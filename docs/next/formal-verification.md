@@ -1644,8 +1644,21 @@ Next candidates after the Kani consolidation are ranked in
   conditions (A14) agree only at scale 1. Since the properties breakpoint lost
   its setter (phase 3, N3) this no longer makes the loop flap; converting the
   width to sp is the open text-scale follow-up.
-- `cargo-gtk-proof` has no sidebar or slice-bin scenario. The screenshot lane
-  is waiting on a `reveal-workspace-path` automation action.
+- ~~`cargo-gtk-proof` has no sidebar or slice-bin scenario. The screenshot lane
+  is waiting on a `reveal-workspace-path` automation action.~~ **Closed
+  2026-10-10 by `add-sidebar-visual-proof-scenario`.** The window action
+  `win.reveal-workspace-path` expands a path's ancestors through the sidebar's
+  admitted scans, selects the row, and scrolls it through the list's own
+  `scroll_to`, so the slice bin's forwarding is what moves the outer scroller;
+  it settles on the new read-only `ViewportSliceBin::outer_request_pending()`
+  rather than on elapsed frames. The `workspace-tree-reveal` scenario runs it
+  past the realized cap, two directories deep, in a second workspace, and at
+  rest, and the `workspace-tree-rendered-row-anchors` invariant (Rust policy and
+  Python mirror) requires the proof for slice-bin, slice-geometry,
+  scroll-request, workspace-section list-host, and reveal edits. The two
+  recorded slice-bin residuals above are untouched: each case issues one
+  request at a time, by design. The reveal depends on one new GTK axiom, A22
+  (a `GtkTreeListRow` expands synchronously), probed in `gtk-lush-axioms`.
 - Proof strength (N9, `measure-proof-strength-with-mutation`): 110 Kani
   survivors and 8 Kani timeouts are accepted as **constrained by tests, not
   proved**; the tests arm kills every one. The clusters and reasons are in the

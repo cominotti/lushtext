@@ -115,6 +115,22 @@ Use predicates tied to visible behavior:
 - a label or title updated
 - a `Cell` flag in the widget `imp()` flipped
 
+**A state that exists only between two dispatches is invisible to `wait_until`.**
+`wait_until` drains every ready source before it looks, so a state recorded by
+one source and cleared by the next lower-priority one inside the same drain is
+never observed. A `ViewportSliceBin` forwarded request is the in-tree case: the
+frame clock's layout (priority 120) records it and a default-priority idle (200)
+applies it. Use `common::observed_between_dispatches`, which runs the main
+loop one `iteration(false)` at a time and samples between dispatches (GLib
+dispatches one priority level per iteration), to assert such a state was ever
+true; then `wait_until` for it to clear.
+
+**`window.destroy()` does not dispose a window a test still holds** (ledger
+A21). A teardown test that needs the widget tree torn down must drop every
+strong handle to the window (and to children it keeps, such as a section)
+after `destroy()`; keep only the widget whose post-teardown evidence you read.
+The sidebar's path reveal ends from `unroot`, which then fires.
+
 For local-history browser tests, remember that the "Before edits" baseline is
 captured on the first modified transition, not when the file load completes. If
 the test relies on browser row ordering, modify the buffer first and then wait

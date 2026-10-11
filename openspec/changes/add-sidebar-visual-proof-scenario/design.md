@@ -93,11 +93,11 @@ Protected regions are per manifest, and the header-unchanged claim only holds wh
 Relationships come from the snapshot:
 
 - inside the viewport;
-- contiguous neighbours at zero tolerance (rows are whole-pixel allocations);
+- contiguous neighbours at zero tolerance: rows are whole-pixel allocations at one constant pitch (a row's border box excludes its CSS margin, so neighbours are separated by the same small gap rather than touching, and the relationship requires every gap to equal the run's common gap);
 - at rest across two post-readiness snapshots;
 - outer scroll and header unchanged for at-rest.
 
-The one claim a snapshot cannot make is that the pixels are where the widget says they are. That is exactly the v0.8.1 defect, so a detector `workspace-selected-row-top-edge` finds the selected-row highlight inside the `workspace-sidebar` crop. The highlight is a band of uniform non-background colour spanning at least 60% of the crop width. The detector is checked against the snapshot row's top edge at `max_screen_y_delta: 0`.
+The one claim a snapshot cannot make is that the pixels are where the widget says they are. That is exactly the v0.8.1 defect, so a detector `workspace-row-ink-bottom-edge` finds the revealed row's drawn content inside a crop equal to the snapshot's revealed-row rectangle and reports its lowest row of content ink, which is checked against the snapshot row's top edge plus a declared `reference_offset_y` at `max_screen_y_delta: 0`. Implementation outcome: the design first named a selected-row highlight detector, but the sidebar draws no selection fill by design (`listview.workspace-file-tree row:selected` is transparent, so clicking rows leaves no permanent fill), and the first live run found nothing to detect. The row's own icon and label are the feature every row carries; their lowest ink row was 25 px below the row's top edge in all sixteen cases and both schemes, while the antialiased top of the glyphs differed by a pixel between schemes.
 
 Fixture kinds:
 
@@ -106,7 +106,7 @@ Fixture kinds:
 | `beyond-cap` | 400 files, reveal the last | crosses `GTK_LIST_VIEW_MAX_LIST_ITEMS` |
 | `nested-beyond-cap` | 300 entries two directories deep, reveal entry 250 | ancestor expansion |
 | `two-workspaces` | reveal in the second section | chrome above the bin includes a whole first section |
-| `already-visible` | reveal a row that is on screen at rest | the resting-bin claim |
+| `already-visible` | a setup reveal expands the folder, then reveal the folder row, on screen at rest with its margins (a row at the band's bottom edge whose margin GTK counts as clipped is a scrolling reveal: the bin's documented `child_value - viewport_top` price) | the resting-bin claim |
 
 The size matrix is desktop 1260×900 and short-wide 1738×342. Short-wide is where the header-loss defects appeared.
 
@@ -116,7 +116,7 @@ The size matrix is desktop 1260×900 and short-wide 1738×342. Short-wide is whe
 
 ## Risks / Trade-offs
 
-- **The selection highlight colour differs per theme, and focus rings may add edges, so the detector could misfire.** → Mitigation: detector unit tests on corpus PNG fixtures for both forced colour schemes, generated from the first live run and frozen with the existing corpus replay. If a scheme cannot be detected reliably, the manifest declares the anchor for the scheme that can. The gap is recorded in the design outcome rather than loosening the delta.
+- **Rendered content differs per theme, and antialiasing may move an edge, so the detector could misfire.** (Outcome: the selection highlight this risk was written for does not exist in this app; see D6.) → Mitigation: detector unit tests on corpus PNG fixtures for both forced colour schemes, generated from the first live run and frozen with the existing corpus replay. If a scheme cannot be detected reliably, the manifest declares the anchor for the scheme that can. The gap is recorded in the design outcome rather than loosening the delta.
 - **The headless frame clock freezes after an idle-driven scroll.** This was observed 2026-09-14, and it is why the latest-target rewrite regressed. → Mitigation: the reveal runs in the real-session `visual-geometry-smoke` lane, not a headless one. Its widget tests use the existing `flush_after_delay` + readiness helpers, which already cope with that behaviour.
 - **Facade headroom (77 lines) may be tight.** → Mitigation: the delegate-harder rule. If the narrative still does not fit, stop and escalate per the convention rather than overrunning 370.
 - **A new blocker in `idle`/`visual-geometry-settled` could stall unrelated waits if a reveal never terminates.** → Mitigation: every path ends in a typed terminal (D4's budget, supersession, disposal), and a widget test proves disposal mid-reveal clears the blocker.

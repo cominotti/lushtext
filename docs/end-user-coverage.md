@@ -107,6 +107,26 @@ they are not default PR gates:
   skipped cases do not count as verified coverage. `make
   visual-geometry-oracle-smoke` remains available for Rust-supervised Python
   oracle diagnostics under `build/smoke/visual-geometry-python-oracle`.
+- The workspace sidebar's rendered rows are a visual-lane invariant,
+  `workspace-tree-rendered-row-anchors`, proved by the `workspace-tree-reveal`
+  scenario type (`scripts/visual-geometry-scenarios/workspace-tree-reveal.json`
+  and `workspace-tree-reveal-at-rest.json`). Each case reaches its row through
+  `win.reveal-workspace-path`, the same bounded expansion, selection, and
+  `scroll_to` forwarded by the `ViewportSliceBin` that user navigation takes:
+  a row past GTK's 200-row realized cap, one two directories deep, one in the
+  second of two workspaces, and one already on screen. Snapshot relationships
+  check that the revealed row is inside the sidebar viewport, that its
+  neighbours tile at one constant pitch, and that it is at rest (for the
+  at-rest case, that neither the outer scroller nor the section header moved,
+  the header pixel-identical). A screenshot-derived pixel anchor finds the
+  revealed row's drawn content (the sidebar draws no selection fill) and
+  requires its lowest ink row at the snapshot row's top plus a fixed offset, at
+  zero delta, which is the one claim a snapshot cannot make (the v0.8.1
+  content-box offset drew rows 1–3px from where the widget reported them). The
+  headless widget lane keeps the matching rendered-row tests in
+  `crates/lushtext/tests/widget/workspace_tree_virtualization.rs`; the
+  accessibility lane is unaffected, because the action adds no keyboard path or
+  AT-SPI anchor.
 - `make check-visual-proof-policy` is a fast Rust-backed local policy gate for agents and
   contributors. If UI Rust, widget tests, Blueprint/UI templates, or CSS files
   are locally changed, it requires a passing, unfiltered

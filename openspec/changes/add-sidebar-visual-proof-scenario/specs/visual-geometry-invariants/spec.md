@@ -2,14 +2,14 @@
 
 ### Requirement: Sidebar rendered rows are proved against screenshot anchors
 
-The visual invariant `workspace-tree-rendered-row-anchors` SHALL be defined by two manifests under `scripts/visual-geometry-scenarios/`: `workspace-tree-reveal.json`, covering fixture kinds `beyond-cap`, `nested-beyond-cap`, and `two-workspaces`, and `workspace-tree-reveal-at-rest.json`, covering `already-visible`. Both SHALL run each case in one same-session pair of captures across at least a desktop size, a short-wide size, and both forced color schemes. Both SHALL protect the header bar, the status bar, and the editor viewport with exact equality. The at-rest manifest SHALL additionally protect the revealed section's header with exact equality. Each case SHALL carry a pixel anchor whose detector finds the top edge of the selected-row highlight inside the `workspace-sidebar` crop, and the detected screen row SHALL match the snapshot's `workspace-revealed-row` top edge with a delta of zero logical pixels. Detector evidence SHALL be recorded in the case's rendered-anchor report.
+The visual invariant `workspace-tree-rendered-row-anchors` SHALL be defined by two manifests under `scripts/visual-geometry-scenarios/`: `workspace-tree-reveal.json`, covering fixture kinds `beyond-cap`, `nested-beyond-cap`, and `two-workspaces`, and `workspace-tree-reveal-at-rest.json`, covering `already-visible`. Both SHALL run each case in one same-session pair of captures across at least a desktop size, a short-wide size, and both forced color schemes. Both SHALL protect the header bar, the status bar, and the editor viewport with exact equality. The at-rest manifest SHALL additionally protect the revealed section's header with exact equality. Each case SHALL carry a pixel anchor whose detector finds the revealed row's drawn content (its icon and label ink) inside a crop equal to the snapshot's `workspace-revealed-row` rectangle, and the detected screen row (the lowest row of content ink) SHALL equal that rectangle's top edge plus the manifest's fixed `reference_offset_y` with a delta of zero logical pixels. The sidebar deliberately draws no selection fill (`listview.workspace-file-tree row:selected` is transparent), so the row's own content is the pixel feature every row carries; its lowest ink row sits a fixed distance below a whole-pixel row's top edge in both colour schemes. Detector evidence SHALL be recorded in the case's rendered-anchor report.
 
 #### Scenario: The drawn row matches the reported row
 - **WHEN** a `beyond-cap` case reveals the last of 400 files
-- **THEN** the selected-row highlight detected in the screenshot starts at the same logical row as the snapshot's revealed-row rectangle, and the case passes
+- **THEN** the row content detected in the screenshot ends at the snapshot's revealed-row top edge plus the declared offset, and the case passes
 
 #### Scenario: An offset drawing fails the anchor
-- **WHEN** a replayed screenshot draws the selected row two pixels below its reported rectangle, as the v0.8.1 content-box defect did
+- **WHEN** a replayed screenshot draws the revealed row two pixels below its reported rectangle, as the v0.8.1 content-box defect did
 - **THEN** the pixel anchor fails with a non-zero screen delta, and the case fails
 
 #### Scenario: Revealing a visible row leaves the header pixel-identical

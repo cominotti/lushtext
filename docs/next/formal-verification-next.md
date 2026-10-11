@@ -48,7 +48,7 @@ change adopts it.
 | 4 | `extend-closed-loop-geometry-verification` (**implemented 2026-09-25**) | **Done**; results in the programme record, phase 3. N4, second half (two bins requesting in one frame), N3 (breakpoint loop, axioms A14–A18), and the two in-Kani attempts at unbounded claims: loop contracts and bin independence | 1 |
 | 5 | `measure-proof-strength-with-mutation` (**implemented 2026-10-10**) | N9. The harness-file mutant exclusion is owned by change 1. **Done**; the per-module table, triage, and lane decision are in the programme record, "Proof strength (N9)" | 1 |
 | 6 | `bound-draft-set-aside-retention` | Fix first: the E1 set-aside naming defect (a body counts as kept only under a byte-identical copy; Kani K9). Then N10 set-aside retention: no automatic deletion, a soft bound that asks for review, and the 256-entry listing bug fixed | — |
-| 7 | `add-sidebar-visual-proof-scenario` | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check | — |
+| 7 | `add-sidebar-visual-proof-scenario` (**implemented 2026-10-10**) | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check. **Done**: `win.reveal-workspace-path`, the `workspace-path-revealed` readiness predicate, `ViewportSliceBin::outer_request_pending()`, and the `workspace-tree-reveal` scenario type with the `workspace-tree-rendered-row-anchors` invariant (programme record, §4) | — |
 | 8 | `apply-verification-altitude-redesigns` | N8, as six groups that can be applied one at a time | 1, 6 |
 | 9 | `verify-shell-conformance-against-proven-cores` | N11: the imperative shells checked against the Kani-proven cores used as oracles | 1, 3 |
 | — | `evaluate-quint-and-tlaplus-empirically` (**implemented 2026-09-24**) | An empirical Quint vs TLA+ comparison, with open exploration. Evaluation only. **Done**: [`formal-verification-quint-vs-tlaplus.md`](./formal-verification-quint-vs-tlaplus.md) decided Kani only for maintained properties, TLA+ with TLC for the disposable N6 sketch, and no Quint; its E1 run found a set-aside defect, fixed first in change 6 | — |
@@ -215,8 +215,13 @@ existing mutation lane to the new one.
   surfaces a review notice and `Preferences > Data` gained a summary row and a
   confirmed "Delete All Preserved Drafts…"; nothing is deleted automatically,
   and Kani R1–R4 check the bulk-deletion decision.
-- Add a sidebar and slice-bin scenario to `cargo-gtk-proof`. It is blocked on
-  a `reveal-workspace-path` automation action.
+- ~~Add a sidebar and slice-bin scenario to `cargo-gtk-proof`. It is blocked on
+  a `reveal-workspace-path` automation action.~~ **Done 2026-10-10
+  (`add-sidebar-visual-proof-scenario`):** `win.reveal-workspace-path` drives the
+  real expansion, selection, and forwarded `scroll_to`; the `workspace-tree-reveal`
+  scenario proves the drawn row content against the reported row at
+  zero delta (invariant `workspace-tree-rendered-row-anchors`), and slice-bin
+  edits now require that proof.
 - Freshness precision for drafts (a nanosecond or file-identity token) needs
   a manifest format bump, so wait for one.
 
