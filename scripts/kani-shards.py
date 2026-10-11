@@ -242,9 +242,14 @@ SHARDS: dict[str, Shard] = {
         ci_peak_gib=4.8,
         measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
     ),
+    # probe-long-line-toolkit-costs added the responsiveness-budget arithmetic
+    # here: seconds of CBMC, too small for a shard of its own.
     "core-second-writer": Shard(
         "lushtext-core",
-        ("services::draft_service::kani_proofs::a_second_writer_",),
+        (
+            "services::draft_service::kani_proofs::a_second_writer_",
+            "model::responsiveness_budget::kani_proofs::",
+        ),
         gate="scheduled",
         ci_minutes=6.6,
         ci_peak_gib=2.7,
@@ -364,6 +369,7 @@ _SHELL_LOOP = "ui::window::geometry::kani_proofs::"
 _PRESET = "ui::sidebar::width_preset::kani_proofs::"
 _MINIMAP = "ui::editor_page::minimap::policy::kani_proofs::"
 _PREVIEW = "ui::markdown_preview::policy::kani_proofs::"
+_BUDGET = "model::responsiveness_budget::kani_proofs::"
 _SHELL_POLICY_HARNESSES = (
     _h(_SHELL + "focus_mode_renders_no_secondary_surface", 0.11, "ci"),
     _h(_SHELL + "layout_never_renders_an_unrequested_surface", 0.2, "ci"),
@@ -505,6 +511,17 @@ ORACLES: dict[str, Oracle] = {
             _h(_PREVIEW + "preview_width_is_monotone_in_preference", 0.15, "ci"),
         ),
         functions=("clamped_preview_width",),
+    ),
+    "crates/lushtext-core/src/model/responsiveness_budget.rs": Oracle(
+        _CORE,
+        (
+            _h(_BUDGET + "classification_is_sound_and_complete", 0.22, "ci"),
+            _h(_BUDGET + "classification_is_monotone_in_the_lateness", 0.19, "ci"),
+            _h(_BUDGET + "buckets_are_monotone_and_in_range", 0.31, "ci"),
+            _h(_BUDGET + "percentile_is_bounded_and_monotone", 16.09, "ci"),
+            _h(_BUDGET + "percentile_refuses_an_unsorted_slice", 7.41, "ci"),
+        ),
+        functions=("classify_dispatch", "histogram_bucket", "histogram_bucket_floor_us", "nearest_rank_percentile"),
     ),
 }
 

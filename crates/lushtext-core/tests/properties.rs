@@ -39,6 +39,8 @@ mod recovery_metadata;
 mod replace_journal_recovery;
 #[path = "properties/replace_undo.rs"]
 mod replace_undo;
+#[path = "properties/responsiveness_budget.rs"]
+mod responsiveness_budget;
 #[path = "properties/search_replacement.rs"]
 mod search_replacement;
 #[path = "properties/session_draft_roundtrip.rs"]

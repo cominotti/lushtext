@@ -25,6 +25,7 @@ pub mod note;
 pub mod palette;
 pub mod plain_disposal;
 pub mod recent_document;
+pub mod responsiveness_budget;
 pub mod session;
 pub mod sidecar_identity;
 pub mod workspace;
