@@ -118,6 +118,10 @@ The lane SHALL run nightly and on demand. It SHALL NOT be a pull-request gate, a
 - **WHEN** the run reproduces a runtime warning already owned by a later change in the programme
 - **THEN** the report lists it as a finding with its owning change, and no allowlist entry hides it
 
+#### Scenario: A fixed pre-existing blocker reappears
+- **WHEN** the run reproduces the runtime warning of a pre-existing blocker that a change in the programme has fixed, such as the scrollbar `GtkGizmo` snapshot warning (ledger A37)
+- **THEN** the report lists it as a regression and the lane fails
+
 ### Requirement: The lane never changes a fixture's bytes
 The lane SHALL record the SHA-256 of every fixture before the app opens it, and after each case. The lane SHALL fail when a fixture's digest differs from the last bytes the driver itself wrote.
 

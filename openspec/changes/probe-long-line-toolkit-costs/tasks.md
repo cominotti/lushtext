@@ -116,3 +116,13 @@
 - [x] 9.2 Run `make gtk-axioms`, `make test-unit`, the new widget test's shard (`make test-widget-shard WIDGET_SHARD=<shard>`), and the Kani shard. Keep the runs within 16 cores and headless.
 - [x] 9.3 Run the lane in the `quick` tier once more after the docs land. Confirm that the artifacts are complete, no fixture digest changed, and the temp scope is clean.
 - [x] 9.4 Run `openspec validate probe-long-line-toolkit-costs --strict`.
+
+## 10. Pre-existing blocker: the scrollbar `GtkGizmo` snapshot warning
+
+The lane reproduced `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation` on ordinary wrap-off documents, so the pre-existing-blockers rule fixes it here rather than in C1.
+
+- [x] 10.1 Confirm the cause against GTK 4.22.5 and GtkSourceView 5.20.0 sources: `GtkTextView` flushes, from inside its snapshot, the line validation that an in-frame edit, caret move or tag change left pending, and the scrollbar it widens or scrolls is then snapshotted without an allocation. Rule out the `mark-set` handlers that run inside GtkSourceView's snapshot.
+- [x] 10.2 Add ledger axiom A37 with its `gtk-lush-axioms` catalogue entry, isolated probe and sample; run it five times in isolation and in `make gtk-axioms`.
+- [x] 10.3 Write the failing-first widget tests (typing in frames; tag changes in frames) that count scroll-adjustment changes inside the paint phase, then fix it in the editor page (`ui/editor_page/frame_validation.rs`: queue the view's allocation on edits and caret moves, and before the paint after tag changes). Run each new test ten times in isolation.
+- [x] 10.4 Make the lane's warning classifier fail the run when a fixed blocker's warning reappears (`FIXED_DEFECTS`), self-tested; rerun the lane's reproducing cases to show the warning is gone.
+- [x] 10.5 Record the fix in the programme record, mark C1's task 8.4a done, and update the ledger, `AGENTS.md`, the editor-page `AGENTS.md`, the axioms crate README and CHANGELOG, `docs/automation.md`, `.agents/rules/build.md` and `docs/next/formal-verification.md`.

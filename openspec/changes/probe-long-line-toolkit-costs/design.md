@@ -252,9 +252,9 @@ Every variant sets `GTK_IM_MODULE` explicitly: `gtk-im-context-simple` for plain
 
 **Storage evidence.** Fifteen seconds after the last case, the wrapper runs `btrfs-stall-report --since <start − 60 s> --until <end> --json` and, per case window, `--no-below`. A case whose window the report attributes to a storage stall is marked `storage-contaminated` and excluded from the derivation. A missing tool or log directory is recorded as `unavailable`. The lane never installs it.
 
-**Warnings.** Runtime warnings are classified with `smoke_warning_classifiers.py`. Known pre-existing defects, such as the minimap detach CRITICAL, are reported as findings with an owner change (C1). They are **not** allowlisted as accepted.
+**Warnings.** Runtime warnings are classified with `smoke_warning_classifiers.py`. Known pre-existing defects, such as the minimap detach CRITICAL, are reported as findings with an owner change (C1). They are **not** allowlisted as accepted. A blocker the programme has fixed (the scrollbar `GtkGizmo` snapshot warning, fixed in C0 under the pre-existing-blockers rule, ledger A37) is a regression instead: its warning fails the lane.
 
-**Exit.** The lane exits 0 when the harness ran and the artifacts are complete. It fails on a fixture hash change, missing artifacts, a driver error, or an app crash outside an `exceeded_cap` kill. Budget overruns are *results* in C0, because the stock app is known to exceed them.
+**Exit.** The lane exits 0 when the harness ran and the artifacts are complete. It fails on a fixture hash change, missing artifacts, a driver error, an app crash outside an `exceeded_cap` kill, or the warning of a fixed pre-existing blocker. Budget overruns are *results* in C0, because the stock app is known to exceed them.
 
 **Derivation** (`report.json` and `report.md`). Every derived value lists the cases, repetitions and variant that decide it, and the worst variant decides. The names match the constants C1 (`document-scale-policy`) and C2 (`long-line-protected-view`) declare, so each can copy its values from the record without renaming.
 

@@ -211,6 +211,7 @@ Rules:
 - Prefer assertions on stable pre/post invariants.
 - If the code already exposes a narrow test-only knob for animation completion, use it.
 - If the behavior only reproduces with real frame-clock progression, run under `mutter --headless` or switch to `gtk-agentic-debugging`.
+- To assert something does **not** happen inside a frame's paint (snapshot), bracket the paint with a one-pixel `GtkDrawingArea` packed *before* the widget under test and redrawn at every frame clock `before-paint` (its draw function runs inside the snapshot), and the clock's `after-paint`. Bracketing with `connect_after("layout")` misses frames that paint without a layout phase. To make a change happen inside a frame (as input does), make it from a tick callback (update phase). See `editor_page::PaintPhaseAdjustmentChanges` and ledger A37.
 
 ## ListView, TreeListModel, and Row Reuse
 

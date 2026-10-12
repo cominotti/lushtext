@@ -79,7 +79,9 @@ axiom) and A22 (the first tree-model axiom, whose probe needs no window).
 `probe-long-line-toolkit-costs` added A23–A36, the first text-layout,
 text-buffer, input-method and GtkSourceView axioms, with the text fixtures
 below and the slow marker; A35 and A36 have no in-crate probe, and the
-responsiveness lane records them. Every later axiom follows the same steps. Rewriting an
+responsiveness lane records them. A37 (text-view validation deferred into
+the paint) followed with LushText's scrollbar-warning fix. Every later axiom
+follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.
 

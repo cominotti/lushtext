@@ -594,6 +594,26 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: None,
     },
+    Axiom {
+        id: AxiomId::new(37),
+        name: "a37_validation_deferred_into_the_paint_moves_adjustments",
+        statement: "a change that invalidates GtkTextView lines inside a frame (an edit or a tag \
+                    change in the update phase, as input is handled in the flush-events phase) \
+                    leaves the view's validation idle pending at paint time, and unless the view \
+                    is allocated in that frame's layout phase, gtk_text_view_paint flushes it \
+                    from inside the snapshot, changing the scroll adjustments after the \
+                    scrollbars were allocated (GTK then may warn that it snapshots the \
+                    scrollbar's trough without a current allocation); queueing the view's \
+                    allocation before the paint moves every such change into layout",
+        dependent_designs: &[
+            "LushText editor page (ui/editor_page/frame_validation.rs): queues the view's \
+             allocation on every edit and caret move, and before the paint after a tag change",
+            "document-scale-policy (C1): wide lines and large documents reach the scrollbar \
+             warning through it",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a37),
+    },
 ];
 
 #[cfg(test)]

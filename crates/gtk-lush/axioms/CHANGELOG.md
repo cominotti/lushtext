@@ -98,6 +98,13 @@
   `text_toolkit_versions` (text probes record the Pango and GtkSourceView
   versions), `time_us` and `offset`; each probe's values and helpers are
   under `fixtures::a23` … `fixtures::a34`.
+- Probe and sample for A37 (a line invalidation made inside a frame is
+  validated inside `gtk_text_view_paint` unless the view is allocated in that
+  frame's layout, so the scroll adjustments change after the scrollbars were
+  allocated), with `fixtures::a37::{LongLineView, PaintPhaseChanges,
+  FrameChange}`: the paint phase is bracketed by a one-pixel `GtkDrawingArea`
+  snapshotted before the view and the frame clock's `after-paint`. Added for
+  LushText's fix of the scrollbar `GtkGizmo` snapshot warning.
 - A slow-probe marker: `Axiom::slow`, with `INCLUDE_SLOW_ENV`
   (`GTK_LUSH_AXIOMS_INCLUDE_SLOW`), `include_slow_probes` and
   `slow_skip_line`. The probe runner and a sample's `--check` skip a slow

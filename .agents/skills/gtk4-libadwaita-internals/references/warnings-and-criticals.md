@@ -106,6 +106,13 @@ So the right posture is:
   - allocation timing
   - visibility toggles racing with render
   - custom paint or snapshot logic
+  - a widget that changes an adjustment inside its own snapshot: `GtkTextView`
+    flushes deferred line validation in `gtk_text_view_paint` (ledger A37), and a
+    scrollbar (`GtkGizmo` trough) snapshotted after it was never re-allocated.
+    Find the in-snapshot setter with an `LD_PRELOAD` shim on `g_object_set`
+    (GTK links `-Bsymbolic`, so only its calls into GLib go through the PLT) and
+    debuginfod symbols; fix by getting the widget allocated in the frame's
+    layout phase, never by suppressing the warning
 
 ## Lifecycle And Parenting Warnings
 

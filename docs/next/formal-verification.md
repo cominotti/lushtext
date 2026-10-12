@@ -282,6 +282,16 @@ not near two million. A32 is the first **defect axiom**: "holds" means the
 `GtkSourceMap` detach CRITICAL is still present, and a probe that turns violated
 after a toolkit update is reviewed as an axiom change.
 
+The same change then added **A37** while fixing a pre-existing blocker its lane
+reproduced (`Trying to snapshot GtkGizmo … without a current allocation`, the
+editor scrollbar's trough): a line invalidation made inside a frame, or just
+before one that input started, is validated inside `gtk_text_view_paint` unless
+the view is allocated in that frame's layout, so the scroll adjustments change
+after the scrollbars were allocated. Its probe counts adjustment emissions
+inside the paint phase (24 typing, 10 tagging, 0 and 0 with the view's
+allocation queued before the paint); LushText's
+`ui/editor_page/frame_validation.rs` relies on the last of those.
+
 The same change added the first Kani harnesses over a **budget** rather than a
 geometry or journal policy: `model/responsiveness_budget/kani_proofs.rs` proves
 the stall classification against the watchdog's lower and upper bounds over

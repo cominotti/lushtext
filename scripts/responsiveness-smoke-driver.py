@@ -148,16 +148,21 @@ KNOWN_DEFECTS = (
         "owner": "document-scale-policy (C1)",
         "axiom": "A32",
     },
+)
+
+# Pre-existing blockers this programme has fixed. A match is a regression: it
+# fails the lane instead of being reported as an owned finding.
+FIXED_DEFECTS = (
     {
-        # The trough/slider of the editor's scrollbar, snapshotted without an
-        # allocation. Smallest reproduction: one 500-character line, wrap off,
-        # Ctrl+Home and typing; also large vertical jumps in 1-5 MB documents.
-        # Never on documents whose lines fit the viewport (lane experiment
-        # gizmo1). Recorded for C1 (docs/next/long-line-documents.md).
+        # The trough of the editor's scrollbar, snapshotted without an
+        # allocation: GtkTextView flushed the validation an in-frame edit or
+        # caret move left pending from inside its snapshot (ledger A37). Fixed
+        # by the editor page queueing its view's allocation on every edit and
+        # caret move (ui/editor_page/frame_validation.rs).
         "id": "gizmo-snapshot-without-allocation",
         "pattern": re.compile(r"Trying to snapshot GtkGizmo .* without a current allocation"),
-        "owner": "document-scale-policy (C1)",
-        "axiom": None,
+        "fixed_by": "editor page frame validation (probe-long-line-toolkit-costs)",
+        "axiom": "A37",
     },
 )
 
@@ -2038,8 +2043,22 @@ def load_axiom_observations(path: Path | None) -> dict[str, dict]:
     return observations
 
 
+def classify_warning(line: str, case: str) -> tuple[str, dict] | None:
+    """The fixed defect (`"regression"`) or known defect (`"finding"`) a
+    warning line matches, or None when it is unclassified. Fixed defects are
+    checked first, so a fixed blocker can never be reported as owned work."""
+    for defect in FIXED_DEFECTS:
+        if defect["pattern"].search(line):
+            return "regression", defect
+    for defect in KNOWN_DEFECTS:
+        if defect["pattern"].search(line) or (defect["id"] == "minimap-detach-critical" and "CRITICAL" in line and "minimap-on" in case):
+            return "finding", defect
+    return None
+
+
 def scan_warnings(artifact_dir: Path) -> dict[str, Any]:
     findings: dict[str, dict] = {}
+    regressions: dict[str, dict] = {}
     unclassified: list[dict] = []
     # Merged sets link their case directories, so follow symlinks.
     for path in sorted(Path(root) / name for root, _dirs, files in os.walk(artifact_dir / "cases", followlinks=True) for name in files if name.startswith("app-") and name.endswith(".stderr")):
@@ -2047,17 +2066,26 @@ def scan_warnings(artifact_dir: Path) -> dict[str, Any]:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if not re.search(r"(WARNING|CRITICAL)", line) or is_gdk_broken_pipe_teardown(line):
                 continue
-            for defect in KNOWN_DEFECTS:
-                if defect["pattern"].search(line) or (defect["id"] == "minimap-detach-critical" and "CRITICAL" in line and "minimap-on" in case):
-                    entry = findings.setdefault(defect["id"], {"owner": defect["owner"], "axiom": defect["axiom"], "count": 0, "cases": [], "example": line[:300]})
-                    entry["count"] += 1
-                    if case not in entry["cases"] and len(entry["cases"]) < 50:
-                        entry["cases"].append(case)
-                    break
-            else:
+            match = classify_warning(line, case)
+            if match is None:
                 if len(unclassified) < 200:
                     unclassified.append({"case": case, "line": line[:300]})
-    return {"known_findings": findings, "unclassified": unclassified, "allowlisted": 0}
+                continue
+            kind, defect = match
+            if kind == "regression":
+                entry = regressions.setdefault(defect["id"], {"fixed_by": defect["fixed_by"], "axiom": defect["axiom"], "count": 0, "cases": [], "example": line[:300]})
+            else:
+                entry = findings.setdefault(defect["id"], {"owner": defect["owner"], "axiom": defect["axiom"], "count": 0, "cases": [], "example": line[:300]})
+            entry["count"] += 1
+            if case not in entry["cases"] and len(entry["cases"]) < 50:
+                entry["cases"].append(case)
+    return {"known_findings": findings, "regressions": regressions, "unclassified": unclassified, "allowlisted": 0}
+
+
+def run_failed(missing: list[str], integrity: dict, run_info: dict, warnings: dict) -> bool:
+    """The lane fails on missing artifacts, an integrity violation, a driver
+    failure, or a warning of a pre-existing blocker the programme has fixed."""
+    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions"))
 
 
 def run_storage(artifact_dir: Path, rows: list[dict]) -> dict[str, Any]:
@@ -2182,7 +2210,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
     calibration = json.loads((artifact_dir / "calibration.json").read_text(encoding="utf-8")) if (artifact_dir / "calibration.json").exists() else {}
     budgets = read_budgets()
     derived = derive(rows, budgets, calibration.get("slack_us"), bool(run_info.get("remote_desktop", {}).get("available")), load_axiom_observations(axiom_path))
-    warnings = scan_warnings(artifact_dir) if (artifact_dir / "cases").exists() else {"known_findings": {}, "unclassified": []}
+    warnings = scan_warnings(artifact_dir) if (artifact_dir / "cases").exists() else {"known_findings": {}, "regressions": {}, "unclassified": []}
     integrity = json.loads((artifact_dir / "integrity.json").read_text(encoding="utf-8")) if (artifact_dir / "integrity.json").exists() else {"violations": ["integrity.json missing"]}
     window = [
         {"case": r["case"], "variant": r["variant"], "rep": r["rep"], "window_construction_us": r.get("window_construction_us"), "open_stall_us": next((p["stall"]["lateness_us"] for p in r.get("phases", []) if p.get("name") == "open" and "stall" in p), None)}
@@ -2216,7 +2244,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
     }
     (artifact_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (artifact_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
-    failed = bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures"))
+    failed = run_failed(missing, integrity, run_info, warnings)
     summary = {
         "status": "failed" if failed else "passed",
         "run_id": run_info.get("run_id"),
@@ -2224,6 +2252,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         "missing_artifacts": missing,
         "integrity_violations": len(integrity.get("violations", [])),
         "driver_failures": run_info.get("driver_failures", []),
+        "fixed_defect_regressions": sorted(warnings.get("regressions", {})),
         "budget_verdict": derived["budget_verdict"].get("verdict"),
     }
     (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -2366,6 +2395,8 @@ def render_markdown(report: dict) -> str:
     lines += ["## Findings (reproduced pre-existing defects)", ""]
     for key, finding in report["warnings"].get("known_findings", {}).items():
         lines.append(f"- `{key}` ({finding['axiom'] or 'no axiom'}), owner {finding['owner']}: {finding['count']} line(s) in {len(finding['cases'])} case(s). Example: `{finding['example']}`")
+    for key, regression in report["warnings"].get("regressions", {}).items():
+        lines.append(f"- **REGRESSION** `{key}` ({regression['axiom']}), fixed by {regression['fixed_by']}: {regression['count']} line(s) in {len(regression['cases'])} case(s); the lane fails. Example: `{regression['example']}`")
     if report["warnings"].get("unclassified"):
         lines.append(f"- {len(report['warnings']['unclassified'])} unclassified warning line(s); see report.json.")
     lines += ["", "## C3 install gate", "", f"{report['install_c3'].get('verdict')}", "", "## Window construction (C4)", ""]
@@ -2687,9 +2718,19 @@ def self_test() -> int:
     mark_noisy(rows_noise)
     expect(all(r.get("noisy") for r in rows_noise), "noisy rows are flagged")
 
-    # The GtkGizmo warning is a reported finding with an owner, not noise.
+    # The GtkGizmo warning was a pre-existing blocker; it is fixed (A37), so it
+    # is a regression that fails the lane, never an owned finding.
     gizmo = "(lushtext:1): Gtk-WARNING **: 20:00:13.364: Trying to snapshot GtkGizmo 0x55596f2a1e80 without a current allocation"
-    expect([d["id"] for d in KNOWN_DEFECTS if d["pattern"].search(gizmo)] == ["gizmo-snapshot-without-allocation"], "the GtkGizmo snapshot warning is a known finding owned by C1")
+    expect(not any(d["pattern"].search(gizmo) for d in KNOWN_DEFECTS), "the GtkGizmo snapshot warning is no longer an owned finding")
+    gizmo_match = classify_warning(gizmo, "paragraph/500/css/txt/wrap-off/minimap-off/plain/rep0")
+    expect(gizmo_match is not None and gizmo_match[0] == "regression" and gizmo_match[1]["id"] == "gizmo-snapshot-without-allocation", "the GtkGizmo snapshot warning is a fixed-defect regression")
+    minimap = "(lushtext:1): Gtk-CRITICAL **: gtk_scrollable_get_vadjustment: assertion 'GTK_IS_SCROLLABLE (scrollable)' failed"
+    minimap_match = classify_warning(minimap, "paragraph/50000/css/txt/wrap-off/minimap-on/plain/rep0")
+    expect(minimap_match is not None and minimap_match[0] == "finding", "an owned defect is still a finding")
+    expect(classify_warning("(lushtext:1): Gtk-WARNING **: something new", "c") is None, "an unknown warning stays unclassified")
+    clean_run: dict[str, Any] = {"driver_failures": []}
+    expect(not run_failed([], {"violations": []}, clean_run, {"regressions": {}, "known_findings": {"x": {}}}), "an owned finding does not fail the lane")
+    expect(run_failed([], {"violations": []}, clean_run, {"regressions": {"gizmo-snapshot-without-allocation": {}}}), "a fixed-defect regression fails the lane")
 
     # Storage contamination.
     expect(storage_status({"verdict": ["Storage was NOT a bottleneck: ..."]}) == "clean", "clean verdict")

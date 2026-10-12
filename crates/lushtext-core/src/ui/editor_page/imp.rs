@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use super::buffer_replacement::BufferReplacementState;
+use super::frame_validation::FrameValidationState;
 use super::minimap::{
     MinimapAnalysisCache, MinimapAnalysisSession, MinimapAvailability, MinimapMarker,
 };
@@ -589,6 +590,8 @@ pub struct LushtextEditorPage {
     pub minimap: MinimapState,
     /// Focus Mode presentation state scoped to this tab.
     pub focus_mode: FocusModeEditorState,
+    /// Frame-clock wiring that keeps line validation out of the snapshot.
+    pub frame_validation: FrameValidationState,
 }
 
 impl Default for LushtextEditorPage {
@@ -630,6 +633,7 @@ impl Default for LushtextEditorPage {
             local_history: LocalHistoryState::default(),
             minimap: MinimapState::default(),
             focus_mode: FocusModeEditorState::default(),
+            frame_validation: FrameValidationState::default(),
         }
     }
 }
@@ -696,6 +700,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.local_history.buffer_signals.clear();
         self.minimap.buffer_signals.clear();
         self.focus_mode.buffer_signals.clear();
+        self.frame_validation.clear();
         self.overscroll.observer.borrow_mut().take();
         self.overscroll.reflow_pause.borrow_mut().take();
         self.minimap.source_map.borrow_mut().take();
@@ -970,6 +975,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().setup_allocation_reflow_observers();
         self.obj().setup_focus_mode_text_origin_guide();
         self.obj().setup_focus_mode_presentation();
+        self.obj().setup_frame_validation();
         self.obj().apply_invisible_characters_mode();
         self.obj().refresh_accessibility_metadata();
     }

@@ -19,6 +19,7 @@ Every GtkTextView, GtkTextBuffer, Pango, input-method, accessibility and GtkSour
 | A34 | `move-cursor` with an invisible cursor moves only the viewport, unless `gtk-keynav-use-caret` is set |
 | A35 | AT-SPI text contents and offsets over invisible text, and `TextChanged` payloads on insert |
 | A36 | The btree copies both strings when it merges adjacent character segments |
+| A37 | A line invalidation made inside a frame (or just before one that input started) is validated inside `gtk_text_view_paint` unless the view is allocated in that frame's layout, so the scroll adjustments change after the scrollbars were allocated |
 
 Each entry's statement SHALL be written from what its probe or measurement observes, not from the source reading that first suggested it. Each entry SHALL list the long-line changes that depend on it.
 

@@ -40,6 +40,7 @@ pub(crate) mod a31;
 pub(crate) mod a32;
 pub(crate) mod a33;
 pub(crate) mod a34;
+pub(crate) mod a37;
 pub(crate) mod adaptive;
 pub(crate) mod text;
 
@@ -80,6 +81,7 @@ pub use a31::probe_a31;
 pub use a32::probe_a32;
 pub use a33::probe_a33;
 pub use a34::probe_a34;
+pub use a37::probe_a37;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);

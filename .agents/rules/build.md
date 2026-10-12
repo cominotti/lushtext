@@ -981,7 +981,10 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   which would add up to 16.7 ms to every input), sets `GTK_IM_MODULE` explicitly for every variant (never
   GTK's Wayland text-input default, S7B-6), never saves (an app holding typed
   edits is `SIGKILL`ed), fails on any fixture digest change, and records
-  `btrfs-stall-report` evidence. Budget overruns are results, not failures; the
+  `btrfs-stall-report` evidence. Budget overruns are results, not failures; a
+warning of a pre-existing blocker the programme fixed (`FIXED_DEFECTS` in the
+driver: the scrollbar `GtkGizmo` snapshot warning, ledger A37) fails the lane,
+while an owned one is reported as a finding; the
   nightly `quick` tier is trend evidence only, and verdicts come from a `full`
   run on the reference machine, recorded in `docs/next/long-line-documents.md`.
   It is not part of `make end-user-smoke`. A long `full` sweep may run group by

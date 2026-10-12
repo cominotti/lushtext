@@ -437,7 +437,10 @@ plain, with the AT bridge and a `pyatspi` text-event listener, with the probe
 input method (`GTK_IM_MODULE=lushtext-probe`), and with IBus when
 `ibus-daemon` is installed (otherwise `skipped`). The report
 (`report.json`, `report.md`) derives the long-line thresholds and the budget
-verdict; the lane is nightly and manual only
+verdict, and lists runtime warnings: a pre-existing defect a later change owns
+is a finding with its owner, while the warning of a blocker the programme has
+fixed (the editor scrollbar's `GtkGizmo` snapshot warning, ledger A37) is a
+regression that fails the lane; the lane is nightly and manual only
 (`.github/workflows/responsiveness-smoke.yml`) and is not part of
 `make end-user-smoke`.
 

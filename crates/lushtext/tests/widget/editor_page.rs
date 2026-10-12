@@ -5500,3 +5500,341 @@ fn test_save_failing_after_rename_reports_durability_unconfirmed_not_a_lost_save
     );
     editor_io::clear_save_failure_for_test();
 }
+
+/// Warnings and criticals GTK logs while a [`GtkLogCapture`] is alive.
+///
+/// GLib accepts one structured-log writer per process and cannot restore a
+/// previous one, so the first capture installs a forwarding writer once: it
+/// always hands the message on to GLib's default writer (the runner's warning
+/// scan still sees it), and additionally keeps `Gtk`-domain warnings and
+/// criticals while a capture is alive.
+struct GtkLogCapture;
+
+static GTK_LOG_CAPTURED: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+static GTK_LOG_WRITER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+impl GtkLogCapture {
+    fn start() -> Self {
+        GTK_LOG_WRITER.get_or_init(|| {
+            glib::log_set_writer_func(|level, fields| {
+                let field = |key: &str| {
+                    fields
+                        .iter()
+                        .find(|field| field.key() == key)
+                        .and_then(|field| field.value_str().map(str::to_owned))
+                        .unwrap_or_default()
+                };
+                if matches!(level, glib::LogLevel::Critical | glib::LogLevel::Warning)
+                    && field("GLIB_DOMAIN") == "Gtk"
+                {
+                    let mut captured = GTK_LOG_CAPTURED
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some(messages) = captured.as_mut() {
+                        messages.push(field("MESSAGE"));
+                    }
+                }
+                glib::log_writer_default(level, fields)
+            });
+        });
+        GTK_LOG_CAPTURED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(Vec::new());
+        Self
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "reading through the live guard ties the read to the capture's lifetime"
+    )]
+    fn messages(&self) -> Vec<String> {
+        GTK_LOG_CAPTURED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for GtkLogCapture {
+    fn drop(&mut self) {
+        GTK_LOG_CAPTURED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+}
+
+/// Counts the editor's scroll-adjustment changes GTK makes *inside* a frame's
+/// paint phase. A change there means the view flushed its deferred validation
+/// from its snapshot (ledger A37), after the scrollbars were already allocated
+/// for the frame.
+///
+/// The paint phase is bracketed by a one-pixel `GtkDrawingArea` prepended to
+/// the page and redrawn in every frame's `before-paint`: GTK snapshots it before
+/// the text view (box children snapshot in order), and its draw function runs
+/// inside that snapshot, so "after the marker drew and before the frame
+/// clock's `after-paint`" is the paint phase even in a frame with no layout.
+struct PaintPhaseAdjustmentChanges {
+    in_paint: Rc<Cell<bool>>,
+    changes: Rc<Cell<u32>>,
+    page: LushtextEditorPage,
+    marker: gtk4::DrawingArea,
+    clock: gtk4::gdk::FrameClock,
+    clock_handlers: Vec<glib::SignalHandlerId>,
+    adjustment_handlers: Vec<(gtk4::Adjustment, glib::SignalHandlerId)>,
+}
+
+impl PaintPhaseAdjustmentChanges {
+    fn watch(page: &LushtextEditorPage) -> Self {
+        let view = page.source_view();
+        let clock = view
+            .frame_clock()
+            .expect("a realized view has a frame clock");
+        let in_paint = Rc::new(Cell::new(false));
+        let changes = Rc::new(Cell::new(0u32));
+        let marker = gtk4::DrawingArea::builder()
+            .content_width(1)
+            .content_height(1)
+            .build();
+        {
+            let in_paint = Rc::clone(&in_paint);
+            marker.set_draw_func(move |_, _, _, _| in_paint.set(true));
+        }
+        page.prepend(&marker);
+        let redraw = {
+            let marker = marker.clone();
+            clock.connect_before_paint(move |_| marker.queue_draw())
+        };
+        let leaving = Rc::clone(&in_paint);
+        let clock_handler = clock.connect_after_paint(move |_| leaving.set(false));
+        let mut adjustment_handlers = Vec::new();
+        for adjustment in [view.hadjustment(), view.vadjustment()]
+            .into_iter()
+            .flatten()
+        {
+            let (changed_in_paint, changed) = (Rc::clone(&in_paint), Rc::clone(&changes));
+            let changed_id = adjustment.connect_changed(move |_| {
+                if changed_in_paint.get() {
+                    changed.set(changed.get() + 1);
+                }
+            });
+            let (moved_in_paint, moved) = (Rc::clone(&in_paint), Rc::clone(&changes));
+            let moved_id = adjustment.connect_value_changed(move |_| {
+                if moved_in_paint.get() {
+                    moved.set(moved.get() + 1);
+                }
+            });
+            adjustment_handlers.push((adjustment.clone(), changed_id));
+            adjustment_handlers.push((adjustment, moved_id));
+        }
+        Self {
+            in_paint,
+            changes,
+            page: page.clone(),
+            marker,
+            clock,
+            clock_handlers: vec![redraw, clock_handler],
+            adjustment_handlers,
+        }
+    }
+
+    fn count(&self) -> u32 {
+        self.changes.get()
+    }
+}
+
+impl Drop for PaintPhaseAdjustmentChanges {
+    fn drop(&mut self) {
+        for handler in self.clock_handlers.drain(..) {
+            self.clock.disconnect(handler);
+        }
+        for (adjustment, handler) in self.adjustment_handlers.drain(..) {
+            adjustment.disconnect(handler);
+        }
+        self.page.remove(&self.marker);
+        self.in_paint.set(false);
+    }
+}
+
+/// Type `count` characters at the cursor, one per frame, from the frame
+/// clock's update phase, the way GTK delivers a key press: inside the frame,
+/// before its layout and paint phases, so the view's validation idle cannot
+/// run in between (ledger A37).
+fn type_in_frames(page: &LushtextEditorPage, count: u32) {
+    let typed = Rc::new(Cell::new(0u32));
+    let typed_in_tick = Rc::clone(&typed);
+    let buffer = page.buffer();
+    page.source_view().add_tick_callback(move |view, _clock| {
+        if typed_in_tick.get() >= count {
+            return glib::ControlFlow::Break;
+        }
+        buffer.insert_interactive_at_cursor("x", true);
+        view.scroll_mark_onscreen(&buffer.get_insert());
+        typed_in_tick.set(typed_in_tick.get() + 1);
+        glib::ControlFlow::Continue
+    });
+    wait_until(Duration::from_secs(10), || typed.get() >= count);
+    flush_after_delay(Duration::from_millis(100));
+}
+
+/// An editor page holding one 500-character line, wrapping off and the
+/// minimap off, presented with the caret and the horizontal scroll at the
+/// start of the line, which is wider than the viewport.
+fn present_long_line_page() -> (LushtextEditorPage, gtk4::ApplicationWindow) {
+    let settings = gio::Settings::new(APP_ID);
+    settings
+        .set_boolean(keys::WORD_WRAP, false)
+        .expect("wrapping off");
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, false)
+        .expect("minimap off");
+    settings
+        .set_boolean(keys::SHOW_LINE_NUMBERS, true)
+        .expect("line numbers on");
+
+    let page = LushtextEditorPage::new();
+    let words = ["lorem", "ipsum", "dolor", "sit", "amet", "consectetur"];
+    let mut line = String::new();
+    for word in words.iter().cycle() {
+        if line.len() >= 500 {
+            break;
+        }
+        line.push_str(word);
+        line.push(' ');
+    }
+    page.buffer().set_text(&line);
+    let window = present_editor_page(&page);
+    let hadjustment = page
+        .source_view()
+        .hadjustment()
+        .expect("the view scrolls horizontally");
+    wait_until(Duration::from_secs(5), || {
+        hadjustment.upper() > hadjustment.page_size() + 1.0
+    });
+    let buffer = page.buffer();
+    buffer.place_cursor(&buffer.start_iter());
+    hadjustment.set_value(0.0);
+    flush_after_delay(Duration::from_millis(100));
+    assert!(
+        hadjustment.upper() > hadjustment.page_size() + 1.0,
+        "control: the line is wider than the viewport ({} vs page {})",
+        hadjustment.upper(),
+        hadjustment.page_size()
+    );
+    (page, window)
+}
+
+/// The Gtk warnings about a widget snapshotted without an allocation.
+fn snapshot_allocation_warnings(messages: &[String]) -> Vec<&String> {
+    messages
+        .iter()
+        .filter(|message| message.contains("without a current allocation"))
+        .collect()
+}
+
+/// Typing into a line wider than the viewport must not change the editor's
+/// scroll adjustments from inside the snapshot.
+///
+/// GtkTextView defers its line validation to an idle that a key press, which
+/// GTK delivers inside the frame, cannot let run before that frame's paint;
+/// its paint then flushes the validation and widens the horizontal adjustment
+/// after the scrollbar was allocated, and GTK logs `Trying to snapshot
+/// GtkGizmo … without a current allocation` for the scrollbar's trough
+/// (ledger A37; first seen by the long-line responsiveness lane on one
+/// 500-character line with wrapping off). The editor queues its view's
+/// allocation on every edit and caret move, so the validation runs in the
+/// layout phase instead.
+#[test]
+fn test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot() {
+    ensure_gtk_init();
+    let (page, window) = present_long_line_page();
+    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
+    let upper_before = hadjustment.upper();
+
+    let capture = GtkLogCapture::start();
+    let changes = PaintPhaseAdjustmentChanges::watch(&page);
+    type_in_frames(&page, 12);
+    let in_paint = changes.count();
+    drop(changes);
+    let warnings = capture.messages();
+    drop(capture);
+
+    assert!(
+        hadjustment.upper() > upper_before,
+        "control: typing widened the horizontal adjustment ({upper_before} -> {})",
+        hadjustment.upper()
+    );
+    assert_eq!(
+        in_paint, 0,
+        "the view changed its scroll adjustments inside the paint phase {in_paint} times"
+    );
+    let allocation_warnings = snapshot_allocation_warnings(&warnings);
+    assert!(
+        allocation_warnings.is_empty(),
+        "GTK snapshotted a widget without an allocation: {allocation_warnings:#?}"
+    );
+    window.destroy();
+    flush_events();
+}
+
+/// A tag change made inside a frame must not leave its validation to the
+/// snapshot either.
+///
+/// GtkSourceView changes tags outside the buffer's text — the search context
+/// highlights matches after a find jump, the context engine highlights syntax
+/// — and a tag that changes a glyph's size invalidates the line like an edit
+/// (ledger A37). The lane reproduced the scrollbar warning on find in dense
+/// and 1 MB documents. Here each frame's update phase widens the line with a
+/// scaled tag.
+#[test]
+fn test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot() {
+    ensure_gtk_init();
+    let (page, window) = present_long_line_page();
+    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
+    let upper_before = hadjustment.upper();
+    let buffer = page.buffer();
+    let widening = gtk4::TextTag::builder().scale(1.6).build();
+    buffer.tag_table().add(&widening);
+
+    let capture = GtkLogCapture::start();
+    let changes = PaintPhaseAdjustmentChanges::watch(&page);
+    const FRAMES: i32 = 10;
+    let tagged = Rc::new(Cell::new(0));
+    {
+        let tagged = Rc::clone(&tagged);
+        page.source_view().add_tick_callback(move |_, _| {
+            if tagged.get() >= FRAMES {
+                return glib::ControlFlow::Break;
+            }
+            tagged.set(tagged.get() + 1);
+            let end = buffer.iter_at_offset(tagged.get() * 10);
+            buffer.apply_tag(&widening, &buffer.start_iter(), &end);
+            glib::ControlFlow::Continue
+        });
+    }
+    wait_until(Duration::from_secs(10), || tagged.get() >= FRAMES);
+    flush_after_delay(Duration::from_millis(100));
+    let in_paint = changes.count();
+    drop(changes);
+    let warnings = capture.messages();
+    drop(capture);
+
+    assert!(
+        hadjustment.upper() > upper_before,
+        "control: the tags widened the horizontal adjustment ({upper_before} -> {})",
+        hadjustment.upper()
+    );
+    assert_eq!(
+        in_paint, 0,
+        "the view changed its scroll adjustments inside the paint phase {in_paint} times"
+    );
+    let allocation_warnings = snapshot_allocation_warnings(&warnings);
+    assert!(
+        allocation_warnings.is_empty(),
+        "GTK snapshotted a widget without an allocation: {allocation_warnings:#?}"
+    );
+    window.destroy();
+    flush_events();
+}

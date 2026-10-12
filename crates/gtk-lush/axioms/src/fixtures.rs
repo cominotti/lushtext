@@ -209,6 +209,15 @@ pub mod a34 {
     pub use crate::probes::a34::{LINES, caret_and_scroll, cursorless_view, document, page_down};
 }
 
+/// The fixture, values and paint-phase counter the A37 probe drives, for its
+/// sample.
+pub mod a37 {
+    pub use crate::probes::a37::{
+        FRAMES, FrameChange, LINE_CHARS, LongLineView, PaintPhaseChanges, SEED, SNAPSHOT_WARNING,
+        TAG_STEP,
+    };
+}
+
 /// Height every probe row requests, so row geometry is predictable.
 ///
 /// GTK adds the row's own CSS padding on top, so a row is drawn taller than

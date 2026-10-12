@@ -16,7 +16,7 @@ that freezes it is **paragraph length**, not file size.
 
 | # | Change | Delivers | Gate before the next change |
 |---|---|---|---|
-| C0 | `probe-long-line-toolkit-costs` | Axioms A23–A36, the synthetic fixture generator, the smoke-only in-process probe, `make responsiveness-smoke`, the budget constants, and the measured values below | Values and the budget verdict recorded here (this record). |
+| C0 | `probe-long-line-toolkit-costs` | Axioms A23–A37, the synthetic fixture generator, the smoke-only in-process probe, `make responsiveness-smoke`, the budget constants, and the measured values below | Values and the budget verdict recorded here (this record). |
 | C1 | `document-scale-policy` | Paragraph profile on the worker, one GTK-matching paragraph-boundary function (fixes the `\n`-only slicer), `DocumentScale` replacing `FileSizeCheck`, gates for syntax/minimap/invisibles/search highlighting at load and on edits, the minimap-detach CRITICAL fix | The context-engine stall and both CRITICALs gone, verified on the lane. |
 | C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for giant-paragraph documents, the display-only fold, the Line Inspector, find on a worker | Every interaction offered on these documents within the budgets. |
 | C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
@@ -222,6 +222,7 @@ point cannot flip.
 | C1 `document-scale-policy` | A27 (tag changes do not dirty the buffer), A29 (context engine cut-off), A31 (2000 px validation batches, the source of R_batch), A32 (source-map detach CRITICAL) |
 | C2 `long-line-protected-view` | A23, A24, A25, A26, A28, A30, A33, A34, A35 |
 | C3 `sliced-protected-install` | A24, A35, A36 |
+| C0 itself (the scrollbar-warning fix below) | A37 |
 
 Two probes corrected the designs that cite them, and C1/C2 must read the
 ledger rows rather than their own earlier text:
@@ -254,14 +255,15 @@ moves, `move-cursor`, typing and scroll; A31 about 2016 px per validation step,
 
 ## Pre-existing blockers reproduced by C0
 
-None is allowlisted; each is reported by the lane as a finding with its owner.
+None is allowlisted; each is reported by the lane as a finding with its owner, and one
+fixed here fails the lane if it reappears.
 
 | Blocker | Owner |
 |---|---|
 | `GtkSourceMap` detach with a pending update tick emits `Gtk-CRITICAL` and `GLib-GObject-CRITICAL` (axiom A32) | C1 |
 | The install slicer splits only on `\n`, so CR-only and U+2029 documents install in one GTK turn | C1 |
 | Window construction stalls the main loop for about 190 ms on every open | C4 |
-| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`. The gizmo is the **trough (and slider) of the editor's horizontal or vertical scrollbar** (found with an `LD_PRELOAD` log-writer shim that walks the widget tree at the warning). Smallest reproduction: **one 500-character line, wrap off** (`paragraph/500/css/txt/wrap-off`), at Ctrl+Home followed by typing, in every repetition and variant; also 160 × 500-character lines wrap off, 2,000-character dense lines, the CR/CRLF delimiter sets and 1–5 MB short-line HTML (large vertical jumps: Ctrl+End, a mid-document click, find). Minimap off in every reproduction. Never seen on the baseline (empty, 400 bytes) or on 20–300 kB documents whose lines fit the viewport, so the trigger is a line wider than the viewport (or a very large scroll range), **not** document scale alone: a Markdown or CSV file with wrap off reaches it. Clue for the fix: GtkSourceView's gutter emits `mark-set` from inside its snapshot on every frame, and LushText's `mark-set` handlers (for example `ui/window/notes/bookmark_execution.rs` → `refresh_notes_menu_state`) run inside that snapshot. **Maintainer decision needed:** it reaches ordinary documents, which the pre-existing-blockers rule would fix in this change; it is recorded for C1 (task 8.4a) because the fix is a toolkit-interaction investigation outside C0's measurement scope | C1 (maintainer to confirm) |
+| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`, the trough of the editor's horizontal or vertical scrollbar. **Fixed in C0** (pre-existing-blockers rule), so it is no longer owned by C1. Root cause, confirmed against GTK 4.22.5 and GtkSourceView 5.20.0 (ledger **A37**): `GtkTextView` validates invalidated lines from an idle at `GTK_PRIORITY_RESIZE - 2`, but a change made inside a frame — the key press of the smallest reproduction (one 500-character line, wrap off, Ctrl+Home and typing) is handled in the frame clock's flush-events phase — or just before a frame that input started (`gdkframeclockidle.c` runs it from `flush_idle` at `GDK_PRIORITY_EVENTS + 1`; find in dense and 1 MB documents, where GtkSourceView's search scan changes tags from an idle) leaves that idle pending at paint time. The view is not re-allocated in that frame's layout, so `gtk_text_view_paint` flushes the validation inside the snapshot (`gtk_text_view_flush_first_validate` → `gtk_text_view_update_adjustments`): a widened line or a queued scroll changes the scroll adjustments, `GtkRange` queues its trough's allocation, and `GtkScrolledWindow` snapshots the scrollbar after its child. Lines that fit the viewport never change `upper`, which is why they never warned. The `mark-set` handlers that run inside GtkSourceView's snapshot were ruled out: disabling LushText's Notes handler left the warning in place. Fix: `ui/editor_page/frame_validation.rs` queues the view's allocation on every edit and caret move, and before the paint (at `before-paint` or after the frame clock's layout handlers) after a tag change, so `gtk_text_view_size_allocate` flushes the validation in layout. Evidence: widget tests `editor_page::test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot` (20 adjustment changes inside the paint before the fix, 0 after) and `editor_page::test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 without the tag handling, 0 with it), probe A37, and the lane: the minimal case and dense 500/2000/50000, total-size 1/5 MB and paragraph 500/15000/22000 (all phases) show no warning, nor do four more repetitions each of dense 500 and total-size 1 MB (before the fix dense 500 warned on find in 3 of 5 runs). The lane classifier now treats this warning as a **regression that fails the run** (`FIXED_DEFECTS` in `scripts/responsiveness-smoke-driver.py`), not as an owned finding. Residual, not observed: a size-changing tag that GtkSourceView applies inside its own snapshot (highlighting the visible region) is still validated in that paint; the editor validates it in the next frame's layout | fixed in C0 |
 
 
 
