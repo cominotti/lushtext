@@ -357,4 +357,9 @@ the rule reads the difference.
 - Validation in the user's session (an isolated-XDG launch with consent) is a
   C2 precondition, not a C0 deliverable.
 - Whether C0 may be archived while the reproduced blockers stay open with their
-  owners (design Open Question 6).
+  owners (design Open Question 6): resolved 2026-10-12, C0 was archived with
+  the remaining blockers owned by C1 and C4 (the one it could fix, the
+  `GtkGizmo` warning, was fixed in C0).
+
+Where this work goes next, in priority order, is in
+[`long-line-evolution.md`](./long-line-evolution.md).
