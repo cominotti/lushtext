@@ -389,10 +389,10 @@ const CATALOGUE: &[Axiom] = &[
         id: AxiomId::new(23),
         name: "a23_a_paragraph_is_one_layout",
         statement: "GtkTextView lays a paragraph out as one PangoLayout over its visible text and \
-                    never lays out part of one: once any part of a wrapped paragraph is shown, its \
-                    display height equals the height Pango gives the whole paragraph laid out \
-                    alone, and its last character's location is already valid on the paragraph's \
-                    last display line",
+                    never lays out part of one: once any part of a wrapped paragraph is shown, it \
+                    wraps into the display lines Pango gives the whole paragraph laid out alone \
+                    at the view's wrap width, and its last character's location is already valid \
+                    on the paragraph's last display line",
         dependent_designs: &[
             "document-scale-policy (C1): N_visible and the paragraph-length thresholds rest on \
              layout cost growing with a paragraph's visible length",

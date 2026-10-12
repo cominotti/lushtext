@@ -82,6 +82,12 @@
   browsing). A35 (AT-SPI text over invisible text) and A36 (btree segment
   merge cost) are catalogued without probes; the responsiveness lane records
   them. Verdicts stay structural; every duration is a recorded value.
+- A23 compares display-line counts, not pixel heights, against an independent
+  Pango layout at the view's wrap width (the text width less GtkTextView's
+  one-pixel cursor space). At the full text width the CI container's font
+  wrapped one line more in the view than in Pango, and the view's summed
+  per-line pixel heights can differ from Pango's once-rounded height by a
+  pixel when the lines agree.
 - The crate now depends on the toolkit crates `pango` and `sourceview5`. New
   text fixtures: `fixtures::paragraph` with `ParagraphKind` (deterministic
   ASCII, multibyte and minified-markup paragraphs), `TextViewFixture`,

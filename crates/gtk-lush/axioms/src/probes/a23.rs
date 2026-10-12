@@ -101,14 +101,19 @@ pub fn probe_a23() -> Observation {
             "control: the view has a viewport and a display line height",
         )?;
         let (pango_lines, pango_height) = independent_layout(&wrapped);
+        let view_lines = display_line_count(&wrapped);
+        recorder.measure("view_display_lines", view_lines);
         recorder.measure("independent_pango_lines", pango_lines);
         recorder.measure("independent_pango_height", pango_height);
         recorder.measure("text_area_width", text_area_width(&wrapped.view));
         record_layout_costs(recorder, &wrapped, "wrap");
         check_whole_paragraph(recorder, geometry, viewport)?;
+        // Lines, not pixels: the view sums each display line's rounded pixel
+        // height while Pango rounds the whole layout once, so the heights may
+        // differ by a pixel when the line counts agree.
         recorder.axiom(
-            geometry.height == pango_height,
-            "the paragraph height is the height Pango gives the whole paragraph laid out alone",
+            view_lines == pango_lines,
+            "the paragraph wraps into the lines Pango gives the whole paragraph laid out alone",
         )?;
 
         let unwrapped = TextViewFixture::new(gtk4::WrapMode::None);
@@ -122,21 +127,40 @@ pub fn probe_a23() -> Observation {
     })
 }
 
+/// How many display lines the view wraps the first paragraph into.
+fn display_line_count(fixture: &TextViewFixture) -> i32 {
+    let mut iter = fixture.buffer.start_iter();
+    let mut end = iter;
+    end.forward_to_line_end();
+    let mut lines = 1;
+    while fixture.view.forward_display_line(&mut iter) && iter < end {
+        lines += 1;
+    }
+    lines
+}
+
 /// The width a wrapped line may use: the view's width less its margins.
 fn text_area_width(view: &gtk4::TextView) -> i32 {
     view.width() - view.left_margin() - view.right_margin()
 }
 
+/// GtkTextView wraps at its text width less one pixel kept free for the
+/// cursor (`SPACE_FOR_CURSOR` in `gtktextview.c`). An independent layout at
+/// the full text width agrees with the view only when no line happens to need
+/// that last pixel, which depends on the font: the CI container's font
+/// wrapped one more line than the reference machine's.
+const SPACE_FOR_CURSOR: i32 = 1;
+
 /// How many lines Pango wraps the fixture's first paragraph into, and how
 /// tall it is in pixels, when it lays the whole paragraph out on its own at
-/// the view's text width and font.
+/// the view's wrap width and font.
 fn independent_layout(fixture: &TextViewFixture) -> (i32, i32) {
     let start = fixture.buffer.start_iter();
     let mut end = start;
     end.forward_to_line_end();
     let text = fixture.buffer.text(&start, &end, false);
     let layout = fixture.view.create_pango_layout(Some(&text));
-    layout.set_width(text_area_width(&fixture.view) * pango::SCALE);
+    layout.set_width((text_area_width(&fixture.view) - SPACE_FOR_CURSOR).max(1) * pango::SCALE);
     layout.set_wrap(pango::WrapMode::WordChar);
     (layout.line_count(), layout.pixel_size().1)
 }
