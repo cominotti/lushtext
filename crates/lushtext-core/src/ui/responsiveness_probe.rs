@@ -590,15 +590,13 @@ mod measurement {
                 }
 
                 fn filter_keypress(&self, event: &gtk4::gdk::Event) -> bool {
-                    if event.event_type() == gtk4::gdk::EventType::KeyPress {
-                        self.request_surrounding(ProbeImTrigger::FilterKeypress);
-                    }
-                    let Some(key) = event.downcast_ref::<gtk4::gdk::KeyEvent>() else {
-                        return false;
-                    };
                     if event.event_type() != gtk4::gdk::EventType::KeyPress {
                         return false;
                     }
+                    self.request_surrounding(ProbeImTrigger::FilterKeypress);
+                    let Some(key) = event.downcast_ref::<gtk4::gdk::KeyEvent>() else {
+                        return false;
+                    };
                     let blocking = gtk4::gdk::ModifierType::CONTROL_MASK
                         | gtk4::gdk::ModifierType::ALT_MASK
                         | gtk4::gdk::ModifierType::SUPER_MASK

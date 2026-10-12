@@ -5614,18 +5614,17 @@ impl PaintPhaseAdjustmentChanges {
             .into_iter()
             .flatten()
         {
-            let (changed_in_paint, changed) = (Rc::clone(&in_paint), Rc::clone(&changes));
-            let changed_id = adjustment.connect_changed(move |_| {
-                if changed_in_paint.get() {
-                    changed.set(changed.get() + 1);
+            let count = {
+                let (in_paint, changes) = (Rc::clone(&in_paint), Rc::clone(&changes));
+                move || {
+                    if in_paint.get() {
+                        changes.set(changes.get() + 1);
+                    }
                 }
-            });
-            let (moved_in_paint, moved) = (Rc::clone(&in_paint), Rc::clone(&changes));
-            let moved_id = adjustment.connect_value_changed(move |_| {
-                if moved_in_paint.get() {
-                    moved.set(moved.get() + 1);
-                }
-            });
+            };
+            let on_changed = count.clone();
+            let changed_id = adjustment.connect_changed(move |_| on_changed());
+            let moved_id = adjustment.connect_value_changed(move |_| count());
             adjustment_handlers.push((adjustment.clone(), changed_id));
             adjustment_handlers.push((adjustment, moved_id));
         }
@@ -5726,12 +5725,45 @@ fn present_long_line_page() -> (LushtextEditorPage, gtk4::ApplicationWindow) {
     (page, window)
 }
 
-/// The Gtk warnings about a widget snapshotted without an allocation.
-fn snapshot_allocation_warnings(messages: &[String]) -> Vec<&String> {
-    messages
+/// Run `drive` on a presented long-line page and assert it widened the line
+/// (the `control`), changed no scroll adjustment inside a paint phase, and
+/// made GTK snapshot no widget without an allocation. Destroys the window.
+fn assert_adjustment_changes_stay_out_of_the_snapshot(
+    page: &LushtextEditorPage,
+    window: &gtk4::ApplicationWindow,
+    control: &str,
+    drive: impl FnOnce(),
+) {
+    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
+    let upper_before = hadjustment.upper();
+
+    let capture = GtkLogCapture::start();
+    let changes = PaintPhaseAdjustmentChanges::watch(page);
+    drive();
+    let in_paint = changes.count();
+    drop(changes);
+    let warnings = capture.messages();
+    drop(capture);
+
+    assert!(
+        hadjustment.upper() > upper_before,
+        "control: {control} widened the horizontal adjustment ({upper_before} -> {})",
+        hadjustment.upper()
+    );
+    assert_eq!(
+        in_paint, 0,
+        "the view changed its scroll adjustments inside the paint phase {in_paint} times"
+    );
+    let allocation_warnings: Vec<&String> = warnings
         .iter()
         .filter(|message| message.contains("without a current allocation"))
-        .collect()
+        .collect();
+    assert!(
+        allocation_warnings.is_empty(),
+        "GTK snapshotted a widget without an allocation: {allocation_warnings:#?}"
+    );
+    window.destroy();
+    flush_events();
 }
 
 /// Typing into a line wider than the viewport must not change the editor's
@@ -5750,33 +5782,9 @@ fn snapshot_allocation_warnings(messages: &[String]) -> Vec<&String> {
 fn test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot() {
     ensure_gtk_init();
     let (page, window) = present_long_line_page();
-    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
-    let upper_before = hadjustment.upper();
-
-    let capture = GtkLogCapture::start();
-    let changes = PaintPhaseAdjustmentChanges::watch(&page);
-    type_in_frames(&page, 12);
-    let in_paint = changes.count();
-    drop(changes);
-    let warnings = capture.messages();
-    drop(capture);
-
-    assert!(
-        hadjustment.upper() > upper_before,
-        "control: typing widened the horizontal adjustment ({upper_before} -> {})",
-        hadjustment.upper()
-    );
-    assert_eq!(
-        in_paint, 0,
-        "the view changed its scroll adjustments inside the paint phase {in_paint} times"
-    );
-    let allocation_warnings = snapshot_allocation_warnings(&warnings);
-    assert!(
-        allocation_warnings.is_empty(),
-        "GTK snapshotted a widget without an allocation: {allocation_warnings:#?}"
-    );
-    window.destroy();
-    flush_events();
+    assert_adjustment_changes_stay_out_of_the_snapshot(&page, &window, "typing", || {
+        type_in_frames(&page, 12);
+    });
 }
 
 /// A tag change made inside a frame must not leave its validation to the
@@ -5790,51 +5798,28 @@ fn test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot() {
 /// scaled tag.
 #[test]
 fn test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot() {
+    const FRAMES: i32 = 10;
     ensure_gtk_init();
     let (page, window) = present_long_line_page();
-    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
-    let upper_before = hadjustment.upper();
     let buffer = page.buffer();
     let widening = gtk4::TextTag::builder().scale(1.6).build();
     buffer.tag_table().add(&widening);
 
-    let capture = GtkLogCapture::start();
-    let changes = PaintPhaseAdjustmentChanges::watch(&page);
-    const FRAMES: i32 = 10;
-    let tagged = Rc::new(Cell::new(0));
-    {
-        let tagged = Rc::clone(&tagged);
-        page.source_view().add_tick_callback(move |_, _| {
-            if tagged.get() >= FRAMES {
-                return glib::ControlFlow::Break;
-            }
-            tagged.set(tagged.get() + 1);
-            let end = buffer.iter_at_offset(tagged.get() * 10);
-            buffer.apply_tag(&widening, &buffer.start_iter(), &end);
-            glib::ControlFlow::Continue
-        });
-    }
-    wait_until(Duration::from_secs(10), || tagged.get() >= FRAMES);
-    flush_after_delay(Duration::from_millis(100));
-    let in_paint = changes.count();
-    drop(changes);
-    let warnings = capture.messages();
-    drop(capture);
-
-    assert!(
-        hadjustment.upper() > upper_before,
-        "control: the tags widened the horizontal adjustment ({upper_before} -> {})",
-        hadjustment.upper()
-    );
-    assert_eq!(
-        in_paint, 0,
-        "the view changed its scroll adjustments inside the paint phase {in_paint} times"
-    );
-    let allocation_warnings = snapshot_allocation_warnings(&warnings);
-    assert!(
-        allocation_warnings.is_empty(),
-        "GTK snapshotted a widget without an allocation: {allocation_warnings:#?}"
-    );
-    window.destroy();
-    flush_events();
+    assert_adjustment_changes_stay_out_of_the_snapshot(&page, &window, "the tags", || {
+        let tagged = Rc::new(Cell::new(0));
+        {
+            let tagged = Rc::clone(&tagged);
+            page.source_view().add_tick_callback(move |_, _| {
+                if tagged.get() >= FRAMES {
+                    return glib::ControlFlow::Break;
+                }
+                tagged.set(tagged.get() + 1);
+                let end = buffer.iter_at_offset(tagged.get() * 10);
+                buffer.apply_tag(&widening, &buffer.start_iter(), &end);
+                glib::ControlFlow::Continue
+            });
+        }
+        wait_until(Duration::from_secs(10), || tagged.get() >= FRAMES);
+        flush_after_delay(Duration::from_millis(100));
+    });
 }

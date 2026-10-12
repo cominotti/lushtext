@@ -41,6 +41,7 @@
 //! lingering.
 
 use std::cell::Cell;
+use std::rc::Rc;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_signals::SignalBag;
@@ -51,8 +52,10 @@ use super::LushtextEditorPage;
 /// Per-tab state of the frame-validation workaround.
 #[derive(Default)]
 pub struct FrameValidationState {
-    /// A tag changed since the last frame's `before-paint`.
-    tags_changed: Cell<bool>,
+    /// A tag changed since the last frame's `before-paint`. Shared with the
+    /// tag handlers, which fire once per highlighted token, so they set it
+    /// without reaching the editor.
+    tags_changed: Rc<Cell<bool>>,
     /// The `before-paint` and `layout` handlers on the view's current frame
     /// clock.
     clock_signals: SignalBag,
@@ -90,12 +93,11 @@ impl LushtextEditorPage {
             });
             self.imp().editing_buffer_signals.track(&buffer, handler_id);
         }
+        let tags_changed = &self.imp().frame_validation.tags_changed;
         for signal in ["apply-tag", "remove-tag"] {
-            let editor_weak = self.downgrade();
+            let tags_changed = Rc::clone(tags_changed);
             let handler_id = buffer.connect_local(signal, false, move |_| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    editor.imp().frame_validation.tags_changed.set(true);
-                }
+                tags_changed.set(true);
                 None
             });
             self.imp().editing_buffer_signals.track(&buffer, handler_id);
@@ -104,10 +106,10 @@ impl LushtextEditorPage {
             // A tag whose properties change size (scale, weight, `invisible`)
             // invalidates every range it covers, like re-applying it.
             let tag_table = buffer.tag_table();
-            let editor_weak = self.downgrade();
+            let tags_changed = Rc::clone(tags_changed);
             let handler_id = tag_table.connect_tag_changed(move |_, _, size_changed| {
-                if size_changed && let Some(editor) = editor_weak.upgrade() {
-                    editor.imp().frame_validation.tags_changed.set(true);
+                if size_changed {
+                    tags_changed.set(true);
                 }
             });
             self.imp()
@@ -147,30 +149,28 @@ impl LushtextEditorPage {
         let Some(clock) = view.frame_clock() else {
             return;
         };
-        let editor_weak = self.downgrade();
-        let before_paint = clock.connect_before_paint(move |_| {
-            if let Some(editor) = editor_weak.upgrade() {
-                editor.validate_tag_changes_in_this_frame();
+        // Every realized tab runs these on every frame, so they reach the
+        // editor only when a tag changed.
+        let consume = {
+            let tags_changed = Rc::clone(&state.tags_changed);
+            let editor_weak = self.downgrade();
+            move || {
+                if tags_changed.replace(false)
+                    && let Some(editor) = editor_weak.upgrade()
+                {
+                    editor.validate_in_next_layout();
+                }
             }
-        });
+        };
+        let at_before_paint = consume.clone();
+        let before_paint = clock.connect_before_paint(move |_| at_before_paint());
         state.clock_signals.track(&clock, before_paint);
-        let editor_weak = self.downgrade();
         let after_layout = clock.connect_closure(
             "layout",
             true,
-            glib::closure_local!(move |_: gtk4::gdk::FrameClock| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    editor.validate_tag_changes_in_this_frame();
-                }
-            }),
+            glib::closure_local!(move |_: gtk4::gdk::FrameClock| consume()),
         );
         state.clock_signals.track(&clock, after_layout);
-    }
-
-    fn validate_tag_changes_in_this_frame(&self) {
-        if self.imp().frame_validation.tags_changed.replace(false) {
-            self.validate_in_next_layout();
-        }
     }
 
     /// Queue the view's allocation, so the next layout phase flushes its
