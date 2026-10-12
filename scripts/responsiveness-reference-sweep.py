@@ -53,14 +53,16 @@ CARET = "click,type-start,type-middle,type-end"
 ALL_BUT_FIND = "scroll,pagedown,click,type-start,type-middle,type-end"
 DENSE = "scroll,pagedown"
 
+PARAGRAPH_SPAN = ((2_000, 10_000, 50_000, 250_000), 500, 1_900_000)  # anchors, floor, ceiling
+
 # threshold -> (group, phases, case patterns at length L, anchors, floor, ceiling)
 THRESHOLDS = {
-    "L_syntax": ("paragraph", LAYOUT, ["paragraph/{L}/*/*/*/minimap-off"], (2_000, 10_000, 50_000, 250_000), 500, 1_900_000),
-    "L_minimap": ("paragraph", LAYOUT, ["paragraph/{L}/css/txt/*/*"], (2_000, 10_000, 50_000, 250_000), 500, 1_900_000),
-    "N_visible": ("paragraph", LAYOUT, ["paragraph/{L}/css/txt/*/minimap-off"], (2_000, 10_000, 50_000, 250_000), 500, 1_900_000),
-    "L_search_highlight": ("paragraph", FIND, ["paragraph/{L}/css/txt/*/minimap-off"], (2_000, 10_000, 50_000, 250_000), 500, 1_900_000),
-    "L_protect": ("paragraph", CARET, ["paragraph/{L}/css/txt/*/minimap-off"], (2_000, 10_000, 50_000, 250_000), 500, 1_900_000),
-    "L_protect_stall": ("paragraph", CARET, ["paragraph/{L}/css/txt/*/minimap-off"], (2_000, 10_000, 50_000, 250_000), 500, 1_900_000),
+    "L_syntax": ("paragraph", LAYOUT, ["paragraph/{L}/*/*/*/minimap-off"], *PARAGRAPH_SPAN),
+    "L_minimap": ("paragraph", LAYOUT, ["paragraph/{L}/css/txt/*/*"], *PARAGRAPH_SPAN),
+    "N_visible": ("paragraph", LAYOUT, ["paragraph/{L}/css/txt/*/minimap-off"], *PARAGRAPH_SPAN),
+    "L_search_highlight": ("paragraph", FIND, ["paragraph/{L}/css/txt/*/minimap-off"], *PARAGRAPH_SPAN),
+    "L_protect": ("paragraph", CARET, ["paragraph/{L}/css/txt/*/minimap-off"], *PARAGRAPH_SPAN),
+    "L_protect_stall": ("paragraph", CARET, ["paragraph/{L}/css/txt/*/minimap-off"], *PARAGRAPH_SPAN),
     "L_invisibles": ("invisibles", LAYOUT, ["invisibles/{L}/*"], (10_000, 250_000), 500, 1_900_000),
     "S_syntax_interact": ("total-size", ALL_BUT_FIND, ["total-size/{L}"], (250_000, 1_000_000), 8_000, 10_000_000),
     "V_batch": ("dense", DENSE, ["dense/{L}/"], (500, 2_000, 10_000, 50_000), 100, 50_000),
@@ -165,21 +167,23 @@ class Sweep:
         """Per-length pass/fail of one threshold, each length judged on its own rows."""
         group = THRESHOLDS[name][0]
         budgets = self.driver.read_budgets()
+        baseline = [r for r in rows if r.get("case") == "baseline/small"]
+        by_length: dict[int, list[dict]] = {}
+        for r in rows:
+            if r.get("group") == group and r.get("length"):
+                by_length.setdefault(r["length"], []).append(r)
         out: dict[int, bool] = {}
-        for length in sorted({r["length"] for r in rows if r.get("group") == group and r.get("length")}):
-            subset = [r for r in rows if r.get("group") == group and r.get("length") == length]
-            baseline = [r for r in rows if r.get("case") == "baseline/small"]
-            derived = self.driver.derive(subset + baseline, budgets, self.slack, True, self.axioms)[name]
+        for length in sorted(by_length):
+            derived = self.driver.derive(by_length[length] + baseline, budgets, self.slack, True, self.axioms)[name]
             if name == "V_batch":
                 if derived.get("line_length") == length:
                     out[length] = True
                 elif str(derived.get("dense_reason", "")).startswith("fails"):
                     out[length] = False
                 continue
-            if derived.get("value") == length:
-                out[length] = True
-            elif derived.get("value") is None and ("upper_bound" in derived or str(derived.get("reason", "")).startswith("fails")):
-                out[length] = False
+            verdict = self.driver.length_verdict(derived, length)
+            if verdict is not None:
+                out[length] = verdict
         return out
 
     def bracket(self, name: str, rows: list[dict]) -> tuple[int | None, int | None, dict[int, bool]]:
@@ -191,6 +195,10 @@ class Sweep:
             elif not decided[length] and hi is None:
                 hi = length
         return lo, hi, decided
+
+    def bracket_record(self, name: str, rows: list[dict]) -> dict:
+        lo, hi, decided = self.bracket(name, rows)
+        return {"lo": lo, "hi": hi, "verdicts": {str(k): v for k, v in decided.items()}}
 
     def next_point(self, name: str, rows: list[dict]) -> int | None:
         _group, _phases, _patterns, _anchors, floor, ceiling = self.spec(name)
@@ -256,10 +264,7 @@ class Sweep:
             report_args += ["--axiom-observations", str(self.axiom_log)]
         status = self.driver.main(report_args)
         rows = [json.loads(line) for line in (merged / "results.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
-        final = {}
-        for name in self.names():
-            lo, hi, decided = self.bracket(name, rows)
-            final[name] = {"lo": lo, "hi": hi, "verdicts": {str(k): v for k, v in decided.items()}}
+        final = {name: self.bracket_record(name, rows) for name in self.names()}
         (self.out / "brackets-final.json").write_text(json.dumps(final, indent=2) + "\n", encoding="utf-8")
         self.note(f"sweep done report={merged / 'report.md'} status={status}")
         return status
@@ -317,8 +322,8 @@ class Sweep:
         confirm: dict[str, list[int]] = {}
         brackets = {}
         for name in self.names():
-            lo, hi, decided = self.bracket(name, rows)
-            brackets[name] = {"lo": lo, "hi": hi, "verdicts": {str(k): v for k, v in decided.items()}}
+            brackets[name] = self.bracket_record(name, rows)
+            lo, hi = brackets[name]["lo"], brackets[name]["hi"]
             points = []
             if lo is not None:
                 points.append(lo)

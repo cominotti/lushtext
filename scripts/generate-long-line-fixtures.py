@@ -428,7 +428,6 @@ def generate(
     charset: str = "ascii",
     flavor: str = "css",
     count: int | None = None,
-    name: str | None = None,
 ) -> dict:
     if kind not in KINDS:
         raise ValueError(f"unknown kind {kind!r}")
@@ -444,7 +443,7 @@ def generate(
     # short-line markup defaults to .html (syntax on); the responsiveness lane
     # also opens the same bytes as .txt to subtract the plain-text cost.
     ext = ext or ("html" if kind == "short-html" else "txt")
-    stem = name or f"{kind}-{size}-{charset}-{flavor}-{delimiter}-s{seed}"
+    stem = f"{kind}-{size}-{charset}-{flavor}-{delimiter}-s{seed}"
     files: list[dict] = []
     if kind == "paragraph":
         files.append(write_paragraph_document(out_dir / f"{stem}.{ext}", separator, seed, size, charset, flavor))

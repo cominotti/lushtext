@@ -20,6 +20,9 @@ them in order; nothing here runs against a live desktop):
 ``report``   after the session: storage evidence, warning findings, the D7
              derivation, ``report.json`` and ``report.md``.
 ``list-cases`` print the case ids of a tier.
+``merge-runs`` join several runs' artifacts for one report.
+``affinity-list`` the first N CPUs of the inherited affinity, as a
+             ``taskset -c`` list (the wrapper's CPU cap).
 ``self-test`` exercise the parsing, classification, noise, contamination,
              derivation and data-integrity logic on synthetic records, without
              GTK or a compositor.
@@ -47,10 +50,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = SCRIPT_PATH.parents[1]
@@ -118,7 +122,6 @@ BISECT_STEPS = 4
 
 PHASE_KINDS = {
     "open": "settle",
-    "window": "settle",
     "background": "settle",
     "restore": "settle",
     "reload": "settle",
@@ -134,6 +137,8 @@ PHASE_KINDS = {
     "idle": "calibration",
 }
 CARET_PHASES = ("click", "type-start", "type-middle", "type-end")
+# Window construction (open, restore) is owned by C4 and left out of stall verdicts.
+STALL_EXCLUDED_PHASES = ("open", "restore")
 
 KNOWN_DEFECTS = (
     {
@@ -147,6 +152,8 @@ KNOWN_DEFECTS = (
         "pattern": re.compile(r"(gtk_source_map|GtkSourceMap|source_map)", re.I),
         "owner": "document-scale-policy (C1)",
         "axiom": "A32",
+        # Any CRITICAL in a minimap-on case is this defect.
+        "critical_in_case": "minimap-on",
     },
 )
 
@@ -239,18 +246,24 @@ def parse_probe_log(lines: Iterable[str]) -> dict[str, Any]:
     }
 
 
+def overlapping_lates(parsed: dict, start_us: int, end_us: int) -> Iterator[dict]:
+    """The late records whose stall (ready time to dispatch) overlaps [start, end]."""
+    for record in parsed["records"]["late"]:
+        ready = int(record.get("ready_us", record["t_us"] - record["lateness_us"]))
+        if record["t_us"] >= start_us and ready <= end_us:
+            yield record
+
+
 def phase_stall(parsed: dict, start_us: int, end_us: int) -> dict[str, Any]:
     """Worst main-loop stall overlapping [start, end] from late records."""
     worst = 0
     worst_at = None
     seen = 0
-    for record in parsed["records"]["late"]:
-        ready = int(record.get("ready_us", record["t_us"] - record["lateness_us"]))
-        if record["t_us"] >= start_us and ready <= end_us:
-            seen += 1
-            if record["lateness_us"] > worst:
-                worst = int(record["lateness_us"])
-                worst_at = int(record["t_us"])
+    for record in overlapping_lates(parsed, start_us, end_us):
+        seen += 1
+        if record["lateness_us"] > worst:
+            worst = int(record["lateness_us"])
+            worst_at = int(record["t_us"])
     below_threshold = seen == 0
     ticks = sum(int(r.get("ticks", 0)) for r in parsed["records"]["second"] if start_us <= r["t_us"] <= end_us + 1_000_000)
     return {
@@ -278,12 +291,13 @@ def frame_gap_p95(parsed: dict, start_us: int, end_us: int, reference_frame_us: 
     """
     frames = sorted((r for r in parsed["records"]["frame"] if start_us <= int(r["frame_time_us"]) <= end_us), key=lambda r: int(r["frame_time_us"]))
     unpresented = sum(1 for r in frames if not r.get("presentation_us"))
+    presented = [frame_presented(parsed, r, reference_frame_us)[0] if r.get("presentation_us") else None for r in frames]
     gaps: list[int] = []
     idle = 0
-    for a, b in zip(frames, frames[1:]):
-        if not a.get("presentation_us") or not b.get("presentation_us"):
+    for (a, at), (b, bt) in zip(zip(frames, presented), zip(frames[1:], presented[1:])):
+        if at is None or bt is None:
             continue
-        gap = frame_presented(parsed, b, reference_frame_us)[0] - frame_presented(parsed, a, reference_frame_us)[0]
+        gap = bt - at
         if gap <= 0:
             continue
         if gap > IDLE_GAP_US and not loop_stalled(parsed, int(a["frame_time_us"]), int(b["frame_time_us"]), reference_frame_us):
@@ -305,11 +319,7 @@ def frame_gap_p95(parsed: dict, start_us: int, end_us: int, reference_frame_us: 
 
 def loop_stalled(parsed: dict, start_us: int, end_us: int, threshold_us: int) -> bool:
     """Whether a main-loop stall of at least `threshold_us` overlapped [start, end]."""
-    for record in parsed["records"]["late"]:
-        ready = int(record.get("ready_us", record["t_us"] - record["lateness_us"]))
-        if int(record["lateness_us"]) >= threshold_us and record["t_us"] >= start_us and ready <= end_us:
-            return True
-    return False
+    return any(int(record["lateness_us"]) >= threshold_us for record in overlapping_lates(parsed, start_us, end_us))
 
 
 def frame_presented(parsed: dict, frame: dict, reference_frame_us: int) -> tuple[int, str]:
@@ -335,7 +345,7 @@ def frame_presented(parsed: dict, frame: dict, reference_frame_us: int) -> tuple
     return presentation, "presentation"
 
 
-def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int, event_clock_ok: bool, horizon_us: int | None = None) -> list[dict]:
+def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int, horizon_us: int | None = None) -> list[dict]:
     """For each measured injected event: origin -> first presentation of a frame started after its handler.
 
     Two attribution rules keep an unrelated frame from being charged to an
@@ -350,24 +360,22 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
     """
     inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
     frames = sorted(parsed["records"]["frame"], key=lambda r: int(r["frame_time_us"]))
-    matched: list[tuple[dict, int | None, Any]] = []
+    matched: list[tuple[dict, int | None]] = []
     used: set[int] = set()
     for injection in injections:
         origin = injection["inject_us"]
         wanted = injection["event"]
         handler = None
-        event_ms = None
         for index, record in enumerate(inputs):
             if index in used or record["t_us"] < origin - 2_000:
                 continue
             if record.get("event") == wanted:
                 handler = int(record["t_us"])
-                event_ms = record.get("event_time_ms")
                 used.add(index)
                 break
-        matched.append((injection, handler, event_ms))
+        matched.append((injection, handler))
     results = []
-    for position, (injection, handler, event_ms) in enumerate(matched):
+    for position, (injection, handler) in enumerate(matched):
         if not injection.get("measured", True):
             continue
         origin = injection["inject_us"]
@@ -375,8 +383,6 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
         if handler is None:
             results.append({"event": wanted, "inject_us": origin, "status": "no-input-record"})
             continue
-        if not injection.get("injected", True) and event_clock_ok and event_ms is not None:
-            origin = int(event_ms) * 1000
         frame = next((f for f in frames if int(f["frame_time_us"]) >= handler), None)
         if frame is not None and horizon_us is not None and int(frame["frame_time_us"]) > horizon_us:
             # The input changed nothing visible (for example Page Down at the
@@ -385,7 +391,7 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
         if frame is None:
             results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-frame"})
             continue
-        next_handler = next((h for _inj, h, _ms in matched[position + 1 :] if h is not None and h > handler), None)
+        next_handler = next((h for _inj, h in matched[position + 1 :] if h is not None and h > handler), None)
         if next_handler is not None and int(frame["frame_time_us"]) > next_handler and not loop_stalled(parsed, handler, next_handler, reference_frame_us):
             results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-visible-change"})
             continue
@@ -408,22 +414,17 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
 def im_summary(parsed: dict, start_us: int, end_us: int) -> dict[str, Any]:
     records = [r for r in parsed["records"]["im"] if start_us <= r["t_us"] <= end_us]
     sizes = [int(r["surrounding_bytes"]) for r in records if r.get("surrounding_bytes") is not None]
-    triggers: dict[str, int] = {}
-    for record in records:
-        triggers[record.get("trigger", "?")] = triggers.get(record.get("trigger", "?"), 0) + 1
-    return {"calls": len(records), "max_surrounding_bytes": max(sizes) if sizes else None, "triggers": triggers}
+    triggers = Counter(record.get("trigger", "?") for record in records)
+    return {"calls": len(records), "max_surrounding_bytes": max(sizes) if sizes else None, "triggers": dict(triggers)}
 
 
 def at_summary(events: list[dict], start_us: int, end_us: int) -> dict[str, Any]:
     inside = [e for e in events if start_us <= e["t_us"] <= end_us]
     lengths = [int(e.get("payload_len", 0)) for e in inside]
     offsets = [int(e.get("detail1", 0)) for e in inside]
-    by_type: dict[str, int] = {}
-    for event in inside:
-        by_type[event["type"]] = by_type.get(event["type"], 0) + 1
     return {
         "events": len(inside),
-        "by_type": by_type,
+        "by_type": dict(Counter(event["type"] for event in inside)),
         "max_payload_len": max(lengths) if lengths else None,
         "max_offset": max(offsets) if offsets else None,
     }
@@ -666,6 +667,16 @@ def select_cases(cases: list[Case], patterns: list[str]) -> list[Case]:
 # --------------------------------------------------------------------------
 
 
+def selected_variants() -> list[str]:
+    """The variants RESPONSIVENESS_VARIANTS selects, in VARIANTS order (all when unset)."""
+    wanted = {v.strip() for v in os.environ.get("RESPONSIVENESS_VARIANTS", ",".join(VARIANTS)).split(",") if v.strip()}
+    return [v for v in VARIANTS if v in wanted]
+
+
+def requested_renderer() -> str:
+    return os.environ.get("RESPONSIVENESS_RENDERER", "cairo")
+
+
 def now_us() -> int:
     return time.monotonic_ns() // 1000
 
@@ -842,14 +853,11 @@ def atspi_listener_main(output: Path) -> int:
 class Launch:
     process: subprocess.Popen
     spawn_us: int
-    log_path: Path
     stderr_path: Path
-    killed_on_cap: bool = False
 
 
 class Runner:
     def __init__(self, args: argparse.Namespace) -> None:
-        self.args = args
         self.artifact_dir: Path = args.artifact_dir
         self.binary: Path = args.binary
         self.tier: str = args.tier
@@ -860,11 +868,10 @@ class Runner:
         self.only_phases: set[str] | None = {p.strip() for p in only.split(",") if p.strip()} or None
         self.install_cap_s = float(os.environ.get("RESPONSIVENESS_INSTALL_CAP_S", "180"))
         # GTK 4.22 renamed `ngl` to `gl` and warns on the old name.
-        self.renderer = {"ngl": "gl"}.get(os.environ.get("RESPONSIVENESS_RENDERER", "cairo"), os.environ.get("RESPONSIVENESS_RENDERER", "cairo"))
+        self.renderer = {"ngl": "gl"}.get(requested_renderer(), requested_renderer())
         self.repetitions = int(os.environ.get("RESPONSIVENESS_REPETITIONS", str(REPETITIONS[self.tier])))
         self.bisect = os.environ.get("RESPONSIVENESS_BISECT", "1" if self.tier == "full" else "0") == "1"
-        wanted = [v.strip() for v in os.environ.get("RESPONSIVENESS_VARIANTS", ",".join(VARIANTS)).split(",") if v.strip()]
-        self.variants = [v for v in VARIANTS if v in wanted]
+        self.variants = selected_variants()
         self.scope = Path(os.environ.get("TMPDIR", tempfile.gettempdir()))
         self.fixture_root = self.scope / "fixtures"
         self.generator = load_generator()
@@ -875,8 +882,6 @@ class Runner:
         self.fixture_manifests: list[dict] = []
         self.event_clock_ok = True
         self.slack_us: int | None = None
-        self.calibration: dict[str, Any] = {}
-        self.case_windows: list[dict] = []
         self.failures: list[str] = []
         self.ibus_available = shutil.which("ibus-daemon") is not None
 
@@ -974,25 +979,15 @@ class Runner:
             env["LUSHTEXT_RESPONSIVENESS_TICK_US"] = str(tick_us)
         # Every variant selects its IM explicitly: never GTK's Wayland
         # text-input default under headless Mutter (S7B-6 crash race).
-        if variant == "at":
-            env["GTK_IM_MODULE"] = "gtk-im-context-simple"
-        elif variant == "probe-im":
-            env["GTK_IM_MODULE"] = "lushtext-probe"
+        env["GTK_IM_MODULE"] = {"probe-im": "lushtext-probe", "ibus": "ibus"}.get(variant, "gtk-im-context-simple")
+        if variant == "probe-im":
             env["LUSHTEXT_PROBE_IM"] = "1"
-            env["NO_AT_BRIDGE"] = "1"
-            env["GTK_A11Y"] = "none"
-        elif variant == "ibus":
-            env["GTK_IM_MODULE"] = "ibus"
-            env["NO_AT_BRIDGE"] = "1"
-            env["GTK_A11Y"] = "none"
-        else:
-            env["GTK_IM_MODULE"] = "gtk-im-context-simple"
+        if variant != "at":
             env["NO_AT_BRIDGE"] = "1"
             env["GTK_A11Y"] = "none"
         return env
 
     def launch(self, rep_dir: Path, env: dict[str, str], files: list[Path], tag: str) -> Launch:
-        log_path = Path(env["LUSHTEXT_RESPONSIVENESS_LOG"])
         stderr_path = rep_dir / f"app-{tag}.stderr"
         spawn = now_us()
         process = subprocess.Popen(
@@ -1002,7 +997,7 @@ class Runner:
             env=env,
             start_new_session=True,
         )
-        return Launch(process, spawn, log_path, stderr_path)
+        return Launch(process, spawn, stderr_path)
 
     def kill(self, launch: Launch) -> None:
         if launch.process.poll() is None:
@@ -1108,6 +1103,15 @@ class Runner:
             return recover()
         return False
 
+    def settle_after(self, seconds: float) -> Callable[[Any, float], tuple[bool, str]]:
+        """A background phase body: wait `seconds`, then for app startup readiness."""
+
+        def body(_inj, deadline):
+            time.sleep(seconds)
+            return self.wait_ready("app-startup", deadline)
+
+        return body
+
     def wanted(self, name: str) -> bool:
         """Whether this run measures the interaction (RESPONSIVENESS_PHASES).
 
@@ -1123,11 +1127,7 @@ class Runner:
     def standard_interactions(self, phases: list[dict], tabs: int = 1, recover: Callable[[], bool] | None = None) -> bool:
         cap = self.cap_s
 
-        def background(_inj, deadline):
-            time.sleep(2.0)
-            return self.wait_ready("app-startup", deadline)
-
-        if not self.step(phases, "background", cap, background, recover):
+        if not self.step(phases, "background", cap, self.settle_after(2.0), recover):
             return False
         if not self.rd.available:
             for name in ("scroll", "click", "pagedown", "type-start", "type-middle", "type-end"):
@@ -1189,7 +1189,7 @@ class Runner:
                     return False
 
         def find(_inj, deadline):
-            if not self.action("win", "set-search-query", [self._string("zqzneedlezqz")], deadline):
+            if not self.action("win", "set-search-query", [self._string(self.generator.FIND_MARKER)], deadline):
                 return False, "action-failed"
             ok, status = self.wait_ready("search-complete", deadline)
             if not ok:
@@ -1266,7 +1266,6 @@ class Runner:
         def recover() -> bool:
             for live in launches:
                 if live.process.poll() is None:
-                    live.killed_on_cap = True
                     self.kill(live)
             recoveries[0] += 1
             if recoveries[0] > 6:
@@ -1292,11 +1291,10 @@ class Runner:
             if not self.ledger.verify(files, f"{case.id}@{variant}#{rep} before launch"):
                 self.failures.append(f"fixture digest changed before {case.id}")
             cap = self.install_cap_s if case.flow == "install" else self.cap_s
-            open_files = files
             if case.flow == "session":
-                launch = self.launch(rep_dir, env, open_files, "first")
+                launch = self.launch(rep_dir, env, files, "first")
                 launches.append(launch)
-                ok = self.open_phase(phases, launch, cap) and self.run_phase(phases, "background", cap, lambda _i, d: (time.sleep(1.0), self.wait_ready("app-startup", d))[1])
+                ok = self.open_phase(phases, launch, cap) and self.run_phase(phases, "background", cap, self.settle_after(1.0))
                 if ok:
                     # Graceful quit happens before any typing, so no save prompt can appear.
                     self.action("app", "quit", None, time.monotonic() + cap)
@@ -1314,15 +1312,15 @@ class Runner:
             elif case.flow == "calibration":
                 ok = self.run_calibration(rep_dir, state_env, phases, launches)
             else:
-                launch = self.launch(rep_dir, env, open_files, "main")
+                launch = self.launch(rep_dir, env, files, "main")
                 launches.append(launch)
                 ok = self.open_phase(phases, launch, cap)
                 if ok and case.flow == "install":
-                    ok = self.run_phase(phases, "background", cap, lambda _i, d: (time.sleep(2.0), self.wait_ready("app-startup", d))[1])
+                    ok = self.run_phase(phases, "background", cap, self.settle_after(2.0))
                     if ok and self.rd.available:
                         self.run_phase(phases, "scroll", cap, lambda inj, d: (self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2), [self.rd.wheel(1, inj) or time.sleep(0.05) for _ in range(40)], (True, "ok"))[2])
                 elif ok and case.flow == "eviction":
-                    ok = self.run_phase(phases, "background", cap, lambda _i, d: (time.sleep(2.0), self.wait_ready("app-startup", d))[1])
+                    ok = self.run_phase(phases, "background", cap, self.settle_after(2.0))
 
                     def reselect(_inj, deadline):
                         self.action("win", "select-tab", [self._uint32(0)], deadline)
@@ -1330,7 +1328,7 @@ class Runner:
 
                     ok = ok and self.run_phase(phases, "reselect", cap, reselect)
                 elif ok and case.flow == "reload":
-                    ok = self.run_phase(phases, "background", cap, lambda _i, d: (time.sleep(1.0), self.wait_ready("app-startup", d))[1])
+                    ok = self.run_phase(phases, "background", cap, self.settle_after(1.0))
 
                     def reload(_inj, deadline):
                         self.rewrite_fixture(case, files[0])
@@ -1340,7 +1338,7 @@ class Runner:
                     ok = ok and self.run_phase(phases, "reload", cap, reload)
                     ok = ok and self.standard_interactions(phases, recover=recover)
                 elif ok:
-                    ok = self.standard_interactions(phases, tabs=len(files) if len(files) > 1 else 1, recover=recover)
+                    ok = self.standard_interactions(phases, tabs=max(1, len(files)), recover=recover)
             for launch in launches:
                 if launch.process.poll() is not None and launch.process.returncode not in (0, -signal.SIGKILL):
                     crashed = True
@@ -1367,8 +1365,7 @@ class Runner:
         row["wall_start"] = wall_start
         row["wall_end"] = time.time()
         (rep_dir / "phases.json").write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
-        with self.results_path.open("a", encoding="utf-8") as results:
-            results.write(json.dumps(row) + "\n")
+        self.append_result(row)
         return row
 
     def rewrite_fixture(self, case: Case, path: Path) -> None:
@@ -1439,7 +1436,6 @@ class Runner:
         self.slack_us = int(result["ticks"]["2000"]["max_idle_lateness_us"])
         result["slack_us"] = self.slack_us
         result["event_clock_monotonic"] = self.event_clock_ok
-        self.calibration = result
         (self.artifact_dir / "calibration.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         phases.append({"name": "idle", "kind": "calibration", "status": "ok", "start_us": 0, "end_us": 0, "injections": []})
         return True
@@ -1474,7 +1470,7 @@ class Runner:
                     stall["lower_bound_only"] = True
                 row["stall"] = stall
                 row["frames"] = frame_gap_p95(parsed, start, end)
-                row["input_to_frame"] = input_to_frame(parsed, phase.get("injections", []), budgets["REFERENCE_FRAME_US"], self.event_clock_ok, end)
+                row["input_to_frame"] = input_to_frame(parsed, phase.get("injections", []), budgets["REFERENCE_FRAME_US"], end)
                 row["im"] = im_summary(parsed, start, end)
                 if variant == "at":
                     row["at"] = at_summary(at_events, start, end)
@@ -1505,24 +1501,27 @@ class Runner:
 
     # -- sweep --------------------------------------------------------------
 
+    def append_result(self, row: dict) -> None:
+        with self.results_path.open("a", encoding="utf-8") as results:
+            results.write(json.dumps(row) + "\n")
+
+    def record_skip(self, case: Case, variant: str, reason: str) -> dict:
+        row = {"case": case.id, "group": case.group, "length": case.length, "variant": variant, "rep": 0, "outcome": "skipped", "reason": reason, "phases": []}
+        self.append_result(row)
+        return row
+
     def run_case(self, case: Case) -> list[dict]:
         files: list[Path] = []
         rows: list[dict] = []
         if case.flow == "install" and not memory_ok(case.length or 0):
-            row = {"case": case.id, "group": case.group, "length": case.length, "variant": "*", "rep": 0, "outcome": "skipped", "reason": "not enough available memory", "phases": []}
-            with self.results_path.open("a", encoding="utf-8") as results:
-                results.write(json.dumps(row) + "\n")
-            return [row]
+            return [self.record_skip(case, "*", "not enough available memory")]
         if case.fixture is not None:
             files = self.make_fixture(case.fixture, case.id)
         try:
             variants = ["plain"] if case.flow == "calibration" else self.variants
             for variant in variants:
                 if variant == "ibus" and not self.ibus_available:
-                    row = {"case": case.id, "group": case.group, "length": case.length, "variant": variant, "rep": 0, "outcome": "skipped", "reason": "ibus-daemon is not installed", "phases": []}
-                    with self.results_path.open("a", encoding="utf-8") as results:
-                        results.write(json.dumps(row) + "\n")
-                    rows.append(row)
+                    rows.append(self.record_skip(case, variant, "ibus-daemon is not installed"))
                     continue
                 reps = 1 if case.flow == "calibration" else self.repetitions
                 variant_rows = [self.run_rep(case, variant, rep, files) for rep in range(reps)]
@@ -1542,7 +1541,6 @@ class Runner:
         try:
             for case in cases:
                 rows.extend(self.run_case(case))
-                self.case_windows.append({"case": case.id})
             if self.bisect:
                 rows.extend(self.run_bisection(rows))
         finally:
@@ -1641,7 +1639,7 @@ def memory_ok(size: int) -> bool:
 
 
 def worst_stall(row: dict) -> int:
-    values = [p["stall"]["lateness_us"] for p in row.get("phases", []) if "stall" in p and p["name"] not in ("open", "window", "restore")]
+    values = [p["stall"]["lateness_us"] for p in row.get("phases", []) if "stall" in p and p["name"] not in STALL_EXCLUDED_PHASES]
     return max(values) if values else 0
 
 
@@ -1694,41 +1692,23 @@ def rows_for(rows: list[dict], group: str, length: int | None = None, **attrs: A
 INTERACTION_PHASES = ("scroll", "click", "pagedown", "type-start", "type-middle", "type-end", "find", "tab-switch", "reselect")
 
 
-def series_pass(name: str, rows: list[dict], length: int, budgets: dict, slack: int) -> bool | None:
-    """Pass/fail for one bisection series at one length (None when not measured)."""
-    tick = 2000
-    if name == "syntax":
-        verdicts = []
-        for wrap, flavor in ((w, f) for w in (True, False) for f in ("css", "script")):
-            html = [r for r in rows_for(rows, "paragraph", length, ext="html", wrap=wrap, minimap=False, flavor=flavor) if usable(r)]
-            txt = [r for r in rows_for(rows, "paragraph", length, ext="txt", wrap=wrap, minimap=False, flavor=flavor) if usable(r)]
-            if not html or not txt:
-                continue
-            for phases, budget in ((("scroll",), budgets["B_INTERACT_US"]), (SETTLE_PHASES, budgets["B_SETTLE_US"])):
-                if hung(html, phases):
-                    verdicts.append("over")
-                    continue
-                a, b = phase_lateness(html, phases), phase_lateness(txt, phases)
-                if a is None or b is None:
-                    continue
-                verdicts.append(classify(max(0, a - b), tick, slack, budget))
-        if not verdicts:
-            return None
-        return all(v == "within" for v in verdicts)
-    if name == "plain":
-        verdicts = []
-        for wrap in (True, False):
-            txt = [r for r in rows_for(rows, "paragraph", length, ext="txt", wrap=wrap, minimap=False) if usable(r)]
-            if hung(txt, ("scroll",)):
-                verdicts.append("over")
-                continue
-            value = phase_lateness(txt, ("scroll",))
-            if value is not None:
-                verdicts.append(classify(value, tick, slack, budgets["B_INTERACT_US"]))
-        if not verdicts:
-            return None
-        return all(v == "within" for v in verdicts)
+# The derived value each in-driver bisection series refines.
+BISECTION_SERIES = {"syntax": "L_syntax", "plain": "N_visible"}
+
+
+def length_verdict(outcome: dict, length: int) -> bool | None:
+    """Whether a derived threshold, computed from one length's rows alone, passes at that length (None: undecided)."""
+    if outcome.get("value") == length:
+        return True
+    if outcome.get("value") is None and ("upper_bound" in outcome or str(outcome.get("reason", "")).startswith("fails")):
+        return False
     return None
+
+
+def series_pass(name: str, rows: list[dict], length: int, budgets: dict, slack: int) -> bool | None:
+    """Pass/fail for one bisection series at one length (None when not measured), by the report's rule."""
+    subset = [r for r in rows if r.get("group") == "paragraph" and r.get("length") == length]
+    return length_verdict(derive(subset, budgets, slack, True, {})[BISECTION_SERIES[name]], length)
 
 
 def largest_passing(lengths: list[int], verdict: Callable[[int], bool | None]) -> dict[str, Any]:
@@ -1828,9 +1808,13 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
     outcome = largest_passing(inv_lengths, attributable(invisibles_rows, ((("scroll",), b_i),)))
     describe("L_invisibles", "invisibles on minus off stall while scrolling <= B_interact", outcome, [r["case"] for r in rows if r.get("group") == "invisibles"])
 
-    def plain_verdict(phases: tuple[str, ...], exts=("txt",)) -> Callable[[int], bool | None]:
+    def txt_rows(length: int) -> list[dict]:
+        """Usable plain-text paragraph rows at one length, wrap on and off, minimap off."""
+        return [r for w in (True, False) for r in rows_for(rows, "paragraph", length, ext="txt", wrap=w, minimap=False) if usable(r)]
+
+    def plain_verdict(phases: tuple[str, ...]) -> Callable[[int], bool | None]:
         def verdict(length: int) -> bool | None:
-            selected = [r for ext in exts for w in (True, False) for r in rows_for(rows, "paragraph", length, ext=ext, wrap=w, minimap=False) if usable(r)]
+            selected = txt_rows(length)
             if selected and hung(selected, phases):
                 return False
             value = phase_lateness(selected, phases)
@@ -1851,15 +1835,25 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
         derived["L_protect"] = {"name": "L_protect", "value": None, "reason": "remote-desktop input was unavailable: caret, type and click interactions were not injected"}
     else:
 
-        def protect_verdict(length: int) -> bool | None:
-            selected = [r for w in (True, False) for r in rows_for(rows, "paragraph", length, ext="txt", wrap=w, minimap=False) if usable(r)]
+        # Informational: the stall half alone. The 2-frame input-to-frame
+        # limit sits at the lane's double-buffered 120 Hz floor (an input
+        # landing just after a frame start waits one frame for the next and
+        # one to present), which the baseline exceeds too, so the literal
+        # L_protect cannot discriminate by length.
+        def protect_stall_verdict(length: int) -> bool | None:
+            selected = txt_rows(length)
             if not selected:
                 return None
             if hung(selected, CARET_PHASES):
                 return False
             value = phase_lateness(selected, CARET_PHASES)
-            if value is None:
-                return None
+            return None if value is None else classify(value, tick, slack, b_i) == "within"
+
+        def protect_verdict(length: int) -> bool | None:
+            stall = protect_stall_verdict(length)
+            if stall is not True:
+                return stall
+            selected = txt_rows(length)
             latencies = [
                 entry["latency_us"]
                 for row in selected
@@ -1868,25 +1862,10 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
                 for entry in phase.get("input_to_frame", [])
                 if "latency_us" in entry
             ]
-            frames_ok = all(latency <= frame_limit for latency in latencies) if latencies else False
-            return classify(value, tick, slack, b_i) == "within" and frames_ok
+            return all(latency <= frame_limit for latency in latencies) if latencies else False
 
         outcome = largest_passing(para_lengths, protect_verdict)
         describe("L_protect", "caret, type and click stalls <= B_interact and input-to-frame <= 2 reference frames, worst variant", outcome, [r["case"] for r in rows if r.get("group") == "paragraph"])
-
-        # Informational: the stall half alone. The 2-frame input-to-frame
-        # limit sits at the lane's double-buffered 120 Hz floor (an input
-        # landing just after a frame start waits one frame for the next and
-        # one to present), which the baseline exceeds too, so the literal
-        # L_protect cannot discriminate by length.
-        def protect_stall_verdict(length: int) -> bool | None:
-            selected = [r for w in (True, False) for r in rows_for(rows, "paragraph", length, ext="txt", wrap=w, minimap=False) if usable(r)]
-            if not selected:
-                return None
-            if hung(selected, CARET_PHASES):
-                return False
-            value = phase_lateness(selected, CARET_PHASES)
-            return None if value is None else classify(value, tick, slack, b_i) == "within"
 
         outcome = largest_passing(para_lengths, protect_stall_verdict)
         describe("L_protect_stall", "informational: caret, type and click stalls <= B_interact, worst variant (L_protect without its frame half)", outcome, [r["case"] for r in rows if r.get("group") == "paragraph"])
@@ -1985,7 +1964,7 @@ def budget_verdict(rows: list[dict], budgets: dict, tick: int, slack: int) -> di
     latencies: list[int] = []
     for row in baseline:
         for phase in row.get("phases", []):
-            if "stall" not in phase or phase["name"] in ("open", "window", "restore"):
+            if "stall" not in phase or phase["name"] in STALL_EXCLUDED_PHASES:
                 continue
             kind = phase.get("kind", "interaction")
             if kind in worst and phase["stall"]["lateness_us"] > worst[kind]:
@@ -2051,7 +2030,8 @@ def classify_warning(line: str, case: str) -> tuple[str, dict] | None:
         if defect["pattern"].search(line):
             return "regression", defect
     for defect in KNOWN_DEFECTS:
-        if defect["pattern"].search(line) or (defect["id"] == "minimap-detach-critical" and "CRITICAL" in line and "minimap-on" in case):
+        hint = defect.get("critical_in_case")
+        if defect["pattern"].search(line) or (hint and "CRITICAL" in line and hint in case):
             return "finding", defect
     return None
 
@@ -2079,7 +2059,7 @@ def scan_warnings(artifact_dir: Path) -> dict[str, Any]:
             entry["count"] += 1
             if case not in entry["cases"] and len(entry["cases"]) < 50:
                 entry["cases"].append(case)
-    return {"known_findings": findings, "regressions": regressions, "unclassified": unclassified, "allowlisted": 0}
+    return {"known_findings": findings, "regressions": regressions, "unclassified": unclassified}
 
 
 def run_failed(missing: list[str], integrity: dict, run_info: dict, warnings: dict) -> bool:
@@ -2434,7 +2414,7 @@ def refuse_live_session() -> None:
 def session_main(args: argparse.Namespace) -> int:
     refuse_live_session()
     registry = None
-    if "at" in [v.strip() for v in os.environ.get("RESPONSIVENESS_VARIANTS", ",".join(VARIANTS)).split(",")]:
+    if "at" in selected_variants():
         if ATSPI_REGISTRYD.exists():
             registry = start_atspi(args.artifact_dir)
         else:
@@ -2596,7 +2576,7 @@ def run_main(args: argparse.Namespace) -> int:
     # `finally`: apps are killed, isolated state and fixtures are removed.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
-    renderer = os.environ.get("RESPONSIVENESS_RENDERER", "cairo")
+    renderer = requested_renderer()
     info = environment_info(args.tier, renderer)
     (args.artifact_dir / "run.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     (args.artifact_dir / "results.jsonl").write_text("", encoding="utf-8")
@@ -2610,8 +2590,9 @@ def run_main(args: argparse.Namespace) -> int:
         runner.rd.close()
         shutil.rmtree(runner.fixture_root, ignore_errors=True)
         return 1
-    cases = select_cases(build_cases(args.tier), args.case or [])
-    calibration = [c for c in build_cases(args.tier) if c.flow == "calibration"]
+    all_cases = build_cases(args.tier)
+    cases = select_cases(all_cases, args.case or [])
+    calibration = [c for c in all_cases if c.flow == "calibration"]
     if not any(c.flow == "calibration" for c in cases):
         cases = calibration + cases
     print(f"Running {len(cases)} case(s) x variants {runner.variants} x {runner.repetitions} rep(s)", flush=True)
@@ -2703,10 +2684,10 @@ def self_test() -> int:
     expect(stall["lateness_us"] == 100_000, "a stall that began before the phase is attributed to it")
     quiet = phase_stall(parsed, 5_000_000, 6_000_000)
     expect(quiet["below_threshold"] and quiet["lateness_us"] == 1000, "a quiet phase reports the late threshold as its bound")
-    itf = input_to_frame(parsed, [{"event": "key-press", "inject_us": 1_000_000}], 8_333, True)
+    itf = input_to_frame(parsed, [{"event": "key-press", "inject_us": 1_000_000}], 8_333)
     expect(itf[0]["latency_us"] == 62_000 and itf[0]["frames"] == 8, "input-to-frame counts from the injection, not the handler")
     expect(im_summary(parsed, 0, 2_000_000)["max_surrounding_bytes"] == 250_000, "IM surrounding bytes recorded")
-    late_frame = input_to_frame(parsed, [{"event": "key-press", "inject_us": 1_000_000}], 8_333, True, horizon_us=1_055_000)
+    late_frame = input_to_frame(parsed, [{"event": "key-press", "inject_us": 1_000_000}], 8_333, horizon_us=1_055_000)
     expect(late_frame[0]["status"] == "no-frame", "a frame after the phase is not the input's frame")
 
     # Noise rule.
@@ -2894,12 +2875,12 @@ def self_test() -> int:
         json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 1, "frame_time_us": home_inject + 101_000, "presentation_us": home_inject + 102_000, "refresh_interval_us": 8333, "source": "presentation"}),
     ]
     right = {"event": "key-press", "inject_us": home_inject + 100_000}
-    attributed = input_to_frame(parse_probe_log(attribution_log), fake_inj + [right], 8_333, True)
+    attributed = input_to_frame(parse_probe_log(attribution_log), fake_inj + [right], 8_333)
     expect(len(attributed) == 2, f"unmeasured injections produce no result ({attributed})")
     expect(attributed[0].get("status") == "no-visible-change", f"a frame after the next handled input is not this input's frame ({attributed[0]})")
     expect(attributed[1].get("latency_us") == 2_000, f"the next input keeps its own frame ({attributed[1]})")
     stalled_log = attribution_log + [json.dumps({"kind": "late", "t_us": home_inject + 100_400, "ready_us": home_inject + 2_000, "lateness_us": 98_400})]
-    stalled = input_to_frame(parse_probe_log(stalled_log), fake_inj + [right], 8_333, True)
+    stalled = input_to_frame(parse_probe_log(stalled_log), fake_inj + [right], 8_333)
     expect(stalled[0].get("latency_us") == 102_000 - 0, f"while the loop was stalled the late frame still counts ({stalled[0]})")
 
     # Headless Mutter presents a lone frame after an idle period only when
@@ -2914,9 +2895,9 @@ def self_test() -> int:
         json.dumps({"kind": "input", "t_us": 10_000_600, "window": 1, "event": "key-press", "event_time_ms": 0}),
         json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 1, "frame_time_us": 10_001_000, "presentation_us": 10_052_000, "refresh_interval_us": 8333, "source": "presentation"}),
     ]
-    deferred = input_to_frame(parse_probe_log(deferred_log), [{"event": "key-press", "inject_us": 10_000_000}], 8_333, True)
+    deferred = input_to_frame(parse_probe_log(deferred_log), [{"event": "key-press", "inject_us": 10_000_000}], 8_333)
     expect(deferred[0].get("latency_us") == 9_333 and deferred[0].get("source") == "deferred-presentation", f"a compositor-deferred presentation counts one reference frame after the frame start ({deferred[0]})")
-    painted = input_to_frame(parse_probe_log(deferred_log + [json.dumps({"kind": "late", "t_us": 10_050_000, "ready_us": 10_002_000, "lateness_us": 48_000})]), [{"event": "key-press", "inject_us": 10_000_000}], 8_333, True)
+    painted = input_to_frame(parse_probe_log(deferred_log + [json.dumps({"kind": "late", "t_us": 10_050_000, "ready_us": 10_002_000, "lateness_us": 48_000})]), [{"event": "key-press", "inject_us": 10_000_000}], 8_333)
     expect(painted[0].get("latency_us") == 52_000, f"a presentation delayed by a stall keeps its real time ({painted[0]})")
 
     # Frame gaps: only gaps between presented frames, and an idle gap (no
@@ -2976,6 +2957,9 @@ def self_test() -> int:
     expect(len(select_cases(full, ["paragraph"])) == 5 * (8 + 4), "group filter selects the paragraph sweep (css matrix + script syntax series)")
     expect({c.group for c in full} == set(GROUPS), "every group has cases")
     expect(read_budgets(Path("/nonexistent"))["B_INTERACT_US"] == 8_000, "budget defaults")
+    expect(length_verdict({"value": 10_000}, 10_000) is True, "a derived value at the length passes it")
+    expect(length_verdict({"value": None, "upper_bound": 10_000}, 10_000) is False, "an upper bound fails the length")
+    expect(length_verdict({"value": None, "reason": "no usable cases"}, 10_000) is None, "no usable cases is undecided")
     expect(hasattr(load_generator(), "generate"), "the fixture generator loads as a module")
 
     if failures:
@@ -3006,6 +2990,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     listing.add_argument("--tier", choices=("quick", "full"), default="quick")
     listing.add_argument("--case", action="append")
     sub.add_parser("self-test")
+    affinity = sub.add_parser("affinity-list", help="the first N CPUs of this process's affinity, as a taskset list")
+    affinity.add_argument("max_cpus", type=int)
     listener = sub.add_parser("atspi-listener")
     listener.add_argument("--output", type=Path, required=True)
     return parser.parse_args(argv)
@@ -3018,6 +3004,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "list-cases":
         for case in select_cases(build_cases(args.tier), args.case or []):
             print(case.id)
+        return 0
+    if args.command == "affinity-list":
+        print(compress_cpus(sorted(os.sched_getaffinity(0))[: args.max_cpus]))
         return 0
     if args.command == "atspi-listener":
         return atspi_listener_main(args.output)

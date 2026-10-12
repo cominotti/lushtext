@@ -110,21 +110,8 @@ smoke_require_command gdbus
 unset WAYLAND_DISPLAY DISPLAY WAYLAND_SOCKET
 
 # At most 16 CPUs, taken from the inherited affinity mask (never widened).
-affinity_list() {
-    "$PYTHON" -c '
-import os, sys
-cpus = sorted(os.sched_getaffinity(0))[: int(sys.argv[1])]
-ranges = []
-for cpu in cpus:
-    if ranges and cpu == ranges[-1][1] + 1:
-        ranges[-1][1] = cpu
-    else:
-        ranges.append([cpu, cpu])
-print(",".join(f"{a}-{b}" if a != b else str(a) for a, b in ranges))
-' "$MAX_CPUS"
-}
 INHERITED_AFFINITY="$("$PYTHON" -c 'import os; print(len(os.sched_getaffinity(0)))')"
-AFFINITY="$(affinity_list)"
+AFFINITY="$("$PYTHON" "$DRIVER" affinity-list "$MAX_CPUS")"
 TASKSET=()
 if [[ "$INHERITED_AFFINITY" -gt "$MAX_CPUS" ]]; then
     command -v taskset >/dev/null 2>&1 || smoke_fail "taskset is required to cap the lane at $MAX_CPUS CPUs"
