@@ -112,7 +112,7 @@
 
 ## 9. Verification
 
-- [ ] 9.1 Run `make check` (fmt, all-feature clippy, policy audits, including `check-gtk-axioms`, `check-kani-shards`, `check-filesystem-boundary`, `check-automation-docs` and `check-workflow-boundaries`).
+- [x] 9.1 Run `make check` (fmt, all-feature clippy, policy audits, including `check-gtk-axioms`, `check-kani-shards`, `check-filesystem-boundary`, `check-automation-docs` and `check-workflow-boundaries`).
 - [x] 9.2 Run `make gtk-axioms`, `make test-unit`, the new widget test's shard (`make test-widget-shard WIDGET_SHARD=<shard>`), and the Kani shard. Keep the runs within 16 cores and headless.
-- [ ] 9.3 Run the lane in the `quick` tier once more after the docs land. Confirm that the artifacts are complete, no fixture digest changed, and the temp scope is clean.
+- [x] 9.3 Run the lane in the `quick` tier once more after the docs land. Confirm that the artifacts are complete, no fixture digest changed, and the temp scope is clean.
 - [x] 9.4 Run `openspec validate probe-long-line-toolkit-costs --strict`.
