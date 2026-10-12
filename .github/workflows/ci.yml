@@ -158,6 +158,7 @@ jobs:
           dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
             libadwaita-devel \
+            gtksourceview5-devel \
             gcc \
             git
 
@@ -186,6 +187,7 @@ jobs:
           dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
             libadwaita-devel \
+            gtksourceview5-devel \
             gcc \
             git \
             openssl-devel
