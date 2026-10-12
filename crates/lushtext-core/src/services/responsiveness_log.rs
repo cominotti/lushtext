@@ -29,7 +29,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 
 use crate::model::responsiveness_budget::{HISTOGRAM_BUCKETS, histogram_bucket};
@@ -204,6 +204,13 @@ impl ProbeRecord {
     #[must_use]
     pub fn to_json_line(&self) -> String {
         let mut line = String::with_capacity(128);
+        self.write_json_line(&mut line);
+        line
+    }
+
+    /// Append the record's JSON line, newline included, to `line` (the
+    /// writer thread reuses one buffer for every record).
+    pub fn write_json_line(&self, line: &mut String) {
         match self {
             Self::Start {
                 t_us,
@@ -241,16 +248,17 @@ impl ProbeRecord {
                     "{{\"kind\":\"second\",\"t_us\":{t_us},\"ticks\":{ticks},\
                      \"max_lateness_us\":{max_lateness_us},\"buckets\":["
                 );
-                push_joined(&mut line, buckets.iter());
+                for (index, bucket) in buckets.iter().enumerate() {
+                    let separator = if index > 0 { "," } else { "" };
+                    let _ = write!(line, "{separator}{bucket}");
+                }
                 line.push_str("]}");
             }
             Self::TopK { t_us, worst } => {
                 let _ = write!(line, "{{\"kind\":\"topk\",\"t_us\":{t_us},\"worst\":[");
                 for (index, (at, lateness)) in worst.iter().enumerate() {
-                    if index > 0 {
-                        line.push(',');
-                    }
-                    let _ = write!(line, "[{at},{lateness}]");
+                    let separator = if index > 0 { "," } else { "" };
+                    let _ = write!(line, "{separator}[{at},{lateness}]");
                 }
                 line.push_str("]}");
             }
@@ -272,8 +280,8 @@ impl ProbeRecord {
                     "{{\"kind\":\"frame\",\"t_us\":{t_us},\"window\":{window},\
                      \"frame_counter\":{frame_counter},\"frame_time_us\":{frame_time_us},\
                      \"presentation_us\":{},\"refresh_interval_us\":{},\"source\":\"{source}\"}}",
-                    json_option(*presentation_us),
-                    json_option(*refresh_interval_us),
+                    JsonOption(*presentation_us),
+                    JsonOption(*refresh_interval_us),
                 );
             }
             Self::Input {
@@ -302,7 +310,7 @@ impl ProbeRecord {
                      \"surrounding_bytes\":{},\"cursor_index\":{cursor_index},\
                      \"handled\":{handled}}}",
                     trigger.as_str(),
-                    json_option(*surrounding_bytes),
+                    JsonOption(*surrounding_bytes),
                 );
             }
             Self::Dropped { t_us, count } => {
@@ -313,20 +321,18 @@ impl ProbeRecord {
             }
         }
         line.push('\n');
-        line
     }
 }
 
-fn json_option<T: std::fmt::Display>(value: Option<T>) -> String {
-    value.map_or_else(|| "null".to_owned(), |value| value.to_string())
-}
+/// An optional number as JSON: the value, or `null`.
+struct JsonOption<T>(Option<T>);
 
-fn push_joined<'a>(line: &mut String, values: impl Iterator<Item = &'a u64>) {
-    for (index, value) in values.enumerate() {
-        if index > 0 {
-            line.push(',');
+impl<T: std::fmt::Display> std::fmt::Display for JsonOption<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(value) => value.fmt(formatter),
+            None => formatter.write_str("null"),
         }
-        let _ = write!(line, "{value}");
     }
 }
 
@@ -461,18 +467,23 @@ impl EvidenceWriter {
         let worker = std::thread::Builder::new()
             .name("lushtext-responsiveness-log".to_owned())
             .spawn(move || {
+                let mut line = String::with_capacity(512);
                 for record in receiver {
                     let pending = worker_dropped.swap(0, Ordering::Relaxed);
                     if pending > 0 {
-                        let notice = ProbeRecord::Dropped {
+                        line.clear();
+                        ProbeRecord::Dropped {
                             t_us: record_time(&record),
                             count: pending,
-                        };
-                        if append(notice.to_json_line().as_bytes()).is_err() {
+                        }
+                        .write_json_line(&mut line);
+                        if append(line.as_bytes()).is_err() {
                             worker_dropped.fetch_add(pending, Ordering::Relaxed);
                         }
                     }
-                    if append(record.to_json_line().as_bytes()).is_err() {
+                    line.clear();
+                    record.write_json_line(&mut line);
+                    if append(line.as_bytes()).is_err() {
                         worker_dropped.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -489,11 +500,9 @@ impl EvidenceWriter {
         let Some(sender) = self.sender.as_ref() else {
             return;
         };
-        match sender.try_send(record) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+        // Full or disconnected: either way the record is dropped and counted.
+        if sender.try_send(record).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 
