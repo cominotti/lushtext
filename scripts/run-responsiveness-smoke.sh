@@ -37,7 +37,10 @@ patterns), RESPONSIVENESS_CASE_CAP_S (per-interaction wall cap, default 20),
 RESPONSIVENESS_INSTALL_CAP_S (default 180), RESPONSIVENESS_VARIANTS
 (default plain,at,probe-im,ibus), RESPONSIVENESS_REPETITIONS,
 RESPONSIVENESS_BISECT (0|1), RESPONSIVENESS_RENDERER (cairo|ngl),
-RESPONSIVENESS_MONITOR (default 1280x800@120).
+RESPONSIVENESS_MONITOR (default 1280x800@120), RESPONSIVENESS_LENGTHS
+(probe points per group, e.g. paragraph=2000,4500;dense=500) and
+RESPONSIVENESS_PHASES (only these interactions; open and background always
+run), both used by scripts/responsiveness-reference-sweep.py.
 EOF
 }
 
@@ -73,6 +76,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --self-test)
             "$PYTHON" "$REPO_ROOT/scripts/generate-long-line-fixtures.py" --self-test
+            "$PYTHON" "$REPO_ROOT/scripts/responsiveness-reference-sweep.py" --self-test
             exec "$PYTHON" "$DRIVER" self-test
             ;;
         -h | --help)

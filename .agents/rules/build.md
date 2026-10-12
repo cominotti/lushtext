@@ -988,8 +988,13 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   group, each part into its own artifact directory, joined for one report with
   `scripts/responsiveness-smoke-driver.py merge-runs --artifact-dir <out> --from
   <part>...` and then `scripts/responsiveness-smoke-driver.py report
-  --artifact-dir <out> [--axiom-observations <make gtk-axioms log>]`; a case a
-  later part re-measured keeps only the later rows.
+  --artifact-dir <out> [--axiom-observations <make gtk-axioms log>]`;
+  repetitions of a case measured by several parts accumulate. The reference
+  values come from the reduced sweep `scripts/responsiveness-reference-sweep.py`
+  (bisection over length, bracketing repetitions and variants only at each
+  boundary; design D7 of `probe-long-line-toolkit-costs`), which drives the lane
+  through `RESPONSIVENESS_LENGTHS` (probe points per group) and
+  `RESPONSIVENESS_PHASES` (only the interactions its thresholds read).
 - `make end-user-smoke` runs the host-supported smoke lanes together. Individual
   scripts own their dependency checks, artifact paths, and skip messages.
 

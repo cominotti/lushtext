@@ -423,7 +423,7 @@ def generate(
     scope: Path,
     out_dir: Path,
     *,
-    ext: str = "txt",
+    ext: str | None = None,
     delimiter: str = "lf",
     charset: str = "ascii",
     flavor: str = "css",
@@ -441,6 +441,9 @@ def generate(
     out_dir = resolve_inside(scope, out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     separator = DELIMITERS[delimiter]
+    # short-line markup defaults to .html (syntax on); the responsiveness lane
+    # also opens the same bytes as .txt to subtract the plain-text cost.
+    ext = ext or ("html" if kind == "short-html" else "txt")
     stem = name or f"{kind}-{size}-{charset}-{flavor}-{delimiter}-s{seed}"
     files: list[dict] = []
     if kind == "paragraph":
@@ -450,7 +453,7 @@ def generate(
     elif kind == "dense":
         files.append(write_dense(out_dir / f"{stem}.{ext}", separator, seed, size, count or 160))
     elif kind == "short-html":
-        files.append(write_short_html(out_dir / f"{stem}.html", separator, seed, size))
+        files.append(write_short_html(out_dir / f"{stem}.{ext}", separator, seed, size))
     elif kind == "session":
         for index in range(count or 3):
             files.append(
@@ -519,6 +522,8 @@ def self_test() -> int:
         short = generate("short-html", 200_000, 9, scope, scope / "s")
         expect(short["files"][0]["bytes"] == 200_000, f"short-html: total size exact ({short['files'][0]['bytes']})")
         expect(short["files"][0]["longest_paragraph"] < 400, "short-html: short lines")
+        short_txt = generate("short-html", 200_000, 9, scope, scope / "st", ext="txt")
+        expect(short["files"][0]["path"].endswith(".html") and short_txt["files"][0]["path"].endswith(".txt") and short_txt["files"][0]["sha256"] == short["files"][0]["sha256"], "short-html: the same bytes as .html (default) and as .txt")
 
         minified = generate("minified-html", 40_000, 11, scope, scope / "h")
         mf = minified["files"][0]
@@ -563,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--scope", type=Path, help="the run's temporary scope (default $TMPDIR)")
     parser.add_argument("--out", type=Path, help="output directory inside the scope")
-    parser.add_argument("--ext", default="txt", choices=("txt", "html"))
+    parser.add_argument("--ext", choices=("txt", "html"), help="default: html for short-html, txt otherwise")
     parser.add_argument("--delimiter", default="lf", choices=tuple(DELIMITERS))
     parser.add_argument("--charset", default="ascii", choices=("ascii", "multibyte"))
     parser.add_argument("--flavor", default="css", choices=tuple(FLAVORS))

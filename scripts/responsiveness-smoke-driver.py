@@ -149,11 +149,11 @@ KNOWN_DEFECTS = (
         "axiom": "A32",
     },
     {
-        # Reproduced on 1-5 MB short-line HTML, 2,000-character dense lines
-        # and the CR/CRLF delimiter sets, during the jumps of Ctrl+End, a
-        # mid-document click and find; never on the baseline or on 20 kB,
-        # 100 kB or 300 kB short-line documents (lane experiment gizmo1), so
-        # it is a document-scale defect, not an ordinary-document one.
+        # The trough/slider of the editor's scrollbar, snapshotted without an
+        # allocation. Smallest reproduction: one 500-character line, wrap off,
+        # Ctrl+Home and typing; also large vertical jumps in 1-5 MB documents.
+        # Never on documents whose lines fit the viewport (lane experiment
+        # gizmo1). Recorded for C1 (docs/next/long-line-documents.md).
         "id": "gizmo-snapshot-without-allocation",
         "pattern": re.compile(r"Trying to snapshot GtkGizmo .* without a current allocation"),
         "owner": "document-scale-policy (C1)",
@@ -525,7 +525,30 @@ def paragraph_case(length: int, ext: str, wrap: bool, minimap: bool, group: str 
     )
 
 
+def sweep_lengths(tier: str, overrides: str | None = None) -> dict[str, tuple[int, ...]]:
+    """The tier's length grid, or the probe points a reduced sweep chose.
+
+    `RESPONSIVENESS_LENGTHS` (`paragraph=2000,4500;invisibles=10000`)
+    replaces a group's grid, so the reference sweep can bisect over length
+    instead of running the whole grid (docs/next/long-line-documents.md).
+    """
+    lengths = {
+        "paragraph": PARAGRAPH_LENGTHS[tier],
+        "dense": DENSE_LINE_LENGTHS[tier],
+        "total-size": TOTAL_SIZES[tier],
+        "invisibles": INVISIBLES_LENGTHS[tier],
+    }
+    raw = os.environ.get("RESPONSIVENESS_LENGTHS", "") if overrides is None else overrides
+    for item in filter(None, (part.strip() for part in raw.split(";"))):
+        group, _, values = item.partition("=")
+        if group.strip() not in lengths:
+            raise SystemExit(f"RESPONSIVENESS_LENGTHS: unknown group {group!r}")
+        lengths[group.strip()] = tuple(int(v) for v in values.split(",") if v.strip())
+    return lengths
+
+
 def build_cases(tier: str) -> list[Case]:
+    grid = sweep_lengths(tier)
     cases: list[Case] = [
         Case("baseline/calibration", "baseline", None, flow="calibration"),
         Case("baseline/empty", "baseline", None, settings={"word-wrap": True}),
@@ -537,7 +560,7 @@ def build_cases(tier: str) -> list[Case]:
             length=400,
         ),
     ]
-    for length in PARAGRAPH_LENGTHS[tier]:
+    for length in grid["paragraph"]:
         for ext in ("html", "txt"):
             for wrap in (True, False):
                 for minimap in (False, True):
@@ -546,7 +569,7 @@ def build_cases(tier: str) -> list[Case]:
                 # (generate-long-line-fixtures.py script_chunk); L_syntax takes
                 # the worst flavour, so it runs the syntax series too.
                 cases.append(paragraph_case(length, ext, wrap, False, flavor="script"))
-    for line_length in DENSE_LINE_LENGTHS[tier]:
+    for line_length in grid["dense"]:
         for wrap in (False, True):
             cases.append(
                 Case(
@@ -558,16 +581,19 @@ def build_cases(tier: str) -> list[Case]:
                     attrs={"wrap": wrap, "lines": DENSE_LINE_COUNT},
                 )
             )
-    for total in TOTAL_SIZES[tier]:
-        cases.append(
-            Case(
-                f"total-size/{total}",
-                "total-size",
-                FixtureSpec("short-html", total, seed_for("short-html", total), ext="html"),
-                settings={"word-wrap": True, "show-minimap": False},
-                length=total,
+    for total in grid["total-size"]:
+        # The same bytes as .html and as .txt: S_syntax is the difference.
+        for ext in ("html", "txt"):
+            cases.append(
+                Case(
+                    f"total-size/{total}" + ("/txt" if ext == "txt" else ""),
+                    "total-size",
+                    FixtureSpec("short-html", total, seed_for("short-html", total), ext=ext),
+                    settings={"word-wrap": True, "show-minimap": False},
+                    length=total,
+                    attrs={"ext": ext},
+                )
             )
-        )
     for delimiter in ("lf", "cr", "crlf", "u2029"):
         cases.append(
             Case(
@@ -620,7 +646,7 @@ def build_cases(tier: str) -> list[Case]:
                     length=size,
                 )
             )
-    for length in INVISIBLES_LENGTHS[tier]:
+    for length in grid["invisibles"]:
         for mode in ("off", "all"):
             cases.append(paragraph_case(length, "txt", True, False, group="invisibles", invisibles=mode))
     return cases
@@ -825,6 +851,10 @@ class Runner:
         self.binary: Path = args.binary
         self.tier: str = args.tier
         self.cap_s = float(os.environ.get("RESPONSIVENESS_CASE_CAP_S", "20"))
+        # A reduced sweep may measure only the interactions its thresholds
+        # read (open and background always run); unset means all of them.
+        only = os.environ.get("RESPONSIVENESS_PHASES", "").strip()
+        self.only_phases: set[str] | None = {p.strip() for p in only.split(",") if p.strip()} or None
         self.install_cap_s = float(os.environ.get("RESPONSIVENESS_INSTALL_CAP_S", "180"))
         # GTK 4.22 renamed `ngl` to `gl` and warns on the old name.
         self.renderer = {"ngl": "gl"}.get(os.environ.get("RESPONSIVENESS_RENDERER", "cairo"), os.environ.get("RESPONSIVENESS_RENDERER", "cairo"))
@@ -1069,6 +1099,18 @@ class Runner:
             return recover()
         return False
 
+    def wanted(self, name: str) -> bool:
+        """Whether this run measures the interaction (RESPONSIVENESS_PHASES).
+
+        The click also gives the window keyboard focus, so it runs whenever a
+        keyboard interaction does.
+        """
+        if self.only_phases is None:
+            return True
+        if name == "click":
+            return bool(self.only_phases & {"click", "pagedown", "type-start", "type-middle", "type-end"})
+        return name in self.only_phases
+
     def standard_interactions(self, phases: list[dict], tabs: int = 1, recover: Callable[[], bool] | None = None) -> bool:
         cap = self.cap_s
 
@@ -1132,6 +1174,8 @@ class Runner:
                 ("type-middle", type_at("middle")),
                 ("type-end", type_at("end")),
             ):
+                if not self.wanted(name):
+                    continue
                 if not self.step(phases, name, cap, body, recover):
                     return False
 
@@ -1145,7 +1189,7 @@ class Runner:
                 self.action("win", "next-match", None, deadline)
             return True, "ok"
 
-        if not self.step(phases, "find", cap, find, recover):
+        if self.wanted("find") and not self.step(phases, "find", cap, find, recover):
             return False
         if tabs > 1:
 
@@ -1438,6 +1482,7 @@ class Runner:
             "late_threshold_us": threshold,
             "dropped_records": dropped,
             "window_construction_us": window_us,
+            "only_phases": sorted(self.only_phases) if self.only_phases else None,
             "exit_codes": [launch.process.returncode for launch in launches],
             "renderer": self.renderer,
             "renderer_actual": actual_renderer(launches),
@@ -1613,7 +1658,8 @@ def hung(rows: list[dict], phase_names: Iterable[str]) -> bool:
         present = [p for p in row.get("phases", []) if p.get("name") in names]
         if any(p.get("status") == "exceeded_cap" or p.get("stall", {}).get("lower_bound_only") for p in present):
             return True
-        if not present and row.get("outcome") == "exceeded_cap":
+        measured = row.get("only_phases")
+        if not present and row.get("outcome") == "exceeded_cap" and (measured is None or names & set(measured)):
             return True
     return False
 
@@ -1720,6 +1766,10 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
                 if hung(with_rows, phases):
                     results.append("over")
                     continue
+                if hung(without_rows, phases):
+                    # The baseline side's cost is only a lower bound, so the
+                    # attributable difference cannot be bounded: no verdict.
+                    continue
                 a, b = phase_lateness(with_rows, phases), phase_lateness(without_rows, phases)
                 if a is None or b is None:
                     continue
@@ -1810,18 +1860,41 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
         outcome = largest_passing(para_lengths, protect_verdict)
         describe("L_protect", "caret, type and click stalls <= B_interact and input-to-frame <= 2 reference frames, worst variant", outcome, [r["case"] for r in rows if r.get("group") == "paragraph"])
 
+        # Informational: the stall half alone. The 2-frame input-to-frame
+        # limit sits at the lane's double-buffered 120 Hz floor (an input
+        # landing just after a frame start waits one frame for the next and
+        # one to present), which the baseline exceeds too, so the literal
+        # L_protect cannot discriminate by length.
+        def protect_stall_verdict(length: int) -> bool | None:
+            selected = [r for w in (True, False) for r in rows_for(rows, "paragraph", length, ext="txt", wrap=w, minimap=False) if usable(r)]
+            if not selected:
+                return None
+            if hung(selected, CARET_PHASES):
+                return False
+            value = phase_lateness(selected, CARET_PHASES)
+            return None if value is None else classify(value, tick, slack, b_i) == "within"
+
+        outcome = largest_passing(para_lengths, protect_stall_verdict)
+        describe("L_protect_stall", "informational: caret, type and click stalls <= B_interact, worst variant (L_protect without its frame half)", outcome, [r["case"] for r in rows if r.get("group") == "paragraph"])
+
     # Validation batches (A31).
     a31 = axiom_obs.get("A31", {}).get("measured", {})
     rows_per_batch = to_int(a31.get("rows_per_batch_nowrap") or a31.get("rows_per_batch"))
     row_height = to_int(a31.get("line_height") or a31.get("row_height_px"))
     dense_lengths = sorted({r["length"] for r in rows if r.get("group") == "dense"})
 
+    # The background phase also holds the post-open stall every document
+    # shows (baseline/small); validation is its excess over that stall.
+    post_open_us = phase_lateness([r for r in rows if r.get("case") == "baseline/small" and usable(r)], ("background",)) or 0
+
     def dense_verdict(length: int) -> bool | None:
         selected = [r for r in rows_for(rows, "dense", length) if usable(r)]
         if selected and hung(selected, ("scroll", "pagedown", "background")):
             return False
-        value = phase_lateness(selected, ("scroll", "pagedown", "background"))
-        return None if value is None else classify(value, tick, slack, b_i) == "within"
+        interaction = phase_lateness(selected, ("scroll", "pagedown"))
+        background = phase_lateness(selected, ("background",))
+        values = [v for v in (interaction, None if background is None else max(0, background - post_open_us)) if v is not None]
+        return None if not values else classify(max(values), tick, slack, b_i) == "within"
 
     dense_outcome = largest_passing(dense_lengths, dense_verdict)
     if rows_per_batch and dense_outcome.get("value"):
@@ -1829,8 +1902,8 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
         dense_outcome["value"] = dense_outcome["value"] * rows_per_batch
         dense_outcome["rows_per_batch_default_zoom"] = rows_per_batch
     else:
-        dense_outcome = {"value": None, "reason": "needs the A31 rows-per-batch observation (pass --axiom-observations) and a passing dense case", "dense_line_length": dense_outcome.get("value")}
-    describe("V_batch", "largest line length x A31 rows per 2000 px batch whose dense validation stalls <= B_interact", dense_outcome, [r["case"] for r in rows if r.get("group") == "dense"])
+        dense_outcome = {"value": None, "reason": "needs the A31 rows-per-batch observation (pass --axiom-observations) and a passing dense case", "dense_line_length": dense_outcome.get("value"), "dense_reason": dense_outcome.get("reason")}
+    describe("V_batch", "largest line length x A31 rows per 2000 px batch whose dense validation stalls <= B_interact (scroll and Page Down as measured; background as its excess over the baseline/small post-open stall)", dense_outcome, [r["case"] for r in rows if r.get("group") == "dense"])
 
     if rows_per_batch:
         # Minimum editor zoom is 50 % (ui/window/zoom.rs ZOOM_MIN), which halves
@@ -1855,14 +1928,20 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
 
     sizes = sorted({r["length"] for r in rows if r.get("group") == "total-size"})
 
-    def size_verdict(size: int) -> bool | None:
-        selected = [r for r in rows_for(rows, "total-size", size) if usable(r)]
-        if selected and hung(selected, ("background", "scroll", "pagedown") + CARET_PHASES):
-            return False
-        value = phase_lateness(selected, ("background", "scroll", "pagedown") + CARET_PHASES)
-        return None if value is None else classify(value, tick, slack, b_i) == "within"
+    # Syntax-attributable, like L_syntax: the same short-line bytes as .html
+    # and as .txt. Without the subtraction the post-open stall that a
+    # 400-byte .txt shows too would fail every size.
+    size_rows = lambda size, _: (rows_for(rows, "total-size", size, ext="html"), rows_for(rows, "total-size", size, ext="txt"))
+    size_phases = ("background", "scroll", "pagedown") + CARET_PHASES
+    outcome = largest_passing(sizes, attributable(size_rows, ((size_phases, b_i),)))
+    describe("S_syntax", "largest short-line total size whose .html minus .txt stall (background highlighting, scroll, Page Down, caret and typing) keeps every dispatch <= B_interact", outcome, [r["case"] for r in rows if r.get("group") == "total-size"])
 
-    describe("S_syntax", "largest short-line HTML total size whose background highlighting keeps every dispatch <= B_interact", largest_passing(sizes, size_verdict), [r["case"] for r in rows if r.get("group") == "total-size"])
+    # Informational: the interaction half alone. On the reference run the
+    # .html background phase carries a size-independent stall (the same
+    # ~42 ms at 16 kB and 62 kB: the HTML language and first highlight in a
+    # fresh process), which no size cutoff can remove.
+    outcome = largest_passing(sizes, attributable(size_rows, ((("scroll", "pagedown") + CARET_PHASES, b_i),)))
+    describe("S_syntax_interact", "informational: S_syntax without the background phase (.html minus .txt scroll, Page Down, caret and typing stalls <= B_interact)", outcome, [r["case"] for r in rows if r.get("group") == "total-size"])
 
     derived["budget_verdict"] = budget_verdict(rows, budgets, tick, slack)
     derived["noisy_cases"] = noisy_cases
@@ -1947,7 +2026,8 @@ def load_axiom_observations(path: Path | None) -> dict[str, dict]:
 def scan_warnings(artifact_dir: Path) -> dict[str, Any]:
     findings: dict[str, dict] = {}
     unclassified: list[dict] = []
-    for path in sorted((artifact_dir / "cases").rglob("app-*.stderr")):
+    # Merged sets link their case directories, so follow symlinks.
+    for path in sorted(Path(root) / name for root, _dirs, files in os.walk(artifact_dir / "cases", followlinks=True) for name in files if name.startswith("app-") and name.endswith(".stderr")):
         case = str(path.parent.relative_to(artifact_dir / "cases"))
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if not re.search(r"(WARNING|CRITICAL)", line) or is_gdk_broken_pipe_teardown(line):
@@ -2139,17 +2219,20 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
 def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
     """Join the artifacts of several lane runs (one per case group) into one.
 
-    The reference sweep runs group by group so it can resume after an
-    interruption. A case measured by more than one part keeps the later
-    part's rows. Each row carries its own part's storage verdict, read from
-    that part's storage/cases.json. Case directories are linked, not copied.
+    The reference sweep runs in parts (groups, bisection rounds, bracketing
+    repetitions). Rows of a case measured by several parts accumulate as
+    further repetitions, renumbered per case and variant in part order; an
+    aborted part is simply not passed in. Each row carries its own part's
+    storage verdict, read from that part's storage/cases.json. Case
+    directories are linked, not copied, under one directory per part.
     """
     out.mkdir(parents=True, exist_ok=True)
     for name in ("results.jsonl", "run.json", "calibration.json", "fixtures.json", "integrity.json"):
         (out / name).unlink(missing_ok=True)
     if (out / "cases").exists():
         shutil.rmtree(out / "cases")
-    rows: dict[tuple, dict] = {}
+    rows: list[dict] = []
+    next_rep: dict[tuple, int] = {}
     runs: list[dict] = []
     fixtures: list = []
     checks = 0
@@ -2177,12 +2260,15 @@ def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
                 row["storage"] = stamp["status"]
                 row["storage_contaminated"] = stamp["status"] == "contaminated"
             row["run_id"] = run.get("run_id")
-            if row["case"] not in part_cases:
-                part_cases.add(row["case"])
-                for key in [k for k in rows if k[0] == row["case"]]:
-                    del rows[key]
-            rows[(row["case"], row["variant"], row.get("rep", 0), row.get("bisection", False))] = row
-        if (source / "calibration.json").exists() and (calibration is None or any(c.startswith("baseline/calibration") for c in part_cases)):
+            row["part_rep"] = row.get("rep", 0)
+            part_cases.add(row["case"])
+            # Repetitions accumulate across parts (a reduced sweep adds the
+            # bracketing repetitions in a later part), renumbered per case
+            # and variant in part order.
+            row["rep"] = next_rep.get((row["case"], row["variant"]), 0)
+            next_rep[(row["case"], row["variant"])] = row["rep"] + 1
+            rows.append(row)
+        if (source / "calibration.json").exists() and calibration is None:
             calibration = json.loads((source / "calibration.json").read_text(encoding="utf-8"))
         if (source / "fixtures.json").exists():
             fixtures.extend(json.loads((source / "fixtures.json").read_text(encoding="utf-8")))
@@ -2192,7 +2278,7 @@ def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
             violations.extend(integrity.get("violations", []))
         for rep_dir in sorted((source / "cases").rglob("rep*")):
             if rep_dir.is_dir():
-                link = out / "cases" / rep_dir.relative_to(source / "cases")
+                link = out / "cases" / f"part{len(runs) - 1:02d}" / rep_dir.relative_to(source / "cases")
                 link.parent.mkdir(parents=True, exist_ok=True)
                 if link.is_symlink() or link.exists():
                     link.unlink()
@@ -2214,7 +2300,7 @@ def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
         }
     )
     (out / "run.json").write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
-    (out / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows.values()), encoding="utf-8")
+    (out / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     if calibration is not None:
         (out / "calibration.json").write_text(json.dumps(calibration, indent=2) + "\n", encoding="utf-8")
     (out / "fixtures.json").write_text(json.dumps(fixtures, indent=2) + "\n", encoding="utf-8")
@@ -2516,7 +2602,8 @@ def synthetic_rows() -> list[dict]:
             rows.append(row(f"paragraph/{length}/script/txt", "paragraph", length, {"ext": "txt", "wrap": wrap, "minimap": False, "flavor": "script"}, txt, itf=10_000 if length < 50_000 else 20_000))
             rows.append(row(f"paragraph/{length}/script/html", "paragraph", length, {"ext": "html", "wrap": wrap, "minimap": False, "flavor": "script"}, dict(txt, scroll=txt_scroll + script_extra)))
     for size, stall in ((1_000_000, 3_000), (5_000_000, 12_000)):
-        rows.append(row(f"total-size/{size}", "total-size", size, {}, {"background": stall, "scroll": 1_000}))
+        rows.append(row(f"total-size/{size}", "total-size", size, {"ext": "html"}, {"background": stall, "scroll": 1_000}))
+        rows.append(row(f"total-size/{size}/txt", "total-size", size, {"ext": "txt"}, {"background": 1_000, "scroll": 1_000}))
     for line, stall in ((500, 2_000), (2_000, 5_000), (10_000, 30_000)):
         rows.append(row(f"dense/{line}", "dense", line, {"wrap": False}, {"scroll": stall, "background": 1_000}))
     return rows
@@ -2589,6 +2676,7 @@ def self_test() -> int:
     expect(derived["N_visible"]["value"] == 50_000, f"N_visible ({derived['N_visible']})")
     expect(derived["L_minimap"]["value"] == 50_000, f"L_minimap ({derived['L_minimap']})")
     expect(derived["L_protect"]["value"] == 10_000, f"L_protect needs caret stalls and 2 frames ({derived['L_protect']})")
+    expect(derived["L_protect_stall"]["value"] == 50_000, f"L_protect_stall reads the stall half only ({derived['L_protect_stall']})")
     expect(derived["S_syntax"]["value"] == 1_000_000, f"S_syntax ({derived['S_syntax']})")
     expect(derived["V_batch"]["value"] == 2_000 * 105, f"V_batch ({derived['V_batch']})")
     expect(derived["R_batch"]["value"] == 210 and derived["N_dense"]["value"] == 2_000 * 105 // 210, "R_batch and N_dense")
@@ -2606,9 +2694,8 @@ def self_test() -> int:
     revised = derive(slow, budgets, 1_000, True, obs)["budget_verdict"]
     expect(revised["verdict"] == "revise" and revised["proposed"]["B_INTERACT_US"] == 22_000, f"an over-budget baseline proposes a revision ({revised})")
 
-    # merge-runs: a group-by-group sweep joins into one artifact set; a case
-    # re-measured by a later part keeps only the later rows, and each row
-    # carries its own part's storage verdict.
+    # merge-runs: a sweep in parts joins into one artifact set; repetitions
+    # accumulate, and each row carries its own part's storage verdict.
     with tempfile.TemporaryDirectory(prefix="lt-resp-merge-") as raw:
         root = Path(raw)
         for part, (cases_rows, contaminated) in enumerate(((["a", "b"], "b@plain#0"), (["b"], None))):
@@ -2622,11 +2709,11 @@ def self_test() -> int:
             (src / "fixtures.json").write_text("[]", encoding="utf-8")
         merge_runs(root / "merged", [root / "part0", root / "part1"], quiet=True)
         merged_rows = [json.loads(line) for line in (root / "merged/results.jsonl").read_text(encoding="utf-8").splitlines()]
-        by_case = {r["case"]: r for r in merged_rows}
-        expect(len(merged_rows) == 2 and by_case["b"]["part"] == 1 and not by_case["b"].get("storage_contaminated"), f"a re-measured case keeps the later part's rows ({merged_rows})")
+        b_rows = sorted((r for r in merged_rows if r["case"] == "b"), key=lambda r: r["rep"])
+        expect(len(merged_rows) == 3 and [r["rep"] for r in b_rows] == [0, 1] and b_rows[0]["storage_contaminated"] and not b_rows[1].get("storage_contaminated"), f"repetitions accumulate across parts with their own storage verdicts ({merged_rows})")
         merged_run = json.loads((root / "merged/run.json").read_text(encoding="utf-8"))
         expect(merged_run["run_id"] == "rr-0+rr-1" and merged_run["wall_start"] == 10 and merged_run["wall_end"] == 21, "merged run id and window")
-        expect((root / "merged/cases/g/p1/plain/rep0").is_symlink(), "case directories are linked into the merged set")
+        expect((root / "merged/cases/part01/g/p1/plain/rep0").is_symlink(), "case directories are linked into the merged set, one directory per part")
 
     # Key guard: no Control+letter chord can be injected.
     class FakeRd(RemoteDesktop):
@@ -2654,6 +2741,50 @@ def self_test() -> int:
     expect(derived_cap["L_syntax"]["per_flavor"]["css"]["value"] == 10_000, f"a capped html phase fails L_syntax even when txt is capped too ({derived_cap['L_syntax']['per_flavor']['css']})")
     expect(derived_cap["L_minimap"]["value"] == 10_000, f"a capped minimap-on phase fails L_minimap ({derived_cap['L_minimap']})")
     expect(derived_cap["N_visible"]["value"] == 10_000, f"a capped plain scroll fails N_visible ({derived_cap['N_visible']})")
+
+    # A capped phase on the baseline side only (txt, minimap off) leaves the
+    # difference unbounded: that phase gives no verdict either way.
+    base_capped = [capped(r, ("scroll", "open")) if r["group"] == "paragraph" and r["length"] == 50_000 and r["attrs"].get("ext") == "txt" and not r["attrs"].get("minimap") and r["attrs"].get("flavor") == "css" else r for r in rows]
+    derived_base = derive(base_capped, budgets, 1_000, True, obs)
+    expect(derived_base["L_minimap"]["value"] == 10_000 and derived_base["L_minimap"]["first_failing"] == 250_000, f"a length whose minimap-off side hung is unmeasured, not passing ({derived_base['L_minimap']})")
+
+    # S_syntax is syntax-attributable (.html minus the same bytes as .txt):
+    # the post-open stall a 400-byte .txt shows too (12-20 ms on the
+    # reference run) is not background highlighting.
+    generic = []
+    for r in rows:
+        r = dict(r)
+        if r["group"] == "total-size":
+            r["phases"] = [dict(p, stall={"lateness_us": p["stall"]["lateness_us"] + 15_000}) if p["name"] == "background" else p for p in r["phases"]]
+        generic.append(r)
+    expect(derive(generic, budgets, 1_000, True, obs)["S_syntax"]["value"] == 1_000_000, "a stall the .txt counterpart shows too does not fail S_syntax")
+    fixed = []
+    for r in rows:
+        r = dict(r)
+        if r["group"] == "total-size" and r["attrs"].get("ext") == "html":
+            r["phases"] = [dict(p, stall={"lateness_us": p["stall"]["lateness_us"] + 40_000}) if p["name"] == "background" else p for p in r["phases"]]
+        fixed.append(r)
+    fixed_derived = derive(fixed, budgets, 1_000, True, obs)
+    expect(fixed_derived["S_syntax"]["value"] is None and fixed_derived["S_syntax_interact"]["value"] == 5_000_000, f"a size-independent background stall fails S_syntax; S_syntax_interact reads the interactions only ({fixed_derived['S_syntax_interact']})")
+
+    # V_batch reads validation, not the post-open stall every document shows
+    # (baseline/small 12-20 ms on the reference run): the dense background
+    # phase is read as its excess over the baseline/small background stall.
+    post_open = []
+    for r in rows:
+        r = dict(r)
+        if r["group"] in ("dense", "baseline"):
+            r["phases"] = [dict(p, stall={"lateness_us": p["stall"]["lateness_us"] + 15_000}) if p["name"] == "background" else p for p in r["phases"]]
+        post_open.append(r)
+    expect(derive(post_open, budgets, 1_000, True, obs)["V_batch"]["value"] == 2_000 * 105, "the post-open stall the baseline shows too does not fail V_batch")
+
+    # A phase a reduced run chose not to measure is not a hang.
+    partial = dict(rows_for(rows, "paragraph", 10_000, ext="txt", wrap=True, minimap=False, flavor="css")[0], outcome="exceeded_cap", only_phases=["click", "type-start"])
+    partial["phases"] = [p for p in partial["phases"] if p["name"] != "scroll"]
+    expect(not hung([partial], ("scroll",)) and hung([dict(partial, only_phases=None)], ("scroll",)), "an unmeasured phase is not a hang; a phase lost to a hang is")
+
+    # Reduced sweeps choose their own probe points.
+    expect(sweep_lengths("full", "paragraph=3000,7000;invisibles=5000")["paragraph"] == (3_000, 7_000) and sweep_lengths("full", "")["dense"] == DENSE_LINE_LENGTHS["full"], "RESPONSIVENESS_LENGTHS replaces a group's grid")
 
     # The settle half of L_syntax and L_minimap reads open AND background:
     # the context engine's 2000 ms cut-off fires after load readiness.
