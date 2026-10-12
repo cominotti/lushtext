@@ -12,27 +12,14 @@ use std::rc::Rc;
 
 use gtk_lush_axioms::AxiomId;
 use gtk_lush_axioms::fixtures::TextViewFixture;
-use gtk_lush_axioms::fixtures::a31::short_lines;
+use gtk_lush_axioms::fixtures::a31::{record_upper_changes, short_lines};
 use gtk4::prelude::*;
 
 fn build(ui: &support::SampleUi) {
     let fixture = TextViewFixture::new(gtk4::WrapMode::None);
     ui.set_fixture(&fixture.scrolled);
     let uppers = Rc::new(RefCell::new(Vec::<f64>::new()));
-    let recorder = uppers.clone();
-    fixture
-        .scrolled
-        .vadjustment()
-        .connect_changed(move |adjustment| {
-            let mut values = recorder.borrow_mut();
-            let upper = adjustment.upper();
-            if values
-                .last()
-                .is_none_or(|last| (last - upper).abs() > f64::EPSILON)
-            {
-                values.push(upper);
-            }
-        });
+    record_upper_changes(&fixture.scrolled.vadjustment(), &uppers);
     {
         let uppers = uppers.clone();
         ui.add_control("Load 6000 short lines", move || {

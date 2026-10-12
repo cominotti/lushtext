@@ -128,17 +128,13 @@ pub mod a22 {
 /// The values and helpers the A23 probe drives its fixture with, for its
 /// sample.
 pub mod a23 {
-    pub use crate::probes::a23::{
-        LENGTHS, ParagraphGeometry, SEED, VERDICT_LENGTH, first_layout_us, paragraph_geometry,
-    };
+    pub use crate::probes::a23::{LENGTHS, first_layout_us, paragraph_geometry};
 }
 
 /// The values and helpers the A24 probe drives its fixture with, for its
 /// sample.
 pub mod a24 {
-    pub use crate::probes::a24::{
-        HEAD_CHARS, HeadGeometry, SEED, TAIL_CHARS, head_geometry, load, tail_bounds,
-    };
+    pub use crate::probes::a24::{head_geometry, load, tail_bounds};
 }
 
 /// The values and helpers the A25 probe drives its fixture with, for its
@@ -153,68 +149,59 @@ pub mod a25 {
 /// sample.
 pub mod a26 {
     pub use crate::probes::a26::{
-        HEAD, HIDDEN, LONG_CHARS, spanning_word_buffer, spanning_word_start, word_movement_costs,
+        HEAD, HIDDEN, spanning_word_buffer, spanning_word_start, word_movement_costs,
     };
 }
 
 /// The values and helpers the A28 probe drives its fixture with, for its
 /// sample.
 pub mod a28 {
-    pub use crate::probes::a28::{
-        ADVANCE_SAMPLE_CHARS, PAST_OVERFLOW_CHARS, predicted_overflow_length, x_positions,
-    };
+    pub use crate::probes::a28::{PAST_OVERFLOW_CHARS, predicted_overflow_length, x_positions};
 }
 
 /// The values and helpers the A29 probe drives its fixture with, for its
 /// sample.
 pub mod a29 {
-    pub use crate::probes::a29::{
-        CUT_OFF_MESSAGE, CutOffAttempt, FIRST_LENGTH, HIDDEN_LINE, LENGTH_CAP, highlight_attempt,
-        highlight_tags_at,
-    };
+    pub use crate::probes::a29::{FIRST_LENGTH, highlight_attempt};
 }
 
 /// The values and helpers the A30 probe drives its fixture with, for its
 /// sample.
 pub mod a30 {
-    pub use crate::probes::a30::{
-        FIRST_LINE, PARAGRAPH_CHARS, SHORT_LINE_OFFSET, describe, probe_im_view, probe_text,
-    };
+    pub use crate::probes::a30::{FIRST_LINE, describe, probe_im_view, probe_text};
 }
 
 /// The values and helpers the A31 probe drives its fixture with, for its
 /// sample.
 pub mod a31 {
-    pub use crate::probes::a31::{BATCH_PX, LINES, short_lines, upper_growth};
+    pub use crate::probes::a31::{LINES, record_upper_changes, short_lines};
 }
 
 /// The values and helpers the A32 probe drives its fixture with, for its
 /// sample.
 pub mod a32 {
-    pub use crate::probes::a32::{LINES, MappedView, SCROLL_STEP};
+    pub use crate::probes::a32::{MappedView, SCROLL_STEP};
 }
 
 /// The values and helpers the A33 probe drives its fixture with, for its
 /// sample.
 pub mod a33 {
     pub use crate::probes::a33::{
-        HIDDEN_MATCHES, NEEDLE, TIMED_LENGTHS, VISIBLE_MATCHES, counted_matches, end_match_us,
-        forward_matches, mixed_buffer, search, search_with,
+        HIDDEN_MATCHES, NEEDLE, VISIBLE_MATCHES, forward_matches, mixed_buffer, search, search_with,
     };
 }
 
 /// The values and helpers the A34 probe drives its fixture with, for its
 /// sample.
 pub mod a34 {
-    pub use crate::probes::a34::{LINES, caret_and_scroll, cursorless_view, document, page_down};
+    pub use crate::probes::a34::{caret_and_scroll, cursorless_view, document, page_down};
 }
 
 /// The fixture, values and paint-phase counter the A37 probe drives, for its
 /// sample.
 pub mod a37 {
     pub use crate::probes::a37::{
-        FRAMES, FrameChange, LINE_CHARS, LongLineView, PaintPhaseChanges, SEED, SNAPSHOT_WARNING,
-        TAG_STEP,
+        FRAMES, FrameChange, LINE_CHARS, LongLineView, PaintPhaseChanges, TAG_STEP,
     };
 }
 

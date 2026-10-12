@@ -94,7 +94,7 @@ fn check(axiom: AxiomId) -> ExitCode {
         );
         return ExitCode::from(REFUSED_EXIT_CODE);
     }
-    let Some(entry) = find(axiom).filter(|entry| entry.probe.is_some()) else {
+    let Some((entry, probe)) = find(axiom).and_then(|entry| Some((entry, entry.probe?))) else {
         eprintln!("{axiom} has no probe in the catalogue");
         return ExitCode::from(REFUSED_EXIT_CODE);
     };
@@ -102,9 +102,6 @@ fn check(axiom: AxiomId) -> ExitCode {
         println!("{}", slow_skip_line(entry));
         return ExitCode::SUCCESS;
     }
-    let Some(probe) = entry.probe else {
-        return ExitCode::from(REFUSED_EXIT_CODE);
-    };
     if let Err(error) = init_toolkit() {
         eprintln!("GTK did not initialize: {error}");
         return ExitCode::from(REFUSED_EXIT_CODE);

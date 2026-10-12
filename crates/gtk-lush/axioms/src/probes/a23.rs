@@ -106,7 +106,7 @@ pub fn probe_a23() -> Observation {
         recorder.measure("independent_pango_lines", pango_lines);
         recorder.measure("independent_pango_height", pango_height);
         recorder.measure("text_area_width", text_area_width(&wrapped.view));
-        record_layout_costs(recorder, &wrapped, "wrap");
+        record_layout_costs(recorder, &wrapped, &WRAP_COST_KEYS);
         check_whole_paragraph(recorder, geometry, viewport)?;
         // Lines, not pixels: the view sums each display line's rounded pixel
         // height while Pango rounds the whole layout once, so the heights may
@@ -122,7 +122,7 @@ pub fn probe_a23() -> Observation {
             &unwrapped.scrolled,
             "control: the unwrapped text view was presented",
         )?;
-        record_layout_costs(recorder, &unwrapped, "nowrap");
+        record_layout_costs(recorder, &unwrapped, &NOWRAP_COST_KEYS);
         Ok(())
     })
 }
@@ -165,28 +165,27 @@ fn independent_layout(fixture: &TextViewFixture) -> (i32, i32) {
     (layout.line_count(), layout.pixel_size().1)
 }
 
-fn record_layout_costs(recorder: &mut Recorder, fixture: &TextViewFixture, mode: &'static str) {
-    for chars in LENGTHS {
+/// The recorded keys for each of [`LENGTHS`]: first layout time, and time per
+/// character.
+type CostKeys = [(&'static str, &'static str); LENGTHS.len()];
+
+const WRAP_COST_KEYS: CostKeys = [
+    ("wrap_2k_first_layout_us", "wrap_2k_ns_per_char"),
+    ("wrap_20k_first_layout_us", "wrap_20k_ns_per_char"),
+    ("wrap_200k_first_layout_us", "wrap_200k_ns_per_char"),
+];
+
+const NOWRAP_COST_KEYS: CostKeys = [
+    ("nowrap_2k_first_layout_us", "nowrap_2k_ns_per_char"),
+    ("nowrap_20k_first_layout_us", "nowrap_20k_ns_per_char"),
+    ("nowrap_200k_first_layout_us", "nowrap_200k_ns_per_char"),
+];
+
+fn record_layout_costs(recorder: &mut Recorder, fixture: &TextViewFixture, keys: &CostKeys) {
+    for (chars, (layout_key, per_char_key)) in LENGTHS.into_iter().zip(keys) {
         let micros = first_layout_us(fixture, chars);
-        let key: &'static str = match (mode, chars) {
-            ("wrap", 2_000) => "wrap_2k_first_layout_us",
-            ("wrap", 20_000) => "wrap_20k_first_layout_us",
-            ("wrap", _) => "wrap_200k_first_layout_us",
-            (_, 2_000) => "nowrap_2k_first_layout_us",
-            (_, 20_000) => "nowrap_20k_first_layout_us",
-            _ => "nowrap_200k_first_layout_us",
-        };
-        recorder.measure(key, micros);
-        let nanos_per_char = micros.saturating_mul(1_000) / chars as u128;
-        let per_char_key: &'static str = match (mode, chars) {
-            ("wrap", 2_000) => "wrap_2k_ns_per_char",
-            ("wrap", 20_000) => "wrap_20k_ns_per_char",
-            ("wrap", _) => "wrap_200k_ns_per_char",
-            (_, 2_000) => "nowrap_2k_ns_per_char",
-            (_, 20_000) => "nowrap_20k_ns_per_char",
-            _ => "nowrap_200k_ns_per_char",
-        };
-        recorder.measure(per_char_key, nanos_per_char);
+        recorder.measure(layout_key, micros);
+        recorder.measure(per_char_key, micros.saturating_mul(1_000) / chars as u128);
     }
 }
 

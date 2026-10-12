@@ -33,14 +33,14 @@ pub fn short_lines() -> String {
     (0..LINES).map(|line| format!("line {line:05}\n")).collect()
 }
 
-/// Load the document into `fixture` and record `upper` each time it changes
-/// while the main loop runs to idle. Returns the successive `upper` values.
-#[must_use]
-pub fn upper_growth(fixture: &TextViewFixture) -> Vec<f64> {
-    let adjustment = fixture.scrolled.vadjustment();
-    let uppers = Rc::new(RefCell::new(vec![adjustment.upper()]));
-    let recorder = uppers.clone();
-    let handler = adjustment.connect_changed(move |adjustment| {
+/// Append `adjustment`'s `upper` to `uppers` each time it changes to a new
+/// value. Returns the handler, for the caller to disconnect.
+pub fn record_upper_changes(
+    adjustment: &gtk4::Adjustment,
+    uppers: &Rc<RefCell<Vec<f64>>>,
+) -> gtk4::glib::SignalHandlerId {
+    let recorder = Rc::clone(uppers);
+    adjustment.connect_changed(move |adjustment| {
         let upper = adjustment.upper();
         let mut values = recorder.borrow_mut();
         if values
@@ -49,7 +49,16 @@ pub fn upper_growth(fixture: &TextViewFixture) -> Vec<f64> {
         {
             values.push(upper);
         }
-    });
+    })
+}
+
+/// Load the document into `fixture` and record `upper` each time it changes
+/// while the main loop runs to idle. Returns the successive `upper` values.
+#[must_use]
+pub fn upper_growth(fixture: &TextViewFixture) -> Vec<f64> {
+    let adjustment = fixture.scrolled.vadjustment();
+    let uppers = Rc::new(RefCell::new(vec![adjustment.upper()]));
+    let handler = record_upper_changes(&adjustment, &uppers);
     fixture.buffer.set_text(&short_lines());
     let context = gtk4::glib::MainContext::default();
     let mut idle_dispatches = 0usize;

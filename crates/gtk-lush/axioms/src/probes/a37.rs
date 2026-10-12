@@ -191,6 +191,18 @@ impl LongLineView {
                 None
             });
         }
+        {
+            // A tag whose properties change size invalidates every range it
+            // covers, like re-applying it.
+            let tags_changed = Rc::clone(&tags_changed);
+            self.buffer
+                .tag_table()
+                .connect_tag_changed(move |_, _, size_changed| {
+                    if size_changed {
+                        tags_changed.set(true);
+                    }
+                });
+        }
         let consume = {
             let view = self.view.downgrade();
             move || {
