@@ -514,7 +514,7 @@ mod measurement {
 
             #[glib::object_subclass]
             impl ObjectSubclass for ProbeImContext {
-                const NAME: &'static str = "LushtextProbeImContext";
+                const NAME: &str = "LushtextProbeImContext";
                 type Type = super::ProbeImContext;
                 type ParentType = gtk4::IMContext;
 

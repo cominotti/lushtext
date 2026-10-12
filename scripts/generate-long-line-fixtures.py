@@ -510,7 +510,8 @@ def self_test() -> int:
 
         for delimiter, separator in DELIMITERS.items():
             result = generate("dense", 1_000, 5, scope, scope / f"d-{delimiter}", delimiter=delimiter, count=12)
-            data = Path(result["files"][0]["path"]).read_text(encoding="utf-8", newline="")
+            with Path(result["files"][0]["path"]).open(encoding="utf-8", newline="") as handle:
+                data = handle.read()
             expect(result["files"][0]["paragraphs"] == 12, f"dense {delimiter}: 12 paragraphs")
             expect(result["files"][0]["longest_paragraph"] == 1_000, f"dense {delimiter}: line length")
             expect(data.count(separator) == 12, f"dense {delimiter}: separator count")

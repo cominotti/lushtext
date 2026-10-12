@@ -193,7 +193,7 @@ class Sweep:
         return lo, hi, decided
 
     def next_point(self, name: str, rows: list[dict]) -> int | None:
-        _group, _phases, _patterns, anchors, floor, ceiling = self.spec(name)
+        _group, _phases, _patterns, _anchors, floor, ceiling = self.spec(name)
         lo, hi, decided = self.bracket(name, rows)
         if not decided:
             return None

@@ -605,34 +605,32 @@ def build_cases(tier: str) -> list[Case]:
                 attrs={"delimiter": delimiter},
             )
         )
-    cases.append(
-        Case(
-            "session/restore-3",
-            "session",
-            FixtureSpec("session", SESSION_LENGTH[tier], seed_for("session"), count=3),
-            settings={"word-wrap": True, "show-minimap": False},
-            flow="session",
-            length=SESSION_LENGTH[tier],
-        )
-    )
-    cases.append(
-        Case(
-            "eviction/reselect",
-            "eviction",
-            FixtureSpec("eviction", EVICTION_FILE_BYTES, seed_for("eviction")),
-            settings={"word-wrap": True, "show-minimap": False},
-            flow="eviction",
-        )
-    )
-    cases.append(
-        Case(
-            "reload/250000",
-            "reload",
-            FixtureSpec("paragraph", 250_000, seed_for("reload")),
-            settings={"word-wrap": True, "show-minimap": False},
-            flow="reload",
-            length=250_000,
-        )
+    cases.extend(
+        [
+            Case(
+                "session/restore-3",
+                "session",
+                FixtureSpec("session", SESSION_LENGTH[tier], seed_for("session"), count=3),
+                settings={"word-wrap": True, "show-minimap": False},
+                flow="session",
+                length=SESSION_LENGTH[tier],
+            ),
+            Case(
+                "eviction/reselect",
+                "eviction",
+                FixtureSpec("eviction", EVICTION_FILE_BYTES, seed_for("eviction")),
+                settings={"word-wrap": True, "show-minimap": False},
+                flow="eviction",
+            ),
+            Case(
+                "reload/250000",
+                "reload",
+                FixtureSpec("paragraph", 250_000, seed_for("reload")),
+                settings={"word-wrap": True, "show-minimap": False},
+                flow="reload",
+                length=250_000,
+            ),
+        ]
     )
     if tier == "full":
         for size in INSTALL_SIZES:
@@ -1071,6 +1069,12 @@ class Runner:
             ok, status = self.wait_ready("app-startup", deadline)
         end = now_us()
         exceeded = not ok and time.monotonic() >= deadline - 0.05
+        if ok:
+            phase_status = "ok"
+        elif exceeded:
+            phase_status = "exceeded_cap"
+        else:
+            phase_status = status
         phases.append(
             {
                 "name": name,
@@ -1079,7 +1083,7 @@ class Runner:
                 "end_us": end,
                 "wall_start": wall,
                 "wall_end": time.time(),
-                "status": "ok" if ok else ("exceeded_cap" if exceeded else status),
+                "status": phase_status,
                 "injections": injections,
                 "input_available": self.rd.available,
             }
@@ -1222,7 +1226,12 @@ class Runner:
         wall = time.time()
         deadline = time.monotonic() + cap_s
         ok = self.wait_bus(launch, deadline)
-        status = "ok" if ok else ("crashed" if launch.process.poll() is not None else "exceeded_cap")
+        if ok:
+            status = "ok"
+        elif launch.process.poll() is not None:
+            status = "crashed"
+        else:
+            status = "exceeded_cap"
         if ok:
             ok, status = self.wait_ready(predicate, deadline)
             if not ok and time.monotonic() >= deadline - 0.05:
@@ -1955,6 +1964,12 @@ def to_int(value: Any) -> int | None:
         return None
 
 
+def frame_verdict(latencies: list[int], frame_limit: int) -> str:
+    if not latencies:
+        return "not measured"
+    return "within" if max(latencies) <= frame_limit else "over"
+
+
 def budget_verdict(rows: list[dict], budgets: dict, tick: int, slack: int) -> dict[str, Any]:
     baseline = [r for r in rows if r.get("group") == "baseline" and r.get("case") != "baseline/calibration" and usable(r)]
     if not baseline:
@@ -1975,7 +1990,7 @@ def budget_verdict(rows: list[dict], budgets: dict, tick: int, slack: int) -> di
     verdicts = {
         "B_interact": classify(worst["interaction"], tick, slack, budgets["B_INTERACT_US"]),
         "B_settle": classify(worst["settle"], tick, slack, budgets["B_SETTLE_US"]),
-        "input_to_frame": ("within" if latencies and max(latencies) <= frame_limit else ("over" if latencies else "not measured")),
+        "input_to_frame": frame_verdict(latencies, frame_limit),
     }
     result: dict[str, Any] = {
         "cases": sorted({r["case"] for r in baseline}),
@@ -2216,6 +2231,15 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
     return 1 if failed else 0
 
 
+def merged_storage_status(parts: list[dict]) -> str:
+    """One storage status for a sweep joined from several parts."""
+    if any(p.get("status") == "contaminated" for p in parts):
+        return "contaminated"
+    if parts and all(p.get("status") == "clean" for p in parts):
+        return "clean"
+    return "mixed"
+
+
 def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
     """Join the artifacts of several lane runs (one per case group) into one.
 
@@ -2293,7 +2317,7 @@ def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
             "remote_desktop": {"available": all(r.get("remote_desktop", {}).get("available") for r in runs), "error": next((r["remote_desktop"].get("error") for r in runs if r.get("remote_desktop", {}).get("error")), None)},
             "driver_failures": [f for r in runs for f in r.get("driver_failures", [])],
             "storage": {
-                "status": "contaminated" if any(p.get("status") == "contaminated" for p in storage_parts) else ("clean" if storage_parts and all(p.get("status") == "clean" for p in storage_parts) else "mixed"),
+                "status": merged_storage_status(storage_parts),
                 "parts": storage_parts,
                 "contaminated_cases": sorted(c for p in storage_parts for c in p.get("contaminated_cases", [])),
             },
@@ -2589,21 +2613,28 @@ def synthetic_rows() -> list[dict]:
 
     rows = []
     base = {"background": 1_000, "scroll": 1_500, "click": 1_000, "type-start": 1_200, "find": 1_000}
-    rows.append(row("baseline/empty", "baseline", 0, {}, dict(base, open=300_000)))
-    rows.append(row("baseline/small", "baseline", 400, {}, dict(base, open=250_000)))
+    rows.extend([row("baseline/empty", "baseline", 0, {}, dict(base, open=300_000)), row("baseline/small", "baseline", 400, {}, dict(base, open=250_000))])
     for length, txt_scroll, html_extra, caret in ((10_000, 2_000, 1_000, 2_000), (50_000, 4_000, 2_000, 5_000), (250_000, 20_000, 40_000, 60_000)):
         for wrap in (True, False):
             txt = {"open": 10_000 + length // 100, "scroll": txt_scroll, "click": caret, "type-start": caret, "find": txt_scroll}
             html = dict(txt, open=txt["open"] + html_extra * 3, scroll=txt_scroll + html_extra)
-            rows.append(row(f"paragraph/{length}/txt", "paragraph", length, {"ext": "txt", "wrap": wrap, "minimap": False, "flavor": "css"}, txt, itf=10_000 if length < 50_000 else 20_000))
-            rows.append(row(f"paragraph/{length}/html", "paragraph", length, {"ext": "html", "wrap": wrap, "minimap": False, "flavor": "css"}, html))
-            rows.append(row(f"paragraph/{length}/txt/mm", "paragraph", length, {"ext": "txt", "wrap": wrap, "minimap": True, "flavor": "css"}, dict(txt, scroll=txt_scroll + (500 if length < 250_000 else 30_000))))
             script_extra = 1_000 if length < 50_000 else 30_000
-            rows.append(row(f"paragraph/{length}/script/txt", "paragraph", length, {"ext": "txt", "wrap": wrap, "minimap": False, "flavor": "script"}, txt, itf=10_000 if length < 50_000 else 20_000))
-            rows.append(row(f"paragraph/{length}/script/html", "paragraph", length, {"ext": "html", "wrap": wrap, "minimap": False, "flavor": "script"}, dict(txt, scroll=txt_scroll + script_extra)))
+            rows.extend(
+                [
+                    row(f"paragraph/{length}/txt", "paragraph", length, {"ext": "txt", "wrap": wrap, "minimap": False, "flavor": "css"}, txt, itf=10_000 if length < 50_000 else 20_000),
+                    row(f"paragraph/{length}/html", "paragraph", length, {"ext": "html", "wrap": wrap, "minimap": False, "flavor": "css"}, html),
+                    row(f"paragraph/{length}/txt/mm", "paragraph", length, {"ext": "txt", "wrap": wrap, "minimap": True, "flavor": "css"}, dict(txt, scroll=txt_scroll + (500 if length < 250_000 else 30_000))),
+                    row(f"paragraph/{length}/script/txt", "paragraph", length, {"ext": "txt", "wrap": wrap, "minimap": False, "flavor": "script"}, txt, itf=10_000 if length < 50_000 else 20_000),
+                    row(f"paragraph/{length}/script/html", "paragraph", length, {"ext": "html", "wrap": wrap, "minimap": False, "flavor": "script"}, dict(txt, scroll=txt_scroll + script_extra)),
+                ]
+            )
     for size, stall in ((1_000_000, 3_000), (5_000_000, 12_000)):
-        rows.append(row(f"total-size/{size}", "total-size", size, {"ext": "html"}, {"background": stall, "scroll": 1_000}))
-        rows.append(row(f"total-size/{size}/txt", "total-size", size, {"ext": "txt"}, {"background": 1_000, "scroll": 1_000}))
+        rows.extend(
+            [
+                row(f"total-size/{size}", "total-size", size, {"ext": "html"}, {"background": stall, "scroll": 1_000}),
+                row(f"total-size/{size}/txt", "total-size", size, {"ext": "txt"}, {"background": 1_000, "scroll": 1_000}),
+            ]
+        )
     for line, stall in ((500, 2_000), (2_000, 5_000), (10_000, 30_000)):
         rows.append(row(f"dense/{line}", "dense", line, {"wrap": False}, {"scroll": stall, "background": 1_000}))
     return rows
@@ -2723,9 +2754,11 @@ def self_test() -> int:
             self.sent: list[int] = []
 
         def _call(self, method: str, params) -> None:
+            # No bus in the self-test: the guards under test run before any call.
             pass
 
         def _notify_key(self, keysym: int, pressed: bool) -> None:
+            # Accept the key without a bus; the allow-list check already ran.
             pass
 
     # A capped phase on the "with" side is a failure, never a ~0 difference
