@@ -234,6 +234,14 @@ Every variant sets `GTK_IM_MODULE` explicitly: `gtk-im-context-simple` for plain
 - `RESPONSIVENESS_TIER=quick` (CI): fewer lengths, one repetition, no `install` group.
 - `full` (local reference): every group, three repetitions, median and maximum.
 - `RESPONSIVENESS_CASES=` filters the cases.
+- **Reduced reference sweep (maintainer deviation, 2026-10-11).** The `full` grid takes 8–10 hours on the reference machine, which the maintainer found unacceptable. The reference values therefore come from `scripts/responsiveness-reference-sweep.py`, which finds each threshold's boundary instead of measuring the grid:
+  - every derived value is the boundary of a series that is monotone in length, so the sweep bisects over length (geometric midpoints, at most four steps, until the bracket ratio is at most 1.5) from a few anchors, with one plain repetition per probe point;
+  - the plain, AT and probe-IM variants, three repetitions each, run at the two points that bracket each boundary, and at the baseline (which keeps the full three variants × three repetitions for the budget verdict);
+  - a failing bracket point whose case already hit the interaction cap is not repeated, because a hang only confirms a fail;
+  - each run measures only the interactions its thresholds read (`RESPONSIVENESS_PHASES`), under a 5 s interaction cap (10 s above 500k characters, so the open completes): a phase that long is over every budget, so the shorter cap changes no verdict;
+  - the dense group (V_batch) and the baseline keep their full-tier runs; the delimiter, session, eviction, reload and install groups derive no threshold and are not part of the reference sweep (the quick tier and C3's own gate run them).
+
+  `RESPONSIVENESS_LENGTHS` chooses the probe points, and `merge-runs` joins the parts, accumulating repetitions, for one report. The same script re-confirms a finished sweep's bracketing points on an idle machine (`--reconfirm`, about 30 minutes), because the reference run shared the machine with other load. Two informational values sit beside the D7 rules where a rule cannot discriminate by length on the lane: `L_protect_stall` (L_protect without its frame half, whose 2-frame limit is the double-buffered 120 Hz floor the baseline also exceeds) and `S_syntax_interact` (S_syntax without the background phase, which carries a size-independent first-highlight stall). What the reduced sweep cannot give, and the record says so: the noise rule outside the bracketing points (one repetition), the worst variant away from the boundary, and bisection beyond four steps.
 
 **Noise.** A case whose maximum is more than twice its median is re-run once, and the result is marked `noisy` if the spread persists.
 
@@ -262,7 +270,7 @@ Every variant sets `GTK_IM_MODULE` explicitly: `gtk-im-context-simple` for plain
 | R_batch | rows per 2000 px validation batch, wrap off, at the smallest supported line height (A31's batch height divided by the measured row height at the minimum editor zoom) |
 | N_dense | V_batch ÷ R_batch |
 | N_inspect bound | min(N_visible, L_protect): the Line Inspector (C2) has a caret, so its window must stay inside both bounds; C2 chooses its value at or below this |
-| S_syntax (syntax total-size cutoff) | the largest total size whose short-line HTML background highlighting keeps every dispatch ≤ B_interact |
+| S_syntax (syntax total-size cutoff) | the largest total size whose short-line HTML background highlighting keeps every dispatch ≤ B_interact, where syntax-attributable means the `.html`-minus-`.txt` difference over the same bytes (the `total-size` group opens each size both ways; without the subtraction, the post-open stall a 400-byte `.txt` shows too would fail every size) |
 | Budgets | **confirmed** when the baseline cases (an empty and a small document, excluding window construction, which C4 owns) fit 8/16 ms and 2 frames on the reference lane with the watchdog's upper bound; otherwise **revised** to the smallest values the baseline fits, with the reason |
 
 The reference values come from a `full` run on the reference machine (the maintainer's desktop, inside its toolbox, headless, ≤ 16 cores). The run id, toolkit versions, kernel and CPU model are recorded. CI runs are trend evidence only.

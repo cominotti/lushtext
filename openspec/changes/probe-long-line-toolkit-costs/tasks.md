@@ -88,9 +88,9 @@
 
 ## 7. Reference run and recorded values
 
-- [ ] 7.1 Run `make responsiveness-smoke RESPONSIVENESS_TIER=full` on the reference lane (headless, ≤ 16 cores, never the live desktop). Re-run cases flagged noisy or storage-contaminated until each value is derived or explicitly not derivable.
-- [ ] 7.2 Apply the budget verdict. If it revises a budget, change the constant in `model/responsiveness_budget.rs`, citing the run id, and re-run `make kani KANI_SHARD=<shard>` and the unit tests.
-- [ ] 7.3 Copy each derived value, with its rule, cases and run id, into `docs/next/long-line-documents.md`, under the constant names C1 and C2 declare. Record whether C3 is needed (from the `install` group and A36), and the window-construction figures for C4.
+- [x] 7.1 Run `make responsiveness-smoke RESPONSIVENESS_TIER=full` on the reference lane (headless, ≤ 16 cores, never the live desktop). Re-run cases flagged noisy or storage-contaminated until each value is derived or explicitly not derivable. **Deviation (maintainer, 2026-10-11):** the full grid was replaced by the reduced reference sweep of design D7 (`scripts/responsiveness-reference-sweep.py`); the baseline and dense groups keep full-tier runs.
+- [x] 7.2 Apply the budget verdict. If it revises a budget, change the constant in `model/responsiveness_budget.rs`, citing the run id, and re-run `make kani KANI_SHARD=<shard>` and the unit tests. **Recorded maintainer deviation (2026-10-11):** the literal verdict of `rr-c0-reference-20261011` is "revise" (B_settle and input-to-frame over); the maintainer kept B_interact = 8 ms, B_settle = 16 ms and 2 reference frames as targets, so no constant changed, and every over-budget stall is attributed to an owner (C4, C1/C2, and the new candidate C6) in `docs/next/long-line-documents.md`.
+- [x] 7.3 Copy each derived value, with its rule, cases and run id, into `docs/next/long-line-documents.md`, under the constant names C1 and C2 declare. Record whether C3 is needed (from the `install` group and A36), and the window-construction figures for C4.
 
 ## 8. Documentation
 

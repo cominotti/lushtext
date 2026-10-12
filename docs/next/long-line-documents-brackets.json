@@ -1,0 +1,130 @@
+{
+  "L_syntax": {
+    "lo": 2000,
+    "hi": 3000,
+    "verdicts": {
+      "2000": true,
+      "3000": false,
+      "4500": false,
+      "10000": false,
+      "50000": false,
+      "250000": false
+    }
+  },
+  "L_minimap": {
+    "lo": 50000,
+    "hi": 74000,
+    "verdicts": {
+      "2000": true,
+      "10000": true,
+      "50000": true,
+      "74000": false,
+      "110000": false,
+      "250000": false
+    }
+  },
+  "N_visible": {
+    "lo": 500000,
+    "hi": 710000,
+    "verdicts": {
+      "2000": true,
+      "3000": true,
+      "4500": true,
+      "10000": true,
+      "50000": true,
+      "74000": true,
+      "110000": true,
+      "250000": true,
+      "500000": true,
+      "710000": false,
+      "1000000": false
+    }
+  },
+  "L_search_highlight": {
+    "lo": 6700,
+    "hi": 10000,
+    "verdicts": {
+      "2000": true,
+      "4500": true,
+      "6700": true,
+      "10000": false,
+      "15000": false,
+      "22000": false,
+      "50000": false,
+      "250000": false
+    }
+  },
+  "L_protect": {
+    "lo": null,
+    "hi": 500,
+    "verdicts": {
+      "500": false,
+      "710": false,
+      "1000": false,
+      "2000": false,
+      "10000": false,
+      "50000": false,
+      "250000": false
+    }
+  },
+  "L_protect_stall": {
+    "lo": 500,
+    "hi": 710,
+    "verdicts": {
+      "500": true,
+      "710": false,
+      "1000": false,
+      "2000": false,
+      "10000": false,
+      "50000": false,
+      "250000": false
+    }
+  },
+  "L_invisibles": {
+    "lo": 50000,
+    "hi": 74000,
+    "verdicts": {
+      "10000": true,
+      "50000": true,
+      "74000": false,
+      "110000": false,
+      "250000": false
+    }
+  },
+  "S_syntax_interact": {
+    "lo": 16000,
+    "hi": 31000,
+    "verdicts": {
+      "16000": true,
+      "31000": false,
+      "44000": false,
+      "62000": false,
+      "250000": false,
+      "1000000": false
+    }
+  },
+  "V_batch": {
+    "lo": 500,
+    "hi": 710,
+    "verdicts": {
+      "500": true,
+      "710": false,
+      "1000": false,
+      "2000": false,
+      "10000": false,
+      "50000": false
+    }
+  },
+  "S_syntax": {
+    "lo": null,
+    "hi": 16000,
+    "verdicts": {
+      "16000": false,
+      "31000": false,
+      "44000": false,
+      "62000": false,
+      "250000": false,
+      "1000000": false
+    }
+  }
+}

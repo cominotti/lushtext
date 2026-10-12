@@ -22,6 +22,7 @@ that freezes it is **paragraph length**, not file size.
 | C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
 | C4 | `bound-window-construction-dispatch` | Removes the window-construction stall | Window construction within B_settle per dispatch. |
 | C5 | `explore-editing-long-paragraphs` (optional) | Exploration of editing giant paragraphs | Maintainer decision. |
+| C6 | `bound-post-open-settle` (candidate, recorded by C0's budget verdict) | Bound the first main-loop turns after load readiness: the small-document post-open stall, the HTML first-highlight stall, the first overlay-indicator frame | The baseline fits B_settle and 2 reference frames on an idle reference run. Does not block C1–C4. |
 
 C1–C4 are drafted; none may be **implemented** before this record holds the
 values they use (`responsiveness-measurement` spec).
@@ -51,7 +52,168 @@ changes read them and never restate the numbers.
 
 ## Measured values (reference run)
 
-_Pending: the `full` reference run of `make responsiveness-smoke` (task 7.1) fills this section with each derived value, its rule, deciding cases, variants, repetitions and run id, and the budget verdict._
+**Reference set `rr-c0-reference-20261011`**: the baseline and dense groups of a
+`full`-tier start (`rr-20261011T234802Z-toolbx-3121571`,
+`rr-20261011T235228Z-toolbx-3134791`) joined with the 33 parts of the reduced
+reference sweep (`scripts/responsiveness-reference-sweep.py`, design D7's
+documented deviation; every part's run id, load and co-running processes are in
+the table below). Headless `mutter 50.4 --virtual-monitor 1280x800@120`,
+`GSK_RENDERER=cairo`, caret blink off, GTK 4.22.5, Libadwaita 1.9.3, Pango
+1.57.1, GtkSourceView 5.20.0, GLib 2.88.3, kernel 7.2.9-200.fc44, Intel Core
+Ultra 9 285K, affinity CPUs 8–23 (16 E-cores, inherited, never widened).
+Watchdog tick 2 ms, idle slack ε 928 µs. 1,499 fixture-integrity checks, 0
+violations; 2 of the bisection rows were storage-contaminated and excluded by
+the lane. Axiom observations: a fresh `make gtk-axioms` on the same tree (A31:
+112 rows per 2016 px step at the default font, wrap off).
+
+| Value | Derived | Bracket (pass / first fail) | Rule (lane `report.md`) |
+|---|---|---|---|
+| `L_syntax` | **2,000** characters | 2,000 / 3,000 | `.html` minus `.txt` at the same length: scroll ≤ B_interact, open and background ≤ B_settle; worst flavour (`script`) decides; worst variant |
+| `L_minimap` | **50,000** | 50,000 / 74,000 | minimap on minus off (`.txt`, same wrap): scroll ≤ B_interact, open and background ≤ B_settle |
+| `L_invisibles` | **50,000** | 50,000 / 74,000 | invisibles on minus off while scrolling ≤ B_interact |
+| `L_search_highlight` | **6,700** | 6,700 / 10,000 | every find and match-navigation stall ≤ B_interact |
+| `N_visible` | **500,000** | 500,000 / 710,000 | plain `.txt` scroll stalls ≤ B_interact, wrap on and off |
+| `L_protect` | **not derived** | fails at 500 (the floor) | caret, type and click stalls ≤ B_interact **and** input-to-frame ≤ 2 reference frames: the frame half fails at every length, because the 2-frame limit sits on the lane's double-buffered 120 Hz floor (an input landing just after a frame start waits one frame for the next frame and one to present, 16.7–19.3 ms), which the baseline exceeds too |
+| `L_protect_stall` (informational) | **500** | 500 / 710 | the stall half of `L_protect` alone, worst variant; typing at the start of an unwrapped 2,000-character line already stalls 50 ms, and 1.26 s at 10,000 |
+| `V_batch` | **56,000** visible characters per 2000 px batch | dense line 500 / 710 | (largest dense line length) × A31's 112 rows; scroll and Page Down as measured, background as its excess over the `baseline/small` post-open stall |
+| `R_batch` | **224** rows | — | A31's 112 rows per batch at the default font, doubled for the 50 % minimum zoom |
+| `N_dense` | **250** characters | — | `V_batch ÷ R_batch` |
+| `N_inspect` bound | **not derived** (literal); **500** from `L_protect_stall` | — | `min(N_visible, L_protect)`; C2 chooses at or below `min(N_visible, L_protect_stall)` = 500 until an idle re-confirmation or the user-session validation says otherwise |
+| `S_syntax` | **not derived** | fails at 16,000 bytes (the floor) | `.html` minus `.txt` over the same short-line bytes, every dispatch ≤ B_interact: the `.html` background phase carries a **size-independent** ~42 ms stall (57–61 ms against 14–17 ms for the same bytes as `.txt`, identical at 16 kB and 62 kB; the HTML language and first highlight in a fresh process), which no size cutoff removes |
+| `S_syntax_interact` (informational) | **16,000** bytes | 16,000 / 31,000 | `S_syntax` without the background phase: scroll, Page Down, caret and typing differences ≤ B_interact (typing in 62 kB of HTML costs 12–16 ms against 2–3 ms as `.txt`) |
+
+C3 (`sliced-protected-install`) is not decided by C0: the reduced sweep does
+not run the `install` group, and the programme gate decides C3 from the install
+case run against C2 (A36 records the btree cost evidence).
+
+**Window construction (C4's evidence).** First frame 150–196 ms after spawn
+(median 182 ms over 18 baseline launches); the open phase's worst stall
+60–81 ms (median 71 ms). Owner: `bound-window-construction-dispatch` (C4).
+
+### Budget verdict (design rule D7, literal)
+
+Run `rr-c0-reference-20261011`, baseline cases (`baseline/empty`,
+`baseline/small`; 3 variants × 3 repetitions each), window construction
+excluded:
+
+- **B_interact = 8 ms: within.** Worst interaction stall 2.26 ms (bounds
+  1.3–4.3 ms).
+- **B_settle = 16 ms: over.** Worst settle stall 19.6 ms (bounds 18.6–21.6 ms),
+  the post-open stall of `baseline/small` (plain repetition 1).
+- **Input-to-frame ≤ 2 frames: over.** Worst 25.3 ms: the first wheel step on
+  the empty, unscrollable document draws only the overlay-scrollbar indicator,
+  whose frame starts 13–17 ms after the handler and is never presented by the
+  compositor (counted one reference frame after it started), in every
+  repetition. Keys, clicks and Page Down: median 4–5 ms, p95 12 ms, maximum
+  16.7–18.0 ms (the double-buffered floor plus jitter).
+- **Scroll p95 frame gap (informational, not a D7 input): 9.7 ms** over
+  presented frames, against 8.3 ms.
+
+The lane's literal verdict is **revise** (it proposes `B_SETTLE_US = 22000`).
+**Maintainer decision (2026-10-11): the targets stay at B_interact = 8 ms and
+B_settle = 16 ms (and 2 reference frames); the constants in
+`model/responsiveness_budget.rs` are not relaxed, and task 7.2 is recorded as a
+maintainer deviation.** Every over-budget stall has an owner:
+
+| Over-budget stall | Owner |
+|---|---|
+| Window construction (first frame 150–196 ms, open stall 60–81 ms) | C4 `bound-window-construction-dispatch` |
+| Long-line costs: every threshold above, the context-engine cut-off, the minimap and invisibles costs, typing in long paragraphs | C1 `document-scale-policy` and C2 `long-line-protected-view` |
+| The post-open settle stall of a small document (12–20 ms within 3 ms of load readiness, on a 400-byte `.txt`), the size-independent ~42 ms first-highlight stall of an HTML document in a fresh process, and the first-wheel overlay-indicator frame on an unscrollable document (21–25 ms) | **New candidate C6 `bound-post-open-settle`** (below) |
+
+**New candidate C6 `bound-post-open-settle` (not yet proposed).** Bound the
+work that runs in the first main-loop turns after a document's load readiness:
+the 12–20 ms stall a 400-byte `.txt` shows within 3 ms of `file-open-complete`
+(the first layout and paint of the opened document plus the post-publish
+projections), the ~42 ms HTML language and first-highlight stall, and the
+13–17 ms delay before the first overlay-scrollbar indicator frame. Gate: the
+baseline fits B_settle and 2 reference frames on an idle reference run. It does
+not block C1–C4.
+
+### Load during the reference run, and what it can move
+
+The run shared the machine with a game (`dota2`, about 2.5 CPUs on P-cores
+0–7), a Windows VM (`qemu`, about 0.6 CPU) and, in later parts, `java`,
+`pwsh` and Flutter test processes; the lane itself ran on E-cores 8–23. Load
+only ever adds latency, so a length that **passed** under load also passes on
+an idle machine: every derived value is a **lower bound** (conservative for C1
+and C2), and an idle run can only raise a threshold or turn a fail into a pass.
+
+- Every **passing** bracket point passed in every variant and repetition
+  (`L_syntax` 10/10, `L_minimap` 10/10, `N_visible` 10/10,
+  `L_search_highlight` 11/11, `L_protect_stall` 19/19, `L_invisibles` 10/10,
+  `S_syntax_interact` 10/10, `V_batch` 18/18).
+- Every **failing** bracket point failed in every run except three, which are
+  the values contamination plausibly lowered: `L_search_highlight` at 10,000
+  failed 6 of 19 runs, `L_protect_stall` at 710 failed 8 of 10, and
+  `S_syntax_interact` at 31,000 failed 2 of 10. `L_syntax`, `L_minimap`,
+  `N_visible`, `L_invisibles`, `V_batch` and `S_syntax` failed in every run, so
+  load cannot have moved them.
+- **Baseline spread.** `baseline/small` background (the B_settle decider):
+  plain 14.3 / 17.9 / 19.6 ms, AT 13.7 / 15.4 / 15.9 ms, probe IM 12.4 /
+  12.5 / 14.5 ms (max ÷ median ≤ 1.4, not noisy); 3 of 9 repetitions are within
+  B_settle, 4 indeterminate, 2 over. The B_settle "over" therefore rests on
+  the two worst repetitions and is plausibly load-sensitive. The input-to-frame
+  "over" is structural (the overlay-indicator frame, in every repetition) and
+  is not.
+
+| Start (-03) | Part | Run id | Load (1 min) | Co-running heavy processes (≥ 1 CPU) |
+|---|---|---|---|---|
+| 20:48 | full/baseline | rr-20261011T234802Z-toolbx-3121571 | 9.01 | dota2 ~217% CPU, win11 VM (qemu ~63%) |
+| 20:52 | full/dense | rr-20261011T235228Z-toolbx-3134791 | 6.05 | dota2 ~217% CPU, win11 VM (qemu ~63%) |
+| 21:25 | reduced/r0-anchors-caret | rr-20261012T002526Z-toolbx-3423529 | 3.02 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:27 | reduced/r0-anchors-find | rr-20261012T002733Z-toolbx-3426828 | 3.14 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:28 | reduced/r0-anchors-layout | rr-20261012T002848Z-toolbx-3429219 | 3.49 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:37 | reduced/r0-anchors-total | rr-20261012T003714Z-toolbx-3441722 | 5.92 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:38 | reduced/r1-bisect-caret | rr-20261012T003842Z-toolbx-3444858 | 8.41 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:39 | reduced/r1-bisect-find | rr-20261012T003938Z-toolbx-3451338 | 10.93 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:40 | reduced/r1-bisect-layout | rr-20261012T004025Z-toolbx-3457547 | 10.02 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:42 | reduced/r1-bisect-layout-large | rr-20261012T004236Z-toolbx-3473456 | 11.06 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:43 | reduced/r1-bisect-total | rr-20261012T004329Z-toolbx-3487872 | 11.28 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:44 | reduced/r2-bisect-find | rr-20261012T004432Z-toolbx-3494852 | 8.59 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:45 | reduced/r2-bisect-layout | rr-20261012T004520Z-toolbx-3495997 | 7.15 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:47 | reduced/r3-bisect-layout | rr-20261012T004740Z-toolbx-3499771 | 5.61 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:48 | reduced/r3-bisect-layout-large | rr-20261012T004831Z-toolbx-3500943 | 5.68 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:49 | reduced/rc-bracket-caret | rr-20261012T004925Z-toolbx-3502309 | 6.40 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:52 | reduced/rc-bracket-find | rr-20261012T005228Z-toolbx-3507155 | 6.01 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 21:55 | reduced/rc-bracket-layout | rr-20261012T005546Z-toolbx-3519128 | 4.79 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 22:25 | reduced/rc-bracket-layout-large | rr-20261012T012524Z-toolbx-3624569 | 8.61 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 22:28 | reduced/rc-bracket-total | rr-20261012T012816Z-toolbx-3644797 | 9.62 | not sampled; dota2 (~250%) and the win11 VM ran throughout |
+| 22:33 | reduced-2/r1-bisect-caret | rr-20261012T013357Z-toolbx-3785616 | 11.54 | dota2:257%,java:284%,java:236% |
+| 22:34 | reduced-2/r1-bisect-find | rr-20261012T013452Z-toolbx-3793862 | 10.67 | dota2:257%,java:103%,java:293% |
+| 22:35 | reduced-2/r1-bisect-dense | rr-20261012T013556Z-toolbx-3799630 | 9.63 | dota2:257%,java:350% |
+| 22:36 | reduced-2/r1-bisect-total | rr-20261012T013652Z-toolbx-3815740 | 8.98 | dota2:257% |
+| 22:37 | reduced-2/r2-bisect-caret | rr-20261012T013756Z-toolbx-3826433 | 10.51 | dota2:257%,java:278% |
+| 22:38 | reduced-2/r2-bisect-find | rr-20261012T013850Z-toolbx-3830753 | 6.83 | dota2:257%,ps:200% |
+| 22:39 | reduced-2/r2-bisect-dense | rr-20261012T013937Z-toolbx-3835566 | 6.72 | dota2:256%,java:273%,ps:200% |
+| 22:40 | reduced-2/rc-bracket-caret | rr-20261012T014034Z-toolbx-3849226 | 5.61 | dota2:256%,java:395% |
+| 22:46 | reduced-2/rc-bracket-find | rr-20261012T014606Z-toolbx-4021856 | 14.10 | dota2:252%,python:100%,java:370% |
+| 22:49 | reduced-2/rc-bracket-dense | rr-20261012T014934Z-toolbx-4065603 | 13.43 | dota2:252%,java:188%,java:416%,ps:200% |
+| 22:55 | reduced-2/rc-bracket-total | rr-20261012T015533Z-toolbx-4113948 | 17.58 | dota2:252%,dart:frontend_s:116%,flutter_tester:132% |
+| 23:00 | reduced-3/r1-bisect-total | rr-20261012T020013Z-toolbx-36551 | 12.44 | pwsh:155%,dota2:253% |
+| 23:01 | reduced-3/r2-bisect-total | rr-20261012T020117Z-toolbx-86765 | 11.85 | java:250%,pwsh:170%,dota2:254% |
+| 23:02 | reduced-3/rc-bracket-total | rr-20261012T020222Z-toolbx-108535 | 12.18 | pwsh:121%,java:253%,dota2:254% |
+
+### Re-confirm on an idle machine
+
+One resumable command (about 30 minutes) re-measures the baseline (3 variants
+× 3 repetitions) and every bracketing point above (plain, 3 repetitions), then
+writes `reconfirm.json` comparing each point's idle verdict with the loaded one
+and a fresh `report.md`. Run it with nothing else heavy on the machine (no
+game, VM, build or test run); re-running the same command resumes it:
+
+```sh
+make responsiveness-build
+scripts/responsiveness-reference-sweep.py --out build/smoke/responsiveness-reconfirm \
+    --reconfirm docs/next/long-line-documents-brackets.json \
+    --axiom-observations <a fresh make gtk-axioms log>
+```
+
+The brackets of this run are committed beside this record
+(`long-line-documents-brackets.json`, the sweep's `brackets-final.json`).
+A point that flips from fail to pass raises its threshold to the next bracket
+(re-run the sweep with `--prior` and `--only` for that threshold); a passing
+point cannot flip.
 
 ## Axioms each change cites
 
@@ -99,7 +261,7 @@ None is allowlisted; each is reported by the lane as a finding with its owner.
 | `GtkSourceMap` detach with a pending update tick emits `Gtk-CRITICAL` and `GLib-GObject-CRITICAL` (axiom A32) | C1 |
 | The install slicer splits only on `\n`, so CR-only and U+2029 documents install in one GTK turn | C1 |
 | Window construction stalls the main loop for about 190 ms on every open | C4 |
-| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation` (a pair per occurrence, so most likely a scrollbar's trough and slider) during the jumps of Ctrl+End, a mid-document click and find, in documents with large scroll ranges: 1–5 MB short-line HTML, 2,000-character dense lines (wrap off) and the CR/CRLF delimiter sets. Triage (lane experiment `gizmo1`): never seen on the baseline (empty and 400-byte documents) nor on 20 kB, 100 kB or 300 kB short-line HTML (plain and AT variants), so it is a document-scale defect, not an ordinary-document one. Quick run #4 first reported it under minimap-on cases; every reproduction has the minimap **off** | C1 |
+| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`. The gizmo is the **trough (and slider) of the editor's horizontal or vertical scrollbar** (found with an `LD_PRELOAD` log-writer shim that walks the widget tree at the warning). Smallest reproduction: **one 500-character line, wrap off** (`paragraph/500/css/txt/wrap-off`), at Ctrl+Home followed by typing, in every repetition and variant; also 160 × 500-character lines wrap off, 2,000-character dense lines, the CR/CRLF delimiter sets and 1–5 MB short-line HTML (large vertical jumps: Ctrl+End, a mid-document click, find). Minimap off in every reproduction. Never seen on the baseline (empty, 400 bytes) or on 20–300 kB documents whose lines fit the viewport, so the trigger is a line wider than the viewport (or a very large scroll range), **not** document scale alone: a Markdown or CSV file with wrap off reaches it. Clue for the fix: GtkSourceView's gutter emits `mark-set` from inside its snapshot on every frame, and LushText's `mark-set` handlers (for example `ui/window/notes/bookmark_execution.rs` → `refresh_notes_menu_state`) run inside that snapshot. **Maintainer decision needed:** it reaches ordinary documents, which the pre-existing-blockers rule would fix in this change; it is recorded for C1 (task 8.4a) because the fix is a toolkit-interaction investigation outside C0's measurement scope | C1 (maintainer to confirm) |
 
 
 
@@ -173,6 +335,13 @@ fixed with a failing-first case in the driver's self-test:
   loop was free is idle time, not a dropped frame. The scroll frame-gap limit
   remains informational in the budget verdict (D7 confirms 8/16 ms and 2
   frames).
+
+A fifth flaw surfaced on the reference sweep's own anchors: **S_syntax read the
+generic post-open stall as syntax cost.** A 400-byte `.txt` already shows a
+12–20 ms stall right after load readiness, so "every dispatch ≤ B_interact"
+failed at every size. S_syntax is now syntax-attributable like L_syntax: the
+`total-size` group opens the same short-line bytes as `.html` and as `.txt`, and
+the rule reads the difference.
 
 ## Carried-forward decisions
 
