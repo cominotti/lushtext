@@ -107,8 +107,12 @@ TYPE_BURST = "abcdefghij"
 
 # Sweep definition (design D7).
 PARAGRAPH_LENGTHS = {"quick": (10_000, 250_000), "full": (2_000, 10_000, 50_000, 250_000, 1_900_000)}
-DENSE_LINE_LENGTHS = {"quick": (2_000,), "full": (500, 2_000, 10_000, 50_000)}
+DENSE_LINE_LENGTHS = {"quick": (2_000,), "full": (120, 500, 2_000, 10_000, 50_000)}
 DENSE_LINE_COUNT = 160
+# The dense reference case: a full screen of short dense lines. V_batch reads
+# the other dense lengths' scroll and Page Down as their excess over it, so the
+# cost of painting a screen of text is not read as validation cost.
+DENSE_REFERENCE_LENGTH = 120
 TOTAL_SIZES = {"quick": (1_000_000, 5_000_000), "full": (1_000_000, 2_000_000, 5_000_000, 10_000_000)}
 DELIMITER_LONGEST = {"quick": 250_000, "full": 1_894_586}
 SESSION_LENGTH = {"quick": 250_000, "full": 1_900_000}
@@ -1748,7 +1752,12 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
             outcome["reason"] = "not derived"
         derived[name] = outcome
 
-    def attributable(group_rows: Callable[[int, Any], tuple[list[dict], list[dict]]], phases_budgets) -> Callable[[int], bool | None]:
+    def attributable(group_rows: Callable[[int, Any], tuple[list[dict], list[dict]]], phases_budgets, allowance: dict[str, int] | None = None) -> Callable[[int], bool | None]:
+        """Per phase, the measured side's stall minus its counterpart's (less
+        any per-phase allowance for a cost that is not the threshold's) within
+        the phase group's budget."""
+        allowance = allowance or {}
+
         def verdict(length: int) -> bool | None:
             with_rows, without_rows = group_rows(length, None)
             with_rows = [r for r in with_rows if usable(r)]
@@ -1764,13 +1773,31 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
                     # The baseline side's cost is only a lower bound, so the
                     # attributable difference cannot be bounded: no verdict.
                     continue
-                a, b = phase_lateness(with_rows, phases), phase_lateness(without_rows, phases)
-                if a is None or b is None:
-                    continue
-                results.append(classify(max(0, a - b), tick, slack, budget))
+                # Phase by phase: pooled maxima let a counterpart outlier in
+                # one phase hide the measured side's cost in another.
+                for phase in phases:
+                    a, b = phase_lateness(with_rows, (phase,)), phase_lateness(without_rows, (phase,))
+                    if a is None or b is None:
+                        continue
+                    results.append(classify(max(0, a - b - allowance.get(phase, 0)), tick, slack, budget))
             return None if not results else all(v == "within" for v in results)
 
         return verdict
+
+    # The size-independent first highlight of an HTML document in a fresh
+    # process (~42 ms on the reference run, C6's), taken as the html-minus-txt
+    # background stall of the smallest short-line total-size document. It is
+    # not a length cost, so L_syntax's background half reads the difference in
+    # excess of it; without that document nothing is discounted.
+    size_list = sorted({r["length"] for r in rows if r.get("group") == "total-size" and usable(r)})
+    first_highlight_us = 0
+    if size_list:
+        smallest = [r for r in rows if r.get("group") == "total-size" and r.get("length") == size_list[0] and usable(r)]
+        html_bg = phase_lateness([r for r in smallest if r.get("attrs", {}).get("ext") == "html"], ("background",))
+        txt_bg = phase_lateness([r for r in smallest if r.get("attrs", {}).get("ext") == "txt"], ("background",))
+        if html_bg is not None and txt_bg is not None:
+            first_highlight_us = max(0, html_bg - txt_bg)
+    derived["first_highlight_us"] = first_highlight_us
 
     # L_syntax: the html-minus-txt difference within one flavour (same
     # bytes), and the worst (smallest) flavour decides.
@@ -1784,7 +1811,7 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
             )
 
         lengths = sorted({r["length"] for r in rows if r.get("group") == "paragraph" and r.get("attrs", {}).get("flavor") == flavor})
-        per_flavor[flavor] = largest_passing(lengths, attributable(syntax_rows, ((("scroll",), b_i), (SETTLE_PHASES, b_s))))
+        per_flavor[flavor] = largest_passing(lengths, attributable(syntax_rows, ((("scroll",), b_i), (SETTLE_PHASES, b_s)), {"background": first_highlight_us}))
     measured = {f: o for f, o in per_flavor.items() if o.get("value") is not None or "upper_bound" in o}
     if measured:
         deciding = min(measured, key=lambda f: measured[f].get("value") if measured[f].get("value") is not None else -1)
@@ -1794,7 +1821,7 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
         deciding = None
         outcome = {"value": None, "reason": "no usable cases"}
     outcome["per_flavor"] = per_flavor
-    describe("L_syntax", ".html minus .txt stall at the same length and flavour: scroll <= B_interact, open and background <= B_settle; a capped .html phase fails; the worst flavour decides", outcome, [r["case"] for r in rows if r.get("group") == "paragraph" and not r.get("attrs", {}).get("minimap")])
+    describe("L_syntax", ".html minus .txt stall at the same length and flavour, phase by phase: scroll <= B_interact, open and background <= B_settle (background in excess of the size-independent first highlight, the smallest total-size document's .html minus .txt background); a capped .html phase fails; the worst flavour decides", outcome, [r["case"] for r in rows if r.get("group") == "paragraph" and not r.get("attrs", {}).get("minimap")])
 
     minimap_rows = lambda length, _: (
         [r for w in (True, False) for r in rows_for(rows, "paragraph", length, ext="txt", wrap=w, minimap=True, flavor="css")],
@@ -1807,6 +1834,17 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
     invisibles_rows = lambda length, _: (rows_for(rows, "invisibles", length, invisibles="all"), rows_for(rows, "invisibles", length, invisibles="off"))
     outcome = largest_passing(inv_lengths, attributable(invisibles_rows, ((("scroll",), b_i),)))
     describe("L_invisibles", "invisibles on minus off stall while scrolling <= B_interact", outcome, [r["case"] for r in rows if r.get("group") == "invisibles"])
+
+    # The dense reference case (a full screen of short dense lines): the cost
+    # of painting and scrolling a screen of text, which every document that
+    # fills the screen pays whatever its line lengths (5-7 ms per scroll
+    # dispatch on the idle reference machine, 2-3 ms under load). V_batch
+    # bounds validation beyond that paint, so it reads scroll and Page Down as
+    # their excess over the reference; without it, as measured. N_visible
+    # deliberately does not: it bounds what is painted, paint included.
+    reference_rows = [r for r in rows_for(rows, "dense", DENSE_REFERENCE_LENGTH) if usable(r)]
+    dense_floor = {phase: phase_lateness(reference_rows, (phase,)) or 0 for phase in ("scroll", "pagedown")}
+    derived["dense_floor_us"] = dense_floor if reference_rows else None
 
     def txt_rows(length: int) -> list[dict]:
         """Usable plain-text paragraph rows at one length, wrap on and off, minimap off."""
@@ -1874,7 +1912,7 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
     a31 = axiom_obs.get("A31", {}).get("measured", {})
     rows_per_batch = to_int(a31.get("rows_per_batch_nowrap") or a31.get("rows_per_batch"))
     row_height = to_int(a31.get("line_height") or a31.get("row_height_px"))
-    dense_lengths = sorted({r["length"] for r in rows if r.get("group") == "dense"})
+    dense_lengths = sorted({r["length"] for r in rows if r.get("group") == "dense" and not (reference_rows and r.get("length") == DENSE_REFERENCE_LENGTH)})
 
     # The background phase also holds the post-open stall every document
     # shows (baseline/small); validation is its excess over that stall.
@@ -1884,9 +1922,9 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
         selected = [r for r in rows_for(rows, "dense", length) if usable(r)]
         if selected and hung(selected, ("scroll", "pagedown", "background")):
             return False
-        interaction = phase_lateness(selected, ("scroll", "pagedown"))
+        interactions = [None if (v := phase_lateness(selected, (phase,))) is None else max(0, v - dense_floor[phase]) for phase in ("scroll", "pagedown")]
         background = phase_lateness(selected, ("background",))
-        values = [v for v in (interaction, None if background is None else max(0, background - post_open_us)) if v is not None]
+        values = [v for v in (*interactions, None if background is None else max(0, background - post_open_us)) if v is not None]
         return None if not values else classify(max(values), tick, slack, b_i) == "within"
 
     dense_outcome = largest_passing(dense_lengths, dense_verdict)
@@ -1896,7 +1934,7 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
         dense_outcome["rows_per_batch_default_zoom"] = rows_per_batch
     else:
         dense_outcome = {"value": None, "reason": "needs the A31 rows-per-batch observation (pass --axiom-observations) and a passing dense case", "dense_line_length": dense_outcome.get("value"), "dense_reason": dense_outcome.get("reason")}
-    describe("V_batch", "largest line length x A31 rows per 2000 px batch whose dense validation stalls <= B_interact (scroll and Page Down as measured; background as its excess over the baseline/small post-open stall)", dense_outcome, [r["case"] for r in rows if r.get("group") == "dense"])
+    describe("V_batch", "largest line length x A31 rows per 2000 px batch whose dense validation stalls <= B_interact (scroll and Page Down as their excess over the dense reference case, a full screen of 120-character lines, or as measured without it; background as its excess over the baseline/small post-open stall)", dense_outcome, [r["case"] for r in rows if r.get("group") == "dense"])
 
     if rows_per_batch:
         # Minimum editor zoom is 50 % (ui/window/zoom.rs ZOOM_MIN), which halves
@@ -2822,6 +2860,40 @@ def self_test() -> int:
     fixed_derived = derive(fixed, budgets, 1_000, True, obs)
     expect(fixed_derived["S_syntax"]["value"] is None and fixed_derived["S_syntax_interact"]["value"] == 5_000_000, f"a size-independent background stall fails S_syntax; S_syntax_interact reads the interactions only ({fixed_derived['S_syntax_interact']})")
 
+    # The .html-minus-.txt difference is taken phase by phase. Pooling the
+    # phases (max over every .html phase minus max over every .txt phase)
+    # let one .txt outlier in another phase hide the .html cost: on the idle
+    # re-confirmation a 9.8 ms .txt click masked 13.8 ms .html typing
+    # against 2.9 ms .txt typing at 44 kB.
+    masked = []
+    for r in rows:
+        r = dict(r)
+        if r["group"] == "total-size" and r["length"] == 5_000_000:
+            stalls = {"background": 1_000, "scroll": 1_000, "click": 1_000, "type-start": 14_000} if r["attrs"].get("ext") == "html" else {"background": 1_000, "scroll": 1_000, "click": 10_000, "type-start": 2_000}
+            r["phases"] = [{"name": n, "kind": PHASE_KINDS.get(n, "interaction"), "status": "ok", "stall": {"lateness_us": v}} for n, v in stalls.items()]
+        masked.append(r)
+    masked_derived = derive(masked, budgets, 1_000, True, obs)
+    expect(masked_derived["S_syntax_interact"]["value"] == 1_000_000, f"a .txt outlier in one phase does not hide the .html cost in another ({masked_derived['S_syntax_interact']})")
+
+    # Read phase by phase, L_syntax's background half sees the size-independent
+    # first highlight of an HTML document in a fresh process (~42 ms, the
+    # stall that leaves S_syntax underivable). That stall is C6's, not a
+    # length cost: L_syntax reads the background difference in excess of it,
+    # measured on the smallest short-line total-size document.
+    first_highlight = []
+    for r in rows:
+        r = dict(r)
+        if r["group"] == "paragraph":
+            extra = 40_000 if r["attrs"].get("ext") == "html" else 0
+            r["phases"] = [*r["phases"], {"name": "background", "kind": "settle", "status": "ok", "stall": {"lateness_us": 1_000 + extra}}]
+        elif r["group"] == "total-size" and r["length"] == 1_000_000 and r["attrs"].get("ext") == "html":
+            r["phases"] = [dict(p, stall={"lateness_us": 41_000}) if p["name"] == "background" else p for p in r["phases"]]
+        first_highlight.append(r)
+    first_derived = derive(first_highlight, budgets, 1_000, True, obs)
+    expect(first_derived["L_syntax"]["value"] == 10_000, f"the size-independent first highlight does not fail L_syntax ({first_derived['L_syntax']})")
+    no_reference = [r for r in first_highlight if r["group"] != "total-size"]
+    expect(derive(no_reference, budgets, 1_000, True, obs)["L_syntax"]["value"] is None, "without a total-size reference the first highlight is not discounted")
+
     # V_batch reads validation, not the post-open stall every document shows
     # (baseline/small 12-20 ms on the reference run): the dense background
     # phase is read as its excess over the baseline/small background stall.
@@ -2832,6 +2904,31 @@ def self_test() -> int:
             r["phases"] = [dict(p, stall={"lateness_us": p["stall"]["lateness_us"] + 15_000}) if p["name"] == "background" else p for p in r["phases"]]
         post_open.append(r)
     expect(derive(post_open, budgets, 1_000, True, obs)["V_batch"]["value"] == 2_000 * 105, "the post-open stall the baseline shows too does not fail V_batch")
+
+    # V_batch reads validation, not the cost of painting a full screen of
+    # text: on an idle reference machine every dense length from 120 to 500
+    # scrolled with the same 5-7 ms stall (2-3 ms under load), so Page Down
+    # and scroll are read as their excess over the dense reference case.
+    floor = []
+    for r in rows:
+        r = dict(r)
+        if r["group"] == "dense":
+            r["phases"] = [dict(p, stall={"lateness_us": p["stall"]["lateness_us"] + 6_000}) if p["name"] == "scroll" else p for p in r["phases"]]
+        floor.append(r)
+    floor_reference = dict(next(r for r in floor if r["group"] == "dense"), case=f"dense/{DENSE_REFERENCE_LENGTH}", length=DENSE_REFERENCE_LENGTH)
+    floor_reference["phases"] = [{"name": "scroll", "kind": "interaction", "status": "ok", "stall": {"lateness_us": 6_500}}, {"name": "background", "kind": "settle", "status": "ok", "stall": {"lateness_us": 1_000}}]
+    floor_derived = derive([*floor, floor_reference], budgets, 1_000, True, obs)
+    expect(floor_derived["V_batch"]["value"] == 2_000 * 105, f"a full-screen scroll floor the reference shows too does not fail V_batch ({floor_derived['V_batch']})")
+    expect(derive(floor, budgets, 1_000, True, obs)["V_batch"]["value"] is None, "without the dense reference the scroll is read as measured")
+    # N_visible bounds what is painted, paint included, so the reference
+    # does not discount its scroll.
+    visible_floor = []
+    for r in rows:
+        r = dict(r)
+        if r["group"] == "paragraph" and r["attrs"].get("ext") == "txt" and not r["attrs"].get("minimap"):
+            r["phases"] = [dict(p, stall={"lateness_us": p["stall"]["lateness_us"] + 6_000}) if p["name"] == "scroll" else p for p in r["phases"]]
+        visible_floor.append(r)
+    expect(derive([*visible_floor, floor_reference], budgets, 1_000, True, obs)["N_visible"]["value"] != 50_000, "the dense reference does not discount N_visible's scroll")
 
     # A phase a reduced run chose not to measure is not a hang.
     partial = dict(rows_for(rows, "paragraph", 10_000, ext="txt", wrap=True, minimap=False, flavor="css")[0], outcome="exceeded_cap", only_phases=["click", "type-start"])

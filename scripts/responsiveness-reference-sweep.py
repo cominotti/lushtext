@@ -65,7 +65,8 @@ THRESHOLDS = {
     "L_protect_stall": ("paragraph", CARET, ["paragraph/{L}/css/txt/*/minimap-off"], *PARAGRAPH_SPAN),
     "L_invisibles": ("invisibles", LAYOUT, ["invisibles/{L}/*"], (10_000, 250_000), 500, 1_900_000),
     "S_syntax_interact": ("total-size", ALL_BUT_FIND, ["total-size/{L}"], (250_000, 1_000_000), 8_000, 10_000_000),
-    "V_batch": ("dense", DENSE, ["dense/{L}/"], (500, 2_000, 10_000, 50_000), 100, 50_000),
+    # 120 is the driver's DENSE_REFERENCE_LENGTH: the floor V_batch is read against, so never stepped below.
+    "V_batch": ("dense", DENSE, ["dense/{L}/"], (120, 500, 2_000, 10_000, 50_000), 120, 50_000),
     "S_syntax": ("total-size", ALL_BUT_FIND, ["total-size/{L}"], (250_000, 1_000_000), 30_000, 10_000_000),
 }
 RATIO = 1.5
@@ -168,6 +169,15 @@ class Sweep:
         group = THRESHOLDS[name][0]
         budgets = self.driver.read_budgets()
         baseline = [r for r in rows if r.get("case") == "baseline/small"]
+        if name == "V_batch":
+            # V_batch reads scroll and Page Down against the dense reference case.
+            reference = self.driver.DENSE_REFERENCE_LENGTH
+            baseline += [r for r in rows if r.get("group") == "dense" and r.get("length") == reference]
+        if name == "L_syntax":
+            # L_syntax discounts the size-independent first highlight, read
+            # from the smallest short-line total-size document.
+            sizes = sorted({r["length"] for r in rows if r.get("group") == "total-size" and r.get("length")})
+            baseline += [r for r in rows if r.get("group") == "total-size" and sizes and r.get("length") == sizes[0]]
         by_length: dict[int, list[dict]] = {}
         for r in rows:
             if r.get("group") == group and r.get("length"):
@@ -284,6 +294,9 @@ class Sweep:
         if calibration.exists():
             self.slack = json.loads(calibration.read_text(encoding="utf-8"))["slack_us"]
         points = {name: [p for p in (b["lo"], b["hi"]) if p is not None] for name, b in brackets.items() if name in THRESHOLDS}
+        if "V_batch" in points:
+            # The floor V_batch is read against is re-measured with it.
+            points["V_batch"] = sorted({self.driver.DENSE_REFERENCE_LENGTH, *points["V_batch"]})
         self.measure("idle-bracket", {k: v for k, v in points.items() if v}, "plain", 3)
         status = self.finish(list(self.parts))
         rows = self.rows()
