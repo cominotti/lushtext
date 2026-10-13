@@ -52,6 +52,12 @@ changes read them and never restate the numbers.
 
 ## Measured values (reference run)
 
+> **Superseded in part on 2026-10-13.** The idle re-confirmation below corrected
+> three derivation rules and changed `L_search_highlight` (6,700 → 10,000) and
+> `L_minimap` (50,000 → 22,000); every other value was confirmed. C1 and C2 read
+> the final values in "Idle re-confirmation (2026-10-13)"; this table stays as
+> the loaded run's record.
+
 **Reference set `rr-c0-reference-20261011`**: the baseline and dense groups of a
 `full`-tier start (`rr-20261011T234802Z-toolbx-3121571`,
 `rr-20261011T235228Z-toolbx-3134791`) joined with the 33 parts of the reduced
@@ -78,7 +84,7 @@ the lane. Axiom observations: a fresh `make gtk-axioms` on the same tree (A31:
 | `V_batch` | **56,000** visible characters per 2000 px batch | dense line 500 / 710 | (largest dense line length) × A31's 112 rows; scroll and Page Down as measured, background as its excess over the `baseline/small` post-open stall |
 | `R_batch` | **224** rows | — | A31's 112 rows per batch at the default font, doubled for the 50 % minimum zoom |
 | `N_dense` | **250** characters | — | `V_batch ÷ R_batch` |
-| `N_inspect` bound | **not derived** (literal); **500** from `L_protect_stall` | — | `min(N_visible, L_protect)`; C2 chooses at or below `min(N_visible, L_protect_stall)` = 500 until an idle re-confirmation or the user-session validation says otherwise |
+| `N_inspect` bound | **not derived** (literal); **500** from `L_protect_stall` | — | `min(N_visible, L_protect)`; C2 chooses at or below `min(N_visible, L_protect_stall)` = 500 (the idle re-confirmation kept both inputs) until the user-session validation says otherwise |
 | `S_syntax` | **not derived** | fails at 16,000 bytes (the floor) | `.html` minus `.txt` over the same short-line bytes, every dispatch ≤ B_interact: the `.html` background phase carries a **size-independent** ~42 ms stall (57–61 ms against 14–17 ms for the same bytes as `.txt`, identical at 16 kB and 62 kB; the HTML language and first highlight in a fresh process), which no size cutoff removes |
 | `S_syntax_interact` (informational) | **16,000** bytes | 16,000 / 31,000 | `S_syntax` without the background phase: scroll, Page Down, caret and typing differences ≤ B_interact (typing in 62 kB of HTML costs 12–16 ms against 2–3 ms as `.txt`) |
 
@@ -149,6 +155,12 @@ and C2), and an idle run can only raise a threshold or turn a fail into a pass.
   `S_syntax_interact` at 31,000 failed 2 of 10. `L_syntax`, `L_minimap`,
   `N_visible`, `L_invisibles`, `V_batch` and `S_syntax` failed in every run, so
   load cannot have moved them.
+- **Correction (2026-10-13).** The premise above is false for short
+  dispatches on this machine: on an idle machine a full screen of text
+  scrolled 2–3× slower than under background load (see "An idle machine is
+  not the fast one" below). Load still only adds latency to long stalls, but a
+  pass under load is not a pass idle, and the idle re-confirmation is the
+  authority.
 - **Baseline spread.** `baseline/small` background (the B_settle decider):
   plain 14.3 / 17.9 / 19.6 ms, AT 13.7 / 15.4 / 15.9 ms, probe IM 12.4 /
   12.5 / 14.5 ms (max ÷ median ≤ 1.4, not noisy); 3 of 9 repetitions are within
@@ -209,11 +221,172 @@ scripts/responsiveness-reference-sweep.py --out build/smoke/responsiveness-recon
     --axiom-observations <a fresh make gtk-axioms log>
 ```
 
-The brackets of this run are committed beside this record
-(`long-line-documents-brackets.json`, the sweep's `brackets-final.json`).
-A point that flips from fail to pass raises its threshold to the next bracket
-(re-run the sweep with `--prior` and `--only` for that threshold); a passing
-point cannot flip.
+The current brackets are committed beside this record
+(`long-line-documents-brackets.json`; since 2026-10-13 they are the idle
+re-confirmation's final brackets below, and `V_batch` always re-measures the
+dense reference case with them). A point that flips from fail to pass raises
+its threshold (re-run the sweep with `--prior` and `--only` for that
+threshold, bisecting upward). A passing point **can** flip too: the idle
+re-confirmation showed that an idle machine is not the fast one (below), so a
+pass→fail flip is investigated before any value is lowered, and a real one is
+bisected downward the same way.
+
+### Idle re-confirmation (2026-10-13)
+
+**These values supersede the loaded ones where they differ.** Run
+`rr-c0-reconfirm-20261013`: the idle re-measurement
+(`rr-20261013T202507Z-toolbx-1259663` baseline, 3 variants × 3 repetitions,
+and six `idle-bracket-*` parts, plain × 3, 17:25–17:49 -03, 1-minute load 5.4
+falling to 1.5, nothing heavy except a 220 % `java` burst during the find part),
+then a follow-up for the flipped points (`--prior` the re-confirmation,
+`--only L_search_highlight,S_syntax_interact,V_batch`, 17:57–18:27) and three
+idle-gated final parts (`final-dense` 18:59, `final-dense120` 19:11,
+`final-minimap` 19:16; each waited for 30 s of load < 4 with no process at
+≥ 80 % CPU). Total measurement time 44 minutes. Same toolkit, kernel, headless
+lane and affinity (E-cores 8–23, inherited) as the reference run; watchdog tick
+2 ms, idle slack ε 295 µs; a fresh `make gtk-axioms` (A31: 112 rows per
+batch); 0 integrity violations. The machine was shared with another session's
+bursty `java` jobs (up to 1,355 % CPU on the same E-cores) during the
+follow-up: parts that ran beside them are marked below, the four that ran
+beside the worst of them were discarded and re-run, and the final parts were
+gated. Artifacts: `build/smoke/responsiveness-reconfirm{,-followup,-final}`,
+merged report `build/smoke/responsiveness-reconfirm-final/merged/report.md`.
+
+| Start (-03) | Part | Run id | Load (1 min) | Co-running heavy processes (≥ 1 CPU) |
+|---|---|---|---|---|
+| 17:25 | idle-baseline | rr-20261013T202507Z-toolbx-1259663 | 5.40 | none |
+| 17:29 | idle-bracket-caret | rr-20261013T202928Z-toolbx-1274828 | 2.51 | shellcheck 101 % |
+| 17:31 | idle-bracket-find | rr-20261013T203138Z-toolbx-1300170 | 2.41 | java 220 % |
+| 17:33 | idle-bracket-layout | rr-20261013T203305Z-toolbx-1371739 | 4.28 | du 101 % |
+| 17:42 | idle-bracket-layout-large | rr-20261013T204243Z-toolbx-1566928 | 3.20 | none |
+| 17:43 | idle-bracket-dense | rr-20261013T204359Z-toolbx-1568698 | 1.83 | none |
+| 17:46 | idle-bracket-total | rr-20261013T204613Z-toolbx-1638271 | 1.53 | none |
+| 17:57 | followup/r0-anchors-find | rr-20261013T205720Z-toolbx-1729302 | 2.06 | none |
+| 17:58 | followup/r0-anchors-dense | rr-20261013T205806Z-toolbx-1732064 | 1.82 | none |
+| 18:07 | followup/r0-anchors-total (re-run) | rr-20261013T210720Z-toolbx-1795335 | 4.25 | none |
+| 18:08 | followup/r1-bisect-dense (re-run) | rr-20261013T210822Z-toolbx-1801755 | 2.91 | none |
+| 18:09 | followup/r2-bisect-dense (re-run) | rr-20261013T210918Z-toolbx-1806020 | 10.00 | java 547 % |
+| 18:10 | followup/rc-bracket-find (re-run) | rr-20261013T211014Z-toolbx-1812323 | 6.66 | java 342 % |
+| 18:13 | followup/rc-bracket-dense | rr-20261013T211333Z-toolbx-1829325 | 13.99 | java 1,355 % |
+| 18:19 | followup/rc-bracket-total | rr-20261013T211908Z-toolbx-1896753 | 1.64 | none |
+| 18:59 | final-dense | rr-20261013T215906Z-toolbx-2716045 | 2.50 | none at start; java from 19:02:55 |
+| 19:11 | final-dense120 | rr-20261013T221124Z-toolbx-2863700 | 1.61 | none |
+| 19:16 | final-minimap | rr-20261013T221619Z-toolbx-2882340 | 0.92 | none |
+
+The discarded first runs of the four re-run follow-up parts ran beside `java`
+at 720–1,100 %; they are kept in `target/reconfirm/contaminated/` only as the
+evidence for the warning below.
+
+| Value | Loaded (`rr-c0-reference-20261011`) | Final (idle, corrected rules) | Bracket (pass / first fail) |
+|---|---|---|---|
+| `L_syntax` | 2,000 | **2,000** (unchanged) | 2,000 / 3,000 |
+| `L_minimap` | 50,000 | **22,000** (lowered; the loaded value was a rule artifact) | 22,000 / 50,000 |
+| `L_invisibles` | 50,000 | **50,000** (unchanged) | 50,000 / 74,000 |
+| `L_search_highlight` | 6,700 | **10,000** (raised) | 10,000 / 15,000 |
+| `N_visible` | 500,000 | **500,000** (unchanged) | 500,000 / 710,000 |
+| `L_protect` | not derived | **not derived** (frame half still fails at 500) | — / 500 |
+| `L_protect_stall` | 500 | **500** (unchanged) | 500 / 710 |
+| `V_batch` | 56,000 | **56,000** (unchanged; dense line 500 × 112 rows) | dense 500 / 710 |
+| `R_batch`, `N_dense` | 224, 250 | **224, 250** (unchanged) | — |
+| `N_inspect` bound | 500 | **500** (unchanged) | — |
+| `S_syntax` | not derived | **not derived** (still fails at 16,000) | — / 16,000 |
+| `S_syntax_interact` | 16,000 | **16,000** (unchanged; the idle "pass" at 31,000 was a rule artifact) | 16,000 / 31,000 |
+
+**What flipped, and why.**
+
+- **`L_search_highlight` (fail → pass at 10,000), raised to 10,000.** Find at
+  10,000 characters stalled at most 4.1 ms idle (plain × 3) and 4.7 ms in the
+  follow-up's bracket (3 variants × 3, beside a 342 % `java` burst); the loaded
+  failures there were load. 15,000 fails on an idle anchor run (10.3 ms) and in
+  the bracket (9.8 ms), so the bracket is 10,000 / 15,000 (ratio 1.5, no
+  further bisection).
+- **`S_syntax_interact` (fail → pass at 31,000) was not a real pass.** The rule
+  subtracted the **largest** `.txt` stall over all interactions from the
+  largest `.html` one, so one `.txt` outlier hid an `.html` cost in another
+  phase: at 44 kB idle a 9.8 ms `.txt` click masked 13.8 ms `.html` typing
+  against 2.9 ms `.txt` typing. The lane now takes the difference **phase by
+  phase** (driver `attributable`, failing-first self-test). Per phase, 31,000
+  fails idle (typing 12.3 ms `.html` against 6.0 ms `.txt`) and loaded, so the
+  value stays 16,000.
+- **The same pooling had decided `L_syntax` and `L_minimap`.** Their settle
+  half pooled `open` and `background`, so the 60–85 ms window-construction
+  `open` stall on both sides hid every background cost below it. Per phase:
+  - `L_syntax`'s `.html` background carries the size-independent first
+    highlight (C6) at every length, so it would fail everywhere; the rule now
+    discounts it, measured as the `.html` minus `.txt` background of the
+    smallest short-line `total-size` document (42 ms loaded, 36 ms idle, the
+    stall that leaves `S_syntax` underivable). With that, `L_syntax` stays
+    2,000 in both runs (at 3,000 the script flavour's `.html` background
+    reaches 111 ms idle and 129 ms loaded).
+  - `L_minimap` is a real cost the pooling hid: minimap on minus off, the
+    background phase at 50,000 is 21 ms loaded and 17 ms idle, over
+    B_settle. Corrected, the loaded run gives 10,000 / 50,000 and the idle
+    final part 22,000 (6.2 ms over the minimap-off background) / 50,000.
+    **`L_minimap` = 22,000** (a lower bound; [22,000, 50,000) is not bisected).
+- **`V_batch` (pass → fail at dense 500) is neither a lower `V_batch` nor the
+  excess rule.** The background excess over the `baseline/small` post-open
+  stall was 0 ms idle (15.2 against 15.4 ms). What failed was the **scroll**
+  phase, read as measured: 5–7 ms per dispatch, over B_interact once the 2 ms
+  tick is added, in 2 of 3 wrap-off repetitions. Bisecting downward found no
+  boundary: on an idle machine every dense length scrolled alike, 120 (17 of
+  18 runs at 4.0–7.1 ms), 240 (4.9–6.7 ms, 18 runs), 350 (5.5–7.5 ms in its
+  first 7 runs) and 500, while a 2,000-character paragraph that does not fill
+  the screen scrolled in 1 ms.
+  It is the cost of painting a **full screen of text**, which every document
+  pays, not validation. The rule now reads scroll and Page Down as their
+  excess over a **dense reference case**, a full screen of 120-character
+  lines (`DENSE_REFERENCE_LENGTH`, added to the `full` dense grid; failing-first
+  self-test), as the background half already reads the post-open stall. With
+  it, idle passes 240, 350 and 500 and fails 710 on the background half (21.8
+  against 15.4 ms post-open, 6.4 ms of validation): **`V_batch` stays 56,000**.
+  `N_visible` deliberately does not discount the reference: it bounds what is
+  painted, paint included.
+
+**An idle machine is not the fast one.** The record assumed load only adds
+latency, so a loaded pass would hold idle. It does not hold for short
+dispatches on the reference machine: in the fully idle windows (1-minute load
+about 1) almost every full-screen scroll took 5–7 ms, while the loaded
+reference run never exceeded 3.5 ms on dense 500 (36 runs). The mode can
+switch within a part: `final-dense` scrolled dense 350 in 5.5–7.5 ms for its
+first 7 runs and in 1.9–4.2 ms (10 of 11 under 3 ms) for the last 11, from
+19:02:29 (the `java`
+jobs resumed at 19:02:55). The baseline's worst interaction stall is 5.6 ms
+idle against 2.3 ms loaded. Power management on the E-cores (governor `powersave`,
+EPP `balance_performance`) is the likely cause; it is not established. Read
+together, a full screen of text costs 5–7 ms per scroll dispatch on the idle
+reference machine, which leaves almost none of B_interact for anything else.
+It is not a length threshold (no line or paragraph length removes it), so it is
+recorded here, with N_visible's idle rows at 10,000 and 22,000 (wrap on, 4.8–6.7
+ms, a screen of wrapped text) that the absolute rule reads as fails, and handed
+to the candidate list in `long-line-evolution.md`.
+
+**Budget verdict, idle (baseline cases, 3 variants × 3 repetitions):**
+
+- **B_interact = 8 ms: within.** Worst interaction stall 5.6 ms (bounds
+  5.3–7.6 ms), `baseline/small` AT, type-middle.
+- **B_settle = 16 ms: indeterminate.** Worst settle stall 15.4 ms (bounds
+  15.1–17.4 ms), the `baseline/small` post-open stall (probe IM repetition 2);
+  the loaded "over" (19.6 ms) was partly load.
+- **Input-to-frame ≤ 2 frames: over.** Worst 24.5 ms, the first-wheel
+  overlay-indicator frame on the empty document, as loaded: structural.
+- Scroll p95 frame gap (informational): 8.6 ms.
+
+The lane's literal verdict is again **revise** (it proposes
+`B_SETTLE_US = 18000`). The maintainer decision of 2026-10-11 stands: the
+targets stay 8 ms, 16 ms and 2 reference frames, and C6 owns the baseline's
+settle and frame stalls.
+
+**A fixed defect reappeared once.** In the follow-up's discarded
+`rc-bracket-find` part (`rr-20261013T210157Z-toolbx-1753909`, beside a
+900 % `java` burst), `paragraph/15000` wrap on, find, plain repetition 1 logged
+`Trying to snapshot GtkGizmo … without a current allocation` (A37) during the
+find phase's worst stall (10.8 ms), and the lane failed the run as designed.
+It did not reproduce in 94 further runs (67 of the same case), all with the
+ring-buffer shim from the original investigation and 76 of them beside 14
+busy threads. It is the A37 residual the blocker row below names ("not
+observed" until now): **open**, with no root cause yet, and listed first among
+the next candidates in `long-line-evolution.md`. C1's task 8.4a says nothing
+is left for C1; that holds only until this is explained.
 
 ## Axioms each change cites
 
@@ -263,7 +436,7 @@ fixed here fails the lane if it reappears.
 | `GtkSourceMap` detach with a pending update tick emits `Gtk-CRITICAL` and `GLib-GObject-CRITICAL` (axiom A32) | C1 |
 | The install slicer splits only on `\n`, so CR-only and U+2029 documents install in one GTK turn | C1 |
 | Window construction stalls the main loop for about 190 ms on every open | C4 |
-| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`, the trough of the editor's horizontal or vertical scrollbar. **Fixed in C0** (pre-existing-blockers rule), so it is no longer owned by C1. Root cause, confirmed against GTK 4.22.5 and GtkSourceView 5.20.0 (ledger **A37**): `GtkTextView` validates invalidated lines from an idle at `GTK_PRIORITY_RESIZE - 2`, but a change made inside a frame — the key press of the smallest reproduction (one 500-character line, wrap off, Ctrl+Home and typing) is handled in the frame clock's flush-events phase — or just before a frame that input started (`gdkframeclockidle.c` runs it from `flush_idle` at `GDK_PRIORITY_EVENTS + 1`; find in dense and 1 MB documents, where GtkSourceView's search scan changes tags from an idle) leaves that idle pending at paint time. The view is not re-allocated in that frame's layout, so `gtk_text_view_paint` flushes the validation inside the snapshot (`gtk_text_view_flush_first_validate` → `gtk_text_view_update_adjustments`): a widened line or a queued scroll changes the scroll adjustments, `GtkRange` queues its trough's allocation, and `GtkScrolledWindow` snapshots the scrollbar after its child. Lines that fit the viewport never change `upper`, which is why they never warned. The `mark-set` handlers that run inside GtkSourceView's snapshot were ruled out: disabling LushText's Notes handler left the warning in place. Fix: `ui/editor_page/frame_validation.rs` queues the view's allocation on every edit and caret move, and before the paint (at `before-paint` or after the frame clock's layout handlers) after a tag change, so `gtk_text_view_size_allocate` flushes the validation in layout. Evidence: widget tests `editor_page::test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot` (20 adjustment changes inside the paint before the fix, 0 after) and `editor_page::test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 without the tag handling, 0 with it), probe A37, and the lane: the minimal case and dense 500/2000/50000, total-size 1/5 MB and paragraph 500/15000/22000 (all phases) show no warning, nor do four more repetitions each of dense 500 and total-size 1 MB (before the fix dense 500 warned on find in 3 of 5 runs). The lane classifier now treats this warning as a **regression that fails the run** (`FIXED_DEFECTS` in `scripts/responsiveness-smoke-driver.py`), not as an owned finding. Residual, not observed: a size-changing tag that GtkSourceView applies inside its own snapshot (highlighting the visible region) is still validated in that paint; the editor validates it in the next frame's layout | fixed in C0 |
+| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`, the trough of the editor's horizontal or vertical scrollbar. **Fixed in C0** (pre-existing-blockers rule), so it is no longer owned by C1. Root cause, confirmed against GTK 4.22.5 and GtkSourceView 5.20.0 (ledger **A37**): `GtkTextView` validates invalidated lines from an idle at `GTK_PRIORITY_RESIZE - 2`, but a change made inside a frame — the key press of the smallest reproduction (one 500-character line, wrap off, Ctrl+Home and typing) is handled in the frame clock's flush-events phase — or just before a frame that input started (`gdkframeclockidle.c` runs it from `flush_idle` at `GDK_PRIORITY_EVENTS + 1`; find in dense and 1 MB documents, where GtkSourceView's search scan changes tags from an idle) leaves that idle pending at paint time. The view is not re-allocated in that frame's layout, so `gtk_text_view_paint` flushes the validation inside the snapshot (`gtk_text_view_flush_first_validate` → `gtk_text_view_update_adjustments`): a widened line or a queued scroll changes the scroll adjustments, `GtkRange` queues its trough's allocation, and `GtkScrolledWindow` snapshots the scrollbar after its child. Lines that fit the viewport never change `upper`, which is why they never warned. The `mark-set` handlers that run inside GtkSourceView's snapshot were ruled out: disabling LushText's Notes handler left the warning in place. Fix: `ui/editor_page/frame_validation.rs` queues the view's allocation on every edit and caret move, and before the paint (at `before-paint` or after the frame clock's layout handlers) after a tag change, so `gtk_text_view_size_allocate` flushes the validation in layout. Evidence: widget tests `editor_page::test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot` (20 adjustment changes inside the paint before the fix, 0 after) and `editor_page::test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 without the tag handling, 0 with it), probe A37, and the lane: the minimal case and dense 500/2000/50000, total-size 1/5 MB and paragraph 500/15000/22000 (all phases) show no warning, nor do four more repetitions each of dense 500 and total-size 1 MB (before the fix dense 500 warned on find in 3 of 5 runs). The lane classifier now treats this warning as a **regression that fails the run** (`FIXED_DEFECTS` in `scripts/responsiveness-smoke-driver.py`), not as an owned finding. Residual: a size-changing tag that GtkSourceView applies inside its own snapshot (highlighting the visible region) is still validated in that paint; the editor validates it in the next frame's layout. **Observed once on 2026-10-13** (find in a 15,000-character wrapped paragraph beside heavy CPU load, `rr-20261013T210157Z-toolbx-1753909`) and not reproduced in 94 further runs; root cause open (see "Idle re-confirmation (2026-10-13)") | fixed in C0; residual open |
 
 
 
@@ -344,6 +517,23 @@ generic post-open stall as syntax cost.** A 400-byte `.txt` already shows a
 failed at every size. S_syntax is now syntax-attributable like L_syntax: the
 `total-size` group opens the same short-line bytes as `.html` and as `.txt`, and
 the rule reads the difference.
+
+Two more derivation flaws surfaced on the idle re-confirmation (2026-10-13),
+each fixed with a failing-first self-test case:
+
+- **Pooled phases.** Every `.html`-minus-`.txt` and on-minus-off rule
+  (`L_syntax`, `L_minimap`, `S_syntax`, `S_syntax_interact`) subtracted the
+  largest counterpart stall over a group of phases from the largest measured
+  one, so a counterpart stall in one phase hid the measured side's cost in
+  another (the 60–85 ms `open` phase hid every settle cost below it; a `.txt`
+  click outlier hid `.html` typing). The difference is now taken phase by
+  phase. `L_syntax`'s background half discounts the size-independent first
+  highlight (C6), measured on the smallest short-line `total-size` document.
+- **The full-screen paint read as validation.** `V_batch` read dense scroll and
+  Page Down as measured, so the cost of painting any full screen of text (5–7
+  ms idle) failed every dense length. They are now read as their excess over
+  the dense reference case (`DENSE_REFERENCE_LENGTH` = 120, a full screen of
+  short dense lines, now in the `full` dense grid).
 
 ## Carried-forward decisions
 

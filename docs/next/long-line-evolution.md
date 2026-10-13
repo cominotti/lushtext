@@ -16,7 +16,7 @@ input to presented frame, measured on the maintainer's desktop.
 
 | # | Change | Why it is next | Gate from C0 |
 |---|---|---|---|
-| C1 | `document-scale-policy` | Removes the multi-second stalls on open and the A32 CRITICAL, using C0's measured thresholds (`L_syntax` 2,000, `L_search_highlight` 6,700, `L_minimap`/`L_invisibles` 50,000, `V_batch` 56,000). Also fixes the `\n`-only install slicer (pre-existing blocker). | Thresholds recorded in `long-line-documents.md` |
+| C1 | `document-scale-policy` | Removes the multi-second stalls on open and the A32 CRITICAL, using C0's measured thresholds as finalized by the idle re-confirmation of 2026-10-13 (`L_syntax` 2,000, `L_search_highlight` 10,000, `L_minimap` 22,000, `L_invisibles` 50,000, `N_visible` 500,000, `V_batch` 56,000). Also fixes the `\n`-only install slicer (pre-existing blocker). | Thresholds recorded in `long-line-documents.md` ("Idle re-confirmation (2026-10-13)") |
 | C2 | `long-line-protected-view` | The only way to make interaction inside giant paragraphs instant with stock GtkTextView (log attrs, IM and AT read the whole paragraph). | `L_protect` is not derivable from the frame half (see §3); C2 uses the stall basis (`L_protect_stall` 500) |
 | C4 | `bound-window-construction-dispatch` | Window construction stalls 150–196 ms to first frame on **every** open, short files included — the largest budget violation C0 measured. Independent of C1/C2 code; can run in parallel with them. | — |
 | C3 | `sliced-protected-install` | Conditional: adopt only if its own gate (the install case against C2) is over `B_settle`. C0 did not run the install group. | Its own first task |
@@ -24,38 +24,56 @@ input to presented frame, measured on the maintainer's desktop.
 
 ## 2. New candidates found by C0 (not yet proposed)
 
-1. **C6 `bound-post-open-settle`.** Even a 400-byte `.txt` stalls 12–20 ms
+1. **Explain the A37 residual that reappeared once.** On 2026-10-13 the lane
+   logged the fixed `GtkGizmo` snapshot warning once (find in a 15,000-character
+   wrapped paragraph, beside heavy CPU load) and failed the run as designed; 94
+   further runs did not reproduce it. Root cause open; it falls under the
+   pre-existing-blockers rule, so it comes before the candidates below
+   (`long-line-documents.md`, "Idle re-confirmation (2026-10-13)").
+2. **C6 `bound-post-open-settle`.** Even a 400-byte `.txt` stalls 12–20 ms
    right after load readiness (first layout/paint plus post-publish
    projections); an HTML document pays a size-independent ~42 ms first
-   highlight in a fresh process; the first wheel step on an unscrollable
-   document waits 13–17 ms for the overlay-scrollbar indicator frame. These are
-   why the baseline is over `B_settle` and the input-to-frame limit. Gate: the
-   baseline fits both on an idle reference run. Propose next, after C1 or in
-   parallel with C4.
-2. **Re-confirm the reference values on an idle machine.** The reference run
-   shared the machine with a game and a VM, so every derived value is a lower
-   bound, and three thresholds (`L_search_highlight`, `L_protect_stall`,
-   `S_syntax_interact`) plus the `B_settle` verdict are load-sensitive. One
-   resumable command (~30 min) is in `long-line-documents.md` §"Re-confirm on
-   an idle machine". Do it before C1 freezes its constants.
-3. **A presentation-capable reference lane.** Headless Mutter with cairo
+   highlight in a fresh process (36 ms idle; `L_syntax` now discounts it); the
+   first wheel step on an unscrollable document waits 13–17 ms for the
+   overlay-scrollbar indicator frame. These are why the baseline misses
+   `B_settle` and the input-to-frame limit. **Idle verdict (2026-10-13):**
+   `B_settle` indeterminate (worst 15.4 ms, bounds 15.1–17.4 ms; the loaded
+   "over" was partly load), input-to-frame still over (24.5 ms, structural),
+   `B_interact` within (5.6 ms). Gate unchanged: the baseline fits both on an
+   idle reference run. Propose next, after C1 or in parallel with C4.
+3. **Re-confirm the reference values on an idle machine — done
+   (2026-10-13).** `L_search_highlight` rose to 10,000; `L_minimap` fell to
+   22,000 (the loaded 50,000 was a derivation artifact); every other value
+   held. Three derivation rules were corrected on the way (phase-by-phase
+   differences, `L_syntax`'s first-highlight discount, `V_batch`'s dense
+   reference floor). Record: `long-line-documents.md` §"Idle re-confirmation
+   (2026-10-13)".
+4. **The idle full-screen scroll floor (new, 2026-10-13).** On the idle
+   reference machine every scroll dispatch over a full screen of text took
+   5–7 ms (2–3 ms under background load), leaving almost none of
+   `B_interact`; no length threshold removes it. Find out whether it is
+   E-core power management (`powersave`/`balance_performance`, the lane's
+   inherited E-core affinity) or the paint itself, and give it an owner (C6 or
+   its own change). Bisecting `L_minimap` inside [22,000, 50,000) can ride
+   along with the next reference run.
+5. **A presentation-capable reference lane.** Headless Mutter with cairo
    double-buffers at 120 Hz, so the 2-frame input-to-frame limit sits on the
    lane's own floor (~16.7 ms) and `L_protect`'s frame half and `S_syntax`
    cannot be derived. Measuring on a real (or GL-presenting) session would turn
    those into real verdicts. Needs a maintainer decision because it touches the
    live-desktop rule (an isolated-XDG launch with consent, never the user's
    session state).
-4. **Share the A37 frame-validation fix.** `ui/editor_page/frame_validation.rs`
+6. **Share the A37 frame-validation fix.** `ui/editor_page/frame_validation.rs`
    keeps line validation out of the snapshot only for the editor view. The
    same GTK behaviour (A37) applies to every `GtkTextView` with wide lines:
    Markdown preview, notes editors, local-history preview, file peek. Moving it
    into a GTK Lush crate and attaching it there is a platform-API decision
    (`gtk-lush-stewardship`).
-5. **Lane posture: fail on unclassified warnings.** The lane fails on fixed
+7. **Lane posture: fail on unclassified warnings.** The lane fails on fixed
    defects that reappear (`FIXED_DEFECTS`) but only reports unclassified
    warnings. Making them fail would match the runtime-warnings rule; it changes
    the lane's documented verdict posture, so it is its own decision.
-6. **Budgets in the evidence itself.** The lane reads the budget constants from
+8. **Budgets in the evidence itself.** The lane reads the budget constants from
    Rust source with a fallback; emitting them in the probe's `start` record
    (and computing verdicts against those) removes that coupling. A schema
    change to the JSONL evidence.
