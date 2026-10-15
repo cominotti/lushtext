@@ -1785,7 +1785,7 @@ def stop_dconf_service(bus: Bus) -> None:
     """Stop a dconf-service the private bus started, so the next write restarts it."""
     try:
         (pid,) = bus.call(
-            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", GLib_string("ca.desrt.dconf"), "(u)"
+            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", dbus_string_arg("ca.desrt.dconf"), "(u)"
         ).unpack()
     except Exception:  # noqa: BLE001 - not running
         return
@@ -1797,7 +1797,7 @@ def stop_dconf_service(bus: Bus) -> None:
     while time.monotonic() < deadline:
         try:
             (owned,) = bus.call(
-                "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", GLib_string("ca.desrt.dconf"), "(b)"
+                "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", dbus_string_arg("ca.desrt.dconf"), "(b)"
             ).unpack()
         except Exception:  # noqa: BLE001
             return
@@ -1807,7 +1807,7 @@ def stop_dconf_service(bus: Bus) -> None:
     raise RuntimeError("dconf-service did not stop")
 
 
-def GLib_string(value: str):  # noqa: N802 - a GLib.Variant constructor
+def dbus_string_arg(value: str):
     from gi.repository import GLib
 
     return GLib.Variant("(s)", (value,))
