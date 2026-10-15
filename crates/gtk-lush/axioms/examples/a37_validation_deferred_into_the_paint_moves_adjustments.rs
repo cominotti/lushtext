@@ -4,11 +4,11 @@
 //! (with a redraw of the view: the margin setter queues none) inside a frame
 //! (a tick callback, as GTK handles a key press inside the frame) makes
 //! `GtkTextView` flush its validation from its snapshot and change the scroll
-//! adjustments there; the
-//! readout counts those changes, and the terminal may show `Trying to
-//! snapshot GtkGizmo … without a current allocation`. "Queue allocation
-//! before paint" installs the workaround, after which the same changes count
-//! nothing inside the paint. Typing with the keyboard shows the same.
+//! adjustments there; the readout counts those changes, and the terminal may
+//! show `Trying to snapshot GtkGizmo … without a current allocation`. "Queue
+//! allocation before paint" installs the workaround, after which the same
+//! changes count nothing inside the paint. Typing with the keyboard shows the
+//! same.
 
 mod support;
 

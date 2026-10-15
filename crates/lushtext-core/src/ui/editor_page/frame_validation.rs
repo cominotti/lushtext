@@ -67,7 +67,9 @@ use super::LushtextEditorPage;
 /// style: each calls `gtk_text_layout_default_style_changed`, which
 /// invalidates every line, and queues no resize, allocation or redraw
 /// (`gtktextview.c`, GTK 4.22; ledger A37). `notify` follows only a real
-/// change, except for `tabs`, which notifies on every call.
+/// change, except for `tabs`, which notifies on every call. The A37 probe
+/// (`gtk_lush_axioms::fixtures::a37::DEFAULT_STYLE_PROPERTIES`) keeps the same
+/// list; change both together.
 const DEFAULT_STYLE_PROPERTIES: [&str; 12] = [
     "wrap-mode",
     "editable",
@@ -152,15 +154,10 @@ impl LushtextEditorPage {
         }
 
         let source_view = self.source_view();
+        // The view is a template child: these handlers capture nothing, live
+        // as long as the editor, and need no teardown.
         for property in DEFAULT_STYLE_PROPERTIES {
-            // The view is a template child: these handlers live as long as
-            // the editor and need no teardown.
-            let editor_weak = self.downgrade();
-            source_view.connect_notify_local(Some(property), move |_, _| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    editor.validate_in_next_layout();
-                }
-            });
+            source_view.connect_notify_local(Some(property), |view, _| view.queue_allocate());
         }
         {
             let editor_weak = self.downgrade();

@@ -61,7 +61,8 @@ pub const MARGIN_STEP: i32 = 10;
 /// `GtkTextView` properties whose setters change the default text style:
 /// each invalidates every line (`gtk_text_layout_default_style_changed`) and
 /// queues no resize, allocation or redraw. `notify` follows a real change
-/// only, except for `tabs`, which notifies on every call.
+/// only, except for `tabs`, which notifies on every call. LushText's
+/// `ui/editor_page/frame_validation.rs` keeps the same list.
 pub const DEFAULT_STYLE_PROPERTIES: [&str; 12] = [
     "wrap-mode",
     "editable",

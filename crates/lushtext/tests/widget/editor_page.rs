@@ -5657,24 +5657,29 @@ impl Drop for PaintPhaseAdjustmentChanges {
     }
 }
 
-/// Type `count` characters at the cursor, one per frame, from the frame
-/// clock's update phase, the way GTK delivers a key press: inside the frame,
-/// before its layout and paint phases, so the view's validation idle cannot
-/// run in between (ledger A37).
-fn type_in_frames(page: &LushtextEditorPage, count: u32) {
-    let typed = Rc::new(Cell::new(0u32));
-    let typed_in_tick = Rc::clone(&typed);
-    let buffer = page.buffer();
-    page.source_view().add_tick_callback(move |view, _clock| {
-        if typed_in_tick.get() >= count {
-            return glib::ControlFlow::Break;
-        }
-        buffer.insert_interactive_at_cursor("x", true);
-        view.scroll_mark_onscreen(&buffer.get_insert());
-        typed_in_tick.set(typed_in_tick.get() + 1);
-        glib::ControlFlow::Continue
-    });
-    wait_until(Duration::from_secs(10), || typed.get() >= count);
+/// Run `change` once per frame for `frames` frames (passing the 1-based
+/// frame number) from the frame clock's update phase, the way GTK delivers a
+/// key press: inside the frame, before its layout and paint phases, so the
+/// view's validation idle cannot run in between (ledger A37). Returns once the
+/// last frame settled.
+fn change_in_frames(
+    page: &LushtextEditorPage,
+    frames: i32,
+    change: impl Fn(&sourceview5::View, i32) + 'static,
+) {
+    let done = Rc::new(Cell::new(0));
+    {
+        let done = Rc::clone(&done);
+        page.source_view().add_tick_callback(move |view, _clock| {
+            if done.get() >= frames {
+                return glib::ControlFlow::Break;
+            }
+            done.set(done.get() + 1);
+            change(view, done.get());
+            glib::ControlFlow::Continue
+        });
+    }
+    wait_until(Duration::from_secs(10), || done.get() >= frames);
     flush_after_delay(Duration::from_millis(100));
 }
 
@@ -5723,19 +5728,6 @@ fn present_long_line_page() -> (LushtextEditorPage, gtk4::ApplicationWindow) {
         hadjustment.page_size()
     );
     (page, window)
-}
-
-/// Run `drive` on a presented long-line page and assert it widened the line
-/// (the `control`), changed no scroll adjustment inside a paint phase, and
-/// made GTK snapshot no widget without an allocation. Destroys the window.
-fn assert_adjustment_changes_stay_out_of_the_snapshot(
-    page: &LushtextEditorPage,
-    window: &gtk4::ApplicationWindow,
-    control: &str,
-    drive: impl FnOnce(),
-) {
-    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
-    assert_scroll_changes_stay_out_of_the_snapshot(page, window, &hadjustment, control, drive);
 }
 
 /// Run `drive` on a presented page and assert it grew `adjustment`'s `upper`
@@ -5795,8 +5787,13 @@ fn assert_scroll_changes_stay_out_of_the_snapshot(
 fn test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot() {
     ensure_gtk_init();
     let (page, window) = present_long_line_page();
-    assert_adjustment_changes_stay_out_of_the_snapshot(&page, &window, "typing", || {
-        type_in_frames(&page, 12);
+    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
+    let buffer = page.buffer();
+    assert_scroll_changes_stay_out_of_the_snapshot(&page, &window, &hadjustment, "typing", || {
+        change_in_frames(&page, 12, move |view, _| {
+            buffer.insert_interactive_at_cursor("x", true);
+            view.scroll_mark_onscreen(&buffer.get_insert());
+        });
     });
 }
 
@@ -5818,23 +5815,19 @@ fn test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot() {
     let widening = gtk4::TextTag::builder().scale(1.6).build();
     buffer.tag_table().add(&widening);
 
-    assert_adjustment_changes_stay_out_of_the_snapshot(&page, &window, "the tags", || {
-        let tagged = Rc::new(Cell::new(0));
-        {
-            let tagged = Rc::clone(&tagged);
-            page.source_view().add_tick_callback(move |_, _| {
-                if tagged.get() >= FRAMES {
-                    return glib::ControlFlow::Break;
-                }
-                tagged.set(tagged.get() + 1);
-                let end = buffer.iter_at_offset(tagged.get() * 10);
+    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
+    assert_scroll_changes_stay_out_of_the_snapshot(
+        &page,
+        &window,
+        &hadjustment,
+        "the tags",
+        || {
+            change_in_frames(&page, FRAMES, move |_, frame| {
+                let end = buffer.iter_at_offset(frame * 10);
                 buffer.apply_tag(&widening, &buffer.start_iter(), &end);
-                glib::ControlFlow::Continue
             });
-        }
-        wait_until(Duration::from_secs(10), || tagged.get() >= FRAMES);
-        flush_after_delay(Duration::from_millis(100));
-    });
+        },
+    );
 }
 
 /// A change of the view's bottom margin made inside a frame must not leave
@@ -5882,23 +5875,12 @@ fn test_bottom_margin_changes_in_frames_keep_adjustment_changes_out_of_the_snaps
                 vadjustment.upper(),
                 vadjustment.page_size()
             );
-            let grown = Rc::new(Cell::new(0));
-            {
-                let grown = Rc::clone(&grown);
-                view.add_tick_callback(move |view, _| {
-                    if grown.get() >= FRAMES {
-                        return glib::ControlFlow::Break;
-                    }
-                    grown.set(grown.get() + 1);
-                    view.set_bottom_margin(view.bottom_margin() + STEP);
-                    // The setter queues no redraw; in the application a
-                    // gutter, a state flag or the selection redraws the view.
-                    view.queue_draw();
-                    glib::ControlFlow::Continue
-                });
-            }
-            wait_until(Duration::from_secs(10), || grown.get() >= FRAMES);
-            flush_after_delay(Duration::from_millis(100));
+            change_in_frames(&page, FRAMES, |view, _| {
+                view.set_bottom_margin(view.bottom_margin() + STEP);
+                // The setter queues no redraw; in the application a gutter, a
+                // state flag or the selection redraws the view.
+                view.queue_draw();
+            });
         },
     );
 }
