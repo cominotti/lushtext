@@ -105,6 +105,14 @@
   FrameChange}`: the paint phase is bracketed by a one-pixel `GtkDrawingArea`
   snapshotted before the view and the frame clock's `after-paint`. Added for
   LushText's fix of the scrollbar `GtkGizmo` snapshot warning.
+- Probes and samples for A38–A41, the first GIO GSettings axioms (a keyfile
+  write replaces the file on the calling thread once per `set_*`;
+  `delay()`/`apply()` writes many keys once; a second keyfile backend over one
+  file stays stale until its monitor reloads; `changed` timing across
+  instances). New fixtures: `KeyfileSettingsFixture` (a keyfile backend over a
+  private file in the temp directory, removed on drop, on GTK 4's
+  `org.gtk.gtk4.Settings.FileChooser` schema), `WriteWatch` (counts renames
+  onto the settings file), `write_on_a_worker`, `drain_main_context`.
 - A slow-probe marker: `Axiom::slow`, with `INCLUDE_SLOW_ENV`
   (`GTK_LUSH_AXIOMS_INCLUDE_SLOW`), `include_slow_probes` and
   `slow_skip_line`. The probe runner and a sample's `--check` skip a slow

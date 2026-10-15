@@ -614,6 +614,70 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a37),
     },
+    Axiom {
+        id: AxiomId::new(38),
+        name: "a38_a_keyfile_write_rewrites_the_file_on_the_calling_thread",
+        statement: "a GSettings write through the keyfile backend replaces the settings file \
+                    synchronously on the calling thread (g_file_replace_contents: a temporary \
+                    file renamed over it, fsynced first when the file has content), exactly once \
+                    per set_* call, and again when the value written equals the stored one",
+        dependent_designs: &[
+            "LushText settings writer (bound-window-construction-dispatch): no backend write \
+             during window construction or in an interaction dispatch, and a value equal to \
+             the persisted one is dropped before it reaches GSettings",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a38),
+    },
+    Axiom {
+        id: AxiomId::new(39),
+        name: "a39_delay_and_apply_write_pending_keys_once",
+        statement: "in delay() mode a GSettings instance keeps written values in memory (it \
+                    reads them back, another instance on the same backend still reads the stored \
+                    values, the file is untouched) until apply(), which writes every pending key \
+                    in one replacement of the settings file",
+        dependent_designs: &[
+            "LushText settings writer (bound-window-construction-dispatch): a flush writes its \
+             whole batch with one delay()/apply() pair, one backend write per flush",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a39),
+    },
+    Axiom {
+        id: AxiomId::new(40),
+        name: "a40_a_second_keyfile_backend_stays_stale_until_its_monitor_reloads",
+        statement: "GKeyfileSettingsBackend takes no lock around its in-memory key file (GLib \
+                    2.88 gkeyfilesettingsbackend.c, source-cited), so one backend object must \
+                    not be written on one thread while another uses it; a second backend object \
+                    over the same file, written on a worker thread, leaves the first answering \
+                    its previous value until the first backend's file monitor delivers the \
+                    replacement on the main context, which reloads the file and emits changed",
+        dependent_designs: &[
+            "LushText settings writer (bound-window-construction-dispatch): the flush runs on \
+             the GTK thread after the first frame as one delay()/apply() batch, because a \
+             worker flush through the shared backend is a data race and one through a private \
+             backend leaves every other reader stale for a monitor round trip",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a40),
+    },
+    Axiom {
+        id: AxiomId::new(41),
+        name: "a41_changed_reaches_another_instance_inside_the_write",
+        statement: "a keyfile-backend write emits changed on a second GSettings instance on the \
+                    same backend once, synchronously inside the writer's set_* and before the \
+                    settings file is rewritten, and the backend's file monitor adds none for its \
+                    own write; a delay()ed instance emits changed on itself inside set_* and on \
+                    no other instance, and apply() emits it on the other instances inside \
+                    apply() and not again on the delayed one",
+        dependent_designs: &[
+            "LushText settings writer (bound-window-construction-dispatch): every LushText \
+             reader and subscriber shares one delayed instance, so a write reaches all of them \
+             when it is made and the flush does not re-notify them",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a41),
+    },
 ];
 
 #[cfg(test)]
@@ -628,8 +692,8 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a36() {
-        for number in 1..=36 {
+    fn the_catalogue_covers_every_ledger_id_up_to_a41() {
+        for number in 1..=41 {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }

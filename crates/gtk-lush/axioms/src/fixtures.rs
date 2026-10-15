@@ -36,9 +36,14 @@ pub use crate::probes::a17::SplitViewFixture;
 pub use crate::probes::a19::{AllocationProbe, QueuedFromNotify, ViewportEvent, ViewportOrder};
 pub use crate::probes::a21::{DisposalLog, DisposeCountingWindow};
 pub use crate::probes::a22::LazyTree;
+pub use crate::probes::a40::write_on_a_worker;
 pub use crate::probes::adaptive::{
     BASE_XFT_DPI, BIN_MIN_WIDTH, BreakpointFixture, ORIGINAL_LABEL, max_width_sp, set_text_scale,
     xft_dpi_for_scale,
+};
+pub use crate::probes::gsettings::{
+    BOOLEAN_KEYS, FileIdentity, INTEGER_KEY, KeyfileSettingsFixture, SCHEMA_ID, WriteWatch,
+    drain_main_context,
 };
 pub use crate::probes::row_stride;
 pub use crate::probes::text::{
