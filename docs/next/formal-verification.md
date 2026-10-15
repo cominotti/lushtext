@@ -307,6 +307,39 @@ covers satisfied). They joined the scheduled `core-second-writer` shard (two dis
 inside its recorded 6.6 min / 2.7 GiB), and the module has a proof-strength
 oracle entry.
 
+`bound-window-construction-dispatch` (C4, 2026-10-15) added **A38–A41**, the
+first GIO axioms: the keyfile GSettings backend replaces and `fsync`s the
+settings file on the calling thread once per `set_*`, an equal value included
+(A38); `delay()`/`apply()` writes many keys in one replacement (A39); the
+keyfile backend takes no lock (source-cited, since observing it needs one
+GObject on two threads, which safe gtk-rs and GTK Lush's `forbid(unsafe_code)`
+refuse), and a second backend object over the same file stays stale until its
+file monitor reloads (A40); `changed` reaches a peer inside `set_*`, before
+the rewrite, and a delayed instance's `apply()` does not re-notify it (A41).
+Their probes run against a private keyfile backend inside the probe's temp
+scope, never the process's default backend. A40 decided the settings writer's
+flush path (GTK idle, not a worker).
+
+It also added two Kani harnesses. `split_view_restore_plan_matches_the_pre_plan_restore`
+(`ui/window/geometry/policy/kani_proofs.rs`, shard `core-geometry-policies`,
+4.5 s local) proves the split-view restore plan equal to a transcription of the
+pre-plan migration and restores for every `i32` width and stored-fact
+combination, with an empty persist set for a matching migrated profile and
+exactly the five migration keys, carrying the restore's values, on a fresh one.
+`a_flush_never_drops_the_latest_value_or_re_emits_a_persisted_one`
+(`model/settings_write_batch/kani_proofs.rs`, shard `core-second-writer`,
+1.4 s local; the shard measured 3.2 min and 2.64 GiB peak under
+`KANI_MEMORY_MAX=16G`) proves the settings writer's per-key machine over six
+arbitrary operations. Fitting it took two redesigns, recorded because the
+first attempt is what drove the workstation to 59.6 GB: a harness over the
+whole batch (a `BTreeMap`, then a sorted `Vec`, then an unsorted one) ran
+CBMC out of a 12 GiB cap at two keys and two steps, while the per-key machine,
+which the batch only looks up, needs no allocation in the model. The harness
+then found a real defect: a value written back to the old one while a flush
+was in flight was dropped as equal to the stale persisted value; the machine
+now compares with the in-flight value first (unit test
+`writing_back_the_old_value_during_a_flush_is_kept`).
+
 ### Phase 2 — Kani lane
 
 - Add a `make kani` target, and an optional CI job using

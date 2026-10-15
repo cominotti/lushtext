@@ -74,6 +74,7 @@ make proof-strength # LOCAL: Kani harnesses as a mutation oracle beside the carg
 make proof-strength-list # the proof-strength population and harness order, without verifying
 make check-widget-shards # every widget test in exactly one CI shard, each shard measured within 20 minutes (no build needed)
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
+make check-settings-writes # (in check-policy) every GSettings write and the one application settings instance live in ui/settings_writes.rs
 make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
 make check-accessibility-policy # accessibility helper/proof guardrail for new UI-sensitive lines
@@ -830,7 +831,7 @@ seed is appropriate.
 - `build.rs` in `lushtext-core` runs `glib-compile-schemas data/` to produce `data/gschemas.compiled` (gitignored).
 - `lib.rs::init_schema_dir()` sets `GSETTINGS_SCHEMA_DIR` to point to `data/` for dev builds. Installed builds use the system schema directory.
 - Requires `glib-compile-schemas` on the build machine (from `glib2-devel` / `libglib2.0-dev`).
-- Widget tests use `GSETTINGS_BACKEND=memory` for isolation (set in `ensure_gtk_init()`).
+- Widget tests use `GSETTINGS_BACKEND=memory` for isolation (set in `ensure_gtk_init()`). A test that counts real backend writes calls `common::keyfile_settings_backend(seed)` first, which selects the keyfile backend over a private `XDG_CONFIG_HOME` for its own process (`window_construction` is the gate that does).
 
 ## Mutation Testing
 
@@ -1013,6 +1014,17 @@ while an owned one is reported as a finding; the
   boundary; design D7 of `probe-long-line-toolkit-costs`), which drives the lane
   through `RESPONSIVENESS_LENGTHS` (probe points per group) and
   `RESPONSIVENESS_PHASES` (only the interactions its thresholds read).
+  The `baseline/small` case runs on four settings profiles
+  (`bound-window-construction-dispatch`): fresh or steady-state (a previous,
+  gracefully quit launch), under the keyfile or the dconf backend. Those cases
+  keep their XDG state on the artifact filesystem (tmpfs hides a keyfile
+  write's `fsync`), and the dconf ones point the private bus's `dconf-service`
+  at the case's config directory before seeding it, so the user's dconf
+  database is never reached. The probe's `span` records feed the report's
+  "Construction spans against B_settle" table (startup, construction, first
+  frame, the largest dispatch before it, each construction stage, the settings
+  flush); `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` makes an over-budget
+  LushText-owned span on the release build fail the run (never in CI).
 - `make end-user-smoke` runs the host-supported smoke lanes together. Individual
   scripts own their dependency checks, artifact paths, and skip messages.
 
