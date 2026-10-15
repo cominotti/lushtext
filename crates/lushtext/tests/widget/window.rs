@@ -264,7 +264,7 @@ fn assert_status_bar_readable_one_row(window: &LushtextWindow, context: &str) {
 
 fn seed_restored_window_size(width: i32, height: i32) {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_int(keys::WINDOW_WIDTH, width)
         .expect("set window width");
@@ -300,7 +300,7 @@ fn test_window_with_split_view_state(
     properties_fraction: f64,
 ) -> LushtextWindow {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true)
         .expect("set split-view-layout-migrated");
@@ -338,7 +338,7 @@ fn test_window_with_split_view_state_and_size(
 
 fn test_window_with_legacy_sidebar_state(visible: bool, position: i32) -> LushtextWindow {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, false)
         .expect("clear split-view-layout-migrated");
@@ -2712,7 +2712,7 @@ fn assert_top_minimap_reflow_invariants(
 }
 
 fn tab_content_opacity_setting() -> f64 {
-    gio::Settings::new(lushtext_core::config::APP_ID).double(keys::TAB_CONTENT_OPACITY)
+    lushtext_core::ui::settings_writes::shared().double(keys::TAB_CONTENT_OPACITY)
 }
 
 fn preview_layout_name(window: &LushtextWindow) -> Option<String> {
@@ -3902,7 +3902,7 @@ fn test_keyboard_search_workflow_navigates_closes_and_restores_editor_focus() {
 #[test]
 fn test_parameterized_search_action_updates_visible_search_workflow() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -4099,7 +4099,7 @@ fn test_command_palette_target_actions_update_visible_mode_query() {
 #[test]
 fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, false)
         .expect("disable minimap");
@@ -4578,7 +4578,7 @@ fn test_hidden_minimap_refresh_does_not_block_visual_readiness() {
 #[test]
 fn test_focus_suppressed_minimap_refresh_does_not_block_visual_readiness() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -4992,7 +4992,7 @@ fn test_focus_mode_readable_editor_margins_restore_after_exit() {
 #[test]
 fn test_focus_mode_text_origin_guide_visibility_and_margin_tracking() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_uint(keys::FOCUS_MODE_TARGET_COLUMNS, 80)
         .expect("reset Focus Mode column width");
@@ -5086,7 +5086,7 @@ fn test_focus_mode_applies_markdown_preview_readable_margins_and_restores() {
 #[test]
 fn test_focus_mode_temporarily_hides_minimap_without_changing_preference() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -5114,7 +5114,7 @@ fn test_focus_mode_temporarily_hides_minimap_without_changing_preference() {
 #[test]
 fn test_focus_mode_typewriter_scrolling_defaults_off_and_tracks_setting() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::FOCUS_MODE_TYPEWRITER_SCROLLING, false)
         .expect("disable typewriter scrolling");
@@ -5527,7 +5527,7 @@ fn test_generic_progress_heartbeat_and_resolve_renders_do_not_pulse() {
 #[test]
 fn test_editor_transparency_uses_derived_scheme_and_keeps_minimap_opaque() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 0.85)
         .expect("set tab-content-opacity");
@@ -5565,7 +5565,7 @@ fn test_editor_transparency_uses_derived_scheme_and_keeps_minimap_opaque() {
 #[test]
 fn test_minimap_visibility_restores_from_setting_for_long_document() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -5583,7 +5583,7 @@ fn test_minimap_visibility_restores_from_setting_for_long_document() {
 #[test]
 fn test_minimap_stays_visible_when_document_fits_viewport() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -5605,7 +5605,7 @@ fn test_minimap_stays_visible_when_document_fits_viewport() {
 #[test]
 fn test_large_document_disables_minimap_and_surfaces_feedback() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -5643,7 +5643,7 @@ fn test_large_document_disables_minimap_and_surfaces_feedback() {
 #[test]
 fn test_large_file_load_disables_syntax_through_ui_state() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7228,7 +7228,7 @@ fn test_transient_load_budget_is_shared_across_windows_and_honors_protected_resi
 #[test]
 fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_int(keys::WINDOW_WIDTH, 2200)
         .expect("set window width");
@@ -7376,7 +7376,7 @@ fn test_workspace_sidebar_setting_recalculates_properties_breakpoint() {
 #[test]
 fn test_bookmark_markers_follow_toggle_state() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7405,7 +7405,7 @@ fn test_bookmark_markers_follow_toggle_state() {
 #[test]
 fn test_search_markers_clear_when_search_closes() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7433,7 +7433,7 @@ fn test_search_markers_clear_when_search_closes() {
 #[test]
 fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7494,7 +7494,7 @@ fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
 }
 
 fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible: bool) {
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7614,7 +7614,7 @@ fn test_minimap_top_anchor_survives_sidebar_show_with_wrap_enabled_and_disabled(
 #[test]
 fn test_modified_markers_clear_after_save() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7648,7 +7648,7 @@ fn test_modified_markers_clear_after_save() {
 #[test]
 fn test_long_line_markers_hidden_by_default_when_minimap_is_enabled() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings.reset(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE);
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
@@ -7670,7 +7670,7 @@ fn test_long_line_markers_hidden_by_default_when_minimap_is_enabled() {
 #[test]
 fn test_long_line_markers_appear_when_preference_is_enabled() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -7693,7 +7693,7 @@ fn test_long_line_markers_appear_when_preference_is_enabled() {
 #[test]
 fn test_disabling_long_line_markers_preserves_other_minimap_markers() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -9871,7 +9871,7 @@ fn test_intermediate_sidebar_hide_defers_properties_reconciliation_until_transit
 #[test]
 fn test_short_normal_window_preserves_status_bar_with_optional_surfaces() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -9986,7 +9986,7 @@ fn test_single_tab_strip_preserves_constrained_normal_geometry() {
 #[test]
 fn test_forced_tiny_window_preserves_status_bar() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -10114,7 +10114,7 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
     narrow_window.destroy();
     flush_after_delay(Duration::from_millis(50));
 
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_int(keys::WINDOW_WIDTH, 1600)
         .expect("set window width");
@@ -15102,7 +15102,7 @@ fn test_print_failure_reports_feedback_and_preserves_document_state() {
 #[test]
 fn test_zoom_actions_and_menu_controls_update_setting_bounds() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_uint(keys::ZOOM_LEVEL, 100)
         .expect("reset zoom");
@@ -15149,7 +15149,7 @@ fn test_zoom_actions_and_menu_controls_update_setting_bounds() {
 #[test]
 fn test_zoom_level_remains_global_across_tab_switches() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_uint(keys::ZOOM_LEVEL, 100)
         .expect("reset zoom");
@@ -15180,7 +15180,7 @@ fn test_zoom_level_remains_global_across_tab_switches() {
 #[test]
 fn test_style_scheme_setting_updates_current_and_new_editors() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_string(keys::STYLE_SCHEME, "Adwaita")
         .expect("set initial style scheme");
@@ -15210,7 +15210,7 @@ fn test_style_scheme_setting_updates_current_and_new_editors() {
 #[test]
 fn test_invalid_style_scheme_falls_back_to_bundled_adwaita_scheme() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
         .expect("set opaque tab content");
@@ -15236,7 +15236,7 @@ fn test_invalid_style_scheme_falls_back_to_bundled_adwaita_scheme() {
 #[test]
 fn test_cycle_invisible_characters_updates_active_editor_and_default_for_new_tabs() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_string(
             keys::INVISIBLE_CHARACTERS_MODE,
@@ -15287,7 +15287,7 @@ fn test_cycle_invisible_characters_updates_active_editor_and_default_for_new_tab
 #[test]
 fn test_narrow_window_keeps_quick_encoding_controls_visible() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_int(keys::WINDOW_WIDTH, 820)
         .expect("set window width");
@@ -15566,7 +15566,7 @@ fn test_preview_only_definition_list_code_block_uses_live_column() {
 #[test]
 fn test_side_by_side_definition_list_code_block_uses_live_column() {
     ensure_gtk_init();
-    gio::Settings::new(lushtext_core::config::APP_ID)
+    lushtext_core::ui::settings_writes::shared()
         .set_int(keys::PREVIEW_PANE_POSITION, 520)
         .expect("set wide preview pane for definition-list code block regression");
     let (window, _dir) =
@@ -15685,7 +15685,7 @@ fn test_preview_only_shell_renders_a_carried_table_as_one_widget() {
 #[test]
 fn test_side_by_side_shell_renders_a_carried_table_as_one_widget() {
     ensure_gtk_init();
-    gio::Settings::new(lushtext_core::config::APP_ID)
+    lushtext_core::ui::settings_writes::shared()
         .set_int(keys::PREVIEW_PANE_POSITION, 520)
         .expect("set wide preview pane for carried-table continuation proof");
     let (window, _dir) = prepare_markdown_preview_window(&oversized_table_markdown(), 1800, 720);
@@ -20245,7 +20245,7 @@ fn test_preview_mode_toggle_uses_full_content_layout() {
 #[test]
 fn test_side_by_side_preview_width_clamps_legacy_preference_without_rewriting_it() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_int(keys::PREVIEW_PANE_POSITION, 520)
         .expect("set legacy preview width preference");

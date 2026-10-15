@@ -89,7 +89,7 @@ DEFAULT_BUDGETS = {
 
 MONITOR = os.environ.get("RESPONSIVENESS_MONITOR", "1280x800@120")
 SCREEN_W, SCREEN_H = 1280, 800
-KNOWN_KINDS = ("start", "late", "second", "frame", "input", "im", "dropped", "topk")
+KNOWN_KINDS = ("start", "late", "second", "frame", "input", "im", "dropped", "topk", "span")
 
 # Keysyms. Only these may be injected; the guard refuses any Control+letter so
 # no save chord can ever reach the app.
@@ -143,6 +143,28 @@ PHASE_KINDS = {
 CARET_PHASES = ("click", "type-start", "type-middle", "type-end")
 # Window construction (open, restore) is owned by C4 and left out of stall verdicts.
 STALL_EXCLUDED_PHASES = ("open", "restore")
+
+# Window construction (bound-window-construction-dispatch, C4). The baseline
+# small case runs on all four settings profiles: a fresh profile (nothing
+# persisted, so the split-view migration runs) and a steady-state one (a
+# previous launch persisted and quit), under the keyfile and the dconf
+# GSettings backends. The probe's `span` records name these top-level spans;
+# every other span name is a construction stage.
+CONSTRUCTION_PROFILES = ("fresh", "steady")
+CONSTRUCTION_BACKENDS = ("keyfile", "dconf")
+CONSTRUCTION_SPANS = ("startup_toolkit", "startup_lushtext", "window_construction", "first_frame")
+# The LushText-owned spans the settle budget applies to; GTK's own startup
+# (`startup_toolkit`) is reported, not budgeted, and the first-frame span is
+# several dispatches, so only the largest dispatch before it is budgeted.
+CONSTRUCTION_BUDGETED = ("startup_lushtext", "window_construction", "largest_dispatch_before_first_frame")
+DCONF_LOAD = Path("/usr/bin/dconf")
+
+
+def construction_case_id(profile: str, backend: str) -> str:
+    """C0's `baseline/small` is the fresh keyfile profile; the other three are suffixed."""
+    if (profile, backend) == ("fresh", "keyfile"):
+        return "baseline/small"
+    return f"baseline/small/{profile}-{backend}"
 
 KNOWN_DEFECTS = (
     {
@@ -561,15 +583,20 @@ def build_cases(tier: str) -> list[Case]:
     grid = sweep_lengths(tier)
     cases: list[Case] = [
         Case("baseline/calibration", "baseline", None, flow="calibration"),
-        Case("baseline/empty", "baseline", None, settings={"word-wrap": True}),
-        Case(
-            "baseline/small",
-            "baseline",
-            FixtureSpec("paragraph", 400, seed_for("small")),
-            settings={"word-wrap": True},
-            length=400,
-        ),
+        Case("baseline/empty", "baseline", None, settings={"word-wrap": True}, attrs={"profile": "fresh", "backend": "keyfile"}),
     ]
+    for profile in CONSTRUCTION_PROFILES:
+        for backend in CONSTRUCTION_BACKENDS:
+            cases.append(
+                Case(
+                    construction_case_id(profile, backend),
+                    "baseline",
+                    FixtureSpec("paragraph", 400, seed_for("small")),
+                    settings={"word-wrap": True},
+                    length=400,
+                    attrs={"profile": profile, "backend": backend},
+                )
+            )
     for length in grid["paragraph"]:
         for ext in ("html", "txt"):
             for wrap in (True, False):
@@ -878,6 +905,7 @@ class Runner:
         self.variants = selected_variants()
         self.scope = Path(os.environ.get("TMPDIR", tempfile.gettempdir()))
         self.fixture_root = self.scope / "fixtures"
+        self.disk_scope = self.artifact_dir / "state-on-disk"
         self.generator = load_generator()
         self.ledger = IntegrityLedger()
         self.bus = Bus()
@@ -919,8 +947,14 @@ class Runner:
 
     # -- app lifecycle ------------------------------------------------------
 
-    def fresh_state(self, case_dir: Path, settings: dict[str, Any]) -> dict[str, str]:
-        state = Path(tempfile.mkdtemp(prefix="state-", dir=self.scope))
+    def fresh_state(self, case_dir: Path, settings: dict[str, Any], backend: str = "keyfile", on_disk: bool = False) -> dict[str, str]:
+        # The construction cases keep their XDG state on the artifact
+        # filesystem, which is the home filesystem on the reference machine:
+        # a GSettings keyfile write fsyncs, and the temp scope (tmpfs) would
+        # hide what that costs a real profile.
+        parent = self.disk_scope if on_disk else self.scope
+        parent.mkdir(parents=True, exist_ok=True)
+        state = Path(tempfile.mkdtemp(prefix="state-", dir=parent))
         for name in ("cache", "config", "data"):
             (state / name).mkdir()
         keyfile = state / "config/glib-2.0/settings/keyfile"
@@ -940,7 +974,10 @@ class Runner:
                 lines.append(f"{key}=uint32 {value}")
             else:
                 lines.append(f"{key}='{value}'")
-        keyfile.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if backend == "dconf":
+            self.seed_dconf(state / "config", lines[1:])
+        else:
+            keyfile.write_text("\n".join(lines) + "\n", encoding="utf-8")
         # No caret blink. Under headless Mutter the blink's frames get no
         # presentation feedback, so GTK paces them on its 60 Hz fallback
         # timer and every input waits up to 16.7 ms for the next tick:
@@ -956,8 +993,36 @@ class Runner:
             "XDG_CONFIG_HOME": str(state / "config"),
             "XDG_DATA_HOME": str(state / "data"),
             "LUSHTEXT_DATA_DIR": str(state / "data/lushtext"),
+            "GSETTINGS_BACKEND": backend,
             "STATE_ROOT": str(state),
         }
+
+    def seed_dconf(self, config_dir: Path, lines: list[str]) -> None:
+        """Point the private bus's dconf service at `config_dir` and seed it.
+
+        The dconf client reads its database from its own
+        `$XDG_CONFIG_HOME/dconf/user` and the service writes the one under the
+        service's, so both must name the same directory. The service is started
+        by the private session bus with the bus's activation environment: this
+        sets it, stops a service started for an earlier state, and loads the
+        values through `dconf load`, which waits for the service's reply. It
+        never reaches the user's real dconf database (`session_main` isolates
+        the activation environment before anything can start the service).
+        """
+        isolate_dconf_activation(self.bus, config_dir)
+        stop_dconf_service(self.bus)
+        if not DCONF_LOAD.exists():
+            raise RuntimeError("dconf is not installed; the dconf backend cases cannot run")
+        env = os.environ.copy()
+        env["XDG_CONFIG_HOME"] = str(config_dir)
+        subprocess.run(
+            [str(DCONF_LOAD), "load", f"/{SCHEMA_GROUP}/"],
+            input="[/]\n" + "\n".join(lines) + "\n",
+            text=True,
+            env=env,
+            check=True,
+            timeout=30,
+        )
 
     def app_env(self, variant: str, state_env: dict[str, str], log_path: Path, tick_us: int | None = None) -> dict[str, str]:
         env = os.environ.copy()
@@ -967,7 +1032,7 @@ class Runner:
         env.update(
             {
                 "GDK_BACKEND": "wayland",
-                "GSETTINGS_BACKEND": "keyfile",
+                "GSETTINGS_BACKEND": state_env.get("GSETTINGS_BACKEND", "keyfile"),
                 "GSETTINGS_SCHEMA_DIR": str(REPO_ROOT / "data"),
                 "GSK_RENDERER": self.renderer,
                 # Prints "Using renderer '...'": the renderer GTK actually got.
@@ -1250,12 +1315,33 @@ class Runner:
         )
         return ok
 
+    def warm_up_profile(self, rep_dir: Path, env: dict[str, str], cap: float) -> bool:
+        """Run the unmeasured launch that turns a fresh profile into a steady one."""
+        warm_env = dict(env)
+        # Not `probe*.jsonl`: the analysis reads only the measured launch.
+        warm_env["LUSHTEXT_RESPONSIVENESS_LOG"] = str(rep_dir / "warmup-probe.jsonl")
+        warm = self.launch(rep_dir, warm_env, [], "warmup")
+        scratch: list[dict] = []
+        ok = self.open_phase(scratch, warm, cap, predicate="app-startup")
+        if ok:
+            time.sleep(1.5)
+            self.action("app", "quit", None, time.monotonic() + cap)
+            try:
+                warm.process.wait(timeout=cap)
+            except subprocess.TimeoutExpired:
+                ok = False
+        if warm.process.poll() is None:
+            self.kill(warm)
+        return ok and warm.process.returncode == 0
+
     # -- one repetition -----------------------------------------------------
 
     def run_rep(self, case: Case, variant: str, rep: int, files: list[Path]) -> dict[str, Any]:
         rep_dir = self.artifact_dir / "cases" / case.id / variant / f"rep{rep}"
         rep_dir.mkdir(parents=True, exist_ok=True)
-        state_env = self.fresh_state(rep_dir, case.settings)
+        backend = case.attrs.get("backend", "keyfile")
+        on_disk = "profile" in case.attrs
+        state_env = self.fresh_state(rep_dir, case.settings, backend, on_disk)
         log_path = rep_dir / "probe.jsonl"
         env = self.app_env(variant, state_env, log_path)
         phases: list[dict] = []
@@ -1274,7 +1360,7 @@ class Runner:
             recoveries[0] += 1
             if recoveries[0] > 6:
                 return False
-            fresh = self.fresh_state(rep_dir, case.settings)
+            fresh = self.fresh_state(rep_dir, case.settings, backend, on_disk)
             extra_states.append(fresh["STATE_ROOT"])
             renv = self.app_env(variant, fresh, rep_dir / f"probe-r{recoveries[0]}.jsonl")
             relaunched = self.launch(rep_dir, renv, files, f"r{recoveries[0]}")
@@ -1316,6 +1402,14 @@ class Runner:
             elif case.flow == "calibration":
                 ok = self.run_calibration(rep_dir, state_env, phases, launches)
             else:
+                if case.attrs.get("profile") == "steady":
+                    # A steady-state profile is one a previous launch wrote:
+                    # launch once with no document (so no session tab is
+                    # restored into the measured launch), let it settle past
+                    # the settings writer's persistence window, and quit
+                    # gracefully so everything it holds is persisted.
+                    if not self.warm_up_profile(rep_dir, env, cap):
+                        self.failures.append(f"steady-state warm-up failed for {case.id}@{variant}#{rep}")
                 launch = self.launch(rep_dir, env, files, "main")
                 launches.append(launch)
                 ok = self.open_phase(phases, launch, cap)
@@ -1496,6 +1590,7 @@ class Runner:
             "late_threshold_us": threshold,
             "dropped_records": dropped,
             "window_construction_us": window_us,
+            "construction": construction_summary(merged, case.attrs, self.binary),
             "only_phases": sorted(self.only_phases) if self.only_phases else None,
             "exit_codes": [launch.process.returncode for launch in launches],
             "renderer": self.renderer,
@@ -1609,6 +1704,113 @@ class Runner:
                 else:
                     hi = mid
         return extra
+
+
+def construction_summary(records: dict[str, list[dict]], attrs: dict[str, Any], binary: Path) -> dict[str, Any] | None:
+    """The startup and window-construction spans of the measured launch.
+
+    `startup_*`, `window_construction` and `first_frame` come from the
+    probe's `span` records; every other span is a construction stage. The
+    largest dispatch before the first frame is the largest watchdog lateness
+    whose dispatch happened before the first frame's paint (it bounds the
+    longest main-loop stall, design D4 of probe-long-line-toolkit-costs).
+    Only the first window's spans count: a later window is not first launch.
+    """
+    spans = records.get("span", [])
+    if not spans:
+        return None
+    first: dict[str, dict] = {}
+    stages: dict[str, int] = {}
+    for record in spans:
+        name = str(record.get("name"))
+        duration = int(record["end_us"]) - int(record["start_us"])
+        if name in CONSTRUCTION_SPANS:
+            first.setdefault(name, record)
+        elif "first_frame" not in first:
+            stages[name] = stages.get(name, 0) + duration
+    result: dict[str, Any] = {
+        "profile": attrs.get("profile", "fresh"),
+        "backend": attrs.get("backend", "keyfile"),
+        "build_profile": "release" if "/release/" in str(binary) else "debug",
+    }
+    for name in CONSTRUCTION_SPANS:
+        record = first.get(name)
+        result[f"{name}_us"] = int(record["end_us"]) - int(record["start_us"]) if record else None
+    painted = first.get("first_frame")
+    largest = None
+    if painted is not None:
+        befores = [int(r["lateness_us"]) for r in records.get("late", []) if int(r["t_us"]) <= int(painted["end_us"]) + 1]
+        largest = max(befores) if befores else 0
+    result["largest_dispatch_before_first_frame_us"] = largest
+    result["stages_us"] = dict(sorted(stages.items(), key=lambda item: -item[1]))
+    return result
+
+
+def construction_verdicts(rows: list[dict], budget_us: int) -> list[dict]:
+    """One row per measured launch: every budgeted construction span against B_settle."""
+    out = []
+    for row in rows:
+        construction = row.get("construction")
+        if not construction:
+            continue
+        over = [name for name in CONSTRUCTION_BUDGETED if (construction.get(f"{name}_us") or 0) > budget_us]
+        out.append(
+            {
+                "case": row["case"],
+                "variant": row["variant"],
+                "rep": row["rep"],
+                **{k: v for k, v in construction.items() if k != "stages_us"},
+                "largest_stages_us": dict(list(construction.get("stages_us", {}).items())[:6]),
+                "over_budget": over,
+                "verdict": "over" if over else "within",
+            }
+        )
+    return out
+
+
+def isolate_dconf_activation(bus: Bus, config_dir: Path) -> None:
+    """Make the private bus start dconf-service with `config_dir` as its config home."""
+    from gi.repository import GLib
+
+    bus.call(
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "UpdateActivationEnvironment",
+        GLib.Variant("(a{ss})", ({"XDG_CONFIG_HOME": str(config_dir)},)),
+    )
+
+
+def stop_dconf_service(bus: Bus) -> None:
+    """Stop a dconf-service the private bus started, so the next write restarts it."""
+    try:
+        (pid,) = bus.call(
+            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", dbus_string_arg("ca.desrt.dconf"), "(u)"
+        ).unpack()
+    except Exception:  # noqa: BLE001 - not running
+        return
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            (owned,) = bus.call(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", dbus_string_arg("ca.desrt.dconf"), "(b)"
+            ).unpack()
+        except Exception:  # noqa: BLE001
+            return
+        if not owned:
+            return
+        time.sleep(0.05)
+    raise RuntimeError("dconf-service did not stop")
+
+
+def dbus_string_arg(value: str):
+    from gi.repository import GLib
+
+    return GLib.Variant("(s)", (value,))
 
 
 def actual_renderer(launches: list) -> str | None:
@@ -2235,6 +2437,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         for r in rows
         if r.get("group") == "baseline" and r.get("case") != "baseline/calibration"
     ]
+    construction = construction_verdicts([r for r in rows if r.get("group") == "baseline"], budgets["B_SETTLE_US"])
     install = [
         {"case": r["case"], "variant": r["variant"], "outcome": r["outcome"], "open_stall_us": next((p["stall"]["lateness_us"] for p in r.get("phases", []) if p.get("name") == "open" and "stall" in p), None)}
         for r in rows
@@ -2256,6 +2459,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         "warnings": warnings,
         "derived": derived,
         "window_construction_c4": window,
+        "construction_c4": construction,
         "install_c3": c3,
         "cases": summarise_cases(rows),
         "missing_artifacts": missing,
@@ -2263,6 +2467,20 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
     (artifact_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (artifact_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
     failed = run_failed(missing, integrity, run_info, warnings)
+    # Window construction is the one budget this lane can enforce
+    # (bound-window-construction-dispatch): with
+    # RESPONSIVENESS_CONSTRUCTION_ENFORCE=1, a LushText-owned span or a
+    # dispatch before the first frame over B_settle on the release build fails
+    # the run (never in CI, which is trend evidence only). It is opt-in until
+    # the residual it measures has an owner that can meet it: after the
+    # settings writer removed every construction-time backend write, the
+    # remaining 29-42 ms are template instantiation and GTK's first present and
+    # paint of the whole window, which no staging of secondary surfaces brings
+    # under B_settle (docs/next/long-line-documents.md, C4).
+    construction_over = [c for c in construction if c["verdict"] == "over" and c.get("build_profile") == "release"]
+    construction_enforced = not os.environ.get("CI") and os.environ.get("RESPONSIVENESS_CONSTRUCTION_ENFORCE") == "1"
+    if construction_over and construction_enforced:
+        failed = True
     summary = {
         "status": "failed" if failed else "passed",
         "run_id": run_info.get("run_id"),
@@ -2272,6 +2490,8 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         "driver_failures": run_info.get("driver_failures", []),
         "fixed_defect_regressions": sorted(warnings.get("regressions", {})),
         "budget_verdict": derived["budget_verdict"].get("verdict"),
+        "construction_over_budget": [f"{c['case']}@{c['variant']}#{c['rep']}: {','.join(c['over_budget'])}" for c in construction_over],
+        "construction_enforced": construction_enforced,
     }
     (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2))
@@ -2420,6 +2640,16 @@ def render_markdown(report: dict) -> str:
     lines += ["", "## C3 install gate", "", f"{report['install_c3'].get('verdict')}", "", "## Window construction (C4)", ""]
     for entry in report["window_construction_c4"]:
         lines.append(f"- {entry['case']}@{entry['variant']}#{entry['rep']}: first frame {entry['window_construction_us']} us after spawn, open-phase worst stall {entry['open_stall_us']} us")
+    lines += ["", "### Construction spans against B_settle", ""]
+    lines.append("| Case | Profile | Backend | Build | toolkit | lushtext | construction | first frame | largest dispatch | verdict | largest stages |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    for entry in report.get("construction_c4", []):
+        stages = ", ".join(f"{k} {v}" for k, v in entry.get("largest_stages_us", {}).items())
+        lines.append(
+            f"| {entry['case']}@{entry['variant']}#{entry['rep']} | {entry['profile']} | {entry['backend']} | {entry['build_profile']} | "
+            f"{entry.get('startup_toolkit_us')} | {entry.get('startup_lushtext_us')} | {entry.get('window_construction_us')} | "
+            f"{entry.get('first_frame_us')} | {entry.get('largest_dispatch_before_first_frame_us')} | {entry['verdict']} {' '.join(entry['over_budget'])} | {stages} |"
+        )
     lines += ["", "## Cases", "", "| Case | Variant | Outcomes | Phase | Stall median / max (us) | Frame p95 gap | Input-to-frame max (us / frames) | IM calls / max bytes | AT events / max payload |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case in report["cases"]:
         flags = (" noisy" if case.get("noisy") else "") + (f" storage:{case.get('storage')}" if case.get("storage") not in (None, "unchecked", "clean") else "")
@@ -2451,6 +2681,16 @@ def refuse_live_session() -> None:
 
 def session_main(args: argparse.Namespace) -> int:
     refuse_live_session()
+    # Before anything can start dconf-service on this private bus, point its
+    # activation environment at a scratch config home inside the run's temp
+    # scope, so the service can never write the user's real dconf database.
+    dconf_home = Path(os.environ.get("TMPDIR", tempfile.gettempdir())) / "dconf-session-config"
+    dconf_home.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["gdbus", "call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus",
+         "--method", "org.freedesktop.DBus.UpdateActivationEnvironment", f"{{'XDG_CONFIG_HOME': '{dconf_home}'}}"],
+        capture_output=True, check=True, timeout=10,
+    )
     registry = None
     if "at" in selected_variants():
         if ATSPI_REGISTRYD.exists():
@@ -2481,6 +2721,9 @@ def session_main(args: argparse.Namespace) -> int:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
+        # The scratch config home the private bus's dconf-service was pointed
+        # at belongs to this run's temp scope.
+        shutil.rmtree(dconf_home, ignore_errors=True)
 
 
 def start_atspi(artifact_dir: Path) -> subprocess.Popen | None:
@@ -3058,6 +3301,29 @@ def self_test() -> int:
     expect(length_verdict({"value": None, "upper_bound": 10_000}, 10_000) is False, "an upper bound fails the length")
     expect(length_verdict({"value": None, "reason": "no usable cases"}, 10_000) is None, "no usable cases is undecided")
     expect(hasattr(load_generator(), "generate"), "the fixture generator loads as a module")
+
+    # Window construction (C4): spans by name, stages summed, the largest
+    # lateness before the first frame, and the verdict against B_settle.
+    span_records = {
+        "span": [
+            {"kind": "span", "name": "startup_toolkit", "start_us": 0, "end_us": 40_000},
+            {"kind": "span", "name": "startup_lushtext", "start_us": 40_000, "end_us": 45_000},
+            {"kind": "span", "name": "migrate_split_view", "start_us": 50_000, "end_us": 90_000},
+            {"kind": "span", "name": "template", "start_us": 45_000, "end_us": 50_000},
+            {"kind": "span", "name": "window_construction", "start_us": 45_000, "end_us": 120_000},
+            {"kind": "span", "name": "first_frame", "start_us": 45_000, "end_us": 200_000},
+            {"kind": "span", "name": "late_stage", "start_us": 300_000, "end_us": 301_000},
+        ],
+        "late": [{"t_us": 121_000, "lateness_us": 80_000}, {"t_us": 250_000, "lateness_us": 99_000}],
+    }
+    summary_c4 = construction_summary(span_records, {"profile": "steady", "backend": "dconf"}, Path("target/responsiveness/release/lushtext"))
+    expect(summary_c4 is not None and summary_c4["window_construction_us"] == 75_000 and summary_c4["first_frame_us"] == 155_000, f"construction spans by name ({summary_c4})")
+    expect(summary_c4 is not None and summary_c4["largest_dispatch_before_first_frame_us"] == 80_000, "only latenesses before the first frame count")
+    expect(summary_c4 is not None and list(summary_c4["stages_us"]) == ["migrate_split_view", "template"], "stages after the first frame are not construction stages")
+    expect(summary_c4 is not None and summary_c4["build_profile"] == "release" and summary_c4["backend"] == "dconf", "profile, backend and build are recorded")
+    verdicts_c4 = construction_verdicts([{"case": "baseline/small", "variant": "plain", "rep": 0, "construction": summary_c4}], 16_000)
+    expect(verdicts_c4[0]["verdict"] == "over" and verdicts_c4[0]["over_budget"] == ["window_construction", "largest_dispatch_before_first_frame"], f"construction verdict ({verdicts_c4})")
+    expect(construction_case_id("fresh", "keyfile") == "baseline/small" and construction_case_id("steady", "dconf") == "baseline/small/steady-dconf", "construction case ids")
 
     if failures:
         print("responsiveness-smoke-driver self-test failed:", file=sys.stderr)

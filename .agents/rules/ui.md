@@ -397,6 +397,19 @@ Dialogs, popovers, and browsers that use `GtkStack`, `GtkStackSwitcher`, or anot
 
 Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Settings::bind()`:
 
+- **One settings instance, one writer.** Every LushText read, `bind()` and
+  `connect_changed()` of the application schema goes through
+  `ui::settings_writes::shared()`, one delayed `gio::Settings` per process, and
+  every imperative write goes through `settings_writes::set_*` / `reset`. Never
+  create `gio::Settings::new(APP_ID)` elsewhere and never call `set_*`/`reset`
+  on a settings object directly (`make check-settings-writes` fails on both).
+  Under the keyfile backend (the shipped Flatpak's) each backend write replaces
+  and `fsync`s the settings file on the calling thread (ledger A38), so no
+  backend write may run during window construction, before the first presented
+  frame, or in an interaction dispatch; the writer flushes once per persistence
+  window after the first frame. Because every reader shares the delayed
+  instance, a write reaches other windows and editor pages at once (A39, A41).
+
 - **Direct bindings** for properties with matching types: `show-line-numbers`, `show-line-marks`, and `highlight-current-line`. Preferences dialog uses two-way (`DEFAULT`), editor pages use one-way (`GET`).
 - **Mapped bindings** for pure setting projections whose property type differs, such as `word-wrap` (bool -> `GtkWrapMode`) and `minimap-width` (integer -> clamped `width-request`). Keep separate `connect_changed()` handlers only for side effects such as minimap geometry or marker refresh.
 - **Manual formatting handlers** for editor-page `tab-width`, `insert-spaces`, and `indent-width` because EditorConfig overrides can take priority over the GSettings fallback.
@@ -410,8 +423,8 @@ Window geometry and split-view state are persisted via GSettings (not JSON sessi
 
 - **Keys**: `window-width` (i), `window-height` (i), `window-maximized` (b), `workspace-sidebar-visible` (b), `workspace-sidebar-width-fraction` (d), `properties-sidebar-visible` (b), `properties-sidebar-width-fraction` (d)
 - **Restore**: in `window/imp.rs` `constructed()` via `set_default_size()`, `maximize()`, split-view property restoration, and breakpoint installation before `present()`
-- **Persist**: width/height/maximized still use `connect_notify_local`; split-view booleans persist from `notify::show-sidebar` handlers and width fractions persist from `notify::sidebar-width-fraction`
-- **Migration**: legacy `sidebar-position` / `sidebar-visible` keys remain only as one-shot migration inputs for existing installs; fresh installs keep the split-view defaults directly
+- **Persist**: width/height/maximized still use `connect_notify_local`, writing through the coalescing settings writer (one flush per persistence window, a synchronous flush at the last window's confirmed close and at shutdown); split-view booleans persist from their toggle actions and the restore plan's persist set, never from allocation
+- **Migration**: legacy `sidebar-position` / `sidebar-visible` keys remain only as one-shot migration inputs for existing installs; the migration and both restores are the pure `plan_split_view_restore` (`ui/window/geometry/policy.rs`, Kani-proved), whose persist set the writer flushes after the first frame — window construction writes nothing to the backend
 
 ## Split-View Rules
 

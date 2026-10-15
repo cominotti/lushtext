@@ -35,14 +35,12 @@ const PREVIEW_SIDEBAR_ALLOCATION_MAX_FRAMES: u32 = 8;
 /// actions let automation and smoke tests request a final state without
 /// depending on toggle parity.
 pub fn setup_preview_actions(window: &LushtextWindow) {
-    let imp = window.imp();
-
     // Side-by-side preview pane toggle. Always start hidden — the spec's
     // "Never: automatic preview activation on app launch" constraint means
     // we don't restore from GSettings. Reset the persisted key to stay consistent.
     let pane_action =
         gtk4::gio::SimpleAction::new_stateful("toggle-preview-pane", None, &false.to_variant());
-    let _ = imp.settings.set_boolean(keys::PREVIEW_PANE_VISIBLE, false);
+    crate::ui::settings_writes::set_boolean(keys::PREVIEW_PANE_VISIBLE, false);
     {
         let window_weak = window.downgrade();
         pane_action.connect_change_state(move |action, state| {
@@ -61,10 +59,7 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
                 }
                 window.imp().preview_visible.set(new_visible);
                 window.apply_preview_shell_state();
-                let _ = window
-                    .imp()
-                    .settings
-                    .set_boolean(keys::PREVIEW_PANE_VISIBLE, new_visible);
+                crate::ui::settings_writes::set_boolean(keys::PREVIEW_PANE_VISIBLE, new_visible);
                 if new_visible {
                     window.refresh_preview();
                 }

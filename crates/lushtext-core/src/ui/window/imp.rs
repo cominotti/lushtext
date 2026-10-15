@@ -10,17 +10,17 @@ use super::drafts::{DraftMutationIntent, DraftMutationOrder};
 use super::drafts::{DraftRestoreTicket, PendingPreservation};
 use super::geometry::execution::{
     configure_split_views, current_window_width, effective_properties_fraction,
-    effective_workspace_sidebar_fraction, install_split_view_breakpoints,
-    migrate_split_view_settings, restore_properties_split_view, restore_workspace_split_view,
-    set_workspace_sidebar_preset, sync_properties_breakpoint, sync_properties_split_view,
-    sync_secondary_surfaces, sync_split_view_widths_for_allocation,
+    effective_workspace_sidebar_fraction, install_split_view_breakpoints, plan_split_view_restore,
+    restore_properties_split_view, restore_workspace_split_view, set_workspace_sidebar_preset,
+    sync_properties_breakpoint, sync_properties_split_view, sync_secondary_surfaces,
+    sync_split_view_widths_for_allocation,
 };
 use super::geometry::policy::NORMAL_MODE_MIN_HEIGHT_SP;
 pub use super::geometry::policy::SecondarySurface;
 use super::notes::ActiveNotesBrowser;
 use super::session_restore::SessionRestoreRuntime;
 use super::session_restore::policy::SessionRestoreTurnMetrics;
-use crate::config::{self, keys};
+use crate::config::keys;
 use crate::model::draft::{
     DraftEntry, DraftManifest, DraftManifestAuthority, PreloadedDraftRestore,
 };
@@ -34,11 +34,13 @@ use crate::services::palette::{
 use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::command_palette::LushtextCommandPalette;
+use crate::ui::construction_spans;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, PREVIEW_DEFAULT_WIDTH_SP};
 use crate::ui::open_popover::LushtextOpenPopover;
 use crate::ui::properties_panel::LushtextPropertiesPanel;
 use crate::ui::search_panel::LushtextSearchPanel;
+use crate::ui::settings_writes;
 use crate::ui::sidebar::LushtextSidebar;
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
@@ -480,6 +482,8 @@ pub struct LushtextWindow {
 
     /// Application-wide settings for geometry, sidebar layout, and editor behavior.
     pub settings: gio::Settings,
+    /// This window's startup-to-first-frame spans (`ui::construction_spans`).
+    pub construction: RefCell<crate::model::construction_spans::WindowConstructionSpans>,
     /// Requested-versus-rendered state for the workspace sidebar and document properties.
     pub secondary_surfaces: SecondarySurfaceState,
     /// Whether the side-by-side preview pane is currently visible.
@@ -608,7 +612,8 @@ impl Default for LushtextWindow {
             content_box: TemplateChild::default(),
             search_panel_revealer: TemplateChild::default(),
             search_panel: TemplateChild::default(),
-            settings: gio::Settings::new(config::APP_ID),
+            settings: crate::ui::settings_writes::shared(),
+            construction: RefCell::default(),
             secondary_surfaces: SecondarySurfaceState::default(),
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
@@ -690,6 +695,7 @@ impl ObjectImpl for LushtextWindow {
 
         let obj = self.obj();
         let settings = &self.settings;
+        let stage_start = construction_spans::now_us();
 
         self.open_button_stack.set_visible_child_name("wide");
         self.apply_accessibility_metadata();
@@ -702,6 +708,7 @@ impl ObjectImpl for LushtextWindow {
         if settings.boolean(keys::WINDOW_MAXIMIZED) {
             obj.maximize();
         }
+        let stage_start = obj.record_construction_stage("size_restore", stage_start);
 
         configure_split_views(
             &self.workspace_split_view,
@@ -711,10 +718,19 @@ impl ObjectImpl for LushtextWindow {
             &self.preview_layout_view,
             &self.preview_split_view,
         );
-        migrate_split_view_settings(settings, w);
+        let stage_start = obj.record_construction_stage("configure_split_views", stage_start);
+        // The plan's persist set goes to the coalescing settings writer, which
+        // keeps it in memory (so the breakpoints below read the planned
+        // preset) and persists it after the first presented frame: window
+        // construction writes nothing to the GSettings backend.
+        let restore_plan = plan_split_view_restore(&obj, w);
+        let stage_start = obj.record_construction_stage("plan_split_view_restore", stage_start);
         install_split_view_breakpoints(&obj);
-        restore_workspace_split_view(&obj);
-        restore_properties_split_view(&obj);
+        let stage_start = obj.record_construction_stage("install_breakpoints", stage_start);
+        restore_workspace_split_view(&obj, &restore_plan);
+        let stage_start = obj.record_construction_stage("restore_workspace", stage_start);
+        restore_properties_split_view(&obj, &restore_plan);
+        let stage_start = obj.record_construction_stage("restore_properties", stage_start);
 
         // The legacy preview-pane-position key now stores a preferred
         // side-by-side preview width. Preview still starts hidden; target-state
@@ -723,34 +739,28 @@ impl ObjectImpl for LushtextWindow {
         self.preferred_preview_width.set(preferred_preview_width);
         obj.sync_preview_width_constraints(w);
         obj.apply_preview_shell_state();
+        let stage_start = obj.record_construction_stage("preview_restore", stage_start);
 
-        {
-            let settings = settings.clone();
-            // GObject property notifications fire on the main thread here; the
-            // `_local` variant lets the closure capture GTK objects that are not
-            // `Send`.
-            obj.connect_notify_local(Some("default-width"), move |window, _| {
-                if !window.is_maximized() {
-                    let (w, _) = window.default_size();
-                    let _ = settings.set_int(keys::WINDOW_WIDTH, w);
-                }
-            });
-        }
-        {
-            let settings = settings.clone();
-            obj.connect_notify_local(Some("default-height"), move |window, _| {
-                if !window.is_maximized() {
-                    let (_, h) = window.default_size();
-                    let _ = settings.set_int(keys::WINDOW_HEIGHT, h);
-                }
-            });
-        }
-        {
-            let settings = settings.clone();
-            obj.connect_notify_local(Some("maximized"), move |window, _| {
-                let _ = settings.set_boolean(keys::WINDOW_MAXIMIZED, window.is_maximized());
-            });
-        }
+        // GObject property notifications fire on the main thread here; the
+        // `_local` variant lets the closures capture GTK objects that are not
+        // `Send`. The values go to the coalescing settings writer, which keeps
+        // them in memory and persists the latest once per persistence window,
+        // so a resize burst never writes the backend per notification.
+        obj.connect_notify_local(Some("default-width"), move |window, _| {
+            if !window.is_maximized() {
+                let (w, _) = window.default_size();
+                settings_writes::set_int(keys::WINDOW_WIDTH, w);
+            }
+        });
+        obj.connect_notify_local(Some("default-height"), move |window, _| {
+            if !window.is_maximized() {
+                let (_, h) = window.default_size();
+                settings_writes::set_int(keys::WINDOW_HEIGHT, h);
+            }
+        });
+        obj.connect_notify_local(Some("maximized"), move |window, _| {
+            settings_writes::set_boolean(keys::WINDOW_MAXIMIZED, window.is_maximized());
+        });
 
         {
             // Returning to the window is the attention moment that matters:
@@ -1076,6 +1086,7 @@ impl ObjectImpl for LushtextWindow {
         });
 
         obj.update_content_stack();
+        obj.record_construction_stage("constructed_wiring", stage_start);
     }
 
     fn dispose(&self) {

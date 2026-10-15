@@ -32,12 +32,11 @@ pub(crate) fn excluded_names(settings: &gio::Settings) -> Vec<String> {
         .collect()
 }
 
-/// Persist a complete excluded-name array.
-pub(crate) fn set_excluded_names(settings: &gio::Settings, names: &[String]) {
+/// Persist a complete excluded-name array, through the coalescing settings
+/// writer (`ui::settings_writes`).
+pub(crate) fn set_excluded_names(names: &[String]) {
     let names = names.iter().map(String::as_str).collect::<Vec<_>>();
-    if let Err(error) = settings.set_strv(keys::WORKSPACE_EXCLUDED_NAMES, names.as_slice()) {
-        tracing::error!("Failed to persist excluded names: {error}");
-    }
+    crate::ui::settings_writes::set_strv(keys::WORKSPACE_EXCLUDED_NAMES, names.as_slice());
 }
 
 /// Connect `handler` to changes of either visibility key.

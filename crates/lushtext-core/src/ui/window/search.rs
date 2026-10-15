@@ -600,7 +600,7 @@ impl LushtextWindow {
         imp.search_panel_revealer.set_reveal_child(true);
         imp.search_panel.open();
         self.set_search_panel_actions_enabled(true);
-        let _ = imp.settings.set_boolean(keys::SEARCH_PANEL_VISIBLE, true);
+        crate::ui::settings_writes::set_boolean(keys::SEARCH_PANEL_VISIBLE, true);
         self.update_search_navigation_actions();
     }
 
@@ -616,7 +616,7 @@ impl LushtextWindow {
         imp.search_panel_revealer.set_reveal_child(false);
         self.set_search_panel_actions_enabled(false);
         self.finish_search_progress_tracking();
-        let _ = imp.settings.set_boolean(keys::SEARCH_PANEL_VISIBLE, false);
+        crate::ui::settings_writes::set_boolean(keys::SEARCH_PANEL_VISIBLE, false);
         self.update_search_navigation_actions();
         self.restore_search_saved_focus();
     }

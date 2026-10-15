@@ -614,7 +614,7 @@ impl Default for LushtextEditorPage {
             load_tracking: LoadTrackingState::default(),
             applied_style_scheme_id: RefCell::new(None),
             document_surface_opacity: Cell::new(1.0),
-            settings: gio::Settings::new(crate::config::APP_ID),
+            settings: crate::ui::settings_writes::shared(),
             preference_bindings: PreferenceBindingState::default(),
             formatting_overrides: Cell::new(FormattingOverrides::default()),
             document_buffer_signals: SignalBag::new(),

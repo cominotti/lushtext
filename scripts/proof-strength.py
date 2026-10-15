@@ -124,8 +124,24 @@ def load_script(name: str, filename: str):
 KS = load_script("kani_shards", "kani-shards.py")
 
 
+# Variables that make git ignore `cwd` and act on another repository. A git
+# hook exports them (`GIT_INDEX_FILE` while committing), so without scrubbing
+# them the self-test's fixture repository wrote into the committing checkout's
+# index under the pre-commit hook.
+GIT_LOCATION_VARIABLES = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+)
+
+
 def git(*args: str, cwd: Path = REPO_ROOT, check: bool = True) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, check=check, capture_output=True, text=True).stdout.strip()
+    env = {k: v for k, v in os.environ.items() if k not in GIT_LOCATION_VARIABLES}
+    return subprocess.run(["git", *args], cwd=cwd, check=check, capture_output=True, text=True, env=env).stdout.strip()
 
 
 def slug(text: str) -> str:

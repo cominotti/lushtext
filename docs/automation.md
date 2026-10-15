@@ -327,6 +327,14 @@ explicit host-tooling reason when the compositor, PipeWire, D-Bus, GSettings, or
 screenshot path is unavailable; skipped invariant coverage is not counted as
 verified.
 
+The window snapshot's `window_construction` object reports, as integers only,
+how long application startup, window construction and the first frame took,
+the largest main-loop dispatch before the first frame (`null` outside the
+smoke-only measurement build), and the coalescing settings writer's pending,
+flushed and dropped-equal counters. LushText makes no GSettings backend write
+before the first presented frame, so `settings_writes_before_first_frame` is
+`0`; field details are in the reference.
+
 When a geometry bug only reproduces in a live user window, first capture the
 bounded live state:
 

@@ -33,7 +33,7 @@ a user-facing workflow unverified.
 | Portal and sandbox smoke | `make portal-sandbox-smoke` | Confined Flatpak/Snap state, full-filesystem permission posture, portal/sandbox runtime diagnostics, and host support reporting | No, local, scheduled, or release validation |
 | Accessibility smoke | `make accessibility-smoke` | AT-SPI-enabled focus, accessible metadata, scenario manifests, editor text-interface evidence, and unsupported-host reporting outside the accessibility-disabled widget harness | No, local, scheduled, or release validation |
 | Performance smoke | `make performance-smoke` | Lightweight latency and throughput sanity checks distinct from full Criterion reports | No by default |
-| Responsiveness smoke | `make responsiveness-smoke` | Long-line responsiveness of the real binary: main-loop stall bounds from the smoke-only probe watchdog, frame gaps, input-to-presented-frame latency, probe-IM and AT-SPI costs, fixture digests, storage-stall evidence, and the derived long-line thresholds and budget verdict | No; nightly and manual (`.github/workflows/responsiveness-smoke.yml`), never in `make end-user-smoke` |
+| Responsiveness smoke | `make responsiveness-smoke` | Long-line responsiveness of the real binary: main-loop stall bounds from the smoke-only probe watchdog, frame gaps, input-to-presented-frame latency, probe-IM and AT-SPI costs, fixture digests, storage-stall evidence, the derived long-line thresholds and budget verdict, and window-construction spans on four settings profiles | No; nightly and manual (`.github/workflows/responsiveness-smoke.yml`), never in `make end-user-smoke` |
 | Full benchmarks | `make bench-report`, `make bench-report-full` | Reviewable Criterion benchmark reports for release and performance-sensitive work | No, release or manual |
 | Mutation testing | `make mutants-smoke`, `make mutants-diff`, `make mutants-full` | Test strength for deterministic model, service, and pure helper code | Diff in PR/scheduled lanes, full manual or scheduled |
 
@@ -241,6 +241,17 @@ they are not default PR gates:
   `make end-user-smoke` and `.github/workflows/end-user-smoke.yml` because of its
   length; the same nightly workflow also runs `make gtk-axioms` with slow probes
   included.
+- Window construction (`bound-window-construction-dispatch`) has two lanes.
+  The deterministic pull-request gate is the `window_construction` widget
+  module: on a private keyfile GSettings backend it counts real backend writes
+  (the settings file's identity and renames onto it) — zero for a steady-state
+  construction, none before the first frame and one coalesced flush for a fresh
+  profile, one write per resize burst, an exact synchronous flush at the last
+  window's close and none at a non-last close, and a write's effects reaching
+  other readers before any flush. The measured lane is the responsiveness
+  smoke's `baseline/small` case on four profiles (fresh or steady-state,
+  keyfile or dconf), reporting startup, construction, first-frame and
+  settings-flush spans against B_settle with storage-stall evidence.
 
 GitHub Actions mirrors that split: `.github/workflows/ci.yml` owns the bounded
 pull-request lanes, `.github/workflows/end-user-smoke.yml` runs automation,

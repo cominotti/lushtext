@@ -479,10 +479,7 @@ impl LushtextWindow {
                 state.compact_surface.set(None);
             }
         }
-        let _ = self
-            .imp()
-            .settings
-            .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, visible);
+        crate::ui::settings_writes::set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, visible);
         self.set_toggle_action_state("toggle-sidebar", visible);
         self.imp()
             .status_bar
@@ -571,10 +568,7 @@ impl LushtextWindow {
                 state.compact_surface.set(None);
             }
         }
-        let _ = self
-            .imp()
-            .settings
-            .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, visible);
+        crate::ui::settings_writes::set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, visible);
         self.set_toggle_action_state("toggle-properties", visible);
         if self.imp().document_properties_toggle_button.is_active() != visible {
             self.imp()

@@ -1047,7 +1047,7 @@ fn test_workspace_header_survives_toggling_hidden_files() {
     // v0.7.0's other sidebar feature changes the tree's height from a settings
     // key, through the automatic refresh path rather than a user scroll.
     let tree = tall_workspace(800);
-    let settings = gtk4::gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
     for show_hidden in [true, false] {
         settings
@@ -1367,7 +1367,7 @@ fn test_rendered_rows_settle_after_model_changes() {
         "after collapsing and re-expanding the section body",
     );
 
-    let settings = gtk4::gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
     for show_hidden in [true, false] {
         settings
@@ -1812,7 +1812,7 @@ struct SidebarRestState {
 
 fn rest_state(sidebar: &LushtextSidebar) -> SidebarRestState {
     let sections = sidebar.imp().sections.borrow().clone();
-    let settings = gtk4::gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     SidebarRestState {
         selected: sections
             .iter()
@@ -1914,7 +1914,7 @@ fn test_reveal_of_a_missing_middle_component_fails_as_not_found() {
 #[test]
 fn test_reveal_through_a_hidden_component_fails_without_changing_visibility() {
     let tree = collapsed_tree(&[(".secret", 3)], 800);
-    let settings = gtk4::gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
     flush_events();
     assert_reveal_fails_without_side_effects(

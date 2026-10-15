@@ -67,13 +67,14 @@ make performance-smoke # lightweight Criterion performance smoke
 make responsiveness-build # measurement binary with the smoke-only responsiveness-probes feature, into target/responsiveness/
 make responsiveness-smoke # long-line responsiveness lane (RESPONSIVENESS_TIER=quick|full); nightly/manual, not in end-user-smoke
 make check-responsiveness-lane # (in check-policy) fixture generator and lane driver self-tests
-make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode)
+make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode, KANI_MEMORY_MAX=16G memory cap)
 make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
 make check-kani-shards # every Kani harness in exactly one CI shard, each shard measured within its budget (no Kani needed)
 make proof-strength # LOCAL: Kani harnesses as a mutation oracle beside the cargo-mutants tests arm (PROOF_STRENGTH_MODULE=<path|all>, PROOF_STRENGTH_TIER=ci|all, PROOF_STRENGTH_SHARD=k/n, PROOF_STRENGTH_ARM=tests|kani|both)
 make proof-strength-list # the proof-strength population and harness order, without verifying
 make check-widget-shards # every widget test in exactly one CI shard, each shard measured within 20 minutes (no build needed)
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
+make check-settings-writes # (in check-policy) every GSettings write and the one application settings instance live in ui/settings_writes.rs
 make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
 make check-accessibility-policy # accessibility helper/proof guardrail for new UI-sensitive lines
@@ -626,6 +627,21 @@ invariant; tighten the generator or use the deep lane.
   `scripts/kani-shards.py` with its own `KANI_TARGET_DIR` (`target/kani`), and
   fails when the installed Kani is not the pinned version or any harness fails;
   `make kani KANI_SHARD=<shard>` runs one shard (`scripts/kani-shards.py list`).
+  The whole run executes inside a memory-capped systemd user scope
+  (`scripts/with-memory-cap.sh`, `KANI_MEMORY_MAX`, default `16G`,
+  `MemorySwapMax=0`), and each process is held to 7/8 of the cap in address
+  space (`--address-space`), so a CBMC that outgrows it fails its own allocation
+  and exits before the scope's OOM killer fires: on GNOME every OOM kill in a
+  user scope raises a "memory nearly full" notification. The cgroup cap stays the
+  backstop for the sum of all processes. Do not retry a harness that hits the
+  limit; shrink its bounds first. The wrapper's self-test reads the scope's
+  `memory.max` instead of provoking the OOM killer, for the same reason. On 2026-10-15 an unmeasured harness reached 59.6 GB and left the
+  workstation with ~250 MB free; hitting the cap is a finding to fix by the fit
+  order below, never a reason to raise it. Locally the wrapper refuses to run
+  uncapped when no user manager exists (`KANI_MEMORY_MAX=none` opts out
+  explicitly); CI containers have none and run uncapped under the shard
+  budget. Run new harnesses through `make kani`, not a bare `cargo kani`, so
+  the cap applies; `make check-kani-shards` self-tests the wrapper.
   Every harness belongs to exactly one shard, and `make check-kani-shards` (in
   `make check-policy`, no Kani needed) fails when a harness anywhere under
   `crates/` matches no shard or several, so a harness cannot silently drop out
@@ -815,7 +831,7 @@ seed is appropriate.
 - `build.rs` in `lushtext-core` runs `glib-compile-schemas data/` to produce `data/gschemas.compiled` (gitignored).
 - `lib.rs::init_schema_dir()` sets `GSETTINGS_SCHEMA_DIR` to point to `data/` for dev builds. Installed builds use the system schema directory.
 - Requires `glib-compile-schemas` on the build machine (from `glib2-devel` / `libglib2.0-dev`).
-- Widget tests use `GSETTINGS_BACKEND=memory` for isolation (set in `ensure_gtk_init()`).
+- Widget tests use `GSETTINGS_BACKEND=memory` for isolation (set in `ensure_gtk_init()`). A test that counts real backend writes calls `common::keyfile_settings_backend(seed)` first, which selects the keyfile backend over a private `XDG_CONFIG_HOME` for its own process (`window_construction` is the gate that does).
 
 ## Mutation Testing
 
@@ -998,6 +1014,17 @@ while an owned one is reported as a finding; the
   boundary; design D7 of `probe-long-line-toolkit-costs`), which drives the lane
   through `RESPONSIVENESS_LENGTHS` (probe points per group) and
   `RESPONSIVENESS_PHASES` (only the interactions its thresholds read).
+  The `baseline/small` case runs on four settings profiles
+  (`bound-window-construction-dispatch`): fresh or steady-state (a previous,
+  gracefully quit launch), under the keyfile or the dconf backend. Those cases
+  keep their XDG state on the artifact filesystem (tmpfs hides a keyfile
+  write's `fsync`), and the dconf ones point the private bus's `dconf-service`
+  at the case's config directory before seeding it, so the user's dconf
+  database is never reached. The probe's `span` records feed the report's
+  "Construction spans against B_settle" table (startup, construction, first
+  frame, the largest dispatch before it, each construction stage, the settings
+  flush); `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` makes an over-budget
+  LushText-owned span on the release build fail the run (never in CI).
 - `make end-user-smoke` runs the host-supported smoke lanes together. Individual
   scripts own their dependency checks, artifact paths, and skip messages.
 

@@ -20,7 +20,7 @@ that freezes it is **paragraph length**, not file size.
 | C1 | `document-scale-policy` | Paragraph profile on the worker, one GTK-matching paragraph-boundary function (fixes the `\n`-only slicer), `DocumentScale` replacing `FileSizeCheck`, gates for syntax/minimap/invisibles/search highlighting at load and on edits, the minimap-detach CRITICAL fix | The context-engine stall and both CRITICALs gone, verified on the lane. |
 | C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for giant-paragraph documents, the display-only fold, the Line Inspector, find on a worker | Every interaction offered on these documents within the budgets. |
 | C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
-| C4 | `bound-window-construction-dispatch` | Removes the window-construction stall | Window construction within B_settle per dispatch. |
+| C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
 | C5 | `explore-editing-long-paragraphs` (optional) | Exploration of editing giant paragraphs | Maintainer decision. |
 | C6 | `bound-post-open-settle` (candidate, recorded by C0's budget verdict) | Bound the first main-loop turns after load readiness: the small-document post-open stall, the HTML first-highlight stall, the first overlay-indicator frame | The baseline fits B_settle and 2 reference frames on an idle reference run. Does not block C1–C4. |
 
@@ -388,6 +388,172 @@ observed" until now): **open**, with no root cause yet, and listed first among
 the next candidates in `long-line-evolution.md`. C1's task 8.4a says nothing
 is left for C1; that holds only until this is explained.
 
+## C4 `bound-window-construction-dispatch` (2026-10-15)
+
+**Status: settings writes removed from window construction and from every
+interaction dispatch; the remaining construction cost and the keyfile flush
+are over B_settle and need a maintainer decision (below).** Branch
+`bound-window-construction-dispatch`, stacked on PR #55.
+
+### Preconditions (tasks 1.1, 1.2)
+
+- C0 applied: budgets in `model/responsiveness_budget.rs`, watchdog and frame
+  timing in `ui/responsiveness_probe.rs`, the lane `make responsiveness-smoke`,
+  last ledger id A37 (C4 adds A38–A41).
+- **The shipped Flatpak runs on the keyfile backend.** Inside the installed
+  `dev.cominotti.lushtext` 0.8.3 (runtime `org.gnome.Platform//50`, GLib
+  2.88.0), `GSETTINGS_BACKEND` is unset, the runtime ships no dconf GIO module,
+  and `G_MESSAGES_DEBUG=all gsettings get …` reports
+  `Found default implementation keyfile (GKeyfileSettingsBackend) for
+  'gsettings-backend'`; the settings file is
+  `~/.var/app/dev.cominotti.lushtext/config/glib-2.0/settings/keyfile`
+  (checked non-interactively with `flatpak run --command=sh`). The Snap check
+  waits for the platform snap.
+
+### What was measured
+
+The lane's `baseline/small` case now runs on four settings profiles (fresh
+or steady-state, keyfile or dconf backend; `scripts/responsiveness-smoke-driver.py`
+`CONSTRUCTION_PROFILES`/`CONSTRUCTION_BACKENDS`). A steady-state profile is one
+a previous, gracefully quit launch wrote. The construction cases keep their XDG
+state on the artifact filesystem (btrfs on the reference machine): the first
+baseline, with state on the temp scope's tmpfs, hid the fsync entirely
+(`migrate_split_view` 0.3 ms). The dconf cases point the private bus's
+`dconf-service` at the case's own config directory before seeding it, so the
+user's real dconf database is never reached. The probe records `span` lines
+(`startup_toolkit`, `startup_lushtext`, `window_construction`, every
+construction stage, `first_frame`, `settings_flush`), and the report adds a
+"Construction spans against B_settle" table.
+
+Release build, `mutter --headless`, cairo, CPUs 8–23, 3 repetitions, plain
+variant; all times in ms; "largest" is the largest dispatch before the first
+frame (watchdog lateness).
+
+**Baseline before the fix** (run `rr-20261015T021420Z`, load 7.7–11.0,
+`btrfs-stall-report`: storage not a bottleneck, IO pressure 0.8 %):
+
+| Profile / backend | construction | largest | first frame | dominant stages |
+|---|---|---|---|---|
+| fresh / keyfile | 135–151 | 136–152 | 182–183 | `migrate_split_view` 59–66 (five writes), `restore_*` 10–13 each, `preview_actions` 10–21 (the reset write), `present` 16, template 11–18 |
+| steady / keyfile | 77–91 | 78–93 | 109–134 | `restore_*` 10–13 each, `preview_actions` 11–18, `present` 17–24, template 11 |
+| fresh / dconf | 28–36 | 29–37 | 48–62 | `present` 15–21, template 11–14 |
+| steady / dconf | 31–39 | 33–41 | 53–62 | `present` 17–21, template 11–13 |
+
+GTK's own startup (`startup_toolkit`) is 39–51 ms in every case and LushText's
+startup 3.4–5.9 ms. Each keyfile write cost 10–13 ms of `fsync` on the GTK
+thread; a steady-state profile still made three of them (the two restores and
+the preview reset), a fresh one eight. The failing-first widget gate
+(`window_construction`) shows the same thing deterministically on the pre-fix
+code: a steady-state construction replaced the settings file, a fresh one
+wrote it before the first frame.
+
+**After the fix** (run `rr-20261015T052216Z`, load 1.8–1.9,
+`btrfs-stall-report`: storage not a bottleneck, IO pressure 0.9 %):
+
+| Profile / backend | construction | largest | first frame | `settings_flush` (after the first frame) |
+|---|---|---|---|---|
+| fresh / keyfile | 22.7–24.1 | 23.1–24.5 | 38.2–41.4 | 12.8, 13.9, **17.9** |
+| steady / keyfile | 22.0–23.6 | 22.4–24.1 | 37.8–39.0 | none (nothing to write) |
+| fresh / dconf | 21.9–24.3 | 22.3–24.7 | 37.0–40.1 | 0.07–0.08 |
+| steady / dconf | 21.9–26.1 | 22.3–27.3 | 37.2–42.1 | none |
+
+A run under heavy load (19.9–24.8, `rr-20261015T025252Z`) measured 29–56 ms;
+the idle run is the reference. What remains is `present` (GTK's realize and
+first measure of the whole window, 11.8–14.4 ms) and template instantiation
+(8.5–11 ms); every other stage is under 0.3 ms.
+
+### GSettings axioms (tasks 2.x) and the flush path (D3)
+
+A38–A41 (ledger, `gtk-lush-axioms`, all hold on GTK 4.22.5 / GLib 2.88.3): a
+keyfile write replaces the file on the calling thread once per `set_*`, an
+equal value included (A38); `delay()`/`apply()` writes N keys in one
+replacement and the delayed instance reads its pending values (A39); the
+keyfile backend takes **no lock** (source-cited), and a second backend object
+over the same file stays stale until its file monitor reloads, about 25 ms
+later (A40); `changed` reaches another instance inside the writer's `set_*`,
+before the rewrite, a delayed instance notifies only itself until `apply()`,
+and `apply()` does not re-notify it (A41).
+
+**Flush path chosen: the GTK-idle fallback (D3.2).** A worker flush through
+the shared default backend would race its unlocked key file; through a private
+backend object it would leave every other reader stale for a monitor round
+trip, and a write through the default backend meanwhile would overwrite the
+file with stale values. The writer (`ui/settings_writes.rs`) therefore keeps
+**one delayed `gio::Settings` instance that every LushText reader, binding and
+subscriber shares** (the overlay of D3 is GSettings' own delayed backend, so
+read-your-writes and enqueue-time notification hold across windows and editor
+pages, A39/A41), drops a value equal to the current one, and flushes with one
+`apply()` on a low-priority idle no earlier than the first presented frame, at
+most once per 500 ms persistence window; the last window's confirmed close and
+application shutdown flush synchronously. The batch algebra
+(`model/settings_write_batch.rs`) is a per-key state machine; its Kani harness
+found a real defect while being fitted (a value written back to the old value
+while a flush was in flight was dropped as equal to the stale persisted
+value), fixed by comparing against the in-flight value first.
+
+### Imperative-write audit (task 3.1)
+
+Every write now goes through `settings_writes::set_*`/`reset`, and every
+reader and subscriber reads the shared instance (no `gio::Settings::new(APP_ID)`
+remains outside the writer; `make check-settings-writes` enforces both).
+
+| Key(s) | Writers | Readers and `changed` subscribers |
+|---|---|---|
+| `window-width`, `window-height`, `window-maximized` | window notify handlers (`ui/window/imp.rs`) | window construction |
+| `workspace-sidebar-visible`, `properties-sidebar-visible` | `actions.rs` toggles, restore plan | restore plan, geometry evidence |
+| `workspace-sidebar-width-fraction` | restore plan, `set_workspace_sidebar_preset`, Preferences preset | window subscription (`imp.rs`), allocation reconciliation, geometry evidence, Preferences |
+| `properties-sidebar-width-fraction`, `split-view-layout-migrated` | restore plan | restore plan, geometry evidence |
+| `preview-pane-visible` | `preview.rs` (construction reset, toggle) | — |
+| `search-panel-visible` | `search.rs` | — |
+| `color-scheme` | theme selector (`window/mod.rs`; also sets `StyleManager`) | app startup |
+| `zoom-level` (missed by the design's list) | `zoom.rs` actions and buttons | zoom controls, `theme.rs` font CSS |
+| `invisible-characters-mode` | `encoding/execution.rs` | editor pages, encoding dialogs |
+| `workspace-show-hidden-files`, `show-minimap` | `register_boolean_setting_toggle_action` (`app.rs`) | the actions, sidebar, editor pages, Preferences binds |
+| `workspace-excluded-names` | `workspace_visibility.rs`, Preferences reset | sidebar, palette index, search, Preferences |
+| `style-scheme`, `custom-font` | Preferences | `theme.rs`, editor pages, Markdown preview |
+
+**Preferences binds (task 3.5):** a keyfile write measured 10–18 ms on the
+reference machine, above B_interact, so the bound rows bind against the
+shared delayed instance (all of them do, since it is the only instance) and
+are flushed by the writer.
+
+### D4 (staged construction): not implemented — maintainer decision
+
+The residual (22–26 ms idle) is GTK's `present` of the whole window and
+template instantiation, not a stageable secondary surface. Timing the custom
+children in isolation (release widget build): sidebar 0.4, properties panel
+0.9, command palette 0.8, Markdown preview 0.5, search panel 0.9, Open popover
+0.2 ms — staging every hidden one saves about 3–4 ms of template and little of
+`present` (removing the revealers' children before `present` changed it by
+0–3 ms in a noisy probe). The first paint after construction is a further
+~15 ms dispatch. Meeting B_settle per dispatch needs a different change: a
+minimal first-frame shell (header bar, empty content, status bar) presented
+first, with the editor shell built in later bounded dispatches, which
+restructures `LushtextWindow`'s template and every `imp()` template-child
+access. Proposed as a follow-up candidate (**C4b `first-frame-shell`**) in
+`long-line-evolution.md`. Until then the lane reports the construction
+verdict, and `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` makes it fail the run.
+
+### Open questions, answered or escalated
+
+1. **dconf access for the Flatpak: escalated (blocker per design D3).** The
+   keyfile flush is one `apply()` per persistence window, but on the reference
+   machine it measured 12.8–17.9 ms, so it does not always fit B_settle. The
+   options are dconf access for the Flatpak (permission-posture change, one-time
+   keyfile import) or accepting a flush after the first frame that can exceed
+   B_settle by a few ms on a slow `fsync`. Maintainer decision.
+2. **Persistence window:** 500 ms (`settings_writes::PERSISTENCE_WINDOW`),
+   trailing; a resize burst writes once after it ends.
+3. **Toolkit startup:** `startup_toolkit` is 30–51 ms and reported, not
+   budgeted. An upstream report and a portal on the reference lane remain open.
+4. **Preferences binds:** moved (task 3.5 above); their effect on editors stays
+   immediate because every reader shares the delayed instance.
+
+Other consequences: values equal to a schema default are no longer written as
+explicit user values (a fresh profile now persists only the keys whose values
+differ from their defaults); a crash before a flush loses at most one
+persistence window of preference and layout values, never content.
+
 ## Axioms each change cites
 
 | Change | Axioms |
@@ -395,6 +561,7 @@ is left for C1; that holds only until this is explained.
 | C1 `document-scale-policy` | A27 (tag changes do not dirty the buffer), A29 (context engine cut-off), A31 (2000 px validation batches, the source of R_batch), A32 (source-map detach CRITICAL) |
 | C2 `long-line-protected-view` | A23, A24, A25, A26, A28, A30, A33, A34, A35 |
 | C3 `sliced-protected-install` | A24, A35, A36 |
+| C4 `bound-window-construction-dispatch` | A38 (keyfile write per `set_*` on the calling thread), A39 (`delay`/`apply` coalescing), A40 (no backend lock; a second backend stays stale), A41 (`changed` timing) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 
 Two probes corrected the designs that cite them, and C1/C2 must read the
@@ -435,7 +602,7 @@ fixed here fails the lane if it reappears.
 |---|---|
 | `GtkSourceMap` detach with a pending update tick emits `Gtk-CRITICAL` and `GLib-GObject-CRITICAL` (axiom A32) | C1 |
 | The install slicer splits only on `\n`, so CR-only and U+2029 documents install in one GTK turn | C1 |
-| Window construction stalls the main loop for about 190 ms on every open | C4 |
+| Window construction stalls the main loop for about 190 ms on every open | C4: the settings writes are gone (135–151 → 22–24 ms on a fresh keyfile profile); the 22–26 ms residual is GTK `present` and template instantiation, proposed as C4b |
 | `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`, the trough of the editor's horizontal or vertical scrollbar. **Fixed in C0** (pre-existing-blockers rule), so it is no longer owned by C1. Root cause, confirmed against GTK 4.22.5 and GtkSourceView 5.20.0 (ledger **A37**): `GtkTextView` validates invalidated lines from an idle at `GTK_PRIORITY_RESIZE - 2`, but a change made inside a frame — the key press of the smallest reproduction (one 500-character line, wrap off, Ctrl+Home and typing) is handled in the frame clock's flush-events phase — or just before a frame that input started (`gdkframeclockidle.c` runs it from `flush_idle` at `GDK_PRIORITY_EVENTS + 1`; find in dense and 1 MB documents, where GtkSourceView's search scan changes tags from an idle) leaves that idle pending at paint time. The view is not re-allocated in that frame's layout, so `gtk_text_view_paint` flushes the validation inside the snapshot (`gtk_text_view_flush_first_validate` → `gtk_text_view_update_adjustments`): a widened line or a queued scroll changes the scroll adjustments, `GtkRange` queues its trough's allocation, and `GtkScrolledWindow` snapshots the scrollbar after its child. Lines that fit the viewport never change `upper`, which is why they never warned. The `mark-set` handlers that run inside GtkSourceView's snapshot were ruled out: disabling LushText's Notes handler left the warning in place. Fix: `ui/editor_page/frame_validation.rs` queues the view's allocation on every edit and caret move, and before the paint (at `before-paint` or after the frame clock's layout handlers) after a tag change, so `gtk_text_view_size_allocate` flushes the validation in layout. Evidence: widget tests `editor_page::test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot` (20 adjustment changes inside the paint before the fix, 0 after) and `editor_page::test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 without the tag handling, 0 with it), probe A37, and the lane: the minimal case and dense 500/2000/50000, total-size 1/5 MB and paragraph 500/15000/22000 (all phases) show no warning, nor do four more repetitions each of dense 500 and total-size 1 MB (before the fix dense 500 warned on find in 3 of 5 runs). The lane classifier now treats this warning as a **regression that fails the run** (`FIXED_DEFECTS` in `scripts/responsiveness-smoke-driver.py`), not as an owned finding. Residual: a size-changing tag that GtkSourceView applies inside its own snapshot (highlighting the visible region) is still validated in that paint; the editor validates it in the next frame's layout. **Observed once on 2026-10-13** (find in a 15,000-character wrapped paragraph beside heavy CPU load, `rr-20261013T210157Z-toolbx-1753909`) and not reproduced in 94 further runs; root cause open (see "Idle re-confirmation (2026-10-13)") | fixed in C0; residual open |
 
 

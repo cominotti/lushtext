@@ -45,6 +45,8 @@ mod responsiveness_budget;
 mod search_replacement;
 #[path = "properties/session_draft_roundtrip.rs"]
 mod session_draft_roundtrip;
+#[path = "properties/settings_write_batch.rs"]
+mod settings_write_batch;
 #[path = "properties/sidecar_reconciliation.rs"]
 mod sidecar_reconciliation;
 #[path = "properties/support.rs"]

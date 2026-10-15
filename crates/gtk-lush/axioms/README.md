@@ -80,7 +80,10 @@ axiom) and A22 (the first tree-model axiom, whose probe needs no window).
 text-buffer, input-method and GtkSourceView axioms, with the text fixtures
 below and the slow marker; A35 and A36 have no in-crate probe, and the
 responsiveness lane records them. A37 (text-view validation deferred into
-the paint) followed with LushText's scrollbar-warning fix. Every later axiom
+the paint) followed with LushText's scrollbar-warning fix, and A38–A41 (the
+GIO GSettings keyfile backend: write cost and thread, coalescing, locking,
+`changed` timing) with LushText's coalescing settings writer; their probes use
+a private keyfile backend, never the process's default one. Every later axiom
 follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.

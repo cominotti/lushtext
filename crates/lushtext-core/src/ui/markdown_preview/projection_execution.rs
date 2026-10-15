@@ -66,8 +66,7 @@ impl LushtextMarkdownPreview {
         // One palette per generation instead of one per projection turn. It stays
         // outside the guarded projection payload because a GtkSourceView style
         // scheme is not `Send` and that payload is retired off the GTK thread.
-        let code_block_theme =
-            CodeBlockTheme::from_settings(&gtk4::gio::Settings::new(crate::config::APP_ID));
+        let code_block_theme = CodeBlockTheme::from_settings(&crate::ui::settings_writes::shared());
         let mut projection =
             Some(
                 plan.map_preserving_reservation(|plan| GuardedMarkdownProjection {

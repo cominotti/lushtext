@@ -20,6 +20,7 @@
 
 mod actions;
 mod attention_refresh;
+mod construction;
 mod dialogs;
 mod documents;
 mod drafts;
@@ -101,7 +102,10 @@ pub use focus_mode::evidence::{FocusModeEvidence, focus_mode_evidence};
 #[cfg(feature = "test-utils")]
 pub use focus_mode::policy::{FocusModeEntry, FocusModeRestore};
 #[cfg(feature = "test-utils")]
-pub use geometry::evidence::{ShellGeometryEvidence, shell_geometry_evidence};
+pub use geometry::evidence::{
+    ShellGeometryEvidence, WindowConstructionEvidence, shell_geometry_evidence,
+};
+
 #[cfg(feature = "test-utils")]
 pub use local_history::LocalHistoryEvidence;
 #[cfg(feature = "test-utils")]
@@ -168,26 +172,61 @@ impl LushtextWindow {
     /// disk writes.
     #[must_use]
     pub fn new(app: &libadwaita::Application) -> Self {
+        let started_us = crate::ui::construction_spans::now_us();
         let window: Self = Object::builder().property("application", app).build();
-        window.join_process_draft_journal(app);
-        window.setup_actions();
-        window.setup_tab_management();
-        window.setup_fullscreen();
-        window.setup_focus_mode();
-        window.setup_transient_surface_dismissal();
-        window.setup_theme_selector();
-        preview::setup_preview_actions(&window);
-        print::setup_print_action(&window);
-        zoom::setup_zoom_actions(&window);
-        zoom::setup_zoom_controls(&window);
-        search::setup_search_panel(&window);
-        window.start_notification_sweep_timer();
-        window.setup_shortcuts();
-        window.load_recent_documents_async();
-        window.update_content_stack();
-        window.refresh_status_bar();
-        window.render_notifications();
-        window.begin_startup_data_flow();
+        window.begin_construction_record(started_us);
+        let mut stages = construction::ConstructionStages::new(&window);
+        stages.run("join_draft_journal", || {
+            window.join_process_draft_journal(app);
+        });
+        stages.run("actions", || {
+            window.setup_actions();
+        });
+        stages.run("tab_management", || {
+            window.setup_tab_management();
+        });
+        stages.run("fullscreen", || {
+            window.setup_fullscreen();
+        });
+        stages.run("focus_mode", || {
+            window.setup_focus_mode();
+        });
+        stages.run("transient_dismissal", || {
+            window.setup_transient_surface_dismissal();
+        });
+        stages.run("theme_selector", || {
+            window.setup_theme_selector();
+        });
+        stages.run("preview_actions", || {
+            preview::setup_preview_actions(&window);
+        });
+        stages.run("print_action", || {
+            print::setup_print_action(&window);
+        });
+        stages.run("zoom", || {
+            zoom::setup_zoom_actions(&window);
+            zoom::setup_zoom_controls(&window);
+        });
+        stages.run("search_panel", || {
+            search::setup_search_panel(&window);
+        });
+        stages.run("notification_sweep", || {
+            window.start_notification_sweep_timer();
+        });
+        stages.run("shortcuts", || {
+            window.setup_shortcuts();
+        });
+        stages.run("recent_documents", || {
+            window.load_recent_documents_async();
+        });
+        stages.run("initial_projection", || {
+            window.update_content_stack();
+            window.refresh_status_bar();
+            window.render_notifications();
+        });
+        stages.run("startup_data_flow", || {
+            window.begin_startup_data_flow();
+        });
         window
     }
 
@@ -255,33 +294,30 @@ impl LushtextWindow {
 
         {
             let sm = style_manager.clone();
-            let s = settings.clone();
             // GTK signals are observer callbacks; every radio toggle emits, so
             // persist only when this button becomes active.
             light_btn.connect_toggled(move |btn| {
                 if btn.is_active() {
                     sm.set_color_scheme(libadwaita::ColorScheme::ForceLight);
-                    let _ = s.set_string(keys::COLOR_SCHEME, "force-light");
+                    crate::ui::settings_writes::set_string(keys::COLOR_SCHEME, "force-light");
                 }
             });
         }
         {
             let sm = style_manager.clone();
-            let s = settings.clone();
             follow_btn.connect_toggled(move |btn| {
                 if btn.is_active() {
                     sm.set_color_scheme(libadwaita::ColorScheme::Default);
-                    let _ = s.set_string(keys::COLOR_SCHEME, "default");
+                    crate::ui::settings_writes::set_string(keys::COLOR_SCHEME, "default");
                 }
             });
         }
         {
             let sm = style_manager;
-            let s = settings.clone();
             dark_btn.connect_toggled(move |btn| {
                 if btn.is_active() {
                     sm.set_color_scheme(libadwaita::ColorScheme::ForceDark);
-                    let _ = s.set_string(keys::COLOR_SCHEME, "force-dark");
+                    crate::ui::settings_writes::set_string(keys::COLOR_SCHEME, "force-dark");
                 }
             });
         }
