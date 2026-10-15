@@ -628,8 +628,13 @@ invariant; tighten the generator or use the deep lane.
   `make kani KANI_SHARD=<shard>` runs one shard (`scripts/kani-shards.py list`).
   The whole run executes inside a memory-capped systemd user scope
   (`scripts/with-memory-cap.sh`, `KANI_MEMORY_MAX`, default `16G`,
-  `MemorySwapMax=0`): a harness whose CBMC outgrows the cap is OOM-killed alone
-  (exit 137). On 2026-10-15 an unmeasured harness reached 59.6 GB and left the
+  `MemorySwapMax=0`), and each process is held to 7/8 of the cap in address
+  space (`--address-space`), so a CBMC that outgrows it fails its own allocation
+  and exits before the scope's OOM killer fires: on GNOME every OOM kill in a
+  user scope raises a "memory nearly full" notification. The cgroup cap stays the
+  backstop for the sum of all processes. Do not retry a harness that hits the
+  limit; shrink its bounds first. The wrapper's self-test reads the scope's
+  `memory.max` instead of provoking the OOM killer, for the same reason. On 2026-10-15 an unmeasured harness reached 59.6 GB and left the
   workstation with ~250 MB free; hitting the cap is a finding to fix by the fit
   order below, never a reason to raise it. Locally the wrapper refuses to run
   uncapped when no user manager exists (`KANI_MEMORY_MAX=none` opts out

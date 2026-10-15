@@ -159,8 +159,10 @@ KANI_TARGET_DIR ?= target/kani
 KANI_MEASURE ?=
 # Memory cap for the whole `make kani` run (cargo plus every CBMC), enforced by
 # scripts/with-memory-cap.sh as a systemd user scope with MemoryMax and no swap:
-# an exploding harness is OOM-killed alone (exit 137) instead of pushing the
-# workstation into swap. 16G stays above the 12 GiB per-shard CI budget
+# an exploding harness is stopped alone instead of pushing the workstation into
+# swap. Each process is also held to 7/8 of the cap in address space, so CBMC
+# fails its own allocation before the OOM killer fires (an OOM kill in a user
+# scope makes GNOME notify that memory is nearly full). 16G stays above the 12 GiB per-shard CI budget
 # `make check-kani-shards` enforces. `none` opts out; on CI without a systemd
 # user manager the run is uncapped.
 KANI_MEMORY_MAX ?= 16G
@@ -326,7 +328,7 @@ fuzz-smoke:
 # documented counterexample.
 kani:
 	@set -eu; $(KANI_VERSION_GUARD); \
-	./scripts/with-memory-cap.sh "$(KANI_MEMORY_MAX)" ./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
+	./scripts/with-memory-cap.sh --address-space "$(KANI_MEMORY_MAX)" ./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
 
 # The pinned-Kani guard shared by the Kani and proof-strength lanes.
 KANI_VERSION_GUARD = installed=$$(cargo kani --version 2>/dev/null | sed -n 's/^Kani Rust Verifier \([0-9.]*\).*/\1/p' | head -n 1 || true); \
