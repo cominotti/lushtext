@@ -33,7 +33,6 @@ pub(crate) fn register_boolean_setting_toggle_action(
     let initial = settings.boolean(settings_key);
     let action = gio::SimpleAction::new_stateful(action_name, None, &initial.to_variant());
     {
-        let settings = settings.clone();
         action.connect_activate(move |action, _| {
             let current = action
                 .state()
@@ -48,9 +47,7 @@ pub(crate) fn register_boolean_setting_toggle_action(
                 return;
             };
             action.set_state(&enabled.to_variant());
-            if let Err(error) = settings.set_boolean(settings_key, enabled) {
-                tracing::error!("{action_name}: failed to persist {settings_key}: {error}");
-            }
+            crate::ui::settings_writes::set_boolean(settings_key, enabled);
         });
     }
     let action_weak = action.downgrade();
@@ -113,7 +110,9 @@ mod imp {
 
     impl ApplicationImpl for LushtextApplication {
         fn startup(&self) {
+            let toolkit_start_us = crate::ui::construction_spans::now_us();
             self.parent_startup();
+            let toolkit_end_us = crate::ui::construction_spans::now_us();
             // Smoke-only instrumentation: an empty function in shipped builds.
             crate::ui::responsiveness_probe::install(&*self.obj());
             crate::ui::theme::load_css();
@@ -122,10 +121,23 @@ mod imp {
 
             // Apply persisted color scheme before any window is created so
             // the first paint uses the correct theme.
-            let settings = gtk4::gio::Settings::new(crate::config::APP_ID);
+            let settings = crate::ui::settings_writes::shared();
             let scheme = settings.string(crate::config::keys::COLOR_SCHEME);
             let color_scheme = crate::ui::window::parse_color_scheme(scheme.as_str());
             libadwaita::StyleManager::default().set_color_scheme(color_scheme);
+            crate::ui::construction_spans::record_startup(
+                toolkit_start_us,
+                toolkit_end_us,
+                crate::ui::construction_spans::now_us(),
+            );
+        }
+
+        fn shutdown(&self) {
+            // Backstop for exits that close no window through its confirmed
+            // close (`app.quit`, the session ending): persist the settings
+            // writer's pending values before the process goes.
+            crate::ui::settings_writes::flush_now();
+            self.parent_shutdown();
         }
 
         fn dbus_register(
@@ -162,7 +174,9 @@ mod imp {
             }
 
             let window = LushtextWindow::new(app.upcast_ref());
+            let present_start_us = crate::ui::construction_spans::now_us();
             window.present();
+            window.record_construction_stage("present", present_start_us);
         }
 
         fn open(&self, files: &[gio::File], _hint: &str) {
@@ -180,7 +194,9 @@ mod imp {
 
             // Root the window before dispatching asynchronous file loads so
             // quick failures have a visible status and inline-error surface.
+            let stage_start_us = crate::ui::construction_spans::now_us();
             window.present();
+            let stage_start_us = window.record_construction_stage("present", stage_start_us);
             for file in files {
                 if let Some(path) = file.path() {
                     window.open_document_from_activation(&path);
@@ -190,6 +206,7 @@ mod imp {
             }
 
             window.present();
+            window.record_construction_stage("open_files", stage_start_us);
         }
     }
 
@@ -282,7 +299,7 @@ impl LushtextApplication {
         // Workspace-wide hidden-file visibility. Registered here rather than in
         // the window accelerator table because the setting is global and every
         // window's menu item must agree.
-        let settings = gio::Settings::new(config::APP_ID);
+        let settings = crate::ui::settings_writes::shared();
         register_boolean_setting_toggle_action(
             self,
             &settings,

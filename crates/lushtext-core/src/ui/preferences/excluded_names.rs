@@ -57,8 +57,8 @@ impl LushtextPreferences {
             .connect_clicked(move |_| {
                 // The schema default is the single source of truth; the key's
                 // `changed` subscription below re-projects the rows.
-                if let Some(prefs) = prefs_weak.upgrade() {
-                    prefs.imp().settings.reset(keys::WORKSPACE_EXCLUDED_NAMES);
+                if prefs_weak.upgrade().is_some() {
+                    crate::ui::settings_writes::reset(keys::WORKSPACE_EXCLUDED_NAMES);
                 }
             });
 
@@ -119,7 +119,7 @@ impl LushtextPreferences {
                 if let Some(prefs) = prefs_weak.upgrade() {
                     let settings = &prefs.imp().settings;
                     let next = remove_excluded_name(&excluded_names(settings), &name_for_remove);
-                    set_excluded_names(settings, &next);
+                    set_excluded_names(&next);
                 }
             });
             row.add_suffix(&remove);
@@ -150,7 +150,7 @@ impl LushtextPreferences {
         let current = excluded_names(&imp.settings);
         match add_excluded_name(&current, &raw) {
             Ok(next) => {
-                set_excluded_names(&imp.settings, &next);
+                set_excluded_names(&next);
                 imp.workspace_excluded_add_row.set_text("");
                 self.clear_excluded_name_error();
             }

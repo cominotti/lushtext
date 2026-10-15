@@ -10,7 +10,7 @@ use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
-use lushtext_core::config::{APP_ID, keys};
+use lushtext_core::config::keys;
 use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
 use lushtext_core::model::encoding::{DocumentEncoding, DocumentEncodingState};
 use lushtext_core::model::formatting_overrides::FormattingOverrides;
@@ -212,7 +212,7 @@ fn baseline_source_map_for_view(view: &sourceview5::View) -> sourceview5::Map {
 }
 
 fn enable_minimap_for_tests(long_line_markers: bool) -> gio::Settings {
-    let settings = gio::Settings::new(APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::SHOW_MINIMAP, true)
         .expect("enable minimap");
@@ -3075,7 +3075,7 @@ fn test_minimap_pending_refresh_marks_work_pending() {
 #[test]
 fn test_minimap_source_map_stays_unwrapped_across_editor_wrap_mode_changes() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::WORD_WRAP, true)
         .expect("enable word wrap");
@@ -4131,7 +4131,7 @@ fn test_settings_word_wrap_default_enabled() {
 #[test]
 fn test_settings_minimap_width_bounds_overlay_width_request() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     let original_width = settings.int(keys::MINIMAP_WIDTH);
     settings
         .set_int(keys::MINIMAP_WIDTH, 88)
@@ -5687,7 +5687,7 @@ fn change_in_frames(
 /// minimap off, presented with the caret and the horizontal scroll at the
 /// start of the line, which is wider than the viewport.
 fn present_long_line_page() -> (LushtextEditorPage, gtk4::ApplicationWindow) {
-    let settings = gio::Settings::new(APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_boolean(keys::WORD_WRAP, false)
         .expect("wrapping off");

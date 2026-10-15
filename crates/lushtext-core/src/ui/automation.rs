@@ -897,6 +897,28 @@ fn window_snapshot(window: &LushtextWindow) -> AutomationWindowSnapshot {
         content_search: content_search_snapshot(window),
         notifications: notification_snapshot(window),
         visual_geometry: visual_geometry_snapshot(window),
+        window_construction: window_construction_snapshot(window),
+    }
+}
+
+/// Project the shell-geometry evidence's window-construction part: integers
+/// only.
+fn window_construction_snapshot(
+    window: &LushtextWindow,
+) -> crate::model::automation::AutomationWindowConstructionSnapshot {
+    let evidence = window.window_construction_evidence();
+    crate::model::automation::AutomationWindowConstructionSnapshot {
+        startup_toolkit_us: evidence.startup_toolkit_us,
+        startup_lushtext_us: evidence.startup_lushtext_us,
+        window_construction_us: evidence.window_construction_us,
+        first_frame_us: evidence.first_frame_us,
+        largest_dispatch_before_first_frame_us: evidence.largest_dispatch_before_first_frame_us,
+        stages_pending: evidence.stages_pending,
+        stages_total: evidence.stages_total,
+        settings_writes_before_first_frame: evidence.settings_writes_before_first_frame,
+        settings_writer_pending: evidence.settings_pending,
+        settings_writer_flushed: evidence.settings_flushed,
+        settings_writer_dropped_equal: evidence.settings_dropped_equal,
     }
 }
 

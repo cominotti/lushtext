@@ -206,7 +206,7 @@ impl Default for LushtextPreferences {
             data_set_aside_list: gtk4::ListBox::new(),
             data_set_aside_listing: RefCell::new(None),
             data_set_aside_focus_pending: Cell::new(false),
-            settings: gio::Settings::new(crate::config::APP_ID),
+            settings: crate::ui::settings_writes::shared(),
             data_details_list: gtk4::ListBox::new(),
             data_last_scan_offers_convert: Cell::new(false),
             data_operation_inflight: Cell::new(false),
@@ -443,8 +443,10 @@ impl LushtextPreferences {
                     .abs()
                     > f64::EPSILON
                 {
-                    let _ = settings
-                        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, preset.fraction());
+                    crate::ui::settings_writes::set_double(
+                        keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION,
+                        preset.fraction(),
+                    );
                 }
             });
     }
@@ -481,11 +483,10 @@ impl LushtextPreferences {
             .unwrap_or(0) as u32;
         self.style_scheme_row.set_selected(selected_pos);
 
-        let settings = self.settings.clone();
         self.style_scheme_row.connect_selected_notify(move |row| {
             let pos = row.selected() as usize;
             if pos < scheme_ids.len() {
-                let _ = settings.set_string(keys::STYLE_SCHEME, &scheme_ids[pos]);
+                crate::ui::settings_writes::set_string(keys::STYLE_SCHEME, &scheme_ids[pos]);
             }
         });
     }
@@ -498,10 +499,9 @@ impl LushtextPreferences {
         let desc = pango::FontDescription::from_string(&current);
         self.font_button.set_font_desc(&desc);
 
-        let settings = self.settings.clone();
         self.font_button.connect_font_desc_notify(move |btn| {
             if let Some(desc) = btn.font_desc() {
-                let _ = settings.set_string(keys::CUSTOM_FONT, &desc.to_string());
+                crate::ui::settings_writes::set_string(keys::CUSTOM_FONT, &desc.to_string());
             }
         });
     }

@@ -17,7 +17,7 @@ procedure â€” how to add or change a workflow, write the proofs, run the gates â
 the `lushtext-workflow` skill.
 
 The migration programme is **closed**: every workflow has a terminal row in
-`docs/workflow-readability-matrix.md` (22 `migrated`, 5 `cross-cutting`, 1
+`docs/workflow-readability-matrix.md` (22 `migrated`, 6 `cross-cutting`, 1
 `exempt`, 1 `superseded`), and the gate rejects any transitional status. New work
 adds or updates a row and follows the convention; it does not re-open the
 programme. `docs/next/workflow-readability.md` is the closed programme record and

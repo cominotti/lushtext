@@ -349,13 +349,13 @@ impl ObjectImpl for LushtextMarkdownPreview {
         self.apply_accessibility_metadata();
         self.obj().setup_link_interaction();
         self.background_opacity.set(
-            gtk4::gio::Settings::new(crate::config::APP_ID)
+            crate::ui::settings_writes::shared()
                 .double(crate::config::keys::TAB_CONTENT_OPACITY)
                 .clamp(0.0, 1.0),
         );
 
         {
-            let settings = gtk4::gio::Settings::new(crate::config::APP_ID);
+            let settings = crate::ui::settings_writes::shared();
             let preview_weak = self.obj().downgrade();
             settings.connect_changed(
                 Some(crate::config::keys::TAB_CONTENT_OPACITY),

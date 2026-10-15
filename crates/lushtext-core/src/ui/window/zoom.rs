@@ -77,7 +77,10 @@ pub(super) fn setup_zoom_controls(window: &super::LushtextWindow) {
         zoom_in_btn.connect_clicked(move |_| {
             let current = s.uint(keys::ZOOM_LEVEL).clamp(ZOOM_MIN, ZOOM_MAX);
             if current < ZOOM_MAX {
-                let _ = s.set_uint(keys::ZOOM_LEVEL, (current + ZOOM_STEP).min(ZOOM_MAX));
+                crate::ui::settings_writes::set_uint(
+                    keys::ZOOM_LEVEL,
+                    (current + ZOOM_STEP).min(ZOOM_MAX),
+                );
             }
         });
     }
@@ -86,14 +89,16 @@ pub(super) fn setup_zoom_controls(window: &super::LushtextWindow) {
         zoom_out_btn.connect_clicked(move |_| {
             let current = s.uint(keys::ZOOM_LEVEL).clamp(ZOOM_MIN, ZOOM_MAX);
             if current > ZOOM_MIN {
-                let _ = s.set_uint(keys::ZOOM_LEVEL, (current - ZOOM_STEP).max(ZOOM_MIN));
+                crate::ui::settings_writes::set_uint(
+                    keys::ZOOM_LEVEL,
+                    (current - ZOOM_STEP).max(ZOOM_MIN),
+                );
             }
         });
     }
     {
-        let s = settings.clone();
         zoom_label_btn.connect_clicked(move |_| {
-            let _ = s.set_uint(keys::ZOOM_LEVEL, ZOOM_DEFAULT);
+            crate::ui::settings_writes::set_uint(keys::ZOOM_LEVEL, ZOOM_DEFAULT);
         });
     }
 
@@ -131,7 +136,10 @@ pub(super) fn setup_zoom_actions(window: &super::LushtextWindow) {
                 let s = &window.imp().settings;
                 let current = s.uint(keys::ZOOM_LEVEL).clamp(ZOOM_MIN, ZOOM_MAX);
                 if current < ZOOM_MAX {
-                    let _ = s.set_uint(keys::ZOOM_LEVEL, (current + ZOOM_STEP).min(ZOOM_MAX));
+                    crate::ui::settings_writes::set_uint(
+                        keys::ZOOM_LEVEL,
+                        (current + ZOOM_STEP).min(ZOOM_MAX),
+                    );
                 }
             })
             .build(),
@@ -140,16 +148,16 @@ pub(super) fn setup_zoom_actions(window: &super::LushtextWindow) {
                 let s = &window.imp().settings;
                 let current = s.uint(keys::ZOOM_LEVEL).clamp(ZOOM_MIN, ZOOM_MAX);
                 if current > ZOOM_MIN {
-                    let _ = s.set_uint(keys::ZOOM_LEVEL, (current - ZOOM_STEP).max(ZOOM_MIN));
+                    crate::ui::settings_writes::set_uint(
+                        keys::ZOOM_LEVEL,
+                        (current - ZOOM_STEP).max(ZOOM_MIN),
+                    );
                 }
             })
             .build(),
         gio::ActionEntry::builder("zoom-reset")
-            .activate(|window: &super::LushtextWindow, _, _| {
-                let _ = window
-                    .imp()
-                    .settings
-                    .set_uint(keys::ZOOM_LEVEL, ZOOM_DEFAULT);
+            .activate(|_: &super::LushtextWindow, _, _| {
+                crate::ui::settings_writes::set_uint(keys::ZOOM_LEVEL, ZOOM_DEFAULT);
             })
             .build(),
     ]);

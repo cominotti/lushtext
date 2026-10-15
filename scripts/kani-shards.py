@@ -256,6 +256,7 @@ SHARDS: dict[str, Shard] = {
         (
             "services::draft_service::kani_proofs::a_second_writer_",
             "model::responsiveness_budget::kani_proofs::",
+            "model::settings_write_batch::kani_proofs::",
         ),
         gate="scheduled",
         ci_minutes=6.6,
@@ -377,6 +378,7 @@ _PRESET = "ui::sidebar::width_preset::kani_proofs::"
 _MINIMAP = "ui::editor_page::minimap::policy::kani_proofs::"
 _PREVIEW = "ui::markdown_preview::policy::kani_proofs::"
 _BUDGET = "model::responsiveness_budget::kani_proofs::"
+_WRITE_BATCH = "model::settings_write_batch::kani_proofs::"
 _SHELL_POLICY_HARNESSES = (
     _h(_SHELL + "focus_mode_renders_no_secondary_surface", 0.11, "ci"),
     _h(_SHELL + "layout_never_renders_an_unrequested_surface", 0.2, "ci"),
@@ -386,6 +388,7 @@ _SHELL_POLICY_HARNESSES = (
     _h(_SHELL + "breakpoint_is_monotone_and_bounded", 0.14, "ci"),
     _h(_SHELL + "pane_shares_are_positive", 0.56, "ci"),
     _h(_SHELL + "shell_policy_never_panics", 0.38, "ci"),
+    _h(_SHELL + "split_view_restore_plan_matches_the_pre_plan_restore", 4.52, "ci"),
 )
 ORACLES: dict[str, Oracle] = {
     "crates/gtk-lush/widgets/src/slice_geometry.rs": Oracle(
@@ -529,6 +532,11 @@ ORACLES: dict[str, Oracle] = {
             _h(_BUDGET + "percentile_refuses_an_unsorted_slice", 7.41, "ci"),
         ),
         functions=("classify_dispatch", "histogram_bucket", "histogram_bucket_floor_us", "nearest_rank_percentile"),
+    ),
+    "crates/lushtext-core/src/model/settings_write_batch.rs": Oracle(
+        _CORE,
+        (_h(_WRITE_BATCH + "a_flush_never_drops_the_latest_value_or_re_emits_a_persisted_one", 1.38, "ci"),),
+        functions=("record", "observe_persisted", "acknowledge"),
     ),
 }
 

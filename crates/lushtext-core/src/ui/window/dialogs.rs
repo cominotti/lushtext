@@ -903,6 +903,14 @@ fn finish_async_close_safety(
     }
     window.imp().session.close_safety_inflight.set(false);
     window.imp().session.close_safety_bypass.set(true);
+    // The confirmed close of the last window persists the settings writer's
+    // pending values synchronously, so the window size, maximized state and
+    // surface visibility on disk are exact. A window closing while others
+    // remain leaves them to the writer's ordinary flush, so the remaining
+    // windows never wait on it.
+    if window.is_last_lushtext_window() {
+        crate::ui::settings_writes::flush_now();
+    }
     window.destroy();
 }
 

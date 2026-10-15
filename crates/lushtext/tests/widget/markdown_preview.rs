@@ -9,7 +9,7 @@ use crate::common::{
 use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
 use gtk4::prelude::*;
-use lushtext_core::config::{self, keys};
+use lushtext_core::config::keys;
 use lushtext_core::services::markdown_render::{
     MARKDOWN_EVENTS_PER_PROJECTION_SLICE, MAX_MARKDOWN_PLACEHOLDER_WIDGETS,
     MAX_MARKDOWN_SOURCE_BYTES,
@@ -242,7 +242,7 @@ fn test_preview_surface_exposes_read_only_accessibility_metadata() {
 #[test]
 fn test_preview_background_opacity_tracks_setting() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 0.7)
         .expect("set tab-content-opacity");

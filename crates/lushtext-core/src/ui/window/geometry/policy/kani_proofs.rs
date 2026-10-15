@@ -22,10 +22,11 @@
 
 use super::{
     AdaptiveShellInputs, DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP,
-    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation,
-    WORKSPACE_BREAKPOINT_MAX_WIDTH_SP, derive_adaptive_shell_layout, desired_properties_share,
-    effective_properties_share, effective_workspace_sidebar_width_sp,
-    properties_breakpoint_max_width_sp, workspace_sidebar_share,
+    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation, SplitViewRestoreFacts,
+    StoredFraction, WORKSPACE_BREAKPOINT_MAX_WIDTH_SP, derive_adaptive_shell_layout,
+    desired_properties_share, effective_properties_share, effective_workspace_sidebar_width_sp,
+    legacy_split_view_restore, plan_split_view_restore, properties_breakpoint_max_width_sp,
+    workspace_sidebar_share,
 };
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
@@ -144,4 +145,65 @@ fn shell_policy_never_panics() {
     let _ = workspace_sidebar_share(input);
     let _ = effective_properties_share(input);
     let _ = desired_properties_share(input.window_width);
+}
+
+/// The split-view restore plan (`plan_split_view_restore`), for every `i32`
+/// width and every combination of stored facts:
+///
+/// - (a) a migrated profile whose stored fractions match persists nothing;
+/// - (b) a fresh profile persists exactly the five migration keys, and each
+///   width-fraction key carries the value the pre-plan code left persisted
+///   last: the restore's (the default preset's fraction, and the desired
+///   properties fraction for the current width, not the restored one);
+/// - (c) the intents, preset and shares equal the pre-plan transcription
+///   (`legacy_split_view_restore`);
+/// - (d) document properties are hidden after a migration.
+///
+/// For a migrated profile, a key the plan leaves out of the persist set is one
+/// the pre-plan code rewrote with the value it already held (the facts state
+/// exactly that), so persisting the set leaves the store as the pre-plan code
+/// did.
+#[kani::proof]
+fn split_view_restore_plan_matches_the_pre_plan_restore() {
+    let facts: SplitViewRestoreFacts = kani::any();
+    let plan = plan_split_view_restore(facts);
+    let (workspace_visible, properties_visible, preset, workspace_share, properties_share, store) =
+        legacy_split_view_restore(facts);
+    kani::cover!(
+        facts.migrated && plan.persist.is_empty(),
+        "steady-state profile"
+    );
+    kani::cover!(!facts.migrated, "fresh profile");
+
+    // (c)
+    assert!(plan.workspace_visible == workspace_visible);
+    assert!(plan.properties_visible == properties_visible);
+    assert!(plan.workspace_preset == preset);
+    assert!(plan.workspace_share == workspace_share);
+    assert!(plan.properties_share == properties_share);
+
+    if facts.migrated {
+        // (a)
+        if facts.stored_workspace_is_exact_preset && facts.stored_properties_matches_desired {
+            assert!(plan.persist.is_empty());
+        }
+        // Only the two fractions can ever need persisting on a migrated profile.
+        assert!(!plan.persist.workspace_visible && !plan.persist.properties_visible);
+        assert!(!plan.persist.migrated);
+        assert!(plan.persist.workspace_fraction == !facts.stored_workspace_is_exact_preset);
+        assert!(plan.persist.properties_fraction == !facts.stored_properties_matches_desired);
+    } else {
+        // (b)
+        assert!(plan.persist.len() == 5);
+        assert!(store.workspace_visible == Some(plan.workspace_visible));
+        assert!(store.workspace_fraction == StoredFraction::Preset(plan.workspace_preset));
+        assert!(store.properties_visible == Some(plan.properties_visible));
+        assert!(
+            store.properties_fraction == StoredFraction::DesiredProperties(facts.current_width)
+        );
+        assert!(store.migrated == Some(true));
+        assert!(plan.workspace_preset == WorkspaceSidebarWidthPreset::DEFAULT);
+        // (d)
+        assert!(!plan.properties_visible);
+    }
 }
