@@ -33,6 +33,19 @@
 //!
 //! **No materialization.** Nothing here walks a lazily created toolkit
 //! collection; the fields are scalars and widget properties.
+//!
+//! **Persisted fractions read the settings writer's overlay.** Since
+//! `bound-window-construction-dispatch`, every LushText read of the application
+//! schema goes through the shared delayed instance (`ui::settings_writes`), so
+//! `persisted_workspace_fraction` and `persisted_properties_fraction` report the
+//! value LushText has decided to persist, which the writer flushes after the
+//! first frame, not the backend's possibly older copy. Their meaning for their
+//! consumers is unchanged: an allocation tick must never move either, and an
+//! explicit preset change or restore moves them at once.
+//!
+//! **Window construction** (`window_construction`) projects the startup and
+//! construction spans (`model::construction_spans`) and the settings writer's
+//! counters: durations in microseconds and counts, never a key, value, or path.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -40,6 +53,7 @@ use gtk4::prelude::*;
 use crate::config::keys;
 
 use super::super::LushtextWindow;
+pub use super::super::construction::WindowConstructionEvidence;
 use super::execution;
 
 /// Everything a test or probe may observe about the adaptive shell geometry.
@@ -83,6 +97,8 @@ pub struct ShellGeometryEvidence {
     pub workspace_sidebar_transition_pending: bool,
     /// Live window width the derivations are running against.
     pub window_width: i32,
+    /// What constructing this window cost, and what the settings writer did.
+    pub window_construction: WindowConstructionEvidence,
 }
 
 /// Read the whole adaptive shell geometry surface.
@@ -141,5 +157,6 @@ pub fn shell_geometry_evidence(window: &LushtextWindow) -> ShellGeometryEvidence
         split_width_syncing: imp.split_width_syncing.get(),
         workspace_sidebar_transition_pending: window.workspace_sidebar_transition_pending(),
         window_width: execution::current_window_width(window),
+        window_construction: window.window_construction_evidence(),
     }
 }

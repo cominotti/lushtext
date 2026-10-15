@@ -70,6 +70,44 @@ pub fn install(app: &impl gtk4::prelude::IsA<gtk4::Application>) {
     measurement::install(app.as_ref());
 }
 
+/// Record one startup or window-construction span in the probe's evidence
+/// stream (`bound-window-construction-dispatch`).
+///
+/// Without the `responsiveness-probes` feature this is an empty function.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn record_span(_name: &'static str, _start_us: i64, _end_us: i64) {}
+
+/// Record one startup or window-construction span in the probe's evidence
+/// stream (`bound-window-construction-dispatch`).
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn record_span(name: &'static str, start_us: i64, end_us: i64) {
+    measurement::record(crate::services::responsiveness_log::ProbeRecord::Span {
+        t_us: glib::monotonic_time(),
+        name,
+        start_us,
+        end_us,
+    });
+}
+
+/// The largest watchdog lateness observed since the probe was installed, which
+/// bounds the longest main-loop dispatch so far (module docs). `None` when no
+/// watchdog runs: without the `responsiveness-probes` feature, or when the
+/// measurement build was not asked to record.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn largest_dispatch_so_far_us() -> Option<u64> {
+    None
+}
+
+/// The largest watchdog lateness observed since the probe was installed, which
+/// bounds the longest main-loop dispatch so far (module docs). `None` when the
+/// measurement build was not asked to record.
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn largest_dispatch_so_far_us() -> Option<u64> {
+    measurement::largest_lateness_so_far_us()
+}
+
 #[cfg(any(test, feature = "responsiveness-probes"))]
 mod watchdog {
     //! The custom `GSource` behind the lateness watchdog.
@@ -301,6 +339,8 @@ mod measurement {
     struct Probe {
         writer: EvidenceWriter,
         aggregator: RefCell<LatenessAggregator>,
+        /// The largest lateness since install (`largest_lateness_so_far_us`).
+        largest_lateness_us: Cell<u64>,
         next_window: Cell<u32>,
         _watchdog: RefCell<Option<LatenessWatchdog>>,
     }
@@ -318,6 +358,12 @@ mod measurement {
         if let Some(probe) = probe() {
             probe.writer.send(record);
         }
+    }
+
+    /// The largest watchdog lateness since install, `None` when the probe is
+    /// not installed.
+    pub(super) fn largest_lateness_so_far_us() -> Option<u64> {
+        probe().map(|probe| probe.largest_lateness_us.get())
     }
 
     pub(super) fn install(app: &gtk4::Application) {
@@ -349,6 +395,7 @@ mod measurement {
         let probe = Rc::new(Probe {
             writer,
             aggregator: RefCell::new(LatenessAggregator::new(DEFAULT_LATE_THRESHOLD_US)),
+            largest_lateness_us: Cell::new(0),
             next_window: Cell::new(1),
             _watchdog: RefCell::new(None),
         });
@@ -368,6 +415,10 @@ mod measurement {
                 let Some(probe) = weak.upgrade() else {
                     return;
                 };
+                let lateness = u64::try_from(now_us.saturating_sub(ready_us)).unwrap_or(0);
+                probe
+                    .largest_lateness_us
+                    .set(probe.largest_lateness_us.get().max(lateness));
                 let records = probe.aggregator.borrow_mut().tick(now_us, ready_us);
                 for record in records {
                     probe.writer.send(record);

@@ -312,10 +312,7 @@ pub(super) fn cycle_invisible_characters(window: &LushtextWindow) {
         )
         .unwrap_or_default();
         let next = current.next();
-        let _ = window
-            .imp()
-            .settings
-            .set_string(keys::INVISIBLE_CHARACTERS_MODE, next.id());
+        crate::ui::settings_writes::set_string(keys::INVISIBLE_CHARACTERS_MODE, next.id());
         window.publish_status_message(
             &format!("Invisible characters: {}", next.label()),
             MessageKind::Info,
@@ -345,10 +342,7 @@ fn apply_invisible_mode(
 ) {
     editor.set_invisible_characters_mode(mode);
     editor.apply_invisible_characters_mode();
-    let _ = window
-        .imp()
-        .settings
-        .set_string(keys::INVISIBLE_CHARACTERS_MODE, mode.id());
+    crate::ui::settings_writes::set_string(keys::INVISIBLE_CHARACTERS_MODE, mode.id());
 
     window.publish_status_message(
         &format!("Invisible characters: {}", mode.label()),

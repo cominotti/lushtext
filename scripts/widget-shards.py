@@ -124,6 +124,7 @@ SHARDS: dict[str, Shard] = {
             "status_bar",
             "tab_strip",
             "transient_dismissal",
+            "window_construction",
             "window_preview",
             "workspace_entry_visibility",
             "workspace_section",

@@ -647,9 +647,9 @@ impl LushtextWorkspaceSection {
 
 /// Read the visibility rule once for a batch of folder-empty probes.
 pub(super) fn current_entry_visibility() -> WorkspaceEntryVisibility {
-    crate::ui::workspace_visibility::workspace_entry_visibility(&gio::Settings::new(
-        crate::config::APP_ID,
-    ))
+    crate::ui::workspace_visibility::workspace_entry_visibility(
+        &crate::ui::settings_writes::shared(),
+    )
 }
 
 pub(super) fn schedule_folder_empty_check(

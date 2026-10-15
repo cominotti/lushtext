@@ -169,7 +169,7 @@ impl Default for LushtextSidebar {
             persist_debounce: Debounce::default(),
             persistence: RefCell::default(),
             persistence_flush_waiters: RefCell::default(),
-            settings: gio::Settings::new(crate::config::APP_ID),
+            settings: crate::ui::settings_writes::shared(),
             visibility_signals: gtk_lush_signals::SignalBag::new(),
             reveal: super::reveal_execution::RevealState::default(),
         }

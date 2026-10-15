@@ -327,7 +327,7 @@ fn test_large_text_breakpoint_never_flips_the_pane_to_the_sheet() {
     let gtk_settings = gtk4::Settings::default().expect("default GTK settings");
     // 1.25 x 96 dpi, in the 1/1024 units `gtk-xft-dpi` takes.
     gtk_settings.set_gtk_xft_dpi(120 * 1024);
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     // Construct at the width it will be allocated at, so the restore-time
     // reconciliation already renders the pane.
     settings
@@ -381,7 +381,7 @@ fn test_doubled_text_scale_keeps_the_workspace_collapsed_at_the_minimum_width() 
     ensure_gtk_init();
     let gtk_settings = gtk4::Settings::default().expect("default GTK settings");
     gtk_settings.set_gtk_xft_dpi(192 * 1024);
-    let settings = gio::Settings::new(lushtext_core::config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_int(lushtext_core::config::keys::WINDOW_WIDTH, 700)
         .expect("set window width");

@@ -769,6 +769,37 @@ pub struct AutomationWindowSnapshot {
     pub notifications: AutomationNotificationSnapshot,
     /// Bounded visual geometry anchors used by screenshot invariant tooling.
     pub visual_geometry: AutomationVisualGeometrySnapshot,
+    /// What constructing this window cost, and what the settings writer did.
+    pub window_construction: AutomationWindowConstructionSnapshot,
+}
+
+/// Bounded window-construction evidence: span durations in microseconds and
+/// counts only, never a path, a setting key or value, or document content.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct AutomationWindowConstructionSnapshot {
+    /// GTK's own startup (`parent_startup`), reported, not budgeted.
+    pub startup_toolkit_us: Option<u64>,
+    /// LushText's startup work.
+    pub startup_lushtext_us: Option<u64>,
+    /// From `LushtextWindow::new` until control returned to the main loop.
+    pub window_construction_us: Option<u64>,
+    /// From `LushtextWindow::new` until the window's first painted frame.
+    pub first_frame_us: Option<u64>,
+    /// The largest main-loop dispatch before the first frame; `null` in a build
+    /// without the responsiveness watchdog, never `0`.
+    pub largest_dispatch_before_first_frame_us: Option<u64>,
+    /// Construction stages still to run.
+    pub stages_pending: u32,
+    /// Construction stages recorded.
+    pub stages_total: u32,
+    /// Backend writes the settings writer made before the first frame.
+    pub settings_writes_before_first_frame: u64,
+    /// Keys whose newest value the settings writer has not persisted yet.
+    pub settings_writer_pending: u64,
+    /// Values the settings writer has flushed.
+    pub settings_writer_flushed: u64,
+    /// Writes the settings writer dropped as equal to the current value.
+    pub settings_writer_dropped_equal: u64,
 }
 
 /// Non-content metadata for one tab.

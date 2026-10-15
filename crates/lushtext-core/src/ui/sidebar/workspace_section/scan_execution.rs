@@ -132,7 +132,7 @@ pub(super) fn populate_child_store(
         .dir_stores
         .borrow_mut()
         .insert(path.clone(), store.downgrade());
-    let settings = gtk4::gio::Settings::new(crate::config::APP_ID);
+    let settings = crate::ui::settings_writes::shared();
     let lookahead_cap =
         settings.uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP) as usize;
     let visibility = crate::ui::workspace_visibility::workspace_entry_visibility(&settings);

@@ -58,7 +58,7 @@ impl Default for LushtextPropertiesPanel {
             health_group: TemplateChild::default(),
             health_summary_row: TemplateChild::default(),
             health_review_button: TemplateChild::default(),
-            settings: gio::Settings::new(crate::config::APP_ID),
+            settings: crate::ui::settings_writes::shared(),
             health_detail_rows: RefCell::new(Vec::new()),
         }
     }

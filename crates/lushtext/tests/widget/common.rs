@@ -35,9 +35,14 @@ pub fn ensure_gtk_init() {
     GTK_INIT.call_once(|| {
         // Widget tests run in one isolated process before GTK startup, so they
         // can safely pin a memory-only GSettings backend for deterministic runs.
-        // SAFETY: widget tests set these process environment variables before
-        // GTK startup and before any background worker threads are spawned.
-        unsafe { std::env::set_var("GSETTINGS_BACKEND", "memory") };
+        // A test that measures backend writes selects the keyfile backend over
+        // a private config directory first (`keyfile_settings_backend`).
+        if std::env::var("GSETTINGS_BACKEND").as_deref() != Ok("keyfile") {
+            // SAFETY: widget tests set these process environment variables
+            // before GTK startup and before any background worker threads are
+            // spawned.
+            unsafe { std::env::set_var("GSETTINGS_BACKEND", "memory") };
+        }
         // Isolate session/draft I/O from the user's real data directory.
         // The harness parent hands every child attempt its own empty `TMPDIR`
         // inside one per-run root and removes it when the child exits, so this
@@ -62,6 +67,28 @@ pub fn ensure_gtk_init() {
         sourceview5::init();
         lushtext_core::register_resources();
     });
+}
+
+/// Select GSettings' keyfile backend over a private config directory for this
+/// test process, seeded with `seed` (the keyfile's text) when given, then
+/// initialize GTK. Returns the keyfile's path. Must run before anything else
+/// in the test touches GTK or GSettings; the harness runs every test in its own
+/// process, so the choice never leaks into another test.
+pub fn keyfile_settings_backend(seed: Option<&str>) -> std::path::PathBuf {
+    let config = std::env::temp_dir().join(format!("lushtext-keyfile-{}", std::process::id()));
+    let keyfile = config.join("glib-2.0/settings/keyfile");
+    let _ = fs_mutate::remove_dir_all_if_exists(&config);
+    let _ = fs_mutate::create_dir_all(keyfile.parent().expect("keyfile has a parent"));
+    if let Some(seed) = seed {
+        fixture::write_text(&keyfile, seed);
+    }
+    // SAFETY: set before GTK starts and before any worker thread exists.
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", &config);
+        std::env::set_var("GSETTINGS_BACKEND", "keyfile");
+    }
+    ensure_gtk_init();
+    keyfile
 }
 
 pub fn test_application() -> libadwaita::Application {

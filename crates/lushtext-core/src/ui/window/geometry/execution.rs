@@ -34,8 +34,8 @@
 //! returned decision.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{gio, glib};
 use libadwaita::prelude::AdwApplicationWindowExt;
 
 use crate::config::keys;
@@ -45,10 +45,12 @@ use super::super::imp::PREVIEW_LAYOUT_EDITOR;
 use super::policy::{
     self, AdaptiveShellInputs, AdaptiveShellLayout, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
     PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation, RenderedShellState,
-    ShellReconciliation, ShellWrite, WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout,
-    plan_shell_reconciliation, properties_breakpoint_condition, workspace_breakpoint_condition,
+    ShellReconciliation, ShellWrite, SplitViewRestoreFacts, SplitViewRestorePlan,
+    WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout, plan_shell_reconciliation,
+    properties_breakpoint_condition, workspace_breakpoint_condition,
 };
 use crate::ui::markdown_preview::PREVIEW_MIN_WIDTH_SP;
+use crate::ui::settings_writes;
 
 /// Turn a pane's whole-sp share into the fraction an `AdwOverlaySplitView`
 /// takes. The one place the shell geometry becomes `f64`: the policy decides
@@ -109,75 +111,119 @@ pub(in crate::ui::window) fn configure_split_views(
     properties_bottom_sheet.set_modal(false);
 }
 
-pub(in crate::ui::window) fn migrate_split_view_settings(
-    settings: &gio::Settings,
-    restored_width: i32,
-) {
-    if settings.boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED) {
-        return;
-    }
-
-    let width = restored_width.max(1);
-    let legacy_visible = if settings.user_value(keys::SIDEBAR_VISIBLE).is_some() {
-        settings.boolean(keys::SIDEBAR_VISIBLE)
-    } else {
-        true
-    };
-    let workspace_fraction = WorkspaceSidebarWidthPreset::DEFAULT.fraction();
-    let properties_fraction = desired_properties_fraction(width);
-
-    let _ = settings.set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, legacy_visible);
-    let _ = settings.set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, workspace_fraction);
-    let _ = settings.set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, false);
-    let _ = settings.set_double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION, properties_fraction);
-    let _ = settings.set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true);
+/// Whether two stored fractions are the same value (GSettings round-trips the
+/// `f64` the restore wrote exactly; the tolerance only absorbs float noise).
+fn same_fraction(left: f64, right: f64) -> bool {
+    (left - right).abs() <= f64::EPSILON
 }
 
-pub(in crate::ui::window) fn restore_workspace_split_view(window: &super::LushtextWindow) {
+/// Read, once, the stored facts the split-view restore is planned from, with
+/// both stored-fraction comparisons reduced to booleans here so the policy
+/// never sees a fraction.
+///
+/// The reads go through the shared settings instance (`ui::settings_writes`),
+/// so a value another window wrote and the writer has not flushed yet is the
+/// one planned from.
+fn split_view_restore_facts(
+    window: &super::LushtextWindow,
+    restored_width: i32,
+) -> SplitViewRestoreFacts {
+    let settings = &window.imp().settings;
+    let current_width = current_window_width(window);
+    let stored_workspace_fraction = settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION);
+    let stored_workspace_preset =
+        WorkspaceSidebarWidthPreset::from_fraction(stored_workspace_fraction);
+    SplitViewRestoreFacts {
+        migrated: settings.boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED),
+        legacy_sidebar_visible: settings
+            .user_value(keys::SIDEBAR_VISIBLE)
+            .map(|_| settings.boolean(keys::SIDEBAR_VISIBLE)),
+        restored_width,
+        current_width,
+        stored_workspace_visible: settings.boolean(keys::WORKSPACE_SIDEBAR_VISIBLE),
+        stored_properties_visible: settings.boolean(keys::PROPERTIES_SIDEBAR_VISIBLE),
+        stored_workspace_preset,
+        stored_workspace_is_exact_preset: same_fraction(
+            stored_workspace_fraction,
+            stored_workspace_preset.fraction(),
+        ),
+        stored_properties_matches_desired: same_fraction(
+            settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
+            desired_properties_fraction(current_width),
+        ),
+    }
+}
+
+/// Plan the split-view migration and restore (`policy::plan_split_view_restore`)
+/// and hand the keys whose stored value must change to the coalescing settings
+/// writer. Nothing reaches the GSettings backend here: the writer keeps the
+/// values in memory, where every later read during construction (the
+/// breakpoint installation reads the workspace preset) already sees them, and
+/// persists them after the first presented frame.
+pub(in crate::ui::window) fn plan_split_view_restore(
+    window: &super::LushtextWindow,
+    restored_width: i32,
+) -> SplitViewRestorePlan {
+    let facts = split_view_restore_facts(window, restored_width);
+    let plan = policy::plan_split_view_restore(facts);
+    let persist = plan.persist;
+    if persist.workspace_visible {
+        settings_writes::set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, plan.workspace_visible);
+    }
+    if persist.workspace_fraction {
+        settings_writes::set_double(
+            keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION,
+            plan.workspace_preset.fraction(),
+        );
+    }
+    if persist.properties_visible {
+        settings_writes::set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, plan.properties_visible);
+    }
+    if persist.properties_fraction {
+        settings_writes::set_double(
+            keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
+            desired_properties_fraction(facts.current_width),
+        );
+    }
+    if persist.migrated {
+        settings_writes::set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true);
+    }
+    plan
+}
+
+/// Apply the plan's workspace share and intent to the workspace split view.
+pub(in crate::ui::window) fn restore_workspace_split_view(
+    window: &super::LushtextWindow,
+    plan: &SplitViewRestorePlan,
+) {
     let width = current_window_width(window);
-    let visible = window
-        .imp()
-        .settings
-        .boolean(keys::WORKSPACE_SIDEBAR_VISIBLE);
-    let preset = workspace_sidebar_preset(window);
-    let fraction = split_fraction(policy::workspace_preset_share(preset, width));
     sync_workspace_sidebar_width_constraints(window, width);
     window.imp().split_width_synced_for_width.set(width);
     window
         .imp()
         .workspace_split_view
-        .set_sidebar_width_fraction(fraction);
-    let _ = window
-        .imp()
-        .settings
-        .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, preset.fraction());
+        .set_sidebar_width_fraction(split_fraction(plan.workspace_share));
     window
         .imp()
         .secondary_surfaces
         .workspace_requested_visible
-        .set(visible);
+        .set(plan.workspace_visible);
 }
 
-pub(in crate::ui::window) fn restore_properties_split_view(window: &super::LushtextWindow) {
-    let width = current_window_width(window);
-    let visible = window
-        .imp()
-        .settings
-        .boolean(keys::PROPERTIES_SIDEBAR_VISIBLE);
-    let fraction = effective_properties_fraction(window, width);
+/// Apply the plan's properties share and intent, then reconcile the shell.
+pub(in crate::ui::window) fn restore_properties_split_view(
+    window: &super::LushtextWindow,
+    plan: &SplitViewRestorePlan,
+) {
     window
         .imp()
         .properties_split_view
-        .set_sidebar_width_fraction(fraction);
-    let _ = window.imp().settings.set_double(
-        keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
-        desired_properties_fraction(width),
-    );
+        .set_sidebar_width_fraction(split_fraction(plan.properties_share));
     window
         .imp()
         .secondary_surfaces
         .properties_requested_visible
-        .set(visible);
+        .set(plan.properties_visible);
     sync_properties_breakpoint(window);
     sync_secondary_surfaces(window);
 }
@@ -390,10 +436,7 @@ pub(in crate::ui::window) fn set_workspace_sidebar_preset(
         .abs()
         > f64::EPSILON
     {
-        let _ = window
-            .imp()
-            .settings
-            .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction);
+        crate::ui::settings_writes::set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction);
     }
     sync_split_view_widths(window, current_window_width(window));
 }

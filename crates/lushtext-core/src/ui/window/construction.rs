@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Window-side recording of the construction spans: each stage of
+//! `LushtextWindow::new` and `constructed`, the end of the constructing
+//! dispatch, and the first painted frame.
+//!
+//! **Cross-cutting coordination with no workflow role**: it serves every
+//! workflow that builds part of the window, and owns no decision. The data
+//! lives in `model::construction_spans`; `ui::construction_spans` owns the
+//! clock and the process-wide startup spans. The shell-geometry evidence
+//! (`geometry::evidence`) projects the result.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::prelude::*;
+
+use super::LushtextWindow;
+use crate::ui::construction_spans;
+use crate::ui::settings_writes;
+
+/// Runs the stages of `LushtextWindow::new` one after another, recording each.
+pub(in crate::ui::window) struct ConstructionStages<'a> {
+    window: &'a LushtextWindow,
+    cursor_us: i64,
+}
+
+impl<'a> ConstructionStages<'a> {
+    /// Start recording stages for `window` from now.
+    pub(in crate::ui::window) fn new(window: &'a LushtextWindow) -> Self {
+        Self {
+            window,
+            cursor_us: construction_spans::now_us(),
+        }
+    }
+
+    /// Run one named stage and record how long it took.
+    pub(in crate::ui::window) fn run(&mut self, name: &'static str, stage: impl FnOnce()) {
+        stage();
+        self.cursor_us = self.window.record_construction_stage(name, self.cursor_us);
+    }
+}
+
+impl LushtextWindow {
+    /// Whether no other LushText window of this window's application exists.
+    pub(in crate::ui::window) fn is_last_lushtext_window(&self) -> bool {
+        self.application().is_none_or(|app| {
+            !app.windows().iter().any(|other| {
+                other != self.upcast_ref::<gtk4::Window>() && other.is::<LushtextWindow>()
+            })
+        })
+    }
+
+    /// Record the stage that ran from `start_us` until now, and return now so
+    /// the next stage can start there.
+    pub(crate) fn record_construction_stage(&self, name: &'static str, start_us: i64) -> i64 {
+        let end_us = construction_spans::now_us();
+        self.imp()
+            .construction
+            .borrow_mut()
+            .record_stage(name, start_us, end_us);
+        construction_spans::emit(name, start_us, end_us);
+        end_us
+    }
+
+    /// Begin this window's construction record at `started_us` (the start of
+    /// `LushtextWindow::new`, before the template was instantiated), and watch
+    /// for the end of the constructing dispatch and the first painted frame.
+    pub(in crate::ui::window) fn begin_construction_record(&self, started_us: i64) {
+        let template_end_us = {
+            let mut construction = self.imp().construction.borrow_mut();
+            construction.begin(started_us);
+            construction.stages().first().map(|stage| stage.start_us)
+        };
+        // `constructed` recorded its stages while the object was being built;
+        // the time before its first stage is template instantiation.
+        if let Some(template_end_us) = template_end_us {
+            self.imp().construction.borrow_mut().record_stage(
+                "template",
+                started_us,
+                template_end_us,
+            );
+            construction_spans::emit("template", started_us, template_end_us);
+        }
+
+        // GLib dispatches a high-priority idle on the first iteration after
+        // the dispatch that is building this window, before default-priority
+        // work: that is when construction returned control to the main loop.
+        let window_weak = self.downgrade();
+        glib::idle_add_local_full(glib::Priority::HIGH, move || {
+            if let Some(window) = window_weak.upgrade() {
+                let end_us = construction_spans::now_us();
+                window
+                    .imp()
+                    .construction
+                    .borrow_mut()
+                    .finish_construction(end_us);
+                construction_spans::emit("window_construction", started_us, end_us);
+            }
+            glib::ControlFlow::Break
+        });
+
+        let window_weak = self.downgrade();
+        self.connect_realize(move |_| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            window.watch_first_frame(started_us);
+        });
+    }
+
+    /// Record the first `after-paint` of this window's frame clock.
+    fn watch_first_frame(&self, started_us: i64) {
+        if self.imp().construction.borrow().first_frame_painted() {
+            return;
+        }
+        let Some(clock) = self.frame_clock() else {
+            return;
+        };
+        let handler = Rc::new(RefCell::new(None::<glib::SignalHandlerId>));
+        let handler_slot = Rc::clone(&handler);
+        let window_weak = self.downgrade();
+        let id = clock.connect_after_paint(move |clock| {
+            if let Some(id) = handler_slot.borrow_mut().take() {
+                clock.disconnect(id);
+            }
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let painted_us = construction_spans::now_us();
+            window
+                .imp()
+                .construction
+                .borrow_mut()
+                .record_first_frame(painted_us, construction_spans::largest_dispatch_so_far_us());
+            construction_spans::emit("first_frame", started_us, painted_us);
+            // The settings writer persists nothing before the first frame.
+            settings_writes::first_frame_presented();
+        });
+        handler.replace(Some(id));
+    }
+}
+
+/// What the window's construction cost, and what the settings writer did.
+///
+/// Integers only (the automation snapshot projects it as `window_construction`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WindowConstructionEvidence {
+    /// GTK's own startup (`parent_startup`), reported, not budgeted.
+    pub startup_toolkit_us: Option<u64>,
+    /// LushText's startup work.
+    pub startup_lushtext_us: Option<u64>,
+    /// From `LushtextWindow::new` until control returned to the main loop.
+    pub window_construction_us: Option<u64>,
+    /// From `LushtextWindow::new` until the window's first painted frame.
+    pub first_frame_us: Option<u64>,
+    /// The largest main-loop dispatch before the first frame, when the
+    /// measurement build's watchdog ran; `None` otherwise, never `Some(0)`.
+    pub largest_dispatch_before_first_frame_us: Option<u64>,
+    /// Construction stages recorded.
+    pub stages_total: u32,
+    /// Construction stages still to run (staged construction runs none later).
+    pub stages_pending: u32,
+    /// The longest recorded construction stage.
+    pub longest_stage_us: Option<u64>,
+    /// Backend writes the settings writer made before the first frame.
+    pub settings_writes_before_first_frame: u64,
+    /// Keys whose newest value the writer has not persisted yet.
+    pub settings_pending: u64,
+    /// Values the writer has flushed.
+    pub settings_flushed: u64,
+    /// Backend writes (flushes) the writer has made.
+    pub settings_flushes: u64,
+    /// Writes the writer dropped as equal to the current or persisted value.
+    pub settings_dropped_equal: u64,
+}
+
+impl LushtextWindow {
+    /// Read the window-construction part of the shell-geometry evidence
+    /// (`geometry::evidence`), which the automation snapshot also projects.
+    pub(crate) fn window_construction_evidence(&self) -> WindowConstructionEvidence {
+        let startup = construction_spans::startup_spans();
+        let writer = settings_writes::evidence();
+        let construction = self.imp().construction.borrow();
+        WindowConstructionEvidence {
+            startup_toolkit_us: startup.toolkit_us,
+            startup_lushtext_us: startup.lushtext_us,
+            window_construction_us: construction.window_construction_us(),
+            first_frame_us: construction.first_frame_us(),
+            largest_dispatch_before_first_frame_us: construction
+                .largest_dispatch_before_first_frame_us(),
+            stages_total: u32::try_from(construction.stages().len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(construction.dropped_stages()),
+            stages_pending: 0,
+            longest_stage_us: construction.longest_stage().map(|stage| stage.duration_us),
+            settings_writes_before_first_frame: writer.writes_before_first_frame,
+            settings_pending: writer.pending,
+            settings_flushed: writer.flushed,
+            settings_flushes: writer.flushes,
+            settings_dropped_equal: writer.dropped_equal,
+        }
+    }
+}

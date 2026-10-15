@@ -408,7 +408,7 @@ impl Default for LushtextSearchPanel {
                 list.set_activate_on_single_click(true);
                 list
             },
-            settings: gio::Settings::new(crate::config::APP_ID),
+            settings: crate::ui::settings_writes::shared(),
             runtime: SearchRuntimeState::default(),
             history: SearchHistoryState::default(),
             preview: SearchPreviewState::default(),

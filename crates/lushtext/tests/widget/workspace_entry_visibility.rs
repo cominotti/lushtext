@@ -16,7 +16,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita::prelude::*;
-use lushtext_core::config::{self, keys};
+use lushtext_core::config::keys;
 use lushtext_core::model::content_search::{ContentSearchOptions, SavedSearch, SearchQuerySpec};
 use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
 use lushtext_core::model::workspace_visibility::WorkspaceEntryVisibility;
@@ -39,7 +39,7 @@ struct VisibilityKeysReset(gio::Settings);
 impl VisibilityKeysReset {
     fn new() -> Self {
         ensure_gtk_init();
-        let settings = gio::Settings::new(config::APP_ID);
+        let settings = lushtext_core::ui::settings_writes::shared();
         settings.reset(keys::WORKSPACE_SHOW_HIDDEN_FILES);
         settings.reset(keys::WORKSPACE_EXCLUDED_NAMES);
         Self(settings)

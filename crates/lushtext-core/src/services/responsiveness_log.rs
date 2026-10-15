@@ -190,6 +190,20 @@ pub enum ProbeRecord {
         /// Whether the client answered the request.
         handled: bool,
     },
+    /// One named startup or window-construction span
+    /// (`bound-window-construction-dispatch`): an identifier the code chose,
+    /// never content.
+    Span {
+        /// When the probe recorded it.
+        t_us: i64,
+        /// The span's name (`startup_toolkit`, `window_construction`,
+        /// `stage:<name>`, `first_frame`, ...).
+        name: &'static str,
+        /// When the span started.
+        start_us: i64,
+        /// When it ended.
+        end_us: i64,
+    },
     /// Records the channel dropped since the previous written record.
     Dropped {
         /// When the writer noticed.
@@ -311,6 +325,18 @@ impl ProbeRecord {
                      \"handled\":{handled}}}",
                     trigger.as_str(),
                     JsonOption(*surrounding_bytes),
+                );
+            }
+            Self::Span {
+                t_us,
+                name,
+                start_us,
+                end_us,
+            } => {
+                let _ = write!(
+                    line,
+                    "{{\"kind\":\"span\",\"t_us\":{t_us},\"name\":\"{name}\",\
+                     \"start_us\":{start_us},\"end_us\":{end_us}}}"
                 );
             }
             Self::Dropped { t_us, count } => {
@@ -540,6 +566,7 @@ const fn record_time(record: &ProbeRecord) -> i64 {
         | ProbeRecord::Frame { t_us, .. }
         | ProbeRecord::Input { t_us, .. }
         | ProbeRecord::Im { t_us, .. }
+        | ProbeRecord::Span { t_us, .. }
         | ProbeRecord::Dropped { t_us, .. } => *t_us,
     }
 }
@@ -599,6 +626,12 @@ mod tests {
                 handled: true,
             },
             ProbeRecord::Dropped { t_us: 70, count: 3 },
+            ProbeRecord::Span {
+                t_us: 80,
+                name: "window_construction",
+                start_us: 5,
+                end_us: 75,
+            },
         ]
         .map(|record| record.to_json_line());
         assert_eq!(
@@ -636,6 +669,11 @@ mod tests {
              \"surrounding_bytes\":1894586,\"cursor_index\":12,\"handled\":true}\n"
         );
         assert_eq!(lines[7], "{\"kind\":\"dropped\",\"t_us\":70,\"count\":3}\n");
+        assert_eq!(
+            lines[8],
+            "{\"kind\":\"span\",\"t_us\":80,\"name\":\"window_construction\",\
+             \"start_us\":5,\"end_us\":75}\n"
+        );
         for line in lines {
             assert_eq!(line.matches('\n').count(), 1, "{line}");
         }

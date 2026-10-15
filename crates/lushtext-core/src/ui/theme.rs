@@ -93,7 +93,7 @@ pub(crate) fn load_css() {
         &font_provider,
         gtk4::STYLE_PROVIDER_PRIORITY_USER,
     );
-    let settings = gio::Settings::new(config::APP_ID);
+    let settings = crate::ui::settings_writes::shared();
     apply_font_css(&font_provider, &settings);
     // GSettings updates are GObject signals; these closures rebuild the small
     // display-wide CSS string whenever editor font preferences change.

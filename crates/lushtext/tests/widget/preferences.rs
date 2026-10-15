@@ -6,7 +6,7 @@ use crate::common::{ensure_gtk_init, fixture, fs_metadata, isolated_data_dir, wa
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use lushtext_core::config::{self, keys};
+use lushtext_core::config::keys;
 use lushtext_core::services::format_upgrade::{
     FORMAT_UPGRADE_BACKUP_DIR, test_support::ConverterRegistry,
 };
@@ -172,7 +172,7 @@ fn test_show_minimap_row_bound_to_settings() {
 #[test]
 fn test_minimap_long_line_markers_row_defaults_off_and_updates_setting() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings.reset(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE);
 
     let prefs = LushtextPreferences::new();
@@ -278,7 +278,7 @@ fn test_color_scheme_row_populated() {
 #[test]
 fn test_background_opacity_row_is_visible_with_default_percentage() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
         .expect("reset tab-content-opacity");
@@ -302,7 +302,7 @@ fn test_background_opacity_row_is_visible_with_default_percentage() {
 #[test]
 fn test_background_opacity_row_updates_setting_and_label() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 1.0)
         .expect("reset tab-content-opacity");
@@ -328,7 +328,7 @@ fn test_background_opacity_row_updates_setting_and_label() {
 #[test]
 fn test_background_opacity_row_restores_persisted_percentage() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_double(keys::TAB_CONTENT_OPACITY, 0.65)
         .expect("set tab-content-opacity");
@@ -343,7 +343,7 @@ fn test_background_opacity_row_restores_persisted_percentage() {
 #[test]
 fn test_workspace_sidebar_width_row_lists_all_presets() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3)
         .expect("set comfy preset");
@@ -366,7 +366,7 @@ fn test_workspace_sidebar_width_row_lists_all_presets() {
 #[test]
 fn test_workspace_sidebar_width_row_updates_setting() {
     ensure_gtk_init();
-    let settings = gio::Settings::new(config::APP_ID);
+    let settings = lushtext_core::ui::settings_writes::shared();
     settings
         .set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, 0.3)
         .expect("set comfy preset");
