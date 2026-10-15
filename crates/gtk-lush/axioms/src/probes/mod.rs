@@ -41,7 +41,12 @@ pub(crate) mod a32;
 pub(crate) mod a33;
 pub(crate) mod a34;
 pub(crate) mod a37;
+pub(crate) mod a38;
+pub(crate) mod a39;
+pub(crate) mod a40;
+pub(crate) mod a41;
 pub(crate) mod adaptive;
+pub(crate) mod gsettings;
 pub(crate) mod text;
 
 use gtk4::prelude::*;
@@ -82,6 +87,10 @@ pub use a32::probe_a32;
 pub use a33::probe_a33;
 pub use a34::probe_a34;
 pub use a37::probe_a37;
+pub use a38::probe_a38;
+pub use a39::probe_a39;
+pub use a40::probe_a40;
+pub use a41::probe_a41;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);
