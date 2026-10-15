@@ -156,6 +156,10 @@ Unlisted visibility, and the `edge` channel first.
 ## Preferences
 
 Preferences are stored with GSettings under `dev.cominotti.lushtext`.
+A change takes effect in every open window at once and is written to disk
+shortly afterwards (at most once every half second, and at once when the last
+window closes or the app quits), so opening a window and resizing or toggling
+panels never waits for the settings file to be synced.
 
 ### Editor
 

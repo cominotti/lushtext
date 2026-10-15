@@ -18,11 +18,21 @@ input to presented frame, measured on the maintainer's desktop.
 |---|---|---|---|
 | C1 | `document-scale-policy` | Removes the multi-second stalls on open and the A32 CRITICAL, using C0's measured thresholds as finalized by the idle re-confirmation of 2026-10-13 (`L_syntax` 2,000, `L_search_highlight` 10,000, `L_minimap` 22,000, `L_invisibles` 50,000, `N_visible` 500,000, `V_batch` 56,000). Also fixes the `\n`-only install slicer (pre-existing blocker). | Thresholds recorded in `long-line-documents.md` ("Idle re-confirmation (2026-10-13)") |
 | C2 | `long-line-protected-view` | The only way to make interaction inside giant paragraphs instant with stock GtkTextView (log attrs, IM and AT read the whole paragraph). | `L_protect` is not derivable from the frame half (see §3); C2 uses the stall basis (`L_protect_stall` 500) |
-| C4 | `bound-window-construction-dispatch` | Window construction stalls 150–196 ms to first frame on **every** open, short files included — the largest budget violation C0 measured. Independent of C1/C2 code; can run in parallel with them. | — |
+| C4 | `bound-window-construction-dispatch` | **Implemented (2026-10-15, PR stacked on #55):** every GSettings write left window construction and interaction dispatches (construction 135–151 → 22–24 ms on a fresh keyfile profile, 77–91 → 22–24 ms steady). Not met: B_settle per construction dispatch (the 22–26 ms residual) and the keyfile flush (12.8–17.9 ms); see C4b and the dconf question in `long-line-documents.md` ("C4"). | — |
 | C3 | `sliced-protected-install` | Conditional: adopt only if its own gate (the install case against C2) is over `B_settle`. C0 did not run the install group. | Its own first task |
 | C5 | `explore-editing-long-paragraphs` | Optional evaluation: editing giant paragraphs needs segmentation or a custom widget. Only after C2, and only if the maintainer wants it. | — |
 
 ## 2. New candidates found by C0 (not yet proposed)
+
+0. **C4b `first-frame-shell` (found by C4, 2026-10-15).** After C4 the
+   constructing dispatch is GTK's `present` of the whole window (11.8–14.4 ms
+   idle) plus template instantiation (8.5–11 ms), and the first paint is
+   another ~15 ms dispatch; staging every hidden secondary surface saves only
+   3–4 ms. Meeting B_settle per dispatch needs a minimal first-frame shell
+   presented first and the editor shell built in later bounded dispatches.
+   Needs a maintainer decision together with C4's dconf question (whether the
+   Flatpak gains dconf access so the settings flush stops paying a 12.8–17.9 ms
+   `fsync` on the GTK thread).
 
 1. **Explain the A37 residual that reappeared once.** On 2026-10-13 the lane
    logged the fixed `GtkGizmo` snapshot warning once (find in a 15,000-character
