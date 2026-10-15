@@ -20,7 +20,7 @@
 #   make fuzz-corpus-replay - Replay committed fuzz corpus seeds on stable Rust
 #   make fuzz-smoke  - Run bounded fuzz smoke against temporary corpus copies
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
-#   make kani        - Run every Kani proof harness (requires the pinned Kani)
+#   make kani        - Run every Kani proof harness (requires the pinned Kani; capped at KANI_MEMORY_MAX)
 #   make proof-strength - Kani mutation oracle vs the tests arm (local, resumable)
 #   make formal-evaluation - LOCAL ONLY: rerun the Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
 #   make test-widget - Widget tests under the private headless runner
@@ -157,6 +157,13 @@ KANI_TARGET_DIR ?= target/kani
 # Measurement mode: a JSON path makes `make kani` record each shard's wall time,
 # peak memory, and per-harness verification time (`kani-shards.py run --measure`).
 KANI_MEASURE ?=
+# Memory cap for the whole `make kani` run (cargo plus every CBMC), enforced by
+# scripts/with-memory-cap.sh as a systemd user scope with MemoryMax and no swap:
+# an exploding harness is OOM-killed alone (exit 137) instead of pushing the
+# workstation into swap. 16G stays above the 12 GiB per-shard CI budget
+# `make check-kani-shards` enforces. `none` opts out; on CI without a systemd
+# user manager the run is uncapped.
+KANI_MEMORY_MAX ?= 16G
 # Proof-strength lane (scripts/proof-strength.py): Kani harnesses as a mutation
 # oracle, beside cargo-mutants' tests arm. LOCAL by default; see
 # docs/mutation-testing.md. MODULE is an ORACLES path of scripts/kani-shards.py
@@ -319,7 +326,7 @@ fuzz-smoke:
 # documented counterexample.
 kani:
 	@set -eu; $(KANI_VERSION_GUARD); \
-	./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
+	./scripts/with-memory-cap.sh "$(KANI_MEMORY_MAX)" ./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
 
 # The pinned-Kani guard shared by the Kani and proof-strength lanes.
 KANI_VERSION_GUARD = installed=$$(cargo kani --version 2>/dev/null | sed -n 's/^Kani Rust Verifier \([0-9.]*\).*/\1/p' | head -n 1 || true); \
@@ -354,6 +361,7 @@ formal-evaluation:
 check-kani-shards:
 	@echo "Checking the Kani shard table..."
 	./scripts/kani-shards.py check --self-test
+	./scripts/with-memory-cap.sh --self-test
 	./scripts/proof-strength.py --self-test
 
 # Every widget test belongs to exactly one CI shard of scripts/widget-shards.py,

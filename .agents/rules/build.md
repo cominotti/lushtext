@@ -67,7 +67,7 @@ make performance-smoke # lightweight Criterion performance smoke
 make responsiveness-build # measurement binary with the smoke-only responsiveness-probes feature, into target/responsiveness/
 make responsiveness-smoke # long-line responsiveness lane (RESPONSIVENESS_TIER=quick|full); nightly/manual, not in end-user-smoke
 make check-responsiveness-lane # (in check-policy) fixture generator and lane driver self-tests
-make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode)
+make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode, KANI_MEMORY_MAX=16G memory cap)
 make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
 make check-kani-shards # every Kani harness in exactly one CI shard, each shard measured within its budget (no Kani needed)
 make proof-strength # LOCAL: Kani harnesses as a mutation oracle beside the cargo-mutants tests arm (PROOF_STRENGTH_MODULE=<path|all>, PROOF_STRENGTH_TIER=ci|all, PROOF_STRENGTH_SHARD=k/n, PROOF_STRENGTH_ARM=tests|kani|both)
@@ -626,6 +626,16 @@ invariant; tighten the generator or use the deep lane.
   `scripts/kani-shards.py` with its own `KANI_TARGET_DIR` (`target/kani`), and
   fails when the installed Kani is not the pinned version or any harness fails;
   `make kani KANI_SHARD=<shard>` runs one shard (`scripts/kani-shards.py list`).
+  The whole run executes inside a memory-capped systemd user scope
+  (`scripts/with-memory-cap.sh`, `KANI_MEMORY_MAX`, default `16G`,
+  `MemorySwapMax=0`): a harness whose CBMC outgrows the cap is OOM-killed alone
+  (exit 137). On 2026-10-15 an unmeasured harness reached 59.6 GB and left the
+  workstation with ~250 MB free; hitting the cap is a finding to fix by the fit
+  order below, never a reason to raise it. Locally the wrapper refuses to run
+  uncapped when no user manager exists (`KANI_MEMORY_MAX=none` opts out
+  explicitly); CI containers have none and run uncapped under the shard
+  budget. Run new harnesses through `make kani`, not a bare `cargo kani`, so
+  the cap applies; `make check-kani-shards` self-tests the wrapper.
   Every harness belongs to exactly one shard, and `make check-kani-shards` (in
   `make check-policy`, no Kani needed) fails when a harness anywhere under
   `crates/` matches no shard or several, so a harness cannot silently drop out

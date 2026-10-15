@@ -306,7 +306,7 @@ make gtk-axioms  # Every gtk-lush-axioms probe + sample --check under private he
 make gtk-axiom-sample AXIOM=<id> [CHECK=1] # Watch one GTK axiom sample on the desktop, or its headless verdict
 make gtk-axioms-runtimes # LOCAL ONLY: rerun sample checks inside installed GNOME SDKs (50, nightly)
 make check-gtk-axioms # (in check-policy) GTK axiom ledger, catalogue, probes, and samples agree
-make kani        # Every Kani proof harness (pinned Kani 0.68.0; KANI_SHARD=<shard> for one, KANI_MEASURE=<json> to record wall time/peak memory/per-harness time; sharded CI lane, pull-request-gated shards also run on PRs)
+make kani        # Every Kani proof harness (pinned Kani 0.68.0; KANI_SHARD=<shard> for one, KANI_MEASURE=<json> to record wall time/peak memory/per-harness time; whole run capped at KANI_MEMORY_MAX=16G, no swap, via scripts/with-memory-cap.sh; sharded CI lane, pull-request-gated shards also run on PRs)
 make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data); never a gate or CI lane — see docs/next/formal-verification-quint-vs-tlaplus.md
 make check-kani-shards # Every Kani harness sits in exactly one CI shard, and every shard has a measured runner budget within its margins (no Kani needed)
 make proof-strength # LOCAL: Kani harnesses as a mutation oracle beside the cargo-mutants tests arm (PROOF_STRENGTH_MODULE/TIER/SHARD/ARM; resumable, one CBMC at a time)
