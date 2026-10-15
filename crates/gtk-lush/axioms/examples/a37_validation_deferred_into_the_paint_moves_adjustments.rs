@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A37: typing, or widening a tag, inside a frame (a tick callback,
-//! as GTK handles a key press inside the frame) makes `GtkTextView` flush its
-//! validation from its snapshot and change the scroll adjustments there; the
+//! Sample for A37: typing, widening a tag, or widening the view's left margin
+//! (with a redraw of the view: the margin setter queues none) inside a frame
+//! (a tick callback, as GTK handles a key press inside the frame) makes
+//! `GtkTextView` flush its validation from its snapshot and change the scroll
+//! adjustments there; the
 //! readout counts those changes, and the terminal may show `Trying to
 //! snapshot GtkGizmo … without a current allocation`. "Queue allocation
 //! before paint" installs the workaround, after which the same changes count
@@ -23,6 +25,7 @@ fn build(ui: &support::SampleUi) {
     for (label, change) in [
         ("Type in frames", FrameChange::Type),
         ("Widen a tag in frames", FrameChange::Tag),
+        ("Widen the left margin in frames", FrameChange::Margin),
     ] {
         let fixture = fixture.clone();
         let counter = Rc::clone(&counter);

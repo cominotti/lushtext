@@ -6,19 +6,26 @@
 //! the wiring that steers one GTK behaviour (ledger A37) that every editing
 //! workflow shares.
 //!
-//! `GtkTextView` validates the lines an edit, a caret move or a tag change
-//! invalidated from an idle (`first_validate_callback`, priority
-//! `GTK_PRIORITY_RESIZE - 2`). A frame runs its layout and paint in one
-//! dispatch, so the idle cannot run first when the change was made inside the
-//! frame (GTK delivers input in its flush-events phase), nor when it was made
-//! just before a frame that input started: GDK starts that frame from a
-//! source of priority `G_PRIORITY_DEFAULT + 1`, above the idle's (a
-//! `GtkSourceSearchContext` scan after a find is such a change).
-//! Unless the view itself is allocated in that frame's layout phase,
-//! `gtk_text_view_paint` then flushes the validation from inside the
-//! snapshot: a line that grew past the viewport widens the horizontal
-//! adjustment, a queued scroll moves either adjustment, and the scrollbar —
-//! already allocated, and snapshotted after its child — logs
+//! `GtkTextView` validates the lines an edit, a caret move, a tag change or a
+//! change of the view's default text style invalidated from an idle
+//! (`first_validate_callback`, priority `GTK_PRIORITY_RESIZE - 2`). A frame
+//! runs its layout and paint in one dispatch, so the idle cannot run first
+//! when the change was made inside the frame (GTK delivers input in its
+//! flush-events phase), nor when it was made just before a frame started by
+//! input: GDK starts that frame from a source of priority
+//! `G_PRIORITY_DEFAULT + 1`, above the idle's. "Input" includes the motion
+//! GTK synthesizes after every relayout (`gtk_window_native_layout` requests
+//! it whenever the window needed an allocation), so every frame of a layout
+//! animation — the search bar sliding in — starts that way, with no device
+//! input at all. A `GtkSourceSearchContext` scan after a find, and the
+//! end-of-document overscroll that follows a viewport height change (an idle
+//! that sets the bottom margin), are such changes.
+//! Unless the view itself is allocated in that frame's layout phase and is
+//! redrawn in it, `gtk_text_view_paint` then flushes the validation from
+//! inside the snapshot: a line that grew past the viewport widens the
+//! horizontal adjustment, a new margin changes `upper`, a queued scroll moves
+//! either adjustment, and the scrollbar — already allocated, and snapshotted
+//! after its child — logs
 //! `Trying to snapshot GtkGizmo … without a current allocation` for its trough.
 //!
 //! The fix makes the layout phase allocate the view whenever validation may be
@@ -27,6 +34,11 @@
 //!
 //! - an edit or caret move queues the view's allocation at once, which also
 //!   covers changes made in the frame's update phase;
+//! - so does a change of a view property whose setter changes the default
+//!   text style (`DEFAULT_STYLE_PROPERTIES`: margins, tabs, wrapping, line
+//!   spacing, indent, justification, editability). Each setter invalidates
+//!   every line and queues nothing — no resize, allocation or redraw — so the
+//!   validation waits for whichever frame redraws the view next;
 //! - a tag change (applied, removed, or a size-changing property of a tag)
 //!   only marks the view, and the frame queues the allocation:
 //!   at `before-paint` for a change made before the frame, after its layout
@@ -38,7 +50,9 @@
 //!
 //! What GtkSourceView invalidates from inside its own snapshot cannot be moved
 //! out of that frame; the allocation queued for the next frame keeps it from
-//! lingering.
+//! lingering. A CSS or state-flag change (pointer, focus, backdrop) also
+//! invalidates lines without an allocation, but it changes colours only, so
+//! revalidating those lines in the paint never changes an adjustment.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -48,6 +62,26 @@ use gtk_lush_signals::SignalBag;
 use gtk4::prelude::*;
 
 use super::LushtextEditorPage;
+
+/// `GtkTextView` properties whose setters change the view's default text
+/// style: each calls `gtk_text_layout_default_style_changed`, which
+/// invalidates every line, and queues no resize, allocation or redraw
+/// (`gtktextview.c`, GTK 4.22; ledger A37). `notify` follows only a real
+/// change, except for `tabs`, which notifies on every call.
+const DEFAULT_STYLE_PROPERTIES: [&str; 12] = [
+    "wrap-mode",
+    "editable",
+    "pixels-above-lines",
+    "pixels-below-lines",
+    "pixels-inside-wrap",
+    "justification",
+    "left-margin",
+    "right-margin",
+    "top-margin",
+    "bottom-margin",
+    "indent",
+    "tabs",
+];
 
 /// Per-tab state of the frame-validation workaround.
 #[derive(Default)]
@@ -70,9 +104,9 @@ impl FrameValidationState {
 }
 
 impl LushtextEditorPage {
-    /// Make the frame's layout phase validate what an edit, caret move or tag
-    /// change invalidated, so GTK never does it inside the snapshot (ledger
-    /// A37).
+    /// Make the frame's layout phase validate what an edit, caret move, tag
+    /// change or default-style change invalidated, so GTK never does it inside
+    /// the snapshot (ledger A37).
     pub(super) fn setup_frame_validation(&self) {
         let buffer = self.buffer();
         {
@@ -118,6 +152,16 @@ impl LushtextEditorPage {
         }
 
         let source_view = self.source_view();
+        for property in DEFAULT_STYLE_PROPERTIES {
+            // The view is a template child: these handlers live as long as
+            // the editor and need no teardown.
+            let editor_weak = self.downgrade();
+            source_view.connect_notify_local(Some(property), move |_, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.validate_in_next_layout();
+                }
+            });
+        }
         {
             let editor_weak = self.downgrade();
             source_view.connect_realize(move |view| {

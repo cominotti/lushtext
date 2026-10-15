@@ -290,7 +290,11 @@ the view is allocated in that frame's layout, so the scroll adjustments change
 after the scrollbars were allocated. Its probe counts adjustment emissions
 inside the paint phase (24 typing, 10 tagging, 0 and 0 with the view's
 allocation queued before the paint); LushText's
-`ui/editor_page/frame_validation.rs` relies on the last of those.
+`ui/editor_page/frame_validation.rs` relies on the last of those. On
+2026-10-14 (`explain-a37-residual`) the entry grew a third route found by the
+lane's one-off residual: a default-style property change (a margin; its setter
+invalidates every line and queues nothing) — 24 emissions inside the paint, 0
+with the allocation queued on the property's `notify`.
 
 The same change added the first Kani harnesses over a **budget** rather than a
 geometry or journal policy: `model/responsiveness_budget/kani_proofs.rs` proves

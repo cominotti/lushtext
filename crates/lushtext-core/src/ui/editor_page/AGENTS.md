@@ -25,7 +25,7 @@ This folder owns one open editor tab: buffer state, file I/O choreography, exter
   `minimap/` role home, dynamic editor overscroll in `overscroll.rs`, bookmark projection
   in `bookmarks.rs`, external monitor behavior in `monitor.rs`, and in-tab
   search-bar behavior in `search.rs`.
-- Keep the frame-phase validation wiring in `frame_validation.rs` (cross-cutting, no role; ledger A37): the view's allocation is queued before the paint after edits, caret moves and tag changes, so GTK never validates lines (and moves the scroll adjustments) inside the snapshot.
+- Keep the frame-phase validation wiring in `frame_validation.rs` (cross-cutting, no role; ledger A37): the view's allocation is queued before the paint after edits, caret moves, tag changes and changes of the view's default-style properties (margins, tabs, wrapping, line spacing, indent, justification, editability — their setters invalidate every line and queue nothing), so GTK never validates lines (and moves the scroll adjustments) inside the snapshot. Setting such a property elsewhere (overscroll's bottom margin, Focus Mode's side margins) needs no extra call; the `notify` hook covers it.
 - Keep `imp.rs` focused on template/state wiring and helper routines shared by those workflows.
 
 ## Local Contracts

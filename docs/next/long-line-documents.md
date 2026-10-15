@@ -383,10 +383,45 @@ settle and frame stalls.
 find phase's worst stall (10.8 ms), and the lane failed the run as designed.
 It did not reproduce in 94 further runs (67 of the same case), all with the
 ring-buffer shim from the original investigation and 76 of them beside 14
-busy threads. It is the A37 residual the blocker row below names ("not
-observed" until now): **open**, with no root cause yet, and listed first among
-the next candidates in `long-line-evolution.md`. C1's task 8.4a says nothing
-is left for C1; that holds only until this is explained.
+busy threads.
+
+**Explained and fixed (2026-10-14, `explain-a37-residual`).** The find
+phase opens the search bar, whose 150 ms slide shrinks the editor viewport
+frame by frame. Every page-size change schedules the end-of-document
+overscroll idle (`ui/editor_page/overscroll.rs`), which sets the view's bottom
+margin. `gtk_text_view_set_bottom_margin`, like every setter of a property
+that changes the view's default text style, invalidates every line and queues
+no resize, allocation or redraw; `frame_validation.rs` hooked none of them.
+Normally the validation idle (`GTK_PRIORITY_RESIZE - 2`) runs right after the
+overscroll idle. But every frame of the slide starts from the frame clock's
+`flush_idle` (`GDK_PRIORITY_EVENTS + 1`), because GTK synthesizes a motion event
+after each relayout (`gtk_window_native_layout` → `gdk_surface_request_motion`),
+so when the main thread is preempted right after the overscroll idle — the
+900 % `java` burst — the next frame is already due and wins. After the slide's
+last frame that frame no longer allocates the view; if it redraws it,
+`gtk_text_view_paint` flushes the validation and the new margin grows the
+vertical `upper` inside the snapshot (symbolized: `gtk_text_view_paint` →
+`gtk_text_view_set_vadjustment_values`), and the vertical scrollbar's trough
+logs the warning, ~45 ms after the slide ended (+195 ms into the phase).
+
+Reproduction: a temporary trace build that records each frame phase and
+whether `first_validate_callback` is pending (found through
+`g_main_context_find_source_by_funcs_user_data` on the view), and simulates
+the preemption with a 12 ms busy wait in the bottom margin's `notify` plus a
+redraw of the view: the lane's `paragraph/15000` wrap-on find case logged the
+warning in 2 of 3 runs and failed as designed (in all 3 the vertical
+`upper` changed inside the paint). Fix: `frame_validation.rs` queues the
+view's allocation on the `notify` of every default-style property
+(`DEFAULT_STYLE_PROPERTIES`); the same simulation then gave 0 in-paint
+changes and no warning in 15 runs (plain, at, probe-im × 5), and 48
+unsimulated runs under induced load (14 and 24 busy threads on the lane's 16
+CPUs, three variants) gave no pending validation at a paint and no warning.
+The same in-frame change in a widget test counted 20 adjustment emissions
+inside the paint without the fix and 0 with it. A37's ledger entry, probe (a
+margin run: 24 inside the paint, 0 with the workaround) and sample now cover
+default-style properties, and the regression test is
+`editor_page::test_bottom_margin_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot`.
+C1's task 8.4a holds again: nothing is left for C1.
 
 ## Axioms each change cites
 
@@ -436,7 +471,7 @@ fixed here fails the lane if it reappears.
 | `GtkSourceMap` detach with a pending update tick emits `Gtk-CRITICAL` and `GLib-GObject-CRITICAL` (axiom A32) | C1 |
 | The install slicer splits only on `\n`, so CR-only and U+2029 documents install in one GTK turn | C1 |
 | Window construction stalls the main loop for about 190 ms on every open | C4 |
-| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`, the trough of the editor's horizontal or vertical scrollbar. **Fixed in C0** (pre-existing-blockers rule), so it is no longer owned by C1. Root cause, confirmed against GTK 4.22.5 and GtkSourceView 5.20.0 (ledger **A37**): `GtkTextView` validates invalidated lines from an idle at `GTK_PRIORITY_RESIZE - 2`, but a change made inside a frame — the key press of the smallest reproduction (one 500-character line, wrap off, Ctrl+Home and typing) is handled in the frame clock's flush-events phase — or just before a frame that input started (`gdkframeclockidle.c` runs it from `flush_idle` at `GDK_PRIORITY_EVENTS + 1`; find in dense and 1 MB documents, where GtkSourceView's search scan changes tags from an idle) leaves that idle pending at paint time. The view is not re-allocated in that frame's layout, so `gtk_text_view_paint` flushes the validation inside the snapshot (`gtk_text_view_flush_first_validate` → `gtk_text_view_update_adjustments`): a widened line or a queued scroll changes the scroll adjustments, `GtkRange` queues its trough's allocation, and `GtkScrolledWindow` snapshots the scrollbar after its child. Lines that fit the viewport never change `upper`, which is why they never warned. The `mark-set` handlers that run inside GtkSourceView's snapshot were ruled out: disabling LushText's Notes handler left the warning in place. Fix: `ui/editor_page/frame_validation.rs` queues the view's allocation on every edit and caret move, and before the paint (at `before-paint` or after the frame clock's layout handlers) after a tag change, so `gtk_text_view_size_allocate` flushes the validation in layout. Evidence: widget tests `editor_page::test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot` (20 adjustment changes inside the paint before the fix, 0 after) and `editor_page::test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 without the tag handling, 0 with it), probe A37, and the lane: the minimal case and dense 500/2000/50000, total-size 1/5 MB and paragraph 500/15000/22000 (all phases) show no warning, nor do four more repetitions each of dense 500 and total-size 1 MB (before the fix dense 500 warned on find in 3 of 5 runs). The lane classifier now treats this warning as a **regression that fails the run** (`FIXED_DEFECTS` in `scripts/responsiveness-smoke-driver.py`), not as an owned finding. Residual: a size-changing tag that GtkSourceView applies inside its own snapshot (highlighting the visible region) is still validated in that paint; the editor validates it in the next frame's layout. **Observed once on 2026-10-13** (find in a 15,000-character wrapped paragraph beside heavy CPU load, `rr-20261013T210157Z-toolbx-1753909`) and not reproduced in 94 further runs; root cause open (see "Idle re-confirmation (2026-10-13)") | fixed in C0; residual open |
+| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`, the trough of the editor's horizontal or vertical scrollbar. **Fixed in C0** (pre-existing-blockers rule), so it is no longer owned by C1. Root cause, confirmed against GTK 4.22.5 and GtkSourceView 5.20.0 (ledger **A37**): `GtkTextView` validates invalidated lines from an idle at `GTK_PRIORITY_RESIZE - 2`, but a change made inside a frame — the key press of the smallest reproduction (one 500-character line, wrap off, Ctrl+Home and typing) is handled in the frame clock's flush-events phase — or just before a frame that input started (`gdkframeclockidle.c` runs it from `flush_idle` at `GDK_PRIORITY_EVENTS + 1`; find in dense and 1 MB documents, where GtkSourceView's search scan changes tags from an idle) leaves that idle pending at paint time. The view is not re-allocated in that frame's layout, so `gtk_text_view_paint` flushes the validation inside the snapshot (`gtk_text_view_flush_first_validate` → `gtk_text_view_update_adjustments`): a widened line or a queued scroll changes the scroll adjustments, `GtkRange` queues its trough's allocation, and `GtkScrolledWindow` snapshots the scrollbar after its child. Lines that fit the viewport never change `upper`, which is why they never warned. The `mark-set` handlers that run inside GtkSourceView's snapshot were ruled out: disabling LushText's Notes handler left the warning in place. Fix: `ui/editor_page/frame_validation.rs` queues the view's allocation on every edit and caret move, and before the paint (at `before-paint` or after the frame clock's layout handlers) after a tag change, so `gtk_text_view_size_allocate` flushes the validation in layout. Evidence: widget tests `editor_page::test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot` (20 adjustment changes inside the paint before the fix, 0 after) and `editor_page::test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 without the tag handling, 0 with it), probe A37, and the lane: the minimal case and dense 500/2000/50000, total-size 1/5 MB and paragraph 500/15000/22000 (all phases) show no warning, nor do four more repetitions each of dense 500 and total-size 1 MB (before the fix dense 500 warned on find in 3 of 5 runs). The lane classifier now treats this warning as a **regression that fails the run** (`FIXED_DEFECTS` in `scripts/responsiveness-smoke-driver.py`), not as an owned finding. Residual: a size-changing tag that GtkSourceView applies inside its own snapshot (highlighting the visible region) is still validated in that paint; the editor validates it in the next frame's layout. **Observed once on 2026-10-13** (find in a 15,000-character wrapped paragraph beside heavy CPU load, `rr-20261013T210157Z-toolbx-1753909`) and not reproduced in 94 further runs; **explained and fixed 2026-10-14**: a second route, the overscroll idle's bottom-margin change (a default-style property: invalidates every line, queues nothing) just before a frame GTK started from its synthesized post-relayout motion, which redrew the view; `frame_validation.rs` now also queues the allocation on those properties' `notify` (see "Idle re-confirmation (2026-10-13)") | fixed in C0; residual fixed |
 
 
 

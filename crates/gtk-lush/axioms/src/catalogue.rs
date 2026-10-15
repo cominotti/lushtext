@@ -597,17 +597,21 @@ const CATALOGUE: &[Axiom] = &[
     Axiom {
         id: AxiomId::new(37),
         name: "a37_validation_deferred_into_the_paint_moves_adjustments",
-        statement: "a change that invalidates GtkTextView lines inside a frame (an edit or a tag \
-                    change in the update phase, as input is handled in the flush-events phase) \
+        statement: "a change that invalidates GtkTextView lines inside a frame (an edit, a tag \
+                    change, or a change of a default-style property such as a margin, whose \
+                    setter invalidates every line and queues no resize, allocation or redraw; \
+                    in the update phase, as input is handled in the flush-events phase) \
                     leaves the view's validation idle pending at paint time, and unless the view \
                     is allocated in that frame's layout phase, gtk_text_view_paint flushes it \
-                    from inside the snapshot, changing the scroll adjustments after the \
-                    scrollbars were allocated (GTK then may warn that it snapshots the \
-                    scrollbar's trough without a current allocation); queueing the view's \
-                    allocation before the paint moves every such change into layout",
+                    from inside the snapshot of any frame that redraws the view, changing the \
+                    scroll adjustments after the scrollbars were allocated (GTK then may warn \
+                    that it snapshots the scrollbar's trough without a current allocation); \
+                    queueing the view's allocation before the paint moves every such change \
+                    into layout",
         dependent_designs: &[
             "LushText editor page (ui/editor_page/frame_validation.rs): queues the view's \
-             allocation on every edit and caret move, and before the paint after a tag change",
+             allocation on every edit, caret move and default-style property change, and \
+             before the paint after a tag change",
             "document-scale-policy (C1): wide lines and large documents reach the scrollbar \
              warning through it",
         ],

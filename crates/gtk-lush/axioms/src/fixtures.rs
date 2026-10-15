@@ -201,7 +201,8 @@ pub mod a34 {
 /// sample.
 pub mod a37 {
     pub use crate::probes::a37::{
-        FRAMES, FrameChange, LINE_CHARS, LongLineView, PaintPhaseChanges, TAG_STEP,
+        DEFAULT_STYLE_PROPERTIES, FRAMES, FrameChange, LINE_CHARS, LongLineView, MARGIN_STEP,
+        PaintPhaseChanges, TAG_STEP,
     };
 }
 

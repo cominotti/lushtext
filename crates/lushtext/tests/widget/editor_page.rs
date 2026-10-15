@@ -5735,7 +5735,20 @@ fn assert_adjustment_changes_stay_out_of_the_snapshot(
     drive: impl FnOnce(),
 ) {
     let hadjustment = page.source_view().hadjustment().expect("hadjustment");
-    let upper_before = hadjustment.upper();
+    assert_scroll_changes_stay_out_of_the_snapshot(page, window, &hadjustment, control, drive);
+}
+
+/// Run `drive` on a presented page and assert it grew `adjustment`'s `upper`
+/// (the `control`), changed no scroll adjustment inside a paint phase, and
+/// made GTK snapshot no widget without an allocation. Destroys the window.
+fn assert_scroll_changes_stay_out_of_the_snapshot(
+    page: &LushtextEditorPage,
+    window: &gtk4::ApplicationWindow,
+    adjustment: &gtk4::Adjustment,
+    control: &str,
+    drive: impl FnOnce(),
+) {
+    let upper_before = adjustment.upper();
 
     let capture = GtkLogCapture::start();
     let changes = PaintPhaseAdjustmentChanges::watch(page);
@@ -5746,9 +5759,9 @@ fn assert_adjustment_changes_stay_out_of_the_snapshot(
     drop(capture);
 
     assert!(
-        hadjustment.upper() > upper_before,
-        "control: {control} widened the horizontal adjustment ({upper_before} -> {})",
-        hadjustment.upper()
+        adjustment.upper() > upper_before,
+        "control: {control} grew the adjustment's upper ({upper_before} -> {})",
+        adjustment.upper()
     );
     assert_eq!(
         in_paint, 0,
@@ -5822,4 +5835,70 @@ fn test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot() {
         wait_until(Duration::from_secs(10), || tagged.get() >= FRAMES);
         flush_after_delay(Duration::from_millis(100));
     });
+}
+
+/// A change of the view's bottom margin made inside a frame must not leave
+/// its validation to the snapshot either.
+///
+/// `gtk_text_view_set_bottom_margin`, like every setter of a property that
+/// changes the view's default text style, invalidates every line and queues
+/// no resize, allocation or redraw, so the first paint that redraws the view
+/// flushes the validation and grows the vertical adjustment's `upper` there
+/// (ledger A37). The editor's end-of-document overscroll sets the bottom margin
+/// from an idle after every viewport height change; the long-line lane hit the
+/// scrollbar warning once, on find, after the search bar's slide, when that
+/// idle ran just before a frame GTK started from its synthesized motion and the
+/// frame redrew the view. Here each frame's update phase grows the margin and
+/// redraws the view, which is that ordering made deterministic.
+#[test]
+fn test_bottom_margin_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot() {
+    const FRAMES: i32 = 10;
+    const STEP: i32 = 10;
+    ensure_gtk_init();
+    let (page, window) = present_long_line_page();
+    let view = page.source_view();
+    let vadjustment = view.vadjustment().expect("vadjustment");
+
+    assert_scroll_changes_stay_out_of_the_snapshot(
+        &page,
+        &window,
+        &vadjustment,
+        "the bottom margin",
+        || {
+            // The paint marker shrinks the viewport, and the overscroll idle
+            // then resets the margin; let it, then make the content taller
+            // than the viewport so every margin step grows `upper`.
+            flush_after_delay(Duration::from_millis(100));
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the page size is a whole number of pixels well inside i32"
+            )]
+            let page_height = vadjustment.page_size() as i32;
+            view.set_bottom_margin(2 * page_height);
+            flush_after_delay(Duration::from_millis(100));
+            assert!(
+                vadjustment.upper() > vadjustment.page_size(),
+                "control: the margin makes the content taller than the viewport ({} vs page {})",
+                vadjustment.upper(),
+                vadjustment.page_size()
+            );
+            let grown = Rc::new(Cell::new(0));
+            {
+                let grown = Rc::clone(&grown);
+                view.add_tick_callback(move |view, _| {
+                    if grown.get() >= FRAMES {
+                        return glib::ControlFlow::Break;
+                    }
+                    grown.set(grown.get() + 1);
+                    view.set_bottom_margin(view.bottom_margin() + STEP);
+                    // The setter queues no redraw; in the application a
+                    // gutter, a state flag or the selection redraws the view.
+                    view.queue_draw();
+                    glib::ControlFlow::Continue
+                });
+            }
+            wait_until(Duration::from_secs(10), || grown.get() >= FRAMES);
+            flush_after_delay(Duration::from_millis(100));
+        },
+    );
 }

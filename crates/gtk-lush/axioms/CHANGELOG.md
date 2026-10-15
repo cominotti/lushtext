@@ -105,6 +105,13 @@
   FrameChange}`: the paint phase is bracketed by a one-pixel `GtkDrawingArea`
   snapshotted before the view and the frame clock's `after-paint`. Added for
   LushText's fix of the scrollbar `GtkGizmo` snapshot warning.
+- A37 also covers default-style properties: `FrameChange::Margin` grows the
+  view's left margin per frame (`MARGIN_STEP`) and redraws the view, and
+  `LongLineView::queue_allocation_before_paint` queues the allocation on the
+  `notify` of every `DEFAULT_STYLE_PROPERTIES` property (their setters
+  invalidate every line and queue no resize, allocation or redraw). Added for
+  LushText's fix of the warning's residual route (the overscroll bottom
+  margin).
 - A slow-probe marker: `Axiom::slow`, with `INCLUDE_SLOW_ENV`
   (`GTK_LUSH_AXIOMS_INCLUDE_SLOW`), `include_slow_probes` and
   `slow_skip_line`. The probe runner and a sample's `--check` skip a slow

@@ -24,12 +24,21 @@ input to presented frame, measured on the maintainer's desktop.
 
 ## 2. New candidates found by C0 (not yet proposed)
 
-1. **Explain the A37 residual that reappeared once.** On 2026-10-13 the lane
-   logged the fixed `GtkGizmo` snapshot warning once (find in a 15,000-character
-   wrapped paragraph, beside heavy CPU load) and failed the run as designed; 94
-   further runs did not reproduce it. Root cause open; it falls under the
-   pre-existing-blockers rule, so it comes before the candidates below
-   (`long-line-documents.md`, "Idle re-confirmation (2026-10-13)").
+1. **Explain the A37 residual that reappeared once — done (2026-10-14,
+   `explain-a37-residual`).** On 2026-10-13 the lane logged the fixed
+   `GtkGizmo` snapshot warning once (find in a 15,000-character wrapped
+   paragraph, beside heavy CPU load) and failed the run as designed. Cause: the
+   end-of-document overscroll idle sets the view's bottom margin after each
+   viewport height change (here the search bar's slide); that setter, like
+   every default-style property setter, invalidates every line and queues no
+   allocation, and a preempted main thread let the next frame — started ahead
+   of the validation idle by GTK's synthesized post-relayout motion — redraw the
+   view first. `frame_validation.rs` now queues the allocation on those
+   properties' `notify`; reproduced deterministically and proved fixed
+   (`long-line-documents.md`, "Idle re-confirmation (2026-10-13)"). A side
+   observation for C1/C2: each such setter invalidates **every** line of the
+   document, so the overscroll margin re-validates a large document after every
+   viewport height change.
 2. **C6 `bound-post-open-settle`.** Even a 400-byte `.txt` stalls 12–20 ms
    right after load readiness (first layout/paint plus post-publish
    projections); an HTML document pays a size-independent ~42 ms first

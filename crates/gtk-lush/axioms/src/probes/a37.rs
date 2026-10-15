@@ -10,17 +10,25 @@
 //! adjustment there, after the scrollbar was allocated for the frame, and GTK
 //! logs `Trying to snapshot GtkGizmo … without a current allocation` for the
 //! scrollbar's trough when it snapshots the scrollbar next. An edit and a tag
-//! change both count. (Not probed: a change made just before a frame that
+//! change both count, and so does a change of a view property that changes
+//! the default text style (a margin, the tabs, wrapping, line spacing, the
+//! indent, justification, editability): its setter invalidates every line and
+//! queues no resize, allocation or redraw, so the validation is flushed by the
+//! first paint that redraws the view (anything does: a state-flag change, a
+//! gutter, the selection). (Not probed: a change made just before a frame that
 //! input started behaves the same, because GDK runs such a frame from a source
-//! of priority `G_PRIORITY_DEFAULT + 1`, ahead of the validation idle; the
-//! responsiveness lane reproduced it on find, where GtkSourceView's search scan
-//! changes tags from an idle.)
+//! of priority `G_PRIORITY_DEFAULT + 1`, ahead of the validation idle — and
+//! every frame of a layout animation starts that way, because GTK synthesizes
+//! a motion event after each relayout. The responsiveness lane reproduced it on
+//! find, where GtkSourceView's search scan changes tags from an idle and the
+//! search bar's slide shrinks the viewport, after which LushText's overscroll
+//! idle sets the view's bottom margin.)
 //!
-//! Queueing the view's allocation before the paint — at once for an edit or a
-//! caret move, and from the frame's `before-paint` or after its layout
-//! handlers for a tag change — moves the flush into the layout phase
-//! (`gtk_text_view_size_allocate` flushes it), and no adjustment changes
-//! inside the paint.
+//! Queueing the view's allocation before the paint — at once for an edit, a
+//! caret move or a default-style property change, and from the frame's
+//! `before-paint` or after its layout handlers for a tag change — moves the
+//! flush into the layout phase (`gtk_text_view_size_allocate` flushes it),
+//! and no adjustment changes inside the paint.
 //!
 //! The probe changes the view from a tick callback, which runs in the same
 //! frame as its layout and paint, and counts the scroll-adjustment emissions
@@ -48,6 +56,26 @@ pub const LINE_CHARS: usize = 500;
 pub const FRAMES: i32 = 12;
 /// Characters a widening tag covers more in each frame.
 pub const TAG_STEP: i32 = 10;
+/// Pixels the view's left margin grows in each frame.
+pub const MARGIN_STEP: i32 = 10;
+/// `GtkTextView` properties whose setters change the default text style:
+/// each invalidates every line (`gtk_text_layout_default_style_changed`) and
+/// queues no resize, allocation or redraw. `notify` follows a real change
+/// only, except for `tabs`, which notifies on every call.
+pub const DEFAULT_STYLE_PROPERTIES: [&str; 12] = [
+    "wrap-mode",
+    "editable",
+    "pixels-above-lines",
+    "pixels-below-lines",
+    "pixels-inside-wrap",
+    "justification",
+    "left-margin",
+    "right-margin",
+    "top-margin",
+    "bottom-margin",
+    "indent",
+    "tabs",
+];
 /// Seed of the probe paragraph.
 pub const SEED: u64 = 37;
 /// The warning GTK logs for a widget snapshotted while it awaits allocation.
@@ -64,6 +92,10 @@ pub enum FrameChange {
     Type,
     /// Widen the line: a scaled tag covers [`TAG_STEP`] more characters.
     Tag,
+    /// Widen the line: the view's left margin grows [`MARGIN_STEP`] pixels,
+    /// and the view is redrawn (the setter queues no redraw; in an
+    /// application something else redraws the view sooner or later).
+    Margin,
 }
 
 /// A wrap-off `GtkSourceView` with line numbers holding one
@@ -154,6 +186,10 @@ impl LongLineView {
                         .buffer
                         .apply_tag(&fixture.widening, &fixture.buffer.start_iter(), &end);
                 }
+                FrameChange::Margin => {
+                    view.set_left_margin(view.left_margin() + MARGIN_STEP);
+                    view.queue_draw();
+                }
             }
             counter.set(counter.get() + 1);
             gtk4::glib::ControlFlow::Continue
@@ -161,10 +197,11 @@ impl LongLineView {
         done
     }
 
-    /// The workaround: queue the view's allocation at once on an edit or a
-    /// caret move, and from the frame's `before-paint` or after its layout
-    /// handlers when a tag changed, so the frame's layout phase flushes the
-    /// pending validation. Needs the view realized (its frame clock).
+    /// The workaround: queue the view's allocation at once on an edit, a
+    /// caret move or a change of a [`DEFAULT_STYLE_PROPERTIES`] property, and
+    /// from the frame's `before-paint` or after its layout handlers when a
+    /// tag changed, so the frame's layout phase flushes the pending
+    /// validation. Needs the view realized (its frame clock).
     #[must_use]
     pub fn queue_allocation_before_paint(&self) -> bool {
         let Some(clock) = self.view.frame_clock() else {
@@ -183,6 +220,10 @@ impl LongLineView {
                     view.queue_allocate();
                 }
             });
+        for property in DEFAULT_STYLE_PROPERTIES {
+            self.view
+                .connect_notify_local(Some(property), |view, _| view.queue_allocate());
+        }
         let tags_changed = Rc::new(Cell::new(false));
         for signal in ["apply-tag", "remove-tag"] {
             let tags_changed = Rc::clone(&tags_changed);
@@ -400,6 +441,14 @@ pub fn probe_a37() -> Observation {
                     "tagged_snapshot_warnings",
                 ],
             ),
+            (
+                FrameChange::Margin,
+                &[
+                    "margin_upper",
+                    "margin_in_paint",
+                    "margin_snapshot_warnings",
+                ],
+            ),
         ] {
             let run = recorder.require(
                 frames_run(&fixture, change),
@@ -427,6 +476,14 @@ pub fn probe_a37() -> Observation {
                     "allocated_tagged_snapshot_warnings",
                 ],
             ),
+            (
+                FrameChange::Margin,
+                &[
+                    "allocated_margin_upper",
+                    "allocated_margin_in_paint",
+                    "allocated_margin_snapshot_warnings",
+                ],
+            ),
         ] {
             let run = recorder.require(
                 frames_run(&fixture, change),
@@ -449,7 +506,12 @@ pub fn probe_a37() -> Observation {
             "a tag change inside a frame changes the scroll adjustments inside that frame's paint",
         )?;
         recorder.axiom(
-            runs[2].in_paint == 0 && runs[3].in_paint == 0,
+            runs[2].in_paint > 0,
+            "a default-style property change inside a frame (a margin) changes the scroll \
+             adjustments inside the paint of a frame that redraws the view",
+        )?;
+        recorder.axiom(
+            runs[3..].iter().all(|run| run.in_paint == 0),
             "queueing the view's allocation before the paint moves every adjustment change into \
              layout",
         )
