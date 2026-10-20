@@ -1610,6 +1610,69 @@ sharded (`PROOF_STRENGTH_SHARD`).
 Next candidates after the Kani consolidation are ranked in
 [`formal-verification-next.md`](./formal-verification-next.md).
 
+### Document scale policy (`document-scale-policy`, C1 of the long-line programme)
+
+Four harness groups over three new pure `model/` modules, each a child
+`kani_proofs.rs` declared `#[cfg(kani)]`, over the production code:
+
+| Group | Module / harness file | Domain | Harnesses |
+| --- | --- | --- | --- |
+| 1. Boundary (`boundary_`) | `model/paragraph_boundary/kani_proofs.rs` | every valid UTF-8 string of ≤ 8 bytes (symbolic bytes, `from_utf8` assumed), any scalar-boundary start, any budget; `unwind(10)` | `boundary_break_is_a_scalar_boundary_after_a_delimiter`, `boundary_slice_end_is_safe_and_advances`, `boundary_slice_end_is_the_reference_choice`, `boundary_agrees_with_the_reference_rule`, `boundary_line_length_excludes_its_delimiter`, `should_panic` `boundary_newline_only_slicer_disagrees` |
+| 2. Profile (`profile_`) | same file | ≤ 6 bytes (weakened from the designed 8 (the design's 8 bytes did not fit: a `String`-built text and growing `Vec`s exhausted the 16 GiB lane cap, and with fixed buffers 6 bytes peak at 7 GiB, so 8 would break the shard's 12 GiB budget)) over {`a`, `é`, `\r`, `\n`, U+2028, U+2029, U+0085} built from symbol indices, ≤ 3 slices at any scalar boundaries (empty included), thresholds ≤ 8, offset cap ≤ 2, `r_batch` 1–3; `unwind(10)` | `profile_is_independent_of_slicing`, `profile_matches_the_specification`, `should_panic` `profile_slices_without_carry_disagree` |
+| 3. Watch (`watch_`) | `model/paragraph_profile_watch/kani_proofs.rs` | an **inductive step** over a model of the buffer's **history-dependent lines** (ledger A42: an insertion splits only its own text, a deletion joins the lines whose starts it removes): any buffer of ≤ 2 symbols from {`a`, `\r`, `\n`, U+2029} with any line-start subset after delimiters (a superset of the reachable ones), any watch state and high-waters ≤ 16 satisfying the invariant, one edit inserting ≤ 2 symbols at any offset or deleting ≤ 2, `r_batch` 1–2, `v_batch` ≤ 16; fixed-capacity arrays, `unwind(8)`, CaDiCaL. **Weakened from the design** (≤ 4 start symbols, ≤ 3 replayed edits, `unwind(12)`): one replayed edit already took 14 minutes and 9 GiB, so the replay was replaced by induction, which covers every edit sequence but only buffers of ≤ 2 symbols before an edit. Deleting the text between `\r` and `\n` needs three symbols (its cover was unsatisfiable in the 2-symbol step), so a fixed-shape harness proves that one deletion over `\r`, any symbol, `\n` with any line structure and related state | `watch_step_preserves_the_invariant`, `watch_reads_are_bounded`, `watch_delete_between_cr_and_lf_preserves_the_invariant`, `should_panic` `watch_fast_path_without_a_carried_bound_is_unsound` |
+| 4. Scale (`scale_`) | `model/document_scale/kani_proofs.rs` | every `u64` profile component, unbounded, no loops | `scale_is_monotone`, `scale_protected_view_is_upward_closed`, `scale_join_is_a_meet_on_presentation_features`, `scale_of_a_profile_join_is_the_join_of_scales`, `scale_byte_tiers_match_the_retired_tiers` (against the frozen `retired_byte_tiers` transcription of `FileSizeCheck`), `should_panic` `scale_save_without_join_reenables_a_feature` |
+
+Beyond the 8-byte boundary/profile domain the evidence is the property tests in
+`crates/lushtext-core/tests/properties/paragraph_boundary.rs`, which compare
+paragraph splits and slice ends with `pango::find_paragraph_boundary` and check
+slice independence with the production configuration on long strings.
+
+**Design-time findings.**
+
+- *The uncarried fast-path bound* (the draft watch skipped the density
+  recompute when `worst_batch_chars + inserted ≤ V_batch` without carrying the
+  bound): **stands**. Two fast keystrokes can cross `V_batch` unseen; the shipped
+  watch carries `density_bound`, and `watch_fast_path_without_a_carried_bound_is_unsound`
+  pins the retired form (Kani finds the crossing).
+- *The line-span delete trigger* (deciding the slow path by
+  `start.line() != end.line()` misses a density rise when the text between `\r`
+  and `\n` is deleted): **withdrawn at apply time.** A headless probe showed that
+  `GtkTextBuffer` lines depend on edit history (now ledger A42): deleting the
+  text between `\r` and `\n` removes no line, so with the buffer's own lines the
+  line-span and line-count tests agree and a `should_panic` harness would have no
+  counterexample. The finding came from modelling the buffer with Pango's rule
+  over the whole text, which is right only for text inserted whole; the watch
+  model now plays the history-dependent rule.
+
+**Tractability notes.** The transcription of the retired `'\n'`-only slicer
+first used the library's `str::rfind`/`str::find`, and CBMC took **26 minutes**
+(1,547 s) for that one `should_panic` harness; rewritten as byte loops (`'\n'`
+is one ASCII byte that never occurs inside a multibyte scalar, so the result is
+identical) it verifies in **158 s**. Likewise the harnesses count scalars with a
+per-byte lead-byte loop instead of `chars().count()`, whose chunked library
+implementation CBMC could not unwind within the bound; the watch core's
+`char_count` is a lead-byte count for the same reason.
+
+**Shard budgets.** Six shards, all gated `scheduled`. Local `make kani`
+(Kani 0.68.0, 2026-10-20, wall time including the compile, peak RSS):
+`core-document-scale` 5.6 min / 2.7 GiB (the scale group plus three boundary
+harnesses), `core-paragraph-boundary` 14.8 min / 3.7 GiB (the slice-choice and
+reference-rule harnesses, split off by the fit order), `core-paragraph-profile`
+9.8 min / 8.3 GiB (the profile group plus the CR/LF deletion harness, 388 s).
+The three general watch harnesses took 652-779 s each and together with the
+profile group 38 local minutes, past the 25-minute margin, so each has its own
+shard: `core-profile-watch-step`, `core-profile-watch-reads`,
+`core-profile-watch-unsound`. TODO(shard budgets): `ci_minutes`, `ci_peak_gib`
+and `measured_in` from two dispatched `kani.yml` runs; until then the table
+carries the provisional 20 min / 10 GiB placeholder.
+
+**Proof strength.** TODO(proof-strength): mutant counts, kills under the tests,
+Kani and both arms, source revision and tool versions for
+`model/paragraph_boundary.rs`, `model/document_scale.rs` and
+`model/paragraph_profile_watch.rs`, with every Kani survivor triaged.
+`boundary_newline_only_slicer_disagrees` is listed in `NOT_ORACLE_HARNESSES`: it
+checks a transcription inside the harness file, not the shipped function.
+
 ## 4. Deferral inventory
 
 - Multi-process safety of the draft journal and the target guard (axiom A6).

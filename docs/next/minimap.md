@@ -104,7 +104,9 @@ If `GtkSourceMap` doesn't support the semantic overlay we need, build a custom w
 - Performance with very large files (>10MB). `GtkSourceMap` creates a second
   `GtkSourceView` which performs its own layout calculations. For huge files, this could
   double the layout cost. May need to disable the minimap above a certain file size
-  threshold (aligned with `file_limits.rs` tiers).
+  threshold (now `DocumentScale::minimap_allowed` in `model/document_scale.rs`: total size
+  above 10 MB or a paragraph above `L_MINIMAP`, decided before any map is attached;
+  `document-scale-policy` retired `file_limits.rs`).
 - The minimap adds visual width to the editor area, which interacts with the sidebar
   position clamping logic. The `stack_min` calculation in `clamp_sidebar_position` needs
   to account for minimap width.

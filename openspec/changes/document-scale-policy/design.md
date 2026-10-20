@@ -32,6 +32,83 @@ Stakeholders: the maintainer, who records decisions in PROPOSAL.md, and C0 `prob
 
 ## Decisions
 
+### D0. The values this change applies (task 0.1)
+
+C0 (`probe-long-line-toolkit-costs`) is archived. Its reference set was finalised
+by the idle re-confirmation, run `rr-c0-reconfirm-20261013`
+(`docs/next/long-line-documents.md`, "Idle re-confirmation (2026-10-13)"), which
+supersedes the loaded run `rr-c0-reference-20261011` where they differ. The
+constants live in `model/document_scale.rs`, each citing that record; the
+budgets are read from `model/responsiveness_budget.rs` and never restated.
+
+| Value | Applied | Source |
+|---|---|---|
+| `S_syntax` | **1 MiB** (1,048,576 bytes) | **Not derived** by C0 (a size-independent ~42 ms first-highlight stall fails every size down to the 16,000-byte floor). Open; the conservative PROPOSAL.md candidate (decision 4: keep 10 MB or about 1 MiB) is applied. `S_syntax_interact` (16,000 bytes) is informational only. |
+| `L_syntax` | 2,000 characters | C0 idle: 2,000 / 3,000 |
+| `L_minimap` | 22,000 | C0 idle: 22,000 / 50,000 (lower bound; `[22,000, 50,000)` not bisected) |
+| `L_invisibles` | 50,000 | C0: 50,000 / 74,000 |
+| `L_search_highlight` | 10,000 | C0 idle: 10,000 / 15,000 |
+| `L_protect` | **500** | **Not derived** (the input-to-frame half fails at every length on the headless lane's frame floor). The stall half, `L_protect_stall`, is 500 / 710; C2's gate (`docs/next/long-line-evolution.md`) takes that stall basis, so C1 applies it. Open (see Open Question 1). |
+| `N_visible` | 500,000 | C0: 500,000 / 710,000 |
+| `R_batch` | 224 rows | A31's 112 rows per 2000 px batch (wrap off, default font), doubled for the 50 % minimum zoom |
+| `V_batch` | 56,000 characters | dense 500-character line × 112 rows (idle: dense 500 / 710) |
+| `N_dense` | 250 | `V_batch ÷ R_batch` (informational; C2's fold) |
+| B_interact | 8 ms | `responsiveness_budget::B_INTERACT_US` (C0: within) |
+| input-to-frame | ≤ 2 reference frames | `responsiveness_budget::INPUT_TO_FRAME_FRAMES` |
+| B_settle | 16 ms | `responsiveness_budget::B_SETTLE_US` (C0 idle: indeterminate) |
+| `S_minimap`, undo, history, refuse | 10 MB, 50 MB, 10/50 MB, 500 MB | unchanged byte tiers |
+
+None of `L_minimap`, `L_invisibles` or `L_search_highlight` was left open, so the
+`min(L_syntax, N_visible)` default of Open Question 1 was not needed.
+
+**C0's ledger and D8 (task 0.2).** C0 pinned A23–A37. A27, A29, A31 and A32
+already list `document-scale-policy` as a dependent design. None of D8's four
+axioms was among them, so all four are new: **A42** (paragraph delimiters,
+probe), **A43** (line-length read cost, verified by source: a duration is not
+a probe verdict input), **A44** (same-emission language downgrade, probe) and
+**A45** (unparent stops a pending tick, probe; it also covers a scrolled
+`GtkSourceMap`).
+
+### D0a. Apply-time correction: the buffer's lines depend on its edit history
+
+A headless probe during apply (now part of ledger A42, `probe_a42`) showed that
+`GtkTextBuffer` does not re-derive its lines from the whole text after an edit:
+
+- an **insertion splits only its own text** at Pango's paragraph delimiters and
+  never joins with or splits around its neighbours (a `\n` typed after a buffer
+  `\r` starts a new line rather than forming a CRLF; text typed between `\r` and
+  `\n` stays inside that line, which then holds an embedded `\r`);
+- a **deletion joins exactly the lines whose starts it removes** (a line start
+  `x` goes when `start < x <= end`): deleting the text between `\r` and `\n`
+  removes no line, while deleting the `\n` of a CRLF joins two lines into one
+  holding an embedded `\r`.
+
+Text inserted whole still has Pango's lines, so the load profile (D1) and the
+paragraph-aligned slicer (D2) are unaffected: slices end after a delimiter, so
+every slice starts a fresh line. The edit-time watch (D5) and its Kani model
+(D9 group 3) are what change:
+
+- The watch measures the **buffer's lines** (what GtkTextView lays out). The core
+  splits an inserted run **alone**; `InsertFacts` no longer carries context
+  characters, and the line counts and iter lines GTK reports are the facts.
+- An insertion without a delimiter never changes the line count, so typing
+  between `\r` and `\n` is a fast step that measures the grown line.
+- A deletion inside one line never grows a paragraph and does nothing; a
+  deletion that removes a line start (deleting the `\n` of a CRLF included)
+  joins lines and takes the window path. The design's first design-time finding
+  (a line-span delete trigger misses a density rise when the text between `\r`
+  and `\n` is deleted) **does not hold in GTK**: with history-dependent lines the
+  line-span test and the line-count test agree, so the `should_panic` harness
+  `watch_line_removal_without_merge_is_missed_by_a_line_span_test` was dropped
+  (it would have no counterexample). The uncarried fast-path finding stands.
+- The Kani model plays the buffer with a line-start flag per offset under these
+  two rules (D9 group 3), not the reference rule over the whole text.
+- The minimap's modified-line marks moved to an `insert-text` **after**-handler
+  that reads the inserted run's first and last lines from GTK: the old
+  before-handler created marks for lines that did not exist yet, so every
+  multi-line insertion (`\n` included) marked only its first line. Task 1.6's
+  "delimiter count" is therefore GTK's own line numbers, which A42 makes exact.
+
 ### D1. The profile is accumulated inside the existing analysis pass
 
 **What.** A GTK-free accumulator lives in `model/paragraph_boundary.rs` and is fed slice by slice. It is the same shape as `LineEndingTally`, with carry state for a pending CR and the length of the paragraph still open at the slice end, and is named `ParagraphProfileAccumulator`. It takes `&str` slices, as `analyze_decoded_content_cancellable` already cuts them on scalar boundaries, so a U+2029 is never split across slices and needs no carry.
@@ -271,7 +348,7 @@ Every harness follows `formal-verification-kani` and the "Formal Verification (K
 
    Every group-1 harness carries `#[kani::unwind(10)]` (at most 8 bytes, plus the exit iteration and one of lookahead), and Kani's unwinding assertions stay on, so a bound too small fails the harness instead of truncating the proof.
 
-2. *Slice independence* (`profile_` prefix), over strings of ≤ 8 bytes drawn from the alphabet {`a`, `é`, `\r`, `\n`, U+2028, U+2029, U+0085} (symbol indices mapped to their UTF-8, which avoids a symbolic `from_utf8` on this larger harness), cut into at most 3 slices at any scalar boundaries, empty slices included, with a symbolic `ProfileConfig` whose thresholds are ≤ 8, `offset_cap ≤ 2` and `1 ≤ r_batch ≤ 3`:
+2. *Slice independence* (`profile_` prefix), over strings of ≤ 6 bytes (fitted at apply time from the 8 designed: (the design's 8 bytes did not fit: a `String`-built text and growing `Vec`s exhausted the 16 GiB lane cap, and with fixed buffers 6 bytes peak at 7 GiB, so 8 would break the shard's 12 GiB budget)) drawn from the alphabet {`a`, `é`, `\r`, `\n`, U+2028, U+2029, U+0085} (symbol indices mapped to their UTF-8, which avoids a symbolic `from_utf8` on this larger harness), cut into at most 3 slices at any scalar boundaries, empty slices included, with a symbolic `ProfileConfig` whose thresholds are ≤ 8, `offset_cap ≤ 2` and `1 ≤ r_batch ≤ 3`:
    - `profile_is_independent_of_slicing`: the profile fed slice by slice equals the whole-text profile field by field: `total_bytes`, `longest_paragraph_chars`, every per-threshold count, the offset list and `truncated`, and `worst_batch_chars`. The carry at a slice end (pending CR, open length, the ring, the counts and offsets) is the slice's summary, and continuing from it is the exact merge;
    - `profile_matches_the_specification`: the whole-text profile equals a profile built from the reference rule's paragraph lengths: the longest, each count, the first `offset_cap` long-paragraph offsets with `truncated` set exactly when more exist, and the maximum window of `min(r_batch, n)` paragraphs;
    - `profile_slices_without_carry_disagree` (`should_panic`): profiling each slice with a fresh accumulator and combining componentwise (maximum of longest and worst, sum of counts) is wrong; Kani finds a CRLF pair or a paragraph split across a cut.
@@ -292,6 +369,8 @@ Every harness follows `formal-verification-kani` and the "Formal Verification (K
    Both drive the production core, not a copy of it. The retired decision is expressed through its inputs: the first reports the line count after a deletion as unchanged whenever the deleted range's start and end lines are equal (so the production `plan_delete` takes the slow path exactly when the retired line-span test did); the second assigns `density_bound = worst_batch_chars` before each step (the harness is a child module and reaches the private field), which turns the production fast-path test into the draft's `worst_batch_chars + inserted ≤ V_batch`. Each asserts the exact-decision property of `watch_density_matches_recomputation` and is expected to fail it.
 
    The group-3 harnesses carry `#[kani::unwind(12)]` (at most 10 model symbols, plus the exit iteration and one context character), with unwinding assertions on. The model document is a fixed-capacity array of symbol indices with a symbolic length, never a `String`, so model loops are per symbol. This is the costliest group; it is expected to take minutes per harness, which is why D9 gives it the fit order's first split.
+
+   **Apply-time revision (group 3).** The bounded replay did not fit: one replayed edit from a 4-symbol start already took 14 minutes and 9 GiB. Following the fit order (split, solver, then bounds), the group was rewritten as an **inductive step**: `watch_step_preserves_the_invariant` takes any buffer of at most 2 symbols with any line structure the A42 rule can reach (and more), any watch state and high-waters (at most 16) satisfying the invariant the two `watch_*_matches_recomputation` harnesses stated, and one edit (insert ≤ 2 symbols or delete ≤ 2), and checks the invariant again; `watch_reads_are_bounded` checks the read bound for the same step, and `watch_fast_path_without_a_carried_bound_is_unsound` is unchanged in intent. The invariant holds after a load, so the proof covers every edit sequence, at the cost of a smaller per-edit buffer. `watch_line_removal_without_merge_is_missed_by_a_line_span_test` was dropped: with the buffer's history-dependent lines (A42) the line-span and line-count tests agree, so it has no counterexample (see D5's note). Harnesses use `unwind(8)` and CaDiCaL. Deleting the text between `\r` and `\n` needs three symbols, so its `kani::cover!` was unsatisfiable in the 2-symbol step; `watch_delete_between_cr_and_lf_preserves_the_invariant` proves the step, the read bound included, for that one deletion over the buffer `\r`, any symbol, `\n` with any line structure after its delimiters and any state satisfying the invariant (388 s locally). The general harnesses' covers live in a helper the fixed-shape harness does not call, so each harness's covers are all satisfiable. The 38 local minutes of the four watch harnesses together broke the 25-minute shard margin, so each general watch harness has its own shard (`core-profile-watch-step`, `-reads`, `-unsound`) and the deletion harness joins `core-paragraph-profile`.
 
    `kani::cover!` marks: a fast-path step, a window-path step, two consecutive fast-path steps, an insertion joining a CRLF, an insertion splitting a CRLF, deleting the `\n` of a CRLF, deleting the text between `\r` and `\n`, a merge raising only the density window, and a density crossing.
 
@@ -371,7 +450,14 @@ No persisted data changes, so rollback is a revert.
 
 ## Open Questions
 
-1. **Threshold values.** C0 must record `S_syntax` (maintainer decision 2: decided by the C0 measurement; candidates 10 MB or about 1 MiB), `L_syntax`, `L_minimap`, `L_invisibles`, `L_search_highlight`, `L_protect` (PROPOSAL.md decision 2: about 20k versus 100k–300k), `N_visible`, `R_batch` and `V_batch`. It must also confirm or revise B_interact = 8 ms, input-to-frame ≤ 2 frames and B_settle = 16 ms. If C0's record leaves `L_minimap`, `L_invisibles` or `L_search_highlight` open, does the maintainer accept the default `min(L_syntax, N_visible)`?
+1. **Threshold values** — partly resolved at apply time (D0). Still open:
+   `S_syntax` (C0 could not derive it; 1 MiB applied, the conservative
+   candidate) and `L_protect` (not derived; the stall basis 500 applied, as C2's
+   gate does). With `L_protect` at 500, any document with a paragraph over 500
+   characters (ordinary Markdown prose written one paragraph per line) is marked
+   for Protected View, and C1's notice says so; the maintainer may prefer a
+   higher C1 notice threshold until C2's user-session validation. Earlier text:
+   **Threshold values.** C0 must record `S_syntax` (maintainer decision 2: decided by the C0 measurement; candidates 10 MB or about 1 MiB), `L_syntax`, `L_minimap`, `L_invisibles`, `L_search_highlight`, `L_protect` (PROPOSAL.md decision 2: about 20k versus 100k–300k), `N_visible`, `R_batch` and `V_batch`. It must also confirm or revise B_interact = 8 ms, input-to-frame ≤ 2 frames and B_settle = 16 ms. If C0's record leaves `L_minimap`, `L_invisibles` or `L_search_highlight` open, does the maintainer accept the default `min(L_syntax, N_visible)`?
 2. **Should `L_protect` be a GSettings key** — resolved 2026-10-11: a fixed policy constant, not a GSettings key. A setting that lets the app block would contradict the always-responsive requirement; revisit only together with `explore-editing-long-paragraphs`.
 3. **Eviction reload and the session floor.** Should an eviction reload keep the session floor? It reloads byte-identical clean content, so a fresh profile is correct. But a user who pasted, undid and saved would see features come back after eviction. Default in this design: an eviction reload keeps the floor, and only open and external reload reset it.
 4. **Edit-time undo downgrade.** Should a session that grows past the undo tier through edits turn undo off with `begin_irreversible_action`? It does not today, and C1 keeps that behaviour.
