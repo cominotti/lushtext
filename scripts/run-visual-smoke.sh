@@ -24,6 +24,9 @@ VISUAL_CASES=(
     markdown-preview
     constrained-preview
     markdown-preview-side-by-side
+    preview-mode-document-alert
+    preview-mode-document-alert-dark
+    preview-mode-document-alert-transparent
     constrained-preview-side-by-side
     workspace-empty
     workspace-representative
@@ -177,6 +180,12 @@ fn main() {
 - preview geometry
 EOF
 printf 'alpha\r\nbeta\ngamma\rdelta\r\n' >"$FILE_HEALTH_FIXTURE"
+# Unreadable on purpose: its failed load raises the "Could Not Open File" alert
+# the preview-mode-document-alert scenarios capture. Restored after they run.
+PREVIEW_ALERT_FIXTURE="$ARTIFACT_DIR/fixtures/unreadable-preview-alert.md"
+rm -f "$PREVIEW_ALERT_FIXTURE"
+printf '# unreadable fixture\n' >"$PREVIEW_ALERT_FIXTURE"
+chmod 000 "$PREVIEW_ALERT_FIXTURE"
 
 scan_visual_logs() {
     local name="$1"
@@ -247,6 +256,9 @@ MATRIX_ROWS_BY_CASE = {
     "constrained-properties": ["A11Y-PROPERTIES-COMPACT"],
     "short-layout": ["A11Y-SHELL-DENSE-CONSTRAINED"],
     "markdown-preview": ["A11Y-MARKDOWN-REPRESENTATIVE"],
+    "preview-mode-document-alert": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-EDITOR-ERROR", "A11Y-ERROR-SURFACES"],
+    "preview-mode-document-alert-dark": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-EDITOR-ERROR", "A11Y-ERROR-SURFACES"],
+    "preview-mode-document-alert-transparent": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-EDITOR-ERROR", "A11Y-ERROR-SURFACES"],
     "constrained-preview": ["A11Y-MARKDOWN-CONSTRAINED"],
     "markdown-preview-side-by-side": ["A11Y-MARKDOWN-REPRESENTATIVE"],
     "constrained-preview-side-by-side": ["A11Y-MARKDOWN-CONSTRAINED"],
@@ -912,6 +924,68 @@ envelope = {
 PY
 }
 
+# The preview-only document alert: shown, opaque, and above the preview.
+#
+# The snapshot proves the copy is the rendered surface; the screenshot proves
+# it is drawn as one opaque band of the error colour (a band that let the
+# transparent preview or the desktop show through would not be uniform) and
+# that the preview area below it is not covered.
+assert_preview_document_alert_capture_artifacts() {
+    local name="$1"
+    local capture_dir="$2"
+    local output="$3"
+    local snapshot_path="$capture_dir/automation-snapshot.json"
+    local summary_path="$ARTIFACT_DIR/assertions/${name}-preview-document-alert.txt"
+
+    [[ -s "$snapshot_path" ]] || smoke_fail "visual smoke '${name}' did not write automation-snapshot.json"
+    /usr/bin/python3 - "$REPO_ROOT/scripts" "$snapshot_path" "$output" >"$summary_path" <<'PY' \
+        || smoke_fail "visual smoke '${name}' preview document alert assertions failed. Artifacts: $ARTIFACT_DIR"
+import collections
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from visual_geometry_png import read_png  # noqa: E402
+
+snapshot = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+surfaces = snapshot["window"]["surfaces"]
+assert surfaces["preview_mode"] is True, surfaces
+assert surfaces["preview_pane_visible"] is False, surfaces
+assert surfaces["preview_document_alert_visible"] is True, surfaces
+
+image = read_png(Path(sys.argv[3]))
+bpp = image.bpp
+
+def pixel(row, x):
+    offset = x * bpp
+    return tuple(row[offset : offset + 3])
+
+def is_error_red(rgb):
+    red, green, blue = rgb
+    return red >= 150 and green <= 90 and blue <= 90
+
+# Scan the right half, which is the preview column whatever the sidebar does.
+left = image.width // 2
+band_rows = []
+colors = collections.Counter()
+for y, row in enumerate(image.rows):
+    reds = [pixel(row, x) for x in range(left, image.width) if is_error_red(pixel(row, x))]
+    if len(reds) >= (image.width - left) * 0.6:
+        band_rows.append(y)
+        colors.update(reds)
+assert len(band_rows) >= 40, f"no error-coloured alert band found ({len(band_rows)} rows)"
+band_top, band_bottom = band_rows[0], band_rows[-1]
+dominant, dominant_count = colors.most_common(1)[0]
+share = dominant_count / sum(colors.values())
+assert share >= 0.9, f"alert band is not one opaque colour (dominant share {share:.2f})"
+below = image.rows[min(band_bottom + 20, image.height - 1)]
+below_reds = sum(1 for x in range(left, image.width) if is_error_red(pixel(below, x)))
+assert below_reds < (image.width - left) * 0.1, "the alert band covers the preview below it"
+print(f"band_rows={band_top}..{band_bottom} dominant={dominant} share={share:.3f}")
+PY
+}
+
 assert_surface_capture_artifacts() {
     local name="$1"
     local capture_dir="$2"
@@ -1241,7 +1315,17 @@ run_capture() {
             capture_args+=(--tab-content-opacity 0.65 --enable-minimap)
             variant_notes+=("tab_content_opacity=0.65" "minimap_requested=true")
             ;;
+        preview-mode-document-alert-transparent)
+            capture_args+=(--tab-content-opacity 0.35)
+            variant_notes+=("tab_content_opacity=0.35")
+            ;;
     esac
+    if [[ "$name" == preview-mode-document-alert* ]]; then
+        # The unreadable Markdown fixture fails to load, which raises "Could Not
+        # Open File" deterministically; preview-only then hides the editor
+        # column, so the alert must be the window-hosted copy above the preview.
+        capture_args+=(--allow-file-open-failure --wait-atspi-text "Could Not Open File")
+    fi
     if [[ "$name" == "recovery-startup" ]]; then
         capture_args+=(
             --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
@@ -1436,6 +1520,9 @@ run_capture() {
         markdown-preview-side-by-side|constrained-preview-side-by-side)
             assert_surface_capture_artifacts "$name" "$capture_dir" "false" "false" "true"
             ;;
+        preview-mode-document-alert*)
+            assert_preview_document_alert_capture_artifacts "$name" "$capture_dir" "$output"
+            ;;
     esac
     case "$name" in
         workspace-empty)
@@ -1523,6 +1610,10 @@ run_selected_capture "constrained-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/scr
 run_selected_capture "short-layout" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/short-layout.png" "1200" "420" "" "0" "default"
 run_selected_capture "markdown-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview.png" "1280" "860" "" "0" "default" "toggle-preview-mode"
 run_selected_capture "constrained-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview.png" "760" "520" "" "0" "default" "toggle-preview-mode"
+run_selected_capture "preview-mode-document-alert" "$PREVIEW_ALERT_FIXTURE" "$ARTIFACT_DIR/screenshots/preview-mode-document-alert.png" "1280" "860" "" "0" "default" "set-preview-mode=true"
+run_selected_capture "preview-mode-document-alert-dark" "$PREVIEW_ALERT_FIXTURE" "$ARTIFACT_DIR/screenshots/preview-mode-document-alert-dark.png" "1280" "860" "" "0" "force-dark" "set-preview-mode=true"
+run_selected_capture "preview-mode-document-alert-transparent" "$PREVIEW_ALERT_FIXTURE" "$ARTIFACT_DIR/screenshots/preview-mode-document-alert-transparent.png" "1280" "860" "" "0" "default" "set-preview-mode=true"
+chmod 600 "$PREVIEW_ALERT_FIXTURE" 2>/dev/null || true
 run_selected_capture "markdown-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview-side-by-side.png" "1280" "860" "" "0" "default" "set-preview-pane-visible=true"
 run_selected_capture "constrained-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview-side-by-side.png" "760" "520" "" "0" "default" "set-preview-pane-visible=true"
 run_selected_capture "workspace-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-empty.png" "1280" "860" "" "0" "default"
@@ -1633,11 +1724,15 @@ coverage = {
         }
     ],
     "variant_cases": {
-        "dark": [name for name in scenario_ids if name == "dark-style"],
+        "dark": [name for name in scenario_ids if name in {"dark-style", "preview-mode-document-alert-dark"}],
         "high_contrast": [name for name in scenario_ids if name == "high-contrast-style"],
         "large_text": [name for name in scenario_ids if name == "large-text-constrained"],
         "reduced_motion": [name for name in scenario_ids if name == "reduced-motion-command-palette"],
-        "transparency_readability": [name for name in scenario_ids if name == "transparency-readability"],
+        "transparency_readability": [
+            name
+            for name in scenario_ids
+            if name in {"transparency-readability", "preview-mode-document-alert-transparent"}
+        ],
     },
     "color_not_only_cases": [
         name

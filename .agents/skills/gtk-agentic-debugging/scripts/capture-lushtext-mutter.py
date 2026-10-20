@@ -21,6 +21,11 @@ ATSPI_TEXT_WAIT_SECONDS = 20
 ATSPI_TREE_PROBE_TIMEOUT_SECONDS = 2
 ATSPI_TREE_PROCESS_TIMEOUT_SECONDS = 5
 ATSPI_TREE_RETRY_INTERVAL_SECONDS = 0.2
+# How deep every AT-SPI helper walks the accessible tree, kept equal to the tree
+# dump's own default (`atspi-dump-tree.py`). LushText's editor text view sits at
+# depth 30 or more, so a helper left at its old default of 30 silently stopped
+# finding it when the window gained one more container level.
+ATSPI_MAX_DEPTH = "44"
 
 
 def discover_repo_root() -> Path:
@@ -1088,6 +1093,8 @@ def set_search_text(args: argparse.Namespace, artifact_dir: Path, env: dict[str,
             "^entry$",
             "--text",
             args.search or "",
+            "--max-depth",
+            ATSPI_MAX_DEPTH,
             "--timeout",
             "10",
         ],
@@ -1118,7 +1125,7 @@ def click_atspi_button(artifact_dir: Path, env: dict[str, str], name_regex: str)
             "--name-regex",
             name_regex,
             "--max-depth",
-            "44",
+            ATSPI_MAX_DEPTH,
             "--timeout",
             "10",
         ],
@@ -1176,7 +1183,7 @@ def run_atspi_accessible_action(
             "--name-regex",
             name_regex,
             "--max-depth",
-            "44",
+            ATSPI_MAX_DEPTH,
             "--timeout",
             "10",
         ],
@@ -1214,6 +1221,8 @@ def run_atspi_key_action(artifact_dir: Path, env: dict[str, str], key: str) -> N
             "key",
             "--key",
             key,
+            "--max-depth",
+            ATSPI_MAX_DEPTH,
             "--timeout",
             "10",
         ],
@@ -1247,6 +1256,8 @@ def set_atspi_editor_text(artifact_dir: Path, env: dict[str, str], text: str) ->
             "^text$",
             "--text",
             text,
+            "--max-depth",
+            ATSPI_MAX_DEPTH,
             "--timeout",
             "10",
         ],

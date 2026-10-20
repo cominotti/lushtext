@@ -4,7 +4,7 @@
 
 use crate::common::{
     ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read, isolated_data_dir,
-    test_application, wait_until,
+    rect_within, test_application, wait_until,
 };
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -392,15 +392,6 @@ fn present_editor_page_sized(page: &LushtextEditorPage, width: i32) -> gtk4::App
 }
 
 /// Bounds of `widget` expressed in the coordinate space of `ancestor`.
-fn rect_within(
-    widget: &impl IsA<gtk4::Widget>,
-    ancestor: &impl IsA<gtk4::Widget>,
-) -> gtk4::graphene::Rect {
-    widget
-        .compute_bounds(ancestor)
-        .expect("widget should have computable bounds within the ancestor")
-}
-
 fn wait_for_minimap_ready(page: &LushtextEditorPage) {
     // Realization, mapping and first allocation of the native source map are
     // frame-clock driven, so this is the generous-budget class per

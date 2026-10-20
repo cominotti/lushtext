@@ -11,8 +11,9 @@ use crate::common::{
     DraftPipelinePolicyReset, EditorLoadDelayReset, FirstDirtyAutosaveDelayReset,
     OrphanCleanupPolicyReset, action_state_bool, activate_action, editor_text,
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
-    fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, test_application,
-    wait_for_startup_data_flow, wait_until,
+    fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, seed_restored_window_size,
+    test_application, test_window_with_restored_size, wait_for_startup_data_flow, wait_until,
+    write_external_change_after_mtime_tick,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::{Cast, IsA, ObjectExt, ToValue, ToVariant};
@@ -261,22 +262,6 @@ fn assert_status_bar_readable_one_row(window: &LushtextWindow, context: &str) {
         "{context}: message area should stay within the status row, got area height {} and row height {height}",
         message_area.height()
     );
-}
-
-fn seed_restored_window_size(width: i32, height: i32) {
-    ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
-    settings
-        .set_int(keys::WINDOW_WIDTH, width)
-        .expect("set window width");
-    settings
-        .set_int(keys::WINDOW_HEIGHT, height)
-        .expect("set window height");
-}
-
-fn test_window_with_restored_size(width: i32, height: i32) -> LushtextWindow {
-    seed_restored_window_size(width, height);
-    test_window()
 }
 
 const DEFINITION_LIST_CODE_BLOCK_SAMPLE: &str = concat!(
@@ -692,34 +677,6 @@ fn open_temp_document(initial_text: &str) -> (LushtextWindow, tempfile::TempDir,
     });
 
     (window, dir, path)
-}
-
-/// Force an external write onto a later mtime second before waiting for GTK.
-///
-/// The production monitor compares second-resolution mtimes, so this helper
-/// avoids false-negative tests on filesystems where two writes inside one
-/// second collapse to the same observed timestamp.
-fn write_external_change_after_mtime_tick(
-    path: &Path,
-    editor: &LushtextEditorPage,
-    contents: &str,
-) {
-    let last_known = editor
-        .imp()
-        .monitor
-        .last_known_mtime
-        .get()
-        .expect("loaded editor should know the backing file mtime");
-
-    for _ in 0..5 {
-        fixture::write_text(path, contents);
-        if editor_io::mtime_secs(path).is_some_and(|mtime| mtime != last_known) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1100));
-    }
-
-    panic!("external write did not advance the observed file mtime");
 }
 
 fn wait_for_external_change_warning(editor: &LushtextEditorPage) {
@@ -20257,6 +20214,110 @@ fn test_notification_evidence_survives_window_disposal() {
     unsafe { window.run_dispose() };
     let after = notification_evidence(&window);
     assert_eq!(after.announcements, before.announcements);
+}
+
+/// "Normalize…" on the preview-only copy, then a choice in the dialog: focus
+/// lands neither on the workspace sidebar nor on the hidden alert.
+#[test]
+fn test_preview_surface_normalize_choice_does_not_strand_focus() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("normalize tempdir");
+    let path = dir.path().join("mixed.md");
+    fixture::write_text(&path, "# A\r\nb\nc\r\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+    gio::prelude::ActionGroupExt::activate_action(
+        &window,
+        "set-preview-mode",
+        Some(&true.to_variant()),
+    );
+    flush_events();
+    let alert = window.imp().preview_document_alert.get();
+    wait_until(Duration::from_secs(5), || {
+        alert.imp().alert_revealer.reveals_child()
+            && alert.imp().alert_title.label().as_str() == "Mixed Line Endings Detected"
+    });
+
+    alert.imp().discard_button.grab_focus();
+    alert.imp().discard_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_some()
+    });
+    let dialog = visible_alert_dialog(&window).expect("line endings dialog");
+    click_alert_extra_button(&dialog, "LF");
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
+    flush_after_delay(Duration::from_millis(200));
+
+    assert!(!alert.imp().alert_revealer.reveals_child());
+    let focus = GtkWindowExt::focus(&window);
+    eprintln!(
+        "preview-normalize-focus-after-dialog={:?}",
+        focus.as_ref().map(glib::prelude::ObjectExt::type_)
+    );
+    assert!(
+        focus
+            .as_ref()
+            .is_none_or(|focus| !focus.is_ancestor(&*window.imp().sidebar)),
+        "focus must not land on the workspace sidebar ({focus:?})"
+    );
+    assert!(
+        focus
+            .as_ref()
+            .is_none_or(|focus| focus.is_visible() && !focus.is_ancestor(&alert)),
+        "focus must not stay on the hidden alert ({focus:?})"
+    );
+}
+
+/// A focused Dismiss on the editor's own bar must not strand focus on the
+/// sidebar once the bar hides itself.
+#[test]
+fn test_editor_alert_dismiss_does_not_strand_focus() {
+    let (window, _dir, _path) = open_temp_document("original\n");
+    let editor = active_editor(&window);
+    editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "File Has Changed on Disk".to_string(),
+            body: "The file was modified by another program.".to_string(),
+            primary_button: Some("_Discard Changes and Reload".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    flush_events();
+    let dismiss = editor.info_bar().imp().dismiss_button.get();
+    dismiss.grab_focus();
+    dismiss.emit_clicked();
+    flush_events();
+
+    let focus = GtkWindowExt::focus(&window);
+    eprintln!(
+        "editor-dismiss-focus={:?}",
+        focus.as_ref().map(glib::prelude::ObjectExt::type_)
+    );
+    assert!(
+        focus
+            .as_ref()
+            .is_none_or(|focus| !focus.is_ancestor(&*window.imp().sidebar)),
+        "focus must not land on the workspace sidebar ({focus:?})"
+    );
+    assert!(
+        focus
+            .as_ref()
+            .is_none_or(|focus| !focus.is_ancestor(editor.info_bar())),
+        "focus must not stay on the hidden alert ({focus:?})"
+    );
+    assert_eq!(
+        focus.as_ref(),
+        Some(editor.source_view().upcast_ref::<gtk4::Widget>()),
+        "focus returns to the document"
+    );
 }
 
 #[test]

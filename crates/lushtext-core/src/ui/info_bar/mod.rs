@@ -8,7 +8,9 @@
 
 mod imp;
 
-use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use crate::services::notifications::{
+    InlineActionNotification, InlineAlertAction, InlineNotificationStyle,
+};
 use crate::ui::accessibility;
 // This widget is a **called presentation surface** of the notification
 // workflow, so what a screen reader hears is the workflow's decision, not this
@@ -138,6 +140,28 @@ impl LushtextInfoBar {
         imp.alert_revealer.set_visible(false);
         imp.actions_box.set_visible(false);
         self.set_visible(false);
+    }
+
+    /// Run exactly what clicking `action`'s button runs.
+    ///
+    /// The buttons' own click handlers call this, so a click and a forwarded
+    /// activation share one code path: the stored callback, and for `Dismiss`
+    /// hiding this bar first. The window forwards clicks on its preview copy
+    /// here, to the selected editor's own bar.
+    pub(crate) fn activate(&self, action: InlineAlertAction) {
+        let imp = self.imp();
+        let callback = match action {
+            InlineAlertAction::Retry => &imp.retry_callback,
+            InlineAlertAction::Primary => &imp.discard_callback,
+            InlineAlertAction::Secondary => &imp.save_callback,
+            InlineAlertAction::Dismiss => {
+                self.render_notification(None);
+                &imp.dismissed_callback
+            }
+        };
+        if let Some(ref callback) = *callback.borrow() {
+            callback();
+        }
     }
 
     /// Set the callback invoked when the retry action is clicked.
