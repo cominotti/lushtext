@@ -557,6 +557,8 @@ pub struct LushtextWindow {
     pub notification_bus: NotificationBus,
     /// Periodic sweep for expiring transient and progress notifications.
     pub notification_sweep_source_id: RefCell<Option<glib::SourceId>>,
+    /// Announcement ledger and counts of the notification projection pass.
+    pub(crate) notification_projection: super::notifications::NotificationProjectionState,
     /// Search-progress lease state used by the status-bar notification flow.
     pub search_progress: SearchProgressState,
     /// Shared app-wide workspace scope mirrored from the sidebar selector.
@@ -649,6 +651,7 @@ impl Default for LushtextWindow {
             search_saved_focus: RefCell::new(None),
             notification_bus: NotificationBus::default(),
             notification_sweep_source_id: RefCell::new(None),
+            notification_projection: super::notifications::NotificationProjectionState::default(),
             search_progress: SearchProgressState::default(),
             workspace_scope: RefCell::new(WorkspaceScope::All),
             properties_breakpoint: RefCell::new(None),

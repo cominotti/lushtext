@@ -108,6 +108,42 @@ pub fn inline_alert_announcement_lane(style: InlineNotificationStyle) -> Announc
     }
 }
 
+/// The one surface on which an inline alert can currently be perceived.
+///
+/// An alert is perceivable on at most one surface: the editor's own bar while
+/// its editor is the window's selected tab and preview-only mode is off, and on
+/// no surface while its editor is a background tab or the whole editor column
+/// is hidden by preview-only mode. Side-by-side needs no case of its own: its
+/// preview pane never collapses into an overlay, so the editor's bar stays on
+/// screen beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineAlertSurface {
+    /// The selected editor's own `LushtextInfoBar`.
+    EditorInfoBar,
+}
+
+/// Where an editor's alert is perceivable, or `None` where nobody can see it.
+///
+/// Whether the window itself is the active one is deliberately not an input:
+/// each window announces for its own selected tab.
+#[must_use]
+pub fn inline_alert_perceivable_on(
+    preview_only: bool,
+    is_selected: bool,
+) -> Option<InlineAlertSurface> {
+    (is_selected && !preview_only).then_some(InlineAlertSurface::EditorInfoBar)
+}
+
+/// Whether an alert whose key is `current` still owes its one announcement.
+///
+/// `announced` is the key the window last announced for that editor. An
+/// unchanged key was already spoken; a changed key, or an alert that came back
+/// after its record was cleared (which drops the ledger entry), is a new alert.
+#[must_use]
+pub fn inline_alert_announcement_due(announced: Option<&str>, current: &str) -> bool {
+    announced != Some(current)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +269,36 @@ mod tests {
             inline_alert_announcement_lane(InlineNotificationStyle::Warning),
             AnnouncementLane::StatusUpdate
         );
+    }
+
+    #[test]
+    fn an_alert_is_perceivable_only_on_the_selected_editor_outside_preview_only() {
+        assert_eq!(
+            inline_alert_perceivable_on(false, true),
+            Some(InlineAlertSurface::EditorInfoBar)
+        );
+        assert_eq!(inline_alert_perceivable_on(false, false), None);
+        assert_eq!(inline_alert_perceivable_on(true, false), None);
+        assert_eq!(
+            inline_alert_perceivable_on(true, true),
+            None,
+            "preview-only hides the whole editor column, banner included"
+        );
+    }
+
+    #[test]
+    fn an_announcement_is_due_on_first_appearance_and_on_a_changed_key_only() {
+        assert!(inline_alert_announcement_due(
+            None,
+            "inline-alert:Warning:A:b"
+        ));
+        assert!(inline_alert_announcement_due(
+            Some("inline-alert:Warning:A:b"),
+            "inline-alert:Warning:A:c"
+        ));
+        assert!(!inline_alert_announcement_due(
+            Some("inline-alert:Warning:A:b"),
+            "inline-alert:Warning:A:b"
+        ));
     }
 }

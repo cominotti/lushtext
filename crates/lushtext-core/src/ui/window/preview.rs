@@ -200,6 +200,9 @@ impl LushtextWindow {
         if let Some(editor) = self.active_editor_for_preview() {
             editor.set_preview_only_accessibility(preview_only);
         }
+        // Preview-only hides the editor column, banner included, so the mode
+        // decides where the selected tab's alert is perceivable.
+        self.render_notifications();
         self.queue_preview_layout_settle();
     }
 

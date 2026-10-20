@@ -534,7 +534,9 @@ impl LushtextEditorPage {
         if let Some(ref callback) = *self.imp().notification_callback.borrow() {
             callback(notification);
         } else {
-            self.info_bar().render_notification(Some(&notification));
+            let info_bar = self.info_bar();
+            info_bar.render_notification(Some(&notification));
+            info_bar.announce_throttled(&notification);
         }
     }
 
