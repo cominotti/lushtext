@@ -633,7 +633,17 @@ invariant; tighten the generator or use the deep lane.
   space (`--address-space`), so a CBMC that outgrows it fails its own allocation
   and exits before the scope's OOM killer fires: on GNOME every OOM kill in a
   user scope raises a "memory nearly full" notification. The cgroup cap stays the
-  backstop for the sum of all processes. Do not retry a harness that hits the
+  backstop for the sum of all processes. The scope runs with
+  `OOMPolicy=continue`, so a kernel OOM kill takes only the process that
+  outgrew the cap and the scope is never marked `oom-kill`, the result
+  gsd-housekeeping raises as a CRITICAL notification that shows through Do Not
+  Disturb and over fullscreen games (2026-10-20: a `cargo-mutants` run at
+  `MUTANTS_LOCAL_BUILD_JOBS=8 MUTANTS_LOCAL_TEST_THREADS=12`, beside a second
+  one and a Kani shard, under a 12G cap). Any command run under the wrapper
+  must size its own parallelism to fit the cap (`cargo -j 4`, at most 4 test
+  threads, and the Makefile's `MUTANTS_LOCAL_*` defaults, never raised), one
+  capped heavy run per agent at a time; a mutant whose test was OOM-killed
+  reads as caught, so a run that hit the cap is discarded. Do not retry a harness that hits the
   limit; shrink its bounds first. The wrapper's self-test reads the scope's
   `memory.max` instead of provoking the OOM killer, for the same reason. On 2026-10-15 an unmeasured harness reached 59.6 GB and left the
   workstation with ~250 MB free; hitting the cap is a finding to fix by the fit

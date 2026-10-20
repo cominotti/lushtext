@@ -19,6 +19,16 @@
 # only (exit status 137). A harness that hits the cap is a finding — shrink its
 # bounds — not a reason to raise the cap.
 #
+# The scope also sets `OOMPolicy=continue`. With systemd's default (`stop`) the
+# first kernel OOM kill stopped the whole scope and marked it `oom-kill`, which
+# is the result gsd-housekeeping turns into a CRITICAL "memory nearly full"
+# notification (shown through Do Not Disturb and over fullscreen apps). With
+# `continue` only the process that outgrew the cap dies, the caller sees that
+# one build or test fail, and the scope is not marked `oom-kill`. That is a
+# backstop, not a licence: a command's own parallelism (cargo jobs, test
+# threads, cargo-mutants jobs) must fit inside the cap, because a mutant whose
+# test was OOM-killed reads as caught and contaminates the run.
+#
 # Why this exists: on 2026-10-15 one unmeasured Kani harness drove CBMC to
 # 59.6 GB resident on a 94 GB workstation, leaving ~250 MB free and stalling
 # the desktop. CPU affinity bounded the cores, nothing bounded the memory.
@@ -49,6 +59,10 @@ self_test() {
     [ "$status" -eq 2 ] || { echo "self-test: invalid cap accepted (status $status)" >&2; return 1; }
     if command -v systemd-run >/dev/null 2>&1 \
         && systemd-run --user --scope --quiet -p MemoryMax=1M true >/dev/null 2>&1; then
+        local policy
+        # shellcheck disable=SC2016 # expanded by the inner shell, inside the scope
+        policy=$("$me" 64M sh -c 'u=$(sed -n "s|^0::.*/||p" /proc/self/cgroup); systemctl --user show -p OOMPolicy --value "$u"' 2>/dev/null)
+        [ "$policy" = "continue" ] || { echo "self-test: scope OOMPolicy was '$policy', expected 'continue'" >&2; return 1; }
         # Read the scope's own limits rather than provoking the OOM killer: an
         # OOM kill in a user scope raises a desktop notification on GNOME.
         local limits
@@ -58,7 +72,7 @@ self_test() {
         status=0
         "$me" --address-space 1G python3 -c 'b = bytearray(2 * 1024 * 1024 * 1024)' 2>/dev/null || status=$?
         [ "$status" -eq 1 ] || { echo "self-test: --address-space did not fail the allocation cleanly (status $status)" >&2; return 1; }
-        echo "with-memory-cap self-test: ok (scope sets MemoryMax and no swap; --address-space fails an allocation cleanly)"
+        echo "with-memory-cap self-test: ok (scope sets MemoryMax, no swap and OOMPolicy=continue; --address-space fails an allocation cleanly)"
     else
         echo "with-memory-cap self-test: ok (no systemd user manager; cap enforcement not exercised)"
     fi
@@ -97,12 +111,12 @@ if command -v systemd-run >/dev/null 2>&1 \
     if [ "$address_space" = 1 ]; then
         cap_kib=$(cap_in_kib "$cap")
         ulimit -v $((cap_kib * 7 / 8))
-        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0, RLIMIT_AS=$((cap_kib * 7 / 8)) KiB per process, for: $*" >&2
+        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue, RLIMIT_AS=$((cap_kib * 7 / 8)) KiB per process, for: $*" >&2
     else
-        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 for: $*" >&2
+        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue for: $*" >&2
     fi
     exec systemd-run --user --scope --quiet \
-        -p MemoryMax="$cap" -p MemorySwapMax=0 -- "$@"
+        -p MemoryMax="$cap" -p MemorySwapMax=0 -p OOMPolicy=continue -- "$@"
 fi
 
 if [ -n "${CI:-}" ]; then
