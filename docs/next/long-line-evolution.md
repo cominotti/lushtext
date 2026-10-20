@@ -27,9 +27,11 @@ input to presented frame, measured on the maintainer's desktop.
 0. **C4b `first-frame-shell` (found by C4, 2026-10-15) — proposed 2026-10-20 as
    `first-frame-window-shell`** (openspec change; measured breakdown in its
    design: about 10 ms of `present` is a one-time first-toplevel realize, the
-   first-frame layout is 13–19 ms of first measure, and only a minimal shell
-   plus staged composition fits B_settle per dispatch; the idle reference run
-   decides, task 1.3). After C4 the
+   first-frame layout is 13–19 ms of first measure, and the costs that must
+   leave those dispatches belong to visible widgets, so the window is built
+   whole with its content invisible and revealed in bounded dispatches; the
+   reference run under the quiet-machine precondition decides, tasks 1.3 and
+   1.5). After C4 the
    constructing dispatch is GTK's `present` of the whole window (11.8–14.4 ms
    idle) plus template instantiation (8.5–11 ms), and the first paint is
    another ~15 ms dispatch; staging every hidden secondary surface saves only

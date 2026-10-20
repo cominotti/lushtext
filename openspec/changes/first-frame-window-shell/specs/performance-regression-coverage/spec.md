@@ -13,23 +13,32 @@ backend:
 - exact window state after close.
 
 A composition widget gate SHALL prove:
-- the stage order, and that no stage starts before the frame showing its predecessor has painted;
-- that each forced-stage path (accelerator, window action, activation file open, and
-  session-restore completion, each issued before each stage) produces the same state as on a fully
-  composed window;
-- that the `window-composition` readiness blocker clears exactly when composition completes;
-- that the first-frame shell's rail and pane allocations equal the composed shell's.
+- that `open` and `activate` return without a window, hold the application, and merge a second
+  request made before the window exists;
+- the stage order, and that no stage from the content stage on starts before the frame showing its
+  predecessor has painted;
+- that each forced-reveal path (accelerator, window action, activation file open, session-restore
+  completion, and automation action, each issued before each stage) produces the same state as on
+  a fully composed window, and that reads and projections force no stage;
+- that the `window-composition` readiness blocker clears exactly when composition completes, and
+  when the window goes away;
+- that closing or destroying the window during any stage runs no later stage and keeps unrestored
+  session descriptors;
+- that the initial focus equals today's composed window;
+- that revealing staged content never changes the rail or pane allocation, and that the chrome
+  bounds are constant at every painted frame of composition.
 
 The measured lane SHALL record, on the release build, for the fresh and steady-state profiles under
 the keyfile and dconf backends:
-- the toolkit startup, LushText startup, window-construction, shell first-frame, and
-  composition-complete spans;
+- the toolkit startup, LushText startup, window-construction, first-frame, and
+  composition-complete spans, and the content fill-in time between the last two;
 - one span per composition stage;
 - the layout and paint phases of each window's first frames;
 - the largest watchdog lateness between the `open` handler and composition complete.
 
 The lane SHALL assert each dispatch against B_settle, and SHALL include the build profile, the
-backend, the machine load, and `btrfs-stall-report` evidence for the run window. The baseline SHALL
+backend, the machine load, the reference-precondition check (load, CPU-heavy processes, and other
+agents' build, test, or proof processes), and `btrfs-stall-report` evidence for the run window. The baseline SHALL
 be recorded failing-first before the change.
 
 #### Scenario: Write-count gate runs on pull requests
@@ -38,7 +47,7 @@ be recorded failing-first before the change.
 
 #### Scenario: Composition gate runs on pull requests
 - **WHEN** the widget shard that owns the composition gate runs
-- **THEN** it fails if a stage runs out of order, a forced path differs from the composed result, or the shell geometry differs from the composed geometry
+- **THEN** it fails if a stage runs out of order, a forced path differs from the composed result, a projection forces a stage, or any chrome bound changes between painted frames
 
 #### Scenario: Measured lane reports construction spans
 - **WHEN** the responsiveness smoke lane runs the construction scenario
