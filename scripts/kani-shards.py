@@ -139,14 +139,10 @@ RESPONSIVENESS_BUDGET_REMEASURED_IN = (
 )
 PROOF_STRENGTH_RAISED_IN = "; raised by runs 38087161968, 38088387193 (max of the two)"
 # document-scale-policy (C1) added the paragraph-boundary, profile, edit-watch
-# and document-scale shards; two dispatched runs (max of the two) measure them.
-# Until those runs are recorded the three shards carry the provisional
-# placeholder budget (the precedent of `verify-multi-window-draft-journal`):
-# `check` accepts it only inside the margins, and it is replaced by the
-# measured figures before the change lands.
-DOCUMENT_SCALE_MEASURED_IN = "PROVISIONAL placeholder until the first dispatched run is recorded"
-DOCUMENT_SCALE_PROVISIONAL_MINUTES = 20.0
-DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB = 10.0
+# and document-scale shards; two dispatched runs (max of the two, rounded up)
+# measure them. core-document-scale's runs predate the join rewrite of
+# c2e33d74 (same harnesses, 5.6 local minutes before and after).
+DOCUMENT_SCALE_MEASURED_IN = "runs 39440638502, 39446126819 (max of the two)"
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -312,8 +308,8 @@ SHARDS: dict[str, Shard] = {
             "model::paragraph_boundary::kani_proofs::boundary_break_",
         ),
         gate="scheduled",
-        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
-        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        ci_minutes=8.2,
+        ci_peak_gib=2.7,
         measured_in=DOCUMENT_SCALE_MEASURED_IN,
     ),
     # Split by the fit order: the two slice-choice harnesses and the
@@ -326,8 +322,8 @@ SHARDS: dict[str, Shard] = {
             "model::paragraph_boundary::kani_proofs::boundary_slice_end_",
         ),
         gate="scheduled",
-        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
-        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        ci_minutes=21.9,
+        ci_peak_gib=3.8,
         measured_in=DOCUMENT_SCALE_MEASURED_IN,
     ),
     "core-paragraph-profile": Shard(
@@ -337,8 +333,8 @@ SHARDS: dict[str, Shard] = {
             "model::paragraph_profile_watch::kani_proofs::watch_delete_",
         ),
         gate="scheduled",
-        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
-        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        ci_minutes=14.7,
+        ci_peak_gib=8.3,
         measured_in=DOCUMENT_SCALE_MEASURED_IN,
     ),
     # Split by the fit order: each inductive watch step takes 11-13 local
@@ -348,24 +344,24 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         ("model::paragraph_profile_watch::kani_proofs::watch_step_",),
         gate="scheduled",
-        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
-        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        ci_minutes=19.4,
+        ci_peak_gib=10.4,
         measured_in=DOCUMENT_SCALE_MEASURED_IN,
     ),
     "core-profile-watch-reads": Shard(
         "lushtext-core",
         ("model::paragraph_profile_watch::kani_proofs::watch_reads_",),
         gate="scheduled",
-        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
-        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        ci_minutes=18.4,
+        ci_peak_gib=10.4,
         measured_in=DOCUMENT_SCALE_MEASURED_IN,
     ),
     "core-profile-watch-unsound": Shard(
         "lushtext-core",
         ("model::paragraph_profile_watch::kani_proofs::watch_fast_path_",),
         gate="scheduled",
-        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
-        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        ci_minutes=19.5,
+        ci_peak_gib=10.4,
         measured_in=DOCUMENT_SCALE_MEASURED_IN,
     ),
     "core-shell-geometry": Shard(
