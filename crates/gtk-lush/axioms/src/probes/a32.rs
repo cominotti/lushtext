@@ -69,6 +69,17 @@ impl MappedView {
     pub fn detach(&self) {
         self.map.set_property("view", None::<&sourceview5::View>);
     }
+
+    /// Detach as [`detach`](Self::detach) does, first unmapping the map
+    /// (`set_child_visible(false)` keeps it realized, so its armed tick still
+    /// runs and the defect still logs its CRITICALs), so the viewless map is
+    /// never drawn: drawing it intermittently printed pixman's
+    /// "Invalid rectangle passed *** BUG ***", a second symptom of the same
+    /// defect that bypasses GLib logging and that the lane fails on.
+    pub fn detach_unmapped(&self) {
+        self.map.set_child_visible(false);
+        self.detach();
+    }
 }
 
 fn criticals(messages: &[CapturedLog]) -> Vec<String> {
@@ -104,7 +115,7 @@ pub fn probe_a32() -> Observation {
         )?;
 
         fixture.scroll();
-        fixture.detach();
+        fixture.detach_unmapped();
         settle(LAYOUT_SETTLE);
         let detached = criticals(&capture.messages());
         drop(capture);

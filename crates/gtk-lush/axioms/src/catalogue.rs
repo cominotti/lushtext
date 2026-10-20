@@ -682,6 +682,67 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a41),
     },
+    Axiom {
+        id: AxiomId::new(42),
+        name: "a42_buffer_lines_end_at_pango_paragraph_delimiters",
+        statement: "text inserted whole into a GtkTextBuffer gets exactly Pango's paragraphs as \
+                    lines: a new line starts after \\n, \\r, \\r\\n (one delimiter) and U+2029, \
+                    not after U+2028 or U+0085, and a line's chars_in_line counts its delimiter; \
+                    the line structure is history-dependent, because an insertion splits only its \
+                    own text at those delimiters (never joining with or splitting around its \
+                    neighbours) and a deletion joins exactly the lines whose starts it removes \
+                    (a line start x with start < x <= end)",
+        dependent_designs: &[
+            "document-scale-policy (C1): model/paragraph_boundary.rs, the boundary rule of the \
+             install slicer and the paragraph profile (fresh text), and the edit-time watch \
+             (model/paragraph_profile_watch.rs, whose core and Kani model follow the edit rule) \
+             and the minimap's modified-line marks (edits)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a42),
+    },
+    Axiom {
+        id: AxiomId::new(43),
+        name: "a43_chars_in_line_walks_segments_not_characters",
+        statement: "gtk_text_iter_get_chars_in_line costs time in proportion to the line's \
+                    segment count, not its character count: it sums the char_count of the line's \
+                    segments (verified by source, gtktextiter.c; a duration is not a structural \
+                    observation, so no in-crate probe)",
+        dependent_designs: &[
+            "document-scale-policy (C1): the edit-time watch's bounded line-length reads \
+             (ui/editor_page/document_scale.rs)",
+        ],
+        slow: false,
+        probe: None,
+    },
+    Axiom {
+        id: AxiomId::new(44),
+        name: "a44_a_language_cleared_after_insert_text_leaves_no_tags",
+        statement: "clearing a GtkSourceBuffer's language (set_language(NULL) and \
+                    set_highlight_syntax(FALSE)) inside an insert-text after-handler leaves the \
+                    inserted text untagged after the main loop drains: the class handler only \
+                    schedules the context engine's idle, and the engine is gone before it runs",
+        dependent_designs: &[
+            "document-scale-policy (C1): the edit-time watch downgrades syntax in the same \
+             emission as the edit that makes a paragraph too long (A29)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a44),
+    },
+    Axiom {
+        id: AxiomId::new(45),
+        name: "a45_an_unparented_widget_never_runs_its_armed_tick",
+        statement: "a widget unparented (and so unrealized) while a frame-clock tick callback is \
+                    armed never runs that callback in a later frame, and its disposal logs \
+                    nothing; unparenting and dropping a GtkSourceMap whose update tick a scroll \
+                    armed logs no CRITICAL, unlike clearing its view in place (A32)",
+        dependent_designs: &[
+            "document-scale-policy (C1): the minimap retire-and-rebuild \
+             (ui/editor_page/minimap/retirement.rs) that replaces the A32 detach",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a45),
+    },
 ];
 
 #[cfg(test)]
@@ -696,8 +757,8 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a41() {
-        for number in 1..=41 {
+    fn the_catalogue_covers_every_ledger_id_up_to_a45() {
+        for number in 1..=45 {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }
