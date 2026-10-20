@@ -138,6 +138,15 @@ RESPONSIVENESS_BUDGET_REMEASURED_IN = (
     "38182511805 (6.44 min / 2.68 GiB max, inside the figure)"
 )
 PROOF_STRENGTH_RAISED_IN = "; raised by runs 38087161968, 38088387193 (max of the two)"
+# document-scale-policy (C1) added the paragraph-boundary, profile, edit-watch
+# and document-scale shards; two dispatched runs (max of the two) measure them.
+# Until those runs are recorded the three shards carry the provisional
+# placeholder budget (the precedent of `verify-multi-window-draft-journal`):
+# `check` accepts it only inside the margins, and it is replaced by the
+# measured figures before the change lands.
+DOCUMENT_SCALE_MEASURED_IN = "PROVISIONAL placeholder until the first dispatched run is recorded"
+DOCUMENT_SCALE_PROVISIONAL_MINUTES = 20.0
+DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB = 10.0
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -294,6 +303,71 @@ SHARDS: dict[str, Shard] = {
         ci_peak_gib=2.2,
         measured_in=GEOMETRY_POLICY_MEASURED_IN,
     ),
+    "core-document-scale": Shard(
+        "lushtext-core",
+        (
+            "model::document_scale::kani_proofs::",
+            "model::paragraph_boundary::kani_proofs::boundary_newline_",
+            "model::paragraph_boundary::kani_proofs::boundary_line_length_",
+            "model::paragraph_boundary::kani_proofs::boundary_break_",
+        ),
+        gate="scheduled",
+        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
+        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        measured_in=DOCUMENT_SCALE_MEASURED_IN,
+    ),
+    # Split by the fit order: the two slice-choice harnesses and the
+    # delimiter-rule agreement take about 13 of the boundary group's 18 local
+    # minutes (symbolic `from_utf8` over 8 bytes).
+    "core-paragraph-boundary": Shard(
+        "lushtext-core",
+        (
+            "model::paragraph_boundary::kani_proofs::boundary_agrees_",
+            "model::paragraph_boundary::kani_proofs::boundary_slice_end_",
+        ),
+        gate="scheduled",
+        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
+        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        measured_in=DOCUMENT_SCALE_MEASURED_IN,
+    ),
+    "core-paragraph-profile": Shard(
+        "lushtext-core",
+        (
+            "model::paragraph_boundary::kani_proofs::profile_",
+            "model::paragraph_profile_watch::kani_proofs::watch_delete_",
+        ),
+        gate="scheduled",
+        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
+        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        measured_in=DOCUMENT_SCALE_MEASURED_IN,
+    ),
+    # Split by the fit order: each inductive watch step takes 11-13 local
+    # minutes and about 10 GiB (CaDiCaL), so together they measured 38 local
+    # minutes, beyond the 25-minute margin; one harness per shard.
+    "core-profile-watch-step": Shard(
+        "lushtext-core",
+        ("model::paragraph_profile_watch::kani_proofs::watch_step_",),
+        gate="scheduled",
+        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
+        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        measured_in=DOCUMENT_SCALE_MEASURED_IN,
+    ),
+    "core-profile-watch-reads": Shard(
+        "lushtext-core",
+        ("model::paragraph_profile_watch::kani_proofs::watch_reads_",),
+        gate="scheduled",
+        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
+        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        measured_in=DOCUMENT_SCALE_MEASURED_IN,
+    ),
+    "core-profile-watch-unsound": Shard(
+        "lushtext-core",
+        ("model::paragraph_profile_watch::kani_proofs::watch_fast_path_",),
+        gate="scheduled",
+        ci_minutes=DOCUMENT_SCALE_PROVISIONAL_MINUTES,
+        ci_peak_gib=DOCUMENT_SCALE_PROVISIONAL_PEAK_GIB,
+        measured_in=DOCUMENT_SCALE_MEASURED_IN,
+    ),
     "core-shell-geometry": Shard(
         "lushtext-core",
         ("ui::window::geometry::kani_proofs::shell_loop_",),
@@ -379,6 +453,18 @@ _MINIMAP = "ui::editor_page::minimap::policy::kani_proofs::"
 _PREVIEW = "ui::markdown_preview::policy::kani_proofs::"
 _BUDGET = "model::responsiveness_budget::kani_proofs::"
 _WRITE_BATCH = "model::settings_write_batch::kani_proofs::"
+# document-scale-policy local seconds: the verification times of `make kani` on
+# this workstation (Kani 0.68.0, 2026-10-20), cheapest first per module.
+PROFILE_CARRY_SECONDS = 13.64
+PROFILE_SPEC_SECONDS = 30.19
+PROFILE_SLICING_SECONDS = 132.52
+WATCH_DELETE_SECONDS = 1.0
+WATCH_READS_SECONDS = 651.83
+WATCH_STEP_SECONDS = 672.86
+WATCH_UNSOUND_SECONDS = 778.55
+_SCALE = "model::document_scale::kani_proofs::"
+_BOUNDARY = "model::paragraph_boundary::kani_proofs::"
+_WATCH = "model::paragraph_profile_watch::kani_proofs::"
 _SHELL_POLICY_HARNESSES = (
     _h(_SHELL + "focus_mode_renders_no_secondary_surface", 0.11, "ci"),
     _h(_SHELL + "layout_never_renders_an_unrequested_surface", 0.2, "ci"),
@@ -538,10 +624,47 @@ ORACLES: dict[str, Oracle] = {
         (_h(_WRITE_BATCH + "a_flush_never_drops_the_latest_value_or_re_emits_a_persisted_one", 1.38, "ci"),),
         functions=("record", "observe_persisted", "acknowledge"),
     ),
+    "crates/lushtext-core/src/model/document_scale.rs": Oracle(
+        _CORE,
+        (
+            _h(_SCALE + "scale_save_without_join_reenables_a_feature", 0.09, "ci"),
+            _h(_SCALE + "scale_byte_tiers_match_the_retired_tiers", 0.13, "ci"),
+            _h(_SCALE + "scale_protected_view_is_upward_closed", 0.18, "ci"),
+            _h(_SCALE + "scale_is_monotone", 0.49, "ci"),
+            _h(_SCALE + "scale_join_is_a_meet_on_presentation_features", 0.54, "ci"),
+            _h(_SCALE + "scale_of_a_profile_join_is_the_join_of_scales", 0.77, "ci"),
+        ),
+    ),
+    "crates/lushtext-core/src/model/paragraph_boundary.rs": Oracle(
+        _CORE,
+        (
+            _h(_BOUNDARY + "profile_slices_without_carry_disagree", PROFILE_CARRY_SECONDS, "ci"),
+            _h(_BOUNDARY + "profile_matches_the_specification", PROFILE_SPEC_SECONDS, "ci"),
+            _h(_BOUNDARY + "profile_is_independent_of_slicing", PROFILE_SLICING_SECONDS, "ci"),
+            _h(_BOUNDARY + "boundary_break_is_a_scalar_boundary_after_a_delimiter", 96.25, "local"),
+            _h(_BOUNDARY + "boundary_line_length_excludes_its_delimiter", 96.42, "local"),
+            _h(_BOUNDARY + "boundary_slice_end_is_safe_and_advances", 203.01, "local"),
+            _h(_BOUNDARY + "boundary_agrees_with_the_reference_rule", 258.74, "local"),
+            _h(_BOUNDARY + "boundary_slice_end_is_the_reference_choice", 293.39, "local"),
+        ),
+    ),
+    "crates/lushtext-core/src/model/paragraph_profile_watch.rs": Oracle(
+        _CORE,
+        (
+            _h(_WATCH + "watch_delete_between_cr_and_lf_preserves_the_invariant", WATCH_DELETE_SECONDS, "local"),
+            _h(_WATCH + "watch_reads_are_bounded", WATCH_READS_SECONDS, "local"),
+            _h(_WATCH + "watch_step_preserves_the_invariant", WATCH_STEP_SECONDS, "local"),
+            _h(_WATCH + "watch_fast_path_without_a_carried_bound_is_unsound", WATCH_UNSOUND_SECONDS, "local"),
+        ),
+    ),
 }
 
 # Harnesses deliberately outside every oracle list, each with its reason.
 NOT_ORACLE_HARNESSES: dict[str, str] = {
+    _BOUNDARY + "boundary_newline_only_slicer_disagrees": (
+        "pins the retired '\\n'-only slicer, a transcription inside the harness file, "
+        "not a property of the shipped boundary function"
+    ),
     _JOURNAL + "a_second_writer_breaks_the_journal_invariants": (
         "pins axiom A6 (one writer per data directory), not a property of journal_core; "
         "journal_invariants_hold_under_crashes says more, and it costs minutes per mutant"
