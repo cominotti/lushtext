@@ -428,7 +428,7 @@ C1's task 8.4a holds again: nothing is left for C1.
 **Status: settings writes removed from window construction and from every
 interaction dispatch; the remaining construction cost and the keyfile flush
 are over B_settle and need a maintainer decision (below).** Branch
-`bound-window-construction-dispatch`, stacked on PR #55.
+`bound-window-construction-dispatch`, PR #58 on `main`.
 
 ### Preconditions (tasks 1.1, 1.2)
 
