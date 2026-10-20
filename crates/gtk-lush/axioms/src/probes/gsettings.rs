@@ -33,15 +33,6 @@ pub const BOOLEAN_KEYS: [&str; 3] = ["show-hidden", "sort-directories-first", "s
 /// An integer key of [`SCHEMA_ID`] the probes write.
 pub const INTEGER_KEY: &str = "sidebar-width";
 
-/// The identity of the settings file: a backend write changes the inode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FileIdentity {
-    /// The file's inode.
-    pub inode: u64,
-    /// The file's size in bytes.
-    pub size: u64,
-}
-
 /// A keyfile settings backend over a private file, removed on drop.
 pub struct KeyfileSettingsFixture {
     dir: PathBuf,
@@ -51,12 +42,10 @@ pub struct KeyfileSettingsFixture {
 }
 
 impl KeyfileSettingsFixture {
-    /// Build the fixture under a fresh directory named for `tag`, with the
-    /// settings file already holding `padding_bytes` of an unrelated group
-    /// (so a write has a known amount of text to serialize). `None` when the
-    /// GTK 4 schema is not installed or the directory cannot be created.
+    /// Build the fixture under a fresh directory named for `tag`. `None` when
+    /// the GTK 4 schema is not installed or the directory cannot be created.
     #[must_use]
-    pub fn new(tag: &str, padding_bytes: usize) -> Option<Self> {
+    pub fn new(tag: &str) -> Option<Self> {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let schema = gio::SettingsSchemaSource::default()?.lookup(SCHEMA_ID, true)?;
         let dir = std::env::temp_dir().join(format!(
@@ -66,16 +55,11 @@ impl KeyfileSettingsFixture {
         ));
         std::fs::create_dir_all(&dir).ok()?;
         let path = dir.join("keyfile");
-        let mut seed = String::from("[org/gtk/gtk4/settings/file-chooser]\nshow-hidden=false\n");
-        if padding_bytes > 0 {
-            seed.push_str("\n[padding]\n");
-            let mut index = 0usize;
-            while seed.len() < padding_bytes {
-                seed.push_str(&format!("key{index}='{}'\n", "x".repeat(96)));
-                index += 1;
-            }
-        }
-        std::fs::write(&path, seed).ok()?;
+        std::fs::write(
+            &path,
+            "[org/gtk/gtk4/settings/file-chooser]\nshow-hidden=false\n",
+        )
+        .ok()?;
         let backend = gio::keyfile_settings_backend_new(path.to_str()?, "/", None);
         Some(Self {
             dir,
@@ -97,27 +81,10 @@ impl KeyfileSettingsFixture {
         &self.path
     }
 
-    /// The settings file's identity now, `None` when it cannot be read.
-    #[must_use]
-    pub fn identity(&self) -> Option<FileIdentity> {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = std::fs::metadata(&self.path).ok()?;
-        Some(FileIdentity {
-            inode: metadata.ino(),
-            size: metadata.size(),
-        })
-    }
-
-    /// The settings file's text now (empty when it cannot be read).
-    #[must_use]
-    pub fn contents(&self) -> String {
-        std::fs::read_to_string(&self.path).unwrap_or_default()
-    }
-
     /// Whether the settings file holds `key=value` in the schema's group.
     #[must_use]
     pub fn file_has(&self, key: &str, value: &str) -> bool {
-        let contents = self.contents();
+        let contents = std::fs::read_to_string(&self.path).unwrap_or_default();
         let mut in_group = false;
         for line in contents.lines() {
             if line.starts_with('[') {
@@ -182,11 +149,7 @@ impl WriteWatch {
     /// arrive (the main context is drained for `EVENT_SETTLE`).
     #[must_use]
     pub fn settled_count(&self) -> u32 {
-        let deadline = Instant::now() + EVENT_SETTLE;
-        while Instant::now() < deadline {
-            drain_main_context();
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        pump_main_context_for(EVENT_SETTLE);
         drain_main_context();
         self.count.get()
     }
@@ -203,6 +166,14 @@ impl Drop for KeyfileSettingsFixture {
 
 /// Drain every ready source of the default main context.
 pub fn drain_main_context() {
-    let context = glib::MainContext::default();
-    while context.iteration(false) {}
+    crate::session::flush_events();
+}
+
+/// Keep draining the default main context, every 5 ms, for `duration`.
+pub(crate) fn pump_main_context_for(duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        drain_main_context();
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }

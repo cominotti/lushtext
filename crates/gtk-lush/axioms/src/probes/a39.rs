@@ -23,7 +23,7 @@ pub const WIDTH: i32 = 321;
 pub fn probe_a39() -> Observation {
     Recorder::run(AxiomId::new(39), |recorder| {
         let fixture = recorder.require(
-            KeyfileSettingsFixture::new("a39", 0),
+            KeyfileSettingsFixture::new("a39"),
             "control: the GTK 4 file-chooser schema is installed and a private keyfile exists",
         )?;
         let watch = recorder.require(

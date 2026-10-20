@@ -12,7 +12,7 @@ use crate::common::{
     OrphanCleanupPolicyReset, action_state_bool, activate_action, editor_text,
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
     fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, test_application,
-    wait_until,
+    wait_for_startup_data_flow, wait_until,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::{Cast, IsA, ObjectExt, ToValue, ToVariant};
@@ -535,12 +535,6 @@ fn wait_for_workspace_consumers(
             .len()
             == expected_folders
             && window.imp().command_palette.evidence().file_index_len == expected_index
-    });
-}
-
-fn wait_for_startup_data_flow(window: &LushtextWindow) {
-    wait_until(Duration::from_secs(10), || {
-        window.imp().startup_data_flow.completed.get()
     });
 }
 

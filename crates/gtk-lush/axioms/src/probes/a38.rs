@@ -29,7 +29,7 @@ pub const WRITES: i32 = 3;
 pub fn probe_a38() -> Observation {
     Recorder::run(AxiomId::new(38), |recorder| {
         let fixture = recorder.require(
-            KeyfileSettingsFixture::new("a38", 0),
+            KeyfileSettingsFixture::new("a38"),
             "control: the GTK 4 file-chooser schema is installed and a private keyfile exists",
         )?;
         let watch = recorder.require(

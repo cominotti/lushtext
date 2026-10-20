@@ -16,12 +16,12 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gtk4::prelude::*;
 
 use crate::observation::Recorder;
-use crate::probes::gsettings::{INTEGER_KEY, KeyfileSettingsFixture, drain_main_context};
+use crate::probes::gsettings::{INTEGER_KEY, KeyfileSettingsFixture, pump_main_context_for};
 use crate::{AxiomId, Observation};
 
 /// How long the probe lets late `changed` emissions arrive.
@@ -46,11 +46,7 @@ enum Phase {
 }
 
 fn settle() {
-    let deadline = Instant::now() + LATE_EMISSION_WINDOW;
-    while Instant::now() < deadline {
-        drain_main_context();
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    pump_main_context_for(LATE_EMISSION_WINDOW);
 }
 
 /// Probe A41.
@@ -58,7 +54,7 @@ fn settle() {
 pub fn probe_a41() -> Observation {
     Recorder::run(AxiomId::new(41), |recorder| {
         let fixture = Rc::new(recorder.require(
-            KeyfileSettingsFixture::new("a41", 0),
+            KeyfileSettingsFixture::new("a41"),
             "control: the GTK 4 file-chooser schema is installed and a private keyfile exists",
         )?);
         let writer = fixture.settings();

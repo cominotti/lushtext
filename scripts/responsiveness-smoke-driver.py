@@ -2686,11 +2686,7 @@ def session_main(args: argparse.Namespace) -> int:
     # scope, so the service can never write the user's real dconf database.
     dconf_home = Path(os.environ.get("TMPDIR", tempfile.gettempdir())) / "dconf-session-config"
     dconf_home.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["gdbus", "call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus",
-         "--method", "org.freedesktop.DBus.UpdateActivationEnvironment", f"{{'XDG_CONFIG_HOME': '{dconf_home}'}}"],
-        capture_output=True, check=True, timeout=10,
-    )
+    isolate_dconf_activation(Bus(), dconf_home)
     registry = None
     if "at" in selected_variants():
         if ATSPI_REGISTRYD.exists():

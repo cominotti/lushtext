@@ -15,7 +15,7 @@ use gtk_lush_axioms::fixtures::{INTEGER_KEY, KeyfileSettingsFixture, write_on_a_
 use gtk4::prelude::*;
 
 fn build(ui: &support::SampleUi) {
-    let Some(fixture) = KeyfileSettingsFixture::new("a40-sample", 0) else {
+    let Some(fixture) = KeyfileSettingsFixture::new("a40-sample") else {
         ui.set_fixture(&gtk4::Label::new(Some(
             "The GTK 4 file-chooser schema is not installed.",
         )));

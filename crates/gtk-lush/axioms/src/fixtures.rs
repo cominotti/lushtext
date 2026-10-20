@@ -42,8 +42,7 @@ pub use crate::probes::adaptive::{
     xft_dpi_for_scale,
 };
 pub use crate::probes::gsettings::{
-    BOOLEAN_KEYS, FileIdentity, INTEGER_KEY, KeyfileSettingsFixture, SCHEMA_ID, WriteWatch,
-    drain_main_context,
+    BOOLEAN_KEYS, INTEGER_KEY, KeyfileSettingsFixture, SCHEMA_ID, WriteWatch, drain_main_context,
 };
 pub use crate::probes::row_stride;
 pub use crate::probes::text::{

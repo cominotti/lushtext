@@ -113,6 +113,15 @@ pub fn test_window() -> lushtext_core::ui::window::LushtextWindow {
     lushtext_core::ui::window::LushtextWindow::new(&app)
 }
 
+/// Wait until the window's startup data flow (draft and session recovery) has
+/// completed, so a close runs the ordinary confirmed close transaction.
+pub fn wait_for_startup_data_flow(window: &lushtext_core::ui::window::LushtextWindow) {
+    use glib::subclass::prelude::ObjectSubclassIsExt;
+    wait_until(Duration::from_secs(10), || {
+        window.imp().startup_data_flow.completed.get()
+    });
+}
+
 /// Present a test window and wait for the headless compositor to realize it.
 ///
 /// This is the single shared presentation helper for the widget-test tree.

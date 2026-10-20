@@ -64,7 +64,7 @@ pub fn write_on_a_worker(path: std::path::PathBuf, value: i32) -> Option<Duratio
 pub fn probe_a40() -> Observation {
     Recorder::run(AxiomId::new(40), |recorder| {
         let fixture = recorder.require(
-            KeyfileSettingsFixture::new("a40", 0),
+            KeyfileSettingsFixture::new("a40"),
             "control: the GTK 4 file-chooser schema is installed and a private keyfile exists",
         )?;
         let reader = fixture.settings();

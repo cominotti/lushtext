@@ -98,11 +98,6 @@ impl WriteCounter {
     }
 }
 
-/// A window of a fresh test application, not yet presented.
-fn window() -> LushtextWindow {
-    LushtextWindow::new(&test_application())
-}
-
 /// Present `window` and wait for its first painted frame. This is also the
 /// harness precondition the gate depends on: presented widget tests must
 /// deliver the frame clock's `after-paint`.
@@ -123,14 +118,6 @@ fn present_and_wait_for_first_frame(window: &LushtextWindow) {
     );
 }
 
-/// Wait until startup data has settled, so a close runs the ordinary confirmed
-/// close transaction rather than waiting on startup recovery.
-fn wait_for_startup(window: &LushtextWindow) {
-    wait_until(Duration::from_secs(10), || {
-        window.imp().startup_data_flow.completed.get()
-    });
-}
-
 /// What the backend holds now, read through an instance of its own.
 fn backend() -> gio::Settings {
     gio::Settings::new(APP_ID)
@@ -141,7 +128,7 @@ fn test_steady_state_construction_writes_nothing() {
     let keyfile = keyfile_settings_backend(Some(STEADY_PROFILE));
     let before = identity(&keyfile);
     let writes = WriteCounter::new(&keyfile);
-    let window = window();
+    let window = test_window();
     flush_events();
     assert_eq!(identity(&keyfile), before, "construction wrote the backend");
     assert_eq!(
@@ -162,7 +149,7 @@ fn test_steady_state_construction_writes_nothing() {
 fn test_fresh_construction_writes_once_after_the_first_frame() {
     let keyfile = keyfile_settings_backend(None);
     let writes = WriteCounter::new(&keyfile);
-    let window = window();
+    let window = test_window();
     flush_events();
     assert!(
         identity(&keyfile).is_none(),
@@ -208,7 +195,7 @@ fn test_fresh_construction_writes_once_after_the_first_frame() {
 fn test_a_resize_burst_writes_at_most_once_per_persistence_window() {
     let keyfile = keyfile_settings_backend(Some(STEADY_PROFILE));
     let writes = WriteCounter::new(&keyfile);
-    let window = window();
+    let window = test_window();
     present_and_wait_for_first_frame(&window);
     let flushes_before = settings_writes::evidence().flushes;
     let (width, height) = window.default_size();
@@ -231,7 +218,7 @@ fn test_a_resize_burst_writes_at_most_once_per_persistence_window() {
 #[test]
 fn test_the_last_window_close_persists_the_exact_state() {
     let _keyfile = keyfile_settings_backend(Some(STEADY_PROFILE));
-    let window = window();
+    let window = test_window();
     present_and_wait_for_first_frame(&window);
     window.set_default_size(1000, 700);
     flush_events();
@@ -240,7 +227,7 @@ fn test_the_last_window_close_persists_the_exact_state() {
         1200,
         "precondition: the new size is still pending"
     );
-    wait_for_startup(&window);
+    wait_for_startup_data_flow(&window);
     window.close();
     wait_until(Duration::from_secs(10), || !window.is_visible());
     // The confirmed close of the last window flushed synchronously, well
@@ -261,7 +248,7 @@ fn test_closing_a_non_last_window_does_not_flush() {
     first.set_default_size(900, 650);
     flush_events();
     let flushes_before = settings_writes::evidence().flushes;
-    wait_for_startup(&first);
+    wait_for_startup_data_flow(&first);
     first.close();
     wait_until(Duration::from_secs(10), || !first.is_visible());
     assert_eq!(
@@ -280,7 +267,7 @@ fn test_closing_a_non_last_window_does_not_flush() {
 #[test]
 fn test_effects_reach_other_readers_before_any_flush() {
     let keyfile = keyfile_settings_backend(Some(STEADY_PROFILE));
-    let window = window();
+    let window = test_window();
     present_and_wait_for_first_frame(&window);
     let before = identity(&keyfile);
 
