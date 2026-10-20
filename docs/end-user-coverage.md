@@ -76,7 +76,9 @@ they are not default PR gates:
 - `make visual-smoke` captures isolated headless Mutter screenshots for
   search/minimap, modified-tab and destructive close states, file-health
   properties, local-history restore state, normal/compact/constrained document
-  properties, normal and constrained Markdown preview, zero-folder/representative/dense/awkward/
+  properties, normal and constrained Markdown preview, the preview-only document
+  alert (`preview-mode-document-alert` in light, dark, and low Background
+  Opacity, asserting it is one opaque band above an uncovered preview), zero-folder/representative/dense/awkward/
   constrained workspace states, workspace-refresh readiness, short-layout
   chrome, no-notes, few/dense/constrained notes, few/dense/constrained
   bookmarks, command-palette files/commands/notes/no-results/dense-files/
@@ -193,7 +195,11 @@ they are not default PR gates:
   renders as preview buffer text and so has no accessible object of its own — is
   asserted by a single text-interface assertion. The quoted-paragraph,
   definition-body, and code-block-line markers are not smoke-asserted; anchoring
-  them would require giving each its own accessible object. The lane writes bounded per-scenario manifests, assertion JSONL,
+  them would require giving each its own accessible object. The
+  `preview-mode-document-alert` case loads an unreadable Markdown file, enters
+  preview-only mode, and asserts exactly one showing "Could Not Open File" alert
+  with its Retry and Dismiss buttons, which is the window-hosted copy above the
+  preview because the editor column is hidden. The lane writes bounded per-scenario manifests, assertion JSONL,
   warning status, screenshots, AT-SPI tree/focus excerpts, `summary.txt`, and
   `summary.json`; unsupported AT-SPI or compositor hosts skip with an explicit
   reason that does not count as coverage. It complements widget tests that

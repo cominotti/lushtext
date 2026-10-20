@@ -191,11 +191,18 @@ The status lane SHALL announce a warning or error status message only when the m
 ### Requirement: The preview-surface alert remains usable in constrained widths
 The preview surface SHALL use the same adaptive layout as the editor's own inline alert. The message and action group share one line when the preview is wide. The action group wraps as one unit beneath the message when the preview is narrow. Titles, bodies, and button labels wrap instead of disappearing.
 
-#### Scenario: Narrow preview-only window wraps the actions beneath the message
-- **WHEN** preview-only mode is active in a narrow window
-- **AND** the preview surface shows "File Has Changed on Disk"
+#### Scenario: Enlarged text in the narrowest preview-only window wraps the actions beneath the message
+- **WHEN** preview-only mode is active in the narrowest supported window
+- **AND** text is scaled to twice its default size
+- **AND** the preview surface shows "Draft Changes Restored" with its Discard and Save actions
 - **THEN** the action group is allocated on its own row beneath the message
-- **AND** "Discard Changes and Reload" and dismiss stay adjacent and fully visible
+- **AND** the action buttons and dismiss stay adjacent on one row and fully visible
+
+#### Scenario: Default-size text in the narrowest preview-only window keeps the actions usable
+- **WHEN** preview-only mode is active in the narrowest supported window at the default text size
+- **AND** the preview surface shows an alert
+- **THEN** the message wraps its own text before the action group is pushed off its row
+- **AND** every action button and dismiss stays fully visible
 
 #### Scenario: Wide preview-only window keeps one line
 - **WHEN** preview-only mode is active in a wide window
