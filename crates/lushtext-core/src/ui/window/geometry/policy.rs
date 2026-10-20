@@ -473,8 +473,8 @@ fn dual_sidebar_window_width_for_center(center_width_sp: i32, workspace_width_sp
 
 /// The stored facts the split-view restore is planned from, all float-free.
 ///
-/// The adapter (`execution::split_view_restore_facts`) reads GSettings once and
-/// reduces each comparison against a stored `f64` fraction to a boolean, so the
+/// The adapter (`execution::split_view_restore_facts`) reads GSettings once;
+/// the stored workspace fraction arrives already snapped to its preset, so the
 /// plan never sees a fraction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
@@ -483,8 +483,6 @@ pub(in crate::ui::window) struct SplitViewRestoreFacts {
     pub(in crate::ui::window) migrated: bool,
     /// The legacy `sidebar-visible` value when the user ever stored one.
     pub(in crate::ui::window) legacy_sidebar_visible: Option<bool>,
-    /// The restored `window-width` the migration sized the pane against.
-    pub(in crate::ui::window) restored_width: i32,
     /// The window width the restore sizes the panes against.
     pub(in crate::ui::window) current_width: i32,
     /// `workspace-sidebar-visible` as stored.
@@ -493,56 +491,6 @@ pub(in crate::ui::window) struct SplitViewRestoreFacts {
     pub(in crate::ui::window) stored_properties_visible: bool,
     /// The stored workspace fraction, snapped to its nearest preset.
     pub(in crate::ui::window) stored_workspace_preset: WorkspaceSidebarWidthPreset,
-    /// Whether the stored workspace fraction already equals that preset's.
-    pub(in crate::ui::window) stored_workspace_is_exact_preset: bool,
-    /// Whether the stored properties fraction already equals the desired
-    /// fraction for `current_width`.
-    pub(in crate::ui::window) stored_properties_matches_desired: bool,
-}
-
-/// The split-view keys whose persisted value the restore must change.
-///
-/// Values are not carried: each is a function of the plan (a visibility, the
-/// preset's fraction, the desired properties fraction for the current width,
-/// `true`), which the adapter forms when it hands the set to the settings
-/// writer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in crate::ui::window) struct SplitViewPersistIntent {
-    /// `workspace-sidebar-visible` ← the plan's workspace intent.
-    pub(in crate::ui::window) workspace_visible: bool,
-    /// `workspace-sidebar-width-fraction` ← the plan preset's fraction.
-    pub(in crate::ui::window) workspace_fraction: bool,
-    /// `properties-sidebar-visible` ← the plan's properties intent.
-    pub(in crate::ui::window) properties_visible: bool,
-    /// `properties-sidebar-width-fraction` ← the desired fraction for the
-    /// current width.
-    pub(in crate::ui::window) properties_fraction: bool,
-    /// `split-view-layout-migrated` ← `true`.
-    pub(in crate::ui::window) migrated: bool,
-}
-
-#[cfg(any(test, kani))]
-impl SplitViewPersistIntent {
-    /// Whether nothing needs persisting.
-    #[must_use]
-    pub(in crate::ui::window) fn is_empty(self) -> bool {
-        self == Self::default()
-    }
-
-    /// How many keys need persisting.
-    #[must_use]
-    pub(in crate::ui::window) fn len(self) -> usize {
-        [
-            self.workspace_visible,
-            self.workspace_fraction,
-            self.properties_visible,
-            self.properties_fraction,
-            self.migrated,
-        ]
-        .into_iter()
-        .filter(|changed| *changed)
-        .count()
-    }
 }
 
 /// What window construction applies to the split views, and persists.
@@ -558,8 +506,6 @@ pub(in crate::ui::window) struct SplitViewRestorePlan {
     pub(in crate::ui::window) workspace_share: PaneShare,
     /// The properties pane's share of its split.
     pub(in crate::ui::window) properties_share: PaneShare,
-    /// The keys whose persisted value must change.
-    pub(in crate::ui::window) persist: SplitViewPersistIntent,
 }
 
 /// Plan the split-view migration and restore window construction performs.
@@ -572,18 +518,16 @@ pub(in crate::ui::window) struct SplitViewRestorePlan {
 /// properties pane's effective share with the workspace intent applied and no
 /// properties request, compact surface, or Focus Mode yet (construction state).
 ///
-/// Nothing is written here: the persist set names only the keys whose stored
-/// value differs from what the plan implies. A migrated profile whose stored
-/// fractions already match persists nothing; a fresh profile persists exactly
-/// the five migration keys, with the restore's values (the restore overwrote
-/// the migration's fractions, so the restore's are what was left persisted).
+/// Nothing is written here. The adapter hands the values the pre-plan code
+/// wrote (the migration's keys on an unmigrated profile, and both fractions
+/// always) to the settings writer, whose change-only filter
+/// drops every one the store already holds, so a steady-state launch writes
+/// nothing.
 ///
 /// Kani proves (`policy/kani_proofs.rs`), for every `i32` width and every
-/// fact combination, that the plan equals the transcription of the
-/// pre-plan migration and restore ([`legacy_split_view_restore`]), that a
-/// matching migrated profile persists nothing, that a fresh profile persists
-/// exactly the five migration keys, and that properties are hidden after a
-/// migration.
+/// fact combination, that the plan equals the transcription of the pre-plan
+/// migration and restore ([`legacy_split_view_restore`]) and that properties
+/// are hidden after a migration.
 #[must_use]
 pub(in crate::ui::window) fn plan_split_view_restore(
     facts: SplitViewRestoreFacts,
@@ -601,21 +545,6 @@ pub(in crate::ui::window) fn plan_split_view_restore(
             WorkspaceSidebarWidthPreset::DEFAULT,
         )
     };
-    let persist = if facts.migrated {
-        SplitViewPersistIntent {
-            workspace_fraction: !facts.stored_workspace_is_exact_preset,
-            properties_fraction: !facts.stored_properties_matches_desired,
-            ..SplitViewPersistIntent::default()
-        }
-    } else {
-        SplitViewPersistIntent {
-            workspace_visible: true,
-            workspace_fraction: true,
-            properties_visible: true,
-            properties_fraction: true,
-            migrated: true,
-        }
-    };
     let properties_inputs = AdaptiveShellInputs {
         window_width: facts.current_width,
         workspace_preset,
@@ -630,77 +559,31 @@ pub(in crate::ui::window) fn plan_split_view_restore(
         workspace_preset,
         workspace_share: workspace_preset_share(workspace_preset, facts.current_width),
         properties_share: effective_properties_share(properties_inputs),
-        persist,
     }
-}
-
-/// A stored split-view fraction in the oracle's model of the settings store:
-/// which value it holds, without forming the `f64`.
-#[cfg(any(test, kani))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::ui::window) enum StoredFraction {
-    /// The value the profile held before construction.
-    Unchanged,
-    /// A preset's fraction.
-    Preset(WorkspaceSidebarWidthPreset),
-    /// The desired properties fraction for a window width.
-    DesiredProperties(i32),
-}
-
-/// The oracle's model of what the pre-plan code left persisted, per key.
-#[cfg(any(test, kani))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::ui::window) struct LegacyStore {
-    pub(in crate::ui::window) workspace_visible: Option<bool>,
-    pub(in crate::ui::window) workspace_fraction: StoredFraction,
-    pub(in crate::ui::window) properties_visible: Option<bool>,
-    pub(in crate::ui::window) properties_fraction: StoredFraction,
-    pub(in crate::ui::window) migrated: Option<bool>,
 }
 
 /// A pure transcription of the migration and restore as they ran before
 /// [`plan_split_view_restore`]: `migrate_split_view_settings`, then
-/// `restore_workspace_split_view`, then `restore_properties_split_view`, each
-/// writing unconditionally. Returns the plan's applied values and what was left
-/// written (`None`/`Unchanged` for a key never written). The reference for the
-/// unit tests and the Kani harness; never called by production.
+/// `restore_workspace_split_view`, then `restore_properties_split_view`, in
+/// that order, reading back what each earlier step stored. The reference for
+/// the unit tests and the Kani harness; never called by production.
 #[cfg(any(test, kani))]
 pub(in crate::ui::window) fn legacy_split_view_restore(
     facts: SplitViewRestoreFacts,
-) -> (
-    bool,
-    bool,
-    WorkspaceSidebarWidthPreset,
-    PaneShare,
-    PaneShare,
-    LegacyStore,
-) {
-    let mut store = LegacyStore {
-        workspace_visible: None,
-        workspace_fraction: StoredFraction::Unchanged,
-        properties_visible: None,
-        properties_fraction: StoredFraction::Unchanged,
-        migrated: None,
-    };
+) -> SplitViewRestorePlan {
     let mut workspace_visible = facts.stored_workspace_visible;
     let mut properties_visible = facts.stored_properties_visible;
     let mut preset = facts.stored_workspace_preset;
     // migrate_split_view_settings
     if !facts.migrated {
         workspace_visible = facts.legacy_sidebar_visible.unwrap_or(true);
-        store.workspace_visible = Some(workspace_visible);
         preset = WorkspaceSidebarWidthPreset::DEFAULT;
-        store.workspace_fraction = StoredFraction::Preset(preset);
         properties_visible = false;
-        store.properties_visible = Some(false);
-        store.properties_fraction = StoredFraction::DesiredProperties(facts.restored_width.max(1));
-        store.migrated = Some(true);
     }
-    // restore_workspace_split_view: the snapped preset's fraction, always.
+    // restore_workspace_split_view: the snapped preset's share.
     let workspace_share = workspace_preset_share(preset, facts.current_width);
-    store.workspace_fraction = StoredFraction::Preset(preset);
     // restore_properties_split_view: the effective share before the
-    // properties request is set, and the desired fraction, always.
+    // properties request is set.
     let properties_share = effective_properties_share(AdaptiveShellInputs {
         window_width: facts.current_width,
         workspace_preset: preset,
@@ -709,15 +592,13 @@ pub(in crate::ui::window) fn legacy_split_view_restore(
         compact_surface: None,
         focus_mode_active: false,
     });
-    store.properties_fraction = StoredFraction::DesiredProperties(facts.current_width);
-    (
+    SplitViewRestorePlan {
         workspace_visible,
         properties_visible,
-        preset,
+        workspace_preset: preset,
         workspace_share,
         properties_share,
-        store,
-    )
+    }
 }
 
 #[cfg(test)]
@@ -1503,72 +1384,36 @@ mod tests {
 
 #[cfg(test)]
 mod restore_plan_tests {
-    use super::{
-        SplitViewPersistIntent, SplitViewRestoreFacts, StoredFraction, legacy_split_view_restore,
-        plan_split_view_restore,
-    };
+    use super::{SplitViewRestoreFacts, legacy_split_view_restore, plan_split_view_restore};
     use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
     fn facts(migrated: bool) -> SplitViewRestoreFacts {
         SplitViewRestoreFacts {
             migrated,
             legacy_sidebar_visible: None,
-            restored_width: 1280,
             current_width: 1280,
             stored_workspace_visible: true,
             stored_properties_visible: true,
             stored_workspace_preset: WorkspaceSidebarWidthPreset::Large,
-            stored_workspace_is_exact_preset: true,
-            stored_properties_matches_desired: true,
         }
     }
 
     #[test]
-    fn a_matching_migrated_profile_persists_nothing() {
+    fn a_migrated_profile_keeps_its_stored_intents_and_preset() {
         let plan = plan_split_view_restore(facts(true));
-        assert!(plan.persist.is_empty());
         assert!(plan.workspace_visible && plan.properties_visible);
         assert_eq!(plan.workspace_preset, WorkspaceSidebarWidthPreset::Large);
     }
 
     #[test]
-    fn a_migrated_profile_persists_only_the_fractions_that_differ() {
-        let mut stored = facts(true);
-        stored.stored_workspace_is_exact_preset = false;
-        assert_eq!(
-            plan_split_view_restore(stored).persist,
-            SplitViewPersistIntent {
-                workspace_fraction: true,
-                ..SplitViewPersistIntent::default()
-            }
-        );
-        stored.stored_properties_matches_desired = false;
-        assert_eq!(plan_split_view_restore(stored).persist.len(), 2);
-    }
-
-    #[test]
-    fn a_fresh_profile_persists_the_five_migration_keys_with_the_restore_values() {
+    fn a_fresh_profile_takes_the_legacy_intent_and_the_default_preset() {
         for legacy in [None, Some(false), Some(true)] {
             let mut fresh = facts(false);
             fresh.legacy_sidebar_visible = legacy;
-            fresh.restored_width = 900;
             let plan = plan_split_view_restore(fresh);
-            assert_eq!(plan.persist.len(), 5);
             assert_eq!(plan.workspace_visible, legacy.unwrap_or(true));
             assert!(!plan.properties_visible);
             assert_eq!(plan.workspace_preset, WorkspaceSidebarWidthPreset::DEFAULT);
-            let (.., store) = legacy_split_view_restore(fresh);
-            // The restore overwrote the migration's fraction with the one for
-            // the current width, which is the value the plan persists.
-            assert_eq!(
-                store.properties_fraction,
-                StoredFraction::DesiredProperties(fresh.current_width)
-            );
-            assert_eq!(
-                store.workspace_fraction,
-                StoredFraction::Preset(WorkspaceSidebarWidthPreset::DEFAULT)
-            );
-            assert_eq!(store.migrated, Some(true));
         }
     }
 
@@ -1583,15 +1428,7 @@ mod restore_plan_tests {
                         f.stored_workspace_preset = preset;
                         f.stored_workspace_visible = visible;
                         let plan = plan_split_view_restore(f);
-                        let (ws, props, legacy_preset, ws_share, props_share, _) =
-                            legacy_split_view_restore(f);
-                        assert_eq!(
-                            (plan.workspace_visible, plan.properties_visible),
-                            (ws, props)
-                        );
-                        assert_eq!(plan.workspace_preset, legacy_preset);
-                        assert_eq!(plan.workspace_share, ws_share);
-                        assert_eq!(plan.properties_share, props_share);
+                        assert_eq!(plan, legacy_split_view_restore(f));
                         assert!(plan.properties_share.of_sp >= 1);
                     }
                 }

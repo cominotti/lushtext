@@ -53,7 +53,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-use gtk_lush_settle::Debounce;
+use gtk_lush_settle::SupersedingTimer;
 use gtk4::gio;
 use gtk4::prelude::*;
 
@@ -81,8 +81,6 @@ pub struct SettingsWriterEvidence {
     pub dropped_equal: u64,
     /// Backend writes made before the first window's first presented frame.
     pub writes_before_first_frame: u64,
-    /// Whether the first window has presented its first frame.
-    pub first_frame_presented: bool,
 }
 
 struct SettingsWriter {
@@ -94,7 +92,7 @@ struct SettingsWriter {
     dropped_before_set: Cell<u64>,
     writes_before_first_frame: Cell<u64>,
     first_frame_presented: Cell<bool>,
-    flush_debounce: Debounce,
+    flush_timer: SupersedingTimer,
     flush_idle: RefCell<Option<glib::SourceId>>,
 }
 
@@ -117,7 +115,7 @@ impl SettingsWriter {
             dropped_before_set: Cell::new(0),
             writes_before_first_frame: Cell::new(0),
             first_frame_presented: Cell::new(false),
-            flush_debounce: Debounce::new(),
+            flush_timer: SupersedingTimer::new(),
             flush_idle: RefCell::new(None),
         });
         let weak = Rc::downgrade(&writer);
@@ -151,8 +149,7 @@ impl SettingsWriter {
 
     fn write(&self, key: &str, value: &glib::Variant) {
         if self.settings.value(key) == *value {
-            self.dropped_before_set
-                .set(self.dropped_before_set.get().saturating_add(1));
+            self.count_dropped();
             return;
         }
         if let Err(error) = self.settings.set_value(key, value) {
@@ -160,14 +157,20 @@ impl SettingsWriter {
         }
     }
 
+    fn count_dropped(&self) {
+        self.dropped_before_set
+            .set(self.dropped_before_set.get().saturating_add(1));
+    }
+
     fn schedule_flush(&self) {
         if !self.first_frame_presented.get() {
             return;
         }
-        let _ = self.flush_debounce.schedule(
-            &self.settings,
-            PERSISTENCE_WINDOW,
-            |_settings, _token| {
+        // Re-arming removes the superseded timeout, so a resize drag that
+        // writes every frame keeps one live source, not one per write.
+        let _ = self
+            .flush_timer
+            .arm(&self.settings, PERSISTENCE_WINDOW, |_settings, _token| {
                 let writer = instance();
                 if writer.flush_idle.borrow().is_some() {
                     return;
@@ -179,8 +182,7 @@ impl SettingsWriter {
                     glib::ControlFlow::Break
                 });
                 writer.flush_idle.replace(Some(id));
-            },
-        );
+            });
     }
 
     /// Persist every pending value in one backend write.
@@ -205,7 +207,7 @@ impl SettingsWriter {
     }
 
     fn flush_now(&self) {
-        let _ = self.flush_debounce.invalidate();
+        let _ = self.flush_timer.invalidate();
         if let Some(id) = self.flush_idle.borrow_mut().take() {
             id.remove();
         }
@@ -223,7 +225,6 @@ impl SettingsWriter {
                 .dropped_equal
                 .saturating_add(self.dropped_before_set.get()),
             writes_before_first_frame: self.writes_before_first_frame.get(),
-            first_frame_presented: self.first_frame_presented.get(),
         }
     }
 }
@@ -296,9 +297,7 @@ pub fn set_strv(key: &str, value: &[&str]) {
 pub fn reset(key: &str) {
     let writer = instance();
     if writer.settings.user_value(key).is_none() {
-        writer
-            .dropped_before_set
-            .set(writer.dropped_before_set.get().saturating_add(1));
+        writer.count_dropped();
         return;
     }
     writer.settings.reset(key);

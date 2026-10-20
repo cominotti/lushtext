@@ -719,11 +719,11 @@ impl ObjectImpl for LushtextWindow {
             &self.preview_split_view,
         );
         let stage_start = obj.record_construction_stage("configure_split_views", stage_start);
-        // The plan's persist set goes to the coalescing settings writer, which
-        // keeps it in memory (so the breakpoints below read the planned
-        // preset) and persists it after the first presented frame: window
+        // The restore's writes go to the coalescing settings writer, which
+        // keeps them in memory (so the breakpoints below read the planned
+        // preset) and persists them after the first presented frame: window
         // construction writes nothing to the GSettings backend.
-        let restore_plan = plan_split_view_restore(&obj, w);
+        let restore_plan = plan_split_view_restore(&obj);
         let stage_start = obj.record_construction_stage("plan_split_view_restore", stage_start);
         install_split_view_breakpoints(&obj);
         let stage_start = obj.record_construction_stage("install_breakpoints", stage_start);

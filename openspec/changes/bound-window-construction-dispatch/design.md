@@ -175,6 +175,15 @@ now, so the same breakpoint is installed and the same widths are restored. It th
   reference);
 - (d) properties visibility after migration is `false`.
 
+**Amended by the simplify pass.** The plan no longer carries a `PersistIntent`, and the facts no
+longer carry the restored width or the two stored-fraction booleans. The settings writer already
+drops a value equal to the current or persisted one (D3), so the adapter hands it the values the
+pre-plan code wrote (the migration keys on a fresh profile, both fractions always, with the values
+left persisted last) and the writer decides what reaches the backend with exact equality. (a) and
+(b) became the writer's own properties; the harness proves (c) and (d), and the default preset on a
+fresh profile. The migration's restored-width fraction was always overwritten by the restore's, so
+that fact never reached the store.
+
 **Alternative rejected:** keeping the writes and only deferring them to an idle. A synchronous fsync in
 a later idle still breaks B_settle.
 
@@ -185,7 +194,7 @@ The writer is cross-cutting coordination with no role, in `ui/settings_writes.rs
 - **One per application.** It owns a pending map from key to `glib::Variant`. A write takes the value
   in memory at once and enqueues it. A value equal to the last value known to be persisted is dropped.
   A flush is scheduled after the first presented frame at the earliest, and is then coalesced to at
-  most one per persistence window (a `gtk_lush_settle::Debounce`, working value 500 ms).
+  most one per persistence window (a `gtk_lush_settle::SupersedingTimer`, which removes a superseded timeout when re-armed; working value 500 ms).
 - **Pure half.** The pending-set algebra is GTK-free in `model/settings_write_batch.rs`:
   last-writer-wins, change-only, and flush snapshot or acknowledge, generic over keys and values. It
   has unit and property tests, and a Kani harness over bounded sequences: a flush never drops the

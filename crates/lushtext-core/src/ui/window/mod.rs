@@ -179,54 +179,34 @@ impl LushtextWindow {
         stages.run("join_draft_journal", || {
             window.join_process_draft_journal(app);
         });
-        stages.run("actions", || {
-            window.setup_actions();
-        });
-        stages.run("tab_management", || {
-            window.setup_tab_management();
-        });
-        stages.run("fullscreen", || {
-            window.setup_fullscreen();
-        });
-        stages.run("focus_mode", || {
-            window.setup_focus_mode();
-        });
+        stages.run("actions", || window.setup_actions());
+        stages.run("tab_management", || window.setup_tab_management());
+        stages.run("fullscreen", || window.setup_fullscreen());
+        stages.run("focus_mode", || window.setup_focus_mode());
         stages.run("transient_dismissal", || {
             window.setup_transient_surface_dismissal();
         });
-        stages.run("theme_selector", || {
-            window.setup_theme_selector();
-        });
+        stages.run("theme_selector", || window.setup_theme_selector());
         stages.run("preview_actions", || {
             preview::setup_preview_actions(&window);
         });
-        stages.run("print_action", || {
-            print::setup_print_action(&window);
-        });
+        stages.run("print_action", || print::setup_print_action(&window));
         stages.run("zoom", || {
             zoom::setup_zoom_actions(&window);
             zoom::setup_zoom_controls(&window);
         });
-        stages.run("search_panel", || {
-            search::setup_search_panel(&window);
-        });
+        stages.run("search_panel", || search::setup_search_panel(&window));
         stages.run("notification_sweep", || {
             window.start_notification_sweep_timer();
         });
-        stages.run("shortcuts", || {
-            window.setup_shortcuts();
-        });
-        stages.run("recent_documents", || {
-            window.load_recent_documents_async();
-        });
+        stages.run("shortcuts", || window.setup_shortcuts());
+        stages.run("recent_documents", || window.load_recent_documents_async());
         stages.run("initial_projection", || {
             window.update_content_stack();
             window.refresh_status_bar();
             window.render_notifications();
         });
-        stages.run("startup_data_flow", || {
-            window.begin_startup_data_flow();
-        });
+        stages.run("startup_data_flow", || window.begin_startup_data_flow());
         window
     }
 

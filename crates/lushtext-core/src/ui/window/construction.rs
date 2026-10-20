@@ -56,12 +56,17 @@ impl LushtextWindow {
     /// the next stage can start there.
     pub(crate) fn record_construction_stage(&self, name: &'static str, start_us: i64) -> i64 {
         let end_us = construction_spans::now_us();
+        self.record_stage_span(name, start_us, end_us);
+        end_us
+    }
+
+    /// Record one stage span and forward it to the evidence stream.
+    fn record_stage_span(&self, name: &'static str, start_us: i64, end_us: i64) {
         self.imp()
             .construction
             .borrow_mut()
             .record_stage(name, start_us, end_us);
         construction_spans::emit(name, start_us, end_us);
-        end_us
     }
 
     /// Begin this window's construction record at `started_us` (the start of
@@ -76,12 +81,7 @@ impl LushtextWindow {
         // `constructed` recorded its stages while the object was being built;
         // the time before its first stage is template instantiation.
         if let Some(template_end_us) = template_end_us {
-            self.imp().construction.borrow_mut().record_stage(
-                "template",
-                started_us,
-                template_end_us,
-            );
-            construction_spans::emit("template", started_us, template_end_us);
+            self.record_stage_span("template", started_us, template_end_us);
         }
 
         // GLib dispatches a high-priority idle on the first iteration after
@@ -162,8 +162,6 @@ pub struct WindowConstructionEvidence {
     pub stages_total: u32,
     /// Construction stages still to run (staged construction runs none later).
     pub stages_pending: u32,
-    /// The longest recorded construction stage.
-    pub longest_stage_us: Option<u64>,
     /// Backend writes the settings writer made before the first frame.
     pub settings_writes_before_first_frame: u64,
     /// Keys whose newest value the writer has not persisted yet.
@@ -194,7 +192,6 @@ impl LushtextWindow {
                 .unwrap_or(u32::MAX)
                 .saturating_add(construction.dropped_stages()),
             stages_pending: 0,
-            longest_stage_us: construction.longest_stage().map(|stage| stage.duration_us),
             settings_writes_before_first_frame: writer.writes_before_first_frame,
             settings_pending: writer.pending,
             settings_flushed: writer.flushed,

@@ -25,9 +25,9 @@
 
 ## 4. Pure split-view restore plan
 
-- [x] 4.1 Add `plan_split_view_restore` and `SplitViewRestorePlan` (whole-pixel, `PaneShare`s, a persist set, float-free facts with the two stored-fraction comparisons reduced to booleans in `execution.rs`) to `ui/window/geometry/policy.rs`, together with a pure transcription of today's `migrate_split_view_settings` and `restore_*` as a `#[cfg(any(test, kani))]` oracle.
+- [x] 4.1 Add `plan_split_view_restore` and `SplitViewRestorePlan` (whole-pixel, `PaneShare`s, float-free facts with the stored workspace fraction snapped in `execution.rs`; the simplify pass dropped the plan's persist set, because the writer's change-only filter already decides what reaches the backend) to `ui/window/geometry/policy.rs`, together with a pure transcription of today's `migrate_split_view_settings` and `restore_*` as a `#[cfg(any(test, kani))]` oracle.
 - [x] 4.2 Add the Kani harness to `geometry/policy/kani_proofs.rs` for the four properties in the spec, in the existing `core-geometry-policies` shard (`scripts/kani-shards.py`). Re-measure that shard's budget and run `make check-kani-shards`.
-- [x] 4.3 Replace `migrate_split_view_settings` and the writes in `restore_workspace_split_view` and `restore_properties_split_view` with: apply the plan to the widgets, then hand the persist set to the writer. Keep the order relative to `install_split_view_breakpoints`.
+- [x] 4.3 Replace `migrate_split_view_settings` and the writes in `restore_workspace_split_view` and `restore_properties_split_view` with: apply the plan to the widgets, then hand the values the pre-plan code wrote to the writer. Keep the order relative to `install_split_view_breakpoints`.
 - [x] 4.4 Extend the shell-geometry `evidence.rs` with `WindowConstructionEvidence`, filled from the span recorder and the writer counters (the largest-dispatch field is `None` without C0's watchdog feature). Decide and document whether `persisted_workspace_fraction`/`persisted_properties_fraction` report the backend or the overlay value, and keep their existing consumers' meaning.
 
 ## 5. Gates

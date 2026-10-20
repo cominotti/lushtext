@@ -428,8 +428,8 @@ Window geometry and split-view state are persisted via GSettings (not JSON sessi
 
 - **Keys**: `window-width` (i), `window-height` (i), `window-maximized` (b), `workspace-sidebar-visible` (b), `workspace-sidebar-width-fraction` (d), `properties-sidebar-visible` (b), `properties-sidebar-width-fraction` (d)
 - **Restore**: in `window/imp.rs` `constructed()` via `set_default_size()`, `maximize()`, split-view property restoration, and breakpoint installation before `present()`
-- **Persist**: width/height/maximized still use `connect_notify_local`, writing through the coalescing settings writer (one flush per persistence window, a synchronous flush at the last window's confirmed close and at shutdown); split-view booleans persist from their toggle actions and the restore plan's persist set, never from allocation
-- **Migration**: legacy `sidebar-position` / `sidebar-visible` keys remain only as one-shot migration inputs for existing installs; the migration and both restores are the pure `plan_split_view_restore` (`ui/window/geometry/policy.rs`, Kani-proved), whose persist set the writer flushes after the first frame — window construction writes nothing to the backend
+- **Persist**: width/height/maximized still use `connect_notify_local`, writing through the coalescing settings writer (one flush per persistence window, a synchronous flush at the last window's confirmed close and at shutdown); split-view booleans persist from their toggle actions and the restore, never from allocation
+- **Migration**: legacy `sidebar-position` / `sidebar-visible` keys remain only as one-shot migration inputs for existing installs; the migration and both restores are the pure `plan_split_view_restore` (`ui/window/geometry/policy.rs`, Kani-proved), whose values the adapter hands to the writer, which drops those the store holds and flushes the rest after the first frame — window construction writes nothing to the backend
 
 ## Split-View Rules
 

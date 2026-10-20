@@ -111,81 +111,60 @@ pub(in crate::ui::window) fn configure_split_views(
     properties_bottom_sheet.set_modal(false);
 }
 
-/// Whether two stored fractions are the same value (GSettings round-trips the
-/// `f64` the restore wrote exactly; the tolerance only absorbs float noise).
-fn same_fraction(left: f64, right: f64) -> bool {
-    (left - right).abs() <= f64::EPSILON
-}
-
 /// Read, once, the stored facts the split-view restore is planned from, with
-/// both stored-fraction comparisons reduced to booleans here so the policy
+/// the stored workspace fraction snapped to its preset here so the policy
 /// never sees a fraction.
 ///
 /// The reads go through the shared settings instance (`ui::settings_writes`),
 /// so a value another window wrote and the writer has not flushed yet is the
 /// one planned from.
-fn split_view_restore_facts(
-    window: &super::LushtextWindow,
-    restored_width: i32,
-) -> SplitViewRestoreFacts {
+fn split_view_restore_facts(window: &super::LushtextWindow) -> SplitViewRestoreFacts {
     let settings = &window.imp().settings;
-    let current_width = current_window_width(window);
-    let stored_workspace_fraction = settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION);
-    let stored_workspace_preset =
-        WorkspaceSidebarWidthPreset::from_fraction(stored_workspace_fraction);
     SplitViewRestoreFacts {
         migrated: settings.boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED),
         legacy_sidebar_visible: settings
             .user_value(keys::SIDEBAR_VISIBLE)
             .map(|_| settings.boolean(keys::SIDEBAR_VISIBLE)),
-        restored_width,
-        current_width,
+        current_width: current_window_width(window),
         stored_workspace_visible: settings.boolean(keys::WORKSPACE_SIDEBAR_VISIBLE),
         stored_properties_visible: settings.boolean(keys::PROPERTIES_SIDEBAR_VISIBLE),
-        stored_workspace_preset,
-        stored_workspace_is_exact_preset: same_fraction(
-            stored_workspace_fraction,
-            stored_workspace_preset.fraction(),
-        ),
-        stored_properties_matches_desired: same_fraction(
-            settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
-            desired_properties_fraction(current_width),
+        stored_workspace_preset: WorkspaceSidebarWidthPreset::from_fraction(
+            settings.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
         ),
     }
 }
 
 /// Plan the split-view migration and restore (`policy::plan_split_view_restore`)
-/// and hand the keys whose stored value must change to the coalescing settings
-/// writer. Nothing reaches the GSettings backend here: the writer keeps the
-/// values in memory, where every later read during construction (the
-/// breakpoint installation reads the workspace preset) already sees them, and
-/// persists them after the first presented frame.
+/// and hand the values the pre-plan code wrote to the coalescing settings
+/// writer: the migration's keys on an unmigrated profile, and both fractions
+/// always. The writer drops each value the store already holds, so a
+/// steady-state launch writes nothing, and nothing reaches the GSettings
+/// backend here: the writer keeps the values in memory, where every later read
+/// during construction (the breakpoint installation reads the workspace
+/// preset) already sees them, and persists them after the first presented
+/// frame.
 pub(in crate::ui::window) fn plan_split_view_restore(
     window: &super::LushtextWindow,
-    restored_width: i32,
 ) -> SplitViewRestorePlan {
-    let facts = split_view_restore_facts(window, restored_width);
+    let facts = split_view_restore_facts(window);
     let plan = policy::plan_split_view_restore(facts);
-    let persist = plan.persist;
-    if persist.workspace_visible {
+    // The pre-plan code's key order, so `changed` reaches subscribers in it.
+    let migrates = !facts.migrated;
+    if migrates {
         settings_writes::set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, plan.workspace_visible);
     }
-    if persist.workspace_fraction {
-        settings_writes::set_double(
-            keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION,
-            plan.workspace_preset.fraction(),
-        );
-    }
-    if persist.properties_visible {
+    settings_writes::set_double(
+        keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION,
+        plan.workspace_preset.fraction(),
+    );
+    if migrates {
         settings_writes::set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, plan.properties_visible);
     }
-    if persist.properties_fraction {
-        settings_writes::set_double(
-            keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
-            desired_properties_fraction(facts.current_width),
-        );
-    }
-    if persist.migrated {
+    settings_writes::set_double(
+        keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION,
+        desired_properties_fraction(facts.current_width),
+    );
+    if migrates {
         settings_writes::set_boolean(keys::SPLIT_VIEW_LAYOUT_MIGRATED, true);
     }
     plan
@@ -436,7 +415,7 @@ pub(in crate::ui::window) fn set_workspace_sidebar_preset(
         .abs()
         > f64::EPSILON
     {
-        crate::ui::settings_writes::set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction);
+        settings_writes::set_double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION, fraction);
     }
     sync_split_view_widths(window, current_window_width(window));
 }

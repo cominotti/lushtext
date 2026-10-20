@@ -324,8 +324,9 @@ It also added two Kani harnesses. `split_view_restore_plan_matches_the_pre_plan_
 (`ui/window/geometry/policy/kani_proofs.rs`, shard `core-geometry-policies`,
 4.5 s local) proves the split-view restore plan equal to a transcription of the
 pre-plan migration and restores for every `i32` width and stored-fact
-combination, with an empty persist set for a matching migrated profile and
-exactly the five migration keys, carrying the restore's values, on a fresh one.
+combination (what is persisted is the settings writer's: the adapter hands it
+the values the pre-plan code wrote, and its change-only filter drops those the
+store holds).
 `a_flush_never_drops_the_latest_value_or_re_emits_a_persisted_one`
 (`model/settings_write_batch/kani_proofs.rs`, shard `core-second-writer`,
 1.4 s local; the shard measured 3.2 min and 2.64 GiB peak under

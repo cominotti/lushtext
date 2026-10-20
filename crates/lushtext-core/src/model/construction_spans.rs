@@ -141,15 +141,6 @@ impl WindowConstructionSpans {
     pub fn dropped_stages(&self) -> u32 {
         self.dropped_stages
     }
-
-    /// The longest recorded stage, if any.
-    #[must_use]
-    pub fn longest_stage(&self) -> Option<ConstructionStageSpan> {
-        self.stages
-            .iter()
-            .copied()
-            .max_by_key(|stage| stage.duration_us)
-    }
 }
 
 #[cfg(test)]
@@ -202,7 +193,7 @@ mod tests {
         assert_eq!(spans.stages().len(), MAX_CONSTRUCTION_STAGES);
         assert_eq!(spans.dropped_stages(), 3);
         assert_eq!(
-            spans.longest_stage().map(|stage| stage.duration_us),
+            spans.stages().last().map(|stage| stage.duration_us),
             Some(u64::try_from(MAX_CONSTRUCTION_STAGES - 1).expect("fits"))
         );
     }
