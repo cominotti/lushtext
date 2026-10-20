@@ -125,6 +125,7 @@
   In `.agents/rules/ui.md`'s Inline Alerts section, amend the "above each editor page" bullet for the preview-only instance and add the D1 rule and the D7 table. Mirror them in `widget-wiring.md` where it describes inline alerts.
   - Log: `widget-wiring.md` has no inline-alert section, so there was nothing to mirror; `ui.md`'s widget hierarchy also gained the host `Box`.
 - [x] 7.5 If the new `window_preview` and `window` tests move either shard's measured wall time materially, re-record `ci_minutes`/`measured_in` in `scripts/widget-shards.py` from the CI measurement artifacts, and keep each shard within 20 minutes (`make check-widget-shards`).
+  - Log: not re-recorded. On PR #62's CI run the `window` shard's widget step took 16.18 min (394 tests) and `surfaces` passed in 9m41s. The same `window` shard took 12.17 min and 26.27 min (385 tests) in main's two latest runs (39448450712, 39464816359), so the change sits inside runner noise. The 26.27 min run on main is already above the 20-minute budget and is reported for a separate rebalance decision rather than re-recorded from one outlier.
 
 ## 8. Verification
 
