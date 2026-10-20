@@ -1694,9 +1694,22 @@ reference-rule harnesses, split off by the fit order), `core-paragraph-profile`
 The three general watch harnesses took 652-779 s each and together with the
 profile group 38 local minutes, past the 25-minute margin, so each has its own
 shard: `core-profile-watch-step`, `core-profile-watch-reads`,
-`core-profile-watch-unsound`. TODO(shard budgets): `ci_minutes`, `ci_peak_gib`
-and `measured_in` from two dispatched `kani.yml` runs; until then the table
-carries the provisional 20 min / 10 GiB placeholder.
+`core-profile-watch-unsound`. Runner budgets from the dispatched `kani.yml`
+runs 39440638502 and 39446126819 (max of the two, rounded up; every shard
+within 25 minutes and 12 GiB):
+
+| Shard | Run 1 | Run 2 | Recorded |
+| --- | --- | --- | --- |
+| `core-document-scale` | 8.14 min / 2.67 GiB | 6.51 / 2.67 | 8.2 min / 2.7 GiB |
+| `core-paragraph-boundary` | 20.83 / 3.73 | 21.82 / 3.73 | 21.9 / 3.8 |
+| `core-paragraph-profile` | 14.62 / 8.27 | 13.21 / 8.27 | 14.7 / 8.3 |
+| `core-profile-watch-step` | 17.50 / 10.34 | 19.39 / 10.34 | 19.4 / 10.4 |
+| `core-profile-watch-reads` | 17.09 / 10.33 | 18.40 / 10.33 | 18.4 / 10.4 |
+| `core-profile-watch-unsound` | 19.48 / 10.35 | 17.78 / 10.35 | 19.5 / 10.4 |
+
+`core-document-scale` was measured before the `join` rewrite that removed the
+splice's unkillable mutants (same harnesses; 5.6 local minutes before and
+after). No bound was weakened for the budget: the split alone fit.
 
 **Proof strength.** TODO(proof-strength): mutant counts, kills under the tests,
 Kani and both arms, source revision and tool versions for
