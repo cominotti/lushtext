@@ -39,7 +39,9 @@ pub(super) fn begin_session(
         .wrap_around(true)
         .build();
     let context = sourceview5::SearchContext::new(buffer, Some(&settings));
-    context.set_highlight(true);
+    // The document scale policy gates automatic highlighting of very long
+    // paragraphs; navigation and counts are unchanged.
+    context.set_highlight(!bar.imp().highlight_gated_off.get());
 
     apply_option_actions_to_settings(bar, &settings);
 

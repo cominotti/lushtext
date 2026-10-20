@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::model::document_scale::{DocumentScale, HISTORY_UNAVAILABLE_BYTES};
 use crate::model::local_history::{
     LocalHistoryDocument, LocalHistorySnapshot, LocalHistorySnapshotMeta,
     LocalHistorySnapshotOrigin,
@@ -29,7 +30,6 @@ use crate::services::recovery_metadata::{
 };
 use crate::services::{
     editor_io,
-    file_limits::{DISABLE_UNDO_HISTORY, FileSizeCheck},
     filesystem::{
         DirectoryScanPolicy, FileKind, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
         read as fs_read, tree as fs_tree, write as fs_write,
@@ -261,30 +261,9 @@ enum ObsoleteLineageCleanupFailure {
     Path(PathBuf),
 }
 
-/// Size-policy view used by the editor and window layers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocalHistoryAvailability {
-    /// Full capture cadence and browse surface are available.
-    Full,
-    /// Only save-boundary capture is allowed, but browsing stored history is still allowed.
-    SaveOnly,
-    /// Local history is unavailable for this document size.
-    Unavailable,
-}
-
-impl LocalHistoryAvailability {
-    /// Whether baseline and periodic automatic capture should run.
-    #[must_use]
-    pub fn allows_automatic_capture(self) -> bool {
-        self == Self::Full
-    }
-
-    /// Whether the browser and restore workflow should be available.
-    #[must_use]
-    pub fn allows_browsing(self) -> bool {
-        self != Self::Unavailable
-    }
-}
+/// Size-policy view used by the editor and window layers (owned by the
+/// document scale policy, which derives it from total bytes).
+pub use crate::model::document_scale::LocalHistoryAvailability;
 
 /// Duplicate-handling policy for one capture boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -418,16 +397,11 @@ pub fn resolve_document_identity(path: &Path) -> Result<DocumentSidecarIdentity>
     note_storage::resolve_document_identity(path)
 }
 
-/// Map the editor's existing large-file policy onto local-history behavior.
+/// The local-history behaviour of a document scale (a byte tier: the 10 MB
+/// save-only and 50 MB unavailable tiers of the total size).
 #[must_use]
-pub fn availability_for_size_check(size_check: FileSizeCheck) -> LocalHistoryAvailability {
-    match size_check {
-        FileSizeCheck::Normal | FileSizeCheck::LargeFileToast => LocalHistoryAvailability::Full,
-        FileSizeCheck::DisableSyntax => LocalHistoryAvailability::SaveOnly,
-        FileSizeCheck::DisableUndoAndSyntax | FileSizeCheck::TooLarge => {
-            LocalHistoryAvailability::Unavailable
-        }
-    }
+pub fn availability_for_scale(scale: DocumentScale) -> LocalHistoryAvailability {
+    scale.local_history
 }
 
 /// Classify local-history capture from the current GTK buffer character count.
@@ -439,14 +413,14 @@ pub fn availability_for_size_check(size_check: FileSizeCheck) -> LocalHistoryAva
 #[must_use]
 pub fn availability_for_live_buffer_chars(char_count: i32) -> LocalHistoryAvailability {
     let char_count = u64::try_from(char_count).unwrap_or(u64::MAX);
-    availability_for_size_check(FileSizeCheck::classify(char_count.saturating_mul(4)))
+    availability_for_scale(DocumentScale::for_total_bytes(char_count.saturating_mul(4)))
 }
 
 /// Classify an incoming immutable UTF-8 body before GTK installation.
 #[must_use]
 pub fn availability_for_utf8_bytes(byte_len: usize) -> LocalHistoryAvailability {
     let byte_len = u64::try_from(byte_len).unwrap_or(u64::MAX);
-    availability_for_size_check(FileSizeCheck::classify(byte_len))
+    availability_for_scale(DocumentScale::for_total_bytes(byte_len))
 }
 
 /// Fail obsolete local-history lineage cleanup only for a specific path.
@@ -1098,11 +1072,11 @@ fn validate_snapshot_body_size(path: &Path) -> Result<u64> {
     if facts.kind != FileKind::File {
         anyhow::bail!("local-history snapshot {} is not a file", path.display());
     }
-    if !availability_for_size_check(FileSizeCheck::classify(facts.byte_size)).allows_browsing() {
+    if !availability_for_scale(DocumentScale::for_total_bytes(facts.byte_size)).allows_browsing() {
         anyhow::bail!(
             "local-history snapshot {} is larger than the {} MB browse limit",
             path.display(),
-            DISABLE_UNDO_HISTORY / 1_000_000
+            HISTORY_UNAVAILABLE_BYTES / 1_000_000
         );
     }
     Ok(facts.byte_size)
@@ -1130,15 +1104,15 @@ fn read_snapshot_text_with_cancel_check(
     byte_size: u64,
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<Option<String>> {
-    let bytes = match fs_read::bounded_bytes(path, DISABLE_UNDO_HISTORY, byte_size, &mut cancelled)
-    {
-        Ok(bytes) => bytes,
-        Err(fs_read::BoundedFileReadError::Cancelled) => return Ok(None),
-        Err(error) => {
-            return Err(anyhow::Error::new(error))
-                .with_context(|| format!("failed to read {}", path.display()));
-        }
-    };
+    let bytes =
+        match fs_read::bounded_bytes(path, HISTORY_UNAVAILABLE_BYTES, byte_size, &mut cancelled) {
+            Ok(bytes) => bytes,
+            Err(fs_read::BoundedFileReadError::Cancelled) => return Ok(None),
+            Err(error) => {
+                return Err(anyhow::Error::new(error))
+                    .with_context(|| format!("failed to read {}", path.display()));
+            }
+        };
     let text = simdutf8::basic::from_utf8(&bytes)
         .map_err(|error| anyhow::anyhow!("{} is not valid UTF-8: {error}", path.display()))?;
     Ok(Some(text.to_string()))
@@ -1521,7 +1495,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::services::file_limits::FileSizeCheck;
     use crate::services::filesystem::fixture;
 
     fn seed_file(dir: &TempDir, rel: &str, content: &str) -> PathBuf {
@@ -1675,51 +1648,36 @@ mod tests {
     #[test]
     fn availability_policy_maps_file_sizes_to_capture_and_browse_modes() {
         let cases = [
+            (0, LocalHistoryAvailability::Full, true, true),
+            (1_000_001, LocalHistoryAvailability::Full, true, true),
+            (10_000_001, LocalHistoryAvailability::SaveOnly, false, true),
             (
-                FileSizeCheck::Normal,
-                LocalHistoryAvailability::Full,
-                true,
-                true,
-            ),
-            (
-                FileSizeCheck::LargeFileToast,
-                LocalHistoryAvailability::Full,
-                true,
-                true,
-            ),
-            (
-                FileSizeCheck::DisableSyntax,
-                LocalHistoryAvailability::SaveOnly,
-                false,
-                true,
-            ),
-            (
-                FileSizeCheck::DisableUndoAndSyntax,
+                50_000_001,
                 LocalHistoryAvailability::Unavailable,
                 false,
                 false,
             ),
             (
-                FileSizeCheck::TooLarge,
+                500_000_001,
                 LocalHistoryAvailability::Unavailable,
                 false,
                 false,
             ),
         ];
 
-        for (size_check, expected, allows_capture, allows_browsing) in cases {
-            let availability = availability_for_size_check(size_check);
+        for (bytes, expected, allows_capture, allows_browsing) in cases {
+            let availability = availability_for_scale(DocumentScale::for_total_bytes(bytes));
 
             assert_eq!(availability, expected);
             assert_eq!(
                 availability.allows_automatic_capture(),
                 allows_capture,
-                "{size_check:?} automatic capture policy changed"
+                "{bytes} automatic capture policy changed"
             );
             assert_eq!(
                 availability.allows_browsing(),
                 allows_browsing,
-                "{size_check:?} browsing policy changed"
+                "{bytes} browsing policy changed"
             );
         }
     }
@@ -1984,7 +1942,7 @@ mod tests {
         );
         let doc_dir = history_dir_for_path(dir.path(), &path);
         let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
-        fixture::create_sparse_file(&snapshot_file, DISABLE_UNDO_HISTORY + 1);
+        fixture::create_sparse_file(&snapshot_file, HISTORY_UNAVAILABLE_BYTES + 1);
 
         let error = load_snapshot_for_path(dir.path(), &path, &meta.snapshot_id)
             .expect_err("oversized snapshot body should be refused before read");
@@ -2016,7 +1974,7 @@ mod tests {
         let doc_dir = history_dir_for_path(dir.path(), &path);
         let index_path = doc_dir.join(INDEX_FILENAME);
         let snapshot_file = snapshot_path(&doc_dir, &meta.snapshot_id);
-        fixture::create_sparse_file(&snapshot_file, DISABLE_UNDO_HISTORY + 1);
+        fixture::create_sparse_file(&snapshot_file, HISTORY_UNAVAILABLE_BYTES + 1);
         fixture::write_text(&index_path, "not local-history json");
 
         let listing =

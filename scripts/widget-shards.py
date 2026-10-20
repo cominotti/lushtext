@@ -129,8 +129,18 @@ SHARDS: dict[str, Shard] = {
     "editor-page": Shard(
         # Rebalanced 2026-10-28 from `window` (multi_window_drafts and two
         # slow local-history/restore tests) and `surfaces` (attention_refresh,
-        # sidebar, workspace_entry_visibility).
-        modules=("attention_refresh", "editor_page", "multi_window_drafts", "sidebar", "workspace_entry_visibility"),
+        # sidebar, workspace_entry_visibility). `document_scale`
+        # (document-scale-policy) joined after that measurement: its 30 tests
+        # took under two minutes locally, build included, so the shard stays
+        # well inside the margin until the next CI measurement records it.
+        modules=(
+            "attention_refresh",
+            "document_scale",
+            "editor_page",
+            "multi_window_drafts",
+            "sidebar",
+            "workspace_entry_visibility",
+        ),
         tests=(
             "window::test_local_history_restore_defers_compactly_until_progress_capacity_clears",
             "window::test_selected_restore_tab_gets_bounded_priority_after_capacity_releases",

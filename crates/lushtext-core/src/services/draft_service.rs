@@ -7,6 +7,7 @@
 //! inspection reads persisted state but mutates nothing. Draft bodies are plain
 //! UTF-8 files beside a JSON manifest under `$XDG_DATA_HOME/lushtext/drafts/`.
 
+use crate::model::document_scale::DocumentScale;
 use crate::model::draft::{
     DraftCleanupContinuation, DraftEntry, DraftManifest, DraftManifestAuthority,
     DraftManifestCompleteness, FileDraftRestoreResolution, FileDraftRestoreSkip,
@@ -23,7 +24,6 @@ use crate::services::recovery_metadata::{
 };
 use crate::services::{
     editor_io,
-    file_limits::FileSizeCheck,
     filesystem::{
         DirectoryScanPolicy, FileKind, MutationOutcome, PathStatus, WriteLabel,
         metadata as fs_metadata, mutate as fs_mutate, read as fs_read, tree as fs_tree,
@@ -874,8 +874,8 @@ fn load_restore_state_with_eager_limit_and_cancel(
                 }
             }
             match resolve_file_draft_restore(data_dir, &entry) {
-                Ok(FileDraftRestoreResolution::Restore { content }) => {
-                    preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
+                Ok(FileDraftRestoreResolution::Restore { content, profile }) => {
+                    preloaded.insert(draft_id, PreloadedDraftRestore::Content(content, profile));
                 }
                 Ok(FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Stale)) => {
                     // The warning marker is published after preservation, so it
@@ -921,7 +921,7 @@ fn load_restore_state_with_eager_limit_and_cancel(
         }
         match read_draft(data_dir, &draft_id) {
             Ok(Some(content)) => {
-                preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
+                preloaded.insert(draft_id, PreloadedDraftRestore::content(content));
             }
             Ok(None) => {}
             Err(e) => {
@@ -1822,7 +1822,7 @@ pub fn resolve_file_draft_restore(
     }
 
     match read_draft(data_dir, &entry.draft_id)? {
-        Some(content) => Ok(FileDraftRestoreResolution::Restore { content }),
+        Some(content) => Ok(FileDraftRestoreResolution::restore(content)),
         None => Ok(FileDraftRestoreResolution::Skip(
             FileDraftRestoreSkip::MissingDraft,
         )),
@@ -1850,7 +1850,7 @@ pub fn resolve_draft_restore(
         ));
     }
     match read_draft(data_dir, &entry.draft_id)? {
-        Some(content) => Ok(FileDraftRestoreResolution::Restore { content }),
+        Some(content) => Ok(FileDraftRestoreResolution::restore(content)),
         None => Ok(FileDraftRestoreResolution::Skip(
             FileDraftRestoreSkip::MissingDraft,
         )),
@@ -2012,7 +2012,9 @@ pub fn preserve_stale_draft_body(
 /// Whether local-history size policy covers both the file and the stale body.
 fn local_history_accepts_stale_body(path: &Path, text: &str) -> bool {
     let file_policy = fs_metadata::file_facts(path).map(|facts| {
-        local_history_service::availability_for_size_check(FileSizeCheck::classify(facts.byte_size))
+        local_history_service::availability_for_scale(DocumentScale::for_total_bytes(
+            facts.byte_size,
+        ))
     });
     matches!(file_policy, Ok(availability) if availability.allows_browsing())
         && local_history_service::availability_for_utf8_bytes(text.len()).allows_browsing()
@@ -3827,9 +3829,7 @@ mod tests {
 
         assert_eq!(
             resolution,
-            FileDraftRestoreResolution::Restore {
-                content: "restored content".to_string()
-            }
+            FileDraftRestoreResolution::restore("restored content".to_string())
         );
     }
 
@@ -3868,9 +3868,7 @@ mod tests {
 
         assert_eq!(
             resolution,
-            FileDraftRestoreResolution::Restore {
-                content: "legacy content".to_string()
-            }
+            FileDraftRestoreResolution::restore("legacy content".to_string())
         );
     }
 
@@ -4056,7 +4054,7 @@ mod tests {
 
         assert_eq!(
             restore.preloaded_drafts.get(first),
-            Some(&PreloadedDraftRestore::Content("four".to_string()))
+            Some(&PreloadedDraftRestore::content("four".to_string()))
         );
         assert_eq!(
             restore.preloaded_drafts.get(second),
@@ -4254,7 +4252,7 @@ mod tests {
 
         assert_eq!(
             restore.preloaded_drafts.get(draft_id),
-            Some(&PreloadedDraftRestore::Content(
+            Some(&PreloadedDraftRestore::content(
                 "restored untitled".to_string()
             ))
         );
@@ -4314,7 +4312,7 @@ mod tests {
 
         assert_eq!(
             restore.preloaded_drafts.get(draft_id),
-            Some(&PreloadedDraftRestore::Content(
+            Some(&PreloadedDraftRestore::content(
                 "restored legacy untitled".to_string()
             ))
         );

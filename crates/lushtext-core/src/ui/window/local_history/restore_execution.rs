@@ -12,6 +12,7 @@
 //! anywhere before that point puts the selected snapshot back and leaves the
 //! buffer alone.
 
+use crate::model::paragraph_boundary::DocumentProfile;
 use std::rc::Rc;
 
 use gtk_lush_tasks::spawn_blocking_then;
@@ -250,6 +251,13 @@ impl LushtextWindow {
                     let restore_text = state
                         .restore_snapshot
                         .map_preserving_reservation(|snapshot| snapshot.text);
+                    // Profiled by the preview worker that read the snapshot.
+                    let restore_profile = state
+                        .browser
+                        .loaded_profile
+                        .borrow()
+                        .clone()
+                        .unwrap_or(DocumentProfile::EMPTY);
                     state.browser.editor.replace_buffer_bounded(
                         BufferReplacementRequest::new_guarded_returning_body_on_cancel(
                             BufferReplacementTicket {
@@ -319,7 +327,8 @@ impl LushtextWindow {
                                     }),
                                 ));
                             },
-                        ),
+                        )
+                        .with_profile(restore_profile),
                     );
                 },
             );

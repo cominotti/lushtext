@@ -15,7 +15,7 @@ use crate::services::palette::{
     PaletteSearchCoordinator, PaletteSearchCoordinatorSnapshot, PaletteSearchStart,
 };
 
-use super::file_limits::FileSizeCheck;
+use crate::model::document_scale::DocumentScale;
 
 /// Number of source lines shown before the bookmarked line when available.
 ///
@@ -332,7 +332,7 @@ pub fn load_from_path_cancellable(
     if !matches!(facts.kind, crate::services::filesystem::FileKind::File) {
         return refused(BookmarkExcerptUnavailableReason::MissingOrUnreadable);
     }
-    if !FileSizeCheck::classify(facts.byte_size).open_allowed() {
+    if !DocumentScale::for_total_bytes(facts.byte_size).open_allowed {
         return refused(BookmarkExcerptUnavailableReason::TooLargeToPreview);
     }
     if usize::try_from(target_line).is_ok_and(|line| line >= BOOKMARK_EXCERPT_SCAN_LINE_LIMIT) {
@@ -794,7 +794,10 @@ mod tests {
     #[test]
     fn load_from_path_reports_too_large_without_reading_contents() {
         let file = tempfile::NamedTempFile::new().expect("temp file");
-        fixture::create_sparse_file(file.path(), super::super::file_limits::REFUSE_TO_OPEN + 1);
+        fixture::create_sparse_file(
+            file.path(),
+            crate::model::document_scale::REFUSE_TO_OPEN + 1,
+        );
 
         assert_eq!(
             unavailable_reason(load_from_path(file.path(), 0)),

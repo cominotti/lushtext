@@ -298,7 +298,7 @@ fn test_startup_restore_load_preserves_temporarily_unavailable_file_tabs() {
     assert_eq!(restore.session.active_tab_index, Some(0));
     assert_eq!(
         restore.preloaded_drafts.get(&real_draft_id),
-        Some(&PreloadedDraftRestore::Content("drafted local".to_string()))
+        Some(&PreloadedDraftRestore::content("drafted local".to_string()))
     );
 }
 
@@ -415,7 +415,7 @@ fn test_startup_restore_repairs_corrupt_manifest_for_untitled_draft() {
     assert_eq!(restore.session.tabs.len(), 1);
     assert_eq!(
         restore.preloaded_drafts.get(draft_id),
-        Some(&PreloadedDraftRestore::Content("restored text".to_string()))
+        Some(&PreloadedDraftRestore::content("restored text".to_string()))
     );
     assert!(
         restore.manifest.find_by_id(draft_id).is_some(),

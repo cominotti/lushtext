@@ -2033,7 +2033,7 @@ fn visual_rect_from_projected_bounds(
 fn minimap_availability_absence_reason(editor: &LushtextEditorPage) -> &'static str {
     match editor.minimap_availability() {
         crate::ui::editor_page::MinimapAvailability::Disabled => "minimap-disabled",
-        crate::ui::editor_page::MinimapAvailability::TooLarge => "minimap-too-large",
+        crate::ui::editor_page::MinimapAvailability::Reduced => "minimap-too-large",
         crate::ui::editor_page::MinimapAvailability::Evicted => "minimap-evicted",
         crate::ui::editor_page::MinimapAvailability::Visible => "bounds-unavailable",
     }

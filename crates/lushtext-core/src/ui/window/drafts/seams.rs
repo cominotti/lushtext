@@ -140,12 +140,18 @@ pub(super) enum DraftRestoreTracking {
 }
 
 pub(super) enum GuardedDraftRestoreResolution {
-    Restore(crate::ui::plain_disposal::DisposalOwned<String>),
+    Restore(
+        crate::ui::plain_disposal::DisposalOwned<String>,
+        crate::model::paragraph_boundary::DocumentProfile,
+    ),
     Compact(FileDraftRestoreSkip),
 }
 
 pub(super) enum GuardedPreloadedDraftRestore {
-    Content(crate::ui::plain_disposal::DisposalOwned<String>),
+    Content(
+        crate::ui::plain_disposal::DisposalOwned<String>,
+        crate::model::paragraph_boundary::DocumentProfile,
+    ),
     Compact(PreloadedDraftSkip),
 }
 

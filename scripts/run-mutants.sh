@@ -5,7 +5,7 @@ set -euo pipefail
 
 MODE="${1:-}"
 MUTANTS_TIMEOUT="${MUTANTS_TIMEOUT:-300}"
-MUTANTS_SMOKE_FILE="${MUTANTS_SMOKE_FILE:-crates/lushtext-core/src/services/file_limits.rs}"
+MUTANTS_SMOKE_FILE="${MUTANTS_SMOKE_FILE:-crates/lushtext-core/src/model/document_scale.rs}"
 MUTANTS_DIFF_FILE="${MUTANTS_DIFF_FILE:-git.diff}"
 MUTANTS_BASE="${MUTANTS_BASE:-origin/main}"
 MUTANTS_SHARD="${MUTANTS_SHARD:-}"

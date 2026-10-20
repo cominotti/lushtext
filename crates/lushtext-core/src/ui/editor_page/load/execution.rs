@@ -44,6 +44,7 @@ use sourceview5::prelude::*;
 
 use crate::model::encoding::FileHealthFindingKind;
 use crate::model::file_load::next_install_boundary;
+use crate::model::paragraph_boundary::ProfileSummary;
 use crate::services::editor_io::{self, EditorLoadError};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::imp::EditorCallback;
@@ -466,6 +467,10 @@ pub(super) fn install_loaded_direct(
 ) {
     editor.imp().load.installation_slice_count.set(0);
     let restore = begin_load_installation(editor, false);
+    // The direct path leaves the minimap projection attached, so a body the
+    // scale keeps from the map or the context engine is gated before the
+    // first byte enters the buffer.
+    editor.prepare_for_incoming_profile(&loaded.metadata.profile);
     let buffer = editor.buffer();
     editor.imp().load.finalizing.set(true);
     editor.imp().load.dispose_during_finalization.set(false);
@@ -487,6 +492,7 @@ fn start_chunked_install(
     permit: Option<TransientLoadPermit>,
 ) {
     let restore = begin_load_installation(editor, true);
+    editor.prepare_for_incoming_profile(&loaded.metadata.profile);
     let buffer = editor.buffer();
     buffer.begin_irreversible_action();
     let session = Rc::new(RefCell::new(ChunkedLoadInstall {
@@ -552,9 +558,10 @@ fn complete_loaded_installation(
         metadata: loaded,
         content,
     } = loaded;
+    let scale = loaded.scale();
     let editor_io::LoadMetadata {
         size,
-        size_check,
+        profile,
         canonical_path,
         mtime,
         encoding_state,
@@ -562,14 +569,16 @@ fn complete_loaded_installation(
         file_health,
     } = loaded;
     let buffer = editor.buffer();
-    if size_check.undo_enabled() {
+    if scale.undo_enabled {
         buffer.end_irreversible_action();
     }
     buffer.set_modified(false);
     buffer.place_cursor(&buffer.start_iter());
 
     editor.imp().file_size.set(Some(size));
-    editor.imp().size_check.set(size_check);
+    // A load starts a new document session from the worker profile; an
+    // eviction reload keeps the session floor (design Open Question 3).
+    let eviction_reload = editor.imp().residency.evicted.get();
     editor.imp().canonical_file_path.replace(canonical_path);
     editor.imp().latest_load_failed.set(false);
     editor.imp().load.installation_incomplete.set(false);
@@ -577,13 +586,16 @@ fn complete_loaded_installation(
     editor.set_document_encoding_state(encoding_state);
     editor.set_has_bom(has_bom);
     editor.set_file_health(file_health);
-    if size_check.syntax_enabled() {
-        editor.reapply_language();
-        buffer.set_highlight_syntax(true);
-    } else {
-        buffer.set_language(None::<&sourceview5::Language>);
-        buffer.set_highlight_syntax(false);
-    }
+    // The scale gates syntax, bracket matching, invisibles, search
+    // highlighting and the minimap before a highlight idle can run.
+    editor.begin_document_scale_session(
+        scale,
+        ProfileSummary {
+            total_bytes: size,
+            ..profile.summary()
+        },
+        eviction_reload,
+    );
     editor.clear_modified_line_marks();
     editor.apply_restore_position();
     editor.imp().monitor.last_known_mtime.set(mtime);
@@ -741,7 +753,9 @@ impl LushtextEditorPage {
     /// Panics when the test process has already exhausted the guarded disposal
     /// capacity required to own the synthetic body.
     pub fn apply_loaded_content_for_test(&self, content: &str, reported_size: u64) {
-        let size_check = crate::services::file_limits::FileSizeCheck::classify(reported_size);
+        // The worker profiles the body; this test path does the same off the
+        // load pipeline, as the analysis pass would.
+        let profile = crate::model::paragraph_boundary::DocumentProfile::of_text(content);
         let content = content.to_string();
         let weight = u64::try_from(content.capacity()).unwrap_or(u64::MAX);
         let reservation = crate::ui::plain_disposal::try_reserve_for_gtk(weight)
@@ -752,7 +766,7 @@ impl LushtextEditorPage {
             GuardedLoadResult {
                 metadata: editor_io::LoadMetadata {
                     size: reported_size,
-                    size_check,
+                    profile,
                     canonical_path: self.canonical_file_path(),
                     mtime: self.imp().monitor.last_known_mtime.get(),
                     encoding_state: self.document_encoding_state(),

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::services::filesystem::{metadata, read};
 
-use super::file_limits::FileSizeCheck;
+use crate::model::document_scale::DocumentScale;
 
 /// Maximum bytes read for one preview sample.
 ///
@@ -139,9 +139,8 @@ pub fn load_snapshot(path: &Path, display_path: impl Into<String>) -> PeekSnapsh
 
     let byte_size = facts.byte_size;
     let modified_at_secs = facts.modified_at_secs;
-    let size_check = FileSizeCheck::classify(byte_size);
-
-    if !size_check.open_allowed() {
+    // Peek knows the file only by its byte size.
+    if !DocumentScale::for_total_bytes(byte_size).open_allowed {
         return unresolved_snapshot(
             path,
             display_name,
@@ -475,7 +474,10 @@ mod tests {
     #[test]
     fn load_snapshot_reports_too_large_without_reading_contents() {
         let file = tempfile::NamedTempFile::new().expect("expected operation to succeed");
-        fixture::create_sparse_file(file.path(), super::super::file_limits::REFUSE_TO_OPEN + 1);
+        fixture::create_sparse_file(
+            file.path(),
+            crate::model::document_scale::REFUSE_TO_OPEN + 1,
+        );
 
         let snapshot = load_snapshot(file.path(), "huge.txt");
 
@@ -483,7 +485,7 @@ mod tests {
         assert!(!snapshot.open_allowed);
         assert_eq!(
             snapshot.byte_size,
-            super::super::file_limits::REFUSE_TO_OPEN + 1
+            crate::model::document_scale::REFUSE_TO_OPEN + 1
         );
     }
 }

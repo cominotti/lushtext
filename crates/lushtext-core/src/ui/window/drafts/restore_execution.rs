@@ -49,11 +49,12 @@ impl LushtextWindow {
 
         if let Some(preloaded) = self.take_preloaded_draft(draft_id) {
             match preloaded {
-                GuardedPreloadedDraftRestore::Content(draft_content) => {
+                GuardedPreloadedDraftRestore::Content(draft_content, profile) => {
                     self.note_draft_restore_started();
                     self.apply_draft(
                         &DraftRestoreTicket::capture(editor, entry),
                         draft_content,
+                        profile,
                         DraftRestoreTracking::Ordinary,
                     );
                 }
@@ -119,7 +120,7 @@ impl LushtextWindow {
             return false;
         };
         match preloaded {
-            GuardedPreloadedDraftRestore::Content(draft_content) => {
+            GuardedPreloadedDraftRestore::Content(draft_content, profile) => {
                 let Some(entry) = self.draft_manifest_entry(&draft_id) else {
                     return false;
                 };
@@ -127,6 +128,7 @@ impl LushtextWindow {
                 self.apply_draft(
                     &DraftRestoreTicket::capture(editor, entry),
                     draft_content,
+                    profile,
                     DraftRestoreTracking::Ordinary,
                 );
             }
@@ -195,8 +197,8 @@ impl LushtextWindow {
         };
         let draft_id = ticket.entry.draft_id.clone();
         match result {
-            Ok(GuardedDraftRestoreResolution::Restore(content)) => {
-                self.apply_draft(ticket, content, tracking);
+            Ok(GuardedDraftRestoreResolution::Restore(content, profile)) => {
+                self.apply_draft(ticket, content, profile, tracking);
                 return;
             }
             Ok(GuardedDraftRestoreResolution::Compact(skip)) => {
@@ -234,7 +236,11 @@ impl LushtextWindow {
     /// ordinary untitled draft from then on. The body is bounded by the
     /// automatic-draft limit by the reader, and installs through the bounded
     /// buffer replacement like any recovered body.
-    pub fn open_set_aside_draft(&self, text: String) {
+    pub fn open_set_aside_draft(
+        &self,
+        text: String,
+        profile: crate::model::paragraph_boundary::DocumentProfile,
+    ) {
         self.new_tab();
         let Some(editor) = self.active_editor() else {
             return;
@@ -264,7 +270,8 @@ impl LushtextWindow {
                     }
                 }
             },
-        );
+        )
+        .with_profile(profile);
         editor.replace_buffer_bounded(request);
     }
 
@@ -273,6 +280,7 @@ impl LushtextWindow {
         &self,
         ticket: &DraftRestoreTicket,
         content: crate::ui::plain_disposal::DisposalOwned<String>,
+        profile: crate::model::paragraph_boundary::DocumentProfile,
         tracking: DraftRestoreTracking,
     ) {
         let Some(editor) = ticket.current_editor(self) else {
@@ -329,7 +337,8 @@ impl LushtextWindow {
             move |body| {
                 accepted_body.borrow_mut().replace(body);
             },
-        );
+        )
+        .with_profile(profile);
         editor.replace_buffer_bounded(request);
     }
 

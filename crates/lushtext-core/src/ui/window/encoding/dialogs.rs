@@ -24,7 +24,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::model::encoding::{DocumentEncoding, LineEnding};
+use crate::model::encoding::{DocumentEncoding, InvisibleCharactersMode, LineEnding};
 use crate::ui::accessibility;
 
 use super::super::LushtextWindow;
@@ -195,12 +195,18 @@ pub(super) fn present_invisible_characters(window: &LushtextWindow) {
         .build();
 
     let current = editor.invisible_characters_mode();
+    let invisibles_allowed = editor.document_scale().invisibles_allowed;
     for mode in policy::INVISIBLE_MODE_CHOICES {
-        let state = policy::invisible_mode_choice_state(mode, current);
+        let state = policy::invisible_mode_choice_state(mode, current, invisibles_allowed);
+        let subtitle = if !invisibles_allowed && mode != InvisibleCharactersMode::Off {
+            policy::INVISIBLE_MODE_UNAVAILABLE_SUBTITLE.to_string()
+        } else {
+            policy::invisible_mode_subtitle(mode, state.selected)
+        };
         append_choice_row(
             &options_group,
             mode.label(),
-            policy::invisible_mode_subtitle(mode, state.selected),
+            subtitle,
             state,
             move |window| window.apply_invisible_characters_mode(mode),
             window.downgrade(),

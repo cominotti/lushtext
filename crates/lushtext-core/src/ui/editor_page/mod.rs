@@ -10,6 +10,7 @@ mod accessibility;
 mod bookmarks;
 mod buffer_replacement;
 mod document_identity;
+pub mod document_scale;
 mod focus_mode;
 mod frame_validation;
 // Private implementation module. GTK's GObject bindings split custom widgets
@@ -510,6 +511,7 @@ impl LushtextEditorPage {
         notification: InlineActionNotification,
         lifetime: imp::InlineAlertLifetime,
     ) {
+        self.note_inline_notification_replaced();
         self.set_pending_warning_action(None);
         self.publish_inline_notification(notification, lifetime);
     }
@@ -521,6 +523,7 @@ impl LushtextEditorPage {
         action: imp::PendingWarningAction,
         lifetime: imp::InlineAlertLifetime,
     ) {
+        self.note_inline_notification_replaced();
         self.set_pending_warning_action(Some(action));
         self.publish_inline_notification(notification, lifetime);
     }

@@ -778,7 +778,7 @@ fn unregistered_path_hash_body_is_attributed_from_session_and_journal_stays_trus
     assert!(restore.manifest_authority.is_trusted());
     assert!(!matches!(
         restore.preloaded_drafts.get(&draft_id),
-        Some(PreloadedDraftRestore::Content(_))
+        Some(PreloadedDraftRestore::Content(..))
     ));
     let snapshots = local_history_service::list_snapshots_for_path(ctx.data_dir(), &file_path)
         .expect("list local history");
@@ -915,7 +915,7 @@ fn stale_draft_for_file_outside_local_history_policy_is_set_aside() {
     let file_path = ctx.path().join("huge.log");
     fixture::create_sparse_file(
         &file_path,
-        lushtext_core::services::file_limits::DISABLE_UNDO_HISTORY + 1,
+        lushtext_core::model::document_scale::HISTORY_UNAVAILABLE_BYTES + 1,
     );
     let draft_id = draft_service::draft_id_for_path(&file_path);
     let body = "edits to a very large file";

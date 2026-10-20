@@ -9,7 +9,6 @@
 
 use gtk4::prelude::*;
 
-use crate::services::file_limits::FileSizeCheck;
 use crate::ui::accessibility as a11y;
 
 use super::{EditorLoadState, LushtextEditorPage};
@@ -47,7 +46,7 @@ impl LushtextEditorPage {
         let loading = self.load_state() == EditorLoadState::Loading;
         let failed = self.load_state() == EditorLoadState::Failed;
         let saving = self.is_saving();
-        let too_large = self.size_check() == FileSizeCheck::TooLarge;
+        let too_large = !self.document_scale().open_allowed;
         let disabled = preview_only || failed || self.is_evicted() || too_large;
         let read_only = preview_only || loading || saving || disabled || !view.is_editable();
 
@@ -102,22 +101,14 @@ impl LushtextEditorPage {
                 .push_str(" Content has been evicted from memory and will reload when selected.");
         }
 
-        match self.size_check() {
-            FileSizeCheck::Normal => {}
-            FileSizeCheck::LargeFileToast => {
-                details.push_str(" Large document mode is active.");
-            }
-            FileSizeCheck::DisableSyntax => {
-                details.push_str(" Syntax highlighting is disabled for this large document.");
-            }
-            FileSizeCheck::DisableUndoAndSyntax => {
-                details.push_str(
-                    " Syntax highlighting and undo history are disabled for this huge document.",
-                );
-            }
-            FileSizeCheck::TooLarge => {
-                details.push_str(" This document is too large to open.");
-            }
+        let scale = self.document_scale();
+        if !scale.open_allowed {
+            details.push_str(" This document is too large to open.");
+        } else if let Some(reduced) = scale.reduced.describe() {
+            // The scale policy's reduced features and reason classes; never
+            // document content, and bounded by the fixed feature set.
+            details.push(' ');
+            details.push_str(&reduced);
         }
 
         details

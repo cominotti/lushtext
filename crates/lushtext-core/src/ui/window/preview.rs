@@ -17,7 +17,6 @@ use crate::ui::markdown_preview::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{glib, prelude::*};
-use sourceview5::prelude::*;
 
 use super::LushtextWindow;
 use super::imp::{PREVIEW_LAYOUT_EDITOR, PREVIEW_LAYOUT_PREVIEW, PREVIEW_SETTLE_DELAY_MS};
@@ -635,13 +634,12 @@ fn preview_sidebar_has_allocation(split_view: &libadwaita::OverlaySplitView) -> 
             .is_some_and(|bin| bin.width() > 0)
 }
 
-/// Check whether an editor page contains a Markdown file by querying
-/// the GtkSourceView buffer's language ID.
+/// Check whether an editor page contains a Markdown file by its language
+/// id, which survives the document scale turning syntax highlighting off.
 fn is_markdown(editor: &LushtextEditorPage) -> bool {
     editor
-        .buffer()
-        .language()
-        .is_some_and(|lang: sourceview5::Language| lang.id() == "markdown")
+        .document_language_id()
+        .is_some_and(|id| id == "markdown")
 }
 
 #[cfg(test)]

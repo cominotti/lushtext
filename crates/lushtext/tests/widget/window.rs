@@ -27,6 +27,7 @@ use lushtext_core::config::keys;
 use lushtext_core::model::action_catalog::{ActionScope, ActionValueType, ObservedAction};
 use lushtext_core::model::automation::{AutomationReadinessPredicate, AutomationReadinessStatus};
 use lushtext_core::model::content_search::SearchMatch;
+use lushtext_core::model::document_scale::{REFUSE_TO_OPEN, S_MINIMAP, S_SYNTAX, UNDO_TOTAL_BYTES};
 use lushtext_core::model::draft::{
     DraftEntry, DraftManifest, PreloadedDraftRestore, PreloadedDraftSkip,
 };
@@ -45,9 +46,6 @@ use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
     WorkspaceScope, WorkspacesFile,
-};
-use lushtext_core::services::file_limits::{
-    DISABLE_SYNTAX_HIGHLIGHTING, DISABLE_UNDO_HISTORY, FileSizeCheck, REFUSE_TO_OPEN,
 };
 use lushtext_core::services::filesystem::PathStatus;
 use lushtext_core::services::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
@@ -1600,7 +1598,11 @@ fn local_history_preview_text(widget: &gtk4::Widget) -> Option<String> {
 }
 
 fn wait_for_local_history_preview_text(widget: &gtk4::Widget, expected: &str) {
-    wait_for_local_history_preview_text_within(widget, expected, Duration::from_secs(5));
+    // An async worker read plus a bounded, sliced install: a document-sized
+    // (10 MB+) snapshot takes several seconds in the unoptimized test build,
+    // so the budget matches the restore wait of the same tests rather than a
+    // synchronous UI flip's.
+    wait_for_local_history_preview_text_within(widget, expected, Duration::from_secs(60));
 }
 
 /// Wait until the read-only local-history preview shows exactly `expected`.
@@ -5591,7 +5593,8 @@ fn test_large_document_disables_minimap_and_surfaces_feedback() {
     window.new_tab();
     present_window(&window);
     let editor = active_editor(&window);
-    editor.imp().size_check.set(FileSizeCheck::DisableSyntax);
+    // A document the scale keeps from the minimap by total size.
+    editor.apply_loaded_content_for_test("large document\n", S_MINIMAP + 1);
     window
         .imp()
         .settings
@@ -5605,7 +5608,7 @@ fn test_large_document_disables_minimap_and_surfaces_feedback() {
     flush_events();
 
     wait_until(Duration::from_secs(2), || {
-        editor.minimap_availability() == MinimapAvailability::TooLarge
+        editor.minimap_availability() == MinimapAvailability::Reduced
     });
 
     assert!(!editor.is_minimap_visible());
@@ -5627,7 +5630,7 @@ fn test_large_file_load_disables_syntax_through_ui_state() {
 
     let dir = tempfile::tempdir().expect("large-file tempdir");
     let path = dir.path().join("large.rs");
-    let size = DISABLE_SYNTAX_HIGHLIGHTING + 1;
+    let size = S_MINIMAP + 1;
     fixture::write_text(&path, "small fixture promoted to large-file policy\n");
 
     let window = test_window();
@@ -5644,12 +5647,14 @@ fn test_large_file_load_disables_syntax_through_ui_state() {
     // timing test for file I/O, UTF-8 decoding, and GtkTextBuffer insertion.
     editor.apply_loaded_content_for_test("large-file policy content\n", size);
     assert_eq!(editor.file_size(), Some(size));
-    assert_eq!(editor.size_check(), FileSizeCheck::DisableSyntax);
+    assert!(!editor.document_scale().syntax_enabled);
+    assert!(editor.document_scale().undo_enabled);
+    assert!(S_SYNTAX < size);
     assert!(!editor.buffer().is_highlight_syntax());
     assert!(editor.buffer().language().is_none());
 
     wait_until(Duration::from_secs(2), || {
-        editor.minimap_availability() == MinimapAvailability::TooLarge
+        editor.minimap_availability() == MinimapAvailability::Reduced
     });
     assert!(!editor.is_minimap_visible());
 }
@@ -5659,7 +5664,7 @@ fn test_large_file_load_disables_undo_and_history_through_ui_state() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("huge-file tempdir");
     let path = dir.path().join("huge.rs");
-    let size = DISABLE_UNDO_HISTORY + 1;
+    let size = UNDO_TOTAL_BYTES + 1;
     fixture::write_text(&path, "small fixture promoted to huge-file policy\n");
 
     let window = test_window();
@@ -5683,8 +5688,8 @@ fn test_large_file_load_disables_undo_and_history_through_ui_state() {
     flush_events();
 
     assert_eq!(editor.file_size(), Some(size));
-    assert_eq!(editor.size_check(), FileSizeCheck::DisableUndoAndSyntax);
-    assert!(!editor.size_check().undo_enabled());
+    assert!(!editor.document_scale().syntax_enabled);
+    assert!(!editor.document_scale().undo_enabled);
     assert!(!editor.buffer().can_undo());
     assert!(!action_enabled(&window, "show-local-history"));
     assert!(!editor.buffer().is_highlight_syntax());
@@ -6259,7 +6264,7 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
     let result = |content: &str, path: &Path| editor_io::LoadResult {
         metadata: editor_io::LoadMetadata {
             size: u64::try_from(content.len()).expect("fixture length"),
-            size_check: FileSizeCheck::Normal,
+            profile: lushtext_core::model::paragraph_boundary::DocumentProfile::EMPTY,
             canonical_path: Some(
                 fs_metadata::canonical_path(path).expect("canonical restore path"),
             ),
@@ -9223,9 +9228,9 @@ fn test_new_file_backed_drafts_are_registered_before_their_first_body_write() {
             .expect("name");
         assert_eq!(
             draft_service::resolve_file_draft_restore(&data_dir, entry).expect("resolve"),
-            lushtext_core::model::draft::FileDraftRestoreResolution::Restore {
-                content: format!("unsaved edits in {name}"),
-            }
+            lushtext_core::model::draft::FileDraftRestoreResolution::restore(format!(
+                "unsaved edits in {name}"
+            ))
         );
     }
 }
@@ -9431,7 +9436,7 @@ fn test_file_backed_draft_body_delete_failure_keeps_an_explicit_retry_tombstone(
     assert!(restarted.manifest.find_by_id(&draft_id).is_some());
     assert!(matches!(
         restarted.preloaded_drafts.get(&draft_id),
-        Some(PreloadedDraftRestore::Content(content))
+        Some(PreloadedDraftRestore::Content(content, _))
             if content == "unsaved file-backed recovery"
     ));
 
@@ -11524,7 +11529,7 @@ fn test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destina
     let stale_result = editor_io::LoadResult {
         metadata: editor_io::LoadMetadata {
             size: 18,
-            size_check: FileSizeCheck::Normal,
+            profile: lushtext_core::model::paragraph_boundary::DocumentProfile::EMPTY,
             canonical_path: Some(fs_metadata::canonical_path(&source).expect("canonical source")),
             mtime: Some(123),
             encoding_state: DocumentEncodingState::default(),
@@ -11990,10 +11995,7 @@ fn test_local_history_action_requires_saved_eligible_document() {
     assert!(action_enabled(&window, "show-local-history"));
 
     let editor = active_editor(&window);
-    editor
-        .imp()
-        .size_check
-        .set(FileSizeCheck::DisableUndoAndSyntax);
+    editor.apply_loaded_content_for_test("one\n", UNDO_TOTAL_BYTES + 1);
     let saved_page = window
         .imp()
         .tab_view
@@ -12912,6 +12914,13 @@ fn test_local_history_restore_defers_compactly_until_progress_capacity_clears() 
     let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
     wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
 
+    // The window's startup session/draft load reserves the progress lane and
+    // retires that reservation on a disposal worker; the hold needs the lane
+    // otherwise empty, so wait for that asynchronous drain first.
+    wait_until(Duration::from_secs(10), || {
+        let progress = plain_disposal_evidence().progress;
+        progress.is_quiesced() && progress.snapshot.retained_bytes == 0
+    });
     let progress_hold = hold_progress_disposal_capacity_for_test();
     let lane_before = plain_disposal_evidence().progress.snapshot;
     restore_button.emit_clicked();
@@ -13603,6 +13612,15 @@ fn test_stale_lossy_encoding_analysis_result_is_rejected_after_buffer_change() {
     );
 }
 
+/// At least `chars` characters of `fill` in 80-character lines: large
+/// enough to need a chunked snapshot, with short paragraphs so the document
+/// scale keeps syntax on (it is held at the 5-byte file's load size, and the
+/// lossy pre-check defers to save whenever syntax is off).
+fn short_lines(fill: char, chars: usize) -> String {
+    let line = format!("{}\n", fill.to_string().repeat(79));
+    line.repeat(chars.div_ceil(80))
+}
+
 #[test]
 fn test_chunked_lossy_encoding_snapshot_discards_source_mutation() {
     ensure_gtk_init();
@@ -13619,7 +13637,7 @@ fn test_chunked_lossy_encoding_snapshot_discards_source_mutation() {
     let editor = active_editor(&window);
     editor
         .buffer()
-        .set_text(&format!("{}😀", "x".repeat(2_500_001)));
+        .set_text(&format!("{}😀", short_lines('x', 2_500_001)));
     editor.buffer().set_modified(true);
     activate_action(&window, "show-encoding-controls");
     let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
@@ -13640,7 +13658,7 @@ fn test_chunked_lossy_encoding_snapshot_discards_source_mutation() {
             .is_some()
     );
 
-    editor.buffer().set_text(&"a".repeat(2_500_001));
+    editor.buffer().set_text(&short_lines('a', 2_500_001));
     editor.buffer().set_modified(true);
     wait_until(Duration::from_secs(10), || {
         editor
@@ -15648,8 +15666,11 @@ fn test_primary_menu_markdown_preview_pauses_large_markdown_buffer() {
     editor
         .buffer()
         .set_text(&"x".repeat(MAX_MARKDOWN_SOURCE_BYTES + 1));
+    // The document scale turns syntax off above S_syntax (1 MiB) and clears
+    // the buffer language; the document is still Markdown by its path.
+    assert!(!editor.document_scale().syntax_enabled);
     assert_eq!(
-        editor.buffer().language().map(|language| language.id()),
+        editor.document_language_id(),
         Some(glib::GString::from("markdown"))
     );
     assert!(
@@ -20703,7 +20724,7 @@ fn test_document_sized_preloaded_draft_publishes_only_after_bounded_install() {
     window.imp().drafts.manifest.borrow_mut().upsert(entry);
     window.imp().drafts.preloaded.borrow_mut().insert(
         draft_id.clone(),
-        PreloadedDraftRestore::Content(content.clone()),
+        PreloadedDraftRestore::content(content.clone()),
     );
 
     window.check_draft_by_id(&editor, &draft_id);
