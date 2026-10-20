@@ -582,6 +582,10 @@ mod tests {
         let mut out = Vec::new();
         let mut cursor = 0;
         while let Some(found) = next_paragraph_break(text, cursor) {
+            // A break that does not advance would grow `out` without bound
+            // (a mutant that did so took one test process to GiBs); fail at
+            // once instead.
+            assert!(found.next_start > cursor, "a paragraph break must advance");
             out.push((found.content_end, found.next_start, found.delimiter));
             cursor = found.next_start;
         }
