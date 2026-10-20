@@ -700,6 +700,15 @@ impl LushtextWindow {
                 window.publish_editor_inline_notification(&editor, notification);
             }
         });
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        editor.connect_inline_notification_superseded(move || {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(editor) = editor_weak.upgrade()
+            {
+                window.resolve_editor_inline_notification(&editor);
+            }
+        });
 
         let editor_weak = editor.downgrade();
         let window_weak = self.downgrade();
@@ -718,7 +727,7 @@ impl LushtextWindow {
         let editor_weak = editor.downgrade();
         editor.info_bar().connect_discard(move || {
             if let Some(editor) = editor_weak.upgrade() {
-                match editor.take_pending_warning_action() {
+                match editor.pending_warning_action() {
                     Some(crate::ui::editor_page::PendingWarningAction::NormalizeLineEndings) => {
                         if let Some(window) = window_weak.upgrade() {
                             window.show_line_ending_controls_dialog();
@@ -1097,6 +1106,10 @@ impl LushtextWindow {
         self.maybe_evict_background_tabs();
         self.save_session_debounced();
         self.refresh_preview();
+        // The selected tab decides which alert is perceivable, so a selection
+        // change re-projects: a background tab's alert is announced the first
+        // time its tab is selected.
+        self.render_notifications();
         self.apply_focus_mode_to_editors();
         if let Some(editor) = self.active_editor() {
             editor.refresh_minimap();

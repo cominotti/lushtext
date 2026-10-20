@@ -219,7 +219,7 @@ impl LushtextWindow {
                     body: "The preserved recovery draft could not be read. The tab remains usable and the recovery files were kept.".to_string(),
                     primary_button: None,
                     secondary_button: None,
-                });
+                }, crate::ui::editor_page::InlineAlertLifetime::OutlivesLoad);
                 // Keep the promise above before the next autosave overwrites it.
                 self.dispose_unapplied_restore(RestoreEnding::ReadFailed, ticket.entry.clone());
             }
@@ -348,25 +348,28 @@ impl LushtextWindow {
         }
         let has_backing_file = editor.file_path().is_some();
         editor.set_draft_restored(true);
-        editor.emit_inline_notification(InlineActionNotification {
-            style: InlineNotificationStyle::Warning,
-            title: if has_backing_file {
-                "Draft Changes Restored".to_string()
-            } else {
-                "Document Restored".to_string()
+        editor.emit_inline_notification(
+            InlineActionNotification {
+                style: InlineNotificationStyle::Warning,
+                title: if has_backing_file {
+                    "Draft Changes Restored".to_string()
+                } else {
+                    "Document Restored".to_string()
+                },
+                body: if has_backing_file {
+                    "Unsaved changes from a previous session have been restored.".to_string()
+                } else {
+                    "Unsaved document has been restored.".to_string()
+                },
+                primary_button: Some("_Discard…".to_string()),
+                secondary_button: Some(if has_backing_file {
+                    "_Save…".to_string()
+                } else {
+                    "Save _As…".to_string()
+                }),
             },
-            body: if has_backing_file {
-                "Unsaved changes from a previous session have been restored.".to_string()
-            } else {
-                "Unsaved document has been restored.".to_string()
-            },
-            primary_button: Some("_Discard…".to_string()),
-            secondary_button: Some(if has_backing_file {
-                "_Save…".to_string()
-            } else {
-                "Save _As…".to_string()
-            }),
-        });
+            crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad,
+        );
     }
 
     /// Warn that a file-backed draft was skipped because the file changed on
@@ -391,9 +394,13 @@ impl LushtextWindow {
             editor.emit_inline_notification_with_warning_action(
                 notification,
                 crate::ui::editor_page::PendingWarningAction::ShowLocalHistory,
+                crate::ui::editor_page::InlineAlertLifetime::OutlivesLoad,
             );
         } else {
-            editor.emit_inline_notification(notification);
+            editor.emit_inline_notification(
+                notification,
+                crate::ui::editor_page::InlineAlertLifetime::OutlivesLoad,
+            );
         }
     }
 
@@ -406,7 +413,7 @@ impl LushtextWindow {
             body: "Unsaved changes from a previous session were not restored automatically because the draft is very large.".to_string(),
             primary_button: None,
             secondary_button: None,
-        });
+        }, crate::ui::editor_page::InlineAlertLifetime::OutlivesLoad);
     }
 
     /// Warn that the current buffer is too large for automatic crash recovery.
@@ -418,7 +425,7 @@ impl LushtextWindow {
             body: "This document is over the 64 MiB automatic recovery limit. Keep editing, or use Save / Save As to protect the latest changes.".to_string(),
             primary_button: None,
             secondary_button: None,
-        });
+        }, crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad);
     }
 
     /// Clear the limit warning only after a matching generation is accepted.

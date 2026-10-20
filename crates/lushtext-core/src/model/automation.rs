@@ -854,6 +854,11 @@ pub struct AutomationSurfaceSnapshot {
     pub preview_pane_visible: bool,
     /// Preview-only Markdown mode state.
     pub preview_mode: bool,
+    /// Whether the selected document's alert is rendered above the preview.
+    ///
+    /// True only while the window-hosted copy shown in preview-only mode is
+    /// rendered visible; it never carries the alert's title or body.
+    pub preview_document_alert_visible: bool,
     /// Focus Mode state.
     pub focus_mode: bool,
     /// Minimap preference state; document policy may still suppress rendering.
@@ -1396,6 +1401,7 @@ mod tests {
             open_popover_visible: false,
             preview_pane_visible: false,
             preview_mode: false,
+            preview_document_alert_visible: false,
             focus_mode: false,
             minimap_requested: true,
             status_bar_visible: true,

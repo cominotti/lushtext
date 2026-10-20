@@ -11,8 +11,9 @@ use crate::common::{
     DraftPipelinePolicyReset, EditorLoadDelayReset, FirstDirtyAutosaveDelayReset,
     OrphanCleanupPolicyReset, action_state_bool, activate_action, editor_text,
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
-    fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, test_application,
-    wait_for_startup_data_flow, wait_until,
+    fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, seed_restored_window_size,
+    test_application, test_window_with_restored_size, wait_for_startup_data_flow, wait_until,
+    write_external_change_after_mtime_tick,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::{Cast, IsA, ObjectExt, ToValue, ToVariant};
@@ -69,8 +70,8 @@ use lushtext_core::ui::editor_page::save::policy::{
     SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveCaptureMode, conservative_save_payload_weight,
 };
 use lushtext_core::ui::editor_page::{
-    BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
-    MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
+    BufferReplacementWorkflow, EditorLoadState, EditorSaveError, InlineAlertLifetime,
+    LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
 };
 use lushtext_core::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownRenderState};
 use lushtext_core::ui::open_popover::evidence::open_popover_evidence;
@@ -83,13 +84,14 @@ use lushtext_core::ui::search_panel::SearchPanelTestPolicy;
 use lushtext_core::ui::window::shell_geometry_evidence;
 use lushtext_core::ui::window::{
     DraftFlushError, LushtextWindow, PrintEvidence, PrintOutcome, editor_memory_eviction_evidence,
-    fail_next_draft_mutations_for_test, local_history_preview_install_evidence, print_evidence,
-    set_automatic_draft_limit_for_test, set_bookmark_excerpt_preview_delay_for_test,
-    set_canonical_refresh_delay_for_test, set_close_safety_completion_delay_for_test,
-    set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
-    set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
-    set_lazy_draft_read_delay_for_test, set_local_history_baseline_delay_for_test,
-    set_local_history_baseline_failures_for_test, set_local_history_preview_install_delay_for_test,
+    fail_next_draft_mutations_for_test, local_history_preview_install_evidence,
+    notification_evidence, print_evidence, set_automatic_draft_limit_for_test,
+    set_bookmark_excerpt_preview_delay_for_test, set_canonical_refresh_delay_for_test,
+    set_close_safety_completion_delay_for_test, set_draft_manifest_completion_delay_for_test,
+    set_draft_mutation_delays_for_test, set_draft_restore_delay_for_test,
+    set_first_dirty_autosave_delay_for_test, set_lazy_draft_read_delay_for_test,
+    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
+    set_local_history_preview_install_delay_for_test,
     set_local_history_preview_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
     set_next_draft_body_disposal_probe_for_test, set_note_source_delay_for_test,
     set_notes_browser_query_delay_for_test, set_notes_browser_source_entry_limit_for_test,
@@ -260,22 +262,6 @@ fn assert_status_bar_readable_one_row(window: &LushtextWindow, context: &str) {
         "{context}: message area should stay within the status row, got area height {} and row height {height}",
         message_area.height()
     );
-}
-
-fn seed_restored_window_size(width: i32, height: i32) {
-    ensure_gtk_init();
-    let settings = lushtext_core::ui::settings_writes::shared();
-    settings
-        .set_int(keys::WINDOW_WIDTH, width)
-        .expect("set window width");
-    settings
-        .set_int(keys::WINDOW_HEIGHT, height)
-        .expect("set window height");
-}
-
-fn test_window_with_restored_size(width: i32, height: i32) -> LushtextWindow {
-    seed_restored_window_size(width, height);
-    test_window()
 }
 
 const DEFINITION_LIST_CODE_BLOCK_SAMPLE: &str = concat!(
@@ -691,34 +677,6 @@ fn open_temp_document(initial_text: &str) -> (LushtextWindow, tempfile::TempDir,
     });
 
     (window, dir, path)
-}
-
-/// Force an external write onto a later mtime second before waiting for GTK.
-///
-/// The production monitor compares second-resolution mtimes, so this helper
-/// avoids false-negative tests on filesystems where two writes inside one
-/// second collapse to the same observed timestamp.
-fn write_external_change_after_mtime_tick(
-    path: &Path,
-    editor: &LushtextEditorPage,
-    contents: &str,
-) {
-    let last_known = editor
-        .imp()
-        .monitor
-        .last_known_mtime
-        .get()
-        .expect("loaded editor should know the backing file mtime");
-
-    for _ in 0..5 {
-        fixture::write_text(path, contents);
-        if editor_io::mtime_secs(path).is_some_and(|mtime| mtime != last_known) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1100));
-    }
-
-    panic!("external write did not advance the observed file mtime");
 }
 
 fn wait_for_external_change_warning(editor: &LushtextEditorPage) {
@@ -10331,7 +10289,7 @@ fn test_warning_inline_alert_actions_stay_allocated_in_a_narrow_window() {
         body: "Unsaved changes to the document have been restored, and the inline actions must remain visible while the window narrows.".to_string(),
         primary_button: Some("_Discard…".to_string()),
         secondary_button: Some("_Save…".to_string()),
-    });
+    }, InlineAlertLifetime::SupersededByLoad);
     flush_after_delay(Duration::from_millis(50));
 
     let info_bar = editor.info_bar().imp();
@@ -10381,7 +10339,7 @@ fn test_access_error_inline_alert_action_stays_allocated_in_a_narrow_window() {
         body: "Permission was denied while opening the document, so the retry action must stay visible after the shell tightens.".to_string(),
         primary_button: Some("_Retry".to_string()),
         secondary_button: None,
-    });
+    }, InlineAlertLifetime::SupersededByLoad);
     flush_after_delay(Duration::from_millis(50));
 
     let info_bar = editor.info_bar().imp();
@@ -10409,20 +10367,26 @@ fn test_dismissing_one_editor_inline_alert_preserves_other_editor_alert() {
     window.new_tab();
     let second_editor = active_editor(&window);
 
-    first_editor.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Warning,
-        title: "First Alert".to_string(),
-        body: "First editor warning".to_string(),
-        primary_button: Some("_Discard...".to_string()),
-        secondary_button: None,
-    });
-    second_editor.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Warning,
-        title: "Second Alert".to_string(),
-        body: "Second editor warning".to_string(),
-        primary_button: Some("_Discard...".to_string()),
-        secondary_button: None,
-    });
+    first_editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "First Alert".to_string(),
+            body: "First editor warning".to_string(),
+            primary_button: Some("_Discard...".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    second_editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Second Alert".to_string(),
+            body: "Second editor warning".to_string(),
+            primary_button: Some("_Discard...".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
 
     assert!(first_editor.info_bar().imp().alert_revealer.reveals_child());
     assert!(
@@ -13647,6 +13611,67 @@ fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status
             .as_deref(),
         Some("LF")
     );
+}
+
+/// A cancelled line-ending dialog must leave "Normalize…" bound to the dialog.
+///
+/// The warning-primary handler used to *consume* the pending warning action,
+/// so after the dialog was closed without a choice the same button fell
+/// through to the default dismiss-and-reload path and silently dropped the
+/// user's unsaved edits.
+#[test]
+fn test_cancelled_normalize_dialog_keeps_normalize_bound_and_unsaved_edits() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("mixed.txt");
+    fixture::write_text(&path, "a\r\nb\nc\r\n");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    wait_until(Duration::from_secs(2), || {
+        editor.info_bar().imp().alert_revealer.reveals_child()
+            && editor.info_bar().imp().discard_button.label().as_deref() == Some("_Normalize…")
+    });
+
+    editor.buffer().set_text("unsaved local edits\n");
+    editor.buffer().set_modified(true);
+
+    let line_endings_dialog_open = |window: &LushtextWindow| {
+        visible_alert_dialog(window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Line Endings"))
+    };
+
+    editor.info_bar().imp().discard_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || line_endings_dialog_open(&window));
+    visible_alert_dialog(&window)
+        .expect("line endings dialog visible")
+        .close();
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
+
+    editor.info_bar().imp().discard_button.emit_clicked();
+    // Give a wrongly routed reload every chance to land before asserting.
+    flush_after_delay(Duration::from_millis(500));
+    assert!(
+        line_endings_dialog_open(&window),
+        "the second Normalize… click must reopen the line-ending dialog",
+    );
+    assert_eq!(
+        editor_buffer_text(&editor),
+        "unsaved local edits\n",
+        "a cancelled Normalize… must not reload the file over unsaved edits",
+    );
+    assert!(editor.is_modified());
+    visible_alert_dialog(&window)
+        .expect("line endings dialog visible")
+        .close();
 }
 
 #[test]
@@ -19852,6 +19877,447 @@ fn test_startup_restore_applies_matching_file_backed_draft() {
         .editor_info_bar_view(editor.notification_owner_id())
         .expect("draft restore notification");
     assert_eq!(notification.title, "Draft Changes Restored");
+}
+
+/// Evict `background` for memory and select it again, so it reloads from disk.
+///
+/// Production's eviction reload (`editor_memory_eviction::reload_if_evicted`)
+/// reaches load success without dismissing the tab's alert first, which is
+/// what the two regressions below need.
+fn evict_and_reselect(window: &LushtextWindow, background: &LushtextEditorPage) {
+    background.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    flush_events();
+    assert!(
+        background.is_evicted(),
+        "the clean background tab must evict"
+    );
+    let page = window.imp().tab_view.page(background);
+    window.imp().tab_view.set_selected_page(&page);
+    wait_until(Duration::from_secs(10), || {
+        !background.is_evicted() && background.load_state() == EditorLoadState::Loaded
+    });
+    flush_events();
+}
+
+/// A load that installs the current bytes resolves the alert it supersedes.
+///
+/// `complete_loaded_installation` used to hide the editor's bar directly while
+/// the bus kept the record, so the next full pass, from any status message,
+/// brought a stale "File Has Changed on Disk" back over current content.
+#[test]
+fn test_eviction_reload_resolves_external_change_alert_for_good() {
+    let (window, dir, path) = open_temp_document("original\n");
+    let editor = active_editor(&window);
+    write_external_change_after_mtime_tick(&path, &editor, "external version\n");
+    wait_for_external_change_warning(&editor);
+
+    let other = dir.path().join("other.txt");
+    fixture::write_text(&other, "other\n");
+    window.open_document(&other);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+            && active_editor(&window) != editor
+    });
+
+    evict_and_reselect(&window, &editor);
+    assert_eq!(editor_buffer_text(&editor), "external version\n");
+
+    window.publish_status_message("Unrelated status", NotificationSeverity::Info);
+    flush_events();
+    assert!(
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(editor.notification_owner_id())
+            .is_none(),
+        "the reload superseded the external-change alert",
+    );
+    assert!(
+        !editor.info_bar().imp().alert_revealer.reveals_child(),
+        "a later full pass must not bring the stale alert back",
+    );
+}
+
+/// A recovery alert pointing at a preserved draft outlives a reload.
+///
+/// "Draft Not Restored" names where the user's unsaved edits were kept, and
+/// those copies are still on disk after the tab reloads, so the eviction reload
+/// must not take the only in-place pointer to them away.
+#[test]
+fn test_draft_not_restored_alert_survives_eviction_reload() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stale_path = dir.path().join("stale.txt");
+    let other_path = dir.path().join("other.txt");
+    fixture::write_text(&stale_path, "current disk content");
+    fixture::write_text(&other_path, "other content");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&stale_path);
+    draft_service::fixture::write_body(&data_dir, &draft_id, "stale draft").expect("seed draft");
+    let current_mtime = editor_io::mtime_secs(&stale_path).expect("file mtime");
+    let stale_mtime = current_mtime
+        .checked_add(1)
+        .unwrap_or_else(|| current_mtime.saturating_sub(1));
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id,
+                original_path: Some(stale_path.clone()),
+                original_mtime_secs: Some(stale_mtime),
+                saved_at_secs: 1,
+            }],
+            cleanup_continuation: None,
+        },
+    )
+    .expect("save manifest");
+    let tab = |path: &Path| SessionTab {
+        path: Some(path.to_path_buf()),
+        draft_id: None,
+        cursor_line: 0,
+        cursor_col: 0,
+        scroll_line: 0,
+        pinned: false,
+    };
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![tab(&stale_path), tab(&other_path)],
+            active_tab_index: Some(1),
+        },
+    )
+    .expect("save session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().tab_view.n_pages() == 2
+    });
+    let stale_editor = window
+        .imp()
+        .tab_view
+        .nth_page(0)
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("stale editor");
+    let stale_alert_title = |window: &LushtextWindow| {
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(stale_editor.notification_owner_id())
+            .map(|notification| notification.title)
+    };
+    wait_until(Duration::from_secs(10), || {
+        stale_alert_title(&window).as_deref() == Some("Draft Not Restored")
+            && stale_editor.load_state() == EditorLoadState::Loaded
+            && active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+
+    evict_and_reselect(&window, &stale_editor);
+    assert_eq!(
+        stale_alert_title(&window).as_deref(),
+        Some("Draft Not Restored")
+    );
+    assert!(
+        stale_editor.info_bar().imp().alert_revealer.reveals_child(),
+        "the recovery alert must still be shown after the reload terminal",
+    );
+
+    window.publish_status_message("Unrelated status", NotificationSeverity::Info);
+    flush_events();
+    assert!(
+        stale_editor.info_bar().imp().alert_revealer.reveals_child(),
+        "the recovery alert must still be shown after a later full pass",
+    );
+}
+
+/// Open two documents; the second ends up selected.
+fn two_document_window() -> (
+    LushtextWindow,
+    tempfile::TempDir,
+    LushtextEditorPage,
+    LushtextEditorPage,
+) {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let window = test_window();
+    present_window(&window);
+    let mut editors = Vec::new();
+    for name in ["first.txt", "second.txt"] {
+        let path = dir.path().join(name);
+        fixture::write_text(&path, &format!("{name}\n"));
+        window.open_document(&path);
+        wait_until(Duration::from_secs(5), || {
+            let editor = active_editor(&window);
+            editor.file_path().as_deref() == Some(path.as_path())
+                && editor.load_state() == EditorLoadState::Loaded
+        });
+        editors.push(active_editor(&window));
+    }
+    let second = editors.pop().expect("second editor");
+    let first = editors.pop().expect("first editor");
+    (window, dir, first, second)
+}
+
+fn select_editor(window: &LushtextWindow, editor: &LushtextEditorPage) {
+    let page = window.imp().tab_view.page(editor);
+    window.imp().tab_view.set_selected_page(&page);
+    flush_events();
+}
+
+fn inline_alert(style: InlineNotificationStyle, title: &str) -> InlineActionNotification {
+    InlineActionNotification {
+        style,
+        title: title.to_string(),
+        body: format!("{title} body"),
+        primary_button: None,
+        secondary_button: None,
+    }
+}
+
+/// A visible error status is announced when it is published, once.
+///
+/// `StatusBar::render_message` used to announce on every render, and an
+/// `Error` status takes the unthrottled `Alert` lane, so every unrelated
+/// projection pass (another tab's inline alert, a dismissal, a tab switch)
+/// re-announced it until it expired.
+#[test]
+fn test_status_error_is_announced_once_across_unrelated_passes() {
+    let (window, _dir, first, second) = two_document_window();
+    let before = notification_evidence(&window).announcements.status_lane;
+
+    window.publish_status_message("Could not open other.txt", NotificationSeverity::Error);
+    assert_eq!(
+        notification_evidence(&window).announcements.status_lane,
+        before + 1,
+        "publishing a visible error status announces it",
+    );
+
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "Background alert"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    window.dismiss_editor_notifications(&first);
+    select_editor(&window, &first);
+    select_editor(&window, &second);
+    window.render_notifications();
+    assert_eq!(
+        notification_evidence(&window).announcements.status_lane,
+        before + 1,
+        "unrelated passes must not announce the visible status again",
+    );
+}
+
+/// An inline alert is announced once, when it first becomes perceivable.
+#[test]
+fn test_inline_alert_is_announced_once_when_first_perceivable() {
+    let (window, _dir, first, second) = two_document_window();
+    let announced =
+        |window: &LushtextWindow| notification_evidence(window).announcements.editor_info_bar;
+    let start = announced(&window);
+
+    // Raised on a background tab: nobody can see it, so nothing is spoken.
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Error, "Could Not Open File"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    assert_eq!(announced(&window), start, "no announcement at raise time");
+
+    // Selecting its tab makes it perceivable: one announcement.
+    select_editor(&window, &first);
+    assert_eq!(announced(&window), start + 1);
+
+    // Switching away and back, re-rendering, and another tab's activity
+    // announce nothing more.
+    select_editor(&window, &second);
+    select_editor(&window, &first);
+    window.render_notifications();
+    second.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "Other tab"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    window.dismiss_editor_notifications(&second);
+    window.publish_status_message("Unrelated", NotificationSeverity::Info);
+    assert_eq!(
+        announced(&window),
+        start + 1,
+        "an announced error is not spoken again by unrelated passes",
+    );
+
+    // A changed alert is a new alert.
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "File Has Changed on Disk"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    assert_eq!(announced(&window), start + 2);
+
+    // So is one that comes back after being cleared.
+    window.dismiss_editor_notifications(&first);
+    assert_eq!(notification_evidence(&window).announcement_ledger_len, 0);
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "File Has Changed on Disk"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    assert_eq!(announced(&window), start + 3);
+    assert_eq!(notification_evidence(&window).announcement_ledger_len, 1);
+}
+
+/// Proof 1 of the notification evidence surface: reading changes nothing.
+#[test]
+fn test_notification_evidence_reads_stay_side_effect_free_across_mutation() {
+    let (window, _dir, first, _second) = two_document_window();
+    let read_twice = |window: &LushtextWindow| {
+        let first_read = notification_evidence(window);
+        assert_eq!(first_read, notification_evidence(window));
+        first_read
+    };
+    read_twice(&window);
+
+    window.publish_status_message("Saved", NotificationSeverity::Warning);
+    let published = read_twice(&window);
+    assert!(published.announcements.status_lane >= 1);
+
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "Restored"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    read_twice(&window);
+    select_editor(&window, &first);
+    let selected = read_twice(&window);
+    assert_eq!(selected.announcement_ledger_len, 1);
+
+    activate_action(&window, "toggle-preview-mode");
+    read_twice(&window);
+    activate_action(&window, "toggle-preview-mode");
+    read_twice(&window);
+
+    window.dismiss_editor_notifications(&first);
+    let dismissed = read_twice(&window);
+    assert_eq!(dismissed.announcement_ledger_len, 0);
+}
+
+/// Proof 2: a disposed window answers honestly instead of panicking.
+///
+/// Proof 3, materialization neutrality, is vacuous for this surface: the
+/// workflow owns no lazy GTK collection and reading touches no widget.
+#[test]
+fn test_notification_evidence_survives_window_disposal() {
+    let (window, _dir, first, _second) = two_document_window();
+    select_editor(&window, &first);
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "Restored"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    let before = notification_evidence(&window);
+    // SAFETY: this test window is disposed exactly once, and the assertions
+    // afterwards only read the evidence surface.
+    unsafe { window.run_dispose() };
+    let after = notification_evidence(&window);
+    assert_eq!(after.announcements, before.announcements);
+}
+
+/// "Normalize…" on the preview-only copy, then a choice in the dialog: focus
+/// lands neither on the workspace sidebar nor on the hidden alert.
+#[test]
+fn test_preview_surface_normalize_choice_does_not_strand_focus() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("normalize tempdir");
+    let path = dir.path().join("mixed.md");
+    fixture::write_text(&path, "# A\r\nb\nc\r\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+    gio::prelude::ActionGroupExt::activate_action(
+        &window,
+        "set-preview-mode",
+        Some(&true.to_variant()),
+    );
+    flush_events();
+    let alert = window.imp().preview_document_alert.get();
+    wait_until(Duration::from_secs(5), || {
+        alert.imp().alert_revealer.reveals_child()
+            && alert.imp().alert_title.label().as_str() == "Mixed Line Endings Detected"
+    });
+
+    alert.imp().discard_button.grab_focus();
+    alert.imp().discard_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_some()
+    });
+    let dialog = visible_alert_dialog(&window).expect("line endings dialog");
+    click_alert_extra_button(&dialog, "LF");
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
+    flush_after_delay(Duration::from_millis(200));
+
+    assert!(!alert.imp().alert_revealer.reveals_child());
+    let focus = GtkWindowExt::focus(&window);
+    eprintln!(
+        "preview-normalize-focus-after-dialog={:?}",
+        focus.as_ref().map(glib::prelude::ObjectExt::type_)
+    );
+    assert!(
+        focus
+            .as_ref()
+            .is_none_or(|focus| !focus.is_ancestor(&*window.imp().sidebar)),
+        "focus must not land on the workspace sidebar ({focus:?})"
+    );
+    assert!(
+        focus
+            .as_ref()
+            .is_none_or(|focus| focus.is_visible() && !focus.is_ancestor(&alert)),
+        "focus must not stay on the hidden alert ({focus:?})"
+    );
+}
+
+/// A focused Dismiss on the editor's own bar must not strand focus on the
+/// sidebar once the bar hides itself.
+#[test]
+fn test_editor_alert_dismiss_does_not_strand_focus() {
+    let (window, _dir, _path) = open_temp_document("original\n");
+    let editor = active_editor(&window);
+    editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "File Has Changed on Disk".to_string(),
+            body: "The file was modified by another program.".to_string(),
+            primary_button: Some("_Discard Changes and Reload".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    flush_events();
+    let dismiss = editor.info_bar().imp().dismiss_button.get();
+    dismiss.grab_focus();
+    dismiss.emit_clicked();
+    flush_events();
+
+    let focus = GtkWindowExt::focus(&window);
+    eprintln!(
+        "editor-dismiss-focus={:?}",
+        focus.as_ref().map(glib::prelude::ObjectExt::type_)
+    );
+    assert!(
+        focus
+            .as_ref()
+            .is_none_or(|focus| !focus.is_ancestor(&*window.imp().sidebar)),
+        "focus must not land on the workspace sidebar ({focus:?})"
+    );
+    assert!(
+        focus
+            .as_ref()
+            .is_none_or(|focus| !focus.is_ancestor(editor.info_bar())),
+        "focus must not stay on the hidden alert ({focus:?})"
+    );
+    assert_eq!(
+        focus.as_ref(),
+        Some(editor.source_view().upcast_ref::<gtk4::Widget>()),
+        "focus returns to the document"
+    );
 }
 
 #[test]

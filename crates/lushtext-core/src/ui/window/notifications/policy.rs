@@ -108,6 +108,123 @@ pub fn inline_alert_announcement_lane(style: InlineNotificationStyle) -> Announc
     }
 }
 
+/// The one surface on which an inline alert can currently be perceived.
+///
+/// An alert is perceivable on at most one surface: the editor's own bar while
+/// its editor is the window's selected tab and preview-only mode is off, the
+/// window-hosted copy above the preview while its editor is selected and
+/// preview-only mode is on, and on no surface while its editor is a background
+/// tab. Side-by-side needs no case of its own: its preview pane never collapses
+/// into an overlay, so the editor's bar stays on screen beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineAlertSurface {
+    /// The selected editor's own `LushtextInfoBar`.
+    EditorInfoBar,
+    /// The window-hosted copy shown above the preview in preview-only mode.
+    PreviewSurface,
+}
+
+/// Where an editor's alert is perceivable, or `None` where nobody can see it.
+///
+/// Whether the window itself is the active one is deliberately not an input:
+/// each window announces for its own selected tab.
+#[must_use]
+pub fn inline_alert_perceivable_on(
+    preview_only: bool,
+    is_selected: bool,
+) -> Option<InlineAlertSurface> {
+    match (is_selected, preview_only) {
+        (false, _) => None,
+        (true, false) => Some(InlineAlertSurface::EditorInfoBar),
+        (true, true) => Some(InlineAlertSurface::PreviewSurface),
+    }
+}
+
+/// Whether an alert whose key is `current` still owes its one announcement.
+///
+/// `announced` is the key the window last announced for that editor. An
+/// unchanged key was already spoken; a changed key, or an alert that came back
+/// after its record was cleared (which drops the ledger entry), is a new alert.
+#[must_use]
+pub fn inline_alert_announcement_due(announced: Option<&str>, current: &str) -> bool {
+    announced != Some(current)
+}
+
+/// What the preview copy was projected for: one editor and one alert.
+///
+/// Built once, by the projection pass, when it renders an alert onto the
+/// window-hosted preview copy. It crosses into the window's state and then into
+/// the copy's click closures (two boundaries) and is validated there as a unit
+/// against `DocumentAlertFacts`, so a click acts only on the alert the user saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentAlertProjectionTicket {
+    owner_id: usize,
+    alert_key: String,
+}
+
+impl DocumentAlertProjectionTicket {
+    /// The notification owner id of the editor whose alert was projected.
+    #[must_use]
+    pub const fn owner_id(&self) -> usize {
+        self.owner_id
+    }
+
+    /// The projected alert's `inline_alert_announcement_key`.
+    #[must_use]
+    pub fn alert_key(&self) -> &str {
+        &self.alert_key
+    }
+}
+
+/// The live state a forwarded preview-copy click is checked against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentAlertFacts {
+    /// Whether preview-only mode is active now.
+    pub preview_only: bool,
+    /// The notification owner id of the selected editor now, if any.
+    pub selected_owner: Option<usize>,
+    /// The key of the selected editor's current alert, if any.
+    pub current_alert_key: Option<String>,
+}
+
+/// Plan the preview copy: `Some` only while preview-only mode is active and the
+/// selected tab has an alert.
+///
+/// In editor-only and side-by-side layouts the editor's own bar is on screen,
+/// so the copy stays hidden and the user never sees two banners.
+#[must_use]
+pub fn plan_preview_document_alert(
+    preview_only: bool,
+    selected_owner: Option<usize>,
+    view: Option<&InlineActionNotification>,
+) -> Option<DocumentAlertProjectionTicket> {
+    if !preview_only {
+        return None;
+    }
+    let owner_id = selected_owner?;
+    let notification = view?;
+    Some(DocumentAlertProjectionTicket {
+        owner_id,
+        alert_key: inline_alert_announcement_key(notification),
+    })
+}
+
+/// Whether a click on the preview copy still refers to what is projected.
+///
+/// Stale when preview-only was left, the selection moved to another editor, or
+/// that editor's alert changed or went away. The selection can move without a
+/// re-projection while tab-derived projections are deferred (session-restore
+/// batches and bulk close), which is the case this guards.
+#[must_use]
+pub fn document_alert_projection_is_current(
+    ticket: &DocumentAlertProjectionTicket,
+    facts: &DocumentAlertFacts,
+) -> bool {
+    facts.preview_only
+        && facts.selected_owner == Some(ticket.owner_id)
+        && facts.current_alert_key.as_deref() == Some(ticket.alert_key.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +350,112 @@ mod tests {
             inline_alert_announcement_lane(InlineNotificationStyle::Warning),
             AnnouncementLane::StatusUpdate
         );
+    }
+
+    #[test]
+    fn an_alert_is_perceivable_only_on_the_selected_editor_outside_preview_only() {
+        assert_eq!(
+            inline_alert_perceivable_on(false, true),
+            Some(InlineAlertSurface::EditorInfoBar)
+        );
+        assert_eq!(inline_alert_perceivable_on(false, false), None);
+        assert_eq!(inline_alert_perceivable_on(true, false), None);
+        assert_eq!(
+            inline_alert_perceivable_on(true, true),
+            Some(InlineAlertSurface::PreviewSurface),
+            "preview-only hides the editor's bar, so the preview copy carries it"
+        );
+    }
+
+    #[test]
+    fn an_announcement_is_due_on_first_appearance_and_on_a_changed_key_only() {
+        assert!(inline_alert_announcement_due(
+            None,
+            "inline-alert:Warning:A:b"
+        ));
+        assert!(inline_alert_announcement_due(
+            Some("inline-alert:Warning:A:b"),
+            "inline-alert:Warning:A:c"
+        ));
+        assert!(!inline_alert_announcement_due(
+            Some("inline-alert:Warning:A:b"),
+            "inline-alert:Warning:A:b"
+        ));
+    }
+
+    fn facts_for(ticket: &DocumentAlertProjectionTicket) -> DocumentAlertFacts {
+        DocumentAlertFacts {
+            preview_only: true,
+            selected_owner: Some(ticket.owner_id()),
+            current_alert_key: Some(ticket.alert_key().to_string()),
+        }
+    }
+
+    #[test]
+    fn the_preview_copy_is_planned_only_for_preview_only_with_an_alert() {
+        let warning = alert(InlineNotificationStyle::Warning, "Changed", "On disk");
+        let ticket = plan_preview_document_alert(true, Some(3), Some(&warning))
+            .expect("preview-only with an alert projects the copy");
+        assert_eq!(ticket.owner_id(), 3);
+        assert_eq!(ticket.alert_key(), inline_alert_announcement_key(&warning));
+
+        assert_eq!(
+            plan_preview_document_alert(false, Some(3), Some(&warning)),
+            None
+        );
+        assert_eq!(
+            plan_preview_document_alert(true, None, Some(&warning)),
+            None
+        );
+        assert_eq!(plan_preview_document_alert(true, Some(3), None), None);
+    }
+
+    #[test]
+    fn a_matching_ticket_and_facts_pair_is_current() {
+        let warning = alert(InlineNotificationStyle::Warning, "Changed", "On disk");
+        let ticket = plan_preview_document_alert(true, Some(3), Some(&warning)).expect("ticket");
+        assert!(document_alert_projection_is_current(
+            &ticket,
+            &facts_for(&ticket)
+        ));
+    }
+
+    #[test]
+    fn every_ticket_facts_mismatch_is_stale() {
+        let warning = alert(InlineNotificationStyle::Warning, "Changed", "On disk");
+        let ticket = plan_preview_document_alert(true, Some(3), Some(&warning)).expect("ticket");
+
+        let left_preview_only = DocumentAlertFacts {
+            preview_only: false,
+            ..facts_for(&ticket)
+        };
+        let other_tab = DocumentAlertFacts {
+            selected_owner: Some(4),
+            ..facts_for(&ticket)
+        };
+        let no_tab = DocumentAlertFacts {
+            selected_owner: None,
+            ..facts_for(&ticket)
+        };
+        let changed_alert = DocumentAlertFacts {
+            current_alert_key: Some("inline-alert:Error:Other:Body".to_string()),
+            ..facts_for(&ticket)
+        };
+        let resolved_alert = DocumentAlertFacts {
+            current_alert_key: None,
+            ..facts_for(&ticket)
+        };
+        for facts in [
+            left_preview_only,
+            other_tab,
+            no_tab,
+            changed_alert,
+            resolved_alert,
+        ] {
+            assert!(
+                !document_alert_projection_is_current(&ticket, &facts),
+                "{facts:?} must be stale"
+            );
+        }
     }
 }

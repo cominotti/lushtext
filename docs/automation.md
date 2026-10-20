@@ -63,6 +63,16 @@ already visible in the editor, sidebar, status, and properties surfaces.
 Free-form text fields such as paths, titles, queries, replacement text, and
 status messages are capped to 4 KiB and marked with ` [truncated]` if shortened.
 
+`surfaces.preview_document_alert_visible` tells "preview-only with no alert"
+apart from "the alert is shown": in preview-only mode the editor column, and its
+own inline alert, is hidden, so the selected document's alert is rendered once
+more, above the preview. The field is true only while that copy is rendered
+visible (it is never true in editor-only or side-by-side layouts, where the
+editor's own alert is on screen). It is projected from the notification
+workflow's evidence surface and carries no alert title or body; the title is
+reachable through the `atspi-anchor-preview-document-alert-alert-could-not-open-file`
+AT-SPI anchor family instead.
+
 `GetReadinessPredicates` returns the named app-owned readiness predicates and
 their blockers. `WaitForReady(predicate, timeout_msec)` is the preferred
 synchronization point for agents after activating an action, opening a file,

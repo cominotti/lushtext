@@ -74,13 +74,16 @@ pub(super) fn finish_user_cancelled_load(editor: &LushtextEditorPage) {
     editor.imp().load_state.set(EditorLoadState::Failed);
     editor.imp().latest_load_failed.set(true);
     evidence::record_outcome(editor, LoadOutcome::Cancelled);
-    editor.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Error,
-        title: "Loading Cancelled".to_string(),
-        body: "The document was not fully loaded. Retry when you are ready.".to_string(),
-        primary_button: Some("_Retry".to_string()),
-        secondary_button: None,
-    });
+    editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Error,
+            title: "Loading Cancelled".to_string(),
+            body: "The document was not fully loaded. Retry when you are ready.".to_string(),
+            primary_button: Some("_Retry".to_string()),
+            secondary_button: None,
+        },
+        crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad,
+    );
     editor.notify_memory_policy_changed();
     editor.refresh_accessibility_metadata();
 }

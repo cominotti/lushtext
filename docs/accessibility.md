@@ -178,6 +178,32 @@ Expected screen-reader behavior includes:
 - Alerts, durability warnings, failed loads, destructive confirmations, Replace
   All completion, undo availability, recovery warnings, and user-initiated
   long-running operations use bounded announcements or alert semantics.
+- An inline alert (a load error, an external change, a restored draft, a
+  line-ending warning, a local-history restore) is announced **once**, at the
+  first moment it becomes perceivable: when it appears on the selected
+  editor, when preview-only mode is entered while it is still unannounced, or
+  when the background tab it was raised on is first selected. An alert raised
+  on a background tab is not announced while nobody can see it. Re-rendering,
+  switching tabs or layouts back, and other tabs' notifications announce
+  nothing; a changed alert, or one that comes back after being cleared, is
+  new. Errors keep the high-priority alert lane and warnings the status-update
+  lane.
+- In Markdown preview-only mode (`Alt+P`) the editor, and its own inline alert,
+  is hidden, so the selected document's alert is shown again directly above
+  the preview, with the same title, body, style, and buttons, over rendered
+  Markdown and over every preview placeholder. It is a sibling above the
+  preview's `document` accessible, not inside it, and keeps the alert's
+  `Group` row and `Alert` title; the hidden editor's alert is not exposed. Tab
+  reaches its actions before the preview content. Its buttons run the
+  editor's own handlers. When an action resolves the alert while focus is on
+  one of its buttons, focus moves to the preview text when it is shown and
+  otherwise to nothing, never to the workspace sidebar; the editor's own alert
+  returns focus to the document in the same case. Escape does not dismiss
+  either surface: inline alerts are persistent document state.
+- A status-bar warning or error is announced when it is published and takes
+  the status lane, through the status bar's throttled lanes. Re-rendering the
+  lane for an expiry sweep, a resolve, a heartbeat, an inline alert, a tab
+  switch, or a layout change does not announce it again.
 - The stale-draft recovery alert ("Draft Not Restored") announces where the
   unsaved edits were kept — Local History, or the drafts set-aside folder —
   without reading any draft text. When they went to Local History, its
@@ -253,6 +279,7 @@ Use focused scenario filters when debugging one surface:
 ```sh
 scripts/run-accessibility-smoke.sh --list-cases
 scripts/run-accessibility-smoke.sh --case command-palette-no-results
+scripts/run-accessibility-smoke.sh --case preview-mode-document-alert
 scripts/lushtext-automation.py artifact-summary build/smoke/accessibility --json
 scripts/run-visual-smoke.sh --list-cases
 scripts/run-visual-smoke.sh --case large-text-constrained

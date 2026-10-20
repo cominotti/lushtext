@@ -23,6 +23,7 @@ ACCESSIBILITY_CASES=(
     editor-search
     editor-save-completion
     editor-failed-load
+    preview-mode-document-alert
     editor-too-large-policy
     workspace-search-no-workspace
     workspace-search
@@ -323,6 +324,7 @@ MATRIX_ROWS_BY_CASE = {
     "editor-search": ["A11Y-EDITOR-SEARCH"],
     "editor-save-completion": ["A11Y-EDITOR-BUSY"],
     "editor-failed-load": ["A11Y-EDITOR-ERROR", "A11Y-ERROR-SURFACES"],
+    "preview-mode-document-alert": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-EDITOR-ERROR", "A11Y-ERROR-SURFACES"],
     "editor-too-large-policy": ["A11Y-EDITOR-LARGE-READONLY", "A11Y-EDITOR-ERROR"],
     "workspace-search-no-workspace": ["A11Y-WORKSPACE-SEARCH-NO-CONTEXT", "A11Y-WORKSPACE-NO-CONTEXT"],
     "workspace-search": ["A11Y-WORKSPACE-SEARCH-REPRESENTATIVE"],
@@ -1426,6 +1428,32 @@ FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor_prefix "editor-failed-load" "editor error" "alert" "Could Not Open File:"
 assert_anchor "editor-failed-load" "editor error" "button" "Retry"
 assert_anchor "editor-failed-load" "editor" "text" "Editor for unreadable-load-target.txt"
+fi
+
+if case_selected "preview-mode-document-alert"; then
+# The editor-failed-load fixture again, as Markdown, in preview-only mode: the
+# editor column (and its own banner) is hidden, so the alert must be the
+# window-hosted copy above the preview, exposed exactly once.
+DEFAULT_FIXTURE="$FIXTURE"
+FIXTURE="$ARTIFACT_DIR/fixtures/unreadable-load-target.md"
+printf '# unreadable fixture\n' >"$FIXTURE"
+chmod 000 "$FIXTURE"
+run_accessibility_capture "preview-mode-document-alert" \
+    --allow-file-open-failure \
+    --step wait-atspi-text:"Could Not Open File" \
+    --step window-bool-action:set-preview-mode=true \
+    --step wait-predicate:accessibility-settled \
+    --step wait-atspi-text:"Could Not Open File"
+chmod 600 "$FIXTURE" || true
+FIXTURE="$DEFAULT_FIXTURE"
+assert_anchor_prefix "preview-mode-document-alert" "preview document alert" "alert" "Could Not Open File:"
+assert_anchor "preview-mode-document-alert" "preview document alert" "button" "Retry"
+assert_anchor "preview-mode-document-alert" "preview document alert" "button" "Dismiss"
+preview_alert_tree="$ARTIFACT_DIR/assertions/preview-mode-document-alert-atspi-tree.txt"
+preview_alert_count="$(grep -F "role='alert' name='Could Not Open File:" "$preview_alert_tree" | grep -c "showing" || true)"
+if [[ "$preview_alert_count" != "1" ]]; then
+    smoke_fail "preview-mode-document-alert: expected exactly one showing 'Could Not Open File' alert, found ${preview_alert_count}. Artifacts: $ARTIFACT_DIR"
+fi
 fi
 
 if case_selected "editor-too-large-policy"; then

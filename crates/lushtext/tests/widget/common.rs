@@ -644,3 +644,69 @@ impl Drop for OrphanCleanupPolicyReset {
         lushtext_core::ui::window::set_orphan_cleanup_delays_for_test(2_000, 30_000, 0);
     }
 }
+
+/// Force an external write onto a later mtime second before waiting for GTK.
+///
+/// The production monitor compares second-resolution mtimes, so this helper
+/// avoids false-negative tests on filesystems where two writes inside one
+/// second collapse to the same observed timestamp.
+pub fn write_external_change_after_mtime_tick(
+    path: &std::path::Path,
+    editor: &lushtext_core::ui::editor_page::LushtextEditorPage,
+    contents: &str,
+) {
+    use glib::subclass::prelude::ObjectSubclassIsExt;
+
+    let last_known = editor
+        .imp()
+        .monitor
+        .last_known_mtime
+        .get()
+        .expect("loaded editor should know the backing file mtime");
+
+    for _ in 0..5 {
+        fixture::write_text(path, contents);
+        if lushtext_core::services::editor_io::mtime_secs(path)
+            .is_some_and(|mtime| mtime != last_known)
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1100));
+    }
+
+    panic!("external write did not advance the observed file mtime");
+}
+
+/// `widget`'s bounds in `ancestor`'s coordinate space.
+pub fn rect_within(
+    widget: &impl IsA<gtk4::Widget>,
+    ancestor: &impl IsA<gtk4::Widget>,
+) -> gtk4::graphene::Rect {
+    widget
+        .compute_bounds(ancestor)
+        .expect("widget should have computable bounds within the ancestor")
+}
+
+/// Seed the GSettings geometry a new window restores in `constructed`.
+pub fn seed_restored_window_size(width: i32, height: i32) {
+    use gio::prelude::SettingsExt;
+
+    ensure_gtk_init();
+    let settings = lushtext_core::ui::settings_writes::shared();
+    settings
+        .set_int(lushtext_core::config::keys::WINDOW_WIDTH, width)
+        .expect("set window width");
+    settings
+        .set_int(lushtext_core::config::keys::WINDOW_HEIGHT, height)
+        .expect("set window height");
+}
+
+/// A window constructed at `width` x `height`. GTK4 does not shrink an
+/// already-presented window, so a narrow layout needs a window built narrow.
+pub fn test_window_with_restored_size(
+    width: i32,
+    height: i32,
+) -> lushtext_core::ui::window::LushtextWindow {
+    seed_restored_window_size(width, height);
+    test_window()
+}

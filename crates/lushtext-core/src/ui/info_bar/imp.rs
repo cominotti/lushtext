@@ -11,6 +11,7 @@
 //! `GtkInfoBar`, while ordinary labels and buttons keep the widget compatible
 //! with GTK5.
 
+use crate::services::notifications::InlineAlertAction;
 use crate::ui::accessibility;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -85,7 +86,8 @@ pub struct LushtextInfoBar {
     pub discard_callback: RefCell<Option<Callback>>,
     /// Callback invoked when the user explicitly dismisses the alert.
     pub dismissed_callback: RefCell<Option<Callback>>,
-    /// Throttles repeated warning announcements when notification renders repeat.
+    /// Throttles repeated announcements on the windowless fallback path; a
+    /// window-hosted bar is announced through the window's ledger instead.
     pub alert_announcement_throttler: accessibility::AnnouncementThrottler,
 }
 
@@ -152,45 +154,18 @@ impl ObjectImpl for LushtextInfoBar {
 
         // GObject signals can outlive the Rust stack frame that installed them,
         // so closures keep only weak references back to the wrapper object.
-        {
+        // Every button goes through `activate`, the path a forwarded click
+        // from the window's preview copy takes too.
+        for (button, action) in [
+            (&*self.retry_button, InlineAlertAction::Retry),
+            (&*self.discard_button, InlineAlertAction::Primary),
+            (&*self.save_button, InlineAlertAction::Secondary),
+            (&*self.dismiss_button, InlineAlertAction::Dismiss),
+        ] {
             let obj_weak = self.obj().downgrade();
-            self.retry_button.connect_clicked(move |_| {
-                if let Some(obj) = obj_weak.upgrade()
-                    && let Some(ref cb) = *obj.imp().retry_callback.borrow()
-                {
-                    cb();
-                }
-            });
-        }
-        {
-            let obj_weak = self.obj().downgrade();
-            self.save_button.connect_clicked(move |_| {
-                if let Some(obj) = obj_weak.upgrade()
-                    && let Some(ref cb) = *obj.imp().save_callback.borrow()
-                {
-                    cb();
-                }
-            });
-        }
-        {
-            let obj_weak = self.obj().downgrade();
-            self.discard_button.connect_clicked(move |_| {
-                if let Some(obj) = obj_weak.upgrade()
-                    && let Some(ref cb) = *obj.imp().discard_callback.borrow()
-                {
-                    cb();
-                }
-            });
-        }
-
-        {
-            let obj_weak = self.obj().downgrade();
-            self.dismiss_button.connect_clicked(move |_| {
+            button.connect_clicked(move |_| {
                 if let Some(obj) = obj_weak.upgrade() {
-                    obj.render_notification(None);
-                    if let Some(ref cb) = *obj.imp().dismissed_callback.borrow() {
-                        cb();
-                    }
+                    obj.activate(action);
                 }
             });
         }
