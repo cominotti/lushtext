@@ -121,6 +121,10 @@ pub use notes::{
     set_notes_browser_query_delay_for_test, set_notes_browser_source_entry_limit_for_test,
 };
 #[cfg(feature = "test-utils")]
+pub use notifications::evidence::{
+    InlineAlertAnnouncementCounts, NotificationEvidence, notification_evidence,
+};
+#[cfg(feature = "test-utils")]
 pub use print::{
     PrintDocumentFacts, PrintEvidence, policy::PrintOutcome, print_evidence,
     with_print_runner_for_test,

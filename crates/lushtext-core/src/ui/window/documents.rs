@@ -1106,6 +1106,10 @@ impl LushtextWindow {
         self.maybe_evict_background_tabs();
         self.save_session_debounced();
         self.refresh_preview();
+        // The selected tab decides which alert is perceivable, so a selection
+        // change re-projects: a background tab's alert is announced the first
+        // time its tab is selected.
+        self.render_notifications();
         self.apply_focus_mode_to_editors();
         if let Some(editor) = self.active_editor() {
             editor.refresh_minimap();

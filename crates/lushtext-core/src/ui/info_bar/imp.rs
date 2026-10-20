@@ -85,7 +85,8 @@ pub struct LushtextInfoBar {
     pub discard_callback: RefCell<Option<Callback>>,
     /// Callback invoked when the user explicitly dismisses the alert.
     pub dismissed_callback: RefCell<Option<Callback>>,
-    /// Throttles repeated warning announcements when notification renders repeat.
+    /// Throttles repeated announcements on the windowless fallback path; a
+    /// window-hosted bar is announced through the window's ledger instead.
     pub alert_announcement_throttler: accessibility::AnnouncementThrottler,
 }
 

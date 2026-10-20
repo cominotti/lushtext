@@ -43,6 +43,10 @@ impl LushtextStatusBar {
     }
 
     /// Render the current status-bar notification view from the notification store.
+    ///
+    /// Silent: the notification workflow announces a status message when it is
+    /// published and wins the lane (its Acknowledge stage), not every time an
+    /// unrelated pass re-renders the lane.
     pub fn render_message(&self, message: Option<&StatusMessage>) {
         let label = &*self.imp().message_label;
         clear_message_classes(label);
@@ -60,7 +64,6 @@ impl LushtextStatusBar {
         });
         label.set_label(&message.text);
         accessibility::set_description(label, &message.text);
-        self.announce_visible_status(message);
     }
 
     /// Briefly flash the full status-message lane using the given severity.
@@ -150,10 +153,14 @@ impl LushtextStatusBar {
         accessibility::set_pressed(button, pressed);
     }
 
-    /// Announce visible status updates only when they carry user-actionable weight.
-    fn announce_visible_status(&self, message: &StatusMessage) {
+    /// Announce a just-published status message that won the lane.
+    ///
+    /// Only warnings and errors carry user-actionable weight; info stays
+    /// visual. Returns whether an announcement was emitted, so the workflow can
+    /// count it.
+    pub(crate) fn announce_visible_status(&self, message: &StatusMessage) -> bool {
         let Some(lane) = status_announcement_lane(message.severity) else {
-            return;
+            return false;
         };
 
         let key = format!(
@@ -163,7 +170,7 @@ impl LushtextStatusBar {
         );
         self.imp()
             .status_announcement_throttler
-            .announce_if_allowed(&*self.imp().message_label, lane, &key, &message.text);
+            .announce_if_allowed(&*self.imp().message_label, lane, &key, &message.text)
     }
 
     /// Announce an informational workflow event through the status-bar speech target.

@@ -188,48 +188,40 @@ fn test_workflow_announcements_use_status_bar_throttling_policy() {
     );
 }
 
+/// Rendering the lane is silent at every severity.
+///
+/// The notification workflow re-renders the lane on every projection pass, so
+/// announcing from the render re-spoke a visible warning or error on each
+/// unrelated pass. The workflow now announces a status message once, when it
+/// is published and wins the lane (see `window::test_status_error_*`).
 #[test]
-fn test_visible_status_rendering_does_not_announce_info_or_flood_repeated_warnings() {
+fn test_visible_status_rendering_is_silent_at_every_severity() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
 
-    bar.render_message(Some(&status_message("File saved", MessageKind::Info)));
-    assert!(
-        !bar.imp()
-            .status_announcement_throttler
-            .has_recent_announcement_for_test(
-                AnnouncementLane::StatusUpdate,
-                "status:info:File saved"
-            ),
-        "routine info status text should stay visually visible without speech spam"
-    );
-
-    bar.render_message(Some(&status_message(
-        "Save is still in progress",
-        MessageKind::Warning,
-    )));
-    assert!(
-        bar.imp()
-            .status_announcement_throttler
-            .has_recent_announcement_for_test(
-                AnnouncementLane::StatusUpdate,
-                "status:warning:Save is still in progress"
-            ),
-        "warning status text should be eligible for one spoken update"
-    );
-
-    bar.render_message(Some(&status_message(
-        "Save is still in progress",
-        MessageKind::Warning,
-    )));
-    assert!(
-        !bar.imp().status_announcement_throttler.should_announce_at(
+    for (text, kind, lane, key) in [
+        (
+            "File saved",
+            MessageKind::Info,
+            AnnouncementLane::StatusUpdate,
+            "status:info:File saved",
+        ),
+        (
+            "Save is still in progress",
+            MessageKind::Warning,
             AnnouncementLane::StatusUpdate,
             "status:warning:Save is still in progress",
-            Instant::now()
         ),
-        "repeated visible warning status text should stay throttled"
-    );
+    ] {
+        bar.render_message(Some(&status_message(text, kind)));
+        bar.render_message(Some(&status_message(text, kind)));
+        assert!(
+            !bar.imp()
+                .status_announcement_throttler
+                .has_recent_announcement_for_test(lane, key),
+            "rendering {kind:?} status text must not announce it",
+        );
+    }
 }
 
 #[test]

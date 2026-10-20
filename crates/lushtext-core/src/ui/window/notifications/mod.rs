@@ -17,24 +17,57 @@
 //! 2. **Project.** `execution` renders the winning status message into the lane
 //!    and each editor's winning alert into its own info bar, bounded by the open
 //!    tab count. A full pass, because the bus's answer for one surface can change
-//!    without that surface being touched.
-//! 3. **Acknowledge.** Only a status update that actually won the lane pulses it.
-//!    A progress heartbeat published underneath a higher-priority transient
-//!    message must not flash for a message the user cannot see, which is
-//!    `policy::status_update_is_visible`'s whole job.
+//!    without that surface being touched. It runs after every bus change, and
+//!    also when the selected tab or the preview mode changes, because those
+//!    decide where an alert can be seen. Rendering is silent.
+//!    - **Announce.** An inline alert is spoken exactly once, from the one
+//!      surface where it is perceivable, the first time it is
+//!      (`policy::inline_alert_perceivable_on`): the selected editor's own bar
+//!      outside preview-only mode, and nowhere for a background tab, which is
+//!      spoken when its tab is first selected. The window's announcement
+//!      ledger records the alert key each editor was announced for
+//!      (`policy::inline_alert_announcement_due`); re-renders, tab switches,
+//!      and other tabs' activity speak nothing, and a changed or re-raised
+//!      alert is new.
+//! 3. **Acknowledge.** Only a status update that actually won the lane pulses it
+//!    and is announced. A progress heartbeat published underneath a
+//!    higher-priority transient message must not flash or speak for a message
+//!    the user cannot see, which is `policy::status_update_is_visible`'s whole
+//!    job. Expiry sweeps, resolves, and every other pass speak nothing.
 //! 4. *(resume)* **Retire.** The expiry sweep is the workflow's only out-of-band
 //!    resumption: the **clock** decides when a timed notification retires, and
 //!    control resumes in `execution::arm_expiry_sweep`'s closure, which
 //!    re-projects if anything actually expired. A recurring heartbeat, not a
 //!    settle timer — there is no newest request to supersede.
 //!
+//! ## What the editor info-bar surface carries
+//!
+//! `NotificationSurface::EditorInfoBar` carries **document-state** alerts only:
+//! each one describes the document or its recovery, not the editor widget. A
+//! future editor-state message must use a different surface.
+//!
+//! Each producer states whether the next successful load supersedes its alert
+//! (`InlineAlertLifetime`), and the load terminal resolves a superseded alert
+//! here, through the bus, so no later pass can bring it back:
+//!
+//! | Superseded by the next successful load | Outlives a load |
+//! | --- | --- |
+//! | "Could Not Open File", "Loading Cancelled" | "Draft Not Restored" (both variants) |
+//! | "File Has Changed on Disk" | "Draft Restore Failed" |
+//! | "Mixed Line Endings Detected" (re-derived from the new bytes) | |
+//! | "Draft Changes Restored" / "Document Restored", "Restored from Local History", "Automatic Recovery Paused" | |
+//!
+//! The outliving alerts point at a preserved recovery body that is still on
+//! disk after the reload.
+//!
 //! ## Module roles
 //!
 //! | Module | Role |
 //! | --- | --- |
 //! | `mod.rs` (this file) | narrative facade |
-//! | `policy` | pure policy — the pulse predicate, the sweep interval, the editor target pair, and the inline-alert announcement key, text, and lane |
-//! | `execution` | coordination — the bounded projection pass and the sweep source |
+//! | `policy` | pure policy — the pulse predicate, the sweep interval, the editor target pair, the inline-alert announcement key, text, and lane, perceivability, and the announce-once rule |
+//! | `execution` | coordination — the bounded projection pass, the announcement ledger, and the sweep source |
+//! | `evidence` | evidence — `NotificationEvidence`, the ledger and the per-surface announcement counts |
 //!
 //! **Called presentation surfaces**, recorded here and in the matrix row rather
 //! than given role names: `ui/status_bar/**` projects one status message onto the
@@ -48,18 +81,19 @@
 //!
 //! ## What a test reads
 //!
-//! Production API. This row had exactly **one** gated declaration
-//! (`inline_alert_announcement_key_for_test`), and it was a test-only wrapper
-//! around a **pure function** rather than an inspection of live state. Its
-//! disposition was therefore **retirement onto production pure policy**, not
-//! consolidation into an evidence surface: the function moved here as
-//! `policy::inline_alert_announcement_key` and the wrapper was deleted, taking
-//! the row's seam count to **zero**. A surface would have been a surface over
-//! nothing.
+//! The bus's own production views for which notification wins each surface, and
+//! `evidence::notification_evidence` for the facts the bus cannot answer: which
+//! alert each editor was announced for and how many announcements each surface
+//! emitted. The row's one former gated declaration
+//! (`inline_alert_announcement_key_for_test`) stays retired onto production pure
+//! policy, so its seam count stays zero.
 
+pub mod evidence;
 pub mod policy;
 
 mod execution;
+
+pub(crate) use execution::NotificationProjectionState;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 
@@ -139,6 +173,16 @@ impl LushtextWindow {
         {
             self.render_notifications();
         }
+    }
+
+    /// Forget a closing editor's announcement ledger entry.
+    ///
+    /// The owner id is an object address a later editor can reuse, so the
+    /// entry must not outlive the tab even until the next projection pass.
+    pub(super) fn forget_inline_alert_announcement(&self, editor: &LushtextEditorPage) {
+        self.imp()
+            .notification_projection
+            .forget(editor.notification_owner_id());
     }
 
     /// Stage 4 — arm the recurring expiry sweep.

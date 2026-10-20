@@ -83,13 +83,14 @@ use lushtext_core::ui::search_panel::SearchPanelTestPolicy;
 use lushtext_core::ui::window::shell_geometry_evidence;
 use lushtext_core::ui::window::{
     DraftFlushError, LushtextWindow, PrintEvidence, PrintOutcome, editor_memory_eviction_evidence,
-    fail_next_draft_mutations_for_test, local_history_preview_install_evidence, print_evidence,
-    set_automatic_draft_limit_for_test, set_bookmark_excerpt_preview_delay_for_test,
-    set_canonical_refresh_delay_for_test, set_close_safety_completion_delay_for_test,
-    set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
-    set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
-    set_lazy_draft_read_delay_for_test, set_local_history_baseline_delay_for_test,
-    set_local_history_baseline_failures_for_test, set_local_history_preview_install_delay_for_test,
+    fail_next_draft_mutations_for_test, local_history_preview_install_evidence,
+    notification_evidence, print_evidence, set_automatic_draft_limit_for_test,
+    set_bookmark_excerpt_preview_delay_for_test, set_canonical_refresh_delay_for_test,
+    set_close_safety_completion_delay_for_test, set_draft_manifest_completion_delay_for_test,
+    set_draft_mutation_delays_for_test, set_draft_restore_delay_for_test,
+    set_first_dirty_autosave_delay_for_test, set_lazy_draft_read_delay_for_test,
+    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
+    set_local_history_preview_install_delay_for_test,
     set_local_history_preview_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
     set_next_draft_body_disposal_probe_for_test, set_note_source_delay_for_test,
     set_notes_browser_query_delay_for_test, set_notes_browser_source_entry_limit_for_test,
@@ -20071,6 +20072,191 @@ fn test_draft_not_restored_alert_survives_eviction_reload() {
         stale_editor.info_bar().imp().alert_revealer.reveals_child(),
         "the recovery alert must still be shown after a later full pass",
     );
+}
+
+/// Open two documents; the second ends up selected.
+fn two_document_window() -> (
+    LushtextWindow,
+    tempfile::TempDir,
+    LushtextEditorPage,
+    LushtextEditorPage,
+) {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let window = test_window();
+    present_window(&window);
+    let mut editors = Vec::new();
+    for name in ["first.txt", "second.txt"] {
+        let path = dir.path().join(name);
+        fixture::write_text(&path, &format!("{name}\n"));
+        window.open_document(&path);
+        wait_until(Duration::from_secs(5), || {
+            let editor = active_editor(&window);
+            editor.file_path().as_deref() == Some(path.as_path())
+                && editor.load_state() == EditorLoadState::Loaded
+        });
+        editors.push(active_editor(&window));
+    }
+    let second = editors.pop().expect("second editor");
+    let first = editors.pop().expect("first editor");
+    (window, dir, first, second)
+}
+
+fn select_editor(window: &LushtextWindow, editor: &LushtextEditorPage) {
+    let page = window.imp().tab_view.page(editor);
+    window.imp().tab_view.set_selected_page(&page);
+    flush_events();
+}
+
+fn inline_alert(style: InlineNotificationStyle, title: &str) -> InlineActionNotification {
+    InlineActionNotification {
+        style,
+        title: title.to_string(),
+        body: format!("{title} body"),
+        primary_button: None,
+        secondary_button: None,
+    }
+}
+
+/// A visible error status is announced when it is published, once.
+///
+/// `StatusBar::render_message` used to announce on every render, and an
+/// `Error` status takes the unthrottled `Alert` lane, so every unrelated
+/// projection pass (another tab's inline alert, a dismissal, a tab switch)
+/// re-announced it until it expired.
+#[test]
+fn test_status_error_is_announced_once_across_unrelated_passes() {
+    let (window, _dir, first, second) = two_document_window();
+    let before = notification_evidence(&window).announcements.status_lane;
+
+    window.publish_status_message("Could not open other.txt", NotificationSeverity::Error);
+    assert_eq!(
+        notification_evidence(&window).announcements.status_lane,
+        before + 1,
+        "publishing a visible error status announces it",
+    );
+
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "Background alert"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    window.dismiss_editor_notifications(&first);
+    select_editor(&window, &first);
+    select_editor(&window, &second);
+    window.render_notifications();
+    assert_eq!(
+        notification_evidence(&window).announcements.status_lane,
+        before + 1,
+        "unrelated passes must not announce the visible status again",
+    );
+}
+
+/// An inline alert is announced once, when it first becomes perceivable.
+#[test]
+fn test_inline_alert_is_announced_once_when_first_perceivable() {
+    let (window, _dir, first, second) = two_document_window();
+    let announced =
+        |window: &LushtextWindow| notification_evidence(window).announcements.editor_info_bar;
+    let start = announced(&window);
+
+    // Raised on a background tab: nobody can see it, so nothing is spoken.
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Error, "Could Not Open File"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    assert_eq!(announced(&window), start, "no announcement at raise time");
+
+    // Selecting its tab makes it perceivable: one announcement.
+    select_editor(&window, &first);
+    assert_eq!(announced(&window), start + 1);
+
+    // Switching away and back, re-rendering, and another tab's activity
+    // announce nothing more.
+    select_editor(&window, &second);
+    select_editor(&window, &first);
+    window.render_notifications();
+    second.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "Other tab"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    window.dismiss_editor_notifications(&second);
+    window.publish_status_message("Unrelated", NotificationSeverity::Info);
+    assert_eq!(
+        announced(&window),
+        start + 1,
+        "an announced error is not spoken again by unrelated passes",
+    );
+
+    // A changed alert is a new alert.
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "File Has Changed on Disk"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    assert_eq!(announced(&window), start + 2);
+
+    // So is one that comes back after being cleared.
+    window.dismiss_editor_notifications(&first);
+    assert_eq!(notification_evidence(&window).announcement_ledger_len, 0);
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "File Has Changed on Disk"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    assert_eq!(announced(&window), start + 3);
+    assert_eq!(notification_evidence(&window).announcement_ledger_len, 1);
+}
+
+/// Proof 1 of the notification evidence surface: reading changes nothing.
+#[test]
+fn test_notification_evidence_reads_stay_side_effect_free_across_mutation() {
+    let (window, _dir, first, _second) = two_document_window();
+    let read_twice = |window: &LushtextWindow| {
+        let first_read = notification_evidence(window);
+        assert_eq!(first_read, notification_evidence(window));
+        first_read
+    };
+    read_twice(&window);
+
+    window.publish_status_message("Saved", NotificationSeverity::Warning);
+    let published = read_twice(&window);
+    assert!(published.announcements.status_lane >= 1);
+
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "Restored"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    read_twice(&window);
+    select_editor(&window, &first);
+    let selected = read_twice(&window);
+    assert_eq!(selected.announcement_ledger_len, 1);
+
+    activate_action(&window, "toggle-preview-mode");
+    read_twice(&window);
+    activate_action(&window, "toggle-preview-mode");
+    read_twice(&window);
+
+    window.dismiss_editor_notifications(&first);
+    let dismissed = read_twice(&window);
+    assert_eq!(dismissed.announcement_ledger_len, 0);
+}
+
+/// Proof 2: a disposed window answers honestly instead of panicking.
+///
+/// Proof 3, materialization neutrality, is vacuous for this surface: the
+/// workflow owns no lazy GTK collection and reading touches no widget.
+#[test]
+fn test_notification_evidence_survives_window_disposal() {
+    let (window, _dir, first, _second) = two_document_window();
+    select_editor(&window, &first);
+    first.emit_inline_notification(
+        inline_alert(InlineNotificationStyle::Warning, "Restored"),
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    let before = notification_evidence(&window);
+    // SAFETY: this test window is disposed exactly once, and the assertions
+    // afterwards only read the evidence surface.
+    unsafe { window.run_dispose() };
+    let after = notification_evidence(&window);
+    assert_eq!(after.announcements, before.announcements);
 }
 
 #[test]

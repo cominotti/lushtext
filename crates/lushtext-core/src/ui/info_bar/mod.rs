@@ -40,11 +40,14 @@ impl LushtextInfoBar {
         Object::builder().build()
     }
 
-    /// Render or clear the editor-scoped inline alert.
+    /// Render or clear the inline alert, silently.
     ///
-    /// Callers pass the already-selected notification for this editor; this
-    /// widget only updates GTK template children, style classes, and reveal
-    /// state on the main thread.
+    /// Callers pass the already-selected notification for this surface; this
+    /// widget only updates GTK template children, style classes, the labelled
+    /// description, and reveal state on the main thread. It announces nothing:
+    /// the notification workflow decides when an alert is spoken (once, when it
+    /// first becomes perceivable) and calls `announce_alert` itself, so re-rendering
+    /// an unchanged alert on every projection pass stays quiet.
     pub fn render_notification(&self, notification: Option<&InlineActionNotification>) {
         let imp = self.imp();
         let Some(notification) = notification else {
@@ -99,11 +102,33 @@ impl LushtextInfoBar {
             &announcement,
             &notification.body,
         );
+    }
+
+    /// Speak `notification` once on this surface's alert label.
+    ///
+    /// Unthrottled on purpose: the window's announcement ledger is what keeps
+    /// an alert from being spoken twice, and it calls this only on the one
+    /// surface where the alert is perceivable.
+    pub fn announce_alert(&self, notification: &InlineActionNotification) {
+        accessibility::announce_with_lane(
+            &*self.imp().alert_title,
+            &inline_alert_announcement_text(notification),
+            inline_alert_announcement_lane(notification.style),
+        );
+    }
+
+    /// Speak `notification` through this widget's own throttler.
+    ///
+    /// The windowless fallback: an editor page with no window connected has
+    /// no ledger, so repeated renders of the same warning are kept calm by the
+    /// per-widget throttler instead.
+    pub fn announce_throttled(&self, notification: &InlineActionNotification) {
+        let imp = self.imp();
         imp.alert_announcement_throttler.announce_if_allowed(
             &*imp.alert_title,
             inline_alert_announcement_lane(notification.style),
             &inline_alert_announcement_key(notification),
-            &announcement,
+            &inline_alert_announcement_text(notification),
         );
     }
 
