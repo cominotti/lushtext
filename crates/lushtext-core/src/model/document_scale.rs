@@ -586,7 +586,10 @@ impl Default for DocumentScale {
 pub(crate) mod retired_byte_tiers {
     use super::LocalHistoryAvailability;
 
-    const LARGE_FILE_TOAST: u64 = 1_000_000;
+    // The retired 1 MB `LargeFileToast` tier is folded into `Normal`: every
+    // query below answered it exactly as `Normal` (its one consumer was an
+    // accessibility sentence, not a compared tier), so keeping it only left
+    // three comparison mutants no parity test could tell apart.
     const DISABLE_SYNTAX_HIGHLIGHTING: u64 = 10_000_000;
     const DISABLE_UNDO_HISTORY: u64 = 50_000_000;
     const REFUSE_TO_OPEN: u64 = 500_000_000;
@@ -594,7 +597,6 @@ pub(crate) mod retired_byte_tiers {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum FileSizeCheck {
         Normal,
-        LargeFileToast,
         DisableSyntax,
         DisableUndoAndSyntax,
         TooLarge,
@@ -607,8 +609,6 @@ pub(crate) mod retired_byte_tiers {
             FileSizeCheck::DisableUndoAndSyntax
         } else if size > DISABLE_SYNTAX_HIGHLIGHTING {
             FileSizeCheck::DisableSyntax
-        } else if size > LARGE_FILE_TOAST {
-            FileSizeCheck::LargeFileToast
         } else {
             FileSizeCheck::Normal
         }
@@ -619,10 +619,7 @@ pub(crate) mod retired_byte_tiers {
     }
 
     pub(crate) const fn undo_enabled(check: FileSizeCheck) -> bool {
-        matches!(
-            check,
-            FileSizeCheck::Normal | FileSizeCheck::LargeFileToast | FileSizeCheck::DisableSyntax
-        )
+        matches!(check, FileSizeCheck::Normal | FileSizeCheck::DisableSyntax)
     }
 
     pub(crate) const fn estimated_buffer_multiplier(check: FileSizeCheck) -> u64 {
@@ -631,7 +628,7 @@ pub(crate) mod retired_byte_tiers {
 
     pub(crate) const fn local_history(check: FileSizeCheck) -> LocalHistoryAvailability {
         match check {
-            FileSizeCheck::Normal | FileSizeCheck::LargeFileToast => LocalHistoryAvailability::Full,
+            FileSizeCheck::Normal => LocalHistoryAvailability::Full,
             FileSizeCheck::DisableSyntax => LocalHistoryAvailability::SaveOnly,
             FileSizeCheck::DisableUndoAndSyntax | FileSizeCheck::TooLarge => {
                 LocalHistoryAvailability::Unavailable
@@ -901,6 +898,24 @@ mod tests {
             .join(DocumentScale::for_total_bytes(100))
             .reduced;
         assert!(dense.has_reason(ScaleFeature::ProtectedView, ReductionReason::Density));
+    }
+
+    #[test]
+    fn join_keeps_every_presentation_feature_off_from_either_side() {
+        let long = by_length(L_INVISIBLES + 1);
+        let small = DocumentScale::for_total_bytes(100);
+        for joined in [long.join(small), small.join(long)] {
+            for feature in ScaleFeature::ALL {
+                if feature.is_presentation() {
+                    assert!(!joined.allows(feature), "{feature:?} re-enabled");
+                }
+            }
+        }
+        // The same long-paragraph and density reasons on both sides survive.
+        let dense = DocumentScale::for_profile(profile(0, L_SYNTAX + 1, V_BATCH + 1));
+        let twice = dense.join(dense).reduced;
+        assert!(twice.has_reason(ScaleFeature::Syntax, ReductionReason::LongParagraph));
+        assert!(twice.has_reason(ScaleFeature::ProtectedView, ReductionReason::Density));
     }
 
     #[test]
