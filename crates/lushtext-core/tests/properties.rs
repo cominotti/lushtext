@@ -31,6 +31,8 @@ mod markdown_plan;
 mod note;
 #[path = "properties/palette.rs"]
 mod palette;
+#[path = "properties/paragraph_boundary.rs"]
+mod paragraph_boundary;
 #[path = "properties/path_rebasing.rs"]
 mod path_rebasing;
 #[path = "properties/recovery_metadata.rs"]
