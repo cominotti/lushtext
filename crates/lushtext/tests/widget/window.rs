@@ -13649,6 +13649,67 @@ fn test_mixed_line_endings_warning_opens_normalization_picker_and_updates_status
     );
 }
 
+/// A cancelled line-ending dialog must leave "Normalize…" bound to the dialog.
+///
+/// The warning-primary handler used to *consume* the pending warning action,
+/// so after the dialog was closed without a choice the same button fell
+/// through to the default dismiss-and-reload path and silently dropped the
+/// user's unsaved edits.
+#[test]
+fn test_cancelled_normalize_dialog_keeps_normalize_bound_and_unsaved_edits() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("mixed.txt");
+    fixture::write_text(&path, "a\r\nb\nc\r\n");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    wait_until(Duration::from_secs(2), || {
+        editor.info_bar().imp().alert_revealer.reveals_child()
+            && editor.info_bar().imp().discard_button.label().as_deref() == Some("_Normalize…")
+    });
+
+    editor.buffer().set_text("unsaved local edits\n");
+    editor.buffer().set_modified(true);
+
+    let line_endings_dialog_open = |window: &LushtextWindow| {
+        visible_alert_dialog(window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Line Endings"))
+    };
+
+    editor.info_bar().imp().discard_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || line_endings_dialog_open(&window));
+    visible_alert_dialog(&window)
+        .expect("line endings dialog visible")
+        .close();
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
+
+    editor.info_bar().imp().discard_button.emit_clicked();
+    // Give a wrongly routed reload every chance to land before asserting.
+    flush_after_delay(Duration::from_millis(500));
+    assert!(
+        line_endings_dialog_open(&window),
+        "the second Normalize… click must reopen the line-ending dialog",
+    );
+    assert_eq!(
+        editor_buffer_text(&editor),
+        "unsaved local edits\n",
+        "a cancelled Normalize… must not reload the file over unsaved edits",
+    );
+    assert!(editor.is_modified());
+    visible_alert_dialog(&window)
+        .expect("line endings dialog visible")
+        .close();
+}
+
 #[test]
 fn test_external_file_change_warning_preserves_unsaved_buffer() {
     let (window, _dir, path) = open_temp_document("original\n");

@@ -337,10 +337,15 @@ impl LushtextEditorPage {
         self.imp().document_metadata.warning_action.set(action);
     }
 
-    /// Consume the current editor-specific warning-bar action, if any.
+    /// The warning-bar action bound to this editor's current alert, if any.
+    ///
+    /// Read, never consumed: every emit sets or resets it, so it always belongs
+    /// to the editor's latest alert. Consuming it on click turned a cancelled
+    /// "Normalize…" dialog into a silent reload on the next click of the same
+    /// button, which dropped unsaved edits.
     #[must_use]
-    pub fn take_pending_warning_action(&self) -> Option<imp::PendingWarningAction> {
-        self.imp().document_metadata.warning_action.replace(None)
+    pub fn pending_warning_action(&self) -> Option<imp::PendingWarningAction> {
+        self.imp().document_metadata.warning_action.get()
     }
 
     #[must_use]

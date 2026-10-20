@@ -718,7 +718,7 @@ impl LushtextWindow {
         let editor_weak = editor.downgrade();
         editor.info_bar().connect_discard(move || {
             if let Some(editor) = editor_weak.upgrade() {
-                match editor.take_pending_warning_action() {
+                match editor.pending_warning_action() {
                     Some(crate::ui::editor_page::PendingWarningAction::NormalizeLineEndings) => {
                         if let Some(window) = window_weak.upgrade() {
                             window.show_line_ending_controls_dialog();
