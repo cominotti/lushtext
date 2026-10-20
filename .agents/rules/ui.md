@@ -528,14 +528,18 @@ draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
 - Large Markdown buffers should show a clear paused/limited preview state unless
   rendering has been split into bounded main-loop snapshots plus worker-side
   preprocessing.
-- Minimap wrapped-layout analysis eligibility comes from the O(1) live-buffer
+- Minimap wrapped-layout analysis (which feeds long-line markers only; availability
+  comes from the document scale) is admitted by the O(1) live-buffer
   byte estimate: wrapping disabled and exact 2 MiB skip that analysis, while one
   byte over requests it. Classification must not scan or copy text; multibyte,
   modified, untitled, known-file-floor, saturation, cancellation, and
   stale-generation behavior remain covered by tests. Optional long-line marker
   collection stays sliced, cancellable, and generation-bound.
 - Bounded buffer installation and clearing slices must end on paragraph
-  boundaries (`next_replacement_boundary` cuts just after a newline; iter-based
+  boundaries (`next_replacement_boundary` cuts just after a GTK paragraph
+  delimiter — `\n`, `\r`, `\r\n` kept whole, or U+2029 — through the one shared
+  `model::paragraph_boundary::slice_end_after_paragraph`, so CR-only and U+2029
+  documents are sliced too; iter-based
   clears extend to the next line start). GTK text layout validates whole
   paragraphs, so a slice that stops mid-paragraph re-lays-out everything
   already installed in that paragraph on every later slice — quadratic work
@@ -543,6 +547,21 @@ draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
   paragraph larger than the slice byte budget installs or clears in one turn;
   that single long turn matches the unavoidable layout cost its first render
   pays anyway.
+- Features whose GTK cost grows with paragraph length read the editor's
+  `document_scale()` (`model/document_scale.rs`): syntax highlighting (clear the
+  language, not only `highlight-syntax`), bracket matching, invisible-character
+  drawing, automatic search highlighting, and the minimap. Never re-derive a
+  size or line-length threshold, never re-enable a gated feature from a rename,
+  Save As, preference change or search session, and gate before content
+  reaches the feature (load publish, every install path, and the same
+  `insert-text`/`delete-range` emission as an edit). A byte-only caller uses
+  `DocumentScale::for_total_bytes`.
+- **Minimap retire-and-rebuild.** Never clear the `view` of a live
+  `GtkSourceMap` (`set_view(NULL)` or `view = None`): an armed update tick then
+  runs against no view and logs `Gtk-CRITICAL`/`GLib-GObject-CRITICAL` (ledger
+  A32). To stop projecting, retire the instance — hide the overlay, unparent the
+  map (which unrealizes it, so an armed tick never runs, A45) and drop it — and
+  build a fresh one with `attach_native_source_map` when it is shown again.
 - Replace-preview rows and other large derived result sets should be generated
   from owned data on a worker, with a pending state and stale-result rejection
   keyed by generation counters.
