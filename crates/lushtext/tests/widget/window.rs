@@ -6378,14 +6378,21 @@ fn test_selected_restore_tab_gets_bounded_priority_after_capacity_releases() {
     let order = Rc::clone(&completion_order);
     third.connect_file_loaded(move || order.borrow_mut().push("third"));
 
-    wait_until(Duration::from_secs(15), || {
+    // Each wait covers an async worker load plus a bounded, sliced install
+    // of a 2 MiB document, and the drain behind it: above S_syntax the
+    // document scale shows the reduced-features notice, whose inline alert
+    // re-lays-out the visible editor (20 s for the whole test in the
+    // unoptimized build, 13 s with the notice suppressed; no main-loop gap
+    // above 100 ms either way). The budget is the 60 s the other
+    // document-sized load waits use, not a UI flip's.
+    wait_until(Duration::from_secs(60), || {
         !completion_order.borrow().is_empty()
     });
 
     assert_eq!(completion_order.borrow().first().copied(), Some("third"));
     assert_eq!(third.load_state(), EditorLoadState::Loaded);
     assert_eq!(second.load_state(), EditorLoadState::Loading);
-    wait_until(Duration::from_secs(15), || {
+    wait_until(Duration::from_secs(60), || {
         second.load_state() == EditorLoadState::Loaded
     });
     assert_eq!(&*completion_order.borrow(), &["third", "second"]);
