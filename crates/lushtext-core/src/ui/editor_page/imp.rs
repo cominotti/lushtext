@@ -159,6 +159,24 @@ pub enum PendingWarningAction {
     ShowLocalHistory,
 }
 
+/// Whether the editor's current inline alert survives the next successful load.
+///
+/// Every producer picks one explicitly when it emits. A load installs the
+/// current bytes, so an alert that describes the previous bytes or buffer is
+/// resolved by it; a recovery alert that points at a preserved draft is still
+/// true after the reload and must stay.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InlineAlertLifetime {
+    /// The next successful load resolves the alert: load failures and
+    /// cancellations, external-change and line-ending warnings, restored-draft
+    /// and local-history-restore alerts, and the recovery-limit warning.
+    SupersededByLoad,
+    /// The alert outlives a load: "Draft Not Restored" and "Draft Restore
+    /// Failed", which name where the user's unsaved edits were kept.
+    #[default]
+    OutlivesLoad,
+}
+
 /// Encoding, line-ending, health, and save-confirmation state for one tab.
 #[derive(Default)]
 pub struct DocumentMetadataState {
@@ -172,6 +190,8 @@ pub struct DocumentMetadataState {
     pub invisible_mode: Cell<InvisibleCharactersMode>,
     /// Shared info-bar action currently routed to this editor.
     pub warning_action: Cell<Option<PendingWarningAction>>,
+    /// Whether the next successful load resolves the current inline alert.
+    pub alert_lifetime: Cell<InlineAlertLifetime>,
     /// One-shot guard that allows the next save to proceed even if the current
     /// encoding conversion is known to be lossy.
     pub allow_lossy_save_once: Cell<bool>,
@@ -566,6 +586,11 @@ pub struct LushtextEditorPage {
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
     /// Callback invoked when the editor needs to surface an inline notification.
     pub notification_callback: RefCell<Option<NotificationCallback>>,
+    /// Callback invoked when a successful load supersedes the current alert.
+    ///
+    /// The window installs it to resolve the alert through the notification
+    /// bus; without a window the editor clears its own bar directly.
+    pub notification_superseded_callback: RefCell<Option<MemoryChangedCallback>>,
     /// External file-monitor state.
     pub monitor: MonitorState,
     /// Draft lifecycle state.
@@ -621,6 +646,7 @@ impl Default for LushtextEditorPage {
             editing_buffer_signals: SignalBag::new(),
             memory_changed_callback: RefCell::default(),
             notification_callback: RefCell::default(),
+            notification_superseded_callback: RefCell::default(),
             monitor: MonitorState::default(),
             draft: DraftState::default(),
             save: SaveState::default(),

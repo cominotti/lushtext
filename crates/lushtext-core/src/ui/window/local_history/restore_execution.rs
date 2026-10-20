@@ -301,6 +301,7 @@ impl LushtextWindow {
                                         secondary_button: None,
                                     },
                                     PendingWarningAction::UndoLocalHistoryRestore,
+                                    crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad,
                                 );
                                 browser.window.publish_status_message(
                                     "Snapshot restored into the editor",

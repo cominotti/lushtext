@@ -69,8 +69,8 @@ use lushtext_core::ui::editor_page::save::policy::{
     SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveCaptureMode, conservative_save_payload_weight,
 };
 use lushtext_core::ui::editor_page::{
-    BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
-    MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
+    BufferReplacementWorkflow, EditorLoadState, EditorSaveError, InlineAlertLifetime,
+    LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
 };
 use lushtext_core::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownRenderState};
 use lushtext_core::ui::open_popover::evidence::open_popover_evidence;
@@ -10331,7 +10331,7 @@ fn test_warning_inline_alert_actions_stay_allocated_in_a_narrow_window() {
         body: "Unsaved changes to the document have been restored, and the inline actions must remain visible while the window narrows.".to_string(),
         primary_button: Some("_Discard…".to_string()),
         secondary_button: Some("_Save…".to_string()),
-    });
+    }, InlineAlertLifetime::SupersededByLoad);
     flush_after_delay(Duration::from_millis(50));
 
     let info_bar = editor.info_bar().imp();
@@ -10381,7 +10381,7 @@ fn test_access_error_inline_alert_action_stays_allocated_in_a_narrow_window() {
         body: "Permission was denied while opening the document, so the retry action must stay visible after the shell tightens.".to_string(),
         primary_button: Some("_Retry".to_string()),
         secondary_button: None,
-    });
+    }, InlineAlertLifetime::SupersededByLoad);
     flush_after_delay(Duration::from_millis(50));
 
     let info_bar = editor.info_bar().imp();
@@ -10409,20 +10409,26 @@ fn test_dismissing_one_editor_inline_alert_preserves_other_editor_alert() {
     window.new_tab();
     let second_editor = active_editor(&window);
 
-    first_editor.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Warning,
-        title: "First Alert".to_string(),
-        body: "First editor warning".to_string(),
-        primary_button: Some("_Discard...".to_string()),
-        secondary_button: None,
-    });
-    second_editor.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Warning,
-        title: "Second Alert".to_string(),
-        body: "Second editor warning".to_string(),
-        primary_button: Some("_Discard...".to_string()),
-        secondary_button: None,
-    });
+    first_editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "First Alert".to_string(),
+            body: "First editor warning".to_string(),
+            primary_button: Some("_Discard...".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    second_editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Second Alert".to_string(),
+            body: "Second editor warning".to_string(),
+            primary_button: Some("_Discard...".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
 
     assert!(first_editor.info_bar().imp().alert_revealer.reveals_child());
     assert!(
@@ -19913,6 +19919,158 @@ fn test_startup_restore_applies_matching_file_backed_draft() {
         .editor_info_bar_view(editor.notification_owner_id())
         .expect("draft restore notification");
     assert_eq!(notification.title, "Draft Changes Restored");
+}
+
+/// Evict `background` for memory and select it again, so it reloads from disk.
+///
+/// Production's eviction reload (`editor_memory_eviction::reload_if_evicted`)
+/// reaches load success without dismissing the tab's alert first, which is
+/// what the two regressions below need.
+fn evict_and_reselect(window: &LushtextWindow, background: &LushtextEditorPage) {
+    background.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    flush_events();
+    assert!(
+        background.is_evicted(),
+        "the clean background tab must evict"
+    );
+    let page = window.imp().tab_view.page(background);
+    window.imp().tab_view.set_selected_page(&page);
+    wait_until(Duration::from_secs(10), || {
+        !background.is_evicted() && background.load_state() == EditorLoadState::Loaded
+    });
+    flush_events();
+}
+
+/// A load that installs the current bytes resolves the alert it supersedes.
+///
+/// `complete_loaded_installation` used to hide the editor's bar directly while
+/// the bus kept the record, so the next full pass, from any status message,
+/// brought a stale "File Has Changed on Disk" back over current content.
+#[test]
+fn test_eviction_reload_resolves_external_change_alert_for_good() {
+    let (window, dir, path) = open_temp_document("original\n");
+    let editor = active_editor(&window);
+    write_external_change_after_mtime_tick(&path, &editor, "external version\n");
+    wait_for_external_change_warning(&editor);
+
+    let other = dir.path().join("other.txt");
+    fixture::write_text(&other, "other\n");
+    window.open_document(&other);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+            && active_editor(&window) != editor
+    });
+
+    evict_and_reselect(&window, &editor);
+    assert_eq!(editor_buffer_text(&editor), "external version\n");
+
+    window.publish_status_message("Unrelated status", NotificationSeverity::Info);
+    flush_events();
+    assert!(
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(editor.notification_owner_id())
+            .is_none(),
+        "the reload superseded the external-change alert",
+    );
+    assert!(
+        !editor.info_bar().imp().alert_revealer.reveals_child(),
+        "a later full pass must not bring the stale alert back",
+    );
+}
+
+/// A recovery alert pointing at a preserved draft outlives a reload.
+///
+/// "Draft Not Restored" names where the user's unsaved edits were kept, and
+/// those copies are still on disk after the tab reloads, so the eviction reload
+/// must not take the only in-place pointer to them away.
+#[test]
+fn test_draft_not_restored_alert_survives_eviction_reload() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stale_path = dir.path().join("stale.txt");
+    let other_path = dir.path().join("other.txt");
+    fixture::write_text(&stale_path, "current disk content");
+    fixture::write_text(&other_path, "other content");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&stale_path);
+    draft_service::fixture::write_body(&data_dir, &draft_id, "stale draft").expect("seed draft");
+    let current_mtime = editor_io::mtime_secs(&stale_path).expect("file mtime");
+    let stale_mtime = current_mtime
+        .checked_add(1)
+        .unwrap_or_else(|| current_mtime.saturating_sub(1));
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id,
+                original_path: Some(stale_path.clone()),
+                original_mtime_secs: Some(stale_mtime),
+                saved_at_secs: 1,
+            }],
+            cleanup_continuation: None,
+        },
+    )
+    .expect("save manifest");
+    let tab = |path: &Path| SessionTab {
+        path: Some(path.to_path_buf()),
+        draft_id: None,
+        cursor_line: 0,
+        cursor_col: 0,
+        scroll_line: 0,
+        pinned: false,
+    };
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![tab(&stale_path), tab(&other_path)],
+            active_tab_index: Some(1),
+        },
+    )
+    .expect("save session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().tab_view.n_pages() == 2
+    });
+    let stale_editor = window
+        .imp()
+        .tab_view
+        .nth_page(0)
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("stale editor");
+    let stale_alert_title = |window: &LushtextWindow| {
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(stale_editor.notification_owner_id())
+            .map(|notification| notification.title)
+    };
+    wait_until(Duration::from_secs(10), || {
+        stale_alert_title(&window).as_deref() == Some("Draft Not Restored")
+            && stale_editor.load_state() == EditorLoadState::Loaded
+            && active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+
+    evict_and_reselect(&window, &stale_editor);
+    assert_eq!(
+        stale_alert_title(&window).as_deref(),
+        Some("Draft Not Restored")
+    );
+    assert!(
+        stale_editor.info_bar().imp().alert_revealer.reveals_child(),
+        "the recovery alert must still be shown after the reload terminal",
+    );
+
+    window.publish_status_message("Unrelated status", NotificationSeverity::Info);
+    flush_events();
+    assert!(
+        stale_editor.info_bar().imp().alert_revealer.reveals_child(),
+        "the recovery alert must still be shown after a later full pass",
+    );
 }
 
 #[test]

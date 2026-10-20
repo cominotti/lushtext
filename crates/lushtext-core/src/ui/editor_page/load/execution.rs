@@ -47,7 +47,9 @@ use crate::model::file_load::next_install_boundary;
 use crate::services::editor_io::{self, EditorLoadError};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::imp::EditorCallback;
-use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage, PendingWarningAction};
+use crate::ui::editor_page::{
+    EditorLoadState, InlineAlertLifetime, LushtextEditorPage, PendingWarningAction,
+};
 
 use super::admission::{self, GuardedLoadResult, TransientLoadPermit};
 use super::policy::{
@@ -435,13 +437,16 @@ fn publish_load_error(
     editor.imp().latest_load_failed.set(true);
     evidence::record_outcome(editor, LoadOutcome::Failed);
     editor.notify_memory_policy_changed();
-    editor.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Error,
-        title: "Could Not Open File".to_string(),
-        body: error_text.clone(),
-        primary_button: Some("_Retry".to_string()),
-        secondary_button: None,
-    });
+    editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Error,
+            title: "Could Not Open File".to_string(),
+            body: error_text.clone(),
+            primary_button: Some("_Retry".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
     editor.refresh_accessibility_metadata();
     if error_state == EditorLoadState::Loaded {
         editor.start_file_monitor();
@@ -582,7 +587,7 @@ fn complete_loaded_installation(
     editor.clear_modified_line_marks();
     editor.apply_restore_position();
     editor.imp().monitor.last_known_mtime.set(mtime);
-    editor.clear_inline_notification();
+    editor.resolve_inline_notification_superseded_by_load();
     editor.seed_local_history_from_guarded_loaded_content(content);
     restore_load_installation_state(editor, restore);
     editor.imp().load_state.set(EditorLoadState::Loaded);
@@ -606,6 +611,7 @@ fn complete_loaded_installation(
                 secondary_button: None,
             },
             PendingWarningAction::NormalizeLineEndings,
+            InlineAlertLifetime::SupersededByLoad,
         );
     }
     editor.refresh_minimap();
