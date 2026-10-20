@@ -83,8 +83,11 @@ TESTS_JOBS = 1
 # address space (0 disables either).
 MIN_AVAILABLE_GIB = float(os.environ.get("PROOF_STRENGTH_MIN_AVAILABLE_GIB", "14"))
 MEMORY_LIMIT_GIB = float(os.environ.get("PROOF_STRENGTH_MEMORY_LIMIT_GIB", "12"))
-TESTS_BUILD_JOBS = 8
-TESTS_THREADS = 8
+# The tests arm builds and runs nextest with `--features property-tests`; at 8
+# build jobs and 8 (and even 4) test threads it outgrew a 12G cap (2026-10-20).
+# The defaults fit the `make proof-strength` scope; override per run only.
+TESTS_BUILD_JOBS = int(os.environ.get("PROOF_STRENGTH_TESTS_BUILD_JOBS", "4"))
+TESTS_THREADS = int(os.environ.get("PROOF_STRENGTH_TESTS_THREADS", "2"))
 
 
 def available_gib() -> float:

@@ -156,6 +156,11 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
   local-only. Before each Kani run and each tests arm the driver waits for
   14 GiB of available memory, and it caps each Kani run at 12 GiB of address
   space (`PROOF_STRENGTH_MIN_AVAILABLE_GIB`, `PROOF_STRENGTH_MEMORY_LIMIT_GIB`).
+  `make proof-strength` runs the whole driver inside one 16G capped scope
+  (`PROOF_STRENGTH_MEMORY_MAX`), and the tests arm builds with 4 jobs and runs
+  nextest on 2 threads (`PROOF_STRENGTH_TESTS_BUILD_JOBS`,
+  `PROOF_STRENGTH_TESTS_THREADS`): at 8 and 8 its `property-tests` build
+  outgrew a 12G cap.
 - **Earlier revisions.** `--module-rev MODULE=REV` reports a module from the
   results of an earlier revision when its shipped source is unchanged since:
   the check ignores top-level `#[cfg(test)] mod … { … }` blocks, because
@@ -169,23 +174,22 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
 
 ## Local Parallelism
 
-cargo-mutants is serial by default — one mutant builds and tests at a time —
-which leaves a multi-core host mostly idle on the slowest gate. The local
-Makefile targets (`mutants-smoke`, `mutants-diff`, `mutants-full`) auto-tune
-this: `MUTANTS_JOBS` defaults to about `nproc / 4`, and the two per-job caps
-default so that `jobs x per-job-parallelism` stays near the logical CPU count:
+cargo-mutants is serial by default — one mutant builds and tests at a time.
+The local Makefile targets (`mutants-smoke`, `mutants-diff`, `mutants-full`)
+run the whole pass inside one memory-capped scope (`MUTANTS_MEMORY_MAX`,
+default `12G`, no swap, through `scripts/with-memory-cap.sh`), so memory, not
+the core count, sets their parallelism. Each cargo-mutants job is a full cargo
+build plus its own nextest processes, so the defaults are:
 
-- `MUTANTS_TEST_THREADS` (default `4`) bounds the test phase — each mutant job
-  launches its own nextest, which otherwise grabs every core.
-- `MUTANTS_BUILD_JOBS` (derived, ~`nproc / jobs`) bounds the build phase via
-  `CARGO_BUILD_JOBS` — without it, the concurrent cold builds each fan out to
-  every core and spike load average far above `nproc` even though IO and memory
-  stay quiet (the build phase is the one that pushed load to ~100 in testing).
+- `MUTANTS_LOCAL_JOBS=1` — one mutant at a time;
+- `MUTANTS_LOCAL_BUILD_JOBS=4` — bounds the build phase via `CARGO_BUILD_JOBS`;
+- `MUTANTS_LOCAL_TEST_THREADS=4` — bounds each job's nextest.
 
-Together these keep both phases near `nproc` instead of thrashing. Override any
-knob inline (see above) or via `MUTANTS_LOCAL_JOBS` /
-`MUTANTS_LOCAL_TEST_THREADS` / `MUTANTS_LOCAL_BUILD_JOBS` in the Makefile
-invocation.
+These fit the 12G cap. The earlier core-derived defaults (about `nproc / 4`
+jobs) did not: on 2026-10-20 runs at 6–8 build jobs and 8–12 test threads were
+OOM-killed inside the cap. A mutant whose test was OOM-killed reads as
+**caught**, so a run that hit the cap is discarded and rerun at the defaults.
+Override a knob inline for one measured run, never as a new default.
 
 CI deliberately does not use this. The mutation workflow calls
 `scripts/run-mutants.sh` directly and leaves `MUTANTS_JOBS` unset, so the small

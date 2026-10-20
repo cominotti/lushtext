@@ -29,6 +29,20 @@
 # threads, cargo-mutants jobs) must fit inside the cap, because a mutant whose
 # test was OOM-killed reads as caught and contaminates the run.
 #
+# Every capped scope also runs inside one shared user slice,
+# `lushtext-heavy.slice`, whose own `MemoryMax` (LUSHTEXT_HEAVY_MEMORY_MAX,
+# default 24G, no swap) bounds the SUM of all capped work on the host, however
+# many agents or terminals start it. A per-command cap alone did not: three
+# agents each held to 12G still added up (2026-10-20). Before a scope starts,
+# admission (serialized by a lock under $XDG_RUNTIME_DIR) waits until the caps
+# already admitted to the slice plus this one fit the slice budget, and until
+# MemAvailable covers this cap plus a reserve for the desktop
+# (LUSHTEXT_MEMORY_RESERVE, default 16G). Caps of 1G or less skip admission:
+# they are bounded and trivially small (the self-test uses them, and it runs in
+# the pre-commit hook). A command already running under a cap (the wrapper
+# exports LUSHTEXT_MEMORY_CAP_KIB) runs nested commands in place, inside the
+# outer scope, instead of admitting a second scope.
+#
 # Why this exists: on 2026-10-15 one unmeasured Kani harness drove CBMC to
 # 59.6 GB resident on a 94 GB workstation, leaving ~250 MB free and stalling
 # the desktop. CPU affinity bounded the cores, nothing bounded the memory.
@@ -52,6 +66,50 @@ cap_in_kib() {
     esac
 }
 
+HEAVY_SLICE=lushtext-heavy.slice
+ADMISSION_LOCK="${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.lock"
+
+mem_available_kib() {
+    awk '/^MemAvailable:/ { print $2 }' /proc/meminfo
+}
+
+# Sum, in KiB, of the caps of the scopes currently in the heavy slice.
+admitted_kib() {
+    local cgroup dir total=0 limit
+    cgroup=$(systemctl --user show -p ControlGroup --value "$HEAVY_SLICE" 2>/dev/null || true)
+    dir="/sys/fs/cgroup$cgroup"
+    if [ -n "$cgroup" ] && [ -d "$dir" ]; then
+        for limit in "$dir"/*.scope/memory.max; do
+            [ -r "$limit" ] || continue
+            read -r limit <"$limit" || continue
+            [ "$limit" = max ] && continue
+            total=$((total + limit / 1024))
+        done
+    fi
+    echo "$total"
+}
+
+# Hold the admission lock until this cap fits the slice budget and the
+# desktop reserve; fd 9 stays locked until the caller's scope exists.
+admit() {
+    local cap_kib=$1 heavy_kib=$2 reserve_kib=$3 admitted available announced=0
+    exec 9>"$ADMISSION_LOCK"
+    flock 9
+    while :; do
+        admitted=$(admitted_kib)
+        available=$(mem_available_kib)
+        if [ $((admitted + cap_kib)) -le "$heavy_kib" ] \
+            && [ "$available" -ge $((cap_kib + reserve_kib)) ]; then
+            return 0
+        fi
+        if [ "$announced" = 0 ]; then
+            echo "with-memory-cap: waiting for memory: $((admitted / 1048576)) GiB of $((heavy_kib / 1048576)) GiB admitted to $HEAVY_SLICE, $((available / 1048576)) GiB available, need $((cap_kib / 1048576)) GiB plus a $((reserve_kib / 1048576)) GiB reserve" >&2
+            announced=1
+        fi
+        sleep 15
+    done
+}
+
 self_test() {
     local me=$0 status
     "$me" none true || { echo "self-test: 'none' did not pass through" >&2; return 1; }
@@ -69,10 +127,18 @@ self_test() {
         # shellcheck disable=SC2016 # expanded by the inner shell, inside the scope
         limits=$("$me" 64M sh -c 'p=$(sed -n "s/^0:://p" /proc/self/cgroup); cat "/sys/fs/cgroup$p/memory.max" "/sys/fs/cgroup$p/memory.swap.max"' 2>/dev/null | tr '\n' ' ')
         [ "$limits" = "67108864 0 " ] || { echo "self-test: scope limits were '$limits', expected '67108864 0 '" >&2; return 1; }
+        local slice
+        # shellcheck disable=SC2016 # expanded by the inner shell, inside the scope
+        slice=$("$me" 64M sh -c 'grep -c "/$0/" /proc/self/cgroup' "$HEAVY_SLICE" 2>/dev/null)
+        [ "$slice" = 1 ] || { echo "self-test: scope is not inside $HEAVY_SLICE" >&2; return 1; }
+        local nested
+        # shellcheck disable=SC2016 # expanded by the inner shell
+        nested=$(LUSHTEXT_MEMORY_CAP_KIB=1 "$me" 64M sh -c 'echo "$LUSHTEXT_MEMORY_CAP_KIB"' 2>/dev/null)
+        [ "$nested" = 1 ] || { echo "self-test: a nested call did not run in place (got '$nested')" >&2; return 1; }
         status=0
         "$me" --address-space 1G python3 -c 'b = bytearray(2 * 1024 * 1024 * 1024)' 2>/dev/null || status=$?
         [ "$status" -eq 1 ] || { echo "self-test: --address-space did not fail the allocation cleanly (status $status)" >&2; return 1; }
-        echo "with-memory-cap self-test: ok (scope sets MemoryMax, no swap and OOMPolicy=continue; --address-space fails an allocation cleanly)"
+        echo "with-memory-cap self-test: ok (scope sets MemoryMax, no swap and OOMPolicy=continue inside $HEAVY_SLICE; nested calls run in place; --address-space fails an allocation cleanly)"
     else
         echo "with-memory-cap self-test: ok (no systemd user manager; cap enforcement not exercised)"
     fi
@@ -106,17 +172,55 @@ if ! [[ "$cap" =~ ^[0-9]+[KMGT]?$ ]]; then
     exit 2
 fi
 
+cap_kib=$(cap_in_kib "$cap")
+
+if [ -n "${LUSHTEXT_MEMORY_CAP_KIB:-}" ]; then
+    echo "with-memory-cap: already inside a ${LUSHTEXT_MEMORY_CAP_KIB} KiB capped scope; running in place: $*" >&2
+    exec "$@"
+fi
+
 if command -v systemd-run >/dev/null 2>&1 \
     && systemd-run --user --scope --quiet -p MemoryMax=1M true >/dev/null 2>&1; then
-    if [ "$address_space" = 1 ]; then
-        cap_kib=$(cap_in_kib "$cap")
-        ulimit -v $((cap_kib * 7 / 8))
-        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue, RLIMIT_AS=$((cap_kib * 7 / 8)) KiB per process, for: $*" >&2
-    else
-        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue for: $*" >&2
+    heavy_max=${LUSHTEXT_HEAVY_MEMORY_MAX:-24G}
+    reserve=${LUSHTEXT_MEMORY_RESERVE:-16G}
+    for size in "$heavy_max" "$reserve"; do
+        [[ "$size" =~ ^[0-9]+[KMGT]?$ ]] || { echo "with-memory-cap: invalid size '$size'" >&2; exit 2; }
+    done
+    heavy_kib=$(cap_in_kib "$heavy_max")
+    if [ "$cap_kib" -gt "$heavy_kib" ]; then
+        echo "with-memory-cap: cap $cap exceeds the host-wide budget $heavy_max (LUSHTEXT_HEAVY_MEMORY_MAX)" >&2
+        exit 2
     fi
-    exec systemd-run --user --scope --quiet \
-        -p MemoryMax="$cap" -p MemorySwapMax=0 -p OOMPolicy=continue -- "$@"
+    systemctl --user set-property --runtime "$HEAVY_SLICE" \
+        MemoryMax="$heavy_max" MemorySwapMax=0 >/dev/null 2>&1 || true
+    if [ "$cap_kib" -gt $((1024 * 1024)) ]; then
+        admit "$cap_kib" "$heavy_kib" "$(cap_in_kib "$reserve")"
+    fi
+    if [ "$address_space" = 1 ]; then
+        ulimit -v $((cap_kib * 7 / 8))
+        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue in $HEAVY_SLICE ($heavy_max), RLIMIT_AS=$((cap_kib * 7 / 8)) KiB per process, for: $*" >&2
+    else
+        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue in $HEAVY_SLICE ($heavy_max) for: $*" >&2
+    fi
+    export LUSHTEXT_MEMORY_CAP_KIB=$cap_kib
+    # Not exec: the admission lock is released once the scope exists, so the
+    # next admission counts this cap, and the wrapper then waits for the scope.
+    systemd-run --user --scope --quiet --slice="$HEAVY_SLICE" \
+        -p MemoryMax="$cap" -p MemorySwapMax=0 -p OOMPolicy=continue -- "$@" <&0 9>&- &
+    child=$!
+    trap 'kill -TERM "$child" 2>/dev/null' INT TERM HUP
+    for _ in $(seq 200); do
+        grep -q "/$HEAVY_SLICE/" "/proc/$child/cgroup" 2>/dev/null && break
+        kill -0 "$child" 2>/dev/null || break
+        sleep 0.05
+    done
+    exec 9>&-
+    status=0
+    while :; do
+        wait "$child" && status=0 || status=$?
+        kill -0 "$child" 2>/dev/null || break
+    done
+    exit "$status"
 fi
 
 if [ -n "${CI:-}" ]; then

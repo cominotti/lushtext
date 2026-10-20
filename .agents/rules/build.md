@@ -652,6 +652,27 @@ invariant; tighten the generator or use the deep lane.
   explicitly); CI containers have none and run uncapped under the shard
   budget. Run new harnesses through `make kani`, not a bare `cargo kani`, so
   the cap applies; `make check-kani-shards` self-tests the wrapper.
+  **The host-wide budget.** Every capped scope runs inside one shared user
+  slice, `lushtext-heavy.slice`, whose `MemoryMax` (`LUSHTEXT_HEAVY_MEMORY_MAX`,
+  default `24G`, no swap) bounds the sum of all capped work on the machine. A
+  per-command cap alone did not: on 2026-10-20 three agents each held to 12G,
+  plus a 16G Kani shard, added up past the desktop's headroom. Before a scope
+  starts, the wrapper's admission (serialized by
+  `$XDG_RUNTIME_DIR/lushtext-heavy-admission.lock`) waits until the caps already
+  admitted to the slice plus the new one fit its budget, and until
+  `MemAvailable` covers the new cap plus `LUSHTEXT_MEMORY_RESERVE` (default
+  `16G`) for the desktop; it prints one line while it waits. A Kani run (16G)
+  and a 12G build therefore never overlap, and two 12G runs may. Caps of 1G or
+  less skip admission (the self-test runs in the pre-commit hook). A command
+  already inside a capped scope runs nested wrapper calls in place
+  (`LUSHTEXT_MEMORY_CAP_KIB`), so wrapping `make mutants-smoke` again neither
+  double-books the budget nor escapes the outer cap. The Makefile wraps
+  `make kani` (`KANI_MEMORY_MAX`), `make proof-strength`
+  (`PROOF_STRENGTH_MEMORY_MAX`, default `16G`) and the `mutants-*` targets
+  (`MUTANTS_MEMORY_MAX`, default `12G`); wrap any other heavy command an agent
+  runs (a full build, a widget run, a bench) the same way, from a checkout
+  whose wrapper has this admission, because a worktree created before it lands
+  still carries the old per-command-only script.
   Every harness belongs to exactly one shard, and `make check-kani-shards` (in
   `make check-policy`, no Kani needed) fails when a harness anywhere under
   `crates/` matches no shard or several, so a harness cannot silently drop out
@@ -898,17 +919,20 @@ For survivor triage, prefer focused proof before another broad local sweep.
 calibrated exclusions. Keep `MUTANTS_JOBS=1` and small per-job thread caps when
 the user has asked to keep Rust build pressure low.
 
-cargo-mutants is serial by default, so the local Makefile targets auto-tune
-parallelism: `MUTANTS_JOBS` defaults to about `nproc / 4`, then two per-job caps
-keep `jobs x per-job-parallelism` near the logical CPU count instead of
-oversubscribing. `MUTANTS_TEST_THREADS` (default `4`) bounds each job's nextest,
-and `MUTANTS_BUILD_JOBS` (derived) bounds each job's `cargo build` via
-`CARGO_BUILD_JOBS` — the build phase is what spikes load average, since six
-concurrent cold builds each fan out to every core by default even while IO and
-memory pressure stay near zero. `scripts/run-mutants.sh` only exports these /
-passes `--jobs` when the matching env var is set. If the gated CI mutation lane
-is re-enabled, it must leave all three unset so the sharded small runners keep
-the serial default and fan out through `MUTANTS_SHARD` instead.
+cargo-mutants is serial by default. Locally, memory rather than cores bounds
+its parallelism: each job is a full cargo build plus nextest processes, and the
+local Makefile targets run the whole pass inside one `MUTANTS_MEMORY_MAX` scope
+(`scripts/with-memory-cap.sh`, default `12G`, no swap). The defaults are
+`MUTANTS_LOCAL_JOBS=1`, `MUTANTS_LOCAL_BUILD_JOBS=4` and
+`MUTANTS_LOCAL_TEST_THREADS=4`, which fit that cap; the earlier core-derived
+defaults (about `nproc / 4` jobs, `nproc / jobs` build jobs) did not, and on
+2026-10-20 runs at 6–8 build jobs and 8–12 test threads were OOM-killed inside
+the cap. A mutant whose test was OOM-killed reads as caught, so a run that hit
+the cap is discarded, and raising a knob is a measured decision for one run,
+never a new default. `scripts/run-mutants.sh` only exports these / passes
+`--jobs` when the matching env var is set. If the gated CI mutation lane is
+re-enabled, it must leave all three unset so the sharded small runners keep the
+serial default and fan out through `MUTANTS_SHARD` instead.
 
 Treat survivors in this order: first decide whether the mutant represents a
 real missed behavior, then add or tighten deterministic tests, then consider

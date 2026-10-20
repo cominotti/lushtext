@@ -172,6 +172,9 @@ KANI_MEMORY_MAX ?= 16G
 # or `all`; TIER `ci` runs only the cheap harnesses; SHARD is k/n; ARM is
 # tests, kani, or both.
 PROOF_STRENGTH_MODULE ?= all
+# The whole run (Kani arm, each CBMC held to 12 GiB of address space, and the
+# cargo-mutants tests arm) executes inside one capped scope.
+PROOF_STRENGTH_MEMORY_MAX ?= 16G
 PROOF_STRENGTH_TIER ?= all
 PROOF_STRENGTH_SHARD ?=
 PROOF_STRENGTH_ARM ?= both
@@ -190,19 +193,19 @@ WIDGET_SHARD ?= all
 # durations (`widget-shards.py run --measure`).
 WIDGET_MEASURE ?=
 
-# Local cargo-mutants parallelism. cargo-mutants defaults to serial (one mutant
-# at a time), which leaves a multi-core box mostly idle on the slowest workload.
-# Locally we fan out: MUTANTS_LOCAL_JOBS defaults to about cores / 4, and each
-# job's nextest is capped to MUTANTS_LOCAL_TEST_THREADS so jobs x threads stays
-# near the logical CPU count instead of oversubscribing it. CI lanes call
-# scripts/run-mutants.sh directly and leave MUTANTS_JOBS unset, so the sharded
-# small runners keep the serial default.
-MUTANTS_LOCAL_JOBS ?= $(shell nproc 2>/dev/null | awk '{j = int($$1 / 4); if (j < 1) j = 1; print j}')
+# Local cargo-mutants parallelism. Memory, not cores, bounds it: every
+# cargo-mutants job is a full cargo build plus nextest processes, and the whole
+# run executes inside one MUTANTS_MEMORY_MAX scope (scripts/with-memory-cap.sh,
+# no swap). On 2026-10-20 runs at 6-8 build jobs and 8-12 test threads were
+# OOM-killed inside a 12G cap (a mutant whose test is killed reads as caught),
+# so the defaults are one job, four build jobs and four test threads, which fit
+# 12G. Raising them is a measured decision for one run, never a default. CI
+# lanes call scripts/run-mutants.sh directly and leave MUTANTS_JOBS unset, so
+# the sharded small runners keep the serial default.
+MUTANTS_LOCAL_JOBS ?= 1
 MUTANTS_LOCAL_TEST_THREADS ?= 4
-# Build-phase cap: derived so jobs x build-jobs stays near the CPU count. Without
-# it, each of the MUTANTS_LOCAL_JOBS concurrent cargo builds fans out to every
-# core, spiking load average far above ncpu during the cold-build phase.
-MUTANTS_LOCAL_BUILD_JOBS ?= $(shell nproc 2>/dev/null | awk '{n = $$1; j = int(n / 4); if (j < 1) j = 1; b = int(n / j); if (b < 1) b = 1; print b}')
+MUTANTS_LOCAL_BUILD_JOBS ?= 4
+MUTANTS_MEMORY_MAX ?= 12G
 MUTANTS_LOCAL_PARALLELISM = MUTANTS_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS) MUTANTS_BUILD_JOBS=$(MUTANTS_LOCAL_BUILD_JOBS)
 
 FLATPAK_REMOTE ?= flathub
@@ -344,7 +347,7 @@ KANI_VERSION_GUARD = installed=$$(cargo kani --version 2>/dev/null | sed -n 's/^
 # Resumable; one Kani run at a time.
 proof-strength:
 	@set -eu; $(KANI_VERSION_GUARD); \
-	./scripts/proof-strength.py measure --module "$(PROOF_STRENGTH_MODULE)" --tier "$(PROOF_STRENGTH_TIER)" \
+	./scripts/with-memory-cap.sh "$(PROOF_STRENGTH_MEMORY_MAX)" ./scripts/proof-strength.py measure --module "$(PROOF_STRENGTH_MODULE)" --tier "$(PROOF_STRENGTH_TIER)" \
 		--arm "$(PROOF_STRENGTH_ARM)" $(if $(PROOF_STRENGTH_SHARD),--shard "$(PROOF_STRENGTH_SHARD)")
 
 # The proof-strength population (mutants, floor, oracle scope, harness order),
@@ -531,17 +534,17 @@ end-user-smoke: automation-smoke builder-diagnostics-smoke visual-geometry-smoke
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:
 	@echo "Running cargo-mutants smoke scope (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
-	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh smoke
+	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/with-memory-cap.sh "$(MUTANTS_MEMORY_MAX)" ./scripts/run-mutants.sh smoke
 
 # Mutation-test the current diff against origin/main.
 mutants-diff:
 	@echo "Running cargo-mutants against changed code (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
-	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh diff
+	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/with-memory-cap.sh "$(MUTANTS_MEMORY_MAX)" ./scripts/run-mutants.sh diff
 
 # Mutation-test the configured deterministic scope.
 mutants-full:
 	@echo "Running configured cargo-mutants scope (jobs=$(MUTANTS_LOCAL_JOBS), build-jobs=$(MUTANTS_LOCAL_BUILD_JOBS), test-threads=$(MUTANTS_LOCAL_TEST_THREADS))..."
-	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/run-mutants.sh full
+	$(MUTANTS_LOCAL_PARALLELISM) ./scripts/with-memory-cap.sh "$(MUTANTS_MEMORY_MAX)" ./scripts/run-mutants.sh full
 
 # List configured mutants without running tests.
 mutants-list:
