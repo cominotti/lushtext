@@ -27,7 +27,7 @@ use crate::{AxiomId, Observation};
 
 use super::LAYOUT_SETTLE;
 
-/// Settle rounds after the unparent, each [`LAYOUT_SETTLE`] long.
+/// Settle rounds after the unparent, each one layout settle long.
 pub const FRAMES_WAITED: u32 = 5;
 
 /// Two drawing areas in a box, each counting its tick-callback invocations.
