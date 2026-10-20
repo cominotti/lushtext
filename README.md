@@ -372,7 +372,9 @@ disable local history.
 
 Markdown preview is available for Markdown files from **Main Menu > Markdown
 Preview** or `Alt+P` for preview-only mode. Canonical sample content lives in
-[`samples/markdown-test.md`](samples/markdown-test.md).
+[`samples/markdown-test.md`](samples/markdown-test.md). Document alerts (a file
+changed on disk, a restored draft, a load error) stay visible above the preview
+in preview-only mode, with the same buttons as in the editor.
 
 The preview renders in bounded slices so a long document never blocks the UI,
 and a large table, list, code block, blockquote, or definition list is rendered

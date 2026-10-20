@@ -42,13 +42,15 @@ LushtextWindow (AdwApplicationWindow)
 │   │       └── [content] AdwMultiLayoutView [properties_layout_view]
 │   │           ├── [slot: primary] GtkBox [content_box] (vertical)
 │   │           │   ├── GtkStack [content_stack] (vexpand)
-│   │           │   │   ├── "tabs": AdwMultiLayoutView [preview_layout_view]
-│   │           │   │   │   ├── [slot: editor] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
-│   │           │   │   │   ├── [slot: preview] LushtextMarkdownPreview (starts hidden)
-│   │           │   │   │   ├── [layout: editor] AdwOverlaySplitView [preview_split_view]
-│   │           │   │   │   │   ├── [content] AdwLayoutSlot "editor"
-│   │           │   │   │   │   └── [sidebar/end] AdwLayoutSlot "preview"
-│   │           │   │   │   └── [layout: preview] AdwLayoutSlot "preview"
+│   │           │   │   ├── "tabs": GtkBox (vertical)
+│   │           │   │   │   ├── LushtextInfoBar [preview_document_alert] (selected tab's alert; shown only in preview-only mode)
+│   │           │   │   │   └── AdwMultiLayoutView [preview_layout_view]
+│   │           │   │   │       ├── [slot: editor] GtkBox [editor_box] → AdwTabView → LushtextEditorPage per tab
+│   │           │   │   │       ├── [slot: preview] LushtextMarkdownPreview (starts hidden)
+│   │           │   │   │       ├── [layout: editor] AdwOverlaySplitView [preview_split_view]
+│   │           │   │   │       │   ├── [content] AdwLayoutSlot "editor"
+│   │           │   │   │       │   └── [sidebar/end] AdwLayoutSlot "preview"
+│   │           │   │   │       └── [layout: preview] AdwLayoutSlot "preview"
 │   │           │   │   └── "empty": AdwStatusPage
 │   │           │   └── GtkRevealer [search_panel_revealer] (slide-up, 250ms)
 │   │           │       └── LushtextSearchPanel (Ctrl+Shift+F workspace search)
@@ -331,7 +333,15 @@ add a new one before calling the work complete.
 
 ## Inline Alerts
 
-- `LushtextInfoBar` remains the inline notification surface above each editor page; do not replace it with a global status message for restored-file or access-error actions.
+- `LushtextInfoBar` remains the inline notification surface above each editor page; do not replace it with a global status message for restored-file or access-error actions. In Markdown preview-only mode, where the editor column (and its bar) is hidden, the window hosts one more instance, `preview_document_alert`, above `preview_layout_view` in `window.blp`: the notification workflow projects the selected tab's alert onto it only in that mode (one banner per document in every layout) and forwards its clicks to the selected editor's own bar through `LushtextInfoBar::activate`. Never host it inside `LushtextMarkdownPreview`, which other workflows reuse, and never reparent the editor's bar.
+- `NotificationSurface::EditorInfoBar` carries **document-state** alerts only (they describe the document or its recovery, not the editor widget). An editor-state message must use another surface.
+- Each producer states whether a successful load supersedes its alert, by passing an `InlineAlertLifetime` to `emit_inline_notification*`; the load terminal resolves superseded alerts through the bus:
+
+  | Superseded by the next successful load | Outlives a load |
+  | --- | --- |
+  | "Could Not Open File", "Loading Cancelled", "File Has Changed on Disk", "Mixed Line Endings Detected", "Draft Changes Restored" / "Document Restored", "Restored from Local History", "Automatic Recovery Paused" | "Draft Not Restored" (both variants), "Draft Restore Failed" |
+
+- Renders are silent. The notification projection pass announces an alert once, from the one surface where it is first perceivable; do not announce from a widget's render. When an action hides a bar that holds keyboard focus, the pass moves focus to the document (the editor's `source_view`, or the preview text in preview-only mode, else nothing), because GTK leaves focus on the hidden button.
 - Titles, subtitles, and inline-alert action labels must stay readable on narrow windows by wrapping instead of disappearing or being truncated.
 - Workflow actions and the dismiss affordance must share one trailing horizontal action row, with dismiss ordered last. A restored-draft warning should read as `Discard...`, `Save...`, then the close icon in the same group.
 - Save/Discard action widths should stay visually balanced so restored-document banners do not jitter while the window is being resized.
