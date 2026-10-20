@@ -36,6 +36,7 @@ use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::construction_spans;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, PREVIEW_DEFAULT_WIDTH_SP};
 use crate::ui::open_popover::LushtextOpenPopover;
 use crate::ui::properties_panel::LushtextPropertiesPanel;
@@ -470,6 +471,11 @@ pub struct LushtextWindow {
     /// Read-only Markdown preview paired with the active editor.
     #[template_child]
     pub markdown_preview: TemplateChild<LushtextMarkdownPreview>,
+    /// The selected tab's document alert, shown above the preview only in
+    /// preview-only mode, where the editor's own bar is hidden with the editor.
+    /// Projected by the notification workflow; never hosts state of its own.
+    #[template_child]
+    pub preview_document_alert: TemplateChild<LushtextInfoBar>,
     /// Central shell containing editor, preview, and search panel surfaces.
     #[template_child]
     pub content_box: TemplateChild<gtk4::Box>,
@@ -611,6 +617,7 @@ impl Default for LushtextWindow {
             preview_split_view: TemplateChild::default(),
             editor_box: TemplateChild::default(),
             markdown_preview: TemplateChild::default(),
+            preview_document_alert: TemplateChild::default(),
             content_box: TemplateChild::default(),
             search_panel_revealer: TemplateChild::default(),
             search_panel: TemplateChild::default(),
@@ -680,6 +687,7 @@ impl ObjectSubclass for LushtextWindow {
         LushtextCommandPalette::ensure_type();
         LushtextOpenPopover::ensure_type();
         LushtextMarkdownPreview::ensure_type();
+        LushtextInfoBar::ensure_type();
         LushtextPropertiesPanel::ensure_type();
         LushtextSearchPanel::ensure_type();
         ClipBin::ensure_type();
@@ -741,6 +749,7 @@ impl ObjectImpl for LushtextWindow {
         let preferred_preview_width = settings.int(keys::PREVIEW_PANE_POSITION);
         self.preferred_preview_width.set(preferred_preview_width);
         obj.sync_preview_width_constraints(w);
+        obj.wire_preview_document_alert();
         obj.apply_preview_shell_state();
         let stage_start = obj.record_construction_stage("preview_restore", stage_start);
 

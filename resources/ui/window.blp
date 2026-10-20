@@ -174,47 +174,56 @@ template $LushtextWindow: Adw.ApplicationWindow {
                 StackPage {
                   name: "tabs";
 
-                  child: Adw.MultiLayoutView preview_layout_view {
-                    vexpand: true;
-                    hexpand: true;
+                  child: Box {
+                    orientation: vertical;
 
-                    Adw.Layout {
-                      name: "editor";
+                    // The selected tab's document alert, shown here only in
+                    // preview-only mode, where the editor column (and its own
+                    // banner) is hidden. Projected by ui/window/notifications.
+                    $LushtextInfoBar preview_document_alert {}
 
-                      content: Adw.OverlaySplitView preview_split_view {
-                        vexpand: true;
-                        hexpand: true;
+                    Adw.MultiLayoutView preview_layout_view {
+                      vexpand: true;
+                      hexpand: true;
+
+                      Adw.Layout {
+                        name: "editor";
+
+                        content: Adw.OverlaySplitView preview_split_view {
+                          vexpand: true;
+                          hexpand: true;
+
+                          content: Adw.LayoutSlot {
+                            id: "editor";
+                          };
+
+                          sidebar: Adw.LayoutSlot {
+                            id: "preview";
+                          };
+                        };
+                      }
+
+                      Adw.Layout {
+                        name: "preview";
 
                         content: Adw.LayoutSlot {
-                          id: "editor";
-                        };
-
-                        sidebar: Adw.LayoutSlot {
                           id: "preview";
                         };
-                      };
-                    }
-
-                    Adw.Layout {
-                      name: "preview";
-
-                      content: Adw.LayoutSlot {
-                        id: "preview";
-                      };
-                    }
-
-                    [editor]
-                    Box editor_box {
-                      orientation: vertical;
-
-                      Adw.TabView tab_view {
-                        vexpand: true;
                       }
-                    }
 
-                    [preview]
-                    $LushtextMarkdownPreview markdown_preview {
-                      visible: "false";
+                      [editor]
+                      Box editor_box {
+                        orientation: vertical;
+
+                        Adw.TabView tab_view {
+                          vexpand: true;
+                        }
+                      }
+
+                      [preview]
+                      $LushtextMarkdownPreview markdown_preview {
+                        visible: "false";
+                      }
                     }
                   };
                 }

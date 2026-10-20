@@ -41,6 +41,7 @@ use crate::ui::editor_page::{
     MinimapNativeSliderDiagnostics, MinimapProjectedBounds, MinimapTextViewRect,
 };
 use crate::ui::window::LushtextWindow;
+use crate::ui::window::notifications::evidence::notification_evidence;
 use gio::prelude::*;
 use glib::prelude::ToVariant;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -2104,6 +2105,8 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
         open_popover_visible: open_popover_visible(window),
         preview_pane_visible: imp.preview_visible.get(),
         preview_mode: imp.preview_mode.get(),
+        preview_document_alert_visible: notification_evidence(window)
+            .preview_document_alert_visible,
         focus_mode: imp.focus_mode.active.get(),
         minimap_requested: imp.settings.boolean(config::keys::SHOW_MINIMAP),
         status_bar_visible: imp.status_bar.is_visible(),

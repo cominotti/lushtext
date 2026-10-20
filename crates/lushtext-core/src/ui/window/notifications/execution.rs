@@ -21,6 +21,12 @@
 //! is perceivable, the first time it is (`announcement ledger`), and a status
 //! message is announced at acknowledgement, when it was just published and won
 //! the lane.
+//!
+//! The pass also projects the selected tab's alert onto the window-hosted copy
+//! above the preview, only while preview-only mode hides the editor column, and
+//! records what it projected as a `DocumentAlertProjectionTicket`. A click on
+//! the copy resumes in `forward_preview_document_alert`, which forwards it to
+//! the selected editor's own bar only while that ticket is still current.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -28,12 +34,12 @@ use std::collections::{HashMap, HashSet};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
-use crate::services::notifications::{InlineActionNotification, StatusMessage};
+use crate::services::notifications::{InlineActionNotification, InlineAlertAction, StatusMessage};
 use crate::ui::editor_page::LushtextEditorPage;
 
 use super::super::LushtextWindow;
 use super::evidence::InlineAlertAnnouncementCounts;
-use super::policy::{self, InlineAlertSurface};
+use super::policy::{self, DocumentAlertFacts, DocumentAlertProjectionTicket, InlineAlertSurface};
 
 /// Window-owned coordination state of the projection pass.
 ///
@@ -45,17 +51,17 @@ use super::policy::{self, InlineAlertSurface};
 pub(crate) struct NotificationProjectionState {
     announced: RefCell<HashMap<usize, String>>,
     counts: Cell<InlineAlertAnnouncementCounts>,
+    /// What the preview copy currently shows, if anything.
+    preview_ticket: RefCell<Option<DocumentAlertProjectionTicket>>,
 }
 
 impl NotificationProjectionState {
     /// How many editors have their current alert recorded as announced.
-    #[cfg(feature = "test-utils")]
     pub(super) fn announced_len(&self) -> usize {
         self.announced.borrow().len()
     }
 
     /// The announcements emitted so far, per surface.
-    #[cfg(feature = "test-utils")]
     pub(super) fn counts(&self) -> InlineAlertAnnouncementCounts {
         self.counts.get()
     }
@@ -66,6 +72,14 @@ impl NotificationProjectionState {
     /// entry is dropped explicitly rather than left for the next pass.
     pub(super) fn forget(&self, owner_id: usize) {
         self.announced.borrow_mut().remove(&owner_id);
+    }
+
+    /// The owner id and alert key the preview copy was last projected for.
+    pub(super) fn preview_projection(&self) -> Option<(usize, String)> {
+        self.preview_ticket
+            .borrow()
+            .as_ref()
+            .map(|ticket| (ticket.owner_id(), ticket.alert_key().to_string()))
     }
 
     fn count(&self, update: impl FnOnce(&mut InlineAlertAnnouncementCounts)) {
@@ -104,6 +118,7 @@ pub(super) fn project_notification_surfaces(
     let tab_view = &imp.tab_view;
     let selected_page = tab_view.selected_page();
     let mut owners_with_alerts = HashSet::new();
+    let mut selected_view = None;
     let mut perceivable = None;
     for index in 0..tab_view.n_pages() {
         let page = tab_view.nth_page(index);
@@ -115,12 +130,21 @@ pub(super) fn project_notification_surfaces(
         };
         let owner_id = editor.notification_owner_id();
         let editor_view = imp.notification_bus.editor_info_bar_view(owner_id);
+        let is_selected = selected_page.as_ref() == Some(&page);
+        let focus_on_bar = is_selected && focus_is_on(window, editor.info_bar());
         editor.info_bar().render_notification(editor_view.as_ref());
+        if focus_on_bar && editor_view.is_none() {
+            // A focused Dismiss hides its own button, and GTK leaves focus on
+            // the hidden widget; give it back to the document.
+            editor.source_view().grab_focus();
+        }
         let Some(notification) = editor_view else {
             continue;
         };
         owners_with_alerts.insert(owner_id);
-        let is_selected = selected_page.as_ref() == Some(&page);
+        if is_selected {
+            selected_view = Some(notification.clone());
+        }
         if let Some(surface) = policy::inline_alert_perceivable_on(preview_only, is_selected) {
             perceivable = Some((editor, notification, surface));
         }
@@ -132,6 +156,12 @@ pub(super) fn project_notification_surfaces(
         .announced
         .borrow_mut()
         .retain(|owner_id, _| owners_with_alerts.contains(owner_id));
+
+    let selected_owner = selected_page
+        .as_ref()
+        .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
+        .map(|editor| editor.notification_owner_id());
+    project_preview_document_alert(window, preview_only, selected_owner, selected_view.as_ref());
 
     if let Some((editor, notification, surface)) = perceivable {
         announce_once(window, &editor, &notification, surface);
@@ -167,8 +197,103 @@ fn announce_once(
             editor.info_bar().announce_alert(notification);
             projection.count(|counts| counts.editor_info_bar += 1);
         }
+        InlineAlertSurface::PreviewSurface => {
+            window
+                .imp()
+                .preview_document_alert
+                .announce_alert(notification);
+            projection.count(|counts| counts.preview_surface += 1);
+        }
     }
     projection.announced.borrow_mut().insert(owner_id, key);
+}
+
+/// Render the selected tab's alert onto the preview copy, or hide the copy.
+///
+/// Shown only in preview-only mode; in the other layouts the editor's own bar
+/// is on screen, and one banner per document is the rule. When the copy hides
+/// while preview-only stays active and keyboard focus was on it, focus moves to
+/// the preview text if it is shown, and otherwise to nothing — never to GTK's
+/// first focusable fallback, which is a sidebar button.
+fn project_preview_document_alert(
+    window: &LushtextWindow,
+    preview_only: bool,
+    selected_owner: Option<usize>,
+    selected_view: Option<&InlineActionNotification>,
+) {
+    let imp = window.imp();
+    let alert = &*imp.preview_document_alert;
+    let plan = policy::plan_preview_document_alert(preview_only, selected_owner, selected_view);
+    let was_projected = imp
+        .notification_projection
+        .preview_ticket
+        .borrow()
+        .is_some();
+    // GTK leaves focus on a button that hides itself, and the dismiss path can
+    // also leave the window with none; either is stranded once the copy hides.
+    let focus_stranded =
+        focus_is_on(window, alert) || (was_projected && GtkWindowExt::focus(window).is_none());
+    alert.render_notification(plan.as_ref().and(selected_view));
+    let hidden_now = plan.is_none();
+    imp.notification_projection.preview_ticket.replace(plan);
+
+    if preview_only && hidden_now && focus_stranded {
+        hand_focus_to_preview(window);
+    }
+}
+
+/// Whether the window's focus widget is `bar` or inside it.
+fn focus_is_on(window: &LushtextWindow, bar: &impl IsA<gtk4::Widget>) -> bool {
+    GtkWindowExt::focus(window)
+        .is_some_and(|focus| focus.is_ancestor(bar) || &focus == bar.upcast_ref::<gtk4::Widget>())
+}
+
+/// Move focus off a hidden preview copy, per the overlay focus-restoration rule.
+fn hand_focus_to_preview(window: &LushtextWindow) {
+    let text_view = window.imp().markdown_preview.text_view();
+    if text_view.is_mapped() && text_view.is_focusable() {
+        text_view.grab_focus();
+    } else {
+        GtkWindowExt::set_focus(window, None::<&gtk4::Widget>);
+    }
+}
+
+/// A button on the preview copy was activated: forward it to the selected
+/// editor's own bar, which runs the handlers `wire_info_bar` installed.
+///
+/// This is the forward's resumption point. The click acts only while the
+/// ticket from the last projection still matches the live state; otherwise —
+/// the selection moved while tab-derived projections were deferred, or the
+/// alert changed — it runs no handler and re-projects instead.
+pub(super) fn forward_preview_document_alert(window: &LushtextWindow, action: InlineAlertAction) {
+    let imp = window.imp();
+    let selected = imp
+        .tab_view
+        .selected_page()
+        .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok());
+    let facts = DocumentAlertFacts {
+        preview_only: imp.preview_mode.get(),
+        selected_owner: selected
+            .as_ref()
+            .map(LushtextEditorPage::notification_owner_id),
+        current_alert_key: selected
+            .as_ref()
+            .and_then(|editor| {
+                imp.notification_bus
+                    .editor_info_bar_view(editor.notification_owner_id())
+            })
+            .map(|notification| policy::inline_alert_announcement_key(&notification)),
+    };
+    let current = imp
+        .notification_projection
+        .preview_ticket
+        .borrow()
+        .as_ref()
+        .is_some_and(|ticket| policy::document_alert_projection_is_current(ticket, &facts));
+    match selected {
+        Some(editor) if current => editor.info_bar().activate(action),
+        _ => window.render_notifications(),
+    }
 }
 
 /// Install the recurring expiry sweep on GTK's local main loop.

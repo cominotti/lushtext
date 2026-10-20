@@ -81,6 +81,26 @@ pub struct InlineActionNotification {
     pub secondary_button: Option<String>,
 }
 
+/// One button of an inline alert, named for the role it plays on the alert.
+///
+/// Shared by both surfaces that present an editor's alert — the editor's own
+/// bar and the window-hosted copy above the preview — so a click on the copy
+/// can be forwarded to the editor's bar without either defining a private copy
+/// of this vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineAlertAction {
+    /// The error alert's primary button ("_Retry").
+    Retry,
+    /// The warning alert's primary button: discard and reload, discard a
+    /// restored draft, normalize line endings, undo a local-history restore, or
+    /// show the local history.
+    Primary,
+    /// The warning alert's secondary button ("_Save…" / "Save _As…").
+    Secondary,
+    /// The trailing dismiss button.
+    Dismiss,
+}
+
 /// Payload variants stored by the notification bus.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotificationPayload {

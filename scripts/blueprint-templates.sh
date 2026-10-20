@@ -263,8 +263,12 @@ accepted_policy = {
             "classified: composite-template children are owned by editor geometry, not standalone scroll containers",
         ),
         "resources/ui/window.blp": (
-            8,
-            "classified: shell children own layout, overlay, and secondary-surface geometry",
+            9,
+            "classified: shell children own layout, overlay, and secondary-surface geometry, including the preview-only document alert",
+        ),
+        "resources/ui/workspace-section.blp": (
+            2,
+            "classified: GtkLushViewportSliceBin is the file tree's scroll host (it owns the ListView's adjustments) inside the sidebar's outer scroller",
         ),
     },
     "translate_display_string": {
