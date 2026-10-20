@@ -191,6 +191,24 @@ OOM-killed inside the cap. A mutant whose test was OOM-killed reads as
 **caught**, so a run that hit the cap is discarded and rerun at the defaults.
 Override a knob inline for one measured run, never as a new default.
 
+**A test loop that cannot fail on lack of progress is a memory hazard under
+mutation.** The thread counts were not the whole cause of those kills. Per-test
+peak RSS on the unmutated tree is at most 171 MB (all 2,185 non-widget tests
+measured one at a time under `/usr/bin/time`; the largest is
+`search_backup::tests::incremental_journal_over_the_retained_memory_cap_is_inactive`).
+But two `document-scale-policy` test helpers, `breaks` in
+`model/paragraph_boundary.rs` and `breaks_of` in
+`model/paragraph_profile_watch.rs`, collected paragraph breaks in a
+`while let Some(..) = next_paragraph_break(..)` loop that pushed before checking
+that the break advanced. A mutant whose break does not advance
+(`next_start: index + 1` with `index * 1`) turned eight tests into unbounded
+`Vec` growth: at least 2.1 GB each in 8.5 s under a 3 GiB address-space
+limit, which matches the 4.5 GB test process killed at 12:35 during a
+`paragraph_boundary.rs` mutation run without one. Each helper now
+asserts progress first, and the same eight tests fail in 0.02 s at 33 MB. A
+test loop that collects while it walks the code under test must check that it
+advances before it stores anything.
+
 CI deliberately does not use this. The mutation workflow calls
 `scripts/run-mutants.sh` directly and leaves `MUTANTS_JOBS` unset, so the small
 sharded runners keep cargo-mutants' serial default; cross-machine fan-out there

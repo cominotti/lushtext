@@ -417,6 +417,9 @@ mod tests {
         let mut out = Vec::new();
         let mut cursor = 0;
         while let Some(found) = next_paragraph_break(&text, cursor) {
+            // A break that does not advance would grow `out` without bound;
+            // fail at once instead (see `paragraph_boundary`'s `breaks`).
+            assert!(found.next_start > cursor, "a paragraph break must advance");
             out.push(text[..found.next_start].chars().count());
             cursor = found.next_start;
         }
