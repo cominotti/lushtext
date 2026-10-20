@@ -576,14 +576,11 @@ impl LushtextSearchPanel {
                 panel.seed_hidden_toggle();
             }
         });
-        let panel_weak = self.obj().downgrade();
-        self.settings.connect_changed(
-            Some(crate::config::keys::WORKSPACE_SHOW_HIDDEN_FILES),
-            move |_, _| {
-                if let Some(panel) = panel_weak.upgrade()
-                    && panel.is_mapped()
-                    && !panel.is_searching()
-                {
+        crate::ui::settings_writes::connect_changed_for(
+            &*self.obj(),
+            crate::config::keys::WORKSPACE_SHOW_HIDDEN_FILES,
+            |panel, _| {
+                if panel.is_mapped() && !panel.is_searching() {
                     panel.seed_hidden_toggle();
                 }
             },

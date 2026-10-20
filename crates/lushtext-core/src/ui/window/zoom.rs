@@ -102,12 +102,11 @@ pub(super) fn setup_zoom_controls(window: &super::LushtextWindow) {
         });
     }
 
-    // React to external zoom changes (keyboard shortcuts, command palette).
-    {
-        settings.connect_changed(Some(keys::ZOOM_LEVEL), move |s, _| {
-            sync_ui(s.uint(keys::ZOOM_LEVEL).clamp(ZOOM_MIN, ZOOM_MAX));
-        });
-    }
+    // React to external zoom changes (keyboard shortcuts, command palette),
+    // for as long as the controls exist.
+    crate::ui::settings_writes::connect_changed_for(&container, keys::ZOOM_LEVEL, move |_, s| {
+        sync_ui(s.uint(keys::ZOOM_LEVEL).clamp(ZOOM_MIN, ZOOM_MAX));
+    });
 
     // Insert into the hamburger menu popover.
     let menu_button = &window.imp().primary_menu_button;

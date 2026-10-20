@@ -19,6 +19,7 @@ use gtk4::prelude::*;
 use crate::config::keys;
 use crate::ui::accessibility;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::settings_writes;
 
 use super::super::LushtextWindow;
 use super::policy;
@@ -188,24 +189,13 @@ pub(super) fn install_reveal_controllers(window: &LushtextWindow) {
 /// because typewriter scrolling is an editor-local behavior with no preview
 /// counterpart.
 pub(super) fn install_settings_hooks(window: &LushtextWindow) {
-    let imp = window.imp();
-    {
-        let window_weak = window.downgrade();
-        imp.settings
-            .connect_changed(Some(keys::FOCUS_MODE_TARGET_COLUMNS), move |_, _| {
-                if let Some(window) = window_weak.upgrade() {
-                    apply_to_editors(&window);
-                    window.refresh_focus_mode_preview_column();
-                }
-            });
-    }
-    {
-        let window_weak = window.downgrade();
-        imp.settings
-            .connect_changed(Some(keys::FOCUS_MODE_TYPEWRITER_SCROLLING), move |_, _| {
-                if let Some(window) = window_weak.upgrade() {
-                    apply_to_editors(&window);
-                }
-            });
-    }
+    settings_writes::connect_changed_for(window, keys::FOCUS_MODE_TARGET_COLUMNS, |window, _| {
+        apply_to_editors(window);
+        window.refresh_focus_mode_preview_column();
+    });
+    settings_writes::connect_changed_for(
+        window,
+        keys::FOCUS_MODE_TYPEWRITER_SCROLLING,
+        |window, _| apply_to_editors(window),
+    );
 }

@@ -64,13 +64,11 @@ impl LushtextPreferences {
 
         // Re-project from the key so dconf edits, automation, and Reset all
         // render through the same path without duplicating rows.
-        let prefs_weak = self.downgrade();
-        imp.settings
-            .connect_changed(Some(keys::WORKSPACE_EXCLUDED_NAMES), move |_, _| {
-                if let Some(prefs) = prefs_weak.upgrade() {
-                    prefs.project_excluded_names();
-                }
-            });
+        crate::ui::settings_writes::connect_changed_for(
+            self,
+            keys::WORKSPACE_EXCLUDED_NAMES,
+            |prefs, _| prefs.project_excluded_names(),
+        );
         self.project_excluded_names();
     }
 

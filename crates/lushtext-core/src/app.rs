@@ -50,12 +50,13 @@ pub(crate) fn register_boolean_setting_toggle_action(
             crate::ui::settings_writes::set_boolean(settings_key, enabled);
         });
     }
-    let action_weak = action.downgrade();
-    settings.connect_changed(Some(settings_key), move |settings, _| {
-        if let Some(action) = action_weak.upgrade() {
+    crate::ui::settings_writes::connect_changed_for(
+        &action,
+        settings_key,
+        move |action, settings| {
             action.set_state(&settings.boolean(settings_key).to_variant());
-        }
-    });
+        },
+    );
     map.add_action(&action);
     action
 }

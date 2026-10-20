@@ -791,42 +791,29 @@ impl ObjectImpl for LushtextWindow {
                 });
         }
 
-        {
-            let window_weak = obj.downgrade();
-            settings.connect_changed(Some(keys::USE_EDITORCONFIG), move |s, _| {
-                if let Some(window) = window_weak.upgrade() {
-                    window.on_use_editorconfig_changed(s.boolean(keys::USE_EDITORCONFIG));
-                }
-            });
-        }
+        settings_writes::connect_changed_for(&*obj, keys::USE_EDITORCONFIG, |window, s| {
+            window.on_use_editorconfig_changed(s.boolean(keys::USE_EDITORCONFIG));
+        });
 
-        {
-            let window_weak = obj.downgrade();
-            settings.connect_changed(Some(keys::PREVIEW_PANE_POSITION), move |s, _| {
-                let Some(window) = window_weak.upgrade() else {
-                    return;
-                };
-                window
-                    .imp()
-                    .preferred_preview_width
-                    .set(s.int(keys::PREVIEW_PANE_POSITION));
-                window.sync_preview_width_constraints(current_window_width(&window));
-                window.queue_preview_layout_settle();
-            });
-        }
+        settings_writes::connect_changed_for(&*obj, keys::PREVIEW_PANE_POSITION, |window, s| {
+            window
+                .imp()
+                .preferred_preview_width
+                .set(s.int(keys::PREVIEW_PANE_POSITION));
+            window.sync_preview_width_constraints(current_window_width(window));
+            window.queue_preview_layout_settle();
+        });
 
-        {
-            let window_weak = obj.downgrade();
-            settings.connect_changed(Some(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION), move |s, _| {
-                let Some(window) = window_weak.upgrade() else {
-                    return;
-                };
+        settings_writes::connect_changed_for(
+            &*obj,
+            keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION,
+            |window, s| {
                 let preset = WorkspaceSidebarWidthPreset::from_fraction(
                     s.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION),
                 );
-                set_workspace_sidebar_preset(&window, preset);
-            });
-        }
+                set_workspace_sidebar_preset(window, preset);
+            },
+        );
 
         {
             let window_weak = obj.downgrade();

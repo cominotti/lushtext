@@ -235,6 +235,28 @@ pub fn shared() -> gio::Settings {
     instance().settings.clone()
 }
 
+/// Run `on_changed` whenever `key` changes on the shared instance, for as long
+/// as `owner` lives.
+///
+/// The shared instance outlives every window and widget, so a handler
+/// connected to it directly would stay registered (and keep everything its
+/// closure captured) after its owner is gone. This one holds `owner` weakly
+/// and is disconnected when `owner` is finalized.
+pub fn connect_changed_for<O, F>(owner: &O, key: &'static str, on_changed: F)
+where
+    O: IsA<glib::Object>,
+    F: Fn(&O, &gio::Settings) + 'static,
+{
+    let settings = shared();
+    let owner_weak = owner.downgrade();
+    let handler = settings.connect_changed(Some(key), move |settings, _| {
+        if let Some(owner) = owner_weak.upgrade() {
+            on_changed(&owner, settings);
+        }
+    });
+    let _ = owner.add_weak_ref_notify_local(move || settings.disconnect(handler));
+}
+
 /// Write `value` to `key` through the writer (change-only, flushed later).
 pub fn set_value(key: &str, value: &glib::Variant) {
     instance().write(key, value);

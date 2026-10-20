@@ -668,27 +668,22 @@ impl LushtextWindow {
         if settings_key != keys::SHOW_MINIMAP {
             return;
         }
-        let window_weak = self.downgrade();
-        self.imp()
-            .settings
-            .connect_changed(Some(settings_key), move |s, _| {
-                let enabled = s.boolean(settings_key);
-                if let Some(window) = window_weak.upgrade() {
-                    window.announce_workflow_update(
-                        AnnouncementLane::StatusUpdate,
-                        if enabled {
-                            "minimap-shown"
-                        } else {
-                            "minimap-hidden"
-                        },
-                        if enabled {
-                            "Minimap shown"
-                        } else {
-                            "Minimap hidden"
-                        },
-                    );
-                }
-            });
+        crate::ui::settings_writes::connect_changed_for(self, settings_key, move |window, s| {
+            let enabled = s.boolean(settings_key);
+            window.announce_workflow_update(
+                AnnouncementLane::StatusUpdate,
+                if enabled {
+                    "minimap-shown"
+                } else {
+                    "minimap-hidden"
+                },
+                if enabled {
+                    "Minimap shown"
+                } else {
+                    "Minimap hidden"
+                },
+            );
+        });
     }
 
     pub(super) fn setup_shortcuts(&self) {

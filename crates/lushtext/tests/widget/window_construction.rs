@@ -16,17 +16,18 @@
 //! - the last window's close persists the exact size synchronously, and closing
 //!   a non-last window flushes nothing synchronously;
 //! - a write's effects reach other readers (a window's preset, a new editor
-//!   page's invisible-character mode) before any flush.
+//!   page's invisible-character mode) before any flush;
+//! - a `changed` handler on the shared instance lives only as long as its
+//!   owner (`settings_writes::connect_changed_for`).
 //!
 //! Before this change a steady-state construction made three writes and a
 //! fresh one eight, every one of them inside the constructing dispatch.
 
 use crate::common::{
     active_editor, fixture, flush_after_delay, flush_events, fs_metadata, keyfile_settings_backend,
-    present_window, test_application, wait_until,
+    present_window, test_application, test_window, wait_for_startup_data_flow, wait_until,
 };
 use gio::prelude::*;
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::config::{APP_ID, keys};
 use lushtext_core::ui::settings_writes;
@@ -303,4 +304,43 @@ fn test_effects_reach_other_readers_before_any_flush() {
         "off",
         "another instance sees the value only at the flush (A39)"
     );
+}
+
+/// The shared settings instance outlives every window, so a handler connected
+/// through `connect_changed_for` must be disconnected, and its captures
+/// released, when its owner is finalized.
+#[test]
+fn test_a_changed_handler_lives_only_as_long_as_its_owner() {
+    let _keyfile = keyfile_settings_backend(Some(STEADY_PROFILE));
+    let calls = Rc::new(Cell::new(0u32));
+    let owner = gtk4::Label::new(None);
+    {
+        let calls = Rc::clone(&calls);
+        settings_writes::connect_changed_for(&owner, keys::ZOOM_LEVEL, move |_, _| {
+            calls.set(calls.get() + 1);
+        });
+    }
+    // GSettings emits `changed` only for a key read since the handler was
+    // connected.
+    let zoom = settings_writes::shared().uint(keys::ZOOM_LEVEL);
+    settings_writes::set_uint(keys::ZOOM_LEVEL, zoom + 10);
+    flush_events();
+    assert_eq!(calls.get(), 1, "the handler runs while its owner lives");
+    assert_eq!(
+        Rc::strong_count(&calls),
+        2,
+        "the handler holds its captures"
+    );
+
+    drop(owner);
+    flush_events();
+    assert_eq!(
+        Rc::strong_count(&calls),
+        1,
+        "finalizing the owner disconnected the handler and released its captures"
+    );
+    let _ = settings_writes::shared().uint(keys::ZOOM_LEVEL);
+    settings_writes::set_uint(keys::ZOOM_LEVEL, zoom);
+    flush_events();
+    assert_eq!(calls.get(), 1, "a disconnected handler never runs again");
 }

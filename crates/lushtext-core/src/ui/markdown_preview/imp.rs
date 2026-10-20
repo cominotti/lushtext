@@ -354,21 +354,16 @@ impl ObjectImpl for LushtextMarkdownPreview {
                 .clamp(0.0, 1.0),
         );
 
-        {
-            let settings = crate::ui::settings_writes::shared();
-            let preview_weak = self.obj().downgrade();
-            settings.connect_changed(
-                Some(crate::config::keys::TAB_CONTENT_OPACITY),
-                move |s, _| {
-                    if let Some(preview) = preview_weak.upgrade() {
-                        preview.imp().background_opacity.set(
-                            s.double(crate::config::keys::TAB_CONTENT_OPACITY)
-                                .clamp(0.0, 1.0),
-                        );
-                    }
-                },
-            );
-        }
+        crate::ui::settings_writes::connect_changed_for(
+            &*self.obj(),
+            crate::config::keys::TAB_CONTENT_OPACITY,
+            |preview, s| {
+                preview.imp().background_opacity.set(
+                    s.double(crate::config::keys::TAB_CONTENT_OPACITY)
+                        .clamp(0.0, 1.0),
+                );
+            },
+        );
 
         // Re-create tags when the dark/light mode changes so colors stay correct.
         let obj_weak = self.obj().downgrade();

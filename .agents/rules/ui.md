@@ -409,6 +409,11 @@ Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Se
   frame, or in an interaction dispatch; the writer flushes once per persistence
   window after the first frame. Because every reader shares the delayed
   instance, a write reaches other windows and editor pages at once (A39, A41).
+  The shared instance outlives every window and widget, so subscribe a
+  widget-owned handler with `settings_writes::connect_changed_for(owner, key, f)`,
+  which holds the owner weakly and disconnects when it is finalized (or track
+  the handler id in a `SignalBag` cleared in `dispose`, as `EditorPage` does);
+  a bare `connect_changed` on it would outlive its owner.
 
 - **Direct bindings** for properties with matching types: `show-line-numbers`, `show-line-marks`, and `highlight-current-line`. Preferences dialog uses two-way (`DEFAULT`), editor pages use one-way (`GET`).
 - **Mapped bindings** for pure setting projections whose property type differs, such as `word-wrap` (bool -> `GtkWrapMode`) and `minimap-width` (integer -> clamped `width-request`). Keep separate `connect_changed()` handlers only for side effects such as minimap geometry or marker refresh.
