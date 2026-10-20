@@ -44,11 +44,12 @@ MONITOR="${GTK_AXIOMS_MONITOR:-1280x1024}"
 # Any warning or critical is a defect here, as in the widget lane, whatever
 # process or log domain printed it: a GLib-style "** (prog:pid): WARNING **"
 # from a helper (xdg-dbus-proxy logs as "(process:pid)", with no domain), a
-# Broken pipe, or a runtime directory the session could not remove all fail the
-# lane. The private session's own mutter and dbus-daemon chatter is not ours;
+# Broken pipe, a library's "*** BUG ***" report (pixman's invalid-rectangle
+# line, which bypasses GLib logging), or a runtime directory the session could
+# not remove all fail the lane. The private session's own mutter and dbus-daemon chatter is not ours;
 # BENIGN_NOISE_REGEX names exactly those lines, taken from the widget runner's
 # list of what the same headless session prints on the hosts and CI images.
-WARNING_REGEX='(WARNING|CRITICAL|Broken pipe|cannot remove|^MESA: error:)'
+WARNING_REGEX='(WARNING|CRITICAL|\*\*\* BUG \*\*\*|Broken pipe|cannot remove|^MESA: error:)'
 BENIGN_NOISE_REGEX='(^dbus-daemon\[[0-9]+\]: |^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. |^\(mutter:[0-9]+\): mutter-WARNING \*\*: .*Failed to acquire org\.freedesktop\.locale1 proxy: Could not connect: No such file or directory$|^\(mutter:[0-9]+\): libmutter-WARNING \*\*: .*Failed to connect to colord daemon: Could not connect: No such file or directory$)'
 
 # An SDK sandbox gets no D-Bus proxy and no document portal: the sample checks
@@ -176,6 +177,8 @@ self_test() {
         '(process:12): GLib-GIO-WARNING **: 02:16:21.611: Error creating IO channel'
         '(process:12): Adwaita-WARNING **: 02:16:21.611: unknown style class'
         '(mutter:582): mutter-WARNING **: 09:42:29.034: an unlisted compositor warning'
+        '*** BUG ***'
+        'In pixman_region32_init_rect: Invalid rectangle passed *** BUG ***'
     )
     local failed=0
     printf '%s\n' "${benign[@]}" >"$log_file"

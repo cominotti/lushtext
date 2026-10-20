@@ -88,7 +88,10 @@ first toplevel realize's one-time cost, present and late composition
 skipping invisible subtrees, concealed revealers, and breakpoints matching
 before or after map) followed with LushText's staged window composition
 (`first-frame-window-shell`), with the `CountingWidget` and `PhaseRecorder`
-fixtures; A42–A45 belong to `document-scale-policy`. A51 (a realize frame
+fixtures; A42–A45 belong to `document-scale-policy` (paragraph
+delimiters, `chars_in_line` cost, a same-emission language downgrade, and an
+unparented widget's armed tick; A43 is verified by source and has no in-crate
+probe). A51 (a realize frame
 runs on the unmapped window, is never presented, and paces the first visible
 frame one `FRAME_INTERVAL` later) followed with LushText's merged
 realize-and-present dispatch (`shorten-window-content-fill-in`), with the

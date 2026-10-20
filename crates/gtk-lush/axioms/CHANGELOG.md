@@ -125,6 +125,15 @@
   `slow_skip_line`. The probe runner and a sample's `--check` skip a slow
   probe unless the switch is `1`, printing `skipped (slow): <id>`. No probe
   is slow yet.
+- Probes and samples for A42 (`GtkTextBuffer` lines end exactly at Pango's
+  paragraph delimiters: `\n`, `\r`, `\r\n`, U+2029, never U+2028 or
+  U+0085), A44 (a language cleared in an `insert-text` after-handler leaves the
+  inserted text untagged) and A45 (a widget unparented with a tick callback
+  armed never runs it; unparenting and dropping a `GtkSourceMap` with its
+  update tick armed logs no CRITICAL), and a catalogue entry for A43
+  (`chars_in_line` walks segments, verified by source, no in-crate probe), for
+  `document-scale-policy`. New fixtures under `fixtures::a42`, `fixtures::a44`
+  and `fixtures::a45`.
 - Probe and sample for A51 (`shorten-window-content-fill-in`): realizing a
   toplevel schedules a frame that runs ahead of default-idle sources; on the
   unmapped surface it emits `after-paint`, is never presented, and paces the
