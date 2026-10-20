@@ -35,7 +35,7 @@ use super::policy::{
     ProjectedBoundsFit, document_height_from_line_span, fit_marker_bounds,
     fit_native_slider_to_source_map_bounds, fit_projected_bounds, line_bottom_in_target,
     line_top_in_target, marker_lane_width, marker_lane_x, marker_rgba, markers_from_lines,
-    modified_line_mark_samples, native_slider_estimate_from_inputs,
+    minimap_unavailable_message, modified_line_mark_samples, native_slider_estimate_from_inputs,
     wide_editor_slider_offset_class,
 };
 use crate::config::keys;
@@ -158,21 +158,21 @@ impl LushtextEditorPage {
         }
         let availability = current_availability(self);
         self.imp().minimap.availability.set(availability);
-        if availability != MinimapAvailability::TooLarge {
+        if availability != MinimapAvailability::Reduced {
             self.imp().minimap.too_large_feedback_shown.set(false);
         }
 
         // Visibility and native projection are one lifecycle decision. A
         // hidden GtkSourceMap that remains bound still performs text layout,
-        // so unavailable and load-suspended states must detach its view.
+        // so unavailable and load-suspended states retire the map instance,
+        // and a visible state attaches a freshly built one. A live map's view
+        // is never cleared (ledger A32).
         let projection_visible =
             availability == MinimapAvailability::Visible && !self.load_projection_suspended();
-        if let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref() {
-            if projection_visible && source_map.view().is_none() {
-                source_map.set_view(self.source_view());
-            } else if !projection_visible && source_map.view().is_some() {
-                source_map.set_property("view", Option::<sourceview5::View>::None);
-            }
+        if projection_visible {
+            self.attach_native_source_map();
+        } else {
+            self.retire_native_source_map();
         }
 
         let overlay = &self.imp().minimap_overlay;
@@ -259,7 +259,7 @@ impl LushtextEditorPage {
 
     /// Publish the one-shot "too large" message when this page is the active tab.
     fn publish_minimap_unavailable_feedback_if_needed(&self, availability: MinimapAvailability) {
-        if availability != MinimapAvailability::TooLarge
+        if availability != MinimapAvailability::Reduced
             || self.imp().minimap.too_large_feedback_shown.get()
             || !self.imp().settings.boolean(keys::SHOW_MINIMAP)
         {
@@ -278,7 +278,7 @@ impl LushtextEditorPage {
         }
 
         root.publish_status_message(
-            "Minimap unavailable for this large document",
+            minimap_unavailable_message(self.document_scale().reduced),
             MessageKind::Warning,
         );
         self.imp().minimap.too_large_feedback_shown.set(true);

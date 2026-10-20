@@ -277,12 +277,14 @@ impl FileLoadAdmissionPolicy {
 /// narrates in load vocabulary ("install slice"), while the arithmetic belongs to
 /// the cross-cutting bounded buffer-replacement policy
 /// ([`next_replacement_boundary`](super::buffer_replacement::next_replacement_boundary),
-/// owned by `WFR-BUFFER-REPLACEMENT`). Calling through here rather than copying
-/// it is what keeps the **paragraph-boundary contract** single-sourced: every
-/// slice ends just after a newline so GTK never re-lays-out an already-installed
-/// paragraph, and a paragraph larger than the slice budget installs in one turn.
-/// Read that function's documentation for the contract itself; this wrapper adds
-/// nothing but the name.
+/// owned by `WFR-BUFFER-REPLACEMENT`, itself the entry point of
+/// [`slice_end_after_paragraph`](super::paragraph_boundary::slice_end_after_paragraph)).
+/// Calling through here rather than copying it is what keeps the
+/// **paragraph-boundary contract** single-sourced: every slice ends just after a
+/// GTK paragraph delimiter (`\n`, `\r`, `\r\n` kept whole, or U+2029) so GTK
+/// never re-lays-out an already-installed paragraph, and a paragraph larger than
+/// the slice budget installs in one turn. Read those functions' documentation
+/// for the contract itself; this wrapper adds nothing but the name.
 #[must_use]
 pub fn next_install_boundary(text: &str, start: usize) -> usize {
     super::buffer_replacement::next_replacement_boundary(text, start)
@@ -324,6 +326,28 @@ mod tests {
         assert_eq!(end, INSTALL_SLICE_BYTES);
         assert!(text[..end].ends_with('\n'));
         assert_eq!(next_install_boundary(&text, text.len()), text.len());
+    }
+
+    #[test]
+    fn install_slices_end_after_every_gtk_paragraph_delimiter() {
+        // The load install path shares the GTK delimiter contract: CR-only and
+        // U+2029-separated documents above the synchronous threshold install
+        // in several bounded slices, and a CRLF pair at the budget edge stays
+        // whole.
+        for delimiter in ["\r", "\u{2029}", "\r\n"] {
+            let line = format!("{}{delimiter}", "x".repeat(1_000));
+            let text = line.repeat(SYNCHRONOUS_INSTALL_THRESHOLD_BYTES / line.len() + 1);
+            let mut start = 0;
+            let mut slices = 0;
+            while start < text.len() {
+                let end = next_install_boundary(&text, start);
+                assert!(end > start && end - start <= INSTALL_SLICE_BYTES);
+                assert!(text[..end].ends_with(delimiter));
+                start = end;
+                slices += 1;
+            }
+            assert!(slices > 1, "{delimiter:?} document installed in one turn");
+        }
     }
 
     #[test]

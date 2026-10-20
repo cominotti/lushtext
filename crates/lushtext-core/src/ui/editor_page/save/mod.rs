@@ -115,7 +115,8 @@
 //! | --- | --- |
 //! | `imp().load*`, `cancel_load`, the pending-load cancellation it triggers | read and invoked only; owned by the document-load workflow in `ui/editor_page/load/`, migrated by slot 3b |
 //! | `imp().restore.*` and the restore-position group | never touched; cross-cutting editor-page state with five owning workflows, in `ui/editor_page/restore_position.rs` |
-//! | `imp().size_check`, `file_size`, `load_state`, encoding state, `monitor.last_known_mtime` | **written by the accept terminal**, which adopts what the write actually produced. Owned jointly with load, which writes the same fields from its own terminal |
+//! | `file_size`, `load_state`, encoding state, `monitor.last_known_mtime` | **written by the accept terminal**, which adopts what the write actually produced. Owned jointly with load, which writes the same fields from its own terminal |
+//! | `imp().document_scale` | **joined by the accept terminal** with the saved byte count: the byte tiers follow it and presentation features never come back on. Owned by the cross-cutting `WFR-DOCUMENT-SCALE` coordination in `super::document_scale` |
 //! | `file_path`, `canonical_file_path` | shared editor-page identity, in `ui/editor_page/document_identity.rs`. The accept terminal **replaces the canonical path** with the one the write resolved, and Save As additionally **adopts the new display path** through `adopt_saved_destination`. Otherwise read-only here; the rename, open, and load flows own it too |
 //! | `imp().local_history.*`, draft and session records | the local-history and draft/session recovery workflows (slot 4) |
 //! | `ui::buffer_snapshot` and its chunked threshold, `ui::plain_disposal` | cross-cutting (slot 7) |

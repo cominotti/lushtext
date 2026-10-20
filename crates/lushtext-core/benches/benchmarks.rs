@@ -28,6 +28,7 @@ use lushtext_core::model::content_search::{
     ContentSearchOptions, MAX_REPLACE_PREVIEW_ROWS, Replacement, SearchEvent, SearchMatch,
     SearchMatchId, generate_replacement_preview,
 };
+use lushtext_core::model::document_scale::DocumentScale;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::editor_memory::{
     EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorResidency, EditorResidencyLedger,
@@ -45,6 +46,7 @@ use lushtext_core::model::palette::{
     IndexedFile, PaletteFileIdentity, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget,
     PaletteOpenEditorNoteSnapshot, PaletteSearchRow, SearchMode, SearchResultItem,
 };
+use lushtext_core::model::paragraph_boundary::{DocumentProfile, ProfileSummary};
 use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
@@ -57,7 +59,6 @@ use lushtext_core::model::workspace_search::{
 use lushtext_core::model::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
-use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::file_tree::{
     self, DirectoryEntry, DirectoryReconciliationPlan, DirectoryRowState,
 };
@@ -2244,20 +2245,54 @@ fn bench_file_index_incremental(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_file_size_classify(c: &mut Criterion) {
-    let mut group = c.benchmark_group("file_size_classify");
+fn bench_document_scale(c: &mut Criterion) {
+    let mut group = c.benchmark_group("document_scale");
 
-    let sizes: &[(&str, u64)] = &[
-        ("normal", 500_000),
-        ("large_toast", 5_000_000),
-        ("disable_syntax", 25_000_000),
-        ("disable_undo", 100_000_000),
-        ("too_large", 1_000_000_000),
+    // The policy itself: a handful of comparisons per profile.
+    let profiles: &[(&str, ProfileSummary)] = &[
+        (
+            "short_lines",
+            ProfileSummary {
+                total_bytes: 500_000,
+                longest_paragraph_chars: 120,
+                worst_batch_chars: 20_000,
+            },
+        ),
+        (
+            "giant_paragraph",
+            ProfileSummary {
+                total_bytes: 5_000_000,
+                longest_paragraph_chars: 1_900_000,
+                worst_batch_chars: 1_900_000,
+            },
+        ),
+        (
+            "too_large",
+            ProfileSummary {
+                total_bytes: 1_000_000_000,
+                longest_paragraph_chars: 80,
+                worst_batch_chars: 18_000,
+            },
+        ),
     ];
+    for &(label, profile) in profiles {
+        group.bench_with_input(BenchmarkId::new("for_profile", label), &profile, |b, &p| {
+            b.iter(|| DocumentScale::for_profile(black_box(p)));
+        });
+    }
 
-    for &(label, size) in sizes {
-        group.bench_with_input(BenchmarkId::new("size", label), &size, |b, &s| {
-            b.iter(|| FileSizeCheck::classify(black_box(s)));
+    // The worker-side paragraph profile over 10 MB: many short lines, one
+    // giant paragraph, and mixed GTK delimiters.
+    let short_lines = format!("{}\n", "a".repeat(79)).repeat(125_000);
+    let giant = "g".repeat(10_000_000);
+    let mixed = "abc\r\ndef\rghi\u{2029}jkl\n".repeat(400_000);
+    for (label, text) in [
+        ("short_lines_10mb", &short_lines),
+        ("giant_10mb", &giant),
+        ("mixed_10mb", &mixed),
+    ] {
+        group.bench_with_input(BenchmarkId::new("profile", label), text, |b, text| {
+            b.iter(|| DocumentProfile::of_text(black_box(text)));
         });
     }
     group.finish();
@@ -3056,7 +3091,7 @@ fn bench_transient_file_load(c: &mut Criterion) {
     });
 
     let exclusive_near_limit = [transient_load_weight(
-        lushtext_core::services::file_limits::REFUSE_TO_OPEN - 1,
+        lushtext_core::model::document_scale::REFUSE_TO_OPEN - 1,
     )];
     group.bench_function("admission/exclusive_near_supported_limit", |b| {
         b.iter(|| black_box(run_transient_load_policy(&exclusive_near_limit, false)));
@@ -3855,7 +3890,7 @@ criterion_group!(
     bench_replace_preview_generation,
     bench_replace_undo_workflows,
     bench_tree_population,
-    bench_file_size_classify,
+    bench_document_scale,
     bench_editor_memory_policy,
     bench_draft_restore,
     bench_recovery_performance,

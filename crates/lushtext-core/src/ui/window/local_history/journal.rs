@@ -90,8 +90,10 @@ impl LushtextWindow {
                 let availability = fs_metadata::file_facts(&path).ok().map_or(
                     local_history_service::LocalHistoryAvailability::Unavailable,
                     |facts| {
-                        local_history_service::availability_for_size_check(
-                            crate::services::file_limits::FileSizeCheck::classify(facts.byte_size),
+                        local_history_service::availability_for_scale(
+                            crate::model::document_scale::DocumentScale::for_total_bytes(
+                                facts.byte_size,
+                            ),
                         )
                     },
                 );

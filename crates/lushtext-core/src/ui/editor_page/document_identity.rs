@@ -21,8 +21,6 @@ use std::path::{Path, PathBuf};
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
-use crate::services::file_limits::FileSizeCheck;
-
 use super::{EditorLoadState, LushtextEditorPage};
 
 impl LushtextEditorPage {
@@ -73,23 +71,17 @@ impl LushtextEditorPage {
     /// be. The content-republished listeners fire last, so the window's Markdown
     /// preview follows a language flip (Save As to `notes.md`, a rename to
     /// `.txt`); during `open_document` no listener is registered yet.
+    ///
+    /// A language the document scale gated off is never re-applied: a rename
+    /// or Save As changes the path, not the paragraphs the gate measured.
     fn republish_document_identity(&self) {
-        if self.imp().size_check.get().syntax_enabled() {
+        if self.document_scale().syntax_enabled {
             self.reapply_language();
         }
         self.schedule_minimap_refresh();
         self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
         self.fire_content_republished();
-    }
-
-    /// The size classification from the last file load.
-    ///
-    /// Written by the load workflow's publish stage and by the save workflow's
-    /// accept terminal; read by the minimap, undo, syntax, and eviction paths.
-    #[must_use]
-    pub fn size_check(&self) -> FileSizeCheck {
-        self.imp().size_check.get()
     }
 
     /// Detect and apply syntax language from the current file path.
@@ -107,5 +99,27 @@ impl LushtextEditorPage {
                 buffer.set_language(language.as_ref());
             }
         }
+    }
+
+    /// The id of the document's language: the buffer's own, or, while the
+    /// document scale holds syntax off (the gate clears the buffer language,
+    /// ledger A44), the language its path names.
+    ///
+    /// The gate removes highlighting, not the document's kind: a 2 MiB
+    /// `notes.md` is still Markdown, and the Markdown preview must still
+    /// recognise it.
+    #[must_use]
+    pub fn document_language_id(&self) -> Option<gtk4::glib::GString> {
+        if let Some(language) = self.buffer().language() {
+            return Some(language.id());
+        }
+        if self.document_scale().syntax_enabled {
+            return None;
+        }
+        let path = self.imp().file_path.borrow();
+        let path = path.as_ref()?;
+        sourceview5::LanguageManager::default()
+            .guess_language(path.to_str(), None::<&str>)
+            .map(|language| language.id())
     }
 }

@@ -51,7 +51,7 @@ they are already editing.
 - `GtkTextView` for the bounded read-only sample body.
 - Existing sidebar selection and file-activation wiring for navigation and promotion.
 - `spawn_blocking_then` for asynchronous snapshot loading.
-- `services/file_limits.rs` for large-file policy alignment.
+- `model/document_scale.rs` (`DocumentScale::for_total_bytes`) for large-file policy alignment (it replaced `services/file_limits.rs` in `document-scale-policy`).
 
 ## Validation
 - Unit coverage lives in `services/file_peek.rs` for truncation, stale-request tokens,

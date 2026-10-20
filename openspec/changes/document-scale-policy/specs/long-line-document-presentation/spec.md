@@ -24,7 +24,7 @@ For file loads, the profile MUST be accumulated inside the existing cancellable 
 - **THEN** the profile keeps at most the cap of offsets, marks itself truncated, and still counts every long paragraph
 
 #### Scenario: Slice independence is machine-checked
-- **WHEN** the Kani lane runs the profile harnesses over every string of at most 8 bytes drawn from `a`, `é`, `\r`, `\n`, U+2028, U+2029 and U+0085, cut into at most 3 slices at any scalar boundaries (empty slices included), with any profile configuration whose thresholds are at most 8, whose offset cap is at most 2 and whose batch row count is 1 to 3
+- **WHEN** the Kani lane runs the profile harnesses over every string of at most 6 bytes drawn from `a`, `é`, `\r`, `\n`, U+2028, U+2029 and U+0085, cut into at most 3 slices at any scalar boundaries (empty slices included), with any profile configuration whose thresholds are at most 8, whose offset cap is at most 2 and whose batch row count is 1 to 3
 - **THEN** it proves that the profile accumulated slice by slice equals the profile of the whole text in every field: total bytes, longest paragraph, each per-threshold count, the offset list and its truncation flag, and the largest batch sum
 - **AND** that the whole-text profile equals the one built from the reference paragraph rule's paragraph lengths
 - **AND** the accumulator's rustdoc states this domain and names the property test as the evidence for longer strings and the production configuration
@@ -50,7 +50,7 @@ The system SHALL use one paragraph-boundary function for the profile, the edit-t
 
 #### Scenario: Slice safety is machine-checked
 - **WHEN** the Kani lane runs the paragraph-boundary harnesses
-- **THEN** it proves, for every valid UTF-8 string of at most 8 bytes, every start on a scalar boundary and every byte budget, that each returned boundary is a scalar boundary, advances, ends at a delimiter or the text end, and never separates CR from LF
+- **THEN** it proves, for every valid UTF-8 string of at most 8 bytes, every start on a scalar boundary that does not split a CRLF pair (every production start is the text start or a previous slice end) and every byte budget, that each returned boundary is a scalar boundary, advances, ends at a delimiter or the text end, and never separates CR from LF
 - **AND** that the returned boundary is the slice end the reference rule chooses for that budget
 - **AND** the rustdoc of the boundary functions states this 8-byte domain and names the Pango property test as the evidence for longer strings
 
@@ -112,7 +112,7 @@ The policy MUST be monotone: if one profile is componentwise no larger than anot
 - **THEN** it uses the total-size-only constructor and gets the same open and history decisions as before this change
 
 ### Requirement: Edits downgrade features synchronously and never re-enable them
-The system SHALL update the editor's live profile from buffer `insert-text` and `delete-range` signals in after-handlers, during the same emission as the edit, and SHALL apply any resulting feature downgrade before the handler returns, so no GTK validation or highlight idle can process a newly giant paragraph with that feature on. Each update MUST be bounded by the inserted run plus a constant number of line-length reads whose cost does not grow with line length. Within one document session, the effective presentation features MUST be the meet of every policy computed so far: edits, saves and buffer-replacement terminals MUST NOT re-enable a presentation feature. The byte-only outputs MUST follow the latest loaded or saved byte count, as before this change. An edit that changes the buffer's line count MUST be treated as able to raise both the longest paragraph and the batch density, whether or not its text contains a delimiter. A fast path that skips the density recomputation MUST carry its upper bound across consecutive edits. The watch MUST stand down while a load installation or buffer-replacement session is active, because those installers supply their profile from the worker.
+The system SHALL update the editor's live profile from buffer `insert-text` and `delete-range` signals in after-handlers, during the same emission as the edit, and SHALL apply any resulting feature downgrade before the handler returns, so no GTK validation or highlight idle can process a newly giant paragraph with that feature on. Each update MUST be bounded by the inserted run plus a constant number of line-length reads whose cost does not grow with line length. Within one document session, the effective presentation features MUST be the meet of every policy computed so far: edits, saves and buffer-replacement terminals MUST NOT re-enable a presentation feature. The byte-only outputs MUST follow the latest loaded or saved byte count, as before this change. The watch MUST measure the buffer's own lines, which depend on its edit history: an insertion splits only its own text at the paragraph delimiters and never joins with or splits around the characters beside it, and a deletion joins exactly the lines whose starts it removes (GTK axiom A42). An edit that changes the buffer's line count MUST be treated as able to raise both the longest paragraph and the batch density. A fast path that skips the density recomputation MUST carry its upper bound across consecutive edits. The watch MUST stand down while a load installation or buffer-replacement session is active, because those installers supply their profile from the worker.
 
 #### Scenario: Paste creates a giant paragraph
 - **WHEN** the user pastes text that makes one paragraph longer than `L_syntax` into a highlighted document
@@ -146,28 +146,33 @@ The system SHALL update the editor's live profile from buffer `insert-text` and 
 - **THEN** the watch performs no density-window recomputation
 - **AND** the number of line-length reads per keystroke is bounded by a constant that a widget test asserts
 
-#### Scenario: Inserting text between a CR and an LF splits a paragraph
-- **WHEN** the user inserts characters between the `\r` and the `\n` of a CRLF pair, so the buffer gains a line although the inserted text has no delimiter
-- **THEN** the watch takes the window path and recomputes the density window in the same emission
+#### Scenario: Text typed between a CR and an LF stays in its line
+- **WHEN** the user inserts characters without a delimiter between the `\r` and the `\n` of a CRLF pair
+- **THEN** the buffer gains no line, but the line's `\r\n` ending becomes `\n` and its paragraph grows by one more than the typed characters, so the watch takes the window path and measures the grown line, its embedded `\r` included
 
-#### Scenario: Deleting the text between a CR and an LF raises density
-- **WHEN** a deletion removes everything between a `\r` and a following `\n`, so a paragraph disappears without merging its neighbours
-- **THEN** the watch recomputes the density window in the same emission, because the neighbouring paragraphs now share a window
+#### Scenario: Deleting the text between a CR and an LF removes no line
+- **WHEN** a deletion removes everything between a `\r` and a following `\n`
+- **THEN** the buffer keeps the `\r`-ended line and the `\n` line apart, no paragraph grows, and the watch does no work
+
+#### Scenario: Deleting the LF of a CRLF joins two lines
+- **WHEN** a deletion removes the `\n` of a CRLF pair, so the following line's start is removed
+- **THEN** the two lines join and the watch recomputes the longest paragraph and the density window in the same emission
 
 #### Scenario: Repeated keystrokes cannot cross the density limit unseen
 - **WHEN** the user types into one paragraph keystroke by keystroke, each keystroke small enough for the fast path, until a window's sum exceeds `V_batch`
 - **THEN** the keystroke that makes the sum exceed `V_batch` takes the window path and sets `protected_view`
 
 #### Scenario: Incremental update equals recomputation is machine-checked
-- **WHEN** the Kani lane runs the edit-watch harnesses over every start document of at most 4 symbols from `a`, `\r`, `\n` and U+2029, every sequence of at most 3 edits each inserting at most 2 symbols at any offset or deleting any range of at most 2 symbols, every batch row count of 1 or 2, and every `V_batch` of at most 8
-- **THEN** it proves that the watched longest paragraph equals the largest longest paragraph recomputed from scratch, by the production length fold over the reference rule's paragraph lengths, over the start document and every intermediate document
+- **WHEN** the Kani lane runs the edit-watch harnesses as an inductive step: from every buffer of at most 2 symbols from `a`, `\r`, `\n` and U+2029 with any line structure the history-dependent rule (A42) can reach, and every watch state related to it by the invariant, one edit inserting at most 2 symbols at any offset or deleting any range of at most 2 symbols, every batch row count of 1 or 2, and every `V_batch`, state value and high-water of at most 16 (weakened from the designed bounded replay of 3 edits from a 4-symbol start, which did not fit the lane)
+- **THEN** it proves that the step preserves the invariant, which holds after a load, so for every edit sequence within that domain the watched longest paragraph equals the largest longest paragraph recomputed from scratch, by the production length fold over the model's line lengths, over every document so far
 - **AND** that the watch's density bound is never below the current document's recomputed largest batch sum, that its batch sum never exceeds the recomputed high-water and equals it whenever no step took the fast path, and that it exceeds `V_batch` exactly when the recomputed high-water does
 - **AND** that every step asks for at most `2·R_batch + 2` line-length reads, and a fast-path step for one
+- **AND** that the same holds for deleting the symbol between `\r` and `\n` in every three-symbol buffer `\r`, any symbol, `\n` with any such line structure and state, a case the 2-symbol step cannot reach
 - **AND** the watch core's rustdoc states this domain
 
-#### Scenario: Known-wrong watch variants are pinned
-- **WHEN** `should_panic` Kani harnesses run the watch with the slow path decided by whether the deleted range's start and end lines differ, and with the fast-path bound reset to the batch sum before each step
-- **THEN** Kani finds a missed density crossing for each and both harnesses pass
+#### Scenario: The uncarried fast-path bound is pinned as wrong
+- **WHEN** a `should_panic` Kani harness runs the watch with the fast-path bound reset to the batch sum before each step
+- **THEN** Kani finds a missed density crossing and the harness passes
 
 #### Scenario: Install slices do not re-profile on GTK
 - **WHEN** a large load or buffer replacement inserts its slices

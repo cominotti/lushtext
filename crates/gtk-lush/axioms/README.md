@@ -83,7 +83,10 @@ responsiveness lane records them. A37 (text-view validation deferred into
 the paint) followed with LushText's scrollbar-warning fix, and A38–A41 (the
 GIO GSettings keyfile backend: write cost and thread, coalescing, locking,
 `changed` timing) with LushText's coalescing settings writer; their probes use
-a private keyfile backend, never the process's default one. Every later axiom
+a private keyfile backend, never the process's default one.
+`document-scale-policy` added A42–A45 (paragraph delimiters, `chars_in_line`
+cost, a same-emission language downgrade, and an unparented widget's armed
+tick); A43 is verified by source and has no in-crate probe. Every later axiom
 follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.

@@ -11,11 +11,12 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use lushtext_core::config::keys;
+use lushtext_core::model::document_scale::LocalHistoryAvailability;
 use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
 use lushtext_core::model::encoding::{DocumentEncoding, DocumentEncodingState};
 use lushtext_core::model::formatting_overrides::FormattingOverrides;
+use lushtext_core::model::paragraph_boundary::DocumentProfile;
 use lushtext_core::services::editor_io::{self, EditorLoadError, LoadResult};
-use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::local_history_service;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
@@ -801,7 +802,9 @@ fn test_source_view_accessibility_keeps_large_file_editable_state() {
 
     page.apply_loaded_content_for_test("large file marker", 50_000_001);
 
-    assert_eq!(page.size_check(), FileSizeCheck::DisableUndoAndSyntax);
+    let scale = page.document_scale();
+    assert!(!scale.undo_enabled && !scale.syntax_enabled);
+    assert_eq!(scale.local_history, LocalHistoryAvailability::Unavailable);
     AccessibleAudit::new()
         .properties(&[
             gtk4::AccessibleProperty::Label,
@@ -1361,8 +1364,10 @@ fn test_minimap_wrapped_budget_stops_after_sliced_extreme_line_evidence() {
     page.buffer().set_text(&"x".repeat(2_500_001));
     let _window = present_editor_page_with_size(&page, 1000, 520);
 
+    // The edit-time paragraph watch, not the wrapped-layout analysis, keeps
+    // the map away from a paragraph over `L_MINIMAP`.
     wait_until(std::time::Duration::from_secs(2), || {
-        page.minimap_availability() == MinimapAvailability::TooLarge
+        page.minimap_availability() == MinimapAvailability::Reduced
     });
 
     assert!(!page.is_minimap_visible());
@@ -1380,7 +1385,7 @@ fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
     let stale_result = LoadResult {
         metadata: editor_io::LoadMetadata {
             size: 17,
-            size_check: FileSizeCheck::Normal,
+            profile: DocumentProfile::EMPTY,
             canonical_path: Some(std::path::PathBuf::from("/tmp/stale.txt")),
             mtime: Some(123),
             encoding_state: DocumentEncodingState::default(),
@@ -3103,7 +3108,7 @@ fn test_minimap_source_map_stays_unwrapped_across_editor_wrap_mode_changes() {
 }
 
 #[test]
-fn test_minimap_disables_wrapped_extreme_long_line_documents() {
+fn test_minimap_wrapped_layout_analysis_does_not_decide_availability() {
     ensure_gtk_init();
     let settings = enable_minimap_for_tests(false);
     settings
@@ -3115,11 +3120,14 @@ fn test_minimap_disables_wrapped_extreme_long_line_documents() {
     page.buffer().set_text(&format!("{}\n", "x".repeat(9_000)));
     let _window = present_editor_page_with_size(&page, 1000, 520);
 
-    wait_until(std::time::Duration::from_secs(2), || {
-        page.minimap_availability() == MinimapAvailability::TooLarge
+    // A 9,000-character wrapped line is over the wrapped-layout budget but
+    // under `L_MINIMAP`: the analysis finishes and feeds markers only, and the
+    // minimap stays available because the scale policy allows it.
+    wait_until(std::time::Duration::from_secs(10), || {
+        page.minimap_evidence().cache_owned
     });
-
-    assert!(!page.is_minimap_visible());
+    assert!(page.document_scale().minimap_allowed);
+    assert_eq!(page.minimap_availability(), MinimapAvailability::Visible);
 }
 
 #[test]
@@ -3342,26 +3350,25 @@ fn test_editor_page_adds_dynamic_eof_overscroll_after_allocation() {
 #[test]
 fn test_minimap_source_map_inherits_dynamic_eof_tail_geometry() {
     ensure_gtk_init();
+    // A hidden minimap has no map instance: the refresh retires it (ledger
+    // A45) and builds a fresh one when it is shown, so enable it and read the
+    // live map on every poll rather than the one built at construction.
+    let _settings = enable_minimap_for_tests(false);
     let page = LushtextEditorPage::new();
     let _window = present_editor_page(&page);
-
-    let source_map = page
-        .imp()
-        .minimap
-        .source_map
-        .borrow()
-        .as_ref()
-        .cloned()
-        .expect("source map should be created during construction");
 
     // Width-reflow bursts pin minimap geometry sync until the viewport
     // settles, so wait for the map to actually mirror the editor's dynamic
     // EOF margin instead of accepting the first margin above the baseline.
     wait_until(std::time::Duration::from_secs(5), || {
         let editor_margin = page.source_view().bottom_margin();
-        editor_margin > 6 && source_map.bottom_margin() == editor_margin
+        editor_margin > 6
+            && page
+                .minimap_source_map_widget()
+                .is_some_and(|map| map.bottom_margin() == editor_margin)
     });
 
+    let source_map = minimap_source_map(&page);
     let baseline_map = baseline_source_map_for_view(page.source_view());
     assert_eq!(source_map.bottom_margin(), baseline_map.bottom_margin());
     assert!(source_map.bottom_margin() > 6);

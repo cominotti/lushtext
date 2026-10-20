@@ -210,7 +210,7 @@ impl LushtextEditorPage {
     pub(crate) fn local_history_availability(
         &self,
     ) -> local_history_service::LocalHistoryAvailability {
-        local_history_service::availability_for_size_check(self.size_check())
+        local_history_service::availability_for_scale(self.document_scale())
     }
 
     pub(crate) fn live_local_history_availability(

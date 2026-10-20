@@ -17,7 +17,7 @@ that freezes it is **paragraph length**, not file size.
 | # | Change | Delivers | Gate before the next change |
 |---|---|---|---|
 | C0 | `probe-long-line-toolkit-costs` | Axioms A23–A37, the synthetic fixture generator, the smoke-only in-process probe, `make responsiveness-smoke`, the budget constants, and the measured values below | Values and the budget verdict recorded here (this record). |
-| C1 | `document-scale-policy` | Paragraph profile on the worker, one GTK-matching paragraph-boundary function (fixes the `\n`-only slicer), `DocumentScale` replacing `FileSizeCheck`, gates for syntax/minimap/invisibles/search highlighting at load and on edits, the minimap-detach CRITICAL fix | The context-engine stall and both CRITICALs gone, verified on the lane. |
+| C1 | `document-scale-policy` | Paragraph profile on the worker, one GTK-matching paragraph-boundary function (fixes the `\n`-only slicer), `DocumentScale` replacing `FileSizeCheck`, gates for syntax/minimap/invisibles/search highlighting at load and on edits, the minimap-detach CRITICAL fix | The context-engine stall and both CRITICALs gone, verified on the lane. **Status: implemented, in review** (branch `document-scale-policy`, PR #59); see "C1 `document-scale-policy` (implementation record)" below. |
 | C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for giant-paragraph documents, the display-only fold, the Line Inspector, find on a worker | Every interaction offered on these documents within the budgets. |
 | C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
@@ -589,11 +589,84 @@ explicit user values (a fresh profile now persists only the keys whose values
 differ from their defaults); a crash before a flush loses at most one
 persistence window of preference and layout values, never content.
 
+## C1 `document-scale-policy` (implementation record)
+
+**Status:** implemented on branch `document-scale-policy` (PR #59, on main
+after C4), in review; not archived.
+
+**Values applied** (constants in `model/document_scale.rs`, each citing the idle
+re-confirmation; budgets read from `model/responsiveness_budget.rs`):
+`L_syntax` 2,000, `L_minimap` 22,000, `L_invisibles` 50,000,
+`L_search_highlight` 10,000, `N_visible` 500,000, `R_batch` 224, `V_batch`
+56,000; unchanged byte tiers `S_minimap` 10 MB, undo and history 50 MB,
+save-only history 10 MB, refuse 500 MB.
+
+**Two values remain open** (C0 could not derive them):
+
+- `S_syntax`: **1 MiB applied**, the conservative candidate of the origin
+  proposal's decision 4 (keep 10 MB or about 1 MiB). The size-independent ~42 ms
+  first-highlight stall (C6's scope) is not removed by any cutoff.
+- `L_protect`: **500 applied**, the stall basis (`L_protect_stall`), as C2's
+  gate already takes it. Consequence for C1: any paragraph over 500 characters
+  (ordinary Markdown prose written one paragraph per line) marks the document
+  for Protected View, and the reduced-features notice says so. A maintainer
+  decision may raise the C1 notice threshold until C2's user-session
+  validation.
+
+**Apply-time finding — `GtkTextBuffer` lines depend on edit history (A42).** Text
+inserted whole has Pango's lines, but an insertion splits only its own text
+(a `\n` typed after a buffer `\r` starts a new line; text typed between `\r`
+and `\n` stays inside the line) and a deletion joins exactly the lines whose
+starts it removes (deleting the `\n` of a CRLF joins two lines with an embedded
+`\r`; deleting the text between `\r` and `\n` removes no line). The edit-time
+watch measures the buffer's own lines and its Kani model plays exactly this rule;
+the design's "line-span delete trigger" finding was withdrawn (with
+history-dependent lines the line-span and line-count tests agree). The minimap's
+modified-line marks, created before the default handler ran, had only ever
+marked a multi-line insertion's first line; they moved to an after-handler.
+
+**Pre-existing blockers fixed in this stream:** the `\n`-only install slicer
+(CR-only and U+2029 documents installed in one GTK turn); the modified-line marks
+above; and an intermittent pixman `In pixman_region32_init_rect: Invalid
+rectangle passed *** BUG ***` printed by C0's A32 probe (the viewless map being
+drawn), which `scripts/run-gtk-axioms.sh` did not catch. The lane now fails on
+`*** BUG ***` (self-test case added), and the A32 probe unmaps the map
+(`set_child_visible(false)`, so it stays realized and the defect still logs its
+CRITICALs) before detaching.
+
+**Upstream GtkSourceView report (task 8.5): drafted, awaiting the maintainer.**
+Filing is outward-facing, so the maintainer files it at
+`https://gitlab.gnome.org/GNOME/gtksourceview/-/issues` and records the link
+here; the full draft with a C reproducer was left in the implementing
+worktree's `target/c1-gtksourceview-upstream-report.md`. Summary: *"GtkSourceMap: `gtk_source_map_set_view (map, NULL)` leaves the
+pending update tick armed. `gtk_source_map_queue_update` adds a frame-clock
+tick (`priv->update_id`) that `disconnect_view` does not remove
+(gtksourcemap.c, 5.20.0: queue_update ~564–591, disconnect_view ~948). When the
+view is cleared after a scroll, in the same frame, the tick runs with no view
+and logs `Gtk-CRITICAL gtk_scrollable_get_vadjustment: assertion
+'GTK_IS_SCROLLABLE (scrollable)' failed` and `GLib-GObject-CRITICAL g_object_get:
+assertion 'G_IS_OBJECT (object)' failed`; drawing the viewless map can also
+print pixman's `Invalid rectangle passed`. Reproducer: an HTML GtkSourceView of
+3,000 lines with a mapped GtkSourceMap; scroll the view 400 px and set the
+map's view to NULL in the same main-loop turn. Expected: disconnecting the view
+removes `update_id`."* LushText does not wait for it: the minimap is retired
+(unparented and dropped) instead of having its view cleared (A45).
+
+**Lane result (task 10.4):** TODO(responsiveness-smoke): open of the synthetic
+1.9M-character fixture (context-engine stall, CRITICALs) and typing in its short
+paragraphs against B_interact, with the watch's share and the machine load.
+
+**C2 scope (declared degraded mode after C1):** the remaining stalls on giant
+paragraphs are Pango layout of the paragraph itself and whole-paragraph buffer
+costs while typing inside one (A26 log attrs, about 95 ms per keystroke on the
+1.9M-character line). C1 does not claim them; C2 (`long-line-protected-view`)
+removes them by making such documents view-only.
+
 ## Axioms each change cites
 
 | Change | Axioms |
 |---|---|
-| C1 `document-scale-policy` | A27 (tag changes do not dirty the buffer), A29 (context engine cut-off), A31 (2000 px validation batches, the source of R_batch), A32 (source-map detach CRITICAL) |
+| C1 `document-scale-policy` | A27 (tag changes do not dirty the buffer), A29 (context engine cut-off), A31 (2000 px validation batches, the source of R_batch), A32 (source-map detach CRITICAL); added by C1: A42 (paragraph delimiters and history-dependent buffer lines), A43 (`chars_in_line` cost, verified by source), A44 (same-emission language downgrade), A45 (unparent stops a pending tick) |
 | C2 `long-line-protected-view` | A23, A24, A25, A26, A28, A30, A33, A34, A35 |
 | C3 `sliced-protected-install` | A24, A35, A36 |
 | C4 `bound-window-construction-dispatch` | A38 (keyfile write per `set_*` on the calling thread), A39 (`delay`/`apply` coalescing), A40 (no backend lock; a second backend stays stale), A41 (`changed` timing) |

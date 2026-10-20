@@ -12,9 +12,9 @@ Use this reference for file open, save, and editor-residency changes. Current co
 
 ## Size policy
 
-`services/file_limits.rs` owns the thresholds and `FileSizeCheck` behavior. At the current checkout, policy distinguishes an informational large-file state, syntax-disabled state, undo-and-syntax-disabled state, and refusal state. Read the constants and boundary tests directly; preserve their strict/inclusive comparisons.
+`model/document_scale.rs` owns the thresholds and the `DocumentScale` policy, which replaced the byte-only `FileSizeCheck` (`document-scale-policy`). It reads a paragraph profile (total bytes, longest paragraph, wrap-off batch density) that the decode-analysis worker accumulates in its existing pass (`model/paragraph_boundary.rs`), and decides two kinds of output: byte tiers (open admission at 500 MB, undo and local history at 50 MB, save-only history at 10 MB, the memory multiplier) and presentation features (syntax, bracket matching, minimap, invisibles, search highlighting, `protected_view`), which an editor session holds monotone and which edits re-evaluate synchronously (`model/paragraph_profile_watch.rs`, `ui/editor_page/document_scale.rs`). Comparisons are strict (`>`); read the constants and the `t`/`t+1` tests directly.
 
-Never duplicate threshold literals in a skill-driven patch. Call `FileSizeCheck` queries so open, peek, syntax, undo, and memory policy stay consistent.
+Never duplicate threshold literals in a skill-driven patch. Callers that know only a byte count use `DocumentScale::for_total_bytes`; an editor reads `editor.document_scale()`, so open, peek, syntax, undo, and memory policy stay consistent.
 
 ## Load pipeline
 

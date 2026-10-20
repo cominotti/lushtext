@@ -210,6 +210,24 @@ pub mod a37 {
     };
 }
 
+/// The texts and splitters the A42 probe compares, for its sample.
+pub mod a42 {
+    pub use crate::probes::a42::{
+        CASES, EDIT_CASES, Edit, buffer_line_starts, edited_buffer, line_texts,
+        pango_paragraph_starts,
+    };
+}
+
+/// The fixture and values the A44 probe drives, for its sample.
+pub mod a44 {
+    pub use crate::probes::a44::{DowngradingView, INSERTED_CHARS, tags_in_range};
+}
+
+/// The fixture the A45 probe drives, for its sample.
+pub mod a45 {
+    pub use crate::probes::a45::{FRAMES_WAITED, TickPair};
+}
+
 /// Height every probe row requests, so row geometry is predictable.
 ///
 /// GTK adds the row's own CSS padding on top, so a row is drawn taller than

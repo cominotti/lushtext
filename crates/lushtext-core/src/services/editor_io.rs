@@ -7,13 +7,16 @@
 //! normalization, lossy-conversion checks, and atomic writes so the GTK layer
 //! only has to react to typed results instead of reimplementing byte policy.
 
+use crate::model::document_scale::{DocumentScale, REFUSE_TO_OPEN};
 use crate::model::encoding::{
     DecodeConfidence, DocumentEncoding, DocumentEncodingState, FileHealthFinding,
     FileHealthFindingKind, FileHealthSeverity, LineEnding,
 };
 use crate::model::file_load::transient_load_weight;
 use crate::model::formatting_overrides::FormattingOverrides;
-use crate::services::file_limits::{FileSizeCheck, REFUSE_TO_OPEN};
+use crate::model::paragraph_boundary::{
+    DocumentProfile, ParagraphProfileAccumulator, ProfileConfig, ProfileSummary,
+};
 use crate::services::filesystem::{
     FileFacts, WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write,
 };
@@ -192,7 +195,9 @@ pub struct LoadResult {
 #[derive(Debug)]
 pub struct LoadMetadata {
     pub size: u64,
-    pub size_check: FileSizeCheck,
+    /// Paragraph profile accumulated inside the decode-analysis pass (no
+    /// extra traversal); its `total_bytes` counts the decoded UTF-8 text.
+    pub profile: DocumentProfile,
     /// Canonical filesystem identity resolved on the background load thread.
     pub canonical_path: Option<PathBuf>,
     /// File mtime (epoch seconds), extracted from the metadata already
@@ -206,13 +211,27 @@ pub struct LoadMetadata {
     pub file_health: Vec<FileHealthFinding>,
 }
 
+impl LoadMetadata {
+    /// The document scale of the loaded file: its paragraph profile with the
+    /// file's byte size as the total (the byte tiers keep classifying the
+    /// file size, as before).
+    #[must_use]
+    pub fn scale(&self) -> DocumentScale {
+        DocumentScale::for_profile(ProfileSummary {
+            total_bytes: self.size,
+            ..self.profile.summary()
+        })
+    }
+}
+
 /// Compact metadata and stable-identity snapshot produced before payload admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileLoadPlan {
     /// Filesystem facts that admitted ingestion must revalidate.
     pub facts: FileFacts,
-    /// Large-file feature policy selected from the planned byte size.
-    pub size_check: FileSizeCheck,
+    /// Byte-tier policy selected from the planned byte size (the paragraph
+    /// profile is known only after decoding).
+    pub scale: DocumentScale,
     /// Conservative transient charge used by the process-wide coordinator.
     pub transient_weight: u64,
 }
@@ -429,9 +448,9 @@ pub fn plan_text_file(path: &Path, cancel: &AtomicBool) -> Result<FileLoadPlan, 
         path: path.to_path_buf(),
         source,
     })?;
-    let size_check = FileSizeCheck::classify(facts.byte_size);
+    let scale = DocumentScale::for_total_bytes(facts.byte_size);
 
-    if size_check == FileSizeCheck::TooLarge {
+    if !scale.open_allowed {
         return Err(EditorLoadError::TooLarge {
             path: path.to_path_buf(),
             size_mb: facts.byte_size / 1_000_000,
@@ -445,7 +464,7 @@ pub fn plan_text_file(path: &Path, cancel: &AtomicBool) -> Result<FileLoadPlan, 
     Ok(FileLoadPlan {
         transient_weight: planned_transient_weight(facts.byte_size),
         facts,
-        size_check,
+        scale,
     })
 }
 
@@ -538,7 +557,7 @@ fn load_planned_text_file_with_limit(
     Ok(LoadResult {
         metadata: LoadMetadata {
             size: plan.facts.byte_size,
-            size_check: plan.size_check,
+            profile: analysis.profile,
             canonical_path: plan.facts.canonical_path,
             mtime: plan.facts.modified_at_secs,
             encoding_state: decoded.encoding_state,
@@ -872,6 +891,8 @@ struct DecodedContentAnalysis {
     suggested_line_ending: LineEnding,
     nbsp_count: usize,
     zero_width_count: usize,
+    /// GTK paragraph profile of the decoded text, from the same pass.
+    profile: DocumentProfile,
 }
 
 fn assemble_decoded_document(
@@ -1291,10 +1312,12 @@ fn analyze_decoded_content_cancellable(
     let mut tally = LineEndingTally::default();
     let mut nbsp_count = 0usize;
     let mut zero_width_count = 0usize;
+    let mut profile = ParagraphProfileAccumulator::new(ProfileConfig::PRODUCTION);
 
     let mut scan_slice = |slice: &str| {
         tally.scan_slice(slice.as_bytes());
         for character in slice.chars() {
+            profile.push_char(character);
             if character == '\u{00A0}' {
                 nbsp_count += 1;
             } else if is_zero_width(character) {
@@ -1325,6 +1348,7 @@ fn analyze_decoded_content_cancellable(
         suggested_line_ending,
         nbsp_count,
         zero_width_count,
+        profile: profile.finish(),
     })
 }
 
@@ -1785,7 +1809,7 @@ mod tests {
 
         assert_eq!(result.content, "hello\nworld");
         assert_eq!(result.metadata.size, 11);
-        assert_eq!(result.metadata.size_check, FileSizeCheck::Normal);
+        assert!(DocumentScale::for_total_bytes(result.metadata.size).syntax_enabled);
         assert_eq!(
             result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::Utf8

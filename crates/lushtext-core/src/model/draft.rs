@@ -6,6 +6,7 @@
 //! preserve the buffer content so it can be restored on the next session.
 //! The manifest maps draft IDs to original file paths and metadata.
 
+use super::paragraph_boundary::DocumentProfile;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -147,10 +148,20 @@ impl DraftCleanupContinuation {
 /// old content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreloadedDraftRestore {
-    /// Restored content ready to apply once the target editor is available.
-    Content(String),
+    /// Restored content ready to apply once the target editor is available,
+    /// with its paragraph profile computed by the preloading worker.
+    Content(String, DocumentProfile),
     /// A body-free restore outcome; the reason says how the editor reacts.
     Skip(PreloadedDraftSkip),
+}
+
+impl PreloadedDraftRestore {
+    /// Preloaded content, profiled here (call on the preloading worker).
+    #[must_use]
+    pub fn content(text: String) -> Self {
+        let profile = DocumentProfile::of_text(&text);
+        Self::Content(text, profile)
+    }
 }
 
 /// Body-free preload outcomes that never carry a document-sized payload.
@@ -198,10 +209,23 @@ pub enum StaleDraftPreservation {
 /// touching blocking filesystem APIs on the main thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileDraftRestoreResolution {
-    /// The draft is still safe to restore and includes ready-to-apply content.
-    Restore { content: String },
+    /// The draft is still safe to restore and includes ready-to-apply content,
+    /// with its paragraph profile computed by the reading worker.
+    Restore {
+        content: String,
+        profile: DocumentProfile,
+    },
     /// A body-free resolution; the reason says how the editor reacts.
     Skip(FileDraftRestoreSkip),
+}
+
+impl FileDraftRestoreResolution {
+    /// A restorable body, profiled here (call on the reading worker).
+    #[must_use]
+    pub fn restore(content: String) -> Self {
+        let profile = DocumentProfile::of_text(&content);
+        Self::Restore { content, profile }
+    }
 }
 
 /// Body-free restore resolutions that never carry a document-sized payload.

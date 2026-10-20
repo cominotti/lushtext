@@ -24,6 +24,19 @@ local history, and careful recovery behavior.
 - **Safe file handling** with external-change detection, graceful large-file
   degradation, atomic saves, symlink-aware writes, and explicit durability
   warnings when the system cannot confirm a write fully reached storage.
+- **Stays responsive with very long lines.** Each document is profiled while it
+  loads (its longest paragraph, how densely long lines pack, and its size), and
+  features whose cost grows with line length are turned off for that document
+  before they meet it: syntax highlighting and bracket matching (paragraphs over
+  2,000 characters or files over 1 MiB), the minimap (paragraphs over 22,000
+  characters or files over 10 MB), automatic search highlighting (over 10,000),
+  and invisible-character drawing (over 50,000). Edits that create such a
+  paragraph, a paste or a joined line, turn the feature off in the same
+  keystroke, and nothing comes back on until the file is reopened. One inline
+  notice says which features are off and why. Undo is off and Local History is
+  unavailable above 50 MB, files above 500 MB are refused, and the file's bytes
+  are never changed. Documents separated only by `\r` or by U+2029 now load in
+  bounded slices like any other.
 - **EditorConfig support** for indentation and save-policy overrides, with
   Preferences values used as fallback.
 
@@ -612,7 +625,10 @@ window and with two windows of one application), and the
 durable-write protocol's crash atomicity, plus the pure policies with the
 longest visual-bug and data-safety history: the live editor-memory budget, the
 minimap fit functions, the adaptive-shell layout and breakpoint, the
-workspace-sidebar width presets, and the side-by-side preview-width clamp.
+workspace-sidebar width presets, the side-by-side preview-width clamp, and the
+document scale policy (its monotonicity, the GTK-matching paragraph-boundary
+function and slice choice, the paragraph profile's independence of slicing,
+and the edit-time paragraph watch against recomputation).
 `make kani` runs them with the pinned Kani version; ordinary builds and tests
 need no Kani install. CI runs every shard of the lane weekly and on dispatch,
 and the fast `widgets-geometry` and `core-geometry-policies` shards on every
