@@ -112,6 +112,11 @@ admit() {
 
 self_test() {
     local me=$0 status
+    # Probe fresh scopes whatever this process inherited: run inside a capped
+    # scope (a capped `make` or `git commit` running the policy checks), every
+    # probe below would otherwise run in place and read the outer scope's
+    # limits. The nested-call check sets the variable explicitly.
+    unset LUSHTEXT_MEMORY_CAP_KIB
     "$me" none true || { echo "self-test: 'none' did not pass through" >&2; return 1; }
     status=0; "$me" 16GiB true 2>/dev/null || status=$?
     [ "$status" -eq 2 ] || { echo "self-test: invalid cap accepted (status $status)" >&2; return 1; }
