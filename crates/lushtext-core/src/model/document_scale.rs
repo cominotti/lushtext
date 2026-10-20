@@ -240,12 +240,13 @@ impl ReductionReason {
 }
 
 /// Bits of the presentation features in a [`ReducedFeatures`] mask.
-const PRESENTATION_MASK: u8 = ScaleFeature::Syntax.bit()
-    | ScaleFeature::BracketMatching.bit()
-    | ScaleFeature::Minimap.bit()
-    | ScaleFeature::Invisibles.bit()
-    | ScaleFeature::SearchHighlight.bit()
-    | ScaleFeature::ProtectedView.bit();
+///
+/// The presentation features are declared first, so their bits are exactly
+/// the bits below the first byte tier's (`Undo`); the unit test
+/// `presentation_mask_is_exactly_the_presentation_features` pins that against
+/// [`ScaleFeature::is_presentation`]. (An OR of the six bits would carry five
+/// `|`/`^` mutants no test can tell apart, since the bits are disjoint.)
+const PRESENTATION_MASK: u8 = ScaleFeature::Undo.bit() - 1;
 
 /// Which features are reduced, and for which reasons (a feature may have
 /// several).
@@ -394,18 +395,6 @@ impl ReducedFeatures {
             }
         }
         (!sentences.is_empty()).then(|| sentences.join(" "))
-    }
-
-    /// Presentation bits from `presentation`, byte-tier bits from `bytes`.
-    const fn splice(presentation: Self, bytes: Self) -> Self {
-        Self {
-            total_size: (presentation.total_size & PRESENTATION_MASK)
-                | (bytes.total_size & !PRESENTATION_MASK),
-            long_paragraph: (presentation.long_paragraph & PRESENTATION_MASK)
-                | (bytes.long_paragraph & !PRESENTATION_MASK),
-            density: (presentation.density & PRESENTATION_MASK)
-                | (bytes.density & !PRESENTATION_MASK),
-        }
     }
 
     const fn union(self, other: Self) -> Self {
@@ -557,7 +546,8 @@ impl DocumentScale {
             search_highlight_allowed: self.search_highlight_allowed
                 && other.search_highlight_allowed,
             protected_view: self.protected_view || other.protected_view,
-            reduced: ReducedFeatures::splice(self.reduced.union(other.reduced), other.reduced),
+            // Presentation reasons from both, byte-tier reasons from `other`.
+            reduced: self.reduced.presentation_only().union(other.reduced),
         }
     }
 
@@ -826,6 +816,116 @@ mod tests {
             dense,
             "This document is marked for Protected View because of dense long lines."
         );
+    }
+
+    #[test]
+    fn presentation_mask_is_exactly_the_presentation_features() {
+        for feature in ScaleFeature::ALL {
+            assert_eq!(
+                PRESENTATION_MASK & feature.bit() != 0,
+                feature.is_presentation(),
+                "{feature:?}"
+            );
+        }
+        let presentation: Vec<ScaleFeature> = ScaleFeature::ALL
+            .into_iter()
+            .filter(|feature| feature.is_presentation())
+            .collect();
+        assert_eq!(presentation, ScaleFeature::ALL[..6]);
+        assert!(!ScaleFeature::Undo.is_presentation());
+        assert!(!ScaleFeature::LocalHistory.is_presentation());
+    }
+
+    #[test]
+    fn a_feature_reduced_for_two_reasons_stays_reduced() {
+        assert!(ReducedFeatures::NONE.is_empty());
+        assert!(DocumentScale::UNRESTRICTED.reduced.is_empty());
+        let both = DocumentScale::for_profile(profile(S_SYNTAX + 1, L_SYNTAX + 1, 0)).reduced;
+        assert!(both.has_reason(ScaleFeature::Syntax, ReductionReason::TotalSize));
+        assert!(both.has_reason(ScaleFeature::Syntax, ReductionReason::LongParagraph));
+        assert!(both.contains(ScaleFeature::Syntax));
+        assert!(!both.is_empty());
+        assert!(both.any_presentation());
+        let protected = DocumentScale::for_profile(profile(0, L_PROTECT + 1, V_BATCH + 1)).reduced;
+        assert!(protected.contains(ScaleFeature::ProtectedView));
+        assert!(!protected.contains(ScaleFeature::Syntax));
+    }
+
+    #[test]
+    fn newly_reduced_presentation_drops_byte_tiers_and_earlier_reasons() {
+        let earlier = DocumentScale::for_profile(profile(0, 0, V_BATCH + 1)).reduced;
+        let now = DocumentScale::for_profile(profile(60_000_000, 0, V_BATCH + 1)).reduced;
+        let fresh = now.newly_reduced_presentation(earlier);
+        assert!(fresh.contains(ScaleFeature::Syntax));
+        assert!(fresh.contains(ScaleFeature::Minimap));
+        assert!(!fresh.contains(ScaleFeature::Undo));
+        assert!(!fresh.contains(ScaleFeature::LocalHistory));
+        assert!(!fresh.contains(ScaleFeature::ProtectedView));
+    }
+
+    #[test]
+    fn presentation_only_keeps_each_reason_and_drops_byte_tiers() {
+        let huge = DocumentScale::for_total_bytes(60_000_000)
+            .reduced
+            .presentation_only();
+        assert!(huge.has_reason(ScaleFeature::Syntax, ReductionReason::TotalSize));
+        assert!(!huge.contains(ScaleFeature::Undo));
+        assert!(!huge.contains(ScaleFeature::LocalHistory));
+        let long = by_length(L_SYNTAX + 1).reduced.presentation_only();
+        assert!(long.has_reason(ScaleFeature::Syntax, ReductionReason::LongParagraph));
+        assert!(!long.contains(ScaleFeature::Invisibles));
+        let dense = DocumentScale::for_profile(profile(0, 0, V_BATCH + 1))
+            .reduced
+            .presentation_only();
+        assert!(dense.has_reason(ScaleFeature::ProtectedView, ReductionReason::Density));
+        assert!(!dense.contains(ScaleFeature::Syntax));
+    }
+
+    #[test]
+    fn join_keeps_presentation_reasons_and_takes_byte_reasons_from_the_newer_bytes() {
+        let huge = DocumentScale::for_total_bytes(60_000_000);
+        let session = by_length(L_SYNTAX + 1).join(huge);
+        let reduced = session.reduced;
+        assert!(reduced.has_reason(ScaleFeature::Syntax, ReductionReason::LongParagraph));
+        assert!(reduced.has_reason(ScaleFeature::Syntax, ReductionReason::TotalSize));
+        assert!(reduced.has_reason(ScaleFeature::Undo, ReductionReason::TotalSize));
+        assert!(!reduced.has_reason(ScaleFeature::Undo, ReductionReason::LongParagraph));
+        // The same byte reason on both sides survives the join.
+        let twice = huge.join(huge).reduced;
+        assert!(twice.has_reason(ScaleFeature::Syntax, ReductionReason::TotalSize));
+        assert!(twice.has_reason(ScaleFeature::Undo, ReductionReason::TotalSize));
+        let shrunk = huge.join(DocumentScale::for_total_bytes(100)).reduced;
+        assert!(!shrunk.contains(ScaleFeature::Undo));
+        assert!(shrunk.has_reason(ScaleFeature::Syntax, ReductionReason::TotalSize));
+        let dense = DocumentScale::for_profile(profile(0, 0, V_BATCH + 1))
+            .join(DocumentScale::for_total_bytes(100))
+            .reduced;
+        assert!(dense.has_reason(ScaleFeature::ProtectedView, ReductionReason::Density));
+    }
+
+    #[test]
+    fn the_policy_constants_have_their_recorded_values() {
+        // Design D7 and `docs/next/long-line-documents.md` record these; a
+        // change to one is a policy decision, not a refactor.
+        let recorded: [(u64, u64); 13] = std::hint::black_box([
+            (S_SYNTAX, 1024 * 1024),
+            (L_SYNTAX, 2_000),
+            (S_MINIMAP, 10_000_000),
+            (L_MINIMAP, 22_000),
+            (L_INVISIBLES, 50_000),
+            (L_SEARCH_HIGHLIGHT, 10_000),
+            (L_PROTECT, 500),
+            (N_VISIBLE, 500_000),
+            (V_BATCH, 56_000),
+            (UNDO_TOTAL_BYTES, 50_000_000),
+            (HISTORY_SAVE_ONLY_BYTES, 10_000_000),
+            (HISTORY_UNAVAILABLE_BYTES, 50_000_000),
+            (REFUSE_TO_OPEN, 500_000_000),
+        ]);
+        for (constant, value) in recorded {
+            assert_eq!(constant, value);
+        }
+        assert_eq!(std::hint::black_box(R_BATCH), 224);
     }
 
     #[test]
