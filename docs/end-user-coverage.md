@@ -68,6 +68,23 @@ cancellable. What is genuinely new is the throttle, and the property lane covers
 its behaviour under an arbitrarily slow pass without needing a slow filesystem
 to produce one.
 
+**The document scale policy** (`document-scale-policy`) is covered by the
+bounded PR lanes plus scheduled Kani shards and the long-line responsiveness
+lane:
+
+| Question | Lane |
+| --- | --- |
+| Does each threshold keep a feature at `t` and drop it at `t+1`; do the byte tiers equal the retired `FileSizeCheck`? | unit, `model::document_scale` |
+| Is the policy monotone, the session join a meet, and are the byte tiers the retired ones, for every `u64`? | Kani, shard `core-document-scale` (scheduled) |
+| Do paragraph splits and slice ends agree with `pango::find_paragraph_boundary`; is the profile independent of slicing on long strings? | property, `properties::paragraph_boundary` |
+| Are the boundary, slice choice and profile right on every small input; does the edit watch equal recomputation over the buffer's history-dependent lines? | Kani, shards `core-document-scale` and `core-paragraph-profile` (scheduled) |
+| Do CR-only, CRLF, U+2029 and mixed documents round-trip byte-identically through load, replacement and save? | widget, `document_scale` |
+| Are syntax, brackets, invisibles, search highlighting and the minimap gated at load and in the same edit emission, never re-enabled by save or rename? | widget, `document_scale` |
+| Does the minimap retire and rebuild instead of clearing a live map's view, with no CRITICAL? | widget, `document_scale` |
+| Does the reduced-features notice rank below recovery alerts and stay bounded and content-free? | widget, `document_scale`; manual Orca row in `docs/accessibility-orca-checklist.md` |
+| Does GTK behave as the policy assumes (A42 delimiters and history-dependent lines, A44 same-emission downgrade, A45 unparent stops a tick)? | `make gtk-axioms` |
+| Does open of a long-line fixture show no context-engine stall or CRITICAL, and does typing stay within B_interact? | `make responsiveness-smoke` (nightly/manual) |
+
 ## Scheduled Or Manual Expectations
 
 Host-sensitive lanes should be available through stable Make targets even when

@@ -97,7 +97,7 @@ SHARDS: dict[str, Shard] = {
         measured_in=MEASURED_IN,
     ),
     "editor-page": Shard(
-        modules=("editor_page",),
+        modules=("editor_page", "document_scale"),
         tests=(),
         ci_minutes=8.8,
         measured_in=MEASURED_IN,

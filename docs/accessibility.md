@@ -129,6 +129,24 @@ Expected screen-reader behavior includes:
   active document's bounded display name, not by document contents.
 - Editor read-only states are surfaced when loading, saving, large-file policy,
   preview-only mode, or a failure state temporarily prevents editing.
+- The editor's accessible description names the features the document scale
+  policy reduced for this document, grouped by reason class: for example
+  "Syntax highlighting, bracket matching, the minimap and search highlighting
+  are off because of very long lines.", "Undo history and automatic local
+  history are off because of the document's total size.", or "This document is
+  marked for Protected View because of dense long lines.". It names features
+  and reasons only, never document content, and is bounded by the fixed feature
+  set. A document refused by open admission keeps its `disabled` state and the
+  sentence "This document is too large to open."; the former "Large document
+  mode is active." sentence (the retired 1 MB tier) is gone.
+- The reduced-features notice is an editor inline alert (warning style, titled
+  "Some Features Are Off for This Document") carrying the same list. Its body
+  and announcement are bounded through `a11y::bounded_announcement_text` and
+  contain no document text. It ranks below every recovery and error alert
+  (restored draft, external change, access error, local-history undo, mixed line
+  endings): it waits while one of them is shown and appears when it clears. It
+  is announced once per document session and again only when an edit reduces an
+  additional feature; dismissing it re-enables nothing.
 - Search fields expose names, options, invalid/no-result states, match counts,
   and debounced result announcements without announcing every keystroke.
 - Markdown preview exposes explicit pending, complete, complete-with-omissions

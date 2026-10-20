@@ -86,20 +86,38 @@ impl LushtextEditorPage {
         self.imp().minimap.tracking_suspended.set(suspended);
     }
 
-    /// Detach the native source map while bounded installation mutates the buffer.
+    /// Retire the native source map while installation or the scale policy
+    /// keeps it away from the buffer.
     ///
-    /// `GtkSourceMap` is a second text view. Hiding its shell alone does not
-    /// remove its buffer projection, so clear the nullable `view` property to
-    /// avoid duplicating layout work for every installation slice.
+    /// `GtkSourceMap` is a second text view, so a hidden but bound map still
+    /// lays out every paragraph. Clearing its `view` while its update tick may
+    /// be armed makes the tick run against no view (ledger A32: a
+    /// `Gtk-CRITICAL` and a `GLib-GObject-CRITICAL`), and LushText cannot read
+    /// that tick. So the map is **retired**: the overlay is hidden, the map is
+    /// unparented, which unrealizes it and detaches it from the frame clock so
+    /// an armed tick never runs (ledger A45), and LushText drops its
+    /// reference. `attach_native_source_map` builds a fresh one when the
+    /// minimap is shown again.
     pub(super) fn detach_minimap_projection(&self) {
         self.discard_minimap_analysis_content();
-        let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
+        self.retire_native_source_map();
+    }
+
+    /// Unparent and drop the current map, if any.
+    pub(super) fn retire_native_source_map(&self) {
+        let imp = self.imp();
+        imp.minimap_overlay.set_visible(false);
+        let Some(source_map) = imp.minimap.source_map.borrow_mut().take() else {
             return;
         };
-        if source_map.view().is_some() {
-            source_map.set_property("view", Option::<sourceview5::View>::None);
+        imp.minimap.map_signals.clear();
+        if let Some(render_hold) = imp.minimap.render_hold.borrow().as_ref() {
+            render_hold.clear();
         }
-        self.imp().minimap_overlay.set_visible(false);
+        if source_map.parent().is_some() {
+            imp.minimap_overlay.set_child(None::<&gtk4::Widget>);
+        }
+        drop(source_map);
     }
 
     /// Clear all modified-since-save markers for this editor.

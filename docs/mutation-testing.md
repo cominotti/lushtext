@@ -90,7 +90,7 @@ Useful environment overrides:
 
 ```sh
 MUTANTS_TIMEOUT=600 make mutants-full
-MUTANTS_SMOKE_FILE=crates/lushtext-core/src/services/file_limits.rs make mutants-smoke
+MUTANTS_SMOKE_FILE=crates/lushtext-core/src/model/document_scale.rs make mutants-smoke
 MUTANTS_BASE=origin/main make mutants-diff
 MUTANTS_SHARD=0/4 make mutants-full
 MUTANTS_JOBS=8 MUTANTS_TEST_THREADS=3 MUTANTS_BUILD_JOBS=3 make mutants-full   # override local parallelism

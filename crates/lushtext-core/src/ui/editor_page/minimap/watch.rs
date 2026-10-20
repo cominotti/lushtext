@@ -59,39 +59,36 @@ impl LushtextEditorPage {
         render_hold.add_cover_css_class("minimap-reflow-freeze");
         imp.minimap_overlay.add_overlay(&marker_strip);
 
-        let source_map_vadjustment = source_map.vadjustment();
-
+        self.watch_source_map_adjustment(&source_map);
         *imp.minimap.source_map.borrow_mut() = Some(source_map);
         *imp.minimap.render_hold.borrow_mut() = Some(render_hold);
         *imp.minimap.marker_strip.borrow_mut() = Some(marker_strip);
 
-        if let Some(vadj) = source_map_vadjustment {
-            let editor_weak = self.downgrade();
-            vadj.connect_changed(move |_| {
-                if let Some(editor) = editor_weak.upgrade() {
-                    editor.guard_fitting_source_map_adjustment();
-                }
-            });
-        }
-
         let buffer = self.buffer();
         {
             let editor_weak = self.downgrade();
-            let handler_id = buffer.connect_insert_text(move |_, iter, text| {
-                let Some(editor) = editor_weak.upgrade() else {
-                    return;
-                };
+            // An after-handler: the inserted lines exist only once the default
+            // handler ran, so marks created before it collapsed onto the
+            // insertion line (every multi-line insertion marked one line).
+            // GTK's own lines then follow its paragraph delimiters (`\n`,
+            // `\r`, `\r\n`, U+2029; ledger A42), CR-only and U+2029 included.
+            let handler_id = buffer.connect_local("insert-text", true, move |values| {
+                let editor = editor_weak.upgrade()?;
                 if editor.imp().minimap.tracking_suspended.get() {
-                    return;
+                    return None;
                 }
-                let start_line = u32::try_from(iter.line()).unwrap_or(0);
-                let inserted_lines = u32::try_from(text.chars().filter(|ch| *ch == '\n').count())
-                    .unwrap_or(u32::MAX);
+                let end = values.get(1)?.get::<gtk4::TextIter>().ok()?;
+                let text = values.get(2)?.get::<String>().ok()?;
+                let run_chars = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+                let start = editor
+                    .buffer()
+                    .iter_at_offset(end.offset().saturating_sub(run_chars));
                 editor.record_modified_line_marks(
-                    start_line,
-                    start_line.saturating_add(inserted_lines),
+                    u32::try_from(start.line()).unwrap_or(0),
+                    u32::try_from(end.line()).unwrap_or(0),
                 );
                 editor.arm_minimap_refresh();
+                None
             });
             imp.minimap.buffer_signals.track(&buffer, handler_id);
         }
@@ -165,6 +162,47 @@ impl LushtextEditorPage {
         self.arm_minimap_refresh();
     }
 
+    /// Attach a freshly built `GtkSourceMap` after a retirement.
+    ///
+    /// The map is built with its view already set (`create_native_source_map`,
+    /// the same configuration construction uses), becomes the overlay's child,
+    /// the reflow freeze is re-pointed at it, and its adjustment guard is
+    /// tracked per instance so the retired map's handler went with it. A live
+    /// map's view is never cleared: retirement unparents and drops the map
+    /// instead (ledger A45; A32 is the defect a cleared view hits).
+    pub(super) fn attach_native_source_map(&self) {
+        let imp = self.imp();
+        if imp.minimap.source_map.borrow().is_some() {
+            return;
+        }
+        let source_map = self.create_native_source_map();
+        imp.minimap_overlay.set_child(Some(&source_map));
+        if let Some(render_hold) = imp.minimap.render_hold.borrow_mut().as_mut() {
+            render_hold.set_live_child(&source_map);
+        }
+        self.watch_source_map_adjustment(&source_map);
+        *imp.minimap.source_map.borrow_mut() = Some(source_map);
+        self.guard_fitting_source_map_adjustment();
+        // The wide-editor slider correction reads the new map's laid-out
+        // document height, which exists only after its first layout; one more
+        // debounced refresh re-syncs the geometry once it does, as the
+        // constructed map's later refreshes do.
+        self.arm_minimap_refresh();
+    }
+
+    /// Track the per-instance adjustment guard of one map.
+    fn watch_source_map_adjustment(&self, source_map: &sourceview5::Map) {
+        if let Some(vadj) = source_map.vadjustment() {
+            let editor_weak = self.downgrade();
+            let handler_id = vadj.connect_changed(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.guard_fitting_source_map_adjustment();
+                }
+            });
+            self.imp().minimap.map_signals.track(&vadj, handler_id);
+        }
+    }
+
     /// Keep GtkSourceMap 5.20 out of its zero-range adjustment division.
     ///
     /// Upstream maps the editor value with `value / (upper - page_size)` when
@@ -203,6 +241,8 @@ impl LushtextEditorPage {
     /// instead of restyling or drawing over the upstream effect.
     fn create_native_source_map(&self) -> sourceview5::Map {
         let source_map = sourceview5::Map::new();
+        let built = &self.imp().minimap.maps_built;
+        built.set(built.get().saturating_add(1));
         source_map.set_view(self.source_view());
         source_map.set_editable(false);
         source_map.set_cursor_visible(false);

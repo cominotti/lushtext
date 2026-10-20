@@ -47,7 +47,7 @@ fn detach_eager_preload_bodies(
             restore,
             PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget),
         ) {
-            PreloadedDraftRestore::Content(content) => retiring.push(content),
+            PreloadedDraftRestore::Content(content, _) => retiring.push(content),
             compact @ PreloadedDraftRestore::Skip(_) => *restore = compact,
         }
     }
@@ -72,7 +72,7 @@ mod tests {
         let mut preloaded = HashMap::from([
             (
                 "eager".to_string(),
-                PreloadedDraftRestore::Content("body".to_string()),
+                PreloadedDraftRestore::content("body".to_string()),
             ),
             (
                 "lazy".to_string(),

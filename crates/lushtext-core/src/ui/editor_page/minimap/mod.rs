@@ -356,9 +356,9 @@ impl LushtextEditorPage {
         self.apply_minimap_tracking_suspension(suspended);
     }
 
-    /// Detach the native source map while a bounded buffer installation runs.
+    /// Retire the native source map while an installation or the scale runs.
     ///
-    /// There is no explicit re-attach: stage 4's refresh re-binds the view once
+    /// No explicit re-attach: stage 4's refresh builds a fresh map once
     /// availability says the minimap is visible again.
     pub(crate) fn suspend_minimap_projection(&self) {
         self.detach_minimap_projection();

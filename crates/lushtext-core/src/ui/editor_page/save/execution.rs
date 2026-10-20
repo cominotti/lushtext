@@ -30,7 +30,7 @@ use sourceview5::prelude::*;
 use crate::model::encoding::{
     DocumentEncoding, FileHealthFinding, FileHealthFindingKind, FileHealthSeverity,
 };
-use crate::services::file_limits::FileSizeCheck;
+use crate::model::paragraph_boundary::DocumentProfile;
 use crate::services::{editor_io, filesystem::metadata as fs_metadata};
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::{
@@ -120,6 +120,8 @@ struct SaveWriteOutcome {
     canonical_path: Option<PathBuf>,
     clean_text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
     formatted_text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
+    /// The mirrored-back text's paragraph profile, computed on the worker.
+    formatted_profile: Option<DocumentProfile>,
     retain_formatted_as_clean: bool,
     permit: Option<SavePayloadPermit>,
 }
@@ -298,22 +300,24 @@ fn write_snapshot_async(
                     retain_as_clean: true
                 }
             );
-            let (clean_text, formatted_text) = match disposition {
+            let (clean_text, formatted_text, formatted_profile) = match disposition {
                 SaveTextDisposition::MirrorFormattedIntoBuffer { .. } => {
                     let formatted_text = formatted_text.into_owned();
+                    let profile = DocumentProfile::of_text(&formatted_text);
                     (
                         None,
                         Some(text.map_preserving_reservation(|_| formatted_text)),
+                        Some(profile),
                     )
                 }
                 SaveTextDisposition::RetainCapturedAsClean => {
                     drop(formatted_text);
-                    (Some(text), None)
+                    (Some(text), None, None)
                 }
                 SaveTextDisposition::RetireCaptured => {
                     drop(formatted_text);
                     drop(text.into_inner_on_worker());
-                    (None, None)
+                    (None, None, None)
                 }
             };
             Ok::<_, EditorSaveError>(SaveWriteOutcome {
@@ -322,6 +326,7 @@ fn write_snapshot_async(
                 canonical_path,
                 clean_text,
                 formatted_text,
+                formatted_profile,
                 retain_formatted_as_clean,
                 permit: Some(permit),
             })
@@ -344,6 +349,10 @@ fn write_snapshot_async(
                         .buffer()
                         .iter_at_mark(&editor.buffer().get_insert())
                         .offset();
+                    let formatted_profile = outcome
+                        .formatted_profile
+                        .take()
+                        .unwrap_or(DocumentProfile::EMPTY);
                     let freshness_editor = editor.downgrade();
                     let terminal_editor = editor.downgrade();
                     let completed_body = Rc::new(RefCell::new(None));
@@ -399,7 +408,8 @@ fn write_snapshot_async(
                             move |body| {
                                 completed_body_for_request.replace(Some(body));
                             },
-                        ),
+                        )
+                        .with_profile(formatted_profile),
                     );
                 }
                 Err(error) => {
@@ -464,10 +474,9 @@ fn finish_accepted_save(
     }
     buffer.set_modified(false);
     editor.imp().file_size.set(Some(outcome.size));
-    editor
-        .imp()
-        .size_check
-        .set(FileSizeCheck::classify(outcome.size));
+    // The byte tiers follow the saved bytes as before; the presentation
+    // features only join, so a save never turns a gated feature back on.
+    editor.join_saved_document_scale(outcome.size);
     editor.imp().load_state.set(EditorLoadState::Loaded);
     editor.imp().latest_load_failed.set(false);
     let mut state = editor.document_encoding_state();

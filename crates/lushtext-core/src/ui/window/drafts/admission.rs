@@ -81,11 +81,11 @@ impl LushtextWindow {
         draft_id: &str,
     ) -> Option<GuardedPreloadedDraftRestore> {
         let mut preloaded = self.imp().drafts.preloaded.borrow_mut();
-        let content = match preloaded.remove(draft_id)? {
+        let (content, profile) = match preloaded.remove(draft_id)? {
             PreloadedDraftRestore::Skip(skip) => {
                 return Some(GuardedPreloadedDraftRestore::Compact(skip));
             }
-            PreloadedDraftRestore::Content(content) => content,
+            PreloadedDraftRestore::Content(content, profile) => (content, profile),
         };
         let body_weight = u64::try_from(content.capacity()).unwrap_or(u64::MAX);
         let reservation = preloaded.reservation_weight().map_or_else(
@@ -102,7 +102,7 @@ impl LushtextWindow {
             // together with its peers; it must not drop on the GTK thread.
             preloaded.insert(
                 draft_id.to_string(),
-                PreloadedDraftRestore::Content(content),
+                PreloadedDraftRestore::Content(content, profile),
             );
             super::retirement::release_eager_preloads(&mut preloaded);
             preloaded.remove(draft_id);
@@ -116,6 +116,7 @@ impl LushtextWindow {
         }
         Some(GuardedPreloadedDraftRestore::Content(
             attach_draft_body_disposal_probe(reservation.own(content)),
+            profile,
         ))
     }
 
@@ -177,11 +178,12 @@ impl LushtextWindow {
                 let mut reservation = reservation;
                 draft_service::resolve_draft_restore(&data_dir, &entry).map(|resolution| {
                     match resolution {
-                        FileDraftRestoreResolution::Restore { content } => {
+                        FileDraftRestoreResolution::Restore { content, profile } => {
                             reservation
                                 .shrink_to(u64::try_from(content.capacity()).unwrap_or(u64::MAX));
                             GuardedDraftRestoreResolution::Restore(
                                 attach_draft_body_disposal_probe(reservation.own(content)),
+                                profile,
                             )
                         }
                         FileDraftRestoreResolution::Skip(skip) => {

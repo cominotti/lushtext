@@ -438,7 +438,7 @@ pub(super) fn startup_preloads_retained_bytes(
             total
                 .saturating_add(id.capacity())
                 .saturating_add(match restore {
-                    PreloadedDraftRestore::Content(content) => content.capacity(),
+                    PreloadedDraftRestore::Content(content, _) => content.capacity(),
                     PreloadedDraftRestore::Skip(_) => 0,
                 })
         })
@@ -470,7 +470,7 @@ pub(super) fn fit_startup_preloads_to_reservation(
             restore,
             PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget),
         ) {
-            PreloadedDraftRestore::Content(content) => content,
+            PreloadedDraftRestore::Content(content, _) => content,
             compact @ PreloadedDraftRestore::Skip(_) => {
                 *restore = compact;
                 continue;
@@ -1060,11 +1060,11 @@ mod tests {
         let mut preloaded = HashMap::from([
             (
                 "first".to_string(),
-                PreloadedDraftRestore::Content(String::with_capacity(2_048)),
+                PreloadedDraftRestore::content(String::with_capacity(2_048)),
             ),
             (
                 "second".to_string(),
-                PreloadedDraftRestore::Content(String::with_capacity(2_048)),
+                PreloadedDraftRestore::content(String::with_capacity(2_048)),
             ),
         ]);
         let original = startup_preloads_retained_bytes(&preloaded);

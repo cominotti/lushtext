@@ -10,7 +10,6 @@ use crate::config::keys;
 use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, InvisibleCharactersMode};
 use crate::model::formatting_overrides::FormattingOverrides;
-use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::InlineActionNotification;
 use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::info_bar::LushtextInfoBar;
@@ -32,6 +31,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use super::buffer_replacement::BufferReplacementState;
+use super::document_scale::DocumentScaleState;
 use super::frame_validation::FrameValidationState;
 use super::minimap::{
     MinimapAnalysisCache, MinimapAnalysisSession, MinimapAvailability, MinimapMarker,
@@ -345,8 +345,15 @@ pub struct BookmarkState {
 /// places.
 #[derive(Default)]
 pub struct MinimapState {
-    /// Programmatically created `GtkSourceMap` bound to the main source view.
+    /// Programmatically created `GtkSourceMap` bound to the main source view,
+    /// `None` while retired (installation, scale policy, hidden states).
     pub source_map: RefCell<Option<sourceview5::Map>>,
+    /// Handlers on the current map instance (its adjustment guard), released
+    /// with the map when it is retired.
+    pub map_signals: SignalBag,
+    /// Native maps built for this tab (construction plus every rebuild after
+    /// a retirement); evidence that a retirement rebuilt rather than re-bound.
+    pub maps_built: Cell<u64>,
     /// Narrow drawing layer that paints semantic markers over the map edge.
     pub marker_strip: RefCell<Option<gtk4::DrawingArea>>,
     /// Last computed render model for the semantic marker strip.
@@ -538,8 +545,10 @@ pub struct LushtextEditorPage {
     /// A failed reload may preserve the prior buffer and `Loaded` state, so
     /// eviction safety cannot be inferred from `load_state` alone.
     pub latest_load_failed: Cell<bool>,
-    /// Feature gate classification based on file size (syntax, undo thresholds).
-    pub size_check: Cell<FileSizeCheck>,
+    /// The document scale policy as this tab applies it: the effective
+    /// scale (session floor), the edit-time paragraph watch, and the
+    /// reduced-features notice.
+    pub document_scale: DocumentScaleState,
     /// Memory-residency and eviction bookkeeping for this tab.
     pub residency: MemoryResidencyState,
     /// Background file-load freshness primitives (generation + cancel token).
@@ -609,7 +618,7 @@ impl Default for LushtextEditorPage {
             file_size: Cell::default(),
             load_state: Cell::new(EditorLoadState::Untitled),
             latest_load_failed: Cell::new(false),
-            size_check: Cell::new(FileSizeCheck::Normal),
+            document_scale: DocumentScaleState::default(),
             residency: MemoryResidencyState::default(),
             load_tracking: LoadTrackingState::default(),
             applied_style_scheme_id: RefCell::new(None),
@@ -699,8 +708,10 @@ impl ObjectImpl for LushtextEditorPage {
         self.editing_buffer_signals.clear();
         self.local_history.buffer_signals.clear();
         self.minimap.buffer_signals.clear();
+        self.minimap.map_signals.clear();
         self.focus_mode.buffer_signals.clear();
         self.frame_validation.clear();
+        self.document_scale.signals.clear();
         self.overscroll.observer.borrow_mut().take();
         self.overscroll.reflow_pause.borrow_mut().take();
         self.minimap.source_map.borrow_mut().take();
@@ -976,6 +987,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().setup_focus_mode_text_origin_guide();
         self.obj().setup_focus_mode_presentation();
         self.obj().setup_frame_validation();
+        self.obj().setup_document_scale_watch();
         self.obj().apply_invisible_characters_mode();
         self.obj().refresh_accessibility_metadata();
     }

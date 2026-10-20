@@ -38,7 +38,7 @@ const DISPOSAL_QUEUE_CAPACITY: usize = 8;
 /// Two maximum-size Replace All undo windows may drain concurrently.
 const DISPOSAL_RETAINED_BYTE_CAPACITY: u64 = 128 * 1024 * 1024;
 /// Largest supported source can expand threefold during legacy decoding.
-const FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY: u64 = crate::services::file_limits::REFUSE_TO_OPEN
+const FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY: u64 = crate::model::document_scale::REFUSE_TO_OPEN
     .saturating_mul(crate::model::file_load::DECODED_BODY_SOURCE_MULTIPLIER);
 /// Recovery and Notes source construction retain independent progress capacity.
 ///

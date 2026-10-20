@@ -20,6 +20,7 @@ use sourceview5::prelude::*;
 use crate::model::buffer_replacement::{
     BufferReplacementMode, BufferReplacementPlan, next_clear_char_count, next_replacement_boundary,
 };
+use crate::model::paragraph_boundary::DocumentProfile;
 use crate::ui::editor_page::LushtextEditorPage;
 
 use super::evidence;
@@ -198,6 +199,9 @@ pub struct BufferReplacementRequest {
     body: ReplacementBody,
     is_current: FreshnessCheck,
     callback: TerminalCallback,
+    /// The body's paragraph profile, computed by the worker that prepared it;
+    /// joined into the editor's document scale at a `Complete` terminal.
+    profile: Option<DocumentProfile>,
 }
 
 impl BufferReplacementRequest {
@@ -217,6 +221,7 @@ impl BufferReplacementRequest {
             },
             is_current: Box::new(is_current),
             callback: Box::new(callback),
+            profile: None,
         }
     }
 
@@ -237,6 +242,7 @@ impl BufferReplacementRequest {
             },
             is_current: Box::new(is_current),
             callback: Box::new(callback),
+            profile: None,
         }
     }
 
@@ -258,6 +264,7 @@ impl BufferReplacementRequest {
             },
             is_current: Box::new(is_current),
             callback: Box::new(callback),
+            profile: None,
         }
     }
 
@@ -279,7 +286,20 @@ impl BufferReplacementRequest {
             },
             is_current: Box::new(is_current),
             callback: Box::new(callback),
+            profile: None,
         }
+    }
+}
+
+impl BufferReplacementRequest {
+    /// Attach the body's worker-computed paragraph profile: before the first
+    /// byte enters the buffer the editor gates what the body may not meet
+    /// (the context engine, a `GtkSourceMap`), and a completed replacement
+    /// joins the profile into the document scale.
+    #[must_use]
+    pub(crate) fn with_profile(mut self, profile: DocumentProfile) -> Self {
+        self.profile = Some(profile);
+        self
     }
 }
 
@@ -311,6 +331,7 @@ pub(crate) struct BufferReplacementSession {
     pub(super) mutation_started: bool,
     terminal: bool,
     pub(super) metrics: BufferReplacementMetrics,
+    profile: Option<DocumentProfile>,
 }
 
 /// Content-free terminal evidence retained by one editor.
@@ -409,6 +430,9 @@ pub(super) fn dispose(editor: &LushtextEditorPage) {
 fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
     let plan = BufferReplacementPlan::for_sizes(editor.buffer().char_count(), request.body.len());
     let guard = begin_guard(editor);
+    if let Some(profile) = &request.profile {
+        editor.prepare_for_incoming_profile(profile);
+    }
     let buffer = editor.buffer();
     buffer.begin_irreversible_action();
     let session = Rc::new(RefCell::new(BufferReplacementSession {
@@ -426,6 +450,7 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         mutation_started: false,
         terminal: false,
         metrics: BufferReplacementMetrics::for_one_retained_body(),
+        profile: request.profile,
     }));
     editor
         .imp()
@@ -475,7 +500,15 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
     editor
         .source_view()
         .set_cursor_visible(guard.cursor_visible);
-    editor.buffer().set_highlight_syntax(guard.highlight_syntax);
+    let syntax_enabled = editor.document_scale().syntax_enabled;
+    editor
+        .buffer()
+        .set_highlight_syntax(guard.highlight_syntax && syntax_enabled);
+    if syntax_enabled && editor.buffer().language().is_none() {
+        // A cancelled install of a gated body cleared the language up front;
+        // the session still allows it, so the path's language comes back.
+        editor.reapply_language();
+    }
     if editor.is_search_visible() && editor.search_bar().search_context().is_none() {
         editor
             .search_bar()
@@ -738,7 +771,7 @@ fn finish_session(
     session: &Rc<RefCell<BufferReplacementSession>>,
     cancellation: Option<BufferReplacementCancelReason>,
 ) {
-    let (editor, buffer, source, guard, ticket, body, callback, metrics) = {
+    let (editor, buffer, source, guard, ticket, body, callback, metrics, profile) = {
         let mut state = session.borrow_mut();
         if state.terminal {
             return;
@@ -754,6 +787,7 @@ fn finish_session(
             state.body.take(),
             state.callback.take(),
             state.metrics,
+            state.profile.take(),
         )
     };
     if let Some(source) = source {
@@ -798,6 +832,13 @@ fn finish_session(
             guard_released: guard.is_some(),
         },
     );
+    if cancellation.is_none()
+        && let Some(profile) = &profile
+    {
+        // The installed body's profile joins the session before the guard
+        // restores highlighting, so a gated feature is never switched back on.
+        editor.join_installed_profile(profile);
+    }
     if guard_restores_on_terminal(cancellation)
         && let Some(guard) = guard
     {

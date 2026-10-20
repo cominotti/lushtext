@@ -96,8 +96,8 @@ pub(super) fn begin_save_encoding_change(window: &LushtextWindow, encoding: Docu
         return;
     };
 
-    if !editor.size_check().syntax_enabled() {
-        // Large-file mode avoids synchronous whole-buffer scans on the GTK
+    if !editor.document_scale().syntax_enabled {
+        // Large-file mode (and long-paragraph documents) avoids synchronous whole-buffer scans on the GTK
         // thread. The save path still blocks a lossy write and asks for
         // confirmation before any bytes are written, so the check is deferred
         // rather than skipped.
@@ -344,6 +344,15 @@ fn apply_invisible_mode(
     editor.apply_invisible_characters_mode();
     crate::ui::settings_writes::set_string(keys::INVISIBLE_CHARACTERS_MODE, mode.id());
 
+    if mode != InvisibleCharactersMode::Off && !editor.document_scale().invisibles_allowed {
+        // The document scale policy keeps the drawer off for this document;
+        // the chosen mode still applies to every other document.
+        window.publish_status_message(
+            "Invisible characters are unavailable for this document because of very long lines.",
+            MessageKind::Warning,
+        );
+        return;
+    }
     window.publish_status_message(
         &format!("Invisible characters: {}", mode.label()),
         MessageKind::Info,

@@ -75,6 +75,10 @@ pub struct LushtextSearchBar {
     pub match_announcement_throttler: accessibility::AnnouncementThrottler,
 
     // --- Navigation state ---
+    /// Whether the document scale policy still allows automatic match
+    /// highlighting for the attached editor's document (set by the editor;
+    /// `false` keeps navigation and counts but draws no highlight).
+    pub highlight_gated_off: Cell<bool>,
     /// Whether the user navigated to a match (next/prev). When true, Escape
     /// keeps the cursor at the navigated position instead of restoring.
     pub navigated: Cell<bool>,

@@ -54,7 +54,7 @@ impl LushtextEditorPage {
             || (imp.settings.boolean(keys::SHOW_MINIMAP)
                 && !self.focus_mode_suppresses_minimap()
                 && !self.is_evicted()
-                && self.size_check().syntax_enabled())
+                && self.document_scale().minimap_allowed)
     }
 
     /// Report whether queued minimap work is still pending.
@@ -136,42 +136,23 @@ impl LushtextEditorPage {
     }
 }
 
+/// Availability comes from the document scale alone, known from the worker
+/// profile before any map is attached; the wrapped-layout analysis feeds
+/// markers only.
 pub(super) fn current_availability(editor: &LushtextEditorPage) -> MinimapAvailability {
-    let cheap = cheap_minimap_availability(editor);
-    if cheap != MinimapAvailability::Visible {
-        return cheap;
-    }
-    let wrapped_layout_too_large = wrapped_layout_analysis_required(editor)
-        && editor
-            .imp()
-            .minimap
-            .analysis_cache
-            .borrow()
-            .as_ref()
-            .is_some_and(|cache| {
-                cache.generation == editor.imp().minimap.analysis_generation.get()
-                    && cache.result.wrapped_layout_too_large
-            });
-    minimap_availability_for_policy(MinimapAvailabilityPolicy {
-        focus_suppressed: false,
-        preference_enabled: true,
-        evicted: false,
-        syntax_enabled: true,
-        wrapped_layout_too_large,
-    })
+    cheap_minimap_availability(editor)
 }
 
 pub(super) fn cheap_minimap_availability(editor: &LushtextEditorPage) -> MinimapAvailability {
     let focus_suppressed = editor.focus_mode_suppresses_minimap();
     let preference_enabled = editor.imp().settings.boolean(keys::SHOW_MINIMAP);
     let evicted = editor.is_evicted();
-    let syntax_enabled = editor.size_check().syntax_enabled();
+    let scale_allows_minimap = editor.document_scale().minimap_allowed;
     minimap_availability_for_policy(MinimapAvailabilityPolicy {
         focus_suppressed,
         preference_enabled,
         evicted,
-        syntax_enabled,
-        wrapped_layout_too_large: false,
+        scale_allows_minimap,
     })
 }
 

@@ -133,6 +133,19 @@ impl LushtextSearchBar {
         self.imp().search_context.borrow().clone()
     }
 
+    /// Allow or gate automatic match highlighting for this bar's document.
+    ///
+    /// The editor sets it from its document scale (`search_highlight_allowed`);
+    /// an attached session follows at once, and a later session starts with it.
+    pub fn set_highlight_allowed(&self, allowed: bool) {
+        self.imp().highlight_gated_off.set(!allowed);
+        if let Some(context) = self.imp().search_context.borrow().as_ref()
+            && context.is_highlight() != allowed
+        {
+            context.set_highlight(allowed);
+        }
+    }
+
     /// Whether the user navigated to a match during this session.
     ///
     /// Read by the editor page's close path to decide whether `Escape` restores

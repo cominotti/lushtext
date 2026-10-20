@@ -356,14 +356,20 @@ impl LushtextPreferences {
         let path = path.to_path_buf();
         spawn_blocking_then_weak(
             self,
-            move || draft_service::set_aside::read(&json_store::data_dir(), &path),
+            move || {
+                // Profiled on the reading worker, for the document scale.
+                draft_service::set_aside::read(&json_store::data_dir(), &path).map(|text| {
+                    let profile = crate::model::paragraph_boundary::DocumentProfile::of_text(&text);
+                    (text, profile)
+                })
+            },
             |prefs, text| match text {
-                Ok(text) => {
+                Ok((text, profile)) => {
                     if let Some(window) = prefs
                         .root()
                         .and_downcast::<crate::ui::window::LushtextWindow>()
                     {
-                        window.open_set_aside_draft(text);
+                        window.open_set_aside_draft(text, profile);
                         prefs.close();
                     }
                 }

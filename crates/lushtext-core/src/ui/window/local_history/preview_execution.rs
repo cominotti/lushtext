@@ -11,6 +11,7 @@
 //! reads through the shared coordinator, a disposal reservation per read, and a
 //! paragraph-aligned sliced install for a body too large for one GTK turn.
 
+use crate::model::paragraph_boundary::DocumentProfile;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -48,7 +49,9 @@ pub(super) type GuardedLocalHistorySnapshot =
     crate::ui::plain_disposal::DisposalOwned<LocalHistorySnapshot>;
 
 pub(super) enum GuardedLocalHistoryPreviewLoadOutcome {
-    Loaded(GuardedLocalHistorySnapshot),
+    /// The snapshot and its paragraph profile, computed on the reading worker
+    /// so a restore can join it into the editor's document scale.
+    Loaded(GuardedLocalHistorySnapshot, Box<DocumentProfile>),
     Missing,
     Cancelled,
 }
@@ -73,8 +76,10 @@ pub(super) fn guard_local_history_preview_on_worker(
             )
             .unwrap_or(u64::MAX);
             debug_assert!(weight <= policy::PREVIEW_RESERVATION_BYTES);
+            let profile = DocumentProfile::of_text(&snapshot.text);
             Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(
                 reservation.shrink_to_and_own(weight, snapshot),
+                Box::new(profile),
             ))
         }
         local_history_service::LocalHistoryPreviewLoadOutcome::Missing => {
@@ -138,6 +143,8 @@ pub(super) struct LocalHistoryBrowserState {
     snapshots: Vec<LocalHistorySnapshotMeta>,
     /// Last fully loaded snapshot preview.
     pub(super) loaded_snapshot: RefCell<Option<GuardedLocalHistorySnapshot>>,
+    /// Paragraph profile of the last loaded snapshot (worker-computed).
+    pub(super) loaded_profile: RefCell<Option<DocumentProfile>>,
     /// One-active/one-latest ownership for snapshot body reads.
     preview_loads: RefCell<local_history_service::LocalHistoryPreviewCoordinator>,
     /// Active compact selection waiting for disposal admission before disk I/O.
@@ -315,6 +322,7 @@ impl LushtextWindow {
             back_button,
             snapshots,
             loaded_snapshot: RefCell::new(None),
+            loaded_profile: RefCell::new(None),
             preview_loads: RefCell::default(),
             preview_admission: RefCell::default(),
             preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup::default(),
@@ -600,7 +608,8 @@ impl LocalHistoryBrowserState {
         };
         if accepted {
             match result {
-                Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(snapshot)) => {
+                Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(snapshot, profile)) => {
+                    self.loaded_profile.replace(Some(*profile));
                     self.begin_preview_install(generation, snapshot);
                 }
                 Ok(GuardedLocalHistoryPreviewLoadOutcome::Missing) => {
@@ -784,7 +793,7 @@ impl LocalHistoryBrowserState {
 fn retire_local_history_preview_result(
     result: anyhow::Result<GuardedLocalHistoryPreviewLoadOutcome>,
 ) {
-    if let Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(snapshot)) = result {
+    if let Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(snapshot, _)) = result {
         drop(snapshot);
     }
 }

@@ -65,30 +65,26 @@ pub fn next_clear_char_count(remaining_chars: i32) -> i32 {
 /// GTK text layout validates whole paragraphs, so a slice that stops inside a
 /// paragraph forces the next slice to re-lay-out everything installed so far —
 /// quadratic total work that freezes recovery of single-line documents. Every
-/// slice therefore ends just after a newline: paragraphs installed by earlier
-/// turns are never touched again. A single paragraph longer than the budget is
-/// installed in one turn because GTK cannot lay it out incrementally anyway.
+/// slice therefore ends just after a **GTK paragraph delimiter** (`\n`, `\r`,
+/// `\r\n` kept whole, or U+2029, the set `pango_find_paragraph_boundary` and
+/// `GtkTextBuffer` use; ledger A42): paragraphs installed by earlier turns are
+/// never touched again. It ends after the last delimiter within
+/// [`REPLACEMENT_INSERT_SLICE_BYTES`], or, when none is, after the first one
+/// beyond it, so a single paragraph longer than the budget is installed in one
+/// turn because GTK cannot lay it out incrementally anyway.
+///
+/// The choice itself is
+/// [`slice_end_after_paragraph`](super::paragraph_boundary::slice_end_after_paragraph),
+/// whose guarantees Kani proves on strings of at most 8 bytes and the Pango
+/// property test samples beyond; this function is its named entry point for
+/// the `WFR-BUFFER-REPLACEMENT` workflow.
 #[must_use]
 pub fn next_replacement_boundary(text: &str, start: usize) -> usize {
-    if start >= text.len() {
-        return text.len();
-    }
-    let mut budget_end = start
-        .saturating_add(REPLACEMENT_INSERT_SLICE_BYTES)
-        .min(text.len());
-    while budget_end > start && !text.is_char_boundary(budget_end) {
-        budget_end -= 1;
-    }
-    if budget_end == text.len() {
-        return text.len();
-    }
-    if let Some(newline) = text[start..budget_end].rfind('\n') {
-        return start.saturating_add(newline).saturating_add(1);
-    }
-    match text[budget_end..].find('\n') {
-        Some(newline) => budget_end.saturating_add(newline).saturating_add(1),
-        None => text.len(),
-    }
+    super::paragraph_boundary::slice_end_after_paragraph(
+        text,
+        start,
+        REPLACEMENT_INSERT_SLICE_BYTES,
+    )
 }
 
 #[cfg(test)]
@@ -168,6 +164,71 @@ mod tests {
         let text = format!("x{}", "y".repeat(2 * REPLACEMENT_INSERT_SLICE_BYTES));
         assert_eq!(next_replacement_boundary(&text, 0), text.len());
         assert_eq!(next_replacement_boundary(&text, text.len()), text.len());
+    }
+
+    /// Collect the slices `next_replacement_boundary` cuts `text` into, asserting
+    /// the per-slice safety contract on the way.
+    fn replacement_slices(text: &str) -> Vec<&str> {
+        let mut slices = Vec::new();
+        let mut start = 0;
+        while start < text.len() {
+            let end = next_replacement_boundary(text, start);
+            assert!(end > start, "a slice must advance");
+            assert!(text.is_char_boundary(end));
+            assert!(
+                !(text.as_bytes().get(end.wrapping_sub(1)) == Some(&b'\r')
+                    && text.as_bytes().get(end) == Some(&b'\n')),
+                "a slice must never separate CR from LF"
+            );
+            slices.push(&text[start..end]);
+            start = end;
+        }
+        slices
+    }
+
+    #[test]
+    fn insertion_policy_slices_cr_only_documents() {
+        // GTK ends a paragraph at a lone `\r` (pango_find_paragraph_boundary), so
+        // a CR-only document above the synchronous threshold must be sliced
+        // like a `\n` one instead of landing in one GTK turn.
+        let line = format!("{}\r", "c".repeat(999));
+        let text = line.repeat(SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES / line.len() + 1);
+        assert!(text.len() > SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES);
+        let slices = replacement_slices(&text);
+        assert!(slices.len() > 1, "CR-only text installed in one turn");
+        for slice in &slices {
+            assert!(slice.len() <= REPLACEMENT_INSERT_SLICE_BYTES);
+            assert!(slice.ends_with('\r'));
+        }
+        assert_eq!(slices.concat(), text);
+    }
+
+    #[test]
+    fn insertion_policy_slices_paragraph_separator_documents() {
+        let line = format!("{}\u{2029}", "p".repeat(997));
+        let text = line.repeat(SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES / line.len() + 1);
+        assert!(text.len() > SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES);
+        let slices = replacement_slices(&text);
+        assert!(slices.len() > 1, "U+2029 text installed in one turn");
+        for slice in &slices {
+            assert!(slice.len() <= REPLACEMENT_INSERT_SLICE_BYTES);
+            assert!(slice.ends_with('\u{2029}'));
+        }
+        assert_eq!(slices.concat(), text);
+    }
+
+    #[test]
+    fn insertion_policy_never_splits_crlf_at_the_budget_edge() {
+        // The budget ends immediately after the `\r` of a CRLF pair: the slice
+        // must end after the `\n`, keeping the pair one GTK delimiter.
+        let text = format!(
+            "{}\r\n{}",
+            "a".repeat(REPLACEMENT_INSERT_SLICE_BYTES - 1),
+            "b\r\n".repeat(8)
+        );
+        let end = next_replacement_boundary(&text, 0);
+        assert_eq!(end, REPLACEMENT_INSERT_SLICE_BYTES + 1);
+        assert_eq!(replacement_slices(&text).concat(), text);
     }
 
     #[test]

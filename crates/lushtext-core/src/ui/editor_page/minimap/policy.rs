@@ -144,8 +144,9 @@ pub enum MinimapAvailability {
     /// The user preference currently disables the minimap everywhere.
     #[default]
     Disabled,
-    /// The current document is above the minimap-supported size tier.
-    TooLarge,
+    /// The document scale policy disables the minimap for this document
+    /// (total size, paragraph length or batch density).
+    Reduced,
     /// The tab buffer was evicted and will be reloaded only when focused again.
     Evicted,
     /// The minimap is visible and fully active for this editor page.
@@ -542,8 +543,10 @@ pub(super) struct MinimapAvailabilityPolicy {
     pub(super) focus_suppressed: bool,
     pub(super) preference_enabled: bool,
     pub(super) evicted: bool,
-    pub(super) syntax_enabled: bool,
-    pub(super) wrapped_layout_too_large: bool,
+    /// `DocumentScale::minimap_allowed`, decided from the paragraph profile
+    /// before any map is attached. Wrapped-layout analysis no longer gates
+    /// availability; it feeds markers only.
+    pub(super) scale_allows_minimap: bool,
 }
 
 pub(super) fn minimap_availability_for_policy(
@@ -555,10 +558,23 @@ pub(super) fn minimap_availability_for_policy(
     if policy.evicted {
         return MinimapAvailability::Evicted;
     }
-    if !policy.syntax_enabled || policy.wrapped_layout_too_large {
-        return MinimapAvailability::TooLarge;
+    if !policy.scale_allows_minimap {
+        return MinimapAvailability::Reduced;
     }
     MinimapAvailability::Visible
+}
+
+/// The status feedback when the scale policy disables the minimap, naming
+/// line length or size as the reason.
+pub(super) fn minimap_unavailable_message(
+    reduced: crate::model::document_scale::ReducedFeatures,
+) -> &'static str {
+    use crate::model::document_scale::{ReductionReason, ScaleFeature};
+    if reduced.has_reason(ScaleFeature::Minimap, ReductionReason::LongParagraph) {
+        "Minimap unavailable for this document's line lengths"
+    } else {
+        "Minimap unavailable for this large document"
+    }
 }
 
 #[cfg(test)]
@@ -1569,6 +1585,20 @@ mod tests {
     }
 
     #[test]
+    fn test_analysis_lines_follow_gtk_paragraph_delimiters() {
+        let policy = MinimapAnalysisPolicy {
+            warning_line_chars: 2,
+            wrapped_line_chars: usize::MAX,
+            marker_limit: 16,
+        };
+        let mut analysis = MinimapAnalysisAccumulator::new(policy, true);
+        analysis.inspect_slice("aaa\rb\r\nccc\u{2029}dddd".chars(), usize::MAX);
+        let result = analysis.finish();
+        assert_eq!(result.long_line_lines, vec![0, 2, 3]);
+        assert_eq!(result.lines_examined, 4);
+    }
+
+    #[test]
     fn test_buffer_line_budget_returns_false_for_empty_buffers() {
         assert!(!text_exceeds_line_char_budget("", 0));
     }
@@ -1579,8 +1609,7 @@ mod tests {
             focus_suppressed: false,
             preference_enabled: true,
             evicted: false,
-            syntax_enabled: true,
-            wrapped_layout_too_large: false,
+            scale_allows_minimap: true,
         };
 
         assert_eq!(
@@ -1591,8 +1620,7 @@ mod tests {
             minimap_availability_for_policy(MinimapAvailabilityPolicy {
                 preference_enabled: false,
                 evicted: true,
-                syntax_enabled: false,
-                wrapped_layout_too_large: true,
+                scale_allows_minimap: false,
                 ..visible
             }),
             MinimapAvailability::Disabled,
@@ -1611,7 +1639,7 @@ mod tests {
         assert_eq!(
             minimap_availability_for_policy(MinimapAvailabilityPolicy {
                 evicted: true,
-                syntax_enabled: false,
+                scale_allows_minimap: false,
                 ..visible
             }),
             MinimapAvailability::Evicted,
@@ -1619,17 +1647,10 @@ mod tests {
         );
         assert_eq!(
             minimap_availability_for_policy(MinimapAvailabilityPolicy {
-                syntax_enabled: false,
+                scale_allows_minimap: false,
                 ..visible
             }),
-            MinimapAvailability::TooLarge
-        );
-        assert_eq!(
-            minimap_availability_for_policy(MinimapAvailabilityPolicy {
-                wrapped_layout_too_large: true,
-                ..visible
-            }),
-            MinimapAvailability::TooLarge
+            MinimapAvailability::Reduced
         );
     }
 
@@ -2489,6 +2510,8 @@ pub struct MinimapAnalysisAccumulator {
     wrapped_layout_too_large: bool,
     long_line_lines: Vec<u32>,
     characters_examined: u64,
+    /// The previous scalar was `\r`, so a `\n` now completes that CRLF.
+    previous_was_cr: bool,
 }
 
 impl MinimapAnalysisAccumulator {
@@ -2504,6 +2527,7 @@ impl MinimapAnalysisAccumulator {
             wrapped_layout_too_large: false,
             long_line_lines: Vec::with_capacity(policy.marker_limit.min(64)),
             characters_examined: 0,
+            previous_was_cr: false,
         }
     }
 
@@ -2524,7 +2548,15 @@ impl MinimapAnalysisAccumulator {
     /// Inspect one scalar from a GTK-owned cursor without retaining GTK state.
     pub fn inspect_char(&mut self, character: char) {
         self.characters_examined = self.characters_examined.saturating_add(1);
-        if character == '\n' {
+        // GTK paragraph delimiters (`model::paragraph_boundary`): `\n`, `\r`,
+        // `\r\n` as one, and U+2029, so CR-only and U+2029 documents get the
+        // same line identities as the buffer's lines.
+        let completes_crlf = character == '\n' && self.previous_was_cr;
+        self.previous_was_cr = character == '\r';
+        if completes_crlf {
+            return;
+        }
+        if matches!(character, '\n' | '\r' | '\u{2029}') {
             self.current_line = self.current_line.saturating_add(1);
             self.current_line_chars = 0;
             self.current_line_marked = false;

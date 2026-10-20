@@ -52,7 +52,9 @@
 //! so the default unit-test lane tests it on a private main context; only
 //! [`install`] and its toolkit hooks are feature-only.
 
-#[cfg(any(test, feature = "responsiveness-probes"))]
+// Only the measurement module names it through this path; the unit tests
+// reach it inside `watchdog`.
+#[cfg(feature = "responsiveness-probes")]
 pub(crate) use watchdog::LatenessWatchdog;
 
 /// Install the responsiveness probes into `app` when the measurement build

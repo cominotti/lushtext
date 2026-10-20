@@ -94,6 +94,11 @@ pub struct MinimapEvidence {
     pub wrapped_layout_analysis_required: bool,
     /// Whether the native source map currently projects this editor.
     pub projection_attached: bool,
+    /// Whether a native map instance currently exists (a retired map is
+    /// unparented and dropped, never kept with a cleared view).
+    pub map_present: bool,
+    /// Native maps built so far (construction plus rebuilds).
+    pub maps_built: u64,
     /// Whether a width-reflow settle burst is still pending.
     pub reflow_settle_pending: bool,
     /// Whether any queued minimap work is still pending.
@@ -205,6 +210,8 @@ impl LushtextEditorPage {
             long_line_warning_count: long_lines,
             wrapped_layout_analysis_required,
             projection_attached,
+            map_present: source_map.is_some(),
+            maps_built: minimap.maps_built.get(),
             reflow_settle_pending,
             work_pending,
             viewport_bounds,

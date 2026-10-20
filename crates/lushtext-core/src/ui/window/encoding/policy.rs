@@ -60,9 +60,24 @@ pub fn encoding_choice_state(
 pub fn invisible_mode_choice_state(
     option: InvisibleCharactersMode,
     current: InvisibleCharactersMode,
+    invisibles_allowed: bool,
 ) -> ChoiceRowState {
-    ChoiceRowState::for_current(option == current)
+    let state = ChoiceRowState::for_current(option == current);
+    if invisibles_allowed || option == InvisibleCharactersMode::Off {
+        state
+    } else {
+        // The document scale policy draws no hints for this document; the
+        // drawing modes stay visible but cannot be chosen for it.
+        ChoiceRowState {
+            selected: state.selected,
+            enabled: false,
+        }
+    }
 }
+
+/// The subtitle of a drawing mode the document scale policy gates off.
+pub const INVISIBLE_MODE_UNAVAILABLE_SUBTITLE: &str =
+    "Unavailable for this document because of very long lines.";
 
 /// Whether a line-ending option is current, and whether it may still be applied.
 ///
@@ -258,18 +273,46 @@ mod tests {
     #[test]
     fn invisible_mode_choices_are_current_only_for_the_matching_mode() {
         assert_eq!(
-            invisible_mode_choice_state(InvisibleCharactersMode::All, InvisibleCharactersMode::All),
+            invisible_mode_choice_state(
+                InvisibleCharactersMode::All,
+                InvisibleCharactersMode::All,
+                true
+            ),
             ChoiceRowState {
                 selected: true,
                 enabled: false
             }
         );
         assert_eq!(
-            invisible_mode_choice_state(InvisibleCharactersMode::Off, InvisibleCharactersMode::All),
+            invisible_mode_choice_state(
+                InvisibleCharactersMode::Off,
+                InvisibleCharactersMode::All,
+                true
+            ),
             ChoiceRowState {
                 selected: false,
                 enabled: true
             }
+        );
+    }
+
+    #[test]
+    fn gated_documents_keep_only_off_choosable() {
+        for mode in [
+            InvisibleCharactersMode::WhitespaceOnly,
+            InvisibleCharactersMode::All,
+        ] {
+            assert!(
+                !invisible_mode_choice_state(mode, InvisibleCharactersMode::Off, false).enabled
+            );
+        }
+        assert!(
+            invisible_mode_choice_state(
+                InvisibleCharactersMode::Off,
+                InvisibleCharactersMode::All,
+                false
+            )
+            .enabled
         );
     }
 
