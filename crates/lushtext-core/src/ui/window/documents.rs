@@ -700,6 +700,15 @@ impl LushtextWindow {
                 window.publish_editor_inline_notification(&editor, notification);
             }
         });
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        editor.connect_inline_notification_superseded(move || {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(editor) = editor_weak.upgrade()
+            {
+                window.resolve_editor_inline_notification(&editor);
+            }
+        });
 
         let editor_weak = editor.downgrade();
         let window_weak = self.downgrade();

@@ -24,8 +24,8 @@ use lushtext_core::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState,
     BufferReplacementCancelReason, BufferReplacementWorkflow, BufferSnapshotCancelReason,
     BufferSnapshotOutcome, BufferSnapshotTestEdit, BufferSnapshotTestMutation,
-    BufferSnapshotTestTrigger, EditorLoadState, EditorSaveError, LoadOutcome, LushtextEditorPage,
-    MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
+    BufferSnapshotTestTrigger, EditorLoadState, EditorSaveError, InlineAlertLifetime, LoadOutcome,
+    LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
     coalesce_snapshot_payload_for_test, set_next_load_body_disposal_probe_for_test,
     set_next_load_disposal_reservation_weight_for_test, snapshot_buffer_text_async_for_test,
 };
@@ -549,7 +549,10 @@ fn test_inline_alert_message_and_actions_share_row_when_wide() {
     // The widget harness does not advance the revealer's slide-animation frame
     // clock, so reveal instantly to obtain a real allocation for geometry checks.
     imp.alert_revealer.set_transition_duration(0);
-    page.emit_inline_notification(warning_notification());
+    page.emit_inline_notification(
+        warning_notification(),
+        InlineAlertLifetime::SupersededByLoad,
+    );
     wait_until(std::time::Duration::from_secs(2), || {
         imp.actions_box.width() > 0 && imp.discard_button.width() > 0
     });
@@ -608,7 +611,10 @@ fn test_inline_alert_actions_wrap_below_message_when_narrow() {
     // The widget harness does not advance the revealer's slide-animation frame
     // clock, so reveal instantly to obtain a real allocation for geometry checks.
     imp.alert_revealer.set_transition_duration(0);
-    page.emit_inline_notification(warning_notification());
+    page.emit_inline_notification(
+        warning_notification(),
+        InlineAlertLifetime::SupersededByLoad,
+    );
     wait_until(std::time::Duration::from_secs(2), || {
         imp.actions_box.width() > 0 && imp.discard_button.width() > 0
     });
@@ -3834,13 +3840,16 @@ fn test_warning_inline_alert_wraps_titles_and_action_labels() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    page.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Warning,
-        title: "Draft Changes Restored".to_string(),
-        body: "Unsaved changes to the document have been restored.".to_string(),
-        primary_button: Some("_Discard…".to_string()),
-        secondary_button: Some("_Save…".to_string()),
-    });
+    page.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Draft Changes Restored".to_string(),
+            body: "Unsaved changes to the document have been restored.".to_string(),
+            primary_button: Some("_Discard…".to_string()),
+            secondary_button: Some("_Save…".to_string()),
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
 
     let imp = page.info_bar().imp();
     assert!(
@@ -3874,13 +3883,16 @@ fn test_warning_inline_alert_groups_workflow_actions_and_dismiss() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    page.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Warning,
-        title: "Draft Changes Restored".to_string(),
-        body: "Unsaved changes to the document have been restored.".to_string(),
-        primary_button: Some("_Discard...".to_string()),
-        secondary_button: Some("_Save...".to_string()),
-    });
+    page.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Draft Changes Restored".to_string(),
+            body: "Unsaved changes to the document have been restored.".to_string(),
+            primary_button: Some("_Discard...".to_string()),
+            secondary_button: Some("_Save...".to_string()),
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
 
     let imp = page.info_bar().imp();
     assert!(imp.actions_box.property::<bool>("visible"));
@@ -3903,13 +3915,16 @@ fn test_error_inline_alert_groups_retry_and_dismiss() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    page.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Error,
-        title: "Could Not Open File".to_string(),
-        body: "Permission denied".to_string(),
-        primary_button: Some("_Retry".to_string()),
-        secondary_button: None,
-    });
+    page.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Error,
+            title: "Could Not Open File".to_string(),
+            body: "Permission denied".to_string(),
+            primary_button: Some("_Retry".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
 
     let imp = page.info_bar().imp();
     assert!(imp.actions_box.property::<bool>("visible"));
@@ -3939,7 +3954,7 @@ fn test_inline_alert_announcements_use_shared_throttling_policy() {
         primary_button: Some("_Discard...".to_string()),
         secondary_button: Some("_Save...".to_string()),
     };
-    page.emit_inline_notification(warning.clone());
+    page.emit_inline_notification(warning.clone(), InlineAlertLifetime::SupersededByLoad);
 
     let warning_key = inline_alert_announcement_key(&warning);
     assert!(
@@ -3958,7 +3973,7 @@ fn test_inline_alert_announcements_use_shared_throttling_policy() {
         primary_button: Some("_Retry".to_string()),
         secondary_button: None,
     };
-    page.emit_inline_notification(error.clone());
+    page.emit_inline_notification(error.clone(), InlineAlertLifetime::SupersededByLoad);
 
     let error_key = inline_alert_announcement_key(&error);
     assert!(
@@ -3975,13 +3990,16 @@ fn test_document_restored_inline_alert_keeps_save_as_visible() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    page.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Warning,
-        title: "Document Restored".to_string(),
-        body: "Unsaved document has been restored.".to_string(),
-        primary_button: None,
-        secondary_button: Some("Save _As…".to_string()),
-    });
+    page.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Document Restored".to_string(),
+            body: "Unsaved document has been restored.".to_string(),
+            primary_button: None,
+            secondary_button: Some("Save _As…".to_string()),
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
 
     let imp = page.info_bar().imp();
     assert!(
@@ -4026,23 +4044,29 @@ fn test_inline_alert_action_callbacks_are_routed() {
         move || save_clicked.set(true)
     });
 
-    page.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Error,
-        title: "Could Not Open File".to_string(),
-        body: "Permission denied".to_string(),
-        primary_button: Some("_Retry".to_string()),
-        secondary_button: None,
-    });
+    page.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Error,
+            title: "Could Not Open File".to_string(),
+            body: "Permission denied".to_string(),
+            primary_button: Some("_Retry".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
     page.info_bar().imp().retry_button.emit_clicked();
     assert!(retry_clicked.get(), "retry callback should fire");
 
-    page.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Warning,
-        title: "Draft Changes Restored".to_string(),
-        body: "Unsaved changes were restored.".to_string(),
-        primary_button: Some("_Discard...".to_string()),
-        secondary_button: Some("_Save...".to_string()),
-    });
+    page.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Draft Changes Restored".to_string(),
+            body: "Unsaved changes were restored.".to_string(),
+            primary_button: Some("_Discard...".to_string()),
+            secondary_button: Some("_Save...".to_string()),
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
     page.info_bar().imp().discard_button.emit_clicked();
     page.info_bar().imp().save_button.emit_clicked();
     assert!(discard_clicked.get(), "discard callback should fire");
@@ -4054,13 +4078,16 @@ fn test_warning_inline_alert_without_workflow_actions_keeps_only_dismiss_action(
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    page.emit_inline_notification(InlineActionNotification {
-        style: InlineNotificationStyle::Warning,
-        title: "Draft Not Restored".to_string(),
-        body: "The file changed on disk.".to_string(),
-        primary_button: None,
-        secondary_button: None,
-    });
+    page.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Draft Not Restored".to_string(),
+            body: "The file changed on disk.".to_string(),
+            primary_button: None,
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
 
     let imp = page.info_bar().imp();
     assert!(imp.alert_revealer.reveals_child());

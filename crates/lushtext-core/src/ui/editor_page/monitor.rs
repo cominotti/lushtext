@@ -67,13 +67,19 @@ impl LushtextEditorPage {
                                 return;
                             }
                             if current_mtime != last_known {
-                                editor.emit_inline_notification(InlineActionNotification {
-                                    style: InlineNotificationStyle::Warning,
-                                    title: "File Has Changed on Disk".to_string(),
-                                    body: "The file was modified by another program.".to_string(),
-                                    primary_button: Some("_Discard Changes and Reload".to_string()),
-                                    secondary_button: None,
-                                });
+                                editor.emit_inline_notification(
+                                    InlineActionNotification {
+                                        style: InlineNotificationStyle::Warning,
+                                        title: "File Has Changed on Disk".to_string(),
+                                        body: "The file was modified by another program."
+                                            .to_string(),
+                                        primary_button: Some(
+                                            "_Discard Changes and Reload".to_string(),
+                                        ),
+                                        secondary_button: None,
+                                    },
+                                    crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad,
+                                );
                             }
                         },
                     );

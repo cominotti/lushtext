@@ -58,7 +58,7 @@ pub use buffer_replacement::{
 pub use buffer_replacement::{BufferReplacementEvidence, BufferReplacementTestOutcome};
 pub(crate) use buffer_replacement::{BufferReplacementOutcome, BufferReplacementRequest};
 pub(crate) use focus_mode::approximate_char_width_pango_units;
-pub use imp::{EditorLoadState, PendingWarningAction};
+pub use imp::{EditorLoadState, InlineAlertLifetime, PendingWarningAction};
 pub use load::{LoadEvidence, LoadInstallPhase, LoadOutcome};
 #[cfg(feature = "test-utils")]
 pub use load::{
@@ -501,13 +501,17 @@ impl LushtextEditorPage {
         self.notify_memory_policy_changed();
     }
 
-    pub fn emit_inline_notification(&self, notification: InlineActionNotification) {
+    /// Surface one document-state inline alert for this editor.
+    ///
+    /// `lifetime` states whether the next successful load resolves it (see
+    /// `InlineAlertLifetime`); every producer picks one explicitly.
+    pub fn emit_inline_notification(
+        &self,
+        notification: InlineActionNotification,
+        lifetime: imp::InlineAlertLifetime,
+    ) {
         self.set_pending_warning_action(None);
-        if let Some(ref callback) = *self.imp().notification_callback.borrow() {
-            callback(notification);
-        } else {
-            self.info_bar().render_notification(Some(&notification));
-        }
+        self.publish_inline_notification(notification, lifetime);
     }
 
     /// Emit one inline notification while keeping a specific warning action wired.
@@ -515,8 +519,18 @@ impl LushtextEditorPage {
         &self,
         notification: InlineActionNotification,
         action: imp::PendingWarningAction,
+        lifetime: imp::InlineAlertLifetime,
     ) {
         self.set_pending_warning_action(Some(action));
+        self.publish_inline_notification(notification, lifetime);
+    }
+
+    fn publish_inline_notification(
+        &self,
+        notification: InlineActionNotification,
+        lifetime: imp::InlineAlertLifetime,
+    ) {
+        self.imp().document_metadata.alert_lifetime.set(lifetime);
         if let Some(ref callback) = *self.imp().notification_callback.borrow() {
             callback(notification);
         } else {
@@ -524,8 +538,28 @@ impl LushtextEditorPage {
         }
     }
 
-    pub fn clear_inline_notification(&self) {
-        self.info_bar().render_notification(None);
+    /// Install the window callback that resolves a load-superseded alert.
+    pub fn connect_inline_notification_superseded<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().notification_superseded_callback.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Resolve the current alert if a successful load superseded it.
+    ///
+    /// Called from the load terminal. With a window it resolves the record on
+    /// the notification bus, so no later projection can bring it back; without
+    /// one it clears this editor's own bar. An alert emitted as
+    /// `InlineAlertLifetime::OutlivesLoad` is left alone.
+    pub(crate) fn resolve_inline_notification_superseded_by_load(&self) {
+        if self.imp().document_metadata.alert_lifetime.get()
+            != imp::InlineAlertLifetime::SupersededByLoad
+        {
+            return;
+        }
+        if let Some(ref callback) = *self.imp().notification_superseded_callback.borrow() {
+            callback();
+        } else {
+            self.info_bar().render_notification(None);
+        }
     }
 
     #[must_use]
