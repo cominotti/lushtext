@@ -160,7 +160,12 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
   (`PROOF_STRENGTH_MEMORY_MAX`), and the tests arm builds with 4 jobs and runs
   nextest on 2 threads (`PROOF_STRENGTH_TESTS_BUILD_JOBS`,
   `PROOF_STRENGTH_TESTS_THREADS`): at 8 and 8 its `property-tests` build
-  outgrew a 12G cap.
+  outgrew a 12G cap. The Kani arm is serial within one run; to use the
+  host-wide budget, run shards of it in parallel, each with its own worktree:
+  `PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=1/3
+  PROOF_STRENGTH_WORKTREE=target/proof-strength/wt1 make proof-strength`, and
+  likewise `2/3` and `3/3`. Run the tests arm once, unsharded: its
+  cargo-mutants output directory is shared.
 - **Earlier revisions.** `--module-rev MODULE=REV` reports a module from the
   results of an earlier revision when its shipped source is unchanged since:
   the check ignores top-level `#[cfg(test)] mod … { … }` blocks, because
@@ -177,19 +182,20 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
 cargo-mutants is serial by default — one mutant builds and tests at a time.
 The local Makefile targets (`mutants-smoke`, `mutants-diff`, `mutants-full`)
 run the whole pass inside one memory-capped scope (`MUTANTS_MEMORY_MAX`,
-default `12G`, no swap, through `scripts/with-memory-cap.sh`), so memory, not
-the core count, sets their parallelism. Each cargo-mutants job is a full cargo
-build plus its own nextest processes, so the defaults are:
+default `36G`, no swap, through `scripts/with-memory-cap.sh`, admitted into the
+host-wide `lushtext-heavy.slice`), so memory, not the core count, sets their
+parallelism. Each cargo-mutants job is a full cargo build plus its own nextest
+processes, so the defaults are:
 
-- `MUTANTS_LOCAL_JOBS=1` — one mutant at a time;
-- `MUTANTS_LOCAL_BUILD_JOBS=4` — bounds the build phase via `CARGO_BUILD_JOBS`;
+- `MUTANTS_LOCAL_JOBS=3` — three mutants at a time;
+- `MUTANTS_LOCAL_BUILD_JOBS=4` — bounds each job's build via `CARGO_BUILD_JOBS`;
 - `MUTANTS_LOCAL_TEST_THREADS=4` — bounds each job's nextest.
 
-These fit the 12G cap. The earlier core-derived defaults (about `nproc / 4`
-jobs) did not: on 2026-10-20 runs at 6–8 build jobs and 8–12 test threads were
-OOM-killed inside the cap. A mutant whose test was OOM-killed reads as
-**caught**, so a run that hit the cap is discarded and rerun at the defaults.
-Override a knob inline for one measured run, never as a new default.
+These fit the 36G scope and the 16-core affinity. On 2026-10-20 runs at 6–8
+build jobs and 8–12 test threads inside a 12G cap were OOM-killed. A mutant
+whose test was OOM-killed reads as **caught**, so a run that hit its cap is
+discarded and rerun at the defaults. Override a knob inline for one measured
+run, never as a new default.
 
 CI deliberately does not use this. The mutation workflow calls
 `scripts/run-mutants.sh` directly and leaves `MUTANTS_JOBS` unset, so the small

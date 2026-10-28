@@ -654,22 +654,26 @@ invariant; tighten the generator or use the deep lane.
   the cap applies; `make check-kani-shards` self-tests the wrapper.
   **The host-wide budget.** Every capped scope runs inside one shared user
   slice, `lushtext-heavy.slice`, whose `MemoryMax` (`LUSHTEXT_HEAVY_MEMORY_MAX`,
-  default `24G`, no swap) bounds the sum of all capped work on the machine. A
-  per-command cap alone did not: on 2026-10-20 three agents each held to 12G,
-  plus a 16G Kani shard, added up past the desktop's headroom. Before a scope
-  starts, the wrapper's admission (serialized by
+  default `72G` on the 93 GB reference workstation, no swap) bounds the sum of
+  all capped work on the machine. A per-command cap alone did not: on
+  2026-10-20 three agents each held to 12G, plus a 16G Kani shard, added up
+  past the desktop's headroom. The slice limit alone is not the safety either:
+  72G admitted plus the 16G reserve is close to the machine's total, and a VM or
+  a game can take tens of GB at any moment. So before a scope starts, the
+  wrapper's admission (serialized by
   `$XDG_RUNTIME_DIR/lushtext-heavy-admission.lock`) waits until the caps already
-  admitted to the slice plus the new one fit its budget, and until
+  admitted to the slice plus the new one fit its budget, **and** until
   `MemAvailable` covers the new cap plus `LUSHTEXT_MEMORY_RESERVE` (default
-  `16G`) for the desktop; it prints one line while it waits. A Kani run (16G)
-  and a 12G build therefore never overlap, and two 12G runs may. Caps of 1G or
+  `16G`) for the desktop; it prints one line while it waits. The second
+  condition is what throttles automatically when something else on the desktop
+  is using memory. Caps of 1G or
   less skip admission (the self-test runs in the pre-commit hook). A command
   already inside a capped scope runs nested wrapper calls in place
   (`LUSHTEXT_MEMORY_CAP_KIB`), so wrapping `make mutants-smoke` again neither
   double-books the budget nor escapes the outer cap. The Makefile wraps
   `make kani` (`KANI_MEMORY_MAX`), `make proof-strength`
   (`PROOF_STRENGTH_MEMORY_MAX`, default `16G`) and the `mutants-*` targets
-  (`MUTANTS_MEMORY_MAX`, default `12G`); wrap any other heavy command an agent
+  (`MUTANTS_MEMORY_MAX`, default `36G`); wrap any other heavy command an agent
   runs (a full build, a widget run, a bench) the same way, from a checkout
   whose wrapper has this admission, because a worktree created before it lands
   still carries the old per-command-only script.
@@ -713,7 +717,12 @@ invariant; tighten the generator or use the deep lane.
   or a harness file imports from a module that is neither. A new harness is
   therefore added to both tables. `make proof-strength` runs the module's
   mutants against those harnesses in a disposable worktree
-  (`scripts/proof-strength.py`, see `docs/mutation-testing.md`); it waits for
+  (`scripts/proof-strength.py`, see `docs/mutation-testing.md`). Its Kani arm
+  is serial within one run; run shards of it in parallel with
+  `PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=k/n` and a distinct
+  `PROOF_STRENGTH_WORKTREE` per shard (each run is its own 16G admitted scope),
+  and the tests arm once, unsharded, because its cargo-mutants output directory
+  is shared. It waits for
   14 GiB available memory before each run and caps each Kani run at 12 GiB of
   address space (`PROOF_STRENGTH_MIN_AVAILABLE_GIB`,
   `PROOF_STRENGTH_MEMORY_LIMIT_GIB`), and it is a measurement lane, not a
@@ -922,17 +931,17 @@ the user has asked to keep Rust build pressure low.
 cargo-mutants is serial by default. Locally, memory rather than cores bounds
 its parallelism: each job is a full cargo build plus nextest processes, and the
 local Makefile targets run the whole pass inside one `MUTANTS_MEMORY_MAX` scope
-(`scripts/with-memory-cap.sh`, default `12G`, no swap). The defaults are
-`MUTANTS_LOCAL_JOBS=1`, `MUTANTS_LOCAL_BUILD_JOBS=4` and
-`MUTANTS_LOCAL_TEST_THREADS=4`, which fit that cap; the earlier core-derived
-defaults (about `nproc / 4` jobs, `nproc / jobs` build jobs) did not, and on
-2026-10-20 runs at 6–8 build jobs and 8–12 test threads were OOM-killed inside
-the cap. A mutant whose test was OOM-killed reads as caught, so a run that hit
-the cap is discarded, and raising a knob is a measured decision for one run,
-never a new default. `scripts/run-mutants.sh` only exports these / passes
-`--jobs` when the matching env var is set. If the gated CI mutation lane is
-re-enabled, it must leave all three unset so the sharded small runners keep the
-serial default and fan out through `MUTANTS_SHARD` instead.
+(`scripts/with-memory-cap.sh`, default `36G`, no swap, admitted into the
+host-wide slice). The defaults are `MUTANTS_LOCAL_JOBS=3`,
+`MUTANTS_LOCAL_BUILD_JOBS=4` and `MUTANTS_LOCAL_TEST_THREADS=4`: three jobs fit
+that scope and keep `jobs x build-jobs` near the 16-core affinity. On
+2026-10-20 runs at 6–8 build jobs and 8–12 test threads inside a 12G cap were
+OOM-killed. A mutant whose test was OOM-killed reads as caught, so a run that
+hit its cap is discarded, and raising a knob beyond these defaults is a
+measured decision for one run. `scripts/run-mutants.sh` only exports these /
+passes `--jobs` when the matching env var is set. If the gated CI mutation lane
+is re-enabled, it must leave all three unset so the sharded small runners keep
+the serial default and fan out through `MUTANTS_SHARD` instead.
 
 Treat survivors in this order: first decide whether the mutant represents a
 real missed behavior, then add or tighten deterministic tests, then consider

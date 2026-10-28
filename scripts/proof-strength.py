@@ -60,7 +60,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATE = REPO_ROOT / "target/proof-strength"
-WORKTREE = STATE / "wt"
+# One disposable worktree per concurrent run: shards of the Kani arm
+# (`--shard k/n`) may run in parallel, each with its own PROOF_STRENGTH_WORKTREE
+# (and therefore its own Kani target directory); per-mutant results never
+# collide because each shard owns disjoint mutants.
+WORKTREE = Path(os.environ["PROOF_STRENGTH_WORKTREE"]).resolve() if os.environ.get("PROOF_STRENGTH_WORKTREE") else STATE / "wt"
 RESULTS = STATE / "results"
 # `touch target/proof-strength/STOP` stops a run cleanly between mutants.
 STOP_FILE = STATE / "STOP"

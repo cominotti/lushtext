@@ -196,16 +196,17 @@ WIDGET_MEASURE ?=
 # Local cargo-mutants parallelism. Memory, not cores, bounds it: every
 # cargo-mutants job is a full cargo build plus nextest processes, and the whole
 # run executes inside one MUTANTS_MEMORY_MAX scope (scripts/with-memory-cap.sh,
-# no swap). On 2026-10-20 runs at 6-8 build jobs and 8-12 test threads were
-# OOM-killed inside a 12G cap (a mutant whose test is killed reads as caught),
-# so the defaults are one job, four build jobs and four test threads, which fit
-# 12G. Raising them is a measured decision for one run, never a default. CI
-# lanes call scripts/run-mutants.sh directly and leave MUTANTS_JOBS unset, so
-# the sharded small runners keep the serial default.
-MUTANTS_LOCAL_JOBS ?= 1
+# no swap), admitted into the host-wide lushtext-heavy.slice. Three jobs of four
+# build jobs and four test threads fit a 36G scope and keep jobs x build-jobs
+# near the 16-core affinity; on 2026-10-20 runs at 6-8 build jobs and 8-12 test
+# threads inside a 12G cap were OOM-killed (a mutant whose test is killed reads
+# as caught, so such a run is discarded). CI lanes call scripts/run-mutants.sh
+# directly and leave MUTANTS_JOBS unset, so the sharded small runners keep the
+# serial default.
+MUTANTS_LOCAL_JOBS ?= 3
 MUTANTS_LOCAL_TEST_THREADS ?= 4
 MUTANTS_LOCAL_BUILD_JOBS ?= 4
-MUTANTS_MEMORY_MAX ?= 12G
+MUTANTS_MEMORY_MAX ?= 36G
 MUTANTS_LOCAL_PARALLELISM = MUTANTS_JOBS=$(MUTANTS_LOCAL_JOBS) MUTANTS_TEST_THREADS=$(MUTANTS_LOCAL_TEST_THREADS) MUTANTS_BUILD_JOBS=$(MUTANTS_LOCAL_BUILD_JOBS)
 
 FLATPAK_REMOTE ?= flathub
