@@ -14,7 +14,7 @@ use gtk4::{IconTheme, gdk};
 use lushtext_core::app::LushtextApplication;
 use lushtext_core::config;
 use lushtext_core::model::session::{SessionData, SessionTab};
-use lushtext_core::services::{editor_io, json_store, session_service};
+use lushtext_core::services::{editor_io, json_store, session_service, test_isolation};
 use lushtext_core::ui::automation::app_snapshot;
 use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use lushtext_core::ui::open_popover::evidence::recent_documents_journal_evidence;
@@ -22,6 +22,35 @@ use lushtext_core::ui::window::LushtextWindow;
 use sourceview5::StyleSchemeManager;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Regression for 2026-10-20: a test that saved a session before GTK was
+/// initialized wrote the developer's real `session.json`, because only
+/// `ensure_gtk_init()` isolated app data. Isolation now exists before any test
+/// code runs, so this test deliberately never initializes GTK.
+#[test]
+fn test_session_saved_before_gtk_init_lands_in_the_private_test_directory() {
+    let temp_root = fs_metadata::canonical_path(&std::env::temp_dir()).expect("canonical temp dir");
+    let data_dir = json_store::data_dir();
+    session_service::save(&data_dir, &SessionData::default()).expect("save the session");
+
+    let written = fs_metadata::canonical_path(&data_dir.join("session.json"))
+        .expect("the session file was written");
+    assert!(
+        written.starts_with(&temp_root),
+        "the session file went to {}, outside the test's private temp dir {}",
+        written.display(),
+        temp_root.display()
+    );
+    if let Some(home) = std::env::var_os("HOME") {
+        assert_eq!(
+            test_isolation::real_home_app_data_tree(&written, Path::new(&home)),
+            None,
+            "the session file went into the real home's app data"
+        );
+    }
+    // GLib-backed paths (recent files, caches) are private before GTK starts too.
+    assert!(test_isolation::environment_is_isolated_within(&temp_root));
+}
 
 #[test]
 fn test_new() {

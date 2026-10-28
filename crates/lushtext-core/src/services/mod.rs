@@ -44,6 +44,8 @@ pub mod search_history;
 pub mod session_service;
 pub mod single_flight;
 pub(crate) mod sync;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_isolation;
 pub mod workspace_manager;
 pub mod workspace_watch;
 

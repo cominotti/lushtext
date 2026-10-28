@@ -29,7 +29,18 @@ Important repo facts:
 - Non-list harness executions self-supervise into a private `mutter --headless`
   session before GTK initializes, so plain Cargo and Makefile runs cannot place
   widget windows on the developer's live desktop.
-- `crates/lushtext/tests/widget/common.rs` already sets up GTK, GResources, in-memory GSettings, isolated data dirs, and unique application IDs.
+- `crates/lushtext/tests/widget/common.rs` already sets up GTK, GResources, in-memory GSettings, and unique application IDs.
+- App data is isolated **before any test code runs**, not by `ensure_gtk_init()`:
+  the first statement of `main` in `widget.rs` points `LUSHTEXT_DATA_DIR` and
+  `XDG_{DATA,CONFIG,CACHE,STATE}_HOME` at a root inside the process's
+  `TMPDIR` (the per-attempt directory in a child), using
+  `lushtext_core::services::test_isolation::isolated_environment`.
+  `ensure_gtk_init()` only asserts it. A test may therefore save sessions,
+  drafts, or any app data before initializing GTK; on 2026-10-20 one did when
+  isolation still lived in `ensure_gtk_init()`, and it overwrote the
+  developer's real `session.json`. In test builds `json_store::data_dir()` also
+  panics if it resolves into `$HOME`'s XDG trees or the Flatpak home.
+  `common::isolated_data_dir()` still gives one test a fresh directory of its own.
 
 Prefer the existing helpers:
 

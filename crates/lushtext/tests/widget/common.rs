@@ -28,8 +28,9 @@ static GTK_INIT: Once = Once::new();
 /// Safe to call multiple times; the actual work only runs once.
 ///
 /// Uses the in-memory GSettings backend so tests don't pollute user's dconf.
-/// Sets `LUSHTEXT_DATA_DIR` to a temp directory so session/draft I/O doesn't
-/// touch the user's real data.
+/// App data (`LUSHTEXT_DATA_DIR` and the XDG base directories) is isolated
+/// earlier, by the widget binary's `main`, before any test code runs; this
+/// asserts that it was.
 /// Requires the private headless compositor owned by the widget harness.
 pub fn ensure_gtk_init() {
     GTK_INIT.call_once(|| {
@@ -43,19 +44,18 @@ pub fn ensure_gtk_init() {
             // spawned.
             unsafe { std::env::set_var("GSETTINGS_BACKEND", "memory") };
         }
-        // Isolate session/draft I/O from the user's real data directory.
-        // The harness parent hands every child attempt its own empty `TMPDIR`
-        // inside one per-run root and removes it when the child exits, so this
-        // directory never outlives the test even when the child crashes. The
-        // PID keeps the name unique when a child is launched by hand outside
-        // the harness; the parent's startup sweep reclaims such leftovers.
-        let test_data_dir =
-            std::env::temp_dir().join(format!("lushtext-test-{}", std::process::id()));
-        let _ = fs_mutate::remove_dir_all_if_exists(&test_data_dir);
-        let _ = fs_mutate::create_dir_all(&test_data_dir);
-        // SAFETY: widget tests set these process environment variables before
-        // GTK startup and before any background worker threads are spawned.
-        unsafe { std::env::set_var("LUSHTEXT_DATA_DIR", &test_data_dir) };
+        // App data is already isolated: `main` in `widget.rs` points
+        // `LUSHTEXT_DATA_DIR` and the XDG base directories at the child's
+        // per-attempt `TMPDIR` before any test runs, so a test that touches
+        // app data before calling this lands there too. GLib caches the XDG
+        // directories on first use, which is why they must be set before GTK
+        // starts; this only checks that they were.
+        assert!(
+            lushtext_core::services::test_isolation::environment_is_isolated_within(
+                &std::env::temp_dir()
+            ),
+            "widget test started without private app data; run it through the widget harness"
+        );
         lushtext_core::init_schema_dir();
         gtk4::init()
             .expect("GTK4 init failed — is a display server available? Try mutter --headless.");

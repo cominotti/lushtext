@@ -10,15 +10,54 @@ use std::path::Path;
 
 /// Returns the application data directory (`$XDG_DATA_HOME/lushtext`).
 ///
-/// Respects `LUSHTEXT_DATA_DIR` env var for test isolation — widget tests
-/// set this to a temp directory so session/draft I/O doesn't touch the
-/// user's real data.
+/// Respects the `LUSHTEXT_DATA_DIR` env var for test isolation: the widget-test
+/// harness, smoke lanes, and manual drills point it at a private directory so
+/// session/draft I/O doesn't touch the user's real data.
+///
+/// # Panics
+///
+/// Only in test builds (`cfg(test)` or the `test-utils` feature), when the
+/// resolved directory lies in the developer's real home application data; see
+/// `services::test_isolation`. Production builds never panic here.
 #[must_use]
 pub fn data_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("LUSHTEXT_DATA_DIR") {
-        return std::path::PathBuf::from(dir);
+    checked_data_dir(
+        std::env::var_os("LUSHTEXT_DATA_DIR").map(std::path::PathBuf::from),
+        dirs::data_dir(),
+        std::env::var_os("HOME").as_deref().map(Path::new),
+    )
+}
+
+/// [`data_dir`] over explicit inputs: resolve, then, in test builds only,
+/// refuse a directory inside `home`'s application data trees.
+#[cfg_attr(
+    not(any(test, feature = "test-utils")),
+    expect(
+        unused_variables,
+        reason = "the home is read only by the test-build guard"
+    )
+)]
+fn checked_data_dir(
+    override_dir: Option<std::path::PathBuf>,
+    platform_data_home: Option<std::path::PathBuf>,
+    home: Option<&Path>,
+) -> std::path::PathBuf {
+    let dir = data_dir_from(override_dir, platform_data_home);
+    #[cfg(any(test, feature = "test-utils"))]
+    crate::services::test_isolation::assert_app_data_dir_is_isolated(&dir, home);
+    dir
+}
+
+/// Resolve the application data directory from an explicit override and the
+/// platform data home, in that order of precedence.
+fn data_dir_from(
+    override_dir: Option<std::path::PathBuf>,
+    platform_data_home: Option<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    if let Some(dir) = override_dir {
+        return dir;
     }
-    dirs::data_dir()
+    platform_data_home
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("lushtext")
 }
@@ -173,10 +212,61 @@ mod tests {
 
     #[test]
     fn test_data_dir_ends_with_lushtext() {
-        let dir = data_dir();
-        assert_eq!(
-            dir.file_name().expect("expected operation to succeed"),
-            "lushtext"
+        // Resolves from a fake data home: reading the process's real
+        // `dirs::data_dir()` here resolved the developer's own app data.
+        let home = TempDir::new().expect("fake data home");
+        let dir = data_dir_from(None, Some(home.path().to_path_buf()));
+        assert_eq!(dir, home.path().join("lushtext"));
+    }
+
+    #[test]
+    fn test_data_dir_override_wins() {
+        let override_dir = TempDir::new().expect("override dir");
+        let home = TempDir::new().expect("fake data home");
+        let dir = data_dir_from(
+            Some(override_dir.path().to_path_buf()),
+            Some(home.path().to_path_buf()),
         );
+        assert_eq!(dir, override_dir.path());
+    }
+
+    #[test]
+    #[should_panic(expected = "test isolation violated")]
+    fn test_data_dir_refuses_the_real_home_app_data() {
+        // A fake HOME stands in for the developer's: with no override and the
+        // default data home, resolution lands in `$HOME/.local/share/lushtext`,
+        // and a test build must refuse it before any caller can write.
+        let home = TempDir::new().expect("fake home");
+        let _ = checked_data_dir(
+            None,
+            Some(home.path().join(".local/share")),
+            Some(home.path()),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "test isolation violated")]
+    fn test_data_dir_refuses_an_override_into_the_real_home() {
+        let home = TempDir::new().expect("fake home");
+        let _ = checked_data_dir(
+            Some(
+                home.path()
+                    .join(".var/app/dev.cominotti.lushtext/data/lushtext"),
+            ),
+            None,
+            Some(home.path()),
+        );
+    }
+
+    #[test]
+    fn test_data_dir_accepts_a_private_override() {
+        let home = TempDir::new().expect("fake home");
+        let private = TempDir::new().expect("private data dir");
+        let dir = checked_data_dir(
+            Some(private.path().to_path_buf()),
+            Some(home.path().join(".local/share")),
+            Some(home.path()),
+        );
+        assert_eq!(dir, private.path());
     }
 }

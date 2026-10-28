@@ -688,6 +688,11 @@ Every test lane runs under `scripts/with-temp-scope.sh`, which gives it a
 private `TMPDIR`, removes it afterwards, and fails the run with `TEMP-LEAK:` if
 anything was left behind; the widget harness additionally gives each per-test
 child process its own temporary directory and removes it when the child exits.
+Tests never touch your real LushText data: every widget-test process points
+`LUSHTEXT_DATA_DIR` and the XDG base directories into that temporary directory
+before any test runs, and in test builds the app-data path resolver panics
+rather than resolve into `~/.local/share/lushtext`, the other XDG directories
+under your home, or the Flatpak's `~/.var/app/dev.cominotti.lushtext`.
 
 Benchmarks cover performance-sensitive service code such as bounded command
 palette ranking and cancellation, fuzzy search, file indexing, directory

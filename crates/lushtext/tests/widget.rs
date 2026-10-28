@@ -13,6 +13,9 @@
 
 use std::process::ExitCode;
 
+use lushtext_core::services::filesystem::fixture;
+use lushtext_core::services::test_isolation;
+
 use gtk_lush_proof_harness::{
     HarnessConfig, RegisteredTest, recommended_pre_gtk_environment, run_registered_tests,
 };
@@ -55,7 +58,50 @@ fn configure_widget_test_environment() {
     }
 }
 
+/// Give this process private app data before anything else runs.
+///
+/// Every widget-test process — the supervising parent and each child — points
+/// `LUSHTEXT_DATA_DIR` and the four XDG base directories at a root inside its
+/// own `TMPDIR`. For a child that is the per-attempt directory the harness
+/// parent creates and removes, so the isolation exists before the registry
+/// dispatches the test and cannot outlive it. Isolation used to be set by
+/// `ensure_gtk_init()` alone, so a test that saved a session before
+/// initializing GTK overwrote the developer's real `session.json`
+/// (2026-10-20).
+///
+/// A child inherits the parent's values, which lie outside its own `TMPDIR`,
+/// and re-roots them; a process whose variables already lie inside its
+/// `TMPDIR` keeps them. A child also creates the directories, as a real home
+/// has them (tests write fixtures straight into `LUSHTEXT_DATA_DIR`); the
+/// parent creates none, so it leaves nothing in the lane's temp scope.
+/// `json_store::data_dir()` refuses a real-home path in test builds as the
+/// second line of defence.
+///
+/// A process outside the private headless session runs no test: it only lists
+/// tests or relaunches itself under `mutter --headless`, and the compositor it
+/// starts keeps the caller's environment, as before.
+fn isolate_app_data_environment() {
+    if std::env::var_os(HEADLESS_RUNNER_ENV).is_none() {
+        return;
+    }
+    let temp_root = std::env::temp_dir();
+    if test_isolation::environment_is_isolated_within(&temp_root) {
+        return;
+    }
+    let root = temp_root.join(format!("{WIDGET_RUN_SCRATCH_PREFIX}{}", std::process::id()));
+    let is_child = std::env::var_os(CHILD_TEST_ENV).is_some();
+    for (key, value) in test_isolation::isolated_environment(&root) {
+        if is_child {
+            fixture::create_dir_all(&value);
+        }
+        // SAFETY: this runs from the first statement of `main`, before any
+        // thread exists.
+        unsafe { std::env::set_var(key, value) };
+    }
+}
+
 fn main() -> ExitCode {
+    isolate_app_data_environment();
     configure_widget_test_environment();
 
     let args: Vec<String> = std::env::args().skip(1).collect();

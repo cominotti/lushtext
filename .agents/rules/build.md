@@ -387,6 +387,50 @@ directory per widget child once accumulated 45,978 directories and exhausted
   deliberately not wrapped: a mutant that breaks cleanup must be caught by the
   tests, not fail the lane.
 
+### Test Isolation From Real App Data
+
+Tests must never read or write the developer's real application data or
+desktop state: `~/.local/share/lushtext`, `~/.config`, `~/.cache`,
+`~/.local/state`, or `~/.var/app/dev.cominotti.lushtext`. On 2026-10-20 a widget
+test saved a session before calling `ensure_gtk_init()`, which was then the
+only place that set `LUSHTEXT_DATA_DIR`, and overwrote the developer's real
+`session.json`; the contents were unrecoverable. Isolation is therefore a
+property of the test **process**, established before any test code runs, never
+a helper a test must remember to call first:
+
+- **Widget tests.** The first statement of `main` in
+  `crates/lushtext/tests/widget.rs` points `LUSHTEXT_DATA_DIR` and
+  `XDG_{DATA,CONFIG,CACHE,STATE}_HOME` at a root inside the process's own
+  `TMPDIR`, from `lushtext_core::services::test_isolation::isolated_environment`.
+  In a child that `TMPDIR` is the per-attempt directory the harness parent
+  creates and removes, so the isolation exists before the registry dispatches
+  the test and cannot outlive the attempt; a child re-roots the values it
+  inherits from the parent, and a hand-launched child isolates itself the same
+  way. Setting the XDG variables before GTK starts matters because GLib caches
+  them on first use (recent files, caches). The process that only lists tests
+  or relaunches into `mutter --headless` runs no test and leaves the
+  compositor's environment as it was. `ensure_gtk_init()` asserts the
+  isolation and no longer sets `LUSHTEXT_DATA_DIR` itself;
+  `common::isolated_data_dir()` still gives one test a fresh directory, and
+  `common::keyfile_settings_backend()` its own `XDG_CONFIG_HOME`, both inside
+  the same `TMPDIR`. `app::test_session_saved_before_gtk_init_lands_in_the_private_test_directory`
+  is the regression test.
+- **Unit and integration tests** (libtest binaries) have no entry point that
+  runs before their tests. They take explicit temporary directories
+  (`TestContext`, `tempfile`) and never resolve the global data directory.
+- **Defence in depth.** In test builds only (`cfg(test)` or the `test-utils`
+  feature), `json_store::data_dir()` panics when the directory it resolves lies
+  under `$HOME`'s XDG trees or the Flatpak home above, comparing after
+  resolving symlinks (`/home` versus `/var/home`). A test that reaches app data
+  without isolation therefore fails loudly before it can write. Production
+  builds compile none of it: `services::test_isolation` exists only under
+  those cfgs, which the default-feature `cargo check -p lushtext --bins` in CI
+  proves. A test that needs a different `HOME` fakes it with a temporary
+  directory and is held to that fake home in turn.
+- **Proving a fix failing-first** is done with `HOME` pointing at a temporary
+  directory and the XDG variables and `LUSHTEXT_DATA_DIR` unset, never against
+  the real home.
+
 Use `make builder-diagnostics-smoke` for runtime GtkBuilder diagnostics. The
 target scopes `GTK_DEBUG=builder,builder-objects`, validates standalone
 templates where possible, runs manifest-backed widget probes under headless
