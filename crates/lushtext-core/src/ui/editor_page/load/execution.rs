@@ -587,17 +587,21 @@ fn complete_loaded_installation(
     editor.clear_modified_line_marks();
     editor.apply_restore_position();
     editor.imp().monitor.last_known_mtime.set(mtime);
-    editor.resolve_inline_notification_superseded_by_load();
+    let outliving_alert_shown = editor.settle_inline_notification_after_load();
     editor.seed_local_history_from_guarded_loaded_content(content);
     restore_load_installation_state(editor, restore);
     editor.imp().load_state.set(EditorLoadState::Loaded);
     evidence::record_outcome(editor, LoadOutcome::Loaded);
     editor.notify_memory_policy_changed();
     editor.start_file_monitor();
-    if editor
-        .file_health()
-        .iter()
-        .any(|finding| finding.kind == FileHealthFindingKind::MixedLineEndings)
+    // A recovery alert that outlives the load keeps the editor's one alert
+    // slot: it says where unsaved edits were kept, and the line-ending warning
+    // returns on a later load once that alert is gone.
+    if !outliving_alert_shown
+        && editor
+            .file_health()
+            .iter()
+            .any(|finding| finding.kind == FileHealthFindingKind::MixedLineEndings)
     {
         editor.emit_inline_notification_with_warning_action(
             InlineActionNotification {

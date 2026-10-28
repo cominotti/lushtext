@@ -20022,11 +20022,24 @@ fn test_eviction_reload_resolves_external_change_alert_for_good() {
 /// must not take the only in-place pointer to them away.
 #[test]
 fn test_draft_not_restored_alert_survives_eviction_reload() {
+    assert_draft_not_restored_survives_eviction_reload("current disk content");
+}
+
+/// The same, for a file whose reload re-derives "Mixed Line Endings Detected".
+///
+/// The bus keeps one alert per editor, so publishing the line-ending warning
+/// from the reload terminal used to replace the recovery alert.
+#[test]
+fn test_draft_not_restored_alert_survives_mixed_line_ending_reload() {
+    assert_draft_not_restored_survives_eviction_reload("a\r\nb\nc\r\n");
+}
+
+fn assert_draft_not_restored_survives_eviction_reload(disk_content: &str) {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("tempdir");
     let stale_path = dir.path().join("stale.txt");
     let other_path = dir.path().join("other.txt");
-    fixture::write_text(&stale_path, "current disk content");
+    fixture::write_text(&stale_path, disk_content);
     fixture::write_text(&other_path, "other content");
     let data_dir = json_store::data_dir();
     let draft_id = draft_service::draft_id_for_path(&stale_path);

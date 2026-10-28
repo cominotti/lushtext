@@ -234,3 +234,9 @@ When a document load completes successfully, the system SHALL resolve that edito
 - **WHEN** an unmodified document shows "Draft Not Restored"
 - **AND** its tab is evicted for memory and then selected again, so it reloads
 - **THEN** the "Draft Not Restored" alert is still shown after the reload completes
+
+#### Scenario: A recovery alert is not replaced by a reload's line-ending warning
+- **WHEN** an unmodified document with mixed line endings shows "Draft Not Restored"
+- **AND** its tab reloads after an eviction
+- **THEN** the "Draft Not Restored" alert is still shown after the reload completes
+- **AND** "Mixed Line Endings Detected" is not published over it

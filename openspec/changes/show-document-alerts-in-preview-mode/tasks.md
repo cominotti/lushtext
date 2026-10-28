@@ -70,7 +70,7 @@
 - [x] 4.7 Implement D7:
   - give the editor a superseded-by-load flag that every emit sets or resets, beside `PendingWarningAction`;
   - have each producer pick its emit variant per the task-1.6 audit;
-  - replace `complete_loaded_installation`'s `clear_inline_notification()` with `resolve_inline_notification_superseded_by_load()`, routed through a `connect_inline_notification_superseded` callback installed in `wire_info_bar` to `resolve_editor_inline_notification`, with the direct render as the windowless fallback.
+  - replace `complete_loaded_installation`'s `clear_inline_notification()` with `resolve_inline_notification_superseded_by_load()`, routed through a `connect_inline_notification_superseded` callback installed in `wire_info_bar` to `resolve_editor_inline_notification`, with the direct render as the windowless fallback. (Revised in review: now `settle_inline_notification_after_load()` via `connect_inline_notification_load_settled`, which also reports whether an outliving alert is still shown so the terminal does not publish the line-ending warning over it; see D7.)
 
   Confirm tasks 1.1, 1.2, and 1.3 pass.
   - Log: the flag is `InlineAlertLifetime { SupersededByLoad, OutlivesLoad }` in `editor_page/imp.rs`, stored beside `PendingWarningAction` and set by every emit, which now takes it as an explicit argument. Tasks 1.2 and 1.3 pass; 1.1 is confirmed with the preview surface (task 4.5).

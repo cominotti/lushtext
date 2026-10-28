@@ -702,12 +702,12 @@ impl LushtextWindow {
         });
         let window_weak = self.downgrade();
         let editor_weak = editor.downgrade();
-        editor.connect_inline_notification_superseded(move || {
-            if let Some(window) = window_weak.upgrade()
-                && let Some(editor) = editor_weak.upgrade()
-            {
-                window.resolve_editor_inline_notification(&editor);
-            }
+        editor.connect_inline_notification_load_settled(move |superseded| {
+            let (Some(window), Some(editor)) = (window_weak.upgrade(), editor_weak.upgrade())
+            else {
+                return false;
+            };
+            window.settle_editor_inline_notification_after_load(&editor, superseded)
         });
 
         let editor_weak = editor.downgrade();

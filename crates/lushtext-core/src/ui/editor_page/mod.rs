@@ -540,28 +540,36 @@ impl LushtextEditorPage {
         }
     }
 
-    /// Install the window callback that resolves a load-superseded alert.
-    pub fn connect_inline_notification_superseded<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().notification_superseded_callback.borrow_mut() = Some(Box::new(f));
+    /// Install the window callback that settles the current alert after a
+    /// successful load.
+    ///
+    /// The callback receives whether the load superseded the alert, resolves
+    /// it on the notification bus if so, and returns whether an alert is still
+    /// shown for this editor afterwards.
+    pub fn connect_inline_notification_load_settled<F: Fn(bool) -> bool + 'static>(&self, f: F) {
+        *self.imp().notification_load_settled_callback.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Resolve the current alert if a successful load superseded it.
+    /// Settle the current alert for a successful load.
     ///
-    /// Called from the load terminal. With a window it resolves the record on
-    /// the notification bus, so no later projection can bring it back; without
-    /// one it clears this editor's own bar. An alert emitted as
-    /// `InlineAlertLifetime::OutlivesLoad` is left alone.
-    pub(crate) fn resolve_inline_notification_superseded_by_load(&self) {
-        if self.imp().document_metadata.alert_lifetime.get()
-            != imp::InlineAlertLifetime::SupersededByLoad
-        {
-            return;
+    /// Called from the load terminal. An alert emitted as
+    /// `InlineAlertLifetime::SupersededByLoad` is resolved — on the
+    /// notification bus with a window, so no later projection can bring it
+    /// back, or on this editor's own bar without one. An
+    /// `InlineAlertLifetime::OutlivesLoad` alert is left alone, and the return
+    /// value says whether one is still shown: the bus keeps one alert per
+    /// editor, so the terminal must not publish its own warning over it.
+    pub(crate) fn settle_inline_notification_after_load(&self) -> bool {
+        let superseded = self.imp().document_metadata.alert_lifetime.get()
+            == imp::InlineAlertLifetime::SupersededByLoad;
+        if let Some(ref callback) = *self.imp().notification_load_settled_callback.borrow() {
+            return callback(superseded);
         }
-        if let Some(ref callback) = *self.imp().notification_superseded_callback.borrow() {
-            callback();
-        } else {
+        if superseded {
             self.info_bar().render_notification(None);
+            return false;
         }
+        self.info_bar().property::<bool>("visible")
     }
 
     #[must_use]

@@ -71,7 +71,9 @@
 //! | "Draft Changes Restored" / "Document Restored", "Restored from Local History", "Automatic Recovery Paused" | |
 //!
 //! The outliving alerts point at a preserved recovery body that is still on
-//! disk after the reload.
+//! disk after the reload. The bus keeps one alert per editor, so while one of
+//! them is shown the load terminal does not publish "Mixed Line Endings
+//! Detected" over it.
 //!
 //! ## Module roles
 //!
@@ -190,6 +192,25 @@ impl LushtextWindow {
         {
             self.render_notifications();
         }
+    }
+
+    /// Stage 1 — settle `editor`'s alert after a successful load.
+    ///
+    /// Resolves it when the load `superseded` it, then reports whether the
+    /// editor still has an alert (one that outlives the load), so the load
+    /// terminal does not publish its own warning over it.
+    pub(super) fn settle_editor_inline_notification_after_load(
+        &self,
+        editor: &LushtextEditorPage,
+        superseded: bool,
+    ) -> bool {
+        if superseded {
+            self.resolve_editor_inline_notification(editor);
+        }
+        self.imp()
+            .notification_bus
+            .editor_info_bar_view(editor.notification_owner_id())
+            .is_some()
     }
 
     /// Wire the window-hosted preview copy's buttons, once, at construction.

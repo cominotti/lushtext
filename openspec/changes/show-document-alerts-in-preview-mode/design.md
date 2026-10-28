@@ -159,6 +159,8 @@ Mechanism:
 
 `complete_loaded_installation` stops calling the widget-only `clear_inline_notification()`. It calls a new `LushtextEditorPage::resolve_inline_notification_superseded_by_load()`. With a window connected, that goes through a second callback installed by `wire_info_bar` (`connect_inline_notification_superseded`) to the existing stage-1 `resolve_editor_inline_notification(editor)`. Without a window it renders `None` directly, as today. The order inside the terminal stays *resolve, then publish the mixed-line-endings warning*.
 
+*Revised in review:* the bus keeps one alert per editor, so publishing "Mixed Line Endings Detected" from that terminal replaced an outliving "Draft Not Restored" on a mixed-ending file, which is exactly the pointer this table keeps. The terminal now calls `settle_inline_notification_after_load()`, which resolves a superseded alert (through the `connect_inline_notification_load_settled` callback, or the editor's own bar without a window) and returns whether an alert is still shown. While an outliving alert is shown the terminal skips the line-ending warning; it is re-derived on a later load once that alert is gone (`window::test_draft_not_restored_alert_survives_mixed_line_ending_reload`, failing first).
+
 It resolves only when the editor's current alert was emitted as **superseded by a load**. The editor records that flag at emit time, beside `PendingWarningAction`, and every emit resets it. Callers pick the emit variant explicitly:
 
 | Superseded by the next successful load | Outlives a load |

@@ -41,6 +41,9 @@ use super::style_scheme::apply_color_scheme_to_editor;
 /// Callback for notifying the window when residency or eviction safety changes.
 type MemoryChangedCallback = Box<dyn Fn()>;
 type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
+/// Settles the current alert after a successful load; see
+/// `LushtextEditorPage::connect_inline_notification_load_settled`.
+type LoadSettledNotificationCallback = Box<dyn Fn(bool) -> bool>;
 type LoadCompletedCallback = Box<dyn FnOnce()>;
 type LoadFailedCallback = Box<dyn FnOnce(String)>;
 /// Recurring editor-lifecycle listener; see `load::execution::invoke_reentrant_callbacks`.
@@ -586,11 +589,12 @@ pub struct LushtextEditorPage {
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
     /// Callback invoked when the editor needs to surface an inline notification.
     pub notification_callback: RefCell<Option<NotificationCallback>>,
-    /// Callback invoked when a successful load supersedes the current alert.
+    /// Callback invoked when a successful load settles the current alert.
     ///
-    /// The window installs it to resolve the alert through the notification
-    /// bus; without a window the editor clears its own bar directly.
-    pub notification_superseded_callback: RefCell<Option<MemoryChangedCallback>>,
+    /// The window installs it to resolve a superseded alert through the
+    /// notification bus and report whether an alert is still shown; without a
+    /// window the editor settles its own bar directly.
+    pub notification_load_settled_callback: RefCell<Option<LoadSettledNotificationCallback>>,
     /// External file-monitor state.
     pub monitor: MonitorState,
     /// Draft lifecycle state.
@@ -646,7 +650,7 @@ impl Default for LushtextEditorPage {
             editing_buffer_signals: SignalBag::new(),
             memory_changed_callback: RefCell::default(),
             notification_callback: RefCell::default(),
-            notification_superseded_callback: RefCell::default(),
+            notification_load_settled_callback: RefCell::default(),
             monitor: MonitorState::default(),
             draft: DraftState::default(),
             save: SaveState::default(),
