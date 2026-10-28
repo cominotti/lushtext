@@ -151,14 +151,14 @@ pub fn probe_a45() -> Observation {
             &fixture.container,
             "control: the view and its map were presented",
         )?;
+        let before = fixture.source.scrolled.vadjustment().value();
+        fixture.scroll();
         let MappedView {
             container,
             source,
             map,
         } = fixture;
-        let before = source.scrolled.vadjustment().value();
         let adjustment = source.scrolled.vadjustment();
-        adjustment.set_value(adjustment.value() + crate::probes::a32::SCROLL_STEP);
         recorder.measure("view_scrolled_by", adjustment.value() - before);
         recorder.control(
             adjustment.value() > before && map.is_realized(),

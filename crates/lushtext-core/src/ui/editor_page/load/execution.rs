@@ -42,9 +42,9 @@ use gtk4::glib;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
+use crate::model::document_scale::DocumentScale;
 use crate::model::encoding::FileHealthFindingKind;
 use crate::model::file_load::next_install_boundary;
-use crate::model::paragraph_boundary::ProfileSummary;
 use crate::services::editor_io::{self, EditorLoadError};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::imp::EditorCallback;
@@ -558,10 +558,10 @@ fn complete_loaded_installation(
         metadata: loaded,
         content,
     } = loaded;
-    let scale = loaded.scale();
+    let summary = loaded.summary();
     let editor_io::LoadMetadata {
         size,
-        profile,
+        profile: _,
         canonical_path,
         mtime,
         encoding_state,
@@ -569,7 +569,7 @@ fn complete_loaded_installation(
         file_health,
     } = loaded;
     let buffer = editor.buffer();
-    if scale.undo_enabled {
+    if DocumentScale::for_profile(summary).undo_enabled {
         buffer.end_irreversible_action();
     }
     buffer.set_modified(false);
@@ -588,14 +588,7 @@ fn complete_loaded_installation(
     editor.set_file_health(file_health);
     // The scale gates syntax, bracket matching, invisibles, search
     // highlighting and the minimap before a highlight idle can run.
-    editor.begin_document_scale_session(
-        scale,
-        ProfileSummary {
-            total_bytes: size,
-            ..profile.summary()
-        },
-        eviction_reload,
-    );
+    editor.begin_document_scale_session(summary, eviction_reload);
     editor.clear_modified_line_marks();
     editor.apply_restore_position();
     editor.imp().monitor.last_known_mtime.set(mtime);

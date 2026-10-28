@@ -504,9 +504,9 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
     editor
         .buffer()
         .set_highlight_syntax(guard.highlight_syntax && syntax_enabled);
-    if syntax_enabled && editor.buffer().language().is_none() {
+    if editor.buffer().language().is_none() {
         // A cancelled install of a gated body cleared the language up front;
-        // the session still allows it, so the path's language comes back.
+        // if the session still allows syntax, the path's language comes back.
         editor.reapply_language();
     }
     if editor.is_search_visible() && editor.search_bar().search_context().is_none() {

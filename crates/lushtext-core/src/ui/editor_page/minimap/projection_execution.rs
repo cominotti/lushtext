@@ -159,7 +159,7 @@ impl LushtextEditorPage {
         let availability = current_availability(self);
         self.imp().minimap.availability.set(availability);
         if availability != MinimapAvailability::Reduced {
-            self.imp().minimap.too_large_feedback_shown.set(false);
+            self.imp().minimap.reduced_feedback_shown.set(false);
         }
 
         // Visibility and native projection are one lifecycle decision. A
@@ -260,7 +260,7 @@ impl LushtextEditorPage {
     /// Publish the one-shot "too large" message when this page is the active tab.
     fn publish_minimap_unavailable_feedback_if_needed(&self, availability: MinimapAvailability) {
         if availability != MinimapAvailability::Reduced
-            || self.imp().minimap.too_large_feedback_shown.get()
+            || self.imp().minimap.reduced_feedback_shown.get()
             || !self.imp().settings.boolean(keys::SHOW_MINIMAP)
         {
             return;
@@ -281,7 +281,7 @@ impl LushtextEditorPage {
             minimap_unavailable_message(self.document_scale().reduced),
             MessageKind::Warning,
         );
-        self.imp().minimap.too_large_feedback_shown.set(true);
+        self.imp().minimap.reduced_feedback_shown.set(true);
     }
 }
 

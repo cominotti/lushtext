@@ -757,3 +757,88 @@ pub fn record_after_paint<T: 'static>(
     });
     log
 }
+
+/// One GLib warning or critical a [`LogCapture`] saw.
+#[derive(Clone, Debug)]
+pub struct CapturedLog {
+    /// Whether it was a critical (otherwise a warning).
+    pub critical: bool,
+    /// Its `GLIB_DOMAIN` field, empty when absent.
+    pub domain: String,
+    /// Its `MESSAGE` field.
+    pub message: String,
+}
+
+static LOG_CAPTURED: std::sync::Mutex<Option<Vec<CapturedLog>>> = std::sync::Mutex::new(None);
+static LOG_WRITER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// The GLib warnings and criticals logged while a capture is alive.
+///
+/// GLib accepts one structured-log writer per process (a second
+/// `g_log_set_writer_func` is a fatal error) and cannot restore a previous
+/// one, so this is the widget tests' one log capture: the first capture in a
+/// process installs a forwarding writer once, which always hands the message
+/// on to GLib's default writer (the runner's warning scan still sees it) and
+/// additionally keeps warnings and criticals while a capture is alive. Each
+/// test filters what it reads.
+pub struct LogCapture;
+
+impl LogCapture {
+    /// Start capturing (clearing anything an earlier capture kept).
+    #[must_use]
+    pub fn start() -> Self {
+        LOG_WRITER.get_or_init(|| {
+            glib::log_set_writer_func(|level, fields| {
+                if matches!(level, glib::LogLevel::Critical | glib::LogLevel::Warning) {
+                    let field = |key: &str| {
+                        fields
+                            .iter()
+                            .find(|field| field.key() == key)
+                            .and_then(|field| field.value_str().map(str::to_owned))
+                            .unwrap_or_default()
+                    };
+                    if let Some(messages) = LOG_CAPTURED
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut()
+                    {
+                        messages.push(CapturedLog {
+                            critical: level == glib::LogLevel::Critical,
+                            domain: field("GLIB_DOMAIN"),
+                            message: field("MESSAGE"),
+                        });
+                    }
+                }
+                glib::log_writer_default(level, fields)
+            });
+        });
+        LOG_CAPTURED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(Vec::new());
+        Self
+    }
+
+    /// Everything captured so far.
+    #[expect(
+        clippy::unused_self,
+        reason = "reading through the live guard ties the read to the capture's lifetime"
+    )]
+    #[must_use]
+    pub fn entries(&self) -> Vec<CapturedLog> {
+        LOG_CAPTURED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for LogCapture {
+    fn drop(&mut self) {
+        LOG_CAPTURED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+}

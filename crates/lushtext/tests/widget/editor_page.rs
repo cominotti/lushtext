@@ -5526,71 +5526,6 @@ fn test_save_failing_after_rename_reports_durability_unconfirmed_not_a_lost_save
     editor_io::clear_save_failure_for_test();
 }
 
-/// Warnings and criticals GTK logs while a [`GtkLogCapture`] is alive.
-///
-/// GLib accepts one structured-log writer per process and cannot restore a
-/// previous one, so the first capture installs a forwarding writer once: it
-/// always hands the message on to GLib's default writer (the runner's warning
-/// scan still sees it), and additionally keeps `Gtk`-domain warnings and
-/// criticals while a capture is alive.
-struct GtkLogCapture;
-
-static GTK_LOG_CAPTURED: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
-static GTK_LOG_WRITER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-
-impl GtkLogCapture {
-    fn start() -> Self {
-        GTK_LOG_WRITER.get_or_init(|| {
-            glib::log_set_writer_func(|level, fields| {
-                let field = |key: &str| {
-                    fields
-                        .iter()
-                        .find(|field| field.key() == key)
-                        .and_then(|field| field.value_str().map(str::to_owned))
-                        .unwrap_or_default()
-                };
-                if matches!(level, glib::LogLevel::Critical | glib::LogLevel::Warning)
-                    && field("GLIB_DOMAIN") == "Gtk"
-                {
-                    let mut captured = GTK_LOG_CAPTURED
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if let Some(messages) = captured.as_mut() {
-                        messages.push(field("MESSAGE"));
-                    }
-                }
-                glib::log_writer_default(level, fields)
-            });
-        });
-        GTK_LOG_CAPTURED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .replace(Vec::new());
-        Self
-    }
-
-    #[expect(
-        clippy::unused_self,
-        reason = "reading through the live guard ties the read to the capture's lifetime"
-    )]
-    fn messages(&self) -> Vec<String> {
-        GTK_LOG_CAPTURED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .unwrap_or_default()
-    }
-}
-
-impl Drop for GtkLogCapture {
-    fn drop(&mut self) {
-        GTK_LOG_CAPTURED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-    }
-}
-
 /// Counts the editor's scroll-adjustment changes GTK makes *inside* a frame's
 /// paint phase. A change there means the view flushed its deferred validation
 /// from its snapshot (ledger A37), after the scrollbars were already allocated
@@ -5767,12 +5702,18 @@ fn assert_scroll_changes_stay_out_of_the_snapshot(
 ) {
     let upper_before = adjustment.upper();
 
-    let capture = GtkLogCapture::start();
+    let capture = crate::common::LogCapture::start();
     let changes = PaintPhaseAdjustmentChanges::watch(page);
     drive();
     let in_paint = changes.count();
     drop(changes);
-    let warnings = capture.messages();
+    // `Gtk`-domain warnings and criticals.
+    let warnings: Vec<String> = capture
+        .entries()
+        .into_iter()
+        .filter(|entry| entry.domain == "Gtk")
+        .map(|entry| entry.message)
+        .collect();
     drop(capture);
 
     assert!(

@@ -71,13 +71,8 @@ impl LushtextEditorPage {
     /// be. The content-republished listeners fire last, so the window's Markdown
     /// preview follows a language flip (Save As to `notes.md`, a rename to
     /// `.txt`); during `open_document` no listener is registered yet.
-    ///
-    /// A language the document scale gated off is never re-applied: a rename
-    /// or Save As changes the path, not the paragraphs the gate measured.
     fn republish_document_identity(&self) {
-        if self.document_scale().syntax_enabled {
-            self.reapply_language();
-        }
+        self.reapply_language();
         self.schedule_minimap_refresh();
         self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
@@ -90,7 +85,14 @@ impl LushtextEditorPage {
     /// classify clears it: renaming `notes.md` to `notes.txt` must stop the tab
     /// claiming to be Markdown. An untitled tab has no path and keeps whatever
     /// language it has.
+    ///
+    /// A language the document scale gated off is never re-applied, from any
+    /// caller: a rename or Save As changes the path, not the paragraphs the
+    /// gate measured.
     pub(crate) fn reapply_language(&self) {
+        if !self.document_scale().syntax_enabled {
+            return;
+        }
         let buffer = self.buffer();
         if let Some(ref file_path) = *self.imp().file_path.borrow() {
             let lang_manager = sourceview5::LanguageManager::default();

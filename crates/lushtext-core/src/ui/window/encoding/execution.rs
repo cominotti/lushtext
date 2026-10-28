@@ -344,11 +344,11 @@ fn apply_invisible_mode(
     editor.apply_invisible_characters_mode();
     crate::ui::settings_writes::set_string(keys::INVISIBLE_CHARACTERS_MODE, mode.id());
 
-    if mode != InvisibleCharactersMode::Off && !editor.document_scale().invisibles_allowed {
+    if policy::invisible_mode_gated(mode, editor.document_scale().invisibles_allowed) {
         // The document scale policy keeps the drawer off for this document;
         // the chosen mode still applies to every other document.
         window.publish_status_message(
-            "Invisible characters are unavailable for this document because of very long lines.",
+            policy::INVISIBLE_MODE_UNAVAILABLE_STATUS,
             MessageKind::Warning,
         );
         return;

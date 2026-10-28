@@ -116,6 +116,20 @@ pub struct DocumentScaleEvidence {
     pub notice_showing: bool,
 }
 
+/// The start of a run an `insert-text` after-handler just saw inserted:
+/// `end` is the iter the default handler revalidated to the run's end.
+///
+/// Shared by the edit-time watch and the minimap's modified-line marks, which
+/// both need the run's first and last buffer lines (ledger A42).
+pub(super) fn inserted_run_start(
+    buffer: &sourceview5::Buffer,
+    end: &gtk4::TextIter,
+    run: &str,
+) -> gtk4::TextIter {
+    let run_chars = i32::try_from(run.chars().count()).unwrap_or(i32::MAX);
+    buffer.iter_at_offset(end.offset().saturating_sub(run_chars))
+}
+
 /// The delimiter that ends GTK line `line`, `None` on the last line.
 fn line_delimiter(buffer: &sourceview5::Buffer, line: i32) -> Option<ParagraphDelimiter> {
     let mut next = buffer.iter_at_line(line.checked_add(1)?)?;
@@ -158,6 +172,20 @@ fn line_of(iter: &gtk4::TextIter) -> u64 {
     u64::try_from(iter.line()).unwrap_or(0)
 }
 
+/// The before-handlers' one job: the line count before the edit.
+fn record_lines_before_edit(
+    editor_weak: &glib::WeakRef<LushtextEditorPage>,
+    buffer: &sourceview5::Buffer,
+) {
+    if let Some(editor) = editor_weak.upgrade() {
+        editor
+            .imp()
+            .document_scale
+            .lines_before_edit
+            .set(line_count(buffer));
+    }
+}
+
 impl LushtextEditorPage {
     /// The effective document scale of this tab.
     #[must_use]
@@ -195,12 +223,8 @@ impl LushtextEditorPage {
     /// eviction reload keeps the session floor (design Open Question 3's
     /// default): it reloads byte-identical clean content, and features a
     /// session lost do not come back because memory pressure evicted the tab.
-    pub(crate) fn begin_document_scale_session(
-        &self,
-        loaded: DocumentScale,
-        summary: ProfileSummary,
-        keep_floor: bool,
-    ) {
+    pub(crate) fn begin_document_scale_session(&self, summary: ProfileSummary, keep_floor: bool) {
+        let loaded = DocumentScale::for_profile(summary);
         let state = &self.imp().document_scale;
         let previous = state.scale.get();
         let (scale, watch) = if keep_floor {
@@ -337,24 +361,12 @@ impl LushtextEditorPage {
         // Before-handlers record the line count only.
         let editor_weak = self.downgrade();
         let id = buffer.connect_insert_text(move |buffer, _, _| {
-            if let Some(editor) = editor_weak.upgrade() {
-                editor
-                    .imp()
-                    .document_scale
-                    .lines_before_edit
-                    .set(line_count(buffer));
-            }
+            record_lines_before_edit(&editor_weak, buffer);
         });
         signals.track(&buffer, id);
         let editor_weak = self.downgrade();
         let id = buffer.connect_delete_range(move |buffer, _, _| {
-            if let Some(editor) = editor_weak.upgrade() {
-                editor
-                    .imp()
-                    .document_scale
-                    .lines_before_edit
-                    .set(line_count(buffer));
-            }
+            record_lines_before_edit(&editor_weak, buffer);
         });
         signals.track(&buffer, id);
 
@@ -362,8 +374,8 @@ impl LushtextEditorPage {
         let id = buffer.connect_local("insert-text", true, move |values| {
             let editor = editor_weak.upgrade()?;
             let location = values.get(1)?.get::<gtk4::TextIter>().ok()?;
-            let text = values.get(2)?.get::<String>().ok()?;
-            editor.watch_insertion(&location, &text);
+            let text = values.get(2)?.get::<&str>().ok()?;
+            editor.watch_insertion(&location, text);
             None
         });
         signals.track(&buffer, id);
@@ -395,8 +407,7 @@ impl LushtextEditorPage {
             return;
         }
         let buffer = self.buffer();
-        let run_chars = i32::try_from(run.chars().count()).unwrap_or(i32::MAX);
-        let start = buffer.iter_at_offset(end.offset().saturating_sub(run_chars));
+        let start = inserted_run_start(&buffer, end, run);
         let mut before = start;
         let between_cr_and_lf =
             before.backward_char() && before.char() == '\r' && end.char() == '\n';
@@ -440,10 +451,19 @@ impl LushtextEditorPage {
         if matches!(plan, WatchPlan::Nothing) {
             return;
         }
-        let reads: Vec<u64> = plan
-            .lines_to_read()
-            .map(|line| read_paragraph_chars(buffer, line))
-            .collect();
+        // The fast path (ordinary typing) reads one line and allocates nothing.
+        let single;
+        let window: Vec<u64>;
+        let reads: &[u64] = if let WatchPlan::FastPath { touched_line, .. } = plan {
+            single = [read_paragraph_chars(buffer, *touched_line)];
+            &single
+        } else {
+            window = plan
+                .lines_to_read()
+                .map(|line| read_paragraph_chars(buffer, line))
+                .collect();
+            &window
+        };
         let scale_state = &self.imp().document_scale;
         scale_state
             .reads
@@ -457,7 +477,7 @@ impl LushtextEditorPage {
                 .set(scale_state.window_steps.get().saturating_add(1)),
             WatchPlan::Nothing => {}
         }
-        let next = complete(state, ProfileConfig::PRODUCTION, plan, &reads);
+        let next = complete(state, ProfileConfig::PRODUCTION, plan, reads);
         scale_state.watch.set(next);
         let previous = scale_state.scale.get();
         let candidate = DocumentScale::for_profile(next.summary(scale_state.total_bytes.get()));
@@ -484,12 +504,7 @@ impl LushtextEditorPage {
         }
         // An idle, so recovery and error alerts the same turn publishes rank
         // first and the notice waits behind them.
-        let editor_weak = self.downgrade();
-        glib::idle_add_local_once(move || {
-            if let Some(editor) = editor_weak.upgrade() {
-                editor.flush_reduced_features_notice();
-            }
-        });
+        self.schedule_reduced_features_notice_flush();
     }
 
     /// Another inline alert replaced the notice: show it again later.
@@ -505,16 +520,19 @@ impl LushtextEditorPage {
         match state.notice.get() {
             // Dismissed or cleared: dismissing never re-enables anything.
             NoticePhase::Showing => state.notice.set(NoticePhase::Idle),
-            NoticePhase::Pending => {
-                let editor_weak = self.downgrade();
-                glib::idle_add_local_once(move || {
-                    if let Some(editor) = editor_weak.upgrade() {
-                        editor.flush_reduced_features_notice();
-                    }
-                });
-            }
+            NoticePhase::Pending => self.schedule_reduced_features_notice_flush(),
             NoticePhase::Idle => {}
         }
+    }
+
+    /// Try to show the pending notice from an idle.
+    fn schedule_reduced_features_notice_flush(&self) {
+        let editor_weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.flush_reduced_features_notice();
+            }
+        });
     }
 
     /// Show the pending notice if the info bar is free.

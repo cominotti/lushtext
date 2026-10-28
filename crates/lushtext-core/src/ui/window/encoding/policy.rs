@@ -63,21 +63,32 @@ pub fn invisible_mode_choice_state(
     invisibles_allowed: bool,
 ) -> ChoiceRowState {
     let state = ChoiceRowState::for_current(option == current);
-    if invisibles_allowed || option == InvisibleCharactersMode::Off {
-        state
-    } else {
+    if invisible_mode_gated(option, invisibles_allowed) {
         // The document scale policy draws no hints for this document; the
         // drawing modes stay visible but cannot be chosen for it.
         ChoiceRowState {
-            selected: state.selected,
             enabled: false,
+            ..state
         }
+    } else {
+        state
     }
+}
+
+/// Whether the document scale policy keeps `mode` from drawing anything for
+/// this document (`Off` draws nothing either way).
+#[must_use]
+pub fn invisible_mode_gated(mode: InvisibleCharactersMode, invisibles_allowed: bool) -> bool {
+    !invisibles_allowed && mode != InvisibleCharactersMode::Off
 }
 
 /// The subtitle of a drawing mode the document scale policy gates off.
 pub const INVISIBLE_MODE_UNAVAILABLE_SUBTITLE: &str =
     "Unavailable for this document because of very long lines.";
+
+/// The status message when a gated drawing mode is chosen.
+pub const INVISIBLE_MODE_UNAVAILABLE_STATUS: &str =
+    "Invisible characters are unavailable for this document because of very long lines.";
 
 /// Whether a line-ending option is current, and whether it may still be applied.
 ///
@@ -268,6 +279,17 @@ mod tests {
                 enabled: true
             }
         );
+    }
+
+    #[test]
+    fn only_drawing_modes_are_gated_and_only_when_not_allowed() {
+        for mode in INVISIBLE_MODE_CHOICES {
+            assert!(!invisible_mode_gated(mode, true));
+            assert_eq!(
+                invisible_mode_gated(mode, false),
+                mode != InvisibleCharactersMode::Off
+            );
+        }
     }
 
     #[test]

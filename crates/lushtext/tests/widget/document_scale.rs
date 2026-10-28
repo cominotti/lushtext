@@ -7,7 +7,10 @@
 //! Every fixture is synthetic. Thresholds are read from
 //! `lushtext_core::model::document_scale`, never restated.
 
-use crate::common::{ensure_gtk_init, fixture, flush_events, test_application, wait_until};
+use crate::common::{
+    LogCapture, editor_text, ensure_gtk_init, fixture, flush_events, present_window,
+    test_application, wait_until,
+};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::config::keys;
@@ -50,19 +53,11 @@ fn present(page: &LushtextEditorPage) -> gtk4::ApplicationWindow {
         .default_height(600)
         .child(page)
         .build();
-    window.present();
-    flush_events();
+    present_window(&window);
     wait_until(Duration::from_secs(5), || {
         page.source_view().is_mapped() && page.source_view().visible_rect().height() > 0
     });
     window
-}
-
-fn text_of(page: &LushtextEditorPage) -> String {
-    let buffer = page.buffer();
-    buffer
-        .text(&buffer.start_iter(), &buffer.end_iter(), true)
-        .to_string()
 }
 
 fn load_and_wait(page: &LushtextEditorPage, path: &std::path::Path) {
@@ -110,71 +105,17 @@ fn has_context_tags(page: &LushtextEditorPage) -> bool {
     found
 }
 
-/// Captures every GLib critical logged while it lives (warnings are the
-/// widget runner's job; the headless session logs benign ones).
-struct CriticalCapture;
-
-static CAPTURED: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
-static WRITER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-
-impl CriticalCapture {
-    fn start() -> Self {
-        WRITER.get_or_init(|| {
-            glib::log_set_writer_func(|level, fields| {
-                // The headless session's missing accessibility bus is benign
-                // (the widget runner allowlists the same line).
-                if level == glib::LogLevel::Critical
-                    && !fields.iter().any(|field| {
-                        field
-                            .value_str()
-                            .is_some_and(|value| value.contains("org.a11y.atspi.Registry"))
-                    })
-                {
-                    let field = |key: &str| {
-                        fields
-                            .iter()
-                            .find(|field| field.key() == key)
-                            .and_then(|field| field.value_str().map(str::to_owned))
-                            .unwrap_or_default()
-                    };
-                    if let Some(messages) = CAPTURED
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .as_mut()
-                    {
-                        messages.push(format!("{}: {}", field("GLIB_DOMAIN"), field("MESSAGE")));
-                    }
-                }
-                glib::log_writer_default(level, fields)
-            });
-        });
-        CAPTURED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .replace(Vec::new());
-        Self
-    }
-
-    #[expect(
-        clippy::unused_self,
-        reason = "reading through the live guard ties the read to the capture's lifetime"
-    )]
-    fn messages(&self) -> Vec<String> {
-        CAPTURED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .unwrap_or_default()
-    }
-}
-
-impl Drop for CriticalCapture {
-    fn drop(&mut self) {
-        CAPTURED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-    }
+/// The GLib criticals `capture` saw (warnings are the widget runner's job;
+/// the headless session logs benign ones), as `domain: message`. The headless
+/// session's missing accessibility bus is benign (the widget runner allowlists
+/// the same line).
+fn criticals(capture: &LogCapture) -> Vec<String> {
+    capture
+        .entries()
+        .into_iter()
+        .filter(|entry| entry.critical && !entry.message.contains("org.a11y.atspi.Registry"))
+        .map(|entry| format!("{}: {}", entry.domain, entry.message))
+        .collect()
 }
 
 /// Drain several frames of the page's window.
@@ -235,7 +176,7 @@ fn test_cr_crlf_and_paragraph_separator_documents_round_trip_byte_identically() 
         let page = LushtextEditorPage::new();
         load_and_wait(&page, &path);
         assert_eq!(
-            text_of(&page),
+            editor_text(&page),
             body,
             "{name}: load installs the decoded text"
         );
@@ -277,7 +218,7 @@ fn continue_with_replacement(body: &str, name: &str) {
         Rc::clone(&outcomes),
     );
     wait_until(Duration::from_secs(20), || !outcomes.borrow().is_empty());
-    assert_eq!(text_of(&replacement), body, "{name}: replacement");
+    assert_eq!(editor_text(&replacement), body, "{name}: replacement");
 }
 
 // ─── 4. Save and identity republication ─────────────────────────────────
@@ -348,7 +289,7 @@ fn test_save_below_ten_megabytes_restores_full_local_history() {
 #[test]
 fn test_giant_paragraph_file_loads_without_language_or_context_tags() {
     ensure_gtk_init();
-    let capture = CriticalCapture::start();
+    let capture = LogCapture::start();
     let dir = tempfile::tempdir().expect("giant paragraph tempdir");
     let path = dir.path().join("minified.html");
     let body = format!(
@@ -369,7 +310,8 @@ fn test_giant_paragraph_file_loads_without_language_or_context_tags() {
     assert!(!page.buffer().is_highlight_syntax());
     assert!(!page.buffer().is_highlight_matching_brackets());
     assert!(!has_context_tags(&page));
-    assert!(capture.messages().is_empty(), "{:?}", capture.messages());
+    let logged = criticals(&capture);
+    assert!(logged.is_empty(), "{logged:?}");
 }
 
 #[test]
@@ -572,7 +514,7 @@ fn test_edit_watch_and_load_profile_agree_at_the_threshold() {
         // Type up to exactly L_SYNTAX characters into the first paragraph.
         insert_at_offset(&page, 0, &"t".repeat(n(L_SYNTAX) - 1));
         insert_at_offset(&page, 0, "t");
-        let text = text_of(&page);
+        let text = editor_text(&page);
         let load_decision =
             DocumentScale::for_profile(DocumentProfile::of_text(&text).summary()).syntax_enabled;
         assert!(
@@ -581,7 +523,7 @@ fn test_edit_watch_and_load_profile_agree_at_the_threshold() {
         );
         assert!(load_decision);
         insert_at_offset(&page, 0, "t");
-        let text = text_of(&page);
+        let text = editor_text(&page);
         assert!(
             !page.document_scale().syntax_enabled,
             "{delimiter:?} at L_SYNTAX + 1"
@@ -663,7 +605,7 @@ fn test_crossing_l_protect_changes_no_text_or_modified_state() {
     let addition = "p".repeat(n(L_PROTECT) + 1);
     insert_at_end(&page, &addition);
     assert!(page.document_scale().protected_view);
-    assert_eq!(text_of(&page), format!("seed\n{addition}"));
+    assert_eq!(editor_text(&page), format!("seed\n{addition}"));
     assert!(
         page.buffer().is_modified(),
         "only the edit itself modified the buffer"
@@ -682,7 +624,7 @@ fn test_crossing_l_protect_changes_no_text_or_modified_state() {
 fn test_minimap_retirement_after_scrolling_emits_no_critical() {
     ensure_gtk_init();
     let _settings = enable_minimap(true);
-    let capture = CriticalCapture::start();
+    let capture = LogCapture::start();
     let page = LushtextEditorPage::new();
     let _window = present(&page);
     page.buffer()
@@ -709,12 +651,11 @@ fn test_minimap_retirement_after_scrolling_emits_no_critical() {
         flush_events();
     }
     wait_until(Duration::from_secs(5), || !outcomes.borrow().is_empty());
-    let criticals: Vec<String> = capture
-        .messages()
+    let logged: Vec<String> = criticals(&capture)
         .into_iter()
         .filter(|message| message.contains("Gtk") || message.contains("GLib-GObject"))
         .collect();
-    assert!(criticals.is_empty(), "{criticals:?}");
+    assert!(logged.is_empty(), "{logged:?}");
 }
 
 #[test]
@@ -789,7 +730,7 @@ fn test_an_edit_retires_the_map_in_the_same_emission() {
 fn test_rapid_minimap_toggling_keeps_at_most_one_map_without_warnings() {
     ensure_gtk_init();
     let settings = enable_minimap(true);
-    let capture = CriticalCapture::start();
+    let capture = LogCapture::start();
     let page = LushtextEditorPage::new();
     let _window = present(&page);
     page.buffer().set_text(&"toggle line\n".repeat(3_000));
@@ -820,7 +761,8 @@ fn test_rapid_minimap_toggling_keeps_at_most_one_map_without_warnings() {
     wait_until(Duration::from_secs(5), || {
         page.minimap_evidence().projection_attached
     });
-    assert!(capture.messages().is_empty(), "{:?}", capture.messages());
+    let logged = criticals(&capture);
+    assert!(logged.is_empty(), "{logged:?}");
 }
 
 #[test]

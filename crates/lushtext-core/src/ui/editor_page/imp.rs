@@ -428,8 +428,8 @@ pub struct MinimapState {
     pub tracking_suspended: Cell<bool>,
     /// Tracks which lines already own a modified marker for O(1) de-duplication.
     pub modified_lines_cache: RefCell<BTreeSet<u32>>,
-    /// One-shot guard so the "too large for minimap" message does not spam on each edit.
-    pub too_large_feedback_shown: Cell<bool>,
+    /// One-shot guard so the "minimap reduced" message does not repeat on each edit.
+    pub reduced_feedback_shown: Cell<bool>,
     /// Handler ID for the buffer's `insert-text` signal. Disconnected in dispose.
     pub buffer_signals: SignalBag,
 }

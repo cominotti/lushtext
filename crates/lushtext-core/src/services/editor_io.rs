@@ -212,15 +212,16 @@ pub struct LoadMetadata {
 }
 
 impl LoadMetadata {
-    /// The document scale of the loaded file: its paragraph profile with the
+    /// The loaded file's profile summary: its paragraph profile with the
     /// file's byte size as the total (the byte tiers keep classifying the
-    /// file size, as before).
+    /// file size, as before). The document scale is
+    /// `DocumentScale::for_profile` of it.
     #[must_use]
-    pub fn scale(&self) -> DocumentScale {
-        DocumentScale::for_profile(ProfileSummary {
+    pub fn summary(&self) -> ProfileSummary {
+        ProfileSummary {
             total_bytes: self.size,
             ..self.profile.summary()
-        })
+        }
     }
 }
 

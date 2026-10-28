@@ -21,6 +21,7 @@ use super::policy::{
     MINIMAP_MARKER_STRIP_WIDTH, MINIMAP_VIEWPORT_HORIZONTAL_OUTSET, fitting_source_map_page_size,
 };
 use super::projection_execution::{draw_marker_strip, sync_source_map_geometry};
+use crate::ui::editor_page::document_scale::inserted_run_start;
 
 impl LushtextEditorPage {
     /// Install the per-tab minimap widgets and signal glue.
@@ -78,11 +79,8 @@ impl LushtextEditorPage {
                     return None;
                 }
                 let end = values.get(1)?.get::<gtk4::TextIter>().ok()?;
-                let text = values.get(2)?.get::<String>().ok()?;
-                let run_chars = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
-                let start = editor
-                    .buffer()
-                    .iter_at_offset(end.offset().saturating_sub(run_chars));
+                let text = values.get(2)?.get::<&str>().ok()?;
+                let start = inserted_run_start(&editor.buffer(), &end, text);
                 editor.record_modified_line_marks(
                     u32::try_from(start.line()).unwrap_or(0),
                     u32::try_from(end.line()).unwrap_or(0),
