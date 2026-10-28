@@ -12766,6 +12766,83 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     });
 }
 
+/// A cancelled "Undo Restore" must not rebind the warning-primary button of an
+/// alert that replaced "Restored from Local History" while the undo ran.
+#[test]
+fn test_cancelled_local_history_undo_does_not_rebind_a_newer_alert() {
+    ensure_gtk_init();
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history-undo-rebind.txt");
+    fixture::write_text(&path, "current\n");
+    let restore_target = format!("restored {}\n", "r".repeat(500)).repeat(4_000);
+    let working_copy = format!("working {}\n", "w".repeat(500)).repeat(4_000);
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        &restore_target,
+        LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed restore target");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    editor.set_local_history_availability_for_test(
+        local_history_service::LocalHistoryAvailability::SaveOnly,
+    );
+    editor.buffer().set_text(&working_copy);
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    wait_for_local_history_preview_text(&child, &restore_target);
+    let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+    wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
+    restore_button.emit_clicked();
+    wait_until(Duration::from_secs(60), || {
+        !editor.buffer_replacement_evidence().in_progress && editor_text(&editor) == restore_target
+    });
+    let undo_button = find_button_by_label(
+        editor.info_bar().upcast_ref::<gtk4::Widget>(),
+        "Undo Restore",
+    )
+    .expect("undo restore button");
+
+    editor.make_buffer_replacement_stale_after_slices_for_test(1);
+    undo_button.emit_clicked();
+    // A newer alert arrives while the undo is still installing.
+    editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "File Has Changed on Disk".to_string(),
+            body: "The file was modified by another program.".to_string(),
+            primary_button: Some("_Discard Changes and Reload".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    wait_until(Duration::from_secs(10), || {
+        !editor.buffer_replacement_evidence().in_progress
+            && editor.local_history_evidence().restore_undo_available
+    });
+
+    assert_eq!(
+        editor.pending_warning_action(),
+        None,
+        "the newer alert's primary button must keep its own action, not Undo Restore"
+    );
+}
+
 #[test]
 fn test_local_history_restore_defers_compactly_until_progress_capacity_clears() {
     ensure_gtk_init();

@@ -148,10 +148,11 @@ impl LushtextWindow {
                 if let Some(editor) = cancelled_editor.upgrade()
                     && ticket.is_current(&editor)
                 {
+                    // Only the undo body comes back. The "Undo Restore" button
+                    // was never unbound (clicks read the pending action without
+                    // consuming it), and if a newer alert replaced it meanwhile,
+                    // rebinding here would make that alert's button run the undo.
                     editor.set_local_history_restore_undo_text(Some(body));
-                    editor.set_pending_warning_action(Some(
-                        PendingWarningAction::UndoLocalHistoryRestore,
-                    ));
                 }
             },
         );
