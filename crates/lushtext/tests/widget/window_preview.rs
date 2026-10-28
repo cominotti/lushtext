@@ -767,6 +767,66 @@ fn test_preview_surface_dismiss_and_save_run_editor_handlers() {
     assert!(bar_hidden(editor.info_bar()));
 }
 
+/// Leaving preview-only while focus is on the copy hands focus to the
+/// document, not to the copy's now-hidden button.
+#[test]
+fn test_leaving_preview_only_does_not_strand_focus_on_the_copy() {
+    let dir = tempfile::tempdir().expect("leave preview focus tempdir");
+    let path = write_markdown(dir.path(), "doc.md", "Heading");
+    let (window, editor) = markdown_in_preview_only(&path);
+    emit(
+        &editor,
+        warning(CHANGED_ON_DISK, Some("_Discard Changes and Reload"), None),
+    );
+    let alert = preview_alert(&window);
+    assert!(bar_shows(&alert, CHANGED_ON_DISK));
+    alert.imp().dismiss_button.grab_focus();
+    flush_events();
+
+    leave_preview_only(&window);
+    assert!(bar_hidden(&alert));
+    assert!(bar_shows(editor.info_bar(), CHANGED_ON_DISK));
+    let focus = focus_widget(&window);
+    assert!(
+        focus.as_ref().is_none_or(
+            |focus| !focus.is_ancestor(&alert) && focus != alert.upcast_ref::<gtk4::Widget>()
+        ),
+        "focus must not stay inside the hidden copy ({focus:?})"
+    );
+    assert_eq!(
+        focus.as_ref(),
+        Some(editor.source_view().upcast_ref::<gtk4::Widget>()),
+        "focus returns to the document's editor"
+    );
+}
+
+/// A resolve the user did not start from the copy moves no focus, even when
+/// the window has no focus widget at that moment.
+#[test]
+fn test_background_resolve_of_the_copy_does_not_move_focus() {
+    let dir = tempfile::tempdir().expect("background resolve tempdir");
+    let path = write_markdown(dir.path(), "doc.md", "Heading");
+    let (window, editor) = markdown_in_preview_only(&path);
+    wait_for_rendered(&window, "Heading");
+    emit(
+        &editor,
+        warning(CHANGED_ON_DISK, Some("_Discard Changes and Reload"), None),
+    );
+    let alert = preview_alert(&window);
+    assert!(bar_shows(&alert, CHANGED_ON_DISK));
+    GtkWindowExt::set_focus(&window, None::<&gtk4::Widget>);
+    flush_events();
+
+    window.dismiss_editor_notifications(&editor);
+    flush_events();
+    assert!(bar_hidden(&alert));
+    let focus = focus_widget(&window);
+    assert!(
+        focus.is_none(),
+        "a resolve not started from the copy must not move focus ({focus:?})"
+    );
+}
+
 /// A non-Markdown document's alert shows above the "Not a Markdown file"
 /// placeholder; Escape leaves it; Dismiss leaves focus nowhere.
 #[test]

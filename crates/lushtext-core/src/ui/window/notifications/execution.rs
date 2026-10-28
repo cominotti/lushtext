@@ -53,6 +53,9 @@ pub(crate) struct NotificationProjectionState {
     counts: Cell<InlineAlertAnnouncementCounts>,
     /// What the preview copy currently shows, if anything.
     preview_ticket: RefCell<Option<DocumentAlertProjectionTicket>>,
+    /// True only while a click on the preview copy is being forwarded, so the
+    /// focus handoff can tell the user's own action from a background resolve.
+    forwarding_preview_action: Cell<bool>,
 }
 
 impl NotificationProjectionState {
@@ -157,11 +160,15 @@ pub(super) fn project_notification_surfaces(
         .borrow_mut()
         .retain(|owner_id, _| owners_with_alerts.contains(owner_id));
 
-    let selected_owner = selected_page
+    let selected_editor = selected_page
         .as_ref()
-        .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
-        .map(|editor| editor.notification_owner_id());
-    project_preview_document_alert(window, preview_only, selected_owner, selected_view.as_ref());
+        .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok());
+    project_preview_document_alert(
+        window,
+        preview_only,
+        selected_editor.as_ref(),
+        selected_view.as_ref(),
+    );
 
     if let Some((editor, notification, surface)) = perceivable {
         announce_once(window, &editor, &notification, surface);
@@ -214,31 +221,51 @@ fn announce_once(
 /// is on screen, and one banner per document is the rule. When the copy hides
 /// while preview-only stays active and keyboard focus was on it, focus moves to
 /// the preview text if it is shown, and otherwise to nothing — never to GTK's
-/// first focusable fallback, which is a sidebar button.
+/// first focusable fallback, which is a sidebar button. When it hides because
+/// preview-only ended, focus on it moves to the selected editor, whose own bar
+/// now shows the alert.
 fn project_preview_document_alert(
     window: &LushtextWindow,
     preview_only: bool,
-    selected_owner: Option<usize>,
+    selected_editor: Option<&LushtextEditorPage>,
     selected_view: Option<&InlineActionNotification>,
 ) {
     let imp = window.imp();
     let alert = &*imp.preview_document_alert;
+    let selected_owner = selected_editor.map(LushtextEditorPage::notification_owner_id);
     let plan = policy::plan_preview_document_alert(preview_only, selected_owner, selected_view);
     let was_projected = imp
         .notification_projection
         .preview_ticket
         .borrow()
         .is_some();
-    // GTK leaves focus on a button that hides itself, and the dismiss path can
-    // also leave the window with none; either is stranded once the copy hides.
-    let focus_stranded =
-        focus_is_on(window, alert) || (was_projected && GtkWindowExt::focus(window).is_none());
+    // GTK leaves focus on a button that hides itself, and the copy's own
+    // dismiss path can also leave the window with none; either is stranded
+    // once the copy hides. "None" counts only while the user's click on the
+    // copy is being forwarded: a background resolve must not move focus.
+    let focus_on_copy = focus_is_on(window, alert);
+    let focus_stranded = focus_on_copy
+        || (was_projected
+            && imp.notification_projection.forwarding_preview_action.get()
+            && GtkWindowExt::focus(window).is_none());
     alert.render_notification(plan.as_ref().and(selected_view));
     let hidden_now = plan.is_none();
     imp.notification_projection.preview_ticket.replace(plan);
 
-    if preview_only && hidden_now && focus_stranded {
+    if !hidden_now {
+        return;
+    }
+    if preview_only && focus_stranded {
         hand_focus_to_preview(window);
+    } else if !preview_only && focus_on_copy {
+        // Preview-only ended under a focused copy button: the editor column is
+        // back, so the document takes focus rather than a hidden button.
+        match selected_editor {
+            Some(editor) => {
+                editor.source_view().grab_focus();
+            }
+            None => GtkWindowExt::set_focus(window, None::<&gtk4::Widget>),
+        }
     }
 }
 
@@ -291,7 +318,12 @@ pub(super) fn forward_preview_document_alert(window: &LushtextWindow, action: In
         .as_ref()
         .is_some_and(|ticket| policy::document_alert_projection_is_current(ticket, &facts));
     match selected {
-        Some(editor) if current => editor.info_bar().activate(action),
+        Some(editor) if current => {
+            let forwarding = &imp.notification_projection.forwarding_preview_action;
+            forwarding.set(true);
+            editor.info_bar().activate(action);
+            forwarding.set(false);
+        }
         _ => window.render_notifications(),
     }
 }

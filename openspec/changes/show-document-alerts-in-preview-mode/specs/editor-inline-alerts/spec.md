@@ -96,6 +96,17 @@ Activating a button on the preview surface SHALL run the same handler as activat
 - **AND** otherwise the window has no focus widget
 - **AND** in neither case does focus move to the workspace sidebar
 
+#### Scenario: Focus when preview-only mode ends on a preview-surface button
+- **WHEN** keyboard focus is on a preview-surface button
+- **AND** the user leaves preview-only mode, so the preview surface hides and the editor's own bar shows the alert
+- **THEN** keyboard focus moves to the selected document's editor
+- **AND** it does not stay on the hidden preview-surface button
+
+#### Scenario: A resolve not started from the preview surface moves no focus
+- **WHEN** preview-only mode is active, the preview surface shows an alert, and the window has no focus widget
+- **AND** the alert is resolved by something other than a preview-surface button
+- **THEN** the window still has no focus widget
+
 #### Scenario: Focus after a dialog-routed action resolves the alert
 - **WHEN** the user activates "Normalize…" on the preview surface and chooses a line ending in the dialog
 - **AND** the dialog closes and the alert is resolved

@@ -180,12 +180,16 @@ fn main() {
 - preview geometry
 EOF
 printf 'alpha\r\nbeta\ngamma\rdelta\r\n' >"$FILE_HEALTH_FIXTURE"
-# Unreadable on purpose: its failed load raises the "Could Not Open File" alert
-# the preview-mode-document-alert scenarios capture. Restored after they run.
 PREVIEW_ALERT_FIXTURE="$ARTIFACT_DIR/fixtures/unreadable-preview-alert.md"
 rm -f "$PREVIEW_ALERT_FIXTURE"
 printf '# unreadable fixture\n' >"$PREVIEW_ALERT_FIXTURE"
-chmod 000 "$PREVIEW_ALERT_FIXTURE"
+
+# Readable again whatever way the script exits, so a failed capture never
+# leaves an unreadable file in the artifact tree for upload or cleanup.
+restore_preview_alert_fixture() {
+    chmod 600 "$PREVIEW_ALERT_FIXTURE" 2>/dev/null || true
+}
+trap restore_preview_alert_fixture EXIT
 
 scan_visual_logs() {
     local name="$1"
@@ -1610,10 +1614,13 @@ run_selected_capture "constrained-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/scr
 run_selected_capture "short-layout" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/short-layout.png" "1200" "420" "" "0" "default"
 run_selected_capture "markdown-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview.png" "1280" "860" "" "0" "default" "toggle-preview-mode"
 run_selected_capture "constrained-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview.png" "760" "520" "" "0" "default" "toggle-preview-mode"
+# Unreadable only for the three captures that need it: its failed load raises
+# the "Could Not Open File" alert the preview-mode-document-alert scenarios show.
+chmod 000 "$PREVIEW_ALERT_FIXTURE"
 run_selected_capture "preview-mode-document-alert" "$PREVIEW_ALERT_FIXTURE" "$ARTIFACT_DIR/screenshots/preview-mode-document-alert.png" "1280" "860" "" "0" "default" "set-preview-mode=true"
 run_selected_capture "preview-mode-document-alert-dark" "$PREVIEW_ALERT_FIXTURE" "$ARTIFACT_DIR/screenshots/preview-mode-document-alert-dark.png" "1280" "860" "" "0" "force-dark" "set-preview-mode=true"
 run_selected_capture "preview-mode-document-alert-transparent" "$PREVIEW_ALERT_FIXTURE" "$ARTIFACT_DIR/screenshots/preview-mode-document-alert-transparent.png" "1280" "860" "" "0" "default" "set-preview-mode=true"
-chmod 600 "$PREVIEW_ALERT_FIXTURE" 2>/dev/null || true
+restore_preview_alert_fixture
 run_selected_capture "markdown-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview-side-by-side.png" "1280" "860" "" "0" "default" "set-preview-pane-visible=true"
 run_selected_capture "constrained-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview-side-by-side.png" "760" "520" "" "0" "default" "set-preview-pane-visible=true"
 run_selected_capture "workspace-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-empty.png" "1280" "860" "" "0" "default"
