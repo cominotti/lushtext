@@ -899,22 +899,29 @@ drawn), which `scripts/run-gtk-axioms.sh` did not catch. The lane now fails on
 CRITICALs) before detaching.
 
 **Upstream GtkSourceView report (task 8.5): drafted, awaiting the maintainer.**
-Filing is outward-facing, so the maintainer files it at
-`https://gitlab.gnome.org/GNOME/gtksourceview/-/issues` and records the link
-here; the full draft with a C reproducer was left in the implementing
-worktree's `target/c1-gtksourceview-upstream-report.md`. Summary: *"GtkSourceMap: `gtk_source_map_set_view (map, NULL)` leaves the
-pending update tick armed. `gtk_source_map_queue_update` adds a frame-clock
-tick (`priv->update_id`) that `disconnect_view` does not remove
-(gtksourcemap.c, 5.20.0: queue_update ~564–591, disconnect_view ~948). When the
-view is cleared after a scroll, in the same frame, the tick runs with no view
-and logs `Gtk-CRITICAL gtk_scrollable_get_vadjustment: assertion
+The defect: `gtk_source_map_queue_update` adds a frame-clock tick
+(`priv->update_id`) that `disconnect_view` does not remove (gtksourcemap.c,
+5.20.0: queue_update 580–591, disconnect_view 948–1017), so a scroll of the view
+followed in the same turn by `gtk_source_map_set_view (map, NULL)` runs the tick
+with no view, which logs `Gtk-CRITICAL gtk_scrollable_get_vadjustment: assertion
 'GTK_IS_SCROLLABLE (scrollable)' failed` and `GLib-GObject-CRITICAL g_object_get:
-assertion 'G_IS_OBJECT (object)' failed`; drawing the viewless map can also
-print pixman's `Invalid rectangle passed`. Reproducer: an HTML GtkSourceView of
-3,000 lines with a mapped GtkSourceMap; scroll the view 400 px and set the
-map's view to NULL in the same main-loop turn. Expected: disconnecting the view
-removes `update_id`."* LushText does not wait for it: the minimap is retired
-(unparented and dropped) instead of having its view cleared (A45).
+assertion 'G_IS_OBJECT (object)' failed` (drawing the viewless map can also print
+pixman's `Invalid rectangle passed`). **Re-drafting found it already fixed
+upstream:** commit `8d679ccd` ("map: reduce scrolling overhead", 2026-07-26)
+added `gtk_source_map_cancel_update` to `disconnect_view`, `dispose` and `unmap`,
+and makes `queue_update` return without a view or while unmapped. It shipped in
+**5.22.0** (2026-09-18) and is not on the `gtksourceview-5-20` branch, so the
+GNOME 50 runtime and Fedora 44 (5.20.0) still have the defect; `make
+gtk-axiom-sample AXIOM=32 CHECK=1` reads "holds" on 5.20.0 (2026-10-28). A new
+bug report would duplicate fixed work, so the draft is now a **backport request**
+for `gtksourceview-5-20` with a minimal C reproducer (8 of 8 runs reproduce
+under headless Mutter); whether to file it is the maintainer's call, at
+`https://gitlab.gnome.org/GNOME/gtksourceview/-/issues`, recording the link here.
+The draft is kept outside the repository, in the maintainer's checkout at
+`.claude/handoffs/c1-gtksourceview-upstream-report.md`. LushText does not wait
+for it: the minimap is retired (unparented and dropped) instead of having its
+view cleared (A45). A32 will read "violated" once the toolkit floor reaches
+5.22, which is an axiom change to review then.
 
 **Lane result (task 10.4):** TODO(responsiveness-smoke): open of the synthetic
 1.9M-character fixture (context-engine stall, CRITICALs) and typing in its short
@@ -1081,7 +1088,8 @@ each fixed with a failing-first self-test case:
 - L_protect as a GSettings key (decision 6 keeps it a constant for now).
 - "Copy whole line" from the Line Inspector.
 - Upstream reports: the `GtkSourceMap` `update_id` that survives
-  `set_view(NULL)` (A32), Pango's int32 width overflow (A28), log attrs over
+  `set_view(NULL)` (A32; fixed upstream in 5.22.0, a 5.20 backport request is
+  drafted), Pango's int32 width overflow (A28), log attrs over
   invisible text (A26), the IM spot updated on every scroll (A30), search
   copying the line per match (A33), and the gtk4-rs `IMContextImpl`
   `get_preedit_string` trampoline that writes NULL out-parameters.

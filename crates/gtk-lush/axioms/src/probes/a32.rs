@@ -7,10 +7,11 @@
 //! `g_object_get` on a null object). A scroll of the view queues the tick, so
 //! scrolling and detaching in the same main-loop turn is enough.
 //!
-//! "Holds" means the defect is present. An upstream fix makes the probe
-//! report violated, which is an axiom change to review against the
-//! document scale policy (C1), which detaches the minimap and owns working
-//! around this CRITICAL.
+//! "Holds" means the defect is present. Upstream fixed it in GtkSourceView
+//! 5.22.0 (commit 8d679ccd cancels the tick in `disconnect_view`); 5.20 still
+//! has it. That fix makes the probe report violated, which is an axiom change
+//! to review against the document scale policy (C1), which owns working
+//! around this CRITICAL (it retires the minimap instead of detaching it, A45).
 
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
