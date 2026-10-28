@@ -106,7 +106,6 @@ impl LushtextWindow {
                 }
             }
             self.dismiss_editor_notifications(editor);
-            self.forget_inline_alert_announcement(editor);
             editor.notify_memory_policy_changed();
             self.untrack_editor_memory(editor);
             editor.cancel_load();

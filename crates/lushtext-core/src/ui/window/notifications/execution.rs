@@ -38,6 +38,7 @@ use crate::services::notifications::{InlineActionNotification, InlineAlertAction
 use crate::ui::editor_page::LushtextEditorPage;
 
 use super::super::LushtextWindow;
+use super::super::geometry::execution::focus_is_within;
 use super::evidence::InlineAlertAnnouncementCounts;
 use super::policy::{self, DocumentAlertFacts, DocumentAlertProjectionTicket, InlineAlertSurface};
 
@@ -53,9 +54,6 @@ pub(crate) struct NotificationProjectionState {
     counts: Cell<InlineAlertAnnouncementCounts>,
     /// What the preview copy currently shows, if anything.
     preview_ticket: RefCell<Option<DocumentAlertProjectionTicket>>,
-    /// True only while a click on the preview copy is being forwarded, so the
-    /// focus handoff can tell the user's own action from a background resolve.
-    forwarding_preview_action: Cell<bool>,
 }
 
 impl NotificationProjectionState {
@@ -67,14 +65,6 @@ impl NotificationProjectionState {
     /// The announcements emitted so far, per surface.
     pub(super) fn counts(&self) -> InlineAlertAnnouncementCounts {
         self.counts.get()
-    }
-
-    /// Forget one editor's entry, for example when its tab closes.
-    ///
-    /// The owner id is an object address that a later editor can reuse, so the
-    /// entry is dropped explicitly rather than left for the next pass.
-    pub(super) fn forget(&self, owner_id: usize) {
-        self.announced.borrow_mut().remove(&owner_id);
     }
 
     /// The owner id and alert key the preview copy was last projected for.
@@ -121,6 +111,7 @@ pub(super) fn project_notification_surfaces(
     let tab_view = &imp.tab_view;
     let selected_page = tab_view.selected_page();
     let mut owners_with_alerts = HashSet::new();
+    let mut selected_editor = None;
     let mut selected_view = None;
     let mut perceivable = None;
     for index in 0..tab_view.n_pages() {
@@ -141,6 +132,9 @@ pub(super) fn project_notification_surfaces(
             // the hidden widget; give it back to the document.
             editor.source_view().grab_focus();
         }
+        if is_selected {
+            selected_editor = Some(editor.clone());
+        }
         let Some(notification) = editor_view else {
             continue;
         };
@@ -154,15 +148,15 @@ pub(super) fn project_notification_surfaces(
     }
 
     // An editor with no alert, or no longer open, loses its entry, so an alert
-    // that comes back after being cleared is announced as a new one.
+    // that comes back after being cleared is announced as a new one. A closing
+    // tab needs nothing more: its teardown dismisses the editor's alerts, and
+    // that pass no longer visits it, so the entry is gone before the owner id
+    // (an object address) can be reused.
     imp.notification_projection
         .announced
         .borrow_mut()
         .retain(|owner_id, _| owners_with_alerts.contains(owner_id));
 
-    let selected_editor = selected_page
-        .as_ref()
-        .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok());
     project_preview_document_alert(
         window,
         preview_only,
@@ -234,45 +228,35 @@ fn project_preview_document_alert(
     let alert = &*imp.preview_document_alert;
     let selected_owner = selected_editor.map(LushtextEditorPage::notification_owner_id);
     let plan = policy::plan_preview_document_alert(preview_only, selected_owner, selected_view);
-    let was_projected = imp
-        .notification_projection
-        .preview_ticket
-        .borrow()
-        .is_some();
-    // GTK leaves focus on a button that hides itself, and the copy's own
-    // dismiss path can also leave the window with none; either is stranded
-    // once the copy hides. "None" counts only while the user's click on the
-    // copy is being forwarded: a background resolve must not move focus.
+    // GTK leaves focus on a button that hides itself, so focus on the copy is
+    // stranded once it hides. (The copy's own Dismiss can instead leave the
+    // window with no focus; the forward handles that, because only a click on
+    // the copy may move focus from nothing.)
     let focus_on_copy = focus_is_on(window, alert);
-    let focus_stranded = focus_on_copy
-        || (was_projected
-            && imp.notification_projection.forwarding_preview_action.get()
-            && GtkWindowExt::focus(window).is_none());
     alert.render_notification(plan.as_ref().and(selected_view));
     let hidden_now = plan.is_none();
     imp.notification_projection.preview_ticket.replace(plan);
 
-    if !hidden_now {
+    if !hidden_now || !focus_on_copy {
         return;
     }
-    if preview_only && focus_stranded {
+    if preview_only {
         hand_focus_to_preview(window);
-    } else if !preview_only && focus_on_copy {
-        // Preview-only ended under a focused copy button: the editor column is
-        // back, so the document takes focus rather than a hidden button.
-        match selected_editor {
-            Some(editor) => {
-                editor.source_view().grab_focus();
-            }
-            None => GtkWindowExt::set_focus(window, None::<&gtk4::Widget>),
+        return;
+    }
+    // Preview-only ended under a focused copy button: the editor column is
+    // back, so the document takes focus rather than a hidden button.
+    match selected_editor {
+        Some(editor) => {
+            editor.source_view().grab_focus();
         }
+        None => GtkWindowExt::set_focus(window, None::<&gtk4::Widget>),
     }
 }
 
 /// Whether the window's focus widget is `bar` or inside it.
 fn focus_is_on(window: &LushtextWindow, bar: &impl IsA<gtk4::Widget>) -> bool {
-    GtkWindowExt::focus(window)
-        .is_some_and(|focus| focus.is_ancestor(bar) || &focus == bar.upcast_ref::<gtk4::Widget>())
+    focus_is_within(window, bar.upcast_ref())
 }
 
 /// Move focus off a hidden preview copy, per the overlay focus-restoration rule.
@@ -294,10 +278,7 @@ fn hand_focus_to_preview(window: &LushtextWindow) {
 /// alert changed — it runs no handler and re-projects instead.
 pub(super) fn forward_preview_document_alert(window: &LushtextWindow, action: InlineAlertAction) {
     let imp = window.imp();
-    let selected = imp
-        .tab_view
-        .selected_page()
-        .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok());
+    let selected = window.active_editor();
     let facts = DocumentAlertFacts {
         preview_only: imp.preview_mode.get(),
         selected_owner: selected
@@ -319,10 +300,21 @@ pub(super) fn forward_preview_document_alert(window: &LushtextWindow, action: In
         .is_some_and(|ticket| policy::document_alert_projection_is_current(ticket, &facts));
     match selected {
         Some(editor) if current => {
-            let forwarding = &imp.notification_projection.forwarding_preview_action;
-            forwarding.set(true);
             editor.info_bar().activate(action);
-            forwarding.set(false);
+            // The copy's own Dismiss hides it before forwarding, which can
+            // leave the window with no focus widget at all. That is stranded
+            // too, but only here: a resolve the user did not start from the
+            // copy must not move focus.
+            if imp.preview_mode.get()
+                && imp
+                    .notification_projection
+                    .preview_ticket
+                    .borrow()
+                    .is_none()
+                && GtkWindowExt::focus(window).is_none()
+            {
+                hand_focus_to_preview(window);
+            }
         }
         _ => window.render_notifications(),
     }

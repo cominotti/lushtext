@@ -28,7 +28,7 @@ use crate::services::draft_service::journal_core::{self, RestoreEnding};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::{
     BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
-    BufferReplacementWorkflow, LushtextEditorPage,
+    BufferReplacementWorkflow, InlineAlertLifetime, LushtextEditorPage,
 };
 
 use super::policy;
@@ -219,7 +219,7 @@ impl LushtextWindow {
                     body: "The preserved recovery draft could not be read. The tab remains usable and the recovery files were kept.".to_string(),
                     primary_button: None,
                     secondary_button: None,
-                }, crate::ui::editor_page::InlineAlertLifetime::OutlivesLoad);
+                }, InlineAlertLifetime::OutlivesLoad);
                 // Keep the promise above before the next autosave overwrites it.
                 self.dispose_unapplied_restore(RestoreEnding::ReadFailed, ticket.entry.clone());
             }
@@ -368,7 +368,7 @@ impl LushtextWindow {
                     "Save _As…".to_string()
                 }),
             },
-            crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad,
+            InlineAlertLifetime::SupersededByLoad,
         );
     }
 
@@ -394,13 +394,10 @@ impl LushtextWindow {
             editor.emit_inline_notification_with_warning_action(
                 notification,
                 crate::ui::editor_page::PendingWarningAction::ShowLocalHistory,
-                crate::ui::editor_page::InlineAlertLifetime::OutlivesLoad,
+                InlineAlertLifetime::OutlivesLoad,
             );
         } else {
-            editor.emit_inline_notification(
-                notification,
-                crate::ui::editor_page::InlineAlertLifetime::OutlivesLoad,
-            );
+            editor.emit_inline_notification(notification, InlineAlertLifetime::OutlivesLoad);
         }
     }
 
@@ -413,7 +410,7 @@ impl LushtextWindow {
             body: "Unsaved changes from a previous session were not restored automatically because the draft is very large.".to_string(),
             primary_button: None,
             secondary_button: None,
-        }, crate::ui::editor_page::InlineAlertLifetime::OutlivesLoad);
+        }, InlineAlertLifetime::OutlivesLoad);
     }
 
     /// Warn that the current buffer is too large for automatic crash recovery.
@@ -425,7 +422,7 @@ impl LushtextWindow {
             body: "This document is over the 64 MiB automatic recovery limit. Keep editing, or use Save / Save As to protect the latest changes.".to_string(),
             primary_button: None,
             secondary_button: None,
-        }, crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad);
+        }, InlineAlertLifetime::SupersededByLoad);
     }
 
     /// Clear the limit warning only after a matching generation is accepted.

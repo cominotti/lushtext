@@ -36,7 +36,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use crate::ui::editor_page::{EditorLoadState, InlineAlertLifetime, LushtextEditorPage};
 
 use super::execution::{self, ChunkedLoadInstall};
 use super::policy::{self, AbortAction, AbortDisposition, LoadInstallPhase, LoadOutcome};
@@ -82,7 +82,7 @@ pub(super) fn finish_user_cancelled_load(editor: &LushtextEditorPage) {
             primary_button: Some("_Retry".to_string()),
             secondary_button: None,
         },
-        crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad,
+        InlineAlertLifetime::SupersededByLoad,
     );
     editor.notify_memory_policy_changed();
     editor.refresh_accessibility_metadata();

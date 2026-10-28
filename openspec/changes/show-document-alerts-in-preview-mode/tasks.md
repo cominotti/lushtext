@@ -65,7 +65,7 @@
   - the D1 rule (`EditorInfoBar` carries document-state alerts only).
 
   Replace the "What a test reads" section's no-surface conclusion. Keep the facade within 370 lines.
-- [x] 4.6 Call `wire_preview_document_alert` from the window's `constructed`. Call `render_notifications()` from `apply_preview_shell_state` (`ui/window/preview.rs`, after the layout and visibility writes) and from `refresh_selected_tab_model_projections` (`ui/window/documents.rs`). Drop the closed editor's ledger entry in `handle_tab_detached` (`ui/window/tab_strip/close_execution.rs`) beside `dismiss_editor_notifications`.
+- [x] 4.6 Call `wire_preview_document_alert` from the window's `constructed`. Call `render_notifications()` from `apply_preview_shell_state` (`ui/window/preview.rs`, after the layout and visibility writes) and from `refresh_selected_tab_model_projections` (`ui/window/documents.rs`). Drop the closed editor's ledger entry in `handle_tab_detached` (`ui/window/tab_strip/close_execution.rs`) beside `dismiss_editor_notifications`. (Simplify pass: the explicit drop was removed; the pass that `dismiss_editor_notifications` runs no longer visits the detached editor and already drops its entry.)
   - Log: `wire_preview_document_alert` is called from `constructed`, before the first `apply_preview_shell_state`.
 - [x] 4.7 Implement D7:
   - give the editor a superseded-by-load flag that every emit sets or resets, beside `PendingWarningAction`;

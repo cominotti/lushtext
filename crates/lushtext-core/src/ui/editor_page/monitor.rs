@@ -16,7 +16,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use crate::services::editor_io;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 
-use super::LushtextEditorPage;
+use super::{InlineAlertLifetime, LushtextEditorPage};
 
 impl LushtextEditorPage {
     /// Start watching the file for external modifications.
@@ -78,7 +78,7 @@ impl LushtextEditorPage {
                                         ),
                                         secondary_button: None,
                                     },
-                                    crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad,
+                                    InlineAlertLifetime::SupersededByLoad,
                                 );
                             }
                         },

@@ -11,7 +11,7 @@
 //! `GtkInfoBar`, while ordinary labels and buttons keep the widget compatible
 //! with GTK5.
 
-use crate::services::notifications::InlineAlertAction;
+use crate::services::notifications::{InlineActionNotification, InlineAlertAction};
 use crate::ui::accessibility;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -89,6 +89,9 @@ pub struct LushtextInfoBar {
     /// Throttles repeated announcements on the windowless fallback path; a
     /// window-hosted bar is announced through the window's ledger instead.
     pub alert_announcement_throttler: accessibility::AnnouncementThrottler,
+    /// What this bar currently shows, so re-rendering the same alert on every
+    /// projection pass is a no-op instead of relabelling and relayout.
+    pub rendered: RefCell<Option<InlineActionNotification>>,
 }
 
 impl Default for LushtextInfoBar {
@@ -109,6 +112,7 @@ impl Default for LushtextInfoBar {
             discard_callback: RefCell::new(None),
             dismissed_callback: RefCell::new(None),
             alert_announcement_throttler: accessibility::AnnouncementThrottler::default(),
+            rendered: RefCell::default(),
         }
     }
 }
@@ -138,7 +142,10 @@ impl ObjectImpl for LushtextInfoBar {
     fn constructed(&self) {
         self.parent_constructed();
 
+        // Start in exactly the state `render_notification(None)` leaves, which
+        // `rendered` (empty) claims, so the first empty render can be skipped.
         self.obj().set_visible(false);
+        self.actions_box.set_visible(false);
         // A container with role Alert can become a leaf in AT-SPI, hiding the
         // retry/dismiss buttons. Keep the row grouped and put Alert on the
         // message label that actually needs high-priority announcement.

@@ -235,16 +235,6 @@ impl LushtextWindow {
         alert.connect_dismissed(forward(InlineAlertAction::Dismiss));
     }
 
-    /// Forget a closing editor's announcement ledger entry.
-    ///
-    /// The owner id is an object address a later editor can reuse, so the
-    /// entry must not outlive the tab even until the next projection pass.
-    pub(super) fn forget_inline_alert_announcement(&self, editor: &LushtextEditorPage) {
-        self.imp()
-            .notification_projection
-            .forget(editor.notification_owner_id());
-    }
-
     /// Stage 4 — arm the recurring expiry sweep.
     pub(super) fn start_notification_sweep_timer(&self) {
         execution::arm_expiry_sweep(self);

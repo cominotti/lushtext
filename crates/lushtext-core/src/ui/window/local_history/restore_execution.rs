@@ -24,7 +24,7 @@ use crate::services::{json_store, local_history_service};
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::{
     BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
-    BufferReplacementWorkflow, LushtextEditorPage, PendingWarningAction,
+    BufferReplacementWorkflow, InlineAlertLifetime, LushtextEditorPage, PendingWarningAction,
 };
 use crate::ui::status_bar::MessageKind;
 
@@ -302,7 +302,7 @@ impl LushtextWindow {
                                         secondary_button: None,
                                     },
                                     PendingWarningAction::UndoLocalHistoryRestore,
-                                    crate::ui::editor_page::InlineAlertLifetime::SupersededByLoad,
+                                    InlineAlertLifetime::SupersededByLoad,
                                 );
                                 browser.window.publish_status_message(
                                     "Snapshot restored into the editor",

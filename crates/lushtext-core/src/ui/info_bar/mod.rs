@@ -50,8 +50,15 @@ impl LushtextInfoBar {
     /// the notification workflow decides when an alert is spoken (once, when it
     /// first becomes perceivable) and calls `announce_alert` itself, so re-rendering
     /// an unchanged alert on every projection pass stays quiet.
+    ///
+    /// Rendering what the bar already shows does nothing, so the full
+    /// projection pass costs no relabelling or relayout for unchanged bars.
     pub fn render_notification(&self, notification: Option<&InlineActionNotification>) {
         let imp = self.imp();
+        if imp.rendered.borrow().as_ref() == notification {
+            return;
+        }
+        imp.rendered.replace(notification.cloned());
         let Some(notification) = notification else {
             self.hide_alert();
             return;
