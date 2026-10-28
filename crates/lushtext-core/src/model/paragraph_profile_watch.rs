@@ -556,6 +556,57 @@ mod tests {
     }
 
     #[test]
+    fn char_count_counts_scalars_not_bytes() {
+        assert_eq!(char_count(""), 0);
+        assert_eq!(char_count("ab"), 2);
+        // Two-, three- and four-byte scalars count once each.
+        assert_eq!(char_count("é\u{2029}😀"), 3);
+    }
+
+    #[test]
+    fn window_range_clamps_out_of_range_lines_into_the_buffer() {
+        let cfg = config(3, 0);
+        // Lines past the buffer clamp to its last line, and a start past the
+        // end clamps to the end.
+        assert_eq!(window_range(cfg, 9, 9, 5), (2, 4));
+        assert_eq!(window_range(cfg, 4, 1, 5), (0, 3));
+        assert_eq!(window_range(cfg, 2, 2, 5), (0, 4));
+    }
+
+    #[test]
+    fn a_window_completes_in_buffer_order_head_run_then_tail() {
+        // Lines 1..=2 and 4..=5 are read; line 3 lies inside the run, whose
+        // one inner paragraph is 10 characters long.
+        let run = "x\nyyyyyyyyyy\nz";
+        let plan = WatchPlan::ReadWindow(WindowPlan {
+            first_line: 1,
+            start_line: 2,
+            end_line: 4,
+            last_line: 5,
+            run,
+        });
+        let cfg = config(3, 0);
+        let state = ProfileWatchState::default();
+        // Buffer order 0, 0, 10, 0, 10: the worst three-line window is 20.
+        // Placing the run after only the first read (0, 10, 0, 0, 10) would
+        // give 10.
+        assert_eq!(
+            complete(state, cfg, &plan, &[0, 0, 0, 10])
+                .summary(0)
+                .worst_batch_chars,
+            20
+        );
+        // Buffer order 10, 0, 10, 0, 0: 20. Appending the run after every read
+        // (10, 0, 0, 0, 10) would give 10.
+        assert_eq!(
+            complete(state, cfg, &plan, &[10, 0, 0, 0])
+                .summary(0)
+                .worst_batch_chars,
+            20
+        );
+    }
+
+    #[test]
     fn the_model_matches_the_probed_buffer() {
         // The GTK 4.22 observations ledger A42 pins.
         let mut b = Buffer::new("aa\rX\nbb");

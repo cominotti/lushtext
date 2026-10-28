@@ -307,4 +307,25 @@ exclude_re = [
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:491:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_to_min_height",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in expanded_to_min_height",
+    # Equivalent in `model/paragraph_boundary.rs` (document-scale-policy's
+    # mutation smoke): `>` with `>=` where the tie picks an equal value (the
+    # window clamp at exactly the ring capacity, the componentwise maxima, the
+    # longest and worst high-waters); and the density ring's fill branch
+    # (`ring_len < window`), which the replace branch reproduces exactly
+    # because the ring starts zeroed and `ring_next` follows `ring_len` while
+    # it fills, so `<` with `>` or `==` changes no fold.
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileConfig::window",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileSummary::max",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:426:19: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:458:26: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:446:26: replace < with (>|==) in ParagraphLengthFold::push",
+    # Equivalent in `model/paragraph_profile_watch.rs`: `>` with `>=` where
+    # the tie picks an equal value (`max`, and the two upper clamps of
+    # `window_range`), and `inner_lengths` reading the run when
+    # `end_line == start_line`: a run that adds no line has no paragraph
+    # delimiter (ledger A42: an insertion splits at its own delimiters), so it
+    # yields no inner length either way.
+    "crates/lushtext-core/src/model/paragraph_profile_watch\\.rs:.*replace > with >= in max",
+    "crates/lushtext-core/src/model/paragraph_profile_watch\\.rs:.*replace > with >= in WindowPlan<'_>::inner_lengths",
+    "crates/lushtext-core/src/model/paragraph_profile_watch\\.rs:.*replace > with >= in window_range",
 ]

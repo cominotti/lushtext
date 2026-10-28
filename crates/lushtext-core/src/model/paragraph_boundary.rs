@@ -629,6 +629,54 @@ mod tests {
     }
 
     #[test]
+    fn slice_end_takes_a_break_exactly_at_the_budget() {
+        // The second break ends exactly at the budget: it is within it.
+        assert_eq!(slice_end_after_paragraph("a\nb\nc", 0, 4), 4);
+        assert_eq!(slice_end_after_paragraph("a\nb\nc", 0, 3), 2);
+    }
+
+    #[test]
+    fn density_window_is_clamped_to_one_and_the_ring_capacity() {
+        let window = |r_batch| small_config(r_batch, 1).window();
+        assert_eq!(window(0), 1);
+        assert_eq!(window(3), 3);
+        assert_eq!(window(MAX_DENSITY_WINDOW), MAX_DENSITY_WINDOW);
+        assert_eq!(window(MAX_DENSITY_WINDOW + 1), MAX_DENSITY_WINDOW);
+    }
+
+    #[test]
+    fn summary_max_is_componentwise() {
+        let a = ProfileSummary {
+            total_bytes: 1,
+            longest_paragraph_chars: 5,
+            worst_batch_chars: 3,
+        };
+        let b = ProfileSummary {
+            total_bytes: 2,
+            longest_paragraph_chars: 4,
+            worst_batch_chars: 6,
+        };
+        let both = ProfileSummary {
+            total_bytes: 2,
+            longest_paragraph_chars: 5,
+            worst_batch_chars: 6,
+        };
+        assert_eq!(a.max(b), both);
+        assert_eq!(b.max(a), both);
+        assert_eq!(a.max(a), a);
+    }
+
+    #[test]
+    fn fold_reports_its_paragraph_count_and_longest_length() {
+        let mut fold = ParagraphLengthFold::new(small_config(2, 2));
+        for length in [3, 7, 2] {
+            fold.push(0, length);
+        }
+        assert_eq!(fold.paragraphs(), 3);
+        assert_eq!(fold.longest_paragraph_chars(), 7);
+    }
+
+    #[test]
     fn slice_end_never_separates_cr_from_lf() {
         let text = "aaa\r\nb";
         // The budget ends between `\r` and `\n`: after the `\n`.
