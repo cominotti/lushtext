@@ -326,6 +326,24 @@ exclude_re = [
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:532:19: replace > with >= in ParagraphLengthFold::push",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:564:26: replace > with >= in ParagraphLengthFold::push",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:552:26: replace < with (>|==) in ParagraphLengthFold::push",
+    # The SIMD fast paths of `model/paragraph_boundary.rs` (document-scale-policy):
+    # equivalent because they change only which search finds the same byte,
+    # or let a loop run once more over an empty tail. In `next_paragraph_break`
+    # the loop bound (`<` with `<=`: the empty-tail `memchr3` returns `None`),
+    # the switch point (`<` with `>`, `==`, `<=`) and the two stepping
+    # increments (`+=` with `*=`: the search stops on the same `0xE2` until the
+    # switch, which then finds the same delimiter); in `last_break_end_within`
+    # the loop bound (`>` with `>=`); in `push_str`
+    # the loop bound (`<` with `<=`). Lines that only compile under Kani (the
+    # byte-loop `let at = end - 1` and the per-character `push_str`) cannot be
+    # killed by any test build.
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:112:17: replace < with <= in next_paragraph_break",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:115:46: replace < with (>|==|<=) in next_paragraph_break",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:15[57]:[0-9]+: replace \\+= with \\*= in next_paragraph_break",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:246:15: replace > with >= in last_break_end_within",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:256:[0-9]+: .* in last_break_end_within",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:685:20: replace < with <= in ParagraphProfileAccumulator::push_str",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:64[78]:[0-9]+: .* in ParagraphProfileAccumulator::push_str",
     # Equivalent in `model/paragraph_profile_watch.rs`: `>` with `>=` where
     # the tie picks an equal value (`max`, and the two upper clamps of
     # `window_range`), and `inner_lengths` reading the run when

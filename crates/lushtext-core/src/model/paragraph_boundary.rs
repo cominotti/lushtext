@@ -944,4 +944,159 @@ mod tests {
                 .all(|pair| pair[0] < pair[1])
         );
     }
+
+    // ─── Fast paths against their byte-loop references ──────────────────
+    //
+    // Every string of at most five scalars over delimiters, plain and
+    // multibyte text, and `’` (an `0xE2`-led scalar that is not U+2029, so
+    // four of them switch `next_paragraph_break` to `memchr2` + `memmem`).
+    // The property suite compares the same paths on long text; these cover
+    // the default unit lane the mutation smoke runs.
+
+    const ALPHABET: [char; 6] = ['a', '\r', '\n', '\u{2029}', '\u{2019}', 'é'];
+
+    fn all_short_strings(max_chars: u32) -> Vec<String> {
+        let mut out = vec![String::new()];
+        let mut frontier = vec![String::new()];
+        for _ in 0..max_chars {
+            let mut next = Vec::new();
+            for prefix in &frontier {
+                for character in ALPHABET {
+                    let mut text = prefix.clone();
+                    text.push(character);
+                    next.push(text);
+                }
+            }
+            out.extend(next.iter().cloned());
+            frontier = next;
+        }
+        out
+    }
+
+    fn reference_break(text: &str, from: usize) -> Option<(usize, usize)> {
+        let bytes = text.as_bytes();
+        let mut index = from;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\n' => return Some((index, index + 1)),
+                b'\r' => {
+                    let crlf = bytes.get(index + 1) == Some(&b'\n');
+                    return Some((index, index + if crlf { 2 } else { 1 }));
+                }
+                0xE2 if bytes.get(index + 1) == Some(&0x80)
+                    && bytes.get(index + 2) == Some(&0xA9) =>
+                {
+                    return Some((index, index + 3));
+                }
+                _ => index += 1,
+            }
+        }
+        None
+    }
+
+    fn reference_slice_end(text: &str, start: usize, budget: usize) -> usize {
+        if start >= text.len() {
+            return text.len();
+        }
+        let mut budget_end = start.saturating_add(budget).min(text.len());
+        while budget_end > start && !text.is_char_boundary(budget_end) {
+            budget_end -= 1;
+        }
+        if budget_end == text.len() {
+            return text.len();
+        }
+        let mut last_within = None;
+        let mut cursor = start;
+        while let Some((_, next_start)) = reference_break(text, cursor) {
+            if next_start > budget_end {
+                return last_within.unwrap_or(next_start);
+            }
+            last_within = Some(next_start);
+            cursor = next_start;
+        }
+        last_within.unwrap_or(text.len())
+    }
+
+    fn splits_crlf(bytes: &[u8], at: usize) -> bool {
+        at > 0 && at < bytes.len() && bytes[at - 1] == b'\r' && bytes[at] == b'\n'
+    }
+
+    fn boundaries(text: &str) -> Vec<usize> {
+        (0..=text.len())
+            .filter(|&at| text.is_char_boundary(at))
+            .collect()
+    }
+
+    #[test]
+    fn break_search_equals_the_byte_loop_on_every_short_string() {
+        let typographic = format!(
+            "{}\n{}\u{2029}x",
+            "\u{2019}".repeat(9),
+            "\u{2014}".repeat(6)
+        );
+        for text in all_short_strings(5).iter().chain([&typographic]) {
+            for from in boundaries(text) {
+                let found = next_paragraph_break(text, from)
+                    .map(|found| (found.content_end, found.next_start));
+                assert_eq!(found, reference_break(text, from), "{text:?} from {from}");
+            }
+        }
+    }
+
+    #[test]
+    fn slice_end_equals_the_forward_walk_on_every_short_string() {
+        for text in all_short_strings(5) {
+            let bytes = text.as_bytes();
+            for start in boundaries(&text) {
+                if splits_crlf(bytes, start) {
+                    continue;
+                }
+                for budget in 0..=text.len() + 1 {
+                    assert_eq!(
+                        slice_end_after_paragraph(&text, start, budget),
+                        reference_slice_end(&text, start, budget),
+                        "{text:?} start {start} budget {budget}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn profile_per_character(text: &str) -> DocumentProfile {
+        let mut accumulator = ParagraphProfileAccumulator::new(small_config(2, 2));
+        for character in text.chars() {
+            accumulator.push_char(character);
+        }
+        accumulator.finish()
+    }
+
+    #[test]
+    fn push_str_equals_push_char_on_every_short_string_and_cut() {
+        for text in all_short_strings(4) {
+            let cuts = boundaries(&text);
+            let whole = profile_per_character(&text);
+            for (index, &first) in cuts.iter().enumerate() {
+                for &second in &cuts[index..] {
+                    let mut accumulator = ParagraphProfileAccumulator::new(small_config(2, 2));
+                    accumulator.push_str(&text[..first]);
+                    accumulator.push_str(&text[first..second]);
+                    accumulator.push_str(&text[second..]);
+                    assert_eq!(accumulator.finish(), whole, "{text:?} cut {first} {second}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn push_char_measures_paragraphs_without_their_delimiters() {
+        // The reference itself, pinned to known values (`push_str` is
+        // compared with it above).
+        let found = profile_per_character("ab\r\ncde\u{2029}\u{2019}\r");
+        assert_eq!(found.total_bytes, 14);
+        assert_eq!(found.paragraph_count, 4);
+        assert_eq!(found.longest_paragraph_chars, 3);
+        assert_eq!(found.long_paragraph_counts, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(found.long_paragraph_offsets, vec![4]);
+        assert_eq!(found.worst_batch_chars, 5);
+    }
 }
