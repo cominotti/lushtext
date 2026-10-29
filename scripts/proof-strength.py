@@ -197,12 +197,46 @@ def resolve_rev(rev: str) -> str:
     return git("rev-parse", "--verify", f"{rev}^{{commit}}")
 
 
+def write_atomic(path: Path, text: str) -> None:
+    """Replace `path` whole: concurrent shards share baseline.json, report.json,
+    and the derived configs, and a plain `write_text` truncates the file a
+    second shard may be reading at that moment."""
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False) as tmp:
+        tmp.write(text)
+    os.replace(tmp.name, path)
+
+
+def owner_marker(worktree: Path) -> Path:
+    """The marker `ensure_worktree` leaves in a worktree it created, inside that
+    worktree's private git directory."""
+    return Path(git("rev-parse", "--absolute-git-dir", cwd=worktree)) / "proof-strength-worktree"
+
+
+def worktree_owned(worktree: Path) -> bool:
+    """Whether this driver created `worktree`: anything under its state
+    directory, or a checkout carrying its marker. A PROOF_STRENGTH_WORKTREE
+    naming any other checkout (the developer's own, another agent's) must never
+    be force-checked-out, patched, or removed."""
+    return worktree.resolve().is_relative_to(STATE.resolve()) or owner_marker(worktree).exists()
+
+
+def refuse_unowned(worktree: Path) -> None:
+    if not worktree_owned(worktree):
+        raise SystemExit(
+            f"proof-strength: {worktree} is not a proof-strength worktree (this driver did not create it); "
+            "point PROOF_STRENGTH_WORKTREE at a new path"
+        )
+
+
 def ensure_worktree(rev: str, worktree: Path = WORKTREE) -> Path:
     """A detached, clean worktree at `rev`. It is disposable: stray edits in it
     (an interrupted mutant) are discarded, never the developer tree's."""
-    if not (worktree / ".git").exists():
+    if (worktree / ".git").exists():
+        refuse_unowned(worktree)
+    else:
         worktree.parent.mkdir(parents=True, exist_ok=True)
         git("worktree", "add", "--detach", str(worktree), rev)
+        owner_marker(worktree).touch()
     git("checkout", "--force", "--detach", rev, cwd=worktree)
     assert_clean(worktree, f"worktree {worktree} is not clean")
     return worktree
@@ -215,6 +249,7 @@ def assert_clean(worktree: Path, problem: str) -> None:
 
 def remove_worktree(worktree: Path = WORKTREE) -> None:
     if (worktree / ".git").exists():
+        refuse_unowned(worktree)
         git("worktree", "remove", "--force", str(worktree))
     git("worktree", "prune")
 
@@ -250,7 +285,7 @@ def derived_config(worktree: Path, module: str) -> Path:
         raise SystemExit("proof-strength: .cargo/mutants.toml has no single examine_globs list")
     path = STATE / "config" / f"{module_slug(module)}.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(narrowed, encoding="utf-8")
+    write_atomic(path, narrowed)
     return path
 
 
@@ -556,7 +591,7 @@ def baseline(worktree: Path, rev: str, modules: list[str], tier: str) -> dict:
                     "batch_peak_gib": round(peak / 1024 / 1024, 2),
                 }
             baseline_path(rev).parent.mkdir(parents=True, exist_ok=True)
-            baseline_path(rev).write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+            write_atomic(baseline_path(rev), json.dumps(record, indent=1) + "\n")
     return record
 
 
@@ -698,7 +733,7 @@ def run_module(worktree: Path, rev: str, module: str, tier: str, shard: str | No
             **versions,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+        write_atomic(path, json.dumps(record, indent=1) + "\n")
         killer = f" by {outcome.harness.split('::')[-1]}" if outcome.harness else ""
         print(f"    -> {outcome.klass}{killer} ({outcome.seconds} s)", flush=True)
 
@@ -776,7 +811,7 @@ def run_tests(worktree: Path, rev: str, module: str, shard: str | None) -> None:
         "command": command,
         "finished": False,
     }
-    meta_path.write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
+    write_atomic(meta_path, json.dumps(meta, indent=1) + "\n")
     wait_for_memory()
     print(f"proof-strength: tests arm for {module}", flush=True)
     start = time.monotonic()
@@ -785,7 +820,7 @@ def run_tests(worktree: Path, rev: str, module: str, shard: str | None) -> None:
     if status not in (0, 2, 3):
         raise SystemExit(f"proof-strength: cargo mutants failed with status {status} for {module}")
     meta.update(finished=True, status=status, wall_seconds=round(time.monotonic() - start, 1))
-    meta_path.write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
+    write_atomic(meta_path, json.dumps(meta, indent=1) + "\n")
 
 
 def tests_outcomes(rev: str, module: str) -> tuple[dict[str, str], list[dict]]:
@@ -962,6 +997,33 @@ def self_test() -> None:
         assert (repo / "src/m.rs").read_text() == "fn f() -> i32 {\n    1 - 2\n}\n"
         restore_mutant(repo, mutant)
         assert (repo / "src/m.rs").read_text() == original
+
+        # PROOF_STRENGTH_WORKTREE naming a checkout this driver did not create
+        # (the developer's own, or another agent's) is refused, never
+        # force-checked-out or removed: its uncommitted edits survive.
+        (repo / "src/m.rs").write_text("// uncommitted\n")
+        for operation in (lambda: ensure_worktree("HEAD", repo), lambda: remove_worktree(repo)):
+            try:
+                operation()
+                raise AssertionError("an unowned checkout must be refused")
+            except SystemExit as refusal:
+                assert "not a proof-strength worktree" in str(refusal), refusal
+            assert (repo / "src/m.rs").read_text() == "// uncommitted\n"
+        assert worktree_owned(STATE / "wt") and not worktree_owned(repo)
+        owner_marker(repo).touch()
+        assert worktree_owned(repo)
+
+    # Concurrent shards share baseline.json, report.json, and the derived
+    # configs: a write replaces the file whole, so a reader that opened the
+    # previous version still reads it complete, never a truncated one.
+    with tempfile.TemporaryDirectory() as scratch:
+        path = Path(scratch) / "baseline.json"
+        write_atomic(path, '{"harnesses": {}}\n')
+        with path.open(encoding="utf-8") as reader:
+            write_atomic(path, '{"harnesses": {"h": {}}}\n')
+            assert json.loads(reader.read()) == {"harnesses": {}}
+        assert json.loads(path.read_text(encoding="utf-8")) == {"harnesses": {"h": {}}}
+        assert [p.name for p in Path(scratch).iterdir()] == ["baseline.json"]
 
     # The floor post-filter and function scope.
     listed = [
@@ -1147,7 +1209,7 @@ def main() -> int:
         if args.markdown:
             Path(args.markdown).write_text(text, encoding="utf-8")
         (RESULTS / rev).mkdir(parents=True, exist_ok=True)
-        (RESULTS / rev / "report.json").write_text(json.dumps(rows, indent=1) + "\n", encoding="utf-8")
+        write_atomic(RESULTS / rev / "report.json", json.dumps(rows, indent=1) + "\n")
     return 0
 
 

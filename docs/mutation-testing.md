@@ -165,7 +165,14 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
   `PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=1/3
   PROOF_STRENGTH_WORKTREE=target/proof-strength/wt1 make proof-strength`, and
   likewise `2/3` and `3/3`. Run the tests arm once, unsharded: its
-  cargo-mutants output directory is shared.
+  cargo-mutants output directory is shared. A relative
+  `PROOF_STRENGTH_WORKTREE` resolves against the current directory (the
+  repository root under `make`). The driver only reuses or removes a worktree
+  it created (one under `target/proof-strength/`, or one carrying its marker in
+  the worktree's git directory); it refuses any other checkout rather than
+  force-checking it out. Shared state files (`baseline.json`, `report.json`,
+  the derived configs) are replaced whole, so a parallel shard never reads a
+  half-written one.
 - **Earlier revisions.** `--module-rev MODULE=REV` reports a module from the
   results of an earlier revision when its shipped source is unchanged since:
   the check ignores top-level `#[cfg(test)] mod … { … }` blocks, because
