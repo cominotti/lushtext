@@ -334,6 +334,27 @@ composition dispatch.** It fits B_settle and is now the largest part of the fill
 (its one-time editor and language state) is recorded as a candidate, with v7's and v9's
 measurements.
 
+## Verdict (2026-10-29): met
+
+Measured as an **interleaved** set (`main`, branch, `main`, branch, 7
+repetitions per side, five profiles, each run under the measurement flock
+alone), by the maintainer's decision to measure under accepted load rather than
+wait for an idle window, and the coordinator's that the official set be
+interleaved. Load was recorded, not gated (load1 0.5–1.6 during the set). Both
+builds were measured by this change's lane driver.
+
+- Every dispatch until the later of composition complete and activation shown:
+  at most **13.2 ms** (the populated profile's activation turn). No fallback was
+  needed: R+P at most 9.3 ms, the reveal frame at most 10.2 ms.
+- Fill-in **20.4–25.9 ms**, median **21.4 ms** (≤ 40 ms per run, median ≤ 3
+  reference frames). `main`: 29.3–38.5 ms, median 36.1 ms.
+- First painted frame **30.0–33.2 ms** from the request, against `main`'s
+  45.1–47.9 ms; first presentation 31.9–40.3 against 47.9–53.8 ms.
+- The unseen frame: on `main` in all 35 runs, on the branch in none of 36.
+
+Figures per profile, the load lines, the storage evidence and the supplementary
+loaded pair are in `docs/next/long-line-documents.md` ("C4c", "Verdict").
+
 ## Migration Plan
 
 No persisted state changes. Rollback is a revert. `test_policy.rs`'s

@@ -58,8 +58,10 @@ input to presented frame, measured on the maintainer's desktop.
    present now share one dispatch (no unseen frame, A51), one dispatch after the
    first frame reveals the content, the sidebar and the properties panel, and
    the first frame is the first one painted on the mapped window everywhere it
-   is reported or gated on. Verdict and figures in `long-line-documents.md`
-   ("C4c"). Left as candidates, with their measured sizes: shortening W, C and R
+   is reported or gated on. **Verdict 2026-10-29: met** (interleaved with
+   `main`): every dispatch ≤ 13.2 ms, fill-in 20.4–25.9 ms (median 21.4), first
+   painted frame 30–33 ms against `main`'s 45–48 ms. Figures in
+   `long-line-documents.md` ("C4c"). Left as candidates, with their measured sizes: shortening W, C and R
    (first-frame work), and the activation turn's one-time editor and language
    state (≈ 5 and ≈ 3.8 ms, the largest part of the remaining fill-in).
 

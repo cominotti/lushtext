@@ -1,8 +1,8 @@
 ## 1. Preconditions and the failing-first baseline
 
 - [x] 1.1 Confirm that C4b is archived on `main` with the frame-record fix (`959018d2`), and that the next free ledger id is still A51 on `main` and in every in-flight change. If it is taken, use the next free id and update the design, the specs and the record.
-- [ ] 1.2 Re-apply the A/B patch (`.claude/handoffs/c4c/c4c-ab-instrumentation.patch`) to a scratch build only, never to the tree. Reproduce `x7-base` and `x7-recommended` (`.claude/handoffs/c4c/ab-run.sh`, 7 repetitions) if more than a week has passed or the toolkit changed. Record any drift in the design before implementing.
-- [ ] 1.3 Failing-first baseline under the reference precondition (C4b design D9: the 1-minute load below 4 for 30 s, no process at ≥ 80 % CPU, no other agent's `cargo`/`rustc`/`nextest`/`kani`/`cbmc`/`mutter --headless` process; record all three and discard a run that loses them). Run `main` on `baseline/small*` (4 profiles × 7 repetitions, `RESPONSIVENESS_VARIANTS=plain`, `RESPONSIVENESS_PHASES=background`, the measurement flock held for one run at a time). From the frame records and the existing spans, record:
+- [x] 1.2 Re-apply the A/B patch (`.claude/handoffs/c4c/c4c-ab-instrumentation.patch`) to a scratch build only, never to the tree. Reproduce `x7-base` and `x7-recommended` (`.claude/handoffs/c4c/ab-run.sh`, 7 repetitions) if more than a week has passed or the toolkit changed. Record any drift in the design before implementing. *(Not needed: the change was implemented the day the A/B was measured, on the same toolkit.)*
+- [x] 1.3 Failing-first baseline under the reference precondition (C4b design D9: the 1-minute load below 4 for 30 s, no process at ≥ 80 % CPU, no other agent's `cargo`/`rustc`/`nextest`/`kani`/`cbmc`/`mutter --headless` process; record all three and discard a run that loses them). Run `main` on `baseline/small*` (4 profiles × 7 repetitions, `RESPONSIVENESS_VARIANTS=plain`, `RESPONSIVENESS_PHASES=background`, the measurement flock held for one run at a time). From the frame records and the existing spans, record:
   - the unmapped first `after-paint` per run;
   - the first painted frame and the first presentation, from the request;
   - composition complete;
@@ -10,7 +10,7 @@
   - every dispatch ≥ 4 ms;
   - `btrfs-stall-report`.
 
-  This is the failing-first evidence. The honest fill-in is above 3 reference frames and the unseen frame is present.
+  This is the failing-first evidence. The honest fill-in is above 3 reference frames and the unseen frame is present. *(Done as `main`'s half of the interleaved verdict set, by the maintainer's and coordinator's decisions: the unseen frame in all 35 `main` runs, fill-in median 36.1 ms; `docs/next/long-line-documents.md`, "C4c".)*
 
 ## 2. GTK axiom A51 (run first)
 
@@ -37,7 +37,7 @@
 
   Keep `composition_window_realized`/`_mapped` as observers. **Fallback** (design D2, only if task 6.2 measures the populated profile's reveal frame above B_settle): two reveal dispatches, content and workspace, then properties. **Fallback** (design D1, only if the merged dispatch measures above B_settle): P as a `G_PRIORITY_HIGH_IDLE` source.
 - [x] 3.4 Update the facade narration in `composition/mod.rs`: the stage order, which dispatches exist, and the resumption points (one `after-paint` resumption now, plus the activation turns).
-- [ ] 3.5 Re-run every existing `window_composition` test unchanged apart from 3.1's rewrite:
+- [x] 3.5 Re-run every existing `window_composition` test unchanged apart from 3.1's rewrite:
   - forced paths before every stage;
   - reads force nothing;
   - close during each stage;
@@ -73,8 +73,8 @@
 
 ## 6. Verdict
 
-- [ ] 6.1 Run `make check`, `make test-widget-shard WIDGET_SHARD=surfaces`, `make gtk-axioms`, `make check-gtk-axioms`, `make visual-geometry-smoke` (`first-frame-shell-chrome` must stay in `pixel_verified_invariant_ids`), `make visual-smoke`, `make accessibility-smoke`, `make crash-recovery-smoke` and the rustdoc lint gate. Run heavy commands through `scripts/with-memory-cap.sh`, one at a time, on CPUs 8–23, headless only. Run `make check-widget-shards`, and update the `surfaces` budget only if CI measures it past its margin.
-- [ ] 6.2 Under the reference precondition, run `main` (task 1.3) and the branch back to back: 5 profiles (the four `baseline/small` ones plus `steady-populated`) × 7 repetitions, the measurement flock held one run at a time. Record per profile:
+- [x] 6.1 Run `make check`, `make test-widget-shard WIDGET_SHARD=surfaces`, `make gtk-axioms`, `make check-gtk-axioms`, `make visual-geometry-smoke` (`first-frame-shell-chrome` must stay in `pixel_verified_invariant_ids`), `make visual-smoke`, `make accessibility-smoke`, `make crash-recovery-smoke` and the rustdoc lint gate. Run heavy commands through `scripts/with-memory-cap.sh`, one at a time, on CPUs 8–23, headless only. Run `make check-widget-shards`, and update the `surfaces` budget only if CI measures it past its margin.
+- [x] 6.2 Under the reference precondition, run `main` (task 1.3) and the branch back to back: 5 profiles (the four `baseline/small` ones plus `steady-populated`) × 7 repetitions, the measurement flock held one run at a time. Record per profile:
   - every dispatch until composition complete, which must be ≤ B_settle;
   - the RP dispatch and the reveal frame;
   - the first painted frame and the first presentation, which must be earlier than `main`'s honest first frame;
@@ -83,16 +83,16 @@
   - the load lines and `btrfs-stall-report`.
 
   If the populated reveal frame or the RP dispatch exceeds B_settle, apply task 3.3's fallback and re-run. Never relax a budget.
-- [ ] 6.3 Confirm that no run leaves a `TEMP-LEAK:`, and that no Gtk, Adwaita, GLib or GObject warning appears in the composition logs.
+- [x] 6.3 Confirm that no run leaves a `TEMP-LEAK:`, and that no Gtk, Adwaita, GLib or GObject warning appears in the composition logs.
 
 ## 7. Documentation
 
-- [ ] 7.1 Update `docs/next/long-line-documents.md`:
+- [x] 7.1 Update `docs/next/long-line-documents.md`:
   - a C4c row in the sequence table (and C4b's row corrected) and a C4c section with the breakdown, the candidates, the verdict and its precondition lines;
   - C4b's first-frame figures corrected in place, with an explicit correction note (design, resolved decisions): the reported first frame was an unseen frame on the unmapped window, the real first frame was about 46 ms from the request, and C4b bounded the dispatches but did not make the first pixels earlier. Make the same in-place correction, with the same note, in the archived C4b design (`openspec/changes/archive/2026-10-29-first-frame-window-shell/design.md`).
 
   Update `docs/next/long-line-evolution.md`.
 - [x] 7.2 Update `AGENTS.md`: the staged-composition decision (realize and present together, one reveal dispatch, and the first frame defined as the first mapped frame) and the composition module description.
-- [ ] 7.3 Update `docs/workflow-readability-matrix.md`: re-derive `WFR-WINDOW-COMPOSITION`'s measured cells (sizes, seams, the new evidence field) and `WFR-SETTINGS-WRITES` (the first-frame gate), then run `make check-workflow-boundaries`.
+- [x] 7.3 Update `docs/workflow-readability-matrix.md`: re-derive `WFR-WINDOW-COMPOSITION`'s measured cells (sizes, seams, the new evidence field) and `WFR-SETTINGS-WRITES` (the first-frame gate), then run `make check-workflow-boundaries`.
 - [x] 7.4 Update the GTK axiom ledger (A51) and `docs/next/formal-verification.md`'s axiom list.
 - [x] 7.5 Update `.agents/rules/build.md` (the lane's first-frame, presentation and fill-in definitions, and the populated profile) and `.agents/rules/widget-wiring.md`, if it names the staged reveal order.

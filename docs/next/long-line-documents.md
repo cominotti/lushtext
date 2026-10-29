@@ -22,7 +22,7 @@ that freezes it is **paragraph length**, not file size.
 | C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
 | C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). **Corrected 2026-10-29 (C4c):** its first-frame figure was an unseen frame on the unmapped window (A51); the real first frame was ≈ 46 ms from the request, no earlier than before C4b, and the honest fill-in 29–39 ms. |
-| C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Verdict: see "C4c" below.** |
+| C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Met (interleaved verdict 2026-10-29):** largest dispatch 13.2 ms, fill-in 20.4–25.9 ms (median 21.4), first painted frame 30.0–33.2 ms against `main`'s 45.1–47.9 ms ("C4c" below). |
 | C5 | `explore-editing-long-paragraphs` (optional) | Exploration of editing giant paragraphs | Maintainer decision. |
 | C6 | `bound-post-open-settle` (candidate, recorded by C0's budget verdict) | Bound the first main-loop turns after load readiness: the small-document post-open stall, the HTML first-highlight stall, the first overlay-indicator frame | The baseline fits B_settle and 2 reference frames on an idle reference run. Does not block C1–C4. |
 
@@ -747,7 +747,7 @@ fails all 28 measured cases and passes the a0adc5e2 ones.
 
 ## C4c `shorten-window-content-fill-in` (2026-10-29)
 
-**Posture: implemented; verdict below.** C4b's accepted fill-in (51–61 ms)
+**Posture: implemented (PR #67); verdict 2026-10-29: met (below).** C4b's accepted fill-in (51–61 ms)
 was frame pacing plus a measuring error, not work (design, "Measured
 breakdown"): stage R's realize ran a frame on the unmapped window that was
 never presented and paced the first visible frame 16.7 ms later (A51), and each
@@ -782,9 +782,76 @@ Exploratory figures (the proposal's A/B instrumentation, load 1.7–2.1, not the
 reference precondition): first painted frame 46.7 → 31.4 ms from the request,
 composition complete 82.1 → 52.9 ms, honest fill-in 36.1 → 21.6 ms.
 
-### Verdict
+### Verdict (2026-10-29): met
 
-Pending: the reference run (main and the branch, five profiles × 7 repetitions, under the reference precondition) had not run when this section was written.
+**Met, on the interleaved set:** every dispatch until the later of
+composition complete and activation shown is within B_settle in every profile
+and repetition (largest 13.2 ms); every fill-in is within 40 ms (20.4–25.9 ms),
+and the median, 21.4 ms, is within the 3-reference-frame target (24,999 µs); the
+first painted frame is earlier than `main`'s in every run (30.0–33.2 ms against
+45.1–47.9 ms from the request), and so is the first presentation (31.9–40.3
+against 47.9–53.8 ms).
+
+- **Runs.** Run directory `.claude/handoffs/c4c-verdict/interleaved/` (local,
+  not committed). The maintainer decided on 2026-10-29 to measure under
+  accepted load rather than wait for an idle window (dota2 running), then
+  stopped dota2. The coordinator asked that the official verdict be an
+  **interleaved** set in one window: `main` (1e2556a2), branch (ca8cf39c),
+  `main`, branch, 17:27:47–17:36:01 −03:00, 4 + 3 repetitions per side (one
+  branch case got an eighth repetition, which the lane adds to a noisy case).
+  `make responsiveness-smoke`, tier `full`, `baseline/small*`, five profiles,
+  `RESPONSIVENESS_VARIANTS=plain`, `RESPONSIVENESS_PHASES=background`, release
+  `responsiveness-probes` builds, cairo, `1280x800@120`, CPUs 8–23, GTK 4.22.5 /
+  Adw 1.9.3. Both sides were measured with **this branch's lane driver**, so
+  `main`'s first frame is derived the same honest way. Each run held the
+  measurement flock alone. Every report `passed`, with 0 integrity violations
+  and no frameless case.
+- **Load, per run** (sampled every 10 s, recorded, never gating, by the
+  maintainer's decision): `main` round 1 load1 0.99–1.57, round 2 0.60–0.95;
+  branch round 1 0.60–1.13, round 2 0.52–0.98. The busiest other processes
+  were chrome (up to 85 %) and btrfs (up to 73 %). No other agent's build,
+  test or proof process ran during any run.
+- **Storage.** `btrfs-stall-report`, all four runs: "Storage was NOT a
+  bottleneck" (IO pressure 0.3–0.7 %, longest commit 36–47 ms).
+- **The unseen frame, failing-first.** On `main` the probe's `first_frame`
+  span ended before `composition_present` in all 35 runs (the realize frame on
+  the unmapped window, A51). On the branch, in none of 36.
+
+Per profile, ms from the request, min–max (median). "First painted" is the
+first frame paint after `composition_present` (the same derivation for both
+builds); fill-in is `max(complete, activation shown) − first painted`, and on
+`main`, which has no activation-shown span, `complete − first painted`.
+
+| Profile | first painted, main → branch | first presentation, main → branch | complete, main → branch | fill-in, main → branch | largest dispatch, main → branch | R+P, branch | reveal frame (layout + paint), branch |
+|---|---|---|---|---|---|---|---|
+| fresh / keyfile | 45.4–47.7 (46.2) → 30.4–33.2 (31.4) | 48.3–51.2 (49.8) → 32.5–37.8 (34.0) | 75.3–85.7 (83.7) → 51.5–54.7 (52.7) | 29.4–38.0 (36.7) → 20.7–22.4 (21.5) | 9.5–10.4 → 9.7–10.5 | 6.5–9.3 | 8.1–9.8 |
+| fresh / dconf | 45.5–46.1 (45.8) → 30.9–33.0 (31.4) | 47.9–48.8 (48.4) → 33.4–35.6 (34.0) | 75.1–83.9 (83.7) → 51.7–56.3 (52.7) | 29.3–38.0 (37.9) → 20.5–23.3 (21.1) | 9.5–10.0 → 9.8–10.3 | 7.2–7.8 | 7.9–10.2 |
+| steady / keyfile | 45.3–47.1 (45.9) → 30.0–33.1 (31.4) | 48.1–53.8 (49.4) → 31.9–40.3 (37.9) | 75.4–84.2 (82.5) → 50.5–55.7 (52.7) | 29.6–37.9 (36.2) → 20.5–22.6 (21.4) | 9.5–10.3 → 9.6–11.0 | 6.9–9.2 | 8.1–9.0 |
+| steady / dconf | 45.1–47.8 (46.2) → 30.2–31.8 (30.9) | 47.9–53.0 (49.8) → 33.2–38.5 (35.4) | 78.7–84.7 (81.6) → 51.2–53.5 (52.3) | 31.0–38.5 (35.8) → 21.0–21.8 (21.4) | 9.6–10.4 → 9.5–10.3 | 6.7–7.8 | 8.5–9.1 |
+| steady-populated / keyfile | 45.6–47.9 (46.4) → 30.0–32.2 (31.1) | 47.9–51.4 (48.9) → 33.2–39.1 (36.8) | 76.1–86.1 (82.0) → 51.5–58.1 (54.2) | 30.1–38.2 (36.1) → 20.4–25.9 (23.3) | 9.5–10.0 → 9.5–13.2 | 6.6–8.1 | 8.2–9.9 |
+
+Over all branch runs the fill-in median is 21.4 ms (38 runs), against 36.1 ms
+on `main` (37 runs); composition completes about 30 ms earlier, and the first
+pixels about 15 ms earlier. The merged R+P dispatch (at most 9.3 ms) and the
+reveal frame (at most 10.2 ms) needed neither fallback (design D1, D2). The
+populated profile's largest dispatch, 13.2 ms, is its activation turn; it is the
+largest composition dispatch, as the design predicted (Trade-off).
+
+**Supplementary, measured under maintainer-accepted load (dota2 running):** a
+first pair, `main` 17:20:37–17:24:03 with dota2 at about 300 % CPU (load1
+4.5), then the branch 17:24:26–17:27:42 after dota2 had mostly stopped (load1
+2.1), so it favours the branch and is not the verdict
+(`.claude/handoffs/c4c-verdict/{baseline,branch}`). Branch: fill-in 20.3–26.7 ms
+(median 22.0), largest dispatch 13.3 ms, first painted 30.2–35.1 ms; `main`:
+fill-in 35.3–49.7 ms (median 41.4, 23 of 36 runs over 40 ms), largest dispatch
+18.3 ms, first painted 46.6–62.0 ms.
+
+An exploratory branch run earlier the same day at load 6–7 (not a verdict)
+measured the populated profile's first frame at 16.1 ms and its activation turn
+at 17.5 ms; on the verdict set they are within 10.2 and 13.2 ms. The populated
+profile's margin under heavy load is therefore the narrowest, and the
+activation turn's one-time editor and language state (design, Non-Goals) is
+the candidate if it needs widening.
 
 ## Axioms each change cites
 
