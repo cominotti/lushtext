@@ -57,11 +57,11 @@ Software rendering on the headless lane overstates paint and present relative to
 there is conservative for those phases; the gate SHALL stay the headless lane and SHALL NOT run
 against the live desktop.
 
-#### Scenario: Steady-state launch composes the window within budget
+#### Scenario: Steady-state launch constructs the window within budget
 - **WHEN** the release build opens any file on a profile whose settings were already migrated
 - **THEN** every dispatch from the `open` handler until composition is complete is at most B_settle, the first presented frame and each composition frame included
 
-#### Scenario: First launch composes the window within budget
+#### Scenario: First launch constructs the window within budget
 - **WHEN** the release build opens a file on a fresh profile under the keyfile GSettings backend
 - **THEN** every dispatch from the `open` handler until composition is complete is at most B_settle
 - **AND** no GSettings backend write occurs before the first presented frame
@@ -75,7 +75,7 @@ against the live desktop.
 - **WHEN** a second `open` arrives before the first request's window has been constructed
 - **THEN** one window is constructed, and it opens the files of both requests
 
-#### Scenario: A staged surface is needed early
+#### Scenario: A deferred surface is needed early
 - **WHEN** a user presses F9, or an automation client activates `win.toggle-sidebar`, before the stage owning that surface has run
 - **THEN** the stages that surface needs complete before the action proceeds, and the dispatch and the frame after it each fit B_settle
 - **AND** the action's visible effect, state, and automation snapshot equal those on a fully composed window

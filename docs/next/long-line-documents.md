@@ -693,16 +693,16 @@ input-to-frame, not for composition. The headless lane renders with cairo, so
 paint and present are conservative relative to a GPU (D9); the CPU-side
 phases are judged as measured.
 
-**Open maintainer decision — content fill-in above the accepted 40 ms.** The
+**Maintainer decision (2026-10-29): the measured fill-in is accepted.** The
 measured fill-in is 51–61 ms (median 58.9 ms over 28 runs, 57.6–59.4 per
 profile), above the 40 ms (5 reference frames) accepted on 2026-10-20 (design
 D7). The facts: no chrome moves during it (the per-frame allocation trace and
 `first-frame-shell-chrome` prove it), every dispatch in it is within B_settle,
 and it includes the B2 and B3 frames that are always scheduled (implementation
-notes, D1/D4). To decide: accept the measured fill-in, or ask for it to be
-shortened. Not resolved here.
+notes, D1/D4). The maintainer accepted the measured 51–61 ms on 2026-10-29;
+it replaces the 40 ms of D7 as the accepted fill-in for this design.
 
-**Lane finding (not part of this verdict).** On b73b9663 the probe writes no
+**Lane finding (not part of this verdict; fixed by `959018d2`, PR #66).** On b73b9663 the probe writes no
 `frame` records (0 in every C4b case, 25 per baseline case), so the report's
 "first frame … after spawn" lines read `None` and the `Frame p95 gap` column is
 empty; the construction and composition figures above come from `span` and

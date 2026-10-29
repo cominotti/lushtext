@@ -45,11 +45,12 @@ input to presented frame, measured on the maintainer's desktop.
    from `open` until composition complete is ≤ 10.7 ms (before C4b the
    dispatch before the first frame was 22.5–25.9 ms); the probe's first-frame
    span is 16–18 ms instead of 37–41 ms, and construction about 10 ms
-   instead of about 23 ms. **Open maintainer decision:** the
-   content fill-in is 51–61 ms (median 58.9 ms), above the 40 ms accepted on
-   2026-10-20, with no chrome moving and every dispatch within B_settle.
-   Figures and the lane finding (the probe's `frame` records are missing on
-   C4b builds) are in `long-line-documents.md` ("C4b", "Budget verdict").
+   instead of about 23 ms. The content fill-in,
+   51–61 ms (median 58.9 ms), is above the 40 ms accepted on 2026-10-20, with
+   no chrome moving and every dispatch within B_settle; **the maintainer
+   accepted it on 2026-10-29**. Archived 2026-10-29.
+   Figures and the lane finding (the probe's `frame` records were missing on
+   C4b builds, fixed by `959018d2`) are in `long-line-documents.md` ("C4b", "Budget verdict").
 
 1. **Explain the A37 residual that reappeared once — done (2026-10-14,
    `explain-a37-residual`).** On 2026-10-13 the lane logged the fixed

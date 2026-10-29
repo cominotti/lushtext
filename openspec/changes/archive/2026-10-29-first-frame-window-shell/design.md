@@ -680,9 +680,9 @@ The post-composition `background` phase is outside this verdict and unchanged:
 a median of 9.7–10.2 per profile and a maximum of 11.4. Paint and present are
 conservative relative to a GPU, because the lane renders with cairo (D9).
 
-**Open maintainer decision.** The fill-in is 51–61 ms (median 58.9 over 28
-runs), above the 40 ms accepted in D7. No chrome moves during it, and every
-dispatch in it is within B_settle. The decision is whether to accept the
-measured fill-in or ask for it to be shortened. The full record and a lane
+**Maintainer decision (2026-10-29): accepted.** The fill-in is 51–61 ms
+(median 58.9 over 28 runs), above the 40 ms accepted in D7. No chrome moves
+during it, and every dispatch in it is within B_settle; the maintainer
+accepted the measured fill-in, which replaces D7's 40 ms for this design. The full record and a lane
 finding are in `docs/next/long-line-documents.md` ("C4b", "Budget verdict").
-The finding: C4b builds write no probe `frame` records.
+The finding: C4b builds wrote no probe `frame` records; fixed by `959018d2` (PR #66).
