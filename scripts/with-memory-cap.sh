@@ -41,7 +41,8 @@
 # they are bounded and trivially small (the self-test uses them, and it runs in
 # the pre-commit hook). A command already running under a cap (the wrapper
 # exports LUSHTEXT_MEMORY_CAP_KIB) runs nested commands in place, inside the
-# outer scope, instead of admitting a second scope.
+# outer scope, instead of admitting a second scope; `--address-space` still
+# applies there, at 7/8 of the smaller of the two caps.
 #
 # Why this exists: on 2026-10-15 one unmeasured Kani harness drove CBMC to
 # 59.6 GB resident on a 94 GB workstation, leaving ~250 MB free and stalling
@@ -90,7 +91,8 @@ admitted_kib() {
 }
 
 # Hold the admission lock until this cap fits the slice budget and the
-# desktop reserve; fd 9 stays locked until the caller's scope exists.
+# desktop reserve; fd 9 stays locked until the caller's scope exists
+# (release_admission_once_scoped).
 admit() {
     local cap_kib=$1 heavy_kib=$2 reserve_kib=$3 admitted available announced=0
     exec 9>"$ADMISSION_LOCK"
@@ -108,6 +110,27 @@ admit() {
         fi
         sleep 15
     done
+}
+
+# Runs detached, holding the inherited admission lock (fd 9) until process
+# $1 has moved into a scope in the heavy slice, so the next admission counts
+# its cap; gives up after 10 s or when the process is gone.
+release_admission_once_scoped() {
+    local pid=$1
+    for _ in $(seq 200); do
+        grep -q "/$HEAVY_SLICE/" "/proc/$pid/cgroup" 2>/dev/null && return 0
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 0.05
+    done
+}
+
+# Lower RLIMIT_AS (KiB) to $1, never raising a lower limit already in force.
+lower_address_space() {
+    local current
+    current=$(ulimit -v)
+    if [ "$current" = unlimited ] || [ "$current" -gt "$1" ]; then
+        ulimit -v "$1"
+    fi
 }
 
 self_test() {
@@ -143,11 +166,39 @@ self_test() {
         status=0
         "$me" --address-space 1G python3 -c 'b = bytearray(2 * 1024 * 1024 * 1024)' 2>/dev/null || status=$?
         [ "$status" -eq 1 ] || { echo "self-test: --address-space did not fail the allocation cleanly (status $status)" >&2; return 1; }
-        echo "with-memory-cap self-test: ok (scope sets MemoryMax, no swap and OOMPolicy=continue inside $HEAVY_SLICE; nested calls run in place; --address-space fails an allocation cleanly)"
+        # The command must see Ctrl-C (SIGINT) and SIGQUIT as the caller does.
+        # Started as a background job of this non-interactive shell, it used to
+        # inherit both as ignored, so a Ctrl-C left the capped work running.
+        local outer inner
+        outer=$(sed -n 's/^SigIgn:[[:space:]]*//p' /proc/self/status)
+        inner=$("$me" 64M sed -n 's/^SigIgn:[[:space:]]*//p' /proc/self/status 2>/dev/null)
+        [ $((0x$inner & 6)) -eq $((0x$outer & 6)) ] || { echo "self-test: the capped command ignores SIGINT/SIGQUIT (SigIgn $inner, caller $outer)" >&2; return 1; }
+        # RLIMIT_AS belongs to the command alone: the wrapper and systemd-run
+        # used to run under it too, and a small cap broke the wrapper itself.
+        status=0
+        "$me" --address-space 64M true 2>/dev/null || status=$?
+        [ "$status" -eq 0 ] || { echo "self-test: --address-space 64M broke the wrapper (status $status)" >&2; return 1; }
+        # A nested call keeps --address-space, at 7/8 of the smaller cap, and
+        # never raises a lower limit it inherited.
+        local expected inherited
+        inherited=$(ulimit -v)
+        expected=$((1048576 * 7 / 8))
+        [ "$inherited" = unlimited ] || [ "$inherited" -ge "$expected" ] || expected=$inherited
+        nested=$(LUSHTEXT_MEMORY_CAP_KIB=1048576 "$me" --address-space 4G sh -c 'ulimit -v' 2>/dev/null)
+        [ "$nested" = "$expected" ] || { echo "self-test: a nested --address-space call set RLIMIT_AS '$nested', expected '$expected'" >&2; return 1; }
+        echo "with-memory-cap self-test: ok (scope sets MemoryMax, no swap and OOMPolicy=continue inside $HEAVY_SLICE; nested calls run in place; --address-space fails an allocation cleanly; Ctrl-C reaches the command)"
     else
         echo "with-memory-cap self-test: ok (no systemd user manager; cap enforcement not exercised)"
     fi
 }
+
+# Internal: the scope's first process applies --address-space to the command
+# alone (not to this wrapper or systemd-run), then becomes the command.
+if [ "${1:-}" = "--exec-with-address-space" ]; then
+    lower_address_space "$2"
+    shift 2
+    exec "$@"
+fi
 
 if [ "${1:-}" = "--self-test" ]; then
     self_test
@@ -181,6 +232,12 @@ cap_kib=$(cap_in_kib "$cap")
 
 if [ -n "${LUSHTEXT_MEMORY_CAP_KIB:-}" ]; then
     echo "with-memory-cap: already inside a ${LUSHTEXT_MEMORY_CAP_KIB} KiB capped scope; running in place: $*" >&2
+    if [ "$address_space" = 1 ]; then
+        # The outer scope binds, so the per-process limit follows the smaller cap.
+        inner_kib=$cap_kib
+        [[ "$LUSHTEXT_MEMORY_CAP_KIB" =~ ^[0-9]+$ ]] && [ "$LUSHTEXT_MEMORY_CAP_KIB" -lt "$inner_kib" ] && inner_kib=$LUSHTEXT_MEMORY_CAP_KIB
+        lower_address_space $((inner_kib * 7 / 8))
+    fi
     exec "$@"
 fi
 
@@ -198,34 +255,32 @@ if command -v systemd-run >/dev/null 2>&1 \
     fi
     systemctl --user set-property --runtime "$HEAVY_SLICE" \
         MemoryMax="$heavy_max" MemorySwapMax=0 >/dev/null 2>&1 || true
+    admitted=0
     if [ "$cap_kib" -gt $((1024 * 1024)) ]; then
         admit "$cap_kib" "$heavy_kib" "$(cap_in_kib "$reserve")"
+        admitted=1
     fi
+    launch=("$@")
     if [ "$address_space" = 1 ]; then
-        ulimit -v $((cap_kib * 7 / 8))
+        launch=(bash "${BASH_SOURCE[0]}" --exec-with-address-space $((cap_kib * 7 / 8)) "$@")
         echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue in $HEAVY_SLICE ($heavy_max), RLIMIT_AS=$((cap_kib * 7 / 8)) KiB per process, for: $*" >&2
     else
         echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue in $HEAVY_SLICE ($heavy_max) for: $*" >&2
     fi
     export LUSHTEXT_MEMORY_CAP_KIB=$cap_kib
-    # Not exec: the admission lock is released once the scope exists, so the
-    # next admission counts this cap, and the wrapper then waits for the scope.
-    systemd-run --user --scope --quiet --slice="$HEAVY_SLICE" \
-        -p MemoryMax="$cap" -p MemorySwapMax=0 -p OOMPolicy=continue -- "$@" <&0 9>&- &
-    child=$!
-    trap 'kill -TERM "$child" 2>/dev/null' INT TERM HUP
-    for _ in $(seq 200); do
-        grep -q "/$HEAVY_SLICE/" "/proc/$child/cgroup" 2>/dev/null && break
-        kill -0 "$child" 2>/dev/null || break
-        sleep 0.05
-    done
-    exec 9>&-
-    status=0
-    while :; do
-        wait "$child" && status=0 || status=$?
-        kill -0 "$child" 2>/dev/null || break
-    done
-    exit "$status"
+    if [ "$admitted" = 1 ]; then
+        # The admission lock passes to a detached watcher (the subshell exits at
+        # once, so the command never inherits a child it did not start), which
+        # releases it once this process's scope exists.
+        ( release_admission_once_scoped "$$" </dev/null >/dev/null 2>&1 & )
+    fi
+    # exec, not a background job: a background job of a non-interactive shell
+    # ignores SIGINT and SIGQUIT, and every descendant inherited that, so a
+    # Ctrl-C left the capped work running. As the same process, the command
+    # gets the terminal's signals and its exit status reaches the caller
+    # directly. fd 9 is closed so the command does not hold the lock.
+    exec systemd-run --user --scope --quiet --slice="$HEAVY_SLICE" \
+        -p MemoryMax="$cap" -p MemorySwapMax=0 -p OOMPolicy=continue -- "${launch[@]}" 9>&-
 fi
 
 if [ -n "${CI:-}" ]; then

@@ -714,7 +714,12 @@ invariant; tighten the generator or use the deep lane.
   less skip admission (the self-test runs in the pre-commit hook). A command
   already inside a capped scope runs nested wrapper calls in place
   (`LUSHTEXT_MEMORY_CAP_KIB`), so wrapping `make mutants-smoke` again neither
-  double-books the budget nor escapes the outer cap. The Makefile wraps
+  double-books the budget nor escapes the outer cap; a nested
+  `--address-space` call still sets RLIMIT_AS, at 7/8 of the smaller cap. The
+  wrapper `exec`s `systemd-run` (a detached watcher releases the admission
+  lock once the scope exists), so Ctrl-C and the exit status reach the command
+  directly: run as a background job, it once made every capped process ignore
+  SIGINT. The Makefile wraps
   `make kani` (`KANI_MEMORY_MAX`), `make proof-strength`
   (`PROOF_STRENGTH_MEMORY_MAX`, default `16G`) and the `mutants-*` targets
   (`MUTANTS_MEMORY_MAX`, default `36G`); wrap any other heavy command an agent
