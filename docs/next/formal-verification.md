@@ -1711,12 +1711,85 @@ within 25 minutes and 12 GiB):
 splice's unkillable mutants (same harnesses; 5.6 local minutes before and
 after). No bound was weakened for the budget: the split alone fit.
 
-**Proof strength.** TODO(proof-strength): mutant counts, kills under the tests,
-Kani and both arms, source revision and tool versions for
-`model/paragraph_boundary.rs`, `model/document_scale.rs` and
-`model/paragraph_profile_watch.rs`, with every Kani survivor triaged.
-`boundary_newline_only_slicer_disagrees` is listed in `NOT_ORACLE_HARNESSES`: it
-checks a transcription inside the harness file, not the shipped function.
+**Proof strength (6K.4, measured 2026-10-28/29).** Each module was mutated and
+run against both oracles of `scripts/proof-strength.py`: the Kani arm with every
+tier (`--tier all`, cheapest harness first), sharded three ways with one
+disposable worktree per shard and one admitted 16 GiB scope each, and the tests
+arm (cargo-mutants with `--features lushtext-core/property-tests`) unsharded.
+
+- **Tools and revision.** Kani 0.68.0, cargo-mutants 27.0.0. Both arms ran at
+  `2fcc4968`, which the rebases onto `main` turned into `64a789f2`; the shipped
+  source of the three modules is identical at the branch tip (only their
+  `#[cfg(test)]` modules changed since), so the results stand for the tip.
+  `boundary_newline_only_slicer_disagrees` is listed in `NOT_ORACLE_HARNESSES`:
+  it checks a transcription inside the harness file, not the shipped function.
+- **Cost.** Kani-arm verification time, summed over mutants: `document_scale`
+  0.3 h, `paragraph_boundary` 15.5 h, `paragraph_profile_watch` 21.8 h (its
+  harnesses take 11–13 minutes each on the baseline); peak CBMC memory 11.7 GiB.
+  Three shards ran concurrently, about 15 hours of wall time.
+
+Joined table (`proof-strength.py report`, the excluded equivalent mutants below
+already removed):
+
+| Module (revision) | Mutants | Floor | Unviable (Kani / tests) | Tests-only kills | Kani-only kills | Both | Either | Vacuity kills | Kani timeouts | Kani survivors |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `model/document_scale.rs` (`2fcc4968`) | 164 | 38 | 13 / 13 | 76 | 0 | 75 | 151 | 3 | 0 | 73 |
+| `model/paragraph_boundary.rs` (`2fcc4968`) | 97 | 38 | 6 / 6 | 2 | 0 | 78 | 80 | 0 | 0 | 13 |
+| `model/paragraph_profile_watch.rs` (`2fcc4968`) | 52 | 38 | 6 / 6 | 11 | 0 | 29 | 40 | 0 | 16 | 1 |
+
+**Missed by both arms: 17, all killed by tests added afterwards** (`0466df82`,
+unit tests in each module's own test module, which change no mutant):
+`ProfileSummary::max` `>` with `<` or `==` (6; only the scale group's
+`scale_of_a_profile_join_is_the_join_of_scales` uses it, and it is outside the
+boundary oracle), `ProfileConfig::window` `>` with `==` (a window past the ring
+capacity), `ParagraphLengthFold::paragraphs` and `longest_paragraph_chars` (4),
+the watch's `char_count` `&` with `|`/`^` (2; the tests never typed a
+multibyte scalar), `window_range`'s two clamps `>` with `==` (2; unreachable
+from a consistent buffer, pinned directly), and `complete`'s head length
+`start − first + 1` (2; a window whose first line is not 0 with an inner
+paragraph). Re-running `make mutants-smoke` at the branch tip (2026-10-29)
+confirms the kills: `paragraph_boundary.rs` 108 mutants, 91 caught, 6
+unviable, 11 missed; `paragraph_profile_watch.rs` 57, 46 caught, 6 unviable,
+5 missed. Every miss is one of the equivalent mutants below (the smoke runs with
+`--no-config`, so it does not apply their exclusions).
+
+**Equivalent, excluded** (`.cargo/mutants.toml`, each with its reason): in
+`paragraph_boundary.rs`, the budget-floor loop's `>` at `:161:22` (`>=`, `<`,
+`==` pick the same break, because break ends are scalar boundaries), the ties
+of `ProfileConfig::window`, `ProfileSummary::max` and the fold's two
+high-waters (`>` with `>=`), and the zeroed density ring's fill branch
+(`ring_len < window` with `>` or `==`); in `paragraph_profile_watch.rs`, `max`,
+`window_range`'s three `>` with `>=`, and `inner_lengths` reading the run when
+`end_line == start_line` (a run that adds no line has no delimiter, ledger A42).
+
+**Accepted gaps (Kani survivors and timeouts the tests arm kills).**
+
+- `document_scale.rs` (73): the reduced-features vocabulary and wording
+  (`ReducedFeatures` mask, membership and presentation helpers and
+  `ScaleFeature::is_presentation` 37,
+  `describe`/`primary_reason`/`label`/`because`/`join_list`/`capitalize` 19),
+  the `LocalHistoryAvailability` predicates (6), `DocumentScale::allows` (1),
+  `S_SYNTAX`'s `1024 * 1024` (2; the byte-tier harness compares with the
+  retired 10 MB tiers, where syntax moved on purpose), and the six threshold
+  comparisons of `for_profile` (`>` with `>=`) plus two `!` deletions (8). The
+  scale harnesses state monotonicity, upward closure, the meet law and the
+  retired byte tiers, not the exact paragraph thresholds or the notice text;
+  the unit tests pin each threshold at `t` and `t + 1`. The three vacuity
+  kills (`has_reason -> false`, `allows -> true/false`) show the covers doing
+  their job.
+- `paragraph_boundary.rs` (13): the 11 missed-by-both above, before their
+  tests, plus `ParagraphLengthFold::worst_batch_chars` (2), which no boundary
+  harness reads and the profile tests pin.
+- `paragraph_profile_watch.rs` (16 timeouts, 1 survivor): the general watch
+  harnesses take 11–13 minutes, so a mutant that slows the step past three
+  times that times out; 10 are killed by the tests arm and 6 are the
+  missed-by-both above. The survivor, `inner_lengths -> empty()`, is outside
+  the inductive domain: a step inserts at most two symbols, so an inner line
+  (between two delimiters of the run) is always empty and contributes 0 either
+  way; the unit tests with longer runs kill it. This is the recorded weakening
+  of the watch domain, not a new one.
+
+No harness or assertion was added, so no shard was re-measured.
 
 ## 4. Deferral inventory
 
