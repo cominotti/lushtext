@@ -3115,6 +3115,33 @@ fn bench_transient_file_load(c: &mut Criterion) {
             black_box(slices)
         });
     });
+    // One 50 MiB paragraph, the main-thread worst case of the slicer: ASCII,
+    // and typographic text full of `0xE2`-led scalars that are not U+2029.
+    let single_line_ascii = "lorem ipsum dolor sit amet ".repeat((50 * 1024 * 1024) / 27);
+    let typographic = "it\u{2019}s \u{2014} \u{201C}quoted\u{201D}\u{2026} ";
+    let single_line_typographic = typographic.repeat((50 * 1024 * 1024) / typographic.len());
+    for (name, text) in [
+        (
+            "install_boundaries/single_line_ascii_50_mib",
+            &single_line_ascii,
+        ),
+        (
+            "install_boundaries/single_line_typographic_50_mib",
+            &single_line_typographic,
+        ),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let mut start = 0;
+                let mut slices = 0u64;
+                while start < text.len() {
+                    start = next_install_boundary(black_box(text), start);
+                    slices = slices.saturating_add(1);
+                }
+                black_box(slices)
+            });
+        });
+    }
     group.finish();
 }
 

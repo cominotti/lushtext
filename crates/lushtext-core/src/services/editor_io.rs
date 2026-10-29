@@ -1322,8 +1322,8 @@ fn analyze_decoded_content_cancellable(
 
     let mut scan_slice = |slice: &str| {
         tally.scan_slice(slice.as_bytes());
+        profile.push_str(slice);
         for character in slice.chars() {
-            profile.push_char(character);
             if character == '\u{00A0}' {
                 nbsp_count += 1;
             } else if is_zero_width(character) {

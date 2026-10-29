@@ -95,17 +95,28 @@ pub struct ParagraphBreak {
 /// Outside Kani, `memchr3` skips to the next byte that can start a delimiter
 /// (`\n`, `\r`, or `0xE2`, the lead byte of U+2029) with SIMD; the match arms
 /// below decide exactly as the byte loop does, so the skip only passes over
-/// bytes the loop would have stepped past one at a time. Kani runs the plain
-/// byte loop (CBMC cannot model the vectorised search), and the property test
-/// `fast_break_search_equals_the_byte_loop` compares the two paths.
+/// bytes the loop would have stepped past one at a time. Typographic text has
+/// many `0xE2`-led scalars that are not U+2029 (`’`, `—`, `…`), so after
+/// `FALSE_SEPARATOR_LEADS` of them the search switches to `memchr2` for
+/// `\n`/`\r` plus `memmem` for U+2029 up to that line break
+/// (`next_delimiter_without_lead_stops`). Kani runs the plain byte loop
+/// (CBMC cannot model the vectorised search), and the property test
+/// `fast_break_search_equals_the_byte_loop` compares the paths, typographic
+/// text included.
 #[must_use]
 pub fn next_paragraph_break(text: &str, from: usize) -> Option<ParagraphBreak> {
     let bytes = text.as_bytes();
     let mut index = from;
+    #[cfg(not(kani))]
+    let mut false_separator_leads = 0u32;
     while index < bytes.len() {
         #[cfg(not(kani))]
         {
-            index += memchr::memchr3(b'\n', b'\r', PARAGRAPH_SEPARATOR_UTF8[0], &bytes[index..])?;
+            index = if false_separator_leads < FALSE_SEPARATOR_LEADS {
+                index + memchr::memchr3(b'\n', b'\r', PARAGRAPH_SEPARATOR_UTF8[0], &bytes[index..])?
+            } else {
+                next_delimiter_without_lead_stops(bytes, index)?
+            };
         }
         match bytes[index] {
             b'\n' => {
@@ -136,10 +147,38 @@ pub fn next_paragraph_break(text: &str, from: usize) -> Option<ParagraphBreak> {
                     delimiter: ParagraphDelimiter::ParagraphSeparator,
                 });
             }
-            _ => index += 1,
+            _ => {
+                // Outside Kani only a `0xE2` that does not start U+2029 gets
+                // here.
+                #[cfg(not(kani))]
+                {
+                    false_separator_leads += 1;
+                }
+                index += 1;
+            }
         }
     }
     None
+}
+
+/// How many `0xE2` lead bytes that do not start U+2029 one
+/// [`next_paragraph_break`] call steps past before it stops using `memchr3`
+/// (the measured switch point of the SIMD exploration, experiment H2).
+#[cfg(not(kani))]
+const FALSE_SEPARATOR_LEADS: u32 = 4;
+
+/// The first byte at or after `from` that starts a delimiter: the next `\n`
+/// or `\r` (`memchr2`), or an earlier U+2029 (`memmem`, searched only up to
+/// that line break, so a call never scans past the break it returns).
+#[cfg(not(kani))]
+fn next_delimiter_without_lead_stops(bytes: &[u8], from: usize) -> Option<usize> {
+    let rest = &bytes[from..];
+    let line_break = memchr::memchr2(b'\n', b'\r', rest);
+    let separator = memchr::memmem::find(
+        &rest[..line_break.unwrap_or(rest.len())],
+        &PARAGRAPH_SEPARATOR_UTF8,
+    );
+    Some(from + separator.or(line_break)?)
 }
 
 /// Choose where one bounded slice of `text` starting at byte `start` ends.
@@ -175,16 +214,72 @@ pub fn slice_end_after_paragraph(text: &str, start: usize, budget: usize) -> usi
     if budget_end == text.len() {
         return text.len();
     }
-    let mut last_within = None;
-    let mut cursor = start;
-    while let Some(paragraph_break) = next_paragraph_break(text, cursor) {
-        if paragraph_break.next_start > budget_end {
-            return last_within.unwrap_or(paragraph_break.next_start);
-        }
-        last_within = Some(paragraph_break.next_start);
-        cursor = paragraph_break.next_start;
+    // The last break within the budget is found searching backwards from
+    // `budget_end`, so a slice costs the bytes after its last break, not one
+    // step per break inside it; only a slice with no break within the budget
+    // searches forwards, for the first break beyond.
+    if let Some(end) = last_break_end_within(text.as_bytes(), start, budget_end) {
+        return end;
     }
-    last_within.unwrap_or(text.len())
+    // No break lies wholly before `budget_end`, so the first one ends after
+    // it and starts at `budget_end - 1` or later (a CRLF whose `\r` is the
+    // last byte within); the forward search need not rescan the window. Its
+    // start may fall inside a scalar or between a CRLF's two bytes: neither
+    // continuation bytes nor a CRLF's `\n` (which ends where its CRLF does)
+    // change which break is found first.
+    let from = budget_end.saturating_sub(2).max(start);
+    next_paragraph_break(text, from).map_or(text.len(), |found| found.next_start)
+}
+
+/// The end of the last paragraph break lying wholly inside
+/// `bytes[start..budget_end]`, or `None`.
+///
+/// Scanning backwards, a `\n` always ends a break (a lone `\n`, or the `\n`
+/// of a CRLF, whose break ends after it too); a `\r` ends one only when no
+/// `\n` follows it (a following `\n` inside the range was met first, and one
+/// at `budget_end` makes a CRLF that ends beyond the budget); `0xE2` ends one
+/// only as the lead byte of U+2029. `start` never splits a CRLF pair, so a
+/// `\n` at `start` is a delimiter of its own. Outside Kani, `memrchr3` skips
+/// to the previous candidate byte with SIMD; Kani runs the byte loop.
+fn last_break_end_within(bytes: &[u8], start: usize, budget_end: usize) -> Option<usize> {
+    let mut end = budget_end;
+    while end > start {
+        #[cfg(not(kani))]
+        let at = start
+            + memchr::memrchr3(
+                b'\n',
+                b'\r',
+                PARAGRAPH_SEPARATOR_UTF8[0],
+                &bytes[start..end],
+            )?;
+        #[cfg(kani)]
+        let at = end - 1;
+        match bytes[at] {
+            b'\n' => return Some(at + 1),
+            b'\r' if bytes.get(at + 1) != Some(&b'\n') => return Some(at + 1),
+            0xE2 if at + PARAGRAPH_SEPARATOR_UTF8.len() <= budget_end
+                && bytes[at + 1] == PARAGRAPH_SEPARATOR_UTF8[1]
+                && bytes[at + 2] == PARAGRAPH_SEPARATOR_UTF8[2] =>
+            {
+                return Some(at + PARAGRAPH_SEPARATOR_UTF8.len());
+            }
+            _ => {}
+        }
+        end = at;
+    }
+    None
+}
+
+/// Scalars in `bytes` (a whole number of UTF-8 scalars): its bytes that are
+/// not continuation bytes (`10xxxxxx`). A branch-free loop LLVM vectorises
+/// with the target's baseline SIMD (SSE2 on x86-64).
+#[cfg(not(kani))]
+fn count_scalars(bytes: &[u8]) -> u64 {
+    let mut count = 0u64;
+    for &byte in bytes {
+        count += u64::from(byte & 0xC0 != 0x80);
+    }
+    count
 }
 
 /// Turn `gtk_text_iter_get_chars_in_line` into a paragraph length.
@@ -546,15 +641,71 @@ impl ParagraphProfileAccumulator {
         }
     }
 
-    /// Feed one slice.
+    /// Feed one slice: the per-character form, which the Kani harnesses
+    /// check (see the paragraph-granular form below for why).
+    #[cfg(kani)]
     pub fn push_str(&mut self, slice: &str) {
         for character in slice.chars() {
             self.push_char(character);
         }
     }
 
-    /// Feed one character (the decode analysis calls this from its own
-    /// per-character loop, so profiling adds no traversal).
+    /// Feed one slice, a paragraph at a time.
+    ///
+    /// The breaks come from [`next_paragraph_break`] (a SIMD skip outside
+    /// Kani) and each paragraph's characters from `count_scalars`, so a
+    /// slice costs about one vectorised pass instead of a state-machine step
+    /// per character. The result is exactly [`push_char`](Self::push_char)'s
+    /// for every character of the slice in order: a `\r` at the slice end
+    /// stays pending, and a `\n` that starts the next slice completes its CRLF.
+    /// Under Kani it runs [`push_char`](Self::push_char) per character, the
+    /// form the `kani_proofs::profile_*` harnesses prove independent of
+    /// slicing and equal to the specification: the paragraph-granular form
+    /// nests the break search and the count inside the slice loop, and its
+    /// unwound formula outgrew the shard's memory. The property test
+    /// `push_str_equals_push_char_per_character` pins the two forms equal
+    /// (ASCII, multibyte, CRLF-mixed, CRLF split across slices).
+    #[cfg(not(kani))]
+    pub fn push_str(&mut self, slice: &str) {
+        let bytes = slice.as_bytes();
+        if bytes.is_empty() {
+            return;
+        }
+        // A slice is at most `isize::MAX` bytes, so the cast is lossless.
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len() as u64);
+        let mut from = 0;
+        if self.pending_cr && bytes[0] == b'\n' {
+            // The `\n` of a CRLF split across slices: the paragraph closed at
+            // the `\r`; the next one starts after this `\n`.
+            self.position = self.position.saturating_add(1);
+            self.open_start = self.position;
+            from = 1;
+        }
+        self.pending_cr = false;
+        while from < bytes.len() {
+            let Some(found) = next_paragraph_break(slice, from) else {
+                let chars = count_scalars(&bytes[from..]);
+                self.open_chars = self.open_chars.saturating_add(chars);
+                self.position = self.position.saturating_add(chars);
+                return;
+            };
+            let chars = count_scalars(&bytes[from..found.content_end]);
+            self.open_chars = self.open_chars.saturating_add(chars);
+            self.fold.push(self.open_start, self.open_chars);
+            self.open_chars = 0;
+            self.position = self
+                .position
+                .saturating_add(chars)
+                .saturating_add(found.delimiter.chars());
+            self.open_start = self.position;
+            from = found.next_start;
+            // A `\r` ending the slice may be the first half of a CRLF.
+            self.pending_cr = found.delimiter == ParagraphDelimiter::Cr && from == bytes.len();
+        }
+    }
+
+    /// Feed one character: the per-character form of
+    /// [`push_str`](Self::push_str), and its reference.
     #[inline]
     pub fn push_char(&mut self, character: char) {
         // `len_utf8` is at most 4, so the cast is lossless.

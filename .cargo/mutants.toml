@@ -320,12 +320,12 @@ exclude_re = [
     # break end is a scalar boundary and so lies at or below an unfloored
     # budget end exactly when it lies at or below the floored one (and an
     # unfloored end inside a scalar never equals `text.len()`).
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:161:22: replace > with (>=|<|==) in slice_end_after_paragraph",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with (>=|<|==) in slice_end_after_paragraph",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileConfig::window",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileSummary::max",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:426:19: replace > with >= in ParagraphLengthFold::push",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:458:26: replace > with >= in ParagraphLengthFold::push",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:446:26: replace < with (>|==) in ParagraphLengthFold::push",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:532:19: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:564:26: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:552:26: replace < with (>|==) in ParagraphLengthFold::push",
     # Equivalent in `model/paragraph_profile_watch.rs`: `>` with `>=` where
     # the tie picks an equal value (`max`, and the two upper clamps of
     # `window_range`), and `inner_lengths` reading the run when

@@ -91,18 +91,96 @@ fn byte_loop_break(text: &str, from: usize) -> Option<(usize, usize)> {
 }
 
 /// Long delimiter-free runs (past every SIMD block width) between the
-/// delimiters and the other `0xE2`-led scalars (U+2027, U+2028, `…`, `€`).
+/// delimiters and the other `0xE2`-led scalars (U+2027, U+2028, `…`, `€`,
+/// `’`, `—`).
 fn simd_text() -> impl Strategy<Value = String> {
     let piece = prop_oneof![
         3 => paragraph_text(4),
         1 => Just("\u{2026}\u{20AC}\u{2028}".to_string()),
         2 => (1usize..200).prop_map(|n| "y".repeat(n)),
         1 => (1usize..40).prop_map(|n| "é".repeat(n)),
+        // Typographic runs: enough `0xE2`-led scalars that are not U+2029 for
+        // the search to switch to `memchr2` + `memmem`.
+        1 => (1usize..60).prop_map(|n| "\u{2019}x\u{2014}".repeat(n)),
+    ];
+    prop::collection::vec(piece, 0..30).prop_map(|pieces| pieces.concat())
+}
+
+/// `slice_end_after_paragraph` as it was before its backward search: walk
+/// every break forwards from `start`, kept here as the oracle.
+fn forward_slice_end(text: &str, start: usize, budget: usize) -> usize {
+    if start >= text.len() {
+        return text.len();
+    }
+    let mut budget_end = start.saturating_add(budget).min(text.len());
+    while budget_end > start && !text.is_char_boundary(budget_end) {
+        budget_end -= 1;
+    }
+    if budget_end == text.len() {
+        return text.len();
+    }
+    let mut last_within = None;
+    let mut cursor = start;
+    while let Some((_, next_start)) = byte_loop_break(text, cursor) {
+        if next_start > budget_end {
+            return last_within.unwrap_or(next_start);
+        }
+        last_within = Some(next_start);
+        cursor = next_start;
+    }
+    last_within.unwrap_or(text.len())
+}
+
+/// The profile `push_char` builds, one character at a time (the oracle for
+/// the paragraph-granular `push_str`).
+fn per_character_profile(text: &str) -> DocumentProfile {
+    let mut accumulator = ParagraphProfileAccumulator::new(ProfileConfig::PRODUCTION);
+    for character in text.chars() {
+        accumulator.push_char(character);
+    }
+    accumulator.finish()
+}
+
+/// ASCII, multibyte, and CRLF-mixed text with long paragraphs.
+fn profile_text() -> impl Strategy<Value = String> {
+    let piece = prop_oneof![
+        4 => paragraph_text(5),
+        1 => Just("\r\n".repeat(3)),
+        1 => (1usize..800).prop_map(|n| "q".repeat(n)),
+        1 => (1usize..300).prop_map(|n| "é𝄞\u{2028}".repeat(n)),
     ];
     prop::collection::vec(piece, 0..30).prop_map(|pieces| pieces.concat())
 }
 
 proptest! {
+    #[test]
+    fn push_str_equals_push_char_per_character(
+        text in profile_text(),
+        cuts in prop::collection::vec(any::<usize>(), 0..8),
+    ) {
+        // `profile_in_slices` feeds `push_str`; every cut lands on a scalar
+        // boundary, including between the `\r` and `\n` of a CRLF.
+        prop_assert_eq!(profile_in_slices(&text, &cuts), per_character_profile(&text));
+    }
+
+    #[test]
+    fn backward_slice_end_equals_the_forward_walk(text in simd_text(), budgets in prop::collection::vec(0usize..600, 1..6)) {
+        let bytes = text.as_bytes();
+        let starts = (0..=text.len()).filter(|&start| {
+            text.is_char_boundary(start)
+                && !(start > 0 && start < bytes.len() && bytes[start - 1] == b'\r' && bytes[start] == b'\n')
+        });
+        for start in starts {
+            for &budget in &budgets {
+                prop_assert_eq!(
+                    slice_end_after_paragraph(&text, start, budget),
+                    forward_slice_end(&text, start, budget),
+                    "start {} budget {}", start, budget
+                );
+            }
+        }
+    }
+
     #[test]
     fn fast_break_search_equals_the_byte_loop(text in simd_text()) {
         for from in (0..=text.len()).filter(|&from| text.is_char_boundary(from)) {
