@@ -21,7 +21,7 @@ that freezes it is **paragraph length**, not file size.
 | C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for giant-paragraph documents, the display-only fold, the Line Inspector, find on a worker | Every interaction offered on these documents within the budgets. |
 | C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
-| C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. |
+| C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). |
 | C5 | `explore-editing-long-paragraphs` (optional) | Exploration of editing giant paragraphs | Maintainer decision. |
 | C6 | `bound-post-open-settle` (candidate, recorded by C0's budget verdict) | Bound the first main-loop turns after load readiness: the small-document post-open stall, the HTML first-highlight stall, the first overlay-indicator frame | The baseline fits B_settle and 2 reference frames on an idle reference run. Does not block C1–C4. |
 
@@ -592,7 +592,7 @@ persistence window of preference and layout values, never content.
 
 ## C4b `first-frame-window-shell` (2026-10-28)
 
-**Posture: implemented; budget verdict below.** The window is built whole in
+**Posture: implemented (b73b9663); idle budget verdict 2026-10-29 met, content fill-in above the accepted 40 ms awaits the maintainer (below).** The window is built whole in
 one dispatch with the content the first frame does not need invisible, its three
 breakpoints installed before it is realized, and then realized, presented and
 revealed in bounded, frame-gated dispatches: W (one text layout and the shell's
@@ -645,9 +645,70 @@ notes.
   restore could land after the test's and replace it. The forced-path harness
   now waits for the startup restore before issuing an operation.
 
-### Budget verdict
+### Budget verdict (idle, 2026-10-29)
 
-*(Filled from the reference-precondition run; see below.)*
+**Met: every dispatch from `open` until composition complete is within
+B_settle, in every profile and repetition. Open: the content fill-in is above
+the accepted 40 ms (maintainer decision below).**
+
+- **Runs.** Run directory `.claude/handoffs/c4b-verdict-20261029-0923/`
+  (local, not committed). Baseline `rr-20261029T122411Z-toolbx-1782972` on
+  `main` a0adc5e2 (before C4b), 2026-10-29 09:24:10–09:26:41 −03:00; branch
+  `rr-20261029T122740Z-toolbx-1787430` on b73b9663 (C4b), 09:27:39–09:30:09.
+  `make responsiveness-smoke`, tier `full`, `baseline/small*`, 4 profiles ×
+  7 repetitions, `RESPONSIVENESS_VARIANTS=plain`, release `responsiveness-probes`
+  build, cairo, `1280x800@120`, CPUs 8–23, GTK 4.22.5 / Adw 1.9.3. Both
+  summaries `passed`, 0 integrity violations over 57 checks.
+- **Reference precondition (D9), from `runs.log`:**
+  - before: `quiet: load 1.65 2.21 2.57 at 2026-10-29T09:24:10-03:00; no build/test/proof process; no process >= 80% CPU`;
+  - between: `quiet: load 0.85 1.62 2.26 at 2026-10-29T09:27:39-03:00; no build/test/proof process; no process >= 80% CPU`;
+  - after: `quiet: load 0.69 1.11 1.91 at 2026-10-29T09:31:07-03:00; no build/test/proof process; no process >= 80% CPU`.
+- **Storage.** `btrfs-stall-report`, both windows: "Storage was NOT a
+  bottleneck" (baseline: IO pressure 0.7 %, longest commit 159 ms; branch:
+  IO pressure 0.9 %, longest commit 61 ms; 0 stall episodes, no swap, no
+  device errors).
+
+Per profile, 7 repetitions each, ms, min–max (median). "Before first frame" is
+the largest watchdog lateness up to the first frame's paint; "composition" is
+the largest up to `composition_complete`; "first frame" and "construction" are
+the probe's spans; fill-in is `composition_complete − first frame`.
+
+| Profile / backend | before first frame, before → after | composition dispatch, after | first frame, before → after | construction, before → after | fill-in, after |
+|---|---|---|---|---|---|
+| fresh / keyfile | 23.1–24.6 → 8.0–8.6 (8.5) | 9.3–9.9 (9.5) | 38.5–41.1 → 16.2–18.1 (16.9) | 22.8–24.3 → 9.9–10.1 | 51.2–59.9 (58.6) |
+| fresh / dconf | 22.9–24.7 → 7.9–8.6 (8.5) | 9.4–10.6 (9.7) | 37.4–39.6 → 16.5–18.2 (17.1) | 22.5–24.3 → 9.9–10.0 | 51.0–60.5 (59.4) |
+| steady / keyfile | 23.2–25.9 → 8.0–9.2 (8.5) | 9.3–10.7 (9.8) | 37.9–41.4 → 16.4–18.2 (16.9) | 22.9–25.5 → 9.9–10.6 | 52.1–59.9 (57.6) |
+| steady / dconf | 22.5–23.6 → 7.9–8.7 (8.5) | 9.6–10.3 (10.0) | 37.6–39.0 → 16.5–18.2 (17.1) | 22.1–23.3 → 9.9–10.1 | 52.0–60.6 (59.0) |
+
+Over all 28 C4b runs: stages W 5.9–6.6, C 9.9–10.6 (template 8.5–8.9),
+R 4.8–6.6, P 0.4–0.9, B1/B2/B3 ≤ 0.07 each; first frame layout + paint
+3.2–4.0; every dispatch ≥ 4 ms is listed in `branch/report.md` and the largest
+is 10.7 ms. Before C4b, `present` alone was 12.0–15.3 ms and the construction
+dispatch was over B_settle in all 28 runs; after it, no dispatch is. Fill-in
+over all 28: 51.0–60.6 ms, median 58.9 ms. The post-composition `background`
+phase is unchanged and outside this verdict: median 9.7–10.2 ms per profile
+(before: 8.1–10.4), maximum 11.4 ms. The lane's overall verdict stays
+`indeterminate`, for the unchanged background phase and the unmeasured
+input-to-frame, not for composition. The headless lane renders with cairo, so
+paint and present are conservative relative to a GPU (D9); the CPU-side
+phases are judged as measured.
+
+**Open maintainer decision — content fill-in above the accepted 40 ms.** The
+measured fill-in is 51–61 ms (median 58.9 ms over 28 runs, 57.6–59.4 per
+profile), above the 40 ms (5 reference frames) accepted on 2026-10-20 (design
+D7). The facts: no chrome moves during it (the per-frame allocation trace and
+`first-frame-shell-chrome` prove it), every dispatch in it is within B_settle,
+and it includes the B2 and B3 frames that are always scheduled (implementation
+notes, D1/D4). To decide: accept the measured fill-in, or ask for it to be
+shortened. Not resolved here.
+
+**Lane finding (not part of this verdict).** On b73b9663 the probe writes no
+`frame` records (0 in every C4b case, 25 per baseline case), so the report's
+"first frame … after spawn" lines read `None` and the `Frame p95 gap` column is
+empty; the construction and composition figures above come from `span` and
+`late` records and are unaffected. Input-to-frame and scroll frame-gap
+verdicts of later changes (C1, C2) read those records, so this must be fixed
+before their lane runs.
 
 ## Axioms each change cites
 
@@ -698,7 +759,7 @@ fixed here fails the lane if it reappears.
 |---|---|
 | `GtkSourceMap` detach with a pending update tick emits `Gtk-CRITICAL` and `GLib-GObject-CRITICAL` (axiom A32) | C1 |
 | The install slicer splits only on `\n`, so CR-only and U+2029 documents install in one GTK turn | C1 |
-| Window construction stalls the main loop for about 190 ms on every open | C4: the settings writes are gone (135–151 → 22–24 ms on a fresh keyfile profile); the 22–26 ms residual is GTK `present` and template instantiation, proposed as C4b |
+| Window construction stalls the main loop for about 190 ms on every open | C4: the settings writes are gone (135–151 → 22–24 ms on a fresh keyfile profile); the 22–26 ms residual is GTK `present` and template instantiation, removed by C4b (`first-frame-window-shell`: every dispatch until composition complete ≤ 10.7 ms, idle verdict 2026-10-29) |
 | `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`, the trough of the editor's horizontal or vertical scrollbar. **Fixed in C0** (pre-existing-blockers rule), so it is no longer owned by C1. Root cause, confirmed against GTK 4.22.5 and GtkSourceView 5.20.0 (ledger **A37**): `GtkTextView` validates invalidated lines from an idle at `GTK_PRIORITY_RESIZE - 2`, but a change made inside a frame — the key press of the smallest reproduction (one 500-character line, wrap off, Ctrl+Home and typing) is handled in the frame clock's flush-events phase — or just before a frame that input started (`gdkframeclockidle.c` runs it from `flush_idle` at `GDK_PRIORITY_EVENTS + 1`; find in dense and 1 MB documents, where GtkSourceView's search scan changes tags from an idle) leaves that idle pending at paint time. The view is not re-allocated in that frame's layout, so `gtk_text_view_paint` flushes the validation inside the snapshot (`gtk_text_view_flush_first_validate` → `gtk_text_view_update_adjustments`): a widened line or a queued scroll changes the scroll adjustments, `GtkRange` queues its trough's allocation, and `GtkScrolledWindow` snapshots the scrollbar after its child. Lines that fit the viewport never change `upper`, which is why they never warned. The `mark-set` handlers that run inside GtkSourceView's snapshot were ruled out: disabling LushText's Notes handler left the warning in place. Fix: `ui/editor_page/frame_validation.rs` queues the view's allocation on every edit and caret move, and before the paint (at `before-paint` or after the frame clock's layout handlers) after a tag change, so `gtk_text_view_size_allocate` flushes the validation in layout. Evidence: widget tests `editor_page::test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot` (20 adjustment changes inside the paint before the fix, 0 after) and `editor_page::test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 without the tag handling, 0 with it), probe A37, and the lane: the minimal case and dense 500/2000/50000, total-size 1/5 MB and paragraph 500/15000/22000 (all phases) show no warning, nor do four more repetitions each of dense 500 and total-size 1 MB (before the fix dense 500 warned on find in 3 of 5 runs). The lane classifier now treats this warning as a **regression that fails the run** (`FIXED_DEFECTS` in `scripts/responsiveness-smoke-driver.py`), not as an owned finding. Residual: a size-changing tag that GtkSourceView applies inside its own snapshot (highlighting the visible region) is still validated in that paint; the editor validates it in the next frame's layout. **Observed once on 2026-10-13** (find in a 15,000-character wrapped paragraph beside heavy CPU load, `rr-20261013T210157Z-toolbx-1753909`) and not reproduced in 94 further runs; **explained and fixed 2026-10-14**: a second route, the overscroll idle's bottom-margin change (a default-style property: invalidates every line, queues nothing) just before a frame GTK started from its synthesized post-relayout motion, which redrew the view; `frame_validation.rs` now also queues the allocation on those properties' `notify` (see "Idle re-confirmation (2026-10-13)") | fixed in C0; residual fixed |
 
 

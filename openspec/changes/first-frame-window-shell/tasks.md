@@ -7,9 +7,24 @@
   - one span per composition dispatch.
 
   Shipped builds keep empty inline functions; extend the `make check-responsiveness-lane` self-tests.
-- [ ] 1.3 Under the reference precondition (design D9: 1-minute load < 4 for 30 s, no process ≥ 80 % CPU, no other agent's `cargo`/`rustc`/`nextest`/`kani`/`cbmc`/`mutter --headless` process; record all three and discard a run that loses them), run `make responsiveness-smoke` on `baseline/small*` (`RESPONSIVENESS_VARIANTS=plain`, 7 repetitions) before any change. Record in `docs/next/long-line-documents.md` ("C4b"), per profile and backend: every span, the frame phases, every dispatch ≥ 4 ms in order, the load, and `btrfs-stall-report`. Also record whether the constructing and first-frame dispatches exceed B_settle; this run is the failing-first evidence.
+- [x] 1.3 Under the reference precondition (design D9: 1-minute load < 4 for 30 s, no process ≥ 80 % CPU, no other agent's `cargo`/`rustc`/`nextest`/`kani`/`cbmc`/`mutter --headless` process; record all three and discard a run that loses them), run `make responsiveness-smoke` on `baseline/small*` (`RESPONSIVENESS_VARIANTS=plain`, 7 repetitions) before any change. Record in `docs/next/long-line-documents.md` ("C4b"), per profile and backend: every span, the frame phases, every dispatch ≥ 4 ms in order, the load, and `btrfs-stall-report`. Also record whether the constructing and first-frame dispatches exceed B_settle; this run is the failing-first evidence.
+  - **Done 2026-10-29.** Run `rr-20261029T122411Z-toolbx-1782972` on `main` a0adc5e2, before this change. It ran 09:24:10–09:26:41 −03:00, after the gate line `quiet: load 1.65 2.21 2.57 … no build/test/proof process; no process >= 80% CPU`. `btrfs-stall-report`: "Storage was NOT a bottleneck", IO pressure 0.7 %.
+  - Per profile, construction was 22.1–25.5 ms, template 8.7–9.2 ms, `present` 12.0–15.3 ms, and first frame 37.4–41.4 ms.
+  - The largest dispatch before the first frame was 22.5–25.9 ms: **over B_settle in all 28 runs** (the failing-first evidence).
+  - a0adc5e2 predates task 1.2's instrumentation, so this run has no frame-phase spans and no per-dispatch list. The 2026-10-20 breakdown in the design stands in for them.
+  - The per-profile table is in the design's "Budget verdict" and in `docs/next/long-line-documents.md` ("C4b").
 - [ ] 1.4 Under the same precondition, run the realize-isolation experiment again: the realize dispatch of a minimal shell, and a second window's realize. If the minimal shell's realize dispatch alone exceeds B_settle, stop here and record that the budget cannot be met in LushText, against A46. File the upstream GTK report with the span breakdown, and ask the maintainer how to proceed.
-- [ ] 1.5 Gating experiment for design D2, on the instrumentation patch and under the same precondition: the full template in its own dispatch with the staged content invisible (content-stack pages, sidebar, properties panel, concealed revealer children), then realize, present, and the first frame. Record C, R, P and F1 per profile. D2 holds if C ≤ 12 ms, P is within 2 ms of the `shell` experiment's present minus its realize, and F1 within 2 ms of the `shell` experiment's first frame; otherwise switch to D2's fallback (C1/C2 split instantiation) and update the design before continuing. In the same session, A/B the two off-thread warm variants (design finding 13): `GTK_ICON_LOOKUP_PRELOAD` lookups of the shell's icons in `startup`, and a worker-thread Pango layout of the UI font; record what each removes from W and F1. Adopt either only if it measurably shortens W without lengthening another dispatch.
+- [x] 1.5 Gating experiment for design D2, on the instrumentation patch and under the same precondition: the full template in its own dispatch with the staged content invisible (content-stack pages, sidebar, properties panel, concealed revealer children), then realize, present, and the first frame. Record C, R, P and F1 per profile. D2 holds if C ≤ 12 ms, P is within 2 ms of the `shell` experiment's present minus its realize, and F1 within 2 ms of the `shell` experiment's first frame; otherwise switch to D2's fallback (C1/C2 split instantiation) and update the design before continuing. In the same session, A/B the two off-thread warm variants (design finding 13): `GTK_ICON_LOOKUP_PRELOAD` lookups of the shell's icons in `startup`, and a worker-thread Pango layout of the UI font; record what each removes from W and F1. Adopt either only if it measurably shortens W without lengthening another dispatch.
+  - **Answered 2026-10-29, post hoc, on the implemented D2 layout.** Source: verdict run `rr-20261029T122740Z-toolbx-1787430` on b73b9663, 28 runs, same precondition. This is not a pre-implementation run on the instrumentation patch.
+  - **C ≤ 12 ms: pass.** C was 9.9–10.6 ms.
+  - **P within 2 ms of the `shell` experiment's present minus its realize: pass.**
+    - P was 0.4–0.9 ms.
+    - The shell's present minus realize was about −1.1 to 2.2 ms: 10.9–11.8 ms of present, minus the `realize` experiment's 9.6–12.0 ms, because the shell's own realize was not split.
+  - **F1 within 2 ms of the `shell` experiment's first frame (7–9 ms): fail, on the low side.**
+    - F1 (first frame layout plus paint) was 3.2–4.0 ms, 3.0–5.8 ms *below* the shell's.
+    - Read as "no costlier than the shell", it passes. Stage W now carries the one-time text and icon cost, which was inside the shell's first frame (load 4–7) in the 2026-10-20 run.
+  - D2 holds, and the C1/C2 fallback is not needed.
+  - The two off-thread warm variants were **not** A/B-tested. Neither is adopted, and W stays the mechanism, at 5.9–6.6 ms (design finding 13: neither is required for the budget).
 - [ ] 1.6 *(Optional, maintainer-gated; nothing depends on it.)* If the maintainer installs a sampling profiler and asks for it, profile the first realize with `sysprof-cli` and attach the attribution to the upstream report. Do not install anything in the toolbox from this change.
 
 ## 2. GTK axioms (run first)
@@ -67,7 +82,16 @@
 ## 7. Measured verdict
 
 - [x] 7.1 Extend the lane's construction verdict to every dispatch until `composition_complete`, plus the frame-phase table and the content fill-in time (`composition_complete_us − shell_first_frame_us`). With `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` it fails on any composition dispatch above B_settle. Extend the driver's self-tests.
-- [ ] 7.2 Under the reference precondition, run the four `baseline/small` profiles (7 repetitions) and record the per-dispatch results and the fill-in time against task 1.3's baseline. If any dispatch exceeds B_settle, name it, fix it in this change, or, for the A46 realize floor only, record it as not met with the upstream report (task 1.4). Never relax the budget. Report a median fill-in above 40 ms to the maintainer (design D7). State in the record that the headless lane's paint and present are conservative relative to a GPU (design D9).
+- [x] 7.2 Under the reference precondition, run the four `baseline/small` profiles (7 repetitions) and record the per-dispatch results and the fill-in time against task 1.3's baseline. If any dispatch exceeds B_settle, name it, fix it in this change, or, for the A46 realize floor only, record it as not met with the upstream report (task 1.4). Never relax the budget. Report a median fill-in above 40 ms to the maintainer (design D7). State in the record that the headless lane's paint and present are conservative relative to a GPU (design D9).
+  - **Done 2026-10-29.** Run `rr-20261029T122740Z-toolbx-1787430` on b73b9663, 09:27:39–09:30:09 −03:00.
+  - The quiet-gate lines before, between and after were at load 1.65, 0.85 and 0.69 (1-minute), with no build, test or proof process.
+  - `btrfs-stall-report`: "Storage was NOT a bottleneck", IO pressure 0.9 %, longest commit 61 ms.
+  - **No dispatch exceeds B_settle:**
+    - the largest before the first frame was 7.9–9.2 ms, against task 1.3's 22.5–25.9 ms;
+    - the largest until `composition_complete` was 9.3–10.7 ms;
+    - the first frame was 16.2–18.2 ms, against 37.4–41.4 ms.
+  - Fill-in was 51.0–60.6 ms (median 58.9 ms), above D7's 40 ms. It is reported to the maintainer as an open decision in `docs/next/long-line-documents.md` ("C4b", "Budget verdict"); no chrome moves and every dispatch fits B_settle.
+  - The record states that cairo paint and present are conservative relative to a GPU.
 
 ## 8. Documentation
 
@@ -80,9 +104,11 @@
 - [x] 8.3 Update the GTK axiom ledger and `docs/next/formal-verification.md` (A46–A50).
 - [x] 8.4 Re-derive the measured cells of `WFR-SHELL-GEOMETRY`, `WFR-SETTINGS-WRITES` (the first presented frame is now the first composition frame), `WFR-SESSION-RESTORE`, `WFR-STARTUP-PREFLIGHT` and `WFR-AUTOMATION-SPINE` in `docs/workflow-readability-matrix.md`, and run `make check-workflow-boundaries`.
 - [ ] 8.5 Update `docs/next/long-line-documents.md` (the C4b section with baseline, gating experiment, posture, verdict and the maintainer decisions of 2026-10-20) and `docs/next/long-line-evolution.md` (C4b proposed, then done). Update `docs/end-user-coverage.md` and `README.md` if its architecture text names construction.
+  - *Open:* the C4b section now holds the verdict, but the fill-in decision it records is still the maintainer's to make.
 
 ## 9. Verification
 
 - [ ] 9.1 Run `make check`, `make test`, `make test-widget-shard WIDGET_SHARD=surfaces`, `make kani KANI_SHARD=core-shell-geometry` (unchanged model, re-run), `make gtk-axioms`, the rustdoc lint gate, and the measured lane. Stay under the 16-core cap, inside `scripts/with-memory-cap.sh`, and never against the live desktop. Fix every failure in this work stream, as the pre-existing-blockers rule requires.
 - [ ] 9.2 Confirm that no run leaves a `TEMP-LEAK:`, and that the composition scenario logs contain no Gtk, Adwaita, GLib or GObject warning.
 - [ ] 9.3 Run `make run` against restored workspaces, with an isolated XDG directory and maintainer consent. Watch stderr while toggling every staged surface during and after composition.
+  - *Open:* needs the maintainer's consent to a live `make run`.

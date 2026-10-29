@@ -635,3 +635,54 @@ this section is the correction:
   template's surfaces), not a toolkit floor; the "realize floor" escalation
   premise of task 1.4 has to be judged against the verdict run's stage R span,
   not against A46.
+
+## Budget verdict (idle, 2026-10-29)
+
+**Met.** Every dispatch from `open` until `composition_complete` is within
+B_settle in all four profiles and all 7 repetitions. **Open:** the content
+fill-in is above the 40 ms D7 accepted, and that is the maintainer's decision.
+
+- **Runs.** Run directory `.claude/handoffs/c4b-verdict-20261029-0923/`
+  (local). Baseline `rr-20261029T122411Z-toolbx-1782972`, `main` a0adc5e2
+  (before this change), 2026-10-29 09:24:10–09:26:41 −03:00. Branch
+  `rr-20261029T122740Z-toolbx-1787430`, b73b9663 (this change),
+  09:27:39–09:30:09. Both used `make responsiveness-smoke`, tier `full`,
+  `baseline/small*`, 4 profiles × 7 repetitions, the `plain` variant, and the
+  release `responsiveness-probes` build. Both runs passed with 0 integrity
+  violations.
+- **Reference precondition (D9).** The gate lines from `runs.log`:
+  - `quiet: load 1.65 2.21 2.57 at 2026-10-29T09:24:10-03:00; no build/test/proof process; no process >= 80% CPU` (before);
+  - `quiet: load 0.85 1.62 2.26 at 2026-10-29T09:27:39-03:00; …` (between);
+  - `quiet: load 0.69 1.11 1.91 at 2026-10-29T09:31:07-03:00; …` (after).
+- **btrfs.** Storage was not a bottleneck in either window: IO pressure 0.7 %
+  and 0.9 %, the longest commit 159 ms and 61 ms, and no stall episode.
+
+All values are ms, per profile, min–max (median).
+
+| Profile / backend | largest dispatch before first frame, before → after | largest composition dispatch | first frame, before → after | construction, before → after | fill-in |
+|---|---|---|---|---|---|
+| fresh / keyfile | 23.1–24.6 → 8.0–8.6 (8.5) | 9.3–9.9 (9.5) | 38.5–41.1 → 16.2–18.1 | 22.8–24.3 → 9.9–10.1 | 51.2–59.9 (58.6) |
+| fresh / dconf | 22.9–24.7 → 7.9–8.6 (8.5) | 9.4–10.6 (9.7) | 37.4–39.6 → 16.5–18.2 | 22.5–24.3 → 9.9–10.0 | 51.0–60.5 (59.4) |
+| steady / keyfile | 23.2–25.9 → 8.0–9.2 (8.5) | 9.3–10.7 (9.8) | 37.9–41.4 → 16.4–18.2 | 22.9–25.5 → 9.9–10.6 | 52.1–59.9 (57.6) |
+| steady / dconf | 22.5–23.6 → 7.9–8.7 (8.5) | 9.6–10.3 (10.0) | 37.6–39.0 → 16.5–18.2 | 22.1–23.3 → 9.9–10.1 | 52.0–60.6 (59.0) |
+
+Stages over the 28 runs:
+
+- W 5.9–6.6;
+- C 9.9–10.6;
+- R 4.8–6.6. R is the "realize floor" of the risks section. It is well under
+  B_settle, so the task 1.4 escalation does not apply;
+- P 0.4–0.9;
+- B1, B2 and B3 at most 0.07 each;
+- the first frame's layout plus paint 3.2–4.0.
+
+The post-composition `background` phase is outside this verdict and unchanged:
+a median of 9.7–10.2 per profile and a maximum of 11.4. Paint and present are
+conservative relative to a GPU, because the lane renders with cairo (D9).
+
+**Open maintainer decision.** The fill-in is 51–61 ms (median 58.9 over 28
+runs), above the 40 ms accepted in D7. No chrome moves during it, and every
+dispatch in it is within B_settle. The decision is whether to accept the
+measured fill-in or ask for it to be shortened. The full record and a lane
+finding are in `docs/next/long-line-documents.md` ("C4b", "Budget verdict").
+The finding: C4b builds write no probe `frame` records.

@@ -40,6 +40,16 @@ input to presented frame, measured on the maintainer's desktop.
    Needs a maintainer decision together with C4's dconf question (whether the
    Flatpak gains dconf access so the settings flush stops paying a 12.8–17.9 ms
    `fsync` on the GTK thread).
+   **Implemented (b73b9663, 2026-10-28); idle verdict 2026-10-29: met.** On
+   the reference precondition (4 profiles × 7 repetitions), every dispatch
+   from `open` until composition complete is ≤ 10.7 ms (before C4b the
+   dispatch before the first frame was 22.5–25.9 ms); the probe's first-frame
+   span is 16–18 ms instead of 37–41 ms, and construction about 10 ms
+   instead of about 23 ms. **Open maintainer decision:** the
+   content fill-in is 51–61 ms (median 58.9 ms), above the 40 ms accepted on
+   2026-10-20, with no chrome moving and every dispatch within B_settle.
+   Figures and the lane finding (the probe's `frame` records are missing on
+   C4b builds) are in `long-line-documents.md` ("C4b", "Budget verdict").
 
 1. **Explain the A37 residual that reappeared once — done (2026-10-14,
    `explain-a37-residual`).** On 2026-10-13 the lane logged the fixed
