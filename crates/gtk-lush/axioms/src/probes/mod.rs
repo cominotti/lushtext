@@ -45,7 +45,13 @@ pub(crate) mod a38;
 pub(crate) mod a39;
 pub(crate) mod a40;
 pub(crate) mod a41;
+pub(crate) mod a46;
+pub(crate) mod a47;
+pub(crate) mod a48;
+pub(crate) mod a49;
+pub(crate) mod a50;
 pub(crate) mod adaptive;
+pub(crate) mod composition;
 pub(crate) mod gsettings;
 pub(crate) mod text;
 
@@ -91,6 +97,11 @@ pub use a38::probe_a38;
 pub use a39::probe_a39;
 pub use a40::probe_a40;
 pub use a41::probe_a41;
+pub use a46::probe_a46;
+pub use a47::probe_a47;
+pub use a48::probe_a48;
+pub use a49::probe_a49;
+pub use a50::probe_a50;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);

@@ -682,6 +682,73 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a41),
     },
+    Axiom {
+        id: AxiomId::new(46),
+        name: "a46_the_first_toplevel_realize_has_a_one_time_cost",
+        statement: "the first gtk_widget_realize of a toplevel in a process costs a one-time \
+                    amount that later toplevels do not pay; it is neither GL initialisation nor \
+                    the window icon",
+        dependent_designs: &[
+            "LushText window composition (first-frame-window-shell): stage R realizes the \
+             window in a dispatch of its own",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a46),
+    },
+    Axiom {
+        id: AxiomId::new(47),
+        name: "a47_present_measures_nothing_and_skips_invisible_subtrees",
+        statement: "gtk_window_show validates CSS only for visible nodes, realizes, presents and \
+                    maps without measuring; the window's size computation and first measure run \
+                    in the first frame's layout phase, and an invisible subtree is neither \
+                    measured, allocated nor mapped",
+        dependent_designs: &[
+            "LushText window composition (first-frame-window-shell): the staged content is \
+             invisible in the template, so it costs the realize, present and first-frame \
+             dispatches nothing",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a47),
+    },
+    Axiom {
+        id: AxiomId::new(48),
+        name: "a48_a_late_subtree_is_measured_in_the_next_frame",
+        statement: "a subtree made visible or parented in a mapped window is styled and measured \
+                    in the next frame's layout phase, not at the call",
+        dependent_designs: &[
+            "LushText window composition (first-frame-window-shell): a reveal is a visibility \
+             flip whose measure lands in the next frame, and each reveal waits for its \
+             predecessor's painted frame",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a48),
+    },
+    Axiom {
+        id: AxiomId::new(49),
+        name: "a49_a_concealed_revealer_measures_a_visible_child_at_full_width",
+        statement: "a concealed vertical-slide GtkRevealer measures a visible child horizontally \
+                    at full scale and returns 0 for an invisible child without measuring it",
+        dependent_designs: &[
+            "LushText window composition (first-frame-window-shell): a concealed revealer's \
+             child (search panel, command palette, Focus Mode affordance) stays invisible",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a49),
+    },
+    Axiom {
+        id: AxiomId::new(50),
+        name: "a50_a_breakpoint_matching_after_map_swaps_through_a_snapshot",
+        statement: "AdwBreakpointBin's first allocation after map applies a matching breakpoint \
+                    before allocating its child; a breakpoint that starts matching later, \
+                    including one added after map, allocates the child with the old values, \
+                    hides it behind a snapshot for one frame, and swaps on the next tick",
+        dependent_designs: &[
+            "LushText window composition (first-frame-window-shell): the three breakpoints are \
+             installed before the window is realized, so the first frame draws their state",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a50),
+    },
 ];
 
 #[cfg(test)]

@@ -125,3 +125,18 @@
   `slow_skip_line`. The probe runner and a sample's `--check` skip a slow
   probe unless the switch is `1`, printing `skipped (slow): <id>`. No probe
   is slow yet.
+- Probes and samples for A46–A50 (`first-frame-window-shell`): the first
+  toplevel realize of a process has a one-time cost a second one does not pay
+  (recorded, not judged); neither realize nor present measures, the first
+  measure runs in the first frame's layout phase, and an invisible subtree is
+  neither measured, allocated nor mapped; a subtree made visible or parented
+  in a mapped window is measured in a later frame's layout phase; a concealed
+  vertical-slide revealer measures a visible child horizontally at full width
+  and an invisible one not at all; `AdwBreakpointBin` applies a breakpoint
+  matching on its first allocation after map before allocating the child, and
+  swaps a later match through a one-frame snapshot. New fixtures:
+  `CountingWidget` (counts measures, allocations and snapshots),
+  `PhaseRecorder` and `PhaseStamp` (stamp each frame-clock phase with a
+  measure count), `first_phase_measuring`, `fixture_window`, `timed_realize`
+  and `concealed_revealer`; their values are under `fixtures::a47`,
+  `fixtures::a49` and `fixtures::a50`.

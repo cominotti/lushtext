@@ -21,6 +21,11 @@
 //!
 //! The tree-model fixture (A22) is [`LazyTree`], a `GtkTreeListModel` whose
 //! create function counts its calls and keeps the child store it returned.
+//!
+//! The toplevel-presentation and late-composition fixtures (A46–A49) are
+//! [`CountingWidget`], a childless widget counting its measures, allocations
+//! and snapshots, and [`PhaseRecorder`], which stamps each frame-clock phase
+//! with its count.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -37,9 +42,14 @@ pub use crate::probes::a19::{AllocationProbe, QueuedFromNotify, ViewportEvent, V
 pub use crate::probes::a21::{DisposalLog, DisposeCountingWindow};
 pub use crate::probes::a22::LazyTree;
 pub use crate::probes::a40::write_on_a_worker;
+pub use crate::probes::a46::{fixture_window, timed_realize};
+pub use crate::probes::a49::concealed_revealer;
 pub use crate::probes::adaptive::{
     BASE_XFT_DPI, BIN_MIN_WIDTH, BreakpointFixture, ORIGINAL_LABEL, max_width_sp, set_text_scale,
     xft_dpi_for_scale,
+};
+pub use crate::probes::composition::{
+    COUNTING_HEIGHT, CountingWidget, PhaseRecorder, PhaseStamp, first_phase_measuring,
 };
 pub use crate::probes::gsettings::{
     BOOLEAN_KEYS, INTEGER_KEY, KeyfileSettingsFixture, SCHEMA_ID, WriteWatch, drain_main_context,
@@ -51,6 +61,18 @@ pub use crate::probes::text::{
     take_im_requests, text_toolkit_versions, time_us,
 };
 
+/// The values the A47 and A48 probes drive their fixtures with.
+pub mod a47 {
+    pub use crate::probes::a47::COUNTING_WIDTH;
+}
+/// The values the A49 probe drives its fixture with, for its sample.
+pub mod a49 {
+    pub use crate::probes::a49::CHILD_WIDTH;
+}
+/// The values the A50 probe drives its fixture with, for its sample.
+pub mod a50 {
+    pub use crate::probes::a50::{CONDITION_SP, MATCHING_WIDTH, WIDE_WIDTH};
+}
 /// The values the A1 probe drives its fixture with, for its sample.
 pub mod a01 {
     pub use crate::probes::a01::{SCROLLED_ROW, TALL_VIEWPORT};
