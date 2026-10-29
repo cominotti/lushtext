@@ -633,14 +633,18 @@ The automation snapshot SHALL project the shell-geometry window-construction evi
 - the largest dispatch before the first frame;
 - the first-frame span of the staged composition;
 - the composition-complete span;
+- the activation-shown span: from the request to the first frame painted after the activation's
+  file opens have run, `null` when the request named no files;
 - the largest composition dispatch;
 - the pending and total composition-stage counts;
 - the number of forced stages;
 - the number of settings writes before the first frame;
 - the settings writer's pending, flushed, and dropped-equal counters.
 
-Every watchdog-derived field SHALL be `null` in a build without the responsiveness watchdog
-feature, never `0`. The object SHALL NOT contain paths, setting values, or document content.
+Every first-frame field SHALL refer to the first frame painted while the window is mapped, never to
+a frame that ran while the window was realized but not mapped. Every watchdog-derived field SHALL
+be `null` in a build without the responsiveness watchdog feature, never `0`. The object SHALL NOT
+contain paths, setting values, or document content.
 
 While any composition stage of the active window is pending, the readiness blocker
 `window-composition` SHALL be active. It SHALL be derived from that window's composition evidence,
@@ -665,6 +669,10 @@ blocker SHALL be documented in `docs/automation.md` and `docs/automation-referen
 #### Scenario: Actions stay reachable during composition
 - **WHEN** an automation client waits for `window-actions-exported` while composition is still pending
 - **THEN** the wait succeeds without waiting for `window-composition`
+
+#### Scenario: The first frame is a mapped frame
+- **WHEN** an automation client reads `window_construction` after the window opened a file
+- **THEN** its first-frame spans end at a frame painted while the window was mapped, and the activation-shown span is at least the shell first-frame span
 
 ### Requirement: Automation snapshots report the preview document alert surface
 The automation surface snapshot SHALL include `surfaces.preview_document_alert_visible`, a boolean that is true only while the Markdown preview's document-alert surface is rendered visible. The field MUST be derived from the rendered widget state, not from preview-mode state alone. It MUST be projected from the notification workflow's evidence surface, not read from the widget by the automation adapter. It MUST NOT carry alert title or body text. The field MUST be documented in `docs/automation.md` and `docs/automation-reference.md` and checked by `make check-automation-docs`.

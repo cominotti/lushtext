@@ -819,10 +819,10 @@ the responsiveness policy constants (working value 16 ms), each one separately:
 
 The budget SHALL hold on the reference lane (private `mutter --headless`, `GSK_RENDERER=cairo`, at
 most 16 cores, release build) for a fresh profile and a steady-state profile, under both the
-keyfile and the dconf GSettings backends, in runs that meet the reference precondition: the
-1-minute load average below 4 for 30 s before the run, no process at 80 % CPU or more, and no other
-agent's build, test, or proof process running. A run that loses the precondition SHALL be
-discarded.
+keyfile and the dconf GSettings backends, and for a steady-state profile with a restored workspace
+folder and the properties pane shown, in runs that meet the reference precondition: the 1-minute
+load average below 4 for 30 s before the run, no process at 80 % CPU or more, and no other agent's
+build, test, or proof process running. A run that loses the precondition SHALL be discarded.
 
 The `open` and `activate` handlers SHALL perform no window construction before the main loop runs:
 they SHALL hold the application, record the request, and schedule the first composition stage. A
@@ -830,18 +830,21 @@ request that arrives before the window exists SHALL merge into the pending one r
 a second window. The hold SHALL be released once the window belongs to the application, or when
 the application quits first.
 
-The window SHALL be composed in a fixed sequence of stages, each in its own dispatch within
-B_settle:
+The window SHALL be composed in a fixed sequence of dispatches, each within B_settle:
 1. warming the one-time text and icon state;
 2. constructing the whole window, with the content the first frame does not need invisible, and
    its breakpoints installed;
-3. realizing it;
-4. presenting it;
-5. after its first frame, revealing the content page, then the workspace sidebar and the
-   document-properties panel when the restored layout shows them.
+3. realizing and presenting it, in one dispatch, so that no frame of the window runs while it is
+   realized but not mapped;
+4. after its first frame has painted, one dispatch that reveals the content page, the workspace
+   sidebar, and the document-properties panel, in that order, and admits the activation's file
+   opens in bounded turns.
 
-From the content-page stage on, a stage's successor SHALL NOT start before the frame that shows
-that stage has painted. A concealed revealer's child SHALL be invisible while it is concealed.
+The window's first frame SHALL be a frame painted while the window is mapped. Every place that
+reports or gates on the first frame SHALL use that frame: the construction evidence, the settings
+writer's first-frame gate, and the measured lane. Composition SHALL complete on the first frame
+painted after the reveal dispatch. A concealed revealer's child SHALL be invisible while it is
+concealed.
 
 When an action, accelerator, activation file open, session-restore completion, or automation call
 needs a staged surface visible, focused, or allocated, the system SHALL first complete the stages
@@ -850,10 +853,14 @@ SHALL each fit B_settle. Reading or projecting onto a staged surface SHALL NOT f
 operation SHALL then behave exactly as it does on a fully composed window. Accelerators and actions
 SHALL NOT be dropped during composition. Activation file opens SHALL be admitted in bounded turns.
 
-The content may fill in over several frames after the first one; the lane SHALL report the time
-from the first frame to composition complete, and the maintainer's accepted fill-in is up to
-40 ms (5 reference frames at 120 Hz). That figure is not a budget constant and does not relax
-B_settle.
+The content fill-in is the time from the window's first frame to the later of composition complete
+and the first frame painted after the activation's file opens have run. On every reference run it
+SHALL be at most 40 ms, the maintainer's accepted fill-in, which lies within five reference frames
+(5 × the 120 Hz reference frame, 41,665 µs), and its median over a verdict run SHALL be at most
+three reference frames (24,999 µs). Neither is a new budget constant, and neither relaxes
+B_settle. Every dispatch until the later of composition complete and that activation frame SHALL
+fit B_settle. The window's first frame SHALL be painted no later than the first frame of the
+staged composition it replaces, measured the same way.
 
 Toolkit-owned startup (`gtk_init`) SHALL be measured and reported separately, and is not counted
 against this budget. The one-time cost of the first toplevel's realize SHALL be counted against
@@ -900,6 +907,20 @@ against the live desktop.
 - **WHEN** the reference lane measures the realize dispatch above B_settle
 - **THEN** the lane reports that dispatch as over budget
 - **AND** the programme record states that the budget is not met and names the toolkit axiom and the upstream report
+
+#### Scenario: No frame runs on the unmapped window
+- **WHEN** the window is realized and presented by its composition
+- **THEN** every `after-paint` of its frame clock fires while the window is mapped
+- **AND** the first frame the construction evidence and the lane report is that first mapped frame
+
+#### Scenario: Revealed content appears in one frame
+- **WHEN** the window's first frame has painted with every reveal stage still pending
+- **THEN** one dispatch reveals the content page, the workspace sidebar, and the properties panel, and composition completes on the next painted frame
+
+#### Scenario: Content fills in within five reference frames
+- **WHEN** the release build opens a file on any reference-lane profile, including the populated one
+- **THEN** the time from the first frame to the first painted frame after the activation's file opens ran, with every revealed surface shown, is at most 40 ms, within five reference frames
+- **AND** the median of that time over the verdict run is at most three reference frames
 
 ### Requirement: GSettings backend writes stay off the construction and interaction paths
 The system SHALL NOT execute a GSettings backend write synchronously on the
