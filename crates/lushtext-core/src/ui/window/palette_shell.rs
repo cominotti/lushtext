@@ -48,6 +48,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
+use crate::ui::window::StagedSurface;
 
 enum GuardedFileIndexBuildOutcome {
     /// Boxed so the cancelled variant does not pay for the index guard and
@@ -140,6 +141,8 @@ impl LushtextWindow {
     /// `close_command_palette`, which is why it belongs with the overlay rather
     /// than with the focus-restoration block it was extracted from.
     fn restore_saved_focus(&self) {
+        // The saved widget or the editor fallback may be staged content.
+        self.ensure_composed(StagedSurface::Content);
         let saved = self.imp().saved_focus.take();
         let target = saved.as_ref().and_then(glib::WeakRef::upgrade).or_else(|| {
             self.active_editor()

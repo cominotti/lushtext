@@ -110,6 +110,23 @@ pub(crate) fn largest_dispatch_so_far_us() -> Option<u64> {
     measurement::largest_lateness_so_far_us()
 }
 
+/// The largest watchdog lateness observed at or after `since_us` (monotonic
+/// microseconds), which bounds the longest dispatch that ended in that window.
+/// `None` when no watchdog runs.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn largest_dispatch_since_us(_since_us: i64) -> Option<u64> {
+    None
+}
+
+/// The largest watchdog lateness observed at or after `since_us` (monotonic
+/// microseconds), which bounds the longest dispatch that ended in that window.
+/// `None` when the measurement build was not asked to record.
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn largest_dispatch_since_us(since_us: i64) -> Option<u64> {
+    measurement::largest_lateness_since_us(since_us)
+}
+
 #[cfg(any(test, feature = "responsiveness-probes"))]
 mod watchdog {
     //! The custom `GSource` behind the lateness watchdog.
@@ -336,6 +353,13 @@ mod measurement {
     /// Frames a window may have queued before the oldest is written without
     /// its presentation time.
     const MAX_PENDING_FRAMES: usize = 64;
+    /// How many of each window's first frames record their phase spans.
+    const FRAME_PHASE_FRAMES: u32 = 4;
+    /// The smallest lateness kept with its time for windowed maxima: below it a
+    /// dispatch is far inside every budget the lane judges.
+    const RECENT_LATE_FLOOR_US: u64 = 1_000;
+    /// How many recent late dispatches are kept, oldest dropped first.
+    const RECENT_LATE_CAPACITY: usize = 1_024;
 
     /// The process-wide probe, owned by the GTK thread.
     struct Probe {
@@ -343,6 +367,9 @@ mod measurement {
         aggregator: RefCell<LatenessAggregator>,
         /// The largest lateness since install (`largest_lateness_so_far_us`).
         largest_lateness_us: Cell<u64>,
+        /// Recent late dispatches as (observed at, lateness), bounded
+        /// (`largest_lateness_since_us`).
+        recent_late: RefCell<VecDeque<(i64, u64)>>,
         next_window: Cell<u32>,
         _watchdog: RefCell<Option<LatenessWatchdog>>,
     }
@@ -366,6 +393,23 @@ mod measurement {
     /// not installed.
     pub(super) fn largest_lateness_so_far_us() -> Option<u64> {
         probe().map(|probe| probe.largest_lateness_us.get())
+    }
+
+    /// The largest watchdog lateness observed at or after `since_us`, `None`
+    /// when the probe is not installed. Dispatches later than
+    /// `RECENT_LATE_FLOOR_US` are kept with their time, the newest
+    /// `RECENT_LATE_CAPACITY` of them.
+    pub(super) fn largest_lateness_since_us(since_us: i64) -> Option<u64> {
+        probe().map(|probe| {
+            probe
+                .recent_late
+                .borrow()
+                .iter()
+                .filter(|(observed_us, _)| *observed_us >= since_us)
+                .map(|(_, lateness)| *lateness)
+                .max()
+                .unwrap_or(0)
+        })
     }
 
     pub(super) fn install(app: &gtk4::Application) {
@@ -398,6 +442,7 @@ mod measurement {
             writer,
             aggregator: RefCell::new(LatenessAggregator::new(DEFAULT_LATE_THRESHOLD_US)),
             largest_lateness_us: Cell::new(0),
+            recent_late: RefCell::new(VecDeque::with_capacity(RECENT_LATE_CAPACITY)),
             next_window: Cell::new(1),
             _watchdog: RefCell::new(None),
         });
@@ -421,6 +466,13 @@ mod measurement {
                 probe
                     .largest_lateness_us
                     .set(probe.largest_lateness_us.get().max(lateness));
+                if lateness >= RECENT_LATE_FLOOR_US {
+                    let mut recent = probe.recent_late.borrow_mut();
+                    if recent.len() == RECENT_LATE_CAPACITY {
+                        recent.pop_front();
+                    }
+                    recent.push_back((now_us, lateness));
+                }
                 let records = probe.aggregator.borrow_mut().tick(now_us, ready_us);
                 for record in records {
                     probe.writer.send(record);
@@ -473,6 +525,7 @@ mod measurement {
             }
             if let Some(clock) = widget.frame_clock() {
                 hooked.set(true);
+                hook_frame_phases(&clock);
                 let pending = Rc::new(RefCell::new(VecDeque::<(i64, i64)>::new()));
                 clock.connect_after_paint(move |clock| record_frames(clock, id, &pending));
             }
@@ -481,6 +534,63 @@ mod measurement {
             hook_clock(window);
         }
         window.connect_realize(move |window| hook_clock(window));
+    }
+
+    /// Record the layout and paint phases of a window's first
+    /// [`FRAME_PHASE_FRAMES`] frames as `frame_layout` and `frame_paint` spans
+    /// (`first-frame-window-shell`, design D7).
+    ///
+    /// A phase's work runs in GDK's own handler of the frame clock's signal,
+    /// which the surface connected when it was created, before this probe
+    /// could: so this probe's handler of each signal runs after that phase's
+    /// work, and a phase spans from the previous phase's stamp to its own.
+    /// The layout phase therefore starts at the end of `update` (GTK's tick
+    /// callbacks), and the paint phase at the end of `layout`.
+    fn hook_frame_phases(clock: &gtk4::gdk::FrameClock) {
+        let frames = Rc::new(Cell::new(0u32));
+        let last = Rc::new(Cell::new(None::<i64>));
+        let stamp = |frames: &Rc<Cell<u32>>, last: &Rc<Cell<Option<i64>>>| {
+            let frames = Rc::clone(frames);
+            let last = Rc::clone(last);
+            move |name: Option<&'static str>| {
+                if frames.get() >= FRAME_PHASE_FRAMES {
+                    return;
+                }
+                let now = glib::monotonic_time();
+                if let (Some(name), Some(start)) = (name, last.get()) {
+                    super::record_span(name, start, now);
+                }
+                last.set(Some(now));
+            }
+        };
+        // GDK emits `before-paint` for every frame it runs (`gdkframeclockidle.c`:
+        // "We always emit ::before-paint and ::after-paint"), but `update` only
+        // when that phase was requested, which a first frame without tick
+        // callbacks never does. So the frame starts at `before-paint`, and
+        // `update` restamps it, keeping tick work out of `frame_layout`.
+        let on_before_paint = stamp(&frames, &last);
+        let on_update = stamp(&frames, &last);
+        let on_layout = stamp(&frames, &last);
+        let on_paint = stamp(&frames, &last);
+        let handlers = Rc::new(RefCell::new(vec![
+            clock.connect_before_paint(move |_| on_before_paint(None)),
+            clock.connect_update(move |_| on_update(None)),
+            clock.connect_layout(move |_| on_layout(Some("frame_layout"))),
+            clock.connect_paint(move |_| on_paint(Some("frame_paint"))),
+        ]));
+        // Once the first frames are recorded, leave the clock: the handlers
+        // would otherwise run on every later frame of the measured session.
+        let own_handlers = Rc::clone(&handlers);
+        let after_paint = clock.connect_after_paint(move |clock| {
+            last.set(None);
+            frames.set(frames.get().saturating_add(1));
+            if frames.get() >= FRAME_PHASE_FRAMES {
+                for handler in own_handlers.borrow_mut().drain(..) {
+                    clock.disconnect(handler);
+                }
+            }
+        });
+        handlers.borrow_mut().push(after_paint);
     }
 
     /// Queue the frame that just painted and write every queued frame whose

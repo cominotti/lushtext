@@ -4,7 +4,7 @@
 
 use crate::common::{
     EditorLoadDelayReset, editor_text, ensure_gtk_init, fixture, flush_events, fs_metadata,
-    fs_read, present_window, wait_until,
+    fs_read, present_window, test_lushtext_application, wait_until,
 };
 use gio::prelude::*;
 use glib::prelude::ObjectExt;
@@ -127,12 +127,6 @@ fn test_startup_registers_bundled_app_icon_path() {
         "expected icon theme to expose {} after startup",
         config::APP_ID
     );
-}
-
-fn test_lushtext_application() -> LushtextApplication {
-    crate::common::test_application()
-        .downcast::<LushtextApplication>()
-        .expect("test application should be LushtextApplication")
 }
 
 fn active_window(app: &LushtextApplication) -> LushtextWindow {
@@ -557,6 +551,8 @@ fn test_open_activation_modified_failed_placeholder_remains_recoverable_without_
     let load_delay = delay_editor_loads_for_test(Duration::from_millis(250));
 
     app.open(&files, "");
+    // `open` records the request; the window is composed from the main loop.
+    flush_events();
     let window = active_window(&app);
     let failed_editor = active_editor(&window);
     failed_editor
@@ -596,6 +592,8 @@ fn test_open_activation_modified_failed_placeholder_restores_draft_after_restart
     let load_delay = delay_editor_loads_for_test(Duration::from_millis(250));
 
     app.open(&files, "");
+    // `open` records the request; the window is composed from the main loop.
+    flush_events();
     let window = active_window(&app);
     let failed_editor = active_editor(&window);
     failed_editor
@@ -636,6 +634,8 @@ fn test_save_after_modified_failed_placeholder_restores_duplicate_bookkeeping() 
     let load_delay = delay_editor_loads_for_test(Duration::from_millis(250));
 
     app.open(&files, "");
+    // `open` records the request; the window is composed from the main loop.
+    flush_events();
     let window = active_window(&app);
     let failed_editor = active_editor(&window);
     failed_editor.buffer().set_text("save from failed tab\n");

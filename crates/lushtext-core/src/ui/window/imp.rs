@@ -490,6 +490,11 @@ pub struct LushtextWindow {
     pub settings: gio::Settings,
     /// This window's startup-to-first-frame spans (`ui::construction_spans`).
     pub construction: RefCell<crate::model::construction_spans::WindowConstructionSpans>,
+    /// Staged composition: which stages ran and what they hold (`composition/`).
+    pub(crate) composition: super::composition::CompositionState,
+    /// Measure and allocation spans recorded so far by the measurement build.
+    #[cfg(feature = "responsiveness-probes")]
+    layout_probe_spans: Cell<u32>,
     /// Requested-versus-rendered state for the workspace sidebar and document properties.
     pub secondary_surfaces: SecondarySurfaceState,
     /// Whether the side-by-side preview pane is currently visible.
@@ -623,6 +628,9 @@ impl Default for LushtextWindow {
             search_panel: TemplateChild::default(),
             settings: crate::ui::settings_writes::shared(),
             construction: RefCell::default(),
+            composition: super::composition::CompositionState::default(),
+            #[cfg(feature = "responsiveness-probes")]
+            layout_probe_spans: Cell::new(0),
             secondary_surfaces: SecondarySurfaceState::default(),
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
@@ -1090,6 +1098,9 @@ impl ObjectImpl for LushtextWindow {
 
     fn dispose(&self) {
         self.disposing.set(true);
+        // Normally already done when the window left its application
+        // (`window-removed`); idempotent either way.
+        self.obj().tear_down_composition();
         if let Some(cancel) = self.session.restore_cancel.take() {
             cancel.store(true, Ordering::Release);
         }
@@ -1197,7 +1208,48 @@ impl LushtextWindow {
 }
 
 impl WidgetImpl for LushtextWindow {
+    /// Measured only in the `responsiveness-probes` build, which records the
+    /// window's first measures as spans (`first-frame-window-shell`, D7); the
+    /// shipped window keeps GTK's own `measure`.
+    #[cfg(feature = "responsiveness-probes")]
+    fn measure(&self, orientation: gtk4::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+        let start_us = construction_spans::now_us();
+        let measured = self.parent_measure(orientation, for_size);
+        let name = if orientation == gtk4::Orientation::Horizontal {
+            "window_measure_h"
+        } else {
+            "window_measure_v"
+        };
+        self.record_layout_probe_span(name, start_us);
+        measured
+    }
+
     fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+        #[cfg(feature = "responsiveness-probes")]
+        let start_us = construction_spans::now_us();
+        self.allocate_shell(width, height, baseline);
+        #[cfg(feature = "responsiveness-probes")]
+        self.record_layout_probe_span("window_size_allocate", start_us);
+    }
+}
+
+impl LushtextWindow {
+    /// Record one of the window's first measure or allocation spans in the
+    /// measurement build's evidence stream; later ones are not recorded, so a
+    /// resize or an animation does not flood the bounded channel.
+    #[cfg(feature = "responsiveness-probes")]
+    fn record_layout_probe_span(&self, name: &'static str, start_us: i64) {
+        /// How many measure and allocation spans one window records.
+        const LAYOUT_PROBE_SPANS: u32 = 16;
+        let recorded = self.layout_probe_spans.get();
+        if recorded < LAYOUT_PROBE_SPANS {
+            self.layout_probe_spans.set(recorded + 1);
+            construction_spans::emit(name, start_us, construction_spans::now_us());
+        }
+    }
+
+    /// The window's allocation: the shell's own clamps around GTK's.
+    fn allocate_shell(&self, width: i32, height: i32, baseline: i32) {
         if height > 0 {
             self.search_panel.clamp_results_height(height / 3);
         }

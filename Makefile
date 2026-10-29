@@ -91,7 +91,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -458,9 +458,18 @@ visual-smoke: build-debug smoke-read-faults-build
 	$(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual" \
 		--read-fault-binary "$(PWD)/target/smoke-read-faults/debug/lushtext"
 
-visual-geometry-smoke: build-debug
+# The smoke-only `composition-hold` build the visual-geometry lane's
+# first-frame-shell scenario launches (`first-frame-window-shell`): it can hold
+# window composition after the first frame (`LUSHTEXT_COMPOSITION_HOLD_MS`).
+# Its own target directory keeps the ordinary debug binary feature-free; never
+# enabled in release, Meson, Flatpak, or Snap builds.
+composition-hold-build:
+	@echo "Building the composition-hold debug binary..."
+	CARGO_TARGET_DIR=target/composition-hold cargo build -p lushtext --features composition-hold
+
+visual-geometry-smoke: build-debug composition-hold-build
 	@echo "Running same-session visual geometry invariant lane..."
-	$(TEMP_SCOPE) vg -- cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"
+	$(TEMP_SCOPE) vg -- cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext" --composition-hold-binary "$(PWD)/target/composition-hold/debug/lushtext"
 
 visual-geometry-oracle-smoke: build-debug
 	@echo "Running Python visual geometry oracle diagnostics..."

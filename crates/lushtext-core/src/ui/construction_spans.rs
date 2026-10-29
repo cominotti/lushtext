@@ -67,3 +67,10 @@ pub(crate) fn emit(name: &'static str, start_us: i64, end_us: i64) {
 pub(crate) fn largest_dispatch_so_far_us() -> Option<u64> {
     responsiveness_probe::largest_dispatch_so_far_us()
 }
+
+/// The largest main-loop dispatch that ended at or after `since_us`, when a
+/// watchdog runs.
+#[must_use]
+pub(crate) fn largest_dispatch_since_us(since_us: i64) -> Option<u64> {
+    responsiveness_probe::largest_dispatch_since_us(since_us)
+}

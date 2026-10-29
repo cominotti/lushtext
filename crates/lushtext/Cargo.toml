@@ -29,6 +29,9 @@ smoke-read-faults = ["lushtext-core/smoke-read-faults"]
 # Responsiveness probes for `make responsiveness-smoke`; see
 # `ui::responsiveness_probe`. Built into `target/responsiveness/` only.
 responsiveness-probes = ["lushtext-core/responsiveness-probes"]
+# The visual-geometry lane's timed composition hold; see
+# `ui::window::composition`. Built into `target/composition-hold/` only.
+composition-hold = ["lushtext-core/composition-hold"]
 
 [lints]
 workspace = true

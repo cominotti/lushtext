@@ -14,6 +14,7 @@ use crate::ui::accessibility::{self, AnnouncementLane};
 use crate::ui::editor_page::BookmarkNavigationDirection;
 
 use super::{LushtextWindow, imp};
+use crate::ui::window::StagedSurface;
 
 impl LushtextWindow {
     pub(super) fn setup_actions(&self) {
@@ -209,6 +210,8 @@ impl LushtextWindow {
                         tracing::error!("reveal-workspace-path: expected string parameter");
                         return;
                     };
+                    // The reveal scrolls a tree that must be allocated.
+                    window.ensure_composed(StagedSurface::Workspace);
                     window
                         .imp()
                         .sidebar
@@ -465,6 +468,10 @@ impl LushtextWindow {
     /// Persist the user's explicit workspace-sidebar preference, then let the
     /// adaptive shell decide how that preference is rendered right now.
     fn set_workspace_sidebar_requested_visible(&self, visible: bool) {
+        if visible {
+            // The sidebar is staged content: reveal it before it can render.
+            self.ensure_composed(StagedSurface::Workspace);
+        }
         if visible != self.rendered_workspace_sidebar_visible() {
             self.protect_active_minimap_for_shell_width_transition();
         }
@@ -500,13 +507,22 @@ impl LushtextWindow {
         self.start_workspace_sidebar_transition();
     }
 
+    /// Show the workspace sidebar for an action that works inside it. The
+    /// sidebar is staged content: when the restored layout already shows the
+    /// rail, requesting it changes no state and never reaches the toggle's
+    /// forced reveal, so this forces the stage itself.
+    fn show_workspace_sidebar_for_action(&self) {
+        self.ensure_composed(StagedSurface::Workspace);
+        self.change_boolean_action_state("toggle-sidebar", true);
+    }
+
     /// Move keyboard focus into the first visible workspace file tree.
     ///
     /// This keeps sidebar context-menu shortcuts reachable for keyboard and
     /// assistive-technology users even when AT-SPI cannot focus recycled list
     /// rows directly.
     pub(crate) fn focus_workspace_tree(&self) {
-        self.change_boolean_action_state("toggle-sidebar", true);
+        self.show_workspace_sidebar_for_action();
         if !self.imp().sidebar.focus_first_visible_file_tree() {
             tracing::warn!("focus-workspace-tree: no visible workspace tree accepted focus");
         }
@@ -517,7 +533,7 @@ impl LushtextWindow {
     /// Header menu shortcuts are handled by the header container, but focus
     /// lives on its collapse button so key events can bubble through GTK.
     pub(crate) fn focus_workspace_header(&self) {
-        self.change_boolean_action_state("toggle-sidebar", true);
+        self.show_workspace_sidebar_for_action();
         if !self.imp().sidebar.focus_first_visible_header_controls() {
             tracing::warn!("focus-workspace-header: no visible workspace header accepted focus");
         }
@@ -528,7 +544,7 @@ impl LushtextWindow {
     /// This is a normal GTK action path for automation and smoke proof; it uses
     /// the same section menu state as pointer and keyboard activation.
     pub(crate) fn show_workspace_tree_context_menu(&self) {
-        self.change_boolean_action_state("toggle-sidebar", true);
+        self.show_workspace_sidebar_for_action();
         if !self
             .imp()
             .sidebar
@@ -542,7 +558,7 @@ impl LushtextWindow {
 
     /// Open the first visible workspace header context menu.
     pub(crate) fn show_workspace_header_context_menu(&self) {
-        self.change_boolean_action_state("toggle-sidebar", true);
+        self.show_workspace_sidebar_for_action();
         if !self.imp().sidebar.show_first_visible_header_context_menu() {
             tracing::warn!(
                 "show-workspace-header-context-menu: no visible workspace header had a menu"
@@ -553,6 +569,10 @@ impl LushtextWindow {
     /// Persist the user's explicit document-properties preference, then let the
     /// adaptive shell render it as a side pane or bottom sheet as needed.
     fn set_document_properties_requested_visible(&self, visible: bool) {
+        if visible {
+            // The panel is staged content: reveal it before it can render.
+            self.ensure_composed(StagedSurface::Properties);
+        }
         if visible != self.rendered_document_properties_visible() {
             self.protect_active_minimap_for_shell_width_transition();
         }
@@ -792,6 +812,8 @@ impl LushtextWindow {
 
     /// Open the in-editor find or replace bar, closing the workspace panel first if needed.
     fn open_editor_search(&self, show_replace: bool) {
+        // The editor's search bar lives in the staged content stack.
+        self.ensure_composed(StagedSurface::Content);
         if self.imp().search_panel_revealer.reveals_child() {
             self.close_search_panel();
             self.after_search_panel_transition(move |window| {
@@ -818,6 +840,8 @@ impl LushtextWindow {
     /// focus, minimap markers, match counts, and close behavior stay identical
     /// to typing in the search entry after pressing Ctrl+F.
     fn set_editor_search_query(&self, query: &str) {
+        // The editor's search bar lives in the staged content stack.
+        self.ensure_composed(StagedSurface::Content);
         if self.imp().search_panel_revealer.reveals_child() {
             let query = query.to_owned();
             self.close_search_panel();

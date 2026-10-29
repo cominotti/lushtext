@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "scenario_id": "first-frame-shell",
+  "scenario_type": "first-frame-shell",
+  "invariant_id": "first-frame-shell-chrome",
+  "description": "Staged window composition (first-frame-window-shell): the held first frame and the composed frame of one session draw the header bar and status bar pixel-identically, and the rail and pane edges do not move while the content, the workspace sidebar and the document properties are revealed. The case opens no file, so the window has no tab and draws no tab strip in either frame; the strip's first-frame geometry with a CLI file is the widget gate's (window_composition::test_a_cli_open_draws_the_tab_strip_from_the_first_frame).",
+  "composition_hold_ms": 10000,
+  "matrix": {
+    "sizes": [
+      {
+        "id": "wide",
+        "width": 1600,
+        "height": 900
+      },
+      {
+        "id": "medium",
+        "width": 1150,
+        "height": 860
+      },
+      {
+        "id": "compact",
+        "width": 760,
+        "height": 860
+      }
+    ],
+    "color_schemes": [
+      "force-light"
+    ]
+  },
+  "protected_regions": [
+    {
+      "name": "header-bar",
+      "surface": "header-bar",
+      "comparison": "exact-equality",
+      "require_same_rect": true,
+      "mask_rects": []
+    },
+    {
+      "name": "status-bar",
+      "surface": "status-bar",
+      "comparison": "exact-equality",
+      "require_same_rect": true,
+      "mask_rects": []
+    }
+  ],
+  "pixel_anchors": [
+    {
+      "name": "header-bar-content",
+      "crop_surface": "header-bar",
+      "detector": "non-background-row",
+      "min_pixels": 3,
+      "max_screen_y_delta": 0
+    }
+  ],
+  "allowed_changing_regions": [
+    {
+      "surface": "content-area",
+      "relationship": "The content stack is revealed after the first frame; the content area's edges, and so the pane edge, do not move"
+    },
+    {
+      "surface": "workspace-rail",
+      "relationship": "The workspace sidebar is revealed into the rail the split view drew from the first frame; the rail edge does not move"
+    }
+  ],
+  "readiness_predicates": [
+    "window-actions-exported",
+    "visual-geometry-settled"
+  ]
+}

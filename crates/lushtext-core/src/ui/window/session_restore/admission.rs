@@ -64,6 +64,12 @@ impl LushtextWindow {
         self.cancel_session_restore_runtime(false);
         if session.tabs.is_empty() {
             self.imp().session.restoring.set(false);
+            // Tabs opened while the startup read ran (a CLI open, admitted in
+            // the window-composition content stage) had their session saves
+            // suppressed by `restoring`; persist them now.
+            if self.imp().tab_view.n_pages() > 0 {
+                self.save_session_debounced();
+            }
             self.schedule_orphan_cleanup(cleanup_allowed);
             self.evaluate_preserved_drafts_after_startup();
             return;

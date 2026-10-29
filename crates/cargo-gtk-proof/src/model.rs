@@ -67,6 +67,10 @@ impl fmt::Display for DocumentKind {
 
 /// Scenario type proving the workspace sidebar's rendered rows after a path reveal.
 pub(crate) const WORKSPACE_TREE_REVEAL_SCENARIO: &str = "workspace-tree-reveal";
+/// Scenario type for the staged window composition's first frame
+/// (`first-frame-window-shell`): the held first frame against the composed
+/// frame, in one session.
+pub(crate) const FIRST_FRAME_SHELL_SCENARIO: &str = "first-frame-shell";
 
 /// Failure returned when a proof artifact cannot be trusted by policy checks.
 ///
@@ -342,6 +346,13 @@ fn validate_visual_scenario(value: &Value) -> Result<(), ProofValidationError> {
             }
         }
         "command-palette-overlay" | "open-popover" | "replace-preview" => {}
+        FIRST_FRAME_SHELL_SCENARIO => {
+            if manifest.composition_hold_ms.is_none_or(|ms| ms == 0) {
+                return Err(ProofValidationError::malformed(
+                    "first-frame-shell requires a positive composition_hold_ms",
+                ));
+            }
+        }
         WORKSPACE_TREE_REVEAL_SCENARIO => {
             if manifest.matrix.fixture_kinds.is_empty() {
                 return Err(ProofValidationError::malformed(
@@ -537,6 +548,10 @@ struct VisualScenarioManifest {
     capture_steps: Vec<CaptureStep>,
     #[serde(default)]
     animation_sampling: Option<AnimationSampling>,
+    /// How long the `composition-hold` build holds composition after the
+    /// first frame (`LUSHTEXT_COMPOSITION_HOLD_MS`); first-frame-shell only.
+    #[serde(default)]
+    composition_hold_ms: Option<u64>,
 }
 
 impl VisualScenarioManifest {
@@ -571,7 +586,7 @@ impl VisualScenarioManifest {
     ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
         match self.scenario_type.as_str() {
             "minimap-sidebar" => self.minimap_sidebar_cases(manifest_value),
-            "command-palette-overlay" | "replace-preview" => {
+            "command-palette-overlay" | "replace-preview" | FIRST_FRAME_SHELL_SCENARIO => {
                 self.command_palette_cases(manifest_value)
             }
             "open-popover" => self.open_popover_cases(manifest_value),

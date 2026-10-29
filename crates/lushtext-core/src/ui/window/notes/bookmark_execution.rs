@@ -56,6 +56,7 @@ use super::policy::{
     parse_bookmark_target_line,
 };
 use super::seams::{NotesBrowserFacts, NotesBrowserTicket, PreviewFlight};
+use crate::ui::window::StagedSurface;
 
 /// Text tag applied to the bookmarked row inside the raw preview surface.
 const NOTES_RAW_BOOKMARK_TARGET_TAG: &str = "bookmark-target-line";
@@ -455,6 +456,8 @@ impl LushtextWindow {
             return;
         };
 
+        // Navigation focuses the editor, which lives in staged content.
+        self.ensure_composed(StagedSurface::Content);
         let Some(bookmark) = editor.navigate_bookmark(direction) else {
             self.publish_status_message(
                 "No bookmarks exist in the active file",
@@ -1031,5 +1034,6 @@ pub(super) fn open_editor_at_line(window: &LushtextWindow, path: &Path, line: u3
             .scroll_to_mark(&mark, 0.2, true, 0.0, 0.0);
         buffer.delete_mark(&mark);
     }
+    window.ensure_composed(StagedSurface::Content);
     editor.source_view().grab_focus();
 }

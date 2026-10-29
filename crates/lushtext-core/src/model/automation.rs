@@ -265,6 +265,10 @@ pub const READINESS_BLOCKER_WORKSPACE_SEARCH: &str = "workspace-search";
 /// Stable serialized blocker ID for a workspace path reveal still expanding,
 /// scanning, or settling.
 pub const READINESS_BLOCKER_WORKSPACE_PATH_REVEAL: &str = "workspace-path-reveal";
+/// Stable serialized blocker ID for the active window's staged composition:
+/// from its construction until the frame after its last scheduled stage
+/// painted (`first-frame-window-shell`).
+pub const READINESS_BLOCKER_WINDOW_COMPOSITION: &str = "window-composition";
 
 /// Blocker universe for the broad `idle` predicate.
 ///
@@ -272,6 +276,7 @@ pub const READINESS_BLOCKER_WORKSPACE_PATH_REVEAL: &str = "workspace-path-reveal
 /// before narrower editor/search blockers so timeout details point at the root gate.
 const IDLE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_WINDOW_COMPOSITION,
     READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_CLOSE_SAFETY,
     READINESS_BLOCKER_DRAFT_AUTOSAVE,
@@ -296,6 +301,7 @@ const IDLE_BLOCKERS: &[&str] = &[
 /// but excludes user-triggered search/save workflows.
 const APP_STARTUP_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_WINDOW_COMPOSITION,
     READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_DRAFT_AUTOSAVE,
@@ -335,6 +341,7 @@ const WORKSPACE_REFRESH_COMPLETE_BLOCKERS: &[&str] = &[
 /// Startup session blockers that can add tabs or restore draft-backed state.
 const SESSION_RESTORE_COMPLETE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_WINDOW_COMPOSITION,
     READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_DRAFT_AUTOSAVE,
@@ -360,6 +367,7 @@ const WORKSPACE_PATH_REVEALED_BLOCKERS: &[&str] = &[
 /// Layout and workflow blockers that can make screenshot geometry stale.
 const VISUAL_GEOMETRY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_WINDOW_COMPOSITION,
     READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_DRAFT_AUTOSAVE,
@@ -383,6 +391,7 @@ const VISUAL_GEOMETRY_SETTLED_BLOCKERS: &[&str] = &[
 /// the compatibility semantics of the legacy idle wait.
 const ACCESSIBILITY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_WINDOW_COMPOSITION,
     READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_DRAFT_AUTOSAVE,
@@ -788,10 +797,19 @@ pub struct AutomationWindowConstructionSnapshot {
     /// The largest main-loop dispatch before the first frame; `null` in a build
     /// without the responsiveness watchdog, never `0`.
     pub largest_dispatch_before_first_frame_us: Option<u64>,
-    /// Construction stages still to run.
+    /// Scheduled composition stages that have not run.
     pub stages_pending: u32,
-    /// Construction stages recorded.
+    /// Composition stages the window schedules.
     pub stages_total: u32,
+    /// Composition stages an operation forced ahead of, or without, a schedule.
+    pub forced_stages: u32,
+    /// From the window request to the first painted frame.
+    pub shell_first_frame_us: Option<u64>,
+    /// From the window request until composition completed.
+    pub composition_complete_us: Option<u64>,
+    /// The largest main-loop dispatch until composition completed; `null`
+    /// without the responsiveness watchdog, never `0`.
+    pub largest_composition_dispatch_us: Option<u64>,
     /// Backend writes the settings writer made before the first frame.
     pub settings_writes_before_first_frame: u64,
     /// Keys whose newest value the settings writer has not persisted yet.
@@ -1655,6 +1673,41 @@ mod tests {
             Some(&P::WorkspacePathRevealed),
             "the predicate list is append-only"
         );
+    }
+
+    #[test]
+    fn window_composition_blocks_the_startup_and_aggregate_predicates_but_not_actions() {
+        use AutomationReadinessPredicate as P;
+        for predicate in [
+            P::AppStartup,
+            P::Idle,
+            P::SessionRestoreComplete,
+            P::VisualGeometrySettled,
+            P::AccessibilitySettled,
+        ] {
+            assert!(
+                predicate.includes_blocker(READINESS_BLOCKER_WINDOW_COMPOSITION),
+                "{} must wait for composition",
+                predicate.as_str()
+            );
+        }
+        // Actions exist from stage C, and automation must be able to issue the
+        // forced paths during composition.
+        for predicate in [
+            P::WindowActionsExported,
+            P::FileOpenComplete,
+            P::SearchComplete,
+            P::SaveComplete,
+            P::WorkspaceRefreshComplete,
+            P::RecoveryRestoreComplete,
+            P::WorkspacePathRevealed,
+        ] {
+            assert!(
+                !predicate.includes_blocker(READINESS_BLOCKER_WINDOW_COMPOSITION),
+                "{} must not wait for composition",
+                predicate.as_str()
+            );
+        }
     }
 
     #[test]

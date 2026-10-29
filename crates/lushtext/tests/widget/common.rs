@@ -136,6 +136,17 @@ pub fn present_window(window: &(impl IsA<gtk4::Window> + IsA<gtk4::Widget>)) {
     wait_until(Duration::from_secs(5), || {
         window.width() > 0 && window.height() > 0
     });
+    // A LushText window reveals its staged content over its first frames
+    // (`first-frame-window-shell`); a presented window is the composed one.
+    // A test of composition itself presents with `window.present()` instead.
+    if let Some(window) = window
+        .upcast_ref::<gtk4::Window>()
+        .downcast_ref::<lushtext_core::ui::window::LushtextWindow>()
+    {
+        wait_until(Duration::from_secs(10), || {
+            window.composition_evidence().complete
+        });
+    }
     flush_after_delay(Duration::from_millis(20));
 }
 
@@ -685,6 +696,13 @@ pub fn rect_within(
     widget
         .compute_bounds(ancestor)
         .expect("widget should have computable bounds within the ancestor")
+}
+
+/// The shared test application as a `LushtextApplication`.
+pub fn test_lushtext_application() -> lushtext_core::app::LushtextApplication {
+    test_application()
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("the test application is a LushtextApplication")
 }
 
 /// Seed the GSettings geometry a new window restores in `constructed`.

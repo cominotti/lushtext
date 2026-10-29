@@ -74,6 +74,10 @@ const WORKSPACE_PATH_REVEALED_PREDICATE: &str = "workspace-path-revealed";
 /// Budget for workspace loading and reveal readiness: ancestor expansion runs
 /// through admitted background scans of several-hundred-entry directories.
 const REVEAL_WAIT_TIMEOUT_MS: u32 = 30_000;
+/// How long a first-frame-shell case waits for the held first frame.
+const FIRST_FRAME_HOLD_TIMEOUT: Duration = Duration::from_secs(15);
+/// Readiness slack after a first-frame-shell hold expires.
+const FIRST_FRAME_COMPOSE_SLACK_MS: u64 = 15_000;
 /// File holding a reveal case's second after-readiness snapshot.
 pub(crate) const AFTER_REST_SNAPSHOT_FILE: &str = "after-rest-geometry-snapshot.json";
 /// Gap between the after capture and the second, at-rest snapshot.
@@ -356,17 +360,33 @@ fn run_mutter_child_with_programs(
     prepare_workspace_tree_reveal_fixture(&case, &case_dir, &app_data_dir)?;
     fs::write(case_dir.join("lushtext.stdout"), b"")
         .map_err(|error| format!("cannot create lushtext stdout log: {error}"))?;
-    let app_env = lushtext_process_environment(&app_data_dir);
+    let mut app_env = lushtext_process_environment(&app_data_dir);
+    // A first-frame-shell case opens no file, so the window has no tab and
+    // draws no tab strip, and its title stays the same between the first and
+    // the composed frame; it holds composition after the first frame (the
+    // `composition-hold` build).
+    let first_frame_shell = scenario_type(&case)? == model::FIRST_FRAME_SHELL_SCENARIO;
+    if let Some(hold_ms) = composition_hold_ms(&case).filter(|_| first_frame_shell) {
+        app_env.push((
+            "LUSHTEXT_COMPOSITION_HOLD_MS".to_string(),
+            hold_ms.to_string(),
+        ));
+    }
+    let args: &[&str] = if first_frame_shell { &[] } else { &[fixture] };
     let log_path = case_dir.join("lushtext.stderr");
-    let mut app = process::start_logged_child(binary, &[fixture], &app_env, &log_path)?;
+    let mut app = process::start_logged_child(binary, args, &app_env, &log_path)?;
     fs::write(case_dir.join("app.pid"), format!("{}\n", app.id()))
         .map_err(|error| format!("cannot write app pid: {error}"))?;
 
     let result = if let Some(code) = app.wait_for_exit(APP_LAUNCH_SETTLE)? {
         Err(format!("LushText exited during launch with status {code}"))
     } else {
-        let client = wait_for_initial_automation(&case_dir)?;
-        capture_case_steps(&client, &case, &case_dir)
+        if first_frame_shell {
+            capture_first_frame_shell_steps(&case, &case_dir)
+        } else {
+            let client = wait_for_initial_automation(&case_dir)?;
+            capture_case_steps(&client, &case, &case_dir)
+        }
     };
     let _ = app.terminate(PROCESS_CLEANUP_TIMEOUT);
     let status = if result.is_ok() { "launched" } else { "failed" };
@@ -405,6 +425,61 @@ fn wait_for_initial_automation(case_dir: &Path) -> Result<automation::Automation
         }
     }
     Ok(client)
+}
+
+/// The manifest's `composition_hold_ms`.
+fn composition_hold_ms(case: &Value) -> Option<u64> {
+    case.pointer("/manifest/composition_hold_ms")
+        .and_then(Value::as_u64)
+}
+
+/// A first-frame-shell case: capture the held first frame, wait for the
+/// composition to complete once the hold expires, and capture the composed
+/// frame, in one session. No action runs between the two captures.
+fn capture_first_frame_shell_steps(case: &Value, case_dir: &Path) -> Result<(), String> {
+    let client = automation::AutomationClient::connect_with_retry(Duration::from_secs(15))?;
+    let actions = client.wait_for_ready("window-actions-exported", 5_000)?;
+    append_automation_wait(case_dir, &actions)?;
+    if !actions.ok {
+        return Err(format!(
+            "Automation1 WaitForReady(window-actions-exported) failed: {}: {}",
+            actions.status, actions.detail
+        ));
+    }
+    wait_for_snapshot_predicate(
+        &client,
+        case_dir,
+        "the first frame painted and composition is held",
+        FIRST_FRAME_HOLD_TIMEOUT,
+        |snapshot| {
+            snapshot
+                .pointer("/window/window_construction/shell_first_frame_us")
+                .is_some_and(|value| !value.is_null())
+                && snapshot
+                    .pointer("/window/window_construction/stages_pending")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|pending| pending > 0)
+        },
+    )?;
+    let before = capture_step(&client, case_dir, "before")?;
+    let hold_ms = composition_hold_ms(case).unwrap_or_default();
+    let timeout =
+        u32::try_from(hold_ms.saturating_add(FIRST_FRAME_COMPOSE_SLACK_MS)).unwrap_or(u32::MAX);
+    let wait = client.wait_for_ready("visual-geometry-settled", timeout)?;
+    append_automation_wait(case_dir, &wait)?;
+    if !wait.ok {
+        return Err(format!(
+            "Automation1 visual-geometry-settled after the composition hold failed: {}: {}",
+            wait.status, wait.detail
+        ));
+    }
+    let after = capture_step(&client, case_dir, "after")?;
+    let action = serde_json::json!({
+        "action": "composition-hold-expired",
+        "hold_ms": hold_ms,
+        "readiness": "visual-geometry-settled",
+    });
+    write_same_session_captures(&client, case, case_dir, &before, &action, &after)
 }
 
 fn append_automation_wait(case_dir: &Path, wait: &automation::ReadinessWait) -> Result<(), String> {

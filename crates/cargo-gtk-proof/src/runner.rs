@@ -69,6 +69,8 @@ struct RunConfig {
     artifact_dir: PathBuf,
     scenario_dir: PathBuf,
     binary: PathBuf,
+    /// The smoke-only `composition-hold` build, for first-frame-shell cases.
+    composition_hold_binary: Option<PathBuf>,
     case_filter: Option<String>,
     mode: RunMode,
 }
@@ -78,6 +80,7 @@ impl RunConfig {
         let mut artifact_dir = PathBuf::from("build/smoke/visual-geometry");
         let mut scenario_dir = PathBuf::from("scripts/visual-geometry-scenarios");
         let mut binary = PathBuf::from("target/debug/lushtext");
+        let mut composition_hold_binary = None;
         let mut case_filter = None;
         let mut oracle_python = false;
         let mut internal_session = false;
@@ -96,6 +99,12 @@ impl RunConfig {
                 }
                 "--binary" => {
                     binary = value_arg(args, index, "--binary").map(PathBuf::from)?;
+                    index += 2;
+                }
+                "--composition-hold-binary" => {
+                    composition_hold_binary = Some(
+                        value_arg(args, index, "--composition-hold-binary").map(PathBuf::from)?,
+                    );
                     index += 2;
                 }
                 "--case-filter" => {
@@ -147,6 +156,7 @@ impl RunConfig {
             artifact_dir,
             scenario_dir,
             binary,
+            composition_hold_binary,
             case_filter,
             mode,
         })
@@ -181,7 +191,12 @@ fn run_rust_live(config: &RunConfig) -> Result<RunOutcome, String> {
     let runtime = host::RuntimeLayout::prepare(&config.artifact_dir)?;
     let loaded = load_scenarios(&config.scenario_dir, config.case_filter.as_deref())?;
     let cases = loaded.cases.clone();
-    materialize_cases(&config.artifact_dir, &config.binary, &cases)?;
+    materialize_cases(
+        &config.artifact_dir,
+        &config.binary,
+        config.composition_hold_binary.as_deref(),
+        &cases,
+    )?;
     let scenario_source = artifacts::ScenarioSourceSummary::new(
         &config.scenario_dir,
         loaded.scenarios,
@@ -1294,6 +1309,14 @@ fn evaluate_allowed_region_relationships(
                 rest_snapshot,
             );
         }
+        model::FIRST_FRAME_SHELL_SCENARIO => {
+            push_first_frame_shell_relationships(
+                &mut rows,
+                &mut status,
+                before_snapshot,
+                after_snapshot,
+            );
+        }
         "replace-preview" => {
             push_relationship(
                 &mut rows,
@@ -1322,6 +1345,60 @@ fn evaluate_allowed_region_relationships(
         "specs": case.pointer("/manifest/allowed_changing_regions").cloned().unwrap_or_default(),
         "assertions": rows,
     })
+}
+
+/// The first-frame-shell relationships: the before frame is the held first
+/// frame (composition pending, the staged rail content not yet drawn), the
+/// after frame the composed one, and the rail and pane edges did not move.
+fn push_first_frame_shell_relationships(
+    rows: &mut Vec<Value>,
+    status: &mut &'static str,
+    before_snapshot: &Value,
+    after_snapshot: &Value,
+) {
+    let pending = |snapshot: &Value| {
+        snapshot
+            .pointer("/window/window_construction/stages_pending")
+            .and_then(Value::as_u64)
+    };
+    push_relationship(
+        rows,
+        status,
+        "before-is-the-held-first-frame",
+        match pending(before_snapshot) {
+            Some(count) if count > 0 => Ok(()),
+            other => Err(format!(
+                "the before capture must hold composition pending, saw stages_pending {other:?}"
+            )),
+        },
+    );
+    push_relationship(
+        rows,
+        status,
+        "after-is-the-composed-frame",
+        match pending(after_snapshot) {
+            Some(0) => Ok(()),
+            other => Err(format!(
+                "the after capture must be composed, saw stages_pending {other:?}"
+            )),
+        },
+    );
+    for (name, edge) in [
+        ("rail-edge-constant", "workspace-rail"),
+        ("pane-edge-constant", "content-area"),
+    ] {
+        let relationship = match (
+            surface_box(before_snapshot, edge),
+            surface_box(after_snapshot, edge),
+        ) {
+            (Ok(before), Ok(after)) if before == after => Ok(()),
+            (Ok(before), Ok(after)) => Err(format!(
+                "{edge} moved between the first frame and the composed frame: {before:?} -> {after:?}"
+            )),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        };
+        push_relationship(rows, status, name, relationship);
+    }
 }
 
 /// The revealed row's surface in the visual-geometry snapshot.
@@ -2100,9 +2177,22 @@ struct LoadedScenarios {
 fn materialize_cases(
     artifact_dir: &Path,
     binary: &Path,
+    composition_hold_binary: Option<&Path>,
     cases: &[model::ExpandedCaseOverview],
 ) -> Result<(), String> {
     for case in cases {
+        // A first-frame-shell case runs the smoke-only `composition-hold`
+        // build, which can hold composition after the first frame.
+        let binary = if case.scenario_type() == Some(model::FIRST_FRAME_SHELL_SCENARIO) {
+            composition_hold_binary.ok_or_else(|| {
+                format!(
+                    "{} needs --composition-hold-binary (a `composition-hold` build)",
+                    case.case_id
+                )
+            })?
+        } else {
+            binary
+        };
         let case_dir = artifact_dir.join(&case.case_id);
         let runtime_dir = case_dir.join("runtime");
         let fixture_path = write_fixture(case, &case_dir)?;
@@ -2164,6 +2254,9 @@ fn materialize_cases(
 
 /// Return the exact GSettings values the Python live runner applies per case.
 fn gsettings_plan(case: &model::ExpandedCaseOverview) -> Vec<GSettingsValue> {
+    // A first-frame-shell case restores both rails, so its composition reveals
+    // the content, the workspace sidebar and the document properties.
+    let both_rails = case.scenario_type() == Some(model::FIRST_FRAME_SHELL_SCENARIO);
     let mut values = vec![
         GSettingsValue::new("show-minimap", "true"),
         GSettingsValue::new(
@@ -2179,14 +2272,17 @@ fn gsettings_plan(case: &model::ExpandedCaseOverview) -> Vec<GSettingsValue> {
             "workspace-sidebar-visible",
             // A sidebar toggle starts visible only to hide it; a reveal proves
             // rows inside the sidebar, so it stays visible throughout.
-            if matches!(case.direction.as_deref(), Some("hide" | "reveal")) {
+            if both_rails || matches!(case.direction.as_deref(), Some("hide" | "reveal")) {
                 "true"
             } else {
                 "false"
             },
         ),
         GSettingsValue::new("workspace-sidebar-width-fraction", "0.3"),
-        GSettingsValue::new("properties-sidebar-visible", "false"),
+        GSettingsValue::new(
+            "properties-sidebar-visible",
+            if both_rails { "true" } else { "false" },
+        ),
     ];
     if let Some(width) = case.size.get("width").and_then(serde_json::Value::as_i64) {
         values.push(GSettingsValue::new("window-width", width.to_string()));
@@ -2326,6 +2422,7 @@ mod tests {
             artifact_dir: artifact_dir.clone(),
             scenario_dir,
             binary: PathBuf::from("/definitely/missing/lushtext"),
+            composition_hold_binary: None,
             case_filter: Some("live-threshold".to_string()),
             mode: RunMode::RustLive,
         };

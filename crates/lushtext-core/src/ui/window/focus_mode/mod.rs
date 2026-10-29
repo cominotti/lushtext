@@ -85,6 +85,7 @@ use crate::config::keys;
 use crate::ui::accessibility::AnnouncementLane;
 
 use super::LushtextWindow;
+use crate::ui::window::StagedSurface;
 use policy::FocusModeEntry;
 
 /// How long the Focus Mode affordance stays revealed before it hides itself.
@@ -220,6 +221,7 @@ impl LushtextWindow {
             "Focus mode on",
         );
         if let Some(editor) = self.active_editor() {
+            self.ensure_composed(StagedSurface::Content);
             editor.source_view().grab_focus();
         }
     }

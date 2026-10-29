@@ -74,6 +74,12 @@
 //!   token so a superseded startup cannot restart it.
 //! - **B5, worker read.** `spawn_blocking_then` leaves the GTK thread; control
 //!   resumes in the completion that installs the records and begins the restore.
+//! - **B5 → B6, queued activation opens.** While the window-composition
+//!   workflow still holds activation opens (a CLI launch, admitted in its
+//!   content stage), the completion hands the restore to
+//!   `after_activation_opens` and returns, so the CLI tabs keep their place and
+//!   selection. Control resumes in that workflow's last activation turn; a
+//!   restore whose startup read was replaced meanwhile is dropped there.
 //! - **B6, per-turn idle.** Every turn is a `glib::idle_add_local_once`; control
 //!   resumes in `admission`'s `run_scheduled_session_restore_turn`.
 //! - **B7 → B8, the load workflow's planning terminal.** This is the inversion
@@ -84,7 +90,7 @@
 //!   request's planning owner into a restart or releases it, and no path drops
 //!   one — `release_permit` counts exactly those releases.
 //!
-//! Seven inversions where the census recorded one.
+//! Eight inversions where the census recorded one.
 //!
 //! ## State this workflow shares with others
 //!

@@ -83,6 +83,14 @@ Ten mechanical guarantees, all derived from
    a rename cannot drop it, and so is any disagreement between the list and the
    table in the "Whole-pixel geometry policy" section of
    `.agents/rules/workflow-convention.md`.
+11. Staged-content reveals: the window shell builds its content invisible and
+   reveals it in composition stages (`first-frame-window-shell`). Outside the
+   `ui/window/composition/` role home, a line under `ui/window/` that makes a
+   staged content widget visible (`set_visible(true)`) or focuses one
+   (`grab_focus()`, or `set_focus(Some(..))` naming it) must be preceded, in
+   the same function, by a `ensure_composed(` call, so a reveal or focus can
+   never reach a surface its stage has not shown. Matched on comment- and
+   literal-stripped code; the staged receivers are `STAGED_CONTENT_RECEIVERS`.
 """
 
 from __future__ import annotations
@@ -1797,6 +1805,58 @@ def record_findings(
 # --- Orchestration ----------------------------------------------------------
 
 
+# Rule 11. Staged-content reveals go through `ensure_composed`.
+STAGED_REVEAL_SCOPE = "ui/window"
+STAGED_REVEAL_OWNER = "ui/window/composition"
+# Template children and editor widgets that live inside staged content: the
+# content stack (tab view, editors and their source views, the empty page),
+# the workspace sidebar, and the document-properties panel.
+STAGED_CONTENT_RECEIVERS = (
+    "content_stack",
+    "empty_page",
+    "editor_box",
+    "tab_view",
+    "source_view",
+    "sidebar",
+    "properties_panel",
+)
+STAGED_REVEAL_RE = re.compile(r"(\.set_visible\(\s*true\s*\)|\.grab_focus\(\s*\)|set_focus\()")
+FN_START_RE = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+\w+")
+
+
+def staged_reveal_findings(root: Path) -> list[str]:
+    """Rule 11: every reveal or focus of staged content follows `ensure_composed`."""
+    findings: list[str] = []
+    scope = root / CORE_SRC / STAGED_REVEAL_SCOPE
+    owner = root / CORE_SRC / STAGED_REVEAL_OWNER
+    if not scope.is_dir():
+        return findings
+    receivers = re.compile(r"\b(" + "|".join(STAGED_CONTENT_RECEIVERS) + r")\b")
+    for path in sorted(scope.rglob("*.rs")):
+        if owner in path.parents:
+            continue
+        lines = code_lines(path.read_text(encoding="utf-8"))
+        function_start = 0
+        for index, (line_number, code) in enumerate(lines):
+            if FN_START_RE.match(code):
+                function_start = index
+                continue
+            if not STAGED_REVEAL_RE.search(code) or not receivers.search(code):
+                continue
+            # A receiver may sit on the previous line of a chained call.
+            if "set_focus(" in code and "Some" not in code and not receivers.search(code):
+                continue
+            preceding = lines[function_start:index]
+            if any("ensure_composed(" in earlier for _, earlier in preceding):
+                continue
+            findings.append(
+                f"{display_path(path.relative_to(root))}:{line_number}: reveals or focuses "
+                "staged content without a preceding `ensure_composed(` in the same function "
+                "(rule 11, `first-frame-window-shell`)"
+            )
+    return findings
+
+
 def check_tree(
     root: Path,
     matrix_path: Path,
@@ -1824,6 +1884,7 @@ def check_tree(
     # a missing matrix must not silently disarm the discovery half.
     findings.extend(unclassified_pure_module_findings(root))
     findings.extend(kani_harness_findings(root))
+    findings.extend(staged_reveal_findings(root))
     findings.extend(whole_pixel_findings(root, real_tree=require_seam_ceiling))
     if require_seam_ceiling:
         findings.extend(whole_pixel_ledger_findings(root / CONVENTION_PATH.relative_to(REPO_ROOT)))
@@ -3417,6 +3478,36 @@ def run_self_test() -> None:
 
     for name, message in whole_pixel_self_test_failures():
         raise AssertionError(f"whole-pixel self-test `{name}`: {message}")
+
+    # --- Rule 11: staged-content reveals -------------------------------------
+    def staged_findings(body: str, where: str = "ui/window/actions.rs") -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root / CORE_SRC / where, body)
+            return staged_reveal_findings(root)
+
+    forced = (
+        "fn focus(&self) {\n    self.ensure_composed(StagedSurface::Content);\n"
+        "    editor.source_view().grab_focus();\n}\n"
+    )
+    if staged_findings(forced):
+        raise AssertionError("expected a focus after ensure_composed to pass")
+    unforced = "fn focus(&self) {\n    editor.source_view().grab_focus();\n}\n"
+    if not staged_findings(unforced):
+        raise AssertionError("expected a focus of staged content without ensure_composed to fail")
+    other_fn = (
+        "fn reveal(&self) {\n    self.ensure_composed(StagedSurface::Content);\n}\n"
+        "fn later(&self) {\n    self.imp().sidebar.set_visible(true);\n}\n"
+    )
+    if not staged_findings(other_fn):
+        raise AssertionError("expected ensure_composed in another function not to count")
+    commented = "fn focus(&self) {\n    // self.ensure_composed(x);\n    imp.content_stack.set_visible(true);\n}\n"
+    if not staged_findings(commented):
+        raise AssertionError("expected a commented-out ensure_composed not to count")
+    if staged_findings(unforced, where="ui/window/composition/execution.rs"):
+        raise AssertionError("expected the composition role home to own its reveals")
+    if staged_findings("fn f() {\n    header_button.grab_focus();\n}\n"):
+        raise AssertionError("expected a focus of a non-staged widget to pass")
 
     home_gated = home_harness_findings("#[cfg(kani)]\nmod kani_proofs;\n")
     if home_gated:

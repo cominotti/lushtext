@@ -13,6 +13,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
+use std::cell::RefCell;
 
 /// App action name for the workspace-wide hidden-file view mode.
 pub const SHOW_HIDDEN_FILES_ACTION: &str = "show-hidden-files";
@@ -64,9 +65,8 @@ pub(crate) fn register_boolean_setting_toggle_action(
 mod imp {
     use crate::model::automation::AutomationWorkflowEventLog;
     use crate::ui::automation::AutomationRegistration;
-    use crate::ui::window::LushtextWindow;
+    use crate::ui::window::PendingWindowRequest;
     use crate::ui::window::SetAsideReviewState;
-    use glib::prelude::*;
     use gtk4::gio;
     use gtk4::prelude::*;
     use libadwaita::subclass::prelude::*;
@@ -95,6 +95,9 @@ mod imp {
         /// The set-aside retention notice's in-memory rate limit and the
         /// review-done flag. Never persisted (`ui/window/set_aside_review.rs`).
         pub set_aside_review: Cell<SetAsideReviewState>,
+        /// The window `open` or `activate` asked for and stage C has not
+        /// constructed yet (`ui/window/composition/`), holding the application.
+        pub(crate) pending_window: RefCell<Option<PendingWindowRequest>>,
     }
 
     // ObjectSubclass registers this Rust struct with GLib's runtime type
@@ -134,6 +137,9 @@ mod imp {
         }
 
         fn shutdown(&self) {
+            // A quit before stage C constructed the requested window drops the
+            // request and its hold.
+            self.obj().drop_pending_window_request();
             // Backstop for exits that close no window through its confirmed
             // close (`app.quit`, the session ending): persist the settings
             // writer's pending values before the process goes.
@@ -166,48 +172,17 @@ mod imp {
         }
 
         fn activate(&self) {
-            let binding = self.obj();
-            let app: &super::LushtextApplication = binding.as_ref();
-
-            if let Some(window) = app.active_window() {
-                window.present();
-                return;
-            }
-
-            let window = LushtextWindow::new(app.upcast_ref());
-            let present_start_us = crate::ui::construction_spans::now_us();
-            window.present();
-            window.record_construction_stage("present", present_start_us);
+            // Record the request and return: the window is composed in bounded
+            // dispatches from the main loop (`ui/window/composition/`). With a
+            // window already composed, it is presented.
+            crate::ui::window::request_window(&self.obj(), Vec::new());
         }
 
         fn open(&self, files: &[gio::File], _hint: &str) {
-            let app = self.obj();
-
-            let window = if let Some(w) = app.active_window() {
-                // GTK returns the active window as a generic ApplicationWindow;
-                // downcast asks GLib's runtime type system for LushText's
-                // concrete window type before forwarding opened files.
-                w.downcast::<LushtextWindow>()
-                    .expect("active window is LushtextWindow")
-            } else {
-                LushtextWindow::new(app.upcast_ref())
-            };
-
-            // Root the window before dispatching asynchronous file loads so
-            // quick failures have a visible status and inline-error surface.
-            let stage_start_us = crate::ui::construction_spans::now_us();
-            window.present();
-            let stage_start_us = window.record_construction_stage("present", stage_start_us);
-            for file in files {
-                if let Some(path) = file.path() {
-                    window.open_document_from_activation(&path);
-                } else {
-                    window.report_unsupported_open_file(file);
-                }
-            }
-
-            window.present();
-            window.record_construction_stage("open_files", stage_start_us);
+            // As `activate`, carrying the files; they open in bounded turns
+            // once the window's content stage has run, or at once in a window
+            // that already has.
+            crate::ui::window::request_window(&self.obj(), files.to_vec());
         }
     }
 
@@ -319,6 +294,31 @@ impl LushtextApplication {
     #[must_use]
     pub fn set_aside_review_state(&self) -> crate::ui::window::SetAsideReviewState {
         self.imp().set_aside_review.get()
+    }
+
+    /// How many files the window request stage C has not constructed yet
+    /// carries, or `None` when no request is pending: the observable half of
+    /// the request `open` and `activate` record (`ui/window/composition/`).
+    #[must_use]
+    pub fn pending_window_file_count(&self) -> Option<usize> {
+        self.imp()
+            .pending_window
+            .borrow()
+            .as_ref()
+            .map(crate::ui::window::PendingWindowRequest::file_count)
+    }
+
+    /// Drop the window request stage C has not constructed yet, and its
+    /// application hold: a quit before the window exists (`shutdown`).
+    pub fn drop_pending_window_request(&self) {
+        crate::ui::window::drop_pending_window_request(self);
+    }
+
+    /// The window request stage C has not constructed yet, if any.
+    pub(crate) fn pending_window_request(
+        &self,
+    ) -> &RefCell<Option<crate::ui::window::PendingWindowRequest>> {
+        &self.imp().pending_window
     }
 
     /// Change this process's set-aside review state in place.

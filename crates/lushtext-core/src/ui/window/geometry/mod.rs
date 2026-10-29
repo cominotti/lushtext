@@ -76,6 +76,7 @@ use gtk4::prelude::*;
 use super::LushtextWindow;
 use super::editor_focus::{EDITOR_FOCUS_MAX_ATTEMPTS, EDITOR_FOCUS_RETRY_INTERVAL};
 use super::imp::WORKSPACE_SIDEBAR_TRANSITION_SETTLE_DELAY_MS;
+use crate::ui::window::StagedSurface;
 use execution::{
     adaptive_shell_inputs_for_width, current_window_width, properties_surface_is_compact,
     sync_properties_breakpoint, sync_properties_split_view, sync_secondary_surfaces,
@@ -141,6 +142,7 @@ impl LushtextWindow {
                 return;
             };
             if let Some(editor) = window.active_editor() {
+                window.ensure_composed(StagedSurface::Content);
                 gtk4::prelude::GtkWindowExt::set_focus(
                     &window,
                     Some(editor.source_view().upcast_ref::<gtk4::Widget>()),
@@ -172,6 +174,7 @@ impl LushtextWindow {
                 return glib::ControlFlow::Break;
             };
 
+            window.ensure_composed(StagedSurface::Content);
             let source_view = editor.source_view();
             let source_ptr = source_view.upcast_ref::<gtk4::Widget>().as_ptr();
             gtk4::prelude::GtkWindowExt::set_focus(

@@ -156,7 +156,25 @@ CONSTRUCTION_SPANS = ("startup_toolkit", "startup_lushtext", "window_constructio
 # The LushText-owned spans the settle budget applies to; GTK's own startup
 # (`startup_toolkit`) is reported, not budgeted, and the first-frame span is
 # several dispatches, so only the largest dispatch before it is budgeted.
-CONSTRUCTION_BUDGETED = ("startup_lushtext", "window_construction", "largest_dispatch_before_first_frame")
+CONSTRUCTION_BUDGETED = ("startup_lushtext", "window_construction", "largest_dispatch_before_first_frame", "largest_composition_dispatch")
+# Staged window composition (first-frame-window-shell, C4b): the window is
+# built whole and revealed in bounded dispatches. `composition_complete` spans
+# from the start of the window work until the last stage's frame painted; each
+# `composition_<stage>` span is one stage's dispatch. The probe also records the
+# layout and paint phases of each window's first frames and the window's first
+# measures and allocations; none of these is a construction stage.
+COMPOSITION_COMPLETE = "composition_complete"
+COMPOSITION_STAGE_PREFIX = "composition_"
+FRAME_PHASE_SPANS = ("frame_layout", "frame_paint")
+LAYOUT_PROBE_SPANS = ("window_measure_h", "window_measure_v", "window_size_allocate")
+# How many of the first frames the report tabulates (the probe records four).
+FRAME_PHASE_FRAMES = 4
+# Dispatches at least this long are listed in time order in the report.
+LISTED_DISPATCH_US = 4_000
+# The content fill-in the maintainer accepted after the first frame
+# (first-frame-window-shell, design D7): five 120 Hz reference frames. It is
+# reported against, never a budget constant.
+ACCEPTED_FILL_IN_US = 40_000
 DCONF_LOAD = Path("/usr/bin/dconf")
 
 
@@ -1721,11 +1739,20 @@ def construction_summary(records: dict[str, list[dict]], attrs: dict[str, Any], 
         return None
     first: dict[str, dict] = {}
     stages: dict[str, int] = {}
+    phases: dict[str, list[int]] = {name: [] for name in FRAME_PHASE_SPANS}
+    layout: list[list[Any]] = []
+    composition: dict[str, int] = {}
     for record in spans:
         name = str(record.get("name"))
         duration = int(record["end_us"]) - int(record["start_us"])
-        if name in CONSTRUCTION_SPANS:
+        if name in CONSTRUCTION_SPANS or name == COMPOSITION_COMPLETE:
             first.setdefault(name, record)
+        elif name in FRAME_PHASE_SPANS:
+            phases[name].append(duration)
+        elif name in LAYOUT_PROBE_SPANS:
+            layout.append([name, duration])
+        elif name.startswith(COMPOSITION_STAGE_PREFIX):
+            composition.setdefault(name[len(COMPOSITION_STAGE_PREFIX):], duration)
         elif "first_frame" not in first:
             stages[name] = stages.get(name, 0) + duration
     result: dict[str, Any] = {
@@ -1743,6 +1770,21 @@ def construction_summary(records: dict[str, list[dict]], attrs: dict[str, Any], 
         largest = max(befores) if befores else 0
     result["largest_dispatch_before_first_frame_us"] = largest
     result["stages_us"] = dict(sorted(stages.items(), key=lambda item: -item[1]))
+    # Composition: every dispatch from the start until the last stage painted
+    # (or, before staged composition, until the first frame) is budgeted.
+    complete = first.get(COMPOSITION_COMPLETE)
+    result["composition_complete_us"] = int(complete["end_us"]) - int(complete["start_us"]) if complete else None
+    result["fill_in_us"] = int(complete["end_us"]) - int(painted["end_us"]) if complete and painted else None
+    window_end = complete or painted
+    lates = [r for r in records.get("late", []) if window_end is not None and int(r["t_us"]) <= int(window_end["end_us"]) + 1]
+    result["largest_composition_dispatch_us"] = max((int(r["lateness_us"]) for r in lates), default=0) if window_end else None
+    result["dispatches_over_4ms_us"] = [int(r["lateness_us"]) for r in sorted(lates, key=lambda r: int(r["t_us"])) if int(r["lateness_us"]) >= LISTED_DISPATCH_US]
+    result["composition_stages_us"] = composition
+    result["frame_phases_us"] = [
+        {"layout": phases["frame_layout"][i] if i < len(phases["frame_layout"]) else None, "paint": phases["frame_paint"][i] if i < len(phases["frame_paint"]) else None}
+        for i in range(min(FRAME_PHASE_FRAMES, max(len(phases["frame_layout"]), len(phases["frame_paint"]))))
+    ]
+    result["layout_probe_us"] = layout
     return result
 
 
@@ -1754,6 +1796,7 @@ def construction_verdicts(rows: list[dict], budget_us: int) -> list[dict]:
         if not construction:
             continue
         over = [name for name in CONSTRUCTION_BUDGETED if (construction.get(f"{name}_us") or 0) > budget_us]
+        fill_in = construction.get("fill_in_us")
         out.append(
             {
                 "case": row["case"],
@@ -1761,6 +1804,7 @@ def construction_verdicts(rows: list[dict], budget_us: int) -> list[dict]:
                 "rep": row["rep"],
                 **{k: v for k, v in construction.items() if k != "stages_us"},
                 "largest_stages_us": dict(list(construction.get("stages_us", {}).items())[:6]),
+                "fill_in_within_accepted": None if fill_in is None else fill_in <= ACCEPTED_FILL_IN_US,
                 "over_budget": over,
                 "verdict": "over" if over else "within",
             }
@@ -2650,6 +2694,17 @@ def render_markdown(report: dict) -> str:
             f"{entry.get('startup_toolkit_us')} | {entry.get('startup_lushtext_us')} | {entry.get('window_construction_us')} | "
             f"{entry.get('first_frame_us')} | {entry.get('largest_dispatch_before_first_frame_us')} | {entry['verdict']} {' '.join(entry['over_budget'])} | {stages} |"
         )
+    lines += ["", "### Composition dispatches and first frames", ""]
+    lines.append("| Case | composition complete | fill-in (accepted ≤ 40000) | largest composition dispatch | dispatches ≥ 4 ms, in order | stage dispatches | frame layout / paint |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for entry in report.get("construction_c4", []):
+        stages = ", ".join(f"{k} {v}" for k, v in entry.get("composition_stages_us", {}).items())
+        frames = ", ".join(f"{f.get('layout')}/{f.get('paint')}" for f in entry.get("frame_phases_us", []))
+        dispatches = ", ".join(str(d) for d in entry.get("dispatches_over_4ms_us", []))
+        lines.append(
+            f"| {entry['case']}@{entry['variant']}#{entry['rep']} | {entry.get('composition_complete_us')} | {entry.get('fill_in_us')} | "
+            f"{entry.get('largest_composition_dispatch_us')} | {dispatches} | {stages} | {frames} |"
+        )
     lines += ["", "## Cases", "", "| Case | Variant | Outcomes | Phase | Stall median / max (us) | Frame p95 gap | Input-to-frame max (us / frames) | IM calls / max bytes | AT events / max payload |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case in report["cases"]:
         flags = (" noisy" if case.get("noisy") else "") + (f" storage:{case.get('storage')}" if case.get("storage") not in (None, "unchecked", "clean") else "")
@@ -3318,8 +3373,38 @@ def self_test() -> int:
     expect(summary_c4 is not None and list(summary_c4["stages_us"]) == ["migrate_split_view", "template"], "stages after the first frame are not construction stages")
     expect(summary_c4 is not None and summary_c4["build_profile"] == "release" and summary_c4["backend"] == "dconf", "profile, backend and build are recorded")
     verdicts_c4 = construction_verdicts([{"case": "baseline/small", "variant": "plain", "rep": 0, "construction": summary_c4}], 16_000)
-    expect(verdicts_c4[0]["verdict"] == "over" and verdicts_c4[0]["over_budget"] == ["window_construction", "largest_dispatch_before_first_frame"], f"construction verdict ({verdicts_c4})")
+    expect(verdicts_c4[0]["verdict"] == "over" and verdicts_c4[0]["over_budget"] == ["window_construction", "largest_dispatch_before_first_frame", "largest_composition_dispatch"], f"construction verdict ({verdicts_c4})")
     expect(construction_case_id("fresh", "keyfile") == "baseline/small" and construction_case_id("steady", "dconf") == "baseline/small/steady-dconf", "construction case ids")
+
+    # Staged composition (C4b): stage, frame-phase and layout spans are not
+    # construction stages; every dispatch until composition completes counts.
+    composed_records = {
+        "span": [
+            {"kind": "span", "name": "startup_lushtext", "start_us": 0, "end_us": 1_000},
+            {"kind": "span", "name": "composition_warm", "start_us": 2_000, "end_us": 9_000},
+            {"kind": "span", "name": "template", "start_us": 10_000, "end_us": 19_000},
+            {"kind": "span", "name": "window_construction", "start_us": 10_000, "end_us": 22_000},
+            {"kind": "span", "name": "composition_construct", "start_us": 10_000, "end_us": 22_000},
+            {"kind": "span", "name": "window_measure_h", "start_us": 40_000, "end_us": 43_000},
+            {"kind": "span", "name": "frame_layout", "start_us": 40_000, "end_us": 45_000},
+            {"kind": "span", "name": "frame_paint", "start_us": 45_000, "end_us": 48_000},
+            {"kind": "span", "name": "first_frame", "start_us": 10_000, "end_us": 48_000},
+            {"kind": "span", "name": "frame_layout", "start_us": 50_000, "end_us": 52_000},
+            {"kind": "span", "name": "frame_paint", "start_us": 52_000, "end_us": 53_000},
+            {"kind": "span", "name": "composition_content", "start_us": 49_000, "end_us": 50_000},
+            {"kind": "span", "name": "composition_complete", "start_us": 2_000, "end_us": 70_000},
+        ],
+        "late": [{"t_us": 9_100, "lateness_us": 7_000}, {"t_us": 22_100, "lateness_us": 12_000}, {"t_us": 60_000, "lateness_us": 18_000}, {"t_us": 90_000, "lateness_us": 50_000}],
+    }
+    composed = construction_summary(composed_records, {}, Path("target/responsiveness/release/lushtext"))
+    expect(composed is not None and list(composed["stages_us"]) == ["template"], f"composition, frame and layout spans are not construction stages ({composed and composed['stages_us']})")
+    expect(composed is not None and composed["composition_stages_us"] == {"warm": 7_000, "construct": 12_000, "content": 1_000}, "composition stage dispatches by stage")
+    expect(composed is not None and composed["frame_phases_us"] == [{"layout": 5_000, "paint": 3_000}, {"layout": 2_000, "paint": 1_000}], "frame phases in frame order")
+    expect(composed is not None and composed["layout_probe_us"] == [["window_measure_h", 3_000]], "the window's first measures are listed")
+    expect(composed is not None and composed["composition_complete_us"] == 68_000 and composed["fill_in_us"] == 22_000, "composition complete and the content fill-in")
+    expect(composed is not None and composed["largest_composition_dispatch_us"] == 18_000 and composed["dispatches_over_4ms_us"] == [7_000, 12_000, 18_000], "every dispatch until composition completes counts, none after")
+    composed_verdict = construction_verdicts([{"case": "baseline/small", "variant": "plain", "rep": 0, "construction": composed}], 16_000)
+    expect(composed_verdict[0]["over_budget"] == ["largest_composition_dispatch"] and composed_verdict[0]["fill_in_within_accepted"] is True, f"composition verdict ({composed_verdict})")
 
     if failures:
         print("responsiveness-smoke-driver self-test failed:", file=sys.stderr)

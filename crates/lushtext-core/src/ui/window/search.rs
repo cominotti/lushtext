@@ -43,6 +43,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::LushtextWindow;
+use crate::ui::window::StagedSurface;
 
 enum GuardedReplaceApplyResult {
     Applied {
@@ -623,6 +624,8 @@ impl LushtextWindow {
 
     /// Restore focus saved before the search panel was opened.
     fn restore_search_saved_focus(&self) {
+        // The saved widget or the editor fallback may be staged content.
+        self.ensure_composed(StagedSurface::Content);
         let saved = self.imp().search_saved_focus.take();
         let target = saved.as_ref().and_then(glib::WeakRef::upgrade).or_else(|| {
             self.active_editor()
@@ -741,6 +744,7 @@ fn open_file_at_line(window: &LushtextWindow, path: &std::path::Path, line: u32)
         // Explicitly move focus to the editor (AC#4: "focus moves to the editor").
         // Without this, GTK4's focus traversal may leave focus on the search panel
         // or sidebar after tab switch.
+        window.ensure_composed(StagedSurface::Content);
         editor.source_view().grab_focus();
     }
 }

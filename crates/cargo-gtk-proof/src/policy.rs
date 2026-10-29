@@ -87,6 +87,20 @@ const WORKSPACE_TREE_ROW_ANCHOR_EXACT: &[&str] = &[
     "resources/ui/workspace-section.blp",
     "resources/ui/workspace-section.ui",
 ];
+/// Invariant proving the staged window composition's first frame
+/// (`first-frame-window-shell`): the protected chrome is pixel-identical
+/// between the held first frame and the composed frame, and the rail and pane
+/// edges did not move.
+const FIRST_FRAME_SHELL_INVARIANT: &str = "first-frame-shell-chrome";
+/// The window-composition role home, keyed as a prefix so a later split inside
+/// it cannot disarm the gate.
+const WINDOW_COMPOSITION_ROLE_HOME_PREFIX: &str = "crates/lushtext-core/src/ui/window/composition/";
+/// Prefix of the first-frame-shell manifest.
+const FIRST_FRAME_SHELL_SCENARIO_PREFIX: &str =
+    "scripts/visual-geometry-scenarios/first-frame-shell";
+/// The window template, which marks the staged content invisible.
+/// `scripts/check-visual-proof-policy.py` mirrors this set exactly.
+const FIRST_FRAME_SHELL_EXACT: &[&str] = &["resources/ui/window.blp", "resources/ui/window.ui"];
 /// Invariant id shared with the Python visual runner and generated summaries.
 const NATIVE_MINIMAP_HIGHLIGHT_INVARIANT: &str = "native-minimap-highlight-anchors";
 /// Animation invariant id shared with existing smoke evidence.
@@ -879,6 +893,7 @@ fn is_visual_sensitive(path: &str) -> bool {
             .iter()
             .any(|suffix| normalized.ends_with(suffix))
         || workspace_tree_row_anchor_path(&normalized)
+        || first_frame_shell_path(&normalized)
 }
 
 fn required_invariants_for_changes(paths: &[String]) -> Vec<String> {
@@ -911,9 +926,23 @@ fn required_invariants_for_changes(paths: &[String]) -> Vec<String> {
         {
             required.push(WORKSPACE_TREE_ROW_ANCHORS_INVARIANT.to_string());
         }
+        if first_frame_shell_path(&path)
+            && !required
+                .iter()
+                .any(|item| item == FIRST_FRAME_SHELL_INVARIANT)
+        {
+            required.push(FIRST_FRAME_SHELL_INVARIANT.to_string());
+        }
     }
     required.sort();
     required
+}
+
+/// Whether `path` can change what the staged window's first frame draws.
+fn first_frame_shell_path(path: &str) -> bool {
+    path.starts_with(WINDOW_COMPOSITION_ROLE_HOME_PREFIX)
+        || path.starts_with(FIRST_FRAME_SHELL_SCENARIO_PREFIX)
+        || FIRST_FRAME_SHELL_EXACT.contains(&path)
 }
 
 /// Whether `path` can move the workspace sidebar's rendered rows.
@@ -1208,6 +1237,36 @@ mod tests {
                 !required_invariants_for_changes(&[path.to_string()])
                     .contains(&WORKSPACE_TREE_ROW_ANCHORS_INVARIANT.to_string()),
                 "{path} must not require the workspace-tree rendered-row invariant"
+            );
+        }
+    }
+
+    #[test]
+    fn first_frame_shell_paths_require_the_first_frame_invariant() {
+        // Mirrored in `scripts/check-visual-proof-policy.py`'s self-test.
+        for path in [
+            "crates/lushtext-core/src/ui/window/composition/execution.rs",
+            "crates/lushtext-core/src/ui/window/composition/policy.rs",
+            "resources/ui/window.blp",
+            "resources/ui/window.ui",
+            "scripts/visual-geometry-scenarios/first-frame-shell.json",
+        ] {
+            assert!(is_visual_sensitive(path), "{path} must be visual-sensitive");
+            assert!(
+                required_invariants_for_changes(&[path.to_string()])
+                    .contains(&FIRST_FRAME_SHELL_INVARIANT.to_string()),
+                "{path} must require the first-frame-shell invariant"
+            );
+        }
+        for path in [
+            "crates/lushtext-core/src/ui/window/construction.rs",
+            "crates/lushtext-core/src/ui/window/session_restore/policy.rs",
+            "resources/ui/status-bar.blp",
+        ] {
+            assert!(
+                !required_invariants_for_changes(&[path.to_string()])
+                    .contains(&FIRST_FRAME_SHELL_INVARIANT.to_string()),
+                "{path} must not require the first-frame-shell invariant"
             );
         }
     }

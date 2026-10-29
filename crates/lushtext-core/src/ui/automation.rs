@@ -28,9 +28,10 @@ use crate::model::automation::{
     READINESS_BLOCKER_DRAFT_AUTOSAVE, READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
-    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
-    READINESS_BLOCKER_WORKSPACE_PERSIST, READINESS_BLOCKER_WORKSPACE_SEARCH,
-    READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION, READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
+    READINESS_BLOCKER_WINDOW_COMPOSITION, READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_PATH_REVEAL, READINESS_BLOCKER_WORKSPACE_PERSIST,
+    READINESS_BLOCKER_WORKSPACE_SEARCH, READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
 use crate::model::palette::SearchMode;
 use crate::services::action_catalog;
@@ -697,6 +698,16 @@ fn window_readiness_blocker(
     predicate: AutomationReadinessPredicate,
 ) -> Option<&'static str> {
     let imp = window.imp();
+    // The window's staged composition, through its cheap accessor: identical
+    // by construction to `CompositionEvidence::blocks_readiness`, and derived
+    // from this window, so it cannot outlive it.
+    if let Some(blocker) = included_blocker(
+        predicate,
+        window.composition_blocks_readiness(),
+        READINESS_BLOCKER_WINDOW_COMPOSITION,
+    ) {
+        return Some(blocker);
+    }
     if let Some(blocker) = included_blocker(
         predicate,
         window.session_restore_in_progress(),
@@ -916,6 +927,10 @@ fn window_construction_snapshot(
         largest_dispatch_before_first_frame_us: evidence.largest_dispatch_before_first_frame_us,
         stages_pending: evidence.stages_pending,
         stages_total: evidence.stages_total,
+        forced_stages: evidence.forced_stages,
+        shell_first_frame_us: evidence.shell_first_frame_us,
+        composition_complete_us: evidence.composition_complete_us,
+        largest_composition_dispatch_us: evidence.largest_composition_dispatch_us,
         settings_writes_before_first_frame: evidence.settings_writes_before_first_frame,
         settings_writer_pending: evidence.settings_pending,
         settings_writer_flushed: evidence.settings_flushed,
@@ -1199,6 +1214,17 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
     push_widget_surface(&mut surfaces, "tab-strip", &*imp.tab_bar, root);
     push_widget_surface(&mut surfaces, "status-bar", &*imp.status_bar, root);
     push_widget_surface(&mut surfaces, "workspace-sidebar", &*imp.sidebar, root);
+    // The rail host the workspace split view allocates the staged sidebar
+    // into, and the content area whose right edge is the properties pane edge:
+    // both drawn from the first frame, so their edges are comparable before
+    // the staged content is revealed (`first-frame-window-shell`).
+    push_parent_surface(
+        &mut surfaces,
+        "workspace-rail",
+        imp.sidebar.upcast_ref(),
+        root,
+    );
+    push_widget_surface(&mut surfaces, "content-area", &*imp.content_box, root);
     push_workspace_reveal_surfaces(window, &mut surfaces, &mut pixel_anchors, root);
     let sidebar_vadjustment = imp.sidebar.sidebar_viewport_vadjustment();
     scroll_anchors.push(scroll_anchor_snapshot(
@@ -1529,6 +1555,19 @@ fn push_open_popover_surfaces(
 fn open_popover_visible(window: &LushtextWindow) -> bool {
     let imp = window.imp();
     imp.open_menu_button.is_active() || imp.open_popover.is_visible()
+}
+
+/// Push the surface of `child`'s parent, or an absent surface without one.
+fn push_parent_surface(
+    surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
+    name: &str,
+    child: &gtk4::Widget,
+    root: &gtk4::Widget,
+) {
+    match child.parent() {
+        Some(parent) => push_widget_surface(surfaces, name, &parent, root),
+        None => surfaces.push(absent_visual_surface(name, "not-created")),
+    }
 }
 
 fn push_widget_surface(

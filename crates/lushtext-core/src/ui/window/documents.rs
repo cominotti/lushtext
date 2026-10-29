@@ -836,11 +836,15 @@ impl LushtextWindow {
         self.update_search_navigation_actions();
     }
 
-    /// Keep the tab strip visible only for normal-mode windows with real tab targets.
+    /// Keep the tab strip visible only for normal-mode windows with real tab
+    /// targets, or with activation opens queued that will add one: those are
+    /// admitted after the first frame (window composition, design D5), and the
+    /// strip must not appear a frame later and move the content below it.
     pub(super) fn sync_tab_bar_visibility(&self) {
         let imp = self.imp();
+        let has_tabs = imp.tab_view.n_pages() > 0 || self.composition_activation_adds_pages();
         imp.tab_bar
-            .set_visible(imp.tab_view.n_pages() > 0 && !self.is_focus_mode_active());
+            .set_visible(has_tabs && !self.is_focus_mode_active());
     }
 
     /// Enable or disable the F4/Shift+F4 search navigation actions.

@@ -177,10 +177,11 @@ impl LushtextWindow {
     }
 
     fn flush_pending_activation_opens(&self) {
+        // The held opens join the window-composition workflow's bounded
+        // activation turns (`composition/`), so a gate releasing many of them
+        // never opens them all in one dispatch.
         let paths = self.imp().startup_data_flow.pending_activation_paths.take();
-        for path in paths {
-            self.open_document_from_activation(&path);
-        }
+        self.admit_activation_files(paths.into_iter().map(gtk4::gio::File::for_path).collect());
         let dropped = self
             .imp()
             .startup_data_flow

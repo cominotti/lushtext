@@ -133,6 +133,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     <property name="vexpand">true</property>
                     <property name="sidebar">
                       <object class="LushtextSidebar" id="sidebar">
+                        <property name="visible">false</property>
                         <style>
                           <class name="side-rail-chrome-opaque"/>
                         </style>
@@ -184,8 +185,12 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                         <child type="primary">
                           <object class="GtkBox" id="content_box">
                             <property name="orientation">1</property>
+                            <style>
+                              <class name="shell-chrome-opaque"/>
+                            </style>
                             <child>
                               <object class="GtkStack" id="content_stack">
+                                <property name="visible">false</property>
                                 <property name="vexpand">true</property>
                                 <property name="hexpand">true</property>
                                 <child>
@@ -276,7 +281,9 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 <property name="transition-duration">250</property>
                                 <property name="reveal-child">false</property>
                                 <property name="child">
-                                  <object class="LushtextSearchPanel" id="search_panel"></object>
+                                  <object class="LushtextSearchPanel" id="search_panel">
+                                    <property name="visible">false</property>
+                                  </object>
                                 </property>
                               </object>
                             </child>
@@ -284,6 +291,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                         </child>
                         <child type="properties">
                           <object class="LushtextPropertiesPanel" id="properties_panel">
+                            <property name="visible">false</property>
                             <style>
                               <class name="side-rail-chrome-opaque"/>
                               <class name="document-properties-inspector"/>
@@ -303,7 +311,9 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 <property name="reveal-child">false</property>
                 <property name="transition-type">5</property>
                 <property name="child">
-                  <object class="LushtextCommandPalette" id="command_palette"></object>
+                  <object class="LushtextCommandPalette" id="command_palette">
+                    <property name="visible">false</property>
+                  </object>
                 </property>
               </object>
             </child>
@@ -315,6 +325,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 <property name="transition-type">5</property>
                 <property name="child">
                   <object class="GtkBox" id="focus_mode_affordance">
+                    <property name="visible">false</property>
                     <property name="spacing">6</property>
                     <property name="margin-top">10</property>
                     <property name="margin-start">10</property>

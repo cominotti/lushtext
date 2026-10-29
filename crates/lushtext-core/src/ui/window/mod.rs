@@ -20,6 +20,7 @@
 
 mod actions;
 mod attention_refresh;
+mod composition;
 mod construction;
 mod dialogs;
 mod documents;
@@ -57,6 +58,13 @@ use gtk4::gio;
 use gtk4::prelude::*;
 
 pub use attention_refresh::{AttentionSurfaces, ModalSurfaceGuard};
+pub use composition::evidence::CompositionEvidence;
+pub use composition::policy::{CompositionStage, StageSet};
+pub(crate) use composition::{
+    PendingWindowRequest, StagedSurface, drop_pending_window_request, request_window,
+};
+#[cfg(feature = "test-utils")]
+pub use composition::{set_composition_collapsed_for_test, set_composition_hold_before_for_test};
 pub use drafts::DraftFlushError;
 pub use set_aside_review::SetAsideReviewState;
 
@@ -173,12 +181,25 @@ impl LushtextWindow {
     /// This runs on the GTK main thread, builds the composite template, installs
     /// window actions and surface dismissal, and starts notification rendering.
     /// Callers receive a ready-to-present shell; this constructor performs no
-    /// disk writes.
+    /// disk writes. It is stage C of window composition (`composition/`): the
+    /// staged content stays invisible until the window is presented and its
+    /// frames reveal it, or an operation forces it (`ensure_composed`).
     #[must_use]
     pub fn new(app: &libadwaita::Application) -> Self {
+        Self::new_composed(app, false, crate::ui::construction_spans::now_us())
+    }
+
+    /// Stage C for a window request: `warmed` is whether the request ran
+    /// stage W, and `origin_us` when the request (or this construction) began.
+    pub(in crate::ui::window) fn new_composed(
+        app: &libadwaita::Application,
+        warmed: bool,
+        origin_us: i64,
+    ) -> Self {
         let started_us = crate::ui::construction_spans::now_us();
         let window: Self = Object::builder().property("application", app).build();
         window.begin_construction_record(started_us);
+        window.begin_composition(warmed, origin_us.min(started_us));
         let mut stages = construction::ConstructionStages::new(&window);
         stages.run("join_draft_journal", || {
             window.join_process_draft_journal(app);

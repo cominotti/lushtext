@@ -403,7 +403,19 @@ impl LushtextWindow {
                 for diagnostic in &loaded.diagnostics {
                     tracing::warn!("{}", diagnostic.summary());
                 }
-                window.begin_session_restore(loaded.session, cleanup_allowed);
+                // Activation opens queued for the window's content stage go
+                // first, as they did before staged composition: their tabs keep
+                // their place and selection (window composition, design D5).
+                // The session's descriptors stay pending meanwhile, so a close
+                // merges the persisted file instead of overwriting it.
+                let session = loaded.session;
+                window.after_activation_opens(move |window| {
+                    // A newer startup read replaced this one while the restore
+                    // waited; that read begins its own restore.
+                    if window.imp().session.restore_cancel.borrow().is_none() {
+                        window.begin_session_restore(session, cleanup_allowed);
+                    }
+                });
                 window.publish_startup_recovery_diagnostics(&loaded.diagnostics);
             },
         );

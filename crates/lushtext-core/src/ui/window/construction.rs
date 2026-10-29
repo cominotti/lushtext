@@ -158,10 +158,23 @@ pub struct WindowConstructionEvidence {
     /// The largest main-loop dispatch before the first frame, when the
     /// measurement build's watchdog ran; `None` otherwise, never `Some(0)`.
     pub largest_dispatch_before_first_frame_us: Option<u64>,
-    /// Construction stages recorded.
+    /// Composition stages this window schedules (`composition/`): W when its
+    /// request ran it, then C, R, P, B1, B2 and B3, always (a rail the
+    /// restored layout hides gets its content revealed into the hidden rail).
     pub stages_total: u32,
-    /// Construction stages still to run (staged construction runs none later).
+    /// Scheduled composition stages that have not run.
     pub stages_pending: u32,
+    /// Composition stages an operation forced ahead of, or without, a schedule.
+    pub forced_stages: u32,
+    /// From the window request (or the construction) to the first painted
+    /// frame, the shell with its final chrome.
+    pub shell_first_frame_us: Option<u64>,
+    /// From the window request (or the construction) until composition
+    /// completed; `None` until it did.
+    pub composition_complete_us: Option<u64>,
+    /// The largest main-loop dispatch until composition completed, when the
+    /// measurement build's watchdog ran; `None` otherwise, never `Some(0)`.
+    pub largest_composition_dispatch_us: Option<u64>,
     /// Backend writes the settings writer made before the first frame.
     pub settings_writes_before_first_frame: u64,
     /// Keys whose newest value the writer has not persisted yet.
@@ -180,6 +193,7 @@ impl LushtextWindow {
     pub(crate) fn window_construction_evidence(&self) -> WindowConstructionEvidence {
         let startup = construction_spans::startup_spans();
         let writer = settings_writes::evidence();
+        let composition = self.composition_evidence();
         let construction = self.imp().construction.borrow();
         WindowConstructionEvidence {
             startup_toolkit_us: startup.toolkit_us,
@@ -188,10 +202,12 @@ impl LushtextWindow {
             first_frame_us: construction.first_frame_us(),
             largest_dispatch_before_first_frame_us: construction
                 .largest_dispatch_before_first_frame_us(),
-            stages_total: u32::try_from(construction.stages().len())
-                .unwrap_or(u32::MAX)
-                .saturating_add(construction.dropped_stages()),
-            stages_pending: 0,
+            stages_total: composition.stages_total,
+            stages_pending: composition.stages_pending,
+            forced_stages: composition.forced_stages,
+            shell_first_frame_us: composition.shell_first_frame_us,
+            composition_complete_us: composition.composition_complete_us,
+            largest_composition_dispatch_us: composition.largest_composition_dispatch_us,
             settings_writes_before_first_frame: writer.writes_before_first_frame,
             settings_pending: writer.pending,
             settings_flushed: writer.flushed,

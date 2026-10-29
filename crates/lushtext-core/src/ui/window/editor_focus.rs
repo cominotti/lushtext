@@ -32,6 +32,7 @@ use gtk4::prelude::*;
 use crate::ui::editor_page::LushtextEditorPage;
 
 use super::LushtextWindow;
+use crate::ui::window::StagedSurface;
 
 /// Delay between focus retries after tab selection or adaptive layout changes.
 ///
@@ -75,6 +76,7 @@ impl LushtextWindow {
                 return glib::ControlFlow::Break;
             }
 
+            window.ensure_composed(StagedSurface::Content);
             let source_view = editor.source_view();
             let source_ptr = source_view.upcast_ref::<gtk4::Widget>().as_ptr();
             gtk4::prelude::GtkWindowExt::set_focus(

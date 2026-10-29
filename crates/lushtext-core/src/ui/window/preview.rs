@@ -21,6 +21,7 @@ use sourceview5::prelude::*;
 
 use super::LushtextWindow;
 use super::imp::{PREVIEW_LAYOUT_EDITOR, PREVIEW_LAYOUT_PREVIEW, PREVIEW_SETTLE_DELAY_MS};
+use crate::ui::window::StagedSurface;
 
 /// Content placeholder shown while the preview waits for installed text.
 const PREPARING_MARKDOWN_PREVIEW: &str = "Preparing Markdown preview…";
@@ -52,6 +53,10 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
                 if window.is_focus_mode_active() {
                     window.mark_focus_mode_preview_changed();
                     return;
+                }
+                if new_visible {
+                    // The preview lives in the staged content stack.
+                    window.ensure_composed(StagedSurface::Content);
                 }
                 action.set_state(state);
                 if new_visible && window.imp().preview_mode.get() {
@@ -99,6 +104,10 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
                 }
                 if window.is_focus_mode_active() {
                     window.mark_focus_mode_preview_changed();
+                }
+                if new_mode {
+                    // The preview lives in the staged content stack.
+                    window.ensure_composed(StagedSurface::Content);
                 }
                 action.set_state(state);
                 window.imp().preview_mode.set(new_mode);

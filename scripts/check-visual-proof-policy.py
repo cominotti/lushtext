@@ -78,6 +78,13 @@ WORKSPACE_TREE_ROW_ANCHOR_EXACT = (
     "resources/ui/workspace-section.blp",
     "resources/ui/workspace-section.ui",
 )
+# Invariant proving the staged window composition's first frame
+# (`first-frame-window-shell`). Mirrors `crates/cargo-gtk-proof/src/policy.rs`
+# exactly; both self-tests assert the same required and not-required paths.
+FIRST_FRAME_SHELL_INVARIANT = "first-frame-shell-chrome"
+WINDOW_COMPOSITION_ROLE_HOME_PREFIX = "crates/lushtext-core/src/ui/window/composition/"
+FIRST_FRAME_SHELL_SCENARIO_PREFIX = "scripts/visual-geometry-scenarios/first-frame-shell"
+FIRST_FRAME_SHELL_EXACT = ("resources/ui/window.blp", "resources/ui/window.ui")
 NATIVE_MINIMAP_HIGHLIGHT_INVARIANT = "native-minimap-highlight-anchors"
 NATIVE_MINIMAP_ANIMATION_INVARIANT = "native-minimap-animation-highlight-anchors"
 WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS = (
@@ -182,6 +189,7 @@ def is_visual_sensitive(path: str) -> bool:
         or normalized.startswith(VISUAL_SENSITIVE_PREFIXES)
         or normalized.endswith(VISUAL_SENSITIVE_SUFFIXES)
         or workspace_tree_row_anchor_path(normalized)
+        or first_frame_shell_path(normalized)
     )
 
 
@@ -211,7 +219,19 @@ def required_invariants_for_changes(paths: list[str]) -> list[str]:
             required.add(NATIVE_MINIMAP_HIGHLIGHT_INVARIANT)
         if workspace_tree_row_anchor_path(path):
             required.add(WORKSPACE_TREE_ROW_ANCHORS_INVARIANT)
+        if first_frame_shell_path(path):
+            required.add(FIRST_FRAME_SHELL_INVARIANT)
     return sorted(required)
+
+
+def first_frame_shell_path(path: str) -> bool:
+    """Whether `path` can change what the staged window's first frame draws."""
+
+    return (
+        path.startswith(WINDOW_COMPOSITION_ROLE_HOME_PREFIX)
+        or path.startswith(FIRST_FRAME_SHELL_SCENARIO_PREFIX)
+        or path in FIRST_FRAME_SHELL_EXACT
+    )
 
 
 def workspace_tree_row_anchor_path(path: str) -> bool:
@@ -671,7 +691,9 @@ def run_self_tests() -> None:
     assert required_animation_invariants_for_changes(
         ["crates/cargo-gtk-proof/src/live.rs"]
     ) == [NATIVE_MINIMAP_ANIMATION_INVARIANT]
-    assert required_invariants_for_changes(["resources/ui/window.blp"]) == []
+    assert required_invariants_for_changes(["resources/ui/window.blp"]) == [
+        FIRST_FRAME_SHELL_INVARIANT
+    ]
 
     # Path-keyed-gate parity. `crates/cargo-gtk-proof/src/policy.rs` implements
     # this same predicate; nothing links the two, so each side asserts the
@@ -1005,6 +1027,26 @@ def _self_test_workspace_tree_row_anchor_paths() -> None:
         assert WORKSPACE_TREE_ROW_ANCHORS_INVARIANT not in required_invariants_for_changes(
             [path]
         ), f"{path} must not require the workspace-tree rendered-row invariant"
+    # Mirrored in `crates/cargo-gtk-proof/src/policy.rs`'s self-test.
+    for path in (
+        "crates/lushtext-core/src/ui/window/composition/execution.rs",
+        "crates/lushtext-core/src/ui/window/composition/policy.rs",
+        "resources/ui/window.blp",
+        "resources/ui/window.ui",
+        "scripts/visual-geometry-scenarios/first-frame-shell.json",
+    ):
+        assert is_visual_sensitive(path), f"{path} must be visual-sensitive"
+        assert FIRST_FRAME_SHELL_INVARIANT in required_invariants_for_changes([path]), (
+            f"{path} must require the first-frame-shell invariant"
+        )
+    for path in (
+        "crates/lushtext-core/src/ui/window/construction.rs",
+        "crates/lushtext-core/src/ui/window/session_restore/policy.rs",
+        "resources/ui/status-bar.blp",
+    ):
+        assert FIRST_FRAME_SHELL_INVARIANT not in required_invariants_for_changes([path]), (
+            f"{path} must not require the first-frame-shell invariant"
+        )
     reference_case = {
         "status": "passed",
         "pixel_anchor_evidence": [

@@ -41,6 +41,7 @@ use super::super::LushtextWindow;
 use super::super::geometry::execution::focus_is_within;
 use super::evidence::InlineAlertAnnouncementCounts;
 use super::policy::{self, DocumentAlertFacts, DocumentAlertProjectionTicket, InlineAlertSurface};
+use crate::ui::window::StagedSurface;
 
 /// Window-owned coordination state of the projection pass.
 ///
@@ -130,6 +131,7 @@ pub(super) fn project_notification_surfaces(
         if focus_on_bar && editor_view.is_none() {
             // A focused Dismiss hides its own button, and GTK leaves focus on
             // the hidden widget; give it back to the document.
+            window.ensure_composed(StagedSurface::Content);
             editor.source_view().grab_focus();
         }
         if is_selected {
@@ -248,6 +250,7 @@ fn project_preview_document_alert(
     // back, so the document takes focus rather than a hidden button.
     match selected_editor {
         Some(editor) => {
+            window.ensure_composed(StagedSurface::Content);
             editor.source_view().grab_focus();
         }
         None => GtkWindowExt::set_focus(window, None::<&gtk4::Widget>),

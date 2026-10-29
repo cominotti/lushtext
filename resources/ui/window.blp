@@ -122,7 +122,11 @@ template $LushtextWindow: Adw.ApplicationWindow {
         child: Adw.OverlaySplitView workspace_split_view {
           vexpand: true;
 
+          // Staged content (first-frame-window-shell): invisible until
+          // composition stage B2 or a forced reveal (ui/window/composition/).
           sidebar: $LushtextSidebar sidebar {
+            visible: false;
+
             styles [
               "side-rail-chrome-opaque",
             ]
@@ -167,7 +171,16 @@ template $LushtextWindow: Adw.ApplicationWindow {
             Box content_box {
               orientation: vertical;
 
+              // Opaque while the content stack is staged: the window background
+              // is transparent and the content draws its own surfaces. Stage B1
+              // removes the class as it reveals the stack.
+              styles [
+                "shell-chrome-opaque",
+              ]
+
+              // Staged content: invisible until composition stage B1.
               Stack content_stack {
+                visible: false;
                 vexpand: true;
                 hexpand: true;
 
@@ -248,12 +261,18 @@ template $LushtextWindow: Adw.ApplicationWindow {
                 transition-duration: 250;
                 reveal-child: false;
 
-                child: $LushtextSearchPanel search_panel {};
+                // Invisible whenever the revealer conceals it (ledger A49).
+                child: $LushtextSearchPanel search_panel {
+                  visible: false;
+                };
               }
             }
 
+            // Staged content: invisible until composition stage B3.
             [properties]
             $LushtextPropertiesPanel properties_panel {
+              visible: false;
+
               styles [
                 "side-rail-chrome-opaque",
                 "document-properties-inspector",
@@ -272,7 +291,10 @@ template $LushtextWindow: Adw.ApplicationWindow {
         reveal-child: false;
         transition-type: slide_down;
 
-        child: $LushtextCommandPalette command_palette {};
+        // Invisible whenever the revealer conceals it (ledger A49).
+        child: $LushtextCommandPalette command_palette {
+          visible: false;
+        };
       }
 
       [overlay]
@@ -282,7 +304,9 @@ template $LushtextWindow: Adw.ApplicationWindow {
         reveal-child: false;
         transition-type: slide_down;
 
+        // Invisible whenever the revealer conceals it (ledger A49).
         child: Box focus_mode_affordance {
+          visible: false;
           spacing: 6;
           margin-top: 10;
           margin-start: 10;

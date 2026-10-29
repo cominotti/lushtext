@@ -25,6 +25,12 @@ smoke-read-faults = []
 # measurement build only; see `ui::responsiveness_probe`. Never enabled in
 # release, Meson, Flatpak, or Snap.
 responsiveness-probes = []
+# A timed hold of window composition after the first frame
+# (`LUSHTEXT_COMPOSITION_HOLD_MS`), for the visual-geometry lane's
+# `first-frame-shell` scenario only; see `ui::window::composition`. Built into
+# `target/composition-hold/` only. Never enabled in release, Meson, Flatpak,
+# or Snap.
+composition-hold = []
 fuzzing = []
 # The property suite seeds unregistered fixture bodies, which only exist
 # with `test-utils`.
