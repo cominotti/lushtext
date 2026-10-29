@@ -152,6 +152,13 @@ STALL_EXCLUDED_PHASES = ("open", "restore")
 # every other span name is a construction stage.
 CONSTRUCTION_PROFILES = ("fresh", "steady")
 CONSTRUCTION_BACKENDS = ("keyfile", "dconf")
+# The populated profile (shorten-window-content-fill-in, design D4): a steady
+# keyfile profile with a restored workspace folder of a few hundred synthetic
+# entries and both side panes shown, so the reveal frame carries the sidebar
+# and the properties panel. The other profiles show neither pane.
+POPULATED_CASE_ID = "baseline/small/steady-populated"
+POPULATED_DIRECTORIES = 20
+POPULATED_FILES = 280
 CONSTRUCTION_SPANS = ("startup_toolkit", "startup_lushtext", "window_construction", "first_frame")
 # The LushText-owned spans the settle budget applies to; GTK's own startup
 # (`startup_toolkit`) is reported, not budgeted, and the first-frame span is
@@ -164,6 +171,14 @@ CONSTRUCTION_BUDGETED = ("startup_lushtext", "window_construction", "largest_dis
 # layout and paint phases of each window's first frames and the window's first
 # measures and allocations; none of these is a construction stage.
 COMPOSITION_COMPLETE = "composition_complete"
+# The first frame painted after the activation's file opens ran
+# (shorten-window-content-fill-in, C4c): the opened document on screen.
+COMPOSITION_ACTIVATION_SHOWN = "composition_activation_shown"
+# The present stage's span. The first `frame_paint` that starts after it ended
+# is the first frame painted on the mapped window in every build, including
+# one that ran an unseen frame on the unmapped window first (ledger A51), so
+# main and a branch compare alike.
+COMPOSITION_PRESENT = "composition_present"
 COMPOSITION_STAGE_PREFIX = "composition_"
 FRAME_PHASE_SPANS = ("frame_layout", "frame_paint")
 LAYOUT_PROBE_SPANS = ("window_measure_h", "window_measure_v", "window_size_allocate")
@@ -172,9 +187,13 @@ FRAME_PHASE_FRAMES = 4
 # Dispatches at least this long are listed in time order in the report.
 LISTED_DISPATCH_US = 4_000
 # The content fill-in the maintainer accepted after the first frame
-# (first-frame-window-shell, design D7): five 120 Hz reference frames. It is
-# reported against, never a budget constant.
+# (first-frame-window-shell D7, shorten-window-content-fill-in): 40 ms, within
+# five 120 Hz reference frames. Every run is judged against it, and a run over
+# it fails the lane only under RESPONSIVENESS_CONSTRUCTION_ENFORCE=1. Not a
+# budget constant.
 ACCEPTED_FILL_IN_US = 40_000
+# The fill-in median target, in reference frames (REFERENCE_FRAME_US).
+FILL_IN_MEDIAN_TARGET_FRAMES = 3
 DCONF_LOAD = Path("/usr/bin/dconf")
 
 
@@ -615,6 +634,16 @@ def build_cases(tier: str) -> list[Case]:
                     attrs={"profile": profile, "backend": backend},
                 )
             )
+    cases.append(
+        Case(
+            POPULATED_CASE_ID,
+            "baseline",
+            FixtureSpec("paragraph", 400, seed_for("small")),
+            settings={"word-wrap": True, "workspace-sidebar-visible": True, "properties-sidebar-visible": True},
+            length=400,
+            attrs={"profile": "steady", "backend": "keyfile", "populated": True},
+        )
+    )
     for length in grid["paragraph"]:
         for ext in ("html", "txt"):
             for wrap in (True, False):
@@ -965,7 +994,7 @@ class Runner:
 
     # -- app lifecycle ------------------------------------------------------
 
-    def fresh_state(self, case_dir: Path, settings: dict[str, Any], backend: str = "keyfile", on_disk: bool = False) -> dict[str, str]:
+    def fresh_state(self, case_dir: Path, settings: dict[str, Any], backend: str = "keyfile", on_disk: bool = False, populated: bool = False) -> dict[str, str]:
         # The construction cases keep their XDG state on the artifact
         # filesystem, which is the home filesystem on the reference machine:
         # a GSettings keyfile write fsyncs, and the temp scope (tmpfs) would
@@ -1006,6 +1035,8 @@ class Runner:
         gtk_settings.parent.mkdir(parents=True)
         gtk_settings.write_text("[Settings]\ngtk-cursor-blink=false\n", encoding="utf-8")
         (case_dir / "settings.json").write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
+        if populated:
+            seed_populated_workspace(state / "data/lushtext", state / "workspace")
         return {
             "XDG_CACHE_HOME": str(state / "cache"),
             "XDG_CONFIG_HOME": str(state / "config"),
@@ -1359,7 +1390,8 @@ class Runner:
         rep_dir.mkdir(parents=True, exist_ok=True)
         backend = case.attrs.get("backend", "keyfile")
         on_disk = "profile" in case.attrs
-        state_env = self.fresh_state(rep_dir, case.settings, backend, on_disk)
+        populated = bool(case.attrs.get("populated"))
+        state_env = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated)
         log_path = rep_dir / "probe.jsonl"
         env = self.app_env(variant, state_env, log_path)
         phases: list[dict] = []
@@ -1378,7 +1410,7 @@ class Runner:
             recoveries[0] += 1
             if recoveries[0] > 6:
                 return False
-            fresh = self.fresh_state(rep_dir, case.settings, backend, on_disk)
+            fresh = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated)
             extra_states.append(fresh["STATE_ROOT"])
             renv = self.app_env(variant, fresh, rep_dir / f"probe-r{recoveries[0]}.jsonl")
             relaunched = self.launch(rep_dir, renv, files, f"r{recoveries[0]}")
@@ -1742,7 +1774,8 @@ def construction_summary(records: dict[str, list[dict]], attrs: dict[str, Any], 
         return None
     first: dict[str, dict] = {}
     stages: dict[str, int] = {}
-    phases: dict[str, list[int]] = {name: [] for name in FRAME_PHASE_SPANS}
+    phase_spans: list[dict] = []
+    shown_spans: list[dict] = []
     layout: list[list[Any]] = []
     composition: dict[str, int] = {}
     for record in spans:
@@ -1750,17 +1783,23 @@ def construction_summary(records: dict[str, list[dict]], attrs: dict[str, Any], 
         duration = int(record["end_us"]) - int(record["start_us"])
         if name in CONSTRUCTION_SPANS or name == COMPOSITION_COMPLETE:
             first.setdefault(name, record)
+        elif name == COMPOSITION_ACTIVATION_SHOWN:
+            # Read below by its origin; it is a span to a frame, not a stage.
+            shown_spans.append(record)
         elif name in FRAME_PHASE_SPANS:
-            phases[name].append(duration)
+            phase_spans.append(record)
         elif name in LAYOUT_PROBE_SPANS:
             layout.append([name, duration])
         elif name.startswith(COMPOSITION_STAGE_PREFIX):
             composition.setdefault(name[len(COMPOSITION_STAGE_PREFIX):], duration)
+            if name == COMPOSITION_PRESENT:
+                first.setdefault(name, record)
         elif "first_frame" not in first:
             stages[name] = stages.get(name, 0) + duration
     result: dict[str, Any] = {
         "profile": attrs.get("profile", "fresh"),
         "backend": attrs.get("backend", "keyfile"),
+        "populated": bool(attrs.get("populated")),
         "build_profile": "release" if "/release/" in str(binary) else "debug",
     }
     for name in CONSTRUCTION_SPANS:
@@ -1773,22 +1812,73 @@ def construction_summary(records: dict[str, list[dict]], attrs: dict[str, Any], 
         largest = max(befores) if befores else 0
     result["largest_dispatch_before_first_frame_us"] = largest
     result["stages_us"] = dict(sorted(stages.items(), key=lambda item: -item[1]))
-    # Composition: every dispatch from the start until the last stage painted
-    # (or, before staged composition, until the first frame) is budgeted.
+    # Composition: every dispatch from the start until the later of the last
+    # stage's frame and the activation's shown frame (or, before staged
+    # composition, until the first frame) is budgeted.
     complete = first.get(COMPOSITION_COMPLETE)
-    result["composition_complete_us"] = int(complete["end_us"]) - int(complete["start_us"]) if complete else None
-    result["fill_in_us"] = int(complete["end_us"]) - int(painted["end_us"]) if complete and painted else None
-    window_end = complete or painted
-    lates = [r for r in records.get("late", []) if window_end is not None and int(r["t_us"]) <= int(window_end["end_us"]) + 1]
-    result["largest_composition_dispatch_us"] = max((int(r["lateness_us"]) for r in lates), default=0) if window_end else None
+    origin = int(complete["start_us"]) if complete else None
+
+    def since_origin(at_us: int | None) -> int | None:
+        return at_us - origin if at_us is not None and origin is not None else None
+
+    # The first window's own activation-shown span: it shares that window's
+    # origin (another window's span would stretch the fill-in).
+    shown = next((r for r in shown_spans if int(r["start_us"]) == origin), None)
+    result["composition_complete_us"] = since_origin(int(complete["end_us"])) if complete else None
+    result["activation_shown_us"] = since_origin(int(shown["end_us"])) if shown else None
+    # The first frame painted on the mapped window, the same way in every
+    # build: the end of the first frame paint after the present stage ended.
+    # (Derived here rather than read from the app's own first-frame span so a
+    # build that reported an unseen frame, ledger A51, compares honestly; once
+    # every compared build reports the mapped frame, `first_frame` suffices.)
+    present = first.get(COMPOSITION_PRESENT)
+    present_end = int(present["end_us"]) if present is not None else None
+    mapped_paint_end = None
+    if present_end is not None:
+        mapped_paint_end = min((int(r["end_us"]) for r in phase_spans if r.get("name") == "frame_paint" and int(r["start_us"]) >= present_end), default=None)
+    if mapped_paint_end is None and painted is not None:
+        mapped_paint_end = int(painted["end_us"])
+    result["first_painted_frame_us"] = since_origin(mapped_paint_end)
+    # The presentation of that first mapped frame: the first frame record that
+    # started after the present stage ended. `None` when the compositor gave
+    # that frame no feedback; a later frame's presentation is not it.
+    first_mapped = None
+    if present_end is not None:
+        first_mapped = min((r for r in records.get("frame", []) if int(r["frame_time_us"]) >= present_end), key=lambda r: int(r["frame_time_us"]), default=None)
+    presented = first_mapped.get("presentation_us") if first_mapped else None
+    result["first_presentation_us"] = since_origin(int(presented)) if presented else None
+    filled_end = max((int(r["end_us"]) for r in (complete, shown) if r is not None), default=None)
+    result["fill_in_us"] = filled_end - mapped_paint_end if complete and mapped_paint_end is not None else None
+    window_end_us = filled_end if filled_end is not None else (int(painted["end_us"]) if painted is not None else None)
+    lates = [r for r in records.get("late", []) if window_end_us is not None and int(r["t_us"]) <= window_end_us + 1]
+    result["largest_composition_dispatch_us"] = max((int(r["lateness_us"]) for r in lates), default=0) if window_end_us is not None else None
     result["dispatches_over_4ms_us"] = [int(r["lateness_us"]) for r in sorted(lates, key=lambda r: int(r["t_us"])) if int(r["lateness_us"]) >= LISTED_DISPATCH_US]
     result["composition_stages_us"] = composition
-    result["frame_phases_us"] = [
-        {"layout": phases["frame_layout"][i] if i < len(phases["frame_layout"]) else None, "paint": phases["frame_paint"][i] if i < len(phases["frame_paint"]) else None}
-        for i in range(min(FRAME_PHASE_FRAMES, max(len(phases["frame_layout"]), len(phases["frame_paint"]))))
-    ]
+    result["frame_phases_us"] = frame_phases(phase_spans)[:FRAME_PHASE_FRAMES]
     result["layout_probe_us"] = layout
     return result
+
+
+def frame_phases(spans: list[dict]) -> list[dict[str, int | None]]:
+    """One `{layout, paint}` per frame, in time order.
+
+    GDK runs the layout phase again within one frame when a layout handler
+    queues another (`gdkframeclockidle.c`, up to four times), and the probe
+    stamps each run, so a frame may carry several `frame_layout` spans before
+    its one `frame_paint`. Every layout span up to a paint belongs to that
+    paint's frame; pairing the i-th layout with the i-th paint instead
+    attributed a frame's second, near-empty layout run to the next frame.
+    """
+    frames: list[dict[str, int | None]] = []
+    layout: int | None = None
+    for record in sorted(spans, key=lambda r: (int(r["start_us"]), r.get("name") != "frame_layout")):
+        duration = int(record["end_us"]) - int(record["start_us"])
+        if record.get("name") == "frame_layout":
+            layout = (layout or 0) + duration
+        else:
+            frames.append({"layout": layout, "paint": duration})
+            layout = None
+    return frames
 
 
 def construction_verdicts(rows: list[dict], budget_us: int) -> list[dict]:
@@ -1808,11 +1898,53 @@ def construction_verdicts(rows: list[dict], budget_us: int) -> list[dict]:
                 **{k: v for k, v in construction.items() if k != "stages_us"},
                 "largest_stages_us": dict(list(construction.get("stages_us", {}).items())[:6]),
                 "fill_in_within_accepted": None if fill_in is None else fill_in <= ACCEPTED_FILL_IN_US,
+                "fill_in_over": fill_in is not None and fill_in > ACCEPTED_FILL_IN_US,
                 "over_budget": over,
                 "verdict": "over" if over else "within",
             }
         )
     return out
+
+
+def fill_in_median(construction: list[dict], reference_frame_us: int) -> dict[str, Any]:
+    """The content fill-in's median over the measured runs, against its target
+    of FILL_IN_MEDIAN_TARGET_FRAMES reference frames (reported, never enforced)."""
+    values = [int(c["fill_in_us"]) for c in construction if c.get("fill_in_us") is not None]
+    target = FILL_IN_MEDIAN_TARGET_FRAMES * reference_frame_us
+    if not values:
+        return {"median_us": None, "target_us": target, "within_target": None, "runs": 0}
+    median = int(statistics.median(values))
+    return {"median_us": median, "target_us": target, "within_target": median <= target, "runs": len(values)}
+
+
+def seed_populated_workspace(data_dir: Path, folder: Path) -> int:
+    """Write one workspace folder of synthetic entries and the `workspaces.json`
+    that restores it; return the number of top-level entries. Names only, with
+    one line of synthetic text per file: never a user file."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for index in range(POPULATED_DIRECTORIES):
+        directory = folder / f"dir-{index:03}"
+        directory.mkdir(exist_ok=True)
+        (directory / "nested.txt").write_text("nested\n", encoding="utf-8")
+    for index in range(POPULATED_FILES):
+        (folder / f"file-{index:03}.txt").write_text(f"synthetic {index}\n", encoding="utf-8")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    workspaces = {
+        "kind": "dev.cominotti.lushtext.workspace-state",
+        "version": 1,
+        "data": {
+            "current_scope": {"kind": "all"},
+            "workspaces": [
+                {
+                    "id": "responsiveness-populated",
+                    "name": "Populated",
+                    "folders": [{"id": "responsiveness-populated-folder", "path": str(folder)}],
+                }
+            ],
+        },
+    }
+    (data_dir / "workspaces.json").write_text(json.dumps(workspaces, indent=2) + "\n", encoding="utf-8")
+    return POPULATED_DIRECTORIES + POPULATED_FILES
 
 
 def isolate_dconf_activation(bus: Bus, config_dir: Path) -> None:
@@ -2567,9 +2699,12 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
     # remaining 29-42 ms are template instantiation and GTK's first present and
     # paint of the whole window, which no staging of secondary surfaces brings
     # under B_settle (docs/next/long-line-documents.md, C4).
+    # The content fill-in (shorten-window-content-fill-in) is enforced the same
+    # way: a release run over the accepted 40 ms fails only under the switch.
     construction_over = [c for c in construction if c["verdict"] == "over" and c.get("build_profile") == "release"]
+    fill_in_over = [c for c in construction if c.get("fill_in_over") and c.get("build_profile") == "release"]
     construction_enforced = not os.environ.get("CI") and os.environ.get("RESPONSIVENESS_CONSTRUCTION_ENFORCE") == "1"
-    if construction_over and construction_enforced:
+    if (construction_over or fill_in_over) and construction_enforced:
         failed = True
     summary = {
         "status": "failed" if failed else "passed",
@@ -2582,6 +2717,8 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         "frameless_cases": frameless,
         "budget_verdict": derived["budget_verdict"].get("verdict"),
         "construction_over_budget": [f"{c['case']}@{c['variant']}#{c['rep']}: {','.join(c['over_budget'])}" for c in construction_over],
+        "fill_in_over_accepted": [f"{c['case']}@{c['variant']}#{c['rep']}: fill-in {c['fill_in_us']} us" for c in fill_in_over],
+        "fill_in_median": fill_in_median(construction, budgets["REFERENCE_FRAME_US"]),
         "construction_enforced": construction_enforced,
     }
     (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -2744,14 +2881,22 @@ def render_markdown(report: dict) -> str:
             f"{entry.get('first_frame_us')} | {entry.get('largest_dispatch_before_first_frame_us')} | {entry['verdict']} {' '.join(entry['over_budget'])} | {stages} |"
         )
     lines += ["", "### Composition dispatches and first frames", ""]
-    lines.append("| Case | composition complete | fill-in (accepted ≤ 40000) | largest composition dispatch | dispatches ≥ 4 ms, in order | stage dispatches | frame layout / paint |")
-    lines.append("|---|---|---|---|---|---|---|")
+    median = fill_in_median(report.get("construction_c4", []), report["budgets"]["REFERENCE_FRAME_US"])
+    lines.append(
+        f"Fill-in median {median['median_us']} us over {median['runs']} run(s), target ≤ {median['target_us']} us "
+        f"({FILL_IN_MEDIAN_TARGET_FRAMES} reference frames): {'met' if median['within_target'] else 'not met' if median['within_target'] is False else 'n/a'}. "
+        f"Every run is judged against the accepted {ACCEPTED_FILL_IN_US} us; the first painted frame is the first frame paint after the present stage, in every build."
+    )
+    lines.append("")
+    lines.append(f"| Case | first painted frame | first presentation | composition complete | activation shown | fill-in (accepted ≤ {ACCEPTED_FILL_IN_US}) | largest composition dispatch | dispatches ≥ 4 ms, in order | stage dispatches | frame layout / paint |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for entry in report.get("construction_c4", []):
         stages = ", ".join(f"{k} {v}" for k, v in entry.get("composition_stages_us", {}).items())
         frames = ", ".join(f"{f.get('layout')}/{f.get('paint')}" for f in entry.get("frame_phases_us", []))
         dispatches = ", ".join(str(d) for d in entry.get("dispatches_over_4ms_us", []))
         lines.append(
-            f"| {entry['case']}@{entry['variant']}#{entry['rep']} | {entry.get('composition_complete_us')} | {entry.get('fill_in_us')} | "
+            f"| {entry['case']}@{entry['variant']}#{entry['rep']} | {entry.get('first_painted_frame_us')} | {entry.get('first_presentation_us')} | "
+            f"{entry.get('composition_complete_us')} | {entry.get('activation_shown_us')} | {entry.get('fill_in_us')} | "
             f"{entry.get('largest_composition_dispatch_us')} | {dispatches} | {stages} | {frames} |"
         )
     lines += ["", "## Cases", "", "| Case | Variant | Outcomes | Phase | Stall median / max (us) | Frame p95 gap | Input-to-frame max (us / frames) | IM calls / max bytes | AT events / max payload |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
@@ -3444,6 +3589,13 @@ def self_test() -> int:
     verdicts_c4 = construction_verdicts([{"case": "baseline/small", "variant": "plain", "rep": 0, "construction": summary_c4}], 16_000)
     expect(verdicts_c4[0]["verdict"] == "over" and verdicts_c4[0]["over_budget"] == ["window_construction", "largest_dispatch_before_first_frame", "largest_composition_dispatch"], f"construction verdict ({verdicts_c4})")
     expect(construction_case_id("fresh", "keyfile") == "baseline/small" and construction_case_id("steady", "dconf") == "baseline/small/steady-dconf", "construction case ids")
+    populated_case = next((c for c in full if c.id == POPULATED_CASE_ID), None)
+    expect(populated_case is not None and populated_case.attrs == {"profile": "steady", "backend": "keyfile", "populated": True} and populated_case.settings.get("workspace-sidebar-visible") is True and populated_case.settings.get("properties-sidebar-visible") is True, "the populated profile shows both panes over a steady keyfile profile")
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        entries = seed_populated_workspace(root / "data", root / "workspace")
+        state = json.loads((root / "data/workspaces.json").read_text(encoding="utf-8"))
+        expect(entries == len(list((root / "workspace").iterdir())) == 300 and state["kind"] == "dev.cominotti.lushtext.workspace-state" and state["data"]["workspaces"][0]["folders"][0]["path"] == str(root / "workspace"), "the populated workspace seeds a few hundred entries and restores them")
 
     # Staged composition (C4b): stage, frame-phase and layout spans are not
     # construction stages; every dispatch until composition completes counts.
@@ -3469,11 +3621,75 @@ def self_test() -> int:
     expect(composed is not None and list(composed["stages_us"]) == ["template"], f"composition, frame and layout spans are not construction stages ({composed and composed['stages_us']})")
     expect(composed is not None and composed["composition_stages_us"] == {"warm": 7_000, "construct": 12_000, "content": 1_000}, "composition stage dispatches by stage")
     expect(composed is not None and composed["frame_phases_us"] == [{"layout": 5_000, "paint": 3_000}, {"layout": 2_000, "paint": 1_000}], "frame phases in frame order")
+    rerun = frame_phases([
+        {"name": "frame_layout", "start_us": 0, "end_us": 7_000},
+        {"name": "frame_layout", "start_us": 7_000, "end_us": 7_020},
+        {"name": "frame_paint", "start_us": 7_020, "end_us": 9_000},
+        {"name": "frame_layout", "start_us": 20_000, "end_us": 20_300},
+        {"name": "frame_paint", "start_us": 20_300, "end_us": 21_000},
+    ])
+    expect(rerun == [{"layout": 7_020, "paint": 1_980}, {"layout": 300, "paint": 700}], f"a frame's repeated layout runs belong to that frame ({rerun})")
     expect(composed is not None and composed["layout_probe_us"] == [["window_measure_h", 3_000]], "the window's first measures are listed")
     expect(composed is not None and composed["composition_complete_us"] == 68_000 and composed["fill_in_us"] == 22_000, "composition complete and the content fill-in")
     expect(composed is not None and composed["largest_composition_dispatch_us"] == 18_000 and composed["dispatches_over_4ms_us"] == [7_000, 12_000, 18_000], "every dispatch until composition completes counts, none after")
     composed_verdict = construction_verdicts([{"case": "baseline/small", "variant": "plain", "rep": 0, "construction": composed}], 16_000)
     expect(composed_verdict[0]["over_budget"] == ["largest_composition_dispatch"] and composed_verdict[0]["fill_in_within_accepted"] is True, f"composition verdict ({composed_verdict})")
+
+    # The first frame where it is seen (shorten-window-content-fill-in, C4c).
+    # A build that ran an unseen frame on the unmapped window (ledger A51)
+    # reports `first_frame` on it; the lane takes the first frame paint after
+    # the present stage instead, in every build, and the first presentation
+    # from the frame records.
+    unseen_records = {
+        "span": [
+            {"kind": "span", "name": "frame_layout", "start_us": 18_000, "end_us": 20_000},
+            {"kind": "span", "name": "frame_paint", "start_us": 20_000, "end_us": 21_000},
+            {"kind": "span", "name": "first_frame", "start_us": 10_000, "end_us": 21_000},
+            {"kind": "span", "name": "composition_present", "start_us": 29_000, "end_us": 30_000},
+            {"kind": "span", "name": "frame_layout", "start_us": 43_000, "end_us": 46_000},
+            {"kind": "span", "name": "frame_paint", "start_us": 46_000, "end_us": 48_000},
+            {"kind": "span", "name": "composition_complete", "start_us": 2_000, "end_us": 70_000},
+        ],
+        "frame": [
+            {"kind": "frame", "frame_counter": 0, "frame_time_us": 18_000, "presentation_us": None},
+            {"kind": "frame", "frame_counter": 1, "frame_time_us": 43_000, "presentation_us": 51_000},
+        ],
+        "late": [],
+    }
+    unseen = construction_summary(unseen_records, {}, Path("target/responsiveness/release/lushtext"))
+    expect(unseen is not None and unseen["first_painted_frame_us"] == 46_000 and unseen["first_presentation_us"] == 49_000, f"the first painted frame is the first paint after present, not the unseen frame ({unseen})")
+    expect(unseen is not None and unseen["fill_in_us"] == 22_000, f"the fill-in starts at the first mapped frame ({unseen and unseen['fill_in_us']})")
+    unpresented = construction_summary({**unseen_records, "frame": [dict(unseen_records["frame"][1], presentation_us=None), {"kind": "frame", "frame_counter": 2, "frame_time_us": 60_000, "presentation_us": 62_000}]}, {}, Path("target/responsiveness/release/lushtext"))
+    expect(unpresented is not None and unpresented["first_presentation_us"] is None, f"a later frame's presentation is not the first mapped frame's ({unpresented and unpresented['first_presentation_us']})")
+
+    # The opened document shown after composition completed: the fill-in and
+    # the budgeted dispatches reach the activation's shown frame.
+    shown_records = {
+        "span": unseen_records["span"] + [
+            # Another window's span (another origin), logged first, is not
+            # this window's.
+            {"kind": "span", "name": "composition_activation_shown", "start_us": 1_000, "end_us": 190_000},
+            {"kind": "span", "name": "composition_activation_shown", "start_us": 2_000, "end_us": 80_000},
+        ],
+        "frame": unseen_records["frame"],
+        "late": [{"t_us": 75_000, "lateness_us": 17_000}, {"t_us": 95_000, "lateness_us": 30_000}],
+    }
+    shown = construction_summary(shown_records, {}, Path("target/responsiveness/release/lushtext"))
+    expect(shown is not None and shown["activation_shown_us"] == 78_000 and shown["fill_in_us"] == 32_000, f"the fill-in reaches the activation's shown frame ({shown})")
+    expect(shown is not None and shown["largest_composition_dispatch_us"] == 17_000, "a dispatch between complete and activation shown is budgeted, none after")
+    expect(shown is not None and "activation_shown" not in shown["composition_stages_us"], f"activation shown is not a stage dispatch ({shown and shown['composition_stages_us']})")
+    shown_verdict = construction_verdicts([{"case": "baseline/small", "variant": "plain", "rep": 0, "construction": shown}], 16_000)
+    expect(shown_verdict[0]["over_budget"] == ["largest_composition_dispatch"] and shown_verdict[0]["fill_in_over"] is False, f"activation-shown verdict ({shown_verdict})")
+
+    # A fill-in over the accepted 40 ms is flagged (and fails the run only
+    # under RESPONSIVENESS_CONSTRUCTION_ENFORCE=1); the median is reported
+    # against three reference frames.
+    slow_records = {**shown_records, "span": unseen_records["span"][:-1] + [{"kind": "span", "name": "composition_complete", "start_us": 2_000, "end_us": 90_000}], "late": []}
+    slow = construction_summary(slow_records, {}, Path("target/responsiveness/release/lushtext"))
+    slow_verdict = construction_verdicts([{"case": "baseline/small", "variant": "plain", "rep": 0, "construction": slow}], 16_000)
+    expect(slow is not None and slow["fill_in_us"] == 42_000 and slow_verdict[0]["fill_in_over"] is True and slow_verdict[0]["fill_in_within_accepted"] is False, f"a fill-in over 40 ms is flagged ({slow_verdict})")
+    median = fill_in_median(shown_verdict + slow_verdict + composed_verdict, 8_333)
+    expect(median == {"median_us": 32_000, "target_us": 24_999, "within_target": False, "runs": 3}, f"the fill-in median against three reference frames ({median})")
 
     if failures:
         print("responsiveness-smoke-driver self-test failed:", file=sys.stderr)

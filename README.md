@@ -462,7 +462,8 @@ Cargo workspace:
   `ui/window/geometry/policy.rs`, keeps draft intent epochs in
   `ui/window/drafts/`, bounds progressive tab restoration in
   `ui/window/session_restore/`, composes each window in bounded stages
-  (build whole, reveal staged content over the first frames) in
+  (build whole, realize and present in one dispatch, reveal the staged
+  content in one dispatch after the first frame) in
   `ui/window/composition/`, and divides note workflows across the private
   `ui/window/notes/` role home. The Markdown preview
   adapter is likewise split under `ui/markdown_preview/` into behavior-neutral

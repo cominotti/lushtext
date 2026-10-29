@@ -9,8 +9,10 @@
 //! - `open` and `activate` return without a window, hold the application, and
 //!   a second request before stage C merges into one window;
 //! - activation files open in bounded turns;
-//! - the stage order, and that no reveal runs before the frame showing its
-//!   predecessor painted;
+//! - realize and present share one dispatch, so every frame of a requested
+//!   window paints on the mapped window (ledger A51);
+//! - the stage order, that no reveal runs before the first frame painted, and
+//!   that one dispatch after it reveals every pending reveal stage;
 //! - every forced path, issued before each stage, ends in the state a composed
 //!   window reaches, and reads and projections force nothing;
 //! - revealing staged content never moves the rail or the pane (design D3), and
@@ -293,33 +295,82 @@ fn test_many_activation_files_open_in_bounded_turns() {
 
 // --- Stage order (D1, D7) ----------------------------------------------------
 
+/// A window composed through the request path realizes and presents in one
+/// dispatch (`shorten-window-content-fill-in` D1), so no frame runs on the
+/// unmapped window (ledger A51), and the first frame its construction evidence
+/// records is a mapped one.
+#[test]
+fn test_a_requested_window_paints_every_frame_mapped() {
+    let app = app();
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let path = dir.path().join("mapped.txt");
+    fixture::write_text(&path, "mapped\n");
+    // One log per window the request path adds: whether each frame painted
+    // while the window was mapped.
+    type MappedLog = Rc<RefCell<Vec<bool>>>;
+    let logs: Rc<RefCell<Vec<MappedLog>>> = Rc::default();
+    let record = Rc::clone(&logs);
+    app.connect_window_added(move |_, window| {
+        record
+            .borrow_mut()
+            .push(crate::common::record_after_paint(window, |window| {
+                Some(window.is_mapped())
+            }));
+    });
+    app.open(&[gio::File::for_path(&path)], "");
+    let mut window = None;
+    // Completion and the activation's shown frame are separate frames that
+    // may come in either order (the activation turn may follow the frame
+    // that completes composition), so wait for both.
+    wait_until(COMPOSED, || {
+        window = lushtext_windows(&app).into_iter().next();
+        window.as_ref().is_some_and(|window| {
+            let evidence = evidence(window);
+            evidence.complete && evidence.activation_shown_us.is_some()
+        })
+    });
+    let window = window.expect("the request composed a window");
+    let mapped_states: Vec<bool> = logs
+        .borrow()
+        .iter()
+        .flat_map(|log| log.borrow().clone())
+        .collect();
+    assert!(
+        !mapped_states.is_empty(),
+        "precondition: the harness delivers after-paint"
+    );
+    assert!(
+        mapped_states.iter().all(|mapped| *mapped),
+        "a frame ran on the unmapped window: {mapped_states:?}"
+    );
+    let construction = shell_geometry_evidence(&window).window_construction;
+    assert!(construction.first_frame_us.is_some(), "{construction:?}");
+    assert!(
+        construction.activation_shown_us.is_some(),
+        "the activation's shown frame is recorded: {construction:?}"
+    );
+    assert!(
+        construction.activation_shown_us >= construction.shell_first_frame_us,
+        "the opened document is shown no earlier than the first frame: {construction:?}"
+    );
+}
+
 /// What one painted frame showed: the stages done when it painted.
 type FrameLog = Rc<RefCell<Vec<CompositionEvidence>>>;
 
 /// Record the composition evidence at every `after-paint`, after the
 /// workflow's own handler (connected first, at realize) decided.
 fn record_frames(window: &LushtextWindow) -> FrameLog {
-    let log: FrameLog = Rc::new(RefCell::new(Vec::new()));
-    let recorder = Rc::clone(&log);
-    window.connect_realize(move |window| {
-        let Some(clock) = window.frame_clock() else {
-            return;
-        };
-        let recorder = Rc::clone(&recorder);
-        let window_weak = window.downgrade();
-        clock.connect_after_paint(move |_| {
-            if let Some(window) = window_weak.upgrade()
-                && !window.composition_evidence().complete
-            {
-                recorder.borrow_mut().push(window.composition_evidence());
-            }
-        });
-    });
-    log
+    crate::common::record_after_paint(window.upcast_ref(), |window| {
+        let evidence = window
+            .downcast_ref::<LushtextWindow>()?
+            .composition_evidence();
+        (!evidence.complete).then_some(evidence)
+    })
 }
 
 #[test]
-fn test_reveal_stages_follow_painted_frames_in_order() {
+fn test_every_reveal_runs_in_one_dispatch_after_the_first_frame() {
     seed_layout(true, true, 1600, 900);
     let app = app();
     let window = LushtextWindow::new(app.upcast_ref());
@@ -357,18 +408,20 @@ fn test_reveal_stages_follow_painted_frames_in_order() {
         "the first frame shows the shell only: {:?}",
         frames[0]
     );
-    let mut previous: Vec<CompositionStage> = Vec::new();
+    // One dispatch after the first frame reveals every stage
+    // (`shorten-window-content-fill-in` D2): no frame shows a partial set,
+    // and composition completes on the frame after that dispatch.
+    let all_reveals = [
+        CompositionStage::Content,
+        CompositionStage::Workspace,
+        CompositionStage::Properties,
+    ];
     for frame in frames.iter() {
         let current = reveals(frame);
         assert!(
-            current.len() <= previous.len() + 1,
-            "one frame carried two stages: {previous:?} -> {current:?}"
+            current.is_empty() || current == all_reveals,
+            "a frame showed a partial set of reveals: {current:?}"
         );
-        assert!(
-            current.starts_with(&previous),
-            "stages ran out of order: {current:?}"
-        );
-        previous = current;
     }
     let composed = evidence(&window);
     assert!(composed.content_visible && composed.workspace_visible && composed.properties_visible);
@@ -1105,6 +1158,44 @@ fn test_closing_during_each_stage_stops_composition() {
             "a stage ran after the window closed during {stage:?}"
         );
     }
+}
+
+/// The merged realize-and-present dispatch (`shorten-window-content-fill-in`
+/// D1) is a stage too: a window that leaves its application after stage C and
+/// before that dispatch runs is neither realized nor presented.
+#[test]
+fn test_leaving_before_the_realize_and_present_dispatch_runs_neither() {
+    let app = app();
+    app.activate();
+    let context = glib::MainContext::default();
+    let mut window = None;
+    for _ in 0..1_000 {
+        context.iteration(false);
+        window = lushtext_windows(&app).into_iter().next();
+        if window.is_some() {
+            break;
+        }
+    }
+    let window = window.expect("stage C constructed the window");
+    let at_construction = evidence(&window);
+    assert!(
+        at_construction.dispatch_queued
+            && !at_construction.done.contains(CompositionStage::Realize),
+        "precondition: the realize-and-present dispatch is queued: {at_construction:?}"
+    );
+    window.destroy();
+    flush_after_delay(Duration::from_millis(200));
+    let after = evidence(&window);
+    assert!(after.torn_down, "{after:?}");
+    assert!(
+        !window.is_realized() && !window.is_mapped(),
+        "a dispatch realized or presented a window that left its application"
+    );
+    assert!(
+        !after.done.contains(CompositionStage::Realize)
+            && !after.done.contains(CompositionStage::Present),
+        "{after:?}"
+    );
 }
 
 #[test]

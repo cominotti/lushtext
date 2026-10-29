@@ -55,6 +55,10 @@ pub struct CompositionEvidence {
     /// From the window request (or the construction) until composition
     /// completed, in microseconds.
     pub composition_complete_us: Option<u64>,
+    /// From the window request (or the construction) to the first frame painted
+    /// after the activation's queued file opens first drained; `None` when the
+    /// request named no files, or until that frame painted.
+    pub activation_shown_us: Option<u64>,
     /// The largest main-loop dispatch until composition completed, from the
     /// responsiveness watchdog; `None` without it, never `Some(0)`.
     pub largest_composition_dispatch_us: Option<u64>,
@@ -98,6 +102,7 @@ impl LushtextWindow {
             forced_stages: plan.map_or(0, CompositionPlan::forced_stages),
             shell_first_frame_us: since_origin(facts.first_frame_us),
             composition_complete_us: since_origin(facts.complete_us),
+            activation_shown_us: since_origin(facts.activation_shown_us),
             largest_composition_dispatch_us: facts.largest_dispatch_us,
             activation_opens_queued: facts.activation_queued,
             dispatch_queued: facts.dispatch_queued,

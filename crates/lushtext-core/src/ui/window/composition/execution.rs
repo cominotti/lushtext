@@ -3,11 +3,12 @@
 //! Role: coordination (`execution`) of the window-composition workflow.
 //!
 //! Owns everything that is not a decision: the application's pending request,
-//! the idle dispatches of stages W, C, R and P, the frame-clock handler that
-//! gates B1–B3 on painted frames, the reveals themselves, forced reveals, the
-//! bounded activation-open turns, the concealment of revealer children, and
-//! teardown when the window leaves its application. Every *which* and *when*
-//! comes from `super::policy`.
+//! the idle dispatches of stages W and C and the shared one of R and P, the
+//! frame-clock handler that queues the reveal dispatch after the first frame
+//! and stamps the activation's shown frame, the reveals themselves, forced
+//! reveals, the bounded activation-open turns, the concealment of revealer
+//! children, and teardown when the window leaves its application. Every
+//! *which* and *when* comes from `super::policy`.
 //!
 //! **Borrow discipline.** Revealing a surface flips a widget's visibility, which
 //! emits notifications whose handlers may call [`LushtextWindow::ensure_composed`]
@@ -24,7 +25,7 @@ use gtk4::{gio, glib};
 
 use super::policy::{
     CompositionFacts, CompositionPlan, CompositionStage, FramePaintedDecision, FramePaintedFacts,
-    StagedSurface, activation_opens_this_turn, frame_painted_decision, stage_for_surface,
+    StageSet, StagedSurface, activation_opens_this_turn, frame_painted_decision, stage_for_surface,
 };
 use super::seams::PendingWindowRequest;
 use super::test_policy;
@@ -67,7 +68,7 @@ type AfterActivation = Box<dyn FnOnce(&LushtextWindow)>;
 struct CompositionRuntime {
     /// `None` until the window begins composing (end of stage C).
     plan: Option<CompositionPlan>,
-    /// The queued stage dispatch (R, P, or one reveal), if any.
+    /// The queued stage dispatch (R and P, or the reveals), if any.
     dispatch: Option<glib::SourceId>,
     /// The window's frame clock and this workflow's `after-paint` handler.
     frame_handler: Option<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>,
@@ -83,6 +84,8 @@ struct CompositionRuntime {
     first_frame_us: Option<i64>,
     /// When composition completed.
     complete_us: Option<i64>,
+    /// Where the activation's shown frame stands.
+    activation_shown: ActivationShown,
     /// The largest main-loop dispatch until completion, when a watchdog ran.
     largest_dispatch_us: Option<u64>,
     /// Activation files waiting for their bounded turn.
@@ -98,6 +101,35 @@ struct CompositionRuntime {
     timed_hold: Option<std::time::Duration>,
 }
 
+/// The activation's shown frame: the first mapped frame painted after the
+/// activation queue, admitted before composition completed, first drained.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ActivationShown {
+    /// No file was admitted before composition completed: nothing to stamp.
+    #[default]
+    NotAwaited,
+    /// Files were admitted and their turns have not all run.
+    Awaiting,
+    /// The queue drained; the next mapped frame shows the opened tabs.
+    Drained,
+    /// The frame painted at this time.
+    Shown(i64),
+}
+
+impl ActivationShown {
+    /// Whether the frame handler must stay connected for this stamp.
+    const fn pending(self) -> bool {
+        matches!(self, Self::Awaiting | Self::Drained)
+    }
+
+    const fn shown_us(self) -> Option<i64> {
+        match self {
+            Self::Shown(at) => Some(at),
+            _ => None,
+        }
+    }
+}
+
 /// What the evidence surface reads, in one borrow.
 pub(super) struct CompositionRuntimeFacts {
     pub(super) plan: Option<CompositionPlan>,
@@ -107,6 +139,7 @@ pub(super) struct CompositionRuntimeFacts {
     pub(super) origin_us: i64,
     pub(super) first_frame_us: Option<i64>,
     pub(super) complete_us: Option<i64>,
+    pub(super) activation_shown_us: Option<i64>,
     pub(super) largest_dispatch_us: Option<u64>,
     pub(super) activation_queued: usize,
     pub(super) dispatch_queued: bool,
@@ -123,6 +156,7 @@ impl CompositionState {
             origin_us: runtime.origin_us,
             first_frame_us: runtime.first_frame_us,
             complete_us: runtime.complete_us,
+            activation_shown_us: runtime.activation_shown.shown_us(),
             largest_dispatch_us: runtime.largest_dispatch_us,
             activation_queued: runtime.activation.len(),
             dispatch_queued: runtime.dispatch.is_some(),
@@ -237,7 +271,7 @@ fn run_construct(app_weak: &glib::WeakRef<LushtextApplication>) {
         start_us,
         construction_spans::now_us(),
     );
-    window.queue_lifecycle_dispatch(CompositionStage::Realize);
+    window.queue_realize_and_present();
 }
 
 // --- The window side --------------------------------------------------------
@@ -352,6 +386,9 @@ impl LushtextWindow {
                 return;
             }
             runtime.activation.extend(files);
+            if !runtime.complete && runtime.activation_shown.shown_us().is_none() {
+                runtime.activation_shown = ActivationShown::Awaiting;
+            }
             runtime
                 .plan
                 .as_ref()
@@ -452,43 +489,53 @@ impl LushtextWindow {
         self.queue_draw();
     }
 
-    // --- Lifecycle stages R and P ------------------------------------------
+    // --- Lifecycle stages R and P, in one dispatch -------------------------
 
-    /// Queue stage R or P in its own `G_PRIORITY_DEFAULT_IDLE` dispatch.
-    fn queue_lifecycle_dispatch(&self, stage: CompositionStage) {
+    /// Queue stages R and P in one `G_PRIORITY_DEFAULT_IDLE` dispatch.
+    ///
+    /// They share it because realizing alone schedules a frame that runs
+    /// before the next default-idle source on the still unmapped window: that
+    /// frame is never presented, and the frame clock then paces the first
+    /// visible frame a full `FRAME_INTERVAL` (16.7 ms) behind it (ledger A51,
+    /// `shorten-window-content-fill-in` D1).
+    fn queue_realize_and_present(&self) {
         let window_weak = self.downgrade();
         let source = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
             if let Some(window) = window_weak.upgrade() {
                 window.imp().composition.runtime.borrow_mut().dispatch = None;
-                window.run_lifecycle_stage(stage);
+                window.run_realize_and_present();
             }
             glib::ControlFlow::Break
         });
         self.imp().composition.runtime.borrow_mut().dispatch = Some(source);
     }
 
-    fn run_lifecycle_stage(&self, stage: CompositionStage) {
+    /// Stage R (realize, carrying GTK's one-time first-realize cost, A46) and
+    /// stage P (CSS validation and map of the visible tree), back to back,
+    /// each with its own span.
+    fn run_realize_and_present(&self) {
         if self.imp().composition.runtime.borrow().torn_down {
             return;
         }
-        let start_us = construction_spans::now_us();
-        match stage {
-            CompositionStage::Realize => {
-                if !self.is_realized() {
-                    WidgetExt::realize(self);
-                }
-                construction_spans::emit(stage.span_name(), start_us, construction_spans::now_us());
-                self.queue_lifecycle_dispatch(CompositionStage::Present);
-            }
-            CompositionStage::Present => {
-                self.present();
-                // A caller may have mapped the window already, so `present`
-                // queues nothing; the frame after P is what resumes the reveals.
-                self.queue_draw();
-                construction_spans::emit(stage.span_name(), start_us, construction_spans::now_us());
-            }
-            _ => {}
+        let realize_us = construction_spans::now_us();
+        if !self.is_realized() {
+            WidgetExt::realize(self);
         }
+        let present_us = construction_spans::now_us();
+        construction_spans::emit(
+            CompositionStage::Realize.span_name(),
+            realize_us,
+            present_us,
+        );
+        self.present();
+        // A caller may have mapped the window already, so `present` queues
+        // nothing; the frame after P is what resumes the reveals.
+        self.queue_draw();
+        construction_spans::emit(
+            CompositionStage::Present.span_name(),
+            present_us,
+            construction_spans::now_us(),
+        );
     }
 
     /// The window was realized (by stage R or by its caller): record R and
@@ -529,11 +576,16 @@ impl LushtextWindow {
         }
     }
 
-    // --- Reveal stages B1–B3, gated on painted frames ----------------------
+    // --- Reveal stages B1–B3, in one dispatch after the first frame ---------
 
-    /// One frame of this window painted: ask the policy what it decides.
+    /// One frame of this window painted: stamp the first frame and the
+    /// activation's shown frame, and ask the policy what it decides.
     fn composition_frame_painted(&self) {
-        let decision = {
+        // A frame on the unmapped window is never seen (ledger A51).
+        if !self.is_mapped() {
+            return;
+        }
+        let (decision, shown) = {
             let mut runtime = self.imp().composition.runtime.borrow_mut();
             if runtime.torn_down {
                 return;
@@ -552,53 +604,74 @@ impl LushtextWindow {
                     });
                 }
             }
-            frame_painted_decision(
+            // Stamped after the first frame, which it can never precede.
+            let shown = if runtime.first_frame_us.is_some()
+                && runtime.activation_shown == ActivationShown::Drained
+            {
+                let shown_us = construction_spans::now_us();
+                runtime.activation_shown = ActivationShown::Shown(shown_us);
+                Some((runtime.origin_us, shown_us))
+            } else {
+                None
+            };
+            let decision = frame_painted_decision(
                 plan,
                 FramePaintedFacts {
                     dispatch_queued: runtime.dispatch.is_some(),
                     hold_before: runtime.hold_before,
                     complete: runtime.complete,
                 },
-            )
+            );
+            (decision, shown)
         };
+        if let Some((origin_us, shown_us)) = shown {
+            construction_spans::emit("composition_activation_shown", origin_us, shown_us);
+            self.release_composition_frame_handler_when_done();
+        }
         match decision {
             FramePaintedDecision::Wait => {}
-            FramePaintedDecision::Queue(stage) => self.queue_reveal_dispatch(stage),
+            FramePaintedDecision::Queue(stages) => self.queue_reveal_dispatch(stages),
             FramePaintedDecision::Complete => self.complete_composition(),
         }
     }
 
-    /// Queue `stage`'s reveal in its own dispatch, after the painted frame.
-    fn queue_reveal_dispatch(&self, stage: CompositionStage) {
+    /// Queue one dispatch that reveals `stages`, after the painted frame.
+    fn queue_reveal_dispatch(&self, stages: StageSet) {
         let window_weak = self.downgrade();
         let source = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
             if let Some(window) = window_weak.upgrade() {
-                window.run_reveal_dispatch(stage);
+                window.run_reveal_dispatch(stages);
             }
             glib::ControlFlow::Break
         });
         self.imp().composition.runtime.borrow_mut().dispatch = Some(source);
     }
 
-    fn run_reveal_dispatch(&self, stage: CompositionStage) {
-        let newly = {
-            let mut runtime = self.imp().composition.runtime.borrow_mut();
-            runtime.dispatch = None;
-            if runtime.torn_down {
-                return;
+    /// Reveal `stages` in run order, each with its own span; a stage a forced
+    /// reveal already ran is skipped. One dispatch reveals them all, so the
+    /// content, the sidebar and the properties panel appear in one frame
+    /// (`shorten-window-content-fill-in` D2).
+    fn run_reveal_dispatch(&self, stages: StageSet) {
+        self.imp().composition.runtime.borrow_mut().dispatch = None;
+        for stage in stages.iter() {
+            // Checked per stage: a reveal's notifications may re-enter and
+            // tear the window down mid-dispatch.
+            let newly = {
+                let mut runtime = self.imp().composition.runtime.borrow_mut();
+                !runtime.torn_down
+                    && runtime
+                        .plan
+                        .as_mut()
+                        .is_some_and(|plan| plan.mark_done(stage))
+            };
+            if newly {
+                let start_us = construction_spans::now_us();
+                self.reveal_stage(stage);
+                construction_spans::emit(stage.span_name(), start_us, construction_spans::now_us());
             }
-            runtime
-                .plan
-                .as_mut()
-                .is_some_and(|plan| plan.mark_done(stage))
-        };
-        if newly {
-            let start_us = construction_spans::now_us();
-            self.reveal_stage(stage);
-            construction_spans::emit(stage.span_name(), start_us, construction_spans::now_us());
         }
-        // The frame showing this stage (or, when a forced reveal ran it first,
-        // the next frame) decides what follows.
+        // The frame showing these stages (or, when a forced reveal ran them
+        // first, the next frame) decides what follows.
         self.queue_draw();
     }
 
@@ -639,7 +712,7 @@ impl LushtextWindow {
     }
 
     fn complete_composition(&self) {
-        let (frame, origin_us) = {
+        let origin_us = {
             let mut runtime = self.imp().composition.runtime.borrow_mut();
             if runtime.complete {
                 return;
@@ -648,16 +721,29 @@ impl LushtextWindow {
             runtime.complete_us = Some(construction_spans::now_us());
             runtime.largest_dispatch_us =
                 construction_spans::largest_dispatch_since_us(runtime.origin_us);
-            (runtime.frame_handler.take(), runtime.origin_us)
+            runtime.origin_us
         };
-        if let Some((clock, id)) = frame {
-            clock.disconnect(id);
-        }
         construction_spans::emit(
             "composition_complete",
             origin_us,
             construction_spans::now_us(),
         );
+        self.release_composition_frame_handler_when_done();
+    }
+
+    /// Disconnect the frame handler once composition completed and the
+    /// activation's shown frame, if one is awaited, was stamped.
+    fn release_composition_frame_handler_when_done(&self) {
+        let frame = {
+            let mut runtime = self.imp().composition.runtime.borrow_mut();
+            if !runtime.complete || runtime.activation_shown.pending() {
+                return;
+            }
+            runtime.frame_handler.take()
+        };
+        if let Some((clock, id)) = frame {
+            clock.disconnect(id);
+        }
     }
 
     // --- Activation opens in bounded turns ---------------------------------
@@ -708,8 +794,19 @@ impl LushtextWindow {
             self.queue_activation_turn();
             return;
         }
-        let deferred =
-            std::mem::take(&mut self.imp().composition.runtime.borrow_mut().after_activation);
+        let (deferred, awaits_shown) = {
+            let mut runtime = self.imp().composition.runtime.borrow_mut();
+            let awaits_shown = runtime.activation_shown == ActivationShown::Awaiting;
+            if awaits_shown {
+                runtime.activation_shown = ActivationShown::Drained;
+            }
+            (std::mem::take(&mut runtime.after_activation), awaits_shown)
+        };
+        if awaits_shown {
+            // The next mapped frame shows the opened files' tabs; make sure one
+            // runs even when the turn changed nothing that queues a redraw.
+            self.queue_draw();
+        }
         for work in deferred {
             work(self);
         }

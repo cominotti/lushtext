@@ -1129,6 +1129,21 @@ while an owned one is reported as a finding; so does a measured case that
   frame, the largest dispatch before it, each construction stage, the settings
   flush); `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` makes an over-budget
   LushText-owned span on the release build fail the run (never in CI).
+  A fifth construction profile, `baseline/small/steady-populated`
+  (`shorten-window-content-fill-in`), is a steady keyfile profile with one
+  restored workspace folder of 300 synthetic entries and both side panes
+  shown. The composition table reports **the first painted frame** derived the
+  same way for every build (the end of the first `frame_paint` that starts
+  after `composition_present`, so a build that ran an unseen frame on the
+  unmapped window, ledger A51, is not credited with it), the **first
+  presentation** from the `frame` records, composition complete, **activation
+  shown** (the first frame after the activation's file opens drained), and the
+  **content fill-in**, `max(complete, activation shown) − first painted frame`.
+  Every dispatch up to that later point is budgeted; each run's fill-in is
+  judged against the maintainer's 40 ms (`ACCEPTED_FILL_IN_US`; a run over it
+  fails only under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1`) and the median is
+  reported against three reference frames. A frame's repeated layout runs are
+  summed into that frame's `frame_layout`.
   Since `first-frame-window-shell` the window composes in stages, and the
   verdict covers **every dispatch until composition completes** (the largest
   watchdog lateness up to the `composition_complete` span,

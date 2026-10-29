@@ -73,6 +73,12 @@ pub mod a49 {
 pub mod a50 {
     pub use crate::probes::a50::{CONDITION_SP, MATCHING_WIDTH, WIDE_WIDTH};
 }
+/// The A51 probe's fixture and the values it judges, for its sample.
+pub mod a51 {
+    pub use crate::probes::a51::{
+        AfterPaint, Composed, FRAME_INTERVAL_US, Order, PACED_GAP_FLOOR_US,
+    };
+}
 /// The values the A1 probe drives its fixture with, for its sample.
 pub mod a01 {
     pub use crate::probes::a01::{SCROLLED_ROW, TALL_VIEWPORT};

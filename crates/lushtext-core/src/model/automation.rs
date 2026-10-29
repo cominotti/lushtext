@@ -792,7 +792,8 @@ pub struct AutomationWindowConstructionSnapshot {
     pub startup_lushtext_us: Option<u64>,
     /// From `LushtextWindow::new` until control returned to the main loop.
     pub window_construction_us: Option<u64>,
-    /// From `LushtextWindow::new` until the window's first painted frame.
+    /// From `LushtextWindow::new` until the window's first frame painted while
+    /// it was mapped.
     pub first_frame_us: Option<u64>,
     /// The largest main-loop dispatch before the first frame; `null` in a build
     /// without the responsiveness watchdog, never `0`.
@@ -807,6 +808,9 @@ pub struct AutomationWindowConstructionSnapshot {
     pub shell_first_frame_us: Option<u64>,
     /// From the window request until composition completed.
     pub composition_complete_us: Option<u64>,
+    /// From the window request to the first frame painted after the
+    /// activation's file opens ran; `null` when the request named no files.
+    pub activation_shown_us: Option<u64>,
     /// The largest main-loop dispatch until composition completed; `null`
     /// without the responsiveness watchdog, never `0`.
     pub largest_composition_dispatch_us: Option<u64>,

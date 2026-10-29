@@ -749,6 +749,23 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a50),
     },
+    Axiom {
+        id: AxiomId::new(51),
+        name: "a51_a_realize_frame_runs_unmapped_and_paces_the_first_visible_frame",
+        statement: "realizing a toplevel schedules a frame whose GDK_PRIORITY_REDRAW paint source \
+                    runs ahead of G_PRIORITY_DEFAULT_IDLE sources; on a surface not yet mapped \
+                    that frame emits after-paint and is never presented, and without \
+                    presentation timings the frame clock starts the next frame no earlier than \
+                    one FRAME_INTERVAL (16,667 us) after it; realizing and presenting in one \
+                    dispatch runs no frame on the unmapped surface",
+        dependent_designs: &[
+            "LushText window composition (shorten-window-content-fill-in, D1): stage R \
+             realizes and presents in one dispatch, so the window's first frame is its first \
+             presented frame and is not paced behind an unseen one",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a51),
+    },
 ];
 
 #[cfg(test)]

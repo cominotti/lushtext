@@ -728,3 +728,32 @@ pub fn test_window_with_restored_size(
     seed_restored_window_size(width, height);
     test_window()
 }
+
+/// Record `project(window)` at every `after-paint` of `window`'s frame clock,
+/// from its realize on, skipping frames where it returns `None`. The handler
+/// runs after the window's own handlers (connected earlier, in `constructed`),
+/// so it sees what they decided for that frame.
+pub fn record_after_paint<T: 'static>(
+    window: &gtk4::Window,
+    project: impl Fn(&gtk4::Window) -> Option<T> + 'static,
+) -> std::rc::Rc<std::cell::RefCell<Vec<T>>> {
+    let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorder = std::rc::Rc::clone(&log);
+    let project = std::rc::Rc::new(project);
+    window.connect_realize(move |window| {
+        let Some(clock) = window.frame_clock() else {
+            return;
+        };
+        let recorder = std::rc::Rc::clone(&recorder);
+        let project = std::rc::Rc::clone(&project);
+        let window_weak = window.downgrade();
+        clock.connect_after_paint(move |_| {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(value) = project(&window)
+            {
+                recorder.borrow_mut().push(value);
+            }
+        });
+    });
+    log
+}

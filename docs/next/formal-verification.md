@@ -363,6 +363,16 @@ destruction had already disposed (GLib criticals), A49 counted re-measures
 against GTK's measure cache, and A50's added-after-map case stopped waiting
 before the swap frame.
 
+`shorten-window-content-fill-in` (C4c, 2026-10-29) added **A51**: realizing a
+toplevel schedules a frame whose `GDK_PRIORITY_REDRAW` paint source runs ahead
+of default-idle sources; on the still unmapped surface it emits `after-paint`,
+is never presented, and, with no presentation timings, paces the next frame one
+`FRAME_INTERVAL` (16,667 µs) later; realizing and presenting in one dispatch
+runs no such frame. The composition's merged realize-and-present dispatch cites
+it, and the first frame is now measured on the mapped window. No Kani harness
+was added, for the same reason as C4b (a finite stage order, enumerated by unit
+tests); no envelope cites it.
+
 ### Phase 2 — Kani lane
 
 - Add a `make kani` target, and an optional CI job using

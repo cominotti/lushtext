@@ -19,10 +19,11 @@ use crate::ui::window::session_restore::policy::SESSION_RESTORE_PAGES_PER_TURN;
 /// One stage of a window's composition, in the order they run.
 ///
 /// `Warm`, `Construct`, `Realize` and `Present` are **lifecycle** stages: they
-/// run from successive idle dispatches and are never forced. `Content`,
-/// `Workspace` and `Properties` are **reveal** stages: each makes one staged
-/// surface visible, runs only after the frame showing its predecessor painted,
-/// and may be forced by an operation that needs its surface.
+/// run from idle dispatches (`Realize` and `Present` share one, ledger A51) and
+/// are never forced. `Content`, `Workspace` and `Properties` are **reveal**
+/// stages: each makes one staged surface visible; every one still pending runs
+/// in one dispatch after the window's first frame painted, and each may be
+/// forced earlier by an operation that needs its surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CompositionStage {
     /// W: one-time text and icon initialisation, once per process.
@@ -269,13 +270,18 @@ impl CompositionPlan {
         self.forced
     }
 
-    /// The next scheduled reveal stage, once the window is presented.
+    /// The scheduled reveal stages one dispatch runs now, once the window is
+    /// presented: every pending reveal before `hold_before` (a test policy's
+    /// hold), in run order. Empty before stage P.
     #[must_use]
-    pub fn next_scheduled_reveal(self) -> Option<CompositionStage> {
+    pub fn scheduled_reveals_now(self, hold_before: Option<CompositionStage>) -> StageSet {
         if !self.done.contains(CompositionStage::Present) {
-            return None;
+            return StageSet::EMPTY;
         }
-        self.pending().iter().find(|stage| stage.is_reveal())
+        self.pending()
+            .iter()
+            .filter(|stage| stage.is_reveal() && hold_before.is_none_or(|hold| *stage < hold))
+            .fold(StageSet::EMPTY, StageSet::with)
     }
 
     /// The stages `ensure_composed(target)` runs now, in order: `target`'s
@@ -340,17 +346,21 @@ pub struct FramePaintedFacts {
 pub enum FramePaintedDecision {
     /// Nothing to do: not presented yet, already queued, held, or complete.
     Wait,
-    /// Queue `stage`'s dispatch: the frame showing its predecessor painted.
-    Queue(CompositionStage),
+    /// Queue one dispatch that reveals these stages, in run order: the
+    /// window's first frame painted (`shorten-window-content-fill-in` D2).
+    Queue(StageSet),
     /// Every scheduled stage ran and this frame showed the last of them.
     Complete,
 }
 
 /// Decide what one painted frame does to composition.
 ///
-/// A reveal stage runs only after a frame painted, so no frame carries two
-/// stages' first-measure work; composition completes on the first frame painted
-/// after every scheduled stage ran (each reveal queues the frame that shows it).
+/// The first frame painted after stage P queues one dispatch revealing every
+/// pending reveal stage (not one per frame: each frame cycle a stage waited for
+/// cost the fill-in a full frame, design D2); composition completes on the first
+/// frame painted after every scheduled stage ran (the reveal dispatch queues
+/// the frame that shows it). A test hold keeps the reveals at and after it
+/// back until it is released.
 #[must_use]
 pub fn frame_painted_decision(
     plan: CompositionPlan,
@@ -359,11 +369,9 @@ pub fn frame_painted_decision(
     if facts.complete || facts.dispatch_queued || !plan.is_done(CompositionStage::Present) {
         return FramePaintedDecision::Wait;
     }
-    if let Some(stage) = plan.next_scheduled_reveal() {
-        if facts.hold_before.is_some_and(|hold| stage >= hold) {
-            return FramePaintedDecision::Wait;
-        }
-        return FramePaintedDecision::Queue(stage);
+    let now = plan.scheduled_reveals_now(facts.hold_before);
+    if !now.is_empty() {
+        return FramePaintedDecision::Queue(now);
     }
     if plan.all_scheduled_done() {
         FramePaintedDecision::Complete
@@ -439,7 +447,7 @@ mod tests {
     fn no_reveal_is_scheduled_before_the_window_is_presented() {
         for plan in reachable_plans() {
             if !plan.is_done(CompositionStage::Present) {
-                assert_eq!(plan.next_scheduled_reveal(), None);
+                assert!(plan.scheduled_reveals_now(None).is_empty());
                 assert_eq!(
                     frame_painted_decision(
                         plan,
@@ -456,19 +464,34 @@ mod tests {
     }
 
     #[test]
-    fn the_next_reveal_is_the_first_pending_scheduled_reveal_in_run_order() {
+    fn the_reveals_now_are_every_pending_scheduled_reveal_before_the_hold() {
+        let mut holds = vec![None];
+        holds.extend(CompositionStage::ALL.into_iter().map(Some));
         for plan in reachable_plans() {
-            let expected = plan
-                .is_done(CompositionStage::Present)
-                .then(|| {
-                    CompositionStage::ALL
-                        .into_iter()
-                        .find(|stage| stage.is_reveal() && plan.pending().contains(*stage))
-                })
-                .flatten();
-            assert_eq!(plan.next_scheduled_reveal(), expected, "{plan:?}");
-            if let Some(stage) = expected {
-                assert!(plan.scheduled().contains(stage) && !plan.is_done(stage));
+            for &hold in &holds {
+                let now = plan.scheduled_reveals_now(hold);
+                if !plan.is_done(CompositionStage::Present) {
+                    assert!(now.is_empty(), "{plan:?}");
+                    continue;
+                }
+                for stage in CompositionStage::ALL {
+                    let expected = stage.is_reveal()
+                        && plan.pending().contains(stage)
+                        && hold.is_none_or(|hold| stage < hold);
+                    assert_eq!(now.contains(stage), expected, "{plan:?} {hold:?} {stage:?}");
+                }
+                // Revealing them leaves no reveal before the hold pending.
+                let mut after = plan;
+                for stage in now.iter() {
+                    assert!(after.mark_done(stage));
+                }
+                assert!(after.scheduled_reveals_now(hold).is_empty());
+                if hold.is_none() {
+                    assert!(
+                        after.pending().iter().all(|stage| !stage.is_reveal()),
+                        "one dispatch leaves no reveal pending: {plan:?}"
+                    );
+                }
             }
         }
     }
@@ -505,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn a_painted_frame_queues_the_next_reveal_or_completes() {
+    fn a_painted_frame_queues_every_pending_reveal_or_completes() {
         let mut holds = vec![None];
         holds.extend(CompositionStage::ALL.into_iter().map(Some));
         let cases: Vec<(u8, Option<CompositionStage>)> = (0..4u8)
@@ -524,17 +547,45 @@ mod tests {
                     assert_eq!(decision, FramePaintedDecision::Wait);
                     continue;
                 }
-                match plan.next_scheduled_reveal() {
-                    Some(stage) if hold_before.is_some_and(|hold| stage >= hold) => {
-                        assert_eq!(decision, FramePaintedDecision::Wait);
-                    }
-                    Some(stage) => assert_eq!(decision, FramePaintedDecision::Queue(stage)),
-                    None if plan.all_scheduled_done() => {
-                        assert_eq!(decision, FramePaintedDecision::Complete);
-                    }
-                    None => assert_eq!(decision, FramePaintedDecision::Wait),
+                let now = plan.scheduled_reveals_now(hold_before);
+                if !now.is_empty() {
+                    assert_eq!(decision, FramePaintedDecision::Queue(now));
+                } else if plan.all_scheduled_done() {
+                    assert_eq!(decision, FramePaintedDecision::Complete);
+                } else {
+                    assert_eq!(decision, FramePaintedDecision::Wait);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_new_plan_reveals_all_three_stages_in_one_dispatch_after_present() {
+        for facts in all_facts() {
+            let mut plan = CompositionPlan::new(facts);
+            plan.mark_done(CompositionStage::Realize);
+            plan.mark_done(CompositionStage::Present);
+            let facts = FramePaintedFacts {
+                dispatch_queued: false,
+                hold_before: None,
+                complete: false,
+            };
+            let all = StageSet::EMPTY
+                .with(CompositionStage::Content)
+                .with(CompositionStage::Workspace)
+                .with(CompositionStage::Properties);
+            assert_eq!(
+                frame_painted_decision(plan, facts),
+                FramePaintedDecision::Queue(all)
+            );
+            let held = FramePaintedFacts {
+                hold_before: Some(CompositionStage::Workspace),
+                ..facts
+            };
+            assert_eq!(
+                frame_painted_decision(plan, held),
+                FramePaintedDecision::Queue(StageSet::EMPTY.with(CompositionStage::Content))
+            );
         }
     }
 

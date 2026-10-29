@@ -930,6 +930,7 @@ fn window_construction_snapshot(
         forced_stages: evidence.forced_stages,
         shell_first_frame_us: evidence.shell_first_frame_us,
         composition_complete_us: evidence.composition_complete_us,
+        activation_shown_us: evidence.activation_shown_us,
         largest_composition_dispatch_us: evidence.largest_composition_dispatch_us,
         settings_writes_before_first_frame: evidence.settings_writes_before_first_frame,
         settings_writer_pending: evidence.settings_pending,

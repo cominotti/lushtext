@@ -81,6 +81,9 @@ pub struct SettingsWriterEvidence {
     pub dropped_equal: u64,
     /// Backend writes made before the first window's first presented frame.
     pub writes_before_first_frame: u64,
+    /// Whether the first window's first frame on its mapped surface has
+    /// painted, so flushing may start.
+    pub flushing_allowed: bool,
 }
 
 struct SettingsWriter {
@@ -225,6 +228,7 @@ impl SettingsWriter {
                 .dropped_equal
                 .saturating_add(self.dropped_before_set.get()),
             writes_before_first_frame: self.writes_before_first_frame.get(),
+            flushing_allowed: self.first_frame_presented.get(),
         }
     }
 }

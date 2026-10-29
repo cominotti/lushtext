@@ -125,6 +125,13 @@
   `slow_skip_line`. The probe runner and a sample's `--check` skip a slow
   probe unless the switch is `1`, printing `skipped (slow): <id>`. No probe
   is slow yet.
+- Probe and sample for A51 (`shorten-window-content-fill-in`): realizing a
+  toplevel schedules a frame that runs ahead of default-idle sources; on the
+  unmapped surface it emits `after-paint`, is never presented, and paces the
+  next frame one `FRAME_INTERVAL` (16,667 µs) later; realizing and presenting
+  in one dispatch runs no unmapped frame. New fixture: `fixtures::a51`
+  (`Composed`, `Order`, `AfterPaint`, `FRAME_INTERVAL_US`,
+  `PACED_GAP_FLOOR_US`).
 - Probes and samples for A46–A50 (`first-frame-window-shell`): the first
   toplevel realize of a process has a one-time cost a second one does not pay
   (recorded, not judged); neither realize nor present measures, the first

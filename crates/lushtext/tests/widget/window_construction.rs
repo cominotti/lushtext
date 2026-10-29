@@ -18,7 +18,10 @@
 //! - a write's effects reach other readers (a window's preset, a new editor
 //!   page's invisible-character mode) before any flush;
 //! - a `changed` handler on the shared instance lives only as long as its
-//!   owner (`settings_writes::connect_changed_for`).
+//!   owner (`settings_writes::connect_changed_for`);
+//! - the first frame the evidence records, and the one that opens the settings
+//!   writer, is a frame painted on the **mapped** window, never the frame a
+//!   realize alone runs (ledger A51, `shorten-window-content-fill-in` D3).
 //!
 //! Before this change a steady-state construction made three writes and a
 //! fresh one eight, every one of them inside the constructing dispatch.
@@ -189,6 +192,69 @@ fn test_fresh_construction_writes_once_after_the_first_frame() {
     assert!(!persisted.boolean(keys::PROPERTIES_SIDEBAR_VISIBLE));
     assert!((persisted.double(keys::WORKSPACE_SIDEBAR_WIDTH_FRACTION) - 0.3).abs() < 1e-9);
     assert!((persisted.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION) - 0.25).abs() < 1e-9);
+}
+
+/// A window realized in one default idle and presented in a later one runs a
+/// frame on the unmapped window first (ledger A51). That frame is never seen,
+/// so neither the construction evidence nor the settings writer may count it
+/// as the first frame.
+#[test]
+fn test_the_first_frame_is_the_first_mapped_frame_even_after_an_unmapped_one() {
+    let _keyfile = keyfile_settings_backend(None);
+    let window = test_window();
+    flush_events();
+    assert!(
+        !settings_writes::evidence().flushing_allowed,
+        "precondition: no frame has opened the writer yet"
+    );
+    // At each `after-paint`: whether the window was mapped, and what the
+    // evidence and the writer said right after the workflow's handler ran.
+    type Seen = (bool, Option<u64>, bool);
+    let seen = crate::common::record_after_paint(window.upcast_ref(), |window| {
+        let window = window.downcast_ref::<LushtextWindow>()?;
+        Some((
+            window.is_mapped(),
+            shell_geometry_evidence(window)
+                .window_construction
+                .first_frame_us,
+            settings_writes::evidence().flushing_allowed,
+        ))
+    });
+    let target = window;
+    glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+        WidgetExt::realize(&target);
+        let later = target.clone();
+        glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+            later.present();
+            glib::ControlFlow::Break
+        });
+        glib::ControlFlow::Break
+    });
+    wait_until(Duration::from_secs(10), || {
+        seen.borrow().iter().any(|(mapped, ..)| *mapped)
+    });
+    let seen = seen.borrow();
+    let (unmapped, mapped): (Vec<&Seen>, Vec<&Seen>) =
+        seen.iter().partition(|(mapped, ..)| !*mapped);
+    assert!(
+        !unmapped.is_empty(),
+        "precondition (A51): the realize frame ran on the unmapped window: {seen:?}"
+    );
+    for (_, first_frame, flushing) in &unmapped {
+        assert_eq!(
+            *first_frame, None,
+            "an unmapped frame was recorded as the first frame: {seen:?}"
+        );
+        assert!(
+            !*flushing,
+            "an unmapped frame opened the settings writer: {seen:?}"
+        );
+    }
+    let (_, first_frame, flushing) = mapped.first().expect("a mapped frame painted");
+    assert!(
+        first_frame.is_some() && *flushing,
+        "the first mapped frame is the first frame: {seen:?}"
+    );
 }
 
 #[test]

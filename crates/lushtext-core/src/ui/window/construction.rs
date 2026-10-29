@@ -110,7 +110,10 @@ impl LushtextWindow {
         });
     }
 
-    /// Record the first `after-paint` of this window's frame clock.
+    /// Record the first `after-paint` of this window's frame clock painted
+    /// while the window is mapped. A frame that runs between realize and map
+    /// is never presented (ledger A51), so it is not the first frame: neither
+    /// the evidence nor the settings writer's gate may rest on it.
     fn watch_first_frame(&self, started_us: i64) {
         if self.imp().construction.borrow().first_frame_painted() {
             return;
@@ -122,10 +125,14 @@ impl LushtextWindow {
         let handler_slot = Rc::clone(&handler);
         let window_weak = self.downgrade();
         let id = clock.connect_after_paint(move |clock| {
+            let window = window_weak.upgrade();
+            if window.as_ref().is_some_and(|window| !window.is_mapped()) {
+                return;
+            }
             if let Some(id) = handler_slot.borrow_mut().take() {
                 clock.disconnect(id);
             }
-            let Some(window) = window_weak.upgrade() else {
+            let Some(window) = window else {
                 return;
             };
             let painted_us = construction_spans::now_us();
@@ -135,7 +142,8 @@ impl LushtextWindow {
                 .borrow_mut()
                 .record_first_frame(painted_us, construction_spans::largest_dispatch_so_far_us());
             construction_spans::emit("first_frame", started_us, painted_us);
-            // The settings writer persists nothing before the first frame.
+            // The settings writer persists nothing before the first frame
+            // painted on the mapped window.
             settings_writes::first_frame_presented();
         });
         handler.replace(Some(id));
@@ -153,13 +161,15 @@ pub struct WindowConstructionEvidence {
     pub startup_lushtext_us: Option<u64>,
     /// From `LushtextWindow::new` until control returned to the main loop.
     pub window_construction_us: Option<u64>,
-    /// From `LushtextWindow::new` until the window's first painted frame.
+    /// From `LushtextWindow::new` until the window's first frame painted while
+    /// it was mapped (never a frame on the realized, unmapped window, A51).
     pub first_frame_us: Option<u64>,
     /// The largest main-loop dispatch before the first frame, when the
     /// measurement build's watchdog ran; `None` otherwise, never `Some(0)`.
     pub largest_dispatch_before_first_frame_us: Option<u64>,
     /// Composition stages this window schedules (`composition/`): W when its
-    /// request ran it, then C, R, P, B1, B2 and B3, always (a rail the
+    /// request ran it, then C, R and P (R and P in one dispatch), and B1, B2
+    /// and B3 (in one dispatch after the first frame), always (a rail the
     /// restored layout hides gets its content revealed into the hidden rail).
     pub stages_total: u32,
     /// Scheduled composition stages that have not run.
@@ -172,6 +182,10 @@ pub struct WindowConstructionEvidence {
     /// From the window request (or the construction) until composition
     /// completed; `None` until it did.
     pub composition_complete_us: Option<u64>,
+    /// From the window request (or the construction) to the first frame
+    /// painted after the activation's file opens ran; `None` when the request
+    /// named no files.
+    pub activation_shown_us: Option<u64>,
     /// The largest main-loop dispatch until composition completed, when the
     /// measurement build's watchdog ran; `None` otherwise, never `Some(0)`.
     pub largest_composition_dispatch_us: Option<u64>,
@@ -207,6 +221,7 @@ impl LushtextWindow {
             forced_stages: composition.forced_stages,
             shell_first_frame_us: composition.shell_first_frame_us,
             composition_complete_us: composition.composition_complete_us,
+            activation_shown_us: composition.activation_shown_us,
             largest_composition_dispatch_us: composition.largest_composition_dispatch_us,
             settings_writes_before_first_frame: writer.writes_before_first_frame,
             settings_pending: writer.pending,

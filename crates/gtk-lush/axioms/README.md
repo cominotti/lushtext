@@ -88,7 +88,11 @@ first toplevel realize's one-time cost, present and late composition
 skipping invisible subtrees, concealed revealers, and breakpoints matching
 before or after map) followed with LushText's staged window composition
 (`first-frame-window-shell`), with the `CountingWidget` and `PhaseRecorder`
-fixtures; A42–A45 belong to `document-scale-policy`. Every later axiom
+fixtures; A42–A45 belong to `document-scale-policy`. A51 (a realize frame
+runs on the unmapped window, is never presented, and paces the first visible
+frame one `FRAME_INTERVAL` later) followed with LushText's merged
+realize-and-present dispatch (`shorten-window-content-fill-in`), with the
+`fixtures::a51::Composed` fixture. Every later axiom
 follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.
