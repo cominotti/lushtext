@@ -68,7 +68,50 @@ fn profile_in_slices(text: &str, cuts: &[usize]) -> DocumentProfile {
     accumulator.finish()
 }
 
+/// The byte loop `next_paragraph_break` ran before its `memchr3` skip, kept
+/// here as the oracle: `(content_end, next_start)` of the first break at or
+/// after `from`.
+fn byte_loop_break(text: &str, from: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut index = from;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\n' => return Some((index, index + 1)),
+            b'\r' => {
+                let crlf = bytes.get(index + 1) == Some(&b'\n');
+                return Some((index, index + if crlf { 2 } else { 1 }));
+            }
+            0xE2 if bytes.get(index + 1) == Some(&0x80) && bytes.get(index + 2) == Some(&0xA9) => {
+                return Some((index, index + 3));
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+/// Long delimiter-free runs (past every SIMD block width) between the
+/// delimiters and the other `0xE2`-led scalars (U+2027, U+2028, `…`, `€`).
+fn simd_text() -> impl Strategy<Value = String> {
+    let piece = prop_oneof![
+        3 => paragraph_text(4),
+        1 => Just("\u{2026}\u{20AC}\u{2028}".to_string()),
+        2 => (1usize..200).prop_map(|n| "y".repeat(n)),
+        1 => (1usize..40).prop_map(|n| "é".repeat(n)),
+    ];
+    prop::collection::vec(piece, 0..30).prop_map(|pieces| pieces.concat())
+}
+
 proptest! {
+    #[test]
+    fn fast_break_search_equals_the_byte_loop(text in simd_text()) {
+        for from in (0..=text.len()).filter(|&from| text.is_char_boundary(from)) {
+            let fast = next_paragraph_break(&text, from)
+                .map(|found| (found.content_end, found.next_start));
+            prop_assert_eq!(fast, byte_loop_break(&text, from), "from {}", from);
+        }
+    }
+
     #[test]
     fn paragraph_breaks_agree_with_pango(text in paragraph_text(200)) {
         let mut start = 0usize;

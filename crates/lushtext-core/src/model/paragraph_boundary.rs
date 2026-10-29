@@ -91,11 +91,22 @@ pub struct ParagraphBreak {
 /// breaks equals the reference rule's (`kani_proofs::boundary_*`). The Pango
 /// property test (`tests/properties/paragraph_boundary.rs`) is the evidence
 /// for longer strings.
+///
+/// Outside Kani, `memchr3` skips to the next byte that can start a delimiter
+/// (`\n`, `\r`, or `0xE2`, the lead byte of U+2029) with SIMD; the match arms
+/// below decide exactly as the byte loop does, so the skip only passes over
+/// bytes the loop would have stepped past one at a time. Kani runs the plain
+/// byte loop (CBMC cannot model the vectorised search), and the property test
+/// `fast_break_search_equals_the_byte_loop` compares the two paths.
 #[must_use]
 pub fn next_paragraph_break(text: &str, from: usize) -> Option<ParagraphBreak> {
     let bytes = text.as_bytes();
     let mut index = from;
     while index < bytes.len() {
+        #[cfg(not(kani))]
+        {
+            index += memchr::memchr3(b'\n', b'\r', PARAGRAPH_SEPARATOR_UTF8[0], &bytes[index..])?;
+        }
         match bytes[index] {
             b'\n' => {
                 return Some(ParagraphBreak {
