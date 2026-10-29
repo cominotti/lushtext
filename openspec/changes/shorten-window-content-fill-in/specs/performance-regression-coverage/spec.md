@@ -45,8 +45,12 @@ folder and the properties pane shown:
 - the layout and paint phases of each window's first frames;
 - the largest watchdog lateness between the `open` handler and composition complete.
 
-The lane SHALL assert each dispatch against B_settle and the content fill-in against five
-reference frames, SHALL report the fill-in median against three reference frames, and SHALL
+The lane SHALL assert each dispatch until the later of composition complete and activation shown
+against B_settle, and each run's content fill-in against the accepted 40 ms (within five reference
+frames), SHALL fail the run on either only under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` and never
+in CI, SHALL report the fill-in median against three reference frames, SHALL derive the first
+painted frame the same way for every build (the first frame painted after the present stage's
+dispatch ended), so a build that ran an unseen frame is compared honestly, and SHALL
 include the build profile, the backend, the machine load, the reference-precondition check (load,
 CPU-heavy processes, and other agents' build, test, or proof processes), and `btrfs-stall-report`
 evidence for the run window. The baseline SHALL be recorded failing-first before the change.
@@ -73,5 +77,5 @@ evidence for the run window. The baseline SHALL be recorded failing-first before
 - **THEN** the composition gate fails, and the construction gate fails if its evidence records that frame as the first frame
 
 #### Scenario: Fill-in above five reference frames fails the measured lane
-- **WHEN** the lane runs with `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` and a run's content fill-in exceeds five reference frames
+- **WHEN** the lane runs with `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` and a run's content fill-in exceeds the accepted 40 ms
 - **THEN** the lane fails and names the case and the measured fill-in

@@ -132,7 +132,7 @@ Findings:
 
 **Goals:**
 
-- Content fill-in at most 40 ms (5 reference frames) in every reference run, with a target
+- Content fill-in at most 40 ms (within 5 reference frames) in every reference run, with a target
   median of 25 ms (3 reference frames). Measured from the first frame painted on the mapped
   window, to the later of composition complete and the first painted frame that shows the
   activation's opened documents.
@@ -233,14 +233,16 @@ The exhaustive unit tests over every reachable plan are rewritten to the new dec
 - The lane:
   - reads the first presentation time from the probe's `frame` records (`959018d2`);
   - reports the fill-in as `max(composition_complete, activation_shown) − first_frame`;
-  - fails a run under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` when the fill-in exceeds
-    `5 × REFERENCE_FRAME_US`;
+  - derives a build-independent first painted frame (the end of the first `frame_paint` span
+    that starts after `composition_present` ended), so `main` and the branch compare alike;
+  - budgets every dispatch up to `max(composition_complete, activation_shown)`;
+  - fails a run under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` when the fill-in exceeds the
+    maintainer's 40 ms (`ACCEPTED_FILL_IN_US`, below `5 × REFERENCE_FRAME_US`);
   - reports the median against `3 × REFERENCE_FRAME_US`.
 
-  These are read from the driver's existing `REFERENCE_FRAME_US`; no new budget constant is
-  added.
-- `docs/next/long-line-documents.md` corrects C4b's first-frame column. The C4b verdict table
-  stays as recorded, with a correction note beside it.
+  No new budget constant is added.
+- `docs/next/long-line-documents.md` and the archived C4b design correct C4b's first-frame figures
+  in place, with an explicit correction note (resolved decisions).
 
 **Alternative:** keep the definitions and only report the honest values beside them. Rejected:
 the settings writer's first-frame gate and the "no backend write before the first presented frame"
@@ -337,11 +339,86 @@ measurements.
 No persisted state changes. Rollback is a revert. `test_policy.rs`'s
 `set_composition_collapsed_for_test` stays for bisection.
 
-## Open Questions
+## Resolved decisions (maintainer, 2026-10-29)
 
-- **Should the fill-in bound become a hard lane failure?** This design makes 5 reference frames a
-  failure under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` only (never in CI), with the 3-frame
-  median as a target. A stricter "every run ≤ 3 frames" is possible on the measured numbers
-  (20.2–22.7 under load), but it leaves about 2.5 ms of margin. That is the maintainer's choice.
-- **Does the maintainer want the C4b record's first-frame figures corrected in place?** This
-  design adds a correction note beside them and leaves the archived verdict text unchanged.
+- **The fill-in bound fails the lane only under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1`**, never
+  in CI, like every other construction bound. The per-run bound is the maintainer's 40 ms (the
+  lane's existing `ACCEPTED_FILL_IN_US`, which is below 5 reference frames, 41,665 µs, so it is the
+  stricter reading of "5 frames"); the median target is 3 × `REFERENCE_FRAME_US` (24,999 µs), and
+  it is reported, not enforced. A stricter "every run ≤ 3 frames" is not adopted (≈ 2.5 ms margin).
+- **C4b's first-frame figures are corrected in place**, with an explicit correction note, both in
+  `docs/next/long-line-documents.md` and in the archived C4b design
+  (`openspec/changes/archive/2026-10-29-first-frame-window-shell/design.md`). The note states that
+  the reported "first frame 16–18 ms" was an unseen frame on the unmapped window, that the real
+  first frame was about 46 ms from the request, and that C4b bounded every dispatch but did **not**
+  make the first pixels earlier (the pre-C4b build presented at 42.3 ms median).
+
+## Adversarial review (2026-10-29)
+
+Each item was checked against the code on `main` 1e2556a2 (`ui/window/composition/`,
+`construction.rs`, `settings_writes.rs`, `responsiveness_probe.rs`, the lane driver) and the
+GTK 4.22.5 sources. Verdicts: **holds** (the design is right as written), **revised** (the
+artifacts changed), **noted** (a stated limit, no change).
+
+1. **A51's mechanism (holds).** `gdkframeclockidle.c` 4.22.5: the paint source is a
+   `g_timeout_add_full (GDK_PRIORITY_REDRAW, min_interval, …)` (l. 348), ahead of
+   `G_PRIORITY_DEFAULT_IDLE`; when a frame starts, `frame_interval` is `FRAME_INTERVAL` unless the
+   previous timings carry a `refresh_interval` (l. 459–463); after the paint,
+   `min_next_frame_time = smooth_cycle_start + smoothed_frame_time_period` (l. 688–689), which
+   `maybe_start_idle` turns into the next paint source's delay (l. 323–328). An unmapped surface is
+   never frozen by a pending commit, so nothing else gates it. The pacing is a lower bound, so the
+   probe's "≥ 16 ms" assertion is robust against load (rounding of `min_interval` to whole
+   milliseconds costs at most 0.5 ms, and the paint itself sits inside the interval).
+2. **A51 probe isolation (revised).** The probe must use a fixture with no tick callbacks, no
+   animation and no pending input, so the only frame request is the one realize forwards from the
+   window's pending resize. It records, per `after-paint`, `is_mapped()`, the frame counter, the
+   frame time and (later) the presentation time, and it runs both orders in fresh windows of one
+   process. The merged-order run also asserts that its first `after-paint` is mapped and has a
+   frame counter equal to the clock's first, so a toolkit change that runs a frame *inside*
+   `present` would be caught. Tasks 2.3 says so.
+3. **Every C4b adversarial finding (holds).** Application hold: released in C, unchanged. Merged
+   early `open`: `request_window` still only admits files while `composition_presented()` is false,
+   and RP is one dispatch. Breakpoints: installed in C, so A50's first-allocation path applies at
+   the first mapped frame exactly as before. Forced reveals: `forced_chain` is unchanged and the
+   reveal dispatch marks only stages not yet done. CLI opens: the reveal dispatch queues the
+   activation turn as B1 did, and `after_activation_opens` still holds the restore. The
+   `window-composition` blocker: same derivation, clears earlier. No layout jump: the per-frame
+   chrome trace, the reveal-at-every-preset test and `first-frame-shell-chrome` stay gates, and the
+   timed hold before `Content` still captures the first frame. The opaque cover: still removed by
+   the `Content` reveal, now in the same dispatch as the other two.
+4. **The merged RP dispatch on a slow profile (noted).** Measured 6.6–9.6 ms under load across all
+   four profiles; the fresh keyfile profile adds nothing to R or P (its migration runs in C).
+   Fallback D1 (`HIGH_IDLE` P) is measured (v2) and keeps the first frame; it is applied only if
+   the verdict measures RP above B_settle.
+5. **The merged reveal frame on the populated profile (revised).** The sidebar's tree is scanned on
+   a worker (`spawn_blocking_then`), so its rows land in whichever frame follows the scan; the
+   reveal frame always carries the sidebar chrome and the properties panel, and carries the rows
+   only when the scan finished first. Every dispatch and frame until composition complete (and
+   until activation shown, item 7) is budgeted either way; a rows frame after that belongs to C6.
+   The verdict records, per run, the reveal frame's layout and paint. Fallback D2 (two reveal
+   dispatches) costs one frame cycle and stays within 40 ms by the measured arithmetic.
+6. **The settings writer's gate (holds, noted).** The gate only *allows* scheduling; the first
+   flush is then a `PERSISTENCE_WINDOW` (500 ms) timeout plus a `LOW` idle, so it stays after the
+   first presented frame whichever painted frame opens the gate (on the branch the mapped frame is
+   ≈ 31 ms from the request, against ≈ 24 ms for today's unseen frame, so the gate opens later,
+   never earlier). A window that is realized but never mapped no longer opens the gate; its values
+   still persist through the synchronous flush at the last close and at shutdown, as documented.
+7. **The budgeted window must reach activation shown (revised).** Today the lane budgets dispatches
+   up to `composition_complete`. With the merged reveal, the activation turn usually runs inside
+   the pacing wait before the reveal frame, but on a slow run (or with more files than one turn
+   admits) a turn can follow that frame. The lane therefore budgets every dispatch up to
+   `max(composition_complete, activation_shown)`, and so does the spec.
+8. **Comparing main and the branch honestly (revised).** On `main` the `first_frame` span is the
+   unseen frame, so the lane derives a build-independent first painted frame: the end of the first
+   `frame_paint` span that starts after the `composition_present` span ended (both builds emit
+   both), plus the first presentation from the `frame` records. The verdict compares those, never
+   the two builds' `first_frame` spans.
+9. **The fill-in bound's units (revised).** The proposal said "40 ms (5 reference frames)" and the
+   spec "5 × 8,333 = 41,665 µs"; they differ. The per-run bound is the 40 ms the maintainer set
+   (resolved decisions above).
+10. **Activation shown with no local file, a second `open`, or a collapsed composition (holds,
+    specified).** `activation_shown_us` is armed only by files admitted before composition
+    completes; a later `open` on a composed window does not arm it. A queue that drains before the
+    first mapped frame (the collapse test policy) is stamped on that first mapped frame. Remote or
+    refused files still drain the queue, so the stamp is reached.
+

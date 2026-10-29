@@ -47,10 +47,11 @@ SHALL NOT be dropped during composition. Activation file opens SHALL be admitted
 
 The content fill-in is the time from the window's first frame to the later of composition complete
 and the first frame painted after the activation's file opens have run. On every reference run it
-SHALL be at most five reference frames (5 × the 120 Hz reference frame, 41,665 µs), and its median
-over a verdict run SHALL be at most three reference frames (24,999 µs). These bounds are multiples
-of the existing reference-frame constant, not new budget constants, and they do not relax
-B_settle. The window's first frame SHALL be painted no later than the first frame of the
+SHALL be at most 40 ms, the maintainer's accepted fill-in, which lies within five reference frames
+(5 × the 120 Hz reference frame, 41,665 µs), and its median over a verdict run SHALL be at most
+three reference frames (24,999 µs). Neither is a new budget constant, and neither relaxes
+B_settle. Every dispatch until the later of composition complete and that activation frame SHALL
+fit B_settle. The window's first frame SHALL be painted no later than the first frame of the
 staged composition it replaces, measured the same way.
 
 Toolkit-owned startup (`gtk_init`) SHALL be measured and reported separately, and is not counted
@@ -110,5 +111,5 @@ against the live desktop.
 
 #### Scenario: Content fills in within five reference frames
 - **WHEN** the release build opens a file on any reference-lane profile, including the populated one
-- **THEN** the time from the first frame to the first painted frame that shows the opened document and every revealed surface is at most five reference frames
+- **THEN** the time from the first frame to the first painted frame that shows the opened document and every revealed surface is at most 40 ms, within five reference frames
 - **AND** the median of that time over the verdict run is at most three reference frames

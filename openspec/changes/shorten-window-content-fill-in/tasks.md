@@ -17,8 +17,9 @@
 - [ ] 2.1 Run `make gtk-axioms` on the current toolchain before adding anything.
 - [ ] 2.2 Add the A51 ledger entry: the realize frame runs ahead of default-idle sources, is never presented on an unmapped surface, and paces the next frame one `FRAME_INTERVAL` later; realize and present in one dispatch runs no such frame. Record its statement, its dependent design (`shorten-window-content-fill-in` D1), the `gdkframeclockidle.c` lines it rests on, and the verified-against versions.
 - [ ] 2.3 Add an isolated probe and a sample (interactive and `--check`) to `gtk-lush-axioms`, and register them in the adoption lab's `axiom_probes` runner:
+  - the fixture has no tick callback, animation or pending input, so the only frame request is the one realize forwards (design, review item 2);
   - with split dispatches, the probe asserts an unmapped `after-paint` before map and a next frame time at least 16 ms later;
-  - with one dispatch, it asserts no unmapped `after-paint`.
+  - with one dispatch, it asserts no unmapped `after-paint`, and that its first `after-paint` is mapped.
 
   Update the crate's `README.md` and `CHANGELOG.md`.
 - [ ] 2.4 Run `make gtk-axioms` and `make check-gtk-axioms`.
@@ -62,10 +63,12 @@
 - [ ] 5.1 In `scripts/responsiveness-smoke-driver.py`:
   - report the first presentation time from the probe's `frame` records;
   - define the fill-in as `max(composition_complete, activation_shown) − first_frame`;
-  - check every run against `5 × REFERENCE_FRAME_US` and the median against `3 × REFERENCE_FRAME_US`, both read from the existing constant;
-  - fail under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` (never in CI) when a run exceeds 5 frames.
+  - derive the first painted frame the same way for every build: the end of the first `frame_paint` span that starts after `composition_present` ended (design, review item 8), and report it beside the `first_frame` span;
+  - budget every dispatch up to `max(composition_complete, activation_shown)` (review item 7);
+  - check every run against the accepted 40 ms (`ACCEPTED_FILL_IN_US`, within `5 × REFERENCE_FRAME_US`) and the median against `3 × REFERENCE_FRAME_US`;
+  - fail under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` (never in CI) when a run exceeds 40 ms.
 
-  Extend the self-tests (`make check-responsiveness-lane`) with an unmapped-first-frame fixture, an activation-shown-after-complete fixture, and the 5-frame failure.
+  Extend the self-tests (`make check-responsiveness-lane`) with an unmapped-first-frame fixture, an activation-shown-after-complete fixture (including a dispatch between complete and activation shown that is budgeted), and the 40 ms failure.
 - [ ] 5.2 Add the `steady-populated` construction profile (design D4): one synthetic workspace folder of a few hundred entries generated in the run's temp scope, with both side panes shown. Update the lane documentation in `.agents/rules/build.md`.
 
 ## 6. Verdict
@@ -85,8 +88,8 @@
 ## 7. Documentation
 
 - [ ] 7.1 Update `docs/next/long-line-documents.md`:
-  - a C4c row in the sequence table and a C4c section with the breakdown, the candidates, the verdict and its precondition lines;
-  - a correction note beside C4b's first-frame figures: an unpresented frame, with the honest values from task 1.3.
+  - a C4c row in the sequence table (and C4b's row corrected) and a C4c section with the breakdown, the candidates, the verdict and its precondition lines;
+  - C4b's first-frame figures corrected in place, with an explicit correction note (design, resolved decisions): the reported first frame was an unseen frame on the unmapped window, the real first frame was about 46 ms from the request, and C4b bounded the dispatches but did not make the first pixels earlier. Make the same in-place correction, with the same note, in the archived C4b design (`openspec/changes/archive/2026-10-29-first-frame-window-shell/design.md`).
 
   Update `docs/next/long-line-evolution.md`.
 - [ ] 7.2 Update `AGENTS.md`: the staged-composition decision (realize and present together, one reveal dispatch, and the first frame defined as the first mapped frame) and the composition module description.

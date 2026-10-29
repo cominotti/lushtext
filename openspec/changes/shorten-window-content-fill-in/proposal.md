@@ -49,9 +49,11 @@ than before C4b: the pre-C4b build presented its first frame at 42.3 ms median. 
   The lane also reports the first presentation time from the frame records. It reports the
   fill-in up to the later of composition complete and the first painted frame after the activation
   files opened, so an opened document counts as content.
-- **A budgeted fill-in target.** The fill-in is at most 40 ms (5 reference frames) in every
-  reference run, with a target median of 25 ms (3 reference frames). These are multiples of the
-  existing `REFERENCE_FRAME_US`, not new budget constants. The first presented frame must come
+- **A budgeted fill-in target.** The fill-in is at most 40 ms (the maintainer's accepted figure,
+  within 5 reference frames) in every reference run, with a target median of 25 ms (3 reference
+  frames). Neither is a new budget constant. The lane fails a run on the 40 ms only under
+  `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1`, never in CI. The lane budgets every dispatch up to the
+  later of composition complete and the activation's shown frame. The first presented frame must come
   earlier than C4b's measured one.
 - **GTK axiom A51.** Realizing a toplevel schedules a frame that runs before default-idle sources.
   On an unmapped surface that frame is never presented, and the frame clock paces the next frame
@@ -107,7 +109,8 @@ None.
   - `ui/settings_writes.rs` (only through that watcher);
   - `ui/automation.rs`, `model/automation.rs`, `model/construction_spans.rs`.
 - **Lane:** `scripts/responsiveness-smoke-driver.py`: the honest first frame and presentation,
-  the fill-in definition, the populated profile, the 40 ms fill-in check under
+  the fill-in definition, the build-independent first painted frame, the dispatch budget up to
+  activation shown, the populated profile, the 40 ms fill-in check under
   `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1`, and the self-tests.
 - **GTK Lush:** the A51 probe and sample in `gtk-lush-axioms`, plus its README and CHANGELOG.
 - **Tests:** the `window_composition` widget module (shard `surfaces`, no new module, so no shard
@@ -119,7 +122,8 @@ None.
   - `docs/automation.md` and `docs/automation-reference.md`;
   - the GTK axiom ledger and `docs/next/formal-verification.md`;
   - `docs/next/long-line-documents.md`, which gets a C4c row and section, and corrects C4b's
-    first-frame figures;
+    first-frame figures in place with an explicit correction note (the archived C4b design gets
+    the same correction);
   - `docs/next/long-line-evolution.md`;
   - `.agents/rules/build.md` (lane metrics).
 - **User-visible:** the first pixels appear about 15 ms earlier, and the composed window, with the
