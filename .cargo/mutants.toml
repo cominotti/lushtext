@@ -314,6 +314,13 @@ exclude_re = [
     # (`ring_len < window`), which the replace branch reproduces exactly
     # because the ring starts zeroed and `ring_next` follows `ring_len` while
     # it fills, so `<` with `>` or `==` changes no fold.
+    # The budget-floor loop of `slice_end_after_paragraph` (`while budget_end
+    # > start && !is_char_boundary`): `>=` stops at `start`, a boundary, anyway;
+    # `<` and `==` never floor, which picks the same break, because every
+    # break end is a scalar boundary and so lies at or below an unfloored
+    # budget end exactly when it lies at or below the floored one (and an
+    # unfloored end inside a scalar never equals `text.len()`).
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:161:22: replace > with (>=|<|==) in slice_end_after_paragraph",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileConfig::window",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileSummary::max",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:426:19: replace > with >= in ParagraphLengthFold::push",
