@@ -345,6 +345,17 @@ flushed and dropped-equal counters. LushText makes no GSettings backend write
 before the first presented frame, so `settings_writes_before_first_frame` is
 `0`; field details are in the reference.
 
+The window is composed in stages (`first-frame-window-shell`): its first frame
+shows the chrome and the rail and pane edges, and the content, the workspace
+sidebar and the document properties are revealed over the next few frames.
+`window_construction` reports the scheduled and pending stages, the stages an
+operation forced, and the first-frame and composition-complete times. While a
+window composes, the `window-composition` blocker holds `app-startup`, `idle`,
+`session-restore-complete`, `visual-geometry-settled` and
+`accessibility-settled`; `window-actions-exported` does not wait for it, so a
+client can activate actions (a sidebar toggle, `F9`, a search) during
+composition, and each completes the stages its surface needs first.
+
 When a geometry bug only reproduces in a live user window, first capture the
 bounded live state:
 

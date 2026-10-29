@@ -1123,6 +1123,24 @@ while an owned one is reported as a finding; the
   frame, the largest dispatch before it, each construction stage, the settings
   flush); `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` makes an over-budget
   LushText-owned span on the release build fail the run (never in CI).
+  Since `first-frame-window-shell` the window composes in stages, and the
+  verdict covers **every dispatch until composition completes** (the largest
+  watchdog lateness up to the `composition_complete` span,
+  `largest_composition_dispatch`), with the "Composition dispatches and first
+  frames" table listing each stage's dispatch (`composition_<stage>` spans),
+  every dispatch of 4 ms or more in order, the layout and paint phases of the
+  first four frames (`frame_layout`/`frame_paint`), and the content fill-in
+  (`composition_complete − first_frame`, reported against the maintainer's
+  accepted 40 ms, five 120 Hz frames; it is not a budget). The probe also
+  records the window's first measures and allocations
+  (`window_measure_h`/`_v`, `window_size_allocate`, measurement build only).
+  **A timing verdict comes only from a run under the reference precondition**:
+  the 1-minute load average below 4 for 30 s, no process at 80 % CPU or more,
+  and no other agent's `cargo`, `rustc`, `nextest`, `kani`/`cbmc`,
+  `cargo-mutants` or `mutter --headless` running; record the load, the process
+  check and `btrfs-stall-report` for the window, wrap the run in
+  `flock target/responsiveness-measure.lock`, and discard a run that loses the
+  precondition part-way. Runs under load are labelled non-verdict.
 - `make end-user-smoke` runs the host-supported smoke lanes together. Individual
   scripts own their dependency checks, artifact paths, and skip messages.
 

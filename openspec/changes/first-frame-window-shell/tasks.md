@@ -1,7 +1,7 @@
 ## 1. Preconditions, the failing-first baseline and the gating experiment
 
-- [ ] 1.1 Confirm that C4 is archived on `main` and that its spans, settings writer and `RESPONSIVENESS_CONSTRUCTION_ENFORCE` exist. Read the last ledger id on `main` and in every in-flight change (C1 `document-scale-policy` holds A42–A45); A46–A50 must still be free, otherwise take the next free ids and update the design, specs and record.
-- [ ] 1.2 Make permanent the instrumentation this proposal measured with:
+- [x] 1.1 Confirm that C4 is archived on `main` and that its spans, settings writer and `RESPONSIVENESS_CONSTRUCTION_ENFORCE` exist. Read the last ledger id on `main` and in every in-flight change (C1 `document-scale-policy` holds A42–A45); A46–A50 must still be free, otherwise take the next free ids and update the design, specs and record.
+- [x] 1.2 Make permanent the instrumentation this proposal measured with:
   - frame-phase spans (`frame_layout`, `frame_paint`) for each window's first four frames in `ui/responsiveness_probe.rs`;
   - spans for the window's `measure` and `size_allocate`, behind the probe feature only;
   - one span per composition dispatch.
@@ -14,39 +14,39 @@
 
 ## 2. GTK axioms (run first)
 
-- [ ] 2.1 Run `make gtk-axioms` on the current toolchain before adding anything.
-- [ ] 2.2 Add ledger entries, each with its statement, dependent designs (`first-frame-window-shell`), and verified-against versions:
+- [x] 2.1 Run `make gtk-axioms` on the current toolchain before adding anything.
+- [x] 2.2 Add ledger entries, each with its statement, dependent designs (`first-frame-window-shell`), and verified-against versions:
   - A46: the one-time first-toplevel realize cost;
   - A47: `gtk_window_show` validates CSS only for visible nodes, and the size computation and first measure run in the first frame's layout phase;
   - A48: a subtree made visible or parented in a mapped window is styled and measured in the next frame's layout phase;
   - A49: a concealed vertical-slide revealer measures a visible child horizontally at full scale and an invisible child not at all;
   - A50: `AdwBreakpointBin`'s first allocation after map applies a matching breakpoint before allocating the child, and a later switch (including a breakpoint added after map) goes through the one-frame `old_node` snapshot swap.
-- [ ] 2.3 Add an isolated probe and a sample (interactive and `--check`) for each to `gtk-lush-axioms`, and register them in the adoption lab's `axiom_probes` runner. A46 records magnitudes without a hard threshold. Update the axioms crate's `README.md` and `CHANGELOG.md`.
-- [ ] 2.4 Write a probe-style check that `grab_focus` on a parented but invisible widget, made visible in the same dispatch, focuses it, and that `editor.root()` is the window for a page appended to the invisible tab view. If either does not hold, revise D4/D5 before continuing.
-- [ ] 2.5 Run `make gtk-axioms` and `make check-gtk-axioms`.
+- [x] 2.3 Add an isolated probe and a sample (interactive and `--check`) for each to `gtk-lush-axioms`, and register them in the adoption lab's `axiom_probes` runner. A46 records magnitudes without a hard threshold. Update the axioms crate's `README.md` and `CHANGELOG.md`.
+- [x] 2.4 Write a probe-style check that `grab_focus` on a parented but invisible widget, made visible in the same dispatch, focuses it, and that `editor.root()` is the window for a page appended to the invisible tab view. If either does not hold, revise D4/D5 before continuing.
+- [x] 2.5 Run `make gtk-axioms` and `make check-gtk-axioms`.
 
 ## 3. Construction, visibility defaults and geometry
 
-- [ ] 3.1 Failing-first: add a widget test (new module `window_composition`, assigned to the `surfaces` shard in `scripts/widget-shards.py`) that asserts the `open` handler returns without a realized window, that the application stays alive (held) until the window is added, and that a second `open` before the window exists merges into one window. Show it failing on the current code. Run `make check-widget-shards` and update the shard's measured figure if it moves.
-- [ ] 3.2 Change `open`/`activate` (`app.rs`) to hold the application, record or merge the `PendingWindowRequest`, and schedule stage W; release the hold in stage C, and on a quit before C.
-- [ ] 3.3 Set the staged content's visibility defaults in `resources/ui/window.blp`: content-stack pages, the sidebar inside its slot host, the properties panel inside its slot host. Keep the skeleton, slot hosts and chrome visible. Run `make blueprint-generate`, `make check-blueprint` and `make lint-blueprint`.
-- [ ] 3.4 Make every concealed revealer's child invisible (search panel, palette, Focus Mode affordance) and the concealed Markdown preview: visible right before `reveal-child = true`, hidden on `notify::child-revealed = false`. Run the existing widget tests for each surface's open, close and Escape paths unchanged.
-- [ ] 3.5 Failing-first widget test (design D3): reveal the sidebar and the properties panel at every width preset, at text scales 1, 1.25, 1.5 and 2, at wide, medium and compact widths, and assert the rail and pane allocations do not change. If a case fails, add the `width-request` floor on the slot host from the restore plan (sp converted to px in the adapter), never a copy of a policy rule.
+- [x] 3.1 Failing-first: add a widget test (new module `window_composition`, assigned to the `surfaces` shard in `scripts/widget-shards.py`) that asserts the `open` handler returns without a realized window, that the application stays alive (held) until the window is added, and that a second `open` before the window exists merges into one window. Show it failing on the current code. Run `make check-widget-shards` and update the shard's measured figure if it moves.
+- [x] 3.2 Change `open`/`activate` (`app.rs`) to hold the application, record or merge the `PendingWindowRequest`, and schedule stage W; release the hold in stage C, and on a quit before C.
+- [x] 3.3 Set the staged content's visibility defaults in `resources/ui/window.blp`: content-stack pages, the sidebar inside its slot host, the properties panel inside its slot host. Keep the skeleton, slot hosts and chrome visible. Run `make blueprint-generate`, `make check-blueprint` and `make lint-blueprint`.
+- [x] 3.4 Make every concealed revealer's child invisible (search panel, palette, Focus Mode affordance) and the concealed Markdown preview: visible right before `reveal-child = true`, hidden on `notify::child-revealed = false`. Run the existing widget tests for each surface's open, close and Escape paths unchanged.
+- [x] 3.5 Failing-first widget test (design D3): reveal the sidebar and the properties panel at every width preset, at text scales 1, 1.25, 1.5 and 2, at wide, medium and compact widths, and assert the rail and pane allocations do not change. If a case fails, add the `width-request` floor on the slot host from the restore plan (sp converted to px in the adapter), never a copy of a policy rule.
 
 ## 4. Composition stages (role home `ui/window/composition/`)
 
-- [ ] 4.1 Create the facade `mod.rs`, which narrates the stage order and each idle and frame resumption point. Add pure `policy.rs` (stage order, dependencies, the stage a surface needs, forced-chain selection) with an exhaustive unit test over every reachable stage set, `execution.rs` (idle scheduling, frame-gated succession, `ensure_composed`), `evidence.rs`, and `test_policy.rs` (collapse-to-one-dispatch and hold-after-F1 overrides, test-only). Add the `WFR-WINDOW-COMPOSITION` row to `docs/workflow-readability-matrix.md`, with cells derived from the code, and run `make check-workflow-boundaries`.
-- [ ] 4.2 Implement the stages W, C (today's `LushtextWindow::new`), R, P, B1, B2 and B3 as designed. From B1 on, each schedules its successor after the painted frame that shows it. Stage sources hold weak references and are removed when the window leaves the application (`window-removed`, A21).
-- [ ] 4.3 Route every reveal or focus of a staged surface through `ensure_composed`. Extend `make check-workflow-boundaries` with a check that fails on a `set_visible(true)` or `grab_focus` of a staged content widget outside `composition/` without it; prove it red on a deliberate violation.
-- [ ] 4.4 Admit activation opens after P through the session-restore admission's bounded page turns; keep the duplicate-path, draft-claim and focus rules on the unchanged open path. Apply the activation and empty-state focus in B1 with today's code.
-- [ ] 4.5 Write widget tests first, for each forced path issued before each stage:
+- [x] 4.1 Create the facade `mod.rs`, which narrates the stage order and each idle and frame resumption point. Add pure `policy.rs` (stage order, dependencies, the stage a surface needs, forced-chain selection) with an exhaustive unit test over every reachable stage set, `execution.rs` (idle scheduling, frame-gated succession, `ensure_composed`), `evidence.rs`, and `test_policy.rs` (collapse-to-one-dispatch and hold-after-F1 overrides, test-only). Add the `WFR-WINDOW-COMPOSITION` row to `docs/workflow-readability-matrix.md`, with cells derived from the code, and run `make check-workflow-boundaries`.
+- [x] 4.2 Implement the stages W, C (today's `LushtextWindow::new`), R, P, B1, B2 and B3 as designed. From B1 on, each schedules its successor after the painted frame that shows it. Stage sources hold weak references and are removed when the window leaves the application (`window-removed`, A21).
+- [x] 4.3 Route every reveal or focus of a staged surface through `ensure_composed`. Extend `make check-workflow-boundaries` with a check that fails on a `set_visible(true)` or `grab_focus` of a staged content widget outside `composition/` without it; prove it red on a deliberate violation.
+- [x] 4.4 Admit activation opens after P through the session-restore admission's bounded page turns; keep the duplicate-path, draft-claim and focus rules on the unchanged open path. Apply the activation and empty-state focus in B1 with today's code.
+- [ ] 4.5 *(Tests done: every forced path before every stage matches a composed window, and reads force nothing. Open: the costliest forced frame's measurement under the reference precondition.)* Write widget tests first, for each forced path issued before each stage:
   - F9, `win.toggle-sidebar`, `win.set-sidebar-visible`, `win.toggle-properties`, Ctrl+Shift+F, Ctrl+Shift+P, `win.begin-search`, a preview action, and the Open popover button;
   - a CLI open, including one with more files than one bounded turn admits;
   - session-restore completion;
   - an automation action.
 
   Each must produce the same state and snapshot as on a composed window. Add a test that reads and projections during composition (`size_allocate`, `refresh_status_bar`, the notification render, sidebar projections) force no stage. Measure the costliest forced frame (B1 + B2 + B3 at once) under the reference precondition; if it exceeds B_settle, limit a forced reveal to its own stage and its dependencies (D4).
-- [ ] 4.6 Add widget tests for:
+- [x] 4.6 Add widget tests for:
   - stage order, and that no stage from B1 on runs before the frame showing its predecessor has painted (drive the real `after-paint` path, as C4's gate does);
   - close requested, and the window destroyed, during each stage: no later stage runs, the hold is released, and the session save keeps unrestored descriptors;
   - initial focus equal to today's composed window, with and without activation files;
@@ -55,30 +55,30 @@
 
 ## 5. Evidence, readiness, automation, accessibility
 
-- [ ] 5.1 Extend `WindowConstructionEvidence` with real `stages_pending` and `stages_total`, `shell_first_frame_us`, `composition_complete_us`, `largest_composition_dispatch_us` (`None` without the watchdog) and `forced_stages`. Project them into the automation snapshot. Add the evidence surface's three driven proofs.
-- [ ] 5.2 Add the readiness blocker `window-composition`, derived from the active window's composition evidence, to `app-startup`, `idle`, `session-restore-complete`, `visual-geometry-settled` and `accessibility-settled`, and not to `window-actions-exported`. Test that it clears when composition completes and when the window goes away. Update `docs/automation.md` and `docs/automation-reference.md`, then run `make check-automation-docs` and `make automation-client-self-test`.
-- [ ] 5.3 Make sure every staged surface's accessible metadata is applied in C. Confirm that `make accessibility-smoke` waits on `accessibility-settled`, now blocked by `window-composition`. Update `docs/accessibility.md` and the affected rows of `docs/accessibility-matrix.md` (anchors exist once their stage reveals them; concealed revealer children are absent from the tree), run `make check-accessibility-policy` and `make accessibility-smoke`.
+- [x] 5.1 Extend `WindowConstructionEvidence` with real `stages_pending` and `stages_total`, `shell_first_frame_us`, `composition_complete_us`, `largest_composition_dispatch_us` (`None` without the watchdog) and `forced_stages`. Project them into the automation snapshot. Add the evidence surface's three driven proofs.
+- [x] 5.2 Add the readiness blocker `window-composition`, derived from the active window's composition evidence, to `app-startup`, `idle`, `session-restore-complete`, `visual-geometry-settled` and `accessibility-settled`, and not to `window-actions-exported`. Test that it clears when composition completes and when the window goes away. Update `docs/automation.md` and `docs/automation-reference.md`, then run `make check-automation-docs` and `make automation-client-self-test`.
+- [x] 5.3 Make sure every staged surface's accessible metadata is applied in C. Confirm that `make accessibility-smoke` waits on `accessibility-settled`, now blocked by `window-composition`. Update `docs/accessibility.md` and the affected rows of `docs/accessibility-matrix.md` (anchors exist once their stage reveals them; concealed revealer children are absent from the tree), run `make check-accessibility-policy` and `make accessibility-smoke`.
 
 ## 6. Visual proof
 
-- [ ] 6.1 Add the `first-frame-shell` visual-geometry scenario, which captures the first frame (through the test-only hold after F1) and the composed frame in one session at wide, medium and compact widths, with invariant `first-frame-shell-chrome` (protected: header bar, tab bar, status bar, rail edge, pane edge; allowed: content regions with bound anchors). Key the invariant by prefix in both `scripts/check-visual-proof-policy.py` and `crates/cargo-gtk-proof/src/policy.rs`, with parity self-tests on both sides.
-- [ ] 6.2 Run `make visual-geometry-smoke` and `make visual-smoke`, and confirm that `first-frame-shell-chrome` is in `pixel_verified_invariant_ids`.
+- [x] 6.1 Add the `first-frame-shell` visual-geometry scenario, which captures the first frame (through the test-only hold after F1) and the composed frame in one session at wide, medium and compact widths, with invariant `first-frame-shell-chrome` (protected: header bar, tab bar, status bar, rail edge, pane edge; allowed: content regions with bound anchors). Key the invariant by prefix in both `scripts/check-visual-proof-policy.py` and `crates/cargo-gtk-proof/src/policy.rs`, with parity self-tests on both sides.
+- [x] 6.2 Run `make visual-geometry-smoke` and `make visual-smoke`, and confirm that `first-frame-shell-chrome` is in `pixel_verified_invariant_ids`.
 
 ## 7. Measured verdict
 
-- [ ] 7.1 Extend the lane's construction verdict to every dispatch until `composition_complete`, plus the frame-phase table and the content fill-in time (`composition_complete_us − shell_first_frame_us`). With `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` it fails on any composition dispatch above B_settle. Extend the driver's self-tests.
+- [x] 7.1 Extend the lane's construction verdict to every dispatch until `composition_complete`, plus the frame-phase table and the content fill-in time (`composition_complete_us − shell_first_frame_us`). With `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` it fails on any composition dispatch above B_settle. Extend the driver's self-tests.
 - [ ] 7.2 Under the reference precondition, run the four `baseline/small` profiles (7 repetitions) and record the per-dispatch results and the fill-in time against task 1.3's baseline. If any dispatch exceeds B_settle, name it, fix it in this change, or, for the A46 realize floor only, record it as not met with the upstream report (task 1.4). Never relax the budget. Report a median fill-in above 40 ms to the maintainer (design D7). State in the record that the headless lane's paint and present are conservative relative to a GPU (design D9).
 
 ## 8. Documentation
 
-- [ ] 8.1 Update `AGENTS.md`:
+- [x] 8.1 Update `AGENTS.md`:
   - the module layout (`ui/window/composition/`);
   - a new "Staged window composition" key decision (build whole, reveal by visibility; breakpoints before map; the application hold);
   - the window-state persistence, adaptive-shell and session-persistence decisions where they name construction;
   - the CLI-file-opening decision (bounded admission).
-- [ ] 8.2 Update `.agents/rules/ui.md` (staged content is invisible by default; concealed revealer children are invisible) and `.agents/rules/widget-wiring.md` (reveal or focus of staged content goes through `ensure_composed`; breakpoints are installed before map). Update `.agents/rules/build.md` (the measured composition verdict and the reference precondition).
-- [ ] 8.3 Update the GTK axiom ledger and `docs/next/formal-verification.md` (A46–A50).
-- [ ] 8.4 Re-derive the measured cells of `WFR-SHELL-GEOMETRY`, `WFR-SETTINGS-WRITES` (the first presented frame is now the first composition frame), `WFR-SESSION-RESTORE`, `WFR-STARTUP-PREFLIGHT` and `WFR-AUTOMATION-SPINE` in `docs/workflow-readability-matrix.md`, and run `make check-workflow-boundaries`.
+- [x] 8.2 Update `.agents/rules/ui.md` (staged content is invisible by default; concealed revealer children are invisible) and `.agents/rules/widget-wiring.md` (reveal or focus of staged content goes through `ensure_composed`; breakpoints are installed before map). Update `.agents/rules/build.md` (the measured composition verdict and the reference precondition).
+- [x] 8.3 Update the GTK axiom ledger and `docs/next/formal-verification.md` (A46–A50).
+- [x] 8.4 Re-derive the measured cells of `WFR-SHELL-GEOMETRY`, `WFR-SETTINGS-WRITES` (the first presented frame is now the first composition frame), `WFR-SESSION-RESTORE`, `WFR-STARTUP-PREFLIGHT` and `WFR-AUTOMATION-SPINE` in `docs/workflow-readability-matrix.md`, and run `make check-workflow-boundaries`.
 - [ ] 8.5 Update `docs/next/long-line-documents.md` (the C4b section with baseline, gating experiment, posture, verdict and the maintainer decisions of 2026-10-20) and `docs/next/long-line-evolution.md` (C4b proposed, then done). Update `docs/end-user-coverage.md` and `README.md` if its architecture text names construction.
 
 ## 9. Verification

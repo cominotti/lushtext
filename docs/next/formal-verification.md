@@ -341,6 +341,28 @@ was in flight was dropped as equal to the stale persisted value; the machine
 now compares with the in-flight value first (unit test
 `writing_back_the_old_value_during_a_flush_is_kept`).
 
+`first-frame-window-shell` (C4b, 2026-10-28) added **A46–A50**, the window
+presentation axioms its staged composition rests on: a toplevel's first realize
+in a process pays a one-time cost that later ones do not (A46, magnitudes
+recorded, never a verdict; in an application-less minimal `AdwWindow` it is
+about 0.2 ms, far below the ~10 ms LushText's first realize measured, so most of
+that is not this floor); `present` measures nothing and an invisible subtree is
+neither measured, allocated nor mapped by the first frame (A47; its CSS half is
+source-cited); a subtree revealed or parented in a mapped window is measured in
+the next frame's layout phase (A48); a concealed vertical-slide revealer measures
+a visible child at full width and an invisible one not at all (A49); and
+`AdwBreakpointBin` applies a breakpoint matching on its first allocation after
+map before allocating the child, while a later switch, including a breakpoint
+added after map, goes through a one-frame snapshot swap (A50). No Kani harness
+was added: the composition policy is a finite stage order an exhaustive unit
+test enumerates (design D3), and the breakpoint-loop model
+(`ui/window/geometry/kani_proofs.rs`) is unchanged because the breakpoints are
+still installed before map. Writing the probes found three fixture defects and
+no axiom change: the A47 recorder disconnected from a frame clock its window's
+destruction had already disposed (GLib criticals), A49 counted re-measures
+against GTK's measure cache, and A50's added-after-map case stopped waiting
+before the swap frame.
+
 ### Phase 2 — Kani lane
 
 - Add a `make kani` target, and an optional CI job using

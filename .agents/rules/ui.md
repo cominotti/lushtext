@@ -70,6 +70,46 @@ LushtextWindow (AdwApplicationWindow)
     └── GtkBox [metadata_box] — EditorConfig + line ending + encoding (right, hidden when no tabs)
 ```
 
+## Staged Window Composition
+
+The main window is built whole and revealed in stages (`ui/window/composition/`,
+`first-frame-window-shell`), so its first frame draws only the chrome and the
+skeleton:
+
+- **Staged content is invisible in `window.blp`**: the content stack
+  (`content_stack`: the tab view and the empty page), the workspace sidebar
+  (`sidebar`), and the document-properties panel (`properties_panel`). The
+  skeleton — `GtkLushClipBin`, the split views, the layout views, the bottom
+  sheet, the editor box with the tab view, and the slot hosts — and the chrome
+  stay visible, so the rail and pane edges are the real split views' from the
+  first frame. Do not make staged content visible in the template, and do not
+  move a staged surface out of the template to stage it: every object must exist
+  from construction, because reads and projections must never force a stage.
+- **A concealed revealer's child is invisible**: the search panel, the command
+  palette, and the Focus Mode affordance become visible as their revealer's
+  `reveal-child` turns true and invisible again once it reports the child
+  concealed (`composition::execution`'s `conceal_revealed_child_while_hidden`).
+  A concealed vertical-slide revealer measures a visible child horizontally at
+  full width (ledger A49), so a visible concealed child costs every window
+  measure. A new revealer in the window shell follows the same rule; a new
+  concealed surface inside staged content needs nothing extra.
+- **Something opaque must cover every staged region.** The window background
+  is transparent (background opacity), and the content's own surfaces (the
+  empty page, the editor) are what paint the content area. While the content
+  stack is staged, `content_box` carries `shell-chrome-opaque`, which stage B1
+  removes as it reveals the stack; without it the first frame shows whatever
+  is behind the window. A new staged region needs the same cover.
+- **Chrome that depends on content decides from what composition will add.**
+  The tab strip is shown only while the window has a tab
+  (`sync_tab_bar_visibility`), and it also counts queued activation opens that
+  will add a page (`composition_activation_adds_pages`): those are admitted in
+  stage B1, after the first frame, and a strip appearing then would move the
+  content below it. Any new chrome whose visibility follows window content
+  must do the same, or the first frame no longer shows the final chrome.
+- Hidden staged content is absent from the accessibility tree until its stage
+  reveals it; automation and AT-SPI smoke wait on readiness predicates that
+  include `window-composition`.
+
 ## Libadwaita Widgets to Use
 
 - `AdwHeaderBar` (not `GtkHeaderBar`)

@@ -263,6 +263,19 @@ they are not default PR gates:
   smoke's `baseline/small` case on four profiles (fresh or steady-state,
   keyfile or dconf), reporting startup, construction, first-frame and
   settings-flush spans against B_settle with storage-stall evidence.
+- Staged window composition (`first-frame-window-shell`) adds a third
+  deterministic gate and widens the measured one. The `window_composition`
+  widget module proves that `open`/`activate` return without a window and
+  merge, that activation files open in bounded turns, the stage order on real
+  painted frames, every forced path issued before each stage, that reads force
+  nothing, that revealing staged rails never moves the rail or the pane at every
+  preset and text scale, a per-frame allocation trace of the protected chrome,
+  the `window-composition` blocker, teardown during each stage, and initial
+  focus. The `first-frame-shell` visual-geometry scenario proves the chrome
+  pixel-identical between the held first frame and the composed frame
+  (invariant `first-frame-shell-chrome`). The responsiveness lane's verdict
+  covers every dispatch until composition completes, with each stage's
+  dispatch, the first frames' layout and paint phases, and the content fill-in.
 
 GitHub Actions mirrors that split: `.github/workflows/ci.yml` owns the bounded
 pull-request lanes, `.github/workflows/end-user-smoke.yml` runs automation,

@@ -19,6 +19,33 @@ Every interactive element in a widget must be fully wired -- no dead-end buttons
 - **Toggles/switches**: read and write to the relevant state.
 - **Child widget signals**: connect in the parent's `constructed()` (e.g., `SearchBar.connect_close`).
 
+## Staged Content Reveals
+
+The window's content stack, workspace sidebar and document-properties panel are
+staged (`ui/window/composition/`): invisible until their composition stage or a
+forced reveal.
+
+- **Reveal or focus staged content only after `ensure_composed`.** Code under
+  `ui/window/` (outside `composition/`) that makes a staged surface visible or
+  focuses a widget inside one — the editor's source view, a sidebar tree — calls
+  `self.ensure_composed(StagedSurface::Content | Workspace | Properties)` first
+  in the same function. It completes that surface's stage (and the content
+  stage it depends on) synchronously; the cost lands in the next frame. Rule 11
+  of `make check-workflow-boundaries` fails on a `set_visible(true)` or
+  `grab_focus()` of a staged receiver without it.
+- **Never force a stage from a read or a projection** (`size_allocate`, status
+  bar, notifications, tab projections, sidebar row states, evidence, snapshots).
+  Every object exists from construction, so reading one is always valid.
+- **Install breakpoints before the window is mapped.** `AdwBreakpointBin`
+  applies a breakpoint that matches on its first allocation after `map` before
+  allocating the child; one that starts matching later — including one added
+  after map — draws one frame of a frozen snapshot of the old state and swaps on
+  the next tick (ledger A50). The three shell breakpoints are installed in
+  `constructed()`; a new one goes there too.
+- Hidden surfaces (search panel, palette, Focus Mode affordance, Markdown
+  preview) are not stages: their own open paths reveal their revealer, whose
+  child the composition workflow makes visible as it opens.
+
 ## Action Enabled State
 
 Actions that depend on app state (e.g., `save`, `toggle-search`, `close-tab` require an active tab) must disable themselves when preconditions are not met. Use `SimpleAction::set_enabled(bool)` so menu items gray out and shortcuts become no-ops.

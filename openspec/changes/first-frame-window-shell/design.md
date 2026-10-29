@@ -557,3 +557,81 @@ None blocking. The maintainer settled content fill-in, attribution tooling, the 
 precondition and the rendering statement on 2026-10-20 (D7, D9). C4's dconf question about the
 keyfile flush (this run measured 8.5–10.4 ms, within budget, where C4 saw up to 17.9 ms) is
 unchanged and stays with C4's record.
+
+## Implementation notes (2026-10-20)
+
+Where the implementation departs from the decisions above, the code is right and
+this section is the correction:
+
+- **D2, the content stack.** `content_stack` itself is invisible until B1, not
+  its two pages. `GtkStack` ignores `set_visible_child` for an invisible page
+  (`gtkstack.c`), so invisible pages would have changed what
+  `update_content_stack` does and what every reader of `visible-child-name`
+  sees. An invisible stack keeps its visible-child bookkeeping exactly as today
+  and is skipped by CSS validation, measurement and mapping all the same (A47).
+- **D2, concealed revealers.** A concealed revealer's child becomes visible in
+  the revealer's `notify::reveal-child` handler, which GTK emits inside
+  `set_reveal_child` before the transition starts, and invisible again on
+  `notify::child-revealed` once the child is concealed. One helper wires the
+  three window revealers in C, so no open path changed. The Markdown preview
+  already followed the rule (`apply_preview_shell_state`).
+- **D1/D4, which rails are scheduled.** B2 and B3 are **always** scheduled. A
+  rail the restored layout hides gets its content revealed into the hidden rail,
+  which draws nothing (the hidden sidebar is allocated off-screen at
+  `x = -width`, the hidden sheet is closed). An earlier implementation scheduled
+  them only when requested, and the visual-geometry lane found what that costs:
+  a never-revealed sidebar has no rect at all, a state no unstaged window has, so
+  every `minimap-sidebar-*` case's hidden step failed, and fixing that in the
+  proof tool meant loosening its geometry predicates one by one. Revealing
+  always makes the composed window identical to an unstaged one, at the cost of
+  up to two more fill-in frames when a rail is hidden. The toggle setters still
+  force their stage when they run before it.
+- **D4, forced chains.** A forced reveal completes its own stage and the
+  content stage (`CompositionPlan::forced_chain`); a lifecycle stage (W, C, R,
+  P) is never forced. A reveal issued before R or P is a visibility flip whose
+  cost lands in P and F1, so forcing realize or present would gain nothing.
+- **D5, activation opens.** The bounded turns are the composition workflow's
+  own activation queue (`execution`), which admits at most
+  `SESSION_RESTORE_PAGES_PER_TURN` (the session restore's page turn, four)
+  files per idle dispatch through the unchanged `open_document_from_activation`,
+  rather than session-restore descriptors: the session runtime carries
+  `SessionRestore` open intent, which skips recent-history recording and the
+  activation's failed-placeholder bypass, both of which activation needs. The
+  startup gate's held opens drain through the same turns.
+- **D5, initial focus.** No code sets the activation or empty-state focus after
+  `present` today: `gtk_window_show` moves focus to the first focusable widget
+  when the window has none (`gtkwindow.c`), which is a header-bar control
+  whether or not the content is visible. The widget gate compares the initial
+  focus of a staged and a collapsed composition.
+- **D7, the hold.** The test-only hold is a hold *before a stage*
+  (`set_composition_hold_before_for_test`), so a widget test can issue a forced
+  path before any one reveal stage; holding before `Content` is the hold after
+  F1. The visual-geometry lane launches the real binary, so its hold is a
+  separate smoke-only Cargo feature, `composition-hold`
+  (`LUSHTEXT_COMPOSITION_HOLD_MS`, built into `target/composition-hold/`, like
+  `crash-kill-points`), which releases itself after the given time, so the lane
+  needs no test-only action.
+- **D6, snapshot surfaces.** The rail and pane edges are the split views' hosts,
+  exported as the visual surfaces `workspace-rail` (the workspace split view's
+  sidebar host) and `content-area` (the content box, whose right edge is the
+  pane edge): the sidebar and the panel have no allocation until revealed, and
+  the properties layout slot is unmapped while its panel is invisible, so the
+  pane edge is read from the content beside it.
+- **D2, opaque cover and the tab strip (found by the visual lane, 2026-10-28).**
+  The window background is transparent (the background-opacity feature), so
+  with the content stack invisible the first frame showed what is behind the
+  window in the content area. `content_box` carries `shell-chrome-opaque` until
+  B1 removes it. And the tab strip, shown only while the window has a tab,
+  appeared a frame after B1 admitted a CLI file; it now also counts queued
+  activation opens, so it is drawn from the first frame. Both are widget-gated
+  (`window_composition`). The `first-frame-shell` scenario opens no file, so it
+  protects the header bar and the status bar, not a tab strip that exists in
+  neither frame.
+- **A46, magnitude.** In an application-less minimal `AdwWindow` the probe
+  measured the one-time first-realize cost at about 0.2 ms (fresh process:
+  266 vs 90 µs), not the ~10 ms the breakdown above attributes to the first
+  realize of LushText's window. Most of that cost is therefore per-application
+  or per-template work (`gtk_application_handle_window_realize`, the menus, the
+  template's surfaces), not a toolkit floor; the "realize floor" escalation
+  premise of task 1.4 has to be judged against the verdict run's stage R span,
+  not against A46.

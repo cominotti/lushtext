@@ -590,6 +590,65 @@ explicit user values (a fresh profile now persists only the keys whose values
 differ from their defaults); a crash before a flush loses at most one
 persistence window of preference and layout values, never content.
 
+## C4b `first-frame-window-shell` (2026-10-28)
+
+**Posture: implemented; budget verdict below.** The window is built whole in
+one dispatch with the content the first frame does not need invisible, its three
+breakpoints installed before it is realized, and then realized, presented and
+revealed in bounded, frame-gated dispatches: W (one text layout and the shell's
+icon lookups), C (the template, wiring, restores and breakpoints), R (realize,
+alone), P (present), F1 (the chrome and the real split views' rail and pane
+edges), then B1 (content stack and the activation's files, four per turn), B2
+(sidebar) and B3 (properties), each after the frame that showed its predecessor
+painted. `open`/`activate` only record a pending request and hold the
+application. The design (`openspec/changes/first-frame-window-shell/design.md`)
+holds the 2026-10-20 breakdown, the adversarial review and the implementation
+notes.
+
+### What the implementation found
+
+- **Axioms A46–A50** (ledger and `gtk-lush-axioms`): all hold on GTK 4.22.5 /
+  Adw 1.9.3. A46's magnitude in an application-less minimal `AdwWindow` is about
+  0.2 ms (fresh process: first realize 266 µs, second 90 µs), so the ~10 ms the
+  2026-10-20 breakdown attributed to "the first realize" is not a toolkit floor:
+  it is per-application or per-template work in LushText's realize, still to be
+  attributed (task 1.6 would profile it). That moves the task 1.4 escalation
+  premise from A46 to the measured stage R span.
+- **The visual-geometry lane found four defects the widget gate had not**, all
+  fixed failing-first: (1) the first frame showed what is behind the window in
+  the content area, because the window background is transparent (background
+  opacity) and the staged content is what paints there; `content_box` is now
+  opaque until B1. (2) A never-revealed sidebar has no rect at all, a state no
+  unstaged window has; B2 and B3 are now always scheduled, revealing a hidden
+  rail's content into the hidden rail, so the composed window equals an
+  unstaged one. (3) A CLI open drew the tab strip a frame after B1; the strip
+  now counts queued activation opens. (4) The scenario's status-bar anchor
+  cannot be met without a tab (the bar draws nothing then, and its toggle icon
+  is not drawn in any headless screenshot, before this change too).
+- **The code review found** (each fixed failing-first): sidebar actions acting
+  on an invisible sidebar before B2; a request between C and P presenting the
+  window inside the handler and stalling composition; CLI tabs landing after the
+  restored session (the restore now waits for queued activation opens);
+  bookmark navigation focusing an invisible editor; files admitted to a
+  torn-down window; the `frame_layout` span missing on frames without an
+  `update` phase; a process-wide largest dispatch reported as the window's.
+- **The crash-recovery smoke found two more.** On `main` it already failed
+  before reaching this change: the shared AT-SPI helpers walked at most 30
+  levels from the desktop and the editor text now sits 31 deep (after the
+  preview document alert), so `atspi-set-text.py` found nothing (fixed on
+  `main` by #64, which raised the default depth to 44). With that fixed it found a defect of this change: a CLI open
+  into an empty session was never written to `session.json`, because the tab
+  now opens in B1 while the startup restore suppresses session saves, and the
+  empty restore ended without saving; it now saves the tabs it held back.
+- **One flaky widget test** (`window_composition::test_session_restore_completion_issued_before_each_stage_matches_a_composed_window`,
+  a retry pass in the headless run) was a test race: the window's own startup
+  restore could land after the test's and replace it. The forced-path harness
+  now waits for the startup restore before issuing an operation.
+
+### Budget verdict
+
+*(Filled from the reference-precondition run; see below.)*
+
 ## Axioms each change cites
 
 | Change | Axioms |
@@ -598,6 +657,7 @@ persistence window of preference and layout values, never content.
 | C2 `long-line-protected-view` | A23, A24, A25, A26, A28, A30, A33, A34, A35 |
 | C3 `sliced-protected-install` | A24, A35, A36 |
 | C4 `bound-window-construction-dispatch` | A38 (keyfile write per `set_*` on the calling thread), A39 (`delay`/`apply` coalescing), A40 (no backend lock; a second backend stays stale), A41 (`changed` timing) |
+| C4b `first-frame-window-shell` | A46 (one-time first realize; small in a minimal window), A47 (`present` measures nothing; invisible subtrees skipped), A48 (a reveal is measured in the next frame), A49 (concealed vertical revealers measure a visible child), A50 (breakpoint before map vs the snapshot swap), A21 (`window-removed` teardown) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 
 Two probes corrected the designs that cite them, and C1/C2 must read the

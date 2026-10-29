@@ -219,6 +219,21 @@ limit automated caret and selection detail for GtkSourceView. Those cases must
 be documented as caveats and covered by manual screen-reader checks before a
 release claims that behavior.
 
+### Staged window composition
+
+A window is built whole and composed in stages (`first-frame-window-shell`):
+its first frame shows the header bar, the tab strip and the status bar, and the
+content, the workspace sidebar and the document-properties panel are revealed
+over the next few frames. Invisible widgets are absent from the accessibility
+tree, so their AT-SPI anchors appear when their stage reveals them; the
+children of concealed revealers (search panel, command palette, Focus Mode
+affordance) are absent until their revealer opens. Accessible metadata is set
+when the window is constructed, so nothing changes about a surface's name,
+role or description when it appears. A keyboard path that needs a staged
+surface (`F9`, the sidebar toggle, editor focus) reveals it first, so no key
+press is lost during composition. `make accessibility-smoke` waits on
+`accessibility-settled`, which includes the `window-composition` blocker.
+
 ## Visual Accessibility
 
 LushText inherits the GTK and Libadwaita visual accessibility stack and adds
