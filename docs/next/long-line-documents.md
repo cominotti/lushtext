@@ -21,7 +21,8 @@ that freezes it is **paragraph length**, not file size.
 | C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for giant-paragraph documents, the display-only fold, the Line Inspector, find on a worker | Every interaction offered on these documents within the budgets. |
 | C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
-| C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). |
+| C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). **Corrected 2026-10-29 (C4c):** its first-frame figure was an unseen frame on the unmapped window (A51); the real first frame was ≈ 46 ms from the request, no earlier than before C4b, and the honest fill-in 29–39 ms. |
+| C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Verdict: see "C4c" below.** |
 | C5 | `explore-editing-long-paragraphs` (optional) | Exploration of editing giant paragraphs | Maintainer decision. |
 | C6 | `bound-post-open-settle` (candidate, recorded by C0's budget verdict) | Bound the first main-loop turns after load readiness: the small-document post-open stall, the HTML first-highlight stall, the first overlay-indicator frame | The baseline fits B_settle and 2 reference frames on an idle reference run. Does not block C1–C4. |
 
@@ -673,12 +674,32 @@ the largest watchdog lateness up to the first frame's paint; "composition" is
 the largest up to `composition_complete`; "first frame" and "construction" are
 the probe's spans; fill-in is `composition_complete − first frame`.
 
-| Profile / backend | before first frame, before → after | composition dispatch, after | first frame, before → after | construction, before → after | fill-in, after |
+**Correction (2026-10-29, `shorten-window-content-fill-in`, C4c), made in
+place.** The "first frame, after" figures this verdict first recorded
+(16.2–18.2 ms from construction start, median 16.9–17.1) were an **unseen
+frame**: stage R realized the window in a dispatch of its own, and the frame
+the realize scheduled ran before stage P's default-idle source, on the
+**unmapped** window. It was never presented, and the frame clock then paced
+the first visible frame a full 60 Hz `FRAME_INTERVAL` (16.7 ms) behind it
+(ledger A51). The probe's `first_frame` span, and the settings writer's
+first-frame gate, fired on that frame in all 28 runs. Re-derived from the same
+run artifacts as the first frame painted after `composition_present`, the
+**real first frame** was 38.0–41.2 ms from construction start (median 39.2) and
+**44.5–47.9 ms from the window request (median 46.1)**; the pre-C4b build
+presented its first frame at 42.3 ms median from the request. **C4b bounded
+every dispatch, but it did not make the first pixels earlier.** The first-frame
+and fill-in columns below are corrected; the honest fill-in (from the real first
+frame to composition complete) was 29.4–38.5 ms (median 36.8), and the 51–61 ms
+the maintainer accepted is the figure measured from the unseen frame. The "first
+frame layout plus paint 3.2–4.0" below is that unseen frame's too; the real
+first frame's layout and paint took about 6.6 ms (C4c's `x7-base` measurement).
+
+| Profile / backend | before first frame, before → after | composition dispatch, after | first frame (from construction start; corrected: the first mapped frame), before → after | construction, before → after | fill-in, after: corrected (from the first mapped frame) / as first reported (from the unseen frame) |
 |---|---|---|---|---|---|
-| fresh / keyfile | 23.1–24.6 → 8.0–8.6 (8.5) | 9.3–9.9 (9.5) | 38.5–41.1 → 16.2–18.1 (16.9) | 22.8–24.3 → 9.9–10.1 | 51.2–59.9 (58.6) |
-| fresh / dconf | 22.9–24.7 → 7.9–8.6 (8.5) | 9.4–10.6 (9.7) | 37.4–39.6 → 16.5–18.2 (17.1) | 22.5–24.3 → 9.9–10.0 | 51.0–60.5 (59.4) |
-| steady / keyfile | 23.2–25.9 → 8.0–9.2 (8.5) | 9.3–10.7 (9.8) | 37.9–41.4 → 16.4–18.2 (16.9) | 22.9–25.5 → 9.9–10.6 | 52.1–59.9 (57.6) |
-| steady / dconf | 22.5–23.6 → 7.9–8.7 (8.5) | 9.6–10.3 (10.0) | 37.6–39.0 → 16.5–18.2 (17.1) | 22.1–23.3 → 9.9–10.1 | 52.0–60.6 (59.0) |
+| fresh / keyfile | 23.1–24.6 → 8.0–8.6 (8.5) | 9.3–9.9 (9.5) | 38.5–41.1 → 38.0–40.4 (38.9) | 22.8–24.3 → 9.9–10.1 | 29.4–37.8 (37.5) / 51.2–59.9 (58.6) |
+| fresh / dconf | 22.9–24.7 → 7.9–8.6 (8.5) | 9.4–10.6 (9.7) | 37.4–39.6 → 38.0–40.0 (38.7) | 22.5–24.3 → 9.9–10.0 | 29.5–38.5 (37.8) / 51.0–60.5 (59.4) |
+| steady / keyfile | 23.2–25.9 → 8.0–9.2 (8.5) | 9.3–10.7 (9.8) | 37.9–41.4 → 38.4–41.2 (39.1) | 22.9–25.5 → 9.9–10.6 | 29.8–36.9 (35.5) / 52.1–59.9 (57.6) |
+| steady / dconf | 22.5–23.6 → 7.9–8.7 (8.5) | 9.6–10.3 (10.0) | 37.6–39.0 → 38.6–40.6 (39.3) | 22.1–23.3 → 9.9–10.1 | 29.8–38.1 (36.8) / 52.0–60.6 (59.0) |
 
 Over all 28 C4b runs: stages W 5.9–6.6, C 9.9–10.6 (template 8.5–8.9),
 R 4.8–6.6, P 0.4–0.9, B1/B2/B3 ≤ 0.07 each; first frame layout + paint
@@ -724,6 +745,47 @@ in which a measured case wrote no `frame` record (`frameless_cases` in
 `summary.json`), instead of reporting `None`; on the C4b verdict artifacts it
 fails all 28 measured cases and passes the a0adc5e2 ones.
 
+## C4c `shorten-window-content-fill-in` (2026-10-29)
+
+**Posture: implemented; verdict below.** C4b's accepted fill-in (51–61 ms)
+was frame pacing plus a measuring error, not work (design, "Measured
+breakdown"): stage R's realize ran a frame on the unmapped window that was
+never presented and paced the first visible frame 16.7 ms later (A51), and each
+of B1, B2 and B3 waited a frame cycle for a 0.03 ms dispatch. The change:
+
+- **R and P in one dispatch**, so the window's first frame is its first
+  presented one;
+- **one reveal dispatch** after the first frame (content, sidebar, properties,
+  one span each), composition completing on the next painted frame;
+- **the first frame is the first frame painted on the mapped window** in the
+  construction evidence, the settings writer's gate (whose first flush stays a
+  500 ms persistence window and a `LOW` idle after it) and the lane, which
+  derives it the same way for every build (the first `frame_paint` after
+  `composition_present`) so `main` compares honestly;
+- **activation shown**: the first frame painted after the activation's file
+  opens drained (`window_construction.activation_shown_us`); the fill-in is
+  `max(composition complete, activation shown) − first frame`, and the lane
+  budgets every dispatch up to that later point;
+- the fill-in is judged against the maintainer's 40 ms per run (failing the
+  lane only under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1`) and a median target
+  of 3 reference frames (24,999 µs);
+- a fifth construction profile, `baseline/small/steady-populated` (steady
+  keyfile, one restored workspace folder of 300 synthetic entries, both side
+  panes shown);
+- a lane reporting fix found on the way (pre-existing): GDK may run a frame's
+  layout phase more than once, and the report paired the i-th `frame_layout`
+  with the i-th `frame_paint`, so a frame's second, near-empty layout run was
+  attributed to the next frame. Layout runs now belong to the paint that
+  follows them.
+
+Exploratory figures (the proposal's A/B instrumentation, load 1.7–2.1, not the
+reference precondition): first painted frame 46.7 → 31.4 ms from the request,
+composition complete 82.1 → 52.9 ms, honest fill-in 36.1 → 21.6 ms.
+
+### Verdict
+
+Pending: the reference run (main and the branch, five profiles × 7 repetitions, under the reference precondition) had not run when this section was written.
+
 ## Axioms each change cites
 
 | Change | Axioms |
@@ -732,6 +794,7 @@ fails all 28 measured cases and passes the a0adc5e2 ones.
 | C2 `long-line-protected-view` | A23, A24, A25, A26, A28, A30, A33, A34, A35 |
 | C3 `sliced-protected-install` | A24, A35, A36 |
 | C4 `bound-window-construction-dispatch` | A38 (keyfile write per `set_*` on the calling thread), A39 (`delay`/`apply` coalescing), A40 (no backend lock; a second backend stays stale), A41 (`changed` timing) |
+| C4c `shorten-window-content-fill-in` | A51 (a realize frame runs on the unmapped window, is never presented, and paces the first visible frame one `FRAME_INTERVAL` later), A46–A50 unchanged |
 | C4b `first-frame-window-shell` | A46 (one-time first realize; small in a minimal window), A47 (`present` measures nothing; invisible subtrees skipped), A48 (a reveal is measured in the next frame), A49 (concealed vertical revealers measure a visible child), A50 (breakpoint before map vs the snapshot swap), A21 (`window-removed` teardown) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 

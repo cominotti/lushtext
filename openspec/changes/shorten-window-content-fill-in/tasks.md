@@ -1,6 +1,6 @@
 ## 1. Preconditions and the failing-first baseline
 
-- [ ] 1.1 Confirm that C4b is archived on `main` with the frame-record fix (`959018d2`), and that the next free ledger id is still A51 on `main` and in every in-flight change. If it is taken, use the next free id and update the design, the specs and the record.
+- [x] 1.1 Confirm that C4b is archived on `main` with the frame-record fix (`959018d2`), and that the next free ledger id is still A51 on `main` and in every in-flight change. If it is taken, use the next free id and update the design, the specs and the record.
 - [ ] 1.2 Re-apply the A/B patch (`.claude/handoffs/c4c/c4c-ab-instrumentation.patch`) to a scratch build only, never to the tree. Reproduce `x7-base` and `x7-recommended` (`.claude/handoffs/c4c/ab-run.sh`, 7 repetitions) if more than a week has passed or the toolkit changed. Record any drift in the design before implementing.
 - [ ] 1.3 Failing-first baseline under the reference precondition (C4b design D9: the 1-minute load below 4 for 30 s, no process at ≥ 80 % CPU, no other agent's `cargo`/`rustc`/`nextest`/`kani`/`cbmc`/`mutter --headless` process; record all three and discard a run that loses them). Run `main` on `baseline/small*` (4 profiles × 7 repetitions, `RESPONSIVENESS_VARIANTS=plain`, `RESPONSIVENESS_PHASES=background`, the measurement flock held for one run at a time). From the frame records and the existing spans, record:
   - the unmapped first `after-paint` per run;
@@ -14,29 +14,29 @@
 
 ## 2. GTK axiom A51 (run first)
 
-- [ ] 2.1 Run `make gtk-axioms` on the current toolchain before adding anything.
-- [ ] 2.2 Add the A51 ledger entry: the realize frame runs ahead of default-idle sources, is never presented on an unmapped surface, and paces the next frame one `FRAME_INTERVAL` later; realize and present in one dispatch runs no such frame. Record its statement, its dependent design (`shorten-window-content-fill-in` D1), the `gdkframeclockidle.c` lines it rests on, and the verified-against versions.
-- [ ] 2.3 Add an isolated probe and a sample (interactive and `--check`) to `gtk-lush-axioms`, and register them in the adoption lab's `axiom_probes` runner:
+- [x] 2.1 Run `make gtk-axioms` on the current toolchain before adding anything.
+- [x] 2.2 Add the A51 ledger entry: the realize frame runs ahead of default-idle sources, is never presented on an unmapped surface, and paces the next frame one `FRAME_INTERVAL` later; realize and present in one dispatch runs no such frame. Record its statement, its dependent design (`shorten-window-content-fill-in` D1), the `gdkframeclockidle.c` lines it rests on, and the verified-against versions.
+- [x] 2.3 Add an isolated probe and a sample (interactive and `--check`) to `gtk-lush-axioms`, and register them in the adoption lab's `axiom_probes` runner:
   - the fixture has no tick callback, animation or pending input, so the only frame request is the one realize forwards (design, review item 2);
   - with split dispatches, the probe asserts an unmapped `after-paint` before map and a next frame time at least 16 ms later;
   - with one dispatch, it asserts no unmapped `after-paint`, and that its first `after-paint` is mapped.
 
   Update the crate's `README.md` and `CHANGELOG.md`.
-- [ ] 2.4 Run `make gtk-axioms` and `make check-gtk-axioms`.
+- [x] 2.4 Run `make gtk-axioms` and `make check-gtk-axioms`.
 
 ## 3. Composition: one realize-and-present dispatch, one reveal dispatch
 
-- [ ] 3.1 Failing-first widget tests in `crates/lushtext/tests/widget/window_composition.rs` (shard `surfaces`; no new module, so `scripts/widget-shards.py` membership does not change). Show each one failing on the current code:
+- [x] 3.1 Failing-first widget tests in `crates/lushtext/tests/widget/window_composition.rs` (shard `surfaces`; no new module, so `scripts/widget-shards.py` membership does not change). Show each one failing on the current code:
   - a window composed through the request path paints every `after-paint` while mapped;
   - the construction evidence's first frame is a mapped frame;
   - once the first frame has painted, one dispatch reveals content, workspace and properties, and composition completes on the next painted frame. This rewrites `test_reveal_stages_follow_painted_frames_in_order`: it keeps "the first frame shows the shell only" and "stages in order", and replaces "one stage per frame" with "every reveal in the frame after the first".
-- [ ] 3.2 In `ui/window/composition/policy.rs`, replace `next_scheduled_reveal` with `scheduled_reveals_now` (the pending reveal stages before any test hold, as a `StageSet`), make `FramePaintedDecision::Queue` carry it, and rewrite the exhaustive unit tests over every reachable plan, including holds.
-- [ ] 3.3 In `execution.rs`:
+- [x] 3.2 In `ui/window/composition/policy.rs`, replace `next_scheduled_reveal` with `scheduled_reveals_now` (the pending reveal stages before any test hold, as a `StageSet`), make `FramePaintedDecision::Queue` carry it, and rewrite the exhaustive unit tests over every reachable plan, including holds.
+- [x] 3.3 In `execution.rs`:
   - run stage R's realize and P's present in one dispatch, emitting both spans;
   - reveal the decided set in one dispatch, in stage order, with one span per stage, and queue the activation turn as B1 does.
 
   Keep `composition_window_realized`/`_mapped` as observers. **Fallback** (design D2, only if task 6.2 measures the populated profile's reveal frame above B_settle): two reveal dispatches, content and workspace, then properties. **Fallback** (design D1, only if the merged dispatch measures above B_settle): P as a `G_PRIORITY_HIGH_IDLE` source.
-- [ ] 3.4 Update the facade narration in `composition/mod.rs`: the stage order, which dispatches exist, and the resumption points (one `after-paint` resumption now, plus the activation turns).
+- [x] 3.4 Update the facade narration in `composition/mod.rs`: the stage order, which dispatches exist, and the resumption points (one `after-paint` resumption now, plus the activation turns).
 - [ ] 3.5 Re-run every existing `window_composition` test unchanged apart from 3.1's rewrite:
   - forced paths before every stage;
   - reads force nothing;
@@ -54,13 +54,13 @@
 
 ## 4. The first frame where it is seen, and activation shown
 
-- [ ] 4.1 Failing-first widget test in `window_construction` (shard `surfaces`): with a window whose realize frame is forced to run unmapped (realize, then present in a later default-idle source, issued by the test), the construction evidence's `first_frame_us` and the settings writer's first-frame gate fire on the first mapped frame, not the unmapped one.
-- [ ] 4.2 In `ui/window/construction.rs`, record the first `after-paint` on which the window is mapped. `first_frame`, `largest_dispatch_before_first_frame_us` and `settings_writes::first_frame_presented()` follow it.
-- [ ] 4.3 Add `activation_shown_us` to `CompositionEvidence` (the first painted frame after the activation queue first drains; `None` without files). Keep the frame handler until both it and completion are known, and disconnect it at teardown as today. Project the field into `WindowConstructionEvidence` and the automation snapshot (`model/automation.rs`, `ui/automation.rs`). Re-run the evidence surface's three driven proofs over it. Update `docs/automation.md` and `docs/automation-reference.md`, then run `make check-automation-docs` and `make automation-client-self-test`.
+- [x] 4.1 Failing-first widget test in `window_construction` (shard `surfaces`): with a window whose realize frame is forced to run unmapped (realize, then present in a later default-idle source, issued by the test), the construction evidence's `first_frame_us` and the settings writer's first-frame gate fire on the first mapped frame, not the unmapped one.
+- [x] 4.2 In `ui/window/construction.rs`, record the first `after-paint` on which the window is mapped. `first_frame`, `largest_dispatch_before_first_frame_us` and `settings_writes::first_frame_presented()` follow it.
+- [x] 4.3 Add `activation_shown_us` to `CompositionEvidence` (the first painted frame after the activation queue first drains; `None` without files). Keep the frame handler until both it and completion are known, and disconnect it at teardown as today. Project the field into `WindowConstructionEvidence` and the automation snapshot (`model/automation.rs`, `ui/automation.rs`). Re-run the evidence surface's three driven proofs over it. Update `docs/automation.md` and `docs/automation-reference.md`, then run `make check-automation-docs` and `make automation-client-self-test`.
 
 ## 5. Measured lane
 
-- [ ] 5.1 In `scripts/responsiveness-smoke-driver.py`:
+- [x] 5.1 In `scripts/responsiveness-smoke-driver.py`:
   - report the first presentation time from the probe's `frame` records;
   - define the fill-in as `max(composition_complete, activation_shown) − first_frame`;
   - derive the first painted frame the same way for every build: the end of the first `frame_paint` span that starts after `composition_present` ended (design, review item 8), and report it beside the `first_frame` span;
@@ -69,7 +69,7 @@
   - fail under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` (never in CI) when a run exceeds 40 ms.
 
   Extend the self-tests (`make check-responsiveness-lane`) with an unmapped-first-frame fixture, an activation-shown-after-complete fixture (including a dispatch between complete and activation shown that is budgeted), and the 40 ms failure.
-- [ ] 5.2 Add the `steady-populated` construction profile (design D4): one synthetic workspace folder of a few hundred entries generated in the run's temp scope, with both side panes shown. Update the lane documentation in `.agents/rules/build.md`.
+- [x] 5.2 Add the `steady-populated` construction profile (design D4): one synthetic workspace folder of a few hundred entries generated in the run's temp scope, with both side panes shown. Update the lane documentation in `.agents/rules/build.md`.
 
 ## 6. Verdict
 
@@ -92,7 +92,7 @@
   - C4b's first-frame figures corrected in place, with an explicit correction note (design, resolved decisions): the reported first frame was an unseen frame on the unmapped window, the real first frame was about 46 ms from the request, and C4b bounded the dispatches but did not make the first pixels earlier. Make the same in-place correction, with the same note, in the archived C4b design (`openspec/changes/archive/2026-10-29-first-frame-window-shell/design.md`).
 
   Update `docs/next/long-line-evolution.md`.
-- [ ] 7.2 Update `AGENTS.md`: the staged-composition decision (realize and present together, one reveal dispatch, and the first frame defined as the first mapped frame) and the composition module description.
+- [x] 7.2 Update `AGENTS.md`: the staged-composition decision (realize and present together, one reveal dispatch, and the first frame defined as the first mapped frame) and the composition module description.
 - [ ] 7.3 Update `docs/workflow-readability-matrix.md`: re-derive `WFR-WINDOW-COMPOSITION`'s measured cells (sizes, seams, the new evidence field) and `WFR-SETTINGS-WRITES` (the first-frame gate), then run `make check-workflow-boundaries`.
-- [ ] 7.4 Update the GTK axiom ledger (A51) and `docs/next/formal-verification.md`'s axiom list.
-- [ ] 7.5 Update `.agents/rules/build.md` (the lane's first-frame, presentation and fill-in definitions, and the populated profile) and `.agents/rules/widget-wiring.md`, if it names the staged reveal order.
+- [x] 7.4 Update the GTK axiom ledger (A51) and `docs/next/formal-verification.md`'s axiom list.
+- [x] 7.5 Update `.agents/rules/build.md` (the lane's first-frame, presentation and fill-in definitions, and the populated profile) and `.agents/rules/widget-wiring.md`, if it names the staged reveal order.

@@ -111,5 +111,5 @@ against the live desktop.
 
 #### Scenario: Content fills in within five reference frames
 - **WHEN** the release build opens a file on any reference-lane profile, including the populated one
-- **THEN** the time from the first frame to the first painted frame that shows the opened document and every revealed surface is at most 40 ms, within five reference frames
+- **THEN** the time from the first frame to the first painted frame after the activation's file opens ran, with every revealed surface shown, is at most 40 ms, within five reference frames
 - **AND** the median of that time over the verdict run is at most three reference frames

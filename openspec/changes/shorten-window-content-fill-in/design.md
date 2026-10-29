@@ -421,4 +421,15 @@ artifacts changed), **noted** (a stated limit, no change).
     completes; a later `open` on a composed window does not arm it. A queue that drains before the
     first mapped frame (the collapse test policy) is stamped on that first mapped frame. Remote or
     refused files still drain the queue, so the stamp is reached.
+11. **Implementation review (2026-10-29), folded in.** A correctness review of
+    the diff found: a widget-test race (completion and the activation's shown
+    frame may arrive in either order; the test now waits for both); the lane's
+    first presentation taken as the minimum over all frames (it is now the
+    first mapped frame's, `None` when that frame got no feedback); the
+    activation-shown span attributed by name rather than by its window's origin
+    (now by origin), and counted as a stage dispatch (now excluded). It also
+    noted that "activation shown" is the first frame after the opens *ran*: the
+    tabs and editors are on screen, while a file's text may still be loading on
+    its worker. That is what is stamped and documented; the fill-in measures
+    composition, not file loading, which `file-open-complete` covers.
 

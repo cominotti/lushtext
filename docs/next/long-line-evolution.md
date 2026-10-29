@@ -43,14 +43,25 @@ input to presented frame, measured on the maintainer's desktop.
    **Implemented (b73b9663, 2026-10-28); idle verdict 2026-10-29: met.** On
    the reference precondition (4 profiles × 7 repetitions), every dispatch
    from `open` until composition complete is ≤ 10.7 ms (before C4b the
-   dispatch before the first frame was 22.5–25.9 ms); the probe's first-frame
-   span is 16–18 ms instead of 37–41 ms, and construction about 10 ms
-   instead of about 23 ms. The content fill-in,
+   dispatch before the first frame was 22.5–25.9 ms), and construction is
+   about 10 ms instead of about 23 ms. **Corrected 2026-10-29 (C4c):** the
+   probe's first-frame span read 16–18 ms because it fired on an unseen frame
+   the realize ran on the unmapped window (ledger A51); the real first frame
+   was about 46 ms from the request, no earlier than before C4b. The content fill-in,
    51–61 ms (median 58.9 ms), is above the 40 ms accepted on 2026-10-20, with
    no chrome moving and every dispatch within B_settle; **the maintainer
    accepted it on 2026-10-29**. Archived 2026-10-29.
    Figures and the lane finding (the probe's `frame` records were missing on
    C4b builds, fixed by `959018d2`) are in `long-line-documents.md` ("C4b", "Budget verdict").
+   **Follow-up C4c `shorten-window-content-fill-in` (2026-10-29):** the
+   fill-in was frame pacing and a measuring error, not work. Realize and
+   present now share one dispatch (no unseen frame, A51), one dispatch after the
+   first frame reveals the content, the sidebar and the properties panel, and
+   the first frame is the first one painted on the mapped window everywhere it
+   is reported or gated on. Verdict and figures in `long-line-documents.md`
+   ("C4c"). Left as candidates, with their measured sizes: shortening W, C and R
+   (first-frame work), and the activation turn's one-time editor and language
+   state (≈ 5 and ≈ 3.8 ms, the largest part of the remaining fill-in).
 
 1. **Explain the A37 residual that reappeared once — done (2026-10-14,
    `explain-a37-residual`).** On 2026-10-13 the lane logged the fixed

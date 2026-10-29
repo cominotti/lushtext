@@ -657,14 +657,34 @@ fill-in is above the 40 ms D7 accepted, and that is the maintainer's decision.
 - **btrfs.** Storage was not a bottleneck in either window: IO pressure 0.7 %
   and 0.9 %, the longest commit 159 ms and 61 ms, and no stall episode.
 
+**Correction (2026-10-29, `shorten-window-content-fill-in`, C4c), made in
+place.** The "first frame, after" figures this verdict first recorded
+(16.2–18.2 ms from construction start, median 16.9–17.1) were an **unseen
+frame**: stage R realized the window in a dispatch of its own, and the frame
+the realize scheduled ran before stage P's default-idle source, on the
+**unmapped** window. It was never presented, and the frame clock then paced
+the first visible frame a full 60 Hz `FRAME_INTERVAL` (16.7 ms) behind it
+(ledger A51). The probe's `first_frame` span, and the settings writer's
+first-frame gate, fired on that frame in all 28 runs. Re-derived from the same
+run artifacts as the first frame painted after `composition_present`, the
+**real first frame** was 38.0–41.2 ms from construction start (median 39.2) and
+**44.5–47.9 ms from the window request (median 46.1)**; the pre-C4b build
+presented its first frame at 42.3 ms median from the request. **C4b bounded
+every dispatch, but it did not make the first pixels earlier.** The first-frame
+and fill-in columns below are corrected; the honest fill-in (from the real first
+frame to composition complete) was 29.4–38.5 ms (median 36.8), and the 51–61 ms
+the maintainer accepted is the figure measured from the unseen frame. The "first
+frame layout plus paint 3.2–4.0" below is that unseen frame's too; the real
+first frame's layout and paint took about 6.6 ms (C4c's `x7-base` measurement).
+
 All values are ms, per profile, min–max (median).
 
-| Profile / backend | largest dispatch before first frame, before → after | largest composition dispatch | first frame, before → after | construction, before → after | fill-in |
+| Profile / backend | largest dispatch before first frame, before → after | largest composition dispatch | first frame (corrected: the first mapped frame), before → after | construction, before → after | fill-in: corrected / as first reported |
 |---|---|---|---|---|---|
-| fresh / keyfile | 23.1–24.6 → 8.0–8.6 (8.5) | 9.3–9.9 (9.5) | 38.5–41.1 → 16.2–18.1 | 22.8–24.3 → 9.9–10.1 | 51.2–59.9 (58.6) |
-| fresh / dconf | 22.9–24.7 → 7.9–8.6 (8.5) | 9.4–10.6 (9.7) | 37.4–39.6 → 16.5–18.2 | 22.5–24.3 → 9.9–10.0 | 51.0–60.5 (59.4) |
-| steady / keyfile | 23.2–25.9 → 8.0–9.2 (8.5) | 9.3–10.7 (9.8) | 37.9–41.4 → 16.4–18.2 | 22.9–25.5 → 9.9–10.6 | 52.1–59.9 (57.6) |
-| steady / dconf | 22.5–23.6 → 7.9–8.7 (8.5) | 9.6–10.3 (10.0) | 37.6–39.0 → 16.5–18.2 | 22.1–23.3 → 9.9–10.1 | 52.0–60.6 (59.0) |
+| fresh / keyfile | 23.1–24.6 → 8.0–8.6 (8.5) | 9.3–9.9 (9.5) | 38.5–41.1 → 38.0–40.4 (38.9) | 22.8–24.3 → 9.9–10.1 | 29.4–37.8 (37.5) / 51.2–59.9 (58.6) |
+| fresh / dconf | 22.9–24.7 → 7.9–8.6 (8.5) | 9.4–10.6 (9.7) | 37.4–39.6 → 38.0–40.0 (38.7) | 22.5–24.3 → 9.9–10.0 | 29.5–38.5 (37.8) / 51.0–60.5 (59.4) |
+| steady / keyfile | 23.2–25.9 → 8.0–9.2 (8.5) | 9.3–10.7 (9.8) | 37.9–41.4 → 38.4–41.2 (39.1) | 22.9–25.5 → 9.9–10.6 | 29.8–36.9 (35.5) / 52.1–59.9 (57.6) |
+| steady / dconf | 22.5–23.6 → 7.9–8.7 (8.5) | 9.6–10.3 (10.0) | 37.6–39.0 → 38.6–40.6 (39.3) | 22.1–23.3 → 9.9–10.1 | 29.8–38.1 (36.8) / 52.0–60.6 (59.0) |
 
 Stages over the 28 runs:
 
