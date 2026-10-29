@@ -1478,6 +1478,8 @@ class Runner:
             self.failures.append(f"fixture digest changed after {case.id}@{variant}#{rep}")
             outcome = "integrity-failure"
         row = self.analyse(case, variant, rep, rep_dir, phases, launches, at_events, outcome)
+        if frameless_row(row):
+            self.failures.append(f"no frame records in {case.id}@{variant}#{rep}: the probe's frame stream is broken")
         row["wall_start"] = wall_start
         row["wall_end"] = time.time()
         (rep_dir / "phases.json").write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
@@ -1607,6 +1609,7 @@ class Runner:
             "tick_us": tick,
             "late_threshold_us": threshold,
             "dropped_records": dropped,
+            "frame_records": len(merged["frame"]),
             "window_construction_us": window_us,
             "construction": construction_summary(merged, case.attrs, self.binary),
             "only_phases": sorted(self.only_phases) if self.only_phases else None,
@@ -2346,10 +2349,51 @@ def scan_warnings(artifact_dir: Path) -> dict[str, Any]:
     return {"known_findings": findings, "regressions": regressions, "unclassified": unclassified}
 
 
-def run_failed(missing: list[str], integrity: dict, run_info: dict, warnings: dict) -> bool:
+def frameless_row(row: dict) -> bool:
+    """Whether a measured case ran with the probe but wrote no `frame` record.
+
+    Every launch paints, so such a row means the probe's frame stream is
+    broken, not that the case was fast: the first-frame time, the frame-gap
+    p95, and the input-to-frame verdicts would all read None or empty. After
+    `first-frame-window-shell` the probe held every frame behind one that never
+    received presentation feedback, and the lane reported None silently. The
+    calibration case and rows that did not run (skipped, crashed, failed) are
+    not judged; a row from an older run without `frame_records` is unknown."""
+    if row.get("case") == "baseline/calibration" or row.get("outcome") not in ("ok", "exceeded_cap"):
+        return False
+    if not row.get("probe_started", True) or "frame_records" not in row:
+        return False
+    return int(row["frame_records"]) == 0
+
+
+def count_frame_records(artifact_dir: Path, row: dict) -> int | None:
+    """The `frame` records a row's case directory holds, for rows written
+    before the driver recorded `frame_records`; None when it has no log."""
+    rep_dir = artifact_dir / "cases" / str(row.get("case")) / str(row.get("variant")) / f"rep{row.get('rep')}"
+    logs = sorted(rep_dir.glob("probe*.jsonl")) if rep_dir.is_dir() else []
+    if not logs:
+        return None
+    return sum(len(parse_probe_log(log.read_text(encoding="utf-8", errors="replace").splitlines())["records"]["frame"]) for log in logs)
+
+
+def frameless_cases(artifact_dir: Path, rows: list[dict]) -> list[str]:
+    """`case@variant#rep` of every frameless row (`frameless_row`)."""
+    out = []
+    for row in rows:
+        if "frame_records" not in row:
+            counted = count_frame_records(artifact_dir, row)
+            if counted is not None:
+                row = dict(row, frame_records=counted)
+        if frameless_row(row):
+            out.append(f"{row['case']}@{row['variant']}#{row['rep']}")
+    return out
+
+
+def run_failed(missing: list[str], integrity: dict, run_info: dict, warnings: dict, frameless: list[str] | None = None) -> bool:
     """The lane fails on missing artifacts, an integrity violation, a driver
-    failure, or a warning of a pre-existing blocker the programme has fixed."""
-    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions"))
+    failure, a warning of a pre-existing blocker the programme has fixed, or a
+    measured case that wrote no `frame` record (`frameless_row`)."""
+    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions")) or bool(frameless)
 
 
 def run_storage(artifact_dir: Path, rows: list[dict]) -> dict[str, Any]:
@@ -2494,6 +2538,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
     else:
         c3["verdict"] = "not measured (install group runs in the full tier only)"
     missing = [name for name in ("run.json", "results.jsonl", "calibration.json", "fixtures.json", "integrity.json") if not (artifact_dir / name).exists()]
+    frameless = frameless_cases(artifact_dir, rows)
     report = {
         "run": run_info,
         "budgets": budgets,
@@ -2507,10 +2552,11 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         "install_c3": c3,
         "cases": summarise_cases(rows),
         "missing_artifacts": missing,
+        "frameless_cases": frameless,
     }
     (artifact_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (artifact_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
-    failed = run_failed(missing, integrity, run_info, warnings)
+    failed = run_failed(missing, integrity, run_info, warnings, frameless)
     # Window construction is the one budget this lane can enforce
     # (bound-window-construction-dispatch): with
     # RESPONSIVENESS_CONSTRUCTION_ENFORCE=1, a LushText-owned span or a
@@ -2533,6 +2579,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         "integrity_violations": len(integrity.get("violations", [])),
         "driver_failures": run_info.get("driver_failures", []),
         "fixed_defect_regressions": sorted(warnings.get("regressions", {})),
+        "frameless_cases": frameless,
         "budget_verdict": derived["budget_verdict"].get("verdict"),
         "construction_over_budget": [f"{c['case']}@{c['variant']}#{c['rep']}: {','.join(c['over_budget'])}" for c in construction_over],
         "construction_enforced": construction_enforced,
@@ -2679,6 +2726,8 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- `{key}` ({finding['axiom'] or 'no axiom'}), owner {finding['owner']}: {finding['count']} line(s) in {len(finding['cases'])} case(s). Example: `{finding['example']}`")
     for key, regression in report["warnings"].get("regressions", {}).items():
         lines.append(f"- **REGRESSION** `{key}` ({regression['axiom']}), fixed by {regression['fixed_by']}: {regression['count']} line(s) in {len(regression['cases'])} case(s); the lane fails. Example: `{regression['example']}`")
+    if report.get("frameless_cases"):
+        lines.append(f"- **NO FRAME RECORDS** in {len(report['frameless_cases'])} measured case(s), so first-frame, frame-gap and input-to-frame figures are missing; the lane fails: {', '.join(report['frameless_cases'][:8])}")
     if report["warnings"].get("unclassified"):
         lines.append(f"- {len(report['warnings']['unclassified'])} unclassified warning line(s); see report.json.")
     lines += ["", "## C3 install gate", "", f"{report['install_c3'].get('verdict')}", "", "## Window construction (C4)", ""]
@@ -3044,6 +3093,26 @@ def self_test() -> int:
     clean_run: dict[str, Any] = {"driver_failures": []}
     expect(not run_failed([], {"violations": []}, clean_run, {"regressions": {}, "known_findings": {"x": {}}}), "an owned finding does not fail the lane")
     expect(run_failed([], {"violations": []}, clean_run, {"regressions": {"gizmo-snapshot-without-allocation": {}}}), "a fixed-defect regression fails the lane")
+
+    # A measured case without frame records fails the lane (the probe's frame
+    # stream broke after first-frame-window-shell and the report said None).
+    framed = {"case": "baseline/small", "variant": "plain", "rep": 0, "outcome": "ok", "probe_started": True, "frame_records": 25}
+    frameless = dict(framed, frame_records=0)
+    expect(frameless_row(frameless), "a measured case with zero frame records is frameless")
+    expect(not frameless_row(framed), "a case with frame records is not frameless")
+    expect(not frameless_row(dict(frameless, case="baseline/calibration")), "calibration is not judged")
+    expect(not frameless_row(dict(frameless, outcome="skipped")), "a skipped case is not judged")
+    expect(not frameless_row(dict(frameless, probe_started=False)), "a case without the probe is not judged")
+    expect(not frameless_row({k: v for k, v in frameless.items() if k != "frame_records"}), "a row without a count is unknown")
+    expect(run_failed([], {"violations": []}, clean_run, {"regressions": {}}, ["baseline/small@plain#0"]), "a frameless case fails the lane")
+    with tempfile.TemporaryDirectory() as frame_tmp:
+        frame_root = Path(frame_tmp)
+        frame_rep = frame_root / "cases" / "baseline" / "small" / "plain" / "rep0"
+        frame_rep.mkdir(parents=True)
+        (frame_rep / "probe.jsonl").write_text(json.dumps({"kind": "start", "t_us": 1, "version": 1, "pid": 1, "tick_us": 2000, "late_threshold_us": 1000, "probe_im": False}) + "\n", encoding="utf-8")
+        legacy = {k: v for k, v in frameless.items() if k != "frame_records"}
+        expect(frameless_cases(frame_root, [legacy]) == ["baseline/small@plain#0"], "an older row is judged from its probe log")
+        expect(frameless_cases(frame_root, [framed]) == [], "a recorded count is used as is")
 
     # Storage contamination.
     expect(storage_status({"verdict": ["Storage was NOT a bottleneck: ..."]}) == "clean", "clean verdict")

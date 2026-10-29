@@ -25,6 +25,7 @@
 //! shipped builds carry none of it, and the default unit-test lane tests it
 //! without the feature.
 
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -455,6 +456,120 @@ impl LatenessAggregator {
     }
 }
 
+/// What a window's frame clock reports for one queued frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameTimingsState {
+    /// The clock no longer holds the frame: it left the clock's history.
+    Missing,
+    /// The clock holds the frame, but its timings are not final yet.
+    Incomplete,
+    /// The frame's timings are final.
+    Complete {
+        /// When the compositor presented the frame, if it reported that.
+        presentation_us: Option<i64>,
+        /// The refresh interval the clock reported, if any.
+        refresh_interval_us: Option<i64>,
+    },
+}
+
+/// The painted frames of one window whose `frame` records are not written
+/// yet, oldest first, and the rule deciding when each one is.
+///
+/// A frame's timings become final only after its `after-paint`, when the
+/// compositor's presentation feedback arrives, so the probe queues each
+/// painted frame and writes it once it is final. A queued frame is final when
+/// its timings are complete, when the clock no longer holds it, when the queue
+/// is over capacity, or when a **later** queued frame is already complete:
+/// presentation feedback arrives in commit order, so a frame that is still
+/// incomplete behind a complete one never completes (its commit received no
+/// feedback). Without that last rule one such frame at the head held every
+/// frame behind it until it left the clock's 16-frame history, which a
+/// session that paints fewer frames never reaches: staged window composition
+/// (`first-frame-window-shell`) made the first frame exactly such a frame, and
+/// the measurement build wrote no `frame` record at all.
+#[derive(Debug)]
+pub struct FrameTimingsQueue {
+    /// `(frame counter, frame time)`, oldest first.
+    pending: VecDeque<(i64, i64)>,
+    capacity: usize,
+}
+
+impl FrameTimingsQueue {
+    /// A queue holding at most `capacity` frames before the oldest is written
+    /// without its timings.
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            pending: VecDeque::with_capacity(capacity.saturating_add(1)),
+            capacity,
+        }
+    }
+
+    /// Queue the frame that just painted.
+    pub fn painted(&mut self, frame_counter: i64, frame_time_us: i64) {
+        self.pending.push_back((frame_counter, frame_time_us));
+    }
+
+    /// Frames still waiting for final timings.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Whether no frame is waiting.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Remove every queued frame that is now final, oldest first, as `frame`
+    /// records of `window` read at `now_us`. `timings` reports a queued
+    /// frame's state by its counter; it is asked once per queued frame.
+    pub fn take_final(
+        &mut self,
+        window: u32,
+        now_us: i64,
+        mut timings: impl FnMut(i64) -> FrameTimingsState,
+    ) -> Vec<ProbeRecord> {
+        let states: Vec<FrameTimingsState> = self
+            .pending
+            .iter()
+            .map(|&(counter, _)| timings(counter))
+            .collect();
+        // Every frame up to the newest complete one is final.
+        let settled = states
+            .iter()
+            .rposition(|state| matches!(state, FrameTimingsState::Complete { .. }))
+            .map_or(0, |index| index + 1);
+        let mut records = Vec::new();
+        for (index, state) in states.into_iter().enumerate() {
+            let over_capacity = self.pending.len() > self.capacity;
+            if index >= settled && state == FrameTimingsState::Incomplete && !over_capacity {
+                break;
+            }
+            let Some((frame_counter, frame_time_us)) = self.pending.pop_front() else {
+                break;
+            };
+            let (presentation_us, refresh_interval_us) = match state {
+                FrameTimingsState::Complete {
+                    presentation_us,
+                    refresh_interval_us,
+                } => (presentation_us, refresh_interval_us),
+                FrameTimingsState::Missing | FrameTimingsState::Incomplete => (None, None),
+            };
+            records.push(ProbeRecord::Frame {
+                t_us: now_us,
+                window,
+                frame_counter,
+                frame_time_us,
+                presentation_us,
+                refresh_interval_us,
+            });
+        }
+        records
+    }
+}
+
 /// The GTK-thread side of the evidence stream: a bounded channel to one
 /// writer thread.
 #[derive(Debug)]
@@ -785,5 +900,93 @@ mod tests {
         let dropped = Arc::clone(&writer.dropped);
         writer.finish();
         assert!(dropped.load(Ordering::Relaxed) >= 1);
+    }
+
+    /// The frame counters and presentation times of `frame` records.
+    fn frames(records: &[ProbeRecord]) -> Vec<(i64, Option<i64>)> {
+        records
+            .iter()
+            .map(|record| match record {
+                ProbeRecord::Frame {
+                    frame_counter,
+                    presentation_us,
+                    ..
+                } => (*frame_counter, *presentation_us),
+                other => panic!("not a frame record: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn presented(frame_counter: i64) -> FrameTimingsState {
+        FrameTimingsState::Complete {
+            presentation_us: Some(frame_counter * 100 + 50),
+            refresh_interval_us: Some(8_333),
+        }
+    }
+
+    #[test]
+    fn a_frame_that_never_completes_does_not_hold_the_frames_behind_it() {
+        // Frame 0 gets no presentation feedback; every later frame is
+        // presented before the next one paints (the shape staged window
+        // composition produces). Fewer than the clock's 16-frame history
+        // paint, so no frame ever leaves it.
+        let mut queue = FrameTimingsQueue::new(64);
+        let mut written = Vec::new();
+        for painted in 0..4 {
+            queue.painted(painted, painted * 100);
+            written.extend(queue.take_final(1, painted, |counter| {
+                if counter == 0 || counter == painted {
+                    FrameTimingsState::Incomplete
+                } else {
+                    presented(counter)
+                }
+            }));
+        }
+        assert_eq!(
+            frames(&written),
+            vec![(0, None), (1, Some(150)), (2, Some(250))],
+            "the incomplete first frame is written once a later one completed"
+        );
+        assert_eq!(queue.len(), 1, "the newest frame waits for its feedback");
+    }
+
+    #[test]
+    fn an_incomplete_frame_waits_while_nothing_after_it_completed() {
+        let mut queue = FrameTimingsQueue::new(64);
+        queue.painted(0, 0);
+        queue.painted(1, 100);
+        let written = queue.take_final(1, 5, |_| FrameTimingsState::Incomplete);
+        assert!(written.is_empty());
+        assert_eq!(queue.len(), 2);
+        let written = queue.take_final(1, 6, presented);
+        assert_eq!(frames(&written), vec![(0, Some(50)), (1, Some(150))]);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn a_frame_the_clock_dropped_is_written_without_timings() {
+        let mut queue = FrameTimingsQueue::new(64);
+        queue.painted(3, 300);
+        queue.painted(4, 400);
+        let written = queue.take_final(2, 9, |counter| {
+            if counter == 3 {
+                FrameTimingsState::Missing
+            } else {
+                FrameTimingsState::Incomplete
+            }
+        });
+        assert_eq!(frames(&written), vec![(3, None)]);
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn an_over_capacity_queue_writes_its_oldest_frames() {
+        let mut queue = FrameTimingsQueue::new(2);
+        for counter in 0..4 {
+            queue.painted(counter, counter);
+        }
+        let written = queue.take_final(1, 9, |_| FrameTimingsState::Incomplete);
+        assert_eq!(frames(&written), vec![(0, None), (1, None)]);
+        assert_eq!(queue.len(), 2);
     }
 }

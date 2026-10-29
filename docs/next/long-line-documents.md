@@ -710,6 +710,20 @@ empty; the construction and composition figures above come from `span` and
 verdicts of later changes (C1, C2) read those records, so this must be fixed
 before their lane runs.
 
+**Fixed (`fix-probe-frame-records`, 2026-10-29).** Not the short-lived phase
+hooks: since C4b the window's first frame (counter 0) never receives
+presentation feedback (it reports only a frame time; frame 1 now carries the
+16.7 ms fallback interval frame 0 used to carry), and the probe wrote frames
+strictly in order, so that one frame held every later frame until it left the
+clock's 16-frame history, which a short case never reaches.
+`services::responsiveness_log::FrameTimingsQueue` now writes a frame once any
+later frame is complete, since presentation feedback arrives in commit order.
+A short lane run on the fix wrote 143–145 `frame` records per `baseline/small`
+case with "first frame … after spawn" 85.6–91.2 ms. The driver now fails a run
+in which a measured case wrote no `frame` record (`frameless_cases` in
+`summary.json`), instead of reporting `None`; on the C4b verdict artifacts it
+fails all 28 measured cases and passes the a0adc5e2 ones.
+
 ## Axioms each change cites
 
 | Change | Axioms |

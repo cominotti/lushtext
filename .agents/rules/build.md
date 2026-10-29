@@ -1098,7 +1098,13 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   `btrfs-stall-report` evidence. Budget overruns are results, not failures; a
 warning of a pre-existing blocker the programme fixed (`FIXED_DEFECTS` in the
 driver: the scrollbar `GtkGizmo` snapshot warning, ledger A37) fails the lane,
-while an owned one is reported as a finding; the
+while an owned one is reported as a finding; so does a measured case that
+  wrote no `frame` record (`frameless_cases` in `summary.json`), because every
+  launch paints and a missing frame stream would otherwise read as `None`
+  first-frame and empty frame-gap figures. The probe writes a frame once it or
+  any later frame is final (`FrameTimingsQueue` in
+  `services/responsiveness_log.rs`), so one frame that never gets presentation
+  feedback cannot hold back the stream; the
   nightly `quick` tier is trend evidence only, and verdicts come from a `full`
   run on the reference machine, recorded in `docs/next/long-line-documents.md`.
   It is not part of `make end-user-smoke`. A long `full` sweep may run group by

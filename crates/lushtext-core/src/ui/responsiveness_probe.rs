@@ -27,9 +27,11 @@
 //!    `timeout_source_new` is not used: it has millisecond granularity and
 //!    re-arms from the iteration's cached time.
 //! 2. **Frame timing**: each window's `GdkFrameClock` `after-paint` queues the
-//!    frame, and once its `GdkFrameTimings` are complete the probe records the
+//!    frame, and once its `GdkFrameTimings` are final the probe records the
 //!    frame time, the presentation time when the compositor reported one, and
-//!    the refresh interval.
+//!    the refresh interval. `services::responsiveness_log::FrameTimingsQueue`
+//!    decides when a frame is final, so one frame that never receives
+//!    presentation feedback cannot hold back the frames painted after it.
 //! 3. **Input stamps**: a capture-phase `GtkEventControllerLegacy` on each
 //!    window records, for key, scroll, and button events, both the handler's
 //!    monotonic time and the event's own compositor timestamp, so latency can
@@ -340,8 +342,8 @@ mod measurement {
 
     use super::LatenessWatchdog;
     use crate::services::responsiveness_log::{
-        DEFAULT_LATE_THRESHOLD_US, EVIDENCE_CHANNEL_CAPACITY, EvidenceWriter, LatenessAggregator,
-        ProbeImTrigger, ProbeInputKind, ProbeRecord,
+        DEFAULT_LATE_THRESHOLD_US, EVIDENCE_CHANNEL_CAPACITY, EvidenceWriter, FrameTimingsQueue,
+        FrameTimingsState, LatenessAggregator, ProbeImTrigger, ProbeInputKind, ProbeRecord,
     };
 
     const LOG_ENV: &str = "LUSHTEXT_RESPONSIVENESS_LOG";
@@ -526,7 +528,7 @@ mod measurement {
             if let Some(clock) = widget.frame_clock() {
                 hooked.set(true);
                 hook_frame_phases(&clock);
-                let pending = Rc::new(RefCell::new(VecDeque::<(i64, i64)>::new()));
+                let pending = Rc::new(RefCell::new(FrameTimingsQueue::new(MAX_PENDING_FRAMES)));
                 clock.connect_after_paint(move |clock| record_frames(clock, id, &pending));
             }
         };
@@ -594,42 +596,30 @@ mod measurement {
     }
 
     /// Queue the frame that just painted and write every queued frame whose
-    /// timings are now final, oldest first.
+    /// timings are now final, oldest first (`FrameTimingsQueue` owns the rule).
     fn record_frames(
         clock: &gtk4::gdk::FrameClock,
         window: u32,
-        pending: &RefCell<VecDeque<(i64, i64)>>,
+        pending: &RefCell<FrameTimingsQueue>,
     ) {
         let mut pending = pending.borrow_mut();
         if let Some(current) = clock.current_timings() {
-            pending.push_back((current.frame_counter(), current.frame_time()));
+            pending.painted(current.frame_counter(), current.frame_time());
         }
-        let now = glib::monotonic_time();
-        while let Some(&(counter, frame_time)) = pending.front() {
-            let timings = clock.timings(counter);
-            let complete = timings
-                .as_ref()
-                .is_some_and(gtk4::gdk::FrameTimings::is_complete);
-            if !complete && timings.is_some() && pending.len() <= MAX_PENDING_FRAMES {
-                break;
+        let records = pending.take_final(window, glib::monotonic_time(), |counter| {
+            match clock.timings(counter) {
+                None => FrameTimingsState::Missing,
+                Some(timings) if timings.is_complete() => FrameTimingsState::Complete {
+                    presentation_us: Some(timings.presentation_time()).filter(|time| *time > 0),
+                    refresh_interval_us: Some(timings.refresh_interval())
+                        .filter(|interval| *interval > 0),
+                },
+                Some(_) => FrameTimingsState::Incomplete,
             }
-            pending.pop_front();
-            let (presentation, refresh) = timings
-                .filter(gtk4::gdk::FrameTimings::is_complete)
-                .map_or((None, None), |timings| {
-                    (
-                        Some(timings.presentation_time()).filter(|time| *time > 0),
-                        Some(timings.refresh_interval()).filter(|interval| *interval > 0),
-                    )
-                });
-            record(ProbeRecord::Frame {
-                t_us: now,
-                window,
-                frame_counter: counter,
-                frame_time_us: frame_time,
-                presentation_us: presentation,
-                refresh_interval_us: refresh,
-            });
+        });
+        drop(pending);
+        for frame in records {
+            record(frame);
         }
     }
 
