@@ -17,7 +17,8 @@ import sys
 import time
 from pathlib import Path
 
-from smoke_warning_classifiers import is_gdk_broken_pipe_teardown
+from smoke_runtime_dir import cleanup_runtime_root, create_runtime_root
+from smoke_warning_classifiers import is_benign_session_noise
 
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -443,9 +444,12 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
 
 def prepare_state(args: argparse.Namespace) -> dict[str, str]:
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("assertions", "fixtures", "logs", "state/cache", "state/config", "state/data", "state/runtime"):
+    for name in ("assertions", "fixtures", "logs", "state/cache", "state/config", "state/data"):
         (args.artifact_dir / name).mkdir(parents=True, exist_ok=True)
-    os.chmod(args.artifact_dir / "state/runtime", 0o700)
+    # Mutter's Wayland socket lives under XDG_RUNTIME_DIR; keep it short (see
+    # smoke_runtime_dir) so a deep checkout cannot exceed sun_path.
+    runtime_root, runtime_dir = create_runtime_root("lt-auto-rt-")
+    (args.artifact_dir / "runtime-dir.txt").write_text(str(runtime_dir) + "\n", encoding="utf-8")
 
     fixture = args.artifact_dir / "fixtures/automation-smoke.txt"
     fixture.write_text(
@@ -464,7 +468,8 @@ def prepare_state(args: argparse.Namespace) -> dict[str, str]:
             "XDG_CACHE_HOME": str(args.artifact_dir / "state/cache"),
             "XDG_CONFIG_HOME": str(args.artifact_dir / "state/config"),
             "XDG_DATA_HOME": str(args.artifact_dir / "state/data"),
-            "XDG_RUNTIME_DIR": str(args.artifact_dir / "state/runtime"),
+            "XDG_RUNTIME_DIR": str(runtime_dir),
+            "LUSHTEXT_AUTOMATION_SMOKE_RUNTIME_ROOT": str(runtime_root),
         }
     )
     return env
@@ -474,6 +479,13 @@ def outer_run(args: argparse.Namespace) -> int:
     validate_outer_args(args)
     ensure_outer_tools()
     env = prepare_state(args)
+    try:
+        return run_session(args, env)
+    finally:
+        cleanup_runtime_root(Path(env["LUSHTEXT_AUTOMATION_SMOKE_RUNTIME_ROOT"]), args.artifact_dir)
+
+
+def run_session(args: argparse.Namespace, env: dict[str, str]) -> int:
     manifest = ScenarioManifest(args.artifact_dir)
     manifest.reset(args, env, launch_mode="dbus-run-session+headless-mutter")
     fixture = Path(env["LUSHTEXT_AUTOMATION_SMOKE_FILE"])
@@ -542,7 +554,7 @@ def scan_runtime_warnings(artifact_dir: Path) -> None:
         ):
             if (
                 WARNING_RE.search(line)
-                and not is_gdk_broken_pipe_teardown(line)
+                and not is_benign_session_noise(line)
                 and not BENIGN_WARNING_RE.search(line)
             ):
                 findings.append(f"{log_path.relative_to(artifact_dir)}:{line_no}: {line}")
@@ -1102,6 +1114,20 @@ def mutter_child(args: argparse.Namespace) -> int:
             "GSK_RENDERER": app_env.get("GSK_RENDERER", "cairo"),
             "GTK_USE_PORTAL": "0",
             "NO_AT_BRIDGE": "1",
+            # GTK 4 does not read NO_AT_BRIDGE: GTK_A11Y=none is what keeps its
+            # AT-SPI backend from activating org.a11y.Bus, which the lane does
+            # not use. GDK_DEBUG=no-portals keeps the app from starting the
+            # portal frontend against a compositor that is not a desktop
+            # session, as the widget harness does
+            # (gtk_lush_proof_harness::recommended_pre_gtk_environment). Where
+            # the session bus activates the a11y bus through dbus-broker (a
+            # Fedora toolbox), both did start, and failed: a Gtk-CRITICAL
+            # "Unable to register the application" from the app plus AT-SPI
+            # warnings from xdg-desktop-portal-gtk. Libadwaita reads the
+            # Settings portal on its own, so ADW_DISABLE_PORTAL=1 too.
+            "GTK_A11Y": "none",
+            "GDK_DEBUG": "no-portals",
+            "ADW_DISABLE_PORTAL": "1",
         }
     )
     app_env.pop("AT_SPI_BUS_ADDRESS", None)
@@ -1111,6 +1137,9 @@ def mutter_child(args: argparse.Namespace) -> int:
             "gtk_use_portal": app_env.get("GTK_USE_PORTAL"),
             "gsk_renderer": app_env.get("GSK_RENDERER"),
             "no_at_bridge": app_env.get("NO_AT_BRIDGE"),
+            "gtk_a11y": app_env.get("GTK_A11Y"),
+            "gdk_debug": app_env.get("GDK_DEBUG"),
+            "adw_disable_portal": app_env.get("ADW_DISABLE_PORTAL"),
         }
     )
 

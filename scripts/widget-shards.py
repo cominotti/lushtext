@@ -83,30 +83,50 @@ class Shard:
 # lands in a different shard: the local-history one with `window`, the minimap
 # mid-scan one with `editor-page`, and the minimap long-line one, by name, with
 # `surfaces`. See openspec/changes/shard-widget-test-ci-job/design.md.
-# The runs every budget below comes from: the first three runs of the sharded
-# matrix on `ubuntu-latest` (Fedora 44 container), each shard recording the
-# largest widget-step wall time of the three, rounded up to 0.1 minute. Run 1:
-# window 10.23, editor-page 8.75, surfaces 9.03; run 2: 11.10, 7.01, 6.55;
-# run 3: 11.03, 6.71, 10.42.
-MEASURED_IN = "runs 35946276130, 35947171706, 35948158637 (max of the three)"
+# The runs every budget below comes from: CI runs 39448450712, 39464816359,
+# and 40770877859 on `main` (Fedora 44 container), the three most recent with
+# a `widget-measure-<shard>` artifact for every shard. After the 2026-10-28
+# rebalance (window was 10.2-12.2 min clean, and 26.27 min in 39464816359)
+# each budget is recomputed, not re-measured: per run and shard, the shard's
+# own overhead (its widget-step wall time minus its per-test durations, i.e.
+# build, `--list`, and session setup) plus that run's per-test durations of the
+# tests in the NEW membership (a moved test or module is charged at its
+# measured duration, against the receiving shard's overhead), the largest of
+# the runs, rounded up to 0.1 minute. Run 39448450712: window 11.42,
+# editor-page 10.14, surfaces 10.81; run 39464816359: editor-page 10.64,
+# surfaces 11.28; run 40770877859: window 11.11, editor-page 10.95, surfaces
+# 11.15. Run 39464816359's window step (26.27 min) is excluded from window's
+# budget: its overhead was a failed first suite attempt plus the runner's
+# whole-suite `--retries 1` rerun, after
+# `window::test_document_sized_local_history_restore_and_undo_are_bounded_and_exact`
+# timed out twice in a 5 s wait. That was a flaky test, not a shard size no
+# membership could absorb (a full retry doubles any shard); the same change
+# fixed it (its preview wait copied the whole 11 MiB preview buffer on every
+# poll, starving the sliced install it waited for, on a 5 s budget).
+MEASURED_IN = "runs 39448450712, 39464816359, 40770877859 (recomputed for the 2026-10-28 membership; max of the runs)"
 SHARDS: dict[str, Shard] = {
     "window": Shard(
-        modules=("window", "multi_window_drafts"),
+        modules=("window",),
         tests=(),
-        ci_minutes=11.1,
+        ci_minutes=11.5,
         measured_in=MEASURED_IN,
     ),
     "editor-page": Shard(
-        modules=("editor_page",),
-        tests=(),
-        ci_minutes=8.8,
+        # Rebalanced 2026-10-28 from `window` (multi_window_drafts and two
+        # slow local-history/restore tests) and `surfaces` (attention_refresh,
+        # sidebar, workspace_entry_visibility).
+        modules=("attention_refresh", "editor_page", "multi_window_drafts", "sidebar", "workspace_entry_visibility"),
+        tests=(
+            "window::test_local_history_restore_defers_compactly_until_progress_capacity_clears",
+            "window::test_selected_restore_tab_gets_bounded_priority_after_capacity_releases",
+        ),
+        ci_minutes=11.0,
         measured_in=MEASURED_IN,
     ),
     "surfaces": Shard(
         modules=(
             "accessibility",
             "app",
-            "attention_refresh",
             "command_palette",
             "editor_memory_eviction",
             "file_tree_item",
@@ -120,18 +140,16 @@ SHARDS: dict[str, Shard] = {
             "search_bar",
             "search_panel",
             "shell_geometry",
-            "sidebar",
             "status_bar",
             "tab_strip",
             "transient_dismissal",
             "window_construction",
             "window_preview",
-            "workspace_entry_visibility",
             "workspace_section",
             "workspace_tree_virtualization",
         ),
         tests=("editor_page::test_minimap_long_line_warning_scan_slices_large_many_short_buffer",),
-        ci_minutes=10.5,
+        ci_minutes=11.3,
         measured_in=MEASURED_IN,
     ),
 }

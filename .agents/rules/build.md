@@ -1022,7 +1022,15 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
 - `make visual-smoke` builds the debug binary, launches LushText under isolated
   headless Mutter through the existing screenshot automation, captures a
   representative editor/search/minimap screenshot, and stores environment and
-  session artifacts under `build/smoke/visual` by default.
+  session artifacts under `build/smoke/visual` by default. It and
+  `make accessibility-smoke` also build a second binary with the smoke-only
+  `smoke-read-faults` feature into `target/smoke-read-faults`
+  (`make smoke-read-faults-build`) and run their failed-load captures on it with
+  `LUSHTEXT_DENY_READ=<fixture>`, which fails that document read with `EACCES`
+  (`services::read_fault`): a mode-000 fixture is still readable by root, and
+  the scheduled smoke containers run as root. Never enable that feature in
+  release, Meson, Flatpak, or Snap builds, which must compile
+  `services::read_fault::denied` as an empty inline function.
 - `make command-palette-notes-smoke` builds the debug binary, seeds an isolated
   workspace with bookmark, folder-note, document-note, and open-tab note
   sidecars, opens the command palette in Notes mode, captures one screenshot,
@@ -1062,7 +1070,10 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   AT-SPI smoke; it catches obvious helper, row-recycling, hover, transient, and
   anchor-policy drift before heavier lanes run.
 - `make performance-smoke` runs a small Criterion smoke filter with coarse
-  timing artifacts, including recovery fixtures for malformed metadata, pending
+  timing artifacts (`PERFORMANCE_SMOKE_GROUP=search-index|io-recovery` runs one
+  half of the filter set and its keyed headless proofs into
+  `performance-<group>`; the scheduled workflow runs the halves as two jobs,
+  because the whole lane outran the 30-minute job ceiling), including recovery fixtures for malformed metadata, pending
   migrations, duplicate sidecars, many local-history lineages, and first-dirty
   autosave persistence. It is distinct from full `bench-report` output and
   should stay forgiving enough to avoid routine shared-runner noise.
@@ -1210,7 +1221,7 @@ All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but thi
 - Widget shards: the suite (1,292 tests) run serially in one job took 15–30 minutes on the shared runner and was cancelled at the cap, so CI runs it as one `Widget Tests (<shard>)` matrix job per shard of `scripts/widget-shards.py`, the single source of truth for membership (a `Widget Shard Table` job builds the matrix from `widget-shards.py github-outputs`, which re-runs the check). A test is owned by the shard naming it explicitly, else by the shard listing its module (its `tests/widget/<module>.rs` file stem); there is no catch-all, so a **new widget module file must be added to a shard** or `make check-widget-shards` (in `make check-policy`) fails, as it does for a module or name in two shards, a stale entry, or an explicit name its own shard already owns by module. New tests in an existing module join that module's shard with no edit. The check discovers tests statically with the same rule `crates/lushtext/build.rs` registers them by; each shard job cross-checks that discovery against the compiled binary's `--list` and fails on any difference, then fails unless the harness's `running N tests` equals the shard's count, so the shards provably sum to the full suite. Each shard records `ci_minutes` and `measured_in` (the largest widget-step wall time, build included, across at least two CI runs; developer timing does not count), and the check fails when a shard is unmeasured or over 20 minutes, leaving 10 of the 30-minute `timeout-minutes` ceiling for setup and runner noise. Every shard job runs in measurement mode and uploads `widget-measure-<shard>` (wall time, status, counts, per-test durations) plus a job-summary table. When a shard nears the margin, move a module or one slow test by name to another shard; never raise `timeout-minutes` (the hard ceiling `scripts/check-workflow-timeouts.py` enforces) and never shrink a threshold-sized test. `make test` and `make test-widget` still run the whole suite in one session; `make test-widget-shard WIDGET_SHARD=<shard>` reproduces one CI shard. `scripts/run-widget-tests.sh` streams the sanitized harness output through `tee` while it runs, so a cancelled job still shows how far its shard got.
 - `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
 - `.github/workflows/kani.yml` — `make kani` lane in measurement mode, one `scripts/kani-shards.py` shard per matrix job, matrix and pinned `KANI_VERSION` derived from the script and Makefile by a `shards` job (Fedora 44 container, `timeout-minutes: 30`). Pull requests and pushes to `main` run only the shards the table gates `pull-request` (`widgets-geometry` and `core-geometry-policies`); schedule and dispatch run every shard.
-- `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive automation, visual-geometry, visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a split benchmark-report matrix. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
+- `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive automation, visual-geometry, visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a split benchmark-report matrix. Its Fedora 44 containers run as root with no system D-Bus and no `/dev/fuse`: failed-load fixtures use the `smoke-read-faults` binary rather than file modes, the session services' reports of the missing system bus and FUSE device are classified once in `scripts/smoke_warning_classifiers.py` (self-tested by `make check-end-user-smoke-workflow`), and the screenshot pipeline needs `pipewire-gstreamer` and `gstreamer1-plugins-good` installed explicitly. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, Cominotti repository metadata tests, a no-mutation release preview, and current metadata validation.
 - `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, prepares/deploys Cominotti Flatpak repository artifacts when signing and deploy configuration are available, creates or updates the GitHub Release context, and carries a dormant Flathub manifest PR step that stays skipped because Flathub publication is not planned.

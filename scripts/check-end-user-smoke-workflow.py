@@ -61,9 +61,13 @@ EXPECTED_LANES: dict[str, tuple[str, str]] = {
         "make accessibility-smoke SMOKE_ARTIFACT_DIR=build/smoke",
         "build/smoke/accessibility",
     ),
-    "performance": (
-        "make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke",
-        "build/smoke/performance",
+    "performance-search-index": (
+        "make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke PERFORMANCE_SMOKE_GROUP=search-index",
+        "build/smoke/performance-search-index",
+    ),
+    "performance-io-recovery": (
+        "make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke PERFORMANCE_SMOKE_GROUP=io-recovery",
+        "build/smoke/performance-io-recovery",
     ),
 }
 

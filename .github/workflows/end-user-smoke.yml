@@ -62,16 +62,26 @@ jobs:
             container_image: registry.fedoraproject.org/fedora:44
             command: make accessibility-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/accessibility
-          - lane: performance
+          # The performance smoke ran past the 30-minute job ceiling as one
+          # job, so it runs as two halves of its filter set.
+          - lane: performance-search-index
             container_image: registry.fedoraproject.org/fedora:44
-            command: make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke
-            artifact_path: build/smoke/performance
+            command: make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke PERFORMANCE_SMOKE_GROUP=search-index
+            artifact_path: build/smoke/performance-search-index
+          - lane: performance-io-recovery
+            container_image: registry.fedoraproject.org/fedora:44
+            command: make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke PERFORMANCE_SMOKE_GROUP=io-recovery
+            artifact_path: build/smoke/performance-io-recovery
 
     steps:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: |
+          # The headless Mutter screenshot pipeline is gst-launch-1.0
+          # pipewiresrc ! videoconvert ! pngenc: pipewire-gstreamer provides
+          # pipewiresrc and gstreamer1-plugins-good provides pngenc. Neither
+          # comes with mutter, pipewire, or gstreamer1 on Fedora 44.
           dnf --disablerepo=fedora-cisco-openh264 install -y \
             gtk4-devel \
             libadwaita-devel \
@@ -87,7 +97,10 @@ jobs:
             glib2 \
             mutter \
             gstreamer1 \
+            gstreamer1-plugins-base \
+            gstreamer1-plugins-good \
             pipewire \
+            pipewire-gstreamer \
             pipewire-utils \
             wireplumber \
             python3 \
@@ -99,11 +112,12 @@ jobs:
         if: ${{ matrix.lane == 'editor-glyph-live' }}
         run: |
           # The live glyph lane types through Xvfb/X11 and inspects PNG crops.
+          # Fedora 44 ships xwd as its own package (xorg-x11-apps is gone).
           dnf --disablerepo=fedora-cisco-openh264 install -y \
             ImageMagick \
             xdotool \
             xorg-x11-server-Xvfb \
-            xorg-x11-apps
+            xwd
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.0

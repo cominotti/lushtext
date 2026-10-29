@@ -9,6 +9,12 @@ source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/accessibility}"
 BINARY="$REPO_ROOT/target/debug/lushtext"
+# Debug binary built with the smoke-only `smoke-read-faults` feature
+# (`make accessibility-smoke` builds it into target/smoke-read-faults). The
+# failed-load cases run it with LUSHTEXT_DENY_READ naming their fixture, so the
+# load fails with "Permission denied" whatever the privileges: a mode-000 file
+# is still readable by root, and the scheduled smoke containers run as root.
+READ_FAULT_BINARY="${LUSHTEXT_READ_FAULT_BINARY:-$REPO_ROOT/target/smoke-read-faults/debug/lushtext}"
 ACCESSIBILITY_CASES=(
     shell
     preferences
@@ -67,13 +73,16 @@ LIST_CASES=false
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-accessibility-smoke.sh [--artifact-dir DIR] [--binary PATH] [--case PATTERN] [--list-cases]
+Usage: scripts/run-accessibility-smoke.sh [--artifact-dir DIR] [--binary PATH] [--read-fault-binary PATH] [--case PATTERN] [--list-cases]
 
 Run accessibility-enabled smoke checks. This lane keeps NO_AT_BRIDGE unset and
 uses the headless Mutter capture helper's AT-SPI path to prove stable anchors,
 focus paths, and no-context overlay states through the real accessibility bus.
 
 Options:
+  --read-fault-binary PATH
+                   Debug binary built with the smoke-read-faults feature, used
+                   by the failed-load cases (default: target/smoke-read-faults).
   --case PATTERN   Run only matching scenario names. Shell-style globs are accepted.
                    May be repeated.
   --list-cases     Print known scenario names and exit.
@@ -90,6 +99,11 @@ while [[ $# -gt 0 ]]; do
         --binary)
             [[ $# -lt 2 ]] && smoke_fail "--binary requires a value"
             BINARY="$2"
+            shift 2
+            ;;
+        --read-fault-binary)
+            [[ $# -lt 2 ]] && smoke_fail "--read-fault-binary requires a value"
+            READ_FAULT_BINARY="$2"
             shift 2
             ;;
         --case)
@@ -528,6 +542,20 @@ accessibility_require_command wireplumber
 /usr/bin/python3 -c 'import gi, pyatspi' >/dev/null 2>&1 || accessibility_skip "system Python lacks gi/pyatspi."
 [[ -x /usr/libexec/at-spi2-registryd ]] || accessibility_skip "at-spi2-registryd is not available."
 [[ -x "$BINARY" ]] || accessibility_skip "LushText debug binary is missing. Run 'make build-debug' first."
+
+# Run the next capture on the read-fault binary with its fixture's document
+# load denied; `end_read_fault_capture` restores the ordinary binary. A failing
+# capture exits through smoke_fail, so no restore is needed on that path.
+DEFAULT_BINARY="$BINARY"
+begin_read_fault_capture() {
+    [[ -x "$READ_FAULT_BINARY" ]] || smoke_fail "read-fault binary is missing: $READ_FAULT_BINARY (make accessibility-smoke builds it)"
+    BINARY="$READ_FAULT_BINARY"
+    export LUSHTEXT_DENY_READ="$1"
+}
+end_read_fault_capture() {
+    BINARY="$DEFAULT_BINARY"
+    unset LUSHTEXT_DENY_READ
+}
 
 collect_accessibility_warnings() {
     local warnings_path="$1"
@@ -1419,11 +1447,11 @@ if case_selected "editor-failed-load"; then
 DEFAULT_FIXTURE="$FIXTURE"
 FIXTURE="$ARTIFACT_DIR/fixtures/unreadable-load-target.txt"
 printf 'unreadable fixture\n' >"$FIXTURE"
-chmod 000 "$FIXTURE"
+begin_read_fault_capture "$FIXTURE"
 run_accessibility_capture "editor-failed-load" \
     --allow-file-open-failure \
     --step wait-atspi-text:"Could Not Open File"
-chmod 600 "$FIXTURE" || true
+end_read_fault_capture
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor_prefix "editor-failed-load" "editor error" "alert" "Could Not Open File:"
 assert_anchor "editor-failed-load" "editor error" "button" "Retry"
@@ -1437,14 +1465,14 @@ if case_selected "preview-mode-document-alert"; then
 DEFAULT_FIXTURE="$FIXTURE"
 FIXTURE="$ARTIFACT_DIR/fixtures/unreadable-load-target.md"
 printf '# unreadable fixture\n' >"$FIXTURE"
-chmod 000 "$FIXTURE"
+begin_read_fault_capture "$FIXTURE"
 run_accessibility_capture "preview-mode-document-alert" \
     --allow-file-open-failure \
     --step wait-atspi-text:"Could Not Open File" \
     --step window-bool-action:set-preview-mode=true \
     --step wait-predicate:accessibility-settled \
     --step wait-atspi-text:"Could Not Open File"
-chmod 600 "$FIXTURE" || true
+end_read_fault_capture
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor_prefix "preview-mode-document-alert" "preview document alert" "alert" "Could Not Open File:"
 assert_anchor "preview-mode-document-alert" "preview document alert" "button" "Retry"

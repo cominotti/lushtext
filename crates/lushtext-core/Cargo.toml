@@ -16,6 +16,10 @@ release-model-roots = ["src/model"]
 # Deterministic crash injection for the crash-recovery smoke build only; see
 # `services::kill_point`. Never enabled in release, Meson, Flatpak, or Snap.
 crash-kill-points = []
+# Deterministic document-read denial for the accessibility and visual smoke
+# builds only; see `services::read_fault`. Never enabled in release, Meson,
+# Flatpak, or Snap.
+smoke-read-faults = []
 # In-process responsiveness probes (main-loop lateness watchdog, frame and
 # input timing, probe input method) for the `make responsiveness-smoke`
 # measurement build only; see `ui::responsiveness_probe`. Never enabled in

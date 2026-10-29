@@ -8,20 +8,30 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/performance}"
-FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-file_index_search palette_pipeline_hardening_100000 file_index_rebuild end_to_end_boundedness quality_gap_scale content_search_smoke search_interactive_policies markdown_render_planning save_admission_policy editor_memory_policy json_persistence editor_file_io transient_file_load workspace_watch_pressure replace_preview_generation replace_undo_workflows recovery_performance}"
+# The default filter set is two groups. The scheduled workflow runs each group
+# as its own job: the whole set (Criterion passes plus the headless widget
+# proofs keyed on them) ran past the 30-minute job ceiling on the shared
+# runner. A group selects its filters and therefore their keyed proofs; the two
+# groups together are exactly the default set, which stays the local default.
+SEARCH_INDEX_FILTERS="file_index_search palette_pipeline_hardening_100000 file_index_rebuild end_to_end_boundedness content_search_smoke search_interactive_policies markdown_render_planning save_admission_policy editor_memory_policy"
+IO_RECOVERY_FILTERS="quality_gap_scale json_persistence editor_file_io transient_file_load workspace_watch_pressure replace_preview_generation replace_undo_workflows recovery_performance"
+FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-$SEARCH_INDEX_FILTERS $IO_RECOVERY_FILTERS}"
+GROUP=""
 SAMPLE_SIZE="${LUSHTEXT_PERFORMANCE_SMOKE_SAMPLE_SIZE:-10}"
 MEASUREMENT_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_MEASUREMENT_TIME:-1}"
 WARM_UP_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_WARM_UP_TIME:-1}"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-performance-smoke.sh [--artifact-dir DIR] [--filter BENCH]
+Usage: scripts/run-performance-smoke.sh [--artifact-dir DIR] [--filter BENCH] [--group search-index|io-recovery]
 
 Run small Criterion smoke passes with coarse timing artifacts. This is distinct
 from full benchmark reports and is intended as a quick sanity check. The default
 filter set covers file indexing, command-palette search/source construction,
 workspace-wide content search, persistence, bounded transient editor loads,
-cleanup/tree planning, and replace/undo workflows.
+cleanup/tree planning, and replace/undo workflows. --group runs one half of
+that set (search-index or io-recovery) with its keyed headless proofs; the
+scheduled workflow runs the halves as separate jobs.
 EOF
 }
 
@@ -37,6 +47,11 @@ while [[ $# -gt 0 ]]; do
             FILTERS="$2"
             shift 2
             ;;
+        --group)
+            [[ $# -lt 2 ]] && smoke_fail "--group requires a value"
+            GROUP="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -47,11 +62,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "$GROUP" in
+    "") ;;
+    search-index) FILTERS="$SEARCH_INDEX_FILTERS" ;;
+    io-recovery) FILTERS="$IO_RECOVERY_FILTERS" ;;
+    *) smoke_fail "unknown --group '$GROUP' (expected search-index or io-recovery)" ;;
+esac
+
 smoke_require_command cargo
 
 ARTIFACT_DIR="$(smoke_artifact_dir "$ARTIFACT_DIR")"
 smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
 {
+    echo "group=${GROUP:-all}"
     echo "filters=$FILTERS"
     echo "sample_size=$SAMPLE_SIZE"
     echo "warm_up_time=$WARM_UP_TIME"

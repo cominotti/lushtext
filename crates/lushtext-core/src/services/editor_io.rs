@@ -482,6 +482,11 @@ fn load_planned_text_file_with_limit(
     revalidate_load_plan(&plan, supported_limit)?;
     delay_payload_load_for_test();
     let read_limit = admitted_read_limit(&plan, supported_limit);
+    if let Some(source) =
+        crate::services::read_fault::denied(&path, plan.facts.canonical_path.as_deref())
+    {
+        return Err(EditorLoadError::Read { path, source });
+    }
     let bytes = fs_read::bounded_bytes(&path, read_limit, plan.facts.byte_size, || {
         cancel.load(Ordering::Acquire)
     })

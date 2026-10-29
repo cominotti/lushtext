@@ -101,6 +101,7 @@ src/
 │   ├── format_upgrade/ # Sealed inventory, plan, backup, apply, and legacy converter workflow for app-data format upgrades
 │   ├── json_store.rs   # Generic JSON load/save + data_dir()
 │   ├── kill_point.rs   # Smoke-only deterministic crash injection (`crash-kill-points` feature); an empty inline function in every shipped build
+│   ├── read_fault.rs   # Smoke-only document-read denial (`smoke-read-faults` feature, `LUSHTEXT_DENY_READ`) for the failed-load smoke cases, which a mode-000 fixture cannot provide under root; an empty inline function in every shipped build
 │   ├── notifications.rs # Window-scoped status and inline notification store
 │   ├── migration_ledger.rs # Durable retry ledger and startup reconciliation for sidecar/history migrations
 │   ├── recovery_metadata.rs # Recovery-aware metadata integrity, quarantine, repair diagnostics, and bounded JSON loading

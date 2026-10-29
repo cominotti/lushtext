@@ -14,12 +14,12 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from smoke_warning_classifiers import is_gdk_broken_pipe_teardown
+from smoke_runtime_dir import cleanup_runtime_root, create_runtime_root
+from smoke_warning_classifiers import is_benign_session_noise
 
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -146,10 +146,7 @@ def prepare_state(args: argparse.Namespace) -> dict[str, str]:
         (args.artifact_dir / name).mkdir(parents=True, exist_ok=True)
     # AT-SPI and PipeWire both create Unix sockets under XDG_RUNTIME_DIR. Keep
     # it short so artifact paths inside a deep checkout do not exceed sun_path.
-    runtime_root = Path(tempfile.mkdtemp(prefix="lt-crash-rt-"))
-    runtime_dir = runtime_root / "runtime"
-    runtime_dir.mkdir()
-    os.chmod(runtime_dir, 0o700)
+    runtime_root, runtime_dir = create_runtime_root("lt-crash-rt-")
     (args.artifact_dir / "runtime-dir.txt").write_text(str(runtime_dir) + "\n", encoding="utf-8")
     (args.artifact_dir / "runtime-dir-status.txt").write_text(
         f"path={runtime_dir}\nstatus=active\ncleanup=pending\n",
@@ -218,76 +215,6 @@ def prepare_state(args: argparse.Namespace) -> dict[str, str]:
         }
     )
     return env
-
-
-def session_runtime_in_use(runtime_dir: Path) -> bool:
-    """Whether any readable process still carries runtime_dir as XDG_RUNTIME_DIR."""
-    marker = b"XDG_RUNTIME_DIR=" + os.fsencode(str(runtime_dir))
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit():
-            continue
-        try:
-            environ = (proc / "environ").read_bytes()
-        except OSError:
-            continue
-        if marker in environ.split(b"\0"):
-            return True
-    return False
-
-
-def wait_for_session_release(runtime_dir: Path, timeout: float = 10.0) -> None:
-    """Wait until the finished session's services have let go of runtime_dir.
-
-    dbus-run-session returns when its direct child exits, while services its
-    private bus activated are still shutting down; xdg-document-portal keeps
-    its FUSE mount on doc/ until then, so removing the directory at once fails
-    and leaves it behind.
-    """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline and session_runtime_in_use(runtime_dir):
-        time.sleep(0.05)
-
-
-def cleanup_runtime_root(runtime_root: Path, artifact_dir: Path) -> str:
-    """Remove the short runtime root after recording what it contained.
-
-    The sockets and mounts in it are dead once the session has exited, so the
-    root is removed on failure too; the listing is kept in the artifacts.
-    """
-    wait_for_session_release(runtime_root / "runtime")
-    listing: list[str] = []
-    for path in runtime_root.rglob("*"):
-        try:
-            listing.append(str(path.relative_to(runtime_root)))
-        except (ValueError, OSError):
-            listing.append(str(path))
-    if artifact_dir.is_dir():
-        (artifact_dir / "runtime-dir-listing.txt").write_text(
-            "\n".join(sorted(listing)) + "\n", encoding="utf-8"
-        )
-    errors: list[str] = []
-    for attempt in range(1, 6):
-        try:
-            shutil.rmtree(runtime_root)
-        except FileNotFoundError:
-            return "removed"
-        except Exception as exc:
-            errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
-        if not runtime_root.exists():
-            return "removed"
-        time.sleep(0.2)
-
-    remaining: list[str] = []
-    for path in runtime_root.rglob("*"):
-        try:
-            remaining.append(str(path.relative_to(runtime_root)))
-        except ValueError:
-            remaining.append(str(path))
-    (artifact_dir / "runtime-dir-cleanup-errors.txt").write_text(
-        "\n".join([*errors, "remaining:", *sorted(remaining)]) + "\n",
-        encoding="utf-8",
-    )
-    return "remove_failed"
 
 
 def outer_run(args: argparse.Namespace) -> int:
@@ -593,6 +520,7 @@ def automation_call(bus, method: str, params=None, reply: str = "(s)", timeout_m
 def wait_for_ready(bus, artifact_dir: Path, predicate: str, timeout_msec: int) -> None:
     from gi.repository import GLib
 
+    started = time.monotonic()
     ok, status, detail = automation_call(
         bus,
         "WaitForReady",
@@ -600,8 +528,12 @@ def wait_for_ready(bus, artifact_dir: Path, predicate: str, timeout_msec: int) -
         "(bss)",
         max(10000, timeout_msec + 5000),
     ).unpack()
+    elapsed_ms = round((time.monotonic() - started) * 1000)
     with (artifact_dir / "assertions/automation-waits.txt").open("a", encoding="utf-8") as waits:
-        waits.write(f"predicate={predicate} ok={ok} status={status} detail={detail}\n")
+        waits.write(
+            f"predicate={predicate} ok={ok} status={status} elapsed_ms={elapsed_ms} "
+            f"timeout_ms={timeout_msec} detail={detail}\n"
+        )
     if not ok:
         raise RuntimeError(f"Automation1 WaitForReady({predicate}) failed: {status}: {detail}")
 
@@ -716,6 +648,11 @@ def set_editor_text(artifact_dir: Path, app_env: dict[str, str], phase: str, tex
         artifact_dir / f"assertions/{phase}-editable-list.stdout",
         artifact_dir / f"assertions/{phase}-editable-list.stderr",
     )
+    # Keep the tree the helper searched, so a failure names what was exposed.
+    try:
+        dump_atspi_tree(artifact_dir, app_env, f"{phase}-set-text-failure")
+    except RuntimeError:
+        pass
     raise RuntimeError(f"AT-SPI could not set editor text during {phase}")
 
 
@@ -1155,7 +1092,7 @@ def scan_runtime_warnings(artifact_dir: Path) -> None:
         if not path.is_file() or path.suffix not in {".log", ".stdout", ".stderr"}:
             continue
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if warning_re.search(line) and not is_gdk_broken_pipe_teardown(line):
+            if warning_re.search(line) and not is_benign_session_noise(line):
                 matches.append(f"{path.name}: {line}")
 
     report = artifact_dir / "assertions/runtime-warning-scan.txt"

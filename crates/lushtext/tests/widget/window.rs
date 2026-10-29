@@ -1600,8 +1600,33 @@ fn local_history_preview_text(widget: &gtk4::Widget) -> Option<String> {
 }
 
 fn wait_for_local_history_preview_text(widget: &gtk4::Widget, expected: &str) {
-    wait_until(Duration::from_secs(5), || {
-        local_history_preview_text(widget).as_deref() == Some(expected)
+    wait_for_local_history_preview_text_within(widget, expected, Duration::from_secs(5));
+}
+
+/// Wait until the read-only local-history preview shows exactly `expected`.
+///
+/// The preview installs on the GTK thread in bounded slices, so the predicate
+/// must stay cheap: it compares the O(1) character count first and copies the
+/// buffer text only once the count matches. Copying a document-sized buffer on
+/// every poll competed with the very install slices it waited for and timed
+/// out the 11 MiB restore test on a loaded CI runner.
+fn wait_for_local_history_preview_text_within(
+    widget: &gtk4::Widget,
+    expected: &str,
+    timeout: Duration,
+) {
+    let expected_chars = i32::try_from(expected.chars().count()).unwrap_or(i32::MAX);
+    wait_until(timeout, || {
+        let mut text_views = Vec::new();
+        collect_text_views(widget, &mut text_views);
+        text_views
+            .into_iter()
+            .find(|text_view| !text_view.is_editable())
+            .is_some_and(|text_view| {
+                let buffer = text_view.buffer();
+                buffer.char_count() == expected_chars
+                    && buffer.text(&buffer.start_iter(), &buffer.end_iter(), true) == expected
+            })
     });
 }
 
@@ -12673,9 +12698,12 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     });
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
-    wait_for_local_history_preview_text(&child, &restore_target);
+    // A worker read plus a sliced GTK install of the same 11 MiB document the
+    // restore below replaces; it gets the restore's async budget, not the 5 s
+    // one sized for small previews.
+    wait_for_local_history_preview_text_within(&child, &restore_target, Duration::from_secs(60));
     let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
-    wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
+    wait_until(Duration::from_secs(10), || restore_button.is_sensitive());
     let progress_lane_before = plain_disposal_evidence().progress.snapshot;
     let snapshot_counters_before = buffer_snapshot_evidence(None).handoff;
     let main_loop_progressed = Rc::new(Cell::new(false));

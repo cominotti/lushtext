@@ -34,6 +34,7 @@ pub mod migration_ledger;
 mod note_storage;
 pub mod notifications;
 pub mod palette;
+pub mod read_fault;
 pub mod recent_documents;
 pub mod recovery_metadata;
 #[cfg(any(test, feature = "responsiveness-probes"))]

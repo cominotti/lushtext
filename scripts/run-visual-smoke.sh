@@ -9,6 +9,13 @@ source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/visual}"
 BINARY="$REPO_ROOT/target/debug/lushtext"
+# Debug binary built with the smoke-only `smoke-read-faults` feature
+# (`make visual-smoke` builds it into target/smoke-read-faults). The
+# preview-mode-document-alert captures run it with LUSHTEXT_DENY_READ naming
+# their fixture, so the load fails with "Permission denied" whatever the
+# privileges: a mode-000 file is still readable by root, and the scheduled
+# smoke containers run as root.
+READ_FAULT_BINARY="${LUSHTEXT_READ_FAULT_BINARY:-$REPO_ROOT/target/smoke-read-faults/debug/lushtext}"
 WIDTH="${LUSHTEXT_VISUAL_SMOKE_WIDTH:-1600}"
 HEIGHT="${LUSHTEXT_VISUAL_SMOKE_HEIGHT:-1000}"
 VISUAL_CASES=(
@@ -61,12 +68,16 @@ VISUAL_CASES_RUN=0
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-visual-smoke.sh [--artifact-dir DIR] [--binary PATH] [--case PATTERN] [--list-cases]
+Usage: scripts/run-visual-smoke.sh [--artifact-dir DIR] [--binary PATH] [--read-fault-binary PATH] [--case PATTERN] [--list-cases]
 
 Launch LushText in isolated headless Mutter sessions, capture representative
 geometry-sensitive desktop states, and preserve screenshots/log artifacts.
 
 Options:
+  --read-fault-binary PATH
+                   Debug binary built with the smoke-read-faults feature, used
+                   by the preview-mode-document-alert captures (default:
+                   target/smoke-read-faults).
   --case PATTERN   Run only matching scenario names. Shell-style globs are accepted.
                    May be repeated.
   --list-cases     Print known scenario names and exit.
@@ -83,6 +94,11 @@ while [[ $# -gt 0 ]]; do
         --binary)
             [[ $# -lt 2 ]] && smoke_fail "--binary requires a value"
             BINARY="$2"
+            shift 2
+            ;;
+        --read-fault-binary)
+            [[ $# -lt 2 ]] && smoke_fail "--read-fault-binary requires a value"
+            READ_FAULT_BINARY="$2"
             shift 2
             ;;
         --case)
@@ -184,13 +200,6 @@ PREVIEW_ALERT_FIXTURE="$ARTIFACT_DIR/fixtures/unreadable-preview-alert.md"
 rm -f "$PREVIEW_ALERT_FIXTURE"
 printf '# unreadable fixture\n' >"$PREVIEW_ALERT_FIXTURE"
 
-# Readable again whatever way the script exits, so a failed capture never
-# leaves an unreadable file in the artifact tree for upload or cleanup.
-restore_preview_alert_fixture() {
-    chmod 600 "$PREVIEW_ALERT_FIXTURE" 2>/dev/null || true
-}
-trap restore_preview_alert_fixture EXIT
-
 scan_visual_logs() {
     local name="$1"
     local capture_dir="$2"
@@ -214,7 +223,7 @@ scan_visual_logs() {
         grep -E -i \
             '(Gtk|Gdk|GSK|Adwaita|Libadwaita|AT-SPI|accessibility).*(warning|critical|error)|GLib-GObject-CRITICAL|gtk_[a-z0-9_]+.*assertion|gdk_[a-z0-9_]+.*assertion' \
             "$log_path" \
-            | /usr/bin/python3 "$REPO_ROOT/scripts/smoke_warning_classifiers.py" --drop-gdk-broken-pipe \
+            | /usr/bin/python3 "$REPO_ROOT/scripts/smoke_warning_classifiers.py" --drop-benign \
             >>"$matches" || true
     done
 
@@ -1616,11 +1625,19 @@ run_selected_capture "markdown-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/scree
 run_selected_capture "constrained-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview.png" "760" "520" "" "0" "default" "toggle-preview-mode"
 # Unreadable only for the three captures that need it: its failed load raises
 # the "Could Not Open File" alert the preview-mode-document-alert scenarios show.
-chmod 000 "$PREVIEW_ALERT_FIXTURE"
+# The denial comes from the read-fault binary, not file permissions (see
+# READ_FAULT_BINARY above), so it holds when the lane runs as root.
+DEFAULT_BINARY="$BINARY"
+if case_selected preview-mode-document-alert || case_selected preview-mode-document-alert-dark || case_selected preview-mode-document-alert-transparent; then
+    [[ -x "$READ_FAULT_BINARY" ]] || smoke_fail "read-fault binary is missing: $READ_FAULT_BINARY (make visual-smoke builds it)"
+    BINARY="$READ_FAULT_BINARY"
+    export LUSHTEXT_DENY_READ="$PREVIEW_ALERT_FIXTURE"
+fi
 run_selected_capture "preview-mode-document-alert" "$PREVIEW_ALERT_FIXTURE" "$ARTIFACT_DIR/screenshots/preview-mode-document-alert.png" "1280" "860" "" "0" "default" "set-preview-mode=true"
 run_selected_capture "preview-mode-document-alert-dark" "$PREVIEW_ALERT_FIXTURE" "$ARTIFACT_DIR/screenshots/preview-mode-document-alert-dark.png" "1280" "860" "" "0" "force-dark" "set-preview-mode=true"
 run_selected_capture "preview-mode-document-alert-transparent" "$PREVIEW_ALERT_FIXTURE" "$ARTIFACT_DIR/screenshots/preview-mode-document-alert-transparent.png" "1280" "860" "" "0" "default" "set-preview-mode=true"
-restore_preview_alert_fixture
+BINARY="$DEFAULT_BINARY"
+unset LUSHTEXT_DENY_READ
 run_selected_capture "markdown-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview-side-by-side.png" "1280" "860" "" "0" "default" "set-preview-pane-visible=true"
 run_selected_capture "constrained-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview-side-by-side.png" "760" "520" "" "0" "default" "set-preview-pane-visible=true"
 run_selected_capture "workspace-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-empty.png" "1280" "860" "" "0" "default"

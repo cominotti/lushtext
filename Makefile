@@ -91,7 +91,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -453,9 +453,10 @@ command-palette-notes-smoke: build-debug
 # Real-session screenshot smoke under isolated headless Mutter. This is an
 # artifact-producing lane for rendered-pixel and compositor behavior; it skips
 # cleanly when host desktop-capture dependencies are unavailable.
-visual-smoke: build-debug
+visual-smoke: build-debug smoke-read-faults-build
 	@echo "Running visual smoke lane..."
-	$(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual"
+	$(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual" \
+		--read-fault-binary "$(PWD)/target/smoke-read-faults/debug/lushtext"
 
 visual-geometry-smoke: build-debug
 	@echo "Running same-session visual geometry invariant lane..."
@@ -492,17 +493,33 @@ portal-sandbox-smoke:
 
 # AT-SPI-enabled smoke lane. Unlike widget tests, this keeps the accessibility
 # bridge enabled so accessible-name and focus automation can be verified.
-accessibility-smoke: build-debug
+accessibility-smoke: build-debug smoke-read-faults-build
 	@echo "Running accessibility smoke lane..."
-	$(TEMP_SCOPE) accessibility -- ./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility"
+	$(TEMP_SCOPE) accessibility -- ./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility" \
+		--read-fault-binary "$(PWD)/target/smoke-read-faults/debug/lushtext"
+
+# The failed-load captures of the visual and accessibility lanes need a second
+# debug binary with the smoke-read-faults feature (services::read_fault), so a
+# document load fails with "Permission denied" even when the lane runs as root,
+# where a mode-000 fixture stays readable. It has its own target directory so
+# the ordinary debug binary (and every release, Meson, Flatpak, and Snap build)
+# never carries it.
+smoke-read-faults-build:
+	@echo "Building the smoke-read-faults smoke binary..."
+	cargo build -p lushtext --features smoke-read-faults --target-dir target/smoke-read-faults
 
 BENCH_REPORT_OUT_DIR ?= docs/benchmarks
 SMOKE_ARTIFACT_DIR ?= build/smoke
 
 # Lightweight performance smoke distinct from full Criterion reports.
+# PERFORMANCE_SMOKE_GROUP=search-index|io-recovery runs one half of the filter
+# set into its own artifact directory; the scheduled workflow runs each half as
+# a job, because the whole lane outran the 30-minute job ceiling.
+PERFORMANCE_SMOKE_GROUP ?=
 performance-smoke:
-	@echo "Running performance smoke lane..."
-	./scripts/run-performance-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/performance"
+	@echo "Running performance smoke lane$(if $(PERFORMANCE_SMOKE_GROUP), (group $(PERFORMANCE_SMOKE_GROUP)))..."
+	./scripts/run-performance-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/performance$(if $(PERFORMANCE_SMOKE_GROUP),-$(PERFORMANCE_SMOKE_GROUP))" \
+		$(if $(PERFORMANCE_SMOKE_GROUP),--group "$(PERFORMANCE_SMOKE_GROUP)")
 
 # Long-line responsiveness measurement build: the smoke-only
 # `responsiveness-probes` feature, release profile, in its own target directory
@@ -651,6 +668,7 @@ check-flatpak-permissions:
 check-end-user-smoke-workflow:
 	@echo "Checking end-user smoke workflow matrix..."
 	./scripts/check-end-user-smoke-workflow.py
+	python3 scripts/smoke_warning_classifiers.py --self-test
 
 # Enforce the repository-wide CI job budget. Missing job timeouts are violations
 # because GitHub's implicit default is much higher than LushText's hard limit.

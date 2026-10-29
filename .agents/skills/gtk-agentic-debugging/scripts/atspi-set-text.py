@@ -122,7 +122,9 @@ def main() -> int:
     parser.add_argument("--text", help="Text to set; not required with --list")
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--interval", type=float, default=0.25)
-    parser.add_argument("--max-depth", type=int, default=30)
+    # Equal to atspi-dump-tree.py: the editor text view sits past desktop depth
+    # 30 since the window gained a container level (preview document alert).
+    parser.add_argument("--max-depth", type=int, default=44)
     parser.add_argument("--max-nodes", type=int, default=20000)
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()

@@ -199,7 +199,12 @@ they are not default PR gates:
   `preview-mode-document-alert` case loads an unreadable Markdown file, enters
   preview-only mode, and asserts exactly one showing "Could Not Open File" alert
   with its Retry and Dismiss buttons, which is the window-hosted copy above the
-  preview because the editor column is hidden. The lane writes bounded per-scenario manifests, assertion JSONL,
+  preview because the editor column is hidden. Both failed-load cases (and the
+  visual lane's `preview-mode-document-alert*` captures) run a second debug
+  binary built with the smoke-only `smoke-read-faults` feature, which fails the
+  named fixture's document read with `EACCES` (`LUSHTEXT_DENY_READ`), because a
+  mode-000 fixture is still readable when the lane runs as root, as the
+  scheduled workflow's containers do. The lane writes bounded per-scenario manifests, assertion JSONL,
   warning status, screenshots, AT-SPI tree/focus excerpts, `summary.txt`, and
   `summary.json`; unsupported AT-SPI or compositor hosts skip with an explicit
   reason that does not count as coverage. It complements widget tests that
@@ -263,7 +268,9 @@ GitHub Actions mirrors that split: `.github/workflows/ci.yml` owns the bounded
 pull-request lanes, `.github/workflows/end-user-smoke.yml` runs automation,
 builder-diagnostics, visual-geometry, visual, crash-recovery, portal/sandbox,
 accessibility, performance-smoke, and full benchmark-report artifact lanes on a
-schedule or manual dispatch, and
+schedule or manual dispatch (performance-smoke as two jobs,
+`PERFORMANCE_SMOKE_GROUP=search-index` and `io-recovery`, because the whole
+lane outran the 30-minute job ceiling), and
 `.github/workflows/release-benchmark.yml` attaches a full benchmark report to
 tagged release validation.
 
