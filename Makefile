@@ -135,7 +135,7 @@ GTK_LUSH_PACKAGES := -p gtk-lush-axioms -p gtk-lush-signals -p gtk-lush-settle -
 GTK_LUSH_CRATES := crates/gtk-lush/axioms crates/gtk-lush/signals crates/gtk-lush/settle crates/gtk-lush/tasks crates/gtk-lush/viewport crates/gtk-lush/widgets crates/gtk-lush/proof-harness crates/gtk-lush/proof-spine
 GTK_LUSH_ADOPTION_LAB_PACKAGE := -p gtk-lush-adoption-lab
 GTK_LUSH_STOCK_FIXTURES := fixtures/gtk-lush-adoption/stock-settle
-GTK_LUSH_MSRV ?= 1.99.1
+GTK_LUSH_MSRV ?= 1.98.0
 GTK_LUSH_PUBLIC_API_TOOLCHAIN ?= nightly-2026-06-01
 GTK_LUSH_PUBLIC_API_OUT_DIR ?= target/gtk-lush-public-api
 

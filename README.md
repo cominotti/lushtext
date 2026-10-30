@@ -391,7 +391,7 @@ stop the preview and say so.
 
 ### Dependencies
 
-- Rust 1.99.1+
+- Rust 1.98.0+ (the pinned toolchain is 1.98.1)
 - GTK4 development libraries
 - Libadwaita development libraries
 - GtkSourceView 5 development libraries
@@ -719,7 +719,7 @@ Cargo invocation needs the feature: `cargo bench -p lushtext-core --features tes
 
 | Component | Technology |
 |-----------|------------|
-| Language | Rust 1.99.1+, Edition 2024 |
+| Language | Rust 1.98.0+, Edition 2024 |
 | GUI | GTK4 0.11 + Libadwaita 0.9 + GtkSourceView 5 0.11 |
 | Config | GSettings |
 | Build | Cargo workspace + Makefile (dev), Meson (Flatpak/installed) |

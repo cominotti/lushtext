@@ -22,7 +22,7 @@ exclude = ["fuzz", "formal/evaluation/stateright", "fixtures/gtk-lush-adoption/s
 default-members = ["crates/lushtext"]
 
 [workspace.package]
-rust-version = "1.99.1"
+rust-version = "1.98.0"
 
 # --- Centralized dependencies (union of features across all crates) ---
 

@@ -10,7 +10,7 @@ A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text
 
 ## Tech Stack
 
-- **Language:** Rust (MSRV: 1.99.1, Edition 2024)
+- **Language:** Rust (MSRV: 1.98.0, pinned toolchain 1.98.1, Edition 2024)
 - **GUI:** GTK4 (0.11) + Libadwaita (0.9) + GtkSourceView 5 (0.11)
 - **Config:** GSettings (`data/dev.cominotti.lushtext.gschema.xml`)
 - **Build:** Cargo workspace + Makefile (dev), Meson (Flatpak/installed)
@@ -463,7 +463,7 @@ If implementation or verification reveals a pre-existing blocker, fix it in the 
 This rule is mandatory and has no exceptions.
 
 ## Active Technologies
-- Rust 1.99.1 (Edition 2024) + GTK4 0.11, Libadwaita 0.9, GtkSourceView 5 0.11, gio/glib/pango 0.22, existing `spawn_blocking_then` background executor (001-file-peek)
+- Rust 1.98.1 (MSRV 1.98.0, Edition 2024) + GTK4 0.11, Libadwaita 0.9, GtkSourceView 5 0.11, gio/glib/pango 0.22, existing `spawn_blocking_then` background executor (001-file-peek)
 - Local workspace files for read-only snapshot reads; transient in-memory peek state only; no new XDG, draft, session, or GSettings persistence (001-file-peek)
 
 ## Recent Changes

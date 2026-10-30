@@ -5,7 +5,7 @@
 # blocking workspace lint table.
 
 schema = 1
-toolchain = "1.99.1"
+toolchain = "1.98.1"
 
 [[rules]]
 code = "clippy::manual_midpoint"
@@ -325,7 +325,7 @@ rationale = "Current stderr findings are test skip diagnostics; production diagn
 code = "clippy::multiple_crate_versions"
 classification = "resolved_policy_exception"
 max_count = 12
-rationale = "cargo-deny denies duplicate versions by default and carries narrow skip-tree exceptions for foundational transitive crates; the Rust 1.96 workspace graph reported twelve advisory duplicate-version entries, and the Rust 1.99.1 graph reports one, so the ceiling stays a ceiling rather than a target."
+rationale = "cargo-deny denies duplicate versions by default and carries narrow skip-tree exceptions for foundational transitive crates; the Rust 1.96 workspace graph reported twelve advisory duplicate-version entries, and the Rust 1.98.1 graph reports one, so the ceiling stays a ceiling rather than a target."
 
 [[rules]]
 code = "unreachable_pub"
@@ -364,14 +364,9 @@ path_globs = ["crates/lushtext-core/src/model/workspace_search.rs"]
 max_count = 1
 rationale = "`WorkspaceSearchRootIndex::canonical_candidate` returns `Option<Option<PathBuf>>` because the two layers report different facts: the outer `None` means the walked path is not under that traversal root, and the inner `None` means the traversal root itself has no canonical identity. Both callers consume them differently — `?` on the outer, a `match` arm on the inner — so flattening would make a non-member path indistinguishable from a member whose root has no canonical form, which is exactly the confusion that produced duplicate search results. The nesting is documented at the definition and this classification is scoped to that one file so a new occurrence elsewhere still fails the lane."
 
-# Rust 1.99.1 bump (2026-10-29): categories first reported by `make lint-advisory`
-# under the 1.99 toolchain, and generated widget-registry findings that a cargo
+# Rust 1.98.1 bump (2026-10-30): categories `make lint-advisory` reports under the
+# 1.98.1 toolchain that had no classification, and generated widget-registry findings that a cargo
 # `build.build-dir` outside `target/` used to hide from the `<generated>` mapping.
-
-[[rules]]
-code = "clippy::assert_is_empty"
-classification = "accepted_advisory"
-rationale = "Clippy 1.99 style suggestion to replace `assert!(x.is_empty())` with a dedicated form; the existing assertions are test and fixture checks whose failure output is already explicit, so a mechanical rewrite of ~170 sites adds churn without a correctness gain."
 
 [[rules]]
 code = "clippy::manual_assert_eq"
@@ -379,13 +374,6 @@ classification = "accepted_advisory"
 path_globs = ["crates/lushtext-core/src/services/draft_service/set_aside.rs"]
 max_count = 1
 rationale = "One unit-test equality assertion on a struct value; scoped so a new occurrence elsewhere still fails the lane."
-
-[[rules]]
-code = "clippy::manual_bit_width"
-classification = "accepted_advisory"
-path_globs = ["crates/lushtext-core/src/model/responsiveness_budget.rs"]
-max_count = 1
-rationale = "`histogram_bucket` is a `const fn` whose bit-length arithmetic is Kani-proved (`buckets_are_monotone_and_in_range`); Kani pins its own nightly, so switching to the newer `bit_width` helper is deferred until that pin is known to support it."
 
 [[rules]]
 code = "clippy::too_long_first_doc_paragraph"
@@ -405,13 +393,6 @@ classification = "accepted_advisory"
 path_globs = ["crates/lushtext-core/src/ui/window/session_restore/execution.rs"]
 max_count = 1
 rationale = "`settle_restore_selection` takes the restore runtime mutably as the coordination owner of the selection settle; scoped to the one site."
-
-[[rules]]
-code = "clippy::tuple_array_conversions"
-classification = "accepted_advisory"
-path_globs = ["crates/cargo-gtk-proof/src/png.rs"]
-max_count = 1
-rationale = "RGBA tuple to byte-array flattening in the proof tool's PNG encoder reads clearer as an explicit array; scoped to the one site."
 
 [[rules]]
 code = "clippy::used_underscore_binding"
