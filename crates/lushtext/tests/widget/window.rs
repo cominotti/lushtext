@@ -13126,13 +13126,11 @@ fn test_local_history_baseline_transient_failure_retries_original_clean_text() {
     editor.buffer().set_text("modified text\n");
     editor.buffer().set_modified(true);
     wait_until(Duration::from_secs(10), || {
-        local_history_service::list_snapshots_for_path(&data_dir, &path)
-            .ok()
-            .is_some_and(|snapshots| {
-                snapshots
-                    .iter()
-                    .any(|snapshot| snapshot.origin == LocalHistorySnapshotOrigin::Baseline)
-            })
+        local_history_service::list_snapshots_for_path(&data_dir, &path).is_ok_and(|snapshots| {
+            snapshots
+                .iter()
+                .any(|snapshot| snapshot.origin == LocalHistorySnapshotOrigin::Baseline)
+        })
     });
 
     let baseline = local_history_service::list_snapshots_for_path(&data_dir, &path)
@@ -13261,8 +13259,7 @@ fn test_local_history_baseline_retry_is_bounded_and_releases_permit() {
     editor.capture_local_history_baseline_for_test();
     wait_until(Duration::from_secs(10), || {
         local_history_service::list_snapshots_for_path(&data_dir, &path)
-            .ok()
-            .is_some_and(|snapshots| !snapshots.is_empty())
+            .is_ok_and(|snapshots| !snapshots.is_empty())
     });
 }
 

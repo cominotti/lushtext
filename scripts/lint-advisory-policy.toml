@@ -5,7 +5,7 @@
 # blocking workspace lint table.
 
 schema = 1
-toolchain = "1.96.0"
+toolchain = "1.99.1"
 
 [[rules]]
 code = "clippy::manual_midpoint"

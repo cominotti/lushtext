@@ -1,18 +1,18 @@
 # rust-toolchain-adoption Specification
 
 ## Purpose
-Define LushText's Rust 1.96.0 adoption contract so toolchain declarations,
+Define LushText's Rust toolchain adoption contract (current floor: Rust 1.99.1; the idiom and lint requirements below were adopted with Rust 1.96.0) so toolchain declarations,
 validation gates, contributor guidance, accepted idioms, and Cargo registry
 security posture stay aligned across development, CI, and packaging.
 
 ## Requirements
 ### Requirement: Rust floor is aligned across all stable toolchain surfaces
-The implementation SHALL pin LushText's stable Rust floor to Rust 1.96.0 everywhere the repository declares, installs, bootstraps, or documents the stable toolchain. The implementation MUST keep nightly-only tooling, such as coverage-guided fuzz smoke, explicitly separate from the stable MSRV.
+The implementation SHALL pin LushText's stable Rust floor to Rust 1.99.1 everywhere the repository declares, installs, bootstraps, or documents the stable toolchain. The implementation MUST keep nightly-only tooling, such as coverage-guided fuzz smoke, explicitly separate from the stable MSRV.
 
 #### Scenario: Stable version surfaces agree
 - **WHEN** the repository is searched for active Rust MSRV, rustup, CI stable-toolchain, Snap rustup bootstrap, README, AGENTS, rule, and skill references
-- **THEN** active references name Rust 1.96.0 instead of Rust 1.95.0
-- **AND** stale Rust 1.95.0 references remain only in archive/history context or are removed
+- **THEN** active references name Rust 1.99.1 instead of Rust 1.96.0
+- **AND** stale Rust 1.96.0 references remain only in archive/history context or are removed
 
 #### Scenario: Nightly lanes remain explicit exceptions
 - **WHEN** fuzz smoke or other nightly-only tooling is inspected
@@ -21,8 +21,8 @@ The implementation SHALL pin LushText's stable Rust floor to Rust 1.96.0 everywh
 
 #### Scenario: Packaging toolchains satisfy the floor
 - **WHEN** Flatpak and Snap packaging surfaces are inspected
-- **THEN** Snap's rustup bootstrap installs Rust 1.96.0
-- **AND** the Flatpak manifest either continues to use a GNOME SDK Rust stable extension that satisfies Rust 1.96.0 or documents a concrete blocker before implementation can be considered complete
+- **THEN** Snap's rustup bootstrap installs Rust 1.99.1
+- **AND** the Flatpak manifest either continues to use a GNOME SDK Rust stable extension that satisfies Rust 1.99.1 or documents a concrete blocker before implementation can be considered complete
 
 ### Requirement: Rust 1.96 compatibility is proven before completion
 The implementation SHALL prove the upgraded toolchain with deterministic commands that exercise formatting, Clippy, rustdoc, and representative tests. The implementation MUST record or report any validation that cannot be run and why.
@@ -72,7 +72,7 @@ The implementation SHALL update human-facing and agent-facing guidance in the sa
 
 #### Scenario: Build guidance names the new floor
 - **WHEN** `.agents/rules/build.md`, README build sections, and AGENTS tech-stack sections are inspected
-- **THEN** they describe Rust 1.96.0 as the active MSRV or pinned stable toolchain
+- **THEN** they describe Rust 1.99.1 as the active MSRV or pinned stable toolchain
 - **AND** they keep existing Edition 2024 and GNOME 50 guidance intact
 
 #### Scenario: Rust coding guidance includes 1.96 decisions

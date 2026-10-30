@@ -64,7 +64,7 @@ jobs:
 
       - name: Install Rust toolchain
         if: env.SONAR_TOKEN != ''
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: clippy
 

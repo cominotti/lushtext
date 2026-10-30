@@ -66,7 +66,7 @@ jobs:
           git checkout "$RECOVERY_SHA" -- scripts/bench-report.sh crates/lushtext-core/benches/benchmarks.rs
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - uses: Swatinem/rust-cache@v2
         with:

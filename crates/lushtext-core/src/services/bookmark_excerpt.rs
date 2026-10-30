@@ -335,10 +335,7 @@ pub fn load_from_path_cancellable(
     if !FileSizeCheck::classify(facts.byte_size).open_allowed() {
         return refused(BookmarkExcerptUnavailableReason::TooLargeToPreview);
     }
-    if usize::try_from(target_line)
-        .ok()
-        .is_some_and(|line| line >= BOOKMARK_EXCERPT_SCAN_LINE_LIMIT)
-    {
+    if usize::try_from(target_line).is_ok_and(|line| line >= BOOKMARK_EXCERPT_SCAN_LINE_LIMIT) {
         return refused(BookmarkExcerptUnavailableReason::LineBeyondPreviewBudget);
     }
 

@@ -129,7 +129,7 @@ The project SHALL provide a documented advisory lint lane that runs broad Clippy
 The project SHALL evaluate stable rustc lint candidates that improve readability, API boundaries, or future compatibility. Current findings for `unused_qualifications`, `unreachable_pub`, and `unused_crate_dependencies` MUST be cleaned or classified before the change is complete, and future-compatibility and Edition 2024 rustc probes MUST remain clean under the pinned stable toolchain.
 
 #### Scenario: Future compatibility probes are clean
-- **WHEN** the rustc advisory probe runs under Rust 1.96.0
+- **WHEN** the rustc advisory probe runs under the pinned stable toolchain (Rust 1.99.1)
 - **THEN** future-incompatible and Edition 2024 compatibility lint groups produce no unclassified warnings
 - **AND** any relevant lint already covered by `[workspace.lints.rust]` remains enforced there
 
