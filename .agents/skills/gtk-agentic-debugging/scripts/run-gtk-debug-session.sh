@@ -10,7 +10,7 @@ Record a live GTK debugging session into an artifact directory.
 Options:
   --cmd COMMAND           Launcher command to run in a PTY (default: make run)
   --out DIR               Artifact directory (default: /tmp/gtk-debug-<timestamp>)
-  --pid-pattern PATTERN   pgrep -f regex for the target app; prefer an anchored executable match
+  --pid-pattern PATTERN   regex over full command lines for the target app; prefer an anchored executable match
   --duration SECONDS      Keep monitors alive for N seconds after launcher exit
   --dbus-profile PROFILE  one of: shell, all, none (default: shell)
   --no-journal            Disable journalctl capture
@@ -127,7 +127,7 @@ pgrep_lines() {
     return 0
   fi
   (
-    pgrep -af -- "$pattern" 2>/dev/null || true
+    pgrep -af -- "$pattern" 2>/dev/null || true # agent-pgrep-f-ok: one-shot snapshot, filtered below; never polled in a loop
   ) | awk -v self="$helper_pid" -v parent="$helper_parent_pid" '
     $1 == self || $1 == parent { next }
     index($0, "run-gtk-debug-session.sh") > 0 { next }
@@ -143,7 +143,7 @@ warn_if_pid_pattern_is_contaminated() {
   fi
 
   local raw_matches
-  raw_matches="$(pgrep -af -- "$pattern" 2>/dev/null || true)"
+  raw_matches="$(pgrep -af -- "$pattern" 2>/dev/null || true)" # agent-pgrep-f-ok: one-shot contamination check
   if [[ -z "$raw_matches" ]]; then
     return 0
   fi
@@ -243,9 +243,19 @@ if [[ -n "$pid_pattern" ]] && [[ -n "$after_pids" ]] && (( duration > 0 )); then
   echo "Keeping monitors alive for ${duration}s after launcher exit" | tee -a "$status_log"
   sleep "$duration" || true
 elif [[ -n "$pid_pattern" ]] && [[ -n "$after_pids" ]]; then
-  echo "Monitoring continues while matching pids exist; press Ctrl-C when the repro is finished" \
+  echo "Monitoring continues while the matching pids ($after_pids) exist; press Ctrl-C when the repro is finished" \
     | tee -a "$status_log"
-  while [[ -n "$(collect_pids "$pid_pattern")" ]]; do
+  # Wait on the PIDs found after launch, never by re-matching the pattern: a
+  # loop re-running `pgrep -f` matches any shell whose command line carries
+  # the pattern (an agent's own wrapper included) and never ends.
+  pid_alive() {
+    local pid
+    for pid in $after_pids; do
+      [[ -e "/proc/$pid" ]] && return 0
+    done
+    return 1
+  }
+  while pid_alive; do
     if (( interrupted )); then
       break
     fi

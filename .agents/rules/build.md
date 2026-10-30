@@ -490,7 +490,7 @@ runs all three plus `shellcheck`, against temporary locks only.
 
 ```
 scripts/heavy.sh [--mem <cap>] -- <command> [args...]       # every heavy non-measurement command
-scripts/measure.sh [--label L] [--log FILE] -- <command> ... # every timing verdict
+scripts/measure.sh [--label L] [--log FILE] [--lock-timeout S] -- <command> ... # every timing verdict
 scripts/wait-for.sh (--pid N | --name EXACT_NAME | --file PATH [--nonempty]) [--timeout S]
 ```
 
@@ -504,53 +504,82 @@ the self-tests):
 
 - **Heavy work** — `cargo build`/`check`/`clippy`/`test`, `make test`, Kani,
   cargo-mutants, proof-strength, smoke lanes, and `git commit` (its hook runs
-  Clippy) — goes through `scripts/heavy.sh`: it probes `INTENT` shared (blocks
-  while a measurement is pending or running), then holds `LOCK` shared for the
-  one command, so heavy commands run beside each other but never during a
-  measurement. It also exports `CARGO_BUILD_JOBS=4`, pins the command to the
-  CPU affinity it inherited (never widened), and runs it inside
-  `scripts/with-memory-cap.sh <cap>` (default `12G`; the host-wide slice budget
-  is the wrapper's own default, which the helper never overrides). Every stage
-  `exec`s, so the command keeps the helper's PID: its exit status and any
-  signal reach it directly. `make test`/`test-widget` admit their own per-shard
-  scopes, so pass `--mem none` for them rather than nesting every shard under
-  one cap.
+  Clippy) — goes through `scripts/heavy.sh`. In order: it waits, holding
+  nothing, until `scripts/with-memory-cap.sh --wait-admissible <cap>` says the
+  cap would be admitted (default `12G`; the host-wide slice budget is the
+  wrapper's own default, which the helper never overrides); probes `INTENT`
+  shared (blocks while a measurement is pending or running); takes `LOCK`
+  shared for the one command, and if memory went short meanwhile, releases it
+  and goes back to waiting for memory; then runs the command as a child, with
+  `CARGO_BUILD_JOBS=4` and its inherited CPU affinity, inside
+  `scripts/with-memory-cap.sh <cap>`. **Memory before locks**: a helper never
+  waits for memory while holding `LOCK` (a pending measurement would wait
+  behind it, and every new heavy start behind that), and never reserves memory
+  while waiting for a lock (a heavy job holding budget while it waits for a
+  measurement could starve the admission of work the measurement is waiting
+  for). The helper, not the command, holds the locks: the command does not
+  inherit the descriptors, so a daemon it leaves behind (a leaked
+  `dbus-daemon` or `mutter`, an `sccache` server) cannot keep `LOCK` held.
+  SIGINT, SIGTERM and SIGHUP are forwarded to the command and its exit status
+  is returned. `make test`/`test-widget` admit their own per-shard scopes, so
+  pass `--mem none` for them rather than nesting every shard under one cap;
+  those inner admissions do wait under the shared `LOCK`, the one place that
+  still happens.
 - **Measurements** — the responsiveness lane, interleaved benches, any timing
   verdict — go through `scripts/measure.sh`: `INTENT` exclusively, then `LOCK`
   exclusively. Holding `INTENT` first is the writer preference: new heavy
   starts wait while the running ones drain, so a measurement is not starved
   (rev 1, `LOCK` alone, let overlapping shared holders keep the exclusive
-  request waiting forever). It records the load average and the top five CPU
-  processes (instantaneous, from `top`) before and after into `--log` (or
-  stderr), runs the one command, and releases both. Build the measured binary
-  first, with `heavy.sh`: `measure.sh` refuses to run inside heavy work
-  (exit 2) rather than deadlock, and a `heavy.sh` started inside a measurement
-  runs in place. Test-suite wall-time comparisons are not verdicts: run them
+  request waiting forever). It waits for `LOCK` at most `--lock-timeout`
+  seconds (default 1800); then it releases `INTENT`, prints every process that
+  has `LOCK` open and exits 75, so a hung or leaked holder cannot keep every
+  agent's heavy work blocked behind a pending measurement. It records the load
+  average and the top five CPU processes (instantaneous, from `top`) before
+  and after into `--log` (or stderr), runs the one command (without the lock
+  descriptors, with signals forwarded), and releases both. The command runs
+  with `LUSHTEXT_ADMISSION_NOWAIT=1`: a capped scope inside it that does not
+  fit at once fails with 75 instead of waiting for memory under the exclusive
+  locks. Build the measured binary first, with `heavy.sh`: `measure.sh`
+  refuses to run inside heavy work (exit 2) rather than deadlock, and a
+  `heavy.sh` started inside a measurement runs in place. Test-suite wall-time comparisons are not verdicts: run them
   through `heavy.sh` and record the load.
 - **Granularity: one lock per command.** Never wrap a whole multi-hour script
   or agent session in one `heavy.sh`; call it per command, so a pending
   measurement runs between steps (one whole-script shared hold blocked a
   measurement and a commit for 28+ minutes). A `heavy.sh` nested inside
-  another runs in place (`LUSHTEXT_AGENT_LOCK_HELD`, honoured only while
-  `LOCK` really is held), because taking the locks again would deadlock as
-  soon as a measurement is pending.
+  another runs in place, because taking the locks again would deadlock as
+  soon as a measurement is pending. That needs proof, not a variable: the
+  marker `LUSHTEXT_AGENT_LOCK_HELD=<shared|exclusive>:<pid>` is honoured only
+  when that PID is an ancestor of the nested call and its fd 7 is still
+  `LOCK`. A bare or stale marker (carried by a measured command's children, a
+  leftover daemon, a copied environment) once let heavy work run in place in
+  the middle of a measurement.
 - **Never wait for other work while holding a lock**, least of all `LOCK`
   exclusively. `measure.sh` does nothing but run its command.
 
 Commits run the hook's Clippy, so commit through the protocol too:
 `scripts/heavy.sh --mem none -- git commit ...` (the hook's own targets admit
-their scopes), or by hand
+their scopes; the helper self-tests the hook runs shed the enclosing marker,
+and `heavy.sh --self-test` runs `measure.sh --self-test` inside a real
+`heavy.sh` to keep it so), or by hand
 `flock -s target/responsiveness-measure.intent true && flock -s target/responsiveness-measure.lock git commit ...`
 from the main checkout.
 
 **Waiting.** Use `scripts/wait-for.sh`, or `tail --pid=<pid> -f /dev/null` /
 a loop on `pgrep -x <name>` directly. **Never `pgrep -f`** (nor `pkill -f`
 with a pattern that matches your own shell). Prefer `--pid` whenever the PID
-is known. `--name` matches the kernel's process name exactly, which is at most
-15 characters; `wait-for.sh` refuses longer or space-containing names, which
-could never match and would report "gone" at once. It exits 0 when the
-condition holds and 124 on `--timeout`. Its self-test also fails if `pgrep -f`
-appears in `scripts/`, the `Makefile`, `.githooks/` or `.github/`. On the
+is known (a positive number; a PID reused by an unrelated process after the
+awaited one exits keeps the wait going, so wait on processes you started).
+`--name` matches the kernel's process name exactly and literally (regex
+metacharacters are escaped), which is at most 15 characters; `wait-for.sh`
+refuses longer, space- or slash-containing names, which could never match and
+would report "gone" at once. It exits 0 when the condition holds, 124 on
+`--timeout` (`--timeout 0` checks once, in every mode; the deadline is not
+overshot by the polling interval), and 2 on a usage error or when `pgrep`
+itself fails. Its self-test also fails if `pgrep -f` or `pkill -f` appears in
+`scripts/`, the `Makefile`, `.githooks/`, `.github/` or `.agents/skills/`,
+except on a line marked `agent-pgrep-f-ok: <reason>`, reserved for one-shot
+snapshots that filter out their own shell (never a wait loop). On the
 maintainer's workstation a global Claude Code `PreToolUse` hook also blocks
 such commands before they run; the helpers are what keeps them unnecessary.
 
@@ -810,7 +839,10 @@ invariant; tighten the generator or use the deep lane.
   wrapper `exec`s `systemd-run` (a detached watcher releases the admission
   lock once the scope exists), so Ctrl-C and the exit status reach the command
   directly: run as a background job, it once made every capped process ignore
-  SIGINT. The Makefile wraps
+  SIGINT. It passes `--expand-environment=no`: systemd 254+ otherwise expands
+  `$VAR`/`${VAR}` in the command's arguments, turns `$$` into `$` and drops a
+  lone `$0`, silently rewriting `sh -c` scripts, commit messages and regexes
+  (the self-test sends such arguments through a real scope). The Makefile wraps
   `make kani` (`KANI_MEMORY_MAX`), `make proof-strength`
   (`PROOF_STRENGTH_MEMORY_MAX`, default `16G`) and the `mutants-*` targets
   (`MUTANTS_MEMORY_MAX`, default `36G`), and the parallel widget run admits

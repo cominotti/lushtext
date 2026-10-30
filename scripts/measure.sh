@@ -5,12 +5,15 @@
 # verdict) under the shared-machine protocol's writer preference (see
 # "Shared-machine agent work" in .agents/rules/build.md):
 #
-#   scripts/measure.sh [--label L] [--log FILE] -- <command> [args...]
+#   scripts/measure.sh [--label L] [--log FILE] [--lock-timeout S] -- <command> [args...]
 #   scripts/measure.sh --self-test
 #
 # 1. Take INTENT exclusively: from now on scripts/heavy.sh refuses to START new
 #    heavy work, so the running work drains instead of overlapping forever.
-# 2. Take LOCK exclusively: waits only for heavy commands already running.
+# 2. Take LOCK exclusively: waits only for heavy commands already running, at
+#    most --lock-timeout seconds (default 1800). On expiry it releases INTENT,
+#    prints the processes holding LOCK and exits 75, instead of keeping every
+#    new heavy start blocked behind a holder that may never finish.
 # 3. Record the load average and the top five CPU processes, run the command,
 #    record them again (with the exit status and wall time), release both.
 #
@@ -23,7 +26,10 @@
 # descriptors is closed), so a daemon the command leaves behind cannot hold
 # them. The command's exit status is propagated; SIGINT, SIGTERM and SIGHUP
 # sent to this script are forwarded to it, and the script still releases the
-# locks and exits with the command's status.
+# locks and exits with the command's status. The command runs with
+# LUSHTEXT_ADMISSION_NOWAIT=1: a scripts/with-memory-cap.sh scope inside it
+# that does not fit at once fails (75) rather than wait for memory while the
+# exclusive locks are held.
 
 set -euo pipefail
 
@@ -32,7 +38,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$here/agent-locks.sh"
 
 usage() {
-    echo "usage: $0 [--label L] [--log FILE] -- <command> [args...]" >&2
+    echo "usage: $0 [--label L] [--log FILE] [--lock-timeout S] -- <command> [args...]" >&2
     echo "       $0 --self-test" >&2
     exit 2
 }
@@ -65,6 +71,9 @@ self_test() {
     # shellcheck disable=SC2064 # expand now: the trap must remove this dir
     trap "rm -rf '$dir'" EXIT
     export LUSHTEXT_AGENT_LOCK_DIR=$dir
+    # Whatever started the self-test (a `heavy.sh -- git commit` whose hook
+    # runs check-policy) must not leak its markers into the cases below.
+    unset LUSHTEXT_AGENT_LOCK_HELD LUSHTEXT_MEMORY_CAP_KIB LUSHTEXT_ADMISSION_NOWAIT
     local intent=$dir/responsiveness-measure.intent lock=$dir/responsiveness-measure.lock
 
     status=0; "$me" --label t --log "$dir/log" -- sh -c 'exit 5' || status=$?
@@ -129,7 +138,34 @@ self_test() {
     timeout 10 "$heavy" --mem none -- "$me" --log "$dir/log" -- true 2>/dev/null || status=$?
     [ "$status" -eq 2 ] || { echo "measure self-test: measure.sh inside heavy.sh gave status $status, expected 2" >&2; return 1; }
 
-    echo "measure self-test: ok (measuring inside heavy work refused; exit status and SIGTERM propagate; load recorded before/after; both locks exclusive; a pending measurement blocks new heavy starts and runs before them)"
+    # The command runs with LUSHTEXT_ADMISSION_NOWAIT=1.
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    status=$("$me" --log "$dir/log" -- sh -c 'echo "${LUSHTEXT_ADMISSION_NOWAIT:-}"')
+    [ "$status" = 1 ] || { echo "measure self-test: the command saw LUSHTEXT_ADMISSION_NOWAIT='$status', expected 1" >&2; return 1; }
+
+    # A LOCK holder that never finishes (a hung heavy command, a leaked
+    # daemon) does not keep the measurement holding INTENT forever: after
+    # --lock-timeout it releases INTENT, names the holder and exits 75.
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    sh -c 'exec 7>>"$0"; flock -s 7; exec sleep 30' "$lock" &
+    local holder=$! report
+    for i in $(seq 50); do
+        flock -n -x "$lock" true || break
+        sleep 0.05
+    done
+    status=0
+    report=$("$me" --log "$dir/log" --lock-timeout 1 -- true 2>&1) || status=$?
+    local intent_free=1
+    flock -n -x "$intent" true || intent_free=0
+    kill "$holder"
+    wait "$holder" 2>/dev/null || true
+    [ "$status" -eq 75 ] || { echo "measure self-test: --lock-timeout gave status $status, expected 75" >&2; return 1; }
+    [ "$intent_free" = 1 ] || { echo "measure self-test: INTENT stayed held after the lock timeout" >&2; return 1; }
+    grep -qE "^ +$holder .*sleep 30" <<<"$report" || { echo "measure self-test: the timeout report does not name the holder $holder:" >&2; echo "$report" >&2; return 1; }
+    status=0; "$me" --lock-timeout 0 -- true 2>/dev/null || status=$?
+    [ "$status" -eq 2 ] || { echo "measure self-test: --lock-timeout 0 was accepted (status $status)" >&2; return 1; }
+
+    echo "measure self-test: ok (measuring inside heavy work refused; exit status and SIGTERM propagate; load recorded before/after; both locks exclusive; a pending measurement blocks new heavy starts and runs before them; the command runs with admission NOWAIT; a lock wait gives up after --lock-timeout, releasing INTENT and naming the holder)"
 }
 
 if [ "${1:-}" = "--self-test" ]; then
@@ -139,6 +175,7 @@ fi
 
 label=measurement
 log=
+lock_timeout=1800
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --label)
@@ -151,6 +188,11 @@ while [ "$#" -gt 0 ]; do
             log=$2
             shift 2
             ;;
+        --lock-timeout)
+            [ "$#" -ge 2 ] && [[ "$2" =~ ^[1-9][0-9]*$ ]] || usage
+            lock_timeout=$2
+            shift 2
+            ;;
         --)
             shift
             break
@@ -161,8 +203,8 @@ done
 [ "$#" -ge 1 ] || usage
 
 agent_lock_paths
-if agent_lock_inherited; then
-    if [ "$LUSHTEXT_AGENT_LOCK_HELD" != exclusive ]; then
+if mode=$(agent_lock_inherited); then
+    if [ "$mode" != exclusive ]; then
         echo "measure: refusing to measure inside heavy work (LOCK is held shared by an enclosing scripts/heavy.sh); waiting for LOCK exclusively there would deadlock" >&2
         exit 2
     fi
@@ -171,48 +213,27 @@ else
     exec 6>>"$AGENT_LOCK_INTENT"
     flock -x 6
     exec 7>>"$AGENT_LOCK_MEASURE"
-    flock -x 7
+    if ! flock -w "$lock_timeout" -x 7; then
+        exec 7>&- 6>&-
+        echo "measure: LOCK still held after ${lock_timeout} s; released INTENT and gave up. Holders of $AGENT_LOCK_MEASURE:" >&2
+        agent_lock_holders "$AGENT_LOCK_MEASURE" >&2
+        exit 75
+    fi
+    LUSHTEXT_AGENT_LOCK_HELD=$(agent_lock_marker exclusive)
+    export LUSHTEXT_AGENT_LOCK_HELD
 fi
-export LUSHTEXT_AGENT_LOCK_HELD=exclusive
+export LUSHTEXT_ADMISSION_NOWAIT=1
 
 # From here the script owns both locks: a signal must not kill it while a
 # snapshot or the command still holds a copy of them, so it is trapped and
 # forwarded (or, before the command starts, recorded and the command skipped).
-child=
-aborted=
-# shellcheck disable=SC2329 # invoked by the traps below
-on_signal() {
-    if [ -n "$child" ]; then
-        kill "-$1" "$child" 2>/dev/null || true
-    else
-        aborted=$1
-    fi
-}
-trap 'on_signal INT' INT
-trap 'on_signal TERM' TERM
-trap 'on_signal HUP' HUP
+agent_trap_signals
 
 record before 6>&- 7>&-
 started=$(date +%s.%N)
 
-status=0
-if [ -z "$aborted" ]; then
-    # A background job of a non-interactive shell ignores SIGINT and SIGQUIT;
-    # `env --default-signal` restores them so the command sees Ctrl-C.
-    env --default-signal=INT,QUIT -- "$@" 6>&- 7>&- &
-    child=$!
-    # A signal that arrived between the fork and this point was only recorded.
-    [ -z "$aborted" ] || kill "-$aborted" "$child" 2>/dev/null || true
-    # `wait` returns early when a trapped signal arrives; wait again until the
-    # command has really exited, then keep its status.
-    while :; do
-        wait "$child" && status=0 || status=$?
-        kill -0 "$child" 2>/dev/null || break
-    done
-else
-    status=$((128 + $(kill -l "$aborted")))
-fi
-trap - INT TERM HUP
+agent_run_child "$@"
+status=$agent_child_status
 
 record after "status=$status seconds=$(awk -v a="$started" -v b="$(date +%s.%N)" 'BEGIN { printf "%.3f", b - a }')" 6>&- 7>&-
 exec 7>&- 6>&-
