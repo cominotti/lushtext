@@ -362,16 +362,24 @@ def run_shard(shard: str, names: list[str], total: int, started: float) -> dict[
             "per-test durations are recorded unattributed",
             file=sys.stderr,
         )
+    return measure_record(shard, status, len(names), total, seconds, log)
+
+
+def measure_record(
+    shard: str, status: int | None, expected: int, total: int, seconds: float, log: WidgetLog, **extra: object
+) -> dict[str, object]:
+    """One shard's `--measure` record, shared by `run` and `parallel`."""
     return {
         "shard": shard,
         "status": status,
-        "expected": len(names),
+        "expected": expected,
         "suite_total": total,
         "selected": log.running_counts,
         "durations_attributed": log.attributed,
         "wall_seconds": round(seconds, 1),
         "wall_minutes": round(seconds / 60, 2),
         "tests": log.tests,
+        **extra,
     }
 
 
@@ -425,46 +433,16 @@ def run(shard_names: list[str], static_tests: list[str], measure: str | None) ->
 
 MEMORY_CAP = REPO_ROOT / "scripts/with-memory-cap.sh"
 # Per-shard memory scope (dbus-daemon, Mutter, the harness parent, and its
-# current test child). Measured 2026-10-30: see `.agents/rules/build.md`.
-DEFAULT_SHARD_MEMORY_MAX = "6G"
+# current test child): the largest shard peak of three parallel runs on
+# 2026-10-30 (editor-page, 864 MiB; window 653, surfaces 237) times 1.5,
+# rounded up to a whole GiB. Re-measure from the summary's `Peak MiB` column
+# when a shard's membership or its heaviest test changes.
+DEFAULT_SHARD_MEMORY_MAX = "2G"
 DEFAULT_BUILD_MEMORY_MAX = "16G"
 DEFAULT_BUILD_JOBS = 4
-# `sun_path` holds 108 bytes; the margin covers the other sockets a session
-# opens next to `wayland-0`.
-SOCKET_PATH_LIMIT = 100
 RERUN_MARKER = "Widget test run failed on attempt"
 FLAKY_NAME_RE = re.compile(r"^FLAKY: (\S+)$")
 MEMORY_RE = re.compile(r"^widget-memory: peak (\d+) MiB, oom_kill (\d+)$")
-# Live lines are shortened past this (the per-shard log keeps them whole):
-# `with-memory-cap.sh` echoes its command, several hundred `--exact` names.
-LIVE_LINE_LIMIT = 500
-
-
-def scope_label(index: int) -> str:
-    """A shard's temp-scope label: short, so its socket path stays short."""
-    return f"w{index}"
-
-
-def socket_path_problem(base: str, labels: list[str], pid_digits: int) -> str | None:
-    """Why the longest Wayland socket path a shard's session would get, under
-    `with-temp-scope.sh --session-runtime`, is too long, or None."""
-    longest = max(
-        f"{base.rstrip('/')}/lt-scope-{'0' * pid_digits}-{label}-XXXXXX/.session-runtime/wayland-0" for label in labels
-    )
-    if len(longest) <= SOCKET_PATH_LIMIT:
-        return None
-    return (
-        f"a shard's Wayland socket path would be {len(longest)} bytes (limit {SOCKET_PATH_LIMIT}): {longest}; "
-        f"the temporary directory {base} (TMPDIR) is too deep, so point TMPDIR at a shorter one"
-    )
-
-
-def max_pid_digits() -> int:
-    try:
-        return len(str(int(Path("/proc/sys/kernel/pid_max").read_text()) - 1))
-    except (OSError, ValueError):
-        return 7
-
 
 @dataclass
 class ShardJob:
@@ -487,6 +465,7 @@ class ShardOutcome:
     flaky: list[str] = field(default_factory=list)
     peak_mib: int | None = None
     oom_kills: int = 0
+    relay_failed: bool = False
     wall_seconds: float = 0.0
     _in_failures: bool = False
 
@@ -499,17 +478,20 @@ class ShardOutcome:
             self.attempts += 1
             self.earlier_failed += self.failed
             self.failed, self.flaky = [], []
+        elif match := MEMORY_RE.match(text):
+            # Checked before the failures section: a harness killed mid-list
+            # never closes it, and the runner's report still follows.
+            self._in_failures = False
+            self.peak_mib, self.oom_kills = int(match.group(1)), int(match.group(2))
         elif text == "failures:":
             self._in_failures = True
         elif self._in_failures:
-            if text and not text.startswith("test result:"):
+            if text and not text.startswith(("test result:", "OOM-KILL:")):
                 self.failed.append(text)
             else:
                 self._in_failures = False
         elif match := FLAKY_NAME_RE.match(text):
             self.flaky.append(match.group(1))
-        elif match := MEMORY_RE.match(text):
-            self.peak_mib, self.oom_kills = int(match.group(1)), int(match.group(2))
 
     def problems(self) -> list[str]:
         problems = count_problems(self.expected, self.log)
@@ -542,29 +524,42 @@ class ParallelRun:
 
     def _relay(self, job: ShardJob, child: subprocess.Popen[str], outcome: ShardOutcome, started: float) -> None:
         assert child.stdout is not None
-        with open(self.log_dir / f"{job.shard}.log", "w", encoding="utf-8") as log:
-            for line in child.stdout:
-                log.write(line)
-                log.flush()
-                live = line.rstrip("\n")
-                if len(live) > LIVE_LINE_LIMIT:
-                    live = live[:LIVE_LINE_LIMIT] + f" ... [{len(live) - LIVE_LINE_LIMIT} more characters in the log]"
-                with self.lock:
-                    self.out.write(f"[{job.shard}] {live}\n")
-                    self.out.flush()
-                outcome.feed(line, time.monotonic())
-        status = child.wait()
-        outcome.status = 128 - status if status < 0 else status
-        outcome.wall_seconds = round(time.monotonic() - started, 1)
-        self.finished.put(job.shard)
+        try:
+            with open(self.log_dir / f"{job.shard}.log", "w", encoding="utf-8") as log:
+                for line in child.stdout:
+                    log.write(line)
+                    log.flush()
+                    outcome.feed(line, time.monotonic())
+                    if not line.strip():
+                        continue  # blank separators interleave into noise; the log keeps them
+                    with self.lock:
+                        self.out.write(f"[{job.shard}] {line.rstrip()}\n")
+                        self.out.flush()
+        except Exception as error:  # noqa: BLE001 - any relay failure must still end the shard
+            outcome.relay_failed = True
+            with self.lock:
+                self.err.write(f"widget-shards: shard {job.shard}: relay failed ({error!r}); draining the shard\n")
+            for _ in child.stdout:
+                pass
+        finally:
+            # Always report completion, or the scheduler would wait forever.
+            status = child.wait()
+            status = 128 - status if status < 0 else status
+            outcome.status = 1 if status == 0 and outcome.relay_failed else status
+            outcome.wall_seconds = round(time.monotonic() - started, 1)
+            self.finished.put(job.shard)
 
     def _forward(self, signum: int, _frame: object) -> None:
         self.stop_signal = self.stop_signal or signum
         for child in list(self.running.values()):
-            try:
-                os.killpg(child.pid, signum)
-            except ProcessLookupError:
-                pass
+            self._signal_group(child, signum)
+
+    @staticmethod
+    def _signal_group(child: subprocess.Popen[str], signum: int) -> None:
+        try:
+            os.killpg(child.pid, signum)
+        except ProcessLookupError:
+            pass
 
     def run(self) -> tuple[list[ShardOutcome], int]:
         """Each job's outcome, in job order, and 0, or 128 + the signal that
@@ -588,6 +583,12 @@ class ParallelRun:
                         start_new_session=True,
                     )
                     self.running[job.shard] = child
+                    # A signal that landed while Popen ran found no child to
+                    # forward to; deliver it now. One landing between the
+                    # registration and this check reaches the group twice,
+                    # which the shard's traps treat as once.
+                    if self.stop_signal is not None:
+                        self._signal_group(child, self.stop_signal)
                     thread = threading.Thread(
                         target=self._relay, args=(job, child, outcomes[job.shard], time.monotonic()), daemon=True
                     )
@@ -595,8 +596,6 @@ class ParallelRun:
                     threads.append(thread)
                 if self.stop_signal is not None:
                     pending = []
-                if not self.running:
-                    break
                 try:
                     # A timeout, so a signal handler runs promptly.
                     self.running.pop(self.finished.get(timeout=0.2))
@@ -615,10 +614,11 @@ def summary_text(outcomes: list[ShardOutcome], total: int) -> str:
     rows = [("Shard", "Status", "Attempts", "Selected/expected", "Minutes", "Peak MiB", "Failed", "FLAKY")]
     for outcome in outcomes:
         selected = "/".join(str(count) for count in outcome.log.running_counts) or "-"
+        status = "ok" if not outcome.problems() else ("not run" if outcome.status is None else f"FAILED ({outcome.status})")
         rows.append(
             (
                 outcome.shard,
-                "not run" if outcome.status is None else ("ok" if not outcome.problems() else f"FAILED ({outcome.status})"),
+                status,
                 str(outcome.attempts),
                 f"{selected}/{outcome.expected}",
                 f"{outcome.wall_seconds / 60:.1f}",
@@ -678,11 +678,6 @@ def shard_order(static_tests: list[str], binary_tests: list[str]) -> dict[str, l
 
 
 def parallel(static_tests: list[str], args: argparse.Namespace) -> int:
-    base = os.environ.get("TMPDIR") or "/tmp"
-    labels = [scope_label(index) for index in range(len(SHARDS))]
-    if problem := socket_path_problem(base, labels, max_pid_digits()):
-        print(f"widget-shards: {problem}", file=sys.stderr)
-        return 2
     if os.environ.get("LUSHTEXT_MEMORY_CAP_KIB"):
         print(
             "widget-shards: already inside a memory-capped scope, so every shard shares that one cap "
@@ -696,8 +691,8 @@ def parallel(static_tests: list[str], args: argparse.Namespace) -> int:
     print(f"Building the widget test binary once: {' '.join(build[2:])}", flush=True)
     if status := subprocess.run(build, cwd=REPO_ROOT).returncode:
         print(
-            "widget-shards: the shared build failed; without a user systemd manager the parallel run "
-            "cannot cap its shards, so use WIDGET_PARALLEL=0 for one serial session",
+            "widget-shards: the shared build failed (see above); if with-memory-cap.sh refused to run "
+            "because there is no user systemd manager, WIDGET_PARALLEL=0 runs one serial session instead",
             file=sys.stderr,
         )
         return status
@@ -705,17 +700,19 @@ def parallel(static_tests: list[str], args: argparse.Namespace) -> int:
     if not cross_check(static_tests, binary_tests):
         return 1
     by_shard = shard_order(static_tests, binary_tests)
+    # Short scope labels (`w0`, `w1`, ...) keep each session's socket path
+    # short; `with-temp-scope.sh` refuses one past the `sun_path` limit.
     jobs = [
         ShardJob(
             shard,
             names,
             [
                 str(MEMORY_CAP), args.shard_memory_max,
-                str(RUNNER), "--headless", "--scope-label", label, "--retries", str(args.retries),
+                str(RUNNER), "--headless", "--scope-label", f"w{index}", "--retries", str(args.retries),
                 "--", "--exact", *names,
             ],  # fmt: skip
         )
-        for (shard, names), label in zip(by_shard.items(), labels)
+        for index, (shard, names) in enumerate(by_shard.items())
     ]
     max_jobs = args.jobs or len(jobs)
     log_dir = REPO_ROOT / "target/widget-parallel"
@@ -731,19 +728,16 @@ def parallel(static_tests: list[str], args: argparse.Namespace) -> int:
     status = evaluate(outcomes, len(static_tests))
     if args.measure is not None:
         records = [
-            {
-                "shard": outcome.shard,
-                "status": outcome.status,
-                "attempts": outcome.attempts,
-                "expected": outcome.expected,
-                "suite_total": len(static_tests),
-                "selected": outcome.log.running_counts,
-                "durations_attributed": outcome.log.attributed,
-                "wall_seconds": outcome.wall_seconds,
-                "wall_minutes": round(outcome.wall_seconds / 60, 2),
-                "peak_mib": outcome.peak_mib,
-                "tests": outcome.log.tests,
-            }
+            measure_record(
+                outcome.shard,
+                outcome.status,
+                outcome.expected,
+                len(static_tests),
+                outcome.wall_seconds,
+                outcome.log,
+                attempts=outcome.attempts,
+                peak_mib=outcome.peak_mib,
+            )
             for outcome in outcomes
         ]
         Path(args.measure).write_text(json.dumps({"shards": records}, indent=2) + "\n", encoding="utf-8")
@@ -846,16 +840,7 @@ def self_test_parallel() -> None:
     """The parallel driver's scheduler, merge, and failure semantics, with
     shell stubs standing in for `run-widget-tests.sh` (no GTK, no session)."""
     import io
-    import signal
     import tempfile
-    import threading
-
-    # The socket guard: `/tmp` fits; a base that pushes the socket past the
-    # limit is refused and named.
-    assert socket_path_problem("/tmp", ["w0", "w1", "w2"], 7) is None
-    deep = "/tmp/" + "d" * 60
-    problem = socket_path_problem(deep, ["w0"], 7)
-    assert problem is not None and deep in problem and "TMPDIR" in problem, problem
 
     def stub(text: str, status: int = 0) -> list[str]:
         return ["sh", "-c", f"printf '%s\\n' {text}; exit {status}"]
@@ -903,6 +888,12 @@ def self_test_parallel() -> None:
         short = [ShardJob("a", ["a::one", "a::two"], stub(quoted("running 1 tests", "test a::one ... ok")))]
         outcomes, _ = ParallelRun(short, 1, log_dir, io.StringIO(), io.StringIO()).run()
         assert evaluate(outcomes, total=2, err=io.StringIO()) != 0
+        # A harness killed mid-way through its failures list leaves the
+        # section open; the runner's memory report still reads as one.
+        cut = ShardOutcome("a", 1, WidgetLog(["a::one"]))
+        for line in ("running 1 tests", "failures:", "    a::one", "widget-memory: peak 70 MiB, oom_kill 1"):
+            cut.feed(line, 0.0)
+        assert cut.failed == ["a::one"] and cut.peak_mib == 70 and cut.oom_kills == 1, cut
         # An OOM kill reported by the runner fails the shard even at status 0.
         oom = [ShardJob("a", ["a::one"], stub(quoted(
             "running 1 tests", "test a::one ... ok", "widget-memory: peak 6100 MiB, oom_kill 1")))]
@@ -936,10 +927,24 @@ def main() -> int:
         "--measure", metavar="JSON", help="run, parallel: record per-shard measurements to this JSON file"
     )
     parser.add_argument("--retries", type=int, default=0, help="parallel: rerun a failed shard up to N times")
-    parser.add_argument("--jobs", type=int, default=0, help="parallel: at most N shards at once (default: all)")
-    parser.add_argument("--shard-memory-max", default=DEFAULT_SHARD_MEMORY_MAX, help="parallel: per-shard scope cap")
-    parser.add_argument("--build-memory-max", default=DEFAULT_BUILD_MEMORY_MAX, help="parallel: build scope cap")
-    parser.add_argument("--build-jobs", type=int, default=DEFAULT_BUILD_JOBS, help="parallel: cargo -j for the build")
+    # The parallel knobs default from the Makefile's WIDGET_* variables, which
+    # make exports when they are set on its command line or in the environment.
+    env = os.environ.get
+    parser.add_argument(
+        "--jobs", type=int, default=int(env("WIDGET_PARALLEL_JOBS") or 0), help="parallel: at most N shards at once"
+    )
+    parser.add_argument(
+        "--shard-memory-max", default=env("WIDGET_SHARD_MEMORY_MAX") or DEFAULT_SHARD_MEMORY_MAX,
+        help="parallel: per-shard scope cap",
+    )  # fmt: skip
+    parser.add_argument(
+        "--build-memory-max", default=env("WIDGET_BUILD_MEMORY_MAX") or DEFAULT_BUILD_MEMORY_MAX,
+        help="parallel: shared build scope cap",
+    )  # fmt: skip
+    parser.add_argument(
+        "--build-jobs", type=int, default=int(env("WIDGET_BUILD_JOBS") or DEFAULT_BUILD_JOBS),
+        help="parallel: cargo -j for the shared build",
+    )  # fmt: skip
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:

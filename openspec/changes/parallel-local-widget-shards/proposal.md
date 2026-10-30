@@ -1,13 +1,15 @@
 ## Why
 
-The widget suite (about 1,300 tests) runs serially in one headless Mutter
-session locally, which takes about an hour on the reference workstation. CI
-already splits the same suite into the shards of `scripts/widget-shards.py`
+The widget suite (1,396 tests) runs serially in one headless Mutter session
+locally, which took 18.6 minutes on the reference workstation on 2026-10-30
+(the proposal's earlier "about an hour" estimate predates that measurement).
+CI already splits the same suite into the shards of `scripts/widget-shards.py`
 (today `window`, `editor-page`, `surfaces`), each measured at 11–11.5 runner
 minutes. Locally the shards are independent too, so running them side by side,
-each in its own session, would bring `make test-widget` down to roughly the
-slowest shard (about 20–25 minutes locally), which is the difference between
-running the suite before every widget commit and skipping it.
+each in its own session, brings `make test-widget` down to roughly the slowest
+shard (7.8 minutes in the first measured parallel run), which is the
+difference between running the suite before every widget commit and skipping
+it.
 
 ## What Changes
 
@@ -21,8 +23,8 @@ running the suite before every widget commit and skipping it.
   of overcommitting the machine.
 - Each shard gets its **own temp scope** (`scripts/with-temp-scope.sh
   --session-runtime`) with a short, distinct `XDG_RUNTIME_DIR` and Wayland
-  socket; the driver refuses to start when a socket path would exceed the
-  `sun_path` limit. Children keep rooting XDG and `LUSHTEXT_DATA_DIR` in their
+  socket; a session whose socket path would exceed the `sun_path` limit is
+  refused by `with-temp-scope.sh` before it starts. Children keep rooting XDG and `LUSHTEXT_DATA_DIR` in their
   own per-attempt `TMPDIR`, and the TEMP-LEAK check stays per scope.
 - One **merged report**: live output prefixed by shard, full per-shard logs on
   disk, and a closing per-shard summary (status, attempts, selected/expected

@@ -103,7 +103,9 @@ pushing the desktop into reclaim.
 
 The default `WIDGET_SHARD_MEMORY_MAX` is set from measurement (task 3.2):
 the largest per-shard peak of three local parallel runs, times 1.5, rounded
-up to a whole GiB. Until measured, the proposal's working value is `6G`.
+up to a whole GiB. Measured 2026-10-30: peaks of 652–654 MiB (window), 862–864 MiB
+(editor-page), and 236–237 MiB (surfaces) over three runs, so the default is
+`2G` (the working value before measurement was `6G`).
 
 *Review finding (OOM visibility).* With `OOMPolicy=continue` the kernel kills
 only the largest process in the scope, which is usually the current test
@@ -140,23 +142,26 @@ shard is its own temp scope, the runtime directories, D-Bus addresses, and
 `wayland-0` sockets are distinct by construction, and each scope's TEMP-LEAK
 check covers exactly one shard.
 
-Before launching, the driver computes the longest socket path its scopes can
-produce from the resolved base `TMPDIR` (the PID width taken from
-`/proc/sys/kernel/pid_max`) and fails with a clear message when it
-exceeds 100 bytes (a margin under 108), naming `TMPDIR` as the cause. When the
-driver runs inside another temp scope (for example from a wrapped
-`make test`), the shard scopes nest under it; the length check covers that
-case too.
+`with-temp-scope.sh --session-runtime` itself refuses, before creating the
+runtime directory, a scope whose `.session-runtime/wayland-0` path would exceed
+100 bytes (a margin under 108), naming `TMPDIR` as the cause and exiting 2.
+*Simplify finding:* the first version rebuilt the scope's naming scheme in
+the driver (PID width from `pid_max`), which would silently drift if the
+script renamed anything and protected only the parallel path; the check now
+lives where the path is made, uses the real PID, and also covers the serial
+runner and nested scopes. Each shard therefore fails before its session
+starts.
 
 ### D5. Merged output: prefixed live lines, per-shard logs, one closing summary
 
 - **Live:** each shard's sanitized stream (what `run-widget-tests.sh` already
   prints, stderr merged as `run` does) is relayed line by line with a
   `[<shard>] ` prefix, one whole line at a time under a lock, so progress and
-  failures are visible while the run is in flight. A relayed line longer than
-  500 characters is shortened in the live stream only (the log keeps it):
-  `with-memory-cap.sh` echoes its whole command, which for a shard is several
-  hundred `--exact` names.
+  failures are visible while the run is in flight. Blank separator lines are
+  dropped from the live stream only. `with-memory-cap.sh` shortens the command
+  it echoes to its first words and an argument count when it is long (a
+  shard's command carries several hundred `--exact` names), rather than the
+  driver truncating lines.
 - **Logs:** the full relayed stream of each shard is written to
   `target/widget-parallel/<shard>.log` (the latest run only; under `target/`,
   outside any temp scope, so it is neither a leak nor tracked).
@@ -207,10 +212,13 @@ case too.
 |---|---|---|
 | `WIDGET_PARALLEL` | `1` | `0` runs today's serial command (`run-widget-tests.sh --headless …`) |
 | `WIDGET_PARALLEL_JOBS` | number of shards | at most this many shards at once (queue the rest) |
-| `WIDGET_SHARD_MEMORY_MAX` | measured (D3) | per-shard scope cap |
+| `WIDGET_SHARD_MEMORY_MAX` | `2G`, measured (D3) | per-shard scope cap |
 | `WIDGET_BUILD_MEMORY_MAX` | `16G` | pre-build scope cap |
 | `WIDGET_BUILD_JOBS` | `4` | cargo `-j` for the pre-build |
 
+Only `WIDGET_PARALLEL` is read by the Makefile; `widget-shards.py parallel`
+reads the other four from the environment (make exports variables set on its
+command line), so the Makefile carries no flag glue.
 `make test-widget-shard` keeps calling `widget-shards.py run` and ignores
 these knobs. The driver refuses to run when no user systemd manager exists and
 `CI` is unset (the wrapper's own rule) and suggests `WIDGET_PARALLEL=0`.
@@ -235,7 +243,7 @@ Checked and found safe as designed, so no mechanism was added:
   fingerprint check that holds cargo's lock for about a second.
 
 Found and folded in above: wrapper order (D3), OOM visibility (D3), nested-cap
-double counting (D3), PID width in the socket guard (D4), overlong echoed
+double counting (D3), the socket guard's placement (D4), overlong echoed
 command lines (D5), the duplicate retry loop (D6), and signal delivery to
 shards in their own sessions (D6). Timing-sensitive tests (for example
 `workspace_section`'s 250 ms callback bounds and `preferences`' dwell loop) are

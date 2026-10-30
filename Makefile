@@ -126,27 +126,19 @@ endif
 # one scripts/with-memory-cap.sh scope per shard, and an outer cap would make
 # every shard share it. WIDGET_PARALLEL=0 runs today's single serial session.
 #   WIDGET_PARALLEL_JOBS     at most this many shards at once (default: all)
-#   WIDGET_SHARD_MEMORY_MAX  per-shard scope cap (default in widget-shards.py,
-#                            set from measured shard peaks; see build.md)
+#   WIDGET_SHARD_MEMORY_MAX  per-shard scope cap (default 2G in widget-shards.py:
+#                            largest measured shard peak, 864 MiB, x 1.5)
 #   WIDGET_BUILD_MEMORY_MAX  shared pre-build scope cap (default 16G)
 #   WIDGET_BUILD_JOBS        cargo -j for the shared pre-build (default 4)
 # `make test-widget-shard` ignores all of these: it runs one shard as CI does.
 WIDGET_PARALLEL ?= 1
-WIDGET_PARALLEL_JOBS ?=
-WIDGET_SHARD_MEMORY_MAX ?=
-WIDGET_BUILD_MEMORY_MAX ?=
-WIDGET_BUILD_JOBS ?=
 ifeq ($(WIDGET_PARALLEL),0)
 CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh --headless
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
 else
-WIDGET_PARALLEL_RUN = $(strip ./scripts/widget-shards.py parallel \
-	$(if $(WIDGET_PARALLEL_JOBS),--jobs "$(WIDGET_PARALLEL_JOBS)") \
-	$(if $(WIDGET_SHARD_MEMORY_MAX),--shard-memory-max "$(WIDGET_SHARD_MEMORY_MAX)") \
-	$(if $(WIDGET_BUILD_MEMORY_MAX),--build-memory-max "$(WIDGET_BUILD_MEMORY_MAX)") \
-	$(if $(WIDGET_BUILD_JOBS),--build-jobs "$(WIDGET_BUILD_JOBS)"))
-CARGO_TEST_WIDGET          = $(WIDGET_PARALLEL_RUN)
-CARGO_TEST_WIDGET_HEADLESS = $(WIDGET_PARALLEL_RUN) --retries 1
+# widget-shards.py reads the other WIDGET_* knobs from the environment.
+CARGO_TEST_WIDGET          = ./scripts/widget-shards.py parallel
+CARGO_TEST_WIDGET_HEADLESS = ./scripts/widget-shards.py parallel --retries 1
 endif
 CARGO_TEST_SEARCH_RETIREMENT_RELEASE = CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false ./scripts/run-widget-tests.sh --headless -- --exact search_panel::test_search_retirement_categories_release_actual_ownership_over_bounded_turns
 CARGO_TEST_WORKSPACE_ROW_STATES = ./scripts/run-widget-tests.sh --headless --retries 1 -- workspace_row_state

@@ -116,26 +116,12 @@ self_test_warning_classification() {
     fi
 
     echo "Widget warning classification self-test passed."
-    self_test_scope_and_memory_report
+    self_test_memory_report
     "$TEMP_SCOPE" --self-test
 }
 
-self_test_scope_and_memory_report() {
-    local saved_label="$SCOPE_LABEL" fixture report failed=0
-
-    # The scope label names the temp scope (and so the runtime directory).
-    session_scope_command
-    if [[ "${SESSION_SCOPE_COMMAND[*]}" != "$TEMP_SCOPE --session-runtime widget --" ]]; then
-        echo "Error: the default scope label is not 'widget': ${SESSION_SCOPE_COMMAND[*]}" >&2
-        failed=1
-    fi
-    SCOPE_LABEL=w1
-    session_scope_command
-    SCOPE_LABEL="$saved_label"
-    if [[ "${SESSION_SCOPE_COMMAND[*]}" != "$TEMP_SCOPE --session-runtime w1 --" ]]; then
-        echo "Error: --scope-label did not reach the temp scope: ${SESSION_SCOPE_COMMAND[*]}" >&2
-        failed=1
-    fi
+self_test_memory_report() {
+    local fixture report failed=0
 
     # The memory report, read from a fixture cgroup directory rather than by
     # provoking the OOM killer: a clean scope passes, an OOM kill fails loudly.
@@ -154,12 +140,7 @@ self_test_scope_and_memory_report() {
     fi
     rm -rf -- "$fixture"
     (( failed == 0 )) || return 1
-    echo "Widget scope label and memory report self-test passed."
-}
-
-# The temp-scope prefix of the session command, in SESSION_SCOPE_COMMAND.
-session_scope_command() {
-    SESSION_SCOPE_COMMAND=("$TEMP_SCOPE" --session-runtime "$SCOPE_LABEL" --)
+    echo "Widget memory report self-test passed."
 }
 
 # Report the memory scope this runner ran in: its peak, and whether the kernel
@@ -222,9 +203,8 @@ run_headless() {
         # private XDG_RUNTIME_DIR, releases the runtime directory only once
         # the session's services have exited, and fails the run if any test
         # process left a temporary entry behind.
-        session_scope_command
         run_with_widget_log \
-            "${SESSION_SCOPE_COMMAND[@]}" \
+            "$TEMP_SCOPE" --session-runtime "$SCOPE_LABEL" -- \
             dbus-run-session -- \
             mutter --headless --wayland --no-x11 --virtual-monitor "$MONITOR" -- \
             cargo test -p lushtext --test widget -- "${TEST_ARGS[@]}"

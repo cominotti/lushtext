@@ -86,6 +86,9 @@ sweep_stale_entries() {
 }
 
 SESSION_RUNTIME_NAME=".session-runtime"
+# Mutter listens on `$XDG_RUNTIME_DIR/wayland-0`; `sun_path` holds 108 bytes,
+# and the margin covers the session's other sockets beside it.
+SESSION_SOCKET_PATH_LIMIT=100
 SESSION_RELEASE_POLLS=200   # x 0.05 s = 10 s
 SESSION_RELEASE_POLL_SECONDS=0.05
 
@@ -167,6 +170,12 @@ run_scoped() {
     local status=0
     if [[ "$session_runtime" == true ]]; then
         local runtime_dir="$scope/$SESSION_RUNTIME_NAME"
+        local socket="$runtime_dir/wayland-0"
+        if (( ${#socket} > SESSION_SOCKET_PATH_LIMIT )); then
+            echo "Error: the session's Wayland socket path would be ${#socket} bytes (limit $SESSION_SOCKET_PATH_LIMIT): $socket" >&2
+            echo "The temporary directory '$base' (TMPDIR) is too deep; point TMPDIR at a shorter one." >&2
+            return 2
+        fi
         mkdir -m 700 -- "$runtime_dir"
         TMPDIR="$scope" XDG_RUNTIME_DIR="$runtime_dir" "$@" || status=$?
         if ! release_session_runtime_dir "$runtime_dir"; then
@@ -201,6 +210,14 @@ self_test() {
         echo "Error: a session runtime directory was not provided or not released." >&2
         failed=1
     fi
+    local deep
+    deep="$base/$(printf 'd%.0s' {1..80})"
+    mkdir -p "$deep"
+    if TMPDIR="$deep" "$0" --session-runtime deep -- true 2>/dev/null; then
+        echo "Error: a session runtime with an overlong socket path was accepted." >&2
+        failed=1
+    fi
+    rm -rf -- "$deep"
     if TMPDIR="$base" "$0" failing -- false 2>/dev/null; then
         echo "Error: the command's own failure was not propagated." >&2
         failed=1

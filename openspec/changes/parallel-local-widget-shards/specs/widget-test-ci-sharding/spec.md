@@ -34,7 +34,7 @@ In a parallel local run, each shard SHALL run in its own admitted memory scope
 `WIDGET_SHARD_MEMORY_MAX`), its own temporary-file scope
 (`scripts/with-temp-scope.sh --session-runtime`), its own D-Bus session, and
 its own headless compositor, with a distinct `XDG_RUNTIME_DIR` and Wayland
-socket. The driver SHALL refuse to start when a shard's Wayland socket path
+socket. A shard's session SHALL refuse to start when its Wayland socket path
 would exceed 100 bytes. Every shard's scope SHALL fail the run with
 `TEMP-LEAK:` when its shard leaves a temporary entry behind, as the serial run
 does. When memory admission cannot yet admit a shard, that shard SHALL wait and
@@ -48,7 +48,7 @@ even if a retry recovered the test.
 
 #### Scenario: Overlong socket path is refused
 - **WHEN** the resolved temporary directory would make a shard's Wayland socket path longer than 100 bytes
-- **THEN** the run fails before any session starts and names the temporary directory as the cause
+- **THEN** each shard fails before its session starts, the message names the temporary directory as the cause, and the run fails
 
 #### Scenario: A leak is attributed to its shard
 - **WHEN** a test in one shard leaves a temporary entry in its scope

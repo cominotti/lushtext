@@ -230,8 +230,16 @@ fi
 
 cap_kib=$(cap_in_kib "$cap")
 
+# The command as this wrapper reports it: whole when short, else its first
+# words and a count, so a command carrying hundreds of test names (a widget
+# shard) does not flood the log with one line.
+shown_command="$*"
+if [ "${#shown_command}" -gt 200 ]; then
+    shown_command="${*:1:4} ... (+$(($# - 4)) more arguments)"
+fi
+
 if [ -n "${LUSHTEXT_MEMORY_CAP_KIB:-}" ]; then
-    echo "with-memory-cap: already inside a ${LUSHTEXT_MEMORY_CAP_KIB} KiB capped scope; running in place: $*" >&2
+    echo "with-memory-cap: already inside a ${LUSHTEXT_MEMORY_CAP_KIB} KiB capped scope; running in place: $shown_command" >&2
     if [ "$address_space" = 1 ]; then
         # The outer scope binds, so the per-process limit follows the smaller cap.
         inner_kib=$cap_kib
@@ -263,9 +271,9 @@ if command -v systemd-run >/dev/null 2>&1 \
     launch=("$@")
     if [ "$address_space" = 1 ]; then
         launch=(bash "${BASH_SOURCE[0]}" --exec-with-address-space $((cap_kib * 7 / 8)) "$@")
-        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue in $HEAVY_SLICE ($heavy_max), RLIMIT_AS=$((cap_kib * 7 / 8)) KiB per process, for: $*" >&2
+        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue in $HEAVY_SLICE ($heavy_max), RLIMIT_AS=$((cap_kib * 7 / 8)) KiB per process, for: $shown_command" >&2
     else
-        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue in $HEAVY_SLICE ($heavy_max) for: $*" >&2
+        echo "with-memory-cap: MemoryMax=$cap MemorySwapMax=0 OOMPolicy=continue in $HEAVY_SLICE ($heavy_max) for: $shown_command" >&2
     fi
     export LUSHTEXT_MEMORY_CAP_KIB=$cap_kib
     if [ "$admitted" = 1 ]; then
@@ -284,7 +292,7 @@ if command -v systemd-run >/dev/null 2>&1 \
 fi
 
 if [ -n "${CI:-}" ]; then
-    echo "with-memory-cap: no systemd user manager on CI; running uncapped: $*" >&2
+    echo "with-memory-cap: no systemd user manager on CI; running uncapped: $shown_command" >&2
     exec "$@"
 fi
 
