@@ -467,7 +467,17 @@ synthetic (`scripts/generate-long-line-fixtures.py`), generated into the run's
 temporary scope, and digest-checked before and after every case. Each case runs
 plain, with the AT bridge and a `pyatspi` text-event listener, with the probe
 input method (`GTK_IM_MODULE=lushtext-probe`), and with IBus when
-`ibus-daemon` is installed (otherwise `skipped`). The report
+`ibus-daemon` is installed (otherwise `skipped`). The `keystroke` group
+(`keystroke/<length>/<css/html|prose/txt>/wrap-<on|off>`) opens one editable
+paragraph of the swept length between short lines, places the caret after a
+marker at its start, middle and end through `win.set-search-query`,
+`win.next-match`, Escape and Right, and types ten letters at each place; a
+final `verify` phase counts marker plus letters in `search.editor_match_count`
+and fails the case if a burst did not land at its marker. It re-measures
+`long-line-protected-view`'s toolkit-floor exception (keystrokes in editable
+paragraphs between `L_EDIT_STALL` 3,500 and `L_PROTECT_EDIT` 50,000 miss
+B_interact; quick tier 3,500 and 50,000, full tier 2,500 to 50,000,
+`RESPONSIVENESS_LENGTHS=keystroke=...` for any sweep). The report
 (`report.json`, `report.md`) derives the long-line thresholds and the budget
 verdict, and lists runtime warnings: a pre-existing defect a later change owns
 is a finding with its owner, while the warning of a blocker the programme has

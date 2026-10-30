@@ -48,6 +48,10 @@ jobs:
             cases: "delimiters/,invisibles/"
           - group: session
             cases: "session/"
+          # C2's toolkit-floor exception (keystrokes in editable paragraphs
+          # between L_EDIT_STALL and L_PROTECT_EDIT): 8 quick cases.
+          - group: keystroke
+            cases: "keystroke/"
 
     steps:
       - uses: actions/checkout@v6

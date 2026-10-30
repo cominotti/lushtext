@@ -265,7 +265,10 @@ they are not default PR gates:
   The nightly workflow runs its `quick` tier per case group as trend evidence
   only and never fails on a budget; budget verdicts and derived thresholds come
   from a `full` run on the reference machine, recorded in
-  `docs/next/long-line-documents.md`. It is deliberately outside
+  `docs/next/long-line-documents.md`. Its `keystroke` group re-measures the
+  toolkit-floor exception `long-line-protected-view` (C2) recorded: keystrokes
+  in editable paragraphs between `L_EDIT_STALL` (3,500) and `L_PROTECT_EDIT`
+  (50,000) characters miss B_interact. It is deliberately outside
   `make end-user-smoke` and `.github/workflows/end-user-smoke.yml` because of its
   length; the same nightly workflow also runs `make gtk-axioms` with slow probes
   included.

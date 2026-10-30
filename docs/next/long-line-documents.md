@@ -1044,7 +1044,7 @@ choice returned to the maintainer (design D0), who chose **the hybrid**:
 - **Protected View above `L_PROTECT_EDIT`**, with the one bounded undo of the
   edit that caused entry.
 
-### Applied (task 1.1a, 2026-10-30)
+### Applied (tasks 1.1a, 1.1b, 2026-10-30)
 
 - **The re-key (1.1a).** `model/document_scale.rs` gained `L_EDIT_STALL`
   (3,500, documentation of the exception's lower bound, deciding nothing) and
@@ -1061,6 +1061,19 @@ choice returned to the maintainer (design D0), who chose **the hybrid**:
   iterate the two remaining reason classes, and the other harnesses are
   unchanged; the shard verified 9 of 9 harnesses on 2026-10-30. The
   exception is recorded on A23 and A26 in the axiom ledger.
+- **The lane (1.1b).** The task 1.1 sweep is now the `keystroke` group of
+  `scripts/responsiveness-smoke-driver.py` and the `keystroke` fixture kind
+  (with the `prose` flavour) of `scripts/generate-long-line-fixtures.py`:
+  one paragraph of exactly the swept length between 30 short lines on each
+  side, markers at its start, middle and end; per position a `place-*`
+  navigation phase (find the marker, Escape, Right) and a `key-*` interaction
+  phase of ten keystrokes 150 ms apart; a `verify` phase that fails the case
+  when a burst did not land right after its marker. Grids: quick 3,500 and
+  50,000, full 2,500, 3,500, 5,000, 10,000, 20,000 and 50,000, CSS/`.html`
+  and prose/`.txt`, wrap on and off (`RESPONSIVENESS_LENGTHS=keystroke=...`
+  for other sweeps); the nightly workflow runs it as its own job. The
+  fixture self-test found that the measurement patch's minimum length (37)
+  produced a paragraph shorter than requested; the minimum is now 46.
 
 ### Pre-existing blocker found by task 1.1
 
