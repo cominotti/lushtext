@@ -92,6 +92,78 @@ pub(crate) fn record_span(name: &'static str, start_us: i64, end_us: i64) {
         start_us,
         end_us,
     });
+    if crate::services::responsiveness_log::arms_settle_sentinel(name) {
+        measurement::arm_settle_sentinel();
+    }
+}
+
+/// One post-open stage span (`bound-post-open-settle`, design D1): created at
+/// the start of the stage, recorded when dropped. The name is one of
+/// `services::responsiveness_log::POST_OPEN_SPANS`.
+///
+/// Without the `responsiveness-probes` feature it is a zero-sized value with
+/// no drop glue, and [`PostOpenSpan::begin`] reads no clock.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[must_use = "a post-open span records when it is dropped"]
+pub(crate) struct PostOpenSpan;
+
+#[cfg(not(feature = "responsiveness-probes"))]
+impl PostOpenSpan {
+    /// Start the span `_name`.
+    #[inline]
+    pub(crate) fn begin(_name: &'static str) -> Self {
+        Self
+    }
+}
+
+/// One post-open stage span (`bound-post-open-settle`, design D1): created at
+/// the start of the stage, recorded when dropped.
+#[cfg(feature = "responsiveness-probes")]
+#[must_use = "a post-open span records when it is dropped"]
+pub(crate) struct PostOpenSpan {
+    name: &'static str,
+    start_us: i64,
+}
+
+#[cfg(feature = "responsiveness-probes")]
+impl PostOpenSpan {
+    /// Start the span `name`.
+    pub(crate) fn begin(name: &'static str) -> Self {
+        debug_assert!(
+            crate::services::responsiveness_log::POST_OPEN_SPANS.contains(&name),
+            "{name} is not a post-open span"
+        );
+        Self {
+            name,
+            start_us: glib::monotonic_time(),
+        }
+    }
+}
+
+#[cfg(feature = "responsiveness-probes")]
+impl Drop for PostOpenSpan {
+    fn drop(&mut self) {
+        record_span(self.name, self.start_us, glib::monotonic_time());
+    }
+}
+
+/// Observe one editor's post-open toolkit work: a mark on every
+/// `highlight-updated` of its buffer and on every change of its vertical
+/// adjustment's `upper`, and the `post_open_first_editor_frame` span over the
+/// layout and paint of the first frame after the view is mapped.
+///
+/// Without the `responsiveness-probes` feature this is an empty function.
+#[cfg(not(feature = "responsiveness-probes"))]
+#[inline]
+pub(crate) fn observe_editor(_view: &sourceview5::View) {}
+
+/// Observe one editor's post-open toolkit work: a mark on every
+/// `highlight-updated` of its buffer and on every change of its vertical
+/// adjustment's `upper`, and the `post_open_first_editor_frame` span over the
+/// layout and paint of the first frame after the view is mapped.
+#[cfg(feature = "responsiveness-probes")]
+pub(crate) fn observe_editor(view: &sourceview5::View) {
+    measurement::observe_editor(view);
 }
 
 /// The largest watchdog lateness observed since the probe was installed, which
@@ -342,8 +414,11 @@ mod measurement {
 
     use super::LatenessWatchdog;
     use crate::services::responsiveness_log::{
-        DEFAULT_LATE_THRESHOLD_US, EVIDENCE_CHANNEL_CAPACITY, EvidenceWriter, FrameTimingsQueue,
-        FrameTimingsState, LatenessAggregator, ProbeImTrigger, ProbeInputKind, ProbeRecord,
+        ADJUSTMENT_UPPER_MARK, DEFAULT_FRAME_PHASE_FRAMES, DEFAULT_LATE_THRESHOLD_US,
+        EVIDENCE_CHANNEL_CAPACITY, EvidenceWriter, FRAME_PHASES_ENV, FrameTimingsQueue,
+        FrameTimingsState, HIGHLIGHT_UPDATED_MARK, LatenessAggregator, ProbeImTrigger,
+        ProbeInputKind, ProbeRecord, SETTLE_SENTINEL_MARK, arms_settle_sentinel,
+        frame_phase_frames,
     };
 
     const LOG_ENV: &str = "LUSHTEXT_RESPONSIVENESS_LOG";
@@ -355,8 +430,6 @@ mod measurement {
     /// Frames a window may have queued before the oldest is written without
     /// its presentation time.
     const MAX_PENDING_FRAMES: usize = 64;
-    /// How many of each window's first frames record their phase spans.
-    const FRAME_PHASE_FRAMES: u32 = 4;
     /// The smallest lateness kept with its time for windowed maxima: below it a
     /// dispatch is far inside every budget the lane judges.
     const RECENT_LATE_FLOOR_US: u64 = 1_000;
@@ -373,6 +446,11 @@ mod measurement {
         /// (`largest_lateness_since_us`).
         recent_late: RefCell<VecDeque<(i64, u64)>>,
         next_window: Cell<u32>,
+        /// How many of each window's first frames record their phase spans
+        /// (`FRAME_PHASES_ENV`, default 4).
+        frame_phase_frames: u32,
+        /// The armed `G_PRIORITY_LOW` settle sentinel, if any.
+        sentinel: RefCell<Option<glib::SourceId>>,
         _watchdog: RefCell<Option<LatenessWatchdog>>,
     }
 
@@ -389,6 +467,95 @@ mod measurement {
         if let Some(probe) = probe() {
             probe.writer.send(record);
         }
+    }
+
+    /// Record one mark; any mark but the sentinel's own arms the sentinel.
+    pub(super) fn record_mark(name: &'static str) {
+        record(ProbeRecord::Mark {
+            t_us: glib::monotonic_time(),
+            name,
+        });
+        if arms_settle_sentinel(name) {
+            arm_settle_sentinel();
+        }
+    }
+
+    /// Arm the settle sentinel: a `G_PRIORITY_LOW` idle that records
+    /// [`SETTLE_SENTINEL_MARK`] when it dispatches. Arming an armed sentinel
+    /// keeps it: it has not dispatched yet, so it still dispatches after the
+    /// span or mark that asked. GTK's validation idles and GtkSourceView's
+    /// update idles run at higher priorities, so the sentinel dispatches only
+    /// in a main-loop iteration where none of them was ready.
+    pub(super) fn arm_settle_sentinel() {
+        let Some(probe) = probe() else {
+            return;
+        };
+        if probe.sentinel.borrow().is_some() {
+            return;
+        }
+        let weak = Rc::downgrade(&probe);
+        let source = glib::idle_add_local_full(glib::Priority::LOW, move || {
+            if let Some(probe) = weak.upgrade() {
+                probe.sentinel.borrow_mut().take();
+            }
+            record_mark(SETTLE_SENTINEL_MARK);
+            glib::ControlFlow::Break
+        });
+        probe.sentinel.replace(Some(source));
+    }
+
+    /// See `super::observe_editor`.
+    pub(super) fn observe_editor(view: &sourceview5::View) {
+        if probe().is_none() {
+            return;
+        }
+        if let Ok(buffer) = view.buffer().downcast::<sourceview5::Buffer>() {
+            buffer.connect_local("highlight-updated", false, |_| {
+                record_mark(HIGHLIGHT_UPDATED_MARK);
+                None
+            });
+        }
+        let observed_upper = Rc::new(Cell::new(false));
+        let first_frame = Rc::new(Cell::new(false));
+        view.connect_map(move |view| {
+            if !observed_upper.replace(true)
+                && let Some(adjustment) = view.vadjustment()
+            {
+                adjustment.connect_upper_notify(|_| record_mark(ADJUSTMENT_UPPER_MARK));
+            }
+            if first_frame.replace(true) {
+                return;
+            }
+            let Some(clock) = view.frame_clock() else {
+                return;
+            };
+            let start = Rc::new(Cell::new(None::<i64>));
+            let handlers = Rc::new(RefCell::new(Vec::new()));
+            let stamp = Rc::clone(&start);
+            handlers
+                .borrow_mut()
+                .push(clock.connect_before_paint(move |_| {
+                    if stamp.get().is_none() {
+                        stamp.set(Some(glib::monotonic_time()));
+                    }
+                }));
+            let own = Rc::clone(&handlers);
+            handlers
+                .borrow_mut()
+                .push(clock.connect_after_paint(move |clock| {
+                    let Some(start_us) = start.get() else {
+                        return;
+                    };
+                    super::record_span(
+                        "post_open_first_editor_frame",
+                        start_us,
+                        glib::monotonic_time(),
+                    );
+                    for handler in own.borrow_mut().drain(..) {
+                        clock.disconnect(handler);
+                    }
+                }));
+        });
     }
 
     /// The largest watchdog lateness since install, `None` when the probe is
@@ -446,6 +613,8 @@ mod measurement {
             largest_lateness_us: Cell::new(0),
             recent_late: RefCell::new(VecDeque::with_capacity(RECENT_LATE_CAPACITY)),
             next_window: Cell::new(1),
+            frame_phase_frames: frame_phase_frames(std::env::var(FRAME_PHASES_ENV).ok().as_deref()),
+            sentinel: RefCell::new(None),
             _watchdog: RefCell::new(None),
         });
         PROBE.with(|slot| slot.replace(Some(Rc::clone(&probe))));
@@ -538,9 +707,10 @@ mod measurement {
         window.connect_realize(move |window| hook_clock(window));
     }
 
-    /// Record the layout and paint phases of a window's first
-    /// [`FRAME_PHASE_FRAMES`] frames as `frame_layout` and `frame_paint` spans
-    /// (`first-frame-window-shell`, design D7).
+    /// Record the layout and paint phases of a window's first frames as
+    /// `frame_layout` and `frame_paint` spans (`first-frame-window-shell`,
+    /// design D7): `DEFAULT_FRAME_PHASE_FRAMES` frames, or as many as
+    /// `FRAME_PHASES_ENV` asks for (`bound-post-open-settle`, design D1).
     ///
     /// A phase's work runs in GDK's own handler of the frame clock's signal,
     /// which the surface connected when it was created, before this probe
@@ -549,13 +719,14 @@ mod measurement {
     /// The layout phase therefore starts at the end of `update` (GTK's tick
     /// callbacks), and the paint phase at the end of `layout`.
     fn hook_frame_phases(clock: &gtk4::gdk::FrameClock) {
+        let limit = probe().map_or(DEFAULT_FRAME_PHASE_FRAMES, |probe| probe.frame_phase_frames);
         let frames = Rc::new(Cell::new(0u32));
         let last = Rc::new(Cell::new(None::<i64>));
         let stamp = |frames: &Rc<Cell<u32>>, last: &Rc<Cell<Option<i64>>>| {
             let frames = Rc::clone(frames);
             let last = Rc::clone(last);
             move |name: Option<&'static str>| {
-                if frames.get() >= FRAME_PHASE_FRAMES {
+                if frames.get() >= limit {
                     return;
                 }
                 let now = glib::monotonic_time();
@@ -586,7 +757,7 @@ mod measurement {
         let after_paint = clock.connect_after_paint(move |clock| {
             last.set(None);
             frames.set(frames.get().saturating_add(1));
-            if frames.get() >= FRAME_PHASE_FRAMES {
+            if frames.get() >= limit {
                 for handler in own_handlers.borrow_mut().drain(..) {
                     clock.disconnect(handler);
                 }

@@ -89,7 +89,7 @@ DEFAULT_BUDGETS = {
 
 MONITOR = os.environ.get("RESPONSIVENESS_MONITOR", "1280x800@120")
 SCREEN_W, SCREEN_H = 1280, 800
-KNOWN_KINDS = ("start", "late", "second", "frame", "input", "im", "dropped", "topk", "span")
+KNOWN_KINDS = ("start", "late", "second", "frame", "input", "im", "dropped", "topk", "span", "mark")
 
 # Keysyms. Only these may be injected; the guard refuses any Control+letter so
 # no save chord can ever reach the app.

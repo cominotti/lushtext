@@ -501,9 +501,13 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
         .source_view()
         .set_cursor_visible(guard.cursor_visible);
     let syntax_enabled = editor.document_scale().syntax_enabled;
-    editor
-        .buffer()
-        .set_highlight_syntax(guard.highlight_syntax && syntax_enabled);
+    {
+        let _span =
+            crate::ui::responsiveness_probe::PostOpenSpan::begin("post_open_highlight_attach");
+        editor
+            .buffer()
+            .set_highlight_syntax(guard.highlight_syntax && syntax_enabled);
+    }
     if editor.buffer().language().is_none() {
         // A cancelled install of a gated body cleared the language up front;
         // if the session still allows syntax, the path's language comes back.

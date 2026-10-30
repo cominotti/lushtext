@@ -36,6 +36,7 @@ use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::InlineActionNotification;
 use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use crate::ui::responsiveness_probe::PostOpenSpan;
 use crate::ui::sidebar::seams::SidebarFileRowStateSnapshot;
 use crate::ui::status_bar::MessageKind;
 
@@ -196,6 +197,7 @@ impl LushtextWindow {
         intent: OpenDocumentIntent,
         planning_terminal: Option<Box<dyn FnOnce()>>,
     ) -> Option<(libadwaita::TabPage, bool)> {
+        let _span = PostOpenSpan::begin("post_open_activation");
         let tab_view = &self.imp().tab_view;
         let key = open_path_key(path);
         if let Some(page) = self.find_open_document_page(&key, intent) {
@@ -236,7 +238,10 @@ impl LushtextWindow {
         }
 
         self.imp().open_paths.borrow_mut().insert(key);
-        let editor_page = LushtextEditorPage::new();
+        let editor_page = {
+            let _span = PostOpenSpan::begin("post_open_editor_construct");
+            LushtextEditorPage::new()
+        };
         self.wire_info_bar(&editor_page);
         self.wire_note_callbacks(&editor_page);
         editor_page.set_file_path_for_pending_load(path);

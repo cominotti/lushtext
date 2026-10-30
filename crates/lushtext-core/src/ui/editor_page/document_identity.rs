@@ -22,6 +22,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
 use super::{EditorLoadState, LushtextEditorPage};
+use crate::ui::responsiveness_probe::PostOpenSpan;
 
 impl LushtextEditorPage {
     /// Set the file path (used by Save As and rename) and refresh highlighting.
@@ -95,6 +96,7 @@ impl LushtextEditorPage {
         }
         let buffer = self.buffer();
         if let Some(ref file_path) = *self.imp().file_path.borrow() {
+            let _span = PostOpenSpan::begin("post_open_language_attach");
             let lang_manager = sourceview5::LanguageManager::default();
             let language = lang_manager.guess_language(file_path.to_str(), None::<&str>);
             if buffer.language() != language {

@@ -768,6 +768,7 @@ impl ObjectImpl for LushtextEditorPage {
             .downcast::<sourceview5::Buffer>()
             .expect("GtkSourceView buffer");
         buffer.set_highlight_syntax(true);
+        crate::ui::responsiveness_probe::observe_editor(&self.source_view);
 
         let settings = &self.settings;
         let invisible_mode = crate::model::encoding::InvisibleCharactersMode::from_id(

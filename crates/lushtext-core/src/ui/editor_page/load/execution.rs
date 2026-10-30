@@ -51,6 +51,7 @@ use crate::ui::editor_page::imp::EditorCallback;
 use crate::ui::editor_page::{
     EditorLoadState, InlineAlertLifetime, LushtextEditorPage, PendingWarningAction,
 };
+use crate::ui::responsiveness_probe::PostOpenSpan;
 
 use super::admission::{self, GuardedLoadResult, TransientLoadPermit};
 use super::policy::{
@@ -222,7 +223,10 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     let mut iter = buffer.iter_at_mark(&mark);
     // GtkTextBuffer emits signals synchronously. Keep the session unborrowed so
     // a reentrant cancellation can move it to bounded cleanup without panicking.
-    buffer.insert(&mut iter, &loaded.content[start..end]);
+    {
+        let _span = PostOpenSpan::begin("post_open_install_slice");
+        buffer.insert(&mut iter, &loaded.content[start..end]);
+    }
 
     let reached_end = {
         let mut state = session.borrow_mut();
@@ -475,7 +479,10 @@ pub(super) fn install_loaded_direct(
     editor.imp().load.finalizing.set(true);
     editor.imp().load.dispose_during_finalization.set(false);
     buffer.begin_irreversible_action();
-    buffer.set_text(&loaded.content);
+    {
+        let _span = PostOpenSpan::begin("post_open_install_direct");
+        buffer.set_text(&loaded.content);
+    }
     if editor.imp().load.dispose_during_finalization.get() {
         buffer.end_irreversible_action();
         finish_load_finalization(editor, permit);
@@ -554,6 +561,7 @@ fn complete_loaded_installation(
     loaded: GuardedLoadResult,
     restore: LoadInstallationState,
 ) {
+    let _span = PostOpenSpan::begin("post_open_publish");
     let GuardedLoadResult {
         metadata: loaded,
         content,

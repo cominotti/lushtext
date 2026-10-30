@@ -53,6 +53,7 @@ use crate::model::paragraph_profile_watch::{
     DeleteFacts, InsertFacts, ProfileWatchState, WatchPlan, complete, plan_delete, plan_insert,
 };
 use crate::ui::accessibility as a11y;
+use crate::ui::responsiveness_probe::PostOpenSpan;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
 
@@ -328,6 +329,7 @@ impl LushtextEditorPage {
         let buffer = self.buffer();
         if scale.syntax_enabled {
             self.reapply_language();
+            let _span = PostOpenSpan::begin("post_open_highlight_attach");
             buffer.set_highlight_syntax(true);
         } else {
             self.clear_language_for_scale();
