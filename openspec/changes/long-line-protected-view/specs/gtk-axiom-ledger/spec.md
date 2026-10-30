@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Protected View's toolkit assumptions are ledger axioms
-Every GTK or GtkSourceView behaviour that Protected View relies on SHALL be a ledger axiom, unless C0 or C1 already pins it. Each axiom SHALL have an isolated headless probe and a `gtk-lush-axioms` sample, except where a probe cannot observe it in-crate; that axiom SHALL be pinned by the named lane case instead, and its ledger row SHALL say so, as C0 does for A35. The axioms are numbered after the last applied ledger entry (provisionally P1–P8, which `sliced-protected-install` cites). The entries SHALL cover:
+Every GTK or GtkSourceView behaviour that Protected View relies on SHALL be a ledger axiom, unless C0 or C1 already pins it. Each axiom SHALL have an isolated headless probe and a `gtk-lush-axioms` sample, except where a probe cannot observe it in-crate; that axiom SHALL be pinned by the named lane case instead, and its ledger row SHALL say so, as C0 does for A35. The axioms are numbered after the last applied ledger entry (provisionally P1–P8, which `sliced-protected-install` cites; applied as A59–A66). The entries SHALL cover:
 - P1: a capture-phase gesture that claims a press sequence on a GtkTextView prevents GtkTextView's click gesture from moving the insert mark, resetting the IM context, pasting the primary selection on middle click, opening its default context menu, or starting a drag; an unclaimed touchscreen drag scrolls the view without moving a mark;
 - P2: a non-editable GtkTextView never calls `gtk_im_context_focus_in`, and its key controller carries no IM context;
 - P3: a handled and stopped `move-cursor` emission with `cursor-visible=false` moves only the viewport, including under `gtk-keynav-use-caret`, extending C0's A34;

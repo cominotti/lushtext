@@ -34,7 +34,7 @@ Documents whose longest paragraph is at most `L_PROTECT_EDIT` stay editable (mai
 ### Requirement: Protected View never snapshots a protected buffer on the GTK thread
 LushText-owned Protected View work SHALL stay within declared chunk sizes, and SHALL NOT read a protected buffer's text through a GTK snapshot whose per-chunk cost grows with the chunk's depth inside a paragraph:
 - find, the Line Inspector, whole-line copy and every save of a protected document SHALL read `ProtectedTextSource`, which for every whole-content install is the installed body itself, retained;
-- after an edit-growth entry the source SHALL be captured at most once; the capture SHALL use a positioning whose per-chunk cost the ledger shows to be independent of depth (P8), or, if no such positioning exists, SHALL be recorded in the verdict as a declared envelope owned by C3;
+- after an edit-growth entry the source SHALL be captured at most once; the capture SHALL use a positioning whose per-chunk cost the ledger shows to be independent of depth (P8, ledger A66), or, if no such positioning exists, SHALL be recorded in the verdict as a declared envelope owned by C3;
 - find SHALL deliver at most a declared number of results and bytes per GTK turn under a total result cap;
 - the inspector SHALL read at most `N_inspect` characters per window, and whole-line copy SHALL write at most one chunk per dispatch;
 - notice and accessible text stay within the inline-alert bounds.

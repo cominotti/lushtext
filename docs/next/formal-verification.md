@@ -373,6 +373,25 @@ it, and the first frame is now measured on the mapped window. No Kani harness
 was added, for the same reason as C4b (a finite stage order, enumerated by unit
 tests); no envelope cites it.
 
+`long-line-protected-view` (C2, axioms landed 2026-10-30) added **A59–A66**,
+its provisional P1–P8 (C6 `bound-post-open-settle` holds A52–A58): a
+capture-phase press claim keeps a text view's own click and drag gestures from
+running (A59; the touchscreen half is not pinned, the private session cannot
+inject touch); a non-editable view gives its input method no focus-in and no key
+filtering (A60); a stopped `move-cursor` holds under caret browsing (A61,
+extends A34); the AT-SPI text and caret-write costs of a folded paragraph (A62,
+lane-pinned like A35); a text view's one drop target, its refusal when
+non-editable unless a tag is editable, and its removal (A63); stopped key-binding
+signals and a captured Shift+F10 guard a non-editable source view, per-instance
+action enablement does not, and GtkSourceView's Ctrl+Shift+A `change-number`
+binding is shadowed by GtkTextView's unselect (A64); a tail inserted hidden is
+never laid out, at 13–17 ms per MiB of insert (A65); and chunk-read cost by
+iterator positioning, flat only for one byte-positioned iterator advanced below
+`MAX_LINEAR_SCAN` (A66, which moved Protected View's edit-growth capture off a
+declared envelope). A59–A61 and A64 are the first probes driven by real input,
+through the private compositor's RemoteDesktop interface. None was falsified,
+and no Kani harness or envelope cites them yet.
+
 ### Phase 2 — Kani lane
 
 - Add a `make kani` target, and an optional CI job using

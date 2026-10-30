@@ -18,7 +18,7 @@ This revision (2026-10-29) re-bases the 2026-10-11 proposal on C1's implemented 
 - **Draft recovery of giant paragraphs (new).** Recovery installs through the fold executor, enters Protected View modified, retains the body as the source, and writes no autosave snapshot. The crash-recovery smoke must pass within its existing 60 s limit; the remaining one-turn hidden-tail insert is recorded as the input to C3's adoption gate.
 - **Automation.** Tab snapshots gain `protected_view`, `protected_view_reason`, `entry_undo_available`, `folded_paragraph_count` and `hidden_character_count`; the surface snapshot gains `line_inspector_visible`. Protected find holds `editor-search`; fold application stays inside `file-load`; recovery inside `draft-autosave`.
 - **Workflow convention.** A `WFR-PROTECTED-VIEW` row with its role home at `ui/editor_page/protected_view/`.
-- **GTK axiom ledger.** P1–P8, numbered after the last applied entry (A51 once C4c lands): capture-phase claims, non-editable IM, the `move-cursor` intercept, AT text and AT caret writes on a folded paragraph (lane-pinned, extended to word, sentence and line granularity), DnD, key-binding pre-emption, `insert_with_tags` of a hidden run (structure and cost), and the snapshot-depth cost.
+- **GTK axiom ledger.** P1–P8, numbered after the last applied entry (they are A59–A66): capture-phase claims, non-editable IM, the `move-cursor` intercept, AT text and AT caret writes on a folded paragraph (lane-pinned, extended to word, sentence and line granularity), DnD, key-binding pre-emption, `insert_with_tags` of a hidden run (structure and cost), and the snapshot-depth cost.
 - **Verdict, interleaved.** The budget verdict is measured with the frame-correct lane, `main`'s binary and the branch's alternating, each run in its own exclusive hold of the measurement lock (lock protocol rev 2) with the load recorded and accepted (maintainer decision, 2026-10-30), 7 repetitions, the three lane variants, and the four construction profiles for cases that start a process.
 - **Docs.** Accessibility guide, matrix and Orca checklist entry, automation docs, end-user coverage, workflow matrix, README, `AGENTS.md`, `.agents/rules/ui.md`, `docs/next/long-line-documents.md`, `docs/next/long-line-evolution.md` and `docs/next/formal-verification.md`.
 - **Dependency.** C0 (archived) and C1 (PR #59, must be on `main` first). This change edits C1's `DocumentScale::for_profile` (the `protected_view` key) and the session join (the entry-undo restore).
@@ -40,7 +40,7 @@ None. The Protected View requirements extend `long-line-document-presentation`, 
 - `editor-inline-alerts`: the Protected View notice replaces C1's reduced-features alert for the same document.
 - `dbus-automation-spine`: snapshot fields, readiness reuse.
 - `search-replace-safety`: in-tab Replace unavailable; no search context attached.
-- `gtk-axiom-ledger`: P1–P8.
+- `gtk-axiom-ledger`: P1–P8 (A59–A66).
 - `gtk-accessibility-spine`: the folded main view, the Line Inspector as the accessible path, the AT fallback, the Orca entry.
 - `workflow-readability-boundaries`: the `WFR-PROTECTED-VIEW` row.
 - `invisible-character-visualization`: invisibles forced off while a fold exists.
