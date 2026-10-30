@@ -6,7 +6,7 @@ The main protected view's accessible text SHALL be documented as the folded view
 - labelled Previous, Next, Go to Column and Copy controls;
 - a polite announcement when the window moves.
 
-The fold-marker gutter SHALL expose an accessible label with the hidden-character count. `docs/accessibility.md` and `docs/accessibility-matrix.md` SHALL gain Protected View and Line Inspector rows. `docs/accessibility-orca-checklist.md` SHALL gain a manual entry that walks through opening a protected document, hearing the notice, opening the inspector, moving windows and copying a window. Accessibility smoke SHALL cover the inspector's keyboard path.
+The fold-marker gutter SHALL expose an accessible label with the hidden-character count. If the lane's AT case (ledger P4) shows that an assistive technology's text queries or caret writes on a folded paragraph exceed `B_interact`, the main view SHALL be made non-focusable, its accessible description SHALL name the Line Inspector as the reading path, and `docs/accessibility.md` SHALL record the limitation. `docs/accessibility.md` and `docs/accessibility-matrix.md` SHALL gain Protected View and Line Inspector rows. `docs/accessibility-orca-checklist.md` SHALL gain a manual entry that walks through opening a protected document, hearing the notice, opening the inspector, moving windows and copying a window. Accessibility smoke SHALL cover the inspector's keyboard path.
 
 #### Scenario: Keyboard-only reading of a giant line
 - **WHEN** a keyboard-only user opens a protected document, presses the Inspect Line shortcut, accepts the default line and presses Next Window

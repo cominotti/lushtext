@@ -1,26 +1,30 @@
 ## ADDED Requirements
 
 ### Requirement: Documents over the protected thresholds open in Protected View
-The system SHALL present a document in Protected View whenever its C1 `DocumentScale` decision reports `protected_view`, that is, when its longest paragraph exceeds `L_protect` or its density summary exceeds `V_batch`. The decision SHALL be taken from the worker-side profile before any of the document's text is inserted into a GtkTextView. Entry SHALL also happen when an edit makes a paragraph exceed `L_protect`, inside the same `insert-text` or `delete-range` after-handler emission that C1's edit-time watch handles (a deletion that removes a paragraph delimiter can join two paragraphs into a giant one). Protected View SHALL be monotone for the editor session: no edit, preference change, tab switch, eviction reload, draft recovery, or local-history restore or Undo Restore SHALL return the document to the editable view. The only exit is a reload of the file from disk (an external-change reload or an explicit reload), which SHALL re-derive the decision from the new content's profile, so a file that has shrunk below the thresholds becomes editable again.
+The system SHALL present a document in Protected View whenever C1's `DocumentScale::protected_view` holds for it, that is, when its longest paragraph exceeds `L_PROTECT` or a window of `R_BATCH` consecutive paragraphs exceeds `V_BATCH` characters; Protected View SHALL add no entry threshold of its own. For every whole-content install (load, eviction reload, external reload, reopen with encoding, draft recovery, set-aside open, local-history restore and Undo Restore) the decision SHALL be taken from the worker-side profile of the body being installed, before any of its text is inserted into a GtkTextView, and the protected view properties SHALL be applied before the first inserted byte. Entry SHALL also happen when C1's edit-time watch reports that an edit newly sets `protected_view`, inside the same `insert-text` or `delete-range` after-handler emission (a deletion that removes a paragraph delimiter can join two paragraphs into a giant one); in that emission the insert and selection-bound marks SHALL be placed at the start of the paragraph that grew, so that no mark is left inside a hidden tail. Protected View SHALL be monotone for the editor session: no edit, preference change, tab switch, eviction reload, draft recovery, or local-history restore or Undo Restore SHALL return the document to the editable view. The only exit is a reload of the file from disk (an external-change reload or an explicit reload), which SHALL re-derive the decision from the new content's profile, so a file that has shrunk below the thresholds becomes editable again.
 
 #### Scenario: Giant-paragraph file opens protected
-- **WHEN** the user opens a synthetic file whose longest paragraph exceeds `L_protect`
+- **WHEN** the user opens a synthetic file whose longest paragraph exceeds `L_PROTECT`
 - **THEN** the editor installs the document in Protected View, and no text of the file ever exists in that view's buffer without the Protected View fold applied
 
 #### Scenario: Density-only file opens protected
-- **WHEN** the user opens a synthetic file in which every paragraph is shorter than `L_protect` but the density summary exceeds `V_batch`
+- **WHEN** the user opens a synthetic file in which every paragraph is shorter than `L_PROTECT` but some window of `R_BATCH` paragraphs exceeds `V_BATCH` characters
 - **THEN** the editor installs the document in Protected View and folds the lines that the density rule selects
 
 #### Scenario: Paste creates a giant paragraph
-- **WHEN** a paste, undo, move-lines or join-lines in an editable document produces a paragraph longer than `L_protect`
-- **THEN** the editor enters Protected View within the same `insert-text` or `delete-range` emission, before any GTK validation or highlight idle runs, and the document keeps its modified state
+- **WHEN** a paste, undo, move-lines or join-lines in an editable document produces a paragraph longer than `L_PROTECT`
+- **THEN** the editor enters Protected View within the same `insert-text` or `delete-range` emission, before any GTK validation or highlight idle runs, the insert and selection-bound marks are at the start of the grown paragraph, and the document keeps its modified state
+
+#### Scenario: Recovered draft with a giant paragraph opens protected
+- **WHEN** startup recovery restores a draft body whose last paragraph holds more than 33 million characters (the crash-recovery smoke's 32 MiB single-line fixture)
+- **THEN** the restored editor is in Protected View, stays modified and draft-restored, and the paragraph's tail was inserted under the fold tag in the same dispatch as its head
 
 #### Scenario: Protected View never reverts within a session
 - **WHEN** the user deletes text, changes preferences or switches tabs in a protected document
 - **THEN** the document stays in Protected View for the life of that editor
 
 ### Requirement: Protected View never modifies the buffer
-While Protected View is active, no interaction, keybinding, action, gesture, drop, menu entry, save path or other LushText operation, and no reachable GTK or GtkSourceView default handler, SHALL insert, delete or replace text in the document's buffer. The only exceptions are whole-content installs that the user explicitly requested or that reload the file from disk (load, eviction reload, external-change reload, reopen with encoding, draft recovery, and local-history restore and Undo Restore), and each of them SHALL go through the fold-at-insertion executor. Save paths SHALL NOT mirror formatted text back into a protected buffer. A document that was installed protected SHALL keep `modified == false`. Tag application and removal for the fold and for the current find match SHALL be the only buffer-level changes, and they SHALL NOT emit `changed`, set `modified` or record undo history (ledger A27).
+While Protected View is active, no interaction, keybinding, action, gesture, drop, menu entry, save path or other LushText operation, and no reachable GTK or GtkSourceView default handler, SHALL insert, delete or replace text in the document's buffer. The only exceptions are whole-content installs that the user explicitly requested or that reload the file from disk (load, eviction reload, external-change reload, reopen with encoding, draft recovery, set-aside open, and local-history restore and Undo Restore), and each of them SHALL go through the fold-at-insertion executor. Save paths SHALL NOT mirror formatted text back into a protected buffer. A document that was installed protected SHALL keep `modified == false`. Tag application and removal for the fold and for the current find match SHALL be the only buffer-level changes, and they SHALL NOT emit `changed`, set `modified` or record undo history (ledger A27).
 
 #### Scenario: Interaction leaves an installed protected document unmodified
 - **WHEN** the user scrolls, clicks, drags, types printable keys, presses Backspace, Delete or Enter, invokes paste or cut by shortcut or menu, or drops data onto a protected document
@@ -31,24 +35,36 @@ While Protected View is active, no interaction, keybinding, action, gesture, dro
 - **THEN** no draft body is written and no local-history snapshot is captured for it
 
 ### Requirement: Protected View folds giant paragraphs for display only, at insertion
-For each paragraph whose length exceeds `N_visible` characters, the system SHALL display only the paragraph's first `N_visible` characters. The remaining tail SHALL carry exactly one Protected View fold tag with `invisible=true` and `editable=false`. When the density rule requires it, the system SHALL also fold the tail of a line longer than `N_dense`, keeping visible at least its first `N_dense` characters and at most the characters the density rule allots it. The density rule SHALL guarantee that every validation window of `R_batch` consecutive rows, under the policy's own row model and in either wrap mode, holds at most `V_batch` visible characters. It does so by an excess budget: each paragraph may show up to `N_dense` characters unconditionally, and the characters it shows beyond `N_dense` are drawn from a budget of `V_batch − R_batch·N_dense` per window, shared by the paragraphs of that window. Because a forward rule cannot know the next paragraphs, the budget caps every paragraph at `V_batch − (R_batch − 1)·N_dense` visible characters whatever its neighbours hold; with C0's `N_dense = V_batch ÷ R_batch` that cap is below `N_dense + R_batch`, so in a protected document density folding applies to every paragraph over that cap, not only where a window would overflow. The fold plan SHALL NOT depend on the wrap mode, so toggling word wrap never needs a re-fold. Only tails SHALL be hidden: a head, any paragraph start, and any paragraph delimiter SHALL never be hidden.
+In Protected View every paragraph SHALL show at most `head_cap` characters, where `head_cap = min(N_VISIBLE, N_HEAD, A28_SAFE_CHARS)`: `N_HEAD` is the largest visible head whose first layout, in either wrap mode, and whose re-layout on a word-wrap toggle each fit `B_settle` per dispatch on the reference lane, and `A28_SAFE_CHARS` keeps every visible head below Pango's `int32` x-position overflow (ledger A28). In addition, a paragraph that belongs to any window of `R_fold` consecutive paragraphs whose `head_cap`-capped character sum exceeds `V_BATCH` SHALL show at most `N_DENSE = V_BATCH / R_BATCH` characters. No other paragraph SHALL be folded: a paragraph of at most `head_cap` characters that lies in no over-budget window keeps all its characters visible. `R_fold` is C1's `R_BATCH`, plus one if C0's value does not count the partially covered edge row of a 2000 px validation batch. Every window of `R_fold` consecutive paragraphs, and therefore every 2000 px validation batch in either wrap mode, SHALL hold at most `V_BATCH` visible characters. The fold plan SHALL NOT depend on the wrap mode, so toggling word wrap never re-folds. A folded paragraph's tail SHALL carry exactly one Protected View fold tag with `invisible=true` and `editable=false`. Only tails SHALL be hidden: a head, any paragraph start, and any paragraph delimiter SHALL never be hidden, and a non-empty paragraph SHALL keep at least `min(len, N_DENSE)` visible characters.
 
-The fold SHALL be applied at insertion. Every install path SHALL insert a folded tail already tagged, so that no unfolded paragraph longer than `N_visible` exists in any LushText `GtkTextView` at any dispatch boundary. The install paths are initial load, buffer replacement, eviction reload, external reload and reopen with encoding. The fold placement SHALL be decided by the pure GTK-free policy `model/protected_fold.rs` and applied by one cross-cutting GTK executor. The placement SHALL be computed off GTK from the complete paragraph sequence of the content being installed (in the worker pass that prepares the body), not from the profile's bounded long-paragraph offset list, which may be truncated. The resulting fold plan SHALL be compact (one range per folded paragraph) and its retained size SHALL be charged to the install's transient admission. Fold boundaries SHALL fall on character boundaries, and SHALL fall on grapheme-cluster boundaries when the profile provides them within the bounded scan.
+The fold SHALL be applied at insertion. Every install path SHALL insert a folded tail already tagged, in the same dispatch as its head, so that no paragraph with more visible characters than the plan allows exists in any LushText `GtkTextView` at any dispatch boundary. The install paths are initial load, buffer replacement (draft recovery, set-aside open, local-history restore and Undo Restore, eviction reload), external reload, reopen with encoding and the local-history preview. The fold placement SHALL be decided by the pure GTK-free streaming policy `model/protected_fold.rs` and applied by one cross-cutting GTK executor. The placement SHALL be computed off GTK from the complete paragraph sequence of the content being installed, in the worker pass that runs C1's `ParagraphProfileAccumulator` over the body, not from the profile's bounded long-paragraph offset list. Its state SHALL be bounded by `R_fold`. The resulting plan SHALL be compact (one range per folded paragraph) and its retained size SHALL be charged to the install's transient admission. Fold boundaries SHALL fall on character boundaries.
 
 #### Scenario: Head shown, tail hidden
-- **WHEN** a protected document contains a paragraph of 1,900,000 characters
-- **THEN** its first `N_visible` characters are visible, and the remaining characters are present in the buffer under the fold tag
+- **WHEN** a protected document contains a paragraph of 1,900,000 characters between short paragraphs
+- **THEN** at most `head_cap` of its characters are visible, never more than `A28_SAFE_CHARS`, and the remaining characters are present in the buffer under the fold tag
+
+#### Scenario: A protected document with moderately long lines is not folded
+- **WHEN** a document is protected only because some of its paragraphs are 600 characters long, and no window of `R_fold` paragraphs exceeds `V_BATCH` characters
+- **THEN** no paragraph is folded and every character is visible
+
+#### Scenario: Dense windows fold to N_DENSE
+- **WHEN** a protected document holds `2 · R_fold` consecutive paragraphs of 700 characters
+- **THEN** each of them shows exactly `N_DENSE` characters, and paragraphs outside every over-budget window keep their full length up to `head_cap`
 
 #### Scenario: Fold exists from the first inserted slice
 - **WHEN** a widget test inspects the protected buffer after every install turn
-- **THEN** no paragraph in the view has more than `N_visible` visible characters at any turn boundary
+- **THEN** no paragraph has more visible characters than the fold plan allows at any turn boundary
+
+#### Scenario: Validation batches stay within V_BATCH
+- **WHEN** the dense fixture is installed protected and laid out with word wrap off and then on
+- **THEN** every 2000 px window of laid-out rows holds at most `V_BATCH` visible characters, and toggling wrap changes no fold
 
 #### Scenario: Fold placement properties are machine-checked
 - **WHEN** `make kani` runs the `protected_fold` harnesses
 - **THEN** they prove the properties and domains stated in "Protected View pure policies carry Kani proofs over stated domains"
 
 ### Requirement: Protected View offers no caret, selection or edit paths
-In Protected View the main source view SHALL have `editable=false` and `cursor-visible=false`. The view SHALL handle `move-cursor` itself and map every movement step to a viewport movement, even when `gtk-keynav-use-caret` is enabled; this covers arrows, Page Up/Down, Home/End and Ctrl+Home/End. A capture-phase gesture SHALL claim every primary, middle and secondary press and drag sequence over the view and its gutters, including double- and triple-click, before GtkTextView's own gestures run. Drag-and-drop source and target SHALL be disabled. No LushText or toolkit input path SHALL move the insert or selection-bound mark while Protected View is active. Assistive-technology caret and selection writes (`GtkAccessibleText` `set_caret_position`/`set_selection`, gtktextview.c:11074-11119) are a toolkit path LushText cannot pre-empt; their cost on a folded paragraph SHALL be pinned by a ledger axiom and the lane's AT case, and the Protected View evidence SHALL count any insert-mark move it observes.
+In Protected View the main source view SHALL have `editable=false` and `cursor-visible=false`, set before the first byte of an install (the `editable` setter invalidates every line, ledger A37), and SHALL have no minimap (`GtkSourceMap`) for the rest of the session, whatever C1 allows. Syntax highlighting and bracket matching SHALL follow C1's `DocumentScale`. The view SHALL handle `move-cursor` itself and map every movement step to a viewport movement, even when `gtk-keynav-use-caret` is enabled; this covers arrows, Page Up/Down, Home/End and Ctrl+Home/End. A capture-phase gesture SHALL claim every primary, middle and secondary press and drag sequence over the view and its gutters, including double- and triple-click, before GtkTextView's own gestures run. Drag-and-drop source and target SHALL be disabled. No LushText or toolkit input path SHALL move the insert or selection-bound mark while Protected View is active. Assistive-technology caret and selection writes (`GtkAccessibleText` `set_caret_position`/`set_selection`, gtktextview.c:11074-11119) are a toolkit path LushText cannot pre-empt; their cost on a folded paragraph SHALL be pinned by a ledger axiom and the lane's AT case, and the Protected View evidence SHALL count any insert-mark move it observes.
 
 GtkTextView recomputes the per-instance enablement of its `clipboard.*` and `selection.*` actions on every popup and selection change (gtktextview.c:9317-9348), so disabling them per instance is not a guard. Protected View SHALL instead pre-empt, before the default handler runs, every default key binding and keybinding signal of GtkTextView and GtkSourceView that can move a mark or change the buffer, and SHALL publish the single bounded Protected View notice for each pre-empted user request. This includes at least:
 - GtkTextView's `select-all` signal (Ctrl+A, Ctrl+/, and their Shift variants), which selects the whole buffer through `gtk_text_buffer_select_range` regardless of `editable` (gtktextview.c:9206-9224);
@@ -81,9 +97,9 @@ The secondary-press context menu and the keyboard menu bindings SHALL open a Pro
 - **THEN** every bound action and signal has an `action_disposition`, and none classified as pre-empted reaches its default handler
 
 ### Requirement: The Line Inspector exposes giant-line content in bounded windows
-The system SHALL provide an "Inspect Line…" command. It SHALL be reachable from the Protected View context menu, from the fold-marker gutter, from the command palette and from a keyboard shortcut. The command SHALL open a secondary read-only view over a copied window of at most `N_inspect` characters of one paragraph, with word wrap on, where `N_inspect` never exceeds the bound C0 records, `min(N_visible, L_protect)`. The inspector SHALL offer Previous Window, Next Window and Go to Column. It SHALL show the window's column range and the paragraph length. A keyboard-only invocation SHALL default to the first folded paragraph in the viewport and accept a line number.
+The system SHALL provide an "Inspect Line…" command. It SHALL be reachable from the Protected View context menu, from the fold-marker gutter, from the command palette and from a keyboard shortcut. The command SHALL open a secondary read-only view over a copied window of at most `N_inspect` characters of one paragraph, with word wrap on, where `N_inspect` never exceeds `min(head_cap, L_PROTECT)` (500 with C0's values). The inspector SHALL offer Previous Window, Next Window and Go to Column. It SHALL show the window's column range and the paragraph length. A keyboard-only invocation SHALL default to the first folded paragraph in the viewport and accept a line number.
 
-Window text SHALL be read off GTK from the immutable Protected View text source. Copy inside the inspector SHALL be bounded to its window. "Copy Whole Line" SHALL publish a lazy `GdkContentProvider` that writes the paragraph from the immutable source in bounded chunks when a client reads it. No GTK dispatch SHALL copy more than one chunk, and the copied line SHALL never be materialized whole on the GTK thread.
+Window text SHALL be read off GTK from the immutable Protected View text source (`ProtectedTextSource`), which for every whole-content install is the installed body itself, moved into long-lived charged ownership at the install's terminal, and which is captured once only after an edit-growth entry. Copy inside the inspector SHALL be bounded to its window. "Copy Whole Line" SHALL publish a lazy `GdkContentProvider` that writes the paragraph from the immutable source in bounded chunks when a client reads it. No GTK dispatch SHALL copy more than one chunk, and the copied line SHALL never be materialized whole on the GTK thread.
 
 #### Scenario: Reading the middle of a giant line
 - **WHEN** the user opens the inspector on a 1,900,000-character paragraph and goes to column 950,000
@@ -97,11 +113,11 @@ Window text SHALL be read off GTK from the immutable Protected View text source.
 Navigation into a protected document SHALL scroll a LushText-owned navigation mark to the target paragraph and SHALL NOT move the insert mark. This covers session restore position, bookmark activation, local-history targets, workspace-search hits and protected find results. When the target column lies inside a hidden tail, the system SHALL scroll to the paragraph and open the Line Inspector at the window that contains the target column.
 
 #### Scenario: Workspace search hit inside a hidden tail
-- **WHEN** the user activates a workspace-search hit at a column past `N_visible` of a folded paragraph
+- **WHEN** the user activates a workspace-search hit at a column inside the hidden tail of a folded paragraph
 - **THEN** the editor scrolls to the paragraph and the Line Inspector opens on the window containing that column
 
 ### Requirement: In-tab find in Protected View runs on a worker
-No `GtkSourceSearchContext` SHALL ever be attached to a protected buffer. In-tab find SHALL run on a worker over the immutable Protected View text source. Requests SHALL be single-flight: one active request and one latest pending request, with generation freshness. Results SHALL be paragraph-and-column records delivered to GTK in batches bounded by count and bytes, under a total result cap. Activating a result SHALL scroll to it, and SHALL highlight it with a display tag only when the match lies entirely in visible text; otherwise activation SHALL open the inspector. The search counter SHALL report found and capped states. In-tab Replace SHALL be unavailable. The editor-side and window-side selection-prefill sites SHALL both read `visible=true` text under the existing prefill bound.
+No `GtkSourceSearchContext` SHALL ever be attached to a protected buffer. In-tab find SHALL run on a worker over the immutable Protected View text source and SHALL find matches in hidden tails as well as in visible text. Requests SHALL be single-flight: one active request and one latest pending request, with generation freshness. Results SHALL be paragraph-and-column records delivered to GTK in batches bounded by count and bytes, under a total result cap. Activating a result SHALL scroll to it, and SHALL highlight it with a display tag only when the match lies entirely in visible text; otherwise activation SHALL open the inspector. The search counter SHALL report found and capped states. In-tab Replace SHALL be unavailable. The editor-side and window-side selection-prefill sites SHALL both read `visible=true` text under the existing prefill bound.
 
 #### Scenario: Find in a giant line does not block
 - **WHEN** the user searches for a string that occurs 100,000 times in a protected document whose paragraph is 1,900,000 characters long
@@ -120,9 +136,9 @@ Invoking `win.print` on a protected document SHALL NOT start a print operation. 
 
 ### Requirement: Secondary views of protected documents follow the same policy
 Every secondary view of a protected document SHALL follow the Protected View policy:
-- **Local-history preview:** installs the snapshot protected and folded through the same executor.
+- **Local-history preview:** installs the snapshot protected and folded through the same executor, and the preview view is itself non-editable and caret-free, with the same capture gesture and key pre-emption.
 - **Markdown preview:** renders a paragraph longer than its admission budget as the existing `Simplified` or limited terminal, with the omission announced.
-- **File peek:** shows only the bounded sample, and the sample's longest line SHALL NOT exceed `N_visible` visible characters.
+- **File peek:** shows only the bounded sample, and the sample's longest line SHALL NOT exceed `head_cap` visible characters.
 - **Notes editors:** a note body whose profile reaches `protected_view` SHALL open read-only with the same notice.
 
 #### Scenario: Local-history preview of a giant-paragraph snapshot
@@ -139,29 +155,29 @@ A Protected View gutter renderer SHALL mark each paragraph that has a hidden tai
 ### Requirement: Protected View pure policies carry Kani proofs over stated domains
 The responsiveness and integrity preconditions of Protected View SHALL be proved by Kani harnesses over the production pure cores, following `formal-verification-kani`. The fold placement and its row model SHALL be checked in `crates/lushtext-core/src/model/protected_fold/kani_proofs.rs`. The action-admission table, the entry state, navigation targets, Line Inspector windows and find batches SHALL be checked in `crates/lushtext-core/src/ui/editor_page/protected_view/policy/kani_proofs.rs`. The proved domain of each property SHALL be stated in its harness and in the checked function's rustdoc, as follows.
 
-- **Fold thresholds.** The fold policy takes its thresholds as one validated `FoldThresholds` value. Its preconditions are `N_dense ≥ 1`, `N_dense ≤ N_visible`, `R_batch ≥ 1` and `R_batch·N_dense ≤ V_batch` (checked multiplication). A harness SHALL prove that the production constants satisfy them, and the generic harnesses SHALL range over every threshold tuple that satisfies them, with `R_batch` from 1 to 3.
-- **Paragraph sequences.** The generic harnesses SHALL range over every sequence of up to six paragraphs whose lengths are arbitrary `u64` values, so lengths are unbounded within the type. The count bound covers sequences longer than `R_batch`. A step-induction harness SHALL extend the window property to sequences of any length, and its rustdoc SHALL state that compositional argument.
-- **Wrap mode.** The row model SHALL be one `row_span(visible_chars, wrap)` function. With wrap off every paragraph is one row. With wrap on, at any `chars_per_row ≥ 1`, a paragraph is `max(1, ceil(visible/chars_per_row))` rows. The window property SHALL be proved for both modes and every `chars_per_row`.
+- **Fold thresholds.** The fold policy takes its thresholds as one validated `FoldThresholds { head_cap, n_dense, v_batch, r_fold }` value. Its preconditions are `n_dense ≥ 1`, `n_dense ≤ head_cap`, `r_fold ≥ 1` and `r_fold · n_dense ≤ v_batch` (checked multiplication). A harness SHALL prove that the production constants satisfy them, and the generic harnesses SHALL range over every threshold tuple that satisfies them, with `r_fold` from 1 to 3.
+- **Paragraph sequences.** The generic harnesses SHALL range over every sequence of up to six paragraphs whose lengths are arbitrary `u64` values. A window-lemma harness SHALL prove the per-window decision for any `r_fold` lengths, and the checked function's rustdoc SHALL state the argument that extends the bound to sequences of any length.
+- **Wrap mode.** The fold plan SHALL be independent of the wrap mode. The extension from paragraph windows to row windows rests on every paragraph occupying at least one row, which the rustdoc SHALL state and the PR-gated widget test SHALL check against GtkTextView's laid-out rows in both modes.
 - **UTF-8.** The byte-boundary property SHALL be proved for every valid UTF-8 string of up to 8 bytes that contains no paragraph delimiter.
 - **Session generation.** The entry-state harness SHALL range over every start generation up to `u64::MAX − 6`, and the transition's rustdoc SHALL state that bound.
 - **Unwind.** Each harness SHALL declare the `#[kani::unwind]` bound its loops need, and SHALL compute its own row positions and window sums without overflow.
 
-#### Scenario: Every validation window holds at most V_batch visible characters
-- **WHEN** the density harness runs the production `fold_step` over any paragraph sequence in the stated domain, in either wrap mode
-- **THEN** every window of `R_batch` consecutive rows under `row_span`, starting at any row, intersects paragraphs whose visible characters sum to at most `V_batch`
-- **AND** every paragraph shows at most `N_visible` visible characters
+#### Scenario: Every window holds at most V_BATCH visible characters
+- **WHEN** the density harness runs the production `fold_step` and `fold_finish` over any paragraph sequence in the stated domain
+- **THEN** every window of `r_fold` consecutive paragraphs (the whole sequence when it is shorter) holds at most `v_batch` visible characters
+- **AND** every paragraph shows at most `head_cap` visible characters
 
-#### Scenario: The fold step preserves the density invariant
-- **WHEN** the step-induction harness takes any fold state whose window excess is within the budget `V_batch − R_batch·N_dense`, and any paragraph length
-- **THEN** the emitted paragraph keeps the window within `V_batch`, and the next state again satisfies the invariant
+#### Scenario: An over-budget window fits once its paragraphs are dense-capped
+- **WHEN** the window-lemma harness takes any `r_fold` capped lengths
+- **THEN** if their sum exceeds `v_batch`, the sum of their dense-capped counts is at most `v_batch`
 
 #### Scenario: The density bound fails without the density fold
-- **WHEN** a `should_panic` harness runs only the production length-cap stage (the `N_visible` fold) over the same domain, and asserts the window bound
-- **THEN** Kani finds a sequence whose window exceeds `V_batch`, and the harness passes
+- **WHEN** a `should_panic` harness runs only the production length-cap stage over the same domain, and asserts the window bound
+- **THEN** Kani finds a sequence whose window exceeds `v_batch`, and the harness passes
 
 #### Scenario: Only tails are hidden
-- **WHEN** the fold-shape harness runs `fold_step` from any valid state over any paragraph length
-- **THEN** the head plus the tail equals the paragraph length, a non-empty paragraph keeps at least `min(len, N_dense)` visible characters starting at its first character, a paragraph of at most `N_dense` characters is never folded, and no fold range covers the paragraph delimiter
+- **WHEN** the fold-shape harness folds any paragraph sequence in the stated domain
+- **THEN** the head plus the tail equals the paragraph length, a non-empty paragraph keeps at least `min(len, n_dense)` visible characters starting at its first character, a paragraph of at most `head_cap` characters that lies in no over-budget window is never folded, and no fold range covers the paragraph delimiter
 
 #### Scenario: A fold boundary never splits a UTF-8 sequence
 - **WHEN** the byte-boundary harness converts any head length up to the string's character count into a byte offset with the production `fold_byte_offset`
@@ -192,7 +208,7 @@ The responsiveness and integrity preconditions of Protected View SHALL be proved
 - **THEN** Kani finds a sequence that leaves Protected View without a reload from disk, and the harness passes
 
 #### Scenario: Inspector windows are bounded and tile the paragraph
-- **WHEN** the inspector harness takes any paragraph length in `u64` of at least 1 (an empty paragraph has no window), any `N_inspect` from 1 up to `min(N_visible, L_protect)`, and any window index below the window count
+- **WHEN** the inspector harness takes any paragraph length in `u64` of at least 1 (an empty paragraph has no window), any `N_inspect` from 1 up to `min(head_cap, L_PROTECT)`, and any window index below the window count
 - **THEN** each window holds between 1 and `N_inspect` characters, the first starts at column 0, each later window starts where the previous ended, and the last ends at the paragraph length
 - **AND** the window that `inspector_window_containing` returns for any column below the length contains that column
 
