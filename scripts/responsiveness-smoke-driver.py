@@ -20,12 +20,23 @@ them in order; nothing here runs against a live desktop):
 ``report``   after the session: storage evidence, warning findings, the D7
              derivation, ``report.json`` and ``report.md``.
 ``list-cases`` print the case ids of a tier.
-``merge-runs`` join several runs' artifacts for one report.
+``merge-runs`` join several runs' artifacts for one report; ``--from
+             LABEL=DIR`` labels a run's rows with a side (``baseline``,
+             ``branch``) for the C6 interleaved verdict.
 ``affinity-list`` the first N CPUs of the inherited affinity, as a
              ``taskset -c`` list (the wrapper's CPU cap).
 ``self-test`` exercise the parsing, classification, noise, contamination,
              derivation and data-integrity logic on synthetic records, without
              GTK or a compositor.
+
+Post-open cases (bound-post-open-settle, C6) wait in ``background`` until the
+settle the driver computes from the probe's ``post_open_*`` spans,
+``highlight_updated``/``adjustment_upper`` marks and ``settle_sentinel``
+records (the clauses of the app's ``document-settled`` predicate, which the
+baseline build lacks), then run ``type-during-settle`` in a launch of its own
+and, on the dense cases, ``wrap-toggle``, ``zoom-step`` and ``font-change``.
+Each repetition's row carries its post-open settle tables (``post_open``);
+the report adds the table and the C6 verdict.
 
 The probe JSONL contract is v1 (see ``KNOWN_KINDS``); every ``t_us`` is
 ``CLOCK_MONOTONIC`` in microseconds, the same clock as ``time.monotonic_ns``.
@@ -34,6 +45,7 @@ The probe JSONL contract is v1 (see ``KNOWN_KINDS``); every ``t_us`` is
 from __future__ import annotations
 
 import argparse
+import bisect
 import fnmatch
 import hashlib
 import importlib.util
@@ -120,7 +132,7 @@ INVISIBLES_LENGTHS = {"quick": (250_000,), "full": (2_000, 10_000, 50_000, 250_0
 INSTALL_SIZES = (100_000_000, 250_000_000, 500_000_000)
 EVICTION_FILE_BYTES = 8 * 1024 * 1024
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "reload", "install", "invisibles")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -139,7 +151,27 @@ PHASE_KINDS = {
     "tab-switch": "interaction",
     "reselect": "interaction",
     "idle": "calibration",
+    # The post-open phases (bound-post-open-settle, C6) have their own kinds,
+    # so C0's budget verdict, which reads `interaction` and `settle`, is
+    # unchanged by them; the C6 verdict reads their post-open entries.
+    "type-during-settle": "post-open-typing",
+    "wrap-toggle": "post-open-restyle",
+    "zoom-step": "post-open-restyle",
+    "font-change": "post-open-restyle",
+    "tab-settle": "post-open-tab",
 }
+# The C6 cases (design D8): a ~200 kB Markdown document with the side-by-side
+# preview, an EditorConfig tab width other than the setting's on the dense 710
+# document, three 16 kB documents restored from the session, and two 64 kB
+# file-backed drafts recovered at startup.
+MARKDOWN_PREVIEW_BYTES = 200_000
+EDITORCONFIG_LINE_LENGTH = 710
+EDITORCONFIG_TAB_WIDTH = 8
+EDITORCONFIG_SETTING_TAB_WIDTH = 4
+SESSION_SMALL_BYTES = 16_000
+RECOVERY_DRAFT_BYTES = 64_000
+RECOVERY_DRAFTS = 2
+RECOVERY_TYPED = "draft"
 CARET_PHASES = ("click", "type-start", "type-middle", "type-end")
 # Window construction (open, restore) is owned by C4 and left out of stall verdicts.
 STALL_EXCLUDED_PHASES = ("open", "restore")
@@ -549,6 +581,549 @@ class IntegrityLedger:
 
 
 # --------------------------------------------------------------------------
+# Post-open settle (bound-post-open-settle, C6; design D1, D8)
+# --------------------------------------------------------------------------
+#
+# The probe's post-open records (crates/lushtext-core/src/services/
+# responsiveness_log.rs): one `span` per post-open stage, a `mark` on every
+# GtkSourceBuffer `highlight-updated` and every change of the editor's
+# vertical adjustment `upper`, and a `settle_sentinel` mark each time the
+# G_PRIORITY_LOW sentinel idle dispatches. The driver computes "settled" from
+# these with the clauses of the app's `document-settled` predicate
+# (ui/editor_page/load/policy.rs `settle_stage`), so the baseline build, which
+# has the records but not the predicate, is measured identically (review R24).
+
+SETTLE_POLICY_SOURCE = REPO_ROOT / "crates/lushtext-core/src/ui/editor_page/load/policy.rs"
+# `SETTLE_QUIET_US` when the load policy cannot be read.
+DEFAULT_SETTLE_QUIET_US = 100_000
+POST_OPEN_SPAN_PREFIX = "post_open_"
+POST_OPEN_ACTIVATION = "post_open_activation"
+HIGHLIGHT_UPDATED_MARK = "highlight_updated"
+ADJUSTMENT_UPPER_MARK = "adjustment_upper"
+SETTLE_SENTINEL_MARK = "settle_sentinel"
+# An unspanned dispatch that ends at one of these marks is attributed to it.
+MARK_ATTRIBUTION = {HIGHLIGHT_UPDATED_MARK: "highlight", ADJUSTMENT_UPPER_MARK: "validation"}
+# How long a post-open phase may wait for the driver-computed settle; a cap
+# hit is a failed phase. The 5 MB HTML background analysis ran to 4.3 s on
+# main (design, measured breakdown). RESPONSIVENESS_SETTLE_CAP_S overrides it.
+SETTLE_CAP_S = 10.0
+SETTLE_POLL_S = 0.05
+# Settle is only concluded this long before "now", so a record the writer
+# thread has not appended yet cannot be missed.
+SETTLE_LOG_MARGIN_US = 50_000
+# Dispatches at least this long are listed in the post-open settle table.
+POST_OPEN_DISPATCH_FLOOR_US = 1_000
+# Frames with phase spans in a post-open case (LUSHTEXT_RESPONSIVENESS_FRAME_PHASES):
+# ten seconds of 120 Hz frames, the settle cap.
+POST_OPEN_FRAME_PHASES = 1_200
+# type-during-settle (design D8, review R26): one key every 50 ms from load
+# readiness, then stop and wait for settle. 60 keys are three seconds, past
+# the 5 MB case's sliced install and language attach (about one second on
+# main) while its background highlighting still runs.
+SETTLE_TYPING_KEYS = 60
+SETTLE_TYPING_INTERVAL_S = 0.05
+SETTLE_TYPING_LETTERS = "etaoinshrdlucmfwypvbgkjqxz"
+# A GSettings write reaches the app through the backend's file monitor
+# (keyfile) or the dconf service, not synchronously: settle is not concluded
+# before this long after the write returned.
+SETTING_PROPAGATION_US = 1_000_000
+# The wrap-toggle, zoom-step and font-change phases (design D9) and the font
+# the font change selects.
+DENSE_RESTYLE_PHASES = ("wrap-toggle", "zoom-step", "font-change")
+FONT_CHANGE_VALUES = {"use-system-font": False, "custom-font": "Monospace 14"}
+# Input-to-frame is reported, never gated (coordinator decision 2026-10-30):
+# headless Mutter with the cairo renderer double-buffers at 120 Hz, so an
+# input waits one frame for the next frame and one more to be presented, plus
+# a full-screen paint.
+INPUT_TO_FRAME_FLOOR_US = (16_700, 19_300)
+FULL_SCREEN_PAINT_US = (5_000, 7_000)
+INPUT_TO_FRAME_FLOOR_TEXT = "double-buffered 120 Hz headless presentation 16.7-19.3 ms plus a full-screen paint 5-7 ms (20-25 ms on any document)"
+# Toolkit-floor exceptions (design D8, review R7): `attribution=AXIOM[:report]`
+# entries separated by `;`, for example
+# `post_open_language_attach=A52:.claude/handoffs/c6-upstream-gtksourceview-language-parse.md`.
+# None is accepted by default: the maintainer records each one.
+TOOLKIT_FLOORS_ENV = "RESPONSIVENESS_TOOLKIT_FLOORS"
+DEFAULT_TOOLKIT_FLOORS = ""
+# The C6 grid (design D8): total-size 16 kB, 1 MB and 5 MB, dense 120, 500
+# and 710. Not in the tiers' grids, whose smallest total size and dense
+# lengths C1's derivations read; run it with RESPONSIVENESS_LENGTHS.
+C6_LENGTHS = "total-size=16000,1000000,5000000;dense=120,500,710"
+# The GIO client `Runner.write_settings` runs: argv is the schema id and a
+# JSON object of keys; each value is converted to the key's own type.
+SETTINGS_WRITER = """
+import json, sys
+from gi.repository import Gio, GLib
+settings = Gio.Settings.new(sys.argv[1])
+settings.delay()
+for key, value in json.loads(sys.argv[2]).items():
+    settings.set_value(key, GLib.Variant(settings.get_value(key).get_type_string(), value))
+settings.apply()
+Gio.Settings.sync()
+"""
+C6_BASELINE_SIDE = "baseline"
+C6_BRANCH_SIDE = "branch"
+# The post-open entry kinds the B_settle condition and the regression rule read.
+POST_OPEN_SETTLE_KINDS = ("open", "tab")
+
+
+def read_settle_quiet(source: Path = SETTLE_POLICY_SOURCE) -> int:
+    """`SETTLE_QUIET_US` from the load policy, the single source of truth."""
+    try:
+        text = source.read_text(encoding="utf-8")
+    except OSError:
+        return DEFAULT_SETTLE_QUIET_US
+    match = re.search(r"const\s+SETTLE_QUIET_US\s*:\s*\w+\s*=\s*([0-9_]+)\s*;", text)
+    return int(match.group(1).replace("_", "")) if match else DEFAULT_SETTLE_QUIET_US
+
+
+def _post_open_spans(parsed: dict, origin_us: int) -> list[dict]:
+    return [r for r in parsed["records"]["span"] if str(r.get("name", "")).startswith(POST_OPEN_SPAN_PREFIX) and int(r["end_us"]) >= origin_us]
+
+
+def _marks(parsed: dict, origin_us: int, names: Iterable[str]) -> list[int]:
+    wanted = set(names)
+    return sorted(int(r["t_us"]) for r in parsed["records"]["mark"] if r.get("name") in wanted and int(r["t_us"]) >= origin_us)
+
+
+def compute_settle(parsed: dict, origin_us: int, floor_us: int, quiet_us: int, until_us: int | None = None, required: Iterable[str] = (), require_activity: bool = False, idle_ok: bool = False) -> dict[str, Any]:
+    """The first time T >= floor at which the opened document counts as settled.
+
+    The clauses of the app's `document-settled` predicate, read from the
+    records at or before T (records before `origin_us`, another launch's,
+    are ignored):
+    (a) no `highlight_updated` or `adjustment_upper` mark in (T - quiet, T];
+    (b) a `settle_sentinel` at or after the last such mark and after the end
+        of the last post-open span (each of them arms the sentinel);
+    (c) no post-open span running at T.
+    `required` names stages that must have run (the predicate's "language
+    attach stage has run" when a case knows it attaches one), and
+    `require_activity` waits for the first post-open span (a document open).
+    `idle_ok` settles a launch with no document, where nothing ever arms the
+    sentinel, once it has been quiet (`baseline/empty`).
+    The open completing is the floor: the caller passes the open phase's
+    readiness. `until_us` bounds the evaluation (the live poll's "now").
+    """
+    marks = _marks(parsed, origin_us, MARK_ATTRIBUTION)
+    sentinels = _marks(parsed, origin_us, (SETTLE_SENTINEL_MARK,))
+    spans = _post_open_spans(parsed, origin_us)
+    result: dict[str, Any] = {
+        "settled_us": None,
+        "floor_us": floor_us,
+        "marks": len(marks),
+        "sentinels": len(sentinels),
+        "last_mark_us": marks[-1] if marks else None,
+        "last_sentinel_us": sentinels[-1] if sentinels else None,
+    }
+    floor = floor_us
+    for name in required:
+        ends = [int(s["end_us"]) for s in spans if s.get("name") == name]
+        if not ends:
+            result["waiting_for"] = name
+            return result
+        floor = max(floor, min(ends))
+    if require_activity:
+        if not spans:
+            result["waiting_for"] = "post-open activity"
+            return result
+        floor = max(floor, min(int(s["end_us"]) for s in spans))
+    # Settle can first hold at the floor, at a sentinel, or when a mark's
+    # quiet period ends. Sorted lists and bisection keep a live poll cheap
+    # while the app is being measured.
+    candidates = {floor}
+    candidates.update(s for s in sentinels if s >= floor)
+    candidates.update(m + quiet_us for m in marks if m + quiet_us >= floor)
+    span_ends = sorted(int(s["end_us"]) for s in spans)
+    intervals = [(int(s["start_us"]), int(s["end_us"])) for s in spans]
+    for t in sorted(candidates):
+        if until_us is not None and t > until_us:
+            break
+        index = bisect.bisect_right(marks, t)
+        last_mark = marks[index - 1] if index else None
+        if last_mark is not None and last_mark > t - quiet_us:
+            continue
+        if any(start <= t < end for start, end in intervals):
+            continue
+        index = bisect.bisect_right(span_ends, t)
+        last_end = span_ends[index - 1] if index else None
+        activity = max((v for v in (last_mark, last_end) if v is not None), default=None)
+        if activity is None:
+            ok = idle_ok or bool(sentinels and sentinels[0] <= t)
+        else:
+            index = bisect.bisect_left(sentinels, activity)
+            ok = index < len(sentinels) and sentinels[index] <= t
+        if ok:
+            result["settled_us"] = t
+            return result
+    return result
+
+
+def post_open_dispatches(parsed: dict, start_us: int, end_us: int, tick_us: int, floor_us: int = POST_OPEN_DISPATCH_FLOOR_US) -> list[dict]:
+    """Every main-loop dispatch of at least `floor_us` that overlaps [start, end].
+
+    A late record at t with lateness L is a dispatch that ended at about t
+    and lasted L to L + T (the watchdog tick): it started in
+    [t - L - T, t - L]. The window carries the earlier bound.
+    """
+    out = []
+    for record in sorted(parsed["records"]["late"], key=lambda r: int(r["t_us"])):
+        t = int(record["t_us"])
+        lateness = int(record["lateness_us"])
+        if lateness < floor_us or t < start_us or t - lateness > end_us:
+            continue
+        out.append({"start_us": t - lateness - tick_us, "end_us": t, "duration_us": lateness})
+    return out
+
+
+def attribute_dispatch(dispatch: dict, spans: list[dict], marks: list[dict], tick_us: int) -> tuple[str, str]:
+    """The post-open stage, mark, or `unattributed` a dispatch belongs to.
+
+    Spans first: the innermost span covering at least half of the dispatch,
+    else the span covering most of it (an activation turn whose short
+    editor-construction span sits inside it is the activation). A dispatch no
+    span covers is highlighting or validation when a `highlight_updated` or
+    `adjustment_upper` mark was recorded inside it (the mark closest to its
+    end decides), else unattributed.
+    """
+    start, end, duration = dispatch["start_us"], dispatch["end_us"], max(1, dispatch["duration_us"])
+    covering = []
+    for s in spans:
+        overlap = min(int(s["end_us"]), end) - max(int(s["start_us"]), start)
+        if overlap > 0:
+            covering.append((overlap, int(s["end_us"]) - int(s["start_us"]), s["name"]))
+    if covering:
+        majority = [c for c in covering if 2 * c[0] >= duration]
+        if majority:
+            return min(majority, key=lambda c: (c[1], -c[0]))[2], "span"
+        return max(covering, key=lambda c: (c[0], -c[1]))[2], "span"
+    inside = [m for m in marks if start <= int(m["t_us"]) <= end + tick_us // 4]
+    if inside:
+        closest = min(inside, key=lambda m: abs(end - int(m["t_us"])))
+        return MARK_ATTRIBUTION[closest["name"]], "mark"
+    return "unattributed", "none"
+
+
+def key_dispatch_latencies(parsed: dict, injections: list[dict]) -> list[dict]:
+    """Each injected key's dispatch latency: compositor event time to its handler.
+
+    Injections are matched to `input` records in order, as input-to-frame
+    matches them (an unmeasured modifier still consumes its record). The
+    event time is the compositor's millisecond stamp on the same monotonic
+    clock, so the latency is exact to a millisecond.
+    """
+    inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
+    used: set[int] = set()
+    out = []
+    for injection in injections:
+        record = None
+        for index, candidate in enumerate(inputs):
+            if index in used or candidate["t_us"] < injection["inject_us"] - 2_000:
+                continue
+            if candidate.get("event") == injection["event"]:
+                record = candidate
+                used.add(index)
+                break
+        if not injection.get("measured", True):
+            continue
+        if record is None:
+            out.append({"inject_us": injection["inject_us"], "status": "no-input-record"})
+            continue
+        handler = int(record["t_us"])
+        event_us = int(record.get("event_time_ms", 0)) * 1000
+        out.append({"inject_us": injection["inject_us"], "event_us": event_us, "handler_us": handler, "latency_us": max(0, handler - event_us)})
+    return out
+
+
+def post_open_entry(parsed: dict, origin_us: int, floor_us: int, quiet_us: int, phase: str, kind: str, until_us: int | None = None, required: Iterable[str] = (), require_activity: bool = False, trigger_us: int | None = None, injections: list[dict] | None = None, idle_ok: bool = False) -> dict[str, Any]:
+    """One post-open settle table: settle, then every dispatch until it, attributed.
+
+    `kind` is `open` (a launch's opened document; the table starts at its
+    first activation span, not at the open phase boundary, because
+    `file-open-complete` can hold before the activation's opens run), `tab`
+    (a restored tab selected; starts at the selection), `typing`
+    (type-during-settle; adds each key's dispatch latency) or `interaction`
+    (wrap/zoom/font; adds the interaction dispatch and the later ones).
+    """
+    settle = compute_settle(parsed, origin_us, floor_us, quiet_us, until_us, required, require_activity, idle_ok)
+    tick = int(parsed.get("tick_us", 2000))
+    spans = _post_open_spans(parsed, origin_us)
+    start = trigger_us if trigger_us is not None else origin_us
+    if kind in ("open", "typing"):
+        activations = [int(s["start_us"]) for s in spans if s.get("name") == POST_OPEN_ACTIVATION and int(s["start_us"]) >= origin_us]
+        if activations:
+            start = min(activations)
+    settled = settle["settled_us"]
+    end = settled if settled is not None else (until_us if until_us is not None else max([int(r["t_us"]) for r in parsed["records"]["late"]] + [start]))
+    marks = [r for r in parsed["records"]["mark"] if r.get("name") in MARK_ATTRIBUTION and int(r["t_us"]) >= origin_us]
+    dispatches = []
+    worst: dict[str, int] = {}
+    for dispatch in post_open_dispatches(parsed, start, end, tick):
+        attribution, source = attribute_dispatch(dispatch, spans, marks, tick)
+        dispatch.update({"at_us": dispatch["end_us"] - start, "attribution": attribution, "source": source})
+        dispatches.append(dispatch)
+        worst[attribution] = max(worst.get(attribution, 0), dispatch["duration_us"])
+    entry: dict[str, Any] = {
+        "phase": phase,
+        "kind": kind,
+        "status": "settled" if settled is not None else "pending",
+        "origin_us": origin_us,
+        "activation_us": start,
+        "settled_us": settled,
+        "settle_us": settled - start if settled is not None else None,
+        "settle": settle,
+        "dispatches": dispatches,
+        "stage_worst_us": worst,
+    }
+    if injections is not None:
+        entry["keys"] = key_dispatch_latencies(parsed, injections)
+    if kind == "interaction":
+        entry["interaction"] = dispatches[0] if dispatches else None
+        entry["later"] = dispatches[1:]
+    return entry
+
+
+def post_open_entries(parsed: dict, phases: list[dict], quiet_us: int) -> list[dict]:
+    """The post-open settle table of every post-open phase of one repetition.
+
+    Recomputed from the merged probe records with the inputs the live phase
+    recorded (origin, floor, kind), bounded by the phase's end, so the
+    settle found here is the one the phase waited for, and a cap hit is an
+    entry that never settled.
+    """
+    entries = []
+    for phase in phases:
+        kind = phase.get("post_open")
+        if not kind or "start_us" not in phase:
+            continue
+        entries.append(
+            post_open_entry(
+                parsed,
+                int(phase["origin_us"]),
+                int(phase["floor_us"]),
+                quiet_us,
+                phase.get("label", phase["name"]),
+                kind,
+                until_us=int(phase["end_us"]),
+                require_activity=bool(phase.get("require_activity")),
+                idle_ok=bool(phase.get("idle_ok")),
+                trigger_us=phase.get("trigger_us"),
+                injections=phase.get("injections", []) if kind == "typing" else None,
+            )
+        )
+    return entries
+
+
+class ProbeTail:
+    """Incrementally read probe logs while a phase waits (complete lines only)."""
+
+    def __init__(self, paths: list[Path]) -> None:
+        self.paths = paths
+        self.offsets: dict[Path, int] = {}
+        self.parsed = parse_probe_log([])
+
+    def poll(self) -> dict[str, Any]:
+        for path in self.paths:
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(self.offsets.get(path, 0))
+                    data = handle.read()
+            except OSError:
+                continue
+            complete = data.rfind(b"\n") + 1
+            if not complete:
+                continue
+            self.offsets[path] = self.offsets.get(path, 0) + complete
+            fresh = parse_probe_log(data[:complete].decode("utf-8", errors="replace").splitlines())
+            for kind, records in fresh["records"].items():
+                self.parsed["records"][kind].extend(records)
+            if fresh["started"] and not self.parsed["started"]:
+                self.parsed.update({k: fresh[k] for k in ("tick_us", "late_threshold_us", "started")})
+        return self.parsed
+
+
+def wait_for_settle(poll: Callable[[], dict], origin_us: int, floor_us: int, quiet_us: int, cap_s: float, clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep, now: Callable[[], int] | None = None, required: Iterable[str] = (), require_activity: bool = False, idle_ok: bool = False) -> dict[str, Any]:
+    """Poll the probe log until the driver-computed settle, or the cap."""
+    now = now or now_us
+    deadline = clock() + cap_s
+    result: dict[str, Any] = {"settled_us": None}
+    while True:
+        result = compute_settle(poll(), origin_us, floor_us, quiet_us, now() - SETTLE_LOG_MARGIN_US, required, require_activity, idle_ok)
+        if result["settled_us"] is not None:
+            result["status"] = "settled"
+            return result
+        if clock() >= deadline:
+            result["status"] = "exceeded_cap"
+            return result
+        sleep(SETTLE_POLL_S)
+
+
+def parse_toolkit_floors(spec: str | None) -> dict[str, dict]:
+    """`attribution=AXIOM[:report];...` into {attribution: {axiom, report}}."""
+    floors: dict[str, dict] = {}
+    for item in filter(None, (part.strip() for part in (spec or "").split(";"))):
+        attribution, _, rest = item.partition("=")
+        axiom, _, report = rest.partition(":")
+        if not attribution.strip() or not axiom.strip():
+            raise SystemExit(f"{TOOLKIT_FLOORS_ENV}: expected attribution=AXIOM[:report], got {item!r}")
+        floors[attribution.strip()] = {"axiom": axiom.strip(), "report": report.strip() or None}
+    return floors
+
+
+def _median(values: list[int]) -> int:
+    return int(statistics.median(values)) if values else 0
+
+
+def c6_verdict(rows: list[dict], budgets: dict, floors: dict[str, dict], baseline_side: str = C6_BASELINE_SIDE, branch_side: str = C6_BRANCH_SIDE) -> dict[str, Any]:
+    """The C6 verdict (design D8, reviews R7 and R27) over side-labelled rows.
+
+    Met when, on the branch, in every case (profile) and repetition:
+    - every open and restored-tab post-open dispatch until settled is within
+      B_SETTLE_US, and the document settled before the cap;
+    - every type-during-settle key is dispatched within B_INTERACT_US;
+    - every wrap/zoom/font interaction dispatch is within B_INTERACT_US and
+      every later dispatch until settled within B_SETTLE_US;
+    - no stage regresses: per case, the median over the repetitions of each
+      attributed stage's worst dispatch, and the median activation-to-settled
+      time, are each at most the baseline's plus one REFERENCE_FRAME_US.
+      A stage only the branch has is listed as new, not compared (it is
+      still under the absolute bounds).
+    A dispatch attributed to a listed toolkit-floor exception is exempt from
+    the dispatch bound that applies to it and reported on its own line; the
+    keys whose dispatch (event to handler) overlaps it are exempt from
+    B_INTERACT_US and listed there with their latencies. Nothing else is exempt.
+    Rows without a side are the branch (a single-build run has no regression check).
+    """
+    b_settle, b_interact, frame = budgets["B_SETTLE_US"], budgets["B_INTERACT_US"], budgets["REFERENCE_FRAME_US"]
+    branch = [r for r in rows if r.get("post_open") and r.get("side", branch_side) == branch_side]
+    baseline = [r for r in rows if r.get("post_open") and r.get("side") == baseline_side]
+    failures: list[str] = []
+    exceptions: list[dict] = []
+    baseline_over: list[dict] = []
+    if not branch:
+        return {"verdict": "not measured", "reason": "no post-open rows on the branch side", "failures": [], "regressions": [], "exceptions": [], "new_stages": [], "baseline_over_budget": [], "input_to_frame": []}
+
+    def exempt(attribution: str) -> bool:
+        return attribution in floors
+
+    for row in branch:
+        label = f"{row['case']}@{row['variant']}#{row['rep']}"
+        if row.get("outcome") not in (None, "ok"):
+            failures.append(f"{label}: outcome {row.get('outcome')}")
+        exception_dispatches = []
+        for entry in row["post_open"]:
+            where = f"{label} {entry['phase']}"
+            if entry.get("status") != "settled":
+                failures.append(f"{where}: not settled before the cap")
+            for dispatch in entry.get("dispatches", []):
+                if exempt(dispatch["attribution"]):
+                    exception_dispatches.append((entry, dispatch))
+            if entry["kind"] in POST_OPEN_SETTLE_KINDS:
+                for dispatch in entry.get("dispatches", []):
+                    if dispatch["duration_us"] > b_settle and not exempt(dispatch["attribution"]):
+                        failures.append(f"{where}: {dispatch['attribution']} dispatch {dispatch['duration_us']} us > B_SETTLE_US {b_settle}")
+            elif entry["kind"] == "interaction":
+                first = entry.get("interaction")
+                if first and first["duration_us"] > b_interact and not exempt(first["attribution"]):
+                    failures.append(f"{where}: interaction dispatch {first['duration_us']} us > B_INTERACT_US {b_interact}")
+                for dispatch in entry.get("later", []):
+                    if dispatch["duration_us"] > b_settle and not exempt(dispatch["attribution"]):
+                        failures.append(f"{where}: later {dispatch['attribution']} dispatch {dispatch['duration_us']} us > B_SETTLE_US {b_settle}")
+        keyed = [(entry, key) for entry in row["post_open"] for key in entry.get("keys", [])]
+        overlapping: dict[int, list[int]] = {}
+        for entry, key in keyed:
+            where = f"{label} {entry['phase']}"
+            if "latency_us" not in key:
+                failures.append(f"{where}: a typed key has no input record")
+                continue
+            hits = [index for index, (_e, d) in enumerate(exception_dispatches) if key["event_us"] <= d["end_us"] and key["handler_us"] >= d["start_us"]]
+            for index in hits:
+                overlapping.setdefault(index, []).append(key["latency_us"])
+            if key["latency_us"] > b_interact and not hits:
+                failures.append(f"{where}: key {key['latency_us']} us > B_INTERACT_US {b_interact}")
+        for index, (entry, dispatch) in enumerate(exception_dispatches):
+            floor = floors[dispatch["attribution"]]
+            exceptions.append(
+                {
+                    "case": row["case"],
+                    "variant": row["variant"],
+                    "rep": row["rep"],
+                    "phase": entry["phase"],
+                    "attribution": dispatch["attribution"],
+                    "duration_us": dispatch["duration_us"],
+                    "axiom": floor["axiom"],
+                    "report": floor["report"],
+                    "overlapping_keys_us": overlapping.get(index, []),
+                }
+            )
+    for row in baseline:
+        for entry in row["post_open"]:
+            for dispatch in entry.get("dispatches", []):
+                if dispatch["duration_us"] > b_settle:
+                    baseline_over.append({"case": row["case"], "variant": row["variant"], "rep": row["rep"], "phase": entry["phase"], "attribution": dispatch["attribution"], "duration_us": dispatch["duration_us"]})
+
+    def stage_series(side_rows: list[dict]) -> dict[tuple, dict[str, list[int]]]:
+        """Per (case, variant, phase): each stage's worst dispatch per repetition, and settle times."""
+        series: dict[tuple, dict[str, list[int]]] = {}
+        reps: dict[tuple, list[dict]] = {}
+        for row in side_rows:
+            for entry in row["post_open"]:
+                if entry["kind"] in POST_OPEN_SETTLE_KINDS:
+                    reps.setdefault((row["case"], row["variant"], entry["phase"]), []).append(entry)
+        for key, entries in reps.items():
+            stages = sorted({s for e in entries for s in e.get("stage_worst_us", {})})
+            out = {stage: [e.get("stage_worst_us", {}).get(stage, 0) for e in entries] for stage in stages}
+            settles = [e["settle_us"] for e in entries if e.get("settle_us") is not None]
+            if settles:
+                out["activation-to-settled"] = settles
+            series[key] = out
+        return series
+
+    regressions: list[dict] = []
+    new_stages: list[dict] = []
+    if baseline:
+        base_series = stage_series(baseline)
+        for key, stages in stage_series(branch).items():
+            base = base_series.get(key)
+            if base is None:
+                new_stages.append({"case": key[0], "variant": key[1], "phase": key[2], "stage": "*", "reason": "no baseline rows"})
+                continue
+            for stage, values in stages.items():
+                if stage not in base:
+                    new_stages.append({"case": key[0], "variant": key[1], "phase": key[2], "stage": stage, "branch_median_us": _median(values)})
+                    continue
+                if exempt(stage):
+                    continue
+                branch_median, base_median = _median(values), _median(base[stage])
+                if branch_median > base_median + frame:
+                    regressions.append({"case": key[0], "variant": key[1], "phase": key[2], "stage": stage, "branch_median_us": branch_median, "baseline_median_us": base_median, "limit_us": base_median + frame})
+    for regression in regressions:
+        failures.append(f"{regression['case']}@{regression['variant']} {regression['phase']}: {regression['stage']} median {regression['branch_median_us']} us > baseline {regression['baseline_median_us']} + one frame")
+    itf = []
+    for side, side_rows in ((branch_side, branch), (baseline_side, baseline)):
+        cases: dict[str, list[int]] = {}
+        for row in side_rows:
+            for phase in row.get("phases", []):
+                if phase.get("name") in ("scroll", "type-during-settle"):
+                    cases.setdefault(f"{row['case']}@{row['variant']} {phase['name']}", []).extend(e["latency_us"] for e in phase.get("input_to_frame", []) if "latency_us" in e)
+        for label, values in sorted(cases.items()):
+            if values:
+                itf.append({"side": side, "case": label, "median_us": _median(values), "max_us": max(values), "events": len(values)})
+    return {
+        "verdict": "not met" if failures else "met",
+        "failures": failures,
+        "regressions": regressions,
+        "new_stages": new_stages,
+        "exceptions": exceptions,
+        "baseline_over_budget": baseline_over,
+        "toolkit_floors": floors,
+        "branch_rows": len(branch),
+        "baseline_rows": len(baseline),
+        "sides": {"baseline": baseline_side, "branch": branch_side},
+        "input_to_frame": itf,
+        "input_to_frame_floor": INPUT_TO_FRAME_FLOOR_TEXT,
+    }
+
+
+# --------------------------------------------------------------------------
 # Case model
 # --------------------------------------------------------------------------
 
@@ -563,6 +1138,8 @@ class FixtureSpec:
     charset: str = "ascii"
     count: int | None = None
     flavor: str = "css"
+    # Written beside the fixture as `.editorconfig` (the `editorconfig/` case).
+    editorconfig: dict[str, Any] | None = None
 
 
 @dataclass
@@ -620,7 +1197,7 @@ def build_cases(tier: str) -> list[Case]:
     grid = sweep_lengths(tier)
     cases: list[Case] = [
         Case("baseline/calibration", "baseline", None, flow="calibration"),
-        Case("baseline/empty", "baseline", None, settings={"word-wrap": True}, attrs={"profile": "fresh", "backend": "keyfile"}),
+        Case("baseline/empty", "baseline", None, settings={"word-wrap": True}, attrs={"profile": "fresh", "backend": "keyfile", "post_open": True}),
     ]
     for profile in CONSTRUCTION_PROFILES:
         for backend in CONSTRUCTION_BACKENDS:
@@ -631,7 +1208,7 @@ def build_cases(tier: str) -> list[Case]:
                     FixtureSpec("paragraph", 400, seed_for("small")),
                     settings={"word-wrap": True},
                     length=400,
-                    attrs={"profile": profile, "backend": backend},
+                    attrs={"profile": profile, "backend": backend, "post_open": True, "typing": True},
                 )
             )
     cases.append(
@@ -641,7 +1218,7 @@ def build_cases(tier: str) -> list[Case]:
             FixtureSpec("paragraph", 400, seed_for("small")),
             settings={"word-wrap": True, "workspace-sidebar-visible": True, "properties-sidebar-visible": True},
             length=400,
-            attrs={"profile": "steady", "backend": "keyfile", "populated": True},
+            attrs={"profile": "steady", "backend": "keyfile", "populated": True, "post_open": True, "typing": True},
         )
     )
     for length in grid["paragraph"]:
@@ -662,7 +1239,7 @@ def build_cases(tier: str) -> list[Case]:
                     FixtureSpec("dense", line_length, seed_for("dense", line_length), count=DENSE_LINE_COUNT),
                     settings={"word-wrap": wrap, "show-minimap": False},
                     length=line_length,
-                    attrs={"wrap": wrap, "lines": DENSE_LINE_COUNT},
+                    attrs={"wrap": wrap, "lines": DENSE_LINE_COUNT, "post_open": True, "typing": True, "restyle": True},
                 )
             )
     for total in grid["total-size"]:
@@ -675,7 +1252,7 @@ def build_cases(tier: str) -> list[Case]:
                     FixtureSpec("short-html", total, seed_for("short-html", total), ext=ext),
                     settings={"word-wrap": True, "show-minimap": False},
                     length=total,
-                    attrs={"ext": ext},
+                    attrs={"ext": ext, "post_open": True, "typing": True},
                 )
             )
     for delimiter in ("lf", "cr", "crlf", "u2029"):
@@ -731,7 +1308,55 @@ def build_cases(tier: str) -> list[Case]:
     for length in grid["invisibles"]:
         for mode in ("off", "all"):
             cases.append(paragraph_case(length, "txt", True, False, group="invisibles", invisibles=mode))
+    cases.extend(post_open_cases())
     return cases
+
+
+def post_open_cases() -> list[Case]:
+    """The cases C6 added (design D8); both tiers run them."""
+    return [
+        Case(
+            "markdown/preview",
+            "markdown",
+            FixtureSpec("markdown", MARKDOWN_PREVIEW_BYTES, seed_for("markdown"), ext="md"),
+            settings={"word-wrap": True, "show-minimap": False},
+            flow="preview",
+            length=MARKDOWN_PREVIEW_BYTES,
+            attrs={"ext": "md", "post_open": True},
+        ),
+        Case(
+            "editorconfig/tab-width",
+            "editorconfig",
+            FixtureSpec(
+                "dense",
+                EDITORCONFIG_LINE_LENGTH,
+                seed_for("editorconfig", EDITORCONFIG_LINE_LENGTH),
+                count=DENSE_LINE_COUNT,
+                editorconfig={"indent_style": "space", "indent_size": EDITORCONFIG_TAB_WIDTH, "tab_width": EDITORCONFIG_TAB_WIDTH},
+            ),
+            settings={"word-wrap": False, "show-minimap": False, "tab-width": EDITORCONFIG_SETTING_TAB_WIDTH, "use-editorconfig": True},
+            length=EDITORCONFIG_LINE_LENGTH,
+            attrs={"wrap": False, "tab_width": EDITORCONFIG_TAB_WIDTH, "post_open": True, "typing": True},
+        ),
+        Case(
+            "session/restore-3-small",
+            "session",
+            FixtureSpec("eviction", SESSION_SMALL_BYTES, seed_for("session-small"), count=3),
+            settings={"word-wrap": True, "show-minimap": False},
+            flow="session",
+            length=SESSION_SMALL_BYTES,
+            attrs={"post_open": True, "tab_settle": True},
+        ),
+        Case(
+            "recovery/small-drafts",
+            "recovery",
+            FixtureSpec("eviction", RECOVERY_DRAFT_BYTES, seed_for("recovery"), count=RECOVERY_DRAFTS),
+            settings={"word-wrap": True, "show-minimap": False},
+            flow="recovery",
+            length=RECOVERY_DRAFT_BYTES,
+            attrs={"post_open": True, "tab_settle": True},
+        ),
+    ]
 
 
 def select_cases(cases: list[Case], patterns: list[str]) -> list[Case]:
@@ -963,13 +1588,19 @@ class Runner:
         self.slack_us: int | None = None
         self.failures: list[str] = []
         self.ibus_available = shutil.which("ibus-daemon") is not None
+        # Post-open settle (bound-post-open-settle, C6): the quiet period is
+        # the app's own constant; RESPONSIVENESS_POST_OPEN=0 restores the
+        # fixed two-second background phase for every case.
+        self.settle_quiet_us = read_settle_quiet()
+        self.settle_cap_s = float(os.environ.get("RESPONSIVENESS_SETTLE_CAP_S", str(SETTLE_CAP_S)))
+        self.post_open_enabled = os.environ.get("RESPONSIVENESS_POST_OPEN", "1") != "0"
 
     # -- fixtures -----------------------------------------------------------
 
     def make_fixture(self, spec: FixtureSpec, label: str) -> list[Path]:
         out_dir = self.fixture_root / re.sub(r"[^A-Za-z0-9_.-]", "_", label)
         manifest = self.generator.generate(
-            spec.kind, spec.size, spec.seed, self.scope, out_dir, ext=spec.ext, delimiter=spec.delimiter, charset=spec.charset, count=spec.count, flavor=spec.flavor
+            spec.kind, spec.size, spec.seed, self.scope, out_dir, ext=spec.ext, delimiter=spec.delimiter, charset=spec.charset, count=spec.count, flavor=spec.flavor, editorconfig=spec.editorconfig
         )
         paths = []
         for entry in manifest["files"]:
@@ -1073,9 +1704,9 @@ class Runner:
             timeout=30,
         )
 
-    def app_env(self, variant: str, state_env: dict[str, str], log_path: Path, tick_us: int | None = None) -> dict[str, str]:
+    def app_env(self, variant: str, state_env: dict[str, str], log_path: Path, tick_us: int | None = None, frame_phases: int | None = None) -> dict[str, str]:
         env = os.environ.copy()
-        for key in ("NO_AT_BRIDGE", "GTK_A11Y", "LUSHTEXT_PROBE_IM", "GTK_IM_MODULE", "LUSHTEXT_RESPONSIVENESS_TICK_US"):
+        for key in ("NO_AT_BRIDGE", "GTK_A11Y", "LUSHTEXT_PROBE_IM", "GTK_IM_MODULE", "LUSHTEXT_RESPONSIVENESS_TICK_US", "LUSHTEXT_RESPONSIVENESS_FRAME_PHASES"):
             env.pop(key, None)
         env.update({k: v for k, v in state_env.items() if k != "STATE_ROOT"})
         env.update(
@@ -1095,6 +1726,9 @@ class Runner:
         )
         if tick_us:
             env["LUSHTEXT_RESPONSIVENESS_TICK_US"] = str(tick_us)
+        if frame_phases:
+            # Only the post-open cases ask for a longer frame-phase window (design D1).
+            env["LUSHTEXT_RESPONSIVENESS_FRAME_PHASES"] = str(frame_phases)
         # Every variant selects its IM explicitly: never GTK's Wayland
         # text-input default under headless Mutter (S7B-6 crash race).
         env["GTK_IM_MODULE"] = {"probe-im": "lushtext-probe", "ibus": "ibus"}.get(variant, "gtk-im-context-simple")
@@ -1172,7 +1806,7 @@ class Runner:
 
     # -- phases -------------------------------------------------------------
 
-    def run_phase(self, phases: list[dict], name: str, cap_s: float, body: Callable[[list[dict], float], tuple[bool, str]]) -> bool:
+    def run_phase(self, phases: list[dict], name: str, cap_s: float, body: Callable[[list[dict], float], tuple[bool, str]], extra: dict | None = None) -> bool:
         injections: list[dict] = []
         start = now_us()
         wall = time.time()
@@ -1204,18 +1838,20 @@ class Runner:
                 "status": phase_status,
                 "injections": injections,
                 "input_available": self.rd.available,
+                # What the body recorded (a post-open phase's settle inputs).
+                **(extra or {}),
             }
         )
         return ok
 
-    def step(self, phases: list[dict], name: str, cap: float, body, recover: Callable[[], bool] | None) -> bool:
+    def step(self, phases: list[dict], name: str, cap: float, body, recover: Callable[[], bool] | None, extra: dict | None = None) -> bool:
         """Run one phase; after a cap hit, relaunch the app and carry on.
 
         A hang is a result, not the end of the case: the remaining
         interactions still run against a fresh launch, so a stall in one
         phase does not hide the cost of the phases after it.
         """
-        if self.run_phase(phases, name, cap, body):
+        if self.run_phase(phases, name, cap, body, extra):
             return True
         if phases[-1].get("status") == "exceeded_cap" and recover is not None:
             return recover()
@@ -1230,6 +1866,56 @@ class Runner:
 
         return body
 
+    def settle_until(self, ctx: dict, kind: str, extra: dict, floor_us: int | None = None, propagation_us: int = 0, then: Callable[[float], tuple[bool, str]] | None = None) -> Callable[[Any, float], tuple[bool, str]]:
+        """A post-open phase body: wait for the driver-computed settle (design D1, review R24).
+
+        Settle is computed from the launch's probe log with the clauses of
+        the `document-settled` predicate, so a build without the predicate is
+        measured the same way. The phase's cap is the settle cap: a cap hit
+        is a failed phase. `then` runs after settle (the preview's own
+        readiness); the phase records its origin, floor and kind for the
+        post-open settle table.
+        """
+
+        def body(_inj, deadline):
+            floor = (floor_us if floor_us is not None else now_us()) + propagation_us
+            extra.update({"post_open": kind, "origin_us": ctx["origin"], "floor_us": floor, "require_activity": ctx["documents"], "idle_ok": not ctx["documents"]})
+            tail = ProbeTail([ctx["log"]])
+            result = wait_for_settle(
+                # The settle cap, from when the settle wait starts (a phase
+                # may type or trigger first); never past the phase's deadline.
+                tail.poll, ctx["origin"], floor, self.settle_quiet_us, min(self.settle_cap_s, max(0.0, deadline - time.monotonic())),
+                require_activity=ctx["documents"], idle_ok=not ctx["documents"],
+            )
+            extra["settled_us"] = result.get("settled_us")
+            if result["status"] != "settled":
+                return False, "settle-cap"
+            if then is not None:
+                return then(deadline)
+            return True, "ok"
+
+        return body
+
+    def write_settings(self, state_env: dict[str, str], values: dict[str, Any]) -> None:
+        """Change GSettings keys of the running app's profile, as one apply.
+
+        A separate GIO client with the app's backend and XDG directories
+        writes the keys; the app sees the change through its backend (the
+        keyfile's file monitor, or the private bus's dconf service), as it
+        sees one from another process. No setting action exists for word
+        wrap or the font.
+        """
+        env = os.environ.copy()
+        env.update({k: v for k, v in state_env.items() if k != "STATE_ROOT"})
+        env["GSETTINGS_SCHEMA_DIR"] = str(REPO_ROOT / "data")
+        subprocess.run(
+            [str(SYSTEM_PYTHON), "-c", SETTINGS_WRITER, APP_ID, json.dumps(values)],
+            env=env,
+            check=True,
+            timeout=30,
+            stdout=subprocess.DEVNULL,
+        )
+
     def wanted(self, name: str) -> bool:
         """Whether this run measures the interaction (RESPONSIVENESS_PHASES).
 
@@ -1242,11 +1928,26 @@ class Runner:
             return bool(self.only_phases & {"click", "pagedown", "type-start", "type-middle", "type-end"})
         return name in self.only_phases
 
-    def standard_interactions(self, phases: list[dict], tabs: int = 1, recover: Callable[[], bool] | None = None) -> bool:
+    def standard_interactions(self, phases: list[dict], tabs: int = 1, recover: Callable[[], bool] | None = None, ctx: dict | None = None, settle_then: Callable[[float], tuple[bool, str]] | None = None) -> bool:
+        """Background, then the standard interactions.
+
+        With a post-open context (`ctx`, bound-post-open-settle) the
+        background phase lasts until the driver-computed settle, capped by
+        the settle cap, instead of a fixed two seconds; a restored session
+        then selects each tab and waits for it to settle, and a dense case
+        ends with the wrap, zoom and font restyles.
+        """
         cap = self.cap_s
 
-        if not self.step(phases, "background", cap, self.settle_after(2.0), recover):
-            return False
+        if ctx is None:
+            if not self.step(phases, "background", cap, self.settle_after(2.0), recover):
+                return False
+        else:
+            extra: dict = {}
+            if not self.step(phases, "background", self.settle_cap_s, self.settle_until(ctx, "open", extra, then=settle_then), recover, extra):
+                return False
+            if ctx.get("tab_settle") and not self.tab_settles(phases, tabs, ctx, recover):
+                return False
         if not self.rd.available:
             for name in ("scroll", "click", "pagedown", "type-start", "type-middle", "type-end"):
                 phases.append({"name": name, "kind": PHASE_KINDS[name], "status": "unavailable", "reason": self.rd.error or "RemoteDesktop unavailable"})
@@ -1330,7 +2031,101 @@ class Runner:
 
             if not self.step(phases, "tab-switch", cap, tab_switch, recover):
                 return False
+        if ctx is not None and ctx.get("restyle"):
+            return self.restyles(phases, ctx, recover)
         return True
+
+    def tab_settles(self, phases: list[dict], tabs: int, ctx: dict, recover: Callable[[], bool] | None) -> bool:
+        """Select each restored tab in turn and wait for it to settle (review R8)."""
+        for index in range(tabs):
+            extra: dict = {"label": f"tab-settle-{index}", "tab_index": index}
+
+            def body(inj, deadline, index=index, extra=extra):
+                extra["trigger_us"] = now_us()
+                self.action("win", "select-tab", [self._uint32(index)], deadline)
+                ok, status = self.wait_ready("file-open-complete", deadline)
+                if not ok:
+                    return ok, status
+                return self.settle_until(ctx, "tab", extra)(inj, deadline)
+
+            if not self.step(phases, "tab-settle", self.settle_cap_s + 5, body, recover, extra):
+                return False
+        return True
+
+    def restyles(self, phases: list[dict], ctx: dict, recover: Callable[[], bool] | None) -> bool:
+        """The dense restyles (design D9): word wrap, one zoom step, a font change.
+
+        Each runs until settled and records its interaction dispatch and every
+        later dispatch. They run last, so no earlier measurement of the case
+        sees the changed wrap, zoom or font.
+        """
+
+        def wrap(_deadline: float) -> int:
+            ctx["wrap"] = not ctx["wrap"]
+            self.write_settings(ctx["state_env"], {"word-wrap": ctx["wrap"]})
+            return SETTING_PROPAGATION_US
+
+        def zoom(deadline: float) -> int:
+            if not self.action("win", "zoom-in", None, deadline):
+                raise RuntimeError("win.zoom-in failed")
+            return 0
+
+        def font(_deadline: float) -> int:
+            self.write_settings(ctx["state_env"], FONT_CHANGE_VALUES)
+            return SETTING_PROPAGATION_US
+
+        for name, trigger in (("wrap-toggle", wrap), ("zoom-step", zoom), ("font-change", font)):
+            if not self.wanted(name):
+                continue
+            extra: dict = {}
+
+            def body(inj, deadline, trigger=trigger, extra=extra):
+                extra["trigger_us"] = now_us()
+                propagation = trigger(deadline)
+                return self.settle_until(ctx, "interaction", extra, propagation_us=propagation)(inj, deadline)
+
+            if not self.step(phases, name, self.settle_cap_s + 5, body, recover, extra):
+                return False
+        return True
+
+    def type_during_settle(self, case: Case, rep_dir: Path, files: list[Path], phases: list[dict], launches: list[Launch], new_state: Callable[[str], tuple[dict, dict]]) -> bool:
+        """`type-during-settle` (design D8, review R26), in a launch of its own.
+
+        From load readiness one key every 50 ms, SETTLE_TYPING_KEYS keys in
+        all, then stop typing and wait for settle. Each key's dispatch
+        latency (compositor event time to handler) is read from the probe's
+        input records. The earlier launch is gone first: a second instance
+        would only forward its files to it.
+        """
+        name = "type-during-settle"
+        if not self.wanted(name):
+            return True
+        if not self.rd.available:
+            phases.append({"name": name, "kind": PHASE_KINDS[name], "status": "unavailable", "reason": self.rd.error or "RemoteDesktop unavailable"})
+            return True
+        for live in launches:
+            if live.process.poll() is None:
+                self.kill(live)
+        state_env, env = new_state("probe-typing.jsonl")
+        launch = self.launch(rep_dir, env, files, "typing")
+        launches.append(launch)
+        scratch: list[dict] = []
+        if not self.open_phase(scratch, launch, self.cap_s):
+            phases.append({"name": name, "kind": PHASE_KINDS[name], "status": f"open-{scratch[-1]['status'] if scratch else 'failed'}"})
+            return False
+        ctx = {"log": Path(env["LUSHTEXT_RESPONSIVENESS_LOG"]), "origin": launch.spawn_us, "documents": bool(files), "state_env": state_env}
+        extra: dict = {"open_ready_us": scratch[-1]["end_us"]}
+
+        def body(inj, deadline):
+            # Keyboard focus, unmeasured (a click is a button press, never
+            # matched to a key).
+            self.rd.click(SCREEN_W // 3, SCREEN_H // 2, [])
+            for index in range(SETTLE_TYPING_KEYS):
+                self.rd.tap(ord(SETTLE_TYPING_LETTERS[index % len(SETTLE_TYPING_LETTERS)]), inj)
+                time.sleep(SETTLE_TYPING_INTERVAL_S)
+            return self.settle_until(ctx, "typing", extra)(inj, deadline)
+
+        return self.run_phase(phases, name, self.settle_cap_s + SETTLE_TYPING_KEYS * SETTLE_TYPING_INTERVAL_S + 5, body, extra)
 
     @staticmethod
     def _string(value: str):
@@ -1344,11 +2139,13 @@ class Runner:
 
         return GLib.Variant("u", value)
 
-    def open_phase(self, phases: list[dict], launch: Launch, cap_s: float, predicate: str = "file-open-complete") -> bool:
+    def open_phase(self, phases: list[dict], launch: Launch, cap_s: float, predicate: str = "file-open-complete", after_bus: Callable[[float], Any] | None = None) -> bool:
         start = launch.spawn_us
         wall = time.time()
         deadline = time.monotonic() + cap_s
         ok = self.wait_bus(launch, deadline)
+        if ok and after_bus is not None:
+            after_bus(deadline)
         if ok:
             status = "ok"
         elif launch.process.poll() is not None:
@@ -1360,7 +2157,7 @@ class Runner:
             if not ok and time.monotonic() >= deadline - 0.05:
                 status = "exceeded_cap"
         phases.append(
-            {"name": "open" if predicate != "session-restore-complete" else "restore", "kind": "settle", "start_us": start, "end_us": now_us(), "wall_start": wall, "wall_end": time.time(), "status": "ok" if ok else status, "injections": []}
+            {"name": "restore" if predicate in ("session-restore-complete", "recovery-restore-complete") else "open", "kind": "settle", "start_us": start, "end_us": now_us(), "wall_start": wall, "wall_end": time.time(), "status": "ok" if ok else status, "injections": []}
         )
         return ok
 
@@ -1393,7 +2190,9 @@ class Runner:
         populated = bool(case.attrs.get("populated"))
         state_env = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated)
         log_path = rep_dir / "probe.jsonl"
-        env = self.app_env(variant, state_env, log_path)
+        post_open = bool(case.attrs.get("post_open")) and self.post_open_enabled
+        frame_phases = POST_OPEN_FRAME_PHASES if post_open else None
+        env = self.app_env(variant, state_env, log_path, frame_phases=frame_phases)
         phases: list[dict] = []
         launches: list[Launch] = []
         listener = AtspiListener(rep_dir / "atspi.jsonl") if variant == "at" else None
@@ -1402,6 +2201,34 @@ class Runner:
         wall_start = time.time()
         extra_states: list[str] = []
         recoveries = [0]
+        # The post-open context (bound-post-open-settle): the launch whose
+        # probe log the settle is computed from, its spawn time (records
+        # before it are another launch's), and the live profile the restyle
+        # phases write to.
+        ctx: dict | None = None
+        if post_open:
+            ctx = {
+                "log": log_path,
+                "origin": 0,
+                "documents": bool(files) or case.flow in ("session", "recovery"),
+                "state_env": state_env,
+                "wrap": bool(case.settings.get("word-wrap", True)),
+                "tab_settle": bool(case.attrs.get("tab_settle")),
+                "restyle": bool(case.attrs.get("restyle")),
+            }
+
+        def attach(launch: Launch, log: Path, live_state: dict[str, str]) -> None:
+            if ctx is not None:
+                ctx.update({"log": log, "origin": launch.spawn_us, "state_env": live_state, "wrap": bool(case.settings.get("word-wrap", True))})
+
+        def new_state(log_name: str) -> tuple[dict[str, str], dict[str, str]]:
+            """A fresh profile for another measured launch (steady ones warmed up first)."""
+            fresh = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated)
+            extra_states.append(fresh["STATE_ROOT"])
+            fresh_env = self.app_env(variant, fresh, rep_dir / log_name, frame_phases=frame_phases)
+            if case.attrs.get("profile") == "steady" and not self.warm_up_profile(rep_dir, fresh_env, self.cap_s):
+                self.failures.append(f"steady-state warm-up failed for {case.id}@{variant}#{rep} ({log_name})")
+            return fresh, fresh_env
 
         def recover() -> bool:
             for live in launches:
@@ -1412,9 +2239,11 @@ class Runner:
                 return False
             fresh = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated)
             extra_states.append(fresh["STATE_ROOT"])
-            renv = self.app_env(variant, fresh, rep_dir / f"probe-r{recoveries[0]}.jsonl")
+            rlog = rep_dir / f"probe-r{recoveries[0]}.jsonl"
+            renv = self.app_env(variant, fresh, rlog, frame_phases=frame_phases)
             relaunched = self.launch(rep_dir, renv, files, f"r{recoveries[0]}")
             launches.append(relaunched)
+            attach(relaunched, rlog, fresh)
             scratch: list[dict] = []
             ok = self.open_phase(scratch, relaunched, cap)
             phases.append({"name": "recovery", "kind": "recovery", "status": scratch[-1]["status"] if scratch else "failed", "after": phases[-1]["name"] if phases else None})
@@ -1448,7 +2277,10 @@ class Runner:
                     env2["LUSHTEXT_RESPONSIVENESS_LOG"] = str(rep_dir / "probe-restore.jsonl")
                     relaunch = self.launch(rep_dir, env2, [], "restore")
                     launches.append(relaunch)
-                    ok = self.open_phase(phases, relaunch, cap, predicate="session-restore-complete") and self.standard_interactions(phases, tabs=len(files), recover=recover)
+                    attach(relaunch, rep_dir / "probe-restore.jsonl", state_env)
+                    ok = self.open_phase(phases, relaunch, cap, predicate="session-restore-complete") and self.standard_interactions(phases, tabs=len(files), recover=recover, ctx=ctx)
+            elif case.flow == "recovery":
+                ok = self.recovery_flow(rep_dir, env, files, phases, launches, cap, attach, state_env, ctx, recover)
             elif case.flow == "calibration":
                 ok = self.run_calibration(rep_dir, state_env, phases, launches)
             else:
@@ -1462,7 +2294,20 @@ class Runner:
                         self.failures.append(f"steady-state warm-up failed for {case.id}@{variant}#{rep}")
                 launch = self.launch(rep_dir, env, files, "main")
                 launches.append(launch)
-                ok = self.open_phase(phases, launch, cap)
+                attach(launch, log_path, state_env)
+                preview = None
+                if case.flow == "preview":
+                    # The side-by-side preview as early as the window can take
+                    # it, and again once the document is open (the action
+                    # needs an active tab; startup resets the pane hidden).
+                    def preview(deadline: float) -> bool:
+                        return self.action("win", "set-preview-pane-visible", [self._bool(True)], deadline)
+
+                ok = self.open_phase(phases, launch, cap, after_bus=preview)
+                if ok and preview is not None:
+                    ok = preview(time.monotonic() + cap)
+                    if not ok:
+                        phases.append({"name": "preview", "kind": "settle", "status": "action-failed"})
                 if ok and case.flow == "install":
                     ok = self.run_phase(phases, "background", cap, self.settle_after(2.0))
                     if ok and self.rd.available:
@@ -1485,8 +2330,12 @@ class Runner:
 
                     ok = ok and self.run_phase(phases, "reload", cap, reload)
                     ok = ok and self.standard_interactions(phases, recover=recover)
+                elif ok and case.flow == "preview":
+                    ok = self.standard_interactions(phases, recover=recover, ctx=ctx, settle_then=lambda deadline: self.wait_ready("visual-geometry-settled", deadline))
                 elif ok:
-                    ok = self.standard_interactions(phases, tabs=max(1, len(files)), recover=recover)
+                    ok = self.standard_interactions(phases, tabs=max(1, len(files)), recover=recover, ctx=ctx)
+                if ok and ctx is not None and case.attrs.get("typing"):
+                    ok = self.type_during_settle(case, rep_dir, files, phases, launches, new_state)
             for launch in launches:
                 if launch.process.poll() is not None and launch.process.returncode not in (0, -signal.SIGKILL):
                     crashed = True
@@ -1517,6 +2366,57 @@ class Runner:
         (rep_dir / "phases.json").write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
         self.append_result(row)
         return row
+
+    def recovery_flow(self, rep_dir: Path, env: dict[str, str], files: list[Path], phases: list[dict], launches: list[Launch], cap: float, attach: Callable, state_env: dict[str, str], ctx: dict | None, recover: Callable[[], bool]) -> bool:
+        """`recovery/small-drafts`: file-backed drafts recovered at startup.
+
+        An unmeasured seeding launch opens the documents, types a few letters
+        into each, waits for the draft autosave and the session save, and is
+        killed (SIGKILL: no close flow runs, as in a crash). The measured
+        launch then starts with no file arguments and restores the session
+        with both drafts. Typed edits are never saved: the documents' bytes
+        are unchanged, which the integrity ledger checks.
+        """
+        if not self.rd.available:
+            phases.append({"name": "restore", "kind": "settle", "status": "unavailable", "reason": self.rd.error or "RemoteDesktop unavailable (the drafts are typed)"})
+            return False
+        seed_env = dict(env)
+        # Not `probe*.jsonl`: the analysis reads only the measured launch.
+        seed_env["LUSHTEXT_RESPONSIVENESS_LOG"] = str(rep_dir / "seed-probe.jsonl")
+        seed = self.launch(rep_dir, seed_env, files, "seed")
+        launches.append(seed)
+        scratch: list[dict] = []
+        if not self.open_phase(scratch, seed, cap):
+            phases.append({"name": "restore", "kind": "settle", "status": f"seed-{scratch[-1]['status'] if scratch else 'failed'}"})
+            return False
+        deadline = time.monotonic() + cap
+        for index in range(len(files)):
+            self.action("win", "select-tab", [self._uint32(index)], deadline)
+            self.wait_ready("file-open-complete", deadline)
+            self.rd.click(SCREEN_W // 3, SCREEN_H // 2, [])
+            time.sleep(0.1)
+            for char in RECOVERY_TYPED:
+                self.rd.tap(ord(char), [])
+                time.sleep(0.05)
+        # The first dirty autosave is debounced (750 ms), the session save 500 ms.
+        time.sleep(1.5)
+        saved, status = self.wait_ready("save-complete", deadline)
+        time.sleep(0.6)
+        self.wait_ready("app-startup", deadline)
+        self.kill(seed)
+        if not saved:
+            phases.append({"name": "restore", "kind": "settle", "status": f"seed-drafts-{status}"})
+            return False
+        restore = self.launch(rep_dir, env, [], "restore")
+        launches.append(restore)
+        attach(restore, Path(env["LUSHTEXT_RESPONSIVENESS_LOG"]), state_env)
+        return self.open_phase(phases, restore, cap, predicate="recovery-restore-complete") and self.standard_interactions(phases, tabs=len(files), recover=recover, ctx=ctx)
+
+    @staticmethod
+    def _bool(value: bool):
+        from gi.repository import GLib
+
+        return GLib.Variant("b", value)
 
     def rewrite_fixture(self, case: Case, path: Path) -> None:
         spec = case.fixture
@@ -1625,6 +2525,7 @@ class Runner:
                 if variant == "at":
                     row["at"] = at_summary(at_events, start, end)
             phase_rows.append(row)
+        post_open = post_open_entries(parsed, phases, read_settle_quiet())
         window_us = None
         if launches and merged["frame"]:
             first_frame = min(int(r["frame_time_us"]) for r in merged["frame"])
@@ -1649,6 +2550,7 @@ class Runner:
             "renderer": self.renderer,
             "renderer_actual": actual_renderer(launches),
             "phases": phase_rows,
+            "post_open": post_open,
         }
 
     # -- sweep --------------------------------------------------------------
@@ -2631,7 +3533,7 @@ def summarise_cases(rows: list[dict]) -> list[dict]:
     return out
 
 
-def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
+def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: list[str] | None = None) -> int:
     rows = []
     results = artifact_dir / "results.jsonl"
     if results.exists():
@@ -2671,6 +3573,19 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         c3["verdict"] = "not measured (install group runs in the full tier only)"
     missing = [name for name in ("run.json", "results.jsonl", "calibration.json", "fixtures.json", "integrity.json") if not (artifact_dir / name).exists()]
     frameless = frameless_cases(artifact_dir, rows)
+    # The C6 verdict (bound-post-open-settle D8) over the post-open rows; with
+    # a side-labelled merge (merge-runs --from baseline=DIR --from branch=DIR)
+    # it also applies the no-regression rule.
+    floor_spec = ";".join([os.environ.get(TOOLKIT_FLOORS_ENV, DEFAULT_TOOLKIT_FLOORS)] + list(toolkit_floors or []))
+    c6 = None
+    if any(r.get("post_open") for r in rows):
+        c6 = c6_verdict(
+            rows,
+            budgets,
+            parse_toolkit_floors(floor_spec),
+            os.environ.get("RESPONSIVENESS_C6_BASELINE_SIDE", C6_BASELINE_SIDE),
+            os.environ.get("RESPONSIVENESS_C6_BRANCH_SIDE", C6_BRANCH_SIDE),
+        )
     report = {
         "run": run_info,
         "budgets": budgets,
@@ -2685,6 +3600,8 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         "cases": summarise_cases(rows),
         "missing_artifacts": missing,
         "frameless_cases": frameless,
+        "post_open": post_open_report(rows),
+        "c6_verdict": c6,
     }
     (artifact_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (artifact_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
@@ -2720,10 +3637,102 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         "fill_in_over_accepted": [f"{c['case']}@{c['variant']}#{c['rep']}: fill-in {c['fill_in_us']} us" for c in fill_in_over],
         "fill_in_median": fill_in_median(construction, budgets["REFERENCE_FRAME_US"]),
         "construction_enforced": construction_enforced,
+        "c6_verdict": c6.get("verdict") if c6 else None,
     }
+    # The C6 verdict is a record for docs/next/long-line-documents.md, not a
+    # gate, unless RESPONSIVENESS_C6_ENFORCE=1 asks for one.
+    if c6 and c6.get("verdict") == "not met" and os.environ.get("RESPONSIVENESS_C6_ENFORCE") == "1":
+        failed = True
+        summary["status"] = "failed"
     (artifact_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2))
     return 1 if failed else 0
+
+
+def post_open_report(rows: list[dict]) -> list[dict]:
+    """Every post-open settle table, one entry per case, repetition and phase."""
+    out = []
+    for row in rows:
+        for entry in row.get("post_open") or []:
+            keys = [k["latency_us"] for k in entry.get("keys", []) if "latency_us" in k]
+            out.append(
+                {
+                    "case": row["case"],
+                    "variant": row["variant"],
+                    "rep": row.get("rep", 0),
+                    "side": row.get("side"),
+                    "phase": entry["phase"],
+                    "kind": entry["kind"],
+                    "status": entry["status"],
+                    "settle_us": entry.get("settle_us"),
+                    "worst_us": max((d["duration_us"] for d in entry.get("dispatches", [])), default=0),
+                    "stage_worst_us": entry.get("stage_worst_us", {}),
+                    "dispatches": [{k: d[k] for k in ("at_us", "duration_us", "attribution", "source")} for d in entry.get("dispatches", [])],
+                    "keys": {"count": len(entry.get("keys", [])), "matched": len(keys), "median_us": _median(keys) if keys else None, "max_us": max(keys) if keys else None} if "keys" in entry else None,
+                    "interaction_us": (entry.get("interaction") or {}).get("duration_us") if entry["kind"] == "interaction" else None,
+                }
+            )
+    return out
+
+
+def render_post_open(report: dict) -> list[str]:
+    """The post-open settle table and the C6 verdict (bound-post-open-settle)."""
+    entries = report.get("post_open") or []
+    if not entries:
+        return []
+    budgets = report["budgets"]
+    lines = [
+        "## Post-open settle (C6)",
+        "",
+        f"Every dispatch of at least {POST_OPEN_DISPATCH_FLOOR_US} us from the activation turn (a restored tab's selection, a restyle's trigger) until the driver-computed settle "
+        f"(no highlight or upper mark for SETTLE_QUIET_US, a G_PRIORITY_LOW sentinel after the last mark and post-open span), attributed by the post-open span that covers it, "
+        "else `highlight` or `validation` when it ends at that mark, else `unattributed`. Read by span, not by phase. Times in ms after the activation; durations in us.",
+        "",
+        "| Case | Side | Phase | Status | Activation to settled (ms) | Worst (us) | Keys (median / max us) | Dispatches (at ms: us stage) |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for e in entries:
+        settle = f"{e['settle_us'] / 1000:.1f}" if e.get("settle_us") is not None else "cap"
+        keys = f"{e['keys']['median_us']} / {e['keys']['max_us']} ({e['keys']['matched']}/{e['keys']['count']})" if e.get("keys") else ""
+        if e.get("interaction_us") is not None:
+            keys = f"interaction {e['interaction_us']}"
+        dispatches = ", ".join(f"{d['at_us'] / 1000:.1f}: {d['duration_us']} {d['attribution']}" for d in e["dispatches"])
+        lines.append(f"| {e['case']}@{e['variant']}#{e['rep']} | {e.get('side') or ''} | {e['phase']} | {e['status']} | {settle} | {e['worst_us']} | {keys} | {dispatches} |")
+    c6 = report.get("c6_verdict")
+    if not c6:
+        return lines + [""]
+    lines += [
+        "",
+        "## C6 verdict",
+        "",
+        f"**{c6['verdict']}** over {c6.get('branch_rows', 0)} branch row(s) (side `{c6.get('sides', {}).get('branch')}`) and {c6.get('baseline_rows', 0)} baseline row(s) (side `{c6.get('sides', {}).get('baseline')}`). "
+        f"Rules: every open and restored-tab post-open dispatch until settled <= B_SETTLE_US {budgets['B_SETTLE_US']} us; every type-during-settle key <= B_INTERACT_US {budgets['B_INTERACT_US']} us; "
+        f"every restyle interaction dispatch <= B_INTERACT_US and each later dispatch <= B_SETTLE_US; per case, the median of each stage's worst dispatch and of activation-to-settled <= the baseline's + REFERENCE_FRAME_US {budgets['REFERENCE_FRAME_US']} us.",
+        "",
+    ]
+    for failure in c6.get("failures", [])[:60]:
+        lines.append(f"- {failure}")
+    if len(c6.get("failures", [])) > 60:
+        lines.append(f"- ... {len(c6['failures']) - 60} more in report.json")
+    if c6.get("regressions"):
+        lines += ["", "| Case | Phase | Stage | Branch median (us) | Baseline median (us) | Limit (us) |", "|---|---|---|---|---|---|"]
+        for r in c6["regressions"]:
+            lines.append(f"| {r['case']}@{r['variant']} | {r['phase']} | {r['stage']} | {r['branch_median_us']} | {r['baseline_median_us']} | {r['limit_us']} |")
+    if c6.get("new_stages"):
+        lines += ["", "New on the branch (no baseline median; under the absolute bounds only): " + ", ".join(f"{n['case']}@{n['variant']} {n['phase']} {n['stage']}" for n in c6["new_stages"])]
+    lines += ["", "### Toolkit-floor exceptions", ""]
+    if not c6.get("exceptions"):
+        lines.append(f"None listed ({TOOLKIT_FLOORS_ENV} / report --toolkit-floor).")
+    for e in c6.get("exceptions", []):
+        lines.append(f"- {e['case']}@{e['variant']}#{e['rep']} {e['phase']}: `{e['attribution']}` {e['duration_us']} us, axiom {e['axiom']}, upstream report {e['report'] or 'none recorded'}; keys that waited behind it: {e['overlapping_keys_us'] or 'none'} us")
+    if c6.get("baseline_over_budget"):
+        lines += ["", "### Baseline dispatches over B_SETTLE_US", ""]
+        for d in c6["baseline_over_budget"]:
+            lines.append(f"- {d['case']}@{d['variant']}#{d['rep']} {d['phase']}: `{d['attribution']}` {d['duration_us']} us")
+    lines += ["", f"### Input-to-frame (reported, not gated; lane floor: {c6.get('input_to_frame_floor')})", "", "| Side | Case and phase | Median (us) | Max (us) | Events |", "|---|---|---|---|---|"]
+    for i in c6.get("input_to_frame", []):
+        lines.append(f"| {i['side']} | {i['case']} | {i['median_us']} | {i['max_us']} | {i['events']} |")
+    return lines + [""]
 
 
 def merged_storage_status(parts: list[dict]) -> str:
@@ -2735,7 +3744,16 @@ def merged_storage_status(parts: list[dict]) -> str:
     return "mixed"
 
 
-def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
+def split_source(value: str | Path) -> tuple[str | None, Path]:
+    """A merge source, `DIR` or `LABEL=DIR` (the side of an interleaved verdict)."""
+    text = str(value)
+    match = re.match(r"^([A-Za-z][\w.-]*)=(.+)$", text)
+    if match and not Path(text).exists():
+        return match.group(1), Path(match.group(2))
+    return None, Path(text)
+
+
+def merge_runs(out: Path, sources: list, quiet: bool = False) -> int:
     """Join the artifacts of several lane runs (one per case group) into one.
 
     The reference sweep runs in parts (groups, bisection rounds, bracketing
@@ -2758,7 +3776,10 @@ def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
     violations: list = []
     calibration = None
     storage_parts: list[dict] = []
-    for source in sources:
+    labelled = [split_source(source) for source in sources]
+    sources = [path for _label, path in labelled]
+    sides = [label for label, _path in labelled]
+    for side, source in zip(sides, sources):
         source = source.resolve()
         run = json.loads((source / "run.json").read_text(encoding="utf-8"))
         runs.append(run)
@@ -2780,12 +3801,17 @@ def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
                 row["storage_contaminated"] = stamp["status"] == "contaminated"
             row["run_id"] = run.get("run_id")
             row["part_rep"] = row.get("rep", 0)
+            if side is not None:
+                # An interleaved verdict's side (baseline, branch): the C6
+                # verdict compares the sides.
+                row["side"] = side
             part_cases.add(row["case"])
             # Repetitions accumulate across parts (a reduced sweep adds the
-            # bracketing repetitions in a later part), renumbered per case
-            # and variant in part order.
-            row["rep"] = next_rep.get((row["case"], row["variant"]), 0)
-            next_rep[(row["case"], row["variant"])] = row["rep"] + 1
+            # bracketing repetitions in a later part), renumbered per side,
+            # case and variant in part order.
+            rep_key = (side, row["case"], row["variant"])
+            row["rep"] = next_rep.get(rep_key, 0)
+            next_rep[rep_key] = row["rep"] + 1
             rows.append(row)
         if (source / "calibration.json").exists() and calibration is None:
             calibration = json.loads((source / "calibration.json").read_text(encoding="utf-8"))
@@ -2806,7 +3832,7 @@ def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
     merged.update(
         {
             "run_id": "+".join(r.get("run_id", "?") for r in runs),
-            "merged_from": [{"run_id": r.get("run_id"), "artifact_dir": str(src), "wall_start": r.get("wall_start"), "wall_end": r.get("wall_end"), "repetitions": r.get("repetitions"), "bisection": r.get("bisection")} for r, src in zip(runs, sources)],
+            "merged_from": [{"run_id": r.get("run_id"), "side": side, "artifact_dir": str(src), "wall_start": r.get("wall_start"), "wall_end": r.get("wall_end"), "repetitions": r.get("repetitions"), "bisection": r.get("bisection")} for r, src, side in zip(runs, sources, sides)],
             "wall_start": min(r.get("wall_start") or math.inf for r in runs),
             "wall_end": max(r.get("wall_end") or 0 for r in runs),
             "remote_desktop": {"available": all(r.get("remote_desktop", {}).get("available") for r in runs), "error": next((r["remote_desktop"].get("error") for r in runs if r.get("remote_desktop", {}).get("error")), None)},
@@ -2899,6 +3925,7 @@ def render_markdown(report: dict) -> str:
             f"{entry.get('composition_complete_us')} | {entry.get('activation_shown_us')} | {entry.get('fill_in_us')} | "
             f"{entry.get('largest_composition_dispatch_us')} | {dispatches} | {stages} | {frames} |"
         )
+    lines += [""] + render_post_open(report)
     lines += ["", "## Cases", "", "| Case | Variant | Outcomes | Phase | Stall median / max (us) | Frame p95 gap | Input-to-frame max (us / frames) | IM calls / max bytes | AT events / max payload |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case in report["cases"]:
         flags = (" noisy" if case.get("noisy") else "") + (f" storage:{case.get('storage')}" if case.get("storage") not in (None, "unchecked", "clean") else "")
@@ -3176,6 +4203,233 @@ def synthetic_rows() -> list[dict]:
     for line, stall in ((500, 2_000), (2_000, 5_000), (10_000, 30_000)):
         rows.append(row(f"dense/{line}", "dense", line, {"wrap": False}, {"scroll": stall, "background": 1_000}))
     return rows
+
+
+
+def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
+    """Driver-computed settle, the post-open settle table, and the C6 verdict (tasks 9.1)."""
+
+    def late(t: int, lateness: int) -> str:
+        return json.dumps({"kind": "late", "t_us": t, "ready_us": t - lateness, "lateness_us": lateness})
+
+    def span(name: str, start: int, end: int) -> str:
+        return json.dumps({"kind": "span", "t_us": end, "name": name, "start_us": start, "end_us": end})
+
+    def mark(name: str, t: int) -> str:
+        return json.dumps({"kind": "mark", "t_us": t, "name": name})
+
+    start = json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000})
+    expect(read_settle_quiet() == 100_000, f"SETTLE_QUIET_US is read from the load policy ({read_settle_quiet()})")
+    expect(read_settle_quiet(Path("/nonexistent/policy.rs")) == DEFAULT_SETTLE_QUIET_US, "a missing load policy falls back to the default quiet period")
+
+    # Attribution by span: the innermost span covering at least half of the
+    # dispatch, else the span covering most of it; then the marks.
+    lines = [
+        start,
+        span("post_open_editor_construct", 1_000_500, 1_002_000),
+        span("post_open_language_attach", 1_004_000, 1_028_000),
+        span("post_open_activation", 1_000_000, 1_030_000),
+        late(1_030_500, 29_000),
+        span("post_open_editor_construct", 1_101_000, 1_103_000),
+        span("post_open_activation", 1_100_000, 1_120_000),
+        late(1_120_400, 19_000),
+        mark("highlight_updated", 1_999_800),
+        late(2_000_000, 40_000),
+        mark("adjustment_upper", 2_099_900),
+        late(2_100_000, 21_000),
+        late(2_200_000, 17_000),
+        late(2_300_000, 900),
+        mark("settle_sentinel", 2_210_000),
+    ]
+    parsed = parse_probe_log(lines)
+    entry = post_open_entry(parsed, 900_000, 1_010_000, 100_000, "background", "open")
+    by_end = {d.get("end_us"): d for d in entry.get("dispatches", [])}
+    expect(by_end.get(1_030_500, {}).get("attribution") == "post_open_language_attach", f"a dispatch mostly inside the attach span is the attach stage ({by_end.get(1_030_500)})")
+    expect(by_end.get(1_120_400, {}).get("attribution") == "post_open_activation", f"a short inner span does not take a dispatch it covers less than half of ({by_end.get(1_120_400)})")
+    expect(by_end.get(2_000_000, {}).get("attribution") == "highlight", f"an unspanned dispatch ending at highlight-updated is highlighting ({by_end.get(2_000_000)})")
+    expect(by_end.get(2_100_000, {}).get("attribution") == "validation", f"an unspanned dispatch ending at an upper change is validation ({by_end.get(2_100_000)})")
+    expect(by_end.get(2_200_000, {}).get("attribution") == "unattributed", f"an unspanned dispatch with no mark is unattributed ({by_end.get(2_200_000)})")
+    expect(2_300_000 not in by_end, "a dispatch under 1 ms is not listed")
+    # Read by span, not by phase: the activation's dispatch ends after the
+    # open phase's readiness (1.01 s) and is still the activation stage, and
+    # the table starts at the activation span, not the phase boundary.
+    expect(entry.get("activation_us") == 1_000_000, f"the table starts at the activation span ({entry.get('activation_us')})")
+    expect(entry.get("settled_us") == 2_210_000 and entry.get("settle_us") == 1_210_000, f"settled at the sentinel after the last mark plus quiet ({entry.get('settled_us')}, {entry.get('settle_us')})")
+    expect(entry.get("stage_worst_us", {}).get("highlight") == 40_000 and entry.get("stage_worst_us", {}).get("post_open_language_attach") == 29_000, f"per-stage worst dispatch ({entry.get('stage_worst_us')})")
+
+    # The driver-computed settle: a sentinel at or after the last mark, no
+    # mark for the quiet period, no post-open span still running.
+    settle_lines = [
+        start,
+        mark("highlight_updated", 1_200_000),
+        mark("settle_sentinel", 1_250_000),
+        mark("adjustment_upper", 1_300_000),
+    ]
+    pending = compute_settle(parse_probe_log(settle_lines), 1_000_000, 1_100_000, 100_000)
+    expect(pending.get("settled_us") is None, f"a sentinel only before the last mark is not settled ({pending})")
+    settled = compute_settle(parse_probe_log(settle_lines + [mark("settle_sentinel", 1_310_000)]), 1_000_000, 1_100_000, 100_000)
+    expect(settled.get("settled_us") == 1_400_000, f"settled once the quiet period after the last mark ends ({settled})")
+    running = compute_settle(parse_probe_log(settle_lines + [mark("settle_sentinel", 1_310_000), span("post_open_language_attach", 1_390_000, 1_450_000)]), 1_000_000, 1_100_000, 100_000)
+    expect(running.get("settled_us") is None, f"a post-open span ending after the last sentinel holds settle ({running})")
+    after = compute_settle(parse_probe_log(settle_lines + [mark("settle_sentinel", 1_310_000), span("post_open_language_attach", 1_390_000, 1_450_000), mark("settle_sentinel", 1_455_000)]), 1_000_000, 1_100_000, 100_000)
+    expect(after.get("settled_us") == 1_455_000, f"the sentinel after the span settles it ({after})")
+    early = compute_settle(parse_probe_log(settle_lines + [mark("settle_sentinel", 1_310_000)]), 1_000_000, 1_500_000, 100_000)
+    expect(early.get("settled_us") == 1_500_000, f"settle is never before the floor ({early})")
+    idle_open = compute_settle(parse_probe_log([start, mark("settle_sentinel", 1_050_000)]), 1_000_000, 1_100_000, 100_000, require_activity=True)
+    expect(idle_open.get("settled_us") is None, f"a document open waits for its first post-open span ({idle_open})")
+    required = compute_settle(parse_probe_log(settle_lines + [mark("settle_sentinel", 1_310_000)]), 1_000_000, 1_100_000, 100_000, required=("post_open_language_attach",))
+    expect(required.get("settled_us") is None, f"a required stage that has not run holds settle ({required})")
+
+    # Background runs until the driver-computed settle (records arrive over
+    # time), and a cap hit fails the phase.
+    clock = [0.0]
+    stream = [start]
+    timeline = [
+        (0.20, mark("highlight_updated", 1_200_000)),
+        (0.21, mark("settle_sentinel", 1_210_000)),
+        (0.28, mark("highlight_updated", 1_280_000)),
+        (0.29, mark("settle_sentinel", 1_290_000)),
+    ]
+
+    def poll() -> dict:
+        while timeline and timeline[0][0] <= clock[0] + 1e-9:
+            stream.append(timeline.pop(0)[1])
+        return parse_probe_log(stream)
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    waited = wait_for_settle(poll, 1_000_000, 1_100_000, 100_000, 5.0, clock=lambda: clock[0], sleep=sleep, now=lambda: 1_000_000 + int(clock[0] * 1_000_000))
+    expect(waited.get("status") == "settled" and waited.get("settled_us") == 1_380_000 and clock[0] >= 0.43, f"background waits past the first quiet sentinel to the driver-computed settle ({waited}, clock {clock[0]:.2f})")
+    clock[0] = 0.0
+    capped_wait = wait_for_settle(lambda: parse_probe_log([start, mark("highlight_updated", 1_200_000)]), 1_000_000, 1_100_000, 100_000, 2.0, clock=lambda: clock[0], sleep=sleep, now=lambda: 9_000_000)
+    expect(capped_wait.get("status") == "exceeded_cap" and capped_wait.get("settled_us") is None, f"a settle that never comes is a cap hit ({capped_wait})")
+    expect(any(c.attrs.get("post_open") for c in build_cases("quick") if c.group == "dense"), "dense cases opt in to the until-settled background")
+    with tempfile.TemporaryDirectory(prefix="lt-resp-tail-") as raw:
+        log_file = Path(raw) / "probe.jsonl"
+        whole = mark("highlight_updated", 1_200_000)
+        log_file.write_text(start + "\n" + whole[:10], encoding="utf-8")
+        tail = ProbeTail([log_file])
+        first_poll = len(tail.poll()["records"]["mark"])
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write(whole[10:] + "\n")
+        second = tail.poll()
+        expect(first_poll == 0 and len(second["records"]["mark"]) == 1 and second["started"] and not second["malformed"], "the live tail reads complete lines only, incrementally")
+
+    # Toolkit-floor exceptions are configured, not hard-coded.
+    floors = parse_toolkit_floors("post_open_language_attach=A52:.claude/handoffs/c6-upstream-gtksourceview-language-parse.md; highlight=S3")
+    expect(floors.get("post_open_language_attach", {}).get("axiom") == "A52" and floors.get("highlight", {}).get("report") is None, f"toolkit-floor list parsing ({floors})")
+
+    # The C6 verdict.
+    budgets = dict(DEFAULT_BUDGETS)
+
+    def open_entry(dispatches: list[tuple[str, int]], settle_us: int = 500_000, status: str = "settled") -> dict:
+        rows_ = []
+        at = 10_000
+        for attribution, duration in dispatches:
+            rows_.append({"at_us": at, "start_us": 1_000_000 + at - duration, "end_us": 1_000_000 + at, "duration_us": duration, "attribution": attribution, "source": "span"})
+            at += 50_000
+        worst: dict[str, int] = {}
+        for d in rows_:
+            worst[d["attribution"]] = max(worst.get(d["attribution"], 0), d["duration_us"])
+        return {"phase": "background", "kind": "open", "status": status, "activation_us": 1_000_000, "settled_us": 1_000_000 + settle_us, "settle_us": settle_us, "dispatches": rows_, "stage_worst_us": worst}
+
+    def row(side: str, rep: int, entries: list[dict], case: str = "total-size/1000000") -> dict:
+        return {"case": case, "variant": "plain", "rep": rep, "side": side, "outcome": "ok", "post_open": entries, "phases": []}
+
+    baseline_rows = [row("baseline", r, [open_entry([("post_open_language_attach", 3_000), ("highlight", 9_000)])]) for r in range(3)]
+    good_branch = [row("branch", r, [open_entry([("post_open_language_attach", 3_000), ("highlight", 9_000)])]) for r in range(3)]
+    met = c6_verdict(baseline_rows + good_branch, budgets, {})
+    expect(met.get("verdict") == "met", f"a branch within every bound and no slower than the baseline meets the verdict ({met.get('verdict')}, {met.get('failures')})")
+    over = c6_verdict(baseline_rows + good_branch[:2] + [row("branch", 2, [open_entry([("unattributed", 20_000)])])], budgets, {})
+    expect(over.get("verdict") == "not met" and any("B_SETTLE" in f for f in over.get("failures", [])), f"one post-open dispatch over B_settle fails ({over.get('failures')})")
+    capped_row = c6_verdict(baseline_rows + good_branch[:2] + [row("branch", 2, [open_entry([], status="pending")])], budgets, {})
+    expect(capped_row.get("verdict") == "not met", f"a background that never settled fails ({capped_row.get('failures')})")
+    # The median, not the maximum, plus one reference frame.
+    regress = [row("branch", r, [open_entry([("post_open_language_attach", d)])]) for r, d in enumerate((12_000, 12_000, 2_000))]
+    regressed = c6_verdict(baseline_rows + regress, budgets, {})
+    expect(regressed.get("verdict") == "not met" and any(r.get("stage") == "post_open_language_attach" for r in regressed.get("regressions", [])), f"a stage whose median worst exceeds the baseline's plus one frame regresses ({regressed.get('regressions')})")
+    outlier = [row("branch", r, [open_entry([("post_open_language_attach", d)])]) for r, d in enumerate((12_000, 2_000, 2_000))]
+    tolerated = c6_verdict(baseline_rows + outlier, budgets, {})
+    expect(not tolerated.get("regressions"), f"one slow repetition is not a regression of the median ({tolerated.get('regressions')})")
+    slow_settle = [row("branch", r, [open_entry([("post_open_language_attach", 3_000)], settle_us=520_000)]) for r in range(3)]
+    slowed = c6_verdict(baseline_rows + slow_settle, budgets, {})
+    expect(any(r.get("stage") == "activation-to-settled" for r in slowed.get("regressions", [])), f"activation-to-settled over the baseline's plus one frame regresses ({slowed.get('regressions')})")
+    # A toolkit-floor exception: exempt from B_settle, and the keys that
+    # overlap it are exempt from B_interact; every other key is still gated.
+    attach = {"at_us": 100_000, "start_us": 1_060_000, "end_us": 1_100_000, "duration_us": 40_000, "attribution": "post_open_language_attach", "source": "span"}
+    typing = {"phase": "type-during-settle", "kind": "typing", "status": "settled", "activation_us": 1_000_000, "settled_us": 2_000_000, "settle_us": 1_000_000, "dispatches": [attach], "stage_worst_us": {"post_open_language_attach": 40_000},
+              "keys": [{"event_us": 1_070_000, "handler_us": 1_101_000, "latency_us": 31_000}, {"event_us": 1_500_000, "handler_us": 1_503_000, "latency_us": 3_000}]}
+    slow_key = dict(typing, keys=typing["keys"] + [{"event_us": 1_600_000, "handler_us": 1_609_000, "latency_us": 9_000}])
+    floor_list = {"post_open_language_attach": {"axiom": "A52", "report": "handoff.md"}}
+    exempt_rows = [row("branch", r, [open_entry([("post_open_language_attach", 40_000)]), typing]) for r in range(3)]
+    exempt = c6_verdict(exempt_rows, budgets, floor_list)
+    expect(exempt.get("verdict") == "met", f"an exception dispatch and the keys that waited behind it are exempt ({exempt.get('failures')})")
+    lines_ = exempt.get("exceptions", [])
+    expect(any(e.get("axiom") == "A52" and e.get("overlapping_keys_us") == [31_000] for e in lines_), f"the exception line lists its axiom and the overlapping keys' latencies ({lines_})")
+    not_exempt = c6_verdict([row("branch", 0, [open_entry([]), slow_key])], budgets, floor_list)
+    expect(not_exempt.get("verdict") == "not met" and any("B_INTERACT" in f for f in not_exempt.get("failures", [])), f"a key that overlaps no exception is gated ({not_exempt.get('failures')})")
+    unlisted = c6_verdict([row("branch", 0, [open_entry([("post_open_language_attach", 40_000)]), typing])], budgets, {})
+    expect(unlisted.get("verdict") == "not met", "without a listed exception the same dispatch and key fail")
+    # Wrap/zoom/font: the interaction dispatch within B_interact, every later one within B_settle.
+    interaction = {"phase": "zoom-step", "kind": "interaction", "status": "settled", "activation_us": 1_000_000, "settled_us": 1_300_000, "settle_us": 300_000, "dispatches": [], "stage_worst_us": {},
+                   "interaction": {"duration_us": 9_000, "attribution": "unattributed"}, "later": [{"duration_us": 15_000, "attribution": "validation"}]}
+    zoom = c6_verdict([row("branch", 0, [open_entry([]), interaction])], budgets, {})
+    expect(zoom.get("verdict") == "not met" and any("zoom-step" in f for f in zoom.get("failures", [])), f"an interaction dispatch over B_interact fails ({zoom.get('failures')})")
+    zoom_ok = c6_verdict([row("branch", 0, [open_entry([]), dict(interaction, interaction={"duration_us": 7_000, "attribution": "unattributed"})])], budgets, {})
+    expect(zoom_ok.get("verdict") == "met", f"an interaction within its bounds passes ({zoom_ok.get('failures')})")
+
+    # The live phases record the settle inputs; the analysis recomputes the
+    # same tables from them, typing keys included.
+    typing_lines = lines + [
+        json.dumps({"kind": "input", "t_us": 2_400_000, "window": 1, "event": "button-press", "event_time_ms": 2_399}),
+        json.dumps({"kind": "input", "t_us": 2_450_000, "window": 1, "event": "key-press", "event_time_ms": 2_444}),
+        json.dumps({"kind": "input", "t_us": 2_500_500, "window": 1, "event": "key-press", "event_time_ms": 2_500}),
+    ]
+    phase_records = [
+        {"name": "background", "start_us": 1_010_000, "end_us": 2_400_000, "post_open": "open", "origin_us": 900_000, "floor_us": 1_010_000, "require_activity": True, "injections": []},
+        {"name": "type-during-settle", "start_us": 2_420_000, "end_us": 2_700_000, "post_open": "typing", "origin_us": 900_000, "floor_us": 2_500_500, "injections": [{"event": "key-press", "inject_us": 2_443_000}, {"event": "key-press", "inject_us": 2_499_000}]},
+        {"name": "scroll", "start_us": 2_700_000, "end_us": 2_800_000, "injections": []},
+    ]
+    analysed = post_open_entries(parse_probe_log(typing_lines + [mark("settle_sentinel", 2_501_000)]), phase_records, 100_000)
+    expect([e["phase"] for e in analysed] == ["background", "type-during-settle"] and analysed[0]["settled_us"] == 2_210_000, f"each post-open phase gets its table ({[(e['phase'], e['settled_us']) for e in analysed]})")
+    keys = analysed[1].get("keys", []) if len(analysed) > 1 else []
+    expect([k.get("latency_us") for k in keys] == [6_000, 500], f"each key's dispatch latency is its handler minus its compositor time ({keys})")
+    expect(split_source("baseline=/x/run1") == ("baseline", Path("/x/run1")) and split_source("/x/run1") == (None, Path("/x/run1")), "merge sources take an optional side label")
+
+    # An interleaved, side-labelled merge reports the C6 verdict.
+    with tempfile.TemporaryDirectory(prefix="lt-resp-c6-") as raw:
+        root = Path(raw)
+        sides = (("baseline", 3_000), ("branch", 3_000), ("baseline", 3_000), ("branch", 3_000))
+        for index, (side, attach_us) in enumerate(sides):
+            src = root / f"{side}{index}"
+            src.mkdir()
+            (src / "run.json").write_text(json.dumps({"run_id": f"rr-{side}-{index}", "remote_desktop": {"available": True}}), encoding="utf-8")
+            (src / "results.jsonl").write_text(json.dumps(row(side, 0, [open_entry([("post_open_language_attach", attach_us)])])) + "\n", encoding="utf-8")
+            for name in ("integrity.json",):
+                (src / name).write_text(json.dumps({"checks": 1, "violations": []}), encoding="utf-8")
+            (src / "fixtures.json").write_text("[]", encoding="utf-8")
+            (src / "calibration.json").write_text("{}", encoding="utf-8")
+        merge_runs(root / "merged", [f"{side}={root / f'{side}{index}'}" for index, (side, _us) in enumerate(sides)], quiet=True)
+        merged = [json.loads(line) for line in (root / "merged/results.jsonl").read_text(encoding="utf-8").splitlines()]
+        expect(sorted((r["side"], r["rep"]) for r in merged) == [("baseline", 0), ("baseline", 1), ("branch", 0), ("branch", 1)], f"repetitions are numbered per side ({[(r.get('side'), r['rep']) for r in merged]})")
+        saved = {k: os.environ.pop(k, None) for k in ("RESPONSIVENESS_SKIP_STORAGE", TOOLKIT_FLOORS_ENV)}
+        os.environ["RESPONSIVENESS_SKIP_STORAGE"] = "1"
+        try:
+            import contextlib
+            import io
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                write_report(root / "merged", None, ["post_open_language_attach=A52:handoff.md"])
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+        written = json.loads((root / "merged/report.json").read_text(encoding="utf-8"))
+        markdown = (root / "merged/report.md").read_text(encoding="utf-8")
+        expect(written.get("c6_verdict", {}).get("verdict") == "met" and written["c6_verdict"]["baseline_rows"] == 2, f"the merged report carries the C6 verdict ({written.get('c6_verdict', {}).get('failures')})")
+        expect("## Post-open settle (C6)" in markdown and "## C6 verdict" in markdown and "axiom A52" in markdown, "report.md renders the post-open table, the verdict and the exception line")
 
 
 def self_test() -> int:
@@ -3590,7 +4844,7 @@ def self_test() -> int:
     expect(verdicts_c4[0]["verdict"] == "over" and verdicts_c4[0]["over_budget"] == ["window_construction", "largest_dispatch_before_first_frame", "largest_composition_dispatch"], f"construction verdict ({verdicts_c4})")
     expect(construction_case_id("fresh", "keyfile") == "baseline/small" and construction_case_id("steady", "dconf") == "baseline/small/steady-dconf", "construction case ids")
     populated_case = next((c for c in full if c.id == POPULATED_CASE_ID), None)
-    expect(populated_case is not None and populated_case.attrs == {"profile": "steady", "backend": "keyfile", "populated": True} and populated_case.settings.get("workspace-sidebar-visible") is True and populated_case.settings.get("properties-sidebar-visible") is True, "the populated profile shows both panes over a steady keyfile profile")
+    expect(populated_case is not None and {k: populated_case.attrs.get(k) for k in ("profile", "backend", "populated")} == {"profile": "steady", "backend": "keyfile", "populated": True} and populated_case.settings.get("workspace-sidebar-visible") is True and populated_case.settings.get("properties-sidebar-visible") is True, "the populated profile shows both panes over a steady keyfile profile")
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
         entries = seed_populated_workspace(root / "data", root / "workspace")
@@ -3691,6 +4945,13 @@ def self_test() -> int:
     median = fill_in_median(shown_verdict + slow_verdict + composed_verdict, 8_333)
     expect(median == {"median_us": 32_000, "target_us": 24_999, "within_target": False, "runs": 3}, f"the fill-in median against three reference frames ({median})")
 
+    # Post-open settle (bound-post-open-settle, C6). An exception here is a
+    # failure, not an abort, so the other checks still report.
+    try:
+        post_open_self_test(expect)
+    except Exception as exc:  # noqa: BLE001 - reported as a failure
+        failures.append(f"post-open self-test raised {type(exc).__name__}: {exc}")
+
     if failures:
         print("responsiveness-smoke-driver self-test failed:", file=sys.stderr)
         for failure in failures:
@@ -3711,10 +4972,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--case", action="append")
     merge = sub.add_parser("merge-runs")
     merge.add_argument("--artifact-dir", type=Path, required=True)
-    merge.add_argument("--from", dest="sources", type=Path, action="append", required=True)
+    merge.add_argument("--from", dest="sources", action="append", required=True, help="a run's artifact dir, or LABEL=DIR to label its rows with a side (baseline, branch)")
     report = sub.add_parser("report")
     report.add_argument("--artifact-dir", type=Path, required=True)
     report.add_argument("--axiom-observations", type=Path)
+    report.add_argument("--toolkit-floor", action="append", default=[], help=f"a toolkit-floor exception ATTRIBUTION=AXIOM[:REPORT] (also {TOOLKIT_FLOORS_ENV})")
     listing = sub.add_parser("list-cases")
     listing.add_argument("--tier", choices=("quick", "full"), default="quick")
     listing.add_argument("--case", action="append")
@@ -3742,7 +5004,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "merge-runs":
         return merge_runs(args.artifact_dir.resolve(), args.sources)
     if args.command == "report":
-        return write_report(args.artifact_dir.resolve(), args.axiom_observations)
+        return write_report(args.artifact_dir.resolve(), args.axiom_observations, args.toolkit_floor)
     args.artifact_dir = args.artifact_dir.resolve()
     args.binary = args.binary.resolve()
     (args.artifact_dir / "logs").mkdir(parents=True, exist_ok=True)

@@ -41,6 +41,16 @@ RESPONSIVENESS_MONITOR (default 1280x800@120), RESPONSIVENESS_LENGTHS
 (probe points per group, e.g. paragraph=2000,4500;dense=500) and
 RESPONSIVENESS_PHASES (only these interactions; open and background always
 run), both used by scripts/responsiveness-reference-sweep.py.
+
+Post-open settle (bound-post-open-settle, C6): the post-open cases' background
+phase lasts until the driver-computed settle, capped by
+RESPONSIVENESS_SETTLE_CAP_S (default 10; a cap hit fails the phase);
+RESPONSIVENESS_POST_OPEN=0 restores the fixed two-second background. The C6
+grid is RESPONSIVENESS_LENGTHS='total-size=16000,1000000,5000000;dense=120,500,710'.
+The report's C6 verdict reads RESPONSIVENESS_TOOLKIT_FLOORS
+(ATTRIBUTION=AXIOM[:REPORT];...), fails the run only with
+RESPONSIVENESS_C6_ENFORCE=1, and compares the sides of a merge made with
+`responsiveness-smoke-driver.py merge-runs --from baseline=DIR --from branch=DIR`.
 EOF
 }
 
