@@ -970,7 +970,10 @@ maintainer-accepted load). Stall medians (max), input-to-frame max:
 | type-start (Ctrl+Home, caret moves, typing) | 7.5 ms (12.7), 3 frames | 7.5 ms (10.7), 3 frames |
 | type-middle (click, typing) | 8.5 ms (10.1), 3 frames | 8.6 ms (10.6), 3 frames |
 
-`baseline/small` is the same on both sides (typing 2.3-3.3 ms, 2 frames). Open
+Re-run after the rebase onto the Rust 1.98.1 pin (`3f1d9cc2`, both binaries
+built with it, load 0.8-1.5): click 3.8 / 3.5 ms, type-start 8.4 / 7.3 ms,
+type-middle 8.8 / 8.4 ms (3 frames on both sides), open 2008 / 518 ms.
+`baseline/small` is the same on both sides (typing 2.2-3.3 ms, 2 frames). Open
 shows no context-engine stall and no CRITICAL on C1; main logs `Highlighting a
 single line took too much time` and stalls 2 s. Typing in the fixture's short
 paragraphs misses B_interact (8 ms) and the 2-frame input-to-frame budget on
