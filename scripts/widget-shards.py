@@ -443,6 +443,9 @@ DEFAULT_BUILD_JOBS = 4
 RERUN_MARKER = "Widget test run failed on attempt"
 FLAKY_NAME_RE = re.compile(r"^FLAKY: (\S+)$")
 MEMORY_RE = re.compile(r"^widget-memory: peak (\d+) MiB, oom_kill (\d+)$")
+# Runner-level verdicts that fail a shard without failing a test; the summary
+# names them so a red shard with no failed test still says why.
+RUNNER_VERDICTS = ("TEMP-LEAK:", "Error: unexpected warning output")
 
 @dataclass
 class ShardJob:
@@ -466,6 +469,7 @@ class ShardOutcome:
     peak_mib: int | None = None
     oom_kills: int = 0
     relay_failed: bool = False
+    verdicts: list[str] = field(default_factory=list)
     wall_seconds: float = 0.0
     _in_failures: bool = False
 
@@ -483,6 +487,9 @@ class ShardOutcome:
             # never closes it, and the runner's report still follows.
             self._in_failures = False
             self.peak_mib, self.oom_kills = int(match.group(1)), int(match.group(2))
+        elif text.startswith(RUNNER_VERDICTS):
+            self._in_failures = False
+            self.verdicts.append(text)
         elif text == "failures:":
             self._in_failures = True
         elif self._in_failures:
@@ -501,7 +508,7 @@ class ShardOutcome:
             problems.append(f"exited with status {self.status}")
         if self.oom_kills:
             problems.append(f"{self.oom_kills} process(es) OOM-killed in its memory scope")
-        return problems
+        return problems + self.verdicts
 
 
 class ParallelRun:
@@ -894,6 +901,12 @@ def self_test_parallel() -> None:
         for line in ("running 1 tests", "failures:", "    a::one", "widget-memory: peak 70 MiB, oom_kill 1"):
             cut.feed(line, 0.0)
         assert cut.failed == ["a::one"] and cut.peak_mib == 70 and cut.oom_kills == 1, cut
+        # A leak fails the shard with no failed test, and the summary says so.
+        leak = ShardOutcome("a", 1, WidgetLog(["a::one"]))
+        for line in ("running 1 tests", "test a::one ... ok", "TEMP-LEAK: 'w0' left 1 temporary entry behind:"):
+            leak.feed(line, 0.0)
+        leak.status = 1
+        assert leak.failed == [] and any("TEMP-LEAK" in problem for problem in leak.problems()), leak.problems()
         # An OOM kill reported by the runner fails the shard even at status 0.
         oom = [ShardJob("a", ["a::one"], stub(quoted(
             "running 1 tests", "test a::one ... ok", "widget-memory: peak 6100 MiB, oom_kill 1")))]

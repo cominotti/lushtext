@@ -379,7 +379,11 @@ directory per widget child once accumulated 45,978 directories and exhausted
   `gtk-lush-proof-runtime-*` form). A live run is never swept.
 - **Every test lane runs under `scripts/with-temp-scope.sh`**, which gives the
   command a private `TMPDIR`, removes it on every exit, and fails with
-  `TEMP-LEAK:` when anything is left inside it. The check is scoped to its own
+  `TEMP-LEAK:` when anything is left inside it. On Ctrl-C or SIGTERM it records
+  the signal and still waits for the session's services to release the runtime
+  directory before removing the scope (exiting from the trap once raced
+  xdg-document-portal, which recreated `doc/` after the removal), then exits
+  130 or 143. The check is scoped to its own
   run, so parallel runs and CI shards cannot blame one another. `make test`,
   `make test-unit`/`test-int`/`test-prop`, `make fuzz-corpus-replay`,
   `scripts/run-widget-tests.sh` (so every CI widget shard and every shard of a

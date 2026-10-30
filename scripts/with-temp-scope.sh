@@ -164,8 +164,13 @@ run_scoped() {
     scope="$(mktemp -d "$base/lt-scope-$$-$label-XXXXXX")"
     # shellcheck disable=SC2064 # expand the scope path now, not at exit
     trap "rm -rf -- '$scope'" EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+    # Ctrl-C and SIGTERM reach the command too (same process group). Record
+    # them instead of exiting: an exit from the trap skipped the session
+    # release below, and the EXIT trap's `rm -rf` then raced the session's
+    # services, which recreated part of the scope after it was removed.
+    INTERRUPTED=0
+    trap 'INTERRUPTED=130' INT
+    trap 'INTERRUPTED=143' TERM
 
     local status=0
     if [[ "$session_runtime" == true ]]; then
@@ -185,6 +190,11 @@ run_scoped() {
         TMPDIR="$scope" "$@" || status=$?
     fi
 
+    if (( INTERRUPTED != 0 )); then
+        # An interrupted command's leftovers are not a finding; the EXIT trap
+        # removes the scope.
+        return "$INTERRUPTED"
+    fi
     if ! report_leftovers "$label" "$scope"; then
         (( status != 0 )) || status=1
     fi
@@ -218,6 +228,31 @@ self_test() {
         failed=1
     fi
     rm -rf -- "$deep"
+    # Ctrl-C mid-session: the scope still waits for the session's services
+    # (here a detached process that recreates a runtime subdirectory a moment
+    # later, as xdg-document-portal's doc/ mount did) before removing itself,
+    # and reports the interruption as 130.
+    local int_status
+    int_status="$(
+        set -m
+        TMPDIR="$base" "$0" --session-runtime int -- sh -c \
+            'setsid sh -c "sleep 1; mkdir -p \"\$XDG_RUNTIME_DIR/late\"" </dev/null >/dev/null 2>&1 & exec sleep 30' \
+            2>/dev/null &
+        scope_pid=$!
+        sleep 0.5
+        kill -INT -- "-$scope_pid"
+        wait "$scope_pid"
+        echo $?
+    )"
+    sleep 1.5
+    if [[ "$int_status" != 130 ]]; then
+        echo "Error: an interrupted scope exited $int_status, not 130." >&2
+        failed=1
+    fi
+    if [[ -n "$(find "$base" -mindepth 1 -maxdepth 1 -name 'lt-scope-*-int-*' -print -quit)" ]]; then
+        echo "Error: an interrupted scope removed itself before its session's processes exited." >&2
+        failed=1
+    fi
     if TMPDIR="$base" "$0" failing -- false 2>/dev/null; then
         echo "Error: the command's own failure was not propagated." >&2
         failed=1

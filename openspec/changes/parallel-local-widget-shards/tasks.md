@@ -21,11 +21,11 @@
 
 ## 4. Failing-first end-to-end verification
 
-- [ ] 4.1 On a scratch commit (never pushed), add one widget test that always fails to a module of the `editor-page` shard; run `make test-widget`; confirm the `window` and `surfaces` shards complete and pass, the summary names the failing shard and test, the exit status is non-zero, and no `TEMP-LEAK:` line appears; drop the scratch commit.
-- [ ] 4.2 On a scratch commit, make one test leave a file in its `TMPDIR`; confirm the run fails with `TEMP-LEAK:` attributed to that shard's scope; drop the scratch commit.
-- [ ] 4.3 Interrupt a parallel run with Ctrl-C mid-shard; confirm no `lt-scope-*`, `lushtext-test-*`, or session runtime directory remains under the base `TMPDIR` and no `mutter`/`dbus-daemon` of the run survives (`pgrep -x`).
-- [ ] 4.4 Run `make test-widget` three times in a row green with no `FLAKY` or `FLAKY-SHARD` line; any flake found is a blocker fixed by the flake discipline in this change.
-- [ ] 4.5 Confirm `make test-widget-shard WIDGET_SHARD=surfaces` output and exit status match the pre-change behaviour, and that `.github/workflows/ci.yml` is unchanged in the diff.
+- [x] 4.1 On a scratch change (never pushed; an uncommitted edit, because the pre-commit hook requires accessibility and visual smoke artifacts for any widget-test commit and `--no-verify` is not allowed), add one widget test that always fails to a module of the `editor-page` shard; run `make test-widget`; confirm the `window` and `surfaces` shards complete and pass, the summary names the failing shard and test, the exit status is non-zero, and no `TEMP-LEAK:` line appears; drop the scratch commit.
+- [x] 4.2 On a scratch change (as in 4.1), make one test leave a file in its `TMPDIR`; confirm the run fails with `TEMP-LEAK:` attributed to that shard's scope; drop the scratch commit.
+- [x] 4.3 Interrupt a parallel run with Ctrl-C mid-shard; confirm no `lt-scope-*`, `lushtext-test-*`, or session runtime directory remains under the base `TMPDIR` and no `mutter`/`dbus-daemon` of the run survives (`pgrep -x`). The first attempt left two scopes behind; fixed in `with-temp-scope.sh` (design D6, verification finding) with a failing-first self-test.
+- [x] 4.4 Run `make test-widget` three times in a row green with no `FLAKY` or `FLAKY-SHARD` line; any flake found is a blocker fixed by the flake discipline in this change.
+- [x] 4.5 Confirm `make test-widget-shard WIDGET_SHARD=surfaces` output and exit status match the pre-change behaviour, and that `.github/workflows/ci.yml` is unchanged in the diff.
 
 ## 5. Documentation
 

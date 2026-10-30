@@ -188,6 +188,14 @@ starts.
   `systemd-run --scope` execs the command, so the shard's PID and group survive
   it), and waits for each, so each scope's traps release its runtime directory
   and the run leaves no `lt-scope-*` entry behind. It then exits 130 or 143.
+  *Verification finding (task 4.3):* the first interrupted run left two shard
+  scopes behind. `with-temp-scope.sh` exited straight from its INT/TERM trap,
+  skipping the session release, and its EXIT `rm -rf` raced the private
+  session's xdg-document-portal, which recreated `.session-runtime/doc` after
+  the removal. The serial runner had the same defect on Ctrl-C. The scope now
+  records the signal, lets the session release run, and returns 130/143; its
+  self-test reproduces the race with a detached process that recreates a
+  runtime subdirectory after the interrupt.
   A `SIGKILL` of the driver orphans its shards; that is the same as killing the
   serial runner outright, and the next run's stale-entry sweep reclaims the
   directories.
