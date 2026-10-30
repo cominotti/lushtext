@@ -1,0 +1,35 @@
+## 1. Failing-first driver tests (no GTK)
+
+- [ ] 1.1 Add a `parallel` self-test to `scripts/widget-shards.py --self-test` that drives the parallel scheduler with a fake runner (a short shell stub per shard) and asserts, before the scheduler exists: one shard exiting non-zero makes the run exit non-zero while the other shards still complete; the summary names the failed shard and test; a shard that fails once then passes under `--retries 1` exits zero and is reported `FLAKY-SHARD`; a `FLAKY` result line is repeated in the summary; selected counts that do not sum to the total fail the run. Confirm it fails against the current script.
+- [ ] 1.2 Add a self-test that the socket-path guard refuses a base `TMPDIR` whose `lt-scope-<pid>-wN-XXXXXX/.session-runtime/wayland-0` path exceeds 100 bytes, and accepts `/tmp`.
+- [ ] 1.3 Add a `run-widget-tests.sh --self-test` case that `--scope-label` reaches the temp scope's directory name and that the default label stays `widget`.
+
+## 2. Implementation
+
+- [ ] 2.1 Add `--scope-label LABEL` to `scripts/run-widget-tests.sh` (default `widget`), passed to `with-temp-scope.sh`; existing callers unchanged.
+- [ ] 2.2 Add `widget-shards.py parallel [--retries N] [--jobs N] [--measure JSON]`: shared pre-build under `with-memory-cap.sh $WIDGET_BUILD_MEMORY_MAX` with cargo jobs sized to the cap, the existing `--list` cross-check, then one `with-memory-cap.sh $WIDGET_SHARD_MEMORY_MAX run-widget-tests.sh --headless --scope-label wN …` per shard, at most `--jobs` at once.
+- [ ] 2.3 Relay each shard's stream live with a `[<shard>] ` prefix, write `target/widget-parallel/<shard>.log`, feed each shard's `WidgetLog`, and print the closing summary table, the repeated `FLAKY` lines, and `FLAKY-SHARD` lines on stderr.
+- [ ] 2.4 Implement per-shard rerun for `--retries N` in a fresh scope, the count assertions (per shard and summed), and the nested-cap notice when `LUSHTEXT_MEMORY_CAP_KIB` is already set.
+- [ ] 2.5 Handle `SIGINT`/`SIGTERM`: signal every shard's process group, wait for each, and exit 130/143 only after every scope's trap has run.
+- [ ] 2.6 Wire the Makefile: `test-widget`, `test-widget-headless`, and the widget half of `test` call `widget-shards.py parallel` unless `WIDGET_PARALLEL=0`, which keeps today's `CARGO_TEST_WIDGET` / `CARGO_TEST_WIDGET_HEADLESS` commands; add `WIDGET_PARALLEL`, `WIDGET_PARALLEL_JOBS`, `WIDGET_SHARD_MEMORY_MAX`, `WIDGET_BUILD_MEMORY_MAX` with comments; leave `test-widget-shard` untouched.
+- [ ] 2.7 Run `./scripts/widget-shards.py check --self-test`, `./scripts/run-widget-tests.sh --self-test`, `make check-temp-scope`, and `make check-widget-shards`; all green, and the 1.x self-tests now pass.
+
+## 3. Measurement
+
+- [ ] 3.1 Run `make test-widget WIDGET_PARALLEL=0` once and `make test-widget` once on the reference workstation, both with nothing else heavy admitted; record wall times, per-shard wall times, and host load. Query `btrfs-stall-report` over any slow stretch.
+- [ ] 3.2 Record each shard's peak memory (scope `memory.peak`) over three parallel runs and set the `WIDGET_SHARD_MEMORY_MAX` default to the largest peak times 1.5, rounded up to a whole GiB; record the figures in the Makefile comment and `build.md`.
+
+## 4. Failing-first end-to-end verification
+
+- [ ] 4.1 On a scratch commit (never pushed), add one widget test that always fails to a module of the `editor-page` shard; run `make test-widget`; confirm the `window` and `surfaces` shards complete and pass, the summary names the failing shard and test, the exit status is non-zero, and no `TEMP-LEAK:` line appears; drop the scratch commit.
+- [ ] 4.2 On a scratch commit, make one test leave a file in its `TMPDIR`; confirm the run fails with `TEMP-LEAK:` attributed to that shard's scope; drop the scratch commit.
+- [ ] 4.3 Interrupt a parallel run with Ctrl-C mid-shard; confirm no `lt-scope-*`, `lushtext-test-*`, or session runtime directory remains under the base `TMPDIR` and no `mutter`/`dbus-daemon` of the run survives (`pgrep -x`).
+- [ ] 4.4 Run `make test-widget` three times in a row green with no `FLAKY` or `FLAKY-SHARD` line; any flake found is a blocker fixed by the flake discipline in this change.
+- [ ] 4.5 Confirm `make test-widget-shard WIDGET_SHARD=surfaces` output and exit status match the pre-change behaviour, and that `.github/workflows/ci.yml` is unchanged in the diff.
+
+## 5. Documentation
+
+- [ ] 5.1 Update `.agents/rules/build.md` (Dev Builds list, the CI widget-shard paragraph's "`make test` and `make test-widget` still run the whole suite in one session" sentence, Temporary Files "every test lane" list, and the heavy-command wrapping note).
+- [ ] 5.2 Update `AGENTS.md` (Build Commands entries for `make test-widget`/`test-widget-headless`, the Testing section's widget paragraph) and `README.md` test commands.
+- [ ] 5.3 Update `.agents/skills/gtk-testing/SKILL.md` and `.agents/skills/gtk-testing/references/widget-testing.md` where they describe running the widget suite locally, and the `widget-shards.py` module docstring.
+- [ ] 5.4 Run `make check-agent-docs` and `openspec validate parallel-local-widget-shards --strict`.
