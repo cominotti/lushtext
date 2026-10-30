@@ -1,0 +1,21 @@
+## ADDED Requirements
+
+### Requirement: The post-open toolkit costs are ledger axioms
+The ledger SHALL record five axioms, provisionally S1–S5, with the next free ids at the time they are applied. A42–A45 belong to `document-scale-policy`, A46–A51 are applied, and `long-line-protected-view` reserves P1–P8.
+
+- **S1.** A GtkSourceView language whose definition embeds others (HTML) parses its definitions when it is first attached to a buffer, and the cost of that parse, recorded per language. Whether the parsed definitions are shared through the language object across buffers. Whether a private language manager and a buffer created, attached and used on a worker thread, and then handed to the GTK thread and used only there, attach without any GDK, style-manager or main-context access on the worker.
+- **S2.** The cost of `set_highlight_syntax(true)` against buffer size, with a language attached. The cost of attaching a language to an empty buffer followed by sliced inserts, and the highlight idles those inserts schedule.
+- **S3.** The context engine's background analysis runs in idle dispatches of a fixed slice that the application cannot configure, with the slice constant cited from the GtkSourceView source of the verified version.
+- **S4.** GtkTextView's validation dispatch after an insert lays out only the inserted, invalid lines, and its cost grows with their visible characters, in either wrap mode. This extends A31 to inserted lines.
+- **S5.** Whether the first write of a keyfile-backend settings file that does not exist yet makes the backend's file monitor reload it and emit `changed` on other instances, including GTK's own settings. This extends A41 to a fresh profile.
+
+Each entry SHALL be pinned by an isolated `gtk-lush-axioms` probe, with a sample that has an interactive and a `--check` mode. A probe that records costs SHALL record magnitudes, never a verdict. The post-open settle design SHALL cite the ids.
+
+#### Scenario: The post-open axioms are probed
+- **WHEN** `make gtk-axioms` runs
+- **THEN** the S1–S5 probes run under the private headless session, and any CRITICAL or WARNING they provoke fails the lane unless the probe captures it on purpose
+- **AND** `make check-gtk-axioms` finds the ledger, catalogue, probes and samples in agreement
+
+#### Scenario: The language parse cannot leave the GTK thread
+- **WHEN** the S1 probe shows that the worker handoff touches GDK, the style manager or a main context, or that the parsed definitions are not shared through the language object
+- **THEN** the language attach stays a GTK dispatch, and its cost is recorded as a residual for the maintainer before any worker attach is implemented
