@@ -102,7 +102,9 @@ Notes:
   `baseline/empty` now draws no frame (input-to-frame not measured). Scroll input-to-frame on
   every document is 20.1–25.0 ms. That is the lane's double-buffered 120 Hz floor (16.7–19.3 ms)
   plus a full-screen paint. No document size or post-open state moves it. It is
-  `long-line-evolution.md` candidate 5 (a presentation-capable lane), not C6 (Open Question 3).
+  `long-line-evolution.md` candidate 5 (a presentation-capable lane), not C6. Coordinator
+  decision 2026-10-30: input-to-frame is reported, not gated, and the floor is documented
+  (D8).
 - **The lane's phase boundary is unreliable for post-open work (pre-existing).** `open` ends
   when `file-open-complete` is true. In 9 of 85 repetitions (`a2`: 5 of 34, `a3`: 4 of 51)
   that was before the activation's open had finished, so the activation turn and the first
@@ -127,16 +129,17 @@ Notes:
   source.
 - Dense documents of short lines stay editable, and their post-open validation stays within
   the budget (the C2 handoff).
+- On a dense editable document, a user-started invalidation (word-wrap toggle, zoom step, font
+  change) re-validates in dispatches of at most `B_settle`, and its own interaction dispatch
+  stays within `B_interact`. This was added by coordinator decision 2026-10-30 (D9).
 
 **Non-Goals:**
 
 - Pango layout of giant paragraphs, Protected View, and the recovery of giant single-line
   drafts: C2 (D13), with the residual insert going to C3.
 - Window construction and composition: C4/C4b/C4c, all met.
-- Invalidations the user starts on dense documents (word-wrap toggle, zoom, font, tab-width
-  preference). These are interactions. Their cost is GtkTextView's 2000 px batch (A31), and
-  they are recorded as a residual with a candidate owner (Open Question 4).
-- The lane's input-to-frame floor (Open Question 3).
+- Gating input-to-frame. The headless lane's double-buffered floor (D8) makes the 2-frame
+  limit unmeasurable there, so it stays with `long-line-evolution.md` candidate 5.
 - Patching GtkSourceView or GTK. Upstream reports are filed instead.
 
 ## Decisions
@@ -211,10 +214,26 @@ The decision has two stages.
    manager, does the parse run on the worker. The throwaway buffer is then kept for the
    process lifetime per language used, which bounds memory by the number of languages.
 
-   If S1 fails, the parse stays a GTK dispatch of 36–40 ms for HTML. It is recorded as an
-   over-budget residual with an upstream report (a parse that can be split or run ahead), and
-   the maintainer decides (Open Question 2). The same precedent was used for C4b's A46 realize
-   floor.
+   **If S1 fails (coordinator decision 2026-10-30).** The parse stays one GTK dispatch, 36–40
+   ms for HTML once per language per process, but it is moved where input cannot be waiting
+   behind it.
+
+   The attach stage then runs from a `G_PRIORITY_LOW` idle, so no input event source can be
+   ready when it is dispatched, events being `G_PRIORITY_DEFAULT`. It runs only after the
+   document's first editor frame, and only once `INPUT_QUIET` has passed with no input event on
+   the window. `INPUT_QUIET` is a named constant in the settle policy, two reference frames,
+   derived from `REFERENCE_FRAME_US`. The window's capture-phase input timestamp is the source.
+   Input that arrives during the parse waits for it, which no scheduling can prevent.
+
+   The parse is recorded as a **toolkit-floor exception** against axiom S1, never accepted
+   silently. This follows the precedent C4b set for A46's realize floor. The record holds:
+   - the measured parse cost per language on the reference machine;
+   - the lane case that shows it as the only post-open dispatch over `B_settle`;
+   - the drafted upstream report
+     (`.claude/handoffs/c6-upstream-gtksourceview-language-parse.md`: a language whose
+     definitions can be parsed ahead of attach, or off the GTK thread).
+
+   The verdict reports that dispatch separately and gates every other dispatch.
 
 *Alternatives rejected:*
 
@@ -241,7 +260,7 @@ The publish order is then chosen so that no publish step is O(document):
 A pure function in the load policy, `highlight_attach_plan(size_check, scale)`, records which
 order applies.
 
-### D4. Background highlighting: a measured total-size gate (maintainer decision)
+### D4. Background highlighting: a measured total-size gate (coordinator decision 2026-10-30)
 
 GtkSourceView's context engine analyses in idle slices whose length is a compile-time constant
 in GtkSourceView. The measured dispatches are 40–47 ms. Axiom **S3** pins this with the slice
@@ -252,7 +271,8 @@ A document whose full analysis needs more than the first slice therefore stalls 
 per slice. The 16 kB HTML document did not; the 1 MB one did, four times, and so did the 5 MB
 one. Those stalls also come between scroll events: 47 ms, input-to-frame 52 ms.
 
-The decision proposed for the maintainer is to measure `S_BG_HIGHLIGHT`: the largest
+Budgets are never relaxed (coordinator decision 2026-10-30; the maintainer may override).
+LushText measures `S_BG_HIGHLIGHT`: the largest
 short-line `.html` total size whose background analysis keeps every dispatch within `B_settle`.
 It is bisected on the lane in the same way as C0's thresholds. Above it:
 
@@ -263,12 +283,13 @@ This needs a total-size component in C1's `DocumentScale`, as a policy input nex
 paragraph profile. If C1 is still unmerged, the edit is made on C1's branch. C1's Kani
 monotonicity and meet harnesses are re-run unchanged in statement.
 
-An upstream report asks GtkSourceView for a configurable slice or a deadline-aware worker. If
-that lands, the gate is revisited.
+An upstream report, drafted at `.claude/handoffs/c6-upstream-gtksourceview-worker-slice.md`
+for the maintainer to file, asks GtkSourceView for a configurable slice or a deadline-aware
+worker. If that lands, the gate is revisited.
 
 *Alternatives:*
 
-- Accepting 40–47 ms slices for large HTML. This breaks the budget; it needs the maintainer.
+- Accepting 40–47 ms slices for large HTML. Rejected: budgets are not relaxed.
 - Highlighting only the visible region. GtkSourceView has no public API for it.
 - Running our own tokenizer. Out of scope.
 
@@ -320,11 +341,10 @@ shrink the batch, but it controls which lines are invalid when a batch runs.
      the install. The read completion waits for the resolution, which is a bounded walk over
      `.editorconfig` files done by a worker. The formatting is applied while the buffer is
      still empty. If the resolution has not returned by the time the install would start (a
-     slow filesystem), the install does not wait. The formatting is applied after publish,
-     and the one revalidation that causes is recorded in the load evidence.
-3. **Residual.** Invalidations started by the user on a dense editable document pay
-   GtkTextView's batch cost. They are not post-open settle and are recorded with a candidate
-   owner (Open Question 4).
+     slow filesystem), the install does not wait. The formatting is applied after publish:
+     through D9's paced mechanism on a dense document, directly on any other.
+3. **User-started invalidations** (word wrap, zoom, font, tab width) on dense documents are
+   C6's too, through D9.
 
 Kani: the two-budget boundary gets harnesses in `model/buffer_replacement/kani_proofs.rs`
 (declared `#[cfg(kani)] mod kani_proofs;`). They go in a new shard `core-post-open-settle`,
@@ -359,7 +379,8 @@ LushText span yet.
 ### D8. The verdict
 
 The verdict is measured the same way as C4c's verdict. It runs under the lock protocol
-(`flock -x` for the measurement, builds `flock -s`) and the quiet gate. The reference
+(rev 2: the measurement runs as `flock -x INTENT flock -x LOCK`, builds as
+`flock -s INTENT true && flock -s LOCK`) and the quiet gate. The reference
 precondition is recorded, never assumed.
 
 - **Interleaved:** `main`, branch, `main`, branch, each a release `responsiveness-probes`
@@ -379,33 +400,130 @@ precondition is recorded, never assumed.
   - new: `session/restore-3-small` (three 16 kB documents);
   - new: `recovery/small-drafts` (two 64 kB file-backed drafts).
 - **Phases:** `open`; `background` until `document-settled`; `type-during-settle`; `scroll`.
+  On the `dense` cases there are also three new phases: `wrap-toggle`, `zoom-step`
+  (`win.zoom-in`) and `font-change` (the custom-font key). Each runs until `document-settled`,
+  and its interaction dispatch and every later dispatch are recorded.
   `type-during-settle` is a new phase: from load readiness, inject one key every 50 ms into
   the document until `document-settled`, and record each key's dispatch latency (compositor
   event time to handler, from the probe's input records).
 - **Met when**, on the branch, in every profile and repetition:
   - every dispatch from the activation turn until `document-settled` is at most `B_SETTLE_US`;
   - every `type-during-settle` key is dispatched within `B_INTERACT_US`;
+  - every `wrap-toggle`, `zoom-step` and `font-change` interaction dispatch is within
+    `B_INTERACT_US`, and every dispatch after it, until settled, is within `B_SETTLE_US`;
   - no post-open stage's span is larger than on `main`.
 
-  Each over-budget dispatch on `main` is listed with its source. Input-to-frame is reported,
-  not gated (Open Question 3).
+  Each over-budget dispatch on `main` is listed with its source. The only dispatch exempted
+  from the `B_SETTLE_US` condition is a toolkit-floor exception: D2's language parse, or D9's,
+  if their probes fail. It is reported on its own line with its axiom id and upstream draft.
 
-  If the maintainer chooses to accept D4's slices instead of a gate, the HTML cases above the
-  threshold are reported as an accepted residual.
+- **Input-to-frame is reported, not gated** (coordinator decision 2026-10-30). The lane's
+  floor is documented in the report and in `docs/next/long-line-documents.md`:
+  - headless Mutter with the cairo renderer double-buffers at 120 Hz;
+  - an input that lands just after a frame starts waits one frame for the next frame and one
+    more to be presented, 16.7–19.3 ms;
+  - a full-screen paint adds 5–7 ms on an idle machine, so every scroll measures 20–25 ms on
+    any document, whatever its size or post-open state (`a3`: 20.1–25.0 ms).
+
+  The 2-frame limit stays with `long-line-evolution.md` candidate 5 (a presentation-capable
+  lane). The report prints each case's input-to-frame next to that floor.
+
+### D9. User-started invalidations on dense documents are paced (coordinator decision 2026-10-30)
+
+GtkTextView invalidates **every** line when the view's default text style changes:
+- a default-style property (`wrap-mode`, `tabs`, margins: A37);
+- a CSS change of the view's font. Zoom (`ui/window/zoom.rs`) and the font preference both
+  restyle `.monospace`.
+
+On a dense document every 2000 px validation batch then costs up to 21.6 ms (dense 710
+wrap-off), and the whole document is revalidated batch by batch. C6 bounds this with the same
+rule as D6: **never more than `V_SLICE` visible characters of invalid lines at a time**.
+
+**Which documents.** A document is *dense* when some window of `R_BATCH` consecutive
+paragraphs holds more than `V_SLICE` visible characters. A pure predicate decides it,
+`batch_exceeds_slice`, over C1's paragraph profile, computed on the load or replacement worker
+beside it. Every other document keeps today's direct property changes, which are within
+budget.
+
+**Two candidate mechanisms.** Axiom probe **S6** decides between them before task 7.
+
+- **A, a tag-carried document style (preferred).** A dense document's text carries one
+  lowest-priority `GtkTextTag`. It holds the properties that would otherwise be view-wide:
+  `wrap-mode`, `tabs`, `family` and `size` (the zoomed font). The tag is applied as each
+  install slice is inserted, so it adds no invalidation, and tag changes do not dirty the
+  buffer (A27).
+
+  The view of a dense document is taken out of the `.monospace` zoom and font CSS: its own
+  font is fixed, so a restyle invalidates nothing. A user change then re-tags the document
+  range by range:
+  - two tags alternate, old and new;
+  - each dispatch moves at most `V_SLICE` visible characters of paragraph-aligned text from the
+    old tag to the new one;
+  - the visible paragraphs go first, then outward.
+
+  Each re-tag invalidates only its range. That range's validation runs in the next frame's
+  layout, because `frame_validation.rs` already queues the allocation after tag changes (A37).
+  Text inserted at a tagged run's edge is untagged (A25), so the insert handler applies the
+  current tag to it.
+
+  S6 must show:
+  - the tag's `wrap-mode`, `tabs`, `family` and `size` lay out exactly like the view
+    properties;
+  - re-tagging a range invalidates only that range;
+  - a view outside the zoom CSS keeps its gutter and line numbers usable.
+
+  The gutter is the known risk: GtkSourceView's line-number renderer uses the view's font.
+- **B, hide and reveal (fallback).** In the interaction dispatch, the paragraphs outside the
+  visible window are hidden with an `invisible` tag. Hidden text adds no layout (A24). Then the
+  view property or CSS changes, and the paragraphs are revealed outward in `V_SLICE` ranges.
+  S6 must show that hiding and revealing keep the scroll anchor and the insert mark in place.
+  It must also show what find and accessibility see during the reveal: A33 means
+  `visible-only` search skips hidden text, and A35 covers the AT-SPI text of hidden ranges.
+
+  B is used only if A fails S6.
+
+**The interaction contract.**
+- The dispatch that handles the user's action takes at most `B_interact`. It records the
+  change and schedules the first range.
+- The first frame showing the change on the visible paragraphs fits `B_settle`.
+- Every later re-tag or reveal dispatch fits `B_settle` and runs at `G_PRIORITY_LOW`, so input
+  goes first.
+- A second change while a re-tag is running supersedes it. The plan restarts from the visible
+  window with the newest values, as a generation-guarded continuation (`rust.md`'s
+  coordination vocabulary).
+
+The plan, `restyle_ranges(profile, visible, v_slice)`, is a pure function in the load
+workflow's `policy.rs`. It has Kani harnesses in the same shard as D6's:
+- exact coverage;
+- visible paragraphs first;
+- each range within `V_SLICE` except a single over-budget paragraph (C2's);
+- no range split inside a paragraph.
+
+If neither A nor B passes S6, the user-started invalidation on dense documents is recorded as
+a toolkit-floor exception against S6, with numbers and a drafted upstream report on
+GtkTextView's batch size. This follows the same pattern as D2.
 
 ## Risks / Trade-offs
 
-- **[S1 fails: the definition parse cannot leave the GTK thread]** → D2 moves the parse to its
-  own dispatch after the first frame. It is still about 37 ms for HTML once per process, and is
-  recorded and escalated (Open Question 2). The activation turn and every other stage still
-  meet the budget.
+- **[S1 fails: the definition parse cannot leave the GTK thread]** → D2 moves the parse to a
+  `G_PRIORITY_LOW` idle after the first frame and after `INPUT_QUIET` with no input. It is
+  still about 37 ms for HTML once per language per process, recorded as a toolkit-floor
+  exception against S1, with a drafted upstream report. The activation turn and every other
+  stage still meet the budget.
 - **[The thread-confined language catalog violates a GtkSourceView assumption]** → S1 probes
   the exact handoff, under a CRITICAL-failing lane (`run-gtk-axioms.sh`). The catalog is built
   only after the first frame, so a fallback to the default manager costs one dispatch, never
   correctness.
-- **[`S_BG_HIGHLIGHT` reduces highlighting on large HTML]** → user-visible, so it is a
-  maintainer decision. The reduction is shown by C1's existing notice. Upstream may make it
-  unnecessary.
+- **[`S_BG_HIGHLIGHT` reduces highlighting on large HTML]** → user-visible. The coordinator
+  decided it (budgets are never relaxed), and the maintainer may override. The reduction is
+  shown by C1's existing notice, and the upstream draft may make it unnecessary.
+- **[D9's tag-carried style takes dense views out of the zoom and font CSS]** → the gutter's
+  line numbers use the view font. S6 checks that they stay usable. If they do not,
+  hide-and-reveal (B) is used, and if that fails too, a toolkit-floor exception is recorded.
+  The predicate `batch_exceeds_slice` keeps every other document on the plain property path.
+- **[A user changes wrap, zoom or font again while a re-tag is running]** → the newest change
+  supersedes, and the plan restarts from the visible window. Generation guards keep a stale
+  range from applying old values.
 - **[Visible-character slicing makes dense installs take more turns]** → each slice is bounded
   and the editor stays non-editable during install, as today. A dense 113 kB document takes
   about 4 slices of about 3 ms instead of one 1.8 ms turn followed by 21.6 ms and 14 ms of
@@ -431,29 +549,34 @@ There are no data, settings or format changes. Implementation order:
 6. the slice plan;
 7. overscroll;
 8. the EditorConfig join;
-9. the background gate (after the maintainer decision);
-10. lane;
-11. verdict.
+9. the background gate;
+10. paced user-started invalidations (D9, after S6);
+11. lane;
+12. verdict.
 
-Each step is a separate commit, and the lane is re-run after steps 4, 6 and 9. Rollback is
+Each step is a separate commit, and the lane is re-run after steps 4, 6, 9 and 10. Rollback is
 per commit. The language catalog has a fallback to `LanguageManager::default()` behind one
 function.
 
+## Resolved questions (coordinator, 2026-10-30; the maintainer may override)
+
+1. **Background highlighting of large HTML (D4).** Budgets are never relaxed. Above the
+   measured `S_BG_HIGHLIGHT`, highlighting is reduced through `DocumentScale` with the reason
+   `TotalSize`. The GtkSourceView upstream report is drafted in `.claude/handoffs/` for the
+   maintainer to file.
+2. **If the language parse cannot leave the GTK thread (D2).** Attach is deferred to a
+   `G_PRIORITY_LOW` idle after the first frame and `INPUT_QUIET`. The parse is recorded as a
+   toolkit-floor exception against S1, with measured numbers and a drafted upstream report,
+   following the A46 precedent.
+3. **Input-to-frame (D8).** Reported, not gated. The double-buffered floor is documented.
+4. **User-started invalidations on dense documents (D9).** C6 owns them through the same
+   bounded validation rule, with a scenario each for word wrap, zoom and font.
+5. **C1 merge order.** If C1 is unmerged when C6 is implemented, the total-size component and
+   the `ReductionReason::TotalSize` edit land on C1's branch, and C1's harnesses are re-run
+   there.
+
 ## Open Questions
 
-1. **Background highlighting of large HTML (D4).** Gate highlighting above a measured
-   `S_BG_HIGHLIGHT` (proposed), or accept GtkSourceView's 40–47 ms slices as a recorded
-   residual until upstream changes? A maintainer decision, before task 7.
-2. **If S1 shows the definition parse cannot leave the GTK thread**, accept one ~37 ms dispatch
-   per language per process (first HTML open) as a recorded residual, or defer highlighting of
-   such languages until the first input-quiet second?
-3. **Input-to-frame.** C0's gate kept "2 reference frames". The headless lane's
-   double-buffered floor plus a full-screen paint puts every scroll at 20–25 ms on any
-   document, independent of post-open work. C6 proposes to report input-to-frame and gate input
-   dispatch latency instead, leaving the frame limit to a presentation-capable lane
-   (`long-line-evolution.md` candidate 5). Does the maintainer agree?
-4. **Dense documents after a user-started invalidation** (word wrap, zoom, font, tab width).
-   These pay GtkTextView's 2000 px batch (21.6 ms at dense 710 wrap-off). Own it in C5
-   (`explore-editing-long-paragraphs`), in a separate change, or accept it?
-5. **C1 merge order.** D4 and the C1 harness re-run assume C1 merges first. If C6 is implemented
-   before C1, the total-size component lands on C1's branch.
+1. Whether S6 selects mechanism A or B for D9, and whether either passes, is decided by the
+   probe in task 2.6. Neither outcome needs a new decision, because the fallback chain ends in a
+   recorded toolkit-floor exception.

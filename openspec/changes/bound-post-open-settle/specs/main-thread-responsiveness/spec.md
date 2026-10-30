@@ -20,7 +20,7 @@ An input event delivered during settle SHALL be dispatched within `B_INTERACT_US
 #### Scenario: An HTML document opens without a language-definition stall
 - **WHEN** the first HTML document of a process is opened
 - **THEN** the activation dispatch does not parse the language definition
-- **AND** every dispatch until the document is settled takes at most `B_SETTLE_US`, or the language-definition parse is recorded as the single accepted residual the maintainer decided
+- **AND** every dispatch until the document is settled takes at most `B_SETTLE_US`, except a language-definition parse recorded as a toolkit-floor exception against its ledger axiom
 
 #### Scenario: Typing during settle is not starved
 - **WHEN** keys are typed into a document from its load readiness until it is settled
@@ -33,9 +33,16 @@ An input event delivered during settle SHALL be dispatched within `B_INTERACT_US
 ### Requirement: Language attach stays out of the activation dispatch
 The language catalog SHALL be built off the GTK thread and handed to it, and every LushText use of a GtkSourceView language manager SHALL go through that catalog. Guessing a document's language from its path SHALL run on a worker and return a language id. Attaching the language to the document's buffer SHALL run in its own dispatch after the document's first editor frame. It SHALL run off the GTK thread only where the ledger's language-parse axiom shows that this is sound.
 
+Where it cannot, the attach SHALL run from a `G_PRIORITY_LOW` idle, and only after the named input-quiet interval has passed with no input event on the window. Its cost SHALL be recorded as a toolkit-floor exception against that axiom, with measured numbers and a drafted upstream report.
+
 #### Scenario: The first open of a process does not load the language list
 - **WHEN** the first document of a process is opened
 - **THEN** the activation dispatch neither loads the language list nor guesses a language
+
+#### Scenario: The language parse cannot leave the GTK thread
+- **WHEN** the ledger's language-parse axiom shows that the definition parse must run on the GTK thread, and an HTML document is opened while the user is typing
+- **THEN** the attach waits until no input event has arrived for the input-quiet interval, and runs from a low-priority idle
+- **AND** the programme record lists the parse as a toolkit-floor exception with its axiom id, cost and upstream report
 
 #### Scenario: The language attaches after the first frame
 - **WHEN** a document with a recognised language opens
@@ -43,16 +50,43 @@ The language catalog SHALL be built off the GTK thread and handed to it, and eve
 - **AND** a later load, reload or rename of the same editor replaces any pending attach, so a stale language is never attached
 
 ### Requirement: Highlighting attach and background analysis are bounded
-Publishing an installed document SHALL NOT turn on syntax highlighting in a dispatch whose cost grows with the document. Above the measured total-size threshold `S_BG_HIGHLIGHT`, if the maintainer adopts it, the document scale SHALL reduce syntax highlighting, with the reduction reason `TotalSize` shown as for the other reductions.
+Publishing an installed document SHALL NOT turn on syntax highlighting in a dispatch whose cost grows with the document. Above the measured total-size threshold `S_BG_HIGHLIGHT`, the document scale SHALL reduce syntax highlighting, with the reduction reason `TotalSize` shown as for the other reductions. The budgets are not relaxed for background analysis.
 
 #### Scenario: A large HTML document publishes without a document-sized dispatch
 - **WHEN** a 5 MB short-line HTML document finishes its sliced installation
 - **THEN** the publish dispatch takes at most `B_SETTLE_US`
 
 #### Scenario: A document above the background-highlight threshold
-- **WHEN** an HTML document larger than `S_BG_HIGHLIGHT` is opened, with the threshold adopted
+- **WHEN** an HTML document larger than `S_BG_HIGHLIGHT` is opened
 - **THEN** syntax highlighting is reduced with the reason `TotalSize`
 - **AND** no background-analysis dispatch runs for it
+
+### Requirement: User-started invalidations on dense documents are paced
+On a document where some window of consecutive paragraphs that one validation batch can cover holds more than `V_SLICE` visible characters, a user-started change of word wrap, zoom, font or tab width SHALL NOT leave more than `V_SLICE` visible characters of invalid lines for one validation dispatch.
+
+The interaction dispatch that handles the change SHALL take at most `B_INTERACT_US`. The visible paragraphs SHALL be updated first, in a frame whose dispatch takes at most `B_SETTLE_US`. The rest of the document SHALL be updated outward, in paragraph-aligned ranges, in low-priority dispatches of at most `B_SETTLE_US` each. A newer change SHALL supersede the running one and restart from the visible paragraphs.
+
+The mechanism is the one the ledger's restyle axiom selects. If none passes, the cost SHALL be recorded as a toolkit-floor exception against that axiom.
+
+#### Scenario: Toggling word wrap on a dense document
+- **WHEN** the user toggles word wrap on a document of 710-character lines
+- **THEN** the toggle's dispatch takes at most `B_INTERACT_US`, the visible paragraphs show the new wrapping in the next frame, and every later dispatch until the document is settled takes at most `B_SETTLE_US`
+
+#### Scenario: Zooming a dense document
+- **WHEN** the user zooms in on a document of 710-character lines
+- **THEN** the zoom's dispatch takes at most `B_INTERACT_US`, the visible paragraphs show the new size first, and every later dispatch until the document is settled takes at most `B_SETTLE_US`
+
+#### Scenario: Changing the font of a dense document
+- **WHEN** the user changes the editor font while a document of 710-character lines is open
+- **THEN** no dispatch caused by the change in that editor takes more than `B_SETTLE_US`, and the visible paragraphs are updated first
+
+#### Scenario: A second change during a paced update
+- **WHEN** the user toggles word wrap again before the previous toggle has reached every paragraph
+- **THEN** the earlier update stops without applying its remaining ranges, and the newest setting is applied from the visible paragraphs outward
+
+#### Scenario: A document that is not dense keeps the direct path
+- **WHEN** the user toggles word wrap on a document with no window over `V_SLICE` visible characters
+- **THEN** the view property changes directly, as today
 
 ## MODIFIED Requirements
 

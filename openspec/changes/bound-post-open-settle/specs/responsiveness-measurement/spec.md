@@ -9,7 +9,7 @@ It SHALL also record a mark for each GtkSourceBuffer `highlight-updated` and for
 
 The lane SHALL report a post-open settle table. For every case and repetition, it lists every dispatch from the activation turn until `document-settled`, at least 1 ms long, with the stage that contains it. A dispatch that no span covers SHALL be attributed to highlighting or validation when it ends at the matching mark, and otherwise reported as unattributed. The table SHALL be read by span, not by the `open`/`background` phase boundary, because `file-open-complete` can hold before the activation's opens run.
 
-The background phase SHALL last until the app reports `document-settled`, capped. A cap hit SHALL be a failed phase. A `type-during-settle` phase SHALL inject one key every 50 ms, from load readiness until `document-settled`, and report each key's dispatch latency from its compositor event time to its handler.
+The background phase SHALL last until the app reports `document-settled`, capped. A cap hit SHALL be a failed phase. A `type-during-settle` phase SHALL inject one key every 50 ms, from load readiness until `document-settled`, and report each key's dispatch latency from its compositor event time to its handler. On the dense cases, `wrap-toggle`, `zoom-step` and `font-change` phases SHALL each run until `document-settled` and record their interaction dispatch and every later dispatch.
 
 #### Scenario: A post-open stall is attributed
 - **WHEN** a post-open dispatch exceeds `B_SETTLE_US`
@@ -40,12 +40,18 @@ The verdict is met when, on the branch, in every profile and repetition:
 - every `type-during-settle` key is dispatched within `B_INTERACT_US`;
 - no post-open stage is slower than on `main`.
 
-Input-to-frame SHALL be reported and not gated, unless the maintainer decides otherwise. The verdict, run ids, load, storage evidence and toolkit versions SHALL be recorded in `docs/next/long-line-documents.md`.
+A dispatch recorded as a toolkit-floor exception against a ledger axiom SHALL be reported on its own line, with the axiom id and upstream report, and SHALL be exempt from the `B_SETTLE_US` condition only.
+
+Input-to-frame SHALL be reported and not gated. The report and the programme record SHALL document the headless lane's floor: double-buffered 120 Hz presentation (16.7–19.3 ms) plus a full-screen paint. Each case's input-to-frame SHALL be printed next to that floor. The verdict, run ids, load, storage evidence and toolkit versions SHALL be recorded in `docs/next/long-line-documents.md`.
 
 #### Scenario: The verdict is met
 - **WHEN** every branch case meets the three conditions in every profile and repetition
 - **THEN** the programme record marks C6's gate as met and cites the interleaved run ids
 
-#### Scenario: A residual is accepted by the maintainer
-- **WHEN** a dispatch over `B_SETTLE_US` remains and the maintainer accepts it
-- **THEN** the record lists it with its stage, size, the maintainer decision with its date, and the upstream report
+#### Scenario: A toolkit-floor exception remains
+- **WHEN** a dispatch over `B_SETTLE_US` remains and its probe shows that LushText cannot split or move it
+- **THEN** the record lists it as a toolkit-floor exception with its stage, size, axiom id and drafted upstream report, and every other dispatch is still gated
+
+#### Scenario: Input-to-frame sits on the lane floor
+- **WHEN** a case's input-to-frame exceeds two reference frames
+- **THEN** the report shows it beside the documented floor, and the verdict does not fail on it
