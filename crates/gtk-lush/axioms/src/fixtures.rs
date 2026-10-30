@@ -256,6 +256,64 @@ pub mod a45 {
     pub use crate::probes::a45::{FRAMES_WAITED, TickPair};
 }
 
+/// The fixtures the post-open settle probes (A52–A58) share, for their
+/// samples.
+pub mod post_open {
+    pub use crate::probes::post_open::{
+        DENSE_LINE_CHARS, DENSE_LINES, DenseView, FrameCounter, HALF_SETTLE_US, REFERENCE_WINDOW,
+        SHORT_LINE_MAX, TimedDispatch, dense_text, short_document, short_html, short_json,
+        short_markdown, short_rust, timed_drain,
+    };
+}
+
+/// The values and helpers the A52 probe drives, for its sample.
+pub mod a52 {
+    pub use crate::probes::a52::{
+        LANGUAGES, SNIPPET, attach_costs, highlighted_buffer, snippet_tags, tagged_characters,
+        worker_buffer_scheme, worker_catalog,
+    };
+}
+
+/// The values and helpers the A53 probe drives, for its sample.
+pub mod a53 {
+    pub use crate::probes::a53::{
+        HighlightUpdates, INSERT_SLICE, INSERTED_TOTAL, TOGGLE_SIZES, html_buffer, insert_run,
+        toggle_run,
+    };
+}
+
+/// The values and helpers the A54 probe drives, for its sample.
+pub mod a54 {
+    pub use crate::probes::a54::{
+        B_SETTLE_US, DERIVATION_BRACKET, DERIVATION_PRECISION_PERCENT, DERIVATION_REPETITIONS,
+        DOCUMENT_BYTES, HighlightFixture, all_fit, bisect_bytes, engine_dispatches, priority_trace,
+    };
+}
+
+/// The fixture and values the A55 probe drives, and the `V_SLICE`
+/// bisection its sample runs.
+pub mod a55 {
+    pub use crate::probes::a55::{
+        CURVE_LINES, DERIVATION_CAP_LINES, DERIVATION_REPETITIONS, PACED_INSERTS,
+        ValidationFixture, bisect_lines, pacing_run,
+    };
+}
+
+/// The helpers the A56 probe drives, for its sample.
+pub mod a56 {
+    pub use crate::probes::a56::{FIRST_VALUE, first_write};
+}
+
+/// The fixture and values the A57 probe drives, for its sample.
+pub mod a57 {
+    pub use crate::probes::a57::{DisplayCss, NEW_ZOOM, ZOOM, document, document_tag, style_css};
+}
+
+/// The fixture and values the A58 probe drives, for its sample.
+pub mod a58 {
+    pub use crate::probes::a58::{ENDS_IN_NEWLINE, ENDS_IN_TEXT, OVERSCROLL_PX};
+}
+
 /// Height every probe row requests, so row geometry is predictable.
 ///
 /// GTK adds the row's own CSS padding on top, so a row is drawn taller than

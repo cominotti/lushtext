@@ -156,3 +156,27 @@
   measure count), `first_phase_measuring`, `fixture_window`, `timed_realize`
   and `concealed_revealer`; their values are under `fixtures::a47`,
   `fixtures::a49` and `fixtures::a50`.
+- Probes and samples for A52–A58 (`bound-post-open-settle`): a language's
+  definition parse is shared through the language object while a buffer holds
+  it and repeated after the last buffer releases it, and cannot leave the GTK
+  thread (a buffer built on a worker takes the default style-scheme manager's
+  `classic` scheme; an attach adds a source to the default main context),
+  while a private language manager works on a worker (A52); turning
+  highlighting on refreshes the whole buffer in the call, and inserts into a
+  language-attached buffer only invalidate (A53); the context engine analyses
+  in a 10 ms `G_PRIORITY_HIGH_IDLE` first update and continuing 30 ms
+  `G_PRIORITY_LOW` idle slices, between which a `G_PRIORITY_LOW` idle
+  dispatches (A54); validation after an insert lays out only the inserted
+  lines, and inserts paced from `after-paint` are validated one per dispatch
+  (A55, with `--derive-v-slice`); the first write of a fresh keyfile profile
+  adds no monitor `changed` (A56); a tag-carried document style against
+  hide-and-reveal (A57); and a `pixels-below-lines` tag cannot carry the
+  overscroll, while `bottom-margin` revalidates the document (A58). New
+  fixtures under `fixtures::post_open` and `fixtures::a52` … `fixtures::a58`,
+  and `KeyfileSettingsFixture::fresh` / `settings_for` / `file_exists`.
+- A54's sample gained `--derive-s-bg-highlight`: per language (html,
+  markdown, rust, json), the largest synthetic short-line document whose
+  highlighting keeps every dispatch after the language attach within
+  `B_SETTLE_US` in an editor-like view (all seven repetitions must pass). New
+  generators `fixtures::post_open::{short_markdown, short_rust, short_json,
+  short_document}` and the `fixtures::a54::HighlightFixture` it measures with.

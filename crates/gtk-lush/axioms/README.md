@@ -95,7 +95,16 @@ probe). A51 (a realize frame
 runs on the unmapped window, is never presented, and paces the first visible
 frame one `FRAME_INTERVAL` later) followed with LushText's merged
 realize-and-present dispatch (`shorten-window-content-fill-in`), with the
-`fixtures::a51::Composed` fixture. Every later axiom
+`fixtures::a51::Composed` fixture. A52–A58 followed with LushText's post-open
+settle (`bound-post-open-settle`): the language-definition parse and its
+thread, the highlight toggle and sliced inserts, the context engine's slices
+and priorities, validation after an insert and its pacing, the first write of
+a fresh keyfile profile, the two restyle mechanisms of a dense document, and
+the end-of-document overscroll, with the shared `fixtures::post_open`
+fixtures (short-line HTML and dense documents, a reference-sized source view,
+timed dispatches, a priority bracket, and a PDF export that counts printed
+pages); the A55 sample's `--derive-v-slice` mode bisects `V_SLICE`, and the A54
+sample's `--derive-s-bg-highlight` mode bisects `S_BG_HIGHLIGHT` per language. Every later axiom
 follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.

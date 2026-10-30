@@ -192,6 +192,14 @@ impl Recorder {
         }
     }
 
+    /// A recorder outside [`Recorder::run`], for a sample that builds a
+    /// probe fixture itself; its values are discarded.
+    pub(crate) fn detached() -> Self {
+        Self {
+            measured: Vec::new(),
+        }
+    }
+
     /// Record one measured value.
     pub(crate) fn measure(&mut self, key: &'static str, value: impl fmt::Display) {
         self.measured.push((key, value.to_string()));
