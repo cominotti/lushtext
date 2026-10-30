@@ -134,6 +134,18 @@
   (`chars_in_line` walks segments, verified by source, no in-crate probe), for
   `document-scale-policy`. New fixtures under `fixtures::a42`, `fixtures::a44`
   and `fixtures::a45`.
+- Probes and samples for A59–A61 and A63–A66 and a catalogue entry for A62
+  (`long-line-protected-view`): a capture-phase press claim keeps a text
+  view's own gestures from running; a non-editable view gives its input
+  method no focus-in and no key filtering; a stopped `move-cursor` holds under
+  caret browsing; a text view's drop target, its refusal when non-editable
+  and its removal; stopped key-binding signals and a captured Shift+F10 guard
+  a non-editable source view while per-instance action enablement does not;
+  a tail inserted hidden is never laid out (insert cost per MiB recorded);
+  chunk-read cost by iterator positioning (recorded). A59–A61 and A64 drive
+  real input through the private compositor's RemoteDesktop interface
+  (`probes/remote_input.rs`, fullscreen fixtures). New fixtures under
+  `fixtures::a59`–`fixtures::a66`.
 - Probe and sample for A51 (`shorten-window-content-fill-in`): realizing a
   toplevel schedules a frame that runs ahead of default-idle sources; on the
   unmapped surface it emits `after-paint`, is never presented, and paces the
