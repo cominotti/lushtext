@@ -30,8 +30,8 @@
 # test was OOM-killed reads as caught and contaminates the run.
 #
 # Every capped scope also runs inside one shared user slice,
-# `lushtext-heavy.slice`, whose own `MemoryMax` (LUSHTEXT_HEAVY_MEMORY_MAX,
-# default 72G, no swap) bounds the SUM of all capped work on the host, however
+# `lushtext-heavy.slice`, whose own `MemoryMax` (LUSHTEXT_HEAVY_MEMORY_MAX, else
+# ~/.config/lushtext/heavy-memory-max, default 48G, no swap) bounds the SUM of all capped work on the host, however
 # many agents or terminals start it. A per-command cap alone did not: three
 # agents each held to 12G still added up (2026-10-20). Before a scope starts,
 # admission (serialized by a lock under $XDG_RUNTIME_DIR) waits until the caps
@@ -251,7 +251,12 @@ fi
 
 if command -v systemd-run >/dev/null 2>&1 \
     && systemd-run --user --scope --quiet -p MemoryMax=1M true >/dev/null 2>&1; then
-    heavy_max=${LUSHTEXT_HEAVY_MEMORY_MAX:-72G}
+    # Operator override without editing every checkout: the env var wins, then the first
+    # line of ~/.config/lushtext/heavy-memory-max, then the default.
+    heavy_file="${XDG_CONFIG_HOME:-$HOME/.config}/lushtext/heavy-memory-max"
+    heavy_default=48G
+    [ -r "$heavy_file" ] && read -r heavy_default <"$heavy_file" || true
+    heavy_max=${LUSHTEXT_HEAVY_MEMORY_MAX:-$heavy_default}
     reserve=${LUSHTEXT_MEMORY_RESERVE:-16G}
     for size in "$heavy_max" "$reserve"; do
         [[ "$size" =~ ^[0-9]+[KMGT]?$ ]] || { echo "with-memory-cap: invalid size '$size'" >&2; exit 2; }

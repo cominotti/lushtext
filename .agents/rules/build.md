@@ -705,11 +705,13 @@ invariant; tighten the generator or use the deep lane.
   the cap applies; `make check-kani-shards` self-tests the wrapper.
   **The host-wide budget.** Every capped scope runs inside one shared user
   slice, `lushtext-heavy.slice`, whose `MemoryMax` (`LUSHTEXT_HEAVY_MEMORY_MAX`,
-  default `72G` on the 93 GB reference workstation, no swap) bounds the sum of
+  default `48G` on the 93 GB reference workstation, overridable without editing
+  the checkout through the first line of `~/.config/lushtext/heavy-memory-max`;
+  no swap) bounds the sum of
   all capped work on the machine. A per-command cap alone did not: on
   2026-10-20 three agents each held to 12G, plus a 16G Kani shard, added up
   past the desktop's headroom. The slice limit alone is not the safety either:
-  72G admitted plus the 16G reserve is close to the machine's total, and a VM or
+  the admitted budget plus the 16G reserve must leave the desktop room, and a VM or
   a game can take tens of GB at any moment. So before a scope starts, the
   wrapper's admission (serialized by
   `$XDG_RUNTIME_DIR/lushtext-heavy-admission.lock`) waits until the caps already
