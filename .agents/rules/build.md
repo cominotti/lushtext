@@ -81,6 +81,7 @@ make check-automation-docs # automation docs drift check against action/D-Bus co
 make check-accessibility-policy # accessibility helper/proof guardrail for new UI-sensitive lines
 make check-visual-proof-policy # require visual geometry proof for local visual-sensitive changes
 make check-workflow-boundaries # workflow readability convention and matrix conformance
+make check-explicit-simd # (in check-policy) explicit-SIMD policy: kernel allowlist, no build-time CPU flags, memchr keeps `std`
 make check-gtk-lush-policy # validate GTK Lush family scaffolding/dependency direction
 make check-terminology # workspace folder-set terminology guard over code, resources, and docs
 make check-gtk-lush-adoption # run GTK Lush adoption lab, stock fixture, and matrix checks

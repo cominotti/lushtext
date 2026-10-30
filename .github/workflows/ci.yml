@@ -78,6 +78,9 @@ jobs:
       - name: Workflow timeout policy
         run: make check-workflow-timeouts
 
+      - name: Explicit-SIMD policy
+        run: make check-explicit-simd
+
       - name: Workflow boundary policy
         run: make check-workflow-boundaries
 
