@@ -3,8 +3,8 @@
 //! Widget coverage for the GNOME-style Open popover.
 
 use crate::common::{
-    ensure_gtk_init, fixture, flush_events, fs_metadata, fs_mutate, isolated_data_dir,
-    present_window, test_window, wait_until,
+    accessible_hidden, ensure_gtk_init, fixture, flush_events, fs_metadata, fs_mutate,
+    isolated_data_dir, present_window, test_window, wait_until,
 };
 use glib::object::ObjectExt;
 use glib::prelude::Cast;
@@ -411,10 +411,7 @@ fn test_open_popover_one_representative_row_uses_file_title() {
 
     assert_eq!(popover_evidence(&popover).visible_titles, vec!["main.rs"]);
     assert!(popover_evidence(&popover).list_visible);
-    assert!(!gtk4::test_accessible_has_state(
-        &popover.list_view_for_test(),
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(!accessible_hidden(&popover.list_view_for_test()));
     assert!(gtk4::test_accessible_has_state(
         &popover.empty_state_for_test(),
         gtk4::AccessibleState::Hidden

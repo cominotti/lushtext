@@ -9,7 +9,7 @@
 
 use crate::common::{
     DraftPipelinePolicyReset, EditorLoadDelayReset, FirstDirtyAutosaveDelayReset,
-    OrphanCleanupPolicyReset, action_state_bool, activate_action, editor_text,
+    OrphanCleanupPolicyReset, accessible_hidden, action_state_bool, activate_action, editor_text,
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
     fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, seed_restored_window_size,
     test_application, test_window_with_restored_size, wait_for_startup_data_flow, wait_until,
@@ -4762,10 +4762,7 @@ fn test_focus_mode_entry_exit_restores_shell_surfaces() {
 
     assert!(workspace_sidebar_visible(&window));
     assert!(properties_sidebar_visible(&window));
-    assert!(gtk4::test_accessible_has_state(
-        &*window.imp().focus_mode_affordance,
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(accessible_hidden(&*window.imp().focus_mode_affordance));
 
     activate_action(&window, "toggle-focus-mode");
 
@@ -4775,10 +4772,7 @@ fn test_focus_mode_entry_exit_restores_shell_surfaces() {
     assert!(!window.imp().status_bar.property::<bool>("visible"));
     assert!(!workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
-    assert!(!gtk4::test_accessible_has_state(
-        &*window.imp().focus_mode_affordance,
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(!accessible_hidden(&*window.imp().focus_mode_affordance));
 
     activate_action(&window, "toggle-focus-mode");
 
@@ -4788,10 +4782,7 @@ fn test_focus_mode_entry_exit_restores_shell_surfaces() {
     assert!(window.imp().status_bar.property::<bool>("visible"));
     assert!(workspace_sidebar_visible(&window));
     assert!(properties_sidebar_visible(&window));
-    assert!(gtk4::test_accessible_has_state(
-        &*window.imp().focus_mode_affordance,
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(accessible_hidden(&*window.imp().focus_mode_affordance));
 }
 
 #[test]
@@ -4801,28 +4792,33 @@ fn test_focus_mode_affordance_stays_visible_while_leave_button_has_focus() {
     window.new_tab();
     present_window(&window);
 
-    // This test races a production deadline, so its budgets are **derived from the
-    // production constant** rather than re-declared. Entering Focus Mode arms the
-    // affordance reveal timer for `FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET`; when it
-    // fires it hides the affordance *unless* focus is inside it, and that decision
-    // is the contract under test.
+    // Entering Focus Mode arms the affordance reveal timer for
+    // `FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET`; when it fires it hides the affordance
+    // *unless* focus is inside it, and that decision is the contract under test.
+    // The budgets below derive from the production constant rather than
+    // re-declaring it.
     //
-    // It previously produced a `FLAKY:` line. The cause was a wait budget longer
-    // than the deadline it competed with: a 5s focus wait let a starved main loop
-    // spend the whole reveal budget before focus landed, after which the timer hid
-    // the affordance *for the correct reason* and the final assertion reported that
-    // lost race as a behavior regression.
+    // This test has produced `FLAKY:` lines twice. The second time (2026-10-30)
+    // the cause was not the timer, which fired on time and declined to hide in
+    // the failing run too. It was two things the compositor decides:
     //
-    // The first fix over-corrected by clamping the focus wait to 400ms, which
-    // `wait_until` turns into a *panic* — creating a new hard-failure band where
-    // focus arriving in 400–1800ms is correct behavior but a failed test. The
-    // budget is generous again; what carries the diagnosis is the
-    // still-revealed-at-flip precondition below, which distinguishes "the timer
-    // won the race" from "the affordance wrongly hid itself".
+    // * Entry also takes fullscreen, and a Wayland window awaiting that configure
+    //   draws no frame, so the affordance revealer's slide transition did not
+    //   start and the leave button stayed unmapped. The test focused an unmapped
+    //   button, and the configure, arriving about 1.9s later, dropped that focus:
+    //   the "while the leave button has focus" premise held only until the timer.
+    // * When the configure did arrive inside the budget, the revealer's first
+    //   frame mapped the affordance and GTK itself wrote `Hidden = false` into
+    //   its accessible state. The old `!test_accessible_has_state(Hidden)`
+    //   assertion checks the state's *presence*, not its value, so a visible
+    //   affordance failed it. `accessible_hidden` reads the value.
+    //
+    // So the window takes fullscreen first and the test waits until the button is
+    // mapped, as it is when a user can reach it, before focusing it.
+    window.fullscreen();
+    wait_until(Duration::from_secs(10), || window.is_fullscreen());
+
     let reveal_budget = lushtext_core::ui::window::FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET;
-    // Comfortably inside the reveal budget on any sane machine, but not asserted
-    // as a deadline — see above.
-    let focus_flip_budget = Duration::from_secs(5);
     // Must exceed the reveal budget so the timer has actually fired before the
     // contract is checked.
     let past_reveal_budget = reveal_budget + Duration::from_millis(100);
@@ -4830,15 +4826,23 @@ fn test_focus_mode_affordance_stays_visible_while_leave_button_has_focus() {
     let armed_at = std::time::Instant::now();
     activate_action(&window, "toggle-focus-mode");
     let leave_button = window.imp().leave_focus_mode_button.get();
+    // The revealer's first frame maps it, normally within a few frames. The
+    // budget is generous because overrunning the reveal budget is diagnosed by
+    // the precondition below, not by this wait.
+    wait_until(Duration::from_secs(5), || leave_button.is_mapped());
     assert!(
         leave_button.grab_focus(),
         "leave-focus-mode button should be focusable while the affordance is revealed"
     );
-    wait_until(focus_flip_budget, || {
+    let leave_button_has_focus = || {
         gtk4::prelude::GtkWindowExt::focus(&window).is_some_and(|focus| {
             focus.as_ptr() == leave_button.upcast_ref::<gtk4::Widget>().as_ptr()
         })
-    });
+    };
+    assert!(
+        leave_button_has_focus(),
+        "a mapped button takes focus at once"
+    );
 
     // The precondition that carries the diagnosis. If the reveal timer won the
     // race, this fails naming that, instead of the visibility assertion below
@@ -4854,12 +4858,14 @@ fn test_focus_mode_affordance_stays_visible_while_leave_button_has_focus() {
     flush_after_delay(past_reveal_budget);
 
     // The contract: the reveal timer has now fired and declined to hide, because
-    // focus is inside the affordance.
+    // focus is inside the affordance. The premise is checked too, so a pass can
+    // only mean the timer saw focus there.
+    assert!(
+        leave_button_has_focus(),
+        "focus must still be on the leave button when the reveal timer fires"
+    );
     assert!(window.imp().focus_mode_revealer.reveals_child());
-    assert!(!gtk4::test_accessible_has_state(
-        &*window.imp().focus_mode_affordance,
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(!accessible_hidden(&*window.imp().focus_mode_affordance));
 }
 
 #[test]
@@ -20819,10 +20825,7 @@ fn test_preview_pane_toggle_uses_adwaita_side_by_side_shell() {
     assert!(window.imp().preview_split_view.is_pin_sidebar());
     assert!(!window.imp().preview_split_view.enables_show_gesture());
     assert!(!window.imp().preview_split_view.enables_hide_gesture());
-    assert!(!gtk4::test_accessible_has_state(
-        &*window.imp().markdown_preview,
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(!accessible_hidden(&*window.imp().markdown_preview));
 }
 
 #[test]
@@ -20845,10 +20848,7 @@ fn test_preview_mode_toggle_uses_full_content_layout() {
     assert!(!window.imp().preview_visible.get());
     assert!(action_state_bool(&window, "toggle-preview-mode"));
     assert!(!action_state_bool(&window, "toggle-preview-pane"));
-    assert!(!gtk4::test_accessible_has_state(
-        &*window.imp().markdown_preview,
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(!accessible_hidden(&*window.imp().markdown_preview));
 }
 
 #[test]

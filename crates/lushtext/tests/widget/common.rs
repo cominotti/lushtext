@@ -230,6 +230,43 @@ pub fn emit_key_pressed_on_focus(
     panic!("focused widget ancestry had no EventControllerKey");
 }
 
+/// Whether the accessible `Hidden` state of `accessible` currently holds `true`.
+///
+/// Assert "not hidden" with `!accessible_hidden(..)`, never with
+/// `!gtk4::test_accessible_has_state(.., Hidden)`. `has_state` answers whether
+/// the state is *present* in the attribute set, whatever its value, and GTK
+/// writes `Hidden` itself: `true` at widget init and on every unmap, `false` on
+/// every map (`gtk_widget_map` / `gtk_widget_unmap`). A widget that maps after
+/// the application cleared the state therefore reports `has_state` true while
+/// it is visible, and when that map happens is compositor timing: a revealer's
+/// child maps on its slide transition's first frame, which a Wayland window
+/// awaiting a configure (fullscreen, for one) does not draw. That made
+/// `window::test_focus_mode_affordance_stays_visible_while_leave_button_has_focus`
+/// pass only when its frame clock happened to stay frozen. This reads the value,
+/// which is the accessibility contract: unset and `false` both mean visible.
+pub fn accessible_hidden(accessible: &impl IsA<gtk4::Accessible>) -> bool {
+    use glib::translate::ToGlibPtr;
+    // SAFETY: `gtk_test_accessible_check_state` is variadic and, for a boolean
+    // state, reads exactly one `gboolean` (an `int`), which is what is passed.
+    // The accessible pointer is borrowed for the call only. It returns NULL when
+    // the state's value equals the expected one, else a newly allocated string
+    // owned by the caller.
+    let mismatch = unsafe {
+        gtk4::ffi::gtk_test_accessible_check_state(
+            accessible.as_ref().to_glib_none().0,
+            gtk4::ffi::GTK_ACCESSIBLE_STATE_HIDDEN,
+            glib::ffi::GTRUE,
+        )
+    };
+    if mismatch.is_null() {
+        return true;
+    }
+    // SAFETY: `mismatch` is the non-NULL, caller-owned string GTK allocated with
+    // `g_malloc`; it is freed exactly once and not used afterwards.
+    unsafe { glib::ffi::g_free(mismatch.cast()) };
+    false
+}
+
 /// Realized row widgets of a `GtkListView`: the visible, non-zero-height
 /// children GTK currently keeps for the model. This is the rendered surface,
 /// not the model, which is the distinction virtualization bugs hide behind.
