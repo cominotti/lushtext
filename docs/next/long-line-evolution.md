@@ -91,6 +91,16 @@ input to presented frame, measured on the maintainer's desktop.
    "over" was partly load), input-to-frame still over (24.5 ms, structural),
    `B_interact` within (5.6 ms). Gate unchanged: the baseline fits both on an
    idle reference run. Propose next, after C1 or in parallel with C4.
+   **Proposed 2026-10-30** as the openspec change `bound-post-open-settle`. Its attribution
+   (exploratory, on `main` after C4c) found:
+   - the small-document stall is already within `B_settle`;
+   - the "first highlight" is the HTML language-definition parse in the activation dispatch;
+   - the overlay-indicator frame no longer reproduces, and scroll input-to-frame is the
+     lane's floor (item 5).
+
+   C6 also took over the dense short-line validation cost from C2's revision. The scope split
+   is in its proposal: C2 owns giant-paragraph layout and the 32 MiB draft recovery, and C6
+   owns everything else after open.
 3. **Re-confirm the reference values on an idle machine — done
    (2026-10-13).** `L_search_highlight` rose to 10,000; `L_minimap` fell to
    22,000 (the loaded 50,000 was a derivation artifact); every other value
