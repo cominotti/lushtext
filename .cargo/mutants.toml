@@ -89,6 +89,14 @@ exclude_globs = [
     "crates/lushtext-core/src/services/filesystem/fixture.rs",
     # Its draft-body sibling is fixture code for the same reason (1 mutant).
     "crates/lushtext-core/src/services/draft_service/fixture.rs",
+    # The scalar scans the accelerated `editor_io::text_scans` replaced, kept
+    # verbatim as the oracle the property tests and the `editor_bytes` fuzz
+    # target compare against (`simd-line-scans`, design D1). An oracle is not
+    # code under test: production cannot call it (it compiles only under
+    # `cfg(test)`, `test-utils`, or `fuzzing`), and its correctness is the old
+    # code's, which that change moved without editing. Path-keyed: re-key this
+    # entry if the module moves.
+    "crates/lushtext-core/src/services/editor_io/text_scans/reference.rs",
     # Kani harness modules are verification code. Each is declared
     # `#[cfg(kani)] mod kani_proofs;`, so no build cargo-mutants runs compiles
     # it and no test can kill a mutant inside it: before this entry the scope
@@ -272,6 +280,22 @@ exclude_re = [
     # Feature-only hooks: widget race tests and fuzz targets own these paths in
     # their dedicated lanes, outside the default deterministic mutation scope.
     "crates/lushtext-core/src/services/editor_io\\.rs:.*(set_load_delay_for_test|delay_load_for_test|classify_bytes_for_fuzzing)",
+    # The `test-utils` benchmark hooks of `simd-line-scans` (`bench_*`): the
+    # default-feature build cargo-mutants tests never compiles them.
+    "crates/lushtext-core/src/services/editor_io\\.rs:.*bench_(load_analysis|load_analysis_fused|health_scan|trim|normalize|crlf_check)",
+    # `MinimapAnalysisAccumulator::inspect_str` (simd-line-scans). Only the
+    # first entry is line-anchored (re-key it on any edit above line 2601): it is
+    # the per-character copy compiled only under `cfg(kani)`, which no test build
+    # compiles, and shares its name with the tested copy. The rest are
+    # equivalent and unique in their functions: `<` with `<=` in the paragraph
+    # loop bound runs one more pass over an empty tail, which `extend_line`
+    # ignores; in `paragraph_may_cross` and `thresholds_in_play`, `>` with `>=`
+    # and `&&` with `||` only count more lines exactly, never fewer, and an
+    # exact count yields the same state.
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:2601:9: replace MinimapAnalysisAccumulator::inspect_str with \\(\\)",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in MinimapAnalysisAccumulator::inspect_str",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in paragraph_may_cross",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace && with \\|\\| in MinimapAnalysisAccumulator::thresholds_in_play",
     # Equivalent in `fit_native_slider_to_source_map_bounds`: equality at the
     # lower or upper edge only applies a zero-sized adjustment and preserves the
     # same final fitted bounds; strict outside-edge behavior remains covered.

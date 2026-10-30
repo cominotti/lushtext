@@ -169,3 +169,22 @@ fn path_char() -> impl Strategy<Value = char> {
         _ => '-',
     })
 }
+
+/// `text` split at the scalar boundaries at or below `cuts` (each taken modulo
+/// `text.len() + 1`), in order; the pieces concatenate back to `text`.
+#[must_use]
+pub fn split_at_scalar_cuts<'a>(text: &'a str, cuts: &[usize]) -> Vec<&'a str> {
+    let mut boundaries: Vec<usize> = cuts
+        .iter()
+        .map(|&cut| text.floor_char_boundary(cut % (text.len() + 1)))
+        .collect();
+    boundaries.sort_unstable();
+    let mut pieces = Vec::with_capacity(boundaries.len() + 1);
+    let mut start = 0;
+    for boundary in boundaries {
+        pieces.push(&text[start..boundary]);
+        start = boundary;
+    }
+    pieces.push(&text[start..]);
+    pieces
+}

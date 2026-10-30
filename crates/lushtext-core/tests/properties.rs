@@ -53,6 +53,8 @@ mod settings_write_batch;
 mod sidecar_reconciliation;
 #[path = "properties/support.rs"]
 mod support;
+#[path = "properties/text_scans.rs"]
+mod text_scans;
 #[path = "properties/viewport_slice.rs"]
 mod viewport_slice;
 #[path = "properties/width_preset.rs"]

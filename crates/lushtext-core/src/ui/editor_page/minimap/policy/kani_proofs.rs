@@ -24,14 +24,21 @@
 //!   finite `f64`, the counterexample is kept as a `should_panic` harness, so a
 //!   future claim of a broader domain has to confront it.
 //!
+//! The analysis accumulator's byte-length shortcut, [`paragraph_may_cross`],
+//! is proved sound over abstract lengths (no text, so no model of the SIMD
+//! search is needed): [`skipped_line_crosses_no_threshold`] for every running
+//! count, byte length, scalar count, and threshold pair, and
+//! [`skipped_line_crosses_no_threshold_per_character`] steps the
+//! per-character count itself for up to four scalars.
+//!
 //! Compiled only under `cfg(kani)` (`make kani`); ordinary builds and tests
 //! never see this module. The harnesses check the functions that ship.
 
 use super::{
-    MINIMAP_VIEWPORT_MIN_HEIGHT, MarkerProjectionSpace, MinimapMarkerKind, MinimapProjectedBounds,
-    MinimapProjectionSpace, NativeSliderEstimateInput, ProjectedBoundsFit, expanded_to_min_height,
-    fit_marker_bounds, fit_native_slider_to_source_map_bounds, fit_projected_bounds,
-    native_slider_estimate_from_inputs,
+    LineThresholds, MINIMAP_VIEWPORT_MIN_HEIGHT, MarkerProjectionSpace, MinimapMarkerKind,
+    MinimapProjectedBounds, MinimapProjectionSpace, NativeSliderEstimateInput, ProjectedBoundsFit,
+    expanded_to_min_height, fit_marker_bounds, fit_native_slider_to_source_map_bounds,
+    fit_projected_bounds, native_slider_estimate_from_inputs, paragraph_may_cross,
 };
 
 /// The largest coordinate magnitude of the whole-pixel domain.
@@ -407,5 +414,69 @@ fn native_slider_stays_in_the_source_map_on_whole_pixels() {
 fn native_slider_containment_fails_for_general_f64() {
     if let Some((_, map, fitted)) = fitted_native_slider(fractional_pixel) {
         assert!(fitted.bottom() <= map.y + map.height);
+    }
+}
+
+/// Any line content of `content_bytes` bytes holds `chars` scalars, at most
+/// one per byte and at least one when it is not empty; and any threshold
+/// pair, each in play or not.
+fn line_extension() -> (usize, usize, usize, LineThresholds) {
+    let running: usize = kani::any();
+    let content_bytes: usize = kani::any();
+    let chars: usize = kani::any();
+    kani::assume(chars <= content_bytes);
+    kani::assume(content_bytes == 0 || chars >= 1);
+    let thresholds = LineThresholds {
+        wrapped: kani::any(),
+        warning: kani::any(),
+    };
+    (running, content_bytes, chars, thresholds)
+}
+
+/// When the shortcut skips the count, the line's largest running count,
+/// `running + chars` (saturating; the count only grows), stays at or below
+/// every threshold in play, so per-character inspection crosses neither.
+#[kani::proof]
+#[kani::unwind(3)]
+fn skipped_line_crosses_no_threshold() {
+    let (running, content_bytes, chars, thresholds) = line_extension();
+    if !paragraph_may_cross(running, content_bytes, thresholds) {
+        let reached = running.saturating_add(chars);
+        for threshold in [thresholds.wrapped, thresholds.warning]
+            .into_iter()
+            .flatten()
+        {
+            assert!(reached <= threshold);
+        }
+        kani::cover!(
+            chars > 0 && thresholds.wrapped.is_some(),
+            "skipped a counted line"
+        );
+    }
+    kani::cover!(
+        paragraph_may_cross(running, content_bytes, thresholds),
+        "the count is needed"
+    );
+}
+
+/// The same, stepping `inspect_char`'s count one scalar at a time (up to four
+/// scalars, so the loop unwinds), checking every intermediate count.
+#[kani::proof]
+#[kani::unwind(5)]
+fn skipped_line_crosses_no_threshold_per_character() {
+    let (running, content_bytes, chars, thresholds) = line_extension();
+    kani::assume(chars <= 4);
+    if !paragraph_may_cross(running, content_bytes, thresholds) {
+        let mut count = running;
+        for _ in 0..chars {
+            count = count.saturating_add(1);
+            for threshold in [thresholds.wrapped, thresholds.warning]
+                .into_iter()
+                .flatten()
+            {
+                assert!(count <= threshold);
+            }
+        }
+        kani::cover!(chars == 4, "four scalars skipped");
     }
 }

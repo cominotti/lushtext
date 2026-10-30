@@ -3922,6 +3922,12 @@ impl TextScanRng {
 const TEXT_SCAN_MIB: usize = 1024 * 1024;
 /// The GTK-side minimap analysis turn (`analysis_execution`): 32 Ki characters.
 const TEXT_SCAN_MINIMAP_SLICE_CHARS: usize = 32 * 1024;
+/// A production-like minimap analysis policy for both minimap cases.
+const TEXT_SCAN_MINIMAP_POLICY: MinimapAnalysisPolicy = MinimapAnalysisPolicy {
+    warning_line_chars: 120,
+    wrapped_line_chars: 8_000,
+    marker_limit: 2_000,
+};
 const TEXT_SCAN_WORDS: &[&str] = &[
     "the",
     "quick",
@@ -4066,75 +4072,49 @@ fn text_scan_code(rng: &mut TextScanRng, size: usize, dirty: bool, eol: &str) ->
     text
 }
 
-/// Whether this run's filter can select a `text_scans` case, so the 50 MiB
-/// fixtures are generated only when they are measured.
-fn text_scans_selected() -> bool {
-    let filters: Vec<String> = std::env::args()
-        .skip(1)
-        .filter(|argument| !argument.starts_with('-'))
-        .collect();
-    filters.is_empty()
-        || filters
-            .iter()
-            .any(|filter| filter.contains("text_scans") || "text_scans".contains(filter.as_str()))
-}
-
 fn text_scan_minimap(text: &str) -> MinimapAnalysisResult {
-    let policy = MinimapAnalysisPolicy {
-        warning_line_chars: 120,
-        wrapped_line_chars: 8_000,
-        marker_limit: 2_000,
-    };
-    let mut analysis = MinimapAnalysisAccumulator::new(policy, true);
+    let mut analysis = MinimapAnalysisAccumulator::new(TEXT_SCAN_MINIMAP_POLICY, true);
     let mut characters = text.chars();
     while analysis.inspect_slice(characters.by_ref(), TEXT_SCAN_MINIMAP_SLICE_CHARS) > 0 {}
     analysis.finish()
 }
 
-fn bench_text_scans(c: &mut Criterion) {
-    if !text_scans_selected() {
-        return;
+/// [`text_scan_minimap`] through the slice entry point, in calls of at most
+/// 128 KiB (32 Ki four-byte characters, one GTK turn's worth), cut on scalar
+/// boundaries by byte offset so the cutting itself costs no character walk.
+fn text_scan_minimap_str(text: &str) -> MinimapAnalysisResult {
+    let mut analysis = MinimapAnalysisAccumulator::new(TEXT_SCAN_MINIMAP_POLICY, true);
+    let mut rest = text;
+    while !rest.is_empty() {
+        let end = rest.floor_char_boundary(4 * TEXT_SCAN_MINIMAP_SLICE_CHARS);
+        analysis.inspect_str(&rest[..end]);
+        rest = &rest[end..];
     }
+    analysis.finish()
+}
+
+/// The seeded `text_scans` fixtures, generated in one fixed order on first
+/// use, so a run whose filter selects no `text_scans` case never builds them
+/// (Criterion calls a case's closure only when the case is selected).
+struct TextScanFixtures {
+    /// In [`TEXT_SCAN_ANALYSIS_LABELS`] order.
+    analysis: [String; 5],
+    clean: String,
+    dirty: String,
+    single_line: String,
+    crlf: String,
+    mixed: String,
+}
+
+static TEXT_SCAN_FIXTURES: std::sync::LazyLock<TextScanFixtures> = std::sync::LazyLock::new(|| {
     let mut rng = TextScanRng(42);
-    let analysis_fixtures = [
-        ("ascii_50MiB", text_scan_ascii(&mut rng, 50 * TEXT_SCAN_MIB)),
-        (
-            "multibyte_50MiB",
-            text_scan_multibyte(&mut rng, 50 * TEXT_SCAN_MIB),
-        ),
-        (
-            "typographic_50MiB",
-            text_scan_typographic(&mut rng, 50 * TEXT_SCAN_MIB),
-        ),
-        (
-            "mixed_eol_50MiB",
-            text_scan_mixed_eol(&mut rng, 50 * TEXT_SCAN_MIB),
-        ),
-        ("long_line", text_scan_long_line(&mut rng, 1_900_000)),
+    let analysis = [
+        text_scan_ascii(&mut rng, 50 * TEXT_SCAN_MIB),
+        text_scan_multibyte(&mut rng, 50 * TEXT_SCAN_MIB),
+        text_scan_typographic(&mut rng, 50 * TEXT_SCAN_MIB),
+        text_scan_mixed_eol(&mut rng, 50 * TEXT_SCAN_MIB),
+        text_scan_long_line(&mut rng, 1_900_000),
     ];
-
-    let mut group = c.benchmark_group("text_scans");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(1));
-    group.measurement_time(Duration::from_secs(4));
-    for (label, text) in &analysis_fixtures {
-        group.bench_function(format!("load_analysis/{label}"), |b| {
-            b.iter(|| editor_io::bench_load_analysis(black_box(text)));
-        });
-        group.bench_function(format!("health/{label}"), |b| {
-            b.iter(|| editor_io::bench_health_scan(black_box(text)));
-        });
-    }
-
-    let short_lines = &analysis_fixtures[0].1;
-    let long_line = &analysis_fixtures[4].1;
-    for (label, text) in [("many_short_lines", short_lines), ("long_line", long_line)] {
-        group.bench_function(format!("minimap/{label}"), |b| {
-            b.iter(|| text_scan_minimap(black_box(text)));
-        });
-    }
-    drop(analysis_fixtures);
-
     let clean = text_scan_code(&mut rng, 50 * TEXT_SCAN_MIB, false, "\n");
     let dirty = text_scan_code(&mut rng, 50 * TEXT_SCAN_MIB, true, "\n");
     let mut single_line: String = (0..1_900_000u32)
@@ -4143,23 +4123,87 @@ fn bench_text_scans(c: &mut Criterion) {
     single_line.push_str(" \t  ");
     let crlf = text_scan_code(&mut rng, 50 * TEXT_SCAN_MIB, false, "\r\n");
     let mixed = text_scan_mixed_eol(&mut rng, 50 * TEXT_SCAN_MIB);
+    TextScanFixtures {
+        analysis,
+        clean,
+        dirty,
+        single_line,
+        crlf,
+        mixed,
+    }
+});
+
+const TEXT_SCAN_ANALYSIS_LABELS: [&str; 5] = [
+    "ascii_50MiB",
+    "multibyte_50MiB",
+    "typographic_50MiB",
+    "mixed_eol_50MiB",
+    "long_line",
+];
+
+fn text_scan_analysis(index: usize) -> &'static str {
+    &TEXT_SCAN_FIXTURES.analysis[index]
+}
+
+fn bench_text_scans(c: &mut Criterion) {
+    let mut group = c.benchmark_group("text_scans");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(4));
+    for (index, label) in TEXT_SCAN_ANALYSIS_LABELS.into_iter().enumerate() {
+        group.bench_function(format!("load_analysis/{label}"), |b| {
+            let text = text_scan_analysis(index);
+            b.iter(|| editor_io::bench_load_analysis(black_box(text)));
+        });
+        group.bench_function(format!("health/{label}"), |b| {
+            let text = text_scan_analysis(index);
+            b.iter(|| editor_io::bench_health_scan(black_box(text)));
+        });
+    }
+
+    // The explicit-SIMD gate (design D6) needs the health scan's share of a
+    // whole load on the typographic fixture, the scan's worst case.
+    group.bench_function("load_text_file/typographic_50MiB", |b| {
+        let dir = TempDir::new().expect("typographic fixture dir");
+        let path = dir.path().join("typographic.txt");
+        fixture::write_text(&path, text_scan_analysis(2));
+        let cancel = AtomicBool::new(false);
+        b.iter(|| {
+            editor_io::load_text_file(black_box(path.as_path()), &cancel)
+                .expect("typographic fixture loads")
+        });
+    });
+
+    for (index, label) in [(0, "many_short_lines"), (4, "long_line")] {
+        group.bench_function(format!("minimap/{label}"), |b| {
+            let text = text_scan_analysis(index);
+            b.iter(|| text_scan_minimap(black_box(text)));
+        });
+        group.bench_function(format!("minimap/{label}_str"), |b| {
+            let text = text_scan_analysis(index);
+            b.iter(|| text_scan_minimap_str(black_box(text)));
+        });
+    }
+
     group.bench_function("save/trim_clean", |b| {
-        b.iter(|| editor_io::bench_trim(black_box(&clean)));
+        b.iter(|| editor_io::bench_trim(black_box(&TEXT_SCAN_FIXTURES.clean)));
     });
     group.bench_function("save/trim_dirty", |b| {
-        b.iter(|| editor_io::bench_trim(black_box(&dirty)));
+        b.iter(|| editor_io::bench_trim(black_box(&TEXT_SCAN_FIXTURES.dirty)));
     });
     group.bench_function("save/trim_single_line", |b| {
-        b.iter(|| editor_io::bench_trim(black_box(&single_line)));
+        b.iter(|| editor_io::bench_trim(black_box(&TEXT_SCAN_FIXTURES.single_line)));
     });
     group.bench_function("save/normalize_crlf", |b| {
-        b.iter(|| editor_io::bench_normalize(black_box(&clean), LineEnding::Crlf));
+        b.iter(|| {
+            editor_io::bench_normalize(black_box(&TEXT_SCAN_FIXTURES.clean), LineEnding::Crlf)
+        });
     });
     group.bench_function("save/normalize_mixed", |b| {
-        b.iter(|| editor_io::bench_normalize(black_box(&mixed), LineEnding::Lf));
+        b.iter(|| editor_io::bench_normalize(black_box(&TEXT_SCAN_FIXTURES.mixed), LineEnding::Lf));
     });
     group.bench_function("save/crlf_check_dense", |b| {
-        b.iter(|| editor_io::bench_crlf_check(black_box(&crlf)));
+        b.iter(|| editor_io::bench_crlf_check(black_box(&TEXT_SCAN_FIXTURES.crlf)));
     });
     group.finish();
 }

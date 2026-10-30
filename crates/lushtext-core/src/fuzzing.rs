@@ -19,8 +19,10 @@ use crate::model::draft::{DraftEntry, DraftManifest};
 use crate::model::encoding::{DocumentEncoding, LineEnding};
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::model::session::{SessionData, SessionTab};
+use crate::services::editor_io::text_scans::reference;
 use crate::services::editor_io::{apply_save_formatting_overrides, classify_bytes_for_fuzzing};
 use crate::services::markdown_render::plan_markdown_cancellable;
+use crate::ui::editor_page::{MinimapAnalysisAccumulator, MinimapAnalysisPolicy};
 use crate::ui::markdown_preview::{lowered_markdown_for_fuzzing, preprocess_markdown_for_fuzzing};
 
 /// Maximum raw bytes one byte-ingestion or Markdown fuzz case processes.
@@ -206,6 +208,7 @@ fn exercise_one_decode(
     report: &mut EditorBytesFuzzReport,
 ) {
     let decoded = classify_bytes_for_fuzzing(bytes, reopen_as);
+    assert_text_scans_match_reference(&decoded.content);
 
     report.decode_runs += 1;
     report.decoded_bytes = report.decoded_bytes.saturating_add(decoded.content.len());
@@ -221,6 +224,33 @@ fn exercise_one_decode(
         let _ = finding.title.len();
         let _ = finding.body.len();
     }
+}
+
+/// Panic unless every accelerated text scan equals its scalar reference on
+/// `text` (`simd-line-scans`): the health count over a three-way split, the
+/// trim, the normalization and the already-normalized check in every mode,
+/// and the minimap accumulator's `inspect_str` against `inspect_char` over
+/// the same split, under a small policy so thresholds are crossed.
+fn assert_text_scans_match_reference(text: &str) {
+    let first = text.floor_char_boundary(text.len() / 3);
+    let second = text.floor_char_boundary(text.len() * 2 / 3);
+    let pieces = [&text[..first], &text[first..second], &text[second..]];
+    reference::assert_scans_match(text, &pieces);
+
+    let policy = MinimapAnalysisPolicy {
+        warning_line_chars: text.len() % 7,
+        wrapped_line_chars: text.len() % 11,
+        marker_limit: 2,
+    };
+    let mut per_character = MinimapAnalysisAccumulator::new(policy, true);
+    for character in text.chars() {
+        per_character.inspect_char(character);
+    }
+    let mut by_slices = MinimapAnalysisAccumulator::new(policy, true);
+    for piece in pieces {
+        by_slices.inspect_str(piece);
+    }
+    assert_eq!(by_slices, per_character);
 }
 
 /// Cursor over fuzzer input that wraps deterministically when the script needs more bytes.

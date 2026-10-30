@@ -32,6 +32,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "test-utils")]
 use std::time::Duration;
 
+pub mod text_scans;
+
 /// Maximum number of concrete lossy characters included in one preview.
 ///
 /// The preview exists to explain the risk, not to render a full diff for a
@@ -756,7 +758,7 @@ pub(crate) fn apply_save_formatting_overrides_borrowed(
     overrides: FormattingOverrides,
 ) -> Cow<'_, str> {
     let mut formatted = if overrides.trim_trailing_whitespace == Some(true) {
-        Cow::Owned(trim_trailing_space_and_tabs(text))
+        text_scans::trim_trailing_space_and_tabs(text)
     } else {
         Cow::Borrowed(text)
     };
@@ -1323,7 +1325,7 @@ fn analyze_decoded_content_cancellable(
     let mut scan_slice = |slice: &str| {
         tally.scan_slice(slice.as_bytes());
         profile.push_str(slice);
-        let (nbsp, zero_width) = count_health_characters(slice);
+        let (nbsp, zero_width) = text_scans::count_health_characters(slice);
         nbsp_count += nbsp;
         zero_width_count += zero_width;
     };
@@ -1354,20 +1356,6 @@ fn analyze_decoded_content_cancellable(
     })
 }
 
-/// Count the non-breaking spaces and zero-width characters of one slice.
-fn count_health_characters(slice: &str) -> (usize, usize) {
-    let mut nbsp_count = 0usize;
-    let mut zero_width_count = 0usize;
-    for character in slice.chars() {
-        if character == '\u{00A0}' {
-            nbsp_count += 1;
-        } else if is_zero_width(character) {
-            zero_width_count += 1;
-        }
-    }
-    (nbsp_count, zero_width_count)
-}
-
 /// Benchmark hook: the whole decoded-content analysis of one load, returning
 /// the non-breaking-space and zero-width counts.
 ///
@@ -1391,18 +1379,20 @@ pub fn bench_load_analysis(content: &str) -> (usize, usize) {
 #[cfg(feature = "test-utils")]
 #[must_use]
 pub fn bench_health_scan(content: &str) -> (usize, usize) {
-    count_health_characters(content)
+    text_scans::count_health_characters(content)
 }
 
 /// Benchmark hook: the EditorConfig `trim_trailing_whitespace` save rewrite,
 /// returning the formatted length.
 #[cfg(feature = "test-utils")]
 #[must_use]
+#[expect(
+    clippy::field_reassign_with_default,
+    reason = "a struct literal here would give cargo-mutants a field-deletion mutant in a hook the default-feature mutation build never compiles"
+)]
 pub fn bench_trim(text: &str) -> usize {
-    let overrides = FormattingOverrides {
-        trim_trailing_whitespace: Some(true),
-        ..FormattingOverrides::default()
-    };
+    let mut overrides = FormattingOverrides::default();
+    overrides.trim_trailing_whitespace = Some(true);
     apply_save_formatting_overrides_borrowed(text, overrides).len()
 }
 
@@ -1420,7 +1410,7 @@ pub fn bench_normalize(text: &str, line_ending: LineEnding) -> Option<usize> {
 #[cfg(feature = "test-utils")]
 #[must_use]
 pub fn bench_crlf_check(text: &str) -> bool {
-    line_endings_already_normalized(text, LineEnding::Crlf)
+    text_scans::line_endings_already_normalized(text, LineEnding::Crlf)
 }
 
 /// Build surfaced file-health findings from the decoded document snapshot.
@@ -1512,73 +1502,7 @@ fn normalize_line_endings(
     text: &str,
     line_ending: LineEnding,
 ) -> Result<Cow<'_, str>, EditorSaveError> {
-    let Some(separator) = line_ending.separator() else {
-        return Err(EditorSaveError::MixedLineEndings);
-    };
-    if line_endings_already_normalized(text, line_ending) {
-        return Ok(Cow::Borrowed(text));
-    }
-
-    let mut normalized = String::with_capacity(text.len() + text.len() / 16);
-    let mut chars = text.chars().peekable();
-    while let Some(character) = chars.next() {
-        if character == '\r' {
-            let _ = chars.next_if_eq(&'\n');
-            normalized.push_str(separator);
-            continue;
-        }
-        if character == '\n' {
-            normalized.push_str(separator);
-        } else {
-            normalized.push(character);
-        }
-    }
-    Ok(Cow::Owned(normalized))
-}
-
-fn line_endings_already_normalized(text: &str, line_ending: LineEnding) -> bool {
-    match line_ending {
-        LineEnding::Lf => !text.contains('\r'),
-        LineEnding::Cr => !text.contains('\n'),
-        LineEnding::Crlf => {
-            let bytes = text.as_bytes();
-            let mut index = 0usize;
-            while index < bytes.len() {
-                match bytes[index] {
-                    b'\r' if bytes.get(index + 1) == Some(&b'\n') => index += 2,
-                    b'\r' | b'\n' => return false,
-                    _ => index += 1,
-                }
-            }
-            true
-        }
-        LineEnding::Mixed => false,
-    }
-}
-
-/// Strip spaces and tabs immediately before line endings and at end-of-file.
-fn trim_trailing_space_and_tabs(text: &str) -> String {
-    let mut trimmed = String::with_capacity(text.len());
-    let mut pending_spaces = String::new();
-
-    for character in text.chars() {
-        if matches!(character, ' ' | '\t') {
-            pending_spaces.push(character);
-            continue;
-        }
-
-        if matches!(character, '\n' | '\r') {
-            pending_spaces.clear();
-            trimmed.push(character);
-            continue;
-        }
-
-        trimmed.push_str(&pending_spaces);
-        pending_spaces.clear();
-        trimmed.push(character);
-    }
-
-    trimmed
+    text_scans::normalize_line_endings(text, line_ending).ok_or(EditorSaveError::MixedLineEndings)
 }
 
 /// Encode normalized text bytes for the requested save encoding.
@@ -1705,7 +1629,7 @@ fn display_character(character: char) -> String {
         '\r' => "\\r".to_string(),
         '\t' => "\\t".to_string(),
         '\u{00A0}' => "NBSP".to_string(),
-        other if is_zero_width(other) => "zero-width".to_string(),
+        other if text_scans::is_zero_width(other) => "zero-width".to_string(),
         other => other.to_string(),
     }
 }
@@ -1713,14 +1637,6 @@ fn display_character(character: char) -> String {
 /// Format one scalar value as a Unicode codepoint label.
 fn format_codepoint(character: char) -> String {
     format!("U+{:04X}", u32::from(character))
-}
-
-/// Return whether the character is one of the zero-width values we surface.
-fn is_zero_width(character: char) -> bool {
-    matches!(
-        character,
-        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
-    )
 }
 
 #[cfg(test)]
@@ -2304,7 +2220,7 @@ mod tests {
             .count();
         let zero_width = content
             .chars()
-            .filter(|&character| is_zero_width(character))
+            .filter(|&character| text_scans::is_zero_width(character))
             .count();
         (nbsp, zero_width)
     }
@@ -3033,6 +2949,26 @@ mod tests {
         );
 
         assert_eq!(formatted, "keep  middle\ntrim\r\nend");
+    }
+
+    /// A clean text crosses the save rewrites borrowed: trim returns it
+    /// unchanged and pointer-equal, so a final newline already present and an
+    /// already-normalized line ending copy nothing either.
+    #[test]
+    fn clean_text_crosses_the_save_rewrites_borrowed() {
+        let text = "fn main() {\r\n    body();\r\n}\r\n";
+        let formatted = apply_save_formatting_overrides_borrowed(
+            text,
+            FormattingOverrides {
+                trim_trailing_whitespace: Some(true),
+                insert_final_newline: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(formatted, Cow::Borrowed(_)));
+        assert!(std::ptr::eq(formatted.as_ref(), text));
+        let normalized = normalize_line_endings(&formatted, LineEnding::Crlf).expect("CRLF");
+        assert!(std::ptr::eq(normalized.as_ref(), text));
     }
 
     #[test]

@@ -297,7 +297,7 @@ fn last_break_end_within(bytes: &[u8], start: usize, budget_end: usize) -> Optio
 /// against 2.49 ms for 9 MiB, and 1.13 ms for that loop built for AVX2 and
 /// dispatched at run time), so no explicit SIMD path is kept.
 #[cfg(not(kani))]
-fn count_scalars(text: &str) -> u64 {
+pub(crate) fn count_scalars(text: &str) -> u64 {
     // A `str` length fits `u64` on every supported target.
     text.chars().count() as u64
 }
