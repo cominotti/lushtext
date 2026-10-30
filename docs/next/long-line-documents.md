@@ -871,7 +871,9 @@ save-only history 10 MB, refuse 500 MB.
   proposal's decision 4 (keep 10 MB or about 1 MiB). The size-independent ~42 ms
   first-highlight stall (C6's scope) is not removed by any cutoff.
 - `L_protect`: **500 applied**, the stall basis (`L_protect_stall`), as C2's
-  gate already takes it. Consequence for C1: any paragraph over 500 characters
+  gate already takes it. (Superseded on 2026-10-30: C2's design D0 keys
+  `protected_view` on `L_PROTECT_EDIT` = 50,000; see the C2 record below.)
+  Consequence for C1: any paragraph over 500 characters
   (ordinary Markdown prose written one paragraph per line) marks the document
   for Protected View, and the reduced-features notice says so. A maintainer
   decision may raise the C1 notice threshold until C2's user-session
@@ -1041,6 +1043,24 @@ choice returned to the maintainer (design D0), who chose **the hybrid**:
   by the optional C5.
 - **Protected View above `L_PROTECT_EDIT`**, with the one bounded undo of the
   edit that caused entry.
+
+### Applied (task 1.1a, 2026-10-30)
+
+- **The re-key (1.1a).** `model/document_scale.rs` gained `L_EDIT_STALL`
+  (3,500, documentation of the exception's lower bound, deciding nothing) and
+  `L_PROTECT_EDIT` (50,000); `protected_view` holds exactly when the longest
+  paragraph exceeds `L_PROTECT_EDIT`. Density no longer produces
+  `ProtectedView`, and as it reduced nothing else, `ReductionReason::Density`
+  and the "dense long lines" reason class were removed (the profile and the
+  edit-time watch still track `worst_batch_chars`, which the fold will read).
+  `L_PROTECT` (500) stays the profile's first threshold. Failing first: a unit
+  test of this repository's `AGENTS.md` profile (170,427 bytes, longest
+  paragraph 8,314, worst window 132,281) failed on C1's key. The
+  `core-document-scale` Kani shard's `scale_protected_view_is_upward_closed`
+  states the new rule, it and `scale_of_a_profile_join_is_the_join_of_scales`
+  iterate the two remaining reason classes, and the other harnesses are
+  unchanged; the shard verified 9 of 9 harnesses on 2026-10-30. The
+  exception is recorded on A23 and A26 in the axiom ledger.
 
 ### Pre-existing blocker found by task 1.1
 

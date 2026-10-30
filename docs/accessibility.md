@@ -134,7 +134,8 @@ Expected screen-reader behavior includes:
   "Syntax highlighting, bracket matching, the minimap and search highlighting
   are off because of very long lines.", "Undo history and automatic local
   history are off because of the document's total size.", or "This document is
-  marked for Protected View because of dense long lines.". It names features
+  marked for Protected View because of very long lines." (a paragraph over
+  50,000 characters; the batch density reduces no feature). It names features
   and reasons only, never document content, and is bounded by the fixed feature
   set. A document refused by open admission keeps its `disabled` state and the
   sentence "This document is too large to open."; the former "Large document

@@ -100,17 +100,10 @@ fn scale_protected_view_is_upward_closed() {
     let s = DocumentScale::for_profile(small);
     let l = DocumentScale::for_profile(large);
     assert!(!s.protected_view || l.protected_view);
-    // Exactly the entry rule C2 consumes.
-    assert!(
-        s.protected_view
-            == (small.longest_paragraph_chars > super::L_PROTECT
-                || small.worst_batch_chars > super::V_BATCH)
-    );
-    for reason in [
-        ReductionReason::TotalSize,
-        ReductionReason::LongParagraph,
-        ReductionReason::Density,
-    ] {
+    // Exactly the entry rule C2 consumes (design D0: the longest paragraph
+    // alone; density never decides it).
+    assert!(s.protected_view == (small.longest_paragraph_chars > super::L_PROTECT_EDIT));
+    for reason in [ReductionReason::TotalSize, ReductionReason::LongParagraph] {
         kani::cover!(
             l.reduced.has_reason(ScaleFeature::Syntax, reason)
                 || l.reduced.has_reason(ScaleFeature::ProtectedView, reason),
@@ -150,11 +143,7 @@ fn scale_of_a_profile_join_is_the_join_of_scales() {
     assert!(presentation(of_max) == presentation(joined));
     for feature in ScaleFeature::ALL {
         if feature.is_presentation() {
-            for reason in [
-                ReductionReason::TotalSize,
-                ReductionReason::LongParagraph,
-                ReductionReason::Density,
-            ] {
+            for reason in [ReductionReason::TotalSize, ReductionReason::LongParagraph] {
                 assert!(
                     of_max.reduced.has_reason(feature, reason)
                         == joined.reduced.has_reason(feature, reason)
