@@ -3896,6 +3896,275 @@ fn bench_save_admission_policy(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Text scans (`simd-line-scans`, design D7)
+// ---------------------------------------------------------------------------
+
+/// Seeded xorshift generator for the text-scan fixtures, so every side of an
+/// interleaved comparison measures the same bytes.
+struct TextScanRng(u64);
+
+impl TextScanRng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn below(&mut self, bound: usize) -> usize {
+        let bound = u64::try_from(bound).expect("pool sizes fit u64");
+        usize::try_from(self.next() % bound).expect("a remainder below a usize bound fits usize")
+    }
+}
+
+const TEXT_SCAN_MIB: usize = 1024 * 1024;
+/// The GTK-side minimap analysis turn (`analysis_execution`): 32 Ki characters.
+const TEXT_SCAN_MINIMAP_SLICE_CHARS: usize = 32 * 1024;
+const TEXT_SCAN_WORDS: &[&str] = &[
+    "the",
+    "quick",
+    "brown",
+    "fox",
+    "jumps",
+    "over",
+    "lazy",
+    "dog",
+    "editor",
+    "buffer",
+    "workspace",
+    "a",
+    "of",
+    "and",
+    "responsiveness",
+    "line",
+    "text",
+];
+
+/// Prose wrapped at 80 columns with `\n`.
+fn text_scan_ascii(rng: &mut TextScanRng, size: usize) -> String {
+    let mut text = String::with_capacity(size + 128);
+    let mut column = 0;
+    while text.len() < size {
+        let word = TEXT_SCAN_WORDS[rng.below(TEXT_SCAN_WORDS.len())];
+        if column + word.len() + 1 > 80 {
+            text.push('\n');
+            column = 0;
+        }
+        text.push_str(word);
+        text.push(' ');
+        column += word.len() + 1;
+    }
+    text
+}
+
+/// Two-, three-, and four-byte scalars with rare NBSP and U+200B, 80 per line.
+fn text_scan_multibyte(rng: &mut TextScanRng, size: usize) -> String {
+    let pool = [
+        'é', 'ã', 'ç', 'ü', 'ñ', '日', '本', '語', '中', '文', '😀', '🚀', 'a', 'b', 'e', ' ', 'o',
+        's', 't',
+    ];
+    let mut text = String::with_capacity(size + 128);
+    let mut column = 0;
+    while text.len() < size {
+        let character = match rng.below(10_000) {
+            0 => '\u{00A0}',
+            1 => '\u{200B}',
+            _ => pool[rng.below(pool.len())],
+        };
+        text.push(character);
+        column += 1;
+        if column >= 80 {
+            text.push('\n');
+            column = 0;
+        }
+    }
+    text
+}
+
+/// Words and typographic marks (`’`, `—`, `…`): many `0xE2` leads, none a hit.
+fn text_scan_typographic(rng: &mut TextScanRng, size: usize) -> String {
+    let marks = ['—', '–', '“', '”', '‘', '’', '…'];
+    let mut text = String::with_capacity(size + 128);
+    let mut column = 0;
+    while text.len() < size {
+        if rng.below(3) == 0 {
+            text.push(marks[rng.below(marks.len())]);
+        } else {
+            text.push_str(TEXT_SCAN_WORDS[rng.below(TEXT_SCAN_WORDS.len())]);
+        }
+        column += 1;
+        if column >= 16 {
+            text.push('\n');
+            column = 0;
+        }
+    }
+    text
+}
+
+/// Short lines ending in `\r\n`, `\n`, or `\r` at random.
+fn text_scan_mixed_eol(rng: &mut TextScanRng, size: usize) -> String {
+    let mut text = String::with_capacity(size + 128);
+    while text.len() < size {
+        for _ in 0..=rng.below(12) {
+            text.push_str(TEXT_SCAN_WORDS[rng.below(TEXT_SCAN_WORDS.len())]);
+            text.push(' ');
+        }
+        text.push_str(["\r\n", "\n", "\r"][rng.below(3)]);
+    }
+    text
+}
+
+/// One line of `chars` scalars: mostly ASCII, some `é`, rare U+2060/U+FEFF.
+fn text_scan_long_line(rng: &mut TextScanRng, chars: usize) -> String {
+    let mut text = String::with_capacity(chars * 2);
+    for _ in 0..chars {
+        let character = match rng.below(1000) {
+            0 => '\u{2060}',
+            1 => '\u{FEFF}',
+            2..=60 => 'é',
+            _ => char::from(b'a' + u8::try_from(rng.below(26)).expect("below 26 fits u8")),
+        };
+        text.push(character);
+    }
+    text
+}
+
+/// Indented code lines; `dirty` puts trailing spaces/tabs on about 5 % of them.
+fn text_scan_code(rng: &mut TextScanRng, size: usize, dirty: bool, eol: &str) -> String {
+    let words = [
+        "let",
+        "fn",
+        "x",
+        "foo_bar",
+        "=",
+        "(",
+        ");",
+        "return",
+        "self.value",
+        "{",
+        "}",
+    ];
+    let mut text = String::with_capacity(size + 256);
+    while text.len() < size {
+        for _ in 0..rng.below(4) {
+            text.push_str("    ");
+        }
+        for _ in 0..(2 + rng.below(10)) {
+            text.push_str(words[rng.below(words.len())]);
+            text.push(' ');
+        }
+        text.pop();
+        if dirty && rng.below(100) < 5 {
+            for _ in 0..=rng.below(4) {
+                text.push(if rng.below(2) == 0 { ' ' } else { '\t' });
+            }
+        }
+        text.push_str(eol);
+    }
+    text
+}
+
+/// Whether this run's filter can select a `text_scans` case, so the 50 MiB
+/// fixtures are generated only when they are measured.
+fn text_scans_selected() -> bool {
+    let filters: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|argument| !argument.starts_with('-'))
+        .collect();
+    filters.is_empty()
+        || filters
+            .iter()
+            .any(|filter| filter.contains("text_scans") || "text_scans".contains(filter.as_str()))
+}
+
+fn text_scan_minimap(text: &str) -> MinimapAnalysisResult {
+    let policy = MinimapAnalysisPolicy {
+        warning_line_chars: 120,
+        wrapped_line_chars: 8_000,
+        marker_limit: 2_000,
+    };
+    let mut analysis = MinimapAnalysisAccumulator::new(policy, true);
+    let mut characters = text.chars();
+    while analysis.inspect_slice(characters.by_ref(), TEXT_SCAN_MINIMAP_SLICE_CHARS) > 0 {}
+    analysis.finish()
+}
+
+fn bench_text_scans(c: &mut Criterion) {
+    if !text_scans_selected() {
+        return;
+    }
+    let mut rng = TextScanRng(42);
+    let analysis_fixtures = [
+        ("ascii_50MiB", text_scan_ascii(&mut rng, 50 * TEXT_SCAN_MIB)),
+        (
+            "multibyte_50MiB",
+            text_scan_multibyte(&mut rng, 50 * TEXT_SCAN_MIB),
+        ),
+        (
+            "typographic_50MiB",
+            text_scan_typographic(&mut rng, 50 * TEXT_SCAN_MIB),
+        ),
+        (
+            "mixed_eol_50MiB",
+            text_scan_mixed_eol(&mut rng, 50 * TEXT_SCAN_MIB),
+        ),
+        ("long_line", text_scan_long_line(&mut rng, 1_900_000)),
+    ];
+
+    let mut group = c.benchmark_group("text_scans");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(4));
+    for (label, text) in &analysis_fixtures {
+        group.bench_function(format!("load_analysis/{label}"), |b| {
+            b.iter(|| editor_io::bench_load_analysis(black_box(text)));
+        });
+        group.bench_function(format!("health/{label}"), |b| {
+            b.iter(|| editor_io::bench_health_scan(black_box(text)));
+        });
+    }
+
+    let short_lines = &analysis_fixtures[0].1;
+    let long_line = &analysis_fixtures[4].1;
+    for (label, text) in [("many_short_lines", short_lines), ("long_line", long_line)] {
+        group.bench_function(format!("minimap/{label}"), |b| {
+            b.iter(|| text_scan_minimap(black_box(text)));
+        });
+    }
+    drop(analysis_fixtures);
+
+    let clean = text_scan_code(&mut rng, 50 * TEXT_SCAN_MIB, false, "\n");
+    let dirty = text_scan_code(&mut rng, 50 * TEXT_SCAN_MIB, true, "\n");
+    let mut single_line: String = (0..1_900_000u32)
+        .map(|index| if index % 7 == 0 { ' ' } else { 'x' })
+        .collect();
+    single_line.push_str(" \t  ");
+    let crlf = text_scan_code(&mut rng, 50 * TEXT_SCAN_MIB, false, "\r\n");
+    let mixed = text_scan_mixed_eol(&mut rng, 50 * TEXT_SCAN_MIB);
+    group.bench_function("save/trim_clean", |b| {
+        b.iter(|| editor_io::bench_trim(black_box(&clean)));
+    });
+    group.bench_function("save/trim_dirty", |b| {
+        b.iter(|| editor_io::bench_trim(black_box(&dirty)));
+    });
+    group.bench_function("save/trim_single_line", |b| {
+        b.iter(|| editor_io::bench_trim(black_box(&single_line)));
+    });
+    group.bench_function("save/normalize_crlf", |b| {
+        b.iter(|| editor_io::bench_normalize(black_box(&clean), LineEnding::Crlf));
+    });
+    group.bench_function("save/normalize_mixed", |b| {
+        b.iter(|| editor_io::bench_normalize(black_box(&mixed), LineEnding::Lf));
+    });
+    group.bench_function("save/crlf_check_dense", |b| {
+        b.iter(|| editor_io::bench_crlf_check(black_box(&crlf)));
+    });
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -3929,5 +4198,6 @@ criterion_group!(
     bench_markdown_render_planning,
     bench_search_interactive_policies,
     bench_save_admission_policy,
+    bench_text_scans,
 );
 criterion_main!(benches);

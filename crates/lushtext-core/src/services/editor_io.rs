@@ -1323,13 +1323,9 @@ fn analyze_decoded_content_cancellable(
     let mut scan_slice = |slice: &str| {
         tally.scan_slice(slice.as_bytes());
         profile.push_str(slice);
-        for character in slice.chars() {
-            if character == '\u{00A0}' {
-                nbsp_count += 1;
-            } else if is_zero_width(character) {
-                zero_width_count += 1;
-            }
-        }
+        let (nbsp, zero_width) = count_health_characters(slice);
+        nbsp_count += nbsp;
+        zero_width_count += zero_width;
     };
 
     if content.len() <= DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES {
@@ -1356,6 +1352,75 @@ fn analyze_decoded_content_cancellable(
         zero_width_count,
         profile: profile.finish(),
     })
+}
+
+/// Count the non-breaking spaces and zero-width characters of one slice.
+fn count_health_characters(slice: &str) -> (usize, usize) {
+    let mut nbsp_count = 0usize;
+    let mut zero_width_count = 0usize;
+    for character in slice.chars() {
+        if character == '\u{00A0}' {
+            nbsp_count += 1;
+        } else if is_zero_width(character) {
+            zero_width_count += 1;
+        }
+    }
+    (nbsp_count, zero_width_count)
+}
+
+/// Benchmark hook: the whole decoded-content analysis of one load, returning
+/// the non-breaking-space and zero-width counts.
+///
+/// The scans are private, so the `text_scans/*` Criterion cases reach them
+/// through these `test-utils` hooks; both sides of an interleaved comparison
+/// carry the same hooks and benchmark IDs.
+///
+/// # Panics
+///
+/// Never in practice: the analysis fails only when its cancellation flag is
+/// set, and this hook passes a flag nothing sets.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn bench_load_analysis(content: &str) -> (usize, usize) {
+    let analysis = analyze_decoded_content_cancellable(content, &AtomicBool::new(false))
+        .expect("an uncancelled analysis completes");
+    (analysis.nbsp_count, analysis.zero_width_count)
+}
+
+/// Benchmark hook: the file-health character scan alone, over one slice.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn bench_health_scan(content: &str) -> (usize, usize) {
+    count_health_characters(content)
+}
+
+/// Benchmark hook: the EditorConfig `trim_trailing_whitespace` save rewrite,
+/// returning the formatted length.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn bench_trim(text: &str) -> usize {
+    let overrides = FormattingOverrides {
+        trim_trailing_whitespace: Some(true),
+        ..FormattingOverrides::default()
+    };
+    apply_save_formatting_overrides_borrowed(text, overrides).len()
+}
+
+/// Benchmark hook: the save-time line-ending normalization, returning the
+/// normalized length (`None` for the refused `Mixed` policy).
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn bench_normalize(text: &str, line_ending: LineEnding) -> Option<usize> {
+    normalize_line_endings(text, line_ending)
+        .ok()
+        .map(|normalized| normalized.len())
+}
+
+/// Benchmark hook: whether the text is already in CRLF form.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn bench_crlf_check(text: &str) -> bool {
+    line_endings_already_normalized(text, LineEnding::Crlf)
 }
 
 /// Build surfaced file-health findings from the decoded document snapshot.
