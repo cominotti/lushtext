@@ -84,7 +84,13 @@ cap_in_kib() {
     esac
 }
 
-HEAVY_SLICE=lushtext-heavy.slice
+# LUSHTEXT_HEAVY_SLICE exists for the self-test only: its fake budgets must
+# never be applied to the real host-wide slice.
+HEAVY_SLICE=${LUSHTEXT_HEAVY_SLICE:-lushtext-heavy.slice}
+case $HEAVY_SLICE in
+    lushtext-heavy*.slice) ;;
+    *) echo "with-memory-cap: LUSHTEXT_HEAVY_SLICE must name a lushtext-heavy*.slice unit" >&2; exit 2 ;;
+esac
 ADMISSION_LOCK="${XDG_RUNTIME_DIR:-/tmp}/lushtext-heavy-admission.lock"
 
 mem_available_kib() {
@@ -119,15 +125,27 @@ waiting_message() {
     echo "with-memory-cap: waiting for memory: $((admitted / 1048576)) GiB of $((heavy_kib / 1048576)) GiB admitted to $HEAVY_SLICE, $((available / 1048576)) GiB available, need $((cap_kib / 1048576)) GiB plus a $((reserve_kib / 1048576)) GiB reserve" >&2
 }
 
-# Hold the admission lock until this cap fits the slice budget and the
+# Take the admission lock once this cap fits the slice budget and the
 # desktop reserve; fd 9 stays locked until the caller's scope exists
-# (release_admission_once_scoped). Under LUSHTEXT_ADMISSION_NOWAIT=1 a cap
-# that does not fit at once exits 75 instead of waiting.
+# (release_admission_once_scoped). The lock is held only while checking and
+# admitting, never while sleeping for memory: a waiter holding it would block
+# every other admission, NOWAIT ones included. Under
+# LUSHTEXT_ADMISSION_NOWAIT=1 a cap that does not fit at once exits 75
+# instead of waiting, and a lock busy for 2 s counts as a misfit: only an
+# admission in flight holds it now, and that normally takes milliseconds.
 admit() {
     local announced=0
     exec 9>"$ADMISSION_LOCK"
-    flock 9
-    while ! fits "$cap_kib" "$heavy_kib" "$reserve_kib"; do
+    while :; do
+        if [ "${LUSHTEXT_ADMISSION_NOWAIT:-}" = 1 ]; then
+            flock -w 2 9 || {
+                echo "with-memory-cap: not waiting (LUSHTEXT_ADMISSION_NOWAIT=1): the admission lock stayed busy" >&2
+                exit 75
+            }
+        else
+            flock 9
+        fi
+        fits "$cap_kib" "$heavy_kib" "$reserve_kib" && return 0
         if [ "${LUSHTEXT_ADMISSION_NOWAIT:-}" = 1 ]; then
             waiting_message
             echo "with-memory-cap: not waiting (LUSHTEXT_ADMISSION_NOWAIT=1, inside a measurement's locks): free memory, or run this capped command before the measurement" >&2
@@ -137,6 +155,7 @@ admit() {
             waiting_message
             announced=1
         fi
+        flock -u 9
         sleep 15
     done
 }
@@ -197,6 +216,14 @@ self_test() {
     # probe below would otherwise run in place and read the outer scope's
     # limits. The nested-call check sets the variable explicitly.
     unset LUSHTEXT_MEMORY_CAP_KIB LUSHTEXT_ADMISSION_NOWAIT
+    # Every scope goes to a private slice. A scope start applies the budget
+    # (LUSHTEXT_HEAVY_MEMORY_MAX) to its slice, and the misfit cases below use
+    # a 2G budget: on the real slice that left every agent's heavy work capped
+    # at 2 GiB host-wide until the next ordinary call.
+    local real_slice=$HEAVY_SLICE real_max
+    real_max=$(systemctl --user show -p MemoryMax --value "$real_slice" 2>/dev/null || true)
+    export LUSHTEXT_HEAVY_SLICE=lushtext-heavy-selftest.slice
+    HEAVY_SLICE=$LUSHTEXT_HEAVY_SLICE
     "$me" none true || { echo "self-test: 'none' did not pass through" >&2; return 1; }
     status=0; "$me" 16GiB true 2>/dev/null || status=$?
     [ "$status" -eq 2 ] || { echo "self-test: invalid cap accepted (status $status)" >&2; return 1; }
@@ -263,7 +290,20 @@ self_test() {
         status=0
         LUSHTEXT_ADMISSION_NOWAIT=1 LUSHTEXT_HEAVY_MEMORY_MAX=2G LUSHTEXT_MEMORY_RESERVE=999999G timeout 5 "$me" 2G true 2>/dev/null || status=$?
         [ "$status" -eq 75 ] || { echo "self-test: LUSHTEXT_ADMISSION_NOWAIT=1 did not fail a misfit with 75 (status $status)" >&2; return 1; }
-        echo "with-memory-cap self-test: ok (scope sets MemoryMax, no swap and OOMPolicy=continue inside $HEAVY_SLICE; nested calls run in place; --address-space fails an allocation cleanly; Ctrl-C reaches the command; arguments with \$ pass unexpanded; --wait-admissible waits without reserving; NOWAIT admission fails fast)"
+        # An admission waiting for memory must not hold the admission lock
+        # while it sleeps, or a NOWAIT admission behind it blocks instead of
+        # failing fast with 75.
+        LUSHTEXT_HEAVY_MEMORY_MAX=2G LUSHTEXT_MEMORY_RESERVE=999999G "$me" 2G true 2>/dev/null &
+        local waiter=$!
+        sleep 1
+        status=0
+        LUSHTEXT_ADMISSION_NOWAIT=1 LUSHTEXT_HEAVY_MEMORY_MAX=2G LUSHTEXT_MEMORY_RESERVE=999999G timeout 5 "$me" 2G true 2>/dev/null || status=$?
+        kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null || true
+        [ "$status" -eq 75 ] || { echo "self-test: a NOWAIT admission blocked behind an admission waiting for memory (status $status)" >&2; return 1; }
+        local after_max
+        after_max=$(systemctl --user show -p MemoryMax --value "$real_slice" 2>/dev/null || true)
+        [ "$after_max" = "$real_max" ] || { echo "self-test: the real $real_slice MemoryMax changed from '$real_max' to '$after_max'" >&2; return 1; }
+        echo "with-memory-cap self-test: ok (scope sets MemoryMax, no swap and OOMPolicy=continue inside $HEAVY_SLICE; nested calls run in place; --address-space fails an allocation cleanly; Ctrl-C reaches the command; arguments with \$ pass unexpanded; --wait-admissible waits without reserving; NOWAIT admission fails fast, even behind a waiter; the real slice's budget untouched)"
     else
         echo "with-memory-cap self-test: ok (no systemd user manager; cap enforcement not exercised)"
     fi
