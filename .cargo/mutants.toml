@@ -323,9 +323,9 @@ exclude_re = [
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with (>=|<|==) in slice_end_after_paragraph",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileConfig::window",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:.*replace > with >= in ProfileSummary::max",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:532:19: replace > with >= in ParagraphLengthFold::push",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:564:26: replace > with >= in ParagraphLengthFold::push",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:552:26: replace < with (>|==) in ParagraphLengthFold::push",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:552:19: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:584:26: replace > with >= in ParagraphLengthFold::push",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:572:26: replace < with (>|==) in ParagraphLengthFold::push",
     # The SIMD fast paths of `model/paragraph_boundary.rs` (document-scale-policy):
     # equivalent because they change only which search finds the same byte,
     # or let a loop run once more over an empty tail. In `next_paragraph_break`
@@ -337,13 +337,21 @@ exclude_re = [
     # the loop bound (`<` with `<=`). Lines that only compile under Kani (the
     # byte-loop `let at = end - 1` and the per-character `push_str`) cannot be
     # killed by any test build.
+    # In the chunked `next_delimiter_without_lead_stops`, widening the
+    # `memmem` window past `limit + 2` (`-` with `+` or `/`, `+` with `*`),
+    # accepting a separator at `limit` (`<` with `<=`: none can start on a
+    # line break or complete past the chunk's two-byte extension), and the
+    # chunk size (`*` with `+`) change no result.
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:188:[0-9]+: replace (-|\\+) with (\\+|/|\\*) in next_delimiter_without_lead_stops",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:192:34: replace < with <= in next_delimiter_without_lead_stops",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:204:42: replace \\* with \\+",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:112:17: replace < with <= in next_paragraph_break",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:115:46: replace < with (>|==|<=) in next_paragraph_break",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:15[57]:[0-9]+: replace \\+= with \\*= in next_paragraph_break",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:246:15: replace > with >= in last_break_end_within",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:256:[0-9]+: .* in last_break_end_within",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:685:20: replace < with <= in ParagraphProfileAccumulator::push_str",
-    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:64[78]:[0-9]+: .* in ParagraphProfileAccumulator::push_str",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:268:15: replace > with >= in last_break_end_within",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:278:[0-9]+: .* in last_break_end_within",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:705:20: replace < with <= in ParagraphProfileAccumulator::push_str",
+    "crates/lushtext-core/src/model/paragraph_boundary\\.rs:66[78]:[0-9]+: .*ParagraphProfileAccumulator::push_str",
     # Equivalent in `model/paragraph_profile_watch.rs`: `>` with `>=` where
     # the tie picks an equal value (`max`, and the two upper clamps of
     # `window_range`), and `inner_lengths` reading the run when
