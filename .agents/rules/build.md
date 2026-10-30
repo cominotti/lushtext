@@ -68,6 +68,7 @@ make performance-smoke # lightweight Criterion performance smoke
 make responsiveness-build # measurement binary with the smoke-only responsiveness-probes feature, into target/responsiveness/
 make responsiveness-smoke # long-line responsiveness lane (RESPONSIVENESS_TIER=quick|full); nightly/manual, not in end-user-smoke
 make check-responsiveness-lane # (in check-policy) fixture generator and lane driver self-tests
+make check-agent-helpers # (in check-policy) self-tests of scripts/heavy.sh, measure.sh, wait-for.sh (shared-machine lock protocol)
 make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode, KANI_MEMORY_MAX=16G memory cap)
 make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
 make check-kani-shards # every Kani harness in exactly one CI shard, each shard measured within its budget (no Kani needed)
@@ -471,6 +472,87 @@ All dev staging, temporary or persistent, must use a non-production ID such as `
 For GNOME Settings File Types work, treat the desktop entry's explicit `MimeType=` line as the allowlist source of truth. `gio mime <type>` can still list LushText for source-like MIME types that inherit from `text/plain`, even when LushText does not explicitly advertise those types; that inherited output must not be used as proof that the File Types allowlist is wrong.
 
 Changing `data/icons/dev.cominotti.lushtext.svg` alone is not enough to refresh every icon surface. The fixed-size PNG fallbacks must be regenerated, and an already-running dev session still needs a fresh Shell app object. Use `make refresh-dock-icon` after icon asset changes: it regenerates the PNG fallbacks from the canonical SVG and then replaces the running dev instance so the dock rebuilds from the fresh file-backed icon.
+
+## Shared-machine agent work
+
+Several agents and terminals share one workstation, its CPUs, memory and
+disk, across every worktree of this repository. Two failures shaped the rules
+below. Agents wrote wait loops such as
+`until ! pgrep -f "cargo build -p foo"; do sleep 15; done`: `pgrep -f` matches
+whole command lines, the waiting shell's own command line contains the
+pattern, so the loop matched itself and never ended (some ran 32 hours). And an
+agent took the measurement lock exclusively and then waited, inside it, for
+other work with such a loop, deadlocking two agents for three hours.
+
+**The helpers are THE way agents run heavy work, measurements, and waits.**
+Each has a `--self-test`; `make check-agent-helpers` (in `make check-policy`)
+runs all three plus `shellcheck`, against temporary locks only.
+
+```
+scripts/heavy.sh [--mem <cap>] -- <command> [args...]       # every heavy non-measurement command
+scripts/measure.sh [--label L] [--log FILE] -- <command> ... # every timing verdict
+scripts/wait-for.sh (--pid N | --name EXACT_NAME | --file PATH [--nonempty]) [--timeout S]
+```
+
+**The lock protocol** (rev 2). Two files in the **main checkout's** `target/`,
+shared by every worktree (the helpers resolve it from
+`git rev-parse --git-common-dir`; `LUSHTEXT_AGENT_LOCK_DIR` overrides it, for
+the self-tests):
+
+- `INTENT` = `target/responsiveness-measure.intent`
+- `LOCK` = `target/responsiveness-measure.lock`
+
+- **Heavy work** — `cargo build`/`check`/`clippy`/`test`, `make test`, Kani,
+  cargo-mutants, proof-strength, smoke lanes, and `git commit` (its hook runs
+  Clippy) — goes through `scripts/heavy.sh`: it probes `INTENT` shared (blocks
+  while a measurement is pending or running), then holds `LOCK` shared for the
+  one command, so heavy commands run beside each other but never during a
+  measurement. It also exports `CARGO_BUILD_JOBS=4`, pins the command to the
+  CPU affinity it inherited (never widened), and runs it inside
+  `scripts/with-memory-cap.sh <cap>` (default `12G`; the host-wide slice budget
+  is the wrapper's own default, which the helper never overrides). Every stage
+  `exec`s, so the command keeps the helper's PID: its exit status and any
+  signal reach it directly. `make test`/`test-widget` admit their own per-shard
+  scopes, so pass `--mem none` for them rather than nesting every shard under
+  one cap.
+- **Measurements** — the responsiveness lane, interleaved benches, any timing
+  verdict — go through `scripts/measure.sh`: `INTENT` exclusively, then `LOCK`
+  exclusively. Holding `INTENT` first is the writer preference: new heavy
+  starts wait while the running ones drain, so a measurement is not starved
+  (rev 1, `LOCK` alone, let overlapping shared holders keep the exclusive
+  request waiting forever). It records the load average and the top five CPU
+  processes (instantaneous, from `top`) before and after into `--log` (or
+  stderr), runs the one command, and releases both. Build the measured binary
+  first, with `heavy.sh`: `measure.sh` refuses to run inside heavy work
+  (exit 2) rather than deadlock, and a `heavy.sh` started inside a measurement
+  runs in place. Test-suite wall-time comparisons are not verdicts: run them
+  through `heavy.sh` and record the load.
+- **Granularity: one lock per command.** Never wrap a whole multi-hour script
+  or agent session in one `heavy.sh`; call it per command, so a pending
+  measurement runs between steps (one whole-script shared hold blocked a
+  measurement and a commit for 28+ minutes). A `heavy.sh` nested inside
+  another runs in place (`LUSHTEXT_AGENT_LOCK_HELD`, honoured only while
+  `LOCK` really is held), because taking the locks again would deadlock as
+  soon as a measurement is pending.
+- **Never wait for other work while holding a lock**, least of all `LOCK`
+  exclusively. `measure.sh` does nothing but run its command.
+
+Commits run the hook's Clippy, so commit through the protocol too:
+`scripts/heavy.sh --mem none -- git commit ...` (the hook's own targets admit
+their scopes), or by hand
+`flock -s target/responsiveness-measure.intent true && flock -s target/responsiveness-measure.lock git commit ...`
+from the main checkout.
+
+**Waiting.** Use `scripts/wait-for.sh`, or `tail --pid=<pid> -f /dev/null` /
+a loop on `pgrep -x <name>` directly. **Never `pgrep -f`** (nor `pkill -f`
+with a pattern that matches your own shell). Prefer `--pid` whenever the PID
+is known. `--name` matches the kernel's process name exactly, which is at most
+15 characters; `wait-for.sh` refuses longer or space-containing names, which
+could never match and would report "gone" at once. It exits 0 when the
+condition holds and 124 on `--timeout`. Its self-test also fails if `pgrep -f`
+appears in `scripts/`, the `Makefile`, `.githooks/` or `.github/`. On the
+maintainer's workstation a global Claude Code `PreToolUse` hook also blocks
+such commands before they run; the helpers are what keeps them unnecessary.
 
 ## Compilation Speed
 
@@ -1175,8 +1257,8 @@ while an owned one is reported as a finding; so does a measured case that
   the 1-minute load average below 4 for 30 s, no process at 80 % CPU or more,
   and no other agent's `cargo`, `rustc`, `nextest`, `kani`/`cbmc`,
   `cargo-mutants` or `mutter --headless` running; record the load, the process
-  check and `btrfs-stall-report` for the window, wrap the run in
-  `flock target/responsiveness-measure.lock`, and discard a run that loses the
+  check and `btrfs-stall-report` for the window, run it through
+  `scripts/measure.sh` (see "Shared-machine agent work"), and discard a run that loses the
   precondition part-way. Runs under load are labelled non-verdict.
 - `make end-user-smoke` runs the host-supported smoke lanes together. Individual
   scripts own their dependency checks, artifact paths, and skip messages.
