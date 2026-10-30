@@ -954,6 +954,39 @@ count over the decoded text). The planned remedy is fusing the profile with
 the P2 file-health scan in the queued `simd-line-scans` change, which should
 make loading faster than main overall.
 
+**Residual closed (`simd-line-scans`, 2026-10-30).** The file-health scan now
+skips between its lead bytes with `memchr3`; fusing it with the profile pass
+(variant B) was measured and declined, because the separate passes already
+re-read a slice from L2 and the fused form was no faster. Interleaved, one
+toolchain (1.98.1) on every side, three rounds, median of round medians
+(min–max), load 1.2–3.0:
+
+| Benchmark | pre-C1 `1e2556a2` | main `0439d4c4` | branch |
+|---|---|---|---|
+| `editor_file_io/load_text_file/1MB` | 655 µs (642–656) | 698 µs (689–710) | 295 µs (293–296) |
+| `editor_file_io/load_text_file/10MB` | 8.00 ms (7.96–8.07) | 8.41 ms (8.08–8.58) | 3.99 ms (3.95–4.11) |
+| `editor_file_io/load_text_file/50MB` | 64.0 ms (61.4–64.2) | 64.1 ms (62.2–67.1) | 42.4 ms (40.8–44.4) |
+
+The full `text_scans/*` table is in `docs/benchmarks/transient-file-load.md`.
+
+**Queued follow-ups from `simd-line-scans`:**
+
+- *Minimap analysis off the GTK thread.* `MinimapAnalysisAccumulator::inspect_str`
+  exists, measured 9.7× (`many_short_lines`) and 18.3× (`long_line`) faster than
+  per-character `inspect_slice`, but has no production caller:
+  `minimap/analysis_execution.rs` still reads one `GtkTextIter` character at a
+  time on the GTK thread (32 Ki per turn). Feeding it a per-turn `get_slice`, or a
+  worker over a buffer snapshot, changes that coordination role (WFR minimap row)
+  and gets its own change; the cost of `get_slice` per turn is unmeasured. Source:
+  `.claude/handoffs/simd-exploration/REPORT.md`, P3.
+- *AVX2 file-health kernel (explicit-SIMD gate met).* On typographic text the
+  `memchr3` health scan is still 19.3 % of `load_text_file` (27.8 of 143.8 ms),
+  above D6's 10 %. A follow-up proposal may add the 64-byte AVX2 block kernel
+  (H1: 2.8× against `memchr3`'s 1.7× on that text) under every condition of the
+  "Explicit SIMD" policy in `.agents/rules/rust.md`: runtime dispatch with the
+  `memchr3` path as the measured fallback, NEON decided (or recorded unmeasured),
+  property and fuzz pinning, an allowlist row. Not started.
+
 **Lane result (task 10.4, 2026-10-30): budget missed on both sides, owned by C2
 (Protected View).** Interleaved `make responsiveness-smoke` runs (full tier,
 `delimiters/{lf,cr,crlf,u2029}`: the 1,894,586-character minified-HTML fixture

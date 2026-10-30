@@ -84,6 +84,9 @@ lane:
 | Is the reduced-features notice announced through the status bar (never the inline alert slot or a text-view reallocation), bounded and content-free? | widget, `document_scale`; manual Orca row in `docs/accessibility-orca-checklist.md` |
 | Does GTK behave as the policy assumes (A42 delimiters and history-dependent lines, A44 same-emission downgrade, A45 unparent stops a tick)? | `make gtk-axioms` |
 | Does open of a long-line fixture show no context-engine stall or CRITICAL, and does typing stay within B_interact? | `make responsiveness-smoke` (nightly/manual) |
+| Do the accelerated text scans (load file-health count, save trim / normalization / CRLF check, minimap `inspect_str`) equal their scalar references for every slicing and policy? | property, `properties::text_scans`; fuzz `editor_bytes` (corpus replay in PR CI); unit, `services::editor_io::text_scans` |
+| Is the minimap's byte-length skip sound for every running count, length and threshold pair? | Kani, shard `core-geometry-policies` (`skipped_line_crosses_no_threshold*`) |
+| Does a clean save trim allocate nothing? | integration, `tests/text_scan_allocations.rs` (counting allocator) |
 
 ## Scheduled Or Manual Expectations
 
