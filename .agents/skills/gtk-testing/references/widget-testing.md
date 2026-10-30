@@ -52,7 +52,7 @@ use crate::common::{ensure_gtk_init, test_application, test_window};
 
 Prefer `mutter --headless` for GTK4 and Libadwaita:
 
-Use `scripts/run-widget-tests.sh --headless` or `make test-widget-headless` when possible so CI and local repro share the same wrapper, retry policy, and monitor size. Plain `cargo test --test widget` is still Cargo-visible by default, but it must re-launch itself into headless Mutter before running tests.
+Use `scripts/run-widget-tests.sh --headless` or `make test-widget-headless` when possible so CI and local repro share the same wrapper, retry policy, and monitor size. `make test-widget`/`test-widget-headless` run the CI shards side by side (`scripts/widget-shards.py parallel`), each shard through that same runner in its own memory scope and session; `WIDGET_PARALLEL=0` keeps one serial session. Plain `cargo test --test widget` is still Cargo-visible by default, but it must re-launch itself into headless Mutter before running tests.
 
 ```bash
 export XDG_RUNTIME_DIR="$(mktemp -d)"

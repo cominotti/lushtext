@@ -9,6 +9,7 @@ TEMP_SCOPE="$SCRIPT_DIR/with-temp-scope.sh"
 # Paths this script itself creates outside the scoped TMPDIR (the warning-scan
 # log), removed on every exit path, including SIGINT and SIGTERM.
 OWNED_TEMP_PATHS=()
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
 remove_owned_temp_paths() {
     if (( ${#OWNED_TEMP_PATHS[@]} > 0 )); then
         rm -rf -- "${OWNED_TEMP_PATHS[@]}"
@@ -20,6 +21,10 @@ trap 'exit 143' TERM
 
 RETRIES=0
 MONITOR="2560x1600"
+# Names the temp scope (`lt-scope-<pid>-<label>-XXXXXX`) and so the session's
+# runtime directory; `widget-shards.py parallel` gives each shard a short,
+# distinct one.
+SCOPE_LABEL=widget
 TEST_ARGS=()
 SELF_TEST=false
 UNSUPPORTED_HOST_EXIT_CODE=77
@@ -31,7 +36,7 @@ WIDGET_WARNING_REGEX='((^|[[:space:]])warning:|WARNING|CRITICAL|Gdk-Message:|Bro
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-widget-tests.sh [--headless] [--retries N] [--monitor WxH] [-- [test-binary-args...]]
+Usage: scripts/run-widget-tests.sh [--headless] [--retries N] [--monitor WxH] [--scope-label LABEL] [-- [test-binary-args...]]
 
 Run the LushText widget test harness under a transient Mutter headless compositor.
 The harness intentionally has no native/live-display mode.
@@ -40,6 +45,9 @@ Options:
   --headless    Always run under `mutter --headless`.
   --retries N   Retry the full harness up to N times after the first failure.
   --monitor WxH Virtual monitor size for headless runs (default: 2560x1600).
+  --scope-label LABEL
+                Label of the temporary-file scope and session runtime
+                directory (default: widget).
   --self-test   Verify warning classification and the temporary-file scope
                 without launching GTK.
   -h, --help    Show this help text.
@@ -108,7 +116,75 @@ self_test_warning_classification() {
     fi
 
     echo "Widget warning classification self-test passed."
+    self_test_scope_and_memory_report
     "$TEMP_SCOPE" --self-test
+}
+
+self_test_scope_and_memory_report() {
+    local saved_label="$SCOPE_LABEL" fixture report failed=0
+
+    # The scope label names the temp scope (and so the runtime directory).
+    session_scope_command
+    if [[ "${SESSION_SCOPE_COMMAND[*]}" != "$TEMP_SCOPE --session-runtime widget --" ]]; then
+        echo "Error: the default scope label is not 'widget': ${SESSION_SCOPE_COMMAND[*]}" >&2
+        failed=1
+    fi
+    SCOPE_LABEL=w1
+    session_scope_command
+    SCOPE_LABEL="$saved_label"
+    if [[ "${SESSION_SCOPE_COMMAND[*]}" != "$TEMP_SCOPE --session-runtime w1 --" ]]; then
+        echo "Error: --scope-label did not reach the temp scope: ${SESSION_SCOPE_COMMAND[*]}" >&2
+        failed=1
+    fi
+
+    # The memory report, read from a fixture cgroup directory rather than by
+    # provoking the OOM killer: a clean scope passes, an OOM kill fails loudly.
+    fixture="$(mktemp -d)"
+    OWNED_TEMP_PATHS+=("$fixture")
+    printf '%s\n' 1073741824 >"$fixture/memory.peak"
+    printf '%s\n' 'low 0' 'high 0' 'max 3' 'oom 1' 'oom_kill 0' >"$fixture/memory.events"
+    if [[ "$(report_memory_scope "$fixture" 2>&1)" != "widget-memory: peak 1024 MiB, oom_kill 0" ]]; then
+        echo "Error: the memory report misread a clean scope." >&2
+        failed=1
+    fi
+    printf '%s\n' 'low 0' 'high 0' 'max 3' 'oom 1' 'oom_kill 2' >"$fixture/memory.events"
+    if report="$(report_memory_scope "$fixture" 2>&1)" || [[ "$report" != *OOM-KILL:* ]]; then
+        echo "Error: the memory report accepted a scope with OOM kills: $report" >&2
+        failed=1
+    fi
+    rm -rf -- "$fixture"
+    (( failed == 0 )) || return 1
+    echo "Widget scope label and memory report self-test passed."
+}
+
+# The temp-scope prefix of the session command, in SESSION_SCOPE_COMMAND.
+session_scope_command() {
+    SESSION_SCOPE_COMMAND=("$TEMP_SCOPE" --session-runtime "$SCOPE_LABEL" --)
+}
+
+# Report the memory scope this runner ran in: its peak, and whether the kernel
+# OOM-killed anything in it. Under `with-memory-cap.sh` the scope uses
+# `OOMPolicy=continue`, so an OOM kill removes only the largest process
+# (usually the current test child), which the harness may then retry and pass
+# as FLAKY; failing here keeps an OOM from ever being green. Reported only when
+# the runner is under `with-memory-cap.sh` (LUSHTEXT_MEMORY_CAP_KIB), so CI's
+# uncapped output is unchanged; nested in place, the scope is the outer one.
+report_memory_scope() {
+    local dir="$1" peak oom_kills
+    [[ -r "$dir/memory.peak" && -r "$dir/memory.events" ]] || return 0
+    read -r peak <"$dir/memory.peak"
+    oom_kills="$(awk '$1 == "oom_kill" { print $2 }' "$dir/memory.events")"
+    echo "widget-memory: peak $(( peak / 1048576 )) MiB, oom_kill ${oom_kills:-0}"
+    if (( ${oom_kills:-0} > 0 )); then
+        echo "OOM-KILL: the kernel killed ${oom_kills} process(es) in this run's memory scope; raise nothing, find what grew." >&2
+        return 1
+    fi
+}
+
+memory_scope_dir() {
+    local cgroup
+    cgroup="$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)"
+    [[ -n "$cgroup" ]] && printf '/sys/fs/cgroup%s\n' "$cgroup"
 }
 
 run_with_widget_log() {
@@ -146,8 +222,9 @@ run_headless() {
         # private XDG_RUNTIME_DIR, releases the runtime directory only once
         # the session's services have exited, and fails the run if any test
         # process left a temporary entry behind.
+        session_scope_command
         run_with_widget_log \
-            "$TEMP_SCOPE" --session-runtime widget -- \
+            "${SESSION_SCOPE_COMMAND[@]}" \
             dbus-run-session -- \
             mutter --headless --wayland --no-x11 --virtual-monitor "$MONITOR" -- \
             cargo test -p lushtext --test widget -- "${TEST_ARGS[@]}"
@@ -183,6 +260,11 @@ while [[ $# -gt 0 ]]; do
             MONITOR="$2"
             shift 2
             ;;
+        --scope-label)
+            [[ $# -lt 2 ]] && { echo "Error: --scope-label requires a value." >&2; exit 1; }
+            SCOPE_LABEL="$2"
+            shift 2
+            ;;
         --self-test)
             SELF_TEST=true
             shift
@@ -216,17 +298,26 @@ fi
 
 attempt=1
 max_attempts=$((RETRIES + 1))
+status=0
 while (( attempt <= max_attempts )); do
     if run_once; then
-        exit 0
+        status=0
+        break
     else
         status=$?
     fi
 
     if (( attempt == max_attempts )); then
-        exit "$status"
+        break
     fi
 
     echo "Widget test run failed on attempt $attempt/$max_attempts; retrying..." >&2
     attempt=$((attempt + 1))
 done
+
+if [[ -n "${LUSHTEXT_MEMORY_CAP_KIB:-}" ]] && scope_dir="$(memory_scope_dir)"; then
+    if ! report_memory_scope "$scope_dir"; then
+        (( status != 0 )) || status=1
+    fi
+fi
+exit "$status"

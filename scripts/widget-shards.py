@@ -5,9 +5,19 @@
 Every widget test belongs to exactly one shard. CI runs one shard per matrix
 job so each job stays inside the repository's 30-minute job cap even though the
 whole suite, run serially in one headless session, takes longer than that on
-the shared runner. `make test` and `make test-widget` still run every test in
-one session; `make test-widget-shard WIDGET_SHARD=<name>` reproduces one CI
-shard locally.
+the shared runner. `make test-widget-shard WIDGET_SHARD=<name>` reproduces one
+CI shard locally.
+
+`parallel` is the local full run behind `make test`, `make test-widget`, and
+`make test-widget-headless`: one shared build of the widget binary in a
+memory-capped scope, the same `--list` cross-check as `run`, then every shard
+at once, each through `scripts/with-memory-cap.sh <cap>
+scripts/run-widget-tests.sh --scope-label wN`, so each has its own memory scope,
+temp scope, D-Bus session, Mutter, and runtime directory. It relays each
+shard's output prefixed `[<shard>]`, keeps each shard's whole output in
+`target/widget-parallel/<shard>.log`, lets every shard finish, and prints one
+summary. `--retries N` is passed to the runner, which reruns a failed shard in
+a new session; a shard that needed a rerun is printed as `FLAKY-SHARD:`.
 
 `check` (part of `make check-policy`, no build needed) discovers every widget
 test from `crates/lushtext/tests/widget/*.rs` with the rule
@@ -26,6 +36,8 @@ Usage:
   scripts/widget-shards.py check [--self-test]
   scripts/widget-shards.py github-outputs
   scripts/widget-shards.py run all|<shard> [--measure JSON] [--self-test]
+  scripts/widget-shards.py parallel [--retries N] [--jobs N] [--measure JSON]
+      [--shard-memory-max CAP] [--build-memory-max CAP] [--build-jobs N]
 
 `run --measure JSON` is the measurement mode every CI shard job uses. It
 records the step wall time (test-binary build, `--list` cross-check, and the
@@ -39,11 +51,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
+import signal
 import subprocess
 import sys
+import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -381,19 +396,9 @@ def summary_markdown(records: list[dict[str, object]], slowest: int = 20) -> str
 def run(shard_names: list[str], static_tests: list[str], measure: str | None) -> int:
     start = time.monotonic()
     binary_tests = listed_tests()
-    missing = sorted(set(static_tests) - set(binary_tests))
-    extra = sorted(set(binary_tests) - set(static_tests))
-    if missing or extra or len(binary_tests) != len(static_tests):
-        for name in missing:
-            print(f"widget-shards: {name} is discovered from source but not in the binary's --list", file=sys.stderr)
-        for name in extra:
-            print(f"widget-shards: {name} is in the binary's --list but not discovered from source", file=sys.stderr)
-        print("widget-shards: the static discovery and the compiled widget binary disagree", file=sys.stderr)
+    if not cross_check(static_tests, binary_tests):
         return 1
-    # Run each shard's tests in the binary's own order, which is the order the
-    # harness runs them in and so the order results are attributed in.
-    order = {name: index for index, name in enumerate(binary_tests)}
-    by_shard = {name: sorted(tests, key=order.__getitem__) for name, tests in assignment(SHARDS, static_tests).items()}
+    by_shard = shard_order(static_tests, binary_tests)
     records = []
     result_status = 0
     for shard in shard_names:
@@ -414,6 +419,335 @@ def run(shard_names: list[str], static_tests: list[str], measure: str | None) ->
             with open(summary, "a", encoding="utf-8") as handle:
                 handle.write(summary_markdown(records))
     return result_status
+
+
+# --- `parallel`: every shard at once, locally -------------------------------
+
+MEMORY_CAP = REPO_ROOT / "scripts/with-memory-cap.sh"
+# Per-shard memory scope (dbus-daemon, Mutter, the harness parent, and its
+# current test child). Measured 2026-10-30: see `.agents/rules/build.md`.
+DEFAULT_SHARD_MEMORY_MAX = "6G"
+DEFAULT_BUILD_MEMORY_MAX = "16G"
+DEFAULT_BUILD_JOBS = 4
+# `sun_path` holds 108 bytes; the margin covers the other sockets a session
+# opens next to `wayland-0`.
+SOCKET_PATH_LIMIT = 100
+RERUN_MARKER = "Widget test run failed on attempt"
+FLAKY_NAME_RE = re.compile(r"^FLAKY: (\S+)$")
+MEMORY_RE = re.compile(r"^widget-memory: peak (\d+) MiB, oom_kill (\d+)$")
+# Live lines are shortened past this (the per-shard log keeps them whole):
+# `with-memory-cap.sh` echoes its command, several hundred `--exact` names.
+LIVE_LINE_LIMIT = 500
+
+
+def scope_label(index: int) -> str:
+    """A shard's temp-scope label: short, so its socket path stays short."""
+    return f"w{index}"
+
+
+def socket_path_problem(base: str, labels: list[str], pid_digits: int) -> str | None:
+    """Why the longest Wayland socket path a shard's session would get, under
+    `with-temp-scope.sh --session-runtime`, is too long, or None."""
+    longest = max(
+        f"{base.rstrip('/')}/lt-scope-{'0' * pid_digits}-{label}-XXXXXX/.session-runtime/wayland-0" for label in labels
+    )
+    if len(longest) <= SOCKET_PATH_LIMIT:
+        return None
+    return (
+        f"a shard's Wayland socket path would be {len(longest)} bytes (limit {SOCKET_PATH_LIMIT}): {longest}; "
+        f"the temporary directory {base} (TMPDIR) is too deep, so point TMPDIR at a shorter one"
+    )
+
+
+def max_pid_digits() -> int:
+    try:
+        return len(str(int(Path("/proc/sys/kernel/pid_max").read_text()) - 1))
+    except (OSError, ValueError):
+        return 7
+
+
+@dataclass
+class ShardJob:
+    shard: str
+    names: list[str]
+    command: list[str]
+
+
+@dataclass
+class ShardOutcome:
+    """What one shard's stream and exit said."""
+
+    shard: str
+    expected: int
+    log: WidgetLog
+    status: int | None = None
+    attempts: int = 1
+    failed: list[str] = field(default_factory=list)
+    earlier_failed: list[str] = field(default_factory=list)
+    flaky: list[str] = field(default_factory=list)
+    peak_mib: int | None = None
+    oom_kills: int = 0
+    wall_seconds: float = 0.0
+    _in_failures: bool = False
+
+    def feed(self, line: str, now: float) -> None:
+        self.log.feed(line, now)
+        text = line.strip()
+        if RERUN_MARKER in text:
+            # The runner reruns the whole shard in a new scope and session;
+            # what the failed attempt reported moves aside.
+            self.attempts += 1
+            self.earlier_failed += self.failed
+            self.failed, self.flaky = [], []
+        elif text == "failures:":
+            self._in_failures = True
+        elif self._in_failures:
+            if text and not text.startswith("test result:"):
+                self.failed.append(text)
+            else:
+                self._in_failures = False
+        elif match := FLAKY_NAME_RE.match(text):
+            self.flaky.append(match.group(1))
+        elif match := MEMORY_RE.match(text):
+            self.peak_mib, self.oom_kills = int(match.group(1)), int(match.group(2))
+
+    def problems(self) -> list[str]:
+        problems = count_problems(self.expected, self.log)
+        if self.status is None:
+            problems.append("never started")
+        elif self.status != 0:
+            problems.append(f"exited with status {self.status}")
+        if self.oom_kills:
+            problems.append(f"{self.oom_kills} process(es) OOM-killed in its memory scope")
+        return problems
+
+
+class ParallelRun:
+    """Run shard jobs, at most `max_jobs` at once, each in its own session
+    (`setsid`) so the terminal's Ctrl-C reaches only this driver, which
+    forwards SIGINT/SIGTERM to every running shard's process group, starts no
+    queued shard, and waits for the running ones so each scope's traps release
+    their directories."""
+
+    def __init__(self, jobs: list[ShardJob], max_jobs: int, log_dir: Path, out=sys.stdout, err=sys.stderr) -> None:
+        self.jobs = jobs
+        self.max_jobs = max(1, max_jobs)
+        self.log_dir = log_dir
+        self.out = out
+        self.err = err
+        self.lock = threading.Lock()
+        self.finished: queue.Queue[str] = queue.Queue()
+        self.running: dict[str, subprocess.Popen[str]] = {}
+        self.stop_signal: int | None = None
+
+    def _relay(self, job: ShardJob, child: subprocess.Popen[str], outcome: ShardOutcome, started: float) -> None:
+        assert child.stdout is not None
+        with open(self.log_dir / f"{job.shard}.log", "w", encoding="utf-8") as log:
+            for line in child.stdout:
+                log.write(line)
+                log.flush()
+                live = line.rstrip("\n")
+                if len(live) > LIVE_LINE_LIMIT:
+                    live = live[:LIVE_LINE_LIMIT] + f" ... [{len(live) - LIVE_LINE_LIMIT} more characters in the log]"
+                with self.lock:
+                    self.out.write(f"[{job.shard}] {live}\n")
+                    self.out.flush()
+                outcome.feed(line, time.monotonic())
+        status = child.wait()
+        outcome.status = 128 - status if status < 0 else status
+        outcome.wall_seconds = round(time.monotonic() - started, 1)
+        self.finished.put(job.shard)
+
+    def _forward(self, signum: int, _frame: object) -> None:
+        self.stop_signal = self.stop_signal or signum
+        for child in list(self.running.values()):
+            try:
+                os.killpg(child.pid, signum)
+            except ProcessLookupError:
+                pass
+
+    def run(self) -> tuple[list[ShardOutcome], int]:
+        """Each job's outcome, in job order, and 0, or 128 + the signal that
+        stopped the run."""
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        outcomes = {job.shard: ShardOutcome(job.shard, len(job.names), WidgetLog(job.names)) for job in self.jobs}
+        pending = list(self.jobs)
+        threads = []
+        previous = {sig: signal.signal(sig, self._forward) for sig in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            while pending or self.running:
+                while pending and len(self.running) < self.max_jobs and self.stop_signal is None:
+                    job = pending.pop(0)
+                    child = subprocess.Popen(
+                        job.command,
+                        cwd=REPO_ROOT,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        errors="replace",
+                        start_new_session=True,
+                    )
+                    self.running[job.shard] = child
+                    thread = threading.Thread(
+                        target=self._relay, args=(job, child, outcomes[job.shard], time.monotonic()), daemon=True
+                    )
+                    thread.start()
+                    threads.append(thread)
+                if self.stop_signal is not None:
+                    pending = []
+                if not self.running:
+                    break
+                try:
+                    # A timeout, so a signal handler runs promptly.
+                    self.running.pop(self.finished.get(timeout=0.2))
+                except queue.Empty:
+                    pass
+            for thread in threads:
+                thread.join()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+        status = 0 if self.stop_signal is None else 128 + self.stop_signal
+        return [outcomes[job.shard] for job in self.jobs], status
+
+
+def summary_text(outcomes: list[ShardOutcome], total: int) -> str:
+    rows = [("Shard", "Status", "Attempts", "Selected/expected", "Minutes", "Peak MiB", "Failed", "FLAKY")]
+    for outcome in outcomes:
+        selected = "/".join(str(count) for count in outcome.log.running_counts) or "-"
+        rows.append(
+            (
+                outcome.shard,
+                "not run" if outcome.status is None else ("ok" if not outcome.problems() else f"FAILED ({outcome.status})"),
+                str(outcome.attempts),
+                f"{selected}/{outcome.expected}",
+                f"{outcome.wall_seconds / 60:.1f}",
+                "-" if outcome.peak_mib is None else str(outcome.peak_mib),
+                ", ".join(outcome.failed) or "-",
+                ", ".join(outcome.flaky) or "-",
+            )
+        )
+    widths = [max(len(row[column]) for row in rows) for column in range(len(rows[0]))]
+    lines = ["", f"Widget shards ({total} widget tests):"]
+    lines += ["  " + "  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip() for row in rows]
+    return "\n".join(lines) + "\n"
+
+
+def evaluate(outcomes: list[ShardOutcome], total: int, err=sys.stderr) -> int:
+    """Repeat every FLAKY test and shard rerun on stderr, and return 1 unless
+    every shard passed and their selected counts sum to the binary's total."""
+    failed = False
+    for outcome in outcomes:
+        for name in outcome.flaky:
+            print(f"FLAKY: [{outcome.shard}] {name}", file=err)
+        if outcome.attempts > 1:
+            earlier = ", ".join(outcome.earlier_failed) or "no test result"
+            print(
+                f"FLAKY-SHARD: {outcome.shard} needed {outcome.attempts} attempts (earlier attempts failed: {earlier})",
+                file=err,
+            )
+        for problem in outcome.problems():
+            print(f"widget-shards: shard {outcome.shard}: {problem}", file=err)
+            failed = True
+    selected = sum(outcome.log.running_counts[-1] for outcome in outcomes if outcome.log.running_counts)
+    if selected != total:
+        print(f"widget-shards: the shards selected {selected} tests, but the binary has {total}", file=err)
+        failed = True
+    return 1 if failed else 0
+
+
+def cross_check(static_tests: list[str], binary_tests: list[str]) -> bool:
+    """Whether static discovery and the compiled binary's --list agree."""
+    missing = sorted(set(static_tests) - set(binary_tests))
+    extra = sorted(set(binary_tests) - set(static_tests))
+    if not missing and not extra and len(binary_tests) == len(static_tests):
+        return True
+    for name in missing:
+        print(f"widget-shards: {name} is discovered from source but not in the binary's --list", file=sys.stderr)
+    for name in extra:
+        print(f"widget-shards: {name} is in the binary's --list but not discovered from source", file=sys.stderr)
+    print("widget-shards: the static discovery and the compiled widget binary disagree", file=sys.stderr)
+    return False
+
+
+def shard_order(static_tests: list[str], binary_tests: list[str]) -> dict[str, list[str]]:
+    """Each shard's tests in the binary's own order, which is the order the
+    harness runs them in and so the order results are attributed in."""
+    order = {name: index for index, name in enumerate(binary_tests)}
+    return {name: sorted(tests, key=order.__getitem__) for name, tests in assignment(SHARDS, static_tests).items()}
+
+
+def parallel(static_tests: list[str], args: argparse.Namespace) -> int:
+    base = os.environ.get("TMPDIR") or "/tmp"
+    labels = [scope_label(index) for index in range(len(SHARDS))]
+    if problem := socket_path_problem(base, labels, max_pid_digits()):
+        print(f"widget-shards: {problem}", file=sys.stderr)
+        return 2
+    if os.environ.get("LUSHTEXT_MEMORY_CAP_KIB"):
+        print(
+            "widget-shards: already inside a memory-capped scope, so every shard shares that one cap "
+            "instead of its own; start the parallel run unwrapped to give each shard its own scope",
+            file=sys.stderr,
+        )
+    build = [
+        str(MEMORY_CAP), args.build_memory_max,
+        "cargo", "test", "-j", str(args.build_jobs), "-p", "lushtext", "--test", "widget", "--no-run",
+    ]  # fmt: skip
+    print(f"Building the widget test binary once: {' '.join(build[2:])}", flush=True)
+    if status := subprocess.run(build, cwd=REPO_ROOT).returncode:
+        print(
+            "widget-shards: the shared build failed; without a user systemd manager the parallel run "
+            "cannot cap its shards, so use WIDGET_PARALLEL=0 for one serial session",
+            file=sys.stderr,
+        )
+        return status
+    binary_tests = listed_tests()
+    if not cross_check(static_tests, binary_tests):
+        return 1
+    by_shard = shard_order(static_tests, binary_tests)
+    jobs = [
+        ShardJob(
+            shard,
+            names,
+            [
+                str(MEMORY_CAP), args.shard_memory_max,
+                str(RUNNER), "--headless", "--scope-label", label, "--retries", str(args.retries),
+                "--", "--exact", *names,
+            ],  # fmt: skip
+        )
+        for (shard, names), label in zip(by_shard.items(), labels)
+    ]
+    max_jobs = args.jobs or len(jobs)
+    log_dir = REPO_ROOT / "target/widget-parallel"
+    for stale in log_dir.glob("*.log"):
+        stale.unlink()
+    print(
+        f"Running {len(jobs)} widget shards, at most {max_jobs} at once, "
+        f"each in its own {args.shard_memory_max} memory scope and headless session; logs in {log_dir}",
+        flush=True,
+    )
+    outcomes, stopped = ParallelRun(jobs, max_jobs, log_dir).run()
+    print(summary_text(outcomes, len(static_tests)), flush=True)
+    status = evaluate(outcomes, len(static_tests))
+    if args.measure is not None:
+        records = [
+            {
+                "shard": outcome.shard,
+                "status": outcome.status,
+                "attempts": outcome.attempts,
+                "expected": outcome.expected,
+                "suite_total": len(static_tests),
+                "selected": outcome.log.running_counts,
+                "durations_attributed": outcome.log.attributed,
+                "wall_seconds": outcome.wall_seconds,
+                "wall_minutes": round(outcome.wall_seconds / 60, 2),
+                "peak_mib": outcome.peak_mib,
+                "tests": outcome.log.tests,
+            }
+            for outcome in outcomes
+        ]
+        Path(args.measure).write_text(json.dumps({"shards": records}, indent=2) + "\n", encoding="utf-8")
+    return stopped or status
 
 
 def self_test() -> None:
@@ -505,12 +839,107 @@ def self_test() -> None:
     assert "| `window` | 0 | 1.5 | 2 / 5 |" in table_text, table_text
     assert "| `window::test_b` | ok | 7.5 |" in table_text, table_text
 
+    self_test_parallel()
+
+
+def self_test_parallel() -> None:
+    """The parallel driver's scheduler, merge, and failure semantics, with
+    shell stubs standing in for `run-widget-tests.sh` (no GTK, no session)."""
+    import io
+    import signal
+    import tempfile
+    import threading
+
+    # The socket guard: `/tmp` fits; a base that pushes the socket past the
+    # limit is refused and named.
+    assert socket_path_problem("/tmp", ["w0", "w1", "w2"], 7) is None
+    deep = "/tmp/" + "d" * 60
+    problem = socket_path_problem(deep, ["w0"], 7)
+    assert problem is not None and deep in problem and "TMPDIR" in problem, problem
+
+    def stub(text: str, status: int = 0) -> list[str]:
+        return ["sh", "-c", f"printf '%s\\n' {text}; exit {status}"]
+
+    def quoted(*lines: str) -> str:
+        return " ".join("'" + line.replace("'", "'\\''") + "'" for line in lines)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        log_dir = Path(scratch) / "logs"
+        jobs = [
+            ShardJob("a", ["a::one", "a::two"], stub(quoted(
+                "running 2 tests", "test a::one ... ok", "test a::two ... ok",
+                "widget-memory: peak 812 MiB, oom_kill 0"))),
+            ShardJob("b", ["b::bad"], stub(quoted(
+                "running 1 tests", "test b::bad ... FAILED", "failures:", "    b::bad",
+                "test result: FAILED. 1 failed"), 101)),
+            ShardJob("c", ["c::x"], stub(quoted(
+                "running 1 tests", "test c::x ... FAILED",
+                "Widget test run failed on attempt 1/2; retrying...",
+                "running 1 tests", "test c::x ... ok (FLAKY: passed on attempt 2)",
+                "FLAKY SUMMARY: 1 widget test(s) passed only on retry - investigate and fix the root cause:",
+                "    FLAKY: c::x"))),
+        ]
+        out, err = io.StringIO(), io.StringIO()
+        outcomes, status = ParallelRun(jobs, 2, log_dir, out, err).run()
+        assert status == 0, status  # the driver only signals stops; verdicts come from evaluate()
+        by_name = {outcome.shard: outcome for outcome in outcomes}
+        assert by_name["a"].status == 0 and by_name["a"].peak_mib == 812
+        assert by_name["b"].status == 101 and by_name["b"].failed == ["b::bad"], by_name["b"]
+        assert by_name["c"].status == 0 and by_name["c"].attempts == 2 and by_name["c"].flaky == ["c::x"]
+        assert "[a] running 2 tests" in out.getvalue(), out.getvalue()
+        assert (log_dir / "b.log").read_text().splitlines()[0] == "running 1 tests"
+        verdict = evaluate(outcomes, total=4, err=err)
+        assert verdict != 0
+        text = summary_text(outcomes, total=4)
+        assert "b::bad" in text and "FAILED" in text, text
+        assert "FLAKY-SHARD: c" in err.getvalue() and "FLAKY: [c] c::x" in err.getvalue(), err.getvalue()
+
+        # A green run passes; selected counts that miss the total fail it.
+        green = [ShardJob("a", ["a::one"], stub(quoted("running 1 tests", "test a::one ... ok")))]
+        outcomes, _ = ParallelRun(green, 1, log_dir, io.StringIO(), io.StringIO()).run()
+        assert evaluate(outcomes, total=1, err=io.StringIO()) == 0
+        assert evaluate(outcomes, total=2, err=io.StringIO()) != 0
+        # A shard whose harness selected the wrong count fails.
+        short = [ShardJob("a", ["a::one", "a::two"], stub(quoted("running 1 tests", "test a::one ... ok")))]
+        outcomes, _ = ParallelRun(short, 1, log_dir, io.StringIO(), io.StringIO()).run()
+        assert evaluate(outcomes, total=2, err=io.StringIO()) != 0
+        # An OOM kill reported by the runner fails the shard even at status 0.
+        oom = [ShardJob("a", ["a::one"], stub(quoted(
+            "running 1 tests", "test a::one ... ok", "widget-memory: peak 6100 MiB, oom_kill 1")))]
+        outcomes, _ = ParallelRun(oom, 1, log_dir, io.StringIO(), io.StringIO()).run()
+        assert evaluate(outcomes, total=1, err=io.StringIO()) != 0
+
+        # SIGTERM reaches every running shard's process group, which runs its
+        # own trap, and no queued shard starts; the run exits 143.
+        marker = Path(scratch) / "trapped"
+        sleeper = ["sh", "-c", f"trap 'touch {marker}; exit 143' TERM; echo started; sleep 30 & wait"]
+        never = Path(scratch) / "never"
+        queued = ["sh", "-c", f"touch {never}"]
+        timer = threading.Timer(1.0, os.kill, (os.getpid(), signal.SIGTERM))
+        timer.start()
+        started = time.monotonic()
+        outcomes, status = ParallelRun(
+            [ShardJob("s", [], sleeper), ShardJob("q", [], queued)], 1, log_dir, io.StringIO(), io.StringIO()
+        ).run()
+        timer.join()
+        assert status == 143, status
+        assert marker.exists(), "the running shard did not receive SIGTERM"
+        assert not never.exists(), "a queued shard started after SIGTERM"
+        assert time.monotonic() - started < 10
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["list", "check", "github-outputs", "run"])
+    parser.add_argument("command", choices=["list", "check", "github-outputs", "run", "parallel"])
     parser.add_argument("shard", nargs="?", default="all", choices=["all", *SHARDS])
-    parser.add_argument("--measure", metavar="JSON", help="run: record per-shard measurements to this JSON file")
+    parser.add_argument(
+        "--measure", metavar="JSON", help="run, parallel: record per-shard measurements to this JSON file"
+    )
+    parser.add_argument("--retries", type=int, default=0, help="parallel: rerun a failed shard up to N times")
+    parser.add_argument("--jobs", type=int, default=0, help="parallel: at most N shards at once (default: all)")
+    parser.add_argument("--shard-memory-max", default=DEFAULT_SHARD_MEMORY_MAX, help="parallel: per-shard scope cap")
+    parser.add_argument("--build-memory-max", default=DEFAULT_BUILD_MEMORY_MAX, help="parallel: build scope cap")
+    parser.add_argument("--build-jobs", type=int, default=DEFAULT_BUILD_JOBS, help="parallel: cargo -j for the build")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -539,6 +968,8 @@ def main() -> int:
     if args.command == "github-outputs":
         print(f"shards={json.dumps(list(SHARDS))}")
         return 0
+    if args.command == "parallel":
+        return parallel(tests, args)
     return run(list(SHARDS) if args.shard == "all" else [args.shard], tests, args.measure)
 
 
