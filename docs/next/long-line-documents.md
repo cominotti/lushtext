@@ -923,6 +923,37 @@ for it: the minimap is retired (unparented and dropped) instead of having its
 view cleared (A45). A32 will read "violated" once the toolkit floor reaches
 5.22, which is an axiom change to review then.
 
+**Load-analysis cost (task 2.5, closed with a recorded residual,
+2026-10-29).** Interleaved Criterion runs, main `1e2556a2` against the branch,
+three alternating rounds per side, at load 1.1–2.9 (measured under
+maintainer-accepted load; dota2 not running during these rounds); medians
+(min–max):
+
+| Benchmark | main | branch | branch / main |
+|---|---|---|---|
+| `editor_file_io/load_text_file/1MB` | 642 µs (640–650) | 733 µs (732–735) | 1.14× |
+| `editor_file_io/load_text_file/10MB` | 8.06 ms (7.96–8.16) | 8.47 ms (8.43–8.52) | 1.05× |
+| `editor_file_io/load_text_file/50MB` | 65.5 ms (64.6–65.6) | 68.0 ms (67.8–68.0) | 1.04× |
+| `end_to_end_boundedness/buffer_replacement_policy_large_unicode_bytes` | 435 ps | 237 ps | 0.54× |
+| `transient_file_load/install_boundaries/unicode_50_mib` | 2.26 µs | 3.77 µs | 1.67× |
+| `transient_file_load/install_boundaries/single_line_ascii_50_mib` | 4.83 ms | 4.09 ms | 0.85× |
+| `transient_file_load/install_boundaries/single_line_typographic_50_mib` | 4.90 ms | 5.13 ms | 1.05× |
+
+The first comparison found the slicer at 23.6–44 ms for a 50 MiB body and the
+profile pass at +63–80 % of `load_text_file`; the slicer now searches
+backwards from the budget end and, after four `0xE2` bytes that do not start
+U+2029, switches to a chunked `memchr2` + `memmem` search (SIMD exploration
+H2), which brings the worst single-line slice on the GTK thread under
+B_interact; the profile counts a paragraph at a time with
+`str::chars().count()` (measured 9x faster than a per-byte count, and 4x
+faster than that count built for AVX2 and dispatched at run time).
+**Residual, accepted by the maintainer:** `load_text_file` is +4–5 % at
+10–50 MB and +14 % (about 90 µs) at 1 MB. The cost is worker-side, off the
+GTK thread, and comes from the extra profile pass (one break search and one
+count over the decoded text). The planned remedy is fusing the profile with
+the P2 file-health scan in the queued `simd-line-scans` change, which should
+make loading faster than main overall.
+
 **Lane result (task 10.4):** TODO(responsiveness-smoke): open of the synthetic
 1.9M-character fixture (context-engine stall, CRITICALs) and typing in its short
 paragraphs against B_interact, with the watch's share and the machine load.

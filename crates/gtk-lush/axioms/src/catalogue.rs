@@ -841,8 +841,8 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a50() {
-        for number in 1..=50 {
+    fn the_catalogue_covers_every_ledger_id_up_to_a51() {
+        for number in 1..=51 {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }

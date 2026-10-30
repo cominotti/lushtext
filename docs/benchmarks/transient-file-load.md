@@ -87,3 +87,18 @@ pressure. The coordinator is shared across every LushText window in the process.
 These fields are bounded implementation evidence. They deliberately do not
 pretend to be exact allocator or resident-set measurements, and the smoke lane
 does not impose a brittle hard RSS threshold.
+
+## Paragraph-boundary slicing (document-scale-policy, 2026-10-29)
+
+Installation slices now end at GTK paragraph delimiters
+(`model/paragraph_boundary.rs`), and the load analysis builds a paragraph
+profile on the worker. Interleaved against main (`1e2556a2`, three rounds per
+side): `install_boundaries/unicode_50_mib` 2.26 µs on main against 3.77 µs;
+the new single-line cases `single_line_ascii_50_mib` 4.83 against 4.09 ms and
+`single_line_typographic_50_mib` 4.90 against 5.13 ms (one slice of a 50 MiB
+paragraph, the slicer's worst call on the GTK thread, under B_interact).
+`editor_file_io/load_text_file` carries a recorded residual of +4–5 % at
+10–50 MB and +14 % (about 90 µs) at 1 MB: worker-side, off the GTK thread,
+from the extra profile pass, to be removed by fusing the profile with the
+file-health scan in the queued `simd-line-scans` change. The full table and
+its history are in `docs/next/long-line-documents.md` (task 2.5).
