@@ -399,14 +399,16 @@ Each records `ci_minutes`, `ci_peak_gib` and `measured_in` from two dispatched `
 
 ### D7. Reduced-features notice
 
-**The alert.** One inline alert per editor, of warning style, titled "Some Features Are Off for This Document". It names the reduced features and the reason class (total size, very long lines, or dense long lines). Its accessible text is bounded with `a11y::bounded_announcement_text`.
+**The surfaces (revised 2026-10-30).** The notice was first an inline alert above the editor. The interleaved 10.4 lane showed that every show and hide of it reallocated the text view, and GTK then laid out each visible giant paragraph again: click 317 ms and typing at the document start 765 ms on the 1.9M-character fixture, against 3.6 and 6.9 ms on main, and 3.5 and 8.2 ms with the notice disabled. It is now reported outside the text view's allocation path:
+- one announced status-bar message, warning style, naming the reduced features and the reason class, bounded with `a11y::bounded_announcement_text`, and published when the tab is the window's selected one (a background tab's notice waits for its selection);
+- a persistent "Editor Features" row in the document properties with the same text, since the status message expires;
+- the editor's accessible description, as before.
 
-**Priority.** It ranks below every recovery and error alert (restored draft, external change, access error, local-history undo, mixed line endings). If one of those is active, the notice waits and is shown when it clears. It is never dropped silently.
+It never takes the inline alert slot, so recovery and error alerts keep it without any priority rule.
 
-**When it is shown.**
+**When it is announced.**
 - Once per document session.
 - Again only when an edit-time downgrade reduces an *additional* feature.
-- Dismissing it does not re-enable anything.
 
 **What it lists.** The reduced presentation features, plus undo and local history when the byte tiers reduce them (reason total size), so the undo statement today's description makes for documents above 50 MB is not lost. Only a reduced presentation feature raises the notice; undo and history reductions are named in it, never raise it on their own.
 
@@ -434,7 +436,7 @@ Each new entry below goes into the ledger with a `gtk-lush-axioms` probe and a s
 - [Monotone downgrades leave features off after the user deletes the giant line] → This is accepted and documented: reopening the file re-profiles it. The notice says so.
 - [Retire-and-rebuild of the minimap loses transient map state (adjustment, slider CSS, the reflow freeze pairing)] → `create_native_source_map` already holds the whole map configuration, `RenderHoldOverlay::set_live_child` re-points the freeze, and the vadjustment guard is reconnected per instance. Rebuild is a new path, so the geometry visual proofs (`native-minimap-*-anchors`) and the minimap widget tests must stay green, and a rebuild test asserts geometry equality with a constructed map.
 - [The paragraph-boundary change alters slice boundaries for CR-only or U+2029 documents] → This is intended, and it fixes a blocker. Byte-identity round-trip tests cover CR, CRLF, U+2029 and mixed documents through load, draft recovery and save.
-- [The reduced-features notice competes with recovery alerts] → It has strict lower priority and is queued, never dropped (D7).
+- [The reduced-features notice competes with recovery alerts] → It never uses the inline alert slot; it is a status-bar message plus a document-properties row (D7, revised after the 10.4 lane).
 - [Data safety] → This change never mutates buffer text. It only toggles projections. `data-safety` is still run explicitly over the load, save and replacement call-site edits.
 
 ## Migration Plan

@@ -81,7 +81,7 @@ lane:
 | Do CR-only, CRLF, U+2029 and mixed documents round-trip byte-identically through load, replacement and save? | widget, `document_scale` |
 | Are syntax, brackets, invisibles, search highlighting and the minimap gated at load and in the same edit emission, never re-enabled by save or rename? | widget, `document_scale` |
 | Does the minimap retire and rebuild instead of clearing a live map's view, with no CRITICAL? | widget, `document_scale` |
-| Does the reduced-features notice rank below recovery alerts and stay bounded and content-free? | widget, `document_scale`; manual Orca row in `docs/accessibility-orca-checklist.md` |
+| Is the reduced-features notice announced through the status bar (never the inline alert slot or a text-view reallocation), bounded and content-free? | widget, `document_scale`; manual Orca row in `docs/accessibility-orca-checklist.md` |
 | Does GTK behave as the policy assumes (A42 delimiters and history-dependent lines, A44 same-emission downgrade, A45 unparent stops a tick)? | `make gtk-axioms` |
 | Does open of a long-line fixture show no context-engine stall or CRITICAL, and does typing stay within B_interact? | `make responsiveness-smoke` (nightly/manual) |
 

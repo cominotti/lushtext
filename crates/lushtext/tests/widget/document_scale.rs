@@ -13,17 +13,18 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use libadwaita::prelude::*;
 use lushtext_core::config::keys;
 use lushtext_core::model::document_scale::{
     DocumentScale, L_INVISIBLES, L_MINIMAP, L_PROTECT, L_SEARCH_HIGHLIGHT, L_SYNTAX,
-    LocalHistoryAvailability, R_BATCH, ReducedFeatures, S_MINIMAP, V_BATCH,
+    LocalHistoryAvailability, R_BATCH, ReducedFeatures, V_BATCH,
 };
 use lushtext_core::model::paragraph_boundary::DocumentProfile;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use lushtext_core::ui::editor_page::document_scale::REDUCED_FEATURES_NOTICE_TITLE;
 use lushtext_core::ui::editor_page::{
     EditorLoadState, InlineAlertLifetime, LushtextEditorPage, MinimapAvailability,
 };
+use lushtext_core::ui::window::LushtextWindow;
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -849,103 +850,209 @@ fn test_rebuilt_map_matches_a_constructed_map() {
 }
 
 // ─── 9. The reduced-features notice ─────────────────────────────────────
+//
+// Reported outside the text view's allocation path: an announced status-bar
+// message and the document properties' "Editor Features" row, never an
+// inline alert (`test_reduced_features_never_resize_the_text_view`).
 
-fn info_bar_title(page: &LushtextEditorPage) -> String {
-    page.info_bar().imp().alert_title.label().to_string()
+/// Open `path` in a presented window and wait for its load.
+fn open_in_window(path: &std::path::Path) -> (LushtextWindow, LushtextEditorPage) {
+    let window = crate::common::test_window();
+    present_window(&window);
+    window.open_document(path);
+    let page = crate::common::active_editor(&window);
+    wait_until(Duration::from_secs(10), || {
+        page.load_evidence().load_state == EditorLoadState::Loaded
+    });
+    (window, page)
 }
 
-fn info_bar_body(page: &LushtextEditorPage) -> String {
-    page.info_bar().imp().alert_body.label().to_string()
+fn status_text(window: &LushtextWindow) -> String {
+    window
+        .imp()
+        .status_bar
+        .imp()
+        .message_label
+        .label()
+        .to_string()
 }
 
-/// Take the shown alert off a windowless page's own bar (a user dismissal).
-fn dismiss_alert(page: &LushtextEditorPage) {
-    page.info_bar().render_notification(None);
+fn features_row(window: &LushtextWindow) -> String {
+    window
+        .imp()
+        .properties_panel
+        .imp()
+        .features_row
+        .subtitle()
+        .map(|subtitle| subtitle.to_string())
+        .unwrap_or_default()
 }
 
-fn notice_visible(page: &LushtextEditorPage) -> bool {
-    page.info_bar().is_visible() && page.document_scale_evidence().notice_showing
+fn short_document(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let path = dir.path().join("short.txt");
+    fixture::write_text(&path, &"short line\n".repeat(20));
+    path
 }
 
 #[test]
-fn test_notice_appears_on_open_of_a_long_line_document() {
+fn test_notice_is_announced_on_open_of_a_long_line_document() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("notice tempdir");
     let path = dir.path().join("long.txt");
     fixture::write_text(&path, &format!("{}\n", "l".repeat(n(L_MINIMAP) + 1)));
-    let page = LushtextEditorPage::new();
-    load_and_wait(&page, &path);
-    wait_until(Duration::from_secs(5), || notice_visible(&page));
-    let label = info_bar_title(&page);
-    assert_eq!(label, REDUCED_FEATURES_NOTICE_TITLE);
-    let body = info_bar_body(&page).to_lowercase();
-    assert!(body.contains("syntax highlighting"), "{body}");
-    assert!(body.contains("the minimap"), "{body}");
-    assert!(body.contains("because of very long lines"), "{body}");
+    let (window, page) = open_in_window(&path);
+    wait_until(Duration::from_secs(5), || {
+        status_text(&window).contains("because of very long lines")
+    });
+    let status = status_text(&window).to_lowercase();
+    assert!(status.contains("syntax highlighting"), "{status}");
+    assert!(status.contains("the minimap"), "{status}");
+    assert!(features_row(&window).to_lowercase().contains("the minimap"));
+    assert!(!page.document_scale_evidence().notice_pending);
+    assert_ne!(
+        page.document_scale_evidence().notice_announced,
+        ReducedFeatures::NONE
+    );
+    assert!(!page.info_bar().is_visible());
 }
 
 #[test]
-fn test_recovery_alert_takes_precedence_over_the_notice() {
+fn test_a_windowless_page_keeps_its_notice_pending() {
+    // Not perceivable until its tab is a window's selected one.
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&format!("{}\n", "w".repeat(n(L_SYNTAX) + 1)));
+    flush_events();
+    assert!(page.document_scale_evidence().notice_pending);
+    assert_eq!(
+        page.document_scale_evidence().notice_announced,
+        ReducedFeatures::NONE
+    );
+    assert!(!page.info_bar().is_visible());
+}
+
+#[test]
+fn test_the_notice_leaves_a_recovery_alert_on_the_inline_bar() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("precedence tempdir");
-    let path = dir.path().join("restored.txt");
-    fixture::write_text(&path, &format!("{}\n", "r".repeat(n(L_SYNTAX) + 1)));
-    let page = LushtextEditorPage::new();
-    let restored_alert = InlineActionNotification {
+    let (window, page) = open_in_window(&short_document(&dir));
+    let restored = InlineActionNotification {
         style: InlineNotificationStyle::Warning,
         title: "Unsaved Changes Restored".to_string(),
         body: "A recovery draft was applied.".to_string(),
         primary_button: Some("_Discard…".to_string()),
         secondary_button: Some("_Save…".to_string()),
     };
-    let page_weak = page.downgrade();
-    let alert = restored_alert.clone();
-    page.connect_file_loaded(move || {
-        if let Some(page) = page_weak.upgrade() {
-            page.emit_inline_notification(alert.clone(), InlineAlertLifetime::SupersededByLoad);
-        }
-    });
-    load_and_wait(&page, &path);
+    page.emit_inline_notification(restored.clone(), InlineAlertLifetime::SupersededByLoad);
     flush_events();
-    assert_eq!(info_bar_title(&page), restored_alert.title);
-    assert!(page.document_scale_evidence().notice_pending);
-    dismiss_alert(&page);
-    wait_until(Duration::from_secs(5), || notice_visible(&page));
+    insert_at_end(&page, &"r".repeat(n(L_SYNTAX) + 1));
+    wait_until(Duration::from_secs(5), || {
+        status_text(&window).contains("because of very long lines")
+    });
+    assert_eq!(
+        page.info_bar().imp().alert_title.label().as_str(),
+        restored.title,
+        "the recovery alert keeps the inline bar"
+    );
 }
 
 #[test]
-fn test_notice_reappears_for_an_additional_downgrade_after_dismissal() {
+fn test_notice_is_announced_again_only_for_an_additional_downgrade() {
     ensure_gtk_init();
-    let page = LushtextEditorPage::new();
-    page.buffer()
-        .set_text(&format!("{}\n", "s".repeat(n(L_SYNTAX) + 1)));
-    wait_until(Duration::from_secs(5), || notice_visible(&page));
-    dismiss_alert(&page);
-    flush_events();
-    assert!(!page.info_bar().is_visible());
-    // The same reductions do not raise it again.
+    let dir = tempfile::tempdir().expect("reannounce tempdir");
+    let (window, page) = open_in_window(&short_document(&dir));
+    insert_at_end(&page, &"s".repeat(n(L_SYNTAX) + 1));
+    wait_until(Duration::from_secs(5), || {
+        status_text(&window).contains("because of very long lines")
+    });
+    // The same reductions do not announce again.
+    window.publish_status_message("marker", lushtext_core::ui::status_bar::MessageKind::Info);
     insert_at_end(&page, "more");
+    drain_frames(&page, 2);
     flush_events();
-    assert!(!page.info_bar().is_visible());
+    assert_eq!(status_text(&window), "marker");
     // A newly reduced feature does.
     insert_at_end(&page, &"i".repeat(n(L_INVISIBLES) + 1));
-    wait_until(Duration::from_secs(5), || notice_visible(&page));
-    assert!(info_bar_body(&page).contains("invisible characters"));
+    wait_until(Duration::from_secs(5), || {
+        status_text(&window).contains("invisible characters")
+    });
+    assert!(features_row(&window).contains("invisible characters"));
 }
 
 #[test]
 fn test_notice_announcement_is_bounded_and_content_free() {
     ensure_gtk_init();
-    let page = LushtextEditorPage::new();
+    let dir = tempfile::tempdir().expect("bounded tempdir");
+    let (window, page) = open_in_window(&short_document(&dir));
     let secret = "SECRET-CONTENT-";
-    let body = format!("{}{}\n", secret, "c".repeat(n(S_MINIMAP) / 1_000));
-    page.buffer().set_text(&body.repeat(2));
-    insert_at_end(&page, &"x".repeat(n(L_INVISIBLES) + 1));
-    wait_until(Duration::from_secs(5), || notice_visible(&page));
-    let shown = info_bar_body(&page);
-    assert!(!shown.contains(secret));
+    insert_at_end(
+        &page,
+        &format!("{secret}{}", "x".repeat(n(L_INVISIBLES) + 1)),
+    );
+    wait_until(Duration::from_secs(5), || {
+        status_text(&window).contains("because of very long lines")
+    });
+    let shown = status_text(&window);
+    assert!(!shown.contains(secret), "{shown}");
     assert!(shown.chars().count() <= 320);
-    let description = page.document_scale().reduced.describe().unwrap_or_default();
-    assert!(!description.contains(secret));
+    assert!(!features_row(&window).contains(secret));
     assert_ne!(page.document_scale().reduced, ReducedFeatures::NONE);
+}
+
+/// The source view's allocated `(width, height)`.
+fn view_allocation(page: &LushtextEditorPage) -> (i32, i32) {
+    let view = page.source_view();
+    (view.width(), view.height())
+}
+
+#[test]
+fn test_reduced_features_never_resize_the_text_view() {
+    // Re-laying out a visible paragraph of hundreds of thousands of
+    // characters costs 300-760 ms (the 10.4 lane, 2026-10-30), so nothing the
+    // scale policy reports may change the text view's allocation: an inline
+    // alert above the editor did, on every show and hide.
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("resize tempdir");
+    let (window, page) = open_in_window(&short_document(&dir));
+    drain_frames(&page, 4);
+    assert_eq!(page.document_scale().reduced, ReducedFeatures::NONE);
+    let before = view_allocation(&page);
+    assert!(
+        before.0 > 0 && before.1 > 0,
+        "the view is allocated: {before:?}"
+    );
+
+    // An edit-time downgrade: one paragraph grows past L_syntax.
+    insert_at_end(&page, &"g".repeat(n(L_SYNTAX) + 1));
+    assert!(!page.document_scale().syntax_enabled);
+    for _ in 0..6 {
+        drain_frames(&page, 2);
+        flush_events();
+        assert_eq!(
+            view_allocation(&page),
+            before,
+            "the reduced-features report resized the view"
+        );
+        assert!(
+            !page.info_bar().is_visible(),
+            "the report took the inline alert slot"
+        );
+    }
+
+    // It is reported outside the view's allocation path: an announced status
+    // message, and a persistent row in the document properties.
+    wait_until(Duration::from_secs(5), || {
+        status_text(&window).contains("because of very long lines")
+    });
+    assert!(
+        status_text(&window)
+            .to_lowercase()
+            .contains("syntax highlighting")
+    );
+    assert!(
+        features_row(&window)
+            .to_lowercase()
+            .contains("syntax highlighting")
+    );
 }

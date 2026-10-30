@@ -511,7 +511,6 @@ impl LushtextEditorPage {
         notification: InlineActionNotification,
         lifetime: imp::InlineAlertLifetime,
     ) {
-        self.note_inline_notification_replaced();
         self.set_pending_warning_action(None);
         self.publish_inline_notification(notification, lifetime);
     }
@@ -523,7 +522,6 @@ impl LushtextEditorPage {
         action: imp::PendingWarningAction,
         lifetime: imp::InlineAlertLifetime,
     ) {
-        self.note_inline_notification_replaced();
         self.set_pending_warning_action(Some(action));
         self.publish_inline_notification(notification, lifetime);
     }

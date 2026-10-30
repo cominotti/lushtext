@@ -2809,6 +2809,11 @@
         },
         {
           "internal-child": "",
+          "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/6:child/0:object:AdwPreferencesGroup/5:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
           "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/7:child",
           "type": ""
         },
@@ -2861,6 +2866,11 @@
           "class": "AdwActionRow",
           "id": "formatting_source_row",
           "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/6:child/0:object:AdwPreferencesGroup/4:child/0:object:AdwActionRow#formatting_source_row"
+        },
+        {
+          "class": "AdwActionRow",
+          "id": "features_row",
+          "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/6:child/0:object:AdwPreferencesGroup/5:child/0:object:AdwActionRow#features_row"
         },
         {
           "class": "AdwPreferencesGroup",
@@ -3022,6 +3032,20 @@
         {
           "context": "",
           "name": "title",
+          "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/6:child/0:object:AdwPreferencesGroup/5:child/0:object:AdwActionRow#features_row/0:property",
+          "translatable": "yes",
+          "value": "Editor Features"
+        },
+        {
+          "context": "",
+          "name": "subtitle",
+          "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/6:child/0:object:AdwPreferencesGroup/5:child/0:object:AdwActionRow#features_row/1:property",
+          "translatable": "yes",
+          "value": "Not available"
+        },
+        {
+          "context": "",
+          "name": "title",
           "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/7:child/0:object:AdwPreferencesGroup#health_group/0:property",
           "translatable": "yes",
           "value": "Health"
@@ -3129,6 +3153,18 @@
           "context": "",
           "name": "subtitle",
           "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/6:child/0:object:AdwPreferencesGroup/4:child/0:object:AdwActionRow#formatting_source_row/1:property",
+          "value": "Not available"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/6:child/0:object:AdwPreferencesGroup/5:child/0:object:AdwActionRow#features_row/0:property",
+          "value": "Editor Features"
+        },
+        {
+          "context": "",
+          "name": "subtitle",
+          "path": "0:template:LushtextPropertiesPanel/2:child/0:object:GtkScrolledWindow/5:property/0:object:GtkBox/6:child/0:object:AdwPreferencesGroup/5:child/0:object:AdwActionRow#features_row/1:property",
           "value": "Not available"
         },
         {

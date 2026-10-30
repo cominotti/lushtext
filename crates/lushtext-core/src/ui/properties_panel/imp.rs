@@ -32,6 +32,9 @@ pub struct LushtextPropertiesPanel {
     /// override for the active file.
     #[template_child]
     pub formatting_source_row: TemplateChild<libadwaita::ActionRow>,
+    /// Which editor features the document scale policy turned off, and why.
+    #[template_child]
+    pub features_row: TemplateChild<libadwaita::ActionRow>,
     /// Group containing the summary row plus any dynamic finding rows.
     #[template_child]
     pub health_group: TemplateChild<libadwaita::PreferencesGroup>,
@@ -55,6 +58,7 @@ impl Default for LushtextPropertiesPanel {
             file_size_row: TemplateChild::default(),
             statistics_row: TemplateChild::default(),
             formatting_source_row: TemplateChild::default(),
+            features_row: TemplateChild::default(),
             health_group: TemplateChild::default(),
             health_summary_row: TemplateChild::default(),
             health_review_button: TemplateChild::default(),
@@ -120,6 +124,11 @@ impl LushtextPropertiesPanel {
             &*self.formatting_source_row,
             "Formatting source",
             "Whether Preferences or EditorConfig currently controls formatting",
+        );
+        accessibility::set_labelled_description(
+            &*self.features_row,
+            "Editor features",
+            "Editor features turned off for this document because of its size or very long lines",
         );
         accessibility::set_role(&*self.health_group, gtk4::AccessibleRole::Group);
         accessibility::set_labelled_description(

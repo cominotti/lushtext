@@ -139,14 +139,15 @@ Expected screen-reader behavior includes:
   set. A document refused by open admission keeps its `disabled` state and the
   sentence "This document is too large to open."; the former "Large document
   mode is active." sentence (the retired 1 MB tier) is gone.
-- The reduced-features notice is an editor inline alert (warning style, titled
-  "Some Features Are Off for This Document") carrying the same list. Its body
-  and announcement are bounded through `a11y::bounded_announcement_text` and
-  contain no document text. It ranks below every recovery and error alert
-  (restored draft, external change, access error, local-history undo, mixed line
-  endings): it waits while one of them is shown and appears when it clears. It
-  is announced once per document session and again only when an edit reduces an
-  additional feature; dismissing it re-enables nothing.
+- The reduced-features notice is an announced status-bar message (warning
+  style) carrying the same list, published when the document's tab is the
+  selected one, plus a persistent "Editor Features" row in the document
+  properties (accessible name "Editor features", value text the same list).
+  Both are bounded through `a11y::bounded_announcement_text` and contain no
+  document text. It is announced once per document session and again only
+  when an edit reduces an additional feature. It never uses the editor's
+  inline alert slot, so recovery and error alerts keep that slot, and the
+  text view is never reallocated by it.
 - Search fields expose names, options, invalid/no-result states, match counts,
   and debounced result announcements without announcing every keystroke.
 - Markdown preview exposes explicit pending, complete, complete-with-omissions

@@ -115,12 +115,14 @@
 
 ## 9. Reduced-features notice
 
-- [x] 9.1 Add the reduced-features inline alert, which names the features and reason classes. Its text is bounded through `a11y::bounded_announcement_text`. It ranks below every recovery and error alert, is queued and never dropped, is shown once per session, and is shown again only for an additionally reduced feature.
+- [x] 9.1 Add the reduced-features notice, which names the features and reason classes. Its text is bounded through `a11y::bounded_announcement_text`, it is announced once per session and again only for an additionally reduced feature. (**Revised 2026-10-30** after the interleaved 10.4 lane: it is an announced status-bar message plus a persistent document-properties "Editor Features" row, never an inline alert, because showing or hiding an alert above the editor reallocated the text view and GTK re-laid out the visible giant paragraphs.)
 - [x] 9.2 Widget tests:
-  - the notice appears on open of a long-line document;
-  - a restored-draft alert takes precedence;
-  - the notice reappears on a new downgrade after a dismissal;
-  - the announcement is bounded and contains no content.
+  - the notice is announced on open of a long-line document, and the properties row names the features;
+  - a windowless page keeps its notice pending until its tab is selected;
+  - a recovery alert keeps the inline bar;
+  - the notice is announced again only for an additional downgrade;
+  - the announcement is bounded and contains no content;
+  - failing first: a reduction never changes the text view's allocated width or height and never shows an inline alert.
 
 ## 10. Data safety, docs and gates
 
@@ -135,4 +137,4 @@
   - the `WFR-ENCODING` row if its file set or policy consumers change;
   - the C0–C5 programme record `docs/next/long-line-documents.md`.
 - [x] 10.3 Run `make check`, `make test-unit`, `make test-int`, `make test-widget` (headless only, ≤ 16 cores), `make kani KANI_SHARD=core-document-scale`, `make kani KANI_SHARD=core-paragraph-profile`, `make check-kani-shards`, `make check-widget-shards` (every new widget test assigned to a shard), `make check-gtk-axioms`, `make gtk-axioms`, `make accessibility-smoke` (the editor description changed) and `make check-automation-docs`. Fix every failure, including pre-existing ones.
-- [ ] 10.4 Ask C0's `make responsiveness-smoke` lane to confirm that open on the synthetic 1.9M-character fixture shows no context-engine stall and no CRITICAL, and that typing in that fixture's short paragraphs stays within B_interact with the watch's share recorded. Record the result in `docs/next/long-line-documents.md`, and record the remaining degraded-mode stalls (Pango layout of giant paragraphs, and whole-paragraph buffer costs such as A26 log attrs when typing inside one) as C2's scope.
+- [x] 10.4 Ask C0's `make responsiveness-smoke` lane to confirm that open on the synthetic 1.9M-character fixture shows no context-engine stall and no CRITICAL, and that typing in that fixture's short paragraphs stays within B_interact with the watch's share recorded. Record the result in `docs/next/long-line-documents.md`, and record the remaining degraded-mode stalls (Pango layout of giant paragraphs, and whole-paragraph buffer costs such as A26 log attrs when typing inside one) as C2's scope. (**Done 2026-10-30, interleaved against main:** budget missed on both sides, owned by C2 (Protected View): typing in short paragraphs type-start 7.5 / 7.5 ms and type-middle 8.5 / 8.6 ms median, 3 frames input-to-frame on main / C1; click 3.9 / 3.5 ms; open 2008 / 517 ms, no context-engine stall or CRITICAL on C1. The notice regression the first comparison found is fixed; see `docs/next/long-line-documents.md`.)

@@ -53,6 +53,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     <property name="subtitle-lines">2</property>
                   </object>
                 </child>
+                <child>
+                  <object class="AdwActionRow" id="features_row">
+                    <property name="title" translatable="yes">Editor Features</property>
+                    <property name="subtitle" translatable="yes">Not available</property>
+                    <property name="subtitle-lines">4</property>
+                  </object>
+                </child>
               </object>
             </child>
             <child>

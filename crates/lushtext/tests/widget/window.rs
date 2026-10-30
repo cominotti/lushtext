@@ -5617,7 +5617,13 @@ fn test_large_document_disables_minimap_and_surfaces_feedback() {
         .notification_bus
         .status_bar_view()
         .expect("minimap warning status message");
-    assert_eq!(status.text, "Minimap unavailable for this large document");
+    // The minimap's own feedback, or the reduced-features notice that
+    // follows it and names the minimap with its reason (document-scale-policy).
+    assert!(
+        status.text.to_lowercase().contains("minimap"),
+        "{}",
+        status.text
+    );
 }
 
 #[test]

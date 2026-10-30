@@ -72,6 +72,14 @@ impl LushtextPropertiesPanel {
             self.imp()
                 .formatting_source_row
                 .set_subtitle(formatting_source);
+            // The document scale policy's reductions, persistently: the
+            // status-bar notice that announces them expires.
+            let features = editor
+                .document_scale()
+                .reduced
+                .describe()
+                .unwrap_or_else(|| "All editor features are on.".to_string());
+            self.imp().features_row.set_subtitle(&features);
             if editor.file_path().is_some() {
                 self.set_health_details(
                     "No file-health issues recorded for this document.",
@@ -92,6 +100,7 @@ impl LushtextPropertiesPanel {
             self.imp()
                 .formatting_source_row
                 .set_subtitle("Not available");
+            self.imp().features_row.set_subtitle("Not available");
             self.set_health_details("Open a document to inspect file health.", &[]);
         }
         self.refresh_accessibility_state();
@@ -132,6 +141,7 @@ impl LushtextPropertiesPanel {
             &*imp.file_size_row,
             &*imp.statistics_row,
             &*imp.formatting_source_row,
+            &*imp.features_row,
             &*imp.health_summary_row,
         ] {
             if let Some(subtitle) = row.subtitle() {

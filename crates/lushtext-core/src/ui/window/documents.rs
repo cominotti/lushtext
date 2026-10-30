@@ -864,7 +864,7 @@ impl LushtextWindow {
     }
 
     /// Refresh the status bar and header bar for the active tab.
-    pub(super) fn refresh_status_bar(&self) {
+    pub(crate) fn refresh_status_bar(&self) {
         let imp = self.imp();
         let editor = self.active_editor();
         imp.properties_panel.set_active_editor(editor.as_ref());
@@ -1117,6 +1117,9 @@ impl LushtextWindow {
         self.apply_focus_mode_to_editors();
         if let Some(editor) = self.active_editor() {
             editor.refresh_minimap();
+            // A background tab's reduced-features notice is announced the
+            // first time its tab is selected.
+            editor.flush_reduced_features_notice();
         }
     }
 

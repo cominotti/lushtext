@@ -32,7 +32,7 @@ This is change **C1** of the long-line stream in `docs/next/long-line-responsive
   - Availability is decided from the profile **before** any `GtkSourceMap` is attached.
   - Every install path, including the direct path below the synchronous threshold that today leaves the map attached, retires the map before the first byte enters the buffer when the profile disallows it.
   - The detach CRITICAL is fixed **failing-first**: a live `GtkSourceMap` never has its view cleared while its update tick can still fire. The map is retired (unparented and dropped) and rebuilt.
-- **Reduced-features notice.** One inline alert per document says which features were reduced and why. Its accessible text is bounded. The editor's accessible description names the reduced features in place of the old size-tier sentences.
+- **Reduced-features notice.** One announced status-bar message per document, and a persistent document-properties row, say which features were reduced and why (never an inline alert, which would reallocate the text view). Its accessible text is bounded. The editor's accessible description names the reduced features in place of the old size-tier sentences.
 - **Thresholds are policy constants.** C0 records `S_syntax`, `L_syntax`, `L_minimap`, `L_invisibles`, `L_search_highlight`, `L_protect`, `N_visible`, `R_batch` and `V_batch` (its derivation table, design D7). A feature limit C0 leaves open defaults to `min(L_syntax, N_visible)` unless the maintainer decides otherwise. The working budgets B_interact = 8 ms per interaction dispatch, input-to-presented-frame ≤ 2 frames, and B_settle = 16 ms per settle dispatch are the targets those values must meet; code reads them from C0's constants module and never restates them.
 - **GTK axiom ledger growth.** New entries, with `gtk-lush-axioms` probes and samples, cover any behaviour this change relies on that C0 did not already pin:
   - GtkTextBuffer line delimiters equal Pango's paragraph delimiters;
@@ -56,7 +56,7 @@ This is change **C1** of the long-line stream in `docs/next/long-line-responsive
   - "Minimap availability adapts…" is decided from the paragraph profile before attach;
   - "Wrapped-layout admission uses conservative live bytes" no longer gates availability; it only admits marker analysis;
   - a new requirement says a map is never detached while its update tick may fire.
-- `editor-inline-alerts`: adds the reduced-features notice.
+- `editor-inline-alerts`: scale-gated feature reductions never occupy the inline alert slot.
 - `invisible-character-visualization`: invisible-character modes become unavailable when the scale policy gates them.
 
 `live-editor-memory-budget` and `local-history` keep their requirement text. Their inputs (`estimated_buffer_multiplier` and the 10/50 MB history tiers) move to `DocumentScale` unchanged.

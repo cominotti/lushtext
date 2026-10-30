@@ -30,9 +30,13 @@
 //!   hidden), bracket matching, invisible characters, automatic search
 //!   highlighting and the minimap are applied from the scale at load
 //!   publication and at every downgrade.
-//! - **The notice.** One reduced-features inline alert per session, below
-//!   every recovery and error alert: it waits while another alert is shown and
-//!   is shown again only for an additionally reduced feature.
+//! - **The notice.** The reduced features are reported outside the text
+//!   view's allocation path: one announced status-bar message per newly
+//!   reduced feature, published when the tab is the window's selected one,
+//!   and a persistent row in the document properties. Never an inline alert:
+//!   showing or hiding one above the editor reallocates the text view, and
+//!   GTK then lays out every visible paragraph again, 300-760 ms for one of
+//!   hundreds of thousands of characters (the 10.4 lane, 2026-10-30).
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_signals::SignalBag;
@@ -48,27 +52,23 @@ use crate::model::paragraph_boundary::{
 use crate::model::paragraph_profile_watch::{
     DeleteFacts, InsertFacts, ProfileWatchState, WatchPlan, complete, plan_delete, plan_insert,
 };
-use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::accessibility as a11y;
+use crate::ui::status_bar::MessageKind;
+use crate::ui::window::LushtextWindow;
 
-use super::{InlineAlertLifetime, LushtextEditorPage};
+use super::LushtextEditorPage;
 
-/// Title of the reduced-features notice.
-pub const REDUCED_FEATURES_NOTICE_TITLE: &str = "Some Features Are Off for This Document";
-
-/// Most characters of the notice body (and so of its announcement).
-const REDUCED_FEATURES_NOTICE_BODY_LIMIT: usize = 320;
+/// Most characters of the notice (and so of its announcement).
+pub const REDUCED_FEATURES_NOTICE_LIMIT: usize = 320;
 
 /// Where the reduced-features notice is.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum NoticePhase {
-    /// Nothing to show.
+    /// Nothing to announce.
     #[default]
     Idle,
-    /// Waiting for the info bar to be free.
+    /// Waiting until the tab is the window's selected one.
     Pending,
-    /// Shown on the info bar.
-    Showing,
 }
 
 /// Per-tab document scale state.
@@ -110,10 +110,10 @@ pub struct DocumentScaleEvidence {
     pub watch_fast_steps: u64,
     /// Watch steps that recomputed density windows.
     pub watch_window_steps: u64,
-    /// Whether the reduced-features notice is waiting for the info bar.
+    /// Whether the reduced-features notice waits for its tab to be selected.
     pub notice_pending: bool,
-    /// Whether the reduced-features notice is on the info bar.
-    pub notice_showing: bool,
+    /// The presentation reductions the notice has announced this session.
+    pub notice_announced: ReducedFeatures,
 }
 
 /// The start of a run an `insert-text` after-handler just saw inserted:
@@ -206,7 +206,7 @@ impl LushtextEditorPage {
             watch_fast_steps: state.fast_steps.get(),
             watch_window_steps: state.window_steps.get(),
             notice_pending: state.notice.get() == NoticePhase::Pending,
-            notice_showing: state.notice.get() == NoticePhase::Showing,
+            notice_announced: state.announced.get(),
         }
     }
 
@@ -286,13 +286,9 @@ impl LushtextEditorPage {
         }
         self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
-        if next
-            .reduced
-            .newly_reduced_presentation(previous.reduced)
-            .any_presentation()
-        {
-            self.request_reduced_features_notice();
-        }
+        // Announces only a newly reduced feature; refreshes the properties
+        // row for any change.
+        self.request_reduced_features_notice();
     }
 
     /// Retire the minimap instance at once (a gated document never meets a
@@ -387,18 +383,6 @@ impl LushtextEditorPage {
             None
         });
         signals.track(&buffer, id);
-
-        // The notice waits for the info bar to be free.
-        let bar = self.info_bar().clone();
-        let editor_weak = self.downgrade();
-        let id = bar.connect_visible_notify(move |bar| {
-            if !bar.is_visible()
-                && let Some(editor) = editor_weak.upgrade()
-            {
-                editor.info_bar_hidden_for_notice();
-            }
-        });
-        signals.track(&bar, id);
     }
 
     /// The `insert-text` after-handler: `end` is at the end of the run.
@@ -489,44 +473,19 @@ impl LushtextEditorPage {
     // ─── The reduced-features notice ─────────────────────────────────────
 
     /// Queue the notice when the scale reduces a presentation feature it has
-    /// not announced yet.
+    /// not announced yet, and refresh the document properties either way.
     fn request_reduced_features_notice(&self) {
         let state = &self.imp().document_scale;
-        let reduced = state.scale.get().reduced;
-        if !reduced
+        if state
+            .scale
+            .get()
+            .reduced
             .newly_reduced_presentation(state.announced.get())
             .any_presentation()
         {
-            return;
-        }
-        if state.notice.get() != NoticePhase::Showing {
             state.notice.set(NoticePhase::Pending);
         }
-        // An idle, so recovery and error alerts the same turn publishes rank
-        // first and the notice waits behind them.
-        self.schedule_reduced_features_notice_flush();
-    }
-
-    /// Another inline alert replaced the notice: show it again later.
-    pub(super) fn note_inline_notification_replaced(&self) {
-        let state = &self.imp().document_scale;
-        if state.notice.get() == NoticePhase::Showing {
-            state.notice.set(NoticePhase::Pending);
-        }
-    }
-
-    fn info_bar_hidden_for_notice(&self) {
-        let state = &self.imp().document_scale;
-        match state.notice.get() {
-            // Dismissed or cleared: dismissing never re-enables anything.
-            NoticePhase::Showing => state.notice.set(NoticePhase::Idle),
-            NoticePhase::Pending => self.schedule_reduced_features_notice_flush(),
-            NoticePhase::Idle => {}
-        }
-    }
-
-    /// Try to show the pending notice from an idle.
-    fn schedule_reduced_features_notice_flush(&self) {
+        // An idle, so the load or edit that changed the scale finishes first.
         let editor_weak = self.downgrade();
         glib::idle_add_local_once(move || {
             if let Some(editor) = editor_weak.upgrade() {
@@ -535,33 +494,31 @@ impl LushtextEditorPage {
         });
     }
 
-    /// Show the pending notice if the info bar is free.
-    fn flush_reduced_features_notice(&self) {
-        let state = &self.imp().document_scale;
-        if state.notice.get() != NoticePhase::Pending || self.info_bar().is_visible() {
-            return;
-        }
-        let reduced = state.scale.get().reduced;
-        let Some(description) = reduced.describe() else {
-            state.notice.set(NoticePhase::Idle);
+    /// Announce a pending notice and refresh the document properties, when
+    /// this tab is its window's selected one (the window also calls this on
+    /// every tab selection, so a background tab announces when selected).
+    pub(crate) fn flush_reduced_features_notice(&self) {
+        let Some(window) = self
+            .root()
+            .and_then(|root| root.downcast::<LushtextWindow>().ok())
+        else {
             return;
         };
-        let body =
-            a11y::bounded_announcement_text(&description, REDUCED_FEATURES_NOTICE_BODY_LIMIT)
-                .into_owned();
-        // A load re-derives the scale and requests the notice again if it
-        // still applies, so the next successful load resolves this one.
-        self.emit_inline_notification(
-            InlineActionNotification {
-                style: InlineNotificationStyle::Warning,
-                title: REDUCED_FEATURES_NOTICE_TITLE.to_string(),
-                body,
-                primary_button: None,
-                secondary_button: None,
-            },
-            InlineAlertLifetime::SupersededByLoad,
-        );
+        if !window.is_active_editor(self) {
+            return;
+        }
+        window.refresh_status_bar();
+        let state = &self.imp().document_scale;
+        if state.notice.get() != NoticePhase::Pending {
+            return;
+        }
+        state.notice.set(NoticePhase::Idle);
+        let reduced = state.scale.get().reduced;
+        let Some(description) = reduced.describe() else {
+            return;
+        };
+        let message = a11y::bounded_announcement_text(&description, REDUCED_FEATURES_NOTICE_LIMIT);
+        window.publish_status_message(&message, MessageKind::Warning);
         state.announced.set(reduced.presentation_only());
-        state.notice.set(NoticePhase::Showing);
     }
 }

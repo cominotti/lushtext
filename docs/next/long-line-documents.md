@@ -954,9 +954,36 @@ count over the decoded text). The planned remedy is fusing the profile with
 the P2 file-health scan in the queued `simd-line-scans` change, which should
 make loading faster than main overall.
 
-**Lane result (task 10.4):** TODO(responsiveness-smoke): open of the synthetic
-1.9M-character fixture (context-engine stall, CRITICALs) and typing in its short
-paragraphs against B_interact, with the watch's share and the machine load.
+**Lane result (task 10.4, 2026-10-30): budget missed on both sides, owned by C2
+(Protected View).** Interleaved `make responsiveness-smoke` runs (full tier,
+`delimiters/{lf,cr,crlf,u2029}`: the 1,894,586-character minified-HTML fixture
+with short lines and giant paragraphs, plus `baseline/small`; phases open,
+background, click, type-start, type-middle; variants plain, at, probe-im;
+main `b7f56d45` and C1 alternating, 3 rounds; load 0.5-1.6, measured under
+maintainer-accepted load). Stall medians (max), input-to-frame max:
+
+| Phase (1.9M fixture) | main | C1 |
+|---|---|---|
+| open | 2008 ms (2010) | 517 ms (528) |
+| background | 769 ms (2008) | 769 ms (777) |
+| click | 3.9 ms (6.8), 3 frames | 3.5 ms (6.6), 3 frames |
+| type-start (Ctrl+Home, caret moves, typing) | 7.5 ms (12.7), 3 frames | 7.5 ms (10.7), 3 frames |
+| type-middle (click, typing) | 8.5 ms (10.1), 3 frames | 8.6 ms (10.6), 3 frames |
+
+`baseline/small` is the same on both sides (typing 2.3-3.3 ms, 2 frames). Open
+shows no context-engine stall and no CRITICAL on C1; main logs `Highlighting a
+single line took too much time` and stalls 2 s. Typing in the fixture's short
+paragraphs misses B_interact (8 ms) and the 2-frame input-to-frame budget on
+**both** sides, so it is not a C1 regression; it is the visible giant
+paragraphs' layout, which C2's Protected View owns. The first comparison
+found C1 worse (click 317 ms, type-start 765 ms): the reduced-features notice,
+then an inline alert above the editor, reallocated the text view on every show
+and hide, and GTK re-laid out each visible giant paragraph. A build without the
+notice measured 3.5 / 8.2 ms; the notice is now an announced status-bar message
+plus a document-properties row (never a reallocation, pinned by
+`document_scale::test_reduced_features_never_resize_the_text_view`). The
+watch's own share is not separable in the lane (no per-step metric); its
+per-keystroke reads are bounded by the widget tests.
 
 **C2 scope (declared degraded mode after C1):** the remaining stalls on giant
 paragraphs are Pango layout of the paragraph itself and whole-paragraph buffer
