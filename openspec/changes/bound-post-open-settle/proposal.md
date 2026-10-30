@@ -48,7 +48,7 @@ problem is the toolkit work those projections trigger, and the order in which it
 ## Decisions recorded (coordinator, 2026-10-30; the maintainer may override)
 
 1. **Budgets are never relaxed.** Above the measured `S_BG_HIGHLIGHT`, highlighting is reduced
-   through C1's `DocumentScale`. A GtkSourceView upstream report about the fixed analysis slice
+   through C1's `DocumentScale`: the measured value replaces C1's underived `S_SYNTAX`. A GtkSourceView upstream report about the fixed analysis slice
    is drafted in `.claude/handoffs/` for the maintainer to file.
 2. **The ~37 ms language-definition parse.** First, axiom probe S1 tries to move the parse off
    the GTK thread. If it cannot, attaching the language is deferred to an idle with no pending
@@ -68,9 +68,11 @@ problem is the toolkit work those projections trigger, and the order in which it
   frames and validation. The lane gains a post-open settle table and a typing-during-settle
   phase.
 - **Language catalog off the activation dispatch.** The language list and the path guess run
-  on a worker, through an application-owned catalog handed to the GTK thread. Parsing the
-  language definition moves out of the activation dispatch into its own stage after the
-  document's first paint. Axiom probe S1 decides whether that parse can run on a worker
+  on a worker, through an application-owned catalog that is started at application startup and
+  handed to the GTK thread. Every site that sets a language (four on C1) requests one attach
+  stage, which runs after the editor's first frame, or after its first mapping for an editor
+  that is not shown. While the stage is pending, the document's language id is already known,
+  so the Markdown preview and the status bar are unaffected. Axiom probe S1 decides whether that parse can run on a worker
   (design D2). If it cannot, the attach waits for an idle with no pending input after the
   first frame, and the parse is recorded as a toolkit-floor exception against S1, with
   measured numbers and a drafted upstream report.
@@ -78,26 +80,33 @@ problem is the toolkit work those projections trigger, and the order in which it
   attached through a sliced install, or are attached in an order the axiom probe shows to be
   O(1) at publish (D3).
 - **A background-highlight policy.** GtkSourceView analyses in fixed slices of about 30 ms that
-  LushText cannot shorten. Above a measured total-size threshold `S_BG_HIGHLIGHT`, highlighting
-  is reduced through C1's `DocumentScale` with the reason `TotalSize`. A drafted upstream
-  report asks for a configurable or deadline-aware slice (D4).
+  LushText cannot shorten. C1's `DocumentScale` already reduces syntax above `S_SYNTAX` with the
+  reason `TotalSize`, but C1 records that value as not derived. C6 derives it: `S_SYNTAX`
+  becomes the measured `S_BG_HIGHLIGHT`. Whether one language-independent value is acceptable
+  is a maintainer question (design, open question 2). A drafted upstream report asks for a
+  configurable or deadline-aware slice (D4).
 - **A measured direct-install threshold.** One-turn installs are limited to what fits a stated
   share of `B_settle` (D5). The existing paragraph-aligned slicing, generation and
   finalization rules are unchanged.
-- **Dense validation is paced.** The pure install slice plan bounds each slice by visible
-  characters as well as bytes, so the validation the slice causes fits the budget. A37's rule
+- **Dense validation is paced.** For a document whose densest validation batch exceeds
+  `V_SLICE` visible characters (C1's `worst_batch_chars`), the pure install slice plan bounds
+  each slice by visible characters as well as bytes. The next slice waits for the frame that
+  validates the previous one, so the validation each slice causes fits the budget. A37's rule
   stays: the allocation is queued before the paint. LushText also stops invalidating every
-  line after open: the end-of-document overscroll no longer sets a default-style margin, and
-  EditorConfig formatting is applied before the text is installed, not after (D6).
-- **User-started invalidations on dense documents are paced.** For documents over `V_SLICE`
-  visible characters, the word-wrap toggle, zoom and font changes are carried by a document
-  style tag. The tag is applied first to the visible paragraphs, then outward in
-  paragraph-aligned ranges of at most `V_SLICE` visible characters per dispatch. GtkTextView
-  therefore never has more than one bounded range of invalid lines to validate at a time (D9,
-  gated by axiom probe S6).
+  line of a dense document after open. Its end-of-document overscroll is fixed before the
+  install, by a margin or a tag as axiom S7 decides. EditorConfig formatting is applied
+  after any clear and before the first insert, not after publish (D6).
+- **User-started invalidations on dense documents are paced.** On dense documents, zoom, font
+  and tab-width changes are carried by a document style tag (zoom as a relative `scale`, so
+  the minimap is scaled rather than overridden). Word wrap cannot be a buffer tag, because the
+  minimap must not wrap, so a wrap toggle hides and reveals. Either way the change reaches the
+  visible paragraphs first, then the rest outward in paragraph-aligned ranges of at most
+  `V_SLICE` visible characters per dispatch. GtkTextView therefore never has more than one
+  bounded range of invalid lines to validate at a time (D9, gated by axiom probe S6).
 - **The fresh-profile flush follow-up and the end-of-transition relayout** are attributed by
   the first task and fixed or recorded (D7).
-- **The verdict.** `main` and the branch are measured interleaved, in the four construction
+- **The verdict.** A baseline (`main` plus the instrumentation commit only) and the branch are
+  measured interleaved, in the four construction
   profiles, with 7 repetitions each. Every dispatch from the activation until the document is
   settled must fit `B_settle`, and every input during settle must be dispatched within
   `B_interact` of its event time (D8). The dense cases also measure a word-wrap toggle, a zoom
@@ -123,13 +132,15 @@ None.
     EditorConfig cases;
   - the C6 verdict rule;
   - the documented input-to-frame floor.
-- `gtk-axiom-ledger`: provisional axioms S1–S6, and the toolkit-floor exception for S1:
+- `gtk-axiom-ledger`: provisional axioms S1–S7, and the toolkit-floor exceptions they may record:
   - language-definition parse cost, and whether it can run off the GTK thread;
   - highlight attach cost against buffer size;
   - the context engine's slice;
   - validation cost per slice against visible characters;
   - what the first keyfile write on a fresh profile triggers;
-  - whether tag-carried wrap, scale and family invalidate only the tagged ranges.
+  - whether tag-carried scale, family and tabs invalidate only the tagged ranges, and what other
+    views of the buffer see;
+  - which end-of-document overscroll mechanism keeps a dense document from revalidating.
 - `dbus-automation-spine`: a `document-settled` readiness predicate and bounded settle evidence
   in the tab snapshot.
 
@@ -142,7 +153,10 @@ None.
   - a new application-owned language catalog (`ui/language_catalog.rs`, cross-cutting);
   - `ui/editor_page/overscroll.rs`;
   - `ui/window/documents.rs`: the activation turn and the EditorConfig join;
-  - `model/document_scale.rs` (the `TotalSize` reduction; on C1's branch if C1 is unmerged);
+  - `model/document_scale.rs` (the derived `S_SYNTAX` value; on C1's branch if C1 is unmerged);
+  - `ui/editor_page/document_identity.rs` and `document_scale.rs` (one attach request for all
+    four language sites; `document_language_id` while an attach is pending);
+  - `ui/editor_page/minimap/projection_execution.rs` (no margin mirror if S7 picks the tag);
   - `ui/editor_page/` style tag for wrap, zoom and font on dense documents (D9);
   - `ui/responsiveness_probe.rs` (spans);
   - `ui/automation.rs` and `model/automation.rs`.
@@ -150,11 +164,11 @@ None.
   - the post-open settle table and the settle-until-quiet background phase;
   - the typing-during-settle phase and the new cases;
   - the verdict rule and failing-first self-tests.
-- **GTK Lush:** probes and samples S1–S6 in `gtk-lush-axioms`.
+- **GTK Lush:** probes and samples S1–S7 in `gtk-lush-axioms`.
 - **Upstream drafts:** `.claude/handoffs/c6-upstream-gtksourceview-worker-slice.md` and `.claude/handoffs/c6-upstream-gtksourceview-language-parse.md`, filed by the maintainer.
 - **Kani:** harnesses for the two-budget slice boundary in `model/buffer_replacement/kani_proofs.rs`
-  (shard `core-post-open-settle`). C1's `DocumentScale` harnesses are re-run if a total-size component is
-  added.
+  and for `next_restyle_range` in the load policy (shard `core-post-open-settle`). C1's
+  `DocumentScale` harnesses are re-run with the derived `S_SYNTAX`.
 - **Docs:**
   - `docs/next/long-line-documents.md` (C6 row and section);
   - `docs/next/long-line-evolution.md`;
@@ -164,7 +178,8 @@ None.
   - the axiom ledger and `docs/next/formal-verification.md`;
   - `.agents/rules/build.md` (lane).
 - **User-visible:** opening any document, HTML included, never freezes input for more than
-  one settle budget. Toggling word wrap, zooming or changing the font on a dense document
+  one settle budget, except a recorded toolkit-floor exception. A newly opened document shows
+  plain text until its language is attached after the first frame. Toggling word wrap, zooming or changing the font on a dense document
   updates the visible text first and the rest progressively. HTML documents above
   `S_BG_HIGHLIGHT` open with syntax highlighting reduced, and the app says so.
 - **No change** to persisted data, settings keys, packaging or permissions.

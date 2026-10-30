@@ -5,7 +5,10 @@ The automation interface SHALL provide a `document-settled` readiness predicate 
 - `file-open-complete` holds and the language attach stage has run;
 - no post-open slice, publish or debounce is pending;
 - the editor's vertical adjustment `upper` has not changed for the settle-quiet period;
-- no `highlight-updated` has been seen for the settle-quiet period.
+- no `highlight-updated` has been seen for the settle-quiet period;
+- a low-priority sentinel idle has dispatched after the last such change or `highlight-updated`.
+
+Debounces started by user edits after the document opened do not hold the predicate.
 
 The tab snapshot SHALL report a bounded settle state: the current post-open stage and whether settle is complete. The snapshot SHALL be projected from the load workflow's evidence surface. Reading it SHALL NOT mutate state or make the toolkit do work. The predicate and the fields SHALL be documented in `docs/automation.md` and `docs/automation-reference.md`.
 
