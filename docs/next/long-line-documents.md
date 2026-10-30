@@ -18,7 +18,7 @@ that freezes it is **paragraph length**, not file size.
 |---|---|---|---|
 | C0 | `probe-long-line-toolkit-costs` | Axioms A23–A37, the synthetic fixture generator, the smoke-only in-process probe, `make responsiveness-smoke`, the budget constants, and the measured values below | Values and the budget verdict recorded here (this record). |
 | C1 | `document-scale-policy` | Paragraph profile on the worker, one GTK-matching paragraph-boundary function (fixes the `\n`-only slicer), `DocumentScale` replacing `FileSizeCheck`, gates for syntax/minimap/invisibles/search highlighting at load and on edits, the minimap-detach CRITICAL fix | The context-engine stall and both CRITICALs gone, verified on the lane. **Status: implemented, in review** (branch `document-scale-policy`, PR #59); see "C1 `document-scale-policy` (implementation record)" below. |
-| C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for giant-paragraph documents, the display-only fold, the Line Inspector, find on a worker | Every interaction offered on these documents within the budgets. |
+| C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for documents whose longest paragraph exceeds `L_PROTECT_EDIT` = 50,000 (maintainer, 2026-10-30), the display-only fold, the Line Inspector, find on a worker; a recorded toolkit-floor exception for editable paragraphs between `L_EDIT_STALL` (3,500) and 50,000 | Every interaction offered on these documents within the budgets. |
 | C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
 | C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). **Corrected 2026-10-29 (C4c):** its first-frame figure was an unseen frame on the unmapped window (A51); the real first frame was ≈ 46 ms from the request, no earlier than before C4b, and the honest fill-in 29–39 ms. |
@@ -993,6 +993,61 @@ paragraphs are Pango layout of the paragraph itself and whole-paragraph buffer
 costs while typing inside one (A26 log attrs, about 95 ms per keystroke on the
 1.9M-character line). C1 does not claim them; C2 (`long-line-protected-view`)
 removes them by making such documents view-only.
+
+## C2 `long-line-protected-view` (implementation record)
+
+### Entry threshold: measured, then decided by the maintainer (2026-10-30)
+
+Task 1.1 measured **`L_EDIT_STALL`**, the shortest paragraph length at which
+one keystroke inside it exceeds B_interact (8 ms), with a `keystroke` sweep
+(one paragraph of the swept length between 30 short lines, CSS and prose
+flavours, keystrokes at its start, middle and end, wrap on and off, C1's
+reduced features applied; plain and probe-IM variants, 2 repetitions on the
+coarse grid and 7–9 near the bracket; evidence in
+`.claude/handoffs/c2-measure/`: `sweep-table.md`, `keystroke-sweep.patch`, runs
+`coarse-*`, `near-*`, `off-*`).
+
+| Wrap | `L_EDIT_STALL` bracket | Note |
+|---|---|---|
+| on (default) | **3,500–5,000** (plain: 0/7 repetitions over at 3,500, first over at 5,000; probe IM: 2,500–3,500) | ratio 1.43 |
+| off | **10,000–14,000** | ratio 1.4 |
+
+Median per-keystroke stall over positions and shapes (max in brackets):
+
+| Length | wrap on | wrap off |
+|---|---|---|
+| 5,000 | 4.7–5.5 ms (8.8) | 0.5–3.5 ms (5.5) |
+| 10,000 | 6.5–7.4 ms (12.9) | 1.3–4.8 ms (8.6) |
+| 20,000 | 7.3–9.9 ms (13.6) | 2.8–6.7 ms (10.0) |
+| 50,000 | 18.5–21.0 ms (24.0) | 7.7–11.6 ms (16.5) |
+| 100,000 | 41.7–44.7 ms (51.0) | 16.1–19.0 ms (27.0) |
+| 200,000 | 104.5–106.9 ms (115.0) | 34.0–37.1 ms (41.5) |
+| 500,000 | 152.0–186.8 ms (195.8) | 83.4–123.8 ms (128.9) |
+
+The cost is GtkTextView's re-layout of the whole edited paragraph (A23) and
+the buffer's whole-paragraph log attrs (A26); no LushText code is on the path.
+The value is far below the tens of thousands the design expected, so the
+choice returned to the maintainer (design D0), who chose **the hybrid**:
+
+- **Editable up to `L_PROTECT_EDIT` = 50,000.** Documents whose longest
+  paragraph is at most 50,000 characters stay editable under C1's reduced
+  features. 50,000 is the length at which the median keystroke cost reaches
+  about 20 ms.
+- **Toolkit-floor exception, recorded, not a relaxed budget.** Keystrokes in
+  editable paragraphs between `L_EDIT_STALL` (3,500) and `L_PROTECT_EDIT`
+  (50,000) miss B_interact by the amounts above. B_INTERACT_US is unchanged;
+  the exception names its range and costs, rests on A23 and A26 (whose ledger
+  rows cite it), is re-measured by the lane's `keystroke` group, and is owned
+  by the optional C5.
+- **Protected View above `L_PROTECT_EDIT`**, with the one bounded undo of the
+  edit that caused entry.
+
+### Pre-existing blocker found by task 1.1
+
+Typing into a 500,000-character paragraph with word wrap off logged A37's
+`Trying to snapshot GtkGizmo … without a current allocation` in 2 runs
+(`coarse-500000`: CSS wrap-off rep 0, prose wrap-off rep 1). C2 owns it under
+the pre-existing-blockers rule (task 1.7).
 
 ## Axioms each change cites
 
