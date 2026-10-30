@@ -3,7 +3,8 @@
 ### Requirement: Automation snapshots report Protected View state without content
 Tab snapshots SHALL include:
 - `protected_view` (boolean);
-- `protected_view_reason` (`paragraph-length` or `density`, from C1's `ReductionReason::LongParagraph` and `Density`, `edit-growth`, or null);
+- `protected_view_reason` (`paragraph-length`, from C1's `ReductionReason::LongParagraph`, `edit-growth`, or null);
+- `entry_undo_available` (boolean);
 - `folded_paragraph_count`;
 - `hidden_character_count`.
 
