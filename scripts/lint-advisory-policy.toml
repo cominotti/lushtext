@@ -325,7 +325,7 @@ rationale = "Current stderr findings are test skip diagnostics; production diagn
 code = "clippy::multiple_crate_versions"
 classification = "resolved_policy_exception"
 max_count = 12
-rationale = "cargo-deny denies duplicate versions by default and carries narrow skip-tree exceptions for foundational transitive crates; the current Rust 1.96 workspace graph reports twelve advisory duplicate-version entries."
+rationale = "cargo-deny denies duplicate versions by default and carries narrow skip-tree exceptions for foundational transitive crates; the Rust 1.96 workspace graph reported twelve advisory duplicate-version entries, and the Rust 1.99.1 graph reports one, so the ceiling stays a ceiling rather than a target."
 
 [[rules]]
 code = "unreachable_pub"
@@ -363,3 +363,91 @@ classification = "accepted_advisory"
 path_globs = ["crates/lushtext-core/src/model/workspace_search.rs"]
 max_count = 1
 rationale = "`WorkspaceSearchRootIndex::canonical_candidate` returns `Option<Option<PathBuf>>` because the two layers report different facts: the outer `None` means the walked path is not under that traversal root, and the inner `None` means the traversal root itself has no canonical identity. Both callers consume them differently — `?` on the outer, a `match` arm on the inner — so flattening would make a non-member path indistinguishable from a member whose root has no canonical form, which is exactly the confusion that produced duplicate search results. The nesting is documented at the definition and this classification is scoped to that one file so a new occurrence elsewhere still fails the lane."
+
+# Rust 1.99.1 bump (2026-10-29): categories first reported by `make lint-advisory`
+# under the 1.99 toolchain, and generated widget-registry findings that a cargo
+# `build.build-dir` outside `target/` used to hide from the `<generated>` mapping.
+
+[[rules]]
+code = "clippy::assert_is_empty"
+classification = "accepted_advisory"
+rationale = "Clippy 1.99 style suggestion to replace `assert!(x.is_empty())` with a dedicated form; the existing assertions are test and fixture checks whose failure output is already explicit, so a mechanical rewrite of ~170 sites adds churn without a correctness gain."
+
+[[rules]]
+code = "clippy::manual_assert_eq"
+classification = "accepted_advisory"
+path_globs = ["crates/lushtext-core/src/services/draft_service/set_aside.rs"]
+max_count = 1
+rationale = "One unit-test equality assertion on a struct value; scoped so a new occurrence elsewhere still fails the lane."
+
+[[rules]]
+code = "clippy::manual_bit_width"
+classification = "accepted_advisory"
+path_globs = ["crates/lushtext-core/src/model/responsiveness_budget.rs"]
+max_count = 1
+rationale = "`histogram_bucket` is a `const fn` whose bit-length arithmetic is Kani-proved (`buckets_are_monotone_and_in_range`); Kani pins its own nightly, so switching to the newer `bit_width` helper is deferred until that pin is known to support it."
+
+[[rules]]
+code = "clippy::too_long_first_doc_paragraph"
+classification = "accepted_advisory"
+rationale = "Probe, journal, and budget doc comments open with a full contract sentence by design; splitting them to satisfy a summary-length heuristic would separate the claim from its conditions."
+
+[[rules]]
+code = "clippy::collapsible_else_if"
+classification = "accepted_advisory"
+path_globs = ["crates/cargo-gtk-proof/src/live.rs"]
+max_count = 1
+rationale = "The nested branch keeps the first-frame and automation capture paths visibly symmetric inside the launch-result `else`; scoped to the one site."
+
+[[rules]]
+code = "clippy::needless_pass_by_ref_mut"
+classification = "accepted_advisory"
+path_globs = ["crates/lushtext-core/src/ui/window/session_restore/execution.rs"]
+max_count = 1
+rationale = "`settle_restore_selection` takes the restore runtime mutably as the coordination owner of the selection settle; scoped to the one site."
+
+[[rules]]
+code = "clippy::tuple_array_conversions"
+classification = "accepted_advisory"
+path_globs = ["crates/cargo-gtk-proof/src/png.rs"]
+max_count = 1
+rationale = "RGBA tuple to byte-array flattening in the proof tool's PNG encoder reads clearer as an explicit array; scoped to the one site."
+
+[[rules]]
+code = "clippy::used_underscore_binding"
+classification = "accepted_advisory"
+path_globs = ["crates/lushtext-core/src/ui/responsiveness_probe.rs"]
+max_count = 1
+rationale = "`_watchdog` is the smoke-only probe's owned watchdog source, held for its lifetime and replaced once at install; scoped to the one site."
+
+[[rules]]
+code = "clippy::option_option"
+classification = "accepted_advisory"
+path_globs = ["crates/lushtext-core/src/ui/window/geometry/policy.rs"]
+max_count = 1
+rationale = "`ShellReconciliation::compact_surface` is `Option<Option<SecondarySurface>>` because the outer `None` means the compact slot is unchanged and the inner `None` means the plan clears it; the Kani-proved shell reconciliation plan depends on telling those apart."
+
+[[rules]]
+code = "clippy::format_collect"
+classification = "accepted_advisory"
+path_globs = ["crates/gtk-lush/axioms/src/probes/*.rs"]
+max_count = 3
+rationale = "GTK axiom probes build small synthetic text fixtures once per probe, where iterator string assembly is clearer than a formatter type."
+
+[[rules]]
+code = "clippy::float_cmp"
+classification = "generated_code_noise"
+path_globs = ["<generated>/**"]
+rationale = "Exact float comparisons in generated widget-test registry code assert published GtkAdjustment values that the slice bin sets exactly; not hand-edited."
+
+[[rules]]
+code = "clippy::used_underscore_binding"
+classification = "generated_code_noise"
+path_globs = ["<generated>/**"]
+rationale = "Widget registry code is generated and normalized separately from hand-written lint policy."
+
+[[rules]]
+code = "clippy::while_float"
+classification = "generated_code_noise"
+path_globs = ["<generated>/**"]
+rationale = "Widget registry code is generated and normalized separately from hand-written lint policy."

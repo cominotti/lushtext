@@ -8,6 +8,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -17,6 +18,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_POLICY = REPO_ROOT / "scripts" / "lint-advisory-policy.toml"
+GENERATED_OUT_DIR = re.compile(r"/build/[^/]+-[0-9a-f]{16}/out/")
 
 
 @dataclass(frozen=True)
@@ -55,7 +57,11 @@ def normalize_path(path: str) -> str:
     if not path:
         return "<unknown>"
     path = path.replace("\\", "/")
-    if "/target/" in path and "/out/" in path:
+    # Build-script output: `<build dir>/<profile>/build/<pkg>-<hash>/out/...`.
+    # The build dir is `target/` by default, but a cargo `build.build-dir`
+    # setting (for example `~/.cache/cargo-build/{workspace-path-hash}`) moves
+    # it outside the checkout, so key on cargo's own layout, not on `target/`.
+    if ("/target/" in path and "/out/" in path) or GENERATED_OUT_DIR.search(path):
         return f"<generated>/{Path(path).name}"
     if path.startswith("/rustc/"):
         return f"<rustc>/{Path(path).name}"
