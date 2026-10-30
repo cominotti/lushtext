@@ -44,13 +44,17 @@ the paragraph-profile pass) whose recorded remedy is this change.
   our own loops that is still measured hot **after** its library-based rewrite,
   behind `#[target_feature(enable = "avx2")]` with `is_x86_feature_detected!`
   dispatch and a measured fallback; NEON parity is decided for each such
-  kernel. No build-time CPU target is required. This change adds no such
-  kernel unless the gate in the design is met.
+  kernel. No build-time CPU target is required. The policy is enforced by a
+  `check-policy` script (allowlist of kernels, no build-time CPU flags, no
+  unlisted dispatch crate, `memchr` keeps its `std` runtime detection) and by
+  Clippy `disallowed-macros` on the feature-detection macros. This change adds
+  no kernel unless the gate in the design is met.
 - **Verification.** Every fast path is pinned to its scalar reference by
-  property tests and the `editor_bytes` fuzz target; fast paths in Kani-checked
-  modules sit behind `cfg(not(kani))` with the scalar form kept for the
-  harnesses; each item lands only on an interleaved main/branch Criterion
-  verdict.
+  property tests and the `editor_bytes` fuzz target. Fast paths in modules a
+  Kani harness compiles sit behind `cfg(not(kani))`. The minimap shortcut's skip
+  decision gets its own Kani harness. Each item lands only on an interleaved
+  main/branch Criterion verdict: same toolchain on every side, the median of round
+  medians, and a stated noise tolerance.
 
 Non-goal, recorded for a follow-up: moving the minimap analysis's per-character
 `GtkTextIter` reads (`minimap/analysis_execution.rs`) off the GTK thread, or to
@@ -74,6 +78,8 @@ changes.
 
 ## Impact
 
+- Policy: `scripts/check-explicit-simd.py` in `make check-policy`; `clippy.toml`
+  `disallowed-macros`; the kernel allowlist table in `.agents/rules/rust.md`.
 - Code: `crates/lushtext-core/src/services/editor_io.rs` (scans move into a new
   child module `services/editor_io/text_scans.rs`, shrinking a 3,000-line
   file), `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs`
