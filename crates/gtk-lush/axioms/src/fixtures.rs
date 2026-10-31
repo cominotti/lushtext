@@ -285,8 +285,10 @@ pub mod a53 {
 /// The values and helpers the A54 probe drives, for its sample.
 pub mod a54 {
     pub use crate::probes::a54::{
-        B_SETTLE_US, DERIVATION_BRACKET, DERIVATION_PRECISION_PERCENT, DERIVATION_REPETITIONS,
-        DOCUMENT_BYTES, HighlightFixture, all_fit, bisect_bytes, engine_dispatches, priority_trace,
+        B_INTERACT_US, B_SETTLE_US, ClassifiedDispatch, DERIVATION_BRACKET,
+        DERIVATION_PRECISION_PERCENT, DERIVATION_REPETITIONS, DOCUMENT_BYTES, DispatchKind,
+        HighlightFixture, KeyCost, all_fit, bisect_bytes, bisect_typing_bytes, engine_dispatches,
+        over_budget, priority_trace, worst,
     };
 }
 
@@ -294,8 +296,8 @@ pub mod a54 {
 /// bisection its sample runs.
 pub mod a55 {
     pub use crate::probes::a55::{
-        CURVE_LINES, DERIVATION_CAP_LINES, DERIVATION_REPETITIONS, PACED_INSERTS,
-        ValidationFixture, bisect_lines, pacing_run,
+        CURVE_LINES, DERIVATION_CAP_LINES, DERIVATION_REPETITIONS, EDITOR_CLASS, EDITOR_FONT_PT,
+        EDITOR_LINE_HEIGHT, PACED_INSERTS, ValidationFixture, ViewStyle, bisect_lines, pacing_run,
     };
 }
 

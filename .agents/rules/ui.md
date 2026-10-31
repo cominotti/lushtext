@@ -516,6 +516,22 @@ When a GtkGrid layout has toggle-visible rows sharing columns (e.g., Find/Replac
 Supported via GtkSourceView built-in language specs: JSON, TOML, YAML, Markdown.
 JSONC is deferred (requires custom `.lang` file — see `docs/next/jsonc-support.md`).
 
+## Dense Documents After Open (`bound-post-open-settle`)
+
+- A default-style property of the editor view (wrap mode, tabs, margins) and
+  the `.monospace` font each invalidate **every** line. On a dense document
+  (`batch_exceeds_slice`) never change one directly after the install: route
+  it through `LushtextEditorPage::restyle_paced` (or, for a display-wide CSS
+  change, `prepare_paced_restyle_everywhere` / `start_paced_reveal_everywhere`),
+  which hides the paragraphs outside the visible ones and reveals them in
+  `V_SLICE` ranges (ledger A57). A buffer tag cannot carry such a style: the
+  gutter takes its font from CSS and the empty last line has no character.
+- The end-of-document overscroll of a dense document is set before the first
+  install slice; a later resize-driven `bottom-margin` change runs at
+  `G_PRIORITY_LOW` (a `pixels-below-lines` tag cannot carry it, A58).
+- Never attach a language directly: call `request_language_attach`, which
+  defers the definition parse to the attach stage (A52).
+
 ## Large-Buffer Preview And Marker Guardrails
 
 Markdown preview, minimap long-line markers, encoding-warning previews, and

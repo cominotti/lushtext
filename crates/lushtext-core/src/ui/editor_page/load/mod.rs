@@ -146,6 +146,7 @@ pub mod policy;
 mod retirement;
 #[cfg(feature = "test-utils")]
 mod test_policy;
+pub(crate) mod watch;
 
 pub use evidence::LoadEvidence;
 pub use policy::{LoadInstallPhase, LoadOutcome};

@@ -133,11 +133,13 @@ SHARDS: dict[str, Shard] = {
         # (document-scale-policy) joined after that measurement: its 30 tests
         # took under two minutes locally, build included, so the shard stays
         # well inside the margin until the next CI measurement records it.
+        # `post_open_settle` (bound-post-open-settle) joined the same way.
         modules=(
             "attention_refresh",
             "document_scale",
             "editor_page",
             "multi_window_drafts",
+            "post_open_settle",
             "sidebar",
             "workspace_entry_visibility",
         ),

@@ -244,8 +244,9 @@ impl LushtextWindow {
         };
         self.wire_info_bar(&editor_page);
         self.wire_note_callbacks(&editor_page);
+        // EditorConfig is resolved by the load's planning worker and applied
+        // before the first insert (`bound-post-open-settle`, D6.2).
         editor_page.set_file_path_for_pending_load(path);
-        self.resolve_editorconfig_for_editor(&editor_page, path);
         self.assign_draft_id(&editor_page);
 
         let page = tab_view.append(&editor_page);

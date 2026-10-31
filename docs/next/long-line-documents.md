@@ -23,6 +23,7 @@ that freezes it is **paragraph length**, not file size.
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
 | C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). **Corrected 2026-10-29 (C4c):** its first-frame figure was an unseen frame on the unmapped window (A51); the real first frame was ≈ 46 ms from the request, no earlier than before C4b, and the honest fill-in 29–39 ms. |
 | C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Met (interleaved verdict 2026-10-29):** largest dispatch 13.2 ms, fill-in 20.4–25.9 ms (median 21.4), first painted frame 30.0–33.2 ms against `main`'s 45.1–47.9 ms ("C4c" below). |
+| C6b | `chunked-highlight-attach` (queued follow-up, maintainer decision 2026-10-31; not implemented in C6) | Attach the language to the **empty** buffer, then install the text in paragraph-aligned chunks of at most 8 KiB, letting each chunk's first context-engine update run before the next: no background analysis slice runs and every dispatch stayed at 7.7–11.9 ms at every size probed (16 KiB chunks already exceed B_settle; ledger A54) | Lifts C6's per-language total-size syntax gate for the ten languages with no per-key cost (markdown, rust, c, python3, js, typescript, yaml, xml, css, sh) to any size within the other `DocumentScale` limits. It **inverts D2's order**: the text appears only after the deferred attach and its A52 parse, so first-frame and fill-in must be re-measured. HTML and JSON **stay gated** by their mid-document per-key re-analysis cost, which chunking does not change. Needs a second, 8 KiB highlight cut inside the `V_SLICE` slice plan. |
 | C5 | `explore-editing-long-paragraphs` (optional) | Exploration of editing giant paragraphs | Maintainer decision. |
 | C6 | `bound-post-open-settle` (proposed 2026-10-30) | Bound every dispatch from the activation turn until the opened document is settled, including the validation of dense documents of short lines that stay editable (handed over by C2's revision, open question 11). The proposal's attribution, exploratory on `main` b7f56d45: small `.txt` post-open dispatches are already ≤ 14.9 ms. The over-budget sources are the HTML language-definition parse in the activation dispatch (36–40 ms; the "first highlight"), the highlight attach after a sliced install (71 ms at 5 MB), GtkSourceView's background analysis slices (40–47 ms), and the validation of dense 710-character lines (21.6 ms). Every LushText projection costs < 0.3 ms. | Every post-open dispatch until `document-settled` ≤ B_settle and every input during settle dispatched within B_interact, interleaved with `main`, 4 profiles × 7 repetitions (design D8). Every wrap toggle, zoom step and font change on a dense document is paced the same way. Input-to-frame is reported, not gated, against the documented double-buffered lane floor. Coordinator decisions of 2026-10-30 (the maintainer may override): budgets are not relaxed, so large HTML above `S_BG_HIGHLIGHT` loses highlighting through `DocumentScale`; a language parse that cannot leave the GTK thread is deferred to an input-quiet idle and recorded as a toolkit-floor exception with an upstream report. Does not block C1–C4. |
 
@@ -1019,6 +1020,44 @@ boundary are made here).
   exception against S7.
 - **Input-to-frame is reported, not gated**, beside the documented lane floor.
 - **C6 owns user-started dense invalidations** (word wrap, zoom, font).
+
+**Maintainer decision of 2026-10-31 (`S_SYNTAX`):** per-language
+total-size syntax thresholds now. Each gate is min(attach threshold,
+mid-document typing threshold), taken from the lower of two runs. The default
+for unmeasured languages is the median of the measured thresholds, and plain
+text keeps 1 MiB. The thresholds were re-measured quietly through
+`scripts/measure.sh` before they were committed. The chunked
+attach-before-install is queued as **C6b** (see "Sequence and gates") and is
+not implemented in C6. Per-key recurrence mid-document was measured only for
+HTML and JSON; the other ten languages showed none at their thresholds.
+
+The committed gates (`model/document_scale.rs`; re-measured 2026-10-31
+through `scripts/measure.sh`, host load 8–30 from work outside the lock
+protocol, so the lower run is used; every run is in ledger A54):
+
+| Language | Attach (lower run) | Typing (lower run) | Gate (bytes) |
+|---|---|---|---|
+| typescript | 10,752 | none | 10,752 |
+| html | 47,104 | 16,384 | 16,384 |
+| js | 18,432 | none | 18,432 |
+| json | 24,576 | 20,480 | 20,480 |
+| css | 37,888 | none | 37,888 |
+| sh | 39,936 | none | 39,936 |
+| any other language | median 48,128 | — | 48,128 |
+| python3, python | 49,152 | none | 49,152 |
+| c | 86,016 | none | 86,016 |
+| xml | 135,168 | none | 135,168 |
+| yaml | 147,456 | none | 147,456 |
+| rust | 188,416 | none | 188,416 |
+| markdown | 327,680 | none | 327,680 |
+| plain text | no engine | — | 1 MiB (C1, unchanged) |
+
+"None" means no per-key dispatch above 2.8 ms at the language's higher attach
+threshold. JSON's typing gate is the lower of runs one and three. Its second
+run failed already at 4,096 bytes, which every other run of either language
+passed with every key under 6 ms, so that run (load 27 falling to 8) is
+recorded as disturbed rather than used (coordinator, 2026-10-31). Taking it literally would have turned JSON highlighting off at
+every size.
 
 ## Axioms each change cites
 

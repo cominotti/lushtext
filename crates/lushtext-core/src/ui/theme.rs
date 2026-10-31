@@ -104,7 +104,12 @@ pub(crate) fn load_css() {
     ] {
         let p = font_provider.clone();
         let s = settings.clone();
-        settings.connect_changed(Some(key), move |_, _| apply_font_css(&p, &s));
+        settings.connect_changed(Some(key), move |_, _| {
+            // Dense documents take the font change paced (D9).
+            let paced = crate::ui::editor_page::restyle::prepare_paced_restyle_everywhere();
+            apply_font_css(&p, &s);
+            crate::ui::editor_page::restyle::start_paced_reveal_everywhere(&paced);
+        });
     }
     if let Some(iface) = desktop_interface_settings() {
         let p = font_provider;

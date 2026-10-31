@@ -18,12 +18,14 @@ mod frame_validation;
 // module for the type-safe API.
 mod imp;
 mod invisibles;
+pub mod language_attach;
 pub mod load;
 pub(crate) mod local_history;
 mod minimap;
 mod monitor;
 mod overscroll;
 mod restore_position;
+pub mod restyle;
 pub mod save;
 mod search;
 mod style_scheme;
@@ -648,7 +650,17 @@ impl LushtextEditorPage {
             self.set_save_encoding(save_encoding);
         }
         self.imp().formatting_overrides.set(overrides);
-        imp::apply_formatting_settings(&self.imp().source_view, &self.imp().settings, overrides);
+        // After an install, a re-resolution (Save As, rename, the
+        // `use-editorconfig` toggle) is paced on a dense document
+        // (`bound-post-open-settle`, D6.2 and D9); during an install the
+        // buffer holds no line yet, so it applies directly.
+        self.restyle_paced(|editor| {
+            imp::apply_formatting_settings(
+                &editor.imp().source_view,
+                &editor.imp().settings,
+                overrides,
+            );
+        });
     }
 
     /// Clear all EditorConfig overrides and fall back to GSettings values.

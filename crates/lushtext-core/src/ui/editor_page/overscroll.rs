@@ -174,6 +174,15 @@ impl LushtextEditorPage {
     }
 
     /// Coalesce repeated size allocations into one idle overscroll refresh.
+    ///
+    /// `bottom-margin` is a default-style property: changing it invalidates
+    /// every line (A37). On a dense document (`batch_exceeds_slice`) that
+    /// revalidation can exceed the settle budget, so its resize-driven update
+    /// runs at `G_PRIORITY_LOW`, after input and validation; the install
+    /// already set the margin before its first slice
+    /// ([`Self::set_overscroll_before_install`], `bound-post-open-settle`
+    /// D6.2, the S7 fallback, ledger A58). Every other document keeps the
+    /// default-priority idle.
     pub(crate) fn schedule_dynamic_overscroll_update(&self) {
         let generation = self
             .imp()
@@ -183,16 +192,27 @@ impl LushtextEditorPage {
             .wrapping_add(1);
         self.imp().overscroll.update_generation.set(generation);
 
+        let priority = if self.is_dense_document() {
+            glib::Priority::LOW
+        } else {
+            glib::Priority::DEFAULT_IDLE
+        };
         let editor_weak = self.downgrade();
-        glib::idle_add_local_once(move || {
-            let Some(editor) = editor_weak.upgrade() else {
-                return;
-            };
-            if editor.imp().overscroll.update_generation.get() != generation {
-                return;
+        glib::idle_add_local_full(priority, move || {
+            if let Some(editor) = editor_weak.upgrade()
+                && editor.imp().overscroll.update_generation.get() == generation
+            {
+                editor.refresh_dynamic_overscroll();
             }
-            editor.refresh_dynamic_overscroll();
+            glib::ControlFlow::Break
         });
+    }
+
+    /// Set the end-of-document overscroll before a dense install's first
+    /// insert, while the buffer holds no line to invalidate (the S7 fallback:
+    /// the margin is fixed at install, ledger A58).
+    pub(crate) fn set_overscroll_before_install(&self) {
+        self.refresh_dynamic_overscroll();
     }
 
     /// Recompute the editor's bottom margin from the current visible rect.

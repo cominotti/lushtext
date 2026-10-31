@@ -180,3 +180,11 @@
   `B_SETTLE_US` in an editor-like view (all seven repetitions must pass). New
   generators `fixtures::post_open::{short_markdown, short_rust, short_json,
   short_document}` and the `fixtures::a54::HighlightFixture` it measures with.
+- A54's sample also gained `--attribute-s-bg-highlight` (what each dispatch
+  after an attach, a page down or a keystroke is), `--typing-s-bg-highlight`
+  and `--typing-check` (mid-document keystrokes within `B_INTERACT_US`), and
+  `--options-s-bg-highlight` (highlighting off then on, no style scheme,
+  chunked inserts after an empty-buffer attach, hidden text, a keystroke during
+  the attach); generators for c, python3, js, typescript, yaml, xml, css and
+  sh. A55's `--derive-v-slice` takes `--editor-like` and `--with-map`, and its
+  bisection now requires all seven repetitions to fit.

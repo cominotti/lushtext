@@ -12729,7 +12729,12 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     restore_button.emit_clicked();
 
     let restore_target_chars = i32::try_from(restore_target.chars().count()).unwrap_or(i32::MAX);
-    wait_until(Duration::from_secs(60), || {
+    // 22,000 lines of 512 characters are dense (`batch_exceeds_slice`), so
+    // the restore inserts paced slices of at most `V_SLICE` visible characters,
+    // each after the frame that lays out the previous one
+    // (`bound-post-open-settle`, D6.1): about 200 insert turns instead of 44,
+    // 76 s against 24 s on the debug build headless. The budget covers that.
+    wait_until(Duration::from_secs(180), || {
         !editor.buffer_replacement_evidence().in_progress
             && editor.buffer().char_count() == restore_target_chars
     });

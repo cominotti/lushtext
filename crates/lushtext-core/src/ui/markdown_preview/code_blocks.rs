@@ -190,7 +190,7 @@ fn preview_text_column_width(text_view: &gtk4::TextView) -> Option<i32> {
 /// Resolve one code-block language hint using IDs, common aliases, and filename guessing.
 fn resolve_code_block_language_hint(raw_hint: &str) -> Option<sourceview5::Language> {
     let hint = normalize_code_block_language_hint(raw_hint)?;
-    let manager = sourceview5::LanguageManager::default();
+    let manager = crate::ui::language_catalog::manager();
     if let Some(language) = manager.language(&hint) {
         return Some(language);
     }

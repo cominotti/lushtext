@@ -422,3 +422,411 @@ pub fn bisect_bytes(
     }
     low
 }
+
+/// What ran in one main-loop iteration the attribution timed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DispatchKind {
+    /// The engine's first-update idle (the first `highlight-updated` after an
+    /// attach, an edit or a view request).
+    FirstUpdate,
+    /// A `G_PRIORITY_LOW` worker slice.
+    Worker,
+    /// A frame (with or without engine work in the same iteration).
+    Frame,
+    /// Anything else: GTK validation, the fixture's own call.
+    Other,
+}
+
+impl std::fmt::Display for DispatchKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::FirstUpdate => "first-update",
+            Self::Worker => "worker",
+            Self::Frame => "frame",
+            Self::Other => "other",
+        })
+    }
+}
+
+/// One timed, classified iteration.
+#[derive(Clone, Copy, Debug)]
+pub struct ClassifiedDispatch {
+    /// What ran.
+    pub kind: DispatchKind,
+    /// Microseconds it took.
+    pub micros: u128,
+}
+
+/// The dispatches of `classified` over `budget`, as `kind:µs` entries.
+#[must_use]
+pub fn over_budget(classified: &[ClassifiedDispatch], budget: u128) -> Vec<String> {
+    classified
+        .iter()
+        .filter(|dispatch| dispatch.micros > budget)
+        .map(|dispatch| format!("{}:{}", dispatch.kind, dispatch.micros))
+        .collect()
+}
+
+/// The longest of `classified`, µs.
+#[must_use]
+pub fn worst(classified: &[ClassifiedDispatch]) -> u128 {
+    classified
+        .iter()
+        .map(|d| d.micros)
+        .max()
+        .unwrap_or_default()
+}
+
+impl HighlightFixture {
+    /// The fixture's buffer.
+    #[must_use]
+    pub fn buffer(&self) -> &sourceview5::Buffer {
+        &self.view.buffer
+    }
+
+    /// The fixture's view.
+    #[must_use]
+    pub fn source_view(&self) -> &sourceview5::View {
+        &self.view.view
+    }
+
+    /// Drive the main loop until 300 ms pass with no engine dispatch and no
+    /// iteration of 1 ms or more, classifying every iteration. The first
+    /// engine dispatch after `first_update_armed` is set (an attach, an edit)
+    /// counts as the first update; `updates` counts `highlight-updated`.
+    #[must_use]
+    pub fn classified_until_quiet(
+        &self,
+        updates: &HighlightUpdates,
+        mut first_update_armed: bool,
+    ) -> Vec<ClassifiedDispatch> {
+        use std::time::Duration;
+        let quiet = Duration::from_millis(300);
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut last_activity = Instant::now();
+        let mut classified = Vec::new();
+        while Instant::now() < deadline && last_activity.elapsed() < quiet {
+            let before = updates.count.get();
+            let Some(dispatch) = crate::probes::post_open::timed_iteration(Some(&self.frames))
+            else {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            };
+            let engine = updates.count.get() != before;
+            let kind = if dispatch.frames > 0 {
+                DispatchKind::Frame
+            } else if engine && first_update_armed {
+                DispatchKind::FirstUpdate
+            } else if engine {
+                DispatchKind::Worker
+            } else {
+                DispatchKind::Other
+            };
+            if engine {
+                first_update_armed = false;
+            }
+            if engine || dispatch.micros >= 1_000 {
+                last_activity = Instant::now();
+            }
+            classified.push(ClassifiedDispatch {
+                kind,
+                micros: dispatch.micros,
+            });
+        }
+        classified
+    }
+
+    /// Load `text` with no language, settle, then attach `language` (not
+    /// timed) with `highlight` and classify every iteration until idle.
+    #[must_use]
+    pub fn classified_attach(
+        &self,
+        language: &sourceview5::Language,
+        text: &str,
+        highlight: bool,
+    ) -> Vec<ClassifiedDispatch> {
+        let buffer = &self.view.buffer;
+        buffer.set_language(None::<&sourceview5::Language>);
+        buffer.set_highlight_syntax(highlight);
+        buffer.set_text(text);
+        buffer.place_cursor(&buffer.start_iter());
+        self.scroll_to(0.0);
+        let updates = HighlightUpdates::watch(buffer);
+        let _ = self.classified_until_quiet(&updates, false);
+        buffer.set_language(Some(language));
+        self.classified_until_quiet(&updates, true)
+    }
+
+    /// Scroll the view to `value` and settle.
+    pub fn scroll_to(&self, value: f64) {
+        self.view.scrolled.vadjustment().set_value(value);
+    }
+
+    /// After the analysis, page down `pages` times from the top, classifying
+    /// the iterations after each page.
+    #[must_use]
+    pub fn classified_page_downs(&self, pages: u32) -> Vec<ClassifiedDispatch> {
+        let updates = HighlightUpdates::watch(&self.view.buffer);
+        self.scroll_to(0.0);
+        let _ = self.classified_until_quiet(&updates, false);
+        let adjustment = self.view.scrolled.vadjustment();
+        let mut all = Vec::new();
+        for _ in 0..pages {
+            adjustment.set_value(adjustment.value() + adjustment.page_size());
+            all.extend(self.classified_until_quiet(&updates, true));
+        }
+        all
+    }
+
+    /// Type `keys` characters at `offset` (`None`: the end), each followed by
+    /// the iterations it causes; the insert call itself is timed as
+    /// [`DispatchKind::Other`].
+    #[must_use]
+    pub fn classified_typing(&self, offset: Option<i32>, keys: u32) -> Vec<ClassifiedDispatch> {
+        let buffer = &self.view.buffer;
+        let updates = HighlightUpdates::watch(buffer);
+        let iter = offset.map_or_else(|| buffer.end_iter(), |offset| buffer.iter_at_offset(offset));
+        buffer.place_cursor(&iter);
+        self.view.view.scroll_mark_onscreen(&buffer.get_insert());
+        let _ = self.classified_until_quiet(&updates, false);
+        let mut all = Vec::new();
+        for _ in 0..keys {
+            let started = Instant::now();
+            buffer.insert_interactive_at_cursor("x", true);
+            self.view.view.scroll_mark_onscreen(&buffer.get_insert());
+            all.push(ClassifiedDispatch {
+                kind: DispatchKind::Other,
+                micros: started.elapsed().as_micros(),
+            });
+            all.extend(self.classified_until_quiet(&updates, true));
+        }
+        all
+    }
+
+    /// Option (d): attach `language` to the empty buffer, then insert `text`
+    /// in paragraph-aligned chunks of at most `chunk` bytes, letting the main
+    /// loop go quiet after each. Returns every timed step, the inserts
+    /// included.
+    #[must_use]
+    pub fn classified_chunked(
+        &self,
+        language: &sourceview5::Language,
+        text: &str,
+        chunk: usize,
+    ) -> Vec<ClassifiedDispatch> {
+        let buffer = &self.view.buffer;
+        buffer.set_language(None::<&sourceview5::Language>);
+        buffer.set_highlight_syntax(true);
+        buffer.set_text("");
+        let updates = HighlightUpdates::watch(buffer);
+        let _ = self.classified_until_quiet(&updates, false);
+        buffer.set_language(Some(language));
+        let mut all = self.classified_until_quiet(&updates, true);
+        for slice in crate::probes::a53::line_slices(text, chunk) {
+            let started = Instant::now();
+            let mut end = buffer.end_iter();
+            buffer.insert(&mut end, slice);
+            all.push(ClassifiedDispatch {
+                kind: DispatchKind::Other,
+                micros: started.elapsed().as_micros(),
+            });
+            all.extend(self.classified_until_quiet(&updates, true));
+        }
+        all
+    }
+
+    /// Option (c): the same attach with no style scheme on the buffer.
+    #[must_use]
+    pub fn classified_attach_without_scheme(
+        &self,
+        language: &sourceview5::Language,
+        text: &str,
+    ) -> Vec<ClassifiedDispatch> {
+        let buffer = &self.view.buffer;
+        let scheme = buffer.style_scheme();
+        buffer.set_style_scheme(None::<&sourceview5::StyleScheme>);
+        let classified = self.classified_attach(language, text, true);
+        buffer.set_style_scheme(scheme.as_ref());
+        classified
+    }
+
+    /// Option (b): attach with highlighting off, let the analysis run, then
+    /// turn highlighting on. Returns (the analysis's dispatches, the toggle
+    /// call's µs, the dispatches after the toggle).
+    #[must_use]
+    pub fn classified_delayed_enable(
+        &self,
+        language: &sourceview5::Language,
+        text: &str,
+    ) -> (Vec<ClassifiedDispatch>, u128, Vec<ClassifiedDispatch>) {
+        let analysis = self.classified_attach(language, text, false);
+        let updates = HighlightUpdates::watch(&self.view.buffer);
+        let started = Instant::now();
+        self.view.buffer.set_highlight_syntax(true);
+        let toggle = started.elapsed().as_micros();
+        let after = self.classified_until_quiet(&updates, true);
+        (analysis, toggle, after)
+    }
+}
+
+/// LushText's `B_INTERACT_US` (8,000 µs, owned by
+/// `crates/lushtext-core/src/model/responsiveness_budget.rs`): the budget each
+/// dispatch after a keystroke must fit for the typing derivation.
+pub const B_INTERACT_US: u128 = 8_000;
+
+/// What one keystroke cost: the longest dispatch it caused (the insert call
+/// included) and their sum, µs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyCost {
+    /// The longest dispatch after the key.
+    pub worst: u128,
+    /// All the dispatches after the key, summed.
+    pub total: u128,
+}
+
+impl HighlightFixture {
+    /// Load `text`, attach `language` and let the analysis finish (not
+    /// measured); then type `keys` characters in the middle of the document,
+    /// one at a time, returning each key's cost.
+    #[must_use]
+    pub fn mid_typing_costs(
+        &self,
+        language: &sourceview5::Language,
+        text: &str,
+        keys: u32,
+    ) -> Vec<KeyCost> {
+        let _ = self.classified_attach(language, text, true);
+        let middle = self.view.buffer.char_count() / 2;
+        (0..keys)
+            .map(|_| {
+                let key = self.classified_typing(Some(middle), 1);
+                KeyCost {
+                    worst: worst(&key),
+                    total: key.iter().map(|dispatch| dispatch.micros).sum(),
+                }
+            })
+            .collect()
+    }
+
+    /// Attach with every paragraph after the first `visible_lines` hidden by
+    /// an `invisible` tag (removed afterwards), classifying the dispatches
+    /// until idle.
+    #[must_use]
+    pub fn classified_attach_hidden(
+        &self,
+        language: &sourceview5::Language,
+        text: &str,
+        visible_lines: i32,
+    ) -> Vec<ClassifiedDispatch> {
+        let buffer = &self.view.buffer;
+        buffer.set_language(None::<&sourceview5::Language>);
+        buffer.set_highlight_syntax(true);
+        buffer.set_text(text);
+        let tag = crate::probes::text::invisible_tag(buffer.upcast_ref());
+        let start = buffer
+            .iter_at_line(visible_lines)
+            .unwrap_or_else(|| buffer.end_iter());
+        buffer.apply_tag(&tag, &start, &buffer.end_iter());
+        let updates = HighlightUpdates::watch(buffer);
+        let _ = self.classified_until_quiet(&updates, false);
+        buffer.set_language(Some(language));
+        let classified = self.classified_until_quiet(&updates, true);
+        buffer.remove_all_tags(&buffer.start_iter(), &buffer.end_iter());
+        buffer.tag_table().remove(&tag);
+        classified
+    }
+
+    /// Attach `language`, and `offset_ms` later deliver a simulated keystroke
+    /// from a `G_PRIORITY_DEFAULT` timeout (the priority of input events) at
+    /// the document's middle. Returns the timeout's lateness (how long the
+    /// key waited behind a dispatch), µs, and the longest dispatch after the
+    /// key.
+    #[must_use]
+    pub fn keystroke_during_attach(
+        &self,
+        language: &sourceview5::Language,
+        text: &str,
+        offset_ms: u64,
+    ) -> (u128, u128) {
+        use std::time::Duration;
+        let buffer = &self.view.buffer;
+        buffer.set_language(None::<&sourceview5::Language>);
+        buffer.set_highlight_syntax(true);
+        buffer.set_text(text);
+        let updates = HighlightUpdates::watch(buffer);
+        let _ = self.classified_until_quiet(&updates, false);
+        let lateness = std::rc::Rc::new(Cell::new(None::<u128>));
+        buffer.set_language(Some(language));
+        let due = Instant::now() + Duration::from_millis(offset_ms);
+        {
+            let (lateness, buffer) = (std::rc::Rc::clone(&lateness), buffer.clone());
+            glib::timeout_add_local_once(Duration::from_millis(offset_ms), move || {
+                lateness.set(Some(
+                    Instant::now().saturating_duration_since(due).as_micros(),
+                ));
+                let middle = buffer.iter_at_offset(buffer.char_count() / 2);
+                buffer.place_cursor(&middle);
+                buffer.insert_interactive_at_cursor("x", true);
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lateness.get().is_none() && Instant::now() < deadline {
+            if crate::probes::post_open::timed_iteration(Some(&self.frames)).is_none() {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        }
+        let after = self.classified_until_quiet(&updates, true);
+        (lateness.get().unwrap_or(u128::MAX), worst(&after))
+    }
+}
+
+/// Bisect, like [`bisect_bytes`], the largest size at which every one of
+/// `repetitions` keystrokes in the middle of an analysed document keeps every
+/// dispatch it causes within [`B_INTERACT_US`].
+#[must_use]
+pub fn bisect_typing_bytes(
+    fixture: &HighlightFixture,
+    language_id: &str,
+    repetitions: u32,
+    tried: &mut Vec<(usize, Vec<KeyCost>)>,
+) -> usize {
+    let Some(language) = sourceview5::LanguageManager::default().language(language_id) else {
+        return 0;
+    };
+    let mut fits = |bytes: usize| {
+        let Some(text) = crate::probes::post_open::short_document(language_id, bytes, SEED) else {
+            return false;
+        };
+        let costs = fixture.mid_typing_costs(&language, &text, repetitions);
+        let passes = !costs.is_empty() && costs.iter().all(|cost| cost.worst <= B_INTERACT_US);
+        tried.push((bytes, costs));
+        passes
+    };
+    let (smallest, largest) = DERIVATION_BRACKET;
+    if !fits(smallest) {
+        return 0;
+    }
+    let mut low = smallest;
+    let mut high = None;
+    while low < largest {
+        let next = (low * 2).min(largest);
+        if fits(next) {
+            low = next;
+        } else {
+            high = Some(next);
+            break;
+        }
+    }
+    let Some(mut high) = high else {
+        return low;
+    };
+    while (high - low) * 100 > low * DERIVATION_PRECISION_PERCENT {
+        let middle = low + (high - low) / 2;
+        if fits(middle) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    low
+}

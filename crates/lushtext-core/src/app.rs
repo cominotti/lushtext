@@ -122,6 +122,9 @@ mod imp {
             crate::ui::theme::load_css();
             crate::ui::theme::register_app_icons();
             crate::ui::theme::register_sourceview_style_schemes();
+            // The language catalog loads the language list on a worker while
+            // the window is constructed (`bound-post-open-settle`, R3).
+            crate::ui::language_catalog::start();
 
             // Apply persisted color scheme before any window is created so
             // the first paint uses the correct theme.

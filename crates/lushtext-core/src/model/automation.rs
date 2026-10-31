@@ -269,6 +269,10 @@ pub const READINESS_BLOCKER_WORKSPACE_PATH_REVEAL: &str = "workspace-path-reveal
 /// from its construction until the frame after its last scheduled stage
 /// painted (`first-frame-window-shell`).
 pub const READINESS_BLOCKER_WINDOW_COMPOSITION: &str = "window-composition";
+/// Stable serialized blocker ID for the selected editor's post-open settle:
+/// its language attach, highlighting and line validation have not been quiet
+/// for the settle-quiet period (`bound-post-open-settle`).
+pub const READINESS_BLOCKER_DOCUMENT_SETTLE: &str = "document-settle";
 
 /// Blocker universe for the broad `idle` predicate.
 ///
@@ -312,6 +316,12 @@ const APP_STARTUP_BLOCKERS: &[&str] = &[
 ];
 /// Minimal gate for querying the active window's `org.gtk.Actions` group.
 const WINDOW_ACTIONS_EXPORTED_BLOCKERS: &[&str] = &[READINESS_BLOCKER_APP_STARTUP];
+/// Blockers of `document-settled`: an open that has not settled yet.
+const DOCUMENT_SETTLED_BLOCKERS: &[&str] = &[
+    READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_FILE_LOAD,
+    READINESS_BLOCKER_DOCUMENT_SETTLE,
+];
 /// Load-state blockers for a file-open workflow.
 const FILE_OPEN_COMPLETE_BLOCKERS: &[&str] =
     &[READINESS_BLOCKER_APP_STARTUP, READINESS_BLOCKER_FILE_LOAD];
@@ -439,6 +449,9 @@ pub enum AutomationReadinessPredicate {
     /// The latest workspace path reveal reached `revealed`; a typed failure reports
     /// `workflow-failure`.
     WorkspacePathRevealed,
+    /// The selected editor's opened document has settled: loaded, its
+    /// language attached, highlighting and validation quiet.
+    DocumentSettled,
 }
 
 impl AutomationReadinessPredicate {
@@ -446,7 +459,7 @@ impl AutomationReadinessPredicate {
     ///
     /// Keep this order append-only so generated docs, D-Bus artifacts, and smoke
     /// outputs diff predictably across releases.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::AppStartup,
         Self::WindowActionsExported,
         Self::FileOpenComplete,
@@ -459,6 +472,7 @@ impl AutomationReadinessPredicate {
         Self::Idle,
         Self::AccessibilitySettled,
         Self::WorkspacePathRevealed,
+        Self::DocumentSettled,
     ];
 
     /// Parse the D-Bus predicate name.
@@ -486,6 +500,7 @@ impl AutomationReadinessPredicate {
             Self::Idle => "idle",
             Self::AccessibilitySettled => "accessibility-settled",
             Self::WorkspacePathRevealed => "workspace-path-revealed",
+            Self::DocumentSettled => "document-settled",
         }
     }
 
@@ -531,6 +546,9 @@ impl AutomationReadinessPredicate {
             Self::WorkspacePathRevealed => {
                 "The latest workspace path reveal selected its row, drew it inside the sidebar viewport, and left no forwarded scroll pending; a typed reveal failure reports workflow-failure."
             }
+            Self::DocumentSettled => {
+                "The selected editor's opened document has settled: loaded, its language attached, and highlighting and line validation quiet for the settle-quiet period."
+            }
         }
     }
 
@@ -550,6 +568,7 @@ impl AutomationReadinessPredicate {
             Self::Idle => IDLE_BLOCKERS,
             Self::AccessibilitySettled => ACCESSIBILITY_SETTLED_BLOCKERS,
             Self::WorkspacePathRevealed => WORKSPACE_PATH_REVEALED_BLOCKERS,
+            Self::DocumentSettled => DOCUMENT_SETTLED_BLOCKERS,
         }
     }
 
@@ -851,6 +870,11 @@ pub struct AutomationTabSnapshot {
     pub evicted: bool,
     /// Whether the tab is pinned in the tab strip.
     pub pinned: bool,
+    /// The opened document's post-open settle stage: `opening`,
+    /// `attach-pending`, `quieting` or `settled` (`bound-post-open-settle`).
+    pub settle_stage: String,
+    /// Whether the opened document has settled.
+    pub settled: bool,
 }
 
 /// Window-level surface state that scenario helpers commonly assert.
@@ -1393,6 +1417,8 @@ mod tests {
             draft_present: true,
             evicted: false,
             pinned: true,
+            settle_stage: "settled".to_string(),
+            settled: true,
         };
 
         let value = serde_json::to_value(tab).expect("tab snapshot should serialize");
@@ -1598,6 +1624,12 @@ mod tests {
                 "workspace path reveal",
                 READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
             ),
+            (
+                AutomationReadinessPredicate::DocumentSettled,
+                "document-settled",
+                "opened document has settled",
+                READINESS_BLOCKER_DOCUMENT_SETTLE,
+            ),
         ];
 
         assert_eq!(AutomationReadinessPredicate::ALL.len(), cases.len());
@@ -1673,10 +1705,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            P::ALL.last(),
-            Some(&P::WorkspacePathRevealed),
+            P::ALL[P::ALL.len() - 2],
+            P::WorkspacePathRevealed,
             "the predicate list is append-only"
         );
+        assert_eq!(P::ALL.last(), Some(&P::DocumentSettled));
     }
 
     #[test]

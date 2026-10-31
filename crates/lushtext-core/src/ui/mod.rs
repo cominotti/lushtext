@@ -14,6 +14,8 @@ pub mod command_palette;
 pub(crate) mod construction_spans;
 pub mod editor_page;
 pub mod info_bar;
+pub mod input_quiet;
+pub mod language_catalog;
 pub mod markdown_preview;
 pub mod open_popover;
 #[cfg(feature = "test-utils")]

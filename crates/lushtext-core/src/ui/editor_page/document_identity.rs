@@ -22,7 +22,6 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
 use super::{EditorLoadState, LushtextEditorPage};
-use crate::ui::responsiveness_probe::PostOpenSpan;
 
 impl LushtextEditorPage {
     /// Set the file path (used by Save As and rename) and refresh highlighting.
@@ -73,47 +72,28 @@ impl LushtextEditorPage {
     /// preview follows a language flip (Save As to `notes.md`, a rename to
     /// `.txt`); during `open_document` no listener is registered yet.
     fn republish_document_identity(&self) {
-        self.reapply_language();
+        self.request_language_attach();
         self.schedule_minimap_refresh();
         self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
         self.fire_content_republished();
     }
 
-    /// Detect and apply syntax language from the current file path.
-    ///
-    /// The language is a projection of the path, so a path GtkSourceView cannot
-    /// classify clears it: renaming `notes.md` to `notes.txt` must stop the tab
-    /// claiming to be Markdown. An untitled tab has no path and keeps whatever
-    /// language it has.
-    ///
-    /// A language the document scale gated off is never re-applied, from any
-    /// caller: a rename or Save As changes the path, not the paragraphs the
-    /// gate measured.
-    pub(crate) fn reapply_language(&self) {
-        if !self.document_scale().syntax_enabled {
-            return;
-        }
-        let buffer = self.buffer();
-        if let Some(ref file_path) = *self.imp().file_path.borrow() {
-            let _span = PostOpenSpan::begin("post_open_language_attach");
-            let lang_manager = sourceview5::LanguageManager::default();
-            let language = lang_manager.guess_language(file_path.to_str(), None::<&str>);
-            if buffer.language() != language {
-                buffer.set_language(language.as_ref());
-            }
-        }
-    }
-
-    /// The id of the document's language: the buffer's own, or, while the
-    /// document scale holds syntax off (the gate clears the buffer language,
-    /// ledger A44), the language its path names.
+    /// The id of the document's language: the requested one while its
+    /// attach stage is pending (`bound-post-open-settle`, review R2), the
+    /// buffer's own, or, while the document scale holds syntax off (the gate
+    /// clears the buffer language, ledger A44), the language its path names.
     ///
     /// The gate removes highlighting, not the document's kind: a 2 MiB
     /// `notes.md` is still Markdown, and the Markdown preview must still
-    /// recognise it.
+    /// recognise it. A pending attach changes nothing for the kind either.
     #[must_use]
     pub fn document_language_id(&self) -> Option<gtk4::glib::GString> {
+        if self.language_attach_pending()
+            && let Some(id) = self.requested_language().id()
+        {
+            return Some(id.into());
+        }
         if let Some(language) = self.buffer().language() {
             return Some(language.id());
         }
@@ -122,7 +102,7 @@ impl LushtextEditorPage {
         }
         let path = self.imp().file_path.borrow();
         let path = path.as_ref()?;
-        sourceview5::LanguageManager::default()
+        crate::ui::language_catalog::manager()
             .guess_language(path.to_str(), None::<&str>)
             .map(|language| language.id())
     }

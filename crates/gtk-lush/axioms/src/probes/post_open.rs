@@ -177,8 +177,178 @@ pub fn short_json(total_bytes: usize, seed: u64) -> String {
     text
 }
 
+/// Repeat `block(generator, index)` until the text is about `total_bytes`
+/// long; `head` and `tail` wrap it.
+fn blocks(
+    total_bytes: usize,
+    seed: u64,
+    head: &str,
+    tail: &str,
+    mut block: impl FnMut(&mut Generator, u64) -> String,
+) -> String {
+    let mut generator = Generator::new(seed);
+    let mut text = String::with_capacity(total_bytes + 1024);
+    text.push_str(head);
+    let mut index = 0u64;
+    while text.len() + 12 * SHORT_LINE_MAX + tail.len() < total_bytes {
+        index += 1;
+        let chunk = block(&mut generator, index);
+        text.push_str(&chunk);
+    }
+    text.push_str(tail);
+    text
+}
+
+/// A short-line C document of about `total_bytes` bytes.
+#[must_use]
+pub fn short_c(total_bytes: usize, seed: u64) -> String {
+    blocks(
+        total_bytes,
+        seed,
+        "#include <stdio.h>\n#include <stdlib.h>\n\n",
+        "",
+        |g, i| {
+            let k = g.below(1_000);
+            format!(
+                "/* {} */\nstatic int\nf{i} (int x, const char *name)\n{{\n  int value = x * {k} + 0x{k:x};\n  \
+             // {}\n  if (value % 3 == 0)\n    printf (\"%s: {}\\n\", name);\n  return value;\n}}\n\n",
+                words(g, 70),
+                words(g, 60),
+                words(g, 30)
+            )
+        },
+    )
+}
+
+/// A short-line Python document of about `total_bytes` bytes.
+#[must_use]
+pub fn short_python(total_bytes: usize, seed: u64) -> String {
+    blocks(
+        total_bytes,
+        seed,
+        "import os\nimport sys\n\n\n",
+        "",
+        |g, i| {
+            let k = g.below(1_000);
+            format!(
+                "def f{i}(x: int, name: str) -> int:\n    \"\"\"{}\"\"\"\n    # {}\n    value = x * {k} + 0x{k:x}\n    \
+             if value % 3 == 0:\n        print(f\"{{name}}: {}\")\n    return value\n\n\n",
+                words(g, 70),
+                words(g, 60),
+                words(g, 30)
+            )
+        },
+    )
+}
+
+/// A short-line JavaScript document of about `total_bytes` bytes.
+#[must_use]
+pub fn short_javascript(total_bytes: usize, seed: u64) -> String {
+    blocks(total_bytes, seed, "'use strict';\n\n", "", |g, i| {
+        let k = g.below(1_000);
+        format!(
+            "// {}\nfunction f{i}(x, name) {{\n  const value = x * {k} + 0x{k:x};\n  \
+             const label = `${{name}}: {}`;\n  if (value % 3 === 0) {{\n    return {{ label, value, ok: true }};\n  }}\n  \
+             return null; /* {} */\n}}\n\n",
+            words(g, 70),
+            words(g, 40),
+            words(g, 30)
+        )
+    })
+}
+
+/// A short-line TypeScript document of about `total_bytes` bytes.
+#[must_use]
+pub fn short_typescript(total_bytes: usize, seed: u64) -> String {
+    blocks(total_bytes, seed, "", "", |g, i| {
+        let k = g.below(1_000);
+        format!(
+            "/** {} */\nexport interface Item{i} {{\n  id: number;\n  name: string;\n}}\n\n\
+             export function f{i}(x: number, name: string): Item{i} | null {{\n  const value: number = x * {k};\n  \
+             // {}\n  return value % 3 === 0 ? {{ id: value, name: `${{name}} {}` }} : null;\n}}\n\n",
+            words(g, 70),
+            words(g, 60),
+            words(g, 20)
+        )
+    })
+}
+
+/// A short-line YAML document of about `total_bytes` bytes.
+#[must_use]
+pub fn short_yaml(total_bytes: usize, seed: u64) -> String {
+    blocks(total_bytes, seed, "---\nitems:\n", "", |g, i| {
+        format!(
+            "  # {}\n  - id: {i}\n    name: \"{}\"\n    enabled: {}\n    ratio: {}.{}\n    tags: [{}, {}]\n    \
+             note: >\n      {}\n",
+            words(g, 70),
+            words(g, 30),
+            g.below(2) == 0,
+            g.below(100),
+            g.below(100),
+            words(g, 10),
+            words(g, 10),
+            words(g, 80)
+        )
+    })
+}
+
+/// A short-line XML document of about `total_bytes` bytes.
+#[must_use]
+pub fn short_xml(total_bytes: usize, seed: u64) -> String {
+    blocks(
+        total_bytes,
+        seed,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<items>\n",
+        "</items>\n",
+        |g, i| {
+            format!(
+                "  <!-- {} -->\n  <item id=\"{i}\" enabled=\"{}\">\n    <name>{}</name>\n    \
+                 <value unit=\"ms\">{}</value>\n    <note><![CDATA[{}]]></note>\n  </item>\n",
+                words(g, 70),
+                g.below(2) == 0,
+                words(g, 40),
+                g.below(10_000),
+                words(g, 60)
+            )
+        },
+    )
+}
+
+/// A short-line CSS document of about `total_bytes` bytes.
+#[must_use]
+pub fn short_css(total_bytes: usize, seed: u64) -> String {
+    blocks(total_bytes, seed, "@charset \"utf-8\";\n\n", "", |g, i| {
+        let k = g.below(1_000);
+        format!(
+            "/* {} */\n.c{i} > .item:hover, #n{k} a[href^=\"/p\"] {{\n  color: #{:06x};\n  \
+             margin: {}px {}em 0 auto;\n  font-family: \"{}\", sans-serif;\n  transition: opacity 0.{}s ease-in;\n}}\n\n",
+            words(g, 70),
+            g.below(0x0100_0000),
+            g.below(40),
+            g.below(4),
+            words(g, 20),
+            g.below(10)
+        )
+    })
+}
+
+/// A short-line shell document of about `total_bytes` bytes.
+#[must_use]
+pub fn short_sh(total_bytes: usize, seed: u64) -> String {
+    blocks(total_bytes, seed, "#!/bin/sh\nset -eu\n\n", "", |g, i| {
+        let k = g.below(1_000);
+        format!(
+            "# {}\nf{i}() {{\n  value=$(( $1 * {k} ))\n  name=\"${{2:-default}}\"\n  \
+             if [ \"$value\" -gt {k} ]; then\n    echo \"$name: {}\" >&2\n  fi\n  for x in a b c; do printf '%s\\n' \"$x\"; done\n}}\n\n",
+            words(g, 70),
+            words(g, 30)
+        )
+    })
+}
+
 /// The synthetic short-line document of `language` (`html`, `markdown`,
-/// `rust` or `json`), about `total_bytes` bytes, or `None` for another id.
+/// `rust`, `json`, `c`, `python3`, `js`, `typescript`, `yaml`, `xml`, `css`
+/// or `sh`), about `total_bytes` bytes, or `None` for another id.
 #[must_use]
 pub fn short_document(language: &str, total_bytes: usize, seed: u64) -> Option<String> {
     match language {
@@ -186,6 +356,14 @@ pub fn short_document(language: &str, total_bytes: usize, seed: u64) -> Option<S
         "markdown" => Some(short_markdown(total_bytes, seed)),
         "rust" => Some(short_rust(total_bytes, seed)),
         "json" => Some(short_json(total_bytes, seed)),
+        "c" => Some(short_c(total_bytes, seed)),
+        "python3" | "python" => Some(short_python(total_bytes, seed)),
+        "js" => Some(short_javascript(total_bytes, seed)),
+        "typescript" => Some(short_typescript(total_bytes, seed)),
+        "yaml" => Some(short_yaml(total_bytes, seed)),
+        "xml" => Some(short_xml(total_bytes, seed)),
+        "css" => Some(short_css(total_bytes, seed)),
+        "sh" => Some(short_sh(total_bytes, seed)),
         _ => None,
     }
 }
@@ -520,7 +698,20 @@ mod tests {
 
     #[test]
     fn short_documents_are_deterministic_short_lined_and_sized() {
-        for language in ["html", "markdown", "rust", "json"] {
+        for language in [
+            "html",
+            "markdown",
+            "rust",
+            "json",
+            "c",
+            "python3",
+            "js",
+            "typescript",
+            "yaml",
+            "xml",
+            "css",
+            "sh",
+        ] {
             let text = short_document(language, 64 * 1024, 7).unwrap_or_default();
             assert_eq!(Some(&text), short_document(language, 64 * 1024, 7).as_ref());
             assert!(
@@ -533,6 +724,6 @@ mod tests {
                 "{language} has a line over {SHORT_LINE_MAX} bytes"
             );
         }
-        assert!(short_document("c", 1024, 7).is_none());
+        assert!(short_document("cobol", 1024, 7).is_none());
     }
 }

@@ -42,9 +42,9 @@ use gtk4::glib;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
+use crate::model::buffer_replacement::{SliceBudget, next_slice_boundary};
 use crate::model::document_scale::DocumentScale;
 use crate::model::encoding::FileHealthFindingKind;
-use crate::model::file_load::next_install_boundary;
 use crate::services::editor_io::{self, EditorLoadError};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::imp::EditorCallback;
@@ -88,6 +88,11 @@ pub(crate) struct ChunkedLoadInstall {
     pub(super) byte_offset: usize,
     pub(super) generation: u64,
     pub(super) source_id: Option<glib::SourceId>,
+    /// The two slice budgets; a dense document also bounds visible
+    /// characters (`bound-post-open-settle`, D6.1).
+    pub(super) budget: SliceBudget,
+    /// A dense install's wait for the frame that lays out its previous slice.
+    pub(super) frame_wait: Option<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>,
     pub(super) permit: Option<TransientLoadPermit>,
     pub(super) restore: LoadInstallationState,
     pub(super) phase: LoadInstallPhase,
@@ -104,6 +109,42 @@ impl ChunkedLoadInstall {
     /// Which phase this installation is running.
     pub(super) fn phase(&self) -> LoadInstallPhase {
         self.phase
+    }
+}
+
+/// Schedule the next slice of a paced (dense) installation after the frame
+/// that lays out the previous one (review R14): GtkTextView validates the
+/// slice's new lines in that frame's layout (A37), so each validation holds
+/// one slice's lines (ledger A55). An unmapped view lays nothing out, so it
+/// takes the ordinary timeout.
+fn schedule_paced_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
+    let clock = {
+        let state = session.borrow();
+        state
+            .editor
+            .upgrade()
+            .filter(|editor| editor.source_view().is_mapped())
+            .and_then(|editor| editor.source_view().frame_clock())
+    };
+    let Some(clock) = clock else {
+        schedule_install_slice(session);
+        return;
+    };
+    let weak = Rc::downgrade(session);
+    let handler = clock.connect_after_paint(move |_| {
+        if let Some(session) = weak.upgrade() {
+            cancel_frame_wait(&session);
+            schedule_install_slice(&session);
+        }
+    });
+    session.borrow_mut().frame_wait = Some((clock, handler));
+}
+
+/// Drop a paced installation's pending frame wait, if any.
+pub(super) fn cancel_frame_wait(session: &Rc<RefCell<ChunkedLoadInstall>>) {
+    let wait = session.borrow_mut().frame_wait.take();
+    if let Some((clock, handler)) = wait {
+        clock.disconnect(handler);
     }
 }
 
@@ -199,6 +240,17 @@ fn run_existing_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         }
         state.end_mark = Some(mark);
         state.phase = LoadInstallPhase::Installing;
+        let editor = state.editor.upgrade();
+        let budget_is_paced = state.budget == SliceBudget::PACED;
+        drop(state);
+        // The old text is gone and nothing new is in: formatting applied now
+        // invalidates no line (review R17).
+        if let Some(editor) = editor {
+            apply_pending_formatting(&editor);
+            if budget_is_paced {
+                editor.set_overscroll_before_install();
+            }
+        }
     }
     schedule_install_slice(session);
 }
@@ -218,7 +270,8 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         };
         (state.buffer.clone(), mark, state.byte_offset, loaded)
     };
-    let end = next_install_boundary(&loaded.content, start);
+    let budget = session.borrow().budget;
+    let end = next_slice_boundary(&loaded.content, start, budget);
     let content_len = loaded.content.len();
     let mut iter = buffer.iter_at_mark(&mark);
     // GtkTextBuffer emits signals synchronously. Keep the session unborrowed so
@@ -243,6 +296,8 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
 
     if reached_end {
         finish_chunked_install(session);
+    } else if budget == SliceBudget::PACED {
+        schedule_paced_insert_slice(session);
     } else {
         schedule_install_slice(session);
     }
@@ -270,6 +325,7 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     if let Some(source) = source {
         source.remove();
     }
+    cancel_frame_wait(session);
     if let Some(editor) = editor.as_ref() {
         editor.imp().load.finalizing.set(true);
         editor.imp().load.dispose_during_finalization.set(false);
@@ -421,8 +477,12 @@ fn install_guarded_load(
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
-    let chunked =
-        policy::requires_chunked_install(loaded.content.len(), editor.buffer().char_count());
+    let summary = loaded.metadata.summary();
+    let chunked = policy::requires_chunked_install(
+        loaded.content.len(),
+        editor.buffer().char_count(),
+        policy::batch_exceeds_slice(summary),
+    );
     evidence::record_install_started(editor, chunked);
     if chunked {
         start_chunked_install(editor, load_generation, loaded, permit);
@@ -470,12 +530,16 @@ pub(super) fn install_loaded_direct(
     permit: Option<TransientLoadPermit>,
 ) {
     editor.imp().load.installation_slice_count.set(0);
-    let restore = begin_load_installation(editor, false);
+    let plan = highlight_plan_for(editor, &loaded);
+    let restore = begin_load_installation(editor, false, plan);
     // The direct path leaves the minimap projection attached, so a body the
     // scale keeps from the map or the context engine is gated before the
     // first byte enters the buffer.
     editor.prepare_for_incoming_profile(&loaded.metadata.profile);
     let buffer = editor.buffer();
+    // A direct install's old text is small by the same threshold, so its
+    // formatting goes on before the one `set_text` (D6.2).
+    apply_pending_formatting(editor);
     editor.imp().load.finalizing.set(true);
     editor.imp().load.dispose_during_finalization.set(false);
     buffer.begin_irreversible_action();
@@ -498,8 +562,10 @@ fn start_chunked_install(
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
-    let restore = begin_load_installation(editor, true);
+    let plan = highlight_plan_for(editor, &loaded);
+    let restore = begin_load_installation(editor, true, plan);
     editor.prepare_for_incoming_profile(&loaded.metadata.profile);
+    let loaded_summary = loaded.metadata.summary();
     let buffer = editor.buffer();
     buffer.begin_irreversible_action();
     let session = Rc::new(RefCell::new(ChunkedLoadInstall {
@@ -510,6 +576,8 @@ fn start_chunked_install(
         byte_offset: 0,
         generation,
         source_id: None,
+        budget: SliceBudget::for_profile(loaded_summary),
+        frame_wait: None,
         permit,
         restore,
         phase: LoadInstallPhase::ClearingExisting,
@@ -525,10 +593,37 @@ fn start_chunked_install(
     schedule_install_slice(&session);
 }
 
+/// Apply the EditorConfig overrides the planning worker resolved, if any,
+/// before the install's first insert (`bound-post-open-settle`, D6.2).
+fn apply_pending_formatting(editor: &LushtextEditorPage) {
+    let pending = editor.imp().load.pending_formatting.take();
+    editor
+        .imp()
+        .load
+        .formatting_applied_before_insert
+        .set(pending.is_some());
+    if let Some(overrides) = pending {
+        editor.apply_editorconfig_overrides(overrides);
+    }
+}
+
+/// The highlight order for one install (`policy::highlight_attach_plan`).
+fn highlight_plan_for(
+    editor: &LushtextEditorPage,
+    loaded: &GuardedLoadResult,
+) -> policy::HighlightAttachPlan {
+    policy::highlight_attach_plan(
+        editor
+            .scale_for_incoming_profile(&loaded.metadata.profile)
+            .syntax_enabled,
+    )
+}
+
 /// Suspend the projections and view flags one installation must not trigger.
 fn begin_load_installation(
     editor: &LushtextEditorPage,
     suspend_minimap_projection: bool,
+    highlight: policy::HighlightAttachPlan,
 ) -> LoadInstallationState {
     editor.invalidate_minimap_analysis_content();
     let imp = editor.imp();
@@ -550,7 +645,9 @@ fn begin_load_installation(
     }
     view.set_editable(false);
     view.set_cursor_visible(false);
-    editor.buffer().set_highlight_syntax(false);
+    if highlight == policy::HighlightAttachPlan::OffUntilPublish {
+        editor.buffer().set_highlight_syntax(false);
+    }
     editor.refresh_accessibility_metadata();
     restore
 }
@@ -641,6 +738,8 @@ fn complete_loaded_installation(
         callback();
     }
     invoke_reentrant_callbacks(&editor.imp().load.file_loaded_callbacks);
+    // Settle is read after the publish: its sentinel must follow it.
+    editor.record_settle_mark();
 }
 
 /// Invoke every listener in `slot`, tolerating re-entrant registration.

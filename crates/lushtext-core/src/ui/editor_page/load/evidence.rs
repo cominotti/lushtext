@@ -34,7 +34,9 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 
 use super::admission;
-use super::policy::{LoadInstallPhase, LoadOutcome};
+use super::policy::{self, LoadInstallPhase, LoadOutcome, SettleFacts, SettleStage};
+use crate::ui::editor_page::language_attach::LanguageAttachEvidence;
+use crate::ui::editor_page::restyle::RestyleEvidence;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 
 /// One consistent read of the document-load workflow.
@@ -123,6 +125,17 @@ pub struct LoadEvidence {
     /// user-visible failure nor a user cancellation, and conflating them would
     /// hide the freshness seam this workflow exists to protect.
     pub outcome: LoadOutcome,
+
+    // --- post-open settle (`bound-post-open-settle`, D1) ---
+    /// Which settle stage the document is in, from the settle watch's marks
+    /// and sentinel and the attach stage (`policy::settle_stage`).
+    pub settle_stage: SettleStage,
+    /// The deferred language attach stage.
+    pub language_attach: LanguageAttachEvidence,
+    /// Whether the newest install applied EditorConfig before its first insert.
+    pub formatting_applied_before_insert: bool,
+    /// The paced restyle of a dense document (D9).
+    pub restyle: RestyleEvidence,
 }
 
 impl LushtextEditorPage {
@@ -154,6 +167,7 @@ impl LushtextEditorPage {
 
         let admission_snapshot = admission::admission_snapshot();
 
+        let settle_stage = self.settle_stage_now(installation_phase.is_some());
         LoadEvidence {
             generation: imp.load_tracking.generation.get(),
             cancel_token_identity,
@@ -177,7 +191,31 @@ impl LushtextEditorPage {
             projection_suspended: imp.load.projection_suspended.get(),
             load_state: imp.load_state.get(),
             outcome: imp.load.outcome.get(),
+            settle_stage,
+            language_attach: self.language_attach_evidence(),
+            formatting_applied_before_insert: imp.load.formatting_applied_before_insert.get(),
+            restyle: self.restyle_evidence(),
         }
+    }
+
+    /// The settle stage now: the cheap accessor readiness polls, identical by
+    /// construction to [`LoadEvidence::settle_stage`].
+    #[must_use]
+    pub(crate) fn document_settle_stage(&self) -> SettleStage {
+        let installing = self.imp().load.installation.borrow().is_some();
+        self.settle_stage_now(installing)
+    }
+
+    fn settle_stage_now(&self, installing: bool) -> SettleStage {
+        let imp = self.imp();
+        let facts = SettleFacts {
+            open_complete: imp.load_state.get() != EditorLoadState::Loading,
+            language_attached: !self.language_attach_pending(),
+            post_open_work_pending: installing || imp.load.finalizing.get(),
+            last_mark_us: imp.load.settle.last_mark_us.get(),
+            last_sentinel_us: imp.load.settle.last_sentinel_us.get(),
+        };
+        policy::settle_stage(facts, glib::monotonic_time())
     }
 }
 

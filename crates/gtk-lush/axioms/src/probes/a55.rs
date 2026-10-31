@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 
 use gtk4::glib;
 use gtk4::prelude::*;
+use sourceview5::prelude::*;
 
 use crate::observation::{Recorder, Stop};
 use crate::probes::post_open::{
@@ -79,18 +80,72 @@ pub struct ValidationFixture {
     /// Counts the view's frames.
     pub frames: FrameCounter,
     _shown: Presented,
+    _editor: Option<(crate::probes::a57::DisplayCss, Option<sourceview5::Map>)>,
+}
+
+/// LushText's editor font size, pt (`ui/theme.rs`: the system monospace
+/// font, `Monospace 11` by default, at zoom 100 %).
+pub const EDITOR_FONT_PT: f64 = 11.0;
+/// LushText's editor line height (`ui/theme.rs`, `EDITOR_GLYPH_LINE_HEIGHT`).
+pub const EDITOR_LINE_HEIGHT: f64 = 1.18;
+/// The CSS class the editor-like fixture's view carries.
+pub const EDITOR_CLASS: &str = "gtk-lush-axioms-a55-editor";
+
+/// How the derivation's view is dressed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewStyle {
+    /// A bare monospace source view (the probe's own fixture).
+    Bare,
+    /// Like LushText's editor: its font CSS (`Monospace` 11 pt, line height
+    /// 1.18), line numbers and the current-line highlight.
+    Editor,
+    /// [`ViewStyle::Editor`] plus a `GtkSourceMap` of the buffer beside it,
+    /// like LushText's minimap.
+    EditorWithMap,
 }
 
 impl ValidationFixture {
     fn new(recorder: &mut Recorder, wrap: gtk4::WrapMode) -> Result<Self, Stop> {
+        Self::styled(recorder, wrap, ViewStyle::Bare)
+    }
+
+    fn styled(
+        recorder: &mut Recorder,
+        wrap: gtk4::WrapMode,
+        style: ViewStyle,
+    ) -> Result<Self, Stop> {
         let dense = DenseView::new(wrap);
         dense
             .buffer
             .set_text(&dense_text(PREFIX_LINES, DENSE_LINE_CHARS, SEED));
         dense.buffer.place_cursor(&dense.buffer.start_iter());
+        let container = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        container.append(&dense.scrolled);
+        let editor = if style == ViewStyle::Bare {
+            None
+        } else {
+            let css = recorder.require(
+                crate::probes::a57::DisplayCss::install(&format!(
+                    "textview.{EDITOR_CLASS}, textview.{EDITOR_CLASS} text {{ font-family: \
+                     \"Monospace\"; font-size: {EDITOR_FONT_PT:.1}pt; line-height: \
+                     {EDITOR_LINE_HEIGHT:.2}; }}"
+                )),
+                "control: a default display exists",
+            )?;
+            dense.view.add_css_class(EDITOR_CLASS);
+            dense.view.set_show_line_numbers(true);
+            dense.view.set_highlight_current_line(true);
+            let map = (style == ViewStyle::EditorWithMap).then(|| {
+                let map = sourceview5::Map::new();
+                map.set_view(&dense.view);
+                container.append(&map);
+                map
+            });
+            Some((css, map))
+        };
         let shown = Presented::checked_sized(
             recorder,
-            &dense.scrolled,
+            &container,
             REFERENCE_WINDOW,
             "control: the dense view was presented",
         )?;
@@ -103,7 +158,15 @@ impl ValidationFixture {
             dense,
             frames,
             _shown: shown,
+            _editor: editor,
         })
+    }
+
+    /// [`Self::standalone`] dressed as `style`.
+    #[must_use]
+    pub fn standalone_styled(wrap: gtk4::WrapMode, style: ViewStyle) -> Option<Self> {
+        let mut recorder = Recorder::detached();
+        Self::styled(&mut recorder, wrap, style).ok()
     }
 
     /// Build the fixture outside a probe (the sample's derivation). `None`
@@ -145,6 +208,14 @@ impl ValidationFixture {
             .map(|_| self.validation_after_insert(lines).0)
             .collect();
         median(&samples)
+    }
+
+    /// The longest dispatch of each of `repetitions` inserts of `lines`.
+    #[must_use]
+    pub fn validation_samples_us(&self, lines: usize, repetitions: usize) -> Vec<u128> {
+        (0..repetitions)
+            .map(|_| self.validation_after_insert(lines).0)
+            .collect()
     }
 }
 
@@ -263,9 +334,10 @@ fn describe_curve(points: &[(usize, u128, usize)]) -> String {
     }))
 }
 
-/// The largest line count in `1..=cap` whose median validation dispatch fits
-/// [`HALF_SETTLE_US`], by bisection, with every point tried; `cap` when even
-/// it fits, 0 when one line does not.
+/// The largest line count in `1..=cap` at which **every** one of
+/// `repetitions` inserts keeps its longest validation dispatch within
+/// [`HALF_SETTLE_US`], by bisection, with every point tried (recorded with its
+/// worst repetition); `cap` when even it fits, 0 when one line does not.
 #[must_use]
 pub fn bisect_lines(
     fixture: &ValidationFixture,
@@ -274,7 +346,11 @@ pub fn bisect_lines(
     tried: &mut Vec<(usize, u128)>,
 ) -> usize {
     let mut fits = |lines: usize| {
-        let micros = fixture.median_validation_us(lines, repetitions);
+        let micros = fixture
+            .validation_samples_us(lines, repetitions)
+            .into_iter()
+            .max()
+            .unwrap_or(u128::MAX);
         tried.push((lines, micros));
         micros <= HALF_SETTLE_US
     };

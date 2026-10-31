@@ -18,7 +18,8 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
 use crate::model::buffer_replacement::{
-    BufferReplacementMode, BufferReplacementPlan, next_clear_char_count, next_replacement_boundary,
+    BufferReplacementMode, BufferReplacementPlan, SliceBudget, next_clear_char_count,
+    next_slice_boundary,
 };
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::ui::editor_page::LushtextEditorPage;
@@ -332,6 +333,10 @@ pub(crate) struct BufferReplacementSession {
     terminal: bool,
     pub(super) metrics: BufferReplacementMetrics,
     profile: Option<DocumentProfile>,
+    /// The two slice budgets of this body.
+    budget: SliceBudget,
+    /// A dense body's wait for the frame that lays out its previous slice.
+    frame_wait: Option<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>,
 }
 
 /// Content-free terminal evidence retained by one editor.
@@ -428,7 +433,19 @@ pub(super) fn dispose(editor: &LushtextEditorPage) {
 // --- stage 2: begin ---------------------------------------------------------
 
 fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
-    let plan = BufferReplacementPlan::for_sizes(editor.buffer().char_count(), request.body.len());
+    // A dense body is sliced at any size, each slice bounded by visible
+    // characters too (`bound-post-open-settle`, D6.1).
+    let budget = request
+        .profile
+        .as_ref()
+        .map_or(SliceBudget::BYTES_ONLY, |profile| {
+            SliceBudget::for_profile(profile.summary())
+        });
+    let plan = BufferReplacementPlan::for_text(
+        editor.buffer().char_count(),
+        request.body.len(),
+        budget == SliceBudget::PACED,
+    );
     let guard = begin_guard(editor);
     if let Some(profile) = &request.profile {
         editor.prepare_for_incoming_profile(profile);
@@ -451,6 +468,8 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         terminal: false,
         metrics: BufferReplacementMetrics::for_one_retained_body(),
         profile: request.profile,
+        budget,
+        frame_wait: None,
     }));
     editor
         .imp()
@@ -511,7 +530,7 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
     if editor.buffer().language().is_none() {
         // A cancelled install of a gated body cleared the language up front;
         // if the session still allows syntax, the path's language comes back.
-        editor.reapply_language();
+        editor.request_language_attach();
     }
     if editor.is_search_visible() && editor.search_bar().search_context().is_none() {
         editor
@@ -646,7 +665,8 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
         state.mutation_started = true;
         (state.buffer.clone(), state.byte_offset, body)
     };
-    let end = next_replacement_boundary(&body, start);
+    let budget = session.borrow().budget;
+    let end = next_slice_boundary(&body, start, budget);
     let body_len = body.len();
     let mut iter = buffer.end_iter();
     buffer.insert(&mut iter, &body[start..end]);
@@ -672,8 +692,45 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
     if insertion_is_complete(end, body_len) {
         finish_session(session, None);
+    } else if budget == SliceBudget::PACED {
+        schedule_paced_turn(session);
     } else {
         schedule_turn(session);
+    }
+}
+
+/// Schedule a dense body's next insertion turn after the frame that lays out
+/// the previous one, so each validation holds one slice's lines
+/// (`bound-post-open-settle`, review R14, ledger A55). An unmapped view lays
+/// nothing out, so it takes the ordinary timeout.
+fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let clock = {
+        let state = session.borrow();
+        state
+            .editor
+            .upgrade()
+            .filter(|editor| editor.source_view().is_mapped())
+            .and_then(|editor| editor.source_view().frame_clock())
+    };
+    let Some(clock) = clock else {
+        schedule_turn(session);
+        return;
+    };
+    let weak = Rc::downgrade(session);
+    let handler = clock.connect_after_paint(move |_| {
+        if let Some(session) = weak.upgrade() {
+            cancel_frame_wait(&session);
+            schedule_turn(&session);
+        }
+    });
+    session.borrow_mut().frame_wait = Some((clock, handler));
+}
+
+/// Drop a dense body's pending frame wait, if any.
+fn cancel_frame_wait(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let wait = session.borrow_mut().frame_wait.take();
+    if let Some((clock, handler)) = wait {
+        clock.disconnect(handler);
     }
 }
 
@@ -738,6 +795,7 @@ fn cancel_session(
     if let Some(source) = source {
         source.remove();
     }
+    cancel_frame_wait(session);
     match cancel_disposition(disposing, mutation_started) {
         CancelDisposition::FinishImmediately => finish_session(session, Some(reason)),
         CancelDisposition::ClearPartialBuffer => {
@@ -797,6 +855,7 @@ fn finish_session(
     if let Some(source) = source {
         source.remove();
     }
+    cancel_frame_wait(session);
     buffer.end_irreversible_action();
     let outcome = match cancellation {
         None => {

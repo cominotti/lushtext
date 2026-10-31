@@ -1,0 +1,298 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Paced restyle of dense documents (`bound-post-open-settle`, design D9).
+//!
+//! **Cross-cutting, no role.** Its callers are the word-wrap preference
+//! projection, the zoom and font CSS (`ui/theme.rs`, through
+//! [`prepare_paced_restyle_everywhere`] and [`start_paced_reveal_everywhere`]),
+//! and the tab-width formatting (EditorConfig and the preference), so it serves
+//! several workflows; its pure plan, `next_restyle_range`, lives in the
+//! document-load workflow's `policy.rs` beside `batch_exceeds_slice`.
+//!
+//! A change of the view's default text style (wrap mode, tabs, the
+//! `.monospace` font) invalidates **every** line, and on a dense document
+//! (`batch_exceeds_slice`) each 2000 px validation batch then costs up to
+//! 21.6 ms in the lane. Mechanism A of the design (a tag carrying the style)
+//! fails ledger A57 (the gutter takes its font from CSS, and the empty last
+//! line has no character to tag), so every such change uses **mechanism B,
+//! hide and reveal**, which A57 shows keeps the top line and the insert mark:
+//!
+//! 1. in the interaction dispatch, every paragraph outside the visible ones is
+//!    hidden with an `invisible` tag (hidden text adds no layout, A24), and
+//!    the change is applied, so only the visible paragraphs revalidate;
+//! 2. then `G_PRIORITY_LOW` dispatches reveal the rest outward in
+//!    paragraph-aligned ranges of at most `V_SLICE` visible characters
+//!    (`next_restyle_range`); each reveal invalidates only its range, which the
+//!    next frame lays out (A37);
+//! 3. a newer change supersedes the running one: it hides again around the
+//!    visible paragraphs and restarts from them.
+//!
+//! An editor that is not mapped hides everything and reveals once it is next
+//! mapped, so only the selected editor is paced first (review R22). While a
+//! reveal runs, a default search and the minimap see only the revealed text
+//! (A33, A57); tags do not dirty the buffer or record undo (A27).
+
+use std::cell::{Cell, RefCell};
+
+use gtk4::glib;
+use gtk4::prelude::*;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+
+use super::LushtextEditorPage;
+use super::load::policy::{ParagraphSpan, RestyleCursor, next_restyle_range};
+use crate::model::buffer_replacement::V_SLICE;
+
+/// One editor's paced-restyle state.
+#[derive(Default)]
+pub struct RestyleState {
+    tag: RefCell<Option<gtk4::TextTag>>,
+    cursor: Cell<Option<RestyleCursor>>,
+    /// The visible paragraphs when the restyle started: revealed already.
+    visible: Cell<ParagraphSpan>,
+    generation: Cell<u64>,
+    source: RefCell<Option<glib::SourceId>>,
+    map_handler: RefCell<Option<glib::SignalHandlerId>>,
+    /// Evidence: restyles started, reveal dispatches, and the most visible
+    /// characters one reveal dispatch made visible.
+    restyles: Cell<u64>,
+    reveals: Cell<u64>,
+    largest_reveal_chars: Cell<u64>,
+}
+
+/// Observable paced-restyle state, projected into the load evidence.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RestyleEvidence {
+    /// Whether a reveal is still running (or waits for the editor's mapping).
+    pub pending: bool,
+    /// Paced restyles started.
+    pub restyles: u64,
+    /// Reveal dispatches run.
+    pub reveals: u64,
+    /// The most visible characters one reveal dispatch made visible.
+    pub largest_reveal_chars: u64,
+}
+
+impl LushtextEditorPage {
+    /// Apply a change of the view's default text style, paced on a dense
+    /// document (module docs) and direct on any other.
+    pub(crate) fn restyle_paced(&self, change: impl FnOnce(&Self)) {
+        let paced = self.prepare_paced_restyle();
+        change(self);
+        if paced {
+            self.start_paced_reveal();
+        }
+    }
+
+    /// Hide every paragraph outside the visible ones, if the document is
+    /// dense; returns whether it did. Pair with [`Self::start_paced_reveal`]
+    /// after the change.
+    pub(crate) fn prepare_paced_restyle(&self) -> bool {
+        if !self.is_dense_document() || self.content_is_installing() {
+            return false;
+        }
+        let state = &self.imp().restyle;
+        state.generation.set(state.generation.get().wrapping_add(1));
+        if let Some(source) = state.source.take() {
+            source.remove();
+        }
+        let buffer = self.buffer();
+        let count = u32::try_from(buffer.line_count()).unwrap_or(u32::MAX);
+        let visible = self.visible_paragraphs(count);
+        let tag = self.restyle_tag();
+        let (start, end) = buffer.bounds();
+        buffer.remove_tag(&tag, &start, &end);
+        if let Some(first) = buffer.iter_at_line(i32::try_from(visible.first).unwrap_or(i32::MAX))
+            && visible.first > 0
+        {
+            buffer.apply_tag(&tag, &buffer.start_iter(), &first);
+        }
+        if visible.end < count
+            && let Some(after) = buffer.iter_at_line(i32::try_from(visible.end).unwrap_or(i32::MAX))
+        {
+            buffer.apply_tag(&tag, &after, &buffer.end_iter());
+        }
+        state.visible.set(visible);
+        state.cursor.set(Some(RestyleCursor::new(visible, count)));
+        state.restyles.set(state.restyles.get().saturating_add(1));
+        true
+    }
+
+    /// Start revealing the hidden paragraphs outward, from low-priority
+    /// dispatches once the editor is mapped.
+    pub(crate) fn start_paced_reveal(&self) {
+        let state = &self.imp().restyle;
+        if state.cursor.get().is_none() {
+            return;
+        }
+        let view = self.imp().source_view.get();
+        if !view.is_mapped() {
+            if state.map_handler.borrow().is_none() {
+                let editor = self.downgrade();
+                let handler = view.connect_map(move |_| {
+                    if let Some(editor) = editor.upgrade() {
+                        editor.arm_reveal();
+                    }
+                });
+                state.map_handler.replace(Some(handler));
+            }
+            return;
+        }
+        self.arm_reveal();
+    }
+
+    /// Observable paced-restyle state.
+    pub(crate) fn restyle_evidence(&self) -> RestyleEvidence {
+        let state = &self.imp().restyle;
+        RestyleEvidence {
+            pending: state.cursor.get().is_some(),
+            restyles: state.restyles.get(),
+            reveals: state.reveals.get(),
+            largest_reveal_chars: state.largest_reveal_chars.get(),
+        }
+    }
+
+    /// Retire the reveal source and handler (from `dispose`).
+    pub(crate) fn dispose_restyle(&self) {
+        let state = &self.imp().restyle;
+        state.generation.set(state.generation.get().wrapping_add(1));
+        if let Some(source) = state.source.take() {
+            source.remove();
+        }
+        if let Some(handler) = state.map_handler.take() {
+            self.imp().source_view.disconnect(handler);
+        }
+    }
+
+    fn restyle_tag(&self) -> gtk4::TextTag {
+        let state = &self.imp().restyle;
+        if let Some(tag) = state.tag.borrow().as_ref() {
+            return tag.clone();
+        }
+        let tag = gtk4::TextTag::builder().invisible(true).build();
+        self.buffer().tag_table().add(&tag);
+        state.tag.replace(Some(tag.clone()));
+        tag
+    }
+
+    /// The paragraphs the view shows now; all of them when it is not mapped
+    /// (nothing is visible, so everything waits for the mapping).
+    fn visible_paragraphs(&self, count: u32) -> ParagraphSpan {
+        let view = self.imp().source_view.get();
+        if !view.is_mapped() {
+            return ParagraphSpan { first: 0, end: 0 };
+        }
+        let rect = view.visible_rect();
+        let (top, _) = view.line_at_y(rect.y());
+        let (bottom, _) = view.line_at_y(rect.y() + rect.height());
+        let first = u32::try_from(top.line()).unwrap_or(0);
+        let end = u32::try_from(bottom.line())
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(count);
+        ParagraphSpan {
+            first,
+            end: end.max(first),
+        }
+    }
+
+    fn arm_reveal(&self) {
+        let state = &self.imp().restyle;
+        if let Some(handler) = state.map_handler.take() {
+            self.imp().source_view.disconnect(handler);
+        }
+        if state.source.borrow().is_some() || state.cursor.get().is_none() {
+            return;
+        }
+        let generation = state.generation.get();
+        let editor = self.downgrade();
+        let source = glib::idle_add_local_full(glib::Priority::LOW, move || {
+            let Some(editor) = editor.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if editor.imp().restyle.generation.get() != generation || !editor.reveal_one_range() {
+                editor.imp().restyle.source.borrow_mut().take();
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+        state.source.replace(Some(source));
+    }
+
+    /// Reveal the next range that is still hidden; returns whether another
+    /// dispatch is needed.
+    fn reveal_one_range(&self) -> bool {
+        let state = &self.imp().restyle;
+        let Some(mut cursor) = state.cursor.get() else {
+            return false;
+        };
+        let buffer = self.buffer();
+        let visible = state.visible.get();
+        let chars = |line: u32| {
+            buffer
+                .iter_at_line(i32::try_from(line).unwrap_or(i32::MAX))
+                .map_or(0, |iter| u64::try_from(iter.chars_in_line()).unwrap_or(0))
+        };
+        loop {
+            let Some((next, range)) = next_restyle_range(cursor, V_SLICE, chars) else {
+                state.cursor.set(None);
+                return false;
+            };
+            cursor = next;
+            // The visible paragraphs were never hidden.
+            if range.first >= visible.first && range.end <= visible.end {
+                continue;
+            }
+            let start = buffer.iter_at_line(i32::try_from(range.first).unwrap_or(i32::MAX));
+            let end = buffer
+                .iter_at_line(i32::try_from(range.end).unwrap_or(i32::MAX))
+                .filter(|_| range.end < u32::try_from(buffer.line_count()).unwrap_or(0))
+                .unwrap_or_else(|| buffer.end_iter());
+            if let Some(start) = start {
+                // Visible characters, as `V_SLICE` counts them: the range's
+                // characters less one delimiter per paragraph.
+                let revealed = u64::try_from(end.offset() - start.offset())
+                    .unwrap_or(0)
+                    .saturating_sub(u64::from(range.len()));
+                buffer.remove_tag(&self.restyle_tag(), &start, &end);
+                state.reveals.set(state.reveals.get().saturating_add(1));
+                state
+                    .largest_reveal_chars
+                    .set(state.largest_reveal_chars.get().max(revealed));
+            }
+            let done = cursor.is_done();
+            state.cursor.set((!done).then_some(cursor));
+            return !done;
+        }
+    }
+}
+
+/// Every editor of every window of the running application.
+fn every_editor() -> Vec<LushtextEditorPage> {
+    gtk4::gio::Application::default()
+        .and_then(|app| app.downcast::<gtk4::Application>().ok())
+        .map(|app| {
+            app.windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<crate::ui::window::LushtextWindow>().ok())
+                .flat_map(|window| window.open_editors())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Before a display-wide `.monospace` change (zoom, font): hide around the
+/// visible paragraphs of every dense editor; returns the ones that did.
+pub fn prepare_paced_restyle_everywhere() -> Vec<LushtextEditorPage> {
+    every_editor()
+        .into_iter()
+        .filter(LushtextEditorPage::prepare_paced_restyle)
+        .collect()
+}
+
+/// After that change: start their reveals (an editor that is not mapped waits
+/// for its mapping).
+pub fn start_paced_reveal_everywhere(editors: &[LushtextEditorPage]) {
+    for editor in editors {
+        editor.start_paced_reveal();
+    }
+}
