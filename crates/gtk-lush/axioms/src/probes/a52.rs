@@ -229,7 +229,7 @@ pub fn spec_resources() -> (bool, usize) {
 }
 
 /// Build a private language manager on a worker thread, load its language
-/// list and guess [`GUESSED_PATH`]; the manager is dropped on the worker.
+/// list and guess `GUESSED_PATH`; the manager is dropped on the worker.
 /// The worker runs alone: the calling thread waits in `join`.
 #[must_use]
 pub fn worker_catalog() -> Option<WorkerCatalog> {

@@ -31,6 +31,16 @@
 //! mapped, so only the selected editor is paced first (review R22). While a
 //! reveal runs, a default search and the minimap see only the revealed text
 //! (A33, A57); tags do not dirty the buffer or record undo (A27).
+//!
+//! Two guards keep hidden text from being lost or stranded:
+//!
+//! - GtkTextBuffer's clipboard serializer copies **visible** text only
+//!   (`gtk_text_iter_get_visible_text`), so a cut of a selection spanning
+//!   hidden paragraphs would delete text the clipboard never received. A
+//!   selection appearing while a reveal runs therefore reveals everything at
+//!   once, before any copy, cut or drag can read it.
+//! - Edits during a reveal shift the line numbers its cursor walks, so the
+//!   last reveal removes the tag from the whole buffer, never only its range.
 
 use std::cell::{Cell, RefCell};
 
@@ -87,7 +97,12 @@ impl LushtextEditorPage {
     /// dense; returns whether it did. Pair with [`Self::start_paced_reveal`]
     /// after the change.
     pub(crate) fn prepare_paced_restyle(&self) -> bool {
-        if !self.is_dense_document() || self.content_is_installing() {
+        // A selection already there would let a copy read around the hidden
+        // paragraphs (module docs), so that restyle runs unpaced.
+        if !self.is_dense_document()
+            || self.content_is_installing()
+            || self.buffer().has_selection()
+        {
             return false;
         }
         let state = &self.imp().restyle;
@@ -169,9 +184,40 @@ impl LushtextEditorPage {
             return tag.clone();
         }
         let tag = gtk4::TextTag::builder().invisible(true).build();
-        self.buffer().tag_table().add(&tag);
+        let buffer = self.buffer();
+        buffer.tag_table().add(&tag);
+        // The clipboard reads visible text only (module docs).
+        let editor = self.downgrade();
+        buffer.connect_has_selection_notify(move |buffer| {
+            if buffer.has_selection()
+                && let Some(editor) = editor.upgrade()
+            {
+                editor.reveal_everything_now();
+            }
+        });
         state.tag.replace(Some(tag.clone()));
         tag
+    }
+
+    /// End a running reveal by showing every hidden paragraph in this
+    /// dispatch.
+    fn reveal_everything_now(&self) {
+        let state = &self.imp().restyle;
+        if state.cursor.get().is_none() {
+            return;
+        }
+        state.generation.set(state.generation.get().wrapping_add(1));
+        if let Some(source) = state.source.take() {
+            source.remove();
+        }
+        state.cursor.set(None);
+        self.remove_restyle_tag_everywhere();
+    }
+
+    fn remove_restyle_tag_everywhere(&self) {
+        let buffer = self.buffer();
+        let (start, end) = buffer.bounds();
+        buffer.remove_tag(&self.restyle_tag(), &start, &end);
     }
 
     /// The paragraphs the view shows now; all of them when it is not mapped
@@ -235,6 +281,7 @@ impl LushtextEditorPage {
         loop {
             let Some((next, range)) = next_restyle_range(cursor, V_SLICE, chars) else {
                 state.cursor.set(None);
+                self.remove_restyle_tag_everywhere();
                 return false;
             };
             cursor = next;
@@ -260,6 +307,11 @@ impl LushtextEditorPage {
                     .set(state.largest_reveal_chars.get().max(revealed));
             }
             let done = cursor.is_done();
+            if done {
+                // Edits during the reveal may have moved hidden paragraphs
+                // past the ranges walked (module docs).
+                self.remove_restyle_tag_everywhere();
+            }
             state.cursor.set((!done).then_some(cursor));
             return !done;
         }

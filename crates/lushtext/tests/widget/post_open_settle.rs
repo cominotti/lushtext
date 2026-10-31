@@ -400,6 +400,30 @@ fn test_a_wrap_toggle_on_a_dense_document_is_paced() {
 }
 
 #[test]
+fn test_a_selection_during_a_paced_reveal_reveals_everything_before_a_copy() {
+    // GtkTextBuffer's clipboard serializer copies visible text only, so a cut
+    // of hidden paragraphs would lose them.
+    let (_window, editor, _dir) = dense_window("dense-select.txt");
+    let wrap = editor.source_view().wrap_mode() != gtk4::WrapMode::None;
+    lushtext_core::ui::settings_writes::set_boolean("word-wrap", !wrap);
+    assert!(editor.load_evidence().restyle.pending);
+    let buffer = editor.buffer();
+    let (start, end) = buffer.bounds();
+    buffer.select_range(&start, &end);
+    assert!(
+        !editor.load_evidence().restyle.pending,
+        "a selection must end the reveal"
+    );
+    let (start, end) = buffer.bounds();
+    assert_eq!(
+        buffer.text(&start, &end, false).as_str(),
+        dense(710, 400),
+        "every paragraph is visible to the clipboard"
+    );
+    lushtext_core::ui::settings_writes::set_boolean("word-wrap", wrap);
+}
+
+#[test]
 fn test_a_document_that_is_not_dense_restyles_directly() {
     ensure_gtk_init();
     let window = test_window();

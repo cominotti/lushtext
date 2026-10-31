@@ -107,8 +107,8 @@ const BUDGET: Duration = Duration::from_secs(20);
 const CSS_PROPERTY_CLASS: &str = "gtk-lush-axioms-a57-property";
 const CSS_FIXED_CLASS: &str = "gtk-lush-axioms-a57-fixed";
 
-/// The probe document: [`LINES`] dense lines, tab lines every
-/// [`TAB_LINE_PERIOD`], [`NEEDLE`] on [`NEEDLE_LINES`], ending in `\n`.
+/// The probe document: `LINES` dense lines, tab lines every
+/// `TAB_LINE_PERIOD`, `NEEDLE` on `NEEDLE_LINES`, ending in `\n`.
 #[must_use]
 pub fn document() -> String {
     let mut text = String::new();

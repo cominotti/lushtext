@@ -47,6 +47,7 @@ use crate::model::document_scale::DocumentScale;
 use crate::model::encoding::FileHealthFindingKind;
 use crate::services::editor_io::{self, EditorLoadError};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use crate::ui::editor_page::frame_pacing::FrameWait;
 use crate::ui::editor_page::imp::EditorCallback;
 use crate::ui::editor_page::{
     EditorLoadState, InlineAlertLifetime, LushtextEditorPage, PendingWarningAction,
@@ -92,7 +93,7 @@ pub(crate) struct ChunkedLoadInstall {
     /// characters (`bound-post-open-settle`, D6.1).
     pub(super) budget: SliceBudget,
     /// A dense install's wait for the frame that lays out its previous slice.
-    pub(super) frame_wait: Option<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>,
+    pub(super) frame_wait: Option<FrameWait>,
     pub(super) permit: Option<TransientLoadPermit>,
     pub(super) restore: LoadInstallationState,
     pub(super) phase: LoadInstallPhase,
@@ -116,35 +117,34 @@ impl ChunkedLoadInstall {
 /// that lays out the previous one (review R14): GtkTextView validates the
 /// slice's new lines in that frame's layout (A37), so each validation holds
 /// one slice's lines (ledger A55). An unmapped view lays nothing out, so it
-/// takes the ordinary timeout.
+/// takes the ordinary timeout; a window that paints no frame falls back after
+/// `FRAME_WAIT_FALLBACK` (`ui/editor_page/frame_pacing.rs`).
 fn schedule_paced_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
-    let clock = {
-        let state = session.borrow();
-        state
-            .editor
-            .upgrade()
-            .filter(|editor| editor.source_view().is_mapped())
-            .and_then(|editor| editor.source_view().frame_clock())
-    };
-    let Some(clock) = clock else {
-        schedule_install_slice(session);
-        return;
-    };
+    let view = session
+        .borrow()
+        .editor
+        .upgrade()
+        .map(|editor| editor.source_view().clone());
     let weak = Rc::downgrade(session);
-    let handler = clock.connect_after_paint(move |_| {
-        if let Some(session) = weak.upgrade() {
-            cancel_frame_wait(&session);
-            schedule_install_slice(&session);
-        }
+    let wait = view.and_then(|view| {
+        FrameWait::after_next_frame(view.upcast_ref(), move || {
+            if let Some(session) = weak.upgrade() {
+                session.borrow_mut().frame_wait = None;
+                schedule_install_slice(&session);
+            }
+        })
     });
-    session.borrow_mut().frame_wait = Some((clock, handler));
+    match wait {
+        Some(wait) => session.borrow_mut().frame_wait = Some(wait),
+        None => schedule_install_slice(session),
+    }
 }
 
 /// Drop a paced installation's pending frame wait, if any.
 pub(super) fn cancel_frame_wait(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     let wait = session.borrow_mut().frame_wait.take();
-    if let Some((clock, handler)) = wait {
-        clock.disconnect(handler);
+    if let Some(wait) = wait {
+        wait.cancel();
     }
 }
 

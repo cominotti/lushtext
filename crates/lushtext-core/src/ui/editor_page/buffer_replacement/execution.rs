@@ -23,6 +23,7 @@ use crate::model::buffer_replacement::{
 };
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::editor_page::frame_pacing::FrameWait;
 
 use super::evidence;
 use super::policy::{
@@ -336,7 +337,7 @@ pub(crate) struct BufferReplacementSession {
     /// The two slice budgets of this body.
     budget: SliceBudget,
     /// A dense body's wait for the frame that lays out its previous slice.
-    frame_wait: Option<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>,
+    frame_wait: Option<FrameWait>,
 }
 
 /// Content-free terminal evidence retained by one editor.
@@ -702,35 +703,34 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 /// Schedule a dense body's next insertion turn after the frame that lays out
 /// the previous one, so each validation holds one slice's lines
 /// (`bound-post-open-settle`, review R14, ledger A55). An unmapped view lays
-/// nothing out, so it takes the ordinary timeout.
+/// nothing out, so it takes the ordinary timeout; a window that paints no
+/// frame falls back after `FRAME_WAIT_FALLBACK`.
 fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let clock = {
-        let state = session.borrow();
-        state
-            .editor
-            .upgrade()
-            .filter(|editor| editor.source_view().is_mapped())
-            .and_then(|editor| editor.source_view().frame_clock())
-    };
-    let Some(clock) = clock else {
-        schedule_turn(session);
-        return;
-    };
+    let view = session
+        .borrow()
+        .editor
+        .upgrade()
+        .map(|editor| editor.source_view().clone());
     let weak = Rc::downgrade(session);
-    let handler = clock.connect_after_paint(move |_| {
-        if let Some(session) = weak.upgrade() {
-            cancel_frame_wait(&session);
-            schedule_turn(&session);
-        }
+    let wait = view.and_then(|view| {
+        FrameWait::after_next_frame(view.upcast_ref(), move || {
+            if let Some(session) = weak.upgrade() {
+                session.borrow_mut().frame_wait = None;
+                schedule_turn(&session);
+            }
+        })
     });
-    session.borrow_mut().frame_wait = Some((clock, handler));
+    match wait {
+        Some(wait) => session.borrow_mut().frame_wait = Some(wait),
+        None => schedule_turn(session),
+    }
 }
 
 /// Drop a dense body's pending frame wait, if any.
 fn cancel_frame_wait(session: &Rc<RefCell<BufferReplacementSession>>) {
     let wait = session.borrow_mut().frame_wait.take();
-    if let Some((clock, handler)) = wait {
-        clock.disconnect(handler);
+    if let Some(wait) = wait {
+        wait.cancel();
     }
 }
 

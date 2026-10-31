@@ -72,7 +72,7 @@ pub const SEED: u64 = 55;
 const PACING_BUDGET: Duration = Duration::from_secs(10);
 const QUIET: Duration = Duration::from_millis(300);
 
-/// A dense view presented at the reference size, holding [`PREFIX_LINES`]
+/// A dense view presented at the reference size, holding `PREFIX_LINES`
 /// validated dense lines and scrolled to the top.
 pub struct ValidationFixture {
     /// The view.
