@@ -738,3 +738,44 @@ fn test_an_edit_entered_session_finds_and_copies_its_hidden_tail() {
     assert!(page.undo_protected_entry());
     assert_eq!(page.protected_view_evidence().source_bytes, None);
 }
+
+#[test]
+fn test_eviction_releases_the_source_and_the_reload_retains_a_new_one() {
+    ensure_gtk_init();
+    let body = body_with_giants(&[n(L_PROTECT_EDIT) * 2]);
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("evict.txt");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    load_and_wait(&page, &path);
+    let before = page.protected_view_evidence();
+    assert!(before.protected);
+    assert_eq!(
+        before.source_bytes,
+        Some(u64::try_from(body.len()).expect("len"))
+    );
+
+    page.evict();
+    wait_until(Duration::from_secs(30), || page.is_evicted());
+    let evicted = page.protected_view_evidence();
+    assert!(
+        evicted.protected,
+        "an evicted protected tab stays protected"
+    );
+    assert_eq!(
+        evicted.source_bytes, None,
+        "eviction releases the source with the buffer"
+    );
+
+    load_and_wait(&page, &path);
+    let reloaded = page.protected_view_evidence();
+    assert!(reloaded.protected);
+    assert_eq!(
+        reloaded.source_bytes, before.source_bytes,
+        "the reload retains its body"
+    );
+    assert_eq!(reloaded.folded_paragraphs, before.folded_paragraphs);
+    assert_eq!(reloaded.hidden_chars, before.hidden_chars);
+    assert_eq!(editor_text(&page), body);
+}

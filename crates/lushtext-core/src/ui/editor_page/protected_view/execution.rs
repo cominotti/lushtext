@@ -179,6 +179,15 @@ impl LushtextEditorPage {
         }
     }
 
+    /// Memory eviction cleared the buffer: the source goes with it (the
+    /// eviction reload retains a fresh body, design D4). The session stays
+    /// protected; an eviction reload is monotone.
+    pub(crate) fn release_protected_source_for_eviction(&self) {
+        let runtime = self.imp_protected_view();
+        runtime.cancel_source_capture();
+        runtime.source.replace(None);
+    }
+
     /// The session's text source, if it has one.
     pub(crate) fn protected_source(&self) -> Option<ProtectedTextSource> {
         self.imp_protected_view().source.borrow().clone()

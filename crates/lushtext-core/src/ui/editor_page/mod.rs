@@ -412,6 +412,7 @@ impl LushtextEditorPage {
                 editor.imp().residency.evicted.set(true);
                 editor.buffer().set_modified(false);
                 editor.release_local_history_residency_for_eviction();
+                editor.release_protected_source_for_eviction();
                 editor.clear_modified_line_marks();
                 editor.refresh_minimap();
                 editor.notify_memory_policy_changed();
