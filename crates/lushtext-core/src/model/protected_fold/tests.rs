@@ -97,7 +97,7 @@ fn production_constants_take_the_measured_values() {
             production.v_batch(),
             production.r_fold()
         ),
-        (15_000, 250, 56_000, 224)
+        (10_000, 250, 56_000, 224)
     );
     assert_eq!(FoldRange::RETAINED_BYTES, 24);
 }

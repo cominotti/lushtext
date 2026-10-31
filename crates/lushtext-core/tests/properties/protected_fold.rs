@@ -109,12 +109,12 @@ fn small_lengths() -> impl Strategy<Value = Vec<u64>> {
     prop::collection::vec(length, 0..120)
 }
 
-/// Lengths around the production thresholds (N_DENSE 250, HEAD_CAP 15,000).
+/// Lengths around the production thresholds (N_DENSE 250, HEAD_CAP 10,000).
 fn production_lengths() -> impl Strategy<Value = Vec<u64>> {
     let length = prop_oneof![
         8 => 0u64..=120,
         4 => 200u64..=800,
-        1 => 14_000u64..=16_000,
+        1 => 9_000u64..=11_000,
         1 => 100_000u64..=2_000_000,
     ];
     prop::collection::vec(length, 0..1_200)

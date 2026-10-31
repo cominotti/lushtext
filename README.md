@@ -39,7 +39,7 @@ local history, and careful recovery behavior.
   bounded slices like any other.
 - **Protected View for giant paragraphs.** A document with a paragraph longer
   than 50,000 characters opens view-only: no caret, nothing can change it, and
-  each giant paragraph shows its first 15,000 characters with the rest folded
+  each giant paragraph shows its first 10,000 characters with the rest folded
   away, so scrolling and selecting stay fast. Find still searches every
   character, hidden ones included; copying a selection copies the folded text
   too; and saving writes the original bytes unchanged. A paste or join that

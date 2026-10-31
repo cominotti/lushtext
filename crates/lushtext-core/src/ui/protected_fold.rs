@@ -83,7 +83,15 @@ pub(crate) fn insert_folded(
                 buffer.insert(iter, &text[cursor..split]);
             }
             if split < content_end {
+                // The hidden tail goes in in one call (the declared envelope
+                // C3's gate measures); the measurement build records it.
+                let started_us = glib::monotonic_time();
                 buffer.insert_with_tags(iter, &text[split..content_end], &[&tag]);
+                crate::ui::responsiveness_probe::record_span(
+                    "protected_tail_insert",
+                    started_us,
+                    glib::monotonic_time(),
+                );
             }
             pending_start = content_end;
             next_range += 1;

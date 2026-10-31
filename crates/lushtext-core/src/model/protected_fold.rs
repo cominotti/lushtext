@@ -67,15 +67,18 @@ mod kani_proofs;
 
 use super::document_scale::{L_PROTECT, N_VISIBLE, R_BATCH, V_BATCH};
 
-/// **PROVISIONAL** (measured by `long-line-protected-view` task 1.3): the
-/// largest visible head whose first layout, wrap on and wrap off, and whose
-/// re-layout on a word-wrap toggle each fit `B_settle` per dispatch.
+/// The largest visible head whose open and post-open settle dispatches fit
+/// `B_settle` (`long-line-protected-view` task 1.3, measured).
 ///
-/// Until the lane measures it, this is design D1's linear extrapolation of
-/// ledger A23 (a 200,000-character paragraph's first layout costs 177–217 ms
-/// wrapped, so about 15,000 characters fit 16 ms). It is not the measured
-/// value, and task 1.3 replaces it.
-pub const N_HEAD: u64 = 15_000;
+/// The lane's `keystroke` group opens one visible paragraph of a swept length
+/// between short paragraphs (2026-10-30, `.claude/handoffs/c2-measure/runs`,
+/// plain, `.txt` prose): the worst background dispatch is 12.7–14.8 ms at
+/// 10,000 characters (wrap off and on), 16.1 ms at 14,000 wrap off and
+/// 20.7 ms at 20,000 wrap on, about 11 ms of each being the size-independent
+/// post-open settle of a 500-character document. The C2 verdict's first round
+/// confirmed it from the other side: the provisional 15,000 (design D1's
+/// extrapolation of ledger A23) cost a 15.8 ms frame layout on its own.
+pub const N_HEAD: u64 = 10_000;
 
 /// Pango's advance of the view's monospace font at the default zoom, in Pango
 /// units (1/1024 px), as ledger A28 measured it (9011 units per character).
