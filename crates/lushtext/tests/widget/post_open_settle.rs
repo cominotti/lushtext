@@ -15,8 +15,9 @@ use crate::common::{
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::buffer_replacement::V_SLICE;
+use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::load::policy::{ATTACH_DEADLINE_US, SettleStage};
-use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use lushtext_core::ui::editor_page::{EditorLoadState, InlineAlertLifetime, LushtextEditorPage};
 use lushtext_core::ui::window::LushtextWindow;
 use sourceview5::prelude::{BufferExt as _, ViewExt as _};
 use std::time::Duration;
@@ -628,5 +629,45 @@ fn test_a_replacement_leaves_no_modified_marks_collapsed_on_the_first_line() {
         buffer.source_marks_at_line(0, None).len() <= 1,
         "{} marks collapsed on the first line",
         buffer.source_marks_at_line(0, None).len()
+    );
+}
+
+#[test]
+fn test_an_inline_alert_leaves_a_dense_document_margin_alone() {
+    // An alert above the editor shortens its view. Recomputing the
+    // end-of-document overscroll from the shorter view changed
+    // `bottom-margin`, a default-style property (A37), and GtkTextView laid
+    // out the whole dense document again: a train of ~18 ms validation
+    // dispatches after every 11 MiB local-history restore, whose "Restored"
+    // alert is such an alert.
+    let (_window, editor, _dir) = dense_window("dense-alert.txt");
+    flush_after_delay(Duration::from_millis(300));
+    let view = editor.source_view();
+    let margin = view.bottom_margin();
+    let changes = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    {
+        let changes = changes.clone();
+        view.connect_notify_local(Some("bottom-margin"), move |_, _| {
+            changes.set(changes.get() + 1);
+        });
+    }
+    let height = view.visible_rect().height();
+    editor.emit_inline_notification(
+        InlineActionNotification {
+            style: InlineNotificationStyle::Warning,
+            title: "Restored from Local History".to_string(),
+            body: "The previous buffer state was saved as a safety snapshot.".to_string(),
+            primary_button: Some("Undo Restore".to_string()),
+            secondary_button: None,
+        },
+        InlineAlertLifetime::SupersededByLoad,
+    );
+    wait_until(SETTLE_BUDGET, || view.visible_rect().height() < height);
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(view.bottom_margin(), margin);
+    assert_eq!(
+        changes.get(),
+        0,
+        "the alert changed the dense document's margin"
     );
 }

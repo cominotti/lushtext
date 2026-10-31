@@ -1052,7 +1052,11 @@ boundary are made here).
   `.claude/handoffs/c6-upstream-gtksourceview-worker-slice.md` (A54).
 - **The dense end-of-document overscroll** uses the S7 fallback, the margin
   frozen at install; a resize-driven change over `B_settle` is a toolkit-floor
-  exception against S7.
+  exception against S7. A view that only becomes shorter (an inline alert, the
+  search bar, a bottom sheet) keeps the larger margin while it fits: the
+  "Restored from Local History" alert after an 11 MiB restore had shrunk the
+  margin and re-laid out the whole document in ~18 ms validation dispatches
+  (found 2026-10-31 while re-measuring the restore).
 - **Input-to-frame is reported, not gated**, beside the documented lane floor.
 - **C6 owns user-started dense invalidations** (word wrap, zoom, font).
 

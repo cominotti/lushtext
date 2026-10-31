@@ -35,6 +35,31 @@ fn overscroll_margin_from_visible_height(visible_height: i32) -> i32 {
     overscroll.max(MIN_EDITOR_BOTTOM_MARGIN)
 }
 
+/// The bottom margin a viewport change leaves on the view.
+///
+/// `bottom-margin` is a default-style property, so every change makes
+/// GtkTextView lay out the whole document again (A37). On a dense document
+/// that is a train of validation dispatches of about 18 ms each, for every
+/// inline alert, search bar or bottom sheet that shortens the view for a
+/// moment (measured after an 11 MiB local-history restore, whose "Restored"
+/// alert did exactly that). So a dense document keeps its larger margin while
+/// the view is shorter, as long as the margin still fits in the view: the
+/// tail room is then a little more than 75% of the view, and the view
+/// regaining its height finds the margin already right. It still shrinks when
+/// the view becomes shorter than the margin, and grows like any document's.
+fn bottom_margin_after_viewport_change(
+    current: i32,
+    desired: i32,
+    visible_height: i32,
+    dense: bool,
+) -> i32 {
+    if dense && desired < current && current <= visible_height {
+        current
+    } else {
+        desired
+    }
+}
+
 impl LushtextEditorPage {
     /// Observe the editor viewport through its scroll adjustments.
     ///
@@ -212,7 +237,7 @@ impl LushtextEditorPage {
     /// insert, while the buffer holds no line to invalidate (the S7 fallback:
     /// the margin is fixed at install, ledger A58).
     pub(crate) fn set_overscroll_before_install(&self) {
-        self.refresh_dynamic_overscroll();
+        self.apply_dynamic_overscroll(false);
     }
 
     /// Recompute the editor's bottom margin from the current visible rect.
@@ -221,13 +246,25 @@ impl LushtextEditorPage {
     /// after the last line so both the main editor and the bound source map
     /// retain usable travel near EOF.
     pub(crate) fn refresh_dynamic_overscroll(&self) {
+        self.apply_dynamic_overscroll(self.is_dense_document());
+    }
+
+    /// Set the bottom margin from the visible rect; `retain_larger` keeps a
+    /// dense document's larger margin while it still fits the view
+    /// ([`bottom_margin_after_viewport_change`]).
+    fn apply_dynamic_overscroll(&self, retain_larger: bool) {
         let source_view = self.source_view();
         if !source_view.is_mapped() {
             return;
         }
 
-        let visible_rect = source_view.visible_rect();
-        let desired_margin = overscroll_margin_from_visible_height(visible_rect.height());
+        let visible_height = source_view.visible_rect().height();
+        let desired_margin = bottom_margin_after_viewport_change(
+            source_view.bottom_margin(),
+            overscroll_margin_from_visible_height(visible_height),
+            visible_height,
+            retain_larger,
+        );
 
         if source_view.bottom_margin() == desired_margin {
             return;
@@ -237,5 +274,49 @@ impl LushtextEditorPage {
         self.sync_minimap_view_geometry();
         self.schedule_minimap_refresh();
         self.queue_minimap_draw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bottom_margin_after_viewport_change;
+
+    #[test]
+    fn a_dense_document_keeps_its_margin_while_the_view_is_briefly_shorter() {
+        // An inline alert shortens an 800 px view to 700 px: 600 would be
+        // 75% of 800, 525 of 700.
+        assert_eq!(
+            bottom_margin_after_viewport_change(600, 525, 700, true),
+            600
+        );
+        // The alert goes away: the margin is already right.
+        assert_eq!(
+            bottom_margin_after_viewport_change(600, 600, 800, true),
+            600
+        );
+    }
+
+    #[test]
+    fn a_dense_document_margin_still_shrinks_below_the_view_and_grows() {
+        assert_eq!(
+            bottom_margin_after_viewport_change(600, 300, 400, true),
+            300
+        );
+        assert_eq!(
+            bottom_margin_after_viewport_change(600, 750, 1000, true),
+            750
+        );
+    }
+
+    #[test]
+    fn other_documents_follow_the_view() {
+        assert_eq!(
+            bottom_margin_after_viewport_change(600, 525, 700, false),
+            525
+        );
+        assert_eq!(
+            bottom_margin_after_viewport_change(525, 600, 800, false),
+            600
+        );
     }
 }
