@@ -245,6 +245,8 @@ When a widget test flakes (fails then passes, or `FLAKY:` appears):
 
 This applies to load-amplified flakes too: heavy local load exposing a 2s async budget is a real fragility (the budget was always too tight), so fix the budget rather than blaming the machine.
 
+The same holds for smoke-lane probes. A probe that *reads* state (an AT-SPI tree walk, a screenshot, a D-Bus snapshot) has a cost of its own that grows with load: an AT-SPI walk is several synchronous calls per node, each answered by the app's main thread, so a ~190-node tree took 0.3–2.9 s at the loads measured. Never cap one attempt below the overall wait and "retry on timeout": a killed attempt discards its work, so once the read costs more than the cap every retry dies too and the wait cannot succeed however long it is (the visual smoke's `bookmarks-few` flake at load ~20). Bound each attempt by the time left before the one deadline, make the read stop as soon as it has the answer, and record per-attempt durations (`probe_ms=` in `automation-waits.txt`, `walk_ms=`/`call_failures=` in the probe's stdout) so the next budget is derived from data.
+
 ## Assertion Rules That Save Time
 
 - For collection, picker, browser, command-palette, search-result, and
