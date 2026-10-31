@@ -1108,6 +1108,31 @@ choice returned to the maintainer (design D0), who chose **the hybrid**:
   fixture self-test found that the measurement patch's minimum length (37)
   produced a paragraph shorter than requested; the minimum is now 46.
 
+### Fold row window: `R_fold = R_BATCH` (task 1.2, 2026-10-30)
+
+The fold's density window counts **`R_fold` = `R_BATCH` = 224** paragraphs; no
+edge row is added. GtkTextView validates whole lines from a line start until a
+batch reaches 2000 px (A31: each step grows `upper` by 2000 px plus at most one
+line; the measured step is 2016 px = 112 × 18 px), so a batch holds at most
+`ceil(2000 / h)` lines of minimum row height `h`, **the line straddling the
+2000 px edge included**: C0's 112 is exactly `ceil(2000 / 18)`, and its double,
+224, covers `ceil(2000 / 9)` = 223 at the 50 % minimum zoom. A 2000 px window
+starting at an arbitrary pixel (task 3.4's widget check) touches at most
+`ceil((2000 + h − 1) / h)` rows: 113 at 18 px, 224 at 9 px. `R_BATCH + 1` would
+also break the fold precondition `R_fold · N_DENSE ≤ V_BATCH`
+(225 · 250 = 56,250 > 56,000). The argument assumes a row of at least 9 px at
+50 % zoom, which C0's doubling already assumed; task 3.4 should lay out one
+zoom-50 % fixture to tie it to the toolkit. The zoom range is 50–400 %
+(`ui/window/zoom.rs`); `model/protected_fold.rs` names both ends, and a
+compile-time assertion in `zoom.rs` is left to the first C2 milestone that
+edits that GTK module.
+
+Provisional fold constants until task 1.3 measures them: `N_HEAD` = 15,000 (the
+A23 extrapolation of design D1) and `A28_SAFE_CHARS` = 59,579, A28's overflow
+at the **largest** zoom (`floor(i32::MAX / (9011 · 4))`; the overflow length
+shrinks as the advance grows, so 400 % binds, not the smallest zoom), so
+`head_cap` = 15,000.
+
 ### Pre-existing blocker found by task 1.1
 
 Typing into a 500,000-character paragraph with word wrap off logged A37's

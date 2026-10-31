@@ -753,7 +753,9 @@ invariant; tighten the generator or use the deep lane.
 - Placement: harnesses live in a `#[cfg(kani)] mod kani_proofs` of the crate
   that owns the checked code (`gtk-lush-widgets` for geometry; `lushtext-core`
   for the draft journal, the durable write, and the pure policies: the
-  editor-memory budget in `model/`, and the `ui/**` policies of the minimap
+  editor-memory budget, the paragraph boundary and profile, the document
+  scale and the Protected View fold (`model/protected_fold.rs`) in `model/`,
+  and the `ui/**` policies of the minimap
   fits, the adaptive-shell geometry, the width presets, and the preview-width
   clamp), over GTK-free, I/O-free code
   that ships, or a pure core production drives. Never a copy of the code.

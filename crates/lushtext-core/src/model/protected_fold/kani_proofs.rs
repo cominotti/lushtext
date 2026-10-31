@@ -19,9 +19,9 @@
 //! Compiled only under `cfg(kani)` (`make kani`, shard `core-protected-fold`).
 
 use super::{
-    A28_SAFE_CHARS, FoldLocation, FoldRange, FoldState, FoldThresholds, HEAD_CAP, L_PROTECT,
-    N_HEAD, N_INSPECT, N_VISIBLE, dense_visible, fold_byte_offset, fold_finish, fold_step,
-    length_cap, window_is_over_budget,
+    A28_MAX_ZOOM_PERCENT, A28_MEASURED_ADVANCE_UNITS, A28_SAFE_CHARS, FoldLocation, FoldRange,
+    FoldState, FoldThresholds, HEAD_CAP, L_PROTECT, N_HEAD, N_INSPECT, N_VISIBLE, dense_visible,
+    fold_byte_offset, fold_finish, fold_step, length_cap, window_is_over_budget,
 };
 
 /// The most paragraphs a sequence harness folds.
@@ -122,6 +122,8 @@ fn fold_run(
         }
         index += 1;
     }
+    assert!(state.paragraphs() == count as u64);
+    assert!(state.thresholds() == thresholds);
     for range in fold_finish(state) {
         apply(range, &mut shown);
     }
@@ -302,6 +304,11 @@ fn production_thresholds_satisfy_the_preconditions() {
         ) == Some(production)
     );
     assert!(production.head_cap() == HEAD_CAP);
+    // A28_SAFE_CHARS is the overflow bound itself at the largest zoom: the
+    // last safe character's x position fits an `i32`, the next one's does not.
+    let advance = A28_MEASURED_ADVANCE_UNITS * A28_MAX_ZOOM_PERCENT / 100;
+    assert!(A28_SAFE_CHARS * advance <= i32::MAX as u64);
+    assert!((A28_SAFE_CHARS + 1) * advance > i32::MAX as u64);
     assert!(HEAD_CAP <= N_VISIBLE && HEAD_CAP <= N_HEAD && HEAD_CAP <= A28_SAFE_CHARS);
     assert!(N_INSPECT <= HEAD_CAP && N_INSPECT <= L_PROTECT);
 }

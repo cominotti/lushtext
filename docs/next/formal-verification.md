@@ -1810,6 +1810,64 @@ high-waters (`>` with `>=`), and the zeroed density ring's fill branch
 
 No harness or assertion was added, so no shard was re-measured.
 
+### Protected View fold (`long-line-protected-view`, C2 of the long-line programme)
+
+One pure module, `model/protected_fold.rs`, with its harnesses in
+`model/protected_fold/kani_proofs.rs` (design D12, ids H1–H2s), over the
+production `fold_step`/`fold_finish`, `FoldRange::locate`,
+`FoldLocation::column_of` and `fold_byte_offset`.
+
+**Design-time findings, both fixed before any code (task 2.10).**
+
+- *The first draft's "fold when the window would overflow" rule* (each
+  paragraph shown at `min(len, N_visible)`, folded to `N_dense` only when adding
+  it would push the running window over `V_batch`) is unsound. Hand-found
+  counterexample: `V_batch = 10`, `R_batch = 2`, `N_dense = 5`, `N_visible = 8`,
+  two 8-character paragraphs show 8 + 5 = 13 > 10. The windowed rule shows
+  5 + 5. Pinned by the unit test `the_overflow_rule_counterexample_is_fixed`
+  against a frozen copy of the superseded rule.
+- *The excess-budget defect* (adversarial review, 2026-10-29): the second
+  draft capped every paragraph at `N_dense + E`, `E = V_batch − R_batch ·
+  N_dense`. With C0's values `E = 0`, so every paragraph over 250 characters was
+  folded whatever its neighbours held. The windowed rule folds only members of
+  over-budget windows; `the_excess_budget_defect_is_fixed` pins a 251-character
+  paragraph in an under-budget window staying whole (the frozen superseded rule
+  folds it).
+
+**Kani counterexamples.** One, expected: task 2.7 ran H1 against a fold with
+`length_cap` alone (before `density_cap` existed); Kani failed H1's window
+assertion in 206 s. `density_bound_fails_without_the_density_fold` (H1x) keeps
+that counterexample as a `should_panic` harness. No harness of the shipped fold
+produced a counterexample.
+
+**Tractability (fit order: split first).** The designed forms did not finish:
+
+| Form | Outcome | Fix |
+| --- | --- | --- |
+| H1 monolithic (every window's visible sum asserted over the run), symbolic `r_fold`, `u128` sums | > 24 min | split H1 into the stream facts (every paragraph shows at most its capped count; every member of an over-budget window shows at most `n_dense`) and the general window lemma H1w; per-`r_fold` instances; `u64` sums under a new precondition `r_fold · head_cap ≤ u64::MAX`; under `cfg(kani)` the window sum is added up from the ring (production keeps the O(1) running sum, pinned equal by `running_sum_equals_direct_sum` and the property tests) |
+| H2 with symbolic `r_fold` | 1,177 s | per-`r_fold` instances and the changes above |
+| H2s sequential (whole run, then a second run from the split) | > 27 min | lockstep comparison of the two runs |
+| H2b with three `chars()` passes over 8 symbolic bytes | CBMC out of its 14 GiB address space | lead-byte counting in the harness, and `fold_byte_offset` itself became a lead-byte scan (no decoding) |
+
+No proof bound was reduced: the domains are the design's (up to 6 paragraphs of
+arbitrary `u64` length, `r_fold` 1–3, every accepted threshold tuple, every
+valid UTF-8 string of ≤ 8 bytes, every `u64` column). The threshold domain
+gained one precondition, `r_fold · head_cap ≤ u64::MAX` (production: 224 ·
+15,000).
+
+**Shards.** `core-protected-fold` (H1 ×3, H1w, H1c, H1x; `pull-request`) and
+`core-protected-fold-shape` (H2 ×3, H2b, H2c, H2s ×3; `scheduled`). Local
+`make kani KANI_MEASURE` (Kani 0.68.0, 2026-10-30): `core-protected-fold`
+3.77 min / 1.44 GiB (H1 r1/r2/r3 26 / 44 / 140 s, H1w 1.9 s, H1x 0.6 s, H1c
+0.03 s), `core-protected-fold-shape` 14.42 min / 0.95 GiB (H2 r1/r2/r3 41 / 70
+/ 266 s, H2s r1/r2/r3 36 / 54 / 361 s, H2b 32 s, H2c 0.4 s). The shape shard
+is near the 25-minute runner margin if the runner is 1.5× slower; split it
+(H2s alone) if the dispatched runs exceed it.
+**Runner figures pending dispatch**: the table carries the local figures,
+marked as such, until two dispatched `kani.yml` runs replace them.
+
+PROOF_STRENGTH_RESULTS
+
 ## 4. Deferral inventory
 
 - Multi-process safety of the draft journal and the target guard (axiom A6).

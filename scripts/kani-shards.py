@@ -143,20 +143,23 @@ PROOF_STRENGTH_RAISED_IN = "; raised by runs 38087161968, 38088387193 (max of th
 # measure them. core-document-scale's runs predate the join rewrite of
 # c2e33d74 (same harnesses, 5.6 local minutes before and after).
 DOCUMENT_SCALE_MEASURED_IN = "runs 39440638502, 39446126819 (max of the two)"
-# long-line-protected-view (C2) added core-protected-fold and
-# core-protected-fold-shape. PENDING DISPATCH:
+# long-line-protected-view (C2) added core-protected-fold, core-protected-fold-shape
+# and core-protected-fold-mapping. PENDING DISPATCH:
 # these figures are a LOCAL `make kani KANI_MEASURE` run on the reference
 # workstation, recorded so the table stays complete until two dispatched
 # kani.yml runs replace them (task 2.8); developer timing is not a runner
 # measurement, and the change must not merge on it.
-PROTECTED_FOLD_MINUTES = 3.8
+PROTECTED_FOLD_MINUTES = 6.9
 PROTECTED_FOLD_PEAK_GIB = 1.5
-PROTECTED_FOLD_SHAPE_MINUTES = 14.5
-PROTECTED_FOLD_SHAPE_PEAK_GIB = 1.0
+PROTECTED_FOLD_SHAPE_MINUTES = 13.0
+PROTECTED_FOLD_SHAPE_PEAK_GIB = 1.6
+PROTECTED_FOLD_MAPPING_MINUTES = 6.0
+PROTECTED_FOLD_MAPPING_PEAK_GIB = 1.6
 PROTECTED_FOLD_MEASURED_IN = (
     "PENDING DISPATCH: local make kani KANI_MEASURE runs on the reference workstation, 2026-10-30 "
-    "(Kani 0.68.0; core-protected-fold 3.77 min / 1.44 GiB, core-protected-fold-shape 14.42 min / "
-    "0.95 GiB), not runner measurements"
+    "(Kani 0.68.0; core-protected-fold 6.88 min / 1.45 GiB; the two scheduled shards from one "
+    "17.28-min / 1.51 GiB run of their union, split by per-harness time plus about one minute of "
+    "compilation), not runner measurements"
 )
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
@@ -401,17 +404,26 @@ SHARDS: dict[str, Shard] = {
         ci_peak_gib=PROTECTED_FOLD_PEAK_GIB,
         measured_in=PROTECTED_FOLD_MEASURED_IN,
     ),
+    # The scheduled rest is split again: the fold-shape harnesses alone took
+    # 12 of the 17.3 local minutes the combined group did.
     "core-protected-fold-shape": Shard(
         "lushtext-core",
+        ("model::protected_fold::kani_proofs::folds_hide_",),
+        gate="scheduled",
+        ci_minutes=PROTECTED_FOLD_SHAPE_MINUTES,
+        ci_peak_gib=PROTECTED_FOLD_SHAPE_PEAK_GIB,
+        measured_in=PROTECTED_FOLD_MEASURED_IN,
+    ),
+    "core-protected-fold-mapping": Shard(
+        "lushtext-core",
         (
-            "model::protected_fold::kani_proofs::folds_hide_",
             "model::protected_fold::kani_proofs::fold_byte_offset_",
             "model::protected_fold::kani_proofs::fold_location_",
             "model::protected_fold::kani_proofs::fold_plan_",
         ),
         gate="scheduled",
-        ci_minutes=PROTECTED_FOLD_SHAPE_MINUTES,
-        ci_peak_gib=PROTECTED_FOLD_SHAPE_PEAK_GIB,
+        ci_minutes=PROTECTED_FOLD_MAPPING_MINUTES,
+        ci_peak_gib=PROTECTED_FOLD_MAPPING_PEAK_GIB,
         measured_in=PROTECTED_FOLD_MEASURED_IN,
     ),
 }
@@ -698,12 +710,12 @@ ORACLES: dict[str, Oracle] = {
             _h(_FOLD + "an_over_budget_window_fits_once_dense", 1.92, "ci"),
             _h(_FOLD + "fold_byte_offset_never_splits_a_scalar", 32.29, "ci"),
             _h(_FOLD + "density_bound_fails_without_the_density_fold", 0.56, "ci"),
-            _h(_FOLD + "density_bound_holds_for_every_window_r1", 26.43, "ci"),
-            _h(_FOLD + "density_bound_holds_for_every_window_r2", 43.72, "ci"),
-            _h(_FOLD + "density_bound_holds_for_every_window_r3", 140.33, "local"),
-            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r1", 41.41, "ci"),
+            _h(_FOLD + "density_bound_holds_for_every_window_r1", 37.35, "ci"),
+            _h(_FOLD + "density_bound_holds_for_every_window_r2", 59.76, "ci"),
+            _h(_FOLD + "density_bound_holds_for_every_window_r3", 301.33, "local"),
+            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r1", 62.05, "local"),
             _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r2", 70.42, "local"),
-            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r3", 265.84, "local"),
+            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r3", 597.46, "local"),
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r1", 36.29, "ci"),
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r2", 54.16, "ci"),
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r3", 361.16, "local"),

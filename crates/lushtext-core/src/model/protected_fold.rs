@@ -366,8 +366,8 @@ pub fn fold_byte_offset(paragraph: &str, head_chars: u64) -> usize {
 
 /// The streaming fold's state: the last paragraphs not yet emitted (at most
 /// `r_fold − 1` between steps), the sum of their length-capped counts, the
-/// next paragraph index, and the last paragraph covered by an over-budget
-/// window.
+/// next paragraph index, and the end of the paragraphs covered by an
+/// over-budget window.
 ///
 /// `CAPACITY` bounds the ring; production uses [`ProductionFoldState`]
 /// (`MAX_R_FOLD`), and the Kani harnesses a ring of 4 so CBMC does not encode
@@ -384,7 +384,9 @@ pub struct FoldState<const CAPACITY: usize> {
     /// Sum of the length-capped counts of the held paragraphs.
     capped_sum: u64,
     next_index: u64,
-    dense_through: Option<u64>,
+    /// Every paragraph below this index lies in an over-budget window that
+    /// has completed (the end, exclusive, of the latest one).
+    dense_until: u64,
 }
 
 /// The production fold state (ring capacity [`MAX_R_FOLD`]).
@@ -406,7 +408,7 @@ impl<const CAPACITY: usize> FoldState<CAPACITY> {
             write: 0,
             capped_sum: 0,
             next_index: 0,
-            dense_through: None,
+            dense_until: 0,
         })
     }
 
@@ -481,7 +483,7 @@ impl<const CAPACITY: usize> FoldState<CAPACITY> {
         self.held -= 1;
         let capped = length_cap(length, self.thresholds);
         self.capped_sum -= capped;
-        let dense = matches!(self.dense_through, Some(last) if last >= paragraph);
+        let dense = paragraph < self.dense_until;
         let visible = density_cap(capped, dense, self.thresholds);
         (visible < length).then_some(FoldRange {
             paragraph,
@@ -550,14 +552,13 @@ pub fn fold_step<const CAPACITY: usize>(
     // At most `r_fold` capped counts, each at most `head_cap`, and
     // `r_fold · head_cap` fits a `u64` (`FoldThresholds::new`).
     state.capped_sum += length_cap(paragraph_chars, thresholds);
-    let index = state.next_index;
     state.next_index = state.next_index.saturating_add(1);
     if state.held < thresholds.r_fold {
         return None;
     }
-    // A full window: paragraphs `index − r_fold + 1 ..= index`.
+    // A full window: the `r_fold` paragraphs before `next_index`.
     if window_is_over_budget(state.window_capped_sum(), thresholds.v_batch) {
-        state.dense_through = Some(index);
+        state.dense_until = state.next_index;
     }
     state.emit_oldest()
 }
@@ -568,13 +569,13 @@ pub fn fold_step<const CAPACITY: usize>(
 /// which then forms the one window).
 #[must_use]
 pub fn fold_finish<const CAPACITY: usize>(mut state: FoldState<CAPACITY>) -> FoldFinish<CAPACITY> {
-    // A document shorter than one window is one window.
-    let shorter_than_a_window = state.next_index < state.thresholds.r_fold as u64;
-    if shorter_than_a_window
-        && state.held > 0
-        && window_is_over_budget(state.window_capped_sum(), state.thresholds.v_batch)
-    {
-        state.dense_through = Some(state.next_index - 1);
+    // The held paragraphs are the whole document when it is shorter than one
+    // window, which is then its one window. Otherwise they are the tail of the
+    // last full window, whose capped sum is at least theirs, so when they are
+    // over budget that window was too and they are already dense: no
+    // shortness test is needed.
+    if window_is_over_budget(state.window_capped_sum(), state.thresholds.v_batch) {
+        state.dense_until = state.next_index;
     }
     FoldFinish { state }
 }

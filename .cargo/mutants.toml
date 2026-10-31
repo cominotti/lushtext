@@ -350,6 +350,9 @@ exclude_re = [
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:552:19: replace > with >= in ParagraphLengthFold::push",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:584:26: replace > with >= in ParagraphLengthFold::push",
     "crates/lushtext-core/src/model/paragraph_boundary\\.rs:572:26: replace < with (>|==) in ParagraphLengthFold::push",
+    # Equivalent in `model/protected_fold.rs` (long-line-protected-view): a
+    # tie in `min_u64` returns the same value either way.
+    "crates/lushtext-core/src/model/protected_fold\\.rs:.*replace < with <= in min_u64",
     # The SIMD fast paths of `model/paragraph_boundary.rs` (document-scale-policy):
     # equivalent because they change only which search finds the same byte,
     # or let a loop run once more over an empty tail. In `next_paragraph_break`
