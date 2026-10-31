@@ -18,6 +18,7 @@
 //! | this file | narrative facade | the stage order below |
 //! | `policy` | pure policy | viewport steps, press and action dispositions, the session transition, navigation targets, inspector windows, find batches, notice text |
 //! | `seams` | seam value objects | `ProtectedViewTicket`, `ProtectedViewFacts`, `protected_view_is_current` |
+//! | `execution` | coordination | the editor's session, the edit-growth entry and the entry undo |
 //!
 //! The executor milestone (tasks 4.3–6.x) adds the coordination modules
 //! (`execution`, `inspector_execution`, `find_execution`), the evidence surface
@@ -40,5 +41,6 @@
 //! 4. **Leave.** A reload from disk re-derives; the entry undo ends an
 //!    edit-growth session.
 
+pub(crate) mod execution;
 pub(crate) mod policy;
 pub(crate) mod seams;

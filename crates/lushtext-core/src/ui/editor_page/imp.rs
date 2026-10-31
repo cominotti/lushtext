@@ -579,6 +579,8 @@ pub struct LushtextEditorPage {
     /// scale (session floor), the edit-time paragraph watch, and the
     /// reduced-features notice.
     pub document_scale: DocumentScaleState,
+    /// The Protected View session (`long-line-protected-view`).
+    pub(crate) protected_view: super::protected_view::execution::ProtectedViewRuntime,
     /// Memory-residency and eviction bookkeeping for this tab.
     pub residency: MemoryResidencyState,
     /// Background file-load freshness primitives (generation + cancel token).
@@ -655,6 +657,7 @@ impl Default for LushtextEditorPage {
             load_state: Cell::new(EditorLoadState::Untitled),
             latest_load_failed: Cell::new(false),
             document_scale: DocumentScaleState::default(),
+            protected_view: super::protected_view::execution::ProtectedViewRuntime::default(),
             residency: MemoryResidencyState::default(),
             load_tracking: LoadTrackingState::default(),
             applied_style_scheme_id: RefCell::new(None),
