@@ -462,3 +462,171 @@ fn test_a_restyle_paces_the_selected_dense_editor_first_and_the_other_when_shown
     });
     assert!(background.load_evidence().restyle.largest_reveal_chars <= V_SLICE);
 }
+
+/// Count every change of the view's `editable` property: a default-style
+/// property, whose change invalidates every line of the document (A37).
+fn count_editable_changes(editor: &LushtextEditorPage) -> std::rc::Rc<std::cell::Cell<u32>> {
+    let changes = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let counter = changes.clone();
+    editor
+        .source_view()
+        .connect_notify_local(Some("editable"), move |_, _| counter.set(counter.get() + 1));
+    changes
+}
+
+#[test]
+fn test_install_replacement_and_save_never_toggle_editable() {
+    // Restoring `editable` at a terminal re-laid out the whole document in
+    // 2000 px batches of up to 18 ms, after a first dispatch of 42-45 ms (an
+    // 11 MiB restore). The workflows hold the buffer-level edit lock instead.
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = dense(710, 160);
+    let path = write(&dir, "dense-lock.txt", &text);
+    window.open_document(&path);
+    let editor = active_editor(&window);
+    let changes = count_editable_changes(&editor);
+    wait_until(SETTLE_BUDGET, || {
+        editor.load_state() == EditorLoadState::Loaded
+    });
+    assert_eq!(changes.get(), 0, "the dense install toggled editable");
+
+    let outcomes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    editor.replace_buffer_for_test(
+        dense(700, 160),
+        1,
+        std::rc::Rc::new(std::cell::Cell::new(true)),
+        outcomes.clone(),
+    );
+    wait_until(SETTLE_BUDGET, || !outcomes.borrow().is_empty());
+    assert_eq!(changes.get(), 0, "the replacement toggled editable");
+
+    let saved = std::rc::Rc::new(std::cell::Cell::new(false));
+    let saved_flag = saved.clone();
+    editor.save_file_async(move |_| saved_flag.set(true));
+    wait_until(SETTLE_BUDGET, || saved.get());
+    assert_eq!(changes.get(), 0, "the save toggled editable");
+    assert!(editor.accepts_user_edits());
+}
+
+/// Every route an edit takes to the buffer, as GTK drives it: a key
+/// (`insert-at-cursor`, the keybinding signal typing reaches), a paste from
+/// the clipboard, an interactive insert (the route drag-and-drop and
+/// input-method commits take: `gtk_text_buffer_insert_interactive`), a
+/// deletion, and undo.
+fn attempt_every_edit_route(editor: &LushtextEditorPage) {
+    let view = editor.source_view();
+    view.emit_by_name::<()>("insert-at-cursor", &[&"KEY"]);
+    view.clipboard().set_text("PASTE");
+    view.emit_paste_clipboard();
+    let buffer = editor.buffer();
+    let _ = buffer.insert_interactive_at_cursor("DROP", true);
+    let (mut start, mut end) = buffer.bounds();
+    buffer.delete(&mut start, &mut end);
+    buffer.undo();
+    flush_after_delay(Duration::from_millis(100));
+}
+
+#[test]
+fn test_every_edit_route_is_refused_while_a_dense_install_owns_the_buffer() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = dense(710, 400);
+    let path = write(&dir, "dense-refuse.txt", &text);
+    window.open_document(&path);
+    let editor = active_editor(&window);
+    // Step the main loop one dispatch at a time until the first slice is in:
+    // a draining wait would run the whole paced install.
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + SETTLE_BUDGET;
+    while editor.buffer().char_count() == 0 {
+        assert!(std::time::Instant::now() < deadline, "no slice arrived");
+        context.iteration(true);
+    }
+    assert_eq!(editor.load_state(), EditorLoadState::Loading);
+    assert!(!editor.accepts_user_edits());
+    attempt_every_edit_route(&editor);
+    wait_until(SETTLE_BUDGET, || {
+        editor.load_state() == EditorLoadState::Loaded
+    });
+    assert_eq!(crate::common::editor_text(&editor), text);
+    assert!(!editor.is_modified());
+    assert!(!editor.draft_dirty());
+    assert!(editor.accepts_user_edits());
+}
+
+#[test]
+fn test_every_edit_route_is_refused_while_a_save_owns_the_buffer() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write(&dir, "save-refuse.txt", "start\n");
+    let editor = opened(&window, &path);
+    let typed = "x".repeat(2_500_001);
+    // One undoable user edit, so a refused undo has history it must keep.
+    let mut end = editor.buffer().end_iter();
+    let _ = editor.buffer().insert_interactive(&mut end, &typed, true);
+    assert!(editor.buffer().can_undo());
+    editor.reset_transient_save_admission_for_test();
+    editor.pause_next_save_snapshot_for_test();
+    let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+    let saved_result = saved.clone();
+    editor.save_file_async(move |result| saved_result.set(Some(result.is_ok())));
+    wait_until(SETTLE_BUDGET, || editor.save_evidence().capture_in_flight);
+    assert!(!editor.accepts_user_edits());
+    attempt_every_edit_route(&editor);
+    editor.resume_save_snapshot_for_test();
+    wait_until(SETTLE_BUDGET, || saved.get().is_some());
+    let expected = format!("start\n{typed}");
+    assert_eq!(saved.get(), Some(true));
+    assert_eq!(crate::common::editor_text(&editor), expected);
+    assert_eq!(
+        lushtext_core::services::filesystem::read::text(&path).expect("saved file"),
+        expected
+    );
+    assert!(!editor.is_modified());
+    assert!(editor.accepts_user_edits());
+    // The refused undo did not consume the history.
+    assert!(editor.buffer().can_undo());
+    editor.buffer().undo();
+    assert_eq!(crate::common::editor_text(&editor), "start\n");
+}
+
+#[test]
+fn test_a_replacement_leaves_no_modified_marks_collapsed_on_the_first_line() {
+    // Clearing the old text moved every modified-line mark onto line 0, and
+    // GtkSourceView sorts a line's marks in every frame's gutter and
+    // background paint: a dense restore of 2 MB took about 100 s in the debug
+    // widget lane, each frame spending hundreds of milliseconds in that sort.
+    let (_window, editor, _dir) = dense_window("dense-marks.txt");
+    let buffer = editor.buffer();
+    let mut end = buffer.end_iter();
+    buffer.insert(&mut end, &dense(500, 400));
+    flush_after_delay(Duration::from_millis(200));
+    let marks_before: usize = (0..buffer.line_count())
+        .map(|line| buffer.source_marks_at_line(line, None).len())
+        .sum();
+    assert!(
+        marks_before > 1,
+        "precondition: the edit recorded modified marks"
+    );
+
+    let outcomes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    editor.replace_buffer_for_test(
+        dense(700, 400),
+        1,
+        std::rc::Rc::new(std::cell::Cell::new(true)),
+        outcomes.clone(),
+    );
+    wait_until(SETTLE_BUDGET, || !outcomes.borrow().is_empty());
+    assert!(
+        buffer.source_marks_at_line(0, None).len() <= 1,
+        "{} marks collapsed on the first line",
+        buffer.source_marks_at_line(0, None).len()
+    );
+}

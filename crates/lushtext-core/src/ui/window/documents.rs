@@ -1243,7 +1243,15 @@ impl LushtextWindow {
                     .open_paths
                     .borrow_mut()
                     .insert(canonical.clone());
-                editor.set_file_path_with_canonical(&updated_for_apply, Some(canonical));
+                // Re-stating an identity the editor already holds must not
+                // advance it. A Save As adopts the canonical target its write
+                // resolved, so this refresh usually confirms it; advancing the
+                // path generation anyway made a save queued in between (a
+                // second Save As, or Ctrl+S) complete stale, its written bytes
+                // reported as not saved and the tab left modified.
+                if editor.canonical_file_path().as_deref() != Some(canonical.as_path()) {
+                    editor.set_file_path_with_canonical(&updated_for_apply, Some(canonical));
+                }
                 window.reconcile_open_paths_from_tabs();
                 window.refresh_sidebar_file_row_states();
                 window.refresh_open_popover_rows();

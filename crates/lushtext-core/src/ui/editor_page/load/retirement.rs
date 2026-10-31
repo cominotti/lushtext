@@ -153,7 +153,6 @@ pub(super) fn abort_installation(
     if let Some(source) = source {
         source.remove();
     }
-    execution::cancel_frame_wait(session);
     if let Some(mark) = mark {
         buffer.delete_mark(&mark);
     }

@@ -581,3 +581,4 @@ draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
 - Replace-preview rows and other large derived result sets should be generated
   from owned data on a worker, with a pending state and stale-result rejection
   keyed by generation counters.
+- **Never toggle `editable` (or any default-style property) to make a document read-only while a workflow owns it.** Hold the buffer-level edit lock (`LushtextEditorPage::lock_edits` / `unlock_edits`) and run the workflow's own edits inside `edit_lock::with_own_edit`. `GtkTextView::set_editable` invalidates every line on each change (ledger A37), so a toggle around a dense install, replacement or save re-lays out the whole document in over-budget batches.

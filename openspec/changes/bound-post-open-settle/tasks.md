@@ -154,4 +154,4 @@
 - 7.3: mechanism B (hide and reveal outward); A57 rejected the tag-carried style.
 - R25 premise: the context engine's incremental slice runs at `G_PRIORITY_LOW`, the sentinel's own priority (A54), so the settle also requires `SETTLE_QUIET_US` without highlight marks.
 - `V_SLICE` is 11,360 visible characters (editor-like A55 re-derivation, confirmed on the lane), not the bare-view 55,380.
-
+- 3.3 / R14 (maintainer decision 2026-10-31, option B): slices are queued from a `G_PRIORITY_DEFAULT_IDLE` idle below `GTK_TEXT_VIEW_PRIORITY_VALIDATE` instead of the frame clock's `after-paint`. Pacing by painted frames kept every dispatch within 11.4 ms but took 16.7 s (open) and 17.5 s (restore) for an 11 MiB dense document against main's 1.9 s and 2.4 s. A55 now also proves the idle pacing (each validation dispatch holds one insert's lines, outside any frame, with no A37 warning); the interim frame-or-100 ms helper (`frame_pacing.rs`) was removed with it.

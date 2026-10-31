@@ -586,6 +586,8 @@ pub struct LushtextEditorPage {
     pub language_attach: LanguageAttachState,
     /// The paced restyle of a dense document (`bound-post-open-settle`, D9).
     pub restyle: super::restyle::RestyleState,
+    /// The buffer-level edit lock (`edit_lock.rs`).
+    pub edit_lock: super::edit_lock::EditLockState,
     /// Memory-residency and eviction bookkeeping for this tab.
     pub residency: MemoryResidencyState,
     /// Background file-load freshness primitives (generation + cancel token).
@@ -664,6 +666,7 @@ impl Default for LushtextEditorPage {
             document_scale: DocumentScaleState::default(),
             language_attach: LanguageAttachState::default(),
             restyle: super::restyle::RestyleState::default(),
+            edit_lock: super::edit_lock::EditLockState::default(),
             residency: MemoryResidencyState::default(),
             load_tracking: LoadTrackingState::default(),
             applied_style_scheme_id: RefCell::new(None),
@@ -786,6 +789,8 @@ impl ObjectImpl for LushtextEditorPage {
             .downcast::<sourceview5::Buffer>()
             .expect("GtkSourceView buffer");
         buffer.set_highlight_syntax(true);
+        // First buffer handlers, so a refused edit reaches no other one.
+        self.obj().setup_edit_lock();
         crate::ui::responsiveness_probe::observe_editor(&self.source_view);
         self.obj().setup_settle_watch();
 

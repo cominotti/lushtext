@@ -25,10 +25,20 @@
 //! bisects the largest insert whose validation dispatch fits half of
 //! LushText's `B_SETTLE_US` in both wrap modes (`V_SLICE`).
 //!
+//! The same holds without frames: when each insert is made from a one-shot
+//! idle **below** `GTK_TEXT_VIEW_PRIORITY_VALIDATE` (`G_PRIORITY_DEFAULT_IDLE`)
+//! queued by the previous insert, the validation idle of that insert runs
+//! first, so each validation dispatch again holds one insert's lines, and the
+//! inserts follow each other at main-loop speed rather than one per frame.
+//! The probe also counts GTK's `Trying to snapshot GtkGizmo … without a
+//! current allocation` warning (A37) in both paced runs: the inserted lines
+//! are below the viewport, which a paint never validates.
+//!
 //! LushText's post-open settle (`bound-post-open-settle`, D6) slices a dense
 //! install at `V_SLICE` visible characters and queues each next slice from
-//! the frame clock's `after-paint` (review R14), so no validation dispatch
-//! holds more than one slice.
+//! such an idle (first from the frame clock's `after-paint`, review R14, until
+//! the idle-paced install of an 11 MiB document took 16.7 s against 1.9 s),
+//! so no validation dispatch holds more than one slice.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -238,17 +248,50 @@ pub struct PacingRun {
     pub widenings: Vec<(f64, bool)>,
     /// Inserts made.
     pub inserts: usize,
+    /// Wall time from the first insert to the last widening, ms.
+    pub elapsed_ms: u128,
+    /// GTK snapshot-allocation warnings (A37) logged during the run.
+    pub snapshot_warnings: usize,
 }
 
-/// Make the paced inserts back to back in one dispatch (`paced` false), or
-/// each from the `after-paint` of a frame that started after the previous
-/// insert (`paced` true), and record each dispatch that widened the view.
+/// How the pacing run spaces its inserts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pacing {
+    /// All inserts back to back in one dispatch.
+    BackToBack,
+    /// Each insert from the `after-paint` of a frame after the previous one.
+    AfterPaint,
+    /// Each insert from a one-shot `G_PRIORITY_DEFAULT_IDLE` idle (below
+    /// `GTK_TEXT_VIEW_PRIORITY_VALIDATE`) queued by the previous insert.
+    IdleBelowValidate,
+}
+
+/// Queue insert `index` and, after it, the next one, each from a one-shot
+/// idle below the validation idle's priority.
+fn queue_idle_insert(dense: DenseView, inserted: Rc<Cell<usize>>) {
+    glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+        let index = inserted.get();
+        if index < PACED_INSERTS {
+            dense.append(&paced_insert_text(index));
+            inserted.set(index + 1);
+            queue_idle_insert(dense.clone(), Rc::clone(&inserted));
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+/// Make the paced inserts as `pacing` says, and record each dispatch that
+/// widened the view.
 #[must_use]
-pub fn pacing_run(fixture: &ValidationFixture, paced: bool) -> PacingRun {
+pub fn pacing_run(fixture: &ValidationFixture, pacing: Pacing) -> PacingRun {
+    let capture = crate::probes::text::LogCapture::start();
+    let started = Instant::now();
     let dense = fixture.dense.clone();
     let inserted = Rc::new(Cell::new(0usize));
     let handler = Rc::new(RefCell::new(None));
-    if paced {
+    if pacing == Pacing::IdleBelowValidate {
+        queue_idle_insert(dense.clone(), Rc::clone(&inserted));
+    } else if pacing == Pacing::AfterPaint {
         // Every insert, the first included, is made from an `after-paint`:
         // a frame that was already due when an insert was made would run
         // before that insert's validation idle, and its `after-paint` would
@@ -290,6 +333,7 @@ pub fn pacing_run(fixture: &ValidationFixture, paced: bool) -> PacingRun {
                     run.widenings.push((now, dispatch.frames > 0));
                     width = now;
                     last_change = Instant::now();
+                    run.elapsed_ms = started.elapsed().as_millis();
                 }
             }
             None => std::thread::sleep(Duration::from_millis(1)),
@@ -302,6 +346,15 @@ pub fn pacing_run(fixture: &ValidationFixture, paced: bool) -> PacingRun {
         clock.disconnect(id);
     }
     run.inserts = inserted.get();
+    run.snapshot_warnings = capture
+        .messages()
+        .iter()
+        .filter(|message| {
+            message
+                .message
+                .contains(crate::probes::a37::SNAPSHOT_WARNING)
+        })
+        .count();
     run
 }
 
@@ -419,7 +472,7 @@ pub fn probe_a55() -> Observation {
         )?;
 
         let base = unwrapped.dense.uppers().0;
-        let batched = pacing_run(&unwrapped, false);
+        let batched = pacing_run(&unwrapped, Pacing::BackToBack);
         recorder.measure(
             "back_to_back_widenings",
             super::join_entries(batched.widenings.iter().map(|(w, frame)| {
@@ -429,7 +482,30 @@ pub fn probe_a55() -> Observation {
         let after_batch = unwrapped.dense.uppers().0;
         drop(unwrapped);
         let fresh = ValidationFixture::new(recorder, gtk4::WrapMode::None)?;
-        let paced = pacing_run(&fresh, true);
+        let paced = pacing_run(&fresh, Pacing::AfterPaint);
+        drop(fresh);
+        let idle_fixture = ValidationFixture::new(recorder, gtk4::WrapMode::None)?;
+        let idle = pacing_run(&idle_fixture, Pacing::IdleBelowValidate);
+        recorder.measure(
+            "idle_paced_widenings",
+            super::join_entries(idle.widenings.iter().map(|(w, frame)| {
+                format!("{}{}", w - base, if *frame { " (in a frame)" } else { "" })
+            })),
+        );
+        recorder.measure(
+            "pacing_elapsed_ms",
+            format!(
+                "after-paint {} ms, idle below validate {} ms, for {PACED_INSERTS} inserts",
+                paced.elapsed_ms, idle.elapsed_ms
+            ),
+        );
+        recorder.measure(
+            "snapshot_warnings",
+            format!(
+                "after-paint {}, idle below validate {}",
+                paced.snapshot_warnings, idle.snapshot_warnings
+            ),
+        );
         recorder.measure(
             "paced_widenings",
             super::join_entries(paced.widenings.iter().map(|(w, frame)| {
@@ -439,7 +515,8 @@ pub fn probe_a55() -> Observation {
         recorder.control(
             batched.inserts == PACED_INSERTS
                 && paced.inserts == PACED_INSERTS
-                && (fresh.dense.uppers().0 - after_batch).abs() < 1.0,
+                && idle.inserts == PACED_INSERTS
+                && (idle_fixture.dense.uppers().0 - after_batch).abs() < 1.0,
             "control: both runs made every insert and reached the same width",
         )?;
         recorder.axiom(
@@ -450,6 +527,17 @@ pub fn probe_a55() -> Observation {
             paced.widenings.len() == PACED_INSERTS,
             "when each insert waits for the after-paint of the frame after the previous one, \
              each validation dispatch holds one insert's lines",
+        )?;
+        recorder.axiom(
+            idle.widenings.len() == PACED_INSERTS && idle.widenings.iter().all(|(_, frame)| !frame),
+            "when each insert waits for an idle below GTK_TEXT_VIEW_PRIORITY_VALIDATE queued by \
+             the previous one, each validation dispatch, outside any frame, holds one insert's \
+             lines",
+        )?;
+        recorder.axiom(
+            paced.snapshot_warnings == 0 && idle.snapshot_warnings == 0,
+            "neither pacing logs the A37 snapshot-allocation warning for inserts below the \
+             viewport",
         )
     })
 }

@@ -297,7 +297,8 @@ pub mod a54 {
 pub mod a55 {
     pub use crate::probes::a55::{
         CURVE_LINES, DERIVATION_CAP_LINES, DERIVATION_REPETITIONS, EDITOR_CLASS, EDITOR_FONT_PT,
-        EDITOR_LINE_HEIGHT, PACED_INSERTS, ValidationFixture, ViewStyle, bisect_lines, pacing_run,
+        EDITOR_LINE_HEIGHT, PACED_INSERTS, Pacing, ValidationFixture, ViewStyle, bisect_lines,
+        pacing_run,
     };
 }
 

@@ -52,7 +52,6 @@ use super::{SaveCallback, evidence};
 /// so neither has to reach into the other's residual state.
 #[derive(Clone, Copy)]
 pub(super) struct SaveViewInteractivity {
-    editable: bool,
     cursor_visible: bool,
 }
 
@@ -60,16 +59,18 @@ impl SaveViewInteractivity {
     fn suspend(editor: &LushtextEditorPage) -> Self {
         let view = editor.source_view();
         let captured = Self {
-            editable: view.is_editable(),
             cursor_visible: view.is_cursor_visible(),
         };
-        view.set_editable(false);
+        // The buffer-level lock, not `set_editable(false)`: restoring
+        // `editable` would invalidate every line of the saved document
+        // (edit_lock.rs).
+        editor.lock_edits();
         view.set_cursor_visible(false);
         captured
     }
 
     fn restore(self, editor: &LushtextEditorPage) {
-        editor.source_view().set_editable(self.editable);
+        editor.unlock_edits();
         editor.source_view().set_cursor_visible(self.cursor_visible);
     }
 }

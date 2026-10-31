@@ -23,7 +23,6 @@ use crate::model::buffer_replacement::{
 };
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::ui::editor_page::LushtextEditorPage;
-use crate::ui::editor_page::frame_pacing::FrameWait;
 
 use super::evidence;
 use super::policy::{
@@ -308,7 +307,6 @@ impl BufferReplacementRequest {
 /// The editor projections one replacement suspends, captured for exact restore.
 #[derive(Clone, Copy)]
 struct ReplacementGuard {
-    editable: bool,
     cursor_visible: bool,
     highlight_syntax: bool,
     minimap_tracking_suspended: bool,
@@ -336,8 +334,6 @@ pub(crate) struct BufferReplacementSession {
     profile: Option<DocumentProfile>,
     /// The two slice budgets of this body.
     budget: SliceBudget,
-    /// A dense body's wait for the frame that lays out its previous slice.
-    frame_wait: Option<FrameWait>,
 }
 
 /// Content-free terminal evidence retained by one editor.
@@ -470,7 +466,6 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         metrics: BufferReplacementMetrics::for_one_retained_body(),
         profile: request.profile,
         budget,
-        frame_wait: None,
     }));
     editor
         .imp()
@@ -489,7 +484,6 @@ fn begin_guard(editor: &LushtextEditorPage) -> ReplacementGuard {
     let view = editor.source_view();
     let buffer = editor.buffer();
     let guard = ReplacementGuard {
-        editable: view.is_editable(),
         cursor_visible: view.is_cursor_visible(),
         highlight_syntax: buffer.is_highlight_syntax(),
         minimap_tracking_suspended: imp.minimap.tracking_suspended.replace(true),
@@ -502,7 +496,15 @@ fn begin_guard(editor: &LushtextEditorPage) -> ReplacementGuard {
     if editor.search_bar().search_context().is_some() {
         editor.search_bar().detach();
     }
-    view.set_editable(false);
+    // The old text's modified-line marks would collapse onto the first line
+    // as it is cleared, and GtkSourceView sorts every mark of a line in each
+    // frame's gutter and background paint: up to 2,000 marks made each frame
+    // of a dense replacement cost hundreds of milliseconds. The new text gets
+    // its own marks from its workflow's terminal.
+    editor.clear_modified_line_marks();
+    // The buffer-level lock, not `set_editable(false)`: restoring `editable`
+    // would invalidate every line of the replaced document (edit_lock.rs).
+    editor.lock_edits();
     view.set_cursor_visible(false);
     buffer.set_highlight_syntax(false);
     editor.refresh_accessibility_metadata();
@@ -516,7 +518,7 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
         .set(guard.projection_suspended);
     editor.set_local_history_capture_suppressed(guard.history_capture_suppressed);
     editor.set_minimap_tracking_suspended(guard.minimap_tracking_suspended);
-    editor.source_view().set_editable(guard.editable);
+    editor.unlock_edits();
     editor
         .source_view()
         .set_cursor_visible(guard.cursor_visible);
@@ -617,7 +619,7 @@ fn delete_one_slice(buffer: &sourceview5::Buffer, count: i32) -> (bool, u64) {
         let _ = end.forward_line();
     }
     let deleted = u64::try_from(end.offset()).unwrap_or(0);
-    buffer.delete(&mut start, &mut end);
+    crate::ui::editor_page::edit_lock::with_own_edit(|| buffer.delete(&mut start, &mut end));
     (buffer.char_count() == 0, deleted)
 }
 
@@ -670,7 +672,9 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     let end = next_slice_boundary(&body, start, budget);
     let body_len = body.len();
     let mut iter = buffer.end_iter();
-    buffer.insert(&mut iter, &body[start..end]);
+    crate::ui::editor_page::edit_lock::with_own_edit(|| {
+        buffer.insert(&mut iter, &body[start..end]);
+    });
 
     {
         let mut state = session.borrow_mut();
@@ -700,38 +704,20 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
 }
 
-/// Schedule a dense body's next insertion turn after the frame that lays out
-/// the previous one, so each validation holds one slice's lines
-/// (`bound-post-open-settle`, review R14, ledger A55). An unmapped view lays
-/// nothing out, so it takes the ordinary timeout; a window that paints no
-/// frame falls back after `FRAME_WAIT_FALLBACK`.
+/// Schedule a dense body's next insertion turn from an idle below
+/// `GTK_TEXT_VIEW_PRIORITY_VALIDATE`, so GtkTextView's validation idle lays
+/// out the previous slice first and each validation holds one slice's lines
+/// (`bound-post-open-settle`, review R14, ledger A55).
 fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let view = session
-        .borrow()
-        .editor
-        .upgrade()
-        .map(|editor| editor.source_view().clone());
-    let weak = Rc::downgrade(session);
-    let wait = view.and_then(|view| {
-        FrameWait::after_next_frame(view.upcast_ref(), move || {
-            if let Some(session) = weak.upgrade() {
-                session.borrow_mut().frame_wait = None;
-                schedule_turn(&session);
-            }
-        })
-    });
-    match wait {
-        Some(wait) => session.borrow_mut().frame_wait = Some(wait),
-        None => schedule_turn(session),
-    }
-}
-
-/// Drop a dense body's pending frame wait, if any.
-fn cancel_frame_wait(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let wait = session.borrow_mut().frame_wait.take();
-    if let Some(wait) = wait {
-        wait.cancel();
-    }
+    let session_for_source = Rc::clone(session);
+    let source_id = glib::idle_add_local_full(
+        crate::ui::editor_page::load::PACED_SLICE_PRIORITY,
+        move || {
+            run_turn(&session_for_source);
+            glib::ControlFlow::Break
+        },
+    );
+    session.borrow_mut().source_id = Some(source_id);
 }
 
 fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
@@ -756,7 +742,7 @@ fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
     let old_chars = buffer.char_count();
     session.borrow_mut().mutation_started = true;
-    buffer.set_text(&body);
+    crate::ui::editor_page::edit_lock::with_own_edit(|| buffer.set_text(&body));
     let mut state = session.borrow_mut();
     if state.terminal || state.phase != ReplacementPhase::Clearing {
         drop(state);
@@ -795,7 +781,6 @@ fn cancel_session(
     if let Some(source) = source {
         source.remove();
     }
-    cancel_frame_wait(session);
     match cancel_disposition(disposing, mutation_started) {
         CancelDisposition::FinishImmediately => finish_session(session, Some(reason)),
         CancelDisposition::ClearPartialBuffer => {
@@ -855,7 +840,6 @@ fn finish_session(
     if let Some(source) = source {
         source.remove();
     }
-    cancel_frame_wait(session);
     buffer.end_irreversible_action();
     let outcome = match cancellation {
         None => {

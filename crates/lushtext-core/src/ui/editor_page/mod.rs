@@ -11,8 +11,8 @@ mod bookmarks;
 mod buffer_replacement;
 mod document_identity;
 pub mod document_scale;
+pub(crate) mod edit_lock;
 mod focus_mode;
-mod frame_pacing;
 mod frame_validation;
 // Private implementation module. GTK's GObject bindings split custom widgets
 // into an `imp` struct for instance data/lifecycle hooks and this public wrapper

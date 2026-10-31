@@ -885,11 +885,12 @@ const CATALOGUE: &[Axiom] = &[
                     GTK_TEXT_VIEW_PRIORITY_VALIDATE, whose cost grows with their visible \
                     characters in either wrap mode; inserts made back to back are validated \
                     together, and when each insert waits for the after-paint of the frame after \
-                    the previous one, each validation dispatch holds one insert's lines",
+                    the previous one, or for an idle below the validation idle queued by it, each \
+                    validation dispatch holds one insert's lines",
         dependent_designs: &[
             "bound-post-open-settle (C6) D6: a dense install is sliced at V_SLICE visible \
-             characters and paced from after-paint, so no validation dispatch holds more than one \
-             slice",
+             characters and paced from an idle below the validation idle, so no validation \
+             dispatch holds more than one slice",
         ],
         slow: false,
         probe: Some(probes::probe_a55),

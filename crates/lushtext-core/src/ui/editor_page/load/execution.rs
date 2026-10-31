@@ -47,7 +47,6 @@ use crate::model::document_scale::DocumentScale;
 use crate::model::encoding::FileHealthFindingKind;
 use crate::services::editor_io::{self, EditorLoadError};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::ui::editor_page::frame_pacing::FrameWait;
 use crate::ui::editor_page::imp::EditorCallback;
 use crate::ui::editor_page::{
     EditorLoadState, InlineAlertLifetime, LushtextEditorPage, PendingWarningAction,
@@ -67,7 +66,6 @@ use super::{evidence, retirement};
 /// neither has to reach into the other's state.
 #[derive(Clone, Copy)]
 pub(super) struct ViewInteractivityState {
-    editable: bool,
     cursor_visible: bool,
 }
 
@@ -92,8 +90,6 @@ pub(crate) struct ChunkedLoadInstall {
     /// The two slice budgets; a dense document also bounds visible
     /// characters (`bound-post-open-settle`, D6.1).
     pub(super) budget: SliceBudget,
-    /// A dense install's wait for the frame that lays out its previous slice.
-    pub(super) frame_wait: Option<FrameWait>,
     pub(super) permit: Option<TransientLoadPermit>,
     pub(super) restore: LoadInstallationState,
     pub(super) phase: LoadInstallPhase,
@@ -113,39 +109,25 @@ impl ChunkedLoadInstall {
     }
 }
 
-/// Schedule the next slice of a paced (dense) installation after the frame
-/// that lays out the previous one (review R14): GtkTextView validates the
-/// slice's new lines in that frame's layout (A37), so each validation holds
-/// one slice's lines (ledger A55). An unmapped view lays nothing out, so it
-/// takes the ordinary timeout; a window that paints no frame falls back after
-/// `FRAME_WAIT_FALLBACK` (`ui/editor_page/frame_pacing.rs`).
-fn schedule_paced_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
-    let view = session
-        .borrow()
-        .editor
-        .upgrade()
-        .map(|editor| editor.source_view().clone());
-    let weak = Rc::downgrade(session);
-    let wait = view.and_then(|view| {
-        FrameWait::after_next_frame(view.upcast_ref(), move || {
-            if let Some(session) = weak.upgrade() {
-                session.borrow_mut().frame_wait = None;
-                schedule_install_slice(&session);
-            }
-        })
-    });
-    match wait {
-        Some(wait) => session.borrow_mut().frame_wait = Some(wait),
-        None => schedule_install_slice(session),
-    }
-}
+/// The priority a paced slice waits at: `G_PRIORITY_DEFAULT_IDLE` (200), below
+/// GtkTextView's incremental validation idle (`GTK_TEXT_VIEW_PRIORITY_VALIDATE`,
+/// 125) and above the settle sentinel (`G_PRIORITY_LOW`). Shared with the paced
+/// whole-buffer replacement.
+pub(crate) const PACED_SLICE_PRIORITY: glib::Priority = glib::Priority::DEFAULT_IDLE;
 
-/// Drop a paced installation's pending frame wait, if any.
-pub(super) fn cancel_frame_wait(session: &Rc<RefCell<ChunkedLoadInstall>>) {
-    let wait = session.borrow_mut().frame_wait.take();
-    if let Some(wait) = wait {
-        wait.cancel();
-    }
+/// Schedule the next slice of a paced (dense) installation from an idle
+/// below `GTK_TEXT_VIEW_PRIORITY_VALIDATE` (review R14, ledger A55):
+/// GtkTextView's incremental validation idle lays out the previous slice's
+/// new lines first, so each validation dispatch holds one slice's lines, and
+/// the slices follow each other at main-loop speed (pacing by painted frames
+/// took 16.7 s for an 11 MiB document against main's 1.9 s).
+fn schedule_paced_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
+    let session_for_source = Rc::clone(session);
+    let source_id = glib::idle_add_local_full(PACED_SLICE_PRIORITY, move || {
+        run_install_slice(&session_for_source);
+        glib::ControlFlow::Break
+    });
+    session.borrow_mut().source_id = Some(source_id);
 }
 
 /// Schedule the next bounded slice of one installation.
@@ -221,7 +203,7 @@ pub(super) fn delete_buffer_slice(buffer: &sourceview5::Buffer) -> bool {
     if policy::clear_slice_extends_to_paragraph_end(end.is_end(), end.starts_line()) {
         let _ = end.forward_line();
     }
-    buffer.delete(&mut start, &mut end);
+    crate::ui::editor_page::edit_lock::with_own_edit(|| buffer.delete(&mut start, &mut end));
     buffer.char_count() == 0
 }
 
@@ -278,7 +260,9 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     // a reentrant cancellation can move it to bounded cleanup without panicking.
     {
         let _span = PostOpenSpan::begin("post_open_install_slice");
-        buffer.insert(&mut iter, &loaded.content[start..end]);
+        crate::ui::editor_page::edit_lock::with_own_edit(|| {
+            buffer.insert(&mut iter, &loaded.content[start..end]);
+        });
     }
 
     let reached_end = {
@@ -325,7 +309,6 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     if let Some(source) = source {
         source.remove();
     }
-    cancel_frame_wait(session);
     if let Some(editor) = editor.as_ref() {
         editor.imp().load.finalizing.set(true);
         editor.imp().load.dispose_during_finalization.set(false);
@@ -545,7 +528,7 @@ pub(super) fn install_loaded_direct(
     buffer.begin_irreversible_action();
     {
         let _span = PostOpenSpan::begin("post_open_install_direct");
-        buffer.set_text(&loaded.content);
+        crate::ui::editor_page::edit_lock::with_own_edit(|| buffer.set_text(&loaded.content));
     }
     if editor.imp().load.dispose_during_finalization.get() {
         buffer.end_irreversible_action();
@@ -577,7 +560,6 @@ fn start_chunked_install(
         generation,
         source_id: None,
         budget: SliceBudget::for_profile(loaded_summary),
-        frame_wait: None,
         permit,
         restore,
         phase: LoadInstallPhase::ClearingExisting,
@@ -630,7 +612,6 @@ fn begin_load_installation(
     let view = editor.source_view();
     let restore = LoadInstallationState {
         view: ViewInteractivityState {
-            editable: view.is_editable(),
             cursor_visible: view.is_cursor_visible(),
         },
         minimap_tracking_suspended: imp.minimap.tracking_suspended.replace(true),
@@ -643,7 +624,15 @@ fn begin_load_installation(
     if editor.search_bar().search_context().is_some() {
         editor.search_bar().detach();
     }
-    view.set_editable(false);
+    // The old text's modified-line marks would collapse onto the first line
+    // as it is cleared, and GtkSourceView sorts every mark of a line in each
+    // frame's gutter and background paint: up to 2,000 marks made each frame
+    // of a dense replacement cost hundreds of milliseconds. The new text gets
+    // its own marks from its workflow's terminal.
+    editor.clear_modified_line_marks();
+    // The buffer-level lock, not `set_editable(false)`: restoring `editable`
+    // would invalidate every line of the installed document (edit_lock.rs).
+    editor.lock_edits();
     view.set_cursor_visible(false);
     if highlight == policy::HighlightAttachPlan::OffUntilPublish {
         editor.buffer().set_highlight_syntax(false);
@@ -770,7 +759,7 @@ pub(super) fn restore_load_installation_state(
         .set(restore.projection_suspended);
     editor.set_local_history_capture_suppressed(restore.history_capture_suppressed);
     editor.set_minimap_tracking_suspended(restore.minimap_tracking_suspended);
-    editor.source_view().set_editable(restore.view.editable);
+    editor.unlock_edits();
     editor
         .source_view()
         .set_cursor_visible(restore.view.cursor_visible);

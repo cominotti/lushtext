@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `wait_until` is `#[track_caller]`: its timeout panic now names the
+  waiting call site instead of the harness's own line, so a test with several
+  waits reports which one timed out.
 - The supervising parent now owns every child's temporary files. It creates
   one `<prefix><pid>-<random>` root in the system temp dir per run, gives each
   child attempt its own empty subdirectory as `TMPDIR`, removes that
