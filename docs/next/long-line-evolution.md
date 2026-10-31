@@ -20,7 +20,7 @@ input to presented frame, measured on the maintainer's desktop.
 | C2 | `long-line-protected-view` | The only way to make interaction inside giant paragraphs instant with stock GtkTextView (log attrs, IM and AT read the whole paragraph). | `L_protect` is not derivable from the frame half (see §3); C2 uses the stall basis (`L_protect_stall` 500) |
 | C4 | `bound-window-construction-dispatch` | **Implemented (2026-10-15, PR #58 on `main`):** every GSettings write left window construction and interaction dispatches (construction 135–151 → 22–24 ms on a fresh keyfile profile, 77–91 → 22–24 ms steady). Not met: B_settle per construction dispatch (the 22–26 ms residual) and the keyfile flush (12.8–17.9 ms); see C4b and the dconf question in `long-line-documents.md` ("C4"). | — |
 | C3 | `sliced-protected-install` | Conditional: adopt only if its own gate (the install case against C2) is over `B_settle`. C0 did not run the install group. | Its own first task |
-| C5 | `explore-editing-long-paragraphs` | Optional evaluation: editing giant paragraphs needs segmentation or a custom widget. Only after C2, and only if the maintainer wants it. | — |
+| C5 | `explore-editing-long-paragraphs` | Rescoped 2026-10-30 (hybrid policy): per-keystroke cost in long editable paragraphs — retired-minimap fix, long-paragraph wrap gate, keystroke lane group, recorded toolkit floor. Editing above `L_protect` deferred. | Proposal revised; awaiting the maintainer's wrap-gate decision |
 
 ## 2. New candidates found by C0 (not yet proposed)
 

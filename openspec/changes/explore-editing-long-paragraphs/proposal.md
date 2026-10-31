@@ -1,115 +1,153 @@
 ## Why
 
-The long-line stream (`docs/next/long-line-responsiveness.md`, C0–C5) makes
-documents with giant paragraphs instantly responsive by opening them in
-**Protected View** (C2): the buffer is the decoded file and is never modified,
-giant paragraphs are folded for display only, there is no caret, and the
-content of a giant line is read through the bounded Line Inspector. The
-maintainer accepted that trade-off on 2026-10-11 ("Protected View now,
-editing those paragraphs deferred to an optional C5").
+The maintainer chose a **hybrid policy** for long paragraphs (2026-10-30):
+documents whose paragraphs reach about `L_protect` ≈ 50,000 characters stay
+editable, and every keystroke that misses B_interact (8 ms) in them is
+recorded as an explicit **toolkit-floor exception**. C2
+(`long-line-protected-view`) measured that miss (`L_EDIT_STALL` sweep, wrap on,
+median per key): 5.2 ms at 5k, 6.8 ms at 10k, 9.6 ms at 20k, 20 ms at 50k and
+43 ms at 100k characters, about half with wrap off below 10k, and 1.5–2.5 ms
+more with a surrounding-text input method. C5's job is to bring that cost back
+within budget, or to say on evidence how far it can get.
 
-Protected View is view-only because stock GtkTextView pays whole-paragraph
-costs on every caret and edit path, and folding cannot remove them:
+C5 was first drafted as an evaluation of editing paragraphs **above**
+`L_protect` (segmentation with an offset map, a custom widget, windowed
+edit-through). Under the hybrid policy that question is deferred (see
+"Deferred" below); this revision turns C5 into an implementable change for the
+editable range, based on a profile of where a keystroke's time goes.
 
-- `compute_log_attrs` slices the whole logical paragraph, hidden text
-  included, and its cache is cleared by any character change
-  (gtktextbuffer.c:4469-4503, 4532-4537). It measured 92–99 ms per call on a
-  1,894,586-character line.
-- Visible-cursor iteration across hidden runs is linear in the hidden length;
-  IM retrieve-surrounding slices the caret's paragraph; AT-SPI offsets and
-  TextChanged payloads cover the paragraph; typing measured 300–440 ms per
-  character unfolded.
+**Where a keystroke goes** (50,000-character prose paragraph, release
+measurement build, headless reference lane, Pango shim timing every Pango call
+GTK makes, symbolized against GTK 4.22.5 debuginfo; design "Evidence"):
 
-The recorded budgets are stricter than the draft: B_interact = 8 ms per
-interaction dispatch, input-to-presented-frame ≤ 2 frames, B_settle = 16 ms
-per settle dispatch, as policy constants whose final values C0 records. An
-editing mode that misses them is not acceptable, and data integrity is
-absolute: no approach may change a byte the user did not edit.
+- **One whole-paragraph Pango layout, 16.5 ms of 16.3–17.4 ms** (wrap on;
+  7.6 ms with wrap off). GTK builds it inside the key press, in
+  `gtk_text_view_commit_text` → `gtk_text_view_set_virtual_cursor_pos` →
+  `gtk_text_layout_get_cursor_locations` → `gtk_text_layout_create_display`.
+  The display is cached and reused by validation, the scroll-to-cursor and the
+  snapshot: the frame's layout phase then costs 0.1–0.3 ms and its paint
+  0–2 ms. There is exactly one layout per key in the editor view, so no
+  ordering trick removes it.
+- **A second, unwrapped layout of the same paragraph, 7.5 ms, in its own
+  dispatch, on every keystroke at every paragraph length.** It belongs to a
+  **retired `GtkSourceMap` that is still alive and still bound to the document
+  buffer** (no parent, one surviving reference, `incremental_validate_callback`
+  queued by the buffer's own insertion). The minimap retirement exists to stop
+  exactly this ("a hidden GtkSourceMap that remains bound still performs text
+  layout"), and the `editor-minimap` spec requires that a retired map "never
+  lays out the new paragraph". Every editor whose minimap is not visible —
+  the default — pays it. This is a pre-existing defect.
+- Everything LushText does per keystroke (draft dirty, document-scale watch,
+  memory estimate, A37 allocation queue, status projections) is under 1 ms.
+  Buffer log attributes are not computed while typing. The AT-SPI bridge with
+  a listener changed nothing measurable at 20k or 50k.
 
-So whether giant paragraphs can become editable is an open engineering
-question with three plausible answers, each touching every place that stores
-or exchanges a document coordinate (save, drafts, bookmarks, local history,
-session restore, search). This change answers it with measurement and ends in
-a recorded maintainer decision. **It does not ship editing.**
+**What the measured candidates do** (median of the per-key worst stall /
+summed stall per key, 50k prose, 90 keystrokes per cell; design D2):
+
+| Candidate | Wrap on | Wrap off | Verdict |
+|---|---|---|---|
+| Baseline | 16.3 / 22.0 ms | 7.4 / 21.3 ms | — |
+| Release the retired minimap's buffer | 15.9 / 15.9 ms | 7.4 / 19.2 ms | adopt (defect fix; at 100k: summed 56 → 41 ms, stalls > 8 ms per key 2 → 1) |
+| Word wrap off | 7.4 ms | — | adopt as a scale gate above `L_wrap_edit` |
+| `WrapMode::Char` | Pango 34.9 ms vs 16.1 | — | reject (2× worse) |
+| `WrapMode::WordChar` | Pango 15.9 ms | — | reject (no gain) |
+| Font features `calt`/`liga`/`kern` off | 16.2 ms | 7.5 ms | reject (no gain) |
+| Pango fallback off, hyphens off | Pango 15.9 / 16.2 ms | — | reject (no gain) |
+| Current-line highlight off | 17.6 ms | 8.2 ms | reject (no gain) |
+| Drop the A37 allocation queue | 17.4 ms | 8.1 ms | reject (no gain; the lane fails its A37 fixed-defect check) |
+| Pre-building the full display before validation | — | — | moot: the display is already built once and reused |
+| Batching keystrokes in a frame | — | — | moot: GTK already coalesces queued keys; the layout is inside GTK's commit handler |
+| Deferring accessibility events | — | — | moot: no measurable AT cost |
+| Display-only soft segmentation (invisible tags, anchors) | — | — | defer: tags do not split a paragraph's PangoLayout; a moving "edit window" fold is the only route to wrapped 50k ≤ 8 ms and is not prototyped |
+
+**How far it gets.** With wrap on, the floor is one wrapped layout of the
+paragraph: 16.1 ms at 50k in an isolated Pango benchmark. No measured
+technique lowers it, so wrapped paragraphs meet B_interact up to about 20,000
+characters and no further. The retired-map fix plus word wrap off for long
+paragraphs reaches **7.4 ms median, 8.2 ms p90 at 50,000 characters** with
+plain input, i.e. at the budget.
+
+**A surrounding-text input method is the larger floor.** With the lane's probe
+IM (it asks for the surrounding text wherever an IBus engine with that
+capability does), GTK's `retrieve-surrounding` handler moves iterators three
+words back and forward, which computes the **whole paragraph's log
+attributes** (A26: 2.7 ms at 50k) about four times per keystroke, then slices
+the whole paragraph. Measured with the map fix: wrap on 2.7 ms at 5k, 5.3 ms at
+10k, 11.6 ms at 20k, 32 ms at 50k (worst-stall medians, heavy host load during
+these runs). LushText cannot reach that handler (the text view's IM context is
+private), so above about 10,000 characters it stays in the toolkit-floor
+exception with an upstream report.
 
 ## What Changes
 
-- Write an evaluation record, `docs/next/long-paragraph-editing.md`, that
-  compares three candidates against one set of criteria:
-  - **A. In-buffer segmentation with an offset map.** Giant paragraphs are
-    split in the GtkSourceBuffer by synthetic, tagged paragraph breaks so that
-    every logical paragraph GTK sees stays under the protected threshold. A
-    pure offset map translates buffer coordinates to file coordinates for
-    save, drafts, bookmarks, local history, session restore, workspace and
-    in-tab search, go-to-line, clipboard, undo, and automation.
-  - **B. A custom virtualized text widget** for protected documents only: a
-    LushText-owned text model (rope or piece table), viewport-only Pango
-    layout, its own caret, selection, IM (bounded surrounding text) and
-    `GtkAccessibleText` implementation, with GtkSourceView kept for every
-    other document.
-  - **C. Windowed edit-through** (found while grounding this change): the C2
-    Line Inspector becomes editable over a copied, grapheme-safe window, and a
-    commit splices the window back into the unchanged-identity main buffer as
-    one bounded delete-and-insert, while the main view stays caret-free. The
-    buffer stays equal to the file text, so no offset map exists.
-- Inventory every consumer of buffer coordinates or buffer text, with the
-  obligation each candidate imposes on it.
-- Run a **measured spike** for each candidate that survives the paper
-  analysis, in a disposable package outside every production crate, build,
-  lint and CI gate, driven by C0's synthetic fixture generator, in-process
-  watchdog and frame-clock timing on the reference lane (private headless
-  Mutter, `GSK_RENDERER=cairo`, ≤ 16 cores), with the AT bridge and a
-  surrounding-text IM, and calibrated against C0 by re-measuring one stock
-  case C0 already recorded.
-- Prove the data-integrity core of each surviving candidate on paper and in
-  the spike: byte-identity round trip with no edit, edits change exactly the
-  edited file range, and seeded defects (a synthetic break leaking into saved
-  bytes, an off-by-one splice) are rejected by property tests and, where the
-  core is pure integer arithmetic, a Kani harness.
-- Record any toolkit behaviour the decision relies on as a GTK axiom ledger
-  entry with a `gtk-lush-axioms` probe and sample, unless C0 already did.
-- End with a **Decision** section recorded by the maintainer: adopt one
-  candidate (carried by a separate follow-up change), keep Protected View
-  view-only, or defer with named re-open triggers. Update the long-line
-  programme record accordingly.
+- **Fix the retired minimap (pre-existing defect).** A retired
+  `GtkSourceMap` releases the document buffer and is finalized; find and
+  remove the reference that keeps it alive. No retired map lays out a
+  paragraph again. Failing-first widget test and a GTK axiom for the toolkit
+  behaviour the fix relies on.
+- **Gate word wrap by paragraph length (`L_wrap_edit`).** `DocumentScale`
+  gains a presentation feature, `wrap_allowed`, off when the longest paragraph
+  exceeds `L_wrap_edit`. The editor then shows the document unwrapped while
+  the user's word-wrap preference is unchanged, with the same monotone
+  session join, synchronous edit-time downgrade, reduced-features notice,
+  document-properties row and accessible description as the other gates.
+  `L_wrap_edit` is measured by the lane (the wrapped-keystroke boundary,
+  expected near 20,000 characters).
+- **Keystroke group in the responsiveness lane.** C2's measurement-only
+  keystroke sweep becomes a maintained lane group (fixtures with start/middle/
+  end markers, `place-*`/`key-*`/`verify` phases), so `L_wrap_edit` and every
+  later claim are derived on the reference lane.
+- **Record the floor.** The long-line programme record states the per-key
+  floor (one paragraph layout in GTK's commit handler), what was tried, and
+  the remaining toolkit-floor exception: wrapped paragraphs between
+  `L_wrap_edit` and `L_protect` when the gate is declined, and typing with a
+  surrounding-text input method above about 10,000 characters.
+- **Upstream reports** (GTK): the commit handler lays out the whole paragraph
+  synchronously to place the virtual cursor, and GtkTextLayout has no partial
+  paragraph layout; `retrieve-surrounding` computes whole-paragraph log
+  attributes several times per keystroke and returns the whole paragraph. A
+  GTK release that bounds either re-opens this change's floor.
+
+## Deferred
+
+Editing paragraphs **above** `L_protect` (the three candidates this change
+first proposed: in-buffer segmentation with an offset map, a custom
+virtualized widget, windowed edit-through via the Line Inspector) is deferred
+to a later change, with re-open triggers in the programme record: a
+maintainer request to edit Protected View documents, or a toolkit change that
+bounds paragraph layout. The analysis stays in this change's history.
 
 ## Capabilities
 
 ### New Capabilities
-- `long-paragraph-editing-evaluation`: how LushText decides whether, and how,
-  paragraphs above the Protected View threshold may become editable — the
-  gate that keeps them view-only until a recorded decision, the candidate and
-  consumer coverage the evaluation must have, the measured spike against the
-  recorded budgets, the data-integrity obligations, the spike's isolation, and
-  the decision record.
+- `long-paragraph-editing`: the per-keystroke cost of typing in long editable
+  paragraphs — the budget it is measured against, the lane group that
+  measures it, the long-paragraph word-wrap gate, and the recorded
+  toolkit-floor exception.
 
 ### Modified Capabilities
-<!-- None. Protected View's capability (`long-line-document-presentation`)
-     is introduced by C1 (`document-scale-policy`) and extended by C2
-     (`long-line-protected-view`); it is not yet in openspec/specs/, and this
-     change does not alter its requirements. An adopted candidate would modify
-     it in its own follow-up change. GTK axiom ledger entries added under
-     design D8 extend the ledger's content without changing the requirements
-     of `gtk-axiom-ledger` or `gtk-lush-axioms`. -->
+- `editor-minimap`: a retired native map releases the document buffer and is
+  finalized, so it never lays out document text again.
+- `long-line-document-presentation`: the document scale policy gains the
+  `wrap_allowed` presentation feature and the `L_wrap_edit` threshold.
 
 ## Impact
 
-- **Depends on** C2 (`long-line-protected-view`: Protected View, the fold,
-  the Line Inspector, worker find) and therefore on C0 (budgets, fixture
-  generator, watchdog, `make responsiveness-smoke`, axioms A23–A36) and C1
-  (`DocumentScale`, the paragraph profile, the GTK-matching paragraph
-  boundary function).
-- **New, documentation:** `docs/next/long-paragraph-editing.md` (evaluation
-  and decision); the long-line programme record created by C0 (C5 posture).
-- **New, disposable:** a standalone spike package under
-  `spikes/long-paragraph-editing/` with its own `[workspace]`, listed in the
-  root `Cargo.toml` `exclude`, building into the gitignored `build/` tree, with
-  a local-only make target. Synthetic fixtures only; the user's file is never
-  copied or referenced in the repository.
-- **Possibly new, maintained:** GTK axiom ledger entries with
-  `gtk-lush-axioms` probes and samples for toolkit facts the decision relies
-  on that C0 did not already record.
-- **Unchanged:** every LushText application crate (`lushtext-core`,
-  `lushtext`) and all behaviour. Protected View stays
-  view-only. No new production dependency, GSettings key, action, D-Bus member
-  or persisted format.
+- **Code:** `ui/editor_page/minimap/retirement.rs` (and whatever holds the
+  retired map), `model/document_scale.rs` (+ its Kani harnesses),
+  `ui/editor_page/document_scale.rs` and `imp.rs` (the wrap projection),
+  `scripts/responsiveness-smoke-driver.py`,
+  `scripts/generate-long-line-fixtures.py`.
+- **Proofs and tests:** Kani `core-document-scale` (monotonicity and meet laws
+  over the new feature), a failing-first widget test for the retired map, a
+  widget test for the gate's edit-time downgrade, a GTK axiom probe and sample
+  for the retired-map behaviour, the lane's keystroke group.
+- **Docs:** `docs/next/long-line-documents.md` (C5 posture, floor, exception),
+  `docs/next/long-line-evolution.md`, the GTK axiom ledger, AGENTS.md
+  (document scale policy), README (reduced features), accessibility docs (the
+  new reduced-feature wording).
+- **No** new dependency, action, D-Bus member, snapshot field, GSettings key
+  or persisted format. The word-wrap preference is not written by the gate.
+- **Depends on** C1 (`DocumentScale`, archived) and C2
+  (`long-line-protected-view`: the hybrid `L_protect` and the keystroke sweep).
