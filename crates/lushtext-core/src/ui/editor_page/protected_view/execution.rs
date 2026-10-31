@@ -101,6 +101,7 @@ impl LushtextEditorPage {
             let view = self.source_view();
             view.set_editable(false);
             view.set_cursor_visible(false);
+            self.detach_protected_drop_targets();
         } else if was_protected {
             runtime.exit_pending.set(true);
         }
@@ -118,6 +119,7 @@ impl LushtextEditorPage {
         } else if runtime.exit_pending.take() {
             view.set_editable(true);
             view.set_cursor_visible(true);
+            self.restore_protected_drop_targets();
         }
     }
 
@@ -170,6 +172,7 @@ impl LushtextEditorPage {
         let view = self.source_view();
         view.set_editable(false);
         view.set_cursor_visible(false);
+        self.detach_protected_drop_targets();
         self.imp_protected_view().advance(SessionEvent::EditGrowth);
     }
 
@@ -202,6 +205,7 @@ impl LushtextEditorPage {
         let view = self.source_view();
         view.set_editable(true);
         view.set_cursor_visible(true);
+        self.restore_protected_drop_targets();
         self.imp_protected_view()
             .advance(SessionEvent::EntryUndo { is_entry_step });
         true

@@ -349,3 +349,74 @@ fn test_loading_a_protected_file_enters_protected_view_without_entry_undo() {
     assert!(page.source_view().is_cursor_visible(), "the caret is back");
     assert_eq!(editor_text(&page), small);
 }
+
+// ─── Caret-free interaction (tasks 4.3, 4.7) ───────────────────────────────
+
+/// A loaded protected page whose short lines hold a number at line 2.
+fn protected_page_with_number() -> (LushtextEditorPage, gtk4::ApplicationWindow, String) {
+    ensure_gtk_init();
+    let mut body = String::from("short\nshort\nvalue 123 here\n");
+    body.push_str(&body_with_giants(&[n(L_PROTECT_EDIT) + 1]));
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("interaction.txt");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    let window = present(&page);
+    load_and_wait(&page, &path);
+    assert!(page.is_protected_view());
+    (page, window, body)
+}
+
+fn marks(page: &LushtextEditorPage) -> (i32, i32) {
+    let buffer = page.buffer();
+    (
+        buffer.iter_at_mark(&buffer.get_insert()).offset(),
+        buffer.iter_at_mark(&buffer.selection_bound()).offset(),
+    )
+}
+
+#[test]
+fn test_mutating_keybinding_signals_leave_a_protected_document_unchanged() {
+    let (page, _window, body) = protected_page_with_number();
+    let buffer = page.buffer();
+    let view = page.source_view().clone();
+    // Put the marks on the number, as an assistive technology could.
+    let mut at_number = buffer.iter_at_line(2).expect("line 2");
+    at_number.forward_chars(7);
+    buffer.place_cursor(&at_number);
+    let before = marks(&page);
+
+    view.emit_by_name::<()>("select-all", &[&true]);
+    view.emit_by_name::<()>("paste-clipboard", &[]);
+    view.emit_by_name::<()>("cut-clipboard", &[]);
+    view.emit_by_name::<()>("backspace", &[]);
+    view.emit_by_name::<()>("delete-from-cursor", &[&gtk4::DeleteType::Chars, &1i32]);
+    view.emit_by_name::<()>("insert-at-cursor", &[&"x"]);
+    view.emit_by_name::<()>("change-number", &[&1i32]);
+    view.emit_by_name::<()>("change-case", &[&sourceview5::ChangeCaseType::Upper]);
+    view.emit_by_name::<()>("join-lines", &[]);
+    view.emit_by_name::<()>("toggle-cursor-visible", &[]);
+    flush_events();
+
+    assert_eq!(editor_text(&page), body, "the buffer is unchanged");
+    assert_eq!(marks(&page), before, "no mark moved");
+    assert!(!buffer.is_modified(), "still unmodified");
+    assert!(!view.is_cursor_visible(), "still caret-free");
+}
+
+#[test]
+fn test_move_cursor_scrolls_without_moving_a_mark() {
+    let (page, _window, _body) = protected_page_with_number();
+    let view = page.source_view().clone();
+    wait_until(Duration::from_secs(10), || {
+        view.vadjustment()
+            .is_some_and(|adjustment| adjustment.upper() > adjustment.page_size())
+    });
+    let vadjustment = view.vadjustment().expect("vertical adjustment");
+    let before = marks(&page);
+    let top = vadjustment.value();
+    view.emit_by_name::<()>("move-cursor", &[&gtk4::MovementStep::Pages, &1i32, &false]);
+    flush_events();
+    assert_eq!(marks(&page), before, "the marks stay");
+    assert!(vadjustment.value() > top, "the viewport moved down a page");
+}

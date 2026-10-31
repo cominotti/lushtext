@@ -581,6 +581,9 @@ pub struct LushtextEditorPage {
     pub document_scale: DocumentScaleState,
     /// The Protected View session (`long-line-protected-view`).
     pub(crate) protected_view: super::protected_view::execution::ProtectedViewRuntime,
+    /// The view's drop targets while Protected View has them off (A63).
+    pub(crate) protected_drop_targets:
+        super::protected_view::interaction_execution::DetachedDropTargets,
     /// Memory-residency and eviction bookkeeping for this tab.
     pub residency: MemoryResidencyState,
     /// Background file-load freshness primitives (generation + cancel token).
@@ -658,6 +661,8 @@ impl Default for LushtextEditorPage {
             latest_load_failed: Cell::new(false),
             document_scale: DocumentScaleState::default(),
             protected_view: super::protected_view::execution::ProtectedViewRuntime::default(),
+            protected_drop_targets:
+                super::protected_view::interaction_execution::DetachedDropTargets::default(),
             residency: MemoryResidencyState::default(),
             load_tracking: LoadTrackingState::default(),
             applied_style_scheme_id: RefCell::new(None),
@@ -1028,6 +1033,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().setup_focus_mode_presentation();
         self.obj().setup_frame_validation();
         self.obj().setup_document_scale_watch();
+        self.obj().setup_protected_view_interaction();
         self.obj().apply_invisible_characters_mode();
         self.obj().refresh_accessibility_metadata();
     }
