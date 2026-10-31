@@ -143,6 +143,21 @@ PROOF_STRENGTH_RAISED_IN = "; raised by runs 38087161968, 38088387193 (max of th
 # measure them. core-document-scale's runs predate the join rewrite of
 # c2e33d74 (same harnesses, 5.6 local minutes before and after).
 DOCUMENT_SCALE_MEASURED_IN = "runs 39440638502, 39446126819 (max of the two)"
+# long-line-protected-view (C2) added core-protected-fold and
+# core-protected-fold-shape. PENDING DISPATCH:
+# these figures are a LOCAL `make kani KANI_MEASURE` run on the reference
+# workstation, recorded so the table stays complete until two dispatched
+# kani.yml runs replace them (task 2.8); developer timing is not a runner
+# measurement, and the change must not merge on it.
+PROTECTED_FOLD_MINUTES = 3.8
+PROTECTED_FOLD_PEAK_GIB = 1.5
+PROTECTED_FOLD_SHAPE_MINUTES = 14.5
+PROTECTED_FOLD_SHAPE_PEAK_GIB = 1.0
+PROTECTED_FOLD_MEASURED_IN = (
+    "PENDING DISPATCH: local make kani KANI_MEASURE runs on the reference workstation, 2026-10-30 "
+    "(Kani 0.68.0; core-protected-fold 3.77 min / 1.44 GiB, core-protected-fold-shape 14.42 min / "
+    "0.95 GiB), not runner measurements"
+)
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -371,6 +386,33 @@ SHARDS: dict[str, Shard] = {
         ci_minutes=10.9,
         ci_peak_gib=2.6,
         measured_in=CLOSED_LOOP_MEASURED_IN,
+    ),    # Split by design D12's rule (the whole group is over the 15-minute
+    # pull-request margin): the density bound (H1, H1w, H1c, H1x) gates pull
+    # requests, the fold shape, UTF-8, column and slicing harnesses are scheduled.
+    "core-protected-fold": Shard(
+        "lushtext-core",
+        (
+            "model::protected_fold::kani_proofs::density_bound_",
+            "model::protected_fold::kani_proofs::an_over_budget_window_",
+            "model::protected_fold::kani_proofs::production_thresholds_",
+        ),
+        gate="pull-request",
+        ci_minutes=PROTECTED_FOLD_MINUTES,
+        ci_peak_gib=PROTECTED_FOLD_PEAK_GIB,
+        measured_in=PROTECTED_FOLD_MEASURED_IN,
+    ),
+    "core-protected-fold-shape": Shard(
+        "lushtext-core",
+        (
+            "model::protected_fold::kani_proofs::folds_hide_",
+            "model::protected_fold::kani_proofs::fold_byte_offset_",
+            "model::protected_fold::kani_proofs::fold_location_",
+            "model::protected_fold::kani_proofs::fold_plan_",
+        ),
+        gate="scheduled",
+        ci_minutes=PROTECTED_FOLD_SHAPE_MINUTES,
+        ci_peak_gib=PROTECTED_FOLD_SHAPE_PEAK_GIB,
+        measured_in=PROTECTED_FOLD_MEASURED_IN,
     ),
 }
 
@@ -461,6 +503,7 @@ WATCH_UNSOUND_SECONDS = 778.55
 _SCALE = "model::document_scale::kani_proofs::"
 _BOUNDARY = "model::paragraph_boundary::kani_proofs::"
 _WATCH = "model::paragraph_profile_watch::kani_proofs::"
+_FOLD = "model::protected_fold::kani_proofs::"
 _SHELL_POLICY_HARNESSES = (
     _h(_SHELL + "focus_mode_renders_no_secondary_surface", 0.11, "ci"),
     _h(_SHELL + "layout_never_renders_an_unrequested_surface", 0.2, "ci"),
@@ -645,6 +688,25 @@ ORACLES: dict[str, Oracle] = {
             _h(_BOUNDARY + "boundary_slice_end_is_safe_and_advances", 203.01, "local"),
             _h(_BOUNDARY + "boundary_agrees_with_the_reference_rule", 258.74, "local"),
             _h(_BOUNDARY + "boundary_slice_end_is_the_reference_choice", 293.39, "local"),
+        ),
+    ),
+    "crates/lushtext-core/src/model/protected_fold.rs": Oracle(
+        _CORE,
+        (
+            _h(_FOLD + "production_thresholds_satisfy_the_preconditions", 0.03, "ci"),
+            _h(_FOLD + "fold_location_is_total_and_round_trips", 0.43, "ci"),
+            _h(_FOLD + "an_over_budget_window_fits_once_dense", 1.92, "ci"),
+            _h(_FOLD + "fold_byte_offset_never_splits_a_scalar", 32.29, "ci"),
+            _h(_FOLD + "density_bound_fails_without_the_density_fold", 0.56, "ci"),
+            _h(_FOLD + "density_bound_holds_for_every_window_r1", 26.43, "ci"),
+            _h(_FOLD + "density_bound_holds_for_every_window_r2", 43.72, "ci"),
+            _h(_FOLD + "density_bound_holds_for_every_window_r3", 140.33, "local"),
+            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r1", 41.41, "ci"),
+            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r2", 70.42, "local"),
+            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r3", 265.84, "local"),
+            _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r1", 36.29, "ci"),
+            _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r2", 54.16, "ci"),
+            _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r3", 361.16, "local"),
         ),
     ),
     "crates/lushtext-core/src/model/paragraph_profile_watch.rs": Oracle(

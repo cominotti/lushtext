@@ -28,6 +28,7 @@ pub mod palette;
 pub mod paragraph_boundary;
 pub mod paragraph_profile_watch;
 pub mod plain_disposal;
+pub mod protected_fold;
 pub mod recent_document;
 pub mod responsiveness_budget;
 pub mod session;

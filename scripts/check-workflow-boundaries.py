@@ -545,6 +545,7 @@ WHOLE_PIXEL_POLICY_MODULES: dict[str, int] = {
     "model/editor_memory.rs": 0,
     "ui/window/local_history/policy.rs": 0,
     "ui/window/focus_mode/policy.rs": 0,
+    "model/protected_fold.rs": 0,
 }
 # Role homes whose `policy.rs` files hold geometry decisions: any `policy.rs`
 # beneath them, present or future, is protected too, with a ceiling of 0 (so it
