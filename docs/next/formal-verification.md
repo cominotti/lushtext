@@ -1855,18 +1855,60 @@ valid UTF-8 string of ≤ 8 bytes, every `u64` column). The threshold domain
 gained one precondition, `r_fold · head_cap ≤ u64::MAX` (production: 224 ·
 15,000).
 
-**Shards.** `core-protected-fold` (H1 ×3, H1w, H1c, H1x; `pull-request`) and
-`core-protected-fold-shape` (H2 ×3, H2b, H2c, H2s ×3; `scheduled`). Local
-`make kani KANI_MEASURE` (Kani 0.68.0, 2026-10-30): `core-protected-fold`
-3.77 min / 1.44 GiB (H1 r1/r2/r3 26 / 44 / 140 s, H1w 1.9 s, H1x 0.6 s, H1c
-0.03 s), `core-protected-fold-shape` 14.42 min / 0.95 GiB (H2 r1/r2/r3 41 / 70
-/ 266 s, H2s r1/r2/r3 36 / 54 / 361 s, H2b 32 s, H2c 0.4 s). The shape shard
-is near the 25-minute runner margin if the runner is 1.5× slower; split it
-(H2s alone) if the dispatched runs exceed it.
-**Runner figures pending dispatch**: the table carries the local figures,
-marked as such, until two dispatched `kani.yml` runs replace them.
+**Shards.** `core-protected-fold` (H1 ×3, H1w, H1c, H1x; `pull-request`),
+`core-protected-fold-shape` (H2 ×3; `scheduled`) and
+`core-protected-fold-mapping` (H2b, H2c, H2s ×3; `scheduled`). Local
+`make kani KANI_MEASURE` (Kani 0.68.0, 2026-10-30), two runs each, the larger
+kept: `core-protected-fold` 3.77 and 6.88 min / 1.45 GiB (H1 r1/r2/r3 up to
+37 / 60 / 301 s, H1w 1.9 s, H1x 0.6 s, H1c 0.04 s); the scheduled harnesses
+14.42 and 17.28 min / 1.51 GiB as one group (H2 r1/r2/r3 up to 62 / 70 / 597 s,
+H2s r1/r2/r3 up to 36 / 54 / 361 s, H2b 32 s, H2c 0.4 s), split into two
+shards because H2 alone is about 12 minutes. CBMC's time for the `r_fold = 3`
+instances varied by up to 2.2× between runs on the same tree. **Runner
+figures pending dispatch**: the table carries these local figures, marked as
+such, until two dispatched `kani.yml` runs replace them.
 
-PROOF_STRENGTH_RESULTS
+**Proof strength (task 2.9, 2026-10-30/31; Kani 0.68.0, cargo-mutants 27.0.0,
+`--tier ci`, Kani arm sharded 2 ways).**
+
+| Revision | Mutants | Unviable | Kani kills (`should_panic`) | Vacuity | Kani survivors |
+| --- | --- | --- | --- | --- | --- |
+| `f8f1bf5f` | 118 | 18 | 86 (2) | 0 | 14 |
+| `e78db80c` | 110 | 17 | 81 (2) | 2 | 7 |
+
+Triage of `f8f1bf5f`'s 14, all closed in `e78db80c`:
+- `A28_SAFE_CHARS`'s expression (`/`→`%`, `/`→`*`, `*`→`+`): H1c now asserts the
+  constant is exactly the `int32` overflow bound at the largest zoom.
+- `FoldState::paragraphs` (→ 0, → 1): the harnesses' fold run asserts it, and
+  `thresholds()`.
+- `fold_finish`'s shortness test and `next_index - 1` (`<`→`<=`, `&&`→`||`,
+  `>`→`>=`, `-`→`+`, `-`→`/`): equivalent (a held tail over budget implies the
+  last full window was). Removed by simplifying the state to `dense_until` and
+  dropping the test, not excluded.
+- `min_u64` `<`→`<=`: equivalent (a tie returns the same value); excluded in
+  `.cargo/mutants.toml`.
+- `window_capped_sum`'s production form (→ 0, → 1) and `plan_folds` (→ `vec![]`):
+  not compiled under Kani (`cfg(not(kani))`) or not called by a harness; the
+  tests arm kills them.
+
+Triage of `e78db80c`'s 7 survivors and 2 vacuity results: every one is in a
+function only H2 (the fold shape and exact-specification harness) checks
+directly — `window_is_over_budget` (`>`→`>=`; → `true`, vacuity),
+`dense_visible` → 0, `density_cap` → 0, and `emit_oldest`'s `paragraph <
+dense_until` and `visible < length` (`<`→`<=`, one of them vacuity) — and H2's
+instances were all in the `local` tier, so the `ci`-tier run never ran H2. H2
+`r_fold = 1` (62 s) is now `ci`; each of these mutants breaks H2's equality
+with the specification or its positive-tail assertion. Plus the two
+`cfg(not(kani))`/test-wrapper survivors above. **Remaining:** re-running these
+six mutants with H2 r1 in the `ci` list (stopped while waiting for memory;
+about 15 minutes).
+
+Tests arm (`e78db80c`, interrupted at 76 of 110 by the session coordinator for
+holding the shared lock): 55 caught, 12 unviable, 9 missed, all nine in the
+`cfg(kani)` form of `window_capped_sum`, which no test build compiles and the
+Kani arm kills. **Remaining:** the last 34 mutants of the tests arm (resumable
+from `target/proof-strength/results/e78db80c…/tests/`), in pieces of at most
+about 20 minutes.
 
 ## 4. Deferral inventory
 

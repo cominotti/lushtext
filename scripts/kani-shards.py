@@ -713,7 +713,7 @@ ORACLES: dict[str, Oracle] = {
             _h(_FOLD + "density_bound_holds_for_every_window_r1", 37.35, "ci"),
             _h(_FOLD + "density_bound_holds_for_every_window_r2", 59.76, "ci"),
             _h(_FOLD + "density_bound_holds_for_every_window_r3", 301.33, "local"),
-            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r1", 62.05, "local"),
+            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r1", 62.05, "ci"),
             _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r2", 70.42, "local"),
             _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r3", 597.46, "local"),
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r1", 36.29, "ci"),
