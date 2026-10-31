@@ -305,7 +305,66 @@ production policy.
 - Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `decimal_literal_representation`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, `wildcard_imports`, and `debug_assert_with_mut_call` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents. In particular, execute mutations before `debug_assert!` and assert only the captured result so release builds cannot elide required state changes.
 - Clippy since the Rust 1.98 pin (toolchain 1.98.1, MSRV 1.98.0) no longer has `from_iter_instead_of_collect` (removed as "proved problematic"), so it is not in the workspace table. A removed lint left in `[workspace.lints.clippy]` prints `renamed_and_removed_lints`, which ignores `-D warnings`; delete the entry rather than letting the warning ride. Write `Result::is_ok_and` rather than `.ok().is_some_and(..)` on a `Result`: Clippy 1.99 rejects the latter, so the next toolchain bump would otherwise start red.
 - `make lint-advisory` runs broad Clippy, selected design-smell Clippy, selected numeric Clippy, and selected rustc probes. Every current category is classified in `scripts/lint-advisory-policy.toml` as `blocking_candidate`, `must_stay_zero`, `accepted_advisory`, `generated_code_noise`, or `resolved_policy_exception`; refresh that policy only after fixing, promoting, or intentionally classifying new output.
-- The root `clippy.toml` holds exactly one policy: the whole-pixel `disallowed-methods` list (float methods that do arithmetic by call — `mul_add`, `powi`, `powf`, `sqrt`, `div_euclid`, `rem_euclid`, `recip`, `hypot`, `midpoint` — for `f64` and `f32`, each with a reason). It is not a global ban: `[workspace.lints.clippy]` sets `disallowed_methods = "allow"`, and only the whole-pixel policy modules raise it (`#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]`, or `deny`), with the module list held path-aware by rule 10 of `make check-workflow-boundaries` and the "Whole-pixel geometry policy" table in `workflow-convention.md`. Do not add a second list to `clippy.toml` unless it is globally safe (reason and replacement metadata, no broad suppressions in backend, fixture, generated, test, or build-support code); a new list would inherit the workspace `allow` and silently check nothing. Path-sensitive rules such as filesystem-boundary ownership stay in `scripts/check-filesystem-boundary.sh`, where backend, fixture, build-support, and approved engine-adapter exceptions can be expressed by path.
+- The root `clippy.toml` holds two policies. The first is the whole-pixel `disallowed-methods` list (float methods that do arithmetic by call — `mul_add`, `powi`, `powf`, `sqrt`, `div_euclid`, `rem_euclid`, `recip`, `hypot`, `midpoint` — for `f64` and `f32`, each with a reason). It is not a global ban: `[workspace.lints.clippy]` sets `disallowed_methods = "allow"`, and only the whole-pixel policy modules raise it (`#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]`, or `deny`), with the module list held path-aware by rule 10 of `make check-workflow-boundaries` and the "Whole-pixel geometry policy" table in `workflow-convention.md`. The second is the explicit-SIMD `disallowed-macros` list (`std::is_x86_feature_detected`, `std::arch::is_aarch64_feature_detected`), which is **not** allowed workspace-wide: it stays at Clippy's default `warn`, so `-D warnings` makes it blocking everywhere (see "Explicit SIMD" below). Do not add a third list to `clippy.toml` unless it is globally safe (reason and replacement metadata, no broad suppressions in backend, fixture, generated, test, or build-support code); a list for a lint the workspace table allows would check nothing. Path-sensitive rules such as filesystem-boundary ownership stay in `scripts/check-filesystem-boundary.sh`, where backend, fixture, build-support, and approved engine-adapter exceptions can be expressed by path.
+
+## Explicit SIMD
+
+Byte scans over text reach SIMD through libraries first: the `memchr` crate
+(SSE2 baseline, AVX2 chosen at run time on x86-64, NEON on aarch64) and the
+standard library (`str::chars().count()` is word-at-a-time). Keep a scalar
+reference beside every accelerated scan, pin the two together with property
+tests and the `editor_bytes` fuzz target, and put the fast path behind
+`cfg(not(kani))` in any module a Kani harness compiles
+(`services/editor_io/text_scans.rs` and `model/paragraph_boundary.rs` are the
+patterns). Land a rewrite only on an interleaved benchmark verdict.
+
+A **hand-written** SIMD kernel is admitted only when all of these hold
+(`simd-line-scans` design D6):
+
+1. The loop is ours and is still measured hot **after** its library-based
+   rewrite: at least 10 % of the enclosing workflow's cost (for example
+   `load_text_file`) on a realistic fixture, on the interleaved bench.
+2. It is `#[target_feature(enable = "avx2")]` (or the relevant x86-64 level)
+   behind `is_x86_feature_detected!` dispatch, cached once; the fallback is the
+   library-based path, and both are measured (the fallback with detection
+   forced off).
+3. NEON parity is decided explicitly: a NEON kernel measured on aarch64
+   hardware, or aarch64 stays on the library path and the row says NEON is
+   unmeasured. SWAR `u64` is not a NEON substitute (it regressed, 0.88x, on
+   typographic text in the SIMD exploration).
+4. Its `unsafe` call site carries a `SAFETY` comment, it is pinned to the scalar
+   reference by property tests and fuzzing, and in a Kani-checked module it sits
+   behind `cfg(not(kani))`.
+5. No build-time CPU requirement: no `target-cpu` / `target-feature` in Cargo,
+   toolchain, Meson, Flatpak or Snap configuration; the shipped binary runs on
+   baseline x86-64.
+
+Two mechanical gates hold the policy:
+
+- `scripts/check-explicit-simd.py` (`make check-explicit-simd`, in
+  `make check-policy`) fails on `#[target_feature`, `std::arch`, `core::arch`
+  or a feature-detection macro in a `crates/` file no row below names, on a
+  build-time CPU flag, on a SIMD-dispatch crate (`multiversion`, `pulp`,
+  `fearless_simd`) in `Cargo.lock` that no row names, and on `memchr` resolved
+  for the shipped `lushtext` binary (`cargo tree`, normal and build edges, so a
+  dev-dependency cannot mask it) without its `std` feature (without it
+  `memchr` cannot detect AVX2 and silently runs SSE2). CI's lint job runs it.
+  A row exempts its whole file; review holds that the SIMD in it is the named
+  function. `--self-test` plants one violation of each kind.
+- Clippy `disallowed-macros` names both detection macros; an admitted kernel's
+  dispatch site carries `#[expect(clippy::disallowed_macros, reason = "...")]`
+  citing its row.
+
+### Explicit-SIMD kernel allowlist
+
+Empty: no kernel is admitted. The only candidate, the typographic file-health
+scan, still measured 19.3 % of `load_text_file` after its `memchr3` rewrite
+(`docs/benchmarks/transient-file-load.md`), so condition 1 holds for it; the
+kernel is queued as a follow-up proposal in `docs/next/long-line-documents.md`
+and gets a row here only when that change lands with the other conditions met.
+
+| File | Function | Measurement | NEON | Dispatch crate |
+| --- | --- | --- | --- | --- |
 
 ## Modern Rust Idioms
 
