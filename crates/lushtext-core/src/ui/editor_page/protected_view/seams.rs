@@ -18,8 +18,11 @@
 //! facts are plain values. Nothing here is Kani-checked: the session transition
 //! that moves the generation is, in `policy.rs`.
 
+use std::sync::Arc;
+
 use super::policy::ProtectedSession;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::plain_disposal::DisposalOwned;
 
 /// Why the editor is in Protected View.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,5 +188,61 @@ mod tests {
             ..entered
         };
         assert!(!protected_view_is_current(&ticket, &facts(forged)));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The text source (design D4, task 5.1)
+// ---------------------------------------------------------------------------
+//
+// Find, the Line Inspector, whole-line copy and every save of a protected
+// document read the source, never a GTK snapshot of the protected buffer (the
+// chunked snapshot is quadratic inside one character segment, ledger A66). For
+// a whole-content install it is the installed body, moved at the install's
+// terminal instead of being disposed: no copy, and the body keeps its
+// guaranteed hand-off to the disposal workers wherever its last reference
+// drops. The buffer is immutable while protected, so the source equals
+// `buffer.text(…, true)` for the life of the session. It crosses into the
+// find and save workers, which is why it is a seam value object.
+
+/// The immutable text of a protected document, shareable with workers.
+#[derive(Clone)]
+pub(crate) struct ProtectedTextSource {
+    body: Arc<DisposalOwned<String>>,
+}
+
+impl ProtectedTextSource {
+    /// Retain an installed body as the session's source.
+    pub(crate) fn retain(body: DisposalOwned<String>) -> Self {
+        Self {
+            body: Arc::new(body.into_retained_current()),
+        }
+    }
+
+    /// The whole document text.
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "read by the protected save and worker find (long-line-protected-view tasks 6.x, 7.1), which land after the source"
+        )
+    )]
+    pub(crate) fn text(&self) -> &str {
+        self.body.as_str()
+    }
+
+    /// Bytes the source retains, for the live-editor memory estimate.
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        u64::try_from(self.body.len()).unwrap_or(u64::MAX)
+    }
+}
+
+impl std::fmt::Debug for ProtectedTextSource {
+    // The size only: document text never reaches a debug log.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProtectedTextSource")
+            .field("bytes", &self.retained_bytes())
+            .finish()
     }
 }

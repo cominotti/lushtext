@@ -9,15 +9,17 @@
 //! the install entries, the caret-free interaction and the clipboard routes
 //! join it in the executor milestone (tasks 4.3–4.7a).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use gtk4::prelude::*;
 
 use super::policy::{ProtectedSession, SessionEvent, WholeContentInstall};
+use super::seams::ProtectedTextSource;
 use crate::model::document_scale::protects_by_length;
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::model::protected_fold::{FoldThresholds, plan_folds};
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::plain_disposal::DisposalOwned;
 use crate::ui::protected_fold::fold_tag;
 
 /// The per-editor Protected View state.
@@ -27,6 +29,8 @@ pub struct ProtectedViewRuntime {
     /// A reload from disk just left Protected View: the next install terminal
     /// makes the view editable again, once.
     exit_pending: Cell<bool>,
+    /// The session's immutable text source (design D4).
+    source: RefCell<Option<ProtectedTextSource>>,
 }
 
 impl Default for ProtectedViewRuntime {
@@ -34,6 +38,7 @@ impl Default for ProtectedViewRuntime {
         Self {
             session: Cell::new(ProtectedSession::EDITABLE),
             exit_pending: Cell::new(false),
+            source: RefCell::new(None),
         }
     }
 }
@@ -105,6 +110,31 @@ impl LushtextEditorPage {
         } else if was_protected {
             runtime.exit_pending.set(true);
         }
+    }
+
+    /// At a whole-content install's terminal: keep the installed body as the
+    /// session's text source when the session is protected (design D4), and
+    /// hand it back otherwise. Every whole-content install replaces the
+    /// previous source.
+    pub(crate) fn retain_protected_source(
+        &self,
+        body: DisposalOwned<String>,
+    ) -> Option<DisposalOwned<String>> {
+        let runtime = self.imp_protected_view();
+        if runtime.session.get().protected {
+            runtime
+                .source
+                .replace(Some(ProtectedTextSource::retain(body)));
+            None
+        } else {
+            runtime.source.replace(None);
+            Some(body)
+        }
+    }
+
+    /// The session's text source, if it has one.
+    pub(crate) fn protected_source(&self) -> Option<ProtectedTextSource> {
+        self.imp_protected_view().source.borrow().clone()
     }
 
     /// At an install terminal, after the installer restored the editable and

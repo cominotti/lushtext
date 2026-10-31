@@ -643,6 +643,9 @@ fn complete_loaded_installation(
     editor.apply_restore_position();
     editor.imp().monitor.last_known_mtime.set(mtime);
     let outliving_alert_shown = editor.settle_inline_notification_after_load();
+    // A protected document keeps its installed body as the text source
+    // (design D4) instead of a local-history baseline.
+    let content = editor.retain_protected_source(content);
     editor.seed_local_history_from_guarded_loaded_content(content);
     restore_load_installation_state(editor, restore);
     editor.imp().load_state.set(EditorLoadState::Loaded);

@@ -335,6 +335,13 @@ fn test_loading_a_protected_file_enters_protected_view_without_entry_undo() {
     );
     assert!(!page.undo_protected_entry());
     assert_eq!(editor_text(&page), body, "nothing changed");
+    let evidence = page.protected_view_evidence();
+    assert!(evidence.protected && !evidence.entered_by_edit);
+    assert_eq!(
+        evidence.source_bytes,
+        Some(u64::try_from(body.len()).expect("fits")),
+        "the installed body is the session's text source"
+    );
 
     // The file shrinks below the threshold and is reloaded from disk: the
     // reload re-derives, and the document is editable again.
@@ -348,6 +355,11 @@ fn test_loading_a_protected_file_enters_protected_view_without_entry_undo() {
     );
     assert!(page.source_view().is_cursor_visible(), "the caret is back");
     assert_eq!(editor_text(&page), small);
+    assert_eq!(
+        page.protected_view_evidence().source_bytes,
+        None,
+        "an editable document keeps no source"
+    );
 }
 
 // ─── Caret-free interaction (tasks 4.3, 4.7) ───────────────────────────────

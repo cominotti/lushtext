@@ -285,19 +285,22 @@ impl LushtextEditorPage {
     }
 
     /// Seed the tab's "last clean text" after a file load or reload completes.
+    ///
+    /// `content` is `None` when Protected View kept the body as its text
+    /// source: an installed-protected document captures no local history
+    /// (`long-line-protected-view`), so it has no clean baseline either.
     pub(crate) fn seed_local_history_from_guarded_loaded_content(
         &self,
-        content: crate::ui::plain_disposal::DisposalOwned<String>,
+        content: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
     ) {
-        let clean_text = if self.file_path().is_some()
-            && self
-                .live_local_history_availability()
-                .allows_automatic_capture()
-        {
-            Some(content.into_retained_current())
-        } else {
-            None
-        };
+        let clean_text = content.filter(|_| {
+            self.file_path().is_some()
+                && self
+                    .live_local_history_availability()
+                    .allows_automatic_capture()
+        });
+        let clean_text =
+            clean_text.map(crate::ui::plain_disposal::DisposalOwned::into_retained_current);
         self.replace_clean_baseline(clean_text);
         self.set_local_history_restore_undo_text(None);
         self.imp()
