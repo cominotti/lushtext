@@ -16,6 +16,8 @@ use lushtext_core::model::paragraph_boundary::{
 };
 use proptest::prelude::*;
 
+use crate::support;
+
 /// A delimiter-heavy, multibyte alphabet without NUL (Pango stops at NUL).
 fn paragraph_text(max_pieces: usize) -> impl Strategy<Value = String> {
     let piece = prop_oneof![
@@ -47,24 +49,10 @@ fn byte_offset(value: i32) -> usize {
 }
 
 fn profile_in_slices(text: &str, cuts: &[usize]) -> DocumentProfile {
-    let mut boundaries: Vec<usize> = cuts
-        .iter()
-        .map(|&cut| {
-            let mut cut = cut % (text.len() + 1);
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            cut
-        })
-        .collect();
-    boundaries.sort_unstable();
     let mut accumulator = ParagraphProfileAccumulator::new(ProfileConfig::PRODUCTION);
-    let mut start = 0;
-    for cut in boundaries {
-        accumulator.push_str(&text[start..cut]);
-        start = cut;
+    for piece in support::split_at_scalar_cuts(text, cuts) {
+        accumulator.push_str(piece);
     }
-    accumulator.push_str(&text[start..]);
     accumulator.finish()
 }
 

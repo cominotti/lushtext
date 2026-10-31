@@ -3,8 +3,8 @@
 //! Tests for the workspace search panel and its components.
 
 use crate::common::{
-    ensure_gtk_init, fixture, flush_after_delay, flush_events, isolated_data_dir, present_window,
-    wait_until,
+    accessible_hidden, ensure_gtk_init, fixture, flush_after_delay, flush_events,
+    isolated_data_dir, present_window, wait_until,
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -528,10 +528,7 @@ fn test_search_panel_accessibility_tracks_busy_error_and_result_visibility() {
     imp.error_label.set_visible(false);
     imp.results_body_revealer.set_reveal_child(true);
     panel.refresh_accessibility_state_for_test();
-    assert!(!gtk4::test_accessible_has_state(
-        &*imp.results_list,
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(!accessible_hidden(&*imp.results_list));
 }
 
 #[test]
@@ -557,10 +554,7 @@ fn test_search_panel_accessibility_tracks_replace_preview_and_undo_state() {
         &*imp.undo_button,
         gtk4::AccessibleState::Disabled
     ));
-    assert!(!gtk4::test_accessible_has_state(
-        &*imp.undo_button,
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(!accessible_hidden(&*imp.undo_button));
 }
 
 #[test]

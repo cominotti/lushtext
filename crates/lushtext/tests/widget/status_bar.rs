@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::common::{ensure_gtk_init, flush_after_delay};
+use crate::common::{accessible_hidden, ensure_gtk_init, flush_after_delay};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::services::notifications::StatusMessage;
@@ -71,10 +71,7 @@ fn test_status_controls_expose_accessibility_roles() {
         gtk4::AccessibleState::Hidden
     ));
     bar.set_metadata_visible(true);
-    assert!(!gtk4::test_accessible_has_state(
-        &*bar.imp().metadata_box,
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(!accessible_hidden(&*bar.imp().metadata_box));
 }
 
 fn status_message(text: &str, severity: MessageKind) -> StatusMessage {

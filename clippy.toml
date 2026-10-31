@@ -28,3 +28,17 @@ disallowed-methods = [
     { path = "f64::midpoint", reason = "a float midpoint is float arithmetic; `manual_midpoint` pushes here, so it is named" },
     { path = "f32::midpoint", reason = "a float midpoint is float arithmetic; `manual_midpoint` pushes here, so it is named" },
 ]
+
+# `disallowed-macros` backs the explicit-SIMD policy (the "Explicit SIMD"
+# section of `.agents/rules/rust.md`, enforced first by
+# `scripts/check-explicit-simd.py`). Unlike `disallowed-methods` it is NOT
+# allowed workspace-wide: it stays at Clippy's default `warn`, which the gate's
+# `-D warnings` makes blocking everywhere. An admitted kernel's dispatch site
+# carries `#[expect(clippy::disallowed_macros, reason = "...")]` citing its
+# allowlist row; there are none today.
+disallowed-macros = [
+    { path = "std::is_x86_feature_detected", reason = "explicit SIMD dispatch needs an allowlist row in .agents/rules/rust.md (Explicit SIMD); prefer memchr or the standard library" },
+    # Exists only when compiling for aarch64, so the x86-64 build cannot resolve
+    # it; `allow-invalid` keeps that from warning there.
+    { path = "std::arch::is_aarch64_feature_detected", reason = "explicit SIMD dispatch needs an allowlist row in .agents/rules/rust.md (Explicit SIMD); prefer memchr or the standard library", allow-invalid = true },
+]
