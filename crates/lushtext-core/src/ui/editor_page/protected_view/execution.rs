@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use gtk4::prelude::*;
 
 use super::policy::{ProtectedSession, SessionEvent, WholeContentInstall};
-use super::seams::ProtectedTextSource;
+use super::seams::{FoldSummary, ProtectedTextSource};
 use crate::model::document_scale::protects_by_length;
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::model::protected_fold::{FoldThresholds, plan_folds};
@@ -31,6 +31,8 @@ pub struct ProtectedViewRuntime {
     exit_pending: Cell<bool>,
     /// The session's immutable text source (design D4).
     source: RefCell<Option<ProtectedTextSource>>,
+    /// What the session's fold hides (evidence and the automation snapshot).
+    fold_summary: Cell<FoldSummary>,
 }
 
 impl Default for ProtectedViewRuntime {
@@ -39,6 +41,7 @@ impl Default for ProtectedViewRuntime {
             session: Cell::new(ProtectedSession::EDITABLE),
             exit_pending: Cell::new(false),
             source: RefCell::new(None),
+            fold_summary: Cell::new(FoldSummary::default()),
         }
     }
 }
@@ -102,6 +105,17 @@ impl LushtextEditorPage {
         let runtime = self.imp_protected_view();
         let was_protected = runtime.session.get().protected;
         let next = runtime.advance(event);
+        runtime
+            .fold_summary
+            .set(
+                profile
+                    .fold_plan
+                    .as_deref()
+                    .map_or_else(FoldSummary::default, |plan| FoldSummary {
+                        folded_paragraphs: plan.folded_paragraphs(),
+                        hidden_chars: plan.hidden_chars(),
+                    }),
+            );
         if next.protected {
             let view = self.source_view();
             view.set_editable(false);
@@ -171,6 +185,7 @@ impl LushtextEditorPage {
         let buffer = self.buffer();
         let tag = fold_tag(buffer.upcast_ref());
         let mut first_folded = None;
+        let mut summary = FoldSummary::default();
         for run in contiguous_runs(lines) {
             let lengths: Vec<u64> = run.iter().map(|&(_, chars)| chars).collect();
             for range in plan_folds(&lengths, FoldThresholds::PRODUCTION) {
@@ -191,6 +206,8 @@ impl LushtextEditorPage {
                     }
                     buffer.apply_tag(&tag, &start, &end);
                 }
+                summary.folded_paragraphs = summary.folded_paragraphs.saturating_add(1);
+                summary.hidden_chars = summary.hidden_chars.saturating_add(range.tail_chars);
                 first_folded.get_or_insert(line);
             }
         }
@@ -203,7 +220,9 @@ impl LushtextEditorPage {
         view.set_editable(false);
         view.set_cursor_visible(false);
         self.detach_protected_drop_targets();
-        self.imp_protected_view().advance(SessionEvent::EditGrowth);
+        let runtime = self.imp_protected_view();
+        runtime.fold_summary.set(summary);
+        runtime.advance(SessionEvent::EditGrowth);
     }
 
     /// Whether the entry undo is available now (the alert's Undo and Ctrl+Z,
@@ -236,8 +255,10 @@ impl LushtextEditorPage {
         view.set_editable(true);
         view.set_cursor_visible(true);
         self.restore_protected_drop_targets();
-        self.imp_protected_view()
-            .advance(SessionEvent::EntryUndo { is_entry_step });
+        let runtime = self.imp_protected_view();
+        runtime.fold_summary.set(FoldSummary::default());
+        runtime.source.replace(None);
+        runtime.advance(SessionEvent::EntryUndo { is_entry_step });
         true
     }
 
@@ -250,4 +271,11 @@ impl LushtextEditorPage {
 /// Split measured lines into runs of consecutive line numbers, in order.
 fn contiguous_runs(lines: &[(u64, u64)]) -> impl Iterator<Item = &[(u64, u64)]> {
     lines.chunk_by(|a, b| b.0 == a.0.saturating_add(1))
+}
+
+impl LushtextEditorPage {
+    /// What the session's fold hides.
+    pub(crate) fn protected_fold_summary(&self) -> FoldSummary {
+        self.imp_protected_view().fold_summary.get()
+    }
 }

@@ -851,6 +851,17 @@ pub struct AutomationTabSnapshot {
     pub evicted: bool,
     /// Whether the tab is pinned in the tab strip.
     pub pinned: bool,
+    /// Whether the document is in Protected View (view-only, folded).
+    pub protected_view: bool,
+    /// Why: `long-paragraph` (installed with a paragraph over the entry
+    /// threshold) or `edit-growth` (an edit grew one); `None` when editable.
+    pub protected_view_reason: Option<String>,
+    /// Whether the one bounded undo of the entering edit is offered now.
+    pub entry_undo_available: bool,
+    /// Paragraphs whose tail Protected View hides.
+    pub folded_paragraph_count: u64,
+    /// Characters hidden across those tails.
+    pub hidden_character_count: u64,
 }
 
 /// Window-level surface state that scenario helpers commonly assert.
@@ -1393,6 +1404,11 @@ mod tests {
             draft_present: true,
             evicted: false,
             pinned: true,
+            protected_view: true,
+            protected_view_reason: Some("long-paragraph".to_string()),
+            entry_undo_available: false,
+            folded_paragraph_count: 2,
+            hidden_character_count: 1_000_000,
         };
 
         let value = serde_json::to_value(tab).expect("tab snapshot should serialize");
@@ -1403,6 +1419,10 @@ mod tests {
         assert_eq!(fields["draft_present"], true);
         assert_eq!(fields["path"], "/tmp/lushtext-automation.txt");
         assert_eq!(fields["file_size"], 42);
+        assert_eq!(fields["protected_view"], true);
+        assert_eq!(fields["protected_view_reason"], "long-paragraph");
+        assert_eq!(fields["folded_paragraph_count"], 2);
+        assert_eq!(fields["hidden_character_count"], 1_000_000);
         assert!(!fields.contains_key("draft_id"));
         assert!(!fields.contains_key("document_text"));
         assert!(!fields.contains_key("content"));

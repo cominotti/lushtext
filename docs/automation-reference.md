@@ -737,6 +737,11 @@ sidebar show/hide animation and belongs to `WFR-SHELL-GEOMETRY`, not to this row
 | <span id="snapshot-field-draft-present"></span>`snapshot-field-draft-present` | `tabs[].draft_present` | `bool` | Whether the tab has draft identity, without exposing the draft ID. |
 | <span id="snapshot-field-evicted"></span>`snapshot-field-evicted` | `tabs[].evicted` | `bool` | Whether the tab buffer has been evicted for memory pressure. |
 | <span id="snapshot-field-pinned"></span>`snapshot-field-pinned` | `tabs[].pinned` | `bool` | Whether the tab is pinned. |
+| <span id="snapshot-field-protected-view"></span>`snapshot-field-protected-view` | `tabs[].protected_view` | `bool` | Whether the document is in Protected View: view-only, caret-free, with paragraphs over `L_PROTECT_EDIT` (50,000 characters) folded for display. |
+| <span id="snapshot-field-protected-view-reason"></span>`snapshot-field-protected-view-reason` | `tabs[].protected_view_reason` | `string \| null` | `long-paragraph` (installed with a paragraph over the entry threshold), `edit-growth` (an edit grew one), or `null` when editable. |
+| <span id="snapshot-field-entry-undo-available"></span>`snapshot-field-entry-undo-available` | `tabs[].entry_undo_available` | `bool` | Whether the one bounded undo of the edit that entered Protected View is offered now (never after a load entry). |
+| <span id="snapshot-field-folded-paragraph-count"></span>`snapshot-field-folded-paragraph-count` | `tabs[].folded_paragraph_count` | `u64` | Paragraphs whose tail Protected View hides. A count, never text. |
+| <span id="snapshot-field-hidden-character-count"></span>`snapshot-field-hidden-character-count` | `tabs[].hidden_character_count` | `u64` | Characters hidden across those tails. A count, never text. |
 | <span id="snapshot-field-workspace-sidebar-visible"></span>`snapshot-field-workspace-sidebar-visible` | `surfaces.workspace_sidebar_visible` | `bool` | Rendered workspace sidebar visibility. |
 | <span id="snapshot-field-workspace-sidebar-requested"></span>`snapshot-field-workspace-sidebar-requested` | `surfaces.workspace_sidebar_requested` | `bool` | User-requested workspace sidebar visibility. |
 | <span id="snapshot-field-document-properties-visible"></span>`snapshot-field-document-properties-visible` | `surfaces.document_properties_visible` | `bool` | Rendered document-properties visibility. |

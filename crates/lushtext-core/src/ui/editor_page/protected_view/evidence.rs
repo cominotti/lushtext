@@ -4,7 +4,8 @@
 //! (`long-line-protected-view`). Widget tests read it and the automation
 //! snapshot projects from it (task 8.1). Reading it touches no toolkit state
 //! and mutates nothing: every field comes from the editor's Protected View
-//! runtime.
+//! runtime (the entry-undo availability reads the buffer's `can-undo`
+//! property, which does no work).
 
 use crate::ui::editor_page::LushtextEditorPage;
 
@@ -19,6 +20,12 @@ pub struct ProtectedViewEvidence {
     pub generation: u64,
     /// Bytes of the retained text source, when the session has one.
     pub source_bytes: Option<u64>,
+    /// Whether the entry undo is offered now.
+    pub entry_undo_available: bool,
+    /// Paragraphs with a hidden tail.
+    pub folded_paragraphs: u64,
+    /// Characters hidden across every tail.
+    pub hidden_chars: u64,
 }
 
 impl LushtextEditorPage {
@@ -33,6 +40,9 @@ impl LushtextEditorPage {
             source_bytes: self
                 .protected_source()
                 .map(|source| source.retained_bytes()),
+            entry_undo_available: self.protected_entry_undo_available(),
+            folded_paragraphs: self.protected_fold_summary().folded_paragraphs,
+            hidden_chars: self.protected_fold_summary().hidden_chars,
         }
     }
 }

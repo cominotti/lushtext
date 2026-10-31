@@ -954,6 +954,11 @@ fn tab_snapshot(index: u32, active: bool, page: &libadwaita::TabPage) -> Automat
     // binding it is read through.
     let load_evidence = editor.as_ref().map(LushtextEditorPage::load_evidence);
     let path = editor.as_ref().and_then(LushtextEditorPage::file_path);
+    // The Protected View workflow's fields project from its evidence surface.
+    let protected_evidence = editor
+        .as_ref()
+        .map(LushtextEditorPage::protected_view_evidence)
+        .unwrap_or_default();
     AutomationTabSnapshot {
         index,
         active,
@@ -976,6 +981,18 @@ fn tab_snapshot(index: u32, active: bool, page: &libadwaita::TabPage) -> Automat
             .is_some(),
         evicted: editor.as_ref().is_some_and(LushtextEditorPage::is_evicted),
         pinned: page.is_pinned(),
+        protected_view: protected_evidence.protected,
+        protected_view_reason: protected_evidence.protected.then(|| {
+            if protected_evidence.entered_by_edit {
+                "edit-growth"
+            } else {
+                "long-paragraph"
+            }
+            .to_string()
+        }),
+        entry_undo_available: protected_evidence.entry_undo_available,
+        folded_paragraph_count: protected_evidence.folded_paragraphs,
+        hidden_character_count: protected_evidence.hidden_chars,
     }
 }
 

@@ -923,6 +923,26 @@ def assert_relaunch_automation_snapshot(
             "Automation snapshot did not preserve the restored active untitled tab: "
             f"active={window.get('active_tab_index')} untitled={untitled_tab!r}"
         )
+    # Both recovered drafts end in one paragraph of about 33.5 million
+    # characters (the lazy-aggregate expansion), so recovery installs them
+    # through the Protected View fold (long-line-protected-view design D13).
+    protected_rows = [
+        {
+            "tab": name,
+            "protected_view": tab.get("protected_view"),
+            "protected_view_reason": tab.get("protected_view_reason"),
+            "folded_paragraph_count": tab.get("folded_paragraph_count"),
+            "hidden_character_count": tab.get("hidden_character_count"),
+        }
+        for name, tab in (("file", file_tab), ("untitled", untitled_tab))
+    ]
+    (artifact_dir / "assertions/relaunch-protected-view.json").write_text(
+        json.dumps(protected_rows, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    for row in protected_rows:
+        if row["protected_view"] is not True or not row["folded_paragraph_count"]:
+            raise RuntimeError(f"Recovered giant-paragraph draft is not in Protected View: {row!r}")
 
     notifications = window.get("notifications", {})
     notification_text = notifications.get("status_text") or ""
