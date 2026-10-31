@@ -693,3 +693,48 @@ fn test_protected_find_runs_on_the_source_and_finds_hidden_text() {
         "the editable document's find attaches its search context again"
     );
 }
+
+#[test]
+fn test_an_edit_entered_session_finds_and_copies_its_hidden_tail() {
+    // An edit-growth session has no install body to keep as its source: it
+    // captures the buffer after the entry, and find and copy wait for it.
+    let body = body_with_giants(&[]);
+    let (page, _window) = editable_page(&body, "edit-source");
+    let run = format!(
+        "{}zqzgrown{}",
+        "p".repeat(n(L_PROTECT_EDIT)),
+        "q".repeat(500)
+    );
+    paste_at_line_end(&page, 5, &run);
+    assert_entered(&page, 5, "edit-source");
+    let text = editor_text(&page);
+    wait_until(Duration::from_secs(30), || {
+        page.protected_view_evidence().source_bytes == Some(u64::try_from(text.len()).expect("len"))
+    });
+
+    page.show_search();
+    flush_events();
+    page.search_bar().search_entry().set_text("zqzgrown");
+    wait_until(Duration::from_secs(30), || {
+        !page.protected_view_evidence().find_pending
+            && page.protected_view_evidence().find_matches == 1
+    });
+
+    page.source_view().clipboard().set_text("");
+    let buffer = page.buffer();
+    let (start, end) = buffer.bounds();
+    buffer.select_range(&start, &end);
+    page.source_view().emit_by_name::<()>("copy-clipboard", &[]);
+    wait_until(Duration::from_secs(30), || {
+        clipboard_text(&page).is_some_and(|copied| !copied.is_empty())
+    });
+    assert_eq!(
+        clipboard_text(&page).expect("the clipboard holds text"),
+        text,
+        "the copy holds the grown paragraph's hidden tail"
+    );
+
+    // The entry undo drops the captured source.
+    assert!(page.undo_protected_entry());
+    assert_eq!(page.protected_view_evidence().source_bytes, None);
+}

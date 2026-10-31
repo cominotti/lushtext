@@ -556,6 +556,17 @@ draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
   reaches the feature (load publish, every install path, and the same
   `insert-text`/`delete-range` emission as an edit). A byte-only caller uses
   `DocumentScale::for_total_bytes`.
+- **Protected View** (`ui/editor_page/protected_view/`). A protected document's
+  hidden tails must never reach a GTK text API that reads only visible text or
+  lays out a giant paragraph: find, copy, save and any future reader take the
+  session's `ProtectedTextSource` (an install body, or the bounded capture an
+  edit entry starts after its emission), never `buffer.text()` with hidden text
+  excluded, never a `GtkSourceSearchContext`. Insert protected bodies through
+  `ui::protected_fold::insert_folded` so the tail is invisible in the same
+  dispatch it is inserted. Never move a mark or iterator into a hidden tail
+  (A66): navigation scrolls a `protected-nav` mark at a visible column or the
+  paragraph start. A new mutating key binding, gesture or drop target on the
+  editor view must be added to the stopped set in `interaction_execution.rs`.
 - **Minimap retire-and-rebuild.** Never clear the `view` of a live
   `GtkSourceMap` (`set_view(NULL)` or `view = None`): an armed update tick then
   runs against no view and logs `Gtk-CRITICAL`/`GLib-GObject-CRITICAL` (ledger

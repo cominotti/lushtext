@@ -23,26 +23,35 @@
 //! | `find_execution` | coordination | the worker-find stage: the search bar's routed query and navigation, one worker search over the source at a time, matches published as paragraph, column and length |
 //! | `interaction_execution` | coordination | the caret-free interaction stage: stopped keybinding signals, the `move-cursor` intercept, the capture key controller and gestures, drop targets |
 //!
-//! The executor milestone (tasks 4.3–6.x) adds the coordination modules
-//! (`execution`, `inspector_execution`, `find_execution`), the evidence surface
-//! and the called presentation surfaces (`inspector`, `fold_gutter`).
+//! Called presentation surfaces outside this directory: `ui/protected_fold.rs`
+//! (the fold tag and the folded insert the install turns call), the search
+//! bar's external-find routing, and the automation snapshot's tab fields.
 //!
-//! ## Stages (filled by the executor milestone)
+//! ## Stages and resumption points
 //!
-//! 1. **Enter.** On a whole-content install whose body profile says protected,
-//!    before its first byte, or from C1's edit watch in the same emission:
-//!    `ProtectedSession::on_event` advances the session, and the ticket is
-//!    built once.
-//! 2. **Make the view caret-free.** Properties, the `move-cursor` intercept
-//!    (`viewport_step`), the capture gestures (`press_disposition`), DnD off,
-//!    key-binding pre-emption (`action_disposition`), minimap off.
-//! 3. **Serve reads from the source.** Navigation (`navigation_target`), the
-//!    Line Inspector (`inspector_window*`), whole-line copy
-//!    (`COPY_CHUNK_BYTES`), worker find (`admit_find_record`,
-//!    `next_find_batch`). Each resumes from a worker completion or an idle
-//!    dispatch and publishes only while `protected_view_is_current` holds.
-//! 4. **Leave.** A reload from disk re-derives; the entry undo ends an
-//!    edit-growth session.
+//! 1. **Enter at install.** A whole-content install (load, eviction reload,
+//!    draft recovery, local-history restore and its undo) whose body profile
+//!    says protected calls `begin_protected_install` before its first byte;
+//!    the install's own turns fold each paragraph as they insert it, and the
+//!    install terminal hands the body over as the [`seams::ProtectedTextSource`]
+//!    (`retain_protected_source`). No resumption point of its own: the install
+//!    workflow's turns are the inversion.
+//! 2. **Enter from an edit.** C1's edit watch, inside the same `insert-text`
+//!    emission, calls `enter_protected_view_from_edit`: the length and density
+//!    folds over the edited lines, then the caret-free properties. Synchronous.
+//! 3. **Stay caret-free** (`interaction_execution`): stopped key-binding
+//!    signals, the `move-cursor` intercept (`policy::viewport_step`), the
+//!    capture key controller and gestures, drop targets off, PRIMARY off. The
+//!    `realize`/`unrealize` handlers resume the PRIMARY balance.
+//! 4. **Serve reads from the source.** Worker find (`find_execution`) resumes in
+//!    its `spawn_blocking_then` completion, which publishes only for the
+//!    current find generation while the editor is still protected. Copy resumes
+//!    in its completion and sets the clipboard with the bytes selected at the
+//!    request, so it needs no freshness check. Save writes the source verbatim
+//!    (`save/execution.rs`).
+//! 5. **Leave.** A reload from disk re-derives the session; the entry undo
+//!    (`undo_protected_entry`) ends an edit-growth session and restores the
+//!    scale held before entry.
 
 pub(crate) mod evidence;
 pub(crate) mod execution;

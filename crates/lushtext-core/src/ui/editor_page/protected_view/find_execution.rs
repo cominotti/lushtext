@@ -88,6 +88,8 @@ impl LushtextEditorPage {
         let bar = self.search_bar();
         let query = bar.search_entry().text().to_string();
         let Some(source) = self.protected_source() else {
+            // An edit-entered session still capturing its source restarts
+            // this request when the capture lands.
             bar.set_match_count(0, 0);
             return;
         };
@@ -213,9 +215,19 @@ impl LushtextEditorPage {
         self.clear_current_match_tag();
     }
 
-    /// Whether a protected find request is running on its worker.
+    /// Whether a protected find request is running on its worker, or waits
+    /// for an edit-entered session's source capture.
     pub(crate) fn protected_find_pending(&self) -> bool {
         self.protected_find_state().cancel.borrow().is_some()
+            || (self.protected_source_capture_pending()
+                && !self.search_bar().search_entry().text().is_empty())
+    }
+
+    /// A new source landed: rerun the bar's current query over it.
+    pub(in crate::ui::editor_page) fn restart_protected_find_for_new_source(&self) {
+        if !self.search_bar().search_entry().text().is_empty() {
+            self.start_protected_find();
+        }
     }
 
     /// The protected find results: the match count and the current index.
