@@ -34,6 +34,7 @@
 //! counter. Both paths converge on [`complete_loaded_installation`], so the
 //! published result cannot differ between them.
 
+use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -492,6 +493,12 @@ pub(super) fn install_loaded_direct(
     // scale keeps from the map or the context engine is gated before the
     // first byte enters the buffer.
     editor.prepare_for_incoming_profile(&loaded.metadata.profile);
+    editor.begin_protected_install(
+        &loaded.metadata.profile,
+        ProtectedInstallSource::Load {
+            eviction_reload: editor.imp().residency.evicted.get(),
+        },
+    );
     let buffer = editor.buffer();
     editor.imp().load.finalizing.set(true);
     editor.imp().load.dispose_during_finalization.set(false);
@@ -529,6 +536,12 @@ fn start_chunked_install(
 ) {
     let restore = begin_load_installation(editor, true);
     editor.prepare_for_incoming_profile(&loaded.metadata.profile);
+    editor.begin_protected_install(
+        &loaded.metadata.profile,
+        ProtectedInstallSource::Load {
+            eviction_reload: editor.imp().residency.evicted.get(),
+        },
+    );
     let buffer = editor.buffer();
     buffer.begin_irreversible_action();
     let session = Rc::new(RefCell::new(ChunkedLoadInstall {
@@ -704,6 +717,7 @@ pub(super) fn restore_load_installation_state(
     editor
         .source_view()
         .set_cursor_visible(restore.view.cursor_visible);
+    editor.reassert_protected_view_properties();
     if editor.is_search_visible() && editor.search_bar().search_context().is_none() {
         editor
             .search_bar()

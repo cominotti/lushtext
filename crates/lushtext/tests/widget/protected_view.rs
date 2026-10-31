@@ -307,3 +307,45 @@ fn test_entry_undo_removes_the_typed_group_and_leaves_protected_view() {
     assert!(!page.protected_entry_undo_available());
     assert!(!page.undo_protected_entry());
 }
+
+// ─── Install entry and the reload exit (tasks 4.3, 3.3a) ───────────────────
+
+#[test]
+fn test_loading_a_protected_file_enters_protected_view_without_entry_undo() {
+    ensure_gtk_init();
+    let body = body_with_giants(&[n(L_PROTECT_EDIT) + 1]);
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("installed.txt");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    load_and_wait(&page, &path);
+    assert!(page.is_protected_view(), "a protected body enters on load");
+    assert!(
+        !page.source_view().is_editable(),
+        "not editable after the install"
+    );
+    assert!(
+        !page.source_view().is_cursor_visible(),
+        "no caret after the install"
+    );
+    assert!(
+        !page.protected_entry_undo_available(),
+        "a load entry offers no entry undo"
+    );
+    assert!(!page.undo_protected_entry());
+    assert_eq!(editor_text(&page), body, "nothing changed");
+
+    // The file shrinks below the threshold and is reloaded from disk: the
+    // reload re-derives, and the document is editable again.
+    let small = body_with_giants(&[]);
+    fixture::write_text(&path, &small);
+    load_and_wait(&page, &path);
+    assert!(!page.is_protected_view(), "a reload from disk re-derives");
+    assert!(
+        page.source_view().is_editable(),
+        "editable after the reload"
+    );
+    assert!(page.source_view().is_cursor_visible(), "the caret is back");
+    assert_eq!(editor_text(&page), small);
+}

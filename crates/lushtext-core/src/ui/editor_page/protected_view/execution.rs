@@ -13,7 +13,9 @@ use std::cell::Cell;
 
 use gtk4::prelude::*;
 
-use super::policy::{ProtectedSession, SessionEvent};
+use super::policy::{ProtectedSession, SessionEvent, WholeContentInstall};
+use crate::model::document_scale::protects_by_length;
+use crate::model::paragraph_boundary::DocumentProfile;
 use crate::model::protected_fold::{FoldThresholds, plan_folds};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::protected_fold::fold_tag;
@@ -22,14 +24,27 @@ use crate::ui::protected_fold::fold_tag;
 #[derive(Debug)]
 pub struct ProtectedViewRuntime {
     session: Cell<ProtectedSession>,
+    /// A reload from disk just left Protected View: the next install terminal
+    /// makes the view editable again, once.
+    exit_pending: Cell<bool>,
 }
 
 impl Default for ProtectedViewRuntime {
     fn default() -> Self {
         Self {
             session: Cell::new(ProtectedSession::EDITABLE),
+            exit_pending: Cell::new(false),
         }
     }
+}
+
+/// Which whole-content install is starting, as the installers know it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProtectedInstallSource {
+    /// A load: a reload from disk unless it re-reads an evicted editor.
+    Load { eviction_reload: bool },
+    /// A bounded buffer replacement of the given kind.
+    Replacement(WholeContentInstall),
 }
 
 impl ProtectedViewRuntime {
@@ -50,6 +65,60 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn is_protected_view(&self) -> bool {
         self.protected_session().protected
+    }
+
+    /// Before the first byte of a whole-content install (design D2, D3): the
+    /// session advances from the body's worker profile, and a protected
+    /// session makes the view non-editable and caret-free now, while the
+    /// buffer still holds nothing of the body (setting `editable` invalidates
+    /// every line, A37). A reload from disk re-derives: a body below
+    /// `L_PROTECT_EDIT` leaves Protected View, applied at the install terminal
+    /// by [`reassert_protected_view_properties`](Self::reassert_protected_view_properties).
+    pub(crate) fn begin_protected_install(
+        &self,
+        profile: &DocumentProfile,
+        source: ProtectedInstallSource,
+    ) {
+        let protected = protects_by_length(profile.longest_paragraph_chars);
+        let event = match source {
+            ProtectedInstallSource::Load {
+                eviction_reload: true,
+            } => SessionEvent::Installed {
+                kind: WholeContentInstall::EvictionReload,
+                protected,
+            },
+            ProtectedInstallSource::Load {
+                eviction_reload: false,
+            } => SessionEvent::ReloadFromDisk { protected },
+            ProtectedInstallSource::Replacement(kind) => {
+                SessionEvent::Installed { kind, protected }
+            }
+        };
+        let runtime = self.imp_protected_view();
+        let was_protected = runtime.session.get().protected;
+        let next = runtime.advance(event);
+        if next.protected {
+            let view = self.source_view();
+            view.set_editable(false);
+            view.set_cursor_visible(false);
+        } else if was_protected {
+            runtime.exit_pending.set(true);
+        }
+    }
+
+    /// At an install terminal, after the installer restored the editable and
+    /// caret state it saved: a protected session stays non-editable and
+    /// caret-free, and a session a reload just left becomes editable again.
+    pub(crate) fn reassert_protected_view_properties(&self) {
+        let runtime = self.imp_protected_view();
+        let view = self.source_view();
+        if runtime.session.get().protected {
+            view.set_editable(false);
+            view.set_cursor_visible(false);
+        } else if runtime.exit_pending.take() {
+            view.set_editable(true);
+            view.set_cursor_visible(true);
+        }
     }
 
     /// Enter Protected View because an edit grew a paragraph over

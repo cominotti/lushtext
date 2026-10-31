@@ -8,6 +8,8 @@
 //! exactly-once terminal cleanup. Every decision it makes about *what* to do
 //! next is delegated to [`super::policy`]; what remains here is *how*.
 
+use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
+use crate::ui::editor_page::protected_view::policy::WholeContentInstall;
 use std::cell::RefCell;
 use std::ops::Deref;
 use std::rc::Rc;
@@ -30,9 +32,8 @@ use super::policy::{
     cancel_disposition, guard_restores_on_terminal, insertion_is_complete, start_disposition,
     turn_may_run,
 };
-// Only the test-only actuation seams name the workflow family directly; every
-// production caller supplies its own variant in the ticket it hands in.
-#[cfg(feature = "test-utils")]
+// The Protected View install mapping and the test-only actuation seams name
+// the workflow family; every caller supplies its own variant in its ticket.
 use super::policy::BufferReplacementWorkflow;
 
 /// Delay between scheduled turns. One millisecond, not an idle source: an idle
@@ -430,6 +431,24 @@ pub(super) fn dispose(editor: &LushtextEditorPage) {
     }
 }
 
+/// The Protected View install kind of a replacement workflow: the
+/// whole-content installs of a document body. Save formatting never runs on a
+/// protected buffer (design D9) and eviction only clears.
+fn protected_install_kind(workflow: BufferReplacementWorkflow) -> Option<WholeContentInstall> {
+    match workflow {
+        BufferReplacementWorkflow::DraftRecovery => Some(WholeContentInstall::DraftRecovery),
+        BufferReplacementWorkflow::LocalHistoryRestore => {
+            Some(WholeContentInstall::LocalHistoryRestore)
+        }
+        BufferReplacementWorkflow::LocalHistoryUndo => Some(WholeContentInstall::UndoRestore),
+        BufferReplacementWorkflow::MemoryEviction | BufferReplacementWorkflow::SaveFormatting => {
+            None
+        }
+        #[cfg(feature = "test-utils")]
+        BufferReplacementWorkflow::Test => None,
+    }
+}
+
 // --- stage 2: begin ---------------------------------------------------------
 
 fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
@@ -437,6 +456,9 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
     let guard = begin_guard(editor);
     if let Some(profile) = &request.profile {
         editor.prepare_for_incoming_profile(profile);
+        if let Some(kind) = protected_install_kind(request.ticket.workflow) {
+            editor.begin_protected_install(profile, ProtectedInstallSource::Replacement(kind));
+        }
     }
     let buffer = editor.buffer();
     buffer.begin_irreversible_action();
@@ -510,6 +532,7 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
     editor
         .source_view()
         .set_cursor_visible(guard.cursor_visible);
+    editor.reassert_protected_view_properties();
     let syntax_enabled = editor.document_scale().syntax_enabled;
     editor
         .buffer()
