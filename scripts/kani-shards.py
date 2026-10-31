@@ -161,6 +161,18 @@ PROTECTED_FOLD_MEASURED_IN = (
     "17.28-min / 1.51 GiB run of their union, split by per-harness time plus about one minute of "
     "compilation), not runner measurements"
 )
+# long-line-protected-view (C2), the Protected View policy's harnesses H3-H4x.
+# H4n (navigation) has its own shard: it alone takes about 13 minutes. H4 (the
+# inspector tiling) is a property test, not a harness (design D12).
+PROTECTED_VIEW_MINUTES = 1.1
+PROTECTED_VIEW_PEAK_GIB = 3.4
+PROTECTED_VIEW_NAVIGATION_MINUTES = 13.3
+PROTECTED_VIEW_NAVIGATION_PEAK_GIB = 1.5
+PROTECTED_VIEW_MEASURED_IN = (
+    "PENDING DISPATCH: local make kani KANI_MEASURE runs on the reference workstation, 2026-10-31 "
+    "(Kani 0.68.0; core-protected-view 1.09 min / 3.34 GiB; core-protected-view-navigation "
+    "13.26 min / 1.41 GiB), not runner measurements"
+)
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -426,6 +438,27 @@ SHARDS: dict[str, Shard] = {
         ci_peak_gib=PROTECTED_FOLD_MAPPING_PEAK_GIB,
         measured_in=PROTECTED_FOLD_MEASURED_IN,
     ),
+    "core-protected-view": Shard(
+        "lushtext-core",
+        (
+            "ui::editor_page::protected_view::policy::kani_proofs::no_mutating_",
+            "ui::editor_page::protected_view::policy::kani_proofs::protected_view_entry_",
+            "ui::editor_page::protected_view::policy::kani_proofs::entry_",
+            "ui::editor_page::protected_view::policy::kani_proofs::find_batch",
+        ),
+        gate="scheduled",
+        ci_minutes=PROTECTED_VIEW_MINUTES,
+        ci_peak_gib=PROTECTED_VIEW_PEAK_GIB,
+        measured_in=PROTECTED_VIEW_MEASURED_IN,
+    ),
+    "core-protected-view-navigation": Shard(
+        "lushtext-core",
+        ("ui::editor_page::protected_view::policy::kani_proofs::navigation_target_",),
+        gate="scheduled",
+        ci_minutes=PROTECTED_VIEW_NAVIGATION_MINUTES,
+        ci_peak_gib=PROTECTED_VIEW_NAVIGATION_PEAK_GIB,
+        measured_in=PROTECTED_VIEW_MEASURED_IN,
+    ),
 }
 
 
@@ -516,6 +549,7 @@ _SCALE = "model::document_scale::kani_proofs::"
 _BOUNDARY = "model::paragraph_boundary::kani_proofs::"
 _WATCH = "model::paragraph_profile_watch::kani_proofs::"
 _FOLD = "model::protected_fold::kani_proofs::"
+_PV = "ui::editor_page::protected_view::policy::kani_proofs::"
 _SHELL_POLICY_HARNESSES = (
     _h(_SHELL + "focus_mode_renders_no_secondary_surface", 0.11, "ci"),
     _h(_SHELL + "layout_never_renders_an_unrequested_surface", 0.2, "ci"),
@@ -719,6 +753,18 @@ ORACLES: dict[str, Oracle] = {
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r1", 36.29, "ci"),
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r2", 54.16, "ci"),
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r3", 361.16, "local"),
+        ),
+    ),
+    "crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs": Oracle(
+        _CORE,
+        (
+            _h(_PV + "no_mutating_action_is_admitted", 0.11, "ci"),
+            _h(_PV + "find_batch_exceeds_the_byte_bound_without_record_admission", 0.12, "ci"),
+            _h(_PV + "protected_view_entry_is_monotone", 0.84, "ci"),
+            _h(_PV + "entry_is_not_monotone_if_eviction_reload_re_derives", 1.11, "ci"),
+            _h(_PV + "entry_undo_after_load_entry_breaks_monotonicity", 1.17, "ci"),
+            _h(_PV + "find_batches_are_bounded_and_partition_results", 49.09, "ci"),
+            _h(_PV + "navigation_target_reaches_every_column", 784.45, "local"),
         ),
     ),
     "crates/lushtext-core/src/model/paragraph_profile_watch.rs": Oracle(

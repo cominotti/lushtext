@@ -23,6 +23,14 @@ pub(crate) mod local_history;
 mod minimap;
 mod monitor;
 mod overscroll;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pure Protected View policy and seams land before their executor (long-line-protected-view tasks 4.3-6.x), which wires them"
+    )
+)]
+mod protected_view;
 mod restore_position;
 pub mod save;
 mod search;
