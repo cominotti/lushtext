@@ -756,8 +756,8 @@ invariant; tighten the generator or use the deep lane.
   editor-memory budget, the paragraph boundary and profile, the document
   scale and the Protected View fold (`model/protected_fold.rs`) in `model/`,
   and the `ui/**` policies of the minimap
-  fits, the adaptive-shell geometry, the width presets, and the preview-width
-  clamp), over GTK-free, I/O-free code
+  fits, the adaptive-shell geometry, the width presets, the preview-width
+  clamp, and Protected View (`ui/editor_page/protected_view/policy.rs`)), over GTK-free, I/O-free code
   that ships, or a pure core production drives. Never a copy of the code.
   `cfg(kani)` is a declared expected cfg in the workspace lints, so ordinary
   builds, Clippy, and tests compile none of it and need no Kani install.

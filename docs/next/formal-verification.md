@@ -1910,6 +1910,37 @@ Kani arm kills. **Remaining:** the last 34 mutants of the tests arm (resumable
 from `target/proof-strength/results/e78db80c…/tests/`), in pieces of at most
 about 20 minutes.
 
+### Protected View policy (`long-line-protected-view`, C2, 2026-10-31)
+
+`ui/editor_page/protected_view/policy.rs` is proved by eight harnesses in
+`policy/kani_proofs.rs` (design D12): H3 (no mutating action is admitted),
+H3m (monotone entry and the entry undo), the `should_panic` pins H3x
+(eviction reload re-deriving) and H3u (entry undo after a load entry), H4n
+(navigation), H4f (find batches) and the `should_panic` pin H4x (a record
+built without admission). Two outcomes differ from the design:
+
+- **H4 (the inspector tiling) is not a harness.** With a symbolic width, and
+  again at the production width `N_INSPECT`, CBMC did not finish it within the
+  20-minute cap: every check of the tiling is a 64-bit division, which CBMC
+  bit-blasts. Its statement is carried by the property test
+  `inspector_windows_tile_over_the_whole_range` (any `u64` length, the
+  production width and widths 1 to `N_INSPECT`, random index and column) and
+  the exhaustive unit test `inspector_windows_tile_for_every_small_width`
+  (widths 1–7, lengths up to 40).
+- **H4n runs at the production width.** Its first form (symbolic width, the
+  window re-derived with `inspector_window`) ran past 71 minutes; its second
+  (compared with a second `inspector_window_containing` call, which asked CBMC
+  to prove two dividers equivalent) timed out at 20. The shipped form checks
+  the window `navigation_target` returns by its defining properties (start
+  `index · n`, 1 to `n` characters, full unless it ends the paragraph,
+  contains the clamped column), by multiplication by the constant width only:
+  784 s. Other widths are an exhaustive unit test.
+
+Shards (local `KANI_MEASURE`, pending two dispatched runs):
+`core-protected-view` (H3, H3m, H3x, H3u, H4f, H4x) 1.09 min / 3.34 GiB and
+`core-protected-view-navigation` (H4n) 13.26 min / 1.41 GiB, both `scheduled`.
+No counterexample was found. Proof strength for the module has not run yet.
+
 ## 4. Deferral inventory
 
 - Multi-process safety of the draft journal and the target guard (axiom A6).
@@ -2064,33 +2095,3 @@ about 20 minutes.
   the `ci` tier should run on the weekly Kani schedule, left open because it
   needs more than twenty 25-minute shards.
 
-### Protected View policy (`long-line-protected-view`, C2, 2026-10-31)
-
-`ui/editor_page/protected_view/policy.rs` is proved by eight harnesses in
-`policy/kani_proofs.rs` (design D12): H3 (no mutating action is admitted),
-H3m (monotone entry and the entry undo), the `should_panic` pins H3x
-(eviction reload re-deriving) and H3u (entry undo after a load entry), H4n
-(navigation), H4f (find batches) and the `should_panic` pin H4x (a record
-built without admission). Two outcomes differ from the design:
-
-- **H4 (the inspector tiling) is not a harness.** With a symbolic width, and
-  again at the production width `N_INSPECT`, CBMC did not finish it within the
-  20-minute cap: every check of the tiling is a 64-bit division, which CBMC
-  bit-blasts. Its statement is carried by the property test
-  `inspector_windows_tile_over_the_whole_range` (any `u64` length, the
-  production width and widths 1 to `N_INSPECT`, random index and column) and
-  the exhaustive unit test `inspector_windows_tile_for_every_small_width`
-  (widths 1–7, lengths up to 40).
-- **H4n runs at the production width.** Its first form (symbolic width, the
-  window re-derived with `inspector_window`) ran past 71 minutes; its second
-  (compared with a second `inspector_window_containing` call, which asked CBMC
-  to prove two dividers equivalent) timed out at 20. The shipped form checks
-  the window `navigation_target` returns by its defining properties (start
-  `index · n`, 1 to `n` characters, full unless it ends the paragraph,
-  contains the clamped column), by multiplication by the constant width only:
-  784 s. Other widths are an exhaustive unit test.
-
-Shards (local `KANI_MEASURE`, pending two dispatched runs):
-`core-protected-view` (H3, H3m, H3x, H3u, H4f, H4x) 1.09 min / 3.34 GiB and
-`core-protected-view-navigation` (H4n) 13.26 min / 1.41 GiB, both `scheduled`.
-No counterexample was found. Proof strength for the module has not run yet.
