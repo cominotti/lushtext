@@ -220,13 +220,6 @@ impl ProtectedTextSource {
     }
 
     /// The whole document text.
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "read by the protected save and worker find (long-line-protected-view tasks 6.x, 7.1), which land after the source"
-        )
-    )]
     pub(crate) fn text(&self) -> &str {
         self.body.as_str()
     }

@@ -718,7 +718,35 @@ pub fn write_document_to_path(
 ) -> Result<EditorWriteResult, EditorSaveError> {
     delay_save_write_for_test();
     let normalized = normalize_line_endings(text, line_ending)?;
-    let bytes = encode_text(normalized.as_ref(), encoding, allow_lossy)?;
+    write_encoded_document(path, normalized.as_ref(), encoding, allow_lossy)
+}
+
+/// Write `text` exactly as it is, in `encoding`: no line-ending
+/// normalization, so `Mixed` endings are kept. The save of a Protected View
+/// document writes its retained text source this way, because normalization
+/// is unavailable there and refusing would leave a recovered or edit-growth
+/// document unsaveable (`long-line-protected-view` design D9).
+///
+/// # Errors
+///
+/// Returns an encode or write error exactly as [`write_document_to_path`].
+pub fn write_document_verbatim_to_path(
+    path: &Path,
+    text: &str,
+    encoding: DocumentEncoding,
+    allow_lossy: bool,
+) -> Result<EditorWriteResult, EditorSaveError> {
+    delay_save_write_for_test();
+    write_encoded_document(path, text, encoding, allow_lossy)
+}
+
+fn write_encoded_document(
+    path: &Path,
+    text: &str,
+    encoding: DocumentEncoding,
+    allow_lossy: bool,
+) -> Result<EditorWriteResult, EditorSaveError> {
+    let bytes = encode_text(text, encoding, allow_lossy)?;
     let bytes_written = bytes.len() as u64;
     write_bytes_to_path(path, &bytes)?;
     let mtime = fs_metadata::file_facts(path)

@@ -435,8 +435,16 @@ fn test_move_cursor_scrolls_without_moving_a_mark() {
 
 // ─── Recovery of a giant-paragraph draft (tasks 7.10, design D13) ──────────
 
-#[test]
-fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source() {
+/// Seed a draft of `draft` for a file holding "small\n", restore it at startup,
+/// and return the window, the recovered editor, the file and its directory.
+fn recover_draft(
+    draft: &str,
+) -> (
+    lushtext_core::ui::window::LushtextWindow,
+    LushtextEditorPage,
+    std::path::PathBuf,
+    tempfile::TempDir,
+) {
     use crate::common::{active_editor, test_window};
     use lushtext_core::model::draft::{DraftEntry, DraftManifest};
     use lushtext_core::model::session::{SessionData, SessionTab};
@@ -448,10 +456,7 @@ fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source()
     fixture::write_text(&file_path, "small\n");
     let data_dir = json_store::data_dir();
     let draft_id = draft_service::draft_id_for_path(&file_path);
-    // The crash-recovery smoke's shape: a body whose last paragraph is
-    // several million characters with no delimiter after it.
-    let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(3_000_000));
-    draft_service::fixture::write_body(&data_dir, &draft_id, &draft).expect("seed draft");
+    draft_service::fixture::write_body(&data_dir, &draft_id, draft).expect("seed draft");
     let mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
     draft_service::save_manifest(
         &data_dir,
@@ -470,7 +475,7 @@ fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source()
         &data_dir,
         &SessionData {
             tabs: vec![SessionTab {
-                path: Some(file_path),
+                path: Some(file_path.clone()),
                 draft_id: None,
                 cursor_line: 0,
                 cursor_col: 0,
@@ -491,6 +496,15 @@ fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source()
     });
     flush_events();
     let editor = active_editor(&window);
+    (window, editor, file_path, dir)
+}
+
+#[test]
+fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source() {
+    // The crash-recovery smoke's shape: a body whose last paragraph is
+    // several million characters with no delimiter after it.
+    let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(3_000_000));
+    let (_window, editor, _path, _dir) = recover_draft(&draft);
     assert_eq!(
         editor_text(&editor),
         draft,
@@ -515,4 +529,33 @@ fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source()
         Some(u64::try_from(draft.len()).expect("fits")),
         "the recovered body is the session's text source"
     );
+}
+
+#[test]
+fn test_saving_a_recovered_protected_draft_writes_its_source_verbatim() {
+    // Mixed line endings: the ordinary save refuses them; a protected save
+    // writes the source exactly (design D9).
+    let draft = format!(
+        "crlf line\r\nlf line\n{}\r\nlast\n",
+        "s".repeat(n(L_PROTECT_EDIT) + 10)
+    );
+    let (_window, editor, path, _dir) = recover_draft(&draft);
+    assert!(editor.is_protected_view());
+    let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+    let saved_result = std::rc::Rc::clone(&saved);
+    editor.save_file_async(move |result| {
+        saved_result.set(Some(result.is_ok()));
+    });
+    wait_until(Duration::from_secs(30), || saved.get().is_some());
+    assert_eq!(saved.get(), Some(true), "the protected save succeeds");
+    assert_eq!(
+        fixture::read_bytes(&path),
+        draft.as_bytes(),
+        "the file holds the recovered source byte for byte, mixed endings included"
+    );
+    assert!(
+        !editor.buffer().is_modified(),
+        "the saved document is clean"
+    );
+    assert!(editor.is_protected_view(), "and stays protected");
 }
