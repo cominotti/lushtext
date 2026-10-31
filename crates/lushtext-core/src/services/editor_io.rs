@@ -1320,7 +1320,7 @@ fn analyze_decoded_content_cancellable(
     let mut tally = LineEndingTally::default();
     let mut nbsp_count = 0usize;
     let mut zero_width_count = 0usize;
-    let mut profile = ParagraphProfileAccumulator::new(ProfileConfig::PRODUCTION);
+    let mut profile = ParagraphProfileAccumulator::with_fold_plan(ProfileConfig::PRODUCTION);
 
     let mut scan_slice = |slice: &str| {
         tally.scan_slice(slice.as_bytes());

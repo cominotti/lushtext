@@ -613,5 +613,114 @@ pub fn plan_folds(paragraph_chars: &[u64], thresholds: FoldThresholds) -> Vec<Fo
     plan
 }
 
+/// The fold plan of one body, built on the worker that profiles it (task 2.2)
+/// and carried to the install by [`DocumentProfile`](super::paragraph_boundary::DocumentProfile).
+///
+/// Only folded paragraphs are listed, in paragraph order; an unfolded
+/// paragraph shows whole. The plan is compact: [`FoldRange::RETAINED_BYTES`]
+/// per folded paragraph, which [`retained_bytes`](Self::retained_bytes)
+/// reports for the install's transient admission.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FoldPlan {
+    ranges: Box<[FoldRange]>,
+    hidden_chars: u64,
+}
+
+impl FoldPlan {
+    /// The folded paragraphs, in paragraph order.
+    #[must_use]
+    pub fn ranges(&self) -> &[FoldRange] {
+        &self.ranges
+    }
+
+    /// Paragraphs with a hidden tail.
+    #[must_use]
+    pub fn folded_paragraphs(&self) -> u64 {
+        // A slice length fits a `u64` on every supported target.
+        self.ranges.len() as u64
+    }
+
+    /// Characters hidden across every tail (saturating).
+    #[must_use]
+    pub const fn hidden_chars(&self) -> u64 {
+        self.hidden_chars
+    }
+
+    /// Bytes the plan retains, the charge the install's admission takes.
+    #[must_use]
+    pub fn retained_bytes(&self) -> u64 {
+        self.folded_paragraphs()
+            .saturating_mul(FoldRange::RETAINED_BYTES)
+    }
+
+    /// The range of `paragraph`, if it is folded (binary search; the ranges
+    /// are in paragraph order).
+    #[must_use]
+    pub fn range_of(&self, paragraph: u64) -> Option<FoldRange> {
+        self.ranges
+            .binary_search_by_key(&paragraph, |range| range.paragraph)
+            .ok()
+            .map(|index| self.ranges[index])
+    }
+}
+
+/// Streams closed paragraph lengths into the production fold (task 2.2): the
+/// second consumer of `ParagraphProfileAccumulator`'s lengths, beside
+/// `ParagraphLengthFold`. O(1) per paragraph; only folded paragraphs are kept.
+#[derive(Clone, Debug)]
+pub struct FoldPlanner {
+    state: ProductionFoldState,
+    ranges: Vec<FoldRange>,
+    hidden_chars: u64,
+}
+
+impl Default for FoldPlanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FoldPlanner {
+    /// A planner over [`FoldThresholds::PRODUCTION`] that has seen nothing.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: ProductionFoldState::with_thresholds(FoldThresholds::PRODUCTION),
+            ranges: Vec::new(),
+            hidden_chars: 0,
+        }
+    }
+
+    /// Feed the next paragraph's length in characters (delimiter excluded).
+    pub fn push(&mut self, paragraph_chars: u64) {
+        if let Some(range) = fold_step(&mut self.state, paragraph_chars) {
+            keep_folded(&mut self.ranges, &mut self.hidden_chars, range);
+        }
+    }
+
+    /// Decide the remaining paragraphs and return the plan.
+    #[must_use]
+    pub fn finish(self) -> FoldPlan {
+        let Self {
+            state,
+            mut ranges,
+            mut hidden_chars,
+        } = self;
+        for range in fold_finish(state) {
+            keep_folded(&mut ranges, &mut hidden_chars, range);
+        }
+        FoldPlan {
+            ranges: ranges.into_boxed_slice(),
+            hidden_chars,
+        }
+    }
+}
+
+/// Record a planned range (the fold emits only ranges with a hidden tail).
+fn keep_folded(ranges: &mut Vec<FoldRange>, hidden_chars: &mut u64, range: FoldRange) {
+    *hidden_chars = hidden_chars.saturating_add(range.tail_chars);
+    ranges.push(range);
+}
+
 #[cfg(test)]
 mod tests;

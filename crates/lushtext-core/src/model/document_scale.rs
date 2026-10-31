@@ -103,6 +103,14 @@ pub const L_EDIT_STALL: u64 = 3_500;
 /// decides the flag.
 pub const L_PROTECT_EDIT: u64 = 50_000;
 
+/// Whether a longest paragraph of `longest_paragraph_chars` characters puts
+/// the document in Protected View: the one entry rule, which
+/// [`DocumentScale::for_profile`] and the worker-side fold planner share.
+#[must_use]
+pub const fn protects_by_length(longest_paragraph_chars: u64) -> bool {
+    longest_paragraph_chars > L_PROTECT_EDIT
+}
+
 /// Plain-text scroll stays within budget up to this paragraph length (C0:
 /// 500,000 / 710,000). The largest per-paragraph threshold the profile counts.
 pub const N_VISIBLE: u64 = 500_000;
@@ -475,7 +483,7 @@ impl DocumentScale {
         let minimap_by_length = longest > L_MINIMAP;
         let invisibles_by_length = longest > L_INVISIBLES;
         let search_by_length = longest > L_SEARCH_HIGHLIGHT;
-        let protect_by_length = longest > L_PROTECT_EDIT;
+        let protect_by_length = protects_by_length(longest);
         let undo_enabled = bytes <= UNDO_TOTAL_BYTES;
         let local_history = if bytes > HISTORY_UNAVAILABLE_BYTES {
             LocalHistoryAvailability::Unavailable
