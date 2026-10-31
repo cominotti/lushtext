@@ -45,6 +45,7 @@
 - [ ] 4.5 Add `fold_gutter.rs` (bounded by visible rows, with an accessible label).
 - [ ] 4.6 Add `test_policy.rs` only if a test-only value is required, within the matrix's `*_for_test` ceiling.
 - [ ] 4.7 Widget tests for the precondition gates: the properties and the intercept with `gtk-keynav-use-caret` on; single, double and triple clicks and drags leave the marks unmoved; Ctrl+V, Ctrl+X, Ctrl+A, Ctrl+Shift+A, Ctrl+Shift+X, Ctrl+%, F7, Shift+F10, Menu, Ctrl+Z, Alt+Up, Backspace, Delete and typing leave the buffer, marks, `cursor-visible` and `modified` unchanged (failing-first: Ctrl+Shift+A on a number and Ctrl+A); the class-shortcut enumeration; a touch drag scrolls; DnD drop refused; no minimap; the notice appears once.
+- [ ] 4.7a Clipboard routes (design D3, C6 review finding): pre-empt `copy-clipboard`/`clipboard.copy` and route a selection's copy to the source-backed lazy provider (hidden tails included), refuse cut, remove the buffer's primary selection clipboard while protected (restore it on reload and entry undo), keep drag-out claimed (A59/A63). Failing-first widget test: select across a folded paragraph, copy, assert the clipboard holds the full paragraph text including the tail (fails on GTK's visible-only copy); also assert cut leaves the buffer unchanged and PRIMARY is not offered the folded range.
 
 ## 5. Immutable source, Line Inspector and whole-line copy
 

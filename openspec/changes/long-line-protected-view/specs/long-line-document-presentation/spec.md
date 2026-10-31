@@ -46,6 +46,10 @@ While Protected View is active, no interaction, keybinding, action, gesture, dro
 - **WHEN** the user scrolls, clicks, drags, types printable keys, presses Backspace, Delete or Enter, invokes paste or cut by shortcut or menu, or drops data onto a protected document
 - **THEN** the buffer's character count and content generation are unchanged and `modified` stays false
 
+#### Scenario: Copy across a folded paragraph keeps the hidden tail
+- **WHEN** a selection spans a folded paragraph of a protected document (for example one an assistive technology set) and the user copies it
+- **THEN** the clipboard holds the selected text in full, the hidden tail included, read from the document's text source and not from GTK's visible-only copy; cut is refused and leaves the buffer unchanged; and the primary selection never offers the folded range
+
 #### Scenario: No draft or history capture for an installed protected document
 - **WHEN** a protected document that was installed unmodified stays open across autosave ticks and the periodic local-history interval
 - **THEN** no draft body is written and no local-history snapshot is captured for it

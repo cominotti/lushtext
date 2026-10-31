@@ -127,6 +127,13 @@ The state is never cleared by edits, preference changes, tab switches, eviction 
    A widget test walks the view's class shortcut controllers on the pinned toolkit and asserts that every bound action and signal has a disposition, so a binding a toolkit update adds fails the test rather than reaching the buffer. Each pre-empted request publishes the notice through the rate-limited lane.
 6. Turns the minimap off for the session (D10).
 
+**Clipboard and selection must never read the folded range through GTK (C6 review finding, 2026-10-31).** GTK's default clipboard path copies only *visible* text (`gtk_text_iter_get_visible_text`, GTK 4.22.5): a copy across a folded paragraph would silently drop its hidden tail, and a cut would delete the tail without putting it on the clipboard. C6 hit exactly this with select-all then cut during a paced reveal. Protected View therefore owns every route out of the buffer:
+- **Copy** (`copy-clipboard` signal, the `clipboard.copy` action, the Protected View menu's Copy) is pre-empted and, when a selection exists, re-routed to the source: the selection's buffer offsets equal the source's character offsets (the buffer is immutable and the source is its text), so the copy installs D6's lazy `GdkContentProvider` over that source range, hidden tails included, on the worker. With no selection, Copy does nothing but publish the notice.
+- **Cut** is refused (the buffer is immutable; H3 lists cut as mutating), never routed to GTK.
+- **Primary selection**: entering Protected View removes the primary clipboard from the buffer (`gtk_text_buffer_remove_selection_clipboard`), and leaving it (reload or entry undo) restores it, so an assistive-technology selection write (A62) never publishes visible-only text to PRIMARY.
+- **Drag-out**: the capture-phase drag claim (A59) keeps the text view's drag source from starting, and the drag source is disabled with the drop target (A63).
+A failing-first widget test selects across a folded paragraph (as an AT selection write could), copies, and asserts that the clipboard holds the paragraph's full text, tail included; it fails today because GTK's copy drops the tail.
+
 Navigation uses a dedicated `protected-nav` mark with `scroll_to_mark`. The one path LushText cannot pre-empt is an assistive technology writing the caret or selection through `GtkAccessibleText`; P4 and the lane's AT case pin its cost, and `ProtectedViewEvidence` counts any insert-mark move it observes.
 
 *Alternatives:* a non-focusable view (rejected: keyboard scrolling and AT access would be lost; it stays the fallback if P1–P6 or P4 fail); switching the IM module to simple (rejected: degrades CJK input everywhere).
