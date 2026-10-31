@@ -622,3 +622,62 @@ fn test_copy_across_a_folded_paragraph_keeps_the_hidden_tail() {
     flush_events();
     assert_eq!(editor_text(&page), body);
 }
+
+// ─── Worker find (tasks 6.1, 6.2, 6.6) ─────────────────────────────────────
+
+#[test]
+fn test_protected_find_runs_on_the_source_and_finds_hidden_text() {
+    ensure_gtk_init();
+    // A marker deep inside a giant paragraph's hidden tail, and one in a
+    // short visible line.
+    let giant = format!(
+        "{}zqzhidden{}",
+        "h".repeat(n(L_PROTECT_EDIT)),
+        "t".repeat(1_000)
+    );
+    let body = format!("short zqzhidden line\n{giant}\nshort\n");
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("find.txt");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    load_and_wait(&page, &path);
+    assert!(page.is_protected_view());
+
+    page.show_search();
+    flush_events();
+    assert!(
+        page.search_bar().search_context().is_none(),
+        "no GtkSourceSearchContext is attached in Protected View"
+    );
+    page.search_bar().search_entry().set_text("zqzhidden");
+    wait_until(Duration::from_secs(30), || {
+        page.protected_view_evidence().find_matches == 2
+    });
+    assert_eq!(page.protected_view_evidence().find_current, Some(0));
+    page.search_bar().move_next();
+    assert_eq!(
+        page.protected_view_evidence().find_current,
+        Some(1),
+        "the second match lies in the hidden tail and is reachable"
+    );
+    page.search_bar().move_next();
+    assert_eq!(
+        page.protected_view_evidence().find_current,
+        Some(0),
+        "navigation wraps"
+    );
+    page.search_bar().move_prev();
+    assert_eq!(page.protected_view_evidence().find_current, Some(1));
+    assert_eq!(editor_text(&page), body, "find changed nothing");
+
+    // Leaving Protected View (a reload of a small file) gives find back to
+    // the search context.
+    fixture::write_text(&path, "small zqzhidden\n");
+    load_and_wait(&page, &path);
+    assert!(!page.is_protected_view());
+    assert!(
+        page.search_bar().search_context().is_some(),
+        "the editable document's find attaches its search context again"
+    );
+}

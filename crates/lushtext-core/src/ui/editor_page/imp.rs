@@ -584,6 +584,8 @@ pub struct LushtextEditorPage {
     /// The view's drop targets while Protected View has them off (A63).
     pub(crate) protected_drop_targets:
         super::protected_view::interaction_execution::DetachedDropTargets,
+    /// Protected View's worker find (design D5).
+    pub(crate) protected_find: super::protected_view::find_execution::ProtectedFindState,
     /// Memory-residency and eviction bookkeeping for this tab.
     pub residency: MemoryResidencyState,
     /// Background file-load freshness primitives (generation + cancel token).
@@ -663,6 +665,7 @@ impl Default for LushtextEditorPage {
             protected_view: super::protected_view::execution::ProtectedViewRuntime::default(),
             protected_drop_targets:
                 super::protected_view::interaction_execution::DetachedDropTargets::default(),
+            protected_find: super::protected_view::find_execution::ProtectedFindState::default(),
             residency: MemoryResidencyState::default(),
             load_tracking: LoadTrackingState::default(),
             applied_style_scheme_id: RefCell::new(None),

@@ -17,7 +17,7 @@ use super::policy::{ProtectedSession, SessionEvent, WholeContentInstall};
 use super::seams::{FoldSummary, ProtectedTextSource};
 use crate::model::document_scale::protects_by_length;
 use crate::model::paragraph_boundary::DocumentProfile;
-use crate::model::protected_fold::{FoldThresholds, plan_folds};
+use crate::model::protected_fold::{FoldPlan, FoldRange, FoldThresholds, plan_folds};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::plain_disposal::DisposalOwned;
 use crate::ui::protected_fold::fold_tag;
@@ -33,6 +33,9 @@ pub struct ProtectedViewRuntime {
     source: RefCell<Option<ProtectedTextSource>>,
     /// What the session's fold hides (evidence and the automation snapshot).
     fold_summary: Cell<FoldSummary>,
+    /// The session's fold plan, absolute paragraph numbers: what find and
+    /// navigation read to tell a visible column from a hidden one.
+    fold_plan: RefCell<Option<std::sync::Arc<FoldPlan>>>,
 }
 
 impl Default for ProtectedViewRuntime {
@@ -42,6 +45,7 @@ impl Default for ProtectedViewRuntime {
             exit_pending: Cell::new(false),
             source: RefCell::new(None),
             fold_summary: Cell::new(FoldSummary::default()),
+            fold_plan: RefCell::new(None),
         }
     }
 }
@@ -116,12 +120,14 @@ impl LushtextEditorPage {
                         hidden_chars: plan.hidden_chars(),
                     }),
             );
+        runtime.fold_plan.replace(profile.fold_plan.clone());
         if next.protected {
             let view = self.source_view();
             view.set_editable(false);
             view.set_cursor_visible(false);
             self.detach_protected_drop_targets();
             self.set_protected_primary_selection_off(true);
+            self.set_protected_find_routing(true);
         } else if was_protected {
             runtime.exit_pending.set(true);
         }
@@ -166,6 +172,7 @@ impl LushtextEditorPage {
             view.set_cursor_visible(true);
             self.restore_protected_drop_targets();
             self.set_protected_primary_selection_off(false);
+            self.set_protected_find_routing(false);
         }
     }
 
@@ -188,6 +195,7 @@ impl LushtextEditorPage {
         let tag = fold_tag(buffer.upcast_ref());
         let mut first_folded = None;
         let mut summary = FoldSummary::default();
+        let mut applied = Vec::new();
         for run in contiguous_runs(lines) {
             let lengths: Vec<u64> = run.iter().map(|&(_, chars)| chars).collect();
             for range in plan_folds(&lengths, FoldThresholds::PRODUCTION) {
@@ -210,6 +218,10 @@ impl LushtextEditorPage {
                 }
                 summary.folded_paragraphs = summary.folded_paragraphs.saturating_add(1);
                 summary.hidden_chars = summary.hidden_chars.saturating_add(range.tail_chars);
+                applied.push(FoldRange {
+                    paragraph: u64::from(line.unsigned_abs()),
+                    ..range
+                });
                 first_folded.get_or_insert(line);
             }
         }
@@ -223,8 +235,16 @@ impl LushtextEditorPage {
         view.set_cursor_visible(false);
         self.detach_protected_drop_targets();
         self.set_protected_primary_selection_off(true);
+        // A search context already attached would keep scanning the grown
+        // buffer from its idle (design D5).
+        self.search_bar().detach();
+        self.search_bar().set_replace_mode(false);
+        self.set_protected_find_routing(true);
         let runtime = self.imp_protected_view();
         runtime.fold_summary.set(summary);
+        runtime
+            .fold_plan
+            .replace(Some(std::sync::Arc::new(FoldPlan::from_ranges(applied))));
         runtime.advance(SessionEvent::EditGrowth);
     }
 
@@ -259,8 +279,10 @@ impl LushtextEditorPage {
         view.set_cursor_visible(true);
         self.restore_protected_drop_targets();
         self.set_protected_primary_selection_off(false);
+        self.set_protected_find_routing(false);
         let runtime = self.imp_protected_view();
         runtime.fold_summary.set(FoldSummary::default());
+        runtime.fold_plan.replace(None);
         runtime.source.replace(None);
         runtime.advance(SessionEvent::EntryUndo { is_entry_step });
         true
@@ -281,5 +303,12 @@ impl LushtextEditorPage {
     /// What the session's fold hides.
     pub(crate) fn protected_fold_summary(&self) -> FoldSummary {
         self.imp_protected_view().fold_summary.get()
+    }
+}
+
+impl LushtextEditorPage {
+    /// The session's fold plan, if it folds anything.
+    pub(crate) fn protected_fold_plan(&self) -> Option<std::sync::Arc<FoldPlan>> {
+        self.imp_protected_view().fold_plan.borrow().clone()
     }
 }

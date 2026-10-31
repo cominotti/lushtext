@@ -57,12 +57,12 @@
 
 ## 6. Worker in-tab find
 
-- [ ] 6.1 Add the protected mode to the search bar: skip `attach` when protected, hide the replace row, make `win.begin-replace` open find plus the notice.
-- [ ] 6.2 In `find_execution.rs`, implement a single-flight worker search over the source (hidden tails included), with the option model, C1's `next_paragraph_break`, bounded batches, a result cap, cancellation and the counter states.
-- [ ] 6.3 Result activation through `navigation_target`: highlight the current match when visible, otherwise open the inspector.
+- [x] 6.1 Add the protected mode to the search bar: skip `attach` when protected, hide the replace row, make `win.begin-replace` open find plus the notice. *(Applied 2026-10-31: `attach_search_context` skips the context while protected at all three attach sites, an edit-growth entry detaches an open one, and Replace mode is never shown. The `win.begin-replace` notice follows with the notice lane.)*
+- [ ] 6.2 In `find_execution.rs`, implement a single-flight worker search over the source (hidden tails included), with the option model, C1's `next_paragraph_break`, bounded batches, a result cap, cancellation and the counter states. *(Partial, 2026-10-31: `find_execution.rs` routes the bar's query, options and next/previous (`set_external_find`), runs one worker search over the source (literal or regex, case, whole word; hidden tails included), cancels a superseded one through a shared flag and a generation, caps at `FIND_RESULT_CAP`, and counts columns incrementally per paragraph (GTK delimiters). The `editor-search` readiness hold follows with 8.2.)*
+- [ ] 6.3 Result activation through `navigation_target`: highlight the current match when visible, otherwise open the inspector. *(Partial, 2026-10-31: a visible match is tagged and scrolled to through a `protected-nav` mark, never the insert mark; a hidden one scrolls to its paragraph until the inspector exists.)*
 - [ ] 6.4 Unify the two prefill sites on one helper that reads `visible=true` text under the prefill bound.
 - [ ] 6.5 Hold `editor-search` for protected requests (and the one edit-growth capture), and a blocker for inspector window reads (an existing one or a new `line-inspector`, documented in task 8.2).
-- [ ] 6.6 Widget tests: no search context is attached; supersession keeps one pending request; a hit in a hidden tail is found and opens the inspector; batches stay within the constants.
+- [ ] 6.6 Widget tests: no search context is attached; supersession keeps one pending request; a hit in a hidden tail is found and opens the inspector; batches stay within the constants. *(Partial, 2026-10-31: test — no context attached, a marker deep in a hidden tail is found, next/previous wrap, find changes nothing, and a reload that leaves Protected View attaches the context again.)*
 
 ## 7. Surfaces, save, recovery and session
 

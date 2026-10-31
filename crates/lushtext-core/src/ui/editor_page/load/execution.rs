@@ -722,9 +722,7 @@ pub(super) fn restore_load_installation_state(
         .set_cursor_visible(restore.view.cursor_visible);
     editor.reassert_protected_view_properties();
     if editor.is_search_visible() && editor.search_bar().search_context().is_none() {
-        editor
-            .search_bar()
-            .attach(&editor.buffer(), editor.source_view());
+        editor.attach_search_context();
     }
     editor.refresh_minimap();
 }

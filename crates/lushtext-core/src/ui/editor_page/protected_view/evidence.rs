@@ -26,6 +26,10 @@ pub struct ProtectedViewEvidence {
     pub folded_paragraphs: u64,
     /// Characters hidden across every tail.
     pub hidden_chars: u64,
+    /// Matches of the current protected find (at most `FIND_RESULT_CAP`).
+    pub find_matches: usize,
+    /// The current match's index, when there is one.
+    pub find_current: Option<usize>,
 }
 
 impl LushtextEditorPage {
@@ -43,6 +47,8 @@ impl LushtextEditorPage {
             entry_undo_available: self.protected_entry_undo_available(),
             folded_paragraphs: self.protected_fold_summary().folded_paragraphs,
             hidden_chars: self.protected_fold_summary().hidden_chars,
+            find_matches: self.protected_find_counts().0,
+            find_current: self.protected_find_counts().1,
         }
     }
 }

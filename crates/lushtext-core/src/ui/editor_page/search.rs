@@ -73,7 +73,7 @@ impl LushtextEditorPage {
                 search_bar.set_replace_mode(replace_mode);
                 return;
             }
-            search_bar.attach(&self.buffer(), self.source_view());
+            self.attach_search_context();
 
             let buffer = self.buffer();
             if let Some((start, end)) = buffer.selection_bounds() {
@@ -85,11 +85,26 @@ impl LushtextEditorPage {
             }
         }
 
-        search_bar.set_replace_mode(replace_mode);
+        // Protected View has no Replace (the buffer is immutable, design D5).
+        search_bar.set_replace_mode(replace_mode && !self.is_protected_view());
 
         let entry = search_bar.search_entry();
         entry.grab_focus();
         entry.select_region(0, -1);
+    }
+
+    /// Attach the in-tab search context, except in Protected View: a
+    /// `GtkSourceSearchContext` scans the whole buffer from an idle (25–28 s on
+    /// the reference giant line) and skips hidden text (ledger A33), so a
+    /// protected document's find runs on a worker over its text source
+    /// instead (design D5, task 6.1).
+    pub(crate) fn attach_search_context(&self) {
+        if self.is_protected_view() {
+            return;
+        }
+        self.imp()
+            .search_bar
+            .attach(&self.buffer(), self.source_view());
     }
 
     /// Save the current cursor position as a text mark for later restoration.

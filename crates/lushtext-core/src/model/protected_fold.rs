@@ -627,6 +627,19 @@ pub struct FoldPlan {
 }
 
 impl FoldPlan {
+    /// A plan of `ranges`, which must be in paragraph order (an edit-growth
+    /// entry builds its plan from the ranges it applied).
+    #[must_use]
+    pub fn from_ranges(ranges: Vec<FoldRange>) -> Self {
+        let hidden_chars = ranges
+            .iter()
+            .fold(0u64, |sum, range| sum.saturating_add(range.tail_chars));
+        Self {
+            ranges: ranges.into_boxed_slice(),
+            hidden_chars,
+        }
+    }
+
     /// The folded paragraphs, in paragraph order.
     #[must_use]
     pub fn ranges(&self) -> &[FoldRange] {

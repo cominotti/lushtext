@@ -567,9 +567,7 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
         editor.reapply_language();
     }
     if editor.is_search_visible() && editor.search_bar().search_context().is_none() {
-        editor
-            .search_bar()
-            .attach(&editor.buffer(), editor.source_view());
+        editor.attach_search_context();
     }
     if guard.monitor_active
         && editor.load_state() == crate::ui::editor_page::EditorLoadState::Loaded

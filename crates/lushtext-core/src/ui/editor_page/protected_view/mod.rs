@@ -20,6 +20,7 @@
 //! | `seams` | seam value objects | `ProtectedViewTicket`, `ProtectedViewFacts`, `protected_view_is_current`, and `ProtectedTextSource` (the retained install body find, the inspector, copy and saves read) |
 //! | `execution` | coordination | the editor's session, the install and edit-growth entries, the entry undo |
 //! | `evidence` | evidence | `ProtectedViewEvidence`, the workflow's one observable surface |
+//! | `find_execution` | coordination | the worker-find stage: the search bar's routed query and navigation, one worker search over the source at a time, matches published as paragraph, column and length |
 //! | `interaction_execution` | coordination | the caret-free interaction stage: stopped keybinding signals, the `move-cursor` intercept, the capture key controller and gestures, drop targets |
 //!
 //! The executor milestone (tasks 4.3–6.x) adds the coordination modules
@@ -45,6 +46,7 @@
 
 pub(crate) mod evidence;
 pub(crate) mod execution;
+pub(crate) mod find_execution;
 pub(crate) mod interaction_execution;
 pub(crate) mod policy;
 pub(crate) mod seams;
