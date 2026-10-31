@@ -572,6 +572,7 @@ ORACLES: dict[str, Oracle] = {
             _h(_MINIMAP + "native_slider_fit_never_panics", 0.29, "ci"),
             _h(_MINIMAP + "marker_fit_never_panics", 0.78, "ci"),
             _h(_MINIMAP + "min_height_expansion_panics_on_an_inverted_band", 1.31, "ci"),
+            _h(_MINIMAP + "skipped_line_crosses_no_threshold", 1.64, "ci"),
             _h(_MINIMAP + "projected_fit_never_panics", 1.83, "ci"),
             _h(_MINIMAP + "marker_bounds_stay_in_content_for_finite_f64", 4.48, "ci"),
             _h(_MINIMAP + "projected_fit_rejects_a_span_outside_the_band", 3.96, "ci"),
@@ -579,6 +580,7 @@ ORACLES: dict[str, Oracle] = {
             _h(_MINIMAP + "native_slider_estimate_never_panics", 4.67, "ci"),
             _h(_MINIMAP + "projected_containment_fails_for_general_f64", 5.55, "ci"),
             _h(_MINIMAP + "native_slider_containment_fails_for_general_f64", 7.12, "ci"),
+            _h(_MINIMAP + "skipped_line_crosses_no_threshold_per_character", 30.29, "ci"),
             _h(_MINIMAP + "projected_bounds_stay_in_content_on_whole_pixels", 44.21, "ci"),
             _h(_MINIMAP + "min_height_expansion_reaches_the_minimum_on_small_whole_pixels", 101.64, "ci"),
             _h(_MINIMAP + "min_height_expansion_never_panics_inside_its_band", 102.5, "ci"),
@@ -590,6 +592,7 @@ ORACLES: dict[str, Oracle] = {
             "fit_native_slider_to_source_map_bounds",
             "fit_projected_bounds",
             "native_slider_estimate_from_inputs",
+            "paragraph_may_cross",
         ),
     ),
     "crates/lushtext-core/src/ui/markdown_preview/policy.rs": Oracle(

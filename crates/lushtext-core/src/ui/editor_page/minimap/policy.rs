@@ -2499,6 +2499,40 @@ pub struct MinimapAnalysisResult {
     pub lines_examined: u64,
 }
 
+/// The per-line thresholds a line can still cross; `None` for one no longer
+/// in play (its verdict is already set, or markers are not collected or this
+/// line is already marked).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineThresholds {
+    /// [`MinimapAnalysisPolicy::wrapped_line_chars`] while in play.
+    pub wrapped: Option<usize>,
+    /// [`MinimapAnalysisPolicy::warning_line_chars`] while in play.
+    pub warning: Option<usize>,
+}
+
+/// Whether a line at `running` characters, extended by content of
+/// `content_bytes` UTF-8 bytes, may cross a threshold in play, so its exact
+/// character count is needed.
+///
+/// A scalar is at least one byte, so content of `b` bytes holds at most `b`
+/// scalars and a line reaches at most `running + b` (saturating). When that
+/// stays at or below every threshold in play, no scalar of the content
+/// crosses one and the count can be skipped. Kani proves this for every
+/// running count, byte length, scalar count no larger than it, and threshold
+/// pair (`kani_proofs::skipped_line_crosses_no_threshold`).
+#[must_use]
+pub fn paragraph_may_cross(
+    running: usize,
+    content_bytes: usize,
+    thresholds: LineThresholds,
+) -> bool {
+    let reach = running.saturating_add(content_bytes);
+    [thresholds.wrapped, thresholds.warning]
+        .into_iter()
+        .flatten()
+        .any(|threshold| reach > threshold)
+}
+
 /// Incremental logical-line accumulator independent of GTK iterator ownership.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MinimapAnalysisAccumulator {
@@ -2545,25 +2579,108 @@ impl MinimapAnalysisAccumulator {
         inspected
     }
 
-    /// Inspect one scalar from a GTK-owned cursor without retaining GTK state.
-    pub fn inspect_char(&mut self, character: char) {
-        self.characters_examined = self.characters_examined.saturating_add(1);
-        // GTK paragraph delimiters (`model::paragraph_boundary`): `\n`, `\r`,
-        // `\r\n` as one, and U+2029, so CR-only and U+2029 documents get the
-        // same line identities as the buffer's lines.
-        let completes_crlf = character == '\n' && self.previous_was_cr;
-        self.previous_was_cr = character == '\r';
-        if completes_crlf {
-            return;
+    /// Inspect every scalar of `text`, in order: the slice form of
+    /// [`inspect_char`](Self::inspect_char), its reference.
+    ///
+    /// The resulting state equals calling `inspect_char` for each character
+    /// of `text`, for every text, every policy, and every split of a document
+    /// into consecutive calls (a `\r` ending one call and a `\n` starting the
+    /// next are one CRLF). Outside Kani, the line breaks come from
+    /// [`next_paragraph_break`](crate::model::paragraph_boundary::next_paragraph_break)
+    /// (a SIMD skip), the characters from the
+    /// standard library's word-at-a-time count, and a closed line whose byte
+    /// length cannot carry it past a threshold still in play
+    /// ([`paragraph_may_cross`]) is not counted at all: the break resets the
+    /// only fields the count reaches. Under Kani it is the per-character loop,
+    /// because the fast path's `count_scalars` exists only outside Kani; no
+    /// harness checks this function, so its equivalence with `inspect_char`
+    /// rests on the property test `inspect_str_equals_inspect_char` and the
+    /// unit tests below.
+    #[cfg(kani)]
+    pub fn inspect_str(&mut self, text: &str) {
+        for character in text.chars() {
+            self.inspect_char(character);
         }
-        if matches!(character, '\n' | '\r' | '\u{2029}') {
-            self.current_line = self.current_line.saturating_add(1);
-            self.current_line_chars = 0;
-            self.current_line_marked = false;
-            return;
-        }
+    }
 
-        self.current_line_chars = self.current_line_chars.saturating_add(1);
+    /// See the `cfg(kani)` form above for the contract.
+    #[cfg(not(kani))]
+    pub fn inspect_str(&mut self, text: &str) {
+        // Imported here, not at the top of the module, so the module's
+        // line-anchored mutation exclusions (`.cargo/mutants.toml`) keep
+        // their line numbers.
+        use crate::model::paragraph_boundary::{
+            ParagraphDelimiter, count_scalars, next_paragraph_break,
+        };
+
+        let bytes = text.as_bytes();
+        if bytes.is_empty() {
+            return;
+        }
+        self.characters_examined = self.characters_examined.saturating_add(count_scalars(text));
+        let mut from = 0;
+        if self.previous_was_cr && bytes[0] == b'\n' {
+            // The `\n` of a CRLF split across calls: its line already closed.
+            from = 1;
+        }
+        self.previous_was_cr = false;
+        while from < bytes.len() {
+            let Some(found) = next_paragraph_break(text, from) else {
+                self.extend_line(&text[from..]);
+                return;
+            };
+            let content = &text[from..found.content_end];
+            if paragraph_may_cross(
+                self.current_line_chars,
+                content.len(),
+                self.thresholds_in_play(),
+            ) {
+                self.extend_line(content);
+            }
+            self.close_line();
+            from = found.next_start;
+            // A `\r` ending the call may be the first half of a CRLF.
+            self.previous_was_cr = found.delimiter == ParagraphDelimiter::Cr && from == bytes.len();
+        }
+    }
+
+    /// The thresholds the current line can still cross: the wrapped-layout
+    /// one until its verdict is set, the marker one while markers are
+    /// collected and this line is unmarked.
+    #[cfg(not(kani))]
+    fn thresholds_in_play(&self) -> LineThresholds {
+        LineThresholds {
+            wrapped: (!self.wrapped_layout_too_large).then_some(self.policy.wrapped_line_chars),
+            warning: (self.collect_markers && !self.current_line_marked)
+                .then_some(self.policy.warning_line_chars),
+        }
+    }
+
+    /// Add `content`'s scalars (no delimiter among them, at least one) to the
+    /// current line, recording a crossing as `inspect_char` would.
+    #[cfg(not(kani))]
+    fn extend_line(&mut self, content: &str) {
+        if content.is_empty() {
+            return;
+        }
+        // The running count only grows, so a threshold is crossed by one of
+        // these scalars exactly when it is crossed by the last; the marker
+        // records the line, which none of them changes.
+        let chars = usize::try_from(crate::model::paragraph_boundary::count_scalars(content))
+            .unwrap_or(usize::MAX);
+        self.current_line_chars = self.current_line_chars.saturating_add(chars);
+        self.check_thresholds();
+    }
+
+    /// Close the current line at a delimiter.
+    fn close_line(&mut self) {
+        self.current_line = self.current_line.saturating_add(1);
+        self.current_line_chars = 0;
+        self.current_line_marked = false;
+    }
+
+    /// Record the crossings the current line's running count has reached.
+    fn check_thresholds(&mut self) {
         if self.current_line_chars > self.policy.wrapped_line_chars {
             self.wrapped_layout_too_large = true;
         }
@@ -2576,6 +2693,26 @@ impl MinimapAnalysisAccumulator {
                 self.long_line_lines.push(self.current_line);
             }
         }
+    }
+
+    /// Inspect one scalar from a GTK-owned cursor without retaining GTK state.
+    pub fn inspect_char(&mut self, character: char) {
+        self.characters_examined = self.characters_examined.saturating_add(1);
+        // GTK paragraph delimiters (`model::paragraph_boundary`): `\n`, `\r`,
+        // `\r\n` as one, and U+2029, so CR-only and U+2029 documents get the
+        // same line identities as the buffer's lines.
+        let completes_crlf = character == '\n' && self.previous_was_cr;
+        self.previous_was_cr = character == '\r';
+        if completes_crlf {
+            return;
+        }
+        if matches!(character, '\n' | '\r' | '\u{2029}') {
+            self.close_line();
+            return;
+        }
+
+        self.current_line_chars = self.current_line_chars.saturating_add(1);
+        self.check_thresholds();
     }
 
     /// Return whether layout evidence already found an extreme logical line.
@@ -2668,6 +2805,125 @@ mod analysis_tests {
 
         assert!(result.wrapped_layout_too_large);
         assert!(result.long_line_lines.is_empty());
+    }
+
+    /// `inspect_char` over every character of every part, in order.
+    fn per_character(
+        policy: MinimapAnalysisPolicy,
+        collect: bool,
+        parts: &[&str],
+    ) -> MinimapAnalysisAccumulator {
+        let mut analysis = MinimapAnalysisAccumulator::new(policy, collect);
+        for part in parts {
+            for character in part.chars() {
+                analysis.inspect_char(character);
+            }
+        }
+        analysis
+    }
+
+    fn by_slices(
+        policy: MinimapAnalysisPolicy,
+        collect: bool,
+        parts: &[&str],
+    ) -> MinimapAnalysisAccumulator {
+        let mut analysis = MinimapAnalysisAccumulator::new(policy, collect);
+        for part in parts {
+            analysis.inspect_str(part);
+        }
+        analysis
+    }
+
+    #[test]
+    fn inspect_str_equals_inspect_char_for_every_two_way_split_and_policy() {
+        let text = "ab\r\ncdéf\r\rgh😀ij\u{2029}k\n\u{2028}lmnopqrs\r";
+        for warning in 0..6 {
+            for wrapped in 0..9 {
+                for marker_limit in 0..3 {
+                    let policy = MinimapAnalysisPolicy {
+                        warning_line_chars: warning,
+                        wrapped_line_chars: wrapped,
+                        marker_limit,
+                    };
+                    for collect in [false, true] {
+                        let whole = per_character(policy, collect, &[text]);
+                        assert_eq!(by_slices(policy, collect, &[text]), whole);
+                        for cut in (0..=text.len()).filter(|&cut| text.is_char_boundary(cut)) {
+                            let (head, tail) = text.split_at(cut);
+                            assert_eq!(
+                                by_slices(policy, collect, &[head, tail]),
+                                whole,
+                                "{policy:?} {collect} cut {cut}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn crlf_split_across_slices_is_one_line_break() {
+        let split = by_slices(POLICY, true, &["ab\r", "\ncd"]);
+        assert_eq!(split, per_character(POLICY, true, &["ab\r\ncd"]));
+        let result = split.finish();
+        assert_eq!(result.lines_examined, 2);
+        assert_eq!(result.characters_examined, 6);
+    }
+
+    #[test]
+    fn thresholds_crossed_inside_a_long_multibyte_line_mark_it_once() {
+        let line = format!("abc\n{}\nend", "é日😀".repeat(5));
+        let analysis = by_slices(POLICY, true, &[&line]);
+        assert_eq!(analysis, per_character(POLICY, true, &[&line]));
+        let result = analysis.finish();
+        assert_eq!(result.long_line_lines, vec![1]);
+        assert!(result.wrapped_layout_too_large);
+    }
+
+    #[test]
+    fn inspect_str_saturates_like_inspect_char() {
+        let mut near_max = MinimapAnalysisAccumulator::new(POLICY, true);
+        near_max.current_line = u32::MAX - 1;
+        near_max.current_line_chars = usize::MAX - 2;
+        near_max.characters_examined = u64::MAX - 3;
+        let text = "abcd\n\r\nxy\u{2029}\rzzzzzzzzz";
+        let mut sliced = near_max.clone();
+        sliced.inspect_str(text);
+        let mut reference = near_max;
+        for character in text.chars() {
+            reference.inspect_char(character);
+        }
+        assert_eq!(sliced, reference);
+        assert_eq!(sliced.current_line, u32::MAX);
+        assert_eq!(sliced.characters_examined, u64::MAX);
+    }
+
+    #[test]
+    fn a_line_shorter_than_every_threshold_in_bytes_is_not_counted() {
+        let in_play = LineThresholds {
+            wrapped: Some(8),
+            warning: Some(4),
+        };
+        assert!(!paragraph_may_cross(1, 3, in_play));
+        assert!(paragraph_may_cross(1, 4, in_play));
+        assert!(!paragraph_may_cross(
+            1,
+            4,
+            LineThresholds {
+                warning: None,
+                ..in_play
+            }
+        ));
+        assert!(paragraph_may_cross(usize::MAX, 1, in_play));
+        assert!(!paragraph_may_cross(
+            usize::MAX,
+            1,
+            LineThresholds {
+                wrapped: None,
+                warning: None
+            }
+        ));
     }
 
     #[test]
