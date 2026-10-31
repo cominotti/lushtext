@@ -337,6 +337,14 @@ fn test_loading_a_protected_file_enters_protected_view_without_entry_undo() {
     assert_eq!(editor_text(&page), body, "nothing changed");
     let evidence = page.protected_view_evidence();
     assert!(evidence.protected && !evidence.entered_by_edit);
+    // Every protected document is past C1's thresholds for these features
+    // (design D10): the minimap, syntax, invisibles and search highlighting
+    // are off for the session.
+    let scale = page.document_scale();
+    assert!(!scale.minimap_allowed, "no minimap");
+    assert!(!scale.syntax_enabled, "no syntax highlighting");
+    assert!(!scale.invisibles_allowed, "no invisibles");
+    assert!(!scale.search_highlight_allowed, "no search highlighting");
     assert_eq!(
         evidence.source_bytes,
         Some(u64::try_from(body.len()).expect("fits")),
@@ -655,6 +663,10 @@ fn test_protected_find_runs_on_the_source_and_finds_hidden_text() {
         page.protected_view_evidence().find_matches == 2
     });
     assert_eq!(page.protected_view_evidence().find_current, Some(0));
+    assert!(
+        !page.protected_view_evidence().find_pending,
+        "the request finished"
+    );
     page.search_bar().move_next();
     assert_eq!(
         page.protected_view_evidence().find_current,

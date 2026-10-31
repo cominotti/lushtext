@@ -30,6 +30,9 @@ pub struct ProtectedViewEvidence {
     pub find_matches: usize,
     /// The current match's index, when there is one.
     pub find_current: Option<usize>,
+    /// Whether a find request is running on its worker (holds the
+    /// `editor-search` readiness blocker).
+    pub find_pending: bool,
 }
 
 impl LushtextEditorPage {
@@ -49,6 +52,7 @@ impl LushtextEditorPage {
             hidden_chars: self.protected_fold_summary().hidden_chars,
             find_matches: self.protected_find_counts().0,
             find_current: self.protected_find_counts().1,
+            find_pending: self.protected_find_pending(),
         }
     }
 }

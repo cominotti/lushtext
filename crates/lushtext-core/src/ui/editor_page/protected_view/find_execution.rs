@@ -213,6 +213,11 @@ impl LushtextEditorPage {
         self.clear_current_match_tag();
     }
 
+    /// Whether a protected find request is running on its worker.
+    pub(crate) fn protected_find_pending(&self) -> bool {
+        self.protected_find_state().cancel.borrow().is_some()
+    }
+
     /// The protected find results: the match count and the current index.
     pub(crate) fn protected_find_counts(&self) -> (usize, Option<usize>) {
         let state = self.protected_find_state();

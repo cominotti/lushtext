@@ -616,6 +616,8 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
             .search_bar()
             .search_context()
             .is_some_and(|context| context.occurrences_count() < 0);
+        // Protected View's worker find holds the same blocker (design D5).
+        editor_search_active |= editor.protected_view_evidence().find_pending;
         minimap_refresh_active |= editor.minimap_refresh_blocks_readiness();
     }
 
