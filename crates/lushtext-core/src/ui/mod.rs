@@ -22,6 +22,7 @@ pub mod plain_disposal;
 pub(crate) mod plain_disposal;
 pub mod preferences;
 pub mod properties_panel;
+pub mod protected_fold;
 pub mod responsiveness_probe;
 pub mod search_bar;
 pub mod search_panel;

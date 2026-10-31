@@ -332,6 +332,11 @@ pub(crate) struct BufferReplacementSession {
     terminal: bool,
     pub(super) metrics: BufferReplacementMetrics,
     profile: Option<DocumentProfile>,
+    /// The body's Protected View fold plan, shared with `profile`, which the
+    /// install turns apply at insertion (`ui::protected_fold`).
+    fold_plan: Option<std::sync::Arc<crate::model::protected_fold::FoldPlan>>,
+    /// The index of the paragraph the next install turn starts.
+    next_paragraph: u64,
 }
 
 /// Content-free terminal evidence retained by one editor.
@@ -450,6 +455,11 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         mutation_started: false,
         terminal: false,
         metrics: BufferReplacementMetrics::for_one_retained_body(),
+        fold_plan: request
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.fold_plan.clone()),
+        next_paragraph: 0,
         profile: request.profile,
     }));
     editor
@@ -632,7 +642,7 @@ fn run_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 }
 
 fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let (buffer, start, body) = {
+    let (buffer, start, body, fold_plan, paragraph) = {
         let mut state = session.borrow_mut();
         let Some(body) = state.body.take() else {
             drop(state);
@@ -640,12 +650,30 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
             return;
         };
         state.mutation_started = true;
-        (state.buffer.clone(), state.byte_offset, body)
+        (
+            state.buffer.clone(),
+            state.byte_offset,
+            body,
+            state.fold_plan.clone(),
+            state.next_paragraph,
+        )
     };
     let end = next_replacement_boundary(&body, start);
     let body_len = body.len();
     let mut iter = buffer.end_iter();
-    buffer.insert(&mut iter, &body[start..end]);
+    let next_paragraph = if let Some(plan) = fold_plan.as_deref() {
+        crate::ui::protected_fold::insert_folded(
+            buffer.upcast_ref(),
+            &mut iter,
+            &body[start..end],
+            paragraph,
+            plan,
+        )
+    } else {
+        buffer.insert(&mut iter, &body[start..end]);
+        paragraph
+    };
+    session.borrow_mut().next_paragraph = next_paragraph;
 
     {
         let mut state = session.borrow_mut();
@@ -694,8 +722,27 @@ fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
         return;
     }
     let old_chars = buffer.char_count();
-    session.borrow_mut().mutation_started = true;
-    buffer.set_text(&body);
+    let fold_plan = {
+        let mut state = session.borrow_mut();
+        state.mutation_started = true;
+        state.fold_plan.clone()
+    };
+    match fold_plan.as_deref() {
+        // A protected body: every folded tail goes in hidden, in this same
+        // dispatch as its head (design D1).
+        Some(plan) => {
+            buffer.set_text("");
+            let mut start = buffer.start_iter();
+            crate::ui::protected_fold::insert_folded(
+                buffer.upcast_ref(),
+                &mut start,
+                &body,
+                0,
+                plan,
+            );
+        }
+        None => buffer.set_text(&body),
+    }
     let mut state = session.borrow_mut();
     if state.terminal || state.phase != ReplacementPhase::Clearing {
         drop(state);

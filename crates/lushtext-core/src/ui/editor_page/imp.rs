@@ -481,7 +481,14 @@ pub struct LocalHistoryState {
     /// Suppresses automatic capture while save or restore changes the buffer programmatically.
     pub automatic_capture_suppressed: Cell<bool>,
     /// One-shot undo body whose final destruction is pre-admitted off GTK.
-    pub restore_undo_text: RefCell<Option<crate::ui::plain_disposal::DisposalOwned<String>>>,
+    /// The body Undo Restore installs and its worker-computed profile, which
+    /// carries the Protected View fold plan (`long-line-protected-view`).
+    pub restore_undo_text: RefCell<
+        Option<(
+            crate::ui::plain_disposal::DisposalOwned<String>,
+            crate::model::paragraph_boundary::DocumentProfile,
+        )>,
+    >,
     /// Buffer signal lifetimes that drive automatic local-history capture.
     pub buffer_signals: SignalBag,
     /// Deterministic policy seam for widget tests without allocating huge buffers.

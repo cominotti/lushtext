@@ -133,11 +133,14 @@ SHARDS: dict[str, Shard] = {
         # (document-scale-policy) joined after that measurement: its 30 tests
         # took under two minutes locally, build included, so the shard stays
         # well inside the margin until the next CI measurement records it.
+        # `protected_view` (long-line-protected-view) joined on 2026-10-31
+        # beside it, on the same terms.
         modules=(
             "attention_refresh",
             "document_scale",
             "editor_page",
             "multi_window_drafts",
+            "protected_view",
             "sidebar",
             "workspace_entry_visibility",
         ),

@@ -92,6 +92,9 @@ pub(crate) struct ChunkedLoadInstall {
     pub(super) phase: LoadInstallPhase,
     pub(super) terminal: bool,
     pub(super) slice_count: u64,
+    /// The index of the paragraph the next slice starts, so a protected
+    /// body's fold plan applies at insertion (`ui::protected_fold`).
+    pub(super) next_paragraph: u64,
 }
 
 impl ChunkedLoadInstall {
@@ -203,7 +206,7 @@ fn run_existing_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
 }
 
 fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
-    let (buffer, mark, start, loaded) = {
+    let (buffer, mark, start, paragraph, loaded) = {
         let mut state = session.borrow_mut();
         let Some(mark) = state.end_mark.clone() else {
             drop(state);
@@ -215,14 +218,31 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
             retirement::abort_installation(session, AbortDisposition::Cancel);
             return;
         };
-        (state.buffer.clone(), mark, state.byte_offset, loaded)
+        (
+            state.buffer.clone(),
+            mark,
+            state.byte_offset,
+            state.next_paragraph,
+            loaded,
+        )
     };
     let end = next_install_boundary(&loaded.content, start);
     let content_len = loaded.content.len();
     let mut iter = buffer.iter_at_mark(&mark);
     // GtkTextBuffer emits signals synchronously. Keep the session unborrowed so
     // a reentrant cancellation can move it to bounded cleanup without panicking.
-    buffer.insert(&mut iter, &loaded.content[start..end]);
+    let next_paragraph = if let Some(plan) = loaded.metadata.profile.fold_plan.as_deref() {
+        crate::ui::protected_fold::insert_folded(
+            buffer.upcast_ref(),
+            &mut iter,
+            &loaded.content[start..end],
+            paragraph,
+            plan,
+        )
+    } else {
+        buffer.insert(&mut iter, &loaded.content[start..end]);
+        paragraph
+    };
 
     let reached_end = {
         let mut state = session.borrow_mut();
@@ -232,6 +252,7 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
             return;
         }
         state.byte_offset = end;
+        state.next_paragraph = next_paragraph;
         state.slice_count = state.slice_count.saturating_add(1);
         state.loaded = Some(loaded);
         end == content_len
@@ -475,7 +496,22 @@ pub(super) fn install_loaded_direct(
     editor.imp().load.finalizing.set(true);
     editor.imp().load.dispose_during_finalization.set(false);
     buffer.begin_irreversible_action();
-    buffer.set_text(&loaded.content);
+    match loaded.metadata.profile.fold_plan.as_deref() {
+        // A protected body: every folded tail goes in hidden, in this same
+        // dispatch as its head (design D1).
+        Some(plan) => {
+            buffer.set_text("");
+            let mut start = buffer.start_iter();
+            crate::ui::protected_fold::insert_folded(
+                buffer.upcast_ref(),
+                &mut start,
+                &loaded.content,
+                0,
+                plan,
+            );
+        }
+        None => buffer.set_text(&loaded.content),
+    }
     if editor.imp().load.dispose_during_finalization.get() {
         buffer.end_irreversible_action();
         finish_load_finalization(editor, permit);
@@ -508,6 +544,7 @@ fn start_chunked_install(
         phase: LoadInstallPhase::ClearingExisting,
         terminal: false,
         slice_count: 0,
+        next_paragraph: 0,
     }));
     editor.imp().load.installation_slice_count.set(0);
     editor

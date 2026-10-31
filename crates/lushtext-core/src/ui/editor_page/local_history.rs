@@ -410,7 +410,10 @@ impl LushtextEditorPage {
     /// Record or clear the guarded body used by the browser's undo-restore affordance.
     pub(crate) fn set_local_history_restore_undo_text(
         &self,
-        text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
+        text: Option<(
+            crate::ui::plain_disposal::DisposalOwned<String>,
+            crate::model::paragraph_boundary::DocumentProfile,
+        )>,
     ) {
         self.imp().local_history.restore_undo_text.replace(text);
     }
@@ -419,7 +422,10 @@ impl LushtextEditorPage {
     #[must_use]
     pub(crate) fn take_local_history_restore_undo_text(
         &self,
-    ) -> Option<crate::ui::plain_disposal::DisposalOwned<String>> {
+    ) -> Option<(
+        crate::ui::plain_disposal::DisposalOwned<String>,
+        crate::model::paragraph_boundary::DocumentProfile,
+    )> {
         self.imp()
             .local_history
             .restore_undo_text
