@@ -187,7 +187,9 @@ impl LushtextWindow {
     }
 
     fn open_document_with_intent(&self, path: &Path, intent: OpenDocumentIntent) {
-        let _ = self.open_document_with_intent_and_planning_terminal(path, intent, None);
+        crate::ui::responsiveness_probe::span("open_document", || {
+            let _ = self.open_document_with_intent_and_planning_terminal(path, intent, None);
+        });
     }
 
     fn open_document_with_intent_and_planning_terminal(

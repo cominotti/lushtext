@@ -60,7 +60,13 @@ impl LushtextEditorPage {
         self.imp().file_size.set(None);
         self.imp().load_state.set(EditorLoadState::Loading);
         self.imp().latest_load_failed.set(false);
-        self.republish_document_identity();
+        // No language yet: the load's publication applies it once the body's
+        // profile says whether syntax is allowed, so a document whose scale
+        // gates syntax (every Protected View document) never pays for loading
+        // its language definition (about 30 ms for HTML, measured by the C2
+        // verdict inside `open_document`). `document_language_id` names the
+        // path's language meanwhile.
+        self.republish_document_identity_without_language();
     }
 
     /// Re-derive the projections that follow any document-identity change.
@@ -73,6 +79,10 @@ impl LushtextEditorPage {
     /// `.txt`); during `open_document` no listener is registered yet.
     fn republish_document_identity(&self) {
         self.reapply_language();
+        self.republish_document_identity_without_language();
+    }
+
+    fn republish_document_identity_without_language(&self) {
         self.schedule_minimap_refresh();
         self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
@@ -105,7 +115,8 @@ impl LushtextEditorPage {
 
     /// The id of the document's language: the buffer's own, or, while the
     /// document scale holds syntax off (the gate clears the buffer language,
-    /// ledger A44), the language its path names.
+    /// ledger A44) or a load is pending (its publication sets the language),
+    /// the language its path names.
     ///
     /// The gate removes highlighting, not the document's kind: a 2 MiB
     /// `notes.md` is still Markdown, and the Markdown preview must still
@@ -115,7 +126,9 @@ impl LushtextEditorPage {
         if let Some(language) = self.buffer().language() {
             return Some(language.id());
         }
-        if self.document_scale().syntax_enabled {
+        if self.document_scale().syntax_enabled
+            && self.imp().load_state.get() != EditorLoadState::Loading
+        {
             return None;
         }
         let path = self.imp().file_path.borrow();

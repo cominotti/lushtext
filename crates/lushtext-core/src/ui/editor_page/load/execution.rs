@@ -120,6 +120,12 @@ pub(super) fn schedule_install_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) 
 }
 
 fn run_install_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
+    crate::ui::responsiveness_probe::span("load_install_slice", || {
+        run_install_slice_now(session);
+    });
+}
+
+fn run_install_slice_now(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     let (editor, generation, phase, terminal) = {
         let mut state = session.borrow_mut();
         state.source_id.take();
@@ -158,6 +164,16 @@ fn run_install_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
             run_existing_clear_slice(session);
         }
         InstallSliceAction::RunPhase(LoadInstallPhase::Installing) => {
+            let protected = session
+                .borrow()
+                .loaded
+                .as_ref()
+                .is_some_and(|loaded| loaded.metadata.profile.fold_plan.is_some());
+            if protected && !crate::ui::protected_fold::tail_insert_admitted() {
+                // Another document inserted a hidden tail in this iteration.
+                schedule_install_slice(session);
+                return;
+            }
             run_text_insert_slice(session);
         }
         InstallSliceAction::RunPhase(LoadInstallPhase::ClearingCancelled) => {
@@ -439,8 +455,28 @@ fn install_guarded_load(
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
+    crate::ui::responsiveness_probe::span("load_install_begin", || {
+        install_guarded_load_now(editor, load_generation, loaded, permit);
+    });
+}
+
+fn install_guarded_load_now(
+    editor: &LushtextEditorPage,
+    load_generation: u64,
+    loaded: GuardedLoadResult,
+    permit: Option<TransientLoadPermit>,
+) {
     let chunked =
         policy::requires_chunked_install(loaded.content.len(), editor.buffer().char_count());
+    if !chunked
+        && loaded.metadata.profile.fold_plan.is_some()
+        && !crate::ui::protected_fold::tail_insert_admitted()
+    {
+        // A direct install inserts its tails now: wait for the next
+        // iteration when another document already inserted one in this one.
+        defer_direct_protected_install(editor, load_generation, loaded, permit);
+        return;
+    }
     evidence::record_install_started(editor, chunked);
     if chunked {
         start_chunked_install(editor, load_generation, loaded, permit);
@@ -598,8 +634,49 @@ fn begin_load_installation(
     restore
 }
 
+/// Re-run a direct protected install on a later main-loop iteration, while its
+/// load is still the editor's current one.
+fn defer_direct_protected_install(
+    editor: &LushtextEditorPage,
+    load_generation: u64,
+    loaded: GuardedLoadResult,
+    permit: Option<TransientLoadPermit>,
+) {
+    let editor = editor.downgrade();
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        let Some(editor) = editor.upgrade() else {
+            return;
+        };
+        let current = policy::installation_is_current(
+            editor.imp().load_tracking.generation.get(),
+            load_generation,
+            editor
+                .imp()
+                .load_tracking
+                .cancel_token
+                .borrow()
+                .load(std::sync::atomic::Ordering::Acquire),
+        );
+        if current {
+            install_guarded_load(&editor, load_generation, loaded, permit);
+        } else {
+            admission::refuse_stale_completion(&editor);
+        }
+    });
+}
+
 /// Stage 7: publish the installed content as this tab's loaded document.
 fn complete_loaded_installation(
+    editor: &LushtextEditorPage,
+    loaded: GuardedLoadResult,
+    restore: LoadInstallationState,
+) {
+    crate::ui::responsiveness_probe::span("load_complete", || {
+        complete_loaded_installation_now(editor, loaded, restore);
+    });
+}
+
+fn complete_loaded_installation_now(
     editor: &LushtextEditorPage,
     loaded: GuardedLoadResult,
     restore: LoadInstallationState,

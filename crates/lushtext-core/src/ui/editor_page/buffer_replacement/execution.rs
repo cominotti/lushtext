@@ -590,6 +590,10 @@ fn schedule_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 }
 
 fn run_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    crate::ui::responsiveness_probe::span("replacement_turn", || run_turn_now(session));
+}
+
+fn run_turn_now(session: &Rc<RefCell<BufferReplacementSession>>) {
     let (editor, phase, current) = {
         let mut state = session.borrow_mut();
         state.source_id.take();
@@ -627,6 +631,13 @@ fn run_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 
     match phase {
         ReplacementPhase::Clearing => run_clear_turn(session),
+        ReplacementPhase::Installing
+            if session.borrow().fold_plan.is_some()
+                && !crate::ui::protected_fold::tail_insert_admitted() =>
+        {
+            // Another document inserted a hidden tail in this iteration.
+            schedule_turn(session);
+        }
         ReplacementPhase::Installing => run_install_turn(session),
         ReplacementPhase::ClearingCancelled => run_cancelled_clear_turn(session),
         ReplacementPhase::Finalizing => {}

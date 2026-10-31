@@ -82,6 +82,25 @@ pub fn install(app: &impl gtk4::prelude::IsA<gtk4::Application>) {
 #[inline]
 pub(crate) fn record_span(_name: &'static str, _start_us: i64, _end_us: i64) {}
 
+/// Run `work` and record it as one span named `name` in the measurement
+/// build, so the lane can attribute a long dispatch to the work inside it.
+/// Without the `responsiveness-probes` feature it only runs `work`.
+#[inline]
+pub(crate) fn span<R>(name: &'static str, work: impl FnOnce() -> R) -> R {
+    #[cfg(feature = "responsiveness-probes")]
+    {
+        let started_us = glib::monotonic_time();
+        let result = work();
+        record_span(name, started_us, glib::monotonic_time());
+        result
+    }
+    #[cfg(not(feature = "responsiveness-probes"))]
+    {
+        let _ = name;
+        work()
+    }
+}
+
 /// Record one startup or window-construction span in the probe's evidence
 /// stream (`bound-window-construction-dispatch`).
 #[cfg(feature = "responsiveness-probes")]

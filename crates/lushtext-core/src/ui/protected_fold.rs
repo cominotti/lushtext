@@ -16,11 +16,44 @@
 //! bounded buffer replacement (`ui/editor_page/buffer_replacement/execution.rs`,
 //! which serves draft recovery, set-aside open, local-history restore and
 //! Undo Restore, and eviction reload).
+//!
+//! **One hidden-tail insert per main-loop iteration, process-wide.** A tail
+//! longer than the slice budget goes in in one call: the declared envelope
+//! `sliced-protected-install` (C3) measures. GLib dispatches every ready
+//! source of the same priority in one iteration, so two documents' install
+//! turns (a session restore, two recovered drafts) would otherwise run their
+//! tail inserts back to back in one dispatch: twice the envelope. Every
+//! protected install therefore asks [`tail_insert_admitted`] before a turn and
+//! reschedules itself when another document already inserted a tail in this
+//! iteration; a high-priority idle re-admits at the start of the next one.
+
+use std::cell::Cell;
 
 use gtk4::prelude::*;
 
 use crate::model::paragraph_boundary::next_paragraph_break;
 use crate::model::protected_fold::{FoldPlan, fold_byte_offset};
+
+thread_local! {
+    static TAIL_INSERTED_THIS_ITERATION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a protected install may run a turn that can insert a hidden tail
+/// now: no other tail went in during this main-loop iteration (module docs).
+pub(crate) fn tail_insert_admitted() -> bool {
+    !TAIL_INSERTED_THIS_ITERATION.with(Cell::get)
+}
+
+/// Record a hidden-tail insert; the next iteration starts with a
+/// `G_PRIORITY_HIGH` idle that re-admits, before any default-priority turn.
+fn note_tail_inserted() {
+    if !TAIL_INSERTED_THIS_ITERATION.with(|inserted| inserted.replace(true)) {
+        glib::idle_add_local_full(glib::Priority::HIGH, || {
+            TAIL_INSERTED_THIS_ITERATION.with(|inserted| inserted.set(false));
+            glib::ControlFlow::Break
+        });
+    }
+}
 
 /// The name of the fold tag in a buffer's tag table.
 pub const FOLD_TAG_NAME: &str = "lushtext-protected-fold";
@@ -92,6 +125,7 @@ pub(crate) fn insert_folded(
                     started_us,
                     glib::monotonic_time(),
                 );
+                note_tail_inserted();
             }
             pending_start = content_end;
             next_range += 1;
