@@ -1,5 +1,8 @@
 ## Context
 
+> **Scope (2026-10-31, maintainer decision (b)).** This change ships the Protected View core: entry above `L_PROTECT_EDIT`, fold at insertion, the caret-free view, the immutable text source for find, copy and save, recovery through the fold, the entry undo (Ctrl+Z), eviction and reload, print refusal, automation fields and the Kani-proved policies. The Line Inspector, the Protected View menu, the fold gutter, the inline notice and its Undo button, accessibility and Orca, and the remaining surfaces (local-history preview, Markdown preview and notes, bookmarks, session restore and navigation from other workflows) moved to `protected-view-inspector-and-surfaces`, whose MODIFIED deltas restore the spec text narrowed here. Until it lands, folded tails cannot be read or copied by an ordinary user. Decisions below that describe those surfaces stand as their design and are implemented there.
+
+
 This is C2 of the long-line programme. The programme record is `docs/next/long-line-documents.md`; the next-candidate list is `docs/next/long-line-evolution.md`; the origin proposal is `docs/next/long-line-responsiveness.md`.
 
 **Revised 2026-10-29 after an adversarial review.** The first draft (2026-10-11) was written before C0's idle re-confirmation, before C1 was implemented, and before C4 and C4b existed. This revision re-bases it on what now exists, folds in the crash-recovery finding (D13), and records what the review confirmed and refuted ("Adversarial review (2026-10-29)" at the end).

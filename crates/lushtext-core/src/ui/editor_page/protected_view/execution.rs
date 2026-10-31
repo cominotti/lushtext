@@ -329,6 +329,7 @@ impl LushtextEditorPage {
         self.imp_protected_view()
             .source
             .replace(Some(ProtectedTextSource::retain(body)));
+        self.notify_memory_policy_changed();
         self.restart_protected_find_for_new_source();
     }
 

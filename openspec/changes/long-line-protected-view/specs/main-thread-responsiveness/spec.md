@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Protected View interactions and settles stay within named budgets
-For documents in Protected View, every interaction dispatch SHALL stay within `B_interact`. Interaction dispatches are scroll, key, click, tab switch, toggles, find navigation, inspector navigation and fold-marker activation. Input-to-presented-frame latency SHALL stay within two reference frames. Every settle dispatch SHALL stay within `B_settle`. Settle dispatches are install, restore, draft recovery, eviction reload, external reload, a word-wrap toggle's re-layout, find-batch publication and whole-line clipboard writes. The one declared exception is the single GTK turn that inserts a hidden tail longer than the slice budget ("Large file installation yields in bounded GTK slices" keeps such a paragraph in one turn): until `sliced-protected-install` (C3) is adopted, that turn is a declared envelope whose measured cost the verdict records as C3's gate input, not a `B_settle` guarantee. Its visible head SHALL still be bounded by `head_cap`, so the envelope covers only the copy of the hidden run into the buffer, never its layout. Both budgets SHALL be read from `model/responsiveness_budget.rs` (`B_INTERACT_US`, `B_SETTLE_US`, `REFERENCE_FRAME_US`, `INPUT_TO_FRAME_FRAMES`); Protected View SHALL NOT restate their values. PR-gated widget tests SHALL assert the preconditions that make the expensive toolkit paths unreachable:
+For documents in Protected View, every interaction dispatch SHALL stay within `B_interact`. Interaction dispatches are scroll, key, click, tab switch, toggles, and find navigation. Input-to-presented-frame latency SHALL stay within two reference frames. Every settle dispatch SHALL stay within `B_settle`. Settle dispatches are install, restore, draft recovery, eviction reload, external reload, a word-wrap toggle's re-layout, find-result publication and the clipboard write of a copy. The one declared exception is the single GTK turn that inserts a hidden tail longer than the slice budget ("Large file installation yields in bounded GTK slices" keeps such a paragraph in one turn): until `sliced-protected-install` (C3) is adopted, that turn is a declared envelope whose measured cost the verdict records as C3's gate input, not a `B_settle` guarantee. Its visible head SHALL still be bounded by `head_cap`, so the envelope covers only the copy of the hidden run into the buffer, never its layout. Both budgets SHALL be read from `model/responsiveness_budget.rs` (`B_INTERACT_US`, `B_SETTLE_US`, `REFERENCE_FRAME_US`, `INPUT_TO_FRAME_FRAMES`); Protected View SHALL NOT restate their values. PR-gated widget tests SHALL assert the preconditions that make the expensive toolkit paths unreachable:
 - at most `head_cap` visible characters per paragraph, and at most `V_BATCH` per window of `R_fold` paragraphs;
 - `editable=false` and `cursor-visible=false`, applied before the first installed byte;
 - the `move-cursor` intercept;
@@ -33,17 +33,16 @@ Documents whose longest paragraph is at most `L_PROTECT_EDIT` stay editable (mai
 
 ### Requirement: Protected View never snapshots a protected buffer on the GTK thread
 LushText-owned Protected View work SHALL stay within declared chunk sizes, and SHALL NOT read a protected buffer's text through a GTK snapshot whose per-chunk cost grows with the chunk's depth inside a paragraph:
-- find, the Line Inspector, whole-line copy and every save of a protected document SHALL read `ProtectedTextSource`, which for every whole-content install is the installed body itself, retained;
-- after an edit-growth entry the source SHALL be captured at most once; the capture SHALL use a positioning whose per-chunk cost the ledger shows to be independent of depth (P8, ledger A66), or, if no such positioning exists, SHALL be recorded in the verdict as a declared envelope owned by C3;
-- find SHALL deliver at most a declared number of results and bytes per GTK turn under a total result cap;
-- the inspector SHALL read at most `N_inspect` characters per window, and whole-line copy SHALL write at most one chunk per dispatch;
-- notice and accessible text stay within the inline-alert bounds.
+- find, copy and every save of a protected document SHALL read `ProtectedTextSource`, which for every whole-content install is the installed body itself, retained;
+- after an edit-growth entry the source SHALL be captured at most once; the capture SHALL run in the shared bounded chunked buffer snapshot after the entering emission returns, while the buffer cannot change;
+- find SHALL deliver at most `FIND_RESULT_CAP` records, moved to GTK in one dispatch;
+- copy SHALL cut the selected range from the source on a worker and hand GTK the bytes without copying them.
 
 None of this work SHALL copy a whole paragraph or the whole buffer on the GTK thread.
 
 #### Scenario: First find on a large protected document
 - **WHEN** the user opens find on a 100 MB protected document that was installed from disk
-- **THEN** the search runs on the retained source with no snapshot turn on the GTK thread, and every result batch is published within `B_settle`
+- **THEN** the search runs on the retained source with no snapshot turn on the GTK thread, and the result set is published within `B_settle`
 
 #### Scenario: Save As of a giant protected document
 - **WHEN** the user saves a protected document holding a 1.9M-character paragraph with Save As
@@ -53,7 +52,7 @@ None of this work SHALL copy a whole paragraph or the whole buffer on the GTK th
 The Protected View budget verdict SHALL be measured with C0's responsiveness lane as it now stands (presented frames only; a run in which a measured case wrote no `frame` record fails), against both `main`'s and the change's release responsiveness binaries measured by the change's lane driver, each in its own hold of the shared measurement lock. Every run SHALL hold the measurement lock exclusively for itself alone (lock protocol rev 2: the intent lock first, so no new build starts, then the measurement lock; one run per hold), and SHALL record the load before the lock, inside it and after the run; load is accepted and recorded, not gated (maintainer decision, 2026-10-30, as for C1's lane verdict). `main` and the change SHALL be measured interleaved, so both sides see the same load. Each case SHALL run 7 repetitions in the lane's three variants (plain, AT, probe IM); cases that start a process (open, three-document restore, draft recovery) SHALL also run in the four construction profiles (fresh or steady-state, keyfile or dconf). The verdict, its run ids, the precondition evidence, `btrfs-stall-report` for each run and the toolkit versions SHALL be recorded in `docs/next/long-line-documents.md`.
 
 #### Scenario: Responsiveness lane run
-- **WHEN** the lane runs the protected cases (open, scroll, Page Down, caret keys, typing, click and double-click, find, inspector open and navigation, Copy Whole Line, Save As, tab switch, word-wrap toggle, eviction and reselection, restore of three protected documents, recovery of two 32 MiB single-line drafts, the AT bridge with a listener)
+- **WHEN** the lane runs the protected cases (open, scroll, Page Down, caret keys, typing, click and double-click, find, Save As, tab switch, word-wrap toggle, eviction and reselection, restore of three protected documents, recovery of two 32 MiB single-line drafts, the AT bridge with a listener)
 - **THEN** the largest interaction dispatch is at most `B_interact`, the largest settle dispatch other than a declared one-turn hidden-tail insert is at most `B_settle`, the one-turn inserts are recorded against the envelope, and the input-to-frame latency is at most two reference frames
 
 #### Scenario: Load is recorded with each run

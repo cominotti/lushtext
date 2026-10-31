@@ -124,6 +124,47 @@ fn test_protected_load_folds_at_insertion_in_slices() {
 }
 
 #[test]
+fn test_protected_fixture_kinds_fold_at_insertion() {
+    // design D1, task 3.4: the remaining synthetic fixture kinds. The worker
+    // plan's density bound per `R_FOLD` window is Kani-proved (H1); this test
+    // proves the buffer shows exactly that plan.
+    let giant = "g".repeat(n(L_PROTECT_EDIT) + 1);
+    let dense_row = "d".repeat(400);
+    let dense: String = (0..300).map(|_| format!("{dense_row}\n")).collect();
+    let prose_row = "prose ".repeat(100);
+    let prose: String = (0..200).map(|_| format!("{prose_row}\n")).collect();
+    assert_installed_folded(&body_with_giants(&[1_900_000]), "1.9M");
+    assert_installed_folded(&format!("a\r{giant}\rb\r"), "cr-only");
+    assert_installed_folded(&format!("a\u{2029}{giant}\u{2029}b"), "u2029");
+    assert_installed_folded(&format!("{dense}{giant}\n{dense}"), "dense");
+    assert_installed_folded(&format!("{prose}{giant}\n{prose}"), "prose-600");
+}
+
+#[test]
+fn test_a_word_wrap_toggle_changes_no_fold() {
+    ensure_gtk_init();
+    let body = body_with_giants(&[n(L_PROTECT_EDIT) * 3]);
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("wrap.txt");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    load_and_wait(&page, &path);
+    let before = visible_lengths(&page);
+    let view = page.source_view();
+    for mode in [gtk4::WrapMode::None, gtk4::WrapMode::WordChar] {
+        view.set_wrap_mode(mode);
+        flush_events();
+        assert_eq!(
+            visible_lengths(&page),
+            before,
+            "{mode:?}: the fold is unchanged"
+        );
+        assert!(page.is_protected_view());
+    }
+}
+
+#[test]
 fn test_unprotected_load_is_not_folded() {
     ensure_gtk_init();
     let body = body_with_giants(&[n(L_PROTECT_EDIT)]);
@@ -241,6 +282,20 @@ fn test_joining_two_paragraphs_over_the_threshold_enters_protected_view() {
     flush_events();
     assert_entered(&page, 1, "join");
     assert_eq!(editor_text(&page), format!("short\n{half}{half}\nshort\n"));
+
+    // The entry undo re-splits the joined paragraph and leaves Protected View.
+    assert!(page.protected_entry_undo_available());
+    assert!(page.undo_protected_entry());
+    flush_events();
+    assert!(!page.is_protected_view());
+    assert!(page.source_view().is_editable());
+    assert_eq!(editor_text(&page), body, "the join is undone");
+    assert!(
+        visible_lengths(&page)
+            .iter()
+            .all(|&shown| shown < L_PROTECT_EDIT),
+        "no fold is left"
+    );
 }
 
 #[test]
@@ -512,7 +567,7 @@ fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source()
     // The crash-recovery smoke's shape: a body whose last paragraph is
     // several million characters with no delimiter after it.
     let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(3_000_000));
-    let (_window, editor, _path, _dir) = recover_draft(&draft);
+    let (window, editor, _path, _dir) = recover_draft(&draft);
     assert_eq!(
         editor_text(&editor),
         draft,
@@ -536,6 +591,29 @@ fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source()
         editor.protected_view_evidence().source_bytes,
         Some(u64::try_from(draft.len()).expect("fits")),
         "the recovered body is the session's text source"
+    );
+
+    // Autosave neither snapshots nor rewrites it: the buffer equals the
+    // persisted body, so the editor is not draft-dirty and a tick writes
+    // nothing (design D13).
+    assert!(
+        !editor.draft_dirty(),
+        "a recovered body is already persisted"
+    );
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(30), || {
+        let evidence = window.draft_evidence();
+        !evidence.autosave_inflight && !evidence.mutation_inflight
+    });
+    assert!(!editor.draft_dirty());
+    let data_dir = lushtext_core::services::json_store::data_dir();
+    let draft_id = editor.draft_id().expect("draft id");
+    assert_eq!(
+        lushtext_core::services::draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read draft")
+            .as_deref(),
+        Some(draft.as_str()),
+        "the persisted body is unchanged"
     );
 }
 
@@ -755,6 +833,16 @@ fn test_eviction_releases_the_source_and_the_reload_retains_a_new_one() {
         before.source_bytes,
         Some(u64::try_from(body.len()).expect("len"))
     );
+    let chars = u64::try_from(page.buffer().char_count()).expect("count");
+    assert_eq!(
+        page.estimated_live_buffer_bytes(),
+        lushtext_core::model::editor_memory::estimate_live_editor_bytes(
+            chars,
+            page.file_size(),
+            false
+        ) + before.source_bytes.expect("source"),
+        "the source is charged to the live-editor estimate"
+    );
 
     page.evict();
     wait_until(Duration::from_secs(30), || page.is_evicted());
@@ -778,4 +866,103 @@ fn test_eviction_releases_the_source_and_the_reload_retains_a_new_one() {
     assert_eq!(reloaded.folded_paragraphs, before.folded_paragraphs);
     assert_eq!(reloaded.hidden_chars, before.hidden_chars);
     assert_eq!(editor_text(&page), body);
+}
+
+#[test]
+fn test_save_as_of_protected_fixtures_is_byte_identical() {
+    // design D9: every protected save writes the source verbatim, with no
+    // formatting (an `.editorconfig` asks for trimming and a final newline)
+    // and no line-ending normalization; the source equals the buffer's full
+    // text, hidden tails included.
+    ensure_gtk_init();
+    let giant = "g ".repeat(n(L_PROTECT_EDIT));
+    let huge = "h".repeat(1_900_000);
+    let fixtures: Vec<(&str, Vec<u8>)> = vec![
+        ("lf", format!("a  \n{giant}\nend  ").into_bytes()),
+        (
+            "bom",
+            [
+                &[0xEF, 0xBB, 0xBF][..],
+                format!("a\n{giant}\nb\n").as_bytes(),
+            ]
+            .concat(),
+        ),
+        ("crlf", format!("a  \r\n{giant}\r\nb\r\n").into_bytes()),
+        ("cr", format!("a\r{giant}\rb\r").into_bytes()),
+        ("mixed", format!("a\r\n{giant}\nb\rc").into_bytes()),
+        ("u2029", format!("a\u{2029}{giant}\u{2029}b").into_bytes()),
+        ("huge", format!("a\n{huge}\nb\n").into_bytes()),
+    ];
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    fixture::write_text(
+        &dir.path().join(".editorconfig"),
+        "root = true\n[*]\ntrim_trailing_whitespace = true\ninsert_final_newline = true\nend_of_line = lf\n",
+    );
+    let window = crate::common::test_window();
+    present_window(&window);
+    for (name, bytes) in fixtures {
+        let path = dir.path().join(format!("{name}.txt"));
+        fixture::write_bytes(&path, &bytes);
+        window.open_document(&path);
+        let page = crate::common::active_editor(&window);
+        wait_until(Duration::from_secs(60), || {
+            page.load_evidence().load_state == EditorLoadState::Loaded
+        });
+        flush_events();
+        assert!(page.is_protected_view(), "{name}: protected");
+        let text = editor_text(&page);
+        assert_eq!(
+            page.protected_view_evidence().source_bytes,
+            Some(u64::try_from(text.len()).expect("len")),
+            "{name}: the source is the buffer's full text"
+        );
+        let copy = dir.path().join(format!("{name}-copy.txt"));
+        window.select_save_as_destination_for_test(&copy);
+        wait_until(Duration::from_secs(60), || {
+            page.file_path().as_deref() == Some(copy.as_path()) && !page.is_saving()
+        });
+        assert!(
+            fixture::read_bytes(&copy) == bytes,
+            "{name}: Save As writes the file's bytes unchanged"
+        );
+        assert_eq!(editor_text(&page), text, "{name}: no mirror-back");
+    }
+}
+
+#[test]
+fn test_print_is_refused_for_a_protected_document() {
+    use lushtext_core::ui::window::{
+        PrintOutcome, notification_evidence, with_print_runner_for_test,
+    };
+    ensure_gtk_init();
+    let body = body_with_giants(&[n(L_PROTECT_EDIT) + 1]);
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("print.txt");
+    fixture::write_text(&path, &body);
+    let window = crate::common::test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let page = crate::common::active_editor(&window);
+    wait_until(Duration::from_secs(60), || {
+        page.load_evidence().load_state == EditorLoadState::Loaded
+    });
+    flush_events();
+    assert!(page.is_protected_view());
+    let before = notification_evidence(&window).announcements.status_lane;
+    let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+    let ran_in_runner = std::rc::Rc::clone(&ran);
+    with_print_runner_for_test(
+        move |_| {
+            ran_in_runner.set(true);
+            PrintOutcome::Completed
+        },
+        || crate::common::activate_action(&window, "print"),
+    );
+    flush_events();
+    assert!(!ran.get(), "no print operation starts");
+    assert_eq!(
+        notification_evidence(&window).announcements.status_lane,
+        before + 1,
+        "the refusal is announced once in the status lane"
+    );
 }

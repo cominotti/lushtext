@@ -63,6 +63,18 @@ already visible in the editor, sidebar, status, and properties surfaces.
 Free-form text fields such as paths, titles, queries, replacement text, and
 status messages are capped to 4 KiB and marked with ` [truncated]` if shortened.
 
+Each tab also reports Protected View (`long-line-protected-view`): whether the
+document is view-only because a paragraph exceeds 50,000 characters
+(`protected_view`), why (`protected_view_reason`: `paragraph-length` for a
+document installed protected, `edit-growth` for one an edit made protected),
+whether the one entry undo is available (`entry_undo_available`), and how much
+the fold hides (`folded_paragraph_count`, `hidden_character_count`). Counts
+only, never the folded text. A protected document's find runs on a worker over
+its text source and holds the `editor-search` blocker, so `search-complete`
+settles after its result set is published; its fold is applied inside the
+install, so `file-open-complete`, `session-restore-complete` and
+`recovery-restore-complete` cover it with no new blocker.
+
 `surfaces.preview_document_alert_visible` tells "preview-only with no alert"
 apart from "the alert is shown": in preview-only mode the editor column, and its
 own inline alert, is hidden, so the selected document's alert is rendered once

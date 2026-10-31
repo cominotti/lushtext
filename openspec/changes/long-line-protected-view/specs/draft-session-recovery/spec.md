@@ -1,12 +1,5 @@
 ## ADDED Requirements
 
-### Requirement: Session restore of protected documents is caret-free and bounded
-Restoring a session tab whose document opens in Protected View SHALL restore the scroll position through the navigation mark without moving the insert mark. Session saves of that tab SHALL keep the cursor offset that was persisted, instead of writing the unmoved insert mark. No draft SHALL be created for a protected document that was installed unmodified. Restoring three or more protected documents together with tab switching SHALL keep every dispatch within `B_settle`, except the declared one-turn hidden-tail inserts that `main-thread-responsiveness` records as an envelope until `sliced-protected-install` is adopted.
-
-#### Scenario: Restore of three protected documents
-- **WHEN** a session with three protected documents and one ordinary document is restored and the user switches through the tabs
-- **THEN** each protected tab is folded at insertion, scrolled to its saved position, and none gains a draft, and the persisted cursor offsets survive the next session save
-
 ### Requirement: Recovery of giant-paragraph drafts does not lay out the paragraph
 Draft recovery and set-aside open SHALL install a body whose worker profile marks it `protected_view` through the fold-at-insertion executor, so that no part of a folded tail is ever laid out. The recovered editor SHALL enter Protected View, stay modified and draft-restored, and retain the installed body as its `ProtectedTextSource`. Because its buffer is immutable and equals its persisted draft body, autosave SHALL NOT snapshot it or rewrite its body; Save, Save As and close-with-changes SHALL write the retained source. The crash-recovery smoke's lazy-aggregate case (two accepted drafts grown to 32 MiB each without a paragraph delimiter) SHALL reach `recovery-restore-complete` within the smoke's existing 60 s limit, which SHALL NOT be raised, and SHALL record the time to that predicate and each recovered tab's `protected_view` in its artifacts.
 

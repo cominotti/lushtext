@@ -34,6 +34,7 @@ mod protected_view;
 mod restore_position;
 pub mod save;
 mod search;
+pub(crate) use search::search_prefill_text;
 mod style_scheme;
 
 use crate::model::bookmark::BookmarkRecord;
@@ -456,10 +457,16 @@ impl LushtextEditorPage {
         // GtkTextBuffer maintains char_count as scalar metadata. Reading it is
         // O(1), so accounting never copies or scans document text on edits.
         let character_count = u64::try_from(self.buffer().char_count()).unwrap_or(0);
+        // A protected document also holds its text source (the installed body
+        // or the edit entry's capture), retained beside the buffer.
         crate::model::editor_memory::estimate_live_editor_bytes(
             character_count,
             self.file_size(),
             self.is_evicted(),
+        )
+        .saturating_add(
+            self.protected_source()
+                .map_or(0, |source| source.retained_bytes()),
         )
     }
 
