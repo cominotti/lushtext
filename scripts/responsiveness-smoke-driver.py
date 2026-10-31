@@ -122,8 +122,13 @@ SESSION_LENGTH = {"quick": 250_000, "full": 1_900_000}
 # and end. It re-measures C2's toolkit-floor exception: keystrokes in editable
 # paragraphs between L_EDIT_STALL (3,500) and L_PROTECT_EDIT (50,000) miss
 # B_interact (ledger A23, A26). Quick brackets the exception; full adds the
-# points around L_EDIT_STALL and inside the range.
-KEYSTROKE_LENGTHS = {"quick": (3_500, 50_000), "full": (2_500, 3_500, 5_000, 10_000, 20_000, 50_000)}
+# points around L_EDIT_STALL and inside the range. The top length leaves room
+# for the three typed bursts: a paragraph the bursts push past L_PROTECT_EDIT
+# enters Protected View mid-case and stops taking keys (the C2 verdict's
+# 49,990 case did), so it would no longer measure the editable exception.
+L_PROTECT_EDIT = 50_000
+KEYSTROKE_EDGE = 49_950
+KEYSTROKE_LENGTHS = {"quick": (3_500, KEYSTROKE_EDGE), "full": (2_500, 3_500, 5_000, 10_000, 20_000, KEYSTROKE_EDGE)}
 KEYSTROKE_SHAPES = (("css", "html"), ("prose", "txt"))
 KEYSTROKE_POSITIONS = ("start", "middle", "end")
 KEYSTROKE_GAP_S = float(os.environ.get("RESPONSIVENESS_KEYSTROKE_GAP_S", "0.15"))
@@ -3338,6 +3343,13 @@ def self_test() -> int:
         if not condition:
             failures.append(label)
 
+    # Every keystroke length stays editable after the case types its bursts.
+    for tier, lengths in KEYSTROKE_LENGTHS.items():
+        expect(
+            max(lengths) + len(KEYSTROKE_POSITIONS) * len(TYPE_BURST) <= L_PROTECT_EDIT,
+            f"{tier} keystroke lengths stay at or below L_PROTECT_EDIT after the bursts",
+        )
+
     # Classification edges (L + T == B is within; L - eps == B is not over).
     expect(classify(6_000, 2_000, 1_000, 8_000) == "within", "L + T == B is within")
     expect(classify(6_001, 2_000, 1_000, 8_000) == "indeterminate", "L + T == B + 1 is indeterminate")
@@ -3722,7 +3734,7 @@ def self_test() -> int:
 
     # The keystroke group (C2's toolkit-floor exception): its case grid per
     # tier, the override, the phases' kinds, and the landing verification.
-    for tier, lengths in (("quick", (3_500, 50_000)), ("full", (2_500, 3_500, 5_000, 10_000, 20_000, 50_000))):
+    for tier, lengths in (("quick", (3_500, 49_950)), ("full", (2_500, 3_500, 5_000, 10_000, 20_000, 49_950))):
         grid = [c for c in build_cases(tier) if c.group == "keystroke"]
         ids = [c.id for c in grid]
         expected_ids = [f"keystroke/{n}/{flavor}/{ext}/wrap-{wrap}" for n in lengths for flavor, ext in (("css", "html"), ("prose", "txt")) for wrap in ("on", "off")]

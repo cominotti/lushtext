@@ -34,4 +34,5 @@
 ## 5. Verdict and verification
 
 - [ ] 5.1 Re-run C2's lane cases with the inspector open and navigation and Copy Whole Line added, interleaved against `main`, one run per exclusive hold.
+- [ ] 5.1a Add the lane cases C2 could not (its task 9.3): Save As of a protected document (needs a measurement-build hook for the file chooser) and a live word-wrap toggle (needs a runtime settings write in the lane), with driver self-tests.
 - [ ] 5.2 `make check`, `make test`, the Protected View Kani shards, `make gtk-axioms`, the accessibility, visual and crash-recovery smokes; fix every failure.

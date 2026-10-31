@@ -1011,3 +1011,43 @@ fn test_a_protected_reload_reruns_find_on_the_new_source() {
     });
     assert_eq!(page.protected_view_evidence().find_current, Some(0));
 }
+
+#[test]
+fn test_the_automation_snapshot_counts_protected_find_matches() {
+    // `search.editor_match_count` must report the worker find's count: a
+    // protected document attaches no search context, and automation clients
+    // (the responsiveness lane's keystroke group) read the count there.
+    ensure_gtk_init();
+    let giant = format!(
+        "{}zqzsnap{}",
+        "h".repeat(n(L_PROTECT_EDIT)),
+        "t".repeat(500)
+    );
+    let body = format!("zqzsnap\n{giant}\nshort\n");
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("snapshot-find.txt");
+    fixture::write_text(&path, &body);
+    let window = crate::common::test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let page = crate::common::active_editor(&window);
+    wait_until(Duration::from_secs(60), || {
+        page.load_evidence().load_state == EditorLoadState::Loaded
+    });
+    assert!(page.is_protected_view());
+    page.show_search();
+    flush_events();
+    page.search_bar().search_entry().set_text("zqzsnap");
+    wait_until(Duration::from_secs(30), || {
+        let evidence = page.protected_view_evidence();
+        !evidence.find_pending && evidence.find_matches == 2
+    });
+    let app = window
+        .application()
+        .expect("window application")
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("LushtextApplication");
+    let snapshot = lushtext_core::ui::automation::app_snapshot(&app);
+    let search = snapshot.window.expect("window snapshot").search;
+    assert_eq!(search.editor_match_count, Some(2));
+}

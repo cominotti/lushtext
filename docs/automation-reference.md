@@ -761,7 +761,7 @@ sidebar show/hide animation and belongs to `WFR-SHELL-GEOMETRY`, not to this row
 | <span id="snapshot-field-accessibility-blocker"></span>`snapshot-field-accessibility-blocker` | `surfaces.accessibility_blocker` | `string?` | First accessibility readiness blocker, if any, using the stable readiness blocker names below. |
 | <span id="snapshot-field-editor-search-visible"></span>`snapshot-field-editor-search-visible` | `search.editor_search_visible` | `bool` | Selected editor search bar visibility. |
 | <span id="snapshot-field-editor-query"></span>`snapshot-field-editor-query` | `search.editor_query` | `string?` | Selected editor query when its search UI is visible. |
-| <span id="snapshot-field-editor-match-count"></span>`snapshot-field-editor-match-count` | `search.editor_match_count` | `i32?` | Selected editor occurrence count, when available. |
+| <span id="snapshot-field-editor-match-count"></span>`snapshot-field-editor-match-count` | `search.editor_match_count` | `i32?` | Selected editor occurrence count, when available. For a Protected View document, the worker find's match count (capped at 10,000). |
 | <span id="snapshot-field-workspace-search-visible"></span>`snapshot-field-workspace-search-visible` | `search.workspace_search_visible` | `bool` | Workspace search panel visibility. |
 | <span id="snapshot-field-workspace-query"></span>`snapshot-field-workspace-query` | `search.workspace_query` | `string` | Current workspace search query. |
 | <span id="snapshot-field-workspace-searching"></span>`snapshot-field-workspace-searching` | `search.workspace_searching` | `bool` | Whether workspace search is currently running. |

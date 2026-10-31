@@ -2192,6 +2192,11 @@ fn search_snapshot(window: &LushtextWindow) -> AutomationSearchSnapshot {
             .then(|| bounded_snapshot_text(editor.search_bar().search_entry().text()))
     });
     let editor_match_count = editor.as_ref().and_then(|editor| {
+        if editor.is_protected_view() {
+            // A protected document's find runs on a worker, with no search
+            // context: report its capped match count.
+            return i32::try_from(editor.protected_view_evidence().find_matches).ok();
+        }
         editor
             .search_bar()
             .search_context()

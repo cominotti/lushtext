@@ -1127,11 +1127,11 @@ zoom-50 % fixture to tie it to the toolkit. The zoom range is 50–400 %
 compile-time assertion in `zoom.rs` is left to the first C2 milestone that
 edits that GTK module.
 
-Provisional fold constants until task 1.3 measures them: `N_HEAD` = 15,000 (the
-A23 extrapolation of design D1) and `A28_SAFE_CHARS` = 59,579, A28's overflow
-at the **largest** zoom (`floor(i32::MAX / (9011 · 4))`; the overflow length
-shrinks as the advance grows, so 400 % binds, not the smallest zoom), so
-`head_cap` = 15,000.
+`A28_SAFE_CHARS` = 59,579 is A28's overflow at the **largest** zoom
+(`floor(i32::MAX / (9011 · 4))`; the overflow length shrinks as the advance
+grows, so 400 % binds, not the smallest zoom). `N_HEAD` was the provisional
+15,000 of design D1 (an A23 extrapolation) until the verdict measured it (next
+section); it is now **10,000**, so `head_cap` = 10,000.
 
 ### Pre-existing blocker found by task 1.1
 
@@ -1139,6 +1139,74 @@ Typing into a 500,000-character paragraph with word wrap off logged A37's
 `Trying to snapshot GtkGizmo … without a current allocation` in 2 runs
 (`coarse-500000`: CSS wrap-off rep 0, prose wrap-off rep 1). C2 owns it under
 the pre-existing-blockers rule (task 1.7).
+
+**Fixed and re-checked (2026-10-31).** The fix (c61d9a7f) queues the view's
+allocation when a tag leaves the tag table. The lane check runs on a binary
+from before Protected View (47cf4d7b), where a 500,000-character paragraph is
+still editable: `keystroke/500000/*/wrap-off`, plain × 3, reproduced no
+defect and the lane's `FIXED_DEFECTS` check passed
+(`.claude/handoffs/c2-verdict/a37-prepv/`).
+
+### Verdict diagnostics (2026-10-31)
+
+Runs in `.claude/handoffs/c2-verdict/` (`runs.log` records the load before and
+after each run; each run is one exclusive hold through `scripts/measure.sh`).
+The measurement build records a span for each dispatch the attribution needs:
+`open_document`, `load_request`, `load_install_begin`, `load_install_slice`,
+`load_complete`, `replacement_turn` and `protected_tail_insert`.
+
+**`N_HEAD` (task 1.3).** The first branch round, with the provisional 15,000,
+put protected open and post-open dispatches at 16–42 ms and find at 9–11 ms
+(machine load 14–23). The lane's `keystroke` sweep of 2026-10-30 is task 1.3's
+measurement: it opens one visible paragraph of a swept length between short
+paragraphs. Its worst post-open dispatch is 12.7–14.8 ms at 10,000 characters
+(prose `.txt`, wrap off and on), 16.1 ms at 14,000 wrap off and 20.7 ms at
+20,000 wrap on; about 11 ms of each is the size-independent settle of a
+500-character document. `N_HEAD` is therefore 10,000. The wrap-toggle
+re-layout was not measured separately.
+
+**Renderer × `N_HEAD`** (idle machine, load 1–2; plain × 2; worst over
+open and the post-open settle, ms):
+
+| Renderer | `N_HEAD` | frame layout | frame paint | worst dispatch outside the tail insert |
+|---|---|---|---|---|
+| cairo | 10,000 | 7.0–7.5 | 3.5 (wrap off), 13.4–13.5 (wrap on) | 9.9–15.7 |
+| cairo | 5,000 | 6.6–7.4 | 2.5 (wrap off), 11.8–12.3 (wrap on) | 10.2–12.5 |
+| GL (`GSK_RENDERER=ngl`, got `GskGLRenderer`) | 10,000 | 7.8–8.5 | 169–171 | 172–174 |
+| GL | 5,000 | 7.9–10.2 | 170–172 | 172–175 |
+
+Headless Mutter does accept the GL renderer, but its first paint costs about
+170 ms whatever the head (size-independent: shader and pipeline set-up on the
+headless EGL device), so the headless lane cannot measure GPU text paint; that
+column says nothing about a desktop's GPU renderer. On cairo, the head adds
+about 1 ms between 5,000 and 10,000, and every protected dispatch outside the
+tail insert fits `B_settle` on an idle machine. The earlier "frame over 16 ms"
+was load: no toolkit-floor exception is asked for.
+
+**Attribution of the remaining long dispatches.**
+- The one-turn hidden-tail insert: 22.7–23.4 ms for a 1.9M-character tail, 2.8–3.0 ms
+  for 250,000 (`protected_tail_insert`), plus the load completion in the same
+  dispatch (3.7–6.0 ms). This is the declared envelope, C3's gate input.
+- Restore of three protected documents: GLib dispatches every ready source of a
+  priority in one main-loop iteration, so two documents' tail inserts ran back
+  to back in one dispatch (52 ms). `ui/protected_fold.rs` now admits one tail
+  insert per iteration process-wide (6761ebf0); each document's envelope then
+  stands alone (25–32 ms including its completion).
+- CR-only (`delimiters/cr`, a 5.2 MB minified `.html`): a 43–47 ms dispatch
+  was `open_document` itself, loading the HTML language definition for a
+  document whose scale then cleared it. A pending load no longer applies a
+  language; the load publication does, only when syntax is allowed (6761ebf0).
+- `eviction/reselect` exceeds its startup wait on `main` and the branch alike.
+  The case opens ten 8 MiB short-line documents. Between batches the GTK thread
+  runs about 90 dispatches a second of about 10 ms each with no frame and no
+  LushText span: GtkTextView's background line validation (priority
+  `GDK_PRIORITY_REDRAW + 5`) of the loaded documents. The loads' worker
+  completions, delivered by `spawn_blocking_then` through
+  `G_PRIORITY_DEFAULT_IDLE`, wait behind it, so the documents install in three
+  batches about 11 s apart and `app-startup` readiness takes over 30 s. Every
+  dispatch stays near 10 ms, so no budget is missed. The case cannot reach its
+  reselect phase as written. This is attributed, not fixed: the delivery
+  priority of `gtk-lush-tasks` completions is a GTK Lush decision outside C2.
 
 ## Axioms each change cites
 
