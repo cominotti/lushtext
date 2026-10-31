@@ -120,7 +120,10 @@ pub(crate) fn load_css() {
             // font provider is display-wide, so this signal is global too.
             let _keepalive = &iface_keepalive;
             if s.boolean(config::keys::USE_SYSTEM_FONT) {
+                // The desktop font is a font change too (D9).
+                let paced = crate::ui::editor_page::restyle::prepare_paced_restyle_everywhere();
                 apply_font_css(&p, &s);
+                crate::ui::editor_page::restyle::start_paced_reveal_everywhere(&paced);
             }
         });
     }

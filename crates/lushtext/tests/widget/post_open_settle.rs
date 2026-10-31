@@ -239,6 +239,57 @@ fn test_a_dense_document_installs_in_paced_slices() {
 }
 
 #[test]
+fn test_editorconfig_tab_width_does_not_change_after_a_dense_install_starts() {
+    // GtkTextView invalidates every line on a default-style property change
+    // and queues no resize (A37), so on a dense document such a change after
+    // the first slice re-lays out everything installed so far in one dispatch.
+    // EditorConfig's tab width (R17) is therefore applied before the first
+    // slice; this test fails when it is applied after it.
+    //
+    // `bottom-margin` is deliberately not observed. The end-of-document
+    // overscroll follows the viewport height, which the editor's map handler
+    // and its viewport-bounds handler already apply before a load's planning
+    // worker returns, so no fixture of an opened, mapped editor changes it
+    // after the first slice, with or without the before-install refresh (that
+    // refresh only covers an install starting before the map idle has run).
+    // Its later changes come from a resize or the first map of a background
+    // tab, which the A58 exception runs at `G_PRIORITY_LOW` instead.
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(&dir, ".editorconfig", "root = true\n\n[*]\ntab_width = 7\n");
+    let path = write(&dir, "dense.txt", &dense(710, 160));
+    window.open_document(&path);
+    let editor = active_editor(&window);
+    let late_changes = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    {
+        let late_changes = late_changes.clone();
+        let buffer = editor.buffer();
+        editor
+            .source_view()
+            .connect_notify_local(Some("tab-width"), move |_, _| {
+                // The tab opened empty, so text in the buffer means the first
+                // slice is in.
+                if buffer.char_count() > 0 {
+                    late_changes.set(late_changes.get() + 1);
+                }
+            });
+    }
+    wait_until(SETTLE_BUDGET, || {
+        editor.load_state() == EditorLoadState::Loaded
+    });
+    flush_after_delay(Duration::from_millis(300));
+    assert!(editor.load_evidence().installation_chunked);
+    assert_eq!(editor.source_view().tab_width(), 7);
+    assert_eq!(
+        late_changes.get(),
+        0,
+        "tab-width changed after the first slice"
+    );
+}
+
+#[test]
 fn test_a_short_line_document_stays_direct() {
     ensure_gtk_init();
     let window = test_window();

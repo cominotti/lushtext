@@ -101,6 +101,11 @@ input to presented frame, measured on the maintainer's desktop.
    C6 also took over the dense short-line validation cost from C2's revision. The scope split
    is in its proposal: C2 owns giant-paragraph layout and the 32 MiB draft recovery, and C6
    owns everything else after open.
+   **Implemented 2026-10-31** on branch `bound-post-open-settle` (record: "C6" in
+   `long-line-documents.md`): deferred language attach (the A52 parse is a toolkit-floor
+   exception), per-language syntax gates, `V_SLICE` = 11,360 paced dense installs and
+   restyles, the `document-settled` predicate. Queued follow-up **C6b**: the chunked
+   attach-before-install, which would lift the gate for ten languages.
 3. **Re-confirm the reference values on an idle machine — done
    (2026-10-13).** `L_search_highlight` rose to 10,000; `L_minimap` fell to
    22,000 (the loaded 50,000 was a derivation artifact); every other value

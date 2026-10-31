@@ -28,7 +28,10 @@ local history, and careful recovery behavior.
   loads (its longest paragraph, how densely long lines pack, and its size), and
   features whose cost grows with line length are turned off for that document
   before they meet it: syntax highlighting and bracket matching (paragraphs over
-  2,000 characters or files over 1 MiB), the minimap (paragraphs over 22,000
+  2,000 characters, or files over a per-language size measured so that opening
+  and typing stay smooth: from about 10 KB for TypeScript and 16 KB for HTML to
+  320 KB for Markdown, 48 KB for languages not measured, and 1 MiB for plain
+  text), the minimap (paragraphs over 22,000
   characters or files over 10 MB), automatic search highlighting (over 10,000),
   and invisible-character drawing (over 50,000). Edits that create such a
   paragraph, a paste or a joined line, turn the feature off in the same

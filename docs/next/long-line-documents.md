@@ -1048,6 +1048,8 @@ boundary are made here).
   editor frame and `INPUT_QUIET`, bounded by `ATTACH_DEADLINE`, and the parse
   is a toolkit-floor exception against S1, with the upstream draft
   `.claude/handoffs/c6-upstream-gtksourceview-language-parse.md`.
+  The background-analysis slice has its own draft for the maintainer to file:
+  `.claude/handoffs/c6-upstream-gtksourceview-worker-slice.md` (A54).
 - **The dense end-of-document overscroll** uses the S7 fallback, the margin
   frozen at install; a resize-driven change over `B_settle` is a toolkit-floor
   exception against S7.

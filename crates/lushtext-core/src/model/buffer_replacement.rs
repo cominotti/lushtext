@@ -26,7 +26,15 @@ mod kani_proofs;
 use super::paragraph_boundary::{ProfileSummary, next_paragraph_break};
 
 /// Maximum old/new document size that may be replaced synchronously.
-pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 1024 * 1024;
+///
+/// The largest short-line body whose one-turn install fits half of
+/// `B_SETTLE_US` (`bound-post-open-settle` task 3.1). Measured on the
+/// responsiveness lane (probe build, 2026-10-30, load 13 falling to 5.5): the
+/// direct install of the 1,000,000-byte short-line fixture took 11.1 ms
+/// (10.9 µs per KiB), and each 256 KiB slice of the 5,000,000-byte fixture
+/// 2.3–2.6 ms (9–10 µs per KiB). At the worst rate, 8,000 µs covers 734 KiB;
+/// 704 KiB keeps about 4 % of margin. The former value, 1 MiB, took 11.1 ms.
+pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 704 * 1024;
 
 /// Maximum existing buffer characters deleted in one GTK turn.
 pub const REPLACEMENT_CLEAR_SLICE_CHARS: i32 = 64 * 1024;
@@ -53,8 +61,10 @@ pub const REPLACEMENT_INSERT_SLICE_BYTES: usize = 256 * 1024;
 /// without a `GtkSourceMap`; host load 40–56, so magnitudes only) found a step
 /// between 11,360 characters (every repetition at most 4.0 ms) and 22,720
 /// (saturated at 8–9 ms). `V_SLICE` is therefore the last size below that
-/// step, 16 lines of 710 characters, PROVISIONAL until the responsiveness lane
-/// confirms it on the probe build.
+/// step, 16 lines of 710 characters. The responsiveness lane confirmed it on
+/// the probe build (2026-10-31, `dense/{120,500,710}` in both wrap modes and
+/// all three input variants, load 1.3): every validation dispatch until settle
+/// at most 11.6 ms, every post-open dispatch at most 15.0 ms.
 pub const V_SLICE: u64 = 11_360;
 
 /// Whether a document's densest validation batch holds more than [`V_SLICE`]
