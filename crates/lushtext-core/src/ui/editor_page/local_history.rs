@@ -315,6 +315,14 @@ impl LushtextEditorPage {
         &self,
         content: crate::ui::plain_disposal::DisposalOwned<String>,
     ) {
+        // A recovered protected document keeps its body as the Protected View
+        // text source (design D4, D13), not as a local-history baseline.
+        let Some(content) = self.retain_protected_source(content) else {
+            self.replace_clean_baseline(None);
+            self.set_local_history_restore_undo_text(None);
+            self.cancel_local_history_periodic_capture();
+            return;
+        };
         let availability = local_history_service::availability_for_utf8_bytes(content.len());
         let clean_text = if self.file_path().is_some() && availability.allows_automatic_capture() {
             Some(content.into_retained_current())

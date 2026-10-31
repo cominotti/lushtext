@@ -432,3 +432,87 @@ fn test_move_cursor_scrolls_without_moving_a_mark() {
     assert_eq!(marks(&page), before, "the marks stay");
     assert!(vadjustment.value() > top, "the viewport moved down a page");
 }
+
+// ─── Recovery of a giant-paragraph draft (tasks 7.10, design D13) ──────────
+
+#[test]
+fn test_recovering_a_giant_paragraph_draft_folds_it_and_keeps_it_as_the_source() {
+    use crate::common::{active_editor, test_window};
+    use lushtext_core::model::draft::{DraftEntry, DraftManifest};
+    use lushtext_core::model::session::{SessionData, SessionTab};
+    use lushtext_core::services::{draft_service, editor_io, json_store, session_service};
+
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let file_path = dir.path().join("recovered.txt");
+    fixture::write_text(&file_path, "small\n");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    // The crash-recovery smoke's shape: a body whose last paragraph is
+    // several million characters with no delimiter after it.
+    let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(3_000_000));
+    draft_service::fixture::write_body(&data_dir, &draft_id, &draft).expect("seed draft");
+    let mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id,
+                original_path: Some(file_path.clone()),
+                original_mtime_secs: Some(mtime),
+                saved_at_secs: 1,
+            }],
+            cleanup_continuation: None,
+        },
+    )
+    .expect("save manifest");
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(file_path),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save session");
+
+    let draft_chars = draft.chars().count();
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(60), || {
+        usize::try_from(active_editor(&window).buffer().char_count())
+            .is_ok_and(|chars| chars == draft_chars)
+    });
+    flush_events();
+    let editor = active_editor(&window);
+    assert_eq!(
+        editor_text(&editor),
+        draft,
+        "the draft is recovered byte for byte"
+    );
+    assert!(
+        editor.is_protected_view(),
+        "a giant recovered paragraph enters Protected View"
+    );
+    assert!(
+        editor.buffer().is_modified(),
+        "a recovered draft stays modified"
+    );
+    assert!(!editor.source_view().is_editable(), "and is caret-free");
+    let last = visible_lengths(&editor).last().copied().expect("lines");
+    assert!(
+        last <= HEAD_CAP,
+        "the recovered giant paragraph shows {last}, at most HEAD_CAP"
+    );
+    assert_eq!(
+        editor.protected_view_evidence().source_bytes,
+        Some(u64::try_from(draft.len()).expect("fits")),
+        "the recovered body is the session's text source"
+    );
+}

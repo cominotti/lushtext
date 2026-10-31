@@ -75,6 +75,30 @@ enum ReplacementBody {
     },
 }
 
+impl ReplacementBody {
+    /// At a completed install into a protected editor, a guarded body nobody
+    /// else keeps becomes the Protected View text source (design D4); a body
+    /// with an `on_complete` consumer goes there, which decides (draft
+    /// recovery retains it through its local-history seeding).
+    fn retain_for_protected_view(self, editor: &LushtextEditorPage) -> Self {
+        match self {
+            Self::Guarded {
+                body,
+                on_cancel,
+                on_complete: None,
+            } if editor.is_protected_view() => match editor.retain_protected_source(body) {
+                None => Self::default(),
+                Some(body) => Self::Guarded {
+                    body,
+                    on_cancel,
+                    on_complete: None,
+                },
+            },
+            other => other,
+        }
+    }
+}
+
 impl Default for ReplacementBody {
     fn default() -> Self {
         Self::Plain {
@@ -866,7 +890,13 @@ fn finish_session(
     buffer.end_irreversible_action();
     let outcome = match cancellation {
         None => {
-            let body = body.unwrap_or_default().into_completed_body();
+            let body = body
+                .map(|body| match &editor {
+                    Some(editor) => body.retain_for_protected_view(editor),
+                    None => body,
+                })
+                .unwrap_or_default()
+                .into_completed_body();
             #[cfg(not(feature = "test-utils"))]
             drop(body);
             BufferReplacementOutcome::Complete {
