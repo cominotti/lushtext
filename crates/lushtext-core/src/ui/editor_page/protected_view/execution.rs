@@ -18,12 +18,12 @@ use super::seams::{FoldSummary, ProtectedTextSource};
 use crate::model::document_scale::protects_by_length;
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::model::protected_fold::{FoldPlan, FoldRange, FoldThresholds, plan_folds};
-use crate::ui::buffer_snapshot::{self, BufferSnapshotHandle, BufferSnapshotOutcome};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::plain_disposal::DisposalOwned;
 use crate::ui::protected_fold::fold_tag;
 
 /// The per-editor Protected View state.
+#[derive(Debug)]
 pub struct ProtectedViewRuntime {
     session: Cell<ProtectedSession>,
     /// A reload from disk just left Protected View: the next install terminal
@@ -36,24 +36,6 @@ pub struct ProtectedViewRuntime {
     /// The session's fold plan, absolute paragraph numbers: what find and
     /// navigation read to tell a visible column from a hidden one.
     fold_plan: RefCell<Option<std::sync::Arc<FoldPlan>>>,
-    /// The bounded buffer capture that becomes an edit-entered session's
-    /// source, while it runs.
-    source_capture: RefCell<Option<BufferSnapshotHandle>>,
-}
-
-impl std::fmt::Debug for ProtectedViewRuntime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProtectedViewRuntime")
-            .field("session", &self.session)
-            .field("exit_pending", &self.exit_pending)
-            .field("source", &self.source)
-            .field("fold_summary", &self.fold_summary)
-            .field(
-                "source_capture_running",
-                &self.source_capture.borrow().is_some(),
-            )
-            .finish_non_exhaustive()
-    }
 }
 
 impl Default for ProtectedViewRuntime {
@@ -64,7 +46,6 @@ impl Default for ProtectedViewRuntime {
             source: RefCell::new(None),
             fold_summary: Cell::new(FoldSummary::default()),
             fold_plan: RefCell::new(None),
-            source_capture: RefCell::new(None),
         }
     }
 }
@@ -79,12 +60,6 @@ pub(crate) enum ProtectedInstallSource {
 }
 
 impl ProtectedViewRuntime {
-    fn cancel_source_capture(&self) {
-        if let Some(handle) = self.source_capture.take() {
-            handle.cancel();
-        }
-    }
-
     fn advance(&self, event: SessionEvent) -> ProtectedSession {
         let next = self.session.get().on_event(event);
         self.session.set(next);
@@ -131,8 +106,8 @@ impl LushtextEditorPage {
                 SessionEvent::Installed { kind, protected }
             }
         };
+        self.cancel_protected_source_capture();
         let runtime = self.imp_protected_view();
-        runtime.cancel_source_capture();
         let was_protected = runtime.session.get().protected;
         let next = runtime.advance(event);
         runtime
@@ -184,7 +159,7 @@ impl LushtextEditorPage {
     /// protected; an eviction reload is monotone.
     pub(crate) fn release_protected_source_for_eviction(&self) {
         let runtime = self.imp_protected_view();
-        runtime.cancel_source_capture();
+        self.cancel_protected_source_capture();
         runtime.source.replace(None);
     }
 
@@ -282,46 +257,12 @@ impl LushtextEditorPage {
             .replace(Some(std::sync::Arc::new(FoldPlan::from_ranges(applied))));
         let session = runtime.advance(SessionEvent::EditGrowth);
         runtime.source.replace(None);
-        self.capture_protected_source_after_entry(session.generation);
+        self.start_protected_source_capture(session.generation);
     }
 
-    /// An edit-entered session has no install body to keep (design D4): after
-    /// the entering emission returns, capture the buffer in bounded chunks
-    /// (hidden tails included) and keep it as the source, unless the session
-    /// moved on meanwhile. Protected View admits no buffer change but the
-    /// entry undo, which cancels the capture.
-    fn capture_protected_source_after_entry(&self, generation: u64) {
-        let page = self.downgrade();
-        glib::idle_add_local_once(move || {
-            let Some(page) = page.upgrade() else {
-                return;
-            };
-            if page.protected_session().generation != generation {
-                return;
-            }
-            let weak = page.downgrade();
-            let handle =
-                buffer_snapshot::snapshot_buffer_text_async(page.buffer(), move |outcome| {
-                    let Some(page) = weak.upgrade() else {
-                        return;
-                    };
-                    page.imp_protected_view().source_capture.replace(None);
-                    let BufferSnapshotOutcome::Captured(payload) = outcome else {
-                        return;
-                    };
-                    gtk_lush_tasks::spawn_blocking_then(
-                        page,
-                        move || payload.into_guarded_string_on_worker(),
-                        move |page, body| page.accept_captured_source(generation, body),
-                    );
-                });
-            page.imp_protected_view()
-                .source_capture
-                .replace(Some(handle));
-        });
-    }
-
-    fn accept_captured_source(&self, generation: u64, body: DisposalOwned<String>) {
+    /// Keep an edit entry's captured body as the source, while the session is
+    /// still protected at the entry's generation (`capture_execution`).
+    pub(super) fn accept_captured_source(&self, generation: u64, body: DisposalOwned<String>) {
         let session = self.protected_session();
         if !session.protected || session.generation != generation {
             return;
@@ -375,7 +316,7 @@ impl LushtextEditorPage {
         runtime.fold_summary.set(FoldSummary::default());
         runtime.fold_plan.replace(None);
         runtime.source.replace(None);
-        runtime.cancel_source_capture();
+        self.cancel_protected_source_capture();
         runtime.advance(SessionEvent::EntryUndo { is_entry_step });
         true
     }

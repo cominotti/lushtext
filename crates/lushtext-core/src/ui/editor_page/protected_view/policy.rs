@@ -94,6 +94,17 @@ const _: () = assert!(MAX_FIND_RECORD_BYTES <= FIND_BYTES_PER_TURN);
 /// back to a character boundary without becoming empty.
 pub(crate) const COPY_CHUNK_BYTES: usize = 64 * 1024;
 
+/// Characters an edit entry's source capture copies per GTK dispatch (design
+/// D4): A66 measured 0.4–1.1 ms per 64 Ki characters at every depth of a
+/// two-million-character paragraph when the iterator advances in steps below
+/// GtkTextIter's linear-scan limit.
+pub(crate) const SOURCE_CAPTURE_CHUNK_CHARS: i32 = 64 * 1024;
+
+/// The `forward_chars` step of that capture: below GtkTextIter's
+/// `MAX_LINEAR_SCAN` (150), so the iterator's byte and character offsets stay
+/// current instead of being re-derived from the segment start (A66).
+pub(crate) const SOURCE_CAPTURE_STEP_CHARS: i32 = 128;
+
 const _: () = assert!(COPY_CHUNK_BYTES >= 4);
 
 // ---------------------------------------------------------------------------

@@ -561,7 +561,10 @@ draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
   lays out a giant paragraph: find, copy, save and any future reader take the
   session's `ProtectedTextSource` (an install body, or the bounded capture an
   edit entry starts after its emission), never `buffer.text()` with hidden text
-  excluded, never a `GtkSourceSearchContext`. Insert protected bodies through
+  excluded, never a `GtkSourceSearchContext`, and never the shared chunked
+  `buffer_snapshot`: it resumes from a mark, whose positioning inside one giant
+  paragraph costs time in proportion to the depth (A66), so `capture_execution.rs`
+  keeps one iterator across its dispatches instead. Insert protected bodies through
   `ui::protected_fold::insert_folded` so the tail is invisible in the same
   dispatch it is inserted. Never move a mark or iterator into a hidden tail
   (A66): navigation scrolls a `protected-nav` mark at a visible column or the

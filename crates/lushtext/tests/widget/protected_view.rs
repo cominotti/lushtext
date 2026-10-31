@@ -778,17 +778,33 @@ fn test_an_edit_entered_session_finds_and_copies_its_hidden_tail() {
     // captures the buffer after the entry, and find and copy wait for it.
     let body = body_with_giants(&[]);
     let (page, _window) = editable_page(&body, "edit-source");
+    // Several capture chunks deep, with a multibyte tail.
     let run = format!(
         "{}zqzgrown{}",
-        "p".repeat(n(L_PROTECT_EDIT)),
-        "q".repeat(500)
+        "p".repeat(n(L_PROTECT_EDIT) * 4),
+        "é".repeat(80_000)
     );
     paste_at_line_end(&page, 5, &run);
     assert_entered(&page, 5, "edit-source");
     let text = editor_text(&page);
-    wait_until(Duration::from_secs(30), || {
+    // Mark and tag changes between capture dispatches (the view moves its own
+    // marks when it scrolls) make the capture re-position by byte index.
+    let buffer = page.buffer();
+    let probe = buffer.create_mark(None, &buffer.start_iter(), true);
+    let probe_tag = buffer.create_tag(None, &[]).expect("tag");
+    let flip = std::cell::Cell::new(false);
+    wait_until(Duration::from_secs(60), || {
+        flip.set(!flip.get());
+        let line = if flip.get() { 0 } else { 2 };
+        buffer.move_mark(&probe, &buffer.iter_at_line(line).expect("line"));
+        let (start, _) = buffer.bounds();
+        let mut end = start;
+        end.forward_char();
+        buffer.apply_tag(&probe_tag, &start, &end);
         page.protected_view_evidence().source_bytes == Some(u64::try_from(text.len()).expect("len"))
     });
+    buffer.remove_tag(&probe_tag, &buffer.start_iter(), &buffer.end_iter());
+    buffer.delete_mark(&probe);
 
     page.show_search();
     flush_events();

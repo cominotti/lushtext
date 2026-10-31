@@ -20,6 +20,7 @@
 //! | `seams` | seam value objects | `ProtectedViewTicket`, `ProtectedViewFacts`, `protected_view_is_current`, and `ProtectedTextSource` (the retained install body find, the inspector, copy and saves read) |
 //! | `execution` | coordination | the editor's session, the install and edit-growth entries, the entry undo |
 //! | `evidence` | evidence | `ProtectedViewEvidence`, the workflow's one observable surface |
+//! | `capture_execution` | coordination | the edit-entry source capture: one iterator kept across bounded dispatches, re-positioned by line and byte index after a mark or tag change, joined and owned for disposal on a worker |
 //! | `find_execution` | coordination | the worker-find stage: the search bar's routed query and navigation, one worker search over the source at a time, matches published as paragraph, column and length |
 //! | `interaction_execution` | coordination | the caret-free interaction stage: stopped keybinding signals, the `move-cursor` intercept, the capture key controller and gestures, drop targets |
 //!
@@ -39,6 +40,9 @@
 //! 2. **Enter from an edit.** C1's edit watch, inside the same `insert-text`
 //!    emission, calls `enter_protected_view_from_edit`: the length and density
 //!    folds over the edited lines, then the caret-free properties. Synchronous.
+//!    An idle then starts the source capture (`capture_execution`), which
+//!    resumes once per chunk dispatch and, after a worker joins the chunks, in
+//!    `accept_captured_source` while the session generation holds.
 //! 3. **Stay caret-free** (`interaction_execution`): stopped key-binding
 //!    signals, the `move-cursor` intercept (`policy::viewport_step`), the
 //!    capture key controller and gestures, drop targets off, PRIMARY off. The
@@ -53,6 +57,7 @@
 //!    (`undo_protected_entry`) ends an edit-growth session and restores the
 //!    scale held before entry.
 
+pub(crate) mod capture_execution;
 pub(crate) mod evidence;
 pub(crate) mod execution;
 pub(crate) mod find_execution;

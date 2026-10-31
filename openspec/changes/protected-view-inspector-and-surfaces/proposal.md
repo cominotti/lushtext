@@ -18,7 +18,7 @@
 
 - Copy is served from the source but needs a selection, which today only an assistive technology can make; Copy Whole Line and the inspector are the ordinary user's copy path.
 - A protected save writes the source verbatim (C2 design D9): an edit-entered document that gained LF lines inside a CRLF file is saved with mixed endings, not normalized. The alert or Save As path should say so if the maintainer wants it visible.
-- The edit-entry source capture reuses the shared chunked buffer snapshot rather than a dedicated P8 iterator (C2 tasks 5.1); the inspector's paragraph index is built over that source on the worker.
+- The inspector's paragraph index is built on the worker over C2's source, whichever entry produced it (the install body, or the edit entry's iterator capture, `capture_execution.rs`).
 
 ## Capabilities
 
