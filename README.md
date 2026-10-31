@@ -453,6 +453,12 @@ launcher fails instead of activating stale code.
 Run `make install-git-hooks` once per checkout to configure the repo-managed
 hooks in `.githooks/`.
 
+On a workstation shared by several agents or terminals, run heavy commands
+through `scripts/heavy.sh -- <command>`, timing measurements through
+`scripts/measure.sh -- <command>`, and waits through `scripts/wait-for.sh`; they
+implement the lock protocol in `.agents/rules/build.md` ("Shared-machine agent
+work"), and `make check-agent-helpers` self-tests them.
+
 ### UI Templates
 
 UI templates are authored in Blueprint (`resources/ui/*.blp`). The generated

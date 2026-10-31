@@ -9,7 +9,7 @@ Check whether LushText is currently alive before live GTK interaction.
 
 Options:
   --dbus-name NAME        Application D-Bus name (default: dev.cominotti.lushtext)
-  --pid-pattern PATTERN   Extra pgrep -f regex for the app process
+  --pid-pattern PATTERN   Extra regex over full command lines for the app process
   --session DIR           Debug artifact dir with session.env from run-gtk-debug-session.sh
   --require-dbus          Fail unless the application D-Bus name has an owner
   --require-launched-instance
@@ -144,7 +144,7 @@ pgrep_lines() {
   fi
 
   (
-    pgrep -af -- "$pattern" 2>/dev/null || true
+    pgrep -af -- "$pattern" 2>/dev/null || true # agent-pgrep-f-ok: one-shot snapshot, filtered below; never polled in a loop
   ) | awk -v self="$helper_pid" -v parent="$helper_parent_pid" '
     $1 == self || $1 == parent { next }
     index($0, "check-lushtext-live.sh") > 0 { next }

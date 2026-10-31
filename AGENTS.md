@@ -21,7 +21,7 @@ A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text
 
 Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added or an existing rule is materially changed, update this section in the same change.
 
-- `build.md` — build, dependency, dev-run and installed Flatpak identity, responsiveness-smoke lane and `responsiveness-probes` measurement build, slow GTK axiom probes, agent-skill registry and topology validation, SonarQube scope maintenance, property-testing, test, temporary-file ownership, test isolation from real app data, widget CI shard table, accessibility-policy, terminology-guard, builder-diagnostics, lint-advisory, GTK axiom probe and toolkit-update procedure, and smoke command rules
+- `build.md` — shared-machine agent work (the `heavy.sh`/`measure.sh`/`wait-for.sh` lock protocol and wait rules), build, dependency, dev-run and installed Flatpak identity, responsiveness-smoke lane and `responsiveness-probes` measurement build, slow GTK axiom probes, agent-skill registry and topology validation, SonarQube scope maintenance, property-testing, test, temporary-file ownership, test isolation from real app data, widget CI shard table, accessibility-policy, terminology-guard, builder-diagnostics, lint-advisory, GTK axiom probe and toolkit-update procedure, and smoke command rules
 - `documentation.md` — documentation maintenance requirements, including accessibility guide, matrix, and manual Orca checklist sync rules
 - `git.md` — git workflow and commit conventions
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
@@ -325,6 +325,7 @@ make check-kani-shards # Every Kani harness sits in exactly one CI shard, and ev
 make proof-strength # LOCAL: Kani harnesses as a mutation oracle beside the cargo-mutants tests arm (PROOF_STRENGTH_MODULE/TIER/SHARD/ARM; resumable, one CBMC at a time)
 make proof-strength-list # Proof-strength mutant population, floor, and cheapest-first harness order, without verifying
 make automation-client-self-test # Reusable D-Bus automation client self-test
+make check-agent-helpers # (in check-policy) self-test scripts/heavy.sh, measure.sh, wait-for.sh: how agents run heavy work, measurements, and waits on the shared machine (.agents/rules/build.md "Shared-machine agent work")
 make end-user-smoke # Run all host-supported end-user smoke lanes
 make fmt         # Apply rustfmt everywhere, including widget tests cargo fmt cannot reach
 make check       # fmt + all-feature Clippy + fast policy audits

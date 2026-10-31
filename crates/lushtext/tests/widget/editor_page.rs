@@ -3,8 +3,8 @@
 //! Tests for the LushtextEditorPage widget.
 
 use crate::common::{
-    ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read, isolated_data_dir,
-    rect_within, test_application, wait_until,
+    accessible_hidden, ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read,
+    isolated_data_dir, rect_within, test_application, wait_until,
 };
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -782,10 +782,7 @@ fn test_source_view_accessibility_tracks_preview_only_state() {
         .assert_on(page.source_view());
 
     page.set_preview_only_accessibility_for_test(false);
-    assert!(!gtk4::test_accessible_has_state(
-        page.source_view(),
-        gtk4::AccessibleState::Hidden
-    ));
+    assert!(!accessible_hidden(page.source_view()));
     assert!(!gtk4::test_accessible_has_state(
         page.source_view(),
         gtk4::AccessibleState::Disabled
