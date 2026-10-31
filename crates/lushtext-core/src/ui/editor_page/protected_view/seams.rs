@@ -29,13 +29,6 @@ use crate::ui::plain_disposal::DisposalOwned;
 pub(crate) enum ProtectedViewReason {
     /// A whole-content install whose body has a paragraph over
     /// `L_PROTECT_EDIT` (C1's `ReductionReason::LongParagraph`).
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "constructed by the Protected View executor (long-line-protected-view tasks 4.3-5.x), which lands after the pure policy"
-        )
-    )]
     LongParagraph,
     /// An edit grew a paragraph over `L_PROTECT_EDIT` (the only reason that
     /// may offer the entry undo).
@@ -56,33 +49,12 @@ pub(crate) struct FoldSummary {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProtectedSourceState {
     /// The installed body, retained at the install's terminal.
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "constructed by the Protected View executor (long-line-protected-view tasks 4.3-5.x), which lands after the pure policy"
-        )
-    )]
     Retained,
     /// An edit-growth entry whose one capture has not run yet.
     CapturePending,
     /// An edit-growth entry whose capture completed.
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "constructed by the Protected View executor (long-line-protected-view tasks 4.3-5.x), which lands after the pure policy"
-        )
-    )]
     Captured,
     /// Released (close, eviction, reload, a replacing install).
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "constructed by the Protected View executor (long-line-protected-view tasks 4.3-5.x), which lands after the pure policy"
-        )
-    )]
     Released,
 }
 

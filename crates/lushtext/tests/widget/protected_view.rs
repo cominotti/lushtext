@@ -982,3 +982,32 @@ fn test_print_is_refused_for_a_protected_document() {
         "the refusal is announced once in the status lane"
     );
 }
+
+#[test]
+fn test_a_protected_reload_reruns_find_on_the_new_source() {
+    // A reload that stays protected replaces the source: the results of the
+    // previous source must not survive it (the session generation moved).
+    ensure_gtk_init();
+    let giant = "h".repeat(n(L_PROTECT_EDIT) + 1);
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("refind.txt");
+    fixture::write_text(&path, &format!("zqz one\n{giant}\nzqz two\n"));
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    load_and_wait(&page, &path);
+    page.show_search();
+    flush_events();
+    page.search_bar().search_entry().set_text("zqz");
+    wait_until(Duration::from_secs(30), || {
+        page.protected_view_evidence().find_matches == 2
+    });
+
+    fixture::write_text(&path, &format!("{giant}\nzqz only\n"));
+    load_and_wait(&page, &path);
+    assert!(page.is_protected_view());
+    wait_until(Duration::from_secs(30), || {
+        let evidence = page.protected_view_evidence();
+        !evidence.find_pending && evidence.find_matches == 1
+    });
+    assert_eq!(page.protected_view_evidence().find_current, Some(0));
+}

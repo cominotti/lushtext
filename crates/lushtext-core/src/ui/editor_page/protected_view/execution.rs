@@ -14,7 +14,10 @@ use std::cell::{Cell, RefCell};
 use gtk4::prelude::*;
 
 use super::policy::{ProtectedSession, SessionEvent, WholeContentInstall};
-use super::seams::{FoldSummary, ProtectedTextSource};
+use super::seams::{
+    FoldSummary, ProtectedSourceState, ProtectedTextSource, ProtectedViewFacts,
+    ProtectedViewReason, ProtectedViewTicket, protected_view_is_current,
+};
 use crate::model::document_scale::protects_by_length;
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::model::protected_fold::{FoldPlan, FoldRange, FoldThresholds, plan_folds};
@@ -147,6 +150,8 @@ impl LushtextEditorPage {
             runtime
                 .source
                 .replace(Some(ProtectedTextSource::retain(body)));
+            // Results of a previous source do not survive it.
+            self.restart_protected_find_for_new_source();
             None
         } else {
             runtime.source.replace(None);
@@ -257,14 +262,54 @@ impl LushtextEditorPage {
             .replace(Some(std::sync::Arc::new(FoldPlan::from_ranges(applied))));
         let session = runtime.advance(SessionEvent::EditGrowth);
         runtime.source.replace(None);
-        self.start_protected_source_capture(session.generation);
+        if let Some(ticket) = ProtectedViewTicket::new(self.downgrade(), session) {
+            self.start_protected_source_capture(ticket);
+        }
+    }
+
+    /// The ticket a Protected View stage dispatches under, while protected.
+    pub(in crate::ui::editor_page) fn protected_view_ticket(&self) -> Option<ProtectedViewTicket> {
+        ProtectedViewTicket::new(self.downgrade(), self.protected_session())
+    }
+
+    /// Whether a stage dispatched under `ticket` may still publish.
+    pub(in crate::ui::editor_page) fn protected_view_current(
+        &self,
+        ticket: &ProtectedViewTicket,
+    ) -> bool {
+        protected_view_is_current(ticket, &self.protected_view_facts())
+    }
+
+    /// The editor's Protected View state, as a resumed stage checks it.
+    pub(crate) fn protected_view_facts(&self) -> ProtectedViewFacts {
+        let runtime = self.imp_protected_view();
+        let session = runtime.session.get();
+        let has_source = runtime.source.borrow().is_some();
+        ProtectedViewFacts {
+            session,
+            reason: if session.entered_by_edit {
+                ProtectedViewReason::EditGrowth
+            } else {
+                ProtectedViewReason::LongParagraph
+            },
+            folds: runtime.fold_summary.get(),
+            source: match (has_source, session.entered_by_edit) {
+                (true, false) => ProtectedSourceState::Retained,
+                (true, true) => ProtectedSourceState::Captured,
+                (false, true) => ProtectedSourceState::CapturePending,
+                (false, false) => ProtectedSourceState::Released,
+            },
+        }
     }
 
     /// Keep an edit entry's captured body as the source, while the session is
     /// still protected at the entry's generation (`capture_execution`).
-    pub(super) fn accept_captured_source(&self, generation: u64, body: DisposalOwned<String>) {
-        let session = self.protected_session();
-        if !session.protected || session.generation != generation {
+    pub(super) fn accept_captured_source(
+        &self,
+        ticket: &ProtectedViewTicket,
+        body: DisposalOwned<String>,
+    ) {
+        if !self.protected_view_current(ticket) {
             return;
         }
         self.imp_protected_view()

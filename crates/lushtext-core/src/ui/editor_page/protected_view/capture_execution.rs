@@ -21,7 +21,7 @@
 //! The chunks are joined and owned for off-GTK disposal on a worker, under a
 //! disposal reservation taken on GTK before the join (retried when disposal
 //! capacity frees). The completion keeps the body only while the session is
-//! still protected at the entry's generation.
+//! current for the entry's `ProtectedViewTicket`.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -29,6 +29,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 
 use super::policy::{SOURCE_CAPTURE_CHUNK_CHARS, SOURCE_CAPTURE_STEP_CHARS};
+use super::seams::ProtectedViewTicket;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::plain_disposal::{
     DisposalCapacityWakeup, DisposalOwned, disposal_capacity_epoch, try_reserve_for_gtk,
@@ -36,7 +37,7 @@ use crate::ui::plain_disposal::{
 
 /// One running capture.
 struct SourceCapture {
-    generation: u64,
+    ticket: ProtectedViewTicket,
     /// Where the next chunk starts: valid while `segments_changed` is false.
     iter: gtk4::TextIter,
     /// The same position as line and byte index, to re-position from.
@@ -65,21 +66,24 @@ impl std::fmt::Debug for SourceCaptureState {
 }
 
 impl LushtextEditorPage {
-    /// Start the capture for the edit-entered session at `generation`, after
+    /// Start the capture for the edit-entered session `ticket` names, after
     /// the entering emission returns.
-    pub(in crate::ui::editor_page) fn start_protected_source_capture(&self, generation: u64) {
+    pub(in crate::ui::editor_page) fn start_protected_source_capture(
+        &self,
+        ticket: ProtectedViewTicket,
+    ) {
         self.cancel_protected_source_capture();
-        let page = self.downgrade();
+        let start_ticket = ticket.clone();
         let start = glib::idle_add_local_once(move || {
-            if let Some(page) = page.upgrade() {
-                page.begin_protected_source_capture(generation);
+            if let Some(page) = start_ticket.editor() {
+                page.begin_protected_source_capture(&start_ticket);
             }
         });
         let buffer = self.buffer();
         let segments_changed = Rc::new(Cell::new(false));
         let handlers = watch_segment_changes(buffer.upcast_ref(), &segments_changed);
         self.capture_state().running.replace(Some(SourceCapture {
-            generation,
+            ticket,
             iter: buffer.start_iter(),
             line: 0,
             line_index: 0,
@@ -126,29 +130,30 @@ impl LushtextEditorPage {
         self.cancel_protected_source_capture();
     }
 
-    fn begin_protected_source_capture(&self, generation: u64) {
-        let page = self.downgrade();
+    fn begin_protected_source_capture(&self, ticket: &ProtectedViewTicket) {
+        let turn_ticket = ticket.clone();
         let source = glib::idle_add_local(move || {
-            let Some(page) = page.upgrade() else {
+            let Some(page) = turn_ticket.editor() else {
                 return glib::ControlFlow::Break;
             };
-            if page.capture_one_chunk(generation) {
+            if page.capture_one_chunk(&turn_ticket) {
                 glib::ControlFlow::Continue
             } else {
                 glib::ControlFlow::Break
             }
         });
         match self.capture_state().running.borrow_mut().as_mut() {
-            Some(capture) if capture.generation == generation => capture.source = Some(source),
+            Some(capture) if capture.ticket.generation() == ticket.generation() => {
+                capture.source = Some(source);
+            }
             _ => source.remove(),
         }
     }
 
     /// One dispatch: copy at most `SOURCE_CAPTURE_CHUNK_CHARS` characters.
     /// Returns whether another dispatch is needed.
-    fn capture_one_chunk(&self, generation: u64) -> bool {
-        let session = self.protected_session();
-        if !session.protected || session.generation != generation {
+    fn capture_one_chunk(&self, ticket: &ProtectedViewTicket) -> bool {
+        if !self.protected_view_current(ticket) {
             self.cancel_capture_from_its_dispatch();
             return false;
         }
@@ -190,25 +195,25 @@ impl LushtextEditorPage {
             }
         };
         if finished {
-            self.finish_protected_source_capture(generation);
+            self.finish_protected_source_capture(ticket);
         }
         !finished
     }
 
     /// Reserve the body's off-GTK disposal, join the chunks on a worker, and
     /// keep the result while the session holds.
-    fn finish_protected_source_capture(&self, generation: u64) {
+    fn finish_protected_source_capture(&self, ticket: &ProtectedViewTicket) {
         let weight = match self.capture_state().running.borrow().as_ref() {
-            Some(capture) if capture.generation == generation => capture.bytes,
+            Some(capture) if capture.ticket.generation() == ticket.generation() => capture.bytes,
             _ => return,
         };
         let Some(reservation) = try_reserve_for_gtk(weight) else {
             let epoch = disposal_capacity_epoch();
-            let page = self.downgrade();
+            let retry_ticket = ticket.clone();
             if let Some(capture) = self.capture_state().running.borrow().as_ref() {
                 capture.capacity.arm(epoch, move || {
-                    if let Some(page) = page.upgrade() {
-                        page.finish_protected_source_capture(generation);
+                    if let Some(page) = retry_ticket.editor() {
+                        page.finish_protected_source_capture(&retry_ticket);
                     }
                 });
             }
@@ -222,11 +227,12 @@ impl LushtextEditorPage {
             buffer.disconnect(handler);
         }
         let chunks = capture.chunks;
+        let ticket = capture.ticket;
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || reservation.own(chunks.concat()),
             move |page, body: DisposalOwned<String>| {
-                page.accept_captured_source(generation, body);
+                page.accept_captured_source(&ticket, body);
             },
         );
     }

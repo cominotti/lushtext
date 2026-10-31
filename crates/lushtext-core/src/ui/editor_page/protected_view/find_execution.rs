@@ -61,9 +61,9 @@ impl LushtextEditorPage {
             }) as ExternalFindHandler
         });
         self.search_bar().set_external_find(handler);
-        if !on {
-            self.clear_protected_find();
-        }
+        // Routing changes with every install and exit: results of the
+        // previous content never survive it.
+        self.clear_protected_find();
     }
 
     fn handle_protected_find(&self, request: ExternalFindRequest) {
@@ -108,6 +108,9 @@ impl LushtextEditorPage {
             pattern
         };
         let case_insensitive = !bar.option_enabled(SearchOption::CaseSensitive);
+        let Some(ticket) = self.protected_view_ticket() else {
+            return;
+        };
         let cancel = Arc::new(AtomicBool::new(false));
         state.cancel.replace(Some(Arc::clone(&cancel)));
         gtk_lush_tasks::spawn_blocking_then(
@@ -121,7 +124,7 @@ impl LushtextEditorPage {
             },
             move |page, hits| {
                 let state = page.protected_find_state();
-                if state.generation.get() != generation || !page.is_protected_view() {
+                if state.generation.get() != generation || !page.protected_view_current(&ticket) {
                     return;
                 }
                 state.cancel.replace(None);
