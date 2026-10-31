@@ -559,3 +559,66 @@ fn test_saving_a_recovered_protected_draft_writes_its_source_verbatim() {
     );
     assert!(editor.is_protected_view(), "and stays protected");
 }
+
+// ─── Clipboard routes (task 4.7a, C6 review finding) ───────────────────────
+
+/// Read the view's clipboard as text, pumping the main loop.
+fn clipboard_text(page: &LushtextEditorPage) -> Option<String> {
+    let result = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = std::rc::Rc::clone(&result);
+    page.source_view()
+        .clipboard()
+        .read_text_async(None::<&gio::Cancellable>, move |text| {
+            slot.replace(Some(text.ok().flatten().map(|text| text.to_string())));
+        });
+    wait_until(Duration::from_secs(30), || result.borrow().is_some());
+    result.take().flatten()
+}
+
+#[test]
+fn test_copy_across_a_folded_paragraph_keeps_the_hidden_tail() {
+    let (page, _window, body) = protected_page_with_number();
+    let buffer = page.buffer();
+    // Clear the clipboard so a stale value cannot pass the test.
+    page.source_view().clipboard().set_text("");
+    // A selection across the folded paragraph, as an assistive technology
+    // could set it: from line 2 to the end of the document.
+    let start = buffer.iter_at_line(2).expect("line 2");
+    let end = buffer.end_iter();
+    buffer.select_range(&start, &end);
+    let expected: String = body
+        .chars()
+        .skip(usize::try_from(start.offset()).expect("offset"))
+        .collect();
+    // The primary selection does not offer the folded range: the buffer's
+    // primary clipboard is off while protected.
+    let primary = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let primary_slot = std::rc::Rc::clone(&primary);
+    page.source_view().primary_clipboard().read_text_async(
+        None::<&gio::Cancellable>,
+        move |text| {
+            primary_slot.replace(Some(text.ok().flatten().map(|text| text.to_string())));
+        },
+    );
+    wait_until(Duration::from_secs(30), || primary.borrow().is_some());
+    assert!(
+        primary.take().flatten().is_none_or(|text| text.is_empty()),
+        "the primary selection offers nothing of a protected document"
+    );
+    page.source_view().emit_by_name::<()>("copy-clipboard", &[]);
+    wait_until(Duration::from_secs(30), || {
+        clipboard_text(&page).is_some_and(|text| !text.is_empty())
+    });
+    let copied = clipboard_text(&page).expect("the clipboard holds text");
+    assert_eq!(
+        copied.len(),
+        expected.len(),
+        "the copy holds every character, hidden tails included"
+    );
+    assert_eq!(copied, expected);
+
+    // Cut is refused: the buffer is unchanged.
+    page.source_view().emit_by_name::<()>("cut-clipboard", &[]);
+    flush_events();
+    assert_eq!(editor_text(&page), body);
+}

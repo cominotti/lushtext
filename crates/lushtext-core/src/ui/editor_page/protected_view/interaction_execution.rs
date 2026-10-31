@@ -32,11 +32,10 @@ use crate::ui::editor_page::LushtextEditorPage;
 
 /// Keybinding signals whose default handler moves a mark, changes the buffer
 /// or the view state (design D3 step 5). `move-cursor` has its own handler.
-const STOPPED_SIGNALS: [&str; 19] = [
+const STOPPED_SIGNALS: [&str; 18] = [
     "select-all",
     "toggle-cursor-visible",
     "cut-clipboard",
-    "copy-clipboard",
     "paste-clipboard",
     "backspace",
     "delete-from-cursor",
@@ -54,10 +53,12 @@ const STOPPED_SIGNALS: [&str; 19] = [
     "push-snippet",
 ];
 
-/// The drop targets taken off the view while protected, to restore on exit.
+/// The drop targets taken off the view while protected, to restore on exit,
+/// and whether the buffer's primary selection clipboard is off.
 #[derive(Debug, Default)]
 pub(crate) struct DetachedDropTargets {
     controllers: RefCell<Vec<gtk4::EventController>>,
+    primary_removed: std::cell::Cell<bool>,
 }
 
 impl LushtextEditorPage {
@@ -76,6 +77,19 @@ impl LushtextEditorPage {
                 None
             });
         }
+        let page = self.downgrade();
+        view.connect_local("copy-clipboard", false, move |args| {
+            if let Some(page) = page.upgrade()
+                && page.is_protected_view()
+                && let Some(Ok(view)) = args.first().map(glib::Value::get::<glib::Object>)
+            {
+                // GTK's copy reads visible text only and would drop every
+                // hidden tail (C6 review finding): serve it from the source.
+                glib::signal::signal_stop_emission_by_name(&view, "copy-clipboard");
+                page.copy_protected_selection();
+            }
+            None
+        });
         let page = self.downgrade();
         view.connect_local("extend-selection", false, move |_| {
             // Returns whether the handler extended the selection; claiming it
@@ -96,6 +110,41 @@ impl LushtextEditorPage {
         });
         self.install_protected_key_controller(view);
         self.install_protected_gestures(view);
+        // GtkTextView adds the primary clipboard to its buffer on realize and
+        // removes it on unrealize (removing an absent one is a CRITICAL): put
+        // it back before an unrealize, take it off again after a realize.
+        let page = self.downgrade();
+        view.connect_unrealize(move |_| {
+            if let Some(page) = page.upgrade() {
+                page.set_protected_primary_selection_off(false);
+            }
+        });
+        let page = self.downgrade();
+        view.connect_realize(move |_| {
+            if let Some(page) = page.upgrade()
+                && page.is_protected_view()
+            {
+                page.set_protected_primary_selection_off(true);
+            }
+        });
+    }
+
+    /// Take the buffer's primary selection clipboard off while protected
+    /// (`off`), so the primary selection never offers GTK's visible-only text
+    /// of a folded range (C6 review finding), or put it back.
+    pub(in crate::ui::editor_page) fn set_protected_primary_selection_off(&self, off: bool) {
+        let view = self.source_view();
+        let state = &self.imp_detached_drop_targets().primary_removed;
+        if off == state.get() || (off && !view.is_realized()) {
+            return;
+        }
+        let primary = view.primary_clipboard();
+        if off {
+            self.buffer().remove_selection_clipboard(&primary);
+        } else {
+            self.buffer().add_selection_clipboard(&primary);
+        }
+        state.set(off);
     }
 
     fn install_protected_key_controller(&self, view: &sourceview5::View) {
@@ -178,6 +227,55 @@ impl LushtextEditorPage {
             }
         });
         view.add_controller(drag);
+    }
+
+    /// Copy the current selection of a protected document from its text
+    /// source (design D3): the selection's character offsets are the source's,
+    /// a worker cuts that range into `glib::Bytes`, and GTK installs them as
+    /// the clipboard content without copying them. With no selection, or
+    /// before an edit-growth entry has its source, nothing is copied.
+    fn copy_protected_selection(&self) {
+        let buffer = self.buffer();
+        let Some((start, end)) = buffer.selection_bounds() else {
+            return;
+        };
+        let Some(source) = self.protected_source() else {
+            return;
+        };
+        let (Ok(start), Ok(end)) = (
+            usize::try_from(start.offset()),
+            usize::try_from(end.offset()),
+        ) else {
+            return;
+        };
+        gtk_lush_tasks::spawn_blocking_then(
+            self.clone(),
+            move || {
+                let text = source.text();
+                let byte_at = |chars: usize| {
+                    text.char_indices()
+                        .nth(chars)
+                        .map_or(text.len(), |(index, _)| index)
+                };
+                let from = byte_at(start);
+                let to = from
+                    + text[from..]
+                        .char_indices()
+                        .nth(end - start)
+                        .map_or(text.len() - from, |(index, _)| index);
+                glib::Bytes::from(&text.as_bytes()[from..to])
+            },
+            |page, bytes| {
+                let providers = [
+                    gtk4::gdk::ContentProvider::for_bytes("text/plain;charset=utf-8", &bytes),
+                    gtk4::gdk::ContentProvider::for_bytes("text/plain", &bytes),
+                ];
+                page.source_view()
+                    .clipboard()
+                    .set_content(Some(&gtk4::gdk::ContentProvider::new_union(&providers)))
+                    .ok();
+            },
+        );
     }
 
     /// Take the view's drop targets off while protected (ledger A63).

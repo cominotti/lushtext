@@ -121,6 +121,7 @@ impl LushtextEditorPage {
             view.set_editable(false);
             view.set_cursor_visible(false);
             self.detach_protected_drop_targets();
+            self.set_protected_primary_selection_off(true);
         } else if was_protected {
             runtime.exit_pending.set(true);
         }
@@ -164,6 +165,7 @@ impl LushtextEditorPage {
             view.set_editable(true);
             view.set_cursor_visible(true);
             self.restore_protected_drop_targets();
+            self.set_protected_primary_selection_off(false);
         }
     }
 
@@ -220,6 +222,7 @@ impl LushtextEditorPage {
         view.set_editable(false);
         view.set_cursor_visible(false);
         self.detach_protected_drop_targets();
+        self.set_protected_primary_selection_off(true);
         let runtime = self.imp_protected_view();
         runtime.fold_summary.set(summary);
         runtime.advance(SessionEvent::EditGrowth);
@@ -255,6 +258,7 @@ impl LushtextEditorPage {
         view.set_editable(true);
         view.set_cursor_visible(true);
         self.restore_protected_drop_targets();
+        self.set_protected_primary_selection_off(false);
         let runtime = self.imp_protected_view();
         runtime.fold_summary.set(FoldSummary::default());
         runtime.source.replace(None);
