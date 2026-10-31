@@ -5697,6 +5697,26 @@ fn assert_scroll_changes_stay_out_of_the_snapshot(
     control: &str,
     drive: impl FnOnce(),
 ) {
+    assert_scroll_changes_stay_out_of_the_snapshot_with(
+        page,
+        window,
+        adjustment,
+        ("grew", |before, after| after > before),
+        control,
+        drive,
+    );
+}
+
+/// [`assert_scroll_changes_stay_out_of_the_snapshot`] with the control's
+/// expected effect on `upper` named and checked by `expected`.
+fn assert_scroll_changes_stay_out_of_the_snapshot_with(
+    page: &LushtextEditorPage,
+    window: &gtk4::ApplicationWindow,
+    adjustment: &gtk4::Adjustment,
+    expected: (&str, fn(f64, f64) -> bool),
+    control: &str,
+    drive: impl FnOnce(),
+) {
     let upper_before = adjustment.upper();
 
     let capture = crate::common::LogCapture::start();
@@ -5713,9 +5733,10 @@ fn assert_scroll_changes_stay_out_of_the_snapshot(
         .collect();
     drop(capture);
 
+    let (effect, holds) = expected;
     assert!(
-        adjustment.upper() > upper_before,
-        "control: {control} grew the adjustment's upper ({upper_before} -> {})",
+        holds(upper_before, adjustment.upper()),
+        "control: {control} {effect} the adjustment's upper ({upper_before} -> {})",
         adjustment.upper()
     );
     assert_eq!(
@@ -5842,6 +5863,53 @@ fn test_bottom_margin_changes_in_frames_keep_adjustment_changes_out_of_the_snaps
                 view.set_bottom_margin(view.bottom_margin() + STEP);
                 // The setter queues no redraw; in the application a gutter, a
                 // state flag or the selection redraws the view.
+                view.queue_draw();
+            });
+        },
+    );
+}
+
+/// Removing a tag from the tag table inside a frame must not leave its
+/// validation to the snapshot either.
+///
+/// `gtk_text_tag_table_remove` strips the tag from every buffer sharing the
+/// table and invalidates the ranges it covered, but emits no `remove-tag`, only
+/// the table's `tag-removed` (ledger A37). GtkSourceView does this whenever a
+/// search context is disposed — closing the search bar drops it, and its
+/// dispose removes the context's match tag — so the long-line lane hit the
+/// scrollbar warning on Escape after a find. Here each frame's update phase
+/// removes a widening tag from the table and redraws the view.
+#[test]
+fn test_tag_table_removals_in_frames_keep_adjustment_changes_out_of_the_snapshot() {
+    const FRAMES: i32 = 6;
+    ensure_gtk_init();
+    let (page, window) = present_long_line_page();
+    let buffer = page.buffer();
+    let tags: Vec<gtk4::TextTag> = (0..FRAMES)
+        .map(|_| gtk4::TextTag::builder().scale(1.6).build())
+        .collect();
+    for (index, tag) in (0..).zip(&tags) {
+        buffer.tag_table().add(tag);
+        let start = buffer.iter_at_offset(index * 20);
+        let end = buffer.iter_at_offset(index * 20 + 20);
+        buffer.apply_tag(tag, &start, &end);
+    }
+    flush_after_delay(Duration::from_millis(100));
+
+    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
+    assert_scroll_changes_stay_out_of_the_snapshot_with(
+        &page,
+        &window,
+        &hadjustment,
+        ("shrank", |before, after| after < before),
+        "removing the tags from the table",
+        || {
+            let table = buffer.tag_table();
+            change_in_frames(&page, FRAMES, move |view, frame| {
+                let index = usize::try_from(frame - 1).expect("frames count from one");
+                table.remove(&tags[index]);
+                // The removal queues no redraw; in the application the
+                // closing search bar redraws the view.
                 view.queue_draw();
             });
         },
