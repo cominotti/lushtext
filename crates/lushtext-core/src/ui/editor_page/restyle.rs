@@ -332,6 +332,14 @@ fn every_editor() -> Vec<LushtextEditorPage> {
         .unwrap_or_default()
 }
 
+/// Apply a display-wide `.monospace` change (zoom, font) with every dense
+/// editor paced: hide around the visible paragraphs, apply, then reveal.
+pub(crate) fn restyle_everywhere(change: impl FnOnce()) {
+    let paced = prepare_paced_restyle_everywhere();
+    change();
+    start_paced_reveal_everywhere(&paced);
+}
+
 /// Before a display-wide `.monospace` change (zoom, font): hide around the
 /// visible paragraphs of every dense editor; returns the ones that did.
 pub fn prepare_paced_restyle_everywhere() -> Vec<LushtextEditorPage> {
