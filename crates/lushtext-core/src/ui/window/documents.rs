@@ -460,6 +460,11 @@ impl LushtextWindow {
             self.show_save_as_dialog();
             return;
         }
+        // An unmodified Protected View document holds exactly the file's
+        // text: Save has nothing to write (`long-line-protected-view` D9).
+        if editor.is_protected_view() && !editor.is_modified() {
+            return;
+        }
         let window = self.clone();
         let editor_for_retry = editor.clone();
         let save_path = editor.file_path();

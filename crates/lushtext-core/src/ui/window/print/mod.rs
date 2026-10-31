@@ -88,6 +88,9 @@ pub(super) fn setup_print_action(window: &LushtextWindow) {
 
 /// Stage 2 — run one print request, through the probe when a test installed one.
 fn run_print_request(window: &LushtextWindow, editor: &LushtextEditorPage) -> PrintOutcome {
+    if editor.is_protected_view() {
+        return PrintOutcome::RefusedProtectedView;
+    }
     #[cfg(feature = "test-utils")]
     if let Some(outcome) = test_policy::installed_runner_outcome(&print_evidence(window)) {
         return outcome;
@@ -99,6 +102,10 @@ fn run_print_request(window: &LushtextWindow, editor: &LushtextEditorPage) -> Pr
 /// Stage 3 — tell the user only when the request actually failed.
 fn report_print_outcome(window: &LushtextWindow, outcome: &PrintOutcome) {
     if let Some(message) = policy::print_failure_report(outcome) {
+        if matches!(outcome, PrintOutcome::RefusedProtectedView) {
+            window.publish_status_message(&message, MessageKind::Warning);
+            return;
+        }
         tracing::error!("{message}");
         window.publish_status_message(&message, MessageKind::Error);
     }
