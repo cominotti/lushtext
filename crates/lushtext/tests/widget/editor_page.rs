@@ -4,7 +4,7 @@
 
 use crate::common::{
     accessible_hidden, ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read,
-    isolated_data_dir, rect_within, test_application, wait_until,
+    isolated_data_dir, rect_within, short_lines, test_application, wait_until,
 };
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -928,7 +928,7 @@ fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() 
     page.set_file_path(file.path());
     page.source_view().set_editable(true);
     page.source_view().set_cursor_visible(true);
-    page.buffer().set_text(&"x".repeat(2_500_001));
+    page.buffer().set_text(&short_lines('x', 2_500_001));
     page.buffer().set_modified(true);
     page.reset_transient_save_admission_for_test();
     page.pause_next_save_snapshot_for_test();
@@ -2243,7 +2243,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
 
     page.imp().file_path.replace(Some(tmp.path().to_path_buf()));
     page.imp().file_size.set(Some(10_000_000));
-    page.buffer().set_text(&"x".repeat(70_000));
+    page.buffer().set_text(&short_lines('x', 70_000));
 
     let first_done = std::rc::Rc::new(std::cell::Cell::new(false));
     let first_done_clone = first_done.clone();
@@ -2289,7 +2289,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     ));
     assert_eq!(
         fs_read::text(tmp.path()).expect("saved duplicate test file"),
-        "x".repeat(70_000)
+        short_lines('x', 70_000)
     );
 }
 
@@ -2424,7 +2424,7 @@ fn test_replace_prefill_rejects_one_over_and_large_selection_without_copying() {
 
     let large_page = LushtextEditorPage::new();
     let large_entry = large_page.search_bar().search_entry();
-    large_page.buffer().set_text(&"z".repeat(100_000));
+    large_page.buffer().set_text(&short_lines('z', 100_000));
     select_buffer_chars(&large_page, 0, 100_000);
     large_entry.set_text("still bounded");
     large_page.show_replace();
@@ -4598,7 +4598,7 @@ fn test_local_history_evidence_reads_survive_widget_disposal() {
 fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
-    page.buffer().set_text(&"old".repeat(100_000));
+    page.buffer().set_text(&short_lines('o', 300_000));
     let expected = format!("{}🙂e\u{301}tail", "a".repeat(1024 * 1024 + 17));
     let current = Rc::new(Cell::new(true));
     let outcomes = Rc::new(RefCell::new(Vec::new()));
@@ -4635,7 +4635,7 @@ fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup(
 fn test_bounded_buffer_replacement_stale_partial_body_is_cleared_not_published() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
-    let old = "old".repeat(200_000);
+    let old = short_lines('o', 600_000);
     page.buffer().set_text(&old);
     let current = Rc::new(Cell::new(true));
     let outcomes = Rc::new(RefCell::new(Vec::new()));

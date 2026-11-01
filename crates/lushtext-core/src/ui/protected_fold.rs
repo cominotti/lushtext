@@ -4,7 +4,7 @@
 //! (`long-line-protected-view` design D1, task 3.1).
 //!
 //! Every whole-content install of a protected body inserts its text through
-//! [`insert_folded`], which hides each folded paragraph's tail **in the same
+//! `insert_folded`, which hides each folded paragraph's tail **in the same
 //! dispatch as its head**: the head with `insert`, the tail with
 //! `insert_with_tags` and the fold tag (`invisible`, not `editable`). No
 //! unfolded giant paragraph therefore exists in a `GtkTextView` at any
@@ -23,7 +23,7 @@
 //! source of the same priority in one iteration, so two documents' install
 //! turns (a session restore, two recovered drafts) would otherwise run their
 //! tail inserts back to back in one dispatch: twice the envelope. Every
-//! protected install therefore asks [`tail_insert_admitted`] before a turn and
+//! protected install therefore asks `tail_insert_admitted` before a turn and
 //! reschedules itself when another document already inserted a tail in this
 //! iteration; a high-priority idle re-admits at the start of the next one.
 

@@ -879,3 +879,14 @@ impl Drop for LogCapture {
             .take();
     }
 }
+
+/// At least `chars` characters of `fill` in 80-character lines. Tests that need
+/// a large buffer for its size (chunked snapshots, bounded installs, large
+/// selections) use it instead of one long line: a paragraph over
+/// `L_PROTECT_EDIT` would enter Protected View (`long-line-protected-view`)
+/// and turn the document read-only, and short paragraphs keep every
+/// scale-gated feature on.
+pub fn short_lines(fill: char, chars: usize) -> String {
+    let line = format!("{}\n", fill.to_string().repeat(79));
+    line.repeat(chars.div_ceil(80))
+}

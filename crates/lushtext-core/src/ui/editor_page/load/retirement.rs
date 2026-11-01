@@ -172,6 +172,7 @@ pub(super) fn abort_installation(
         return;
     };
     editor.imp().load.installation_incomplete.set(true);
+    editor.abandon_protected_install();
     execution::schedule_install_slice(session);
 }
 

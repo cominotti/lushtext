@@ -1205,8 +1205,12 @@ was load: no toolkit-floor exception is asked for.
   `G_PRIORITY_DEFAULT_IDLE`, wait behind it, so the documents install in three
   batches about 11 s apart and `app-startup` readiness takes over 30 s. Every
   dispatch stays near 10 ms, so no budget is missed. The case cannot reach its
-  reselect phase as written. This is attributed, not fixed: the delivery
-  priority of `gtk-lush-tasks` completions is a GTK Lush decision outside C2.
+  reselect phase as written, so it is excluded from the C2 verdict.
+  **Queued GTK Lush change (scheduled after C2):** the delivery priority of
+  `spawn_blocking_then` completions (`gtk-lush-tasks`, `glib::idle_add_once`,
+  `G_PRIORITY_DEFAULT_IDLE`) against GtkTextView's validation idle
+  (`GDK_PRIORITY_REDRAW + 5`): about 11 s between load batches and over 30 s
+  to `app-startup` readiness, on `main` as on the branch.
 
 ## Axioms each change cites
 

@@ -173,6 +173,23 @@ impl LushtextEditorPage {
         self.imp_protected_view().source.borrow().clone()
     }
 
+    /// A cancelled install clears the partial buffer it inserted: no protected
+    /// body remains, so the session leaves Protected View (as a reload of a
+    /// short file would) and the install's terminal makes the view editable
+    /// again through [`reassert_protected_view_properties`](Self::reassert_protected_view_properties).
+    pub(crate) fn abandon_protected_install(&self) {
+        let runtime = self.imp_protected_view();
+        if !runtime.session.get().protected {
+            return;
+        }
+        self.cancel_protected_source_capture();
+        runtime.source.replace(None);
+        runtime.fold_summary.set(FoldSummary::default());
+        runtime.fold_plan.replace(None);
+        runtime.advance(SessionEvent::ReloadFromDisk { protected: false });
+        runtime.exit_pending.set(true);
+    }
+
     /// At an install terminal, after the installer restored the editable and
     /// caret state it saved: a protected session stays non-editable and
     /// caret-free, and a session a reload just left becomes editable again.
