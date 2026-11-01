@@ -149,6 +149,38 @@ fn test_steady_state_construction_writes_nothing() {
 }
 
 #[test]
+fn test_a_flush_waits_for_input_quiet() {
+    // Under the keyfile backend GIO's own monitor dispatch follows every
+    // write and parses the mount table (10-13 ms): a key typed then waited
+    // behind it. The flush now waits until input has been quiet.
+    let keyfile = keyfile_settings_backend(None);
+    let window = test_window();
+    present_and_wait_for_first_frame(&window);
+    wait_until(Duration::from_secs(10), || {
+        settings_writes::evidence().pending == 0
+    });
+    let flushes = settings_writes::evidence().flushes;
+    settings_writes::set_boolean(
+        keys::WORD_WRAP,
+        !settings_writes::shared().boolean(keys::WORD_WRAP),
+    );
+    // Steady typing: one input every 100 ms, for twice the persistence window.
+    for _ in 0..10 {
+        lushtext_core::ui::input_quiet::simulate_user_input();
+        flush_after_delay(Duration::from_millis(100));
+    }
+    assert_eq!(
+        settings_writes::evidence().flushes,
+        flushes,
+        "the flush ran while input continued"
+    );
+    wait_until(Duration::from_secs(10), || {
+        settings_writes::evidence().flushes > flushes
+    });
+    assert!(identity(&keyfile).is_some());
+}
+
+#[test]
 fn test_fresh_construction_writes_once_after_the_first_frame() {
     let keyfile = keyfile_settings_backend(None);
     let writes = WriteCounter::new(&keyfile);

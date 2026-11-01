@@ -518,8 +518,11 @@ precondition is recorded, never assumed.
   - every `wrap-toggle`, `zoom-step` and `font-change` interaction dispatch is within
     `B_INTERACT_US`, and every dispatch after it, until settled, is within `B_SETTLE_US`;
   - no post-open stage regresses: per case, the median over the 7 repetitions of each
-    attributed stage's worst dispatch, and the median time from activation to settled, are each
-    at most the baseline's plus one reference frame (R27).
+    attributed stage's worst dispatch is at most the baseline's plus one reference frame (R27).
+    **Amended 2026-11-01 (maintainer decision):** the median time from activation to settled
+    is reported against the baseline's, not gated. Deferring the attach until input is quiet
+    makes the settle later by design (12 cases in the verdict, e.g. dense/710 wrap-on 306 vs
+    194 ms, total-size/1 MB/txt 1.18 vs 0.80 s), in exchange for no dispatch stall.
 
   Each over-budget dispatch on the baseline is listed with its source. The only dispatches
   exempted are toolkit-floor exceptions: D2's language parse, D6's dense resize margin (S7), or

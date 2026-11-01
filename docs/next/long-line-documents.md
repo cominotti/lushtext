@@ -1058,6 +1058,8 @@ boundary are made here).
   margin and re-laid out the whole document in ~18 ms validation dispatches
   (found 2026-10-31 while re-measuring the restore).
 - **Input-to-frame is reported, not gated**, beside the documented lane floor.
+- **The settle may be later than main's** (maintainer decision 2026-11-01): the deferred attach waits for input quiet, so activation-to-settled is reported, not gated; per-dispatch stages stay gated.
+- **Floors found by the verdict** (perf from the lane): GIO's keyfile-backend monitor dispatch after any settings write parses the mount table (10-13 ms on the reference host), so LushText's flush now waits for 250 ms of input quiet, and the lane's keyfile-written wrap and font triggers carry that dispatch as their interaction; the dense zoom step's first dispatch is GTK's CSS revalidation, font load and visible re-layout (9.8-16.6 ms, both sides).
 - **C6 owns user-started dense invalidations** (word wrap, zoom, font).
 
 **Maintainer decision of 2026-10-31 (`S_SYNTAX`):** per-language

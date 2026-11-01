@@ -38,7 +38,7 @@ The C6 verdict SHALL run under the measurement lock protocol and the reference p
 The verdict is met when, on the branch, in every profile and repetition:
 - every post-open dispatch until settled is at most `B_SETTLE_US`;
 - every `type-during-settle` key is dispatched within `B_INTERACT_US`;
-- no post-open stage regresses: per case, the median over the repetitions of each attributed stage's worst dispatch, and the median time from activation to settled, are each at most the baseline's plus one reference frame.
+- no post-open stage regresses: per case, the median over the repetitions of each attributed stage's worst dispatch is at most the baseline's plus one reference frame. The median time from activation to settled is reported against the baseline's and is not gated for this change: deferring the language attach until input is quiet makes the settle later by design, in exchange for no dispatch stall (maintainer decision, 2026-11-01).
 
 A dispatch recorded as a toolkit-floor exception against a ledger axiom SHALL be reported on its own line, with the axiom id and upstream report, and SHALL be exempt from the `B_SETTLE_US` condition. The input events whose dispatch overlaps it SHALL be listed on that line with their latencies, and SHALL be exempt from the `B_INTERACT_US` condition. No other dispatch or event is exempt.
 
