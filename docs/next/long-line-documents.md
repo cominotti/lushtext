@@ -1268,8 +1268,10 @@ on `main` (bimodal by run, both within `B_interact`).
   (170 ms first paint, set-up). On 1.9M wrap on its median is 17.6 ms in
   `F-*` (14.0 ms on 250,000), 1.6 ms over `B_settle`. It is the first frame
   of any screen of wrapped text under the cairo renderer, not a Protected View
-  cost; it is reported to the maintainer with its stack as a candidate floor,
-  not claimed as an exception.
+  cost. **Accepted maintainer exception (2026-11-01):** the maintainer accepted
+  this 17.6 ms first head frame (1.9M paragraph, word wrap on, 1.6 ms over
+  `B_settle`, the cairo text paint plus the head layout) as a recorded
+  exception, to be re-evaluated when the lane can measure the GPU renderer.
 - Restore of three documents (22 ms): `GKeyfileSettingsBackend`'s file monitor
   re-checking writability after the settings flush
   (`g_keyfile_settings_backend_keyfile_writable` → `g_local_file_query_info` →
@@ -1286,7 +1288,11 @@ on `main` (bimodal by run, both within `B_interact`).
 **Verdict.** Every Protected View interaction median is within `B_interact`
 (10–100× under `main`). Settle medians are within `B_settle` outside the
 declared envelope, except the first head frame on 1.9M wrap on (17.6 ms, the
-cairo paint above). Every remaining maximum is attributed above.
+cairo paint above), an accepted maintainer exception (2026-11-01; re-evaluate
+when the lane can measure the GPU renderer). The keystroke toolkit-floor
+exception for editable paragraphs between `L_EDIT_STALL` and `L_PROTECT_EDIT`
+(maintainer, 2026-10-30, "editable up to ~50k"; owned by C5) is accepted, not
+a blocker. Every remaining maximum is attributed above.
 
 ## Axioms each change cites
 

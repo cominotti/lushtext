@@ -300,6 +300,8 @@ The budget verdict (tasks 9.3–9.4) uses the lane as it now stands (presented f
 
 The verdict records, per case and phase, the largest interaction and settle stall against `B_INTERACT_US`/`B_SETTLE_US`, the input-to-frame latency against two reference frames, the one-turn hidden-tail insert as the declared envelope (C3's gate input), the run ids, the precondition evidence and the toolkit versions, in `docs/next/long-line-documents.md`.
 
+**Accepted maintainer exceptions (2026-11-01).** Two measured misses are accepted by the maintainer, not blockers: (1) the first frame that shows a head on the 1.9M-character paragraph with word wrap on, median 17.6 ms, 1.6 ms over `B_settle`, attributed to the cairo text paint plus the head layout, to be re-evaluated when the lane can measure the GPU renderer; (2) the keystroke toolkit-floor exception for editable paragraphs between `L_EDIT_STALL` and `L_PROTECT_EDIT` (D0, maintainer decision 2026-10-30, "editable up to ~50k"; owned by C5).
+
 ## Risks / Trade-offs
 
 - **[Editable paragraphs between `L_EDIT_STALL` and `L_PROTECT_EDIT` miss `B_interact`]** (D0) → the maintainer's recorded toolkit-floor exception: measured, named, owned by C5, and re-measured by the lane's `keystroke` group.
