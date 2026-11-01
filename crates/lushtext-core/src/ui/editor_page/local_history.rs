@@ -285,19 +285,22 @@ impl LushtextEditorPage {
     }
 
     /// Seed the tab's "last clean text" after a file load or reload completes.
+    ///
+    /// `content` is `None` when Protected View kept the body as its text
+    /// source: an installed-protected document captures no local history
+    /// (`long-line-protected-view`), so it has no clean baseline either.
     pub(crate) fn seed_local_history_from_guarded_loaded_content(
         &self,
-        content: crate::ui::plain_disposal::DisposalOwned<String>,
+        content: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
     ) {
-        let clean_text = if self.file_path().is_some()
-            && self
-                .live_local_history_availability()
-                .allows_automatic_capture()
-        {
-            Some(content.into_retained_current())
-        } else {
-            None
-        };
+        let clean_text = content.filter(|_| {
+            self.file_path().is_some()
+                && self
+                    .live_local_history_availability()
+                    .allows_automatic_capture()
+        });
+        let clean_text =
+            clean_text.map(crate::ui::plain_disposal::DisposalOwned::into_retained_current);
         self.replace_clean_baseline(clean_text);
         self.set_local_history_restore_undo_text(None);
         self.imp()
@@ -312,6 +315,14 @@ impl LushtextEditorPage {
         &self,
         content: crate::ui::plain_disposal::DisposalOwned<String>,
     ) {
+        // A recovered protected document keeps its body as the Protected View
+        // text source (design D4, D13), not as a local-history baseline.
+        let Some(content) = self.retain_protected_source(content) else {
+            self.replace_clean_baseline(None);
+            self.set_local_history_restore_undo_text(None);
+            self.cancel_local_history_periodic_capture();
+            return;
+        };
         let availability = local_history_service::availability_for_utf8_bytes(content.len());
         let clean_text = if self.file_path().is_some() && availability.allows_automatic_capture() {
             Some(content.into_retained_current())
@@ -410,7 +421,10 @@ impl LushtextEditorPage {
     /// Record or clear the guarded body used by the browser's undo-restore affordance.
     pub(crate) fn set_local_history_restore_undo_text(
         &self,
-        text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
+        text: Option<(
+            crate::ui::plain_disposal::DisposalOwned<String>,
+            crate::model::paragraph_boundary::DocumentProfile,
+        )>,
     ) {
         self.imp().local_history.restore_undo_text.replace(text);
     }
@@ -419,7 +433,10 @@ impl LushtextEditorPage {
     #[must_use]
     pub(crate) fn take_local_history_restore_undo_text(
         &self,
-    ) -> Option<crate::ui::plain_disposal::DisposalOwned<String>> {
+    ) -> Option<(
+        crate::ui::plain_disposal::DisposalOwned<String>,
+        crate::model::paragraph_boundary::DocumentProfile,
+    )> {
         self.imp()
             .local_history
             .restore_undo_text

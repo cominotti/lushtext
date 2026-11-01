@@ -39,6 +39,10 @@
 //!   spacing, indent, justification, editability). Each setter invalidates
 //!   every line and queues nothing — no resize, allocation or redraw — so the
 //!   validation waits for whichever frame redraws the view next;
+//! - so does a tag's removal from the tag table, which invalidates every
+//!   range the tag covered and emits only the table's `tag-removed`, never the
+//!   buffer's `remove-tag` (GtkSourceView removes its match tag that way when a
+//!   search context is disposed);
 //! - a tag change (applied, removed, or a size-changing property of a tag)
 //!   only marks the view, and the frame queues the allocation:
 //!   at `before-paint` for a change made before the frame, after its layout
@@ -138,14 +142,34 @@ impl LushtextEditorPage {
             });
             self.imp().editing_buffer_signals.track(&buffer, handler_id);
         }
+        let tag_table = buffer.tag_table();
         {
             // A tag whose properties change size (scale, weight, `invisible`)
             // invalidates every range it covers, like re-applying it.
-            let tag_table = buffer.tag_table();
             let tags_changed = Rc::clone(tags_changed);
             let handler_id = tag_table.connect_tag_changed(move |_, _, size_changed| {
                 if size_changed {
                     tags_changed.set(true);
+                }
+            });
+            self.imp()
+                .editing_buffer_signals
+                .track(&tag_table, handler_id);
+        }
+        {
+            // Removing a tag from the table strips it from the buffer and
+            // invalidates every range it covered without emitting
+            // `remove-tag`; only the table's `tag-removed` reports it.
+            // GtkSourceView does this whenever a search context is disposed
+            // (its match tag), which closing the search bar does. Removals are
+            // rare, unlike highlighting, so the allocation is queued at once,
+            // like an edit's: deferred to the frame's layout handlers, half of
+            // the removals made in the update phase were still validated in
+            // the paint.
+            let editor_weak = self.downgrade();
+            let handler_id = tag_table.connect_tag_removed(move |_, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.validate_in_next_layout();
                 }
             });
             self.imp()

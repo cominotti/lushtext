@@ -104,7 +104,14 @@ the end-of-document overscroll, with the shared `fixtures::post_open`
 fixtures (short-line HTML and dense documents, a reference-sized source view,
 timed dispatches, a priority bracket, and a PDF export that counts printed
 pages); the A55 sample's `--derive-v-slice` mode bisects `V_SLICE`, and the A54
-sample's `--derive-s-bg-highlight` mode bisects `S_BG_HIGHLIGHT` per language. Every later axiom
+sample's `--derive-s-bg-highlight` mode bisects `S_BG_HIGHLIGHT` per language.
+A59–A66 (a capture-phase press claim,
+a non-editable view's input method, a stopped `move-cursor` under caret
+browsing, drag and drop, key-binding pre-emption, a tail inserted hidden, and
+chunk-read cost by iterator positioning) followed with LushText's Protected
+View (`long-line-protected-view`); A62 has no in-crate probe (it needs an
+AT-SPI bus, like A35), and A59–A61 and A64 are the first probes driven by
+real input (below). Every later axiom
 follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.
@@ -175,6 +182,19 @@ The text probes (A23–A34) share fixtures in `fixtures`:
   duration (never the text); `take_im_requests` reads them.
 - `text_toolkit_versions` is the Pango and GtkSourceView versions, which
   every text probe records first.
+
+## Real input
+
+GTK 4 has no public way to synthesize a `GdkEvent`, and gesture and
+key-binding handlers read the event that started them, so a probe whose
+axiom is about what a press or a key does (A59–A61, A64) drives the private
+compositor through `org.gnome.Mutter.RemoteDesktop` (`probes/remote_input.rs`,
+the same interface the responsiveness lane uses). Those probes present their
+fixture in a **fullscreen** window, so widget coordinates are screen
+coordinates, and record where each press landed before trusting it. The
+samples never inject input in their interactive mode: a person clicks and
+types. Touch is not driven: RemoteDesktop touch needs a screen-cast stream,
+and the private session runs no PipeWire.
 
 ## Slow probes
 

@@ -238,10 +238,18 @@ and raising one is a reviewed edit to this table and the script together:
 | `model/editor_memory.rs` | `forbid` | 0 |
 | `ui/window/local_history/policy.rs` | `forbid` | 0 |
 | `ui/window/focus_mode/policy.rs` | `forbid` | 0 |
+| `model/protected_fold.rs` | `forbid` | 0 |
+| `ui/editor_page/protected_view/policy.rs` | `forbid` | 0 |
 
-The last two apply the rule retroactively to the other migrated workflows whose
+`ui/window/local_history/policy.rs` and `ui/window/focus_mode/policy.rs` apply the rule retroactively to the other migrated workflows whose
 policy holds geometry: the local-history viewer geometry and size display, and
-Focus Mode's reveal band and readable-column margin. The minimap's ten are GTK
+Focus Mode's reveal band and readable-column margin. `model/protected_fold.rs`
+(`long-line-protected-view`) is a budget policy in characters whose window size
+carries the pixel relationship (rows per 2000 px validation batch), so it is
+integer-only by the same rule. `ui/editor_page/protected_view/policy.rs`
+(`long-line-protected-view`) is a budget policy too: viewport steps, inspector
+windows and find batches in whole characters, bytes and adjustment increments,
+never fractional. The minimap's ten are GTK
 widget and adjustment coordinates (projected-bounds edges, the native-slider
 estimate and fit, the adjustment distance and fitting page size, the
 target-relative line offset, the minimum-height expansion, and the two marker

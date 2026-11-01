@@ -4,7 +4,7 @@
 
 use crate::common::{
     accessible_hidden, ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read,
-    isolated_data_dir, rect_within, test_application, wait_until,
+    isolated_data_dir, rect_within, short_lines, test_application, wait_until,
 };
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -932,7 +932,7 @@ fn test_chunked_save_snapshot_refuses_a_mutation_and_writes_the_captured_text() 
     page.set_file_path(file.path());
     page.source_view().set_editable(true);
     page.source_view().set_cursor_visible(true);
-    let captured = "x".repeat(2_500_001);
+    let captured = short_lines('x', 2_500_001);
     page.buffer().set_text(&captured);
     page.buffer().set_modified(true);
     page.reset_transient_save_admission_for_test();
@@ -952,7 +952,7 @@ fn test_chunked_save_snapshot_refuses_a_mutation_and_writes_the_captured_text() 
         .insert(&mut end, "mutated during save capture");
     assert_eq!(
         page.buffer().char_count(),
-        2_500_001,
+        i32::try_from(captured.chars().count()).expect("char count"),
         "the edit was refused"
     );
     page.resume_save_snapshot_for_test();
@@ -2246,7 +2246,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
 
     page.imp().file_path.replace(Some(tmp.path().to_path_buf()));
     page.imp().file_size.set(Some(10_000_000));
-    page.buffer().set_text(&"x".repeat(70_000));
+    page.buffer().set_text(&short_lines('x', 70_000));
 
     let first_done = std::rc::Rc::new(std::cell::Cell::new(false));
     let first_done_clone = first_done.clone();
@@ -2292,7 +2292,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     ));
     assert_eq!(
         fs_read::text(tmp.path()).expect("saved duplicate test file"),
-        "x".repeat(70_000)
+        short_lines('x', 70_000)
     );
 }
 
@@ -2427,7 +2427,7 @@ fn test_replace_prefill_rejects_one_over_and_large_selection_without_copying() {
 
     let large_page = LushtextEditorPage::new();
     let large_entry = large_page.search_bar().search_entry();
-    large_page.buffer().set_text(&"z".repeat(100_000));
+    large_page.buffer().set_text(&short_lines('z', 100_000));
     select_buffer_chars(&large_page, 0, 100_000);
     large_entry.set_text("still bounded");
     large_page.show_replace();
@@ -4601,7 +4601,7 @@ fn test_local_history_evidence_reads_survive_widget_disposal() {
 fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
-    page.buffer().set_text(&"old".repeat(100_000));
+    page.buffer().set_text(&short_lines('o', 300_000));
     let expected = format!("{}🙂e\u{301}tail", "a".repeat(1024 * 1024 + 17));
     let current = Rc::new(Cell::new(true));
     let outcomes = Rc::new(RefCell::new(Vec::new()));
@@ -4638,7 +4638,7 @@ fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup(
 fn test_bounded_buffer_replacement_stale_partial_body_is_cleared_not_published() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
-    let old = "old".repeat(200_000);
+    let old = short_lines('o', 600_000);
     page.buffer().set_text(&old);
     let current = Rc::new(Cell::new(true));
     let outcomes = Rc::new(RefCell::new(Vec::new()));
@@ -5700,6 +5700,26 @@ fn assert_scroll_changes_stay_out_of_the_snapshot(
     control: &str,
     drive: impl FnOnce(),
 ) {
+    assert_scroll_changes_stay_out_of_the_snapshot_with(
+        page,
+        window,
+        adjustment,
+        ("grew", |before, after| after > before),
+        control,
+        drive,
+    );
+}
+
+/// [`assert_scroll_changes_stay_out_of_the_snapshot`] with the control's
+/// expected effect on `upper` named and checked by `expected`.
+fn assert_scroll_changes_stay_out_of_the_snapshot_with(
+    page: &LushtextEditorPage,
+    window: &gtk4::ApplicationWindow,
+    adjustment: &gtk4::Adjustment,
+    expected: (&str, fn(f64, f64) -> bool),
+    control: &str,
+    drive: impl FnOnce(),
+) {
     let upper_before = adjustment.upper();
 
     let capture = crate::common::LogCapture::start();
@@ -5716,9 +5736,10 @@ fn assert_scroll_changes_stay_out_of_the_snapshot(
         .collect();
     drop(capture);
 
+    let (effect, holds) = expected;
     assert!(
-        adjustment.upper() > upper_before,
-        "control: {control} grew the adjustment's upper ({upper_before} -> {})",
+        holds(upper_before, adjustment.upper()),
+        "control: {control} {effect} the adjustment's upper ({upper_before} -> {})",
         adjustment.upper()
     );
     assert_eq!(
@@ -5845,6 +5866,53 @@ fn test_bottom_margin_changes_in_frames_keep_adjustment_changes_out_of_the_snaps
                 view.set_bottom_margin(view.bottom_margin() + STEP);
                 // The setter queues no redraw; in the application a gutter, a
                 // state flag or the selection redraws the view.
+                view.queue_draw();
+            });
+        },
+    );
+}
+
+/// Removing a tag from the tag table inside a frame must not leave its
+/// validation to the snapshot either.
+///
+/// `gtk_text_tag_table_remove` strips the tag from every buffer sharing the
+/// table and invalidates the ranges it covered, but emits no `remove-tag`, only
+/// the table's `tag-removed` (ledger A37). GtkSourceView does this whenever a
+/// search context is disposed — closing the search bar drops it, and its
+/// dispose removes the context's match tag — so the long-line lane hit the
+/// scrollbar warning on Escape after a find. Here each frame's update phase
+/// removes a widening tag from the table and redraws the view.
+#[test]
+fn test_tag_table_removals_in_frames_keep_adjustment_changes_out_of_the_snapshot() {
+    const FRAMES: i32 = 6;
+    ensure_gtk_init();
+    let (page, window) = present_long_line_page();
+    let buffer = page.buffer();
+    let tags: Vec<gtk4::TextTag> = (0..FRAMES)
+        .map(|_| gtk4::TextTag::builder().scale(1.6).build())
+        .collect();
+    for (index, tag) in (0..).zip(&tags) {
+        buffer.tag_table().add(tag);
+        let start = buffer.iter_at_offset(index * 20);
+        let end = buffer.iter_at_offset(index * 20 + 20);
+        buffer.apply_tag(tag, &start, &end);
+    }
+    flush_after_delay(Duration::from_millis(100));
+
+    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
+    assert_scroll_changes_stay_out_of_the_snapshot_with(
+        &page,
+        &window,
+        &hadjustment,
+        ("shrank", |before, after| after < before),
+        "removing the tags from the table",
+        || {
+            let table = buffer.tag_table();
+            change_in_frames(&page, FRAMES, move |view, frame| {
+                let index = usize::try_from(frame - 1).expect("frames count from one");
+                table.remove(&tags[index]);
+                // The removal queues no redraw; in the application the
+                // closing search bar redraws the view.
                 view.queue_draw();
             });
         },

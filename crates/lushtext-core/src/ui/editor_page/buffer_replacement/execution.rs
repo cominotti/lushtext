@@ -8,6 +8,8 @@
 //! exactly-once terminal cleanup. Every decision it makes about *what* to do
 //! next is delegated to [`super::policy`]; what remains here is *how*.
 
+use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
+use crate::ui::editor_page::protected_view::policy::WholeContentInstall;
 use std::cell::RefCell;
 use std::ops::Deref;
 use std::rc::Rc;
@@ -31,9 +33,8 @@ use super::policy::{
     cancel_disposition, guard_restores_on_terminal, insertion_is_complete, start_disposition,
     turn_may_run,
 };
-// Only the test-only actuation seams name the workflow family directly; every
-// production caller supplies its own variant in the ticket it hands in.
-#[cfg(feature = "test-utils")]
+// The Protected View install mapping and the test-only actuation seams name
+// the workflow family; every caller supplies its own variant in its ticket.
 use super::policy::BufferReplacementWorkflow;
 
 /// Delay between scheduled turns. One millisecond, not an idle source: an idle
@@ -73,6 +74,30 @@ enum ReplacementBody {
         /// Preserves the installed guarded source for an accepted workflow cache.
         on_complete: Option<GuardedBodyCallback>,
     },
+}
+
+impl ReplacementBody {
+    /// At a completed install into a protected editor, a guarded body nobody
+    /// else keeps becomes the Protected View text source (design D4); a body
+    /// with an `on_complete` consumer goes there, which decides (draft
+    /// recovery retains it through its local-history seeding).
+    fn retain_for_protected_view(self, editor: &LushtextEditorPage) -> Self {
+        match self {
+            Self::Guarded {
+                body,
+                on_cancel,
+                on_complete: None,
+            } if editor.is_protected_view() => match editor.retain_protected_source(body) {
+                None => Self::default(),
+                Some(body) => Self::Guarded {
+                    body,
+                    on_cancel,
+                    on_complete: None,
+                },
+            },
+            other => other,
+        }
+    }
 }
 
 impl Default for ReplacementBody {
@@ -334,6 +359,11 @@ pub(crate) struct BufferReplacementSession {
     profile: Option<DocumentProfile>,
     /// The two slice budgets of this body.
     budget: SliceBudget,
+    /// The body's Protected View fold plan, shared with `profile`, which the
+    /// install turns apply at insertion (`ui::protected_fold`).
+    fold_plan: Option<std::sync::Arc<crate::model::protected_fold::FoldPlan>>,
+    /// The index of the paragraph the next install turn starts.
+    next_paragraph: u64,
 }
 
 /// Content-free terminal evidence retained by one editor.
@@ -427,6 +457,24 @@ pub(super) fn dispose(editor: &LushtextEditorPage) {
     }
 }
 
+/// The Protected View install kind of a replacement workflow: the
+/// whole-content installs of a document body. Save formatting never runs on a
+/// protected buffer (design D9) and eviction only clears.
+fn protected_install_kind(workflow: BufferReplacementWorkflow) -> Option<WholeContentInstall> {
+    match workflow {
+        BufferReplacementWorkflow::DraftRecovery => Some(WholeContentInstall::DraftRecovery),
+        BufferReplacementWorkflow::LocalHistoryRestore => {
+            Some(WholeContentInstall::LocalHistoryRestore)
+        }
+        BufferReplacementWorkflow::LocalHistoryUndo => Some(WholeContentInstall::UndoRestore),
+        BufferReplacementWorkflow::MemoryEviction | BufferReplacementWorkflow::SaveFormatting => {
+            None
+        }
+        #[cfg(feature = "test-utils")]
+        BufferReplacementWorkflow::Test => None,
+    }
+}
+
 // --- stage 2: begin ---------------------------------------------------------
 
 fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
@@ -446,6 +494,9 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
     let guard = begin_guard(editor);
     if let Some(profile) = &request.profile {
         editor.prepare_for_incoming_profile(profile);
+        if let Some(kind) = protected_install_kind(request.ticket.workflow) {
+            editor.begin_protected_install(profile, ProtectedInstallSource::Replacement(kind));
+        }
     }
     let buffer = editor.buffer();
     buffer.begin_irreversible_action();
@@ -464,6 +515,11 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         mutation_started: false,
         terminal: false,
         metrics: BufferReplacementMetrics::for_one_retained_body(),
+        fold_plan: request
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.fold_plan.clone()),
+        next_paragraph: 0,
         profile: request.profile,
         budget,
     }));
@@ -522,6 +578,7 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
     editor
         .source_view()
         .set_cursor_visible(guard.cursor_visible);
+    editor.reassert_protected_view_properties();
     let syntax_enabled = editor.document_scale().syntax_enabled;
     {
         let _span =
@@ -536,9 +593,7 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
         editor.request_language_attach();
     }
     if editor.is_search_visible() && editor.search_bar().search_context().is_none() {
-        editor
-            .search_bar()
-            .attach(&editor.buffer(), editor.source_view());
+        editor.attach_search_context();
     }
     if guard.monitor_active
         && editor.load_state() == crate::ui::editor_page::EditorLoadState::Loaded
@@ -561,6 +616,10 @@ fn schedule_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 }
 
 fn run_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    crate::ui::responsiveness_probe::span("replacement_turn", || run_turn_now(session));
+}
+
+fn run_turn_now(session: &Rc<RefCell<BufferReplacementSession>>) {
     let (editor, phase, current) = {
         let mut state = session.borrow_mut();
         state.source_id.take();
@@ -598,6 +657,13 @@ fn run_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 
     match phase {
         ReplacementPhase::Clearing => run_clear_turn(session),
+        ReplacementPhase::Installing
+            if session.borrow().fold_plan.is_some()
+                && !crate::ui::protected_fold::tail_insert_admitted() =>
+        {
+            // Another document inserted a hidden tail in this iteration.
+            schedule_turn(session);
+        }
         ReplacementPhase::Installing => run_install_turn(session),
         ReplacementPhase::ClearingCancelled => run_cancelled_clear_turn(session),
         ReplacementPhase::Finalizing => {}
@@ -658,7 +724,7 @@ fn run_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 }
 
 fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let (buffer, start, body) = {
+    let (buffer, start, body, fold_plan, paragraph) = {
         let mut state = session.borrow_mut();
         let Some(body) = state.body.take() else {
             drop(state);
@@ -666,15 +732,33 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
             return;
         };
         state.mutation_started = true;
-        (state.buffer.clone(), state.byte_offset, body)
+        (
+            state.buffer.clone(),
+            state.byte_offset,
+            body,
+            state.fold_plan.clone(),
+            state.next_paragraph,
+        )
     };
     let budget = session.borrow().budget;
     let end = next_slice_boundary(&body, start, budget);
     let body_len = body.len();
     let mut iter = buffer.end_iter();
-    crate::ui::editor_page::edit_lock::with_own_edit(|| {
-        buffer.insert(&mut iter, &body[start..end]);
+    let next_paragraph = crate::ui::editor_page::edit_lock::with_own_edit(|| {
+        if let Some(plan) = fold_plan.as_deref() {
+            crate::ui::protected_fold::insert_folded(
+                buffer.upcast_ref(),
+                &mut iter,
+                &body[start..end],
+                paragraph,
+                plan,
+            )
+        } else {
+            buffer.insert(&mut iter, &body[start..end]);
+            paragraph
+        }
     });
+    session.borrow_mut().next_paragraph = next_paragraph;
 
     {
         let mut state = session.borrow_mut();
@@ -741,8 +825,27 @@ fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
         return;
     }
     let old_chars = buffer.char_count();
-    session.borrow_mut().mutation_started = true;
-    crate::ui::editor_page::edit_lock::with_own_edit(|| buffer.set_text(&body));
+    let fold_plan = {
+        let mut state = session.borrow_mut();
+        state.mutation_started = true;
+        state.fold_plan.clone()
+    };
+    crate::ui::editor_page::edit_lock::with_own_edit(|| match fold_plan.as_deref() {
+        // A protected body: every folded tail goes in hidden, in this same
+        // dispatch as its head (design D1).
+        Some(plan) => {
+            buffer.set_text("");
+            let mut start = buffer.start_iter();
+            crate::ui::protected_fold::insert_folded(
+                buffer.upcast_ref(),
+                &mut start,
+                &body,
+                0,
+                plan,
+            );
+        }
+        None => buffer.set_text(&body),
+    });
     let mut state = session.borrow_mut();
     if state.terminal || state.phase != ReplacementPhase::Clearing {
         drop(state);
@@ -843,7 +946,13 @@ fn finish_session(
     buffer.end_irreversible_action();
     let outcome = match cancellation {
         None => {
-            let body = body.unwrap_or_default().into_completed_body();
+            let body = body
+                .map(|body| match &editor {
+                    Some(editor) => body.retain_for_protected_view(editor),
+                    None => body,
+                })
+                .unwrap_or_default()
+                .into_completed_body();
             #[cfg(not(feature = "test-utils"))]
             drop(body);
             BufferReplacementOutcome::Complete {

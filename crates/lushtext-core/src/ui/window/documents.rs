@@ -188,7 +188,9 @@ impl LushtextWindow {
     }
 
     fn open_document_with_intent(&self, path: &Path, intent: OpenDocumentIntent) {
-        let _ = self.open_document_with_intent_and_planning_terminal(path, intent, None);
+        crate::ui::responsiveness_probe::span("open_document", || {
+            let _ = self.open_document_with_intent_and_planning_terminal(path, intent, None);
+        });
     }
 
     fn open_document_with_intent_and_planning_terminal(
@@ -464,6 +466,11 @@ impl LushtextWindow {
         };
         if editor.file_path().is_none() {
             self.show_save_as_dialog();
+            return;
+        }
+        // An unmodified Protected View document holds exactly the file's
+        // text: Save has nothing to write (`long-line-protected-view` D9).
+        if editor.is_protected_view() && !editor.is_modified() {
             return;
         }
         let window = self.clone();

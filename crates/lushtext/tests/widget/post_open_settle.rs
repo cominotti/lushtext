@@ -568,7 +568,8 @@ fn test_every_edit_route_is_refused_while_a_save_owns_the_buffer() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = write(&dir, "save-refuse.txt", "start\n");
     let editor = opened(&window, &path);
-    let typed = "x".repeat(2_500_001);
+    // Short lines: one giant paragraph would enter Protected View (C2).
+    let typed = crate::common::short_lines('x', 2_500_001);
     // One undoable user edit, so a refused undo has history it must keep.
     let mut end = editor.buffer().end_iter();
     let _ = editor.buffer().insert_interactive(&mut end, &typed, true);

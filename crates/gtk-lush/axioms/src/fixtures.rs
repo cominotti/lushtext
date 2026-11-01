@@ -317,6 +317,51 @@ pub mod a58 {
     pub use crate::probes::a58::{ENDS_IN_NEWLINE, ENDS_IN_TEXT, OVERSCROLL_PX};
 }
 
+/// The Protected View press-claim fixture and observers the A59 probe drives,
+/// for its sample.
+pub mod a59 {
+    pub use crate::probes::a59::{
+        CaptureClaim, LINES, MarkState, StockGestureLog, document, mark_state,
+        observe_stock_gestures, popover_visible, protected_view,
+    };
+}
+
+/// The focus fixture the A60 probe drives, for its sample.
+pub mod a60 {
+    pub use crate::probes::a60::{focus_pair, key_controller_has_im};
+}
+
+/// The move-cursor intercept the A61 probe installs, for its sample.
+pub mod a61 {
+    pub use crate::probes::a61::{STEPS, connect_intercept, marks};
+}
+
+/// The drag-and-drop fixture the A63 probe drives, for its sample.
+pub mod a63 {
+    pub use crate::probes::a63::{DOCUMENT, DROPPED, DndCensus, dnd_census, dnd_view, drop_text};
+}
+
+/// The source-view fixture and guards the A64 probe drives, for its sample.
+pub mod a64 {
+    pub use crate::probes::a64::{
+        BRACKET_OFFSET, DOCUMENT, NUMBER_OFFSET, PREEMPTED_SIGNALS, ViewState, menu_key_claim,
+        preempt_signals, reset, source_view, view_state,
+    };
+}
+
+/// The hidden-tail insert the A65 probe measures, for its sample.
+pub mod a65 {
+    pub use crate::probes::a65::{HEAD_CHARS, head, insert_hidden_tail, paragraph_extent, tail};
+}
+
+/// The chunk reads the A66 probe times, for its sample.
+pub mod a66 {
+    pub use crate::probes::a66::{
+        CHUNK_CHARS, DEPTHS, LINEAR_STEP, PARAGRAPH_CHARS, read_by_line_index, read_by_offset,
+        single_segment_buffer, walk_by_line_index, walk_by_mark, walk_by_persistent_iter,
+    };
+}
+
 /// Height every probe row requests, so row geometry is predictable.
 ///
 /// GTK adds the row's own CSS padding on top, so a row is drawn taller than

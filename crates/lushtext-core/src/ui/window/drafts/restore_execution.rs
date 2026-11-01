@@ -54,7 +54,7 @@ impl LushtextWindow {
                     self.apply_draft(
                         &DraftRestoreTicket::capture(editor, entry),
                         draft_content,
-                        profile,
+                        *profile,
                         DraftRestoreTracking::Ordinary,
                     );
                 }
@@ -128,7 +128,7 @@ impl LushtextWindow {
                 self.apply_draft(
                     &DraftRestoreTicket::capture(editor, entry),
                     draft_content,
-                    profile,
+                    *profile,
                     DraftRestoreTracking::Ordinary,
                 );
             }
@@ -198,7 +198,7 @@ impl LushtextWindow {
         let draft_id = ticket.entry.draft_id.clone();
         match result {
             Ok(GuardedDraftRestoreResolution::Restore(content, profile)) => {
-                self.apply_draft(ticket, content, profile, tracking);
+                self.apply_draft(ticket, content, *profile, tracking);
                 return;
             }
             Ok(GuardedDraftRestoreResolution::Compact(skip)) => {

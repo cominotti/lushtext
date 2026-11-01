@@ -373,6 +373,25 @@ it, and the first frame is now measured on the mapped window. No Kani harness
 was added, for the same reason as C4b (a finite stage order, enumerated by unit
 tests); no envelope cites it.
 
+`long-line-protected-view` (C2, axioms landed 2026-10-30) added **A59–A66**,
+its provisional P1–P8 (C6 `bound-post-open-settle` holds A52–A58): a
+capture-phase press claim keeps a text view's own click and drag gestures from
+running (A59; the touchscreen half is not pinned, the private session cannot
+inject touch); a non-editable view gives its input method no focus-in and no key
+filtering (A60); a stopped `move-cursor` holds under caret browsing (A61,
+extends A34); the AT-SPI text and caret-write costs of a folded paragraph (A62,
+lane-pinned like A35); a text view's one drop target, its refusal when
+non-editable unless a tag is editable, and its removal (A63); stopped key-binding
+signals and a captured Shift+F10 guard a non-editable source view, per-instance
+action enablement does not, and GtkSourceView's Ctrl+Shift+A `change-number`
+binding is shadowed by GtkTextView's unselect (A64); a tail inserted hidden is
+never laid out, at 13–17 ms per MiB of insert (A65); and chunk-read cost by
+iterator positioning, flat only for one byte-positioned iterator advanced below
+`MAX_LINEAR_SCAN` (A66, which moved Protected View's edit-growth capture off a
+declared envelope). A59–A61 and A64 are the first probes driven by real input,
+through the private compositor's RemoteDesktop interface. None was falsified,
+and no Kani harness or envelope cites them yet.
+
 ### Phase 2 — Kani lane
 
 - Add a `make kani` target, and an optional CI job using
@@ -1811,6 +1830,137 @@ high-waters (`>` with `>=`), and the zeroed density ring's fill branch
 
 No harness or assertion was added, so no shard was re-measured.
 
+### Protected View fold (`long-line-protected-view`, C2 of the long-line programme)
+
+One pure module, `model/protected_fold.rs`, with its harnesses in
+`model/protected_fold/kani_proofs.rs` (design D12, ids H1–H2s), over the
+production `fold_step`/`fold_finish`, `FoldRange::locate`,
+`FoldLocation::column_of` and `fold_byte_offset`.
+
+**Design-time findings, both fixed before any code (task 2.10).**
+
+- *The first draft's "fold when the window would overflow" rule* (each
+  paragraph shown at `min(len, N_visible)`, folded to `N_dense` only when adding
+  it would push the running window over `V_batch`) is unsound. Hand-found
+  counterexample: `V_batch = 10`, `R_batch = 2`, `N_dense = 5`, `N_visible = 8`,
+  two 8-character paragraphs show 8 + 5 = 13 > 10. The windowed rule shows
+  5 + 5. Pinned by the unit test `the_overflow_rule_counterexample_is_fixed`
+  against a frozen copy of the superseded rule.
+- *The excess-budget defect* (adversarial review, 2026-10-29): the second
+  draft capped every paragraph at `N_dense + E`, `E = V_batch − R_batch ·
+  N_dense`. With C0's values `E = 0`, so every paragraph over 250 characters was
+  folded whatever its neighbours held. The windowed rule folds only members of
+  over-budget windows; `the_excess_budget_defect_is_fixed` pins a 251-character
+  paragraph in an under-budget window staying whole (the frozen superseded rule
+  folds it).
+
+**Kani counterexamples.** One, expected: task 2.7 ran H1 against a fold with
+`length_cap` alone (before `density_cap` existed); Kani failed H1's window
+assertion in 206 s. `density_bound_fails_without_the_density_fold` (H1x) keeps
+that counterexample as a `should_panic` harness. No harness of the shipped fold
+produced a counterexample.
+
+**Tractability (fit order: split first).** The designed forms did not finish:
+
+| Form | Outcome | Fix |
+| --- | --- | --- |
+| H1 monolithic (every window's visible sum asserted over the run), symbolic `r_fold`, `u128` sums | > 24 min | split H1 into the stream facts (every paragraph shows at most its capped count; every member of an over-budget window shows at most `n_dense`) and the general window lemma H1w; per-`r_fold` instances; `u64` sums under a new precondition `r_fold · head_cap ≤ u64::MAX`; under `cfg(kani)` the window sum is added up from the ring (production keeps the O(1) running sum, pinned equal by `running_sum_equals_direct_sum` and the property tests) |
+| H2 with symbolic `r_fold` | 1,177 s | per-`r_fold` instances and the changes above |
+| H2s sequential (whole run, then a second run from the split) | > 27 min | lockstep comparison of the two runs |
+| H2b with three `chars()` passes over 8 symbolic bytes | CBMC out of its 14 GiB address space | lead-byte counting in the harness, and `fold_byte_offset` itself became a lead-byte scan (no decoding) |
+
+No proof bound was reduced: the domains are the design's (up to 6 paragraphs of
+arbitrary `u64` length, `r_fold` 1–3, every accepted threshold tuple, every
+valid UTF-8 string of ≤ 8 bytes, every `u64` column). The threshold domain
+gained one precondition, `r_fold · head_cap ≤ u64::MAX` (production: 224 ·
+15,000).
+
+**Shards.** `core-protected-fold` (H1 ×3, H1w, H1c, H1x; `pull-request`),
+`core-protected-fold-shape` (H2 ×3; `scheduled`) and
+`core-protected-fold-mapping` (H2b, H2c, H2s ×3; `scheduled`). Local
+`make kani KANI_MEASURE` (Kani 0.68.0, 2026-10-30), two runs each, the larger
+kept: `core-protected-fold` 3.77 and 6.88 min / 1.45 GiB (H1 r1/r2/r3 up to
+37 / 60 / 301 s, H1w 1.9 s, H1x 0.6 s, H1c 0.04 s); the scheduled harnesses
+14.42 and 17.28 min / 1.51 GiB as one group (H2 r1/r2/r3 up to 62 / 70 / 597 s,
+H2s r1/r2/r3 up to 36 / 54 / 361 s, H2b 32 s, H2c 0.4 s), split into two
+shards because H2 alone is about 12 minutes. CBMC's time for the `r_fold = 3`
+instances varied by up to 2.2× between runs on the same tree. **Runner
+figures pending dispatch**: the table carries these local figures, marked as
+such, until two dispatched `kani.yml` runs replace them.
+
+**Proof strength (task 2.9, 2026-10-30/31; Kani 0.68.0, cargo-mutants 27.0.0,
+`--tier ci`, Kani arm sharded 2 ways).**
+
+| Revision | Mutants | Unviable | Kani kills (`should_panic`) | Vacuity | Kani survivors |
+| --- | --- | --- | --- | --- | --- |
+| `f8f1bf5f` | 118 | 18 | 86 (2) | 0 | 14 |
+| `e78db80c` | 110 | 17 | 81 (2) | 2 | 7 |
+
+Triage of `f8f1bf5f`'s 14, all closed in `e78db80c`:
+- `A28_SAFE_CHARS`'s expression (`/`→`%`, `/`→`*`, `*`→`+`): H1c now asserts the
+  constant is exactly the `int32` overflow bound at the largest zoom.
+- `FoldState::paragraphs` (→ 0, → 1): the harnesses' fold run asserts it, and
+  `thresholds()`.
+- `fold_finish`'s shortness test and `next_index - 1` (`<`→`<=`, `&&`→`||`,
+  `>`→`>=`, `-`→`+`, `-`→`/`): equivalent (a held tail over budget implies the
+  last full window was). Removed by simplifying the state to `dense_until` and
+  dropping the test, not excluded.
+- `min_u64` `<`→`<=`: equivalent (a tie returns the same value); excluded in
+  `.cargo/mutants.toml`.
+- `window_capped_sum`'s production form (→ 0, → 1) and `plan_folds` (→ `vec![]`):
+  not compiled under Kani (`cfg(not(kani))`) or not called by a harness; the
+  tests arm kills them.
+
+Triage of `e78db80c`'s 7 survivors and 2 vacuity results: every one is in a
+function only H2 (the fold shape and exact-specification harness) checks
+directly — `window_is_over_budget` (`>`→`>=`; → `true`, vacuity),
+`dense_visible` → 0, `density_cap` → 0, and `emit_oldest`'s `paragraph <
+dense_until` and `visible < length` (`<`→`<=`, one of them vacuity) — and H2's
+instances were all in the `local` tier, so the `ci`-tier run never ran H2. H2
+`r_fold = 1` (62 s) is now `ci`; each of these mutants breaks H2's equality
+with the specification or its positive-tail assertion. Plus the two
+`cfg(not(kani))`/test-wrapper survivors above. **Remaining:** re-running these
+six mutants with H2 r1 in the `ci` list (stopped while waiting for memory;
+about 15 minutes).
+
+Tests arm (`e78db80c`, interrupted at 76 of 110 by the session coordinator for
+holding the shared lock): 55 caught, 12 unviable, 9 missed, all nine in the
+`cfg(kani)` form of `window_capped_sum`, which no test build compiles and the
+Kani arm kills. **Remaining:** the last 34 mutants of the tests arm (resumable
+from `target/proof-strength/results/e78db80c…/tests/`), in pieces of at most
+about 20 minutes.
+
+### Protected View policy (`long-line-protected-view`, C2, 2026-10-31)
+
+`ui/editor_page/protected_view/policy.rs` is proved by eight harnesses in
+`policy/kani_proofs.rs` (design D12): H3 (no mutating action is admitted),
+H3m (monotone entry and the entry undo), the `should_panic` pins H3x
+(eviction reload re-deriving) and H3u (entry undo after a load entry), H4n
+(navigation), H4f (find batches) and the `should_panic` pin H4x (a record
+built without admission). Two outcomes differ from the design:
+
+- **H4 (the inspector tiling) is not a harness.** With a symbolic width, and
+  again at the production width `N_INSPECT`, CBMC did not finish it within the
+  20-minute cap: every check of the tiling is a 64-bit division, which CBMC
+  bit-blasts. Its statement is carried by the property test
+  `inspector_windows_tile_over_the_whole_range` (any `u64` length, the
+  production width and widths 1 to `N_INSPECT`, random index and column) and
+  the exhaustive unit test `inspector_windows_tile_for_every_small_width`
+  (widths 1–7, lengths up to 40).
+- **H4n runs at the production width.** Its first form (symbolic width, the
+  window re-derived with `inspector_window`) ran past 71 minutes; its second
+  (compared with a second `inspector_window_containing` call, which asked CBMC
+  to prove two dividers equivalent) timed out at 20. The shipped form checks
+  the window `navigation_target` returns by its defining properties (start
+  `index · n`, 1 to `n` characters, full unless it ends the paragraph,
+  contains the clamped column), by multiplication by the constant width only:
+  784 s. Other widths are an exhaustive unit test.
+
+Shards (local `KANI_MEASURE`, pending two dispatched runs):
+`core-protected-view` (H3, H3m, H3x, H3u, H4f, H4x) 1.09 min / 3.34 GiB and
+`core-protected-view-navigation` (H4n) 13.26 min / 1.41 GiB, both `scheduled`.
+No counterexample was found. Proof strength for the module has not run yet.
+
 ## 4. Deferral inventory
 
 - Multi-process safety of the draft journal and the target guard (axiom A6).
@@ -1964,3 +2114,4 @@ No harness or assertion was added, so no shard was re-measured.
   GTK Lush scope decision (`gtk-lush-stewardship`), left open; and whether
   the `ci` tier should run on the weekly Kani schedule, left open because it
   needs more than twenty 25-minute shards.
+

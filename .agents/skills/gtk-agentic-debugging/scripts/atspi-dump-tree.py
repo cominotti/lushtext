@@ -8,7 +8,11 @@ import time
 from collections import deque
 from pathlib import Path
 
-import pyatspi
+# Taken before `import pyatspi` so the reported phases include the import,
+# which is part of what every probe process pays.
+PROCESS_START = time.monotonic()
+
+import pyatspi  # noqa: E402
 
 
 STATE_FLAG_NAMES = (
@@ -32,12 +36,23 @@ STATE_FLAGS = tuple(
     if (value := getattr(pyatspi, const_name, None)) is not None
 )
 TEXT_SAMPLE_LIMIT = 120
+# AT-SPI calls the walk swallowed. A failed call is dumped as an empty value or
+# zero children, so a nonzero count means the tree may be incomplete (for
+# example, calls that timed out while the application's main thread was
+# starved), not that the application lacks those nodes.
+CALL_FAILURES = 0
+
+
+def note_call_failure() -> None:
+    global CALL_FAILURES
+    CALL_FAILURES += 1
 
 
 def safe_text(value) -> str:
     try:
         text = value() if callable(value) else value
     except Exception:
+        note_call_failure()
         return ""
     return str(text or "").replace("\n", "\\n")
 
@@ -54,6 +69,7 @@ def node_state(node) -> str:
     try:
         state_set = node.getState()
     except Exception:
+        note_call_failure()
         return "unavailable"
 
     states = [name for name, flag in STATE_FLAGS if state_set.contains(flag)]
@@ -64,6 +80,7 @@ def child_at(node, index: int):
     try:
         return node.getChildAtIndex(index)
     except Exception:
+        note_call_failure()
         return None
 
 
@@ -71,6 +88,7 @@ def child_count(node) -> int:
     try:
         return int(node.childCount)
     except Exception:
+        note_call_failure()
         return 0
 
 
@@ -79,6 +97,7 @@ def application_name(node) -> str:
         app = node.getApplication()
         return app.name or ""
     except Exception:
+        note_call_failure()
         return ""
 
 
@@ -156,7 +175,9 @@ def find_application_root(pattern: re.Pattern[str], *, timeout: float, interval:
     raise RuntimeError(f"no accessible application matched {pattern.pattern!r}; seen: {seen}")
 
 
-def dump_tree(root, *, max_depth: int, max_nodes: int) -> tuple[list[str], list[str]]:
+def dump_tree(
+    root, *, max_depth: int, max_nodes: int, stop_at_text: str | None = None
+) -> tuple[list[str], list[str]]:
     tree_lines: list[str] = []
     focus_lines: list[str] = []
 
@@ -172,6 +193,11 @@ def dump_tree(root, *, max_depth: int, max_nodes: int) -> tuple[list[str], list[
         tree_lines.append(line)
         if "focused" in states.split(","):
             focus_lines.append(line)
+        if stop_at_text is not None and stop_at_text in line:
+            # A readiness wait needs presence, not the whole tree: every node
+            # it skips is several round trips to the application.
+            tree_lines.append(f"<walk stopped at the first node containing {stop_at_text!r}>")
+            break
 
     if not focus_lines:
         focus_lines.append("<no focused accessible node reported>")
@@ -190,19 +216,27 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=0.25)
     parser.add_argument("--max-depth", type=int, default=44)
     parser.add_argument("--max-nodes", type=int, default=20000)
+    parser.add_argument(
+        "--stop-at-text",
+        help="stop the walk at the first node whose dumped line contains this text",
+    )
     args = parser.parse_args()
 
     app_pattern = re.compile(args.application_regex, re.IGNORECASE)
+    root_start = time.monotonic()
     root = find_application_root(
         app_pattern,
         timeout=args.timeout,
         interval=args.interval,
     )
+    walk_start = time.monotonic()
     tree_lines, focus_lines = dump_tree(
         root,
         max_depth=args.max_depth,
         max_nodes=args.max_nodes,
+        stop_at_text=args.stop_at_text,
     )
+    walk_end = time.monotonic()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.focus_output.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +244,16 @@ def main() -> int:
     args.focus_output.write_text("\n".join(focus_lines) + "\n", encoding="utf-8")
     print(f"dumped_nodes={len(tree_lines)}")
     print(f"focused_nodes={0 if focus_lines[0].startswith('<') else len(focus_lines)}")
+    # The walk issues several synchronous AT-SPI calls per node, each answered
+    # by the application's main thread, so its wall time scales with node
+    # count times scheduler latency; these phases are what a caller's timeout
+    # has to cover.
+    print(
+        f"startup_ms={round((root_start - PROCESS_START) * 1000)} "
+        f"root_ms={round((walk_start - root_start) * 1000)} "
+        f"walk_ms={round((walk_end - walk_start) * 1000)} "
+        f"call_failures={CALL_FAILURES}"
+    )
     return 0
 
 

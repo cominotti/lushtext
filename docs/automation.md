@@ -63,6 +63,18 @@ already visible in the editor, sidebar, status, and properties surfaces.
 Free-form text fields such as paths, titles, queries, replacement text, and
 status messages are capped to 4 KiB and marked with ` [truncated]` if shortened.
 
+Each tab also reports Protected View (`long-line-protected-view`): whether the
+document is view-only because a paragraph exceeds 50,000 characters
+(`protected_view`), why (`protected_view_reason`: `paragraph-length` for a
+document installed protected, `edit-growth` for one an edit made protected),
+whether the one entry undo is available (`entry_undo_available`), and how much
+the fold hides (`folded_paragraph_count`, `hidden_character_count`). Counts
+only, never the folded text. A protected document's find runs on a worker over
+its text source and holds the `editor-search` blocker, so `search-complete`
+settles after its result set is published; its fold is applied inside the
+install, so `file-open-complete`, `session-restore-complete` and
+`recovery-restore-complete` cover it with no new blocker.
+
 `surfaces.preview_document_alert_visible` tells "preview-only with no alert"
 apart from "the alert is shown": in preview-only mode the editor column, and its
 own inline alert, is hidden, so the selected document's alert is rendered once
@@ -475,7 +487,17 @@ synthetic (`scripts/generate-long-line-fixtures.py`), generated into the run's
 temporary scope, and digest-checked before and after every case. Each case runs
 plain, with the AT bridge and a `pyatspi` text-event listener, with the probe
 input method (`GTK_IM_MODULE=lushtext-probe`), and with IBus when
-`ibus-daemon` is installed (otherwise `skipped`). The report
+`ibus-daemon` is installed (otherwise `skipped`). The `keystroke` group
+(`keystroke/<length>/<css/html|prose/txt>/wrap-<on|off>`) opens one editable
+paragraph of the swept length between short lines, places the caret after a
+marker at its start, middle and end through `win.set-search-query`,
+`win.next-match`, Escape and Right, and types ten letters at each place; a
+final `verify` phase counts marker plus letters in `search.editor_match_count`
+and fails the case if a burst did not land at its marker. It re-measures
+`long-line-protected-view`'s toolkit-floor exception (keystrokes in editable
+paragraphs between `L_EDIT_STALL` 3,500 and `L_PROTECT_EDIT` 50,000 miss
+B_interact; quick tier 3,500 and 50,000, full tier 2,500 to 50,000,
+`RESPONSIVENESS_LENGTHS=keystroke=...` for any sweep). The report
 (`report.json`, `report.md`) derives the long-line thresholds and the budget
 verdict, and lists runtime warnings: a pre-existing defect a later change owns
 is a finding with its owner, while the warning of a blocker the programme has

@@ -584,6 +584,32 @@ snapshots that filter out their own shell (never a wait loop). On the
 maintainer's workstation a global Claude Code `PreToolUse` hook also blocks
 such commands before they run; the helpers are what keeps them unnecessary.
 
+**Gate order before a commit.** Run the cheap gates first, with the same
+`make` targets the hook runs: `make fmt`, `make check-fmt`, `make check-clippy`
+(it adds project lints a plain `cargo clippy` lacks), `make
+check-workflow-boundaries`, `make check-automation-docs` when the automation
+surface changed, and `cargo check -p lushtext --bins --locked` with default
+features (all-feature Clippy hides `test-utils`-only imports). Only then run the
+accessibility, visual and visual-geometry smokes, and commit right after them:
+their proofs fingerprint file contents, so any edit after a smoke, `make fmt`
+included, makes them stale and the hook refuses the commit.
+
+**Profiling.** On the maintainer's workstation `perf` and `gdb` are installed in
+the toolbox, and Fedora's debuginfod fetches GTK, Pango and GLib symbols on
+demand. Prefer them to hand-written timing shims. The host keeps
+`perf_event_paranoid = 2` and `ptrace_scope = 1`, so:
+
+- profile user space only and launch the target as a child; do not attach to a
+  running process:
+  `perf record -e cycles:u --call-graph dwarf --user-callchains -F 999 -o <file> -- <command>`
+  (without `:u` and `--user-callchains`, `perf record` fails with "Failure to
+  open any events for recording");
+- `gdb --args <command>` works on a child; `gdb -p`/`eu-stack -p` on another
+  process does not;
+- a profiled measurement still goes through `scripts/measure.sh`
+  (`scripts/measure.sh --label <l> -- perf record … -- <command>`), and a run
+  under `perf` is attribution evidence, never a verdict figure.
+
 ## Compilation Speed
 
 These patterns are replicated from invowk-rust and must be maintained:
@@ -753,9 +779,11 @@ invariant; tighten the generator or use the deep lane.
 - Placement: harnesses live in a `#[cfg(kani)] mod kani_proofs` of the crate
   that owns the checked code (`gtk-lush-widgets` for geometry; `lushtext-core`
   for the draft journal, the durable write, and the pure policies: the
-  editor-memory budget in `model/`, and the `ui/**` policies of the minimap
-  fits, the adaptive-shell geometry, the width presets, and the preview-width
-  clamp), over GTK-free, I/O-free code
+  editor-memory budget, the paragraph boundary and profile, the document
+  scale and the Protected View fold (`model/protected_fold.rs`) in `model/`,
+  and the `ui/**` policies of the minimap
+  fits, the adaptive-shell geometry, the width presets, the preview-width
+  clamp, and Protected View (`ui/editor_page/protected_view/policy.rs`)), over GTK-free, I/O-free code
   that ships, or a pure core production drives. Never a copy of the code.
   `cfg(kani)` is a declared expected cfg in the workspace lints, so ordinary
   builds, Clippy, and tests compile none of it and need no Kani install.

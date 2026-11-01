@@ -37,10 +37,21 @@ Kinds (``--size`` unit in brackets):
     headings, paragraphs with inline emphasis, code and links, lists, fenced
     code blocks, tables and block quotes, so the side-by-side preview renders
     every block kind it supports.
+``keystroke`` [characters of the edited paragraph]
+    One paragraph of exactly ``size`` characters between two runs of short
+    lines, with a unique marker at its start, middle and end
+    (``KEYSTROKE_MARKERS``), so the lane places the caret by finding a marker
+    and types beside it. It measures the cost of one keystroke inside an
+    editable paragraph (C2's ``L_EDIT_STALL`` and toolkit-floor exception).
 
 The Python API also writes an ``.editorconfig`` beside the documents
 (``editorconfig={"tab_width": 8, ...}``, ``root = true``); the manifest
 records it under ``editorconfig``, outside ``files``, so it is never opened.
+
+``--flavor css|script|markup|prose`` picks the giant paragraph's character mix:
+the three markup flavours open the sub-language GtkSourceView's html context
+runs; ``prose`` is lowercase words, spaces and sentence punctuation with no
+markup (and no ``q`` or ``z``, so the keystroke markers stay unique).
 
 ``--delimiter lf|cr|crlf|u2029`` rewrites every paragraph separator, so the
 same paragraph sets can be split by CR-only, CRLF or U+2029.
@@ -136,11 +147,18 @@ MARKUP_CLASS_WEIGHTS = (
     (",", 0.0024),
     ("#()_%&", 0.0056),
 )
+PROSE_CLASS_WEIGHTS = (
+    ("etaoinshrdlucmfwypvbgk", 0.80),
+    (" ", 0.17),
+    (",.", 0.03),
+)
 FLAVORS = {
     # opener, class mix: which sub-language GtkSourceView's html context runs.
     "css": ("<style>", MINIFIED_CLASS_WEIGHTS),
     "script": ("<script>", SCRIPT_CLASS_WEIGHTS),
     "markup": ("<div>", MARKUP_CLASS_WEIGHTS),
+    # Prose: no opener, no markup.
+    "prose": ("", PROSE_CLASS_WEIGHTS),
 }
 MULTIBYTE_CLASS_WEIGHTS = (
     ("abcdefghijklmnoprstuvwxy", 0.40),
@@ -152,7 +170,7 @@ MULTIBYTE_CLASS_WEIGHTS = (
 SHORT_HTML_TAGS = ("div", "span", "p", "li", "a", "td", "section", "em")
 
 DELIMITERS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "u2029": " "}
-KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "markdown")
+KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "markdown", "keystroke")
 CHUNK_CHARS = 16 * 1024
 CHUNK_COUNT = 48
 TABLE_SIZE = 4096
@@ -351,6 +369,58 @@ def write_paragraph_document(path: Path, delimiter: str, seed: int, length: int,
     return writer.close()
 
 
+# The keystroke fixture's caret anchors: no flavour's character mix contains
+# both `q` and `z`, so none occurs by chance in the generated text.
+KEYSTROKE_MARKERS = {"start": "zqzkstartzqz", "middle": "zqzkmiddlezqz", "end": "zqzkendzqz"}
+KEYSTROKE_SHORT_LINES = 30
+# The start marker must fit the paragraph's first half, the middle and end
+# markers its second half, so the paragraph is exactly `size` characters.
+KEYSTROKE_MIN_LENGTH = 2 * max(
+    len(KEYSTROKE_MARKERS["start"]), len(KEYSTROKE_MARKERS["middle"]) + len(KEYSTROKE_MARKERS["end"])
+)
+
+
+def write_keystroke_document(path: Path, delimiter: str, seed: int, length: int, charset: str, flavor: str = "css") -> dict:
+    """One paragraph of exactly ``length`` characters between short lines.
+
+    The paragraph starts with the start marker, holds the middle marker at
+    ``length // 2`` and ends with the end marker; a flavour with an opener
+    (``<style>`` for css) gets it on its own line just before the paragraph.
+    """
+    if length < KEYSTROKE_MIN_LENGTH:
+        raise ValueError(f"keystroke paragraph must be at least {KEYSTROKE_MIN_LENGTH} characters for its markers")
+    rng = SplitMix64(seed)
+    chunks = make_chunks(rng, charset, flavor)
+
+    def fill(writer: FixtureWriter, count: int) -> None:
+        while count > 0:
+            piece = chunks[rng.below(len(chunks))][:count]
+            writer.text(piece)
+            count -= len(piece)
+
+    def short_lines(writer: FixtureWriter) -> None:
+        for _ in range(KEYSTROKE_SHORT_LINES):
+            fill(writer, 30 + rng.below(50))
+            writer.end_paragraph()
+
+    start, middle, end = (KEYSTROKE_MARKERS[k] for k in ("start", "middle", "end"))
+    writer = FixtureWriter(path, delimiter)
+    short_lines(writer)
+    opener = FLAVORS[flavor][0]
+    if opener:
+        writer.text(opener)
+        writer.end_paragraph()
+    half = length // 2
+    writer.text(start)
+    fill(writer, half - len(start))
+    writer.text(middle)
+    fill(writer, length - half - len(middle) - len(end))
+    writer.text(end)
+    writer.end_paragraph()
+    short_lines(writer)
+    return writer.close()
+
+
 def write_minified_html(path: Path, delimiter: str, seed: int, longest: int) -> dict:
     rng = SplitMix64(seed)
     chunks = make_chunks(rng, "ascii")
@@ -546,6 +616,8 @@ def generate(
     files: list[dict] = []
     if kind == "paragraph":
         files.append(write_paragraph_document(out_dir / f"{stem}.{ext}", separator, seed, size, charset, flavor))
+    elif kind == "keystroke":
+        files.append(write_keystroke_document(out_dir / f"{stem}.{ext}", separator, seed, size, charset, flavor))
     elif kind == "minified-html":
         files.append(write_minified_html(out_dir / f"{stem}.html", separator, seed, size))
     elif kind == "dense":
@@ -575,6 +647,7 @@ def generate(
         "flavor": flavor,
         "find_marker": FIND_MARKER if kind in ("paragraph", "minified-html", "session") else None,
         "editorconfig": manifest_editorconfig,
+        "keystroke_markers": dict(KEYSTROKE_MARKERS) if kind == "keystroke" else None,
         "files": files,
     }
 
@@ -636,6 +709,39 @@ def self_test() -> int:
         session = generate("session", 5_000, 1, scope, scope / "sess", count=3)
         digests = {entry["sha256"] for entry in session["files"]}
         expect(len(session["files"]) == 3 and len(digests) == 3, "session: three distinct documents")
+
+        # The keystroke fixture: each marker once, the edited paragraph exactly
+        # its size, every delimiter, both lane flavours, and the minimum.
+        for delimiter, separator in DELIMITERS.items():
+            for flavor, ext in (("css", "html"), ("prose", "txt")):
+                for size in (KEYSTROKE_MIN_LENGTH, 3_500, 50_000):
+                    made = generate("keystroke", size, 4, scope, scope / f"k-{delimiter}-{flavor}-{size}", ext=ext, delimiter=delimiter, flavor=flavor)
+                    entry = made["files"][0]
+                    with Path(entry["path"]).open(encoding="utf-8", newline="") as handle:
+                        data = handle.read()
+                    label = f"keystroke {delimiter} {flavor} {size}"
+                    expect(entry["path"].endswith(f".{ext}"), f"{label}: extension")
+                    expect(all(data.count(marker) == 1 for marker in KEYSTROKE_MARKERS.values()), f"{label}: each marker exactly once")
+                    paragraphs = data.split(separator)
+                    edited = [p for p in paragraphs if KEYSTROKE_MARKERS["start"] in p]
+                    expect(len(edited) == 1 and len(edited[0]) == size, f"{label}: the edited paragraph is exactly {size} characters")
+                    expect(edited[0].startswith(KEYSTROKE_MARKERS["start"]) and edited[0].endswith(KEYSTROKE_MARKERS["end"]), f"{label}: start and end markers bound it")
+                    expect(edited[0].index(KEYSTROKE_MARKERS["middle"]) == size // 2, f"{label}: the middle marker at the middle")
+                    expect(entry["longest_paragraph"] == size or size < 80, f"{label}: the longest paragraph")
+                    opener_lines = 1 if FLAVORS[flavor][0] else 0
+                    expect(entry["paragraphs"] == 2 * KEYSTROKE_SHORT_LINES + opener_lines + 1, f"{label}: paragraph count")
+                    others = {"lf": ("\r", "\u2029"), "cr": ("\n", "\u2029"), "crlf": ("\u2029",), "u2029": ("\n", "\r")}[delimiter]
+                    expect(not any(other in data for other in others), f"{label}: only its delimiter")
+                    if delimiter == "crlf":
+                        expect(data.count("\r\n") == data.count("\r") == data.count("\n"), f"{label}: CR and LF only as pairs")
+                    if flavor == "prose":
+                        expect(not any(c in data for c in "<>") and "zqz" not in data.replace(KEYSTROKE_MARKERS["start"], "").replace(KEYSTROKE_MARKERS["middle"], "").replace(KEYSTROKE_MARKERS["end"], ""), f"{label}: prose has no markup and no stray marker text")
+        try:
+            generate("keystroke", KEYSTROKE_MIN_LENGTH - 1, 4, scope, scope / "k-short")
+        except ValueError:
+            pass
+        else:
+            failures.append("keystroke: a length too short for the markers is refused")
 
         expect(eviction_count(8 * 1024 * 1024) * 8 * 1024 * 1024 * 4 > EDITOR_MEMORY_UPPER_BUDGET_BYTES, "eviction crosses the budget")
         eviction = generate("eviction", 64 * 1024, 2, scope, scope / "e", count=2)

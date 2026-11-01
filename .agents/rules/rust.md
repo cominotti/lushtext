@@ -291,6 +291,37 @@ shared. Inline literals remain fine for `0`/`1`, indexes, simple arithmetic
 identities, obvious counters, narrow fixture data, and tests that do not mirror
 production policy.
 
+### Thresholds are powers of two, rounded the conservative way
+
+A new threshold, budget, cap, slice size, or window (bytes, characters,
+paragraphs, rows, counts) is a power of two (2, 4, 8, …, 1024, 64 KiB,
+1 MiB, …). Its rustdoc names its **kind** and the rounding that kind requires:
+
+- **Cap** (at most N per dispatch, per document, or per resource; a measured
+  point where a budget breaks): round **down** to the power of two at or below
+  the measured or derived value. The policies are monotone, so a smaller cap
+  only reduces features sooner and keeps the budget guarantee.
+- **Coverage window** (must span a whole toolkit unit for a proof to hold, e.g.
+  the paragraphs GTK validates in one 2000 px batch): round **up**, never
+  down. A window that is too small silently breaks the proof.
+- **Policy tier** (user-visible size tiers, retention): a power of two chosen
+  to align with neighbouring limits for the same concern, shown in IEC units
+  (`MiB`, `G_FORMAT_SIZE_IEC_UNITS`).
+- **External fact** (GTK's 2000 px validation batch, the `GtkListView`
+  realized-row cap, Pango's overflow length, the 120 Hz frame): kept exact and
+  cited from the GTK axiom ledger. These describe the toolkit or physics, not
+  a choice; constants *derived* from them follow the rules above.
+
+Time budgets already follow this (`B_interact` 8 ms, `B_settle` 16 ms). A
+value that cannot be a power of two without a measured, user-visible loss (more
+text folded, highlighting off for common files, a slower total) is an
+**exception**: keep the exact value and record the measurement and the reason
+beside the constant. Prefer a power of two because it states the margin
+honestly (a measured 22,000 under load is not that precise), and because
+division and modulo by it are shifts and masks that Kani and CBMC verify
+cheaply. Constants that predate this rule are being converted by the queued
+`power-of-two-thresholds` change (`docs/next/long-line-documents.md`).
+
 ## Mutable State on GObject Structs
 
 - Use `Cell<T>` for `Copy` types (e.g., `Cell<Option<u64>>`, `Cell<u32>`). No borrow overhead, no panic risk from overlapping borrows.

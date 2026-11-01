@@ -19,8 +19,9 @@
 //! - `density_bound >=` the buffer's worst window;
 //! - `worst_batch_chars <= H_w` and `H_w >=` the buffer's worst window;
 //! - `worst_batch_chars == H_w` while no step took the fast path;
-//! - `worst_batch_chars > v_batch` exactly when `H_w > v_batch` (the decision
-//!   the scale reads).
+//! - `worst_batch_chars > v_batch` exactly when `H_w > v_batch` (the density
+//!   crossing; since C2's design D0 the scale decides no feature on it, and
+//!   Protected View's fold reads it).
 //!
 //! Domain: a buffer of at most [`DOC_SYMBOLS`] symbols from {`a`, `\r`, `\n`,
 //! U+2029} with **any** line structure `GtkTextBuffer` can reach (ledger A42:

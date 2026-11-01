@@ -943,6 +943,135 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a58),
     },
+    Axiom {
+        id: AxiomId::new(59),
+        name: "a59_a_capture_claim_keeps_presses_from_the_text_view",
+        statement: "a capture-phase GtkGestureClick and GtkGestureDrag (button 0) that claim \
+                    every sequence on a GtkTextView keep the view's own click and drag gestures \
+                    from running: no press, middle press or drag moves the insert mark or the \
+                    selection bound, resets the input method, pastes the primary selection, \
+                    opens the default context menu or starts a selection drag or \
+                    drag-and-drop; without the claim a non-editable view still does all of \
+                    these except inserting (a touchscreen drag is not driven)",
+        dependent_designs: &[
+            "long-line-protected-view (C2): the capture-phase press claim of Protected View \
+             (design D3, step 3)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a59),
+    },
+    Axiom {
+        id: AxiomId::new(60),
+        name: "a60_a_non_editable_view_keeps_the_input_method_out",
+        statement: "set_editable(false) leaves a GtkTextView's key controller with no \
+                    input-method context, so key presses never reach the input method's \
+                    filter_keypress, and a later focus-in does not call \
+                    gtk_im_context_focus_in; an editable view does both",
+        dependent_designs: &[
+            "long-line-protected-view (C2): a protected (non-editable) view hands no paragraph \
+             to the input method on focus or typing, without changing the input-method module \
+             (design D3, step 1)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a60),
+    },
+    Axiom {
+        id: AxiomId::new(61),
+        name: "a61_a_stopped_move_cursor_holds_under_caret_browsing",
+        statement: "a move-cursor handler that scrolls the view and stops the emission keeps \
+                    the insert mark and the selection bound still for every step kind, with \
+                    and without extend_selection, also under gtk-keynav-use-caret, where the \
+                    stock handler moves the insert mark (extends A34); the real navigation \
+                    keys reach the same signal",
+        dependent_designs: &[
+            "long-line-protected-view (C2): the move-cursor intercept of Protected View \
+             (design D3, step 2)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a61),
+    },
+    Axiom {
+        id: AxiomId::new(62),
+        name: "a62_atspi_text_and_caret_writes_on_a_folded_paragraph",
+        statement: "for a paragraph whose tail is invisible, the AT-SPI text contents and \
+                    offsets, the payload and cost of text queries at character, word, sentence \
+                    and line granularity, the TextChanged payload when the hidden tail is \
+                    inserted, and the cost of an AT-initiated caret or selection write into it \
+                    are reachable only through an AT-SPI bus (unpinned in-crate, like A35; the \
+                    responsiveness lane's AT case records them)",
+        dependent_designs: &[
+            "long-line-protected-view (C2): the accessibility contract of a folded paragraph \
+             and the one write path it cannot pre-empt (extends A35)",
+            "sliced-protected-install (C3): per-slice AT payloads",
+        ],
+        slow: false,
+        probe: None,
+    },
+    Axiom {
+        id: AxiomId::new(63),
+        name: "a63_a_text_view_drop_target_and_its_removal",
+        statement: "a GtkTextView carries one GtkDropTarget (string, copy or move), one \
+                    GtkDropControllerMotion and no GtkDragSource (drag-out starts from its own \
+                    drag gesture); a non-editable view's drop handler refuses a drop and \
+                    leaves the buffer unchanged, unless a tag marks the drop point editable; \
+                    removing the drop target with gtk_widget_remove_controller leaves none",
+        dependent_designs: &[
+            "long-line-protected-view (C2): Protected View removes the drop target and relies \
+             on the capture claim (A59) for drag-out (design D3, step 4)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a63),
+    },
+    Axiom {
+        id: AxiomId::new(64),
+        name: "a64_stopped_keybinding_signals_guard_a_non_editable_view",
+        statement: "GtkTextView recomputes the per-instance enablement of selection.select-all \
+                    (and the other clipboard.* and selection.* actions) on menu.popup, so \
+                    disabling it is not a guard, and Ctrl+A reaches the select-all signal \
+                    whatever it says; a handler that stops select-all, toggle-cursor-visible, \
+                    change-number, change-case, join-lines or move-to-matching-bracket keeps \
+                    its default handler from running, and a capture-phase key controller that \
+                    claims Shift+F10 keeps menu.popup from opening the menu; without them \
+                    change-number (Ctrl+Shift+X), change-case and join-lines change a \
+                    non-editable buffer",
+        dependent_designs: &[
+            "long-line-protected-view (C2): the key-binding pre-emption of Protected View \
+             (design D3, step 5)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a64),
+    },
+    Axiom {
+        id: AxiomId::new(65),
+        name: "a65_a_tail_inserted_hidden_is_never_laid_out",
+        statement: "insert_with_tags of a run tagged invisible after a visible head in the \
+                    same paragraph leaves the paragraph's display height (wrapping on) and the \
+                    layout width (wrapping off) exactly those of the head alone, at every tail \
+                    size; the cost of the insert and of the first validation per MiB of tail is \
+                    recorded",
+        dependent_designs: &[
+            "long-line-protected-view (C2): the fold executor inserts a giant paragraph's tail \
+             hidden (design D1, D13)",
+            "sliced-protected-install (C3): the per-MiB insert cost is its adoption-gate input",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a65),
+    },
+    Axiom {
+        id: AxiomId::new(66),
+        name: "a66_chunk_reads_by_offset_and_by_byte_index",
+        statement: "reading a fixed 64 Ki-character chunk of a single-segment paragraph yields \
+                    the exact text by every positioning; its recorded cost grows with the depth \
+                    by character offset, with the paragraph's length for a walking mark, and \
+                    stays flat for one iterator positioned by byte index and advanced with \
+                    forward_chars below MAX_LINEAR_SCAN (cost evidence, like A36)",
+        dependent_designs: &[
+            "long-line-protected-view (C2): the positioning of the edit-growth source capture \
+             (design D4)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a66),
+    },
 ];
 
 #[cfg(test)]

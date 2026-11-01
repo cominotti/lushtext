@@ -4,7 +4,7 @@ This is C3 of the long-line programme (`docs/next/long-line-responsiveness.md`, 
 
 - **C0, `probe-long-line-toolkit-costs`**: the budgets, the in-process lateness watchdog, the frame-clock timing, the synthetic fixture generator, `make responsiveness-smoke`, and the ledger axioms A23–A36. A36 is the segment merge.
 - **C1, `document-scale-policy`**: the worker paragraph profile, the GTK-matching paragraph-boundary function (`\n`, `\r`, `\r\n`, U+2029), and `DocumentScale`.
-- **C2, `long-line-protected-view`**: Protected View, the protected tail tag (`invisible=true, editable=false`), the pure fold placement policy `model/protected_fold.rs` (`FoldRange { paragraph, head_chars, tail_chars }`), the cross-cutting fold-at-insertion executor `ui/protected_fold.rs` that load, buffer replacement and reload call, and axioms P1–P7 (P4 extends A35, P7 pins that `insert_with_tags` of an invisible run never lays out the tail).
+- **C2, `long-line-protected-view`**: Protected View, the protected tail tag (`invisible=true, editable=false`), the pure fold placement policy `model/protected_fold.rs` (`FoldRange { paragraph, head_chars, tail_chars }`), the cross-cutting fold-at-insertion executor `ui/protected_fold.rs` that load, buffer replacement and reload call, and axioms A59–A65 (A62 extends A35, A65 pins that `insert_with_tags` of an invisible run never lays out the tail).
 
 Today, installation slices end only at paragraph ends:
 
@@ -30,7 +30,7 @@ Taken together:
 
 Two more facts bound what "tagged at insertion" means:
 
-- `gtk_text_buffer_insert_with_tags` is `gtk_text_buffer_insert` (which emits `insert-text` in full, after-handlers included) followed by `gtk_text_buffer_apply_tag` (`g/gtktextbuffer.c:1906-1942`). Text inserted at a tagged run's end is untagged (A25). So for the duration of that one call the new slice is untagged, and synchronous `insert-text` handlers see it so. It is never laid out untagged, because validation runs later from an idle (C2's P7), and never untagged across a dispatch.
+- `gtk_text_buffer_insert_with_tags` is `gtk_text_buffer_insert` (which emits `insert-text` in full, after-handlers included) followed by `gtk_text_buffer_apply_tag` (`g/gtktextbuffer.c:1906-1942`). Text inserted at a tagged run's end is untagged (A25). So for the duration of that one call the new slice is untagged, and synchronous `insert-text` handlers see it so. It is never laid out untagged, because validation runs later from an idle (C2's A65), and never untagged across a dispatch.
 - GtkTextView reports accessible changes from a `connect_after("insert-text")` handler and a `connect("delete-range")` handler (`gtk/gtk/gtktextview.c:2417-2422`, `7395-7425`). The AT-SPI context then reads the range back with `gtk_text_buffer_get_text (…, FALSE)` (`gtk_text_view_accessible_text_get_contents`, `gtk/gtk/gtktextview.c:10703-10716`; emission in `g/gtkatspicontext.c:1741-1790`, only when the bus has event listeners). The insert event therefore carries the whole slice text (not yet hidden), and the delete event of a hidden range carries no hidden characters. Both cost O(slice), never O(paragraph).
 
 ## Goals / Non-Goals
@@ -70,7 +70,7 @@ Alternative considered: adopt unconditionally because 16 ms is tight. Rejected. 
 
 ### D2. The exception covers the hidden tail only
 
-A slice may end inside a paragraph **only** at or after C2's fold point for that paragraph. The head of the paragraph is everything before the fold point, at most N_visible characters. It goes in **one** visible slice, together with any whole short paragraphs that fit the budget. Tail slices are inserted with the protected tag applied by `insert_with_tags`, so tail text is untagged only inside that one synchronous call (see Context) and never across a dispatch or in a layout. That is the same guarantee as C2's single-turn executor (P7). Every synchronous `insert-text` handler LushText owns (C1's profile handler, C2's edit-growth entry) treats an install slice as installation (D6), so none of them reacts to the momentarily untagged run.
+A slice may end inside a paragraph **only** at or after C2's fold point for that paragraph. The head of the paragraph is everything before the fold point, at most N_visible characters. It goes in **one** visible slice, together with any whole short paragraphs that fit the budget. Tail slices are inserted with the protected tag applied by `insert_with_tags`, so tail text is untagged only inside that one synchronous call (see Context) and never across a dispatch or in a layout. That is the same guarantee as C2's single-turn executor (A65). Every synchronous `insert-text` handler LushText owns (C1's profile handler, C2's edit-growth entry) treats an install slice as installation (D6), so none of them reacts to the momentarily untagged run.
 
 Why this does not bring back the quadratic re-layout: invisible text is left out of the paragraph's PangoLayout (A24, from C0). After every tail slice the visible text of the paragraph is the same fixed head. A new axiom pins the cost of re-validating the paragraph after a hidden append (provisionally **S2**): it is bounded by the visible text plus the segment count, not by the hidden bytes. If that probe fails, this design is not viable. The gate then closes the change and the failure is filed upstream.
 
@@ -225,7 +225,7 @@ The `data-safety` skill runs explicitly over the change before sign-off.
 ## Migration Plan
 
 1. Pass the gate (D1). If it is not met, record the result and stop. There is nothing to roll back.
-2. Land the axioms (S1–S3, final ids allocated after C0's A23–A36, C1's D8 axioms and C2's P1–P7) with their probes, samples and, for S3, the lane's AT case. Run `make gtk-axioms` first.
+2. Land the axioms (S1–S3, final ids allocated after C0's A23–A36, C1's A42–A45, C6's A52–A58 and C2's A59–A66) with their probes, samples and, for S3, the lane's AT case. Run `make gtk-axioms` first.
 3. Land the planner, its Kani harnesses and its property tests.
 4. Wire the executor and evidence. Revise the spec and docs in the same change.
 5. Run the responsiveness sweep and record the results.
@@ -239,5 +239,5 @@ To roll back, revert the change. C2's one-turn executor is still the fallback pa
 - **Half adoption.** If only clearing, or only installing, is over budget, should the change ship that half alone (as D1 proposes) or wait until both halves need it?
 - **Gate evidence source.** Is the reference lane (private headless mutter, cairo, ≤ 16 cores) sufficient for the gate, or should the gate also require a consented isolated-XDG run on the maintainer's session, as PROPOSAL.md decision 8 suggests for C2?
 - **Disposition if not adopted.** Archive the change with a "not adopted" note, or leave it open in `openspec/changes/` as a dormant conditional that re-evaluates on a budget or toolkit change?
-- **Final ledger ids.** S1–S3 are provisional names. C0 takes A23–A36, C1's D8 axioms and C2's P1–P7 take the next ids, and `stop-expander-bind-time-child-scans` (provisionally T1) takes the next free id whenever it lands, so the final ids are fixed in application order when this change is applied.
+- **Final ledger ids.** S1–S3 are provisional names. C0 takes A23–A36, C1's A42–A45, C6's A52–A58 and C2's A59–A66 take the next ids, and `stop-expander-bind-time-child-scans` (provisionally T1) takes the next free id whenever it lands, so the final ids are fixed in application order when this change is applied.
 - **Mid-install interaction budget.** With B_settle = 16 ms and a 120 Hz frame, an input that arrives just after a slice starts can wait two frames. Is B_settle per install dispatch acceptable for that, or should install slices be held to B_interact (8 ms) while the window has pending input?

@@ -19,6 +19,7 @@
 //! still be admitted; [`SaveCompletionTicket`] decides whether a *completed*
 //! worker result may still mutate the editor. Both stay.
 
+use crate::ui::editor_page::protected_view::seams::ProtectedTextSource;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -176,6 +177,14 @@ pub(super) fn begin_admitted_save(
     let restore_state = SaveViewInteractivity::suspend(editor);
     editor.refresh_accessibility_metadata();
 
+    // A Protected View document is saved from its retained text source, on
+    // the worker, with no GTK snapshot (quadratic inside a giant paragraph,
+    // ledger A66) and no transformation (design D9).
+    if let Some(source) = editor.protected_source() {
+        write_protected_source_async(editor, path, source, restore_state, admitted, callback);
+        return;
+    }
+
     if buffer_snapshot::buffer_requires_chunked_snapshot(&editor.buffer()) {
         let editor_weak = editor.downgrade();
         let snapshot_callback = move |outcome| {
@@ -212,6 +221,88 @@ pub(super) fn begin_admitted_save(
         buffer_snapshot::snapshot_buffer_text_direct(&buffer),
     );
     write_snapshot_async(editor, path, text, restore_state, admitted, callback);
+}
+
+/// Write a Protected View document's text source (design D9): the bytes the
+/// buffer holds, in the recorded encoding, with no save-time transformation
+/// (no EditorConfig formatting, no line-ending normalization, so `Mixed`
+/// endings are written verbatim) and so no mirror-back. Control leaves the GTK
+/// thread inside `spawn_blocking_then` and resumes in the completion, which
+/// publishes through the same accepted-save terminal as an ordinary save.
+fn write_protected_source_async(
+    editor: &LushtextEditorPage,
+    path: PathBuf,
+    source: ProtectedTextSource,
+    restore_view_state: SaveViewInteractivity,
+    admitted: AdmittedSaveContext,
+    callback: SaveCallback,
+) {
+    let AdmittedSaveContext {
+        ticket,
+        allow_lossy,
+        permit,
+    } = admitted;
+    editor.prepare_local_history_for_save();
+    let was_modified_before_save = editor.buffer().is_modified();
+    let encoding = editor.document_encoding_state().save_encoding;
+    let history_availability = editor.live_local_history_availability();
+    spawn_blocking_then(
+        editor.clone(),
+        move || {
+            let write_result = editor_io::write_document_verbatim_to_path(
+                &path,
+                source.text(),
+                encoding,
+                allow_lossy,
+            )?;
+            let canonical_path = fs_metadata::canonical_path(&path).ok();
+            if history_availability.allows_browsing() {
+                let data_dir = crate::services::json_store::data_dir();
+                if let Err(error) = crate::services::local_history_service::capture_snapshot_for_path(
+                    &data_dir,
+                    &path,
+                    source.text(),
+                    crate::model::local_history::LocalHistorySnapshotOrigin::Save,
+                    crate::services::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+                ) {
+                    tracing::warn!(
+                        "Saved {}, but local-history snapshot capture failed: {error}",
+                        path.display()
+                    );
+                }
+            }
+            Ok::<_, EditorSaveError>(SaveWriteOutcome {
+                size: write_result.bytes_written,
+                mtime: write_result.modified_at_secs,
+                canonical_path,
+                clean_text: None,
+                formatted_text: None,
+                formatted_profile: None,
+                retain_formatted_as_clean: false,
+                permit: Some(permit),
+            })
+        },
+        move |editor, result| {
+            if !ticket.is_current(&editor) {
+                finish_save_formatting_without_acceptance(&editor, restore_view_state, callback);
+                return;
+            }
+            match result {
+                Ok(outcome) => {
+                    evidence::record_formatting_rewrite(&editor, false);
+                    finish_accepted_save(&editor, outcome, restore_view_state, None, callback);
+                }
+                Err(error) => {
+                    evidence::record_write_classification(&editor, classify_write_error(&error));
+                    restore_view_after_save(&editor, restore_view_state);
+                    editor.buffer().set_modified(was_modified_before_save);
+                    editor.complete_local_history_after_save_failure();
+                    editor.refresh_accessibility_metadata();
+                    callback(Err(error));
+                }
+            }
+        },
+    );
 }
 
 /// Restore the view after a chunked snapshot ends without coherent text.

@@ -134,12 +134,15 @@ SHARDS: dict[str, Shard] = {
         # took under two minutes locally, build included, so the shard stays
         # well inside the margin until the next CI measurement records it.
         # `post_open_settle` (bound-post-open-settle) joined the same way.
+        # `protected_view` (long-line-protected-view) joined on 2026-10-31
+        # beside it, on the same terms.
         modules=(
             "attention_refresh",
             "document_scale",
             "editor_page",
             "multi_window_drafts",
             "post_open_settle",
+            "protected_view",
             "sidebar",
             "workspace_entry_visibility",
         ),

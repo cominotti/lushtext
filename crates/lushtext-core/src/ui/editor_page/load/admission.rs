@@ -183,6 +183,17 @@ pub(crate) fn begin_load_request(
     reopen_as: Option<DocumentEncoding>,
     planning_terminal: Option<Box<dyn FnOnce()>>,
 ) {
+    crate::ui::responsiveness_probe::span("load_request", || {
+        begin_load_request_now(editor, path, reopen_as, planning_terminal);
+    });
+}
+
+fn begin_load_request_now(
+    editor: &LushtextEditorPage,
+    path: &Path,
+    reopen_as: Option<DocumentEncoding>,
+    planning_terminal: Option<Box<dyn FnOnce()>>,
+) {
     if editor.imp().load.finalizing.get() {
         park_pending_request(editor, path, reopen_as, planning_terminal);
         retirement::cancel_noninstall_load_resources(editor);

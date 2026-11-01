@@ -113,35 +113,88 @@ class GtkDebugConfigurationTests(unittest.TestCase):
         ):
             self.assertIn(flag, result.stdout)
 
-    def test_atspi_text_wait_retries_consecutive_timed_out_probes_within_deadline(self) -> None:
+    def run_atspi_text_wait(
+        self, artifact_dir: Path, walks: list[tuple[float, str]]
+    ) -> tuple[list[dict[str, object]], str | None]:
+        """Run the wait on a fake clock; each walk is (cost in s, tree text).
+
+        A probe given a process timeout below its walk's cost is killed at that
+        timeout, as `subprocess.run` does, and writes no tree.
+        """
+        now = [0.0]
+        calls: list[dict[str, object]] = []
+
+        def run_probe(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            cost, tree = walks[min(len(calls), len(walks) - 1)]
+            timeout = float(kwargs["timeout"])  # type: ignore[arg-type]
+            calls.append({"command": command, "timeout": timeout})
+            if timeout < cost:
+                now[0] += timeout
+                raise subprocess.TimeoutExpired(command, timeout)
+            now[0] += cost
+            output = Path(command[command.index("--output") + 1])
+            output.write_text(tree, encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        def sleep(seconds: float) -> None:
+            now[0] += seconds
+
+        fake_time = mock.Mock(monotonic=lambda: now[0], sleep=sleep)
+        with (
+            mock.patch.object(MUTTER.subprocess, "run", side_effect=run_probe),
+            mock.patch.object(MUTTER, "time", fake_time),
+        ):
+            try:
+                MUTTER.wait_for_atspi_text(artifact_dir, {}, "Visual bookmark")
+            except RuntimeError as exc:
+                return calls, str(exc)
+        return calls, None
+
+    def test_atspi_text_wait_lets_a_slow_walk_finish_within_the_deadline(self) -> None:
+        # The bookmarks-few flake: under load one walk outlasted the old fixed
+        # 5 s per-probe cap, so every retry was killed and the 20 s wait failed
+        # although the tree held the text.
         with tempfile.TemporaryDirectory() as directory:
             artifact_dir = Path(directory)
-            calls = 0
+            calls, error = self.run_atspi_text_wait(artifact_dir, [(8.0, "Visual bookmark")])
 
-            def run_probe(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-                nonlocal calls
-                calls += 1
-                if calls <= 2:
-                    raise subprocess.TimeoutExpired(
-                        command,
-                        MUTTER.ATSPI_TREE_PROCESS_TIMEOUT_SECONDS,
-                    )
-                output = Path(command[command.index("--output") + 1])
-                output.write_text("Preferences", encoding="utf-8")
-                return subprocess.CompletedProcess(command, 0, "", "")
-
-            with (
-                mock.patch.object(MUTTER.subprocess, "run", side_effect=run_probe),
-                mock.patch.object(MUTTER.time, "sleep"),
-            ):
-                MUTTER.wait_for_atspi_text(artifact_dir, {}, "Preferences")
-
-            self.assertEqual(calls, 3)
+            self.assertIsNone(error)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["timeout"], MUTTER.ATSPI_TEXT_WAIT_SECONDS)
+            command = calls[0]["command"]
+            self.assertIsInstance(command, list)
+            self.assertEqual(
+                command[command.index("--stop-at-text") + 1],  # type: ignore[union-attr]
+                "Visual bookmark",
+            )
             self.assertIn(
-                "probe_timeouts=2",
+                "probes=1",
                 (artifact_dir / "automation-waits.txt").read_text(encoding="utf-8"),
             )
 
+    def test_atspi_text_wait_retries_a_tree_without_the_text_on_the_remaining_budget(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact_dir = Path(directory)
+            calls, error = self.run_atspi_text_wait(
+                artifact_dir, [(3.0, "Notes"), (3.0, "Notes Visual bookmark")]
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(len(calls), 2)
+            budget = MUTTER.ATSPI_TEXT_WAIT_SECONDS - 3.0 - MUTTER.ATSPI_TREE_RETRY_INTERVAL_SECONDS
+            self.assertAlmostEqual(float(calls[1]["timeout"]), budget)  # type: ignore[arg-type]
+
+    def test_atspi_text_wait_fails_once_a_walk_outlasts_the_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact_dir = Path(directory)
+            calls, error = self.run_atspi_text_wait(artifact_dir, [(30.0, "Visual bookmark")])
+
+            self.assertEqual(len(calls), 1)
+            self.assertIsNotNone(error)
+            self.assertIn("still walking the tree", error or "")
+            self.assertIn("probes=1", error or "")
 
 if __name__ == "__main__":
     unittest.main()

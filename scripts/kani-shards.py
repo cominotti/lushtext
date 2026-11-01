@@ -149,6 +149,36 @@ DOCUMENT_SCALE_MEASURED_IN = "runs 39440638502, 39446126819 (max of the two)"
 POST_OPEN_SETTLE_MEASURED_IN = (
     "provisional: local make kani 10.6 min / 1.69 GiB (2026-10-30), pending two dispatched runs"
 )
+# long-line-protected-view (C2) added core-protected-fold, core-protected-fold-shape
+# and core-protected-fold-mapping. PENDING DISPATCH:
+# these figures are a LOCAL `make kani KANI_MEASURE` run on the reference
+# workstation, recorded so the table stays complete until two dispatched
+# kani.yml runs replace them (task 2.8); developer timing is not a runner
+# measurement, and the change must not merge on it.
+PROTECTED_FOLD_MINUTES = 6.9
+PROTECTED_FOLD_PEAK_GIB = 1.5
+PROTECTED_FOLD_SHAPE_MINUTES = 13.0
+PROTECTED_FOLD_SHAPE_PEAK_GIB = 1.6
+PROTECTED_FOLD_MAPPING_MINUTES = 6.0
+PROTECTED_FOLD_MAPPING_PEAK_GIB = 1.6
+PROTECTED_FOLD_MEASURED_IN = (
+    "PENDING DISPATCH: local make kani KANI_MEASURE runs on the reference workstation, 2026-10-30 "
+    "(Kani 0.68.0; core-protected-fold 6.88 min / 1.45 GiB; the two scheduled shards from one "
+    "17.28-min / 1.51 GiB run of their union, split by per-harness time plus about one minute of "
+    "compilation), not runner measurements"
+)
+# long-line-protected-view (C2), the Protected View policy's harnesses H3-H4x.
+# H4n (navigation) has its own shard: it alone takes about 13 minutes. H4 (the
+# inspector tiling) is a property test, not a harness (design D12).
+PROTECTED_VIEW_MINUTES = 1.1
+PROTECTED_VIEW_PEAK_GIB = 3.4
+PROTECTED_VIEW_NAVIGATION_MINUTES = 13.3
+PROTECTED_VIEW_NAVIGATION_PEAK_GIB = 1.5
+PROTECTED_VIEW_MEASURED_IN = (
+    "PENDING DISPATCH: local make kani KANI_MEASURE runs on the reference workstation, 2026-10-31 "
+    "(Kani 0.68.0; core-protected-view 1.09 min / 3.34 GiB; core-protected-view-navigation "
+    "13.26 min / 1.41 GiB), not runner measurements"
+)
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -388,6 +418,63 @@ SHARDS: dict[str, Shard] = {
         ci_minutes=10.9,
         ci_peak_gib=2.6,
         measured_in=CLOSED_LOOP_MEASURED_IN,
+    ),    # Split by design D12's rule (the whole group is over the 15-minute
+    # pull-request margin): the density bound (H1, H1w, H1c, H1x) gates pull
+    # requests, the fold shape, UTF-8, column and slicing harnesses are scheduled.
+    "core-protected-fold": Shard(
+        "lushtext-core",
+        (
+            "model::protected_fold::kani_proofs::density_bound_",
+            "model::protected_fold::kani_proofs::an_over_budget_window_",
+            "model::protected_fold::kani_proofs::production_thresholds_",
+        ),
+        gate="pull-request",
+        ci_minutes=PROTECTED_FOLD_MINUTES,
+        ci_peak_gib=PROTECTED_FOLD_PEAK_GIB,
+        measured_in=PROTECTED_FOLD_MEASURED_IN,
+    ),
+    # The scheduled rest is split again: the fold-shape harnesses alone took
+    # 12 of the 17.3 local minutes the combined group did.
+    "core-protected-fold-shape": Shard(
+        "lushtext-core",
+        ("model::protected_fold::kani_proofs::folds_hide_",),
+        gate="scheduled",
+        ci_minutes=PROTECTED_FOLD_SHAPE_MINUTES,
+        ci_peak_gib=PROTECTED_FOLD_SHAPE_PEAK_GIB,
+        measured_in=PROTECTED_FOLD_MEASURED_IN,
+    ),
+    "core-protected-fold-mapping": Shard(
+        "lushtext-core",
+        (
+            "model::protected_fold::kani_proofs::fold_byte_offset_",
+            "model::protected_fold::kani_proofs::fold_location_",
+            "model::protected_fold::kani_proofs::fold_plan_",
+        ),
+        gate="scheduled",
+        ci_minutes=PROTECTED_FOLD_MAPPING_MINUTES,
+        ci_peak_gib=PROTECTED_FOLD_MAPPING_PEAK_GIB,
+        measured_in=PROTECTED_FOLD_MEASURED_IN,
+    ),
+    "core-protected-view": Shard(
+        "lushtext-core",
+        (
+            "ui::editor_page::protected_view::policy::kani_proofs::no_mutating_",
+            "ui::editor_page::protected_view::policy::kani_proofs::protected_view_entry_",
+            "ui::editor_page::protected_view::policy::kani_proofs::entry_",
+            "ui::editor_page::protected_view::policy::kani_proofs::find_batch",
+        ),
+        gate="scheduled",
+        ci_minutes=PROTECTED_VIEW_MINUTES,
+        ci_peak_gib=PROTECTED_VIEW_PEAK_GIB,
+        measured_in=PROTECTED_VIEW_MEASURED_IN,
+    ),
+    "core-protected-view-navigation": Shard(
+        "lushtext-core",
+        ("ui::editor_page::protected_view::policy::kani_proofs::navigation_target_",),
+        gate="scheduled",
+        ci_minutes=PROTECTED_VIEW_NAVIGATION_MINUTES,
+        ci_peak_gib=PROTECTED_VIEW_NAVIGATION_PEAK_GIB,
+        measured_in=PROTECTED_VIEW_MEASURED_IN,
     ),
 }
 
@@ -480,6 +567,8 @@ _PACED = "model::buffer_replacement::kani_proofs::"
 _SETTLE = "ui::editor_page::load::policy::kani_proofs::"
 _BOUNDARY = "model::paragraph_boundary::kani_proofs::"
 _WATCH = "model::paragraph_profile_watch::kani_proofs::"
+_FOLD = "model::protected_fold::kani_proofs::"
+_PV = "ui::editor_page::protected_view::policy::kani_proofs::"
 _SHELL_POLICY_HARNESSES = (
     _h(_SHELL + "focus_mode_renders_no_secondary_surface", 0.11, "ci"),
     _h(_SHELL + "layout_never_renders_an_unrequested_surface", 0.2, "ci"),
@@ -685,6 +774,37 @@ ORACLES: dict[str, Oracle] = {
             _h(_BOUNDARY + "boundary_slice_end_is_safe_and_advances", 203.01, "local"),
             _h(_BOUNDARY + "boundary_agrees_with_the_reference_rule", 258.74, "local"),
             _h(_BOUNDARY + "boundary_slice_end_is_the_reference_choice", 293.39, "local"),
+        ),
+    ),
+    "crates/lushtext-core/src/model/protected_fold.rs": Oracle(
+        _CORE,
+        (
+            _h(_FOLD + "production_thresholds_satisfy_the_preconditions", 0.03, "ci"),
+            _h(_FOLD + "fold_location_is_total_and_round_trips", 0.43, "ci"),
+            _h(_FOLD + "an_over_budget_window_fits_once_dense", 1.92, "ci"),
+            _h(_FOLD + "fold_byte_offset_never_splits_a_scalar", 32.29, "ci"),
+            _h(_FOLD + "density_bound_fails_without_the_density_fold", 0.56, "ci"),
+            _h(_FOLD + "density_bound_holds_for_every_window_r1", 37.35, "ci"),
+            _h(_FOLD + "density_bound_holds_for_every_window_r2", 59.76, "ci"),
+            _h(_FOLD + "density_bound_holds_for_every_window_r3", 301.33, "local"),
+            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r1", 62.05, "ci"),
+            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r2", 70.42, "local"),
+            _h(_FOLD + "folds_hide_only_tails_and_only_where_needed_r3", 597.46, "local"),
+            _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r1", 36.29, "ci"),
+            _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r2", 54.16, "ci"),
+            _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r3", 361.16, "local"),
+        ),
+    ),
+    "crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs": Oracle(
+        _CORE,
+        (
+            _h(_PV + "no_mutating_action_is_admitted", 0.11, "ci"),
+            _h(_PV + "find_batch_exceeds_the_byte_bound_without_record_admission", 0.12, "ci"),
+            _h(_PV + "protected_view_entry_is_monotone", 0.84, "ci"),
+            _h(_PV + "entry_is_not_monotone_if_eviction_reload_re_derives", 1.11, "ci"),
+            _h(_PV + "entry_undo_after_load_entry_breaks_monotonicity", 1.17, "ci"),
+            _h(_PV + "find_batches_are_bounded_and_partition_results", 49.09, "ci"),
+            _h(_PV + "navigation_target_reaches_every_column", 784.45, "local"),
         ),
     ),
     "crates/lushtext-core/src/model/paragraph_profile_watch.rs": Oracle(

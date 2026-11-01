@@ -36,7 +36,10 @@
 #[cfg(kani)]
 mod kani_proofs;
 
+use std::sync::Arc;
+
 use super::document_scale;
+use super::protected_fold::{FoldPlan, FoldPlanner};
 
 /// UTF-8 encoding of U+2029 PARAGRAPH SEPARATOR, the only multibyte delimiter.
 const PARAGRAPH_SEPARATOR_UTF8: [u8; 3] = [0xE2, 0x80, 0xA9];
@@ -421,6 +424,13 @@ pub struct DocumentProfile {
     /// Largest character sum of any `r_batch` consecutive paragraphs (the sum
     /// of all of them when there are fewer).
     pub worst_batch_chars: u64,
+    /// The Protected View fold plan (`long-line-protected-view` task 2.2):
+    /// present only when the accumulator was asked to plan
+    /// ([`ParagraphProfileAccumulator::with_fold_plan`]) and the profile is
+    /// protected (its longest paragraph exceeds
+    /// [`L_PROTECT_EDIT`](super::document_scale::L_PROTECT_EDIT)), so the
+    /// install that carries this profile folds at insertion.
+    pub fold_plan: Option<Arc<FoldPlan>>,
 }
 
 impl DocumentProfile {
@@ -433,15 +443,18 @@ impl DocumentProfile {
         long_paragraph_offsets: Vec::new(),
         offsets_truncated: false,
         worst_batch_chars: 0,
+        fold_plan: None,
     };
 
-    /// Profile `text` in one slice with the production configuration.
+    /// Profile `text` in one slice with the production configuration, with
+    /// the Protected View fold plan when the profile is protected.
     ///
     /// Workers that already traverse their body feed a
     /// [`ParagraphProfileAccumulator`] from that traversal instead.
     #[must_use]
     pub fn of_text(text: &str) -> Self {
-        let mut accumulator = ParagraphProfileAccumulator::new(ProfileConfig::PRODUCTION);
+        let mut accumulator =
+            ParagraphProfileAccumulator::with_fold_plan(ProfileConfig::PRODUCTION);
         accumulator.push_str(text);
         accumulator.finish()
     }
@@ -615,6 +628,7 @@ impl ParagraphLengthFold {
             long_paragraph_offsets: self.offsets[..self.offsets_len].to_vec(),
             offsets_truncated: self.truncated,
             worst_batch_chars: self.worst,
+            fold_plan: None,
         }
     }
 }
@@ -640,6 +654,10 @@ impl ParagraphLengthFold {
 #[derive(Clone, Debug)]
 pub struct ParagraphProfileAccumulator {
     fold: ParagraphLengthFold,
+    /// The Protected View fold planner, the second consumer of the closed
+    /// lengths (`long-line-protected-view` task 2.2); `None` unless
+    /// [`with_fold_plan`](Self::with_fold_plan) asked for it.
+    planner: Option<Box<FoldPlanner>>,
     total_bytes: u64,
     position: u64,
     open_start: u64,
@@ -653,11 +671,32 @@ impl ParagraphProfileAccumulator {
     pub fn new(config: ProfileConfig) -> Self {
         Self {
             fold: ParagraphLengthFold::new(config),
+            planner: None,
             total_bytes: 0,
             position: 0,
             open_start: 0,
             open_chars: 0,
             pending_cr: false,
+        }
+    }
+
+    /// An accumulator that also plans the Protected View fold: the profile
+    /// [`finish`](Self::finish) returns carries the plan when it is protected.
+    /// One O(1) fold step per closed paragraph, on the same worker pass.
+    #[must_use]
+    pub fn with_fold_plan(config: ProfileConfig) -> Self {
+        Self {
+            planner: Some(Box::new(FoldPlanner::new())),
+            ..Self::new(config)
+        }
+    }
+
+    /// Close one paragraph of `chars` characters starting at `start`.
+    #[inline]
+    fn close_paragraph(&mut self, start: u64, chars: u64) {
+        self.fold.push(start, chars);
+        if let Some(planner) = self.planner.as_deref_mut() {
+            planner.push(chars);
         }
     }
 
@@ -711,7 +750,7 @@ impl ParagraphProfileAccumulator {
             };
             let chars = count_scalars(&slice[from..found.content_end]);
             self.open_chars = self.open_chars.saturating_add(chars);
-            self.fold.push(self.open_start, self.open_chars);
+            self.close_paragraph(self.open_start, self.open_chars);
             self.open_chars = 0;
             self.position = self
                 .position
@@ -738,7 +777,7 @@ impl ParagraphProfileAccumulator {
                 self.open_start = after;
             }
             '\n' | '\r' | '\u{2029}' => {
-                self.fold.push(self.open_start, self.open_chars);
+                self.close_paragraph(self.open_start, self.open_chars);
                 self.open_start = after;
                 self.open_chars = 0;
             }
@@ -751,14 +790,76 @@ impl ParagraphProfileAccumulator {
     /// Close the last paragraph and return the profile.
     #[must_use]
     pub fn finish(mut self) -> DocumentProfile {
-        self.fold.push(self.open_start, self.open_chars);
-        self.fold.into_profile(self.total_bytes)
+        self.close_paragraph(self.open_start, self.open_chars);
+        let mut profile = self.fold.into_profile(self.total_bytes);
+        if let Some(planner) = self.planner
+            && document_scale::protects_by_length(profile.longest_paragraph_chars)
+        {
+            profile.fold_plan = Some(Arc::new(planner.finish()));
+        }
+        profile
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- the Protected View fold plan (task 2.2) ---------------------------
+
+    fn protected_body() -> String {
+        use super::super::document_scale::L_PROTECT_EDIT;
+        let giant = "a".repeat(usize::try_from(L_PROTECT_EDIT).expect("fits") + 1);
+        format!("short\n{giant}\nshort again\n")
+    }
+
+    #[test]
+    fn a_protected_profile_carries_the_fold_plan_of_its_lengths() {
+        use super::super::protected_fold::{FoldThresholds, plan_folds};
+        let body = protected_body();
+        let profile = DocumentProfile::of_text(&body);
+        let plan = profile
+            .fold_plan
+            .as_deref()
+            .expect("a protected body is planned");
+        let lengths: Vec<u64> = body
+            .split('\n')
+            .map(|line| u64::try_from(line.chars().count()).expect("fits"))
+            .collect();
+        assert_eq!(
+            plan.ranges(),
+            plan_folds(&lengths, FoldThresholds::PRODUCTION).as_slice()
+        );
+        assert_eq!(plan.folded_paragraphs(), 1);
+        let range = plan.range_of(1).expect("the giant paragraph is folded");
+        assert_eq!(range.head_chars + range.tail_chars, lengths[1]);
+        assert_eq!(plan.hidden_chars(), range.tail_chars);
+        assert_eq!(plan.range_of(0), None);
+    }
+
+    #[test]
+    fn an_unprotected_profile_carries_no_plan() {
+        use super::super::document_scale::L_PROTECT_EDIT;
+        let at_the_edge = "b".repeat(usize::try_from(L_PROTECT_EDIT).expect("fits"));
+        assert_eq!(DocumentProfile::of_text(&at_the_edge).fold_plan, None);
+        assert_eq!(DocumentProfile::of_text("one\ntwo").fold_plan, None);
+        // An accumulator not asked to plan never plans.
+        let mut plain = ParagraphProfileAccumulator::new(ProfileConfig::PRODUCTION);
+        plain.push_str(&protected_body());
+        assert_eq!(plain.finish().fold_plan, None);
+    }
+
+    #[test]
+    fn the_fold_plan_is_independent_of_slicing() {
+        let body = protected_body().replace('\n', "\r\n");
+        let whole = DocumentProfile::of_text(&body);
+        for cut in [1, 5, 6, 7, 30_000, body.len() - 3, body.len() - 2] {
+            let mut sliced = ParagraphProfileAccumulator::with_fold_plan(ProfileConfig::PRODUCTION);
+            sliced.push_str(&body[..cut]);
+            sliced.push_str(&body[cut..]);
+            assert_eq!(sliced.finish(), whole, "cut at {cut}");
+        }
+    }
 
     fn breaks(text: &str) -> Vec<(usize, usize, ParagraphDelimiter)> {
         let mut out = Vec::new();
