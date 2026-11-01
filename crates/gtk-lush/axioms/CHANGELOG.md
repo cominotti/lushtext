@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- A52 probe and sample (`explore-editing-long-paragraphs`): a `GtkTextView`
+  unparented but still alive keeps re-laying out the paragraphs an edit
+  invalidates, and dropping its last reference finalizes it silently. New
+  fixture `fixtures::a52::SharedBufferViews`.
+- A53 probe and sample: a paragraph's wrap mode comes from the tags on its
+  first character, and text inserted before that character is untagged. New
+  fixture `fixtures::a53::FirstCharacterWrap`.
+- A54 probe and sample: a text view answers `retrieve-surrounding` from the
+  cursor paragraph's start, and a handler connected after the view's is never
+  called. New helpers under `fixtures::a54`.
+
 ## 0.0.0
 
 - First functional in-tree pre-publication implementation: the axiom

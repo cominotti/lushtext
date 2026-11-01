@@ -91,8 +91,24 @@ pub struct DocumentScaleState {
     reads: Cell<u64>,
     fast_steps: Cell<u64>,
     window_steps: Cell<u64>,
+    /// Paragraphs the per-paragraph wrap gate unwrapped and rewrapped
+    /// (`paragraph_wrap.rs`), cumulative.
+    unwraps: Cell<u64>,
+    rewraps: Cell<u64>,
     /// Buffer and info-bar handlers, disconnected on dispose.
     pub(crate) signals: SignalBag,
+}
+
+impl DocumentScaleState {
+    /// Count one paragraph the wrap gate unwrapped.
+    pub(super) fn record_unwrap(&self) {
+        self.unwraps.set(self.unwraps.get().saturating_add(1));
+    }
+
+    /// Count one paragraph the wrap gate let wrap again.
+    pub(super) fn record_rewrap(&self) {
+        self.rewraps.set(self.rewraps.get().saturating_add(1));
+    }
 }
 
 /// Observable document-scale state of one editor, for tests and automation.
@@ -114,6 +130,10 @@ pub struct DocumentScaleEvidence {
     pub notice_pending: bool,
     /// The presentation reductions the notice has announced this session.
     pub notice_announced: ReducedFeatures,
+    /// Paragraphs the per-paragraph wrap gate unwrapped, cumulative.
+    pub paragraphs_unwrapped: u64,
+    /// Paragraphs the gate let wrap again, cumulative.
+    pub paragraphs_rewrapped: u64,
 }
 
 /// The start of a run an `insert-text` after-handler just saw inserted:
@@ -153,7 +173,7 @@ fn line_delimiter(buffer: &sourceview5::Buffer, line: i32) -> Option<ParagraphDe
 
 /// The paragraph length of GTK line `line`, from `chars_in_line` (ledger
 /// A43: segment walks, not character walks).
-fn read_paragraph_chars(buffer: &sourceview5::Buffer, line: u64) -> u64 {
+pub(super) fn read_paragraph_chars(buffer: &sourceview5::Buffer, line: u64) -> u64 {
     let Ok(line) = i32::try_from(line) else {
         return 0;
     };
@@ -207,6 +227,8 @@ impl LushtextEditorPage {
             watch_window_steps: state.window_steps.get(),
             notice_pending: state.notice.get() == NoticePhase::Pending,
             notice_announced: state.announced.get(),
+            paragraphs_unwrapped: state.unwraps.get(),
+            paragraphs_rewrapped: state.rewraps.get(),
         }
     }
 

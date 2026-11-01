@@ -12,8 +12,8 @@
 //!   local-history availability — depend on total bytes alone and describe the
 //!   latest loaded or saved bytes, exactly as the retired `FileSizeCheck` did.
 //! - **Presentation features** — syntax highlighting, bracket matching, the
-//!   minimap, invisible characters, automatic search highlighting, and the
-//!   `protected_view` flag — are the ones an editor session holds monotone:
+//!   minimap, invisible characters, automatic search highlighting, the word
+//!   wrap of the longest paragraphs, and the `protected_view` flag — are the ones an editor session holds monotone:
 //!   [`DocumentScale::join`] is their meet, so an edit or a save never turns
 //!   one back on.
 //!
@@ -70,6 +70,16 @@ pub const L_INVISIBLES: u64 = 50_000;
 /// Automatic search highlighting turns off above this paragraph length (C0
 /// idle re-confirmation: 10,000 / 15,000).
 pub const L_SEARCH_HIGHLIGHT: u64 = 10_000;
+
+/// Paragraphs longer than this are shown unwrapped (the per-paragraph wrap
+/// gate, `explore-editing-long-paragraphs`; `model::paragraph_wrap` holds the
+/// per-paragraph decision and its hysteresis). Every keystroke lays the
+/// edited paragraph out once, whole; a wrapped layout costs about twice an
+/// unwrapped one. With GNOME's input path (GTK's Wayland text-input module,
+/// the bounded surrounding text in place), a wrapped keystroke reaches
+/// B_interact near 10,000 characters on the reference lane, and this value
+/// keeps the wrapped tail inside it (design D3 records the derivation).
+pub const L_WRAP_EDIT: u64 = 8_000;
 
 /// `protected_view` holds above this paragraph length.
 ///
@@ -150,6 +160,9 @@ pub enum ScaleFeature {
     Invisibles,
     /// Automatic highlighting of search matches.
     SearchHighlight,
+    /// Word wrapping of paragraphs longer than [`L_WRAP_EDIT`] (they are
+    /// shown unwrapped; every other paragraph keeps the user's setting).
+    WordWrap,
     /// The document is marked for Protected View.
     ProtectedView,
     /// Undo history (a byte tier).
@@ -160,19 +173,20 @@ pub enum ScaleFeature {
 
 impl ScaleFeature {
     /// Every feature, presentation features first, in notice order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Syntax,
         Self::BracketMatching,
         Self::Minimap,
         Self::Invisibles,
         Self::SearchHighlight,
+        Self::WordWrap,
         Self::ProtectedView,
         Self::Undo,
         Self::LocalHistory,
     ];
 
-    const fn bit(self) -> u8 {
-        1 << (self as u8)
+    const fn bit(self) -> u16 {
+        1 << (self as u16)
     }
 
     /// Whether the session floor holds this feature monotone.
@@ -192,6 +206,7 @@ impl ScaleFeature {
             Self::Minimap => "the minimap",
             Self::Invisibles => "invisible characters",
             Self::SearchHighlight => "search highlighting",
+            Self::WordWrap => "word wrap of the longest lines",
             Self::ProtectedView => "editing",
             Self::Undo => "undo history",
             Self::LocalHistory => "automatic local history",
@@ -244,17 +259,17 @@ impl ReductionReason {
 /// The presentation features are declared first, so their bits are exactly
 /// the bits below the first byte tier's (`Undo`); the unit test
 /// `presentation_mask_is_exactly_the_presentation_features` pins that against
-/// [`ScaleFeature::is_presentation`]. (An OR of the six bits would carry five
+/// [`ScaleFeature::is_presentation`]. (An OR of the seven bits would carry six
 /// `|`/`^` mutants no test can tell apart, since the bits are disjoint.)
-const PRESENTATION_MASK: u8 = ScaleFeature::Undo.bit() - 1;
+const PRESENTATION_MASK: u16 = ScaleFeature::Undo.bit() - 1;
 
 /// Which features are reduced, and for which reasons (a feature may have
 /// several).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReducedFeatures {
-    total_size: u8,
-    long_paragraph: u8,
-    density: u8,
+    total_size: u16,
+    long_paragraph: u16,
+    density: u16,
 }
 
 impl ReducedFeatures {
@@ -290,7 +305,7 @@ impl ReducedFeatures {
         }
     }
 
-    const fn mask(self) -> u8 {
+    const fn mask(self) -> u16 {
         self.total_size | self.long_paragraph | self.density
     }
 
@@ -431,6 +446,9 @@ pub struct DocumentScale {
     pub invisibles_allowed: bool,
     /// Automatic search-match highlighting.
     pub search_highlight_allowed: bool,
+    /// Whether every paragraph follows the user's wrap setting; false once a
+    /// paragraph longer than [`L_WRAP_EDIT`] is shown unwrapped.
+    pub wrap_allowed: bool,
     /// The document is marked for Protected View (C2 consumes it).
     pub protected_view: bool,
     /// Which features are reduced, and why.
@@ -451,7 +469,7 @@ impl DocumentScale {
         use ReductionReason::{Density, LongParagraph, TotalSize};
         use ScaleFeature::{
             BracketMatching, Invisibles, LocalHistory, Minimap, ProtectedView, SearchHighlight,
-            Syntax, Undo,
+            Syntax, Undo, WordWrap,
         };
         let bytes = profile.total_bytes;
         let longest = profile.longest_paragraph_chars;
@@ -461,6 +479,7 @@ impl DocumentScale {
         let minimap_by_length = longest > L_MINIMAP;
         let invisibles_by_length = longest > L_INVISIBLES;
         let search_by_length = longest > L_SEARCH_HIGHLIGHT;
+        let wrap_by_length = longest > L_WRAP_EDIT;
         let protect_by_length = longest > L_PROTECT;
         let protect_by_density = profile.worst_batch_chars > V_BATCH;
         let undo_enabled = bytes <= UNDO_TOTAL_BYTES;
@@ -480,6 +499,7 @@ impl DocumentScale {
             .with_if(minimap_by_length, Minimap, LongParagraph)
             .with_if(invisibles_by_length, Invisibles, LongParagraph)
             .with_if(search_by_length, SearchHighlight, LongParagraph)
+            .with_if(wrap_by_length, WordWrap, LongParagraph)
             .with_if(protect_by_length, ProtectedView, LongParagraph)
             .with_if(protect_by_density, ProtectedView, Density)
             .with_if(!undo_enabled, Undo, TotalSize)
@@ -502,6 +522,7 @@ impl DocumentScale {
             minimap_allowed: !(minimap_by_size || minimap_by_length),
             invisibles_allowed: !invisibles_by_length,
             search_highlight_allowed: !search_by_length,
+            wrap_allowed: !wrap_by_length,
             protected_view: protect_by_length || protect_by_density,
             reduced,
         }
@@ -545,6 +566,7 @@ impl DocumentScale {
             invisibles_allowed: self.invisibles_allowed && other.invisibles_allowed,
             search_highlight_allowed: self.search_highlight_allowed
                 && other.search_highlight_allowed,
+            wrap_allowed: self.wrap_allowed && other.wrap_allowed,
             protected_view: self.protected_view || other.protected_view,
             // Presentation reasons from both, byte-tier reasons from `other`.
             reduced: self.reduced.presentation_only().union(other.reduced),
@@ -561,6 +583,7 @@ impl DocumentScale {
             ScaleFeature::Minimap => self.minimap_allowed,
             ScaleFeature::Invisibles => self.invisibles_allowed,
             ScaleFeature::SearchHighlight => self.search_highlight_allowed,
+            ScaleFeature::WordWrap => self.wrap_allowed,
             ScaleFeature::ProtectedView => !self.protected_view,
             ScaleFeature::Undo => self.undo_enabled,
             ScaleFeature::LocalHistory => {
@@ -655,12 +678,13 @@ mod tests {
 
     #[test]
     fn paragraph_thresholds_keep_the_feature_at_t_and_drop_it_at_t_plus_one() {
-        let cases: [(u64, ScaleFeature); 6] = [
+        let cases: [(u64, ScaleFeature); 7] = [
             (L_SYNTAX, ScaleFeature::Syntax),
             (L_SYNTAX, ScaleFeature::BracketMatching),
             (L_MINIMAP, ScaleFeature::Minimap),
             (L_INVISIBLES, ScaleFeature::Invisibles),
             (L_SEARCH_HIGHLIGHT, ScaleFeature::SearchHighlight),
+            (L_WRAP_EDIT, ScaleFeature::WordWrap),
             (L_PROTECT, ScaleFeature::ProtectedView),
         ];
         for (threshold, feature) in cases {
@@ -792,9 +816,9 @@ mod tests {
             .expect("reduced features describe themselves");
         assert_eq!(
             long,
-            "Syntax highlighting, bracket matching, the minimap and search highlighting are \
-             off because of very long lines. This document is marked for Protected View \
-             because of very long lines."
+            "Syntax highlighting, bracket matching, the minimap, search highlighting and word \
+             wrap of the longest lines are off because of very long lines. This document is \
+             marked for Protected View because of very long lines."
         );
         let huge = DocumentScale::for_total_bytes(60_000_000)
             .reduced
@@ -828,7 +852,7 @@ mod tests {
             .into_iter()
             .filter(|feature| feature.is_presentation())
             .collect();
-        assert_eq!(presentation, ScaleFeature::ALL[..6]);
+        assert_eq!(presentation, ScaleFeature::ALL[..7]);
         assert!(!ScaleFeature::Undo.is_presentation());
         assert!(!ScaleFeature::LocalHistory.is_presentation());
     }

@@ -16,13 +16,15 @@ use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use lushtext_core::config::keys;
 use lushtext_core::model::document_scale::{
-    DocumentScale, L_INVISIBLES, L_MINIMAP, L_PROTECT, L_SEARCH_HIGHLIGHT, L_SYNTAX,
+    DocumentScale, L_INVISIBLES, L_MINIMAP, L_PROTECT, L_SEARCH_HIGHLIGHT, L_SYNTAX, L_WRAP_EDIT,
     LocalHistoryAvailability, R_BATCH, ReducedFeatures, V_BATCH,
 };
 use lushtext_core::model::paragraph_boundary::DocumentProfile;
+use lushtext_core::model::paragraph_wrap::REWRAP_MARGIN;
+use lushtext_core::model::surrounding_text::SURROUNDING_WINDOW_CHARS;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::editor_page::{
-    EditorLoadState, InlineAlertLifetime, LushtextEditorPage, MinimapAvailability,
+    EditorLoadState, InlineAlertLifetime, LushtextEditorPage, MinimapAvailability, NO_WRAP_TAG,
 };
 use lushtext_core::ui::window::LushtextWindow;
 use sourceview5::prelude::*;
@@ -766,6 +768,54 @@ fn test_rapid_minimap_toggling_keeps_at_most_one_map_without_warnings() {
     assert!(logged.is_empty(), "{logged:?}");
 }
 
+/// A retired map is finalized, so it never lays out document text again
+/// (`explore-editing-long-paragraphs`, design D1). Kept alive, it stays bound
+/// to the buffer and re-lays out every edited paragraph from its validation
+/// idle: 7.5 ms per keystroke in a 50,000-character paragraph.
+#[test]
+fn test_a_map_retired_by_an_edit_is_finalized() {
+    ensure_gtk_init();
+    let _settings = enable_minimap(true);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    page.buffer().set_text("short\n");
+    wait_until(Duration::from_secs(5), || {
+        page.minimap_evidence().projection_attached
+    });
+    let weak = page
+        .minimap_source_map_widget()
+        .expect("live map")
+        .downgrade();
+    insert_at_end(&page, &"r".repeat(n(L_MINIMAP) + 1));
+    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        !page.minimap_evidence().work_pending
+    });
+    assert!(weak.upgrade().is_none(), "the retired map was kept alive");
+    assert_eq!(page.minimap_evidence().retired_maps_alive, 0);
+}
+
+/// With the minimap preference off (the default), the map construction builds
+/// is retired at once and must not survive bound to the buffer.
+#[test]
+fn test_the_map_retired_at_construction_is_finalized() {
+    ensure_gtk_init();
+    let _settings = enable_minimap(false);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    page.buffer().set_text("a paragraph to type into\n");
+    flush_events();
+    wait_until(Duration::from_secs(5), || {
+        !page.minimap_evidence().work_pending
+    });
+    let evidence = page.minimap_evidence();
+    assert!(!evidence.map_present);
+    assert_eq!(
+        evidence.retired_maps_alive, 0,
+        "a retired map is still alive"
+    );
+}
+
 #[test]
 fn test_load_suspension_retires_and_rebuilds_the_map() {
     ensure_gtk_init();
@@ -845,8 +895,211 @@ fn test_rebuilt_map_matches_a_constructed_map() {
         .as_ref()
         .expect("render hold")
         .live_child()
-        .clone();
+        .expect("the hold sees the live map");
     assert_eq!(live_child, rebuilt.upcast::<gtk4::Widget>());
+}
+
+// ─── 8b. The per-paragraph wrap gate ────────────────────────────────────
+//
+// `explore-editing-long-paragraphs` (design D3): paragraphs longer than
+// `L_WRAP_EDIT` are shown unwrapped by a no-wrap tag, which GTK reads from their first character (ledger
+// A53); every other paragraph keeps the user's wrap setting.
+
+/// Whether GTK line `line`'s first character carries the no-wrap tag.
+fn paragraph_unwrapped(page: &LushtextEditorPage, line: i32) -> bool {
+    let buffer = page.buffer();
+    let Some(tag) = buffer.tag_table().lookup(NO_WRAP_TAG) else {
+        return false;
+    };
+    buffer
+        .iter_at_line(line)
+        .is_some_and(|start| start.has_tag(&tag))
+}
+
+#[test]
+fn test_only_the_long_paragraph_is_unwrapped() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    page.buffer().set_text(&format!(
+        "short above\n{}\nshort below\n",
+        "w ".repeat(n(L_WRAP_EDIT) / 2 + 1)
+    ));
+    assert!(!paragraph_unwrapped(&page, 0));
+    assert!(
+        paragraph_unwrapped(&page, 1),
+        "the long paragraph is unwrapped"
+    );
+    assert!(!paragraph_unwrapped(&page, 2));
+    assert_eq!(page.source_view().wrap_mode(), gtk4::WrapMode::Word);
+    assert!(
+        lushtext_core::ui::settings_writes::shared().boolean(keys::WORD_WRAP),
+        "the word-wrap preference is never written"
+    );
+    assert!(!page.document_scale().wrap_allowed);
+    assert_eq!(page.document_scale_evidence().paragraphs_unwrapped, 1);
+}
+
+#[test]
+fn test_typing_past_the_threshold_unwraps_in_the_same_emission() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    page.buffer().set_text(&"p".repeat(n(L_WRAP_EDIT)));
+    assert!(!paragraph_unwrapped(&page, 0), "at the threshold it wraps");
+    let observed = Rc::new(Cell::new(None));
+    let observer = Rc::clone(&observed);
+    let page_weak = page.downgrade();
+    // Connected after the gate's handler, so it sees the state GTK's commit
+    // handler will lay out once the emission returns.
+    let handler = page.buffer().connect_local("insert-text", true, move |_| {
+        if let Some(page) = page_weak.upgrade() {
+            observer.set(Some(paragraph_unwrapped(&page, 0)));
+        }
+        None
+    });
+    insert_at_end(&page, "q");
+    page.buffer().disconnect(handler);
+    assert_eq!(observed.get(), Some(true));
+}
+
+#[test]
+fn test_typing_before_the_first_character_keeps_the_paragraph_unwrapped() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    page.buffer().set_text(&"p".repeat(n(L_WRAP_EDIT) + 10));
+    assert!(paragraph_unwrapped(&page, 0));
+    insert_at_offset(&page, 0, "x");
+    assert!(
+        paragraph_unwrapped(&page, 0),
+        "the new first character is re-tagged"
+    );
+    delete_range(&page, 0, 2);
+    assert!(
+        paragraph_unwrapped(&page, 0),
+        "deleting the first characters re-tags too"
+    );
+}
+
+#[test]
+fn test_a_paragraph_rewraps_only_below_the_margin() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    let long = n(L_WRAP_EDIT) + 1;
+    page.buffer().set_text(&"p".repeat(long));
+    assert!(paragraph_unwrapped(&page, 0));
+    let margin = n(REWRAP_MARGIN);
+    // Within the hysteresis band it stays unwrapped.
+    let into_band = i32::try_from(long - (n(L_WRAP_EDIT) - margin + 1)).expect("fits");
+    delete_range(&page, 0, into_band);
+    assert!(
+        paragraph_unwrapped(&page, 0),
+        "inside the band it keeps its state"
+    );
+    // Typing before the first character inside the band keeps it too: the
+    // inserted text is untagged (A25), but the paragraph still carries the tag.
+    insert_at_offset(&page, 0, "x");
+    assert!(
+        paragraph_unwrapped(&page, 0),
+        "typing at its start keeps the state"
+    );
+    delete_range(&page, 0, 1);
+    assert!(
+        paragraph_unwrapped(&page, 0),
+        "deleting its first character keeps the state"
+    );
+    delete_range(&page, 0, 1);
+    assert!(
+        !paragraph_unwrapped(&page, 0),
+        "at the margin it wraps again"
+    );
+    let evidence = page.document_scale_evidence();
+    assert_eq!(
+        (evidence.paragraphs_unwrapped, evidence.paragraphs_rewrapped),
+        (1, 1)
+    );
+}
+
+#[test]
+fn test_undo_re_inserting_a_long_paragraph_unwraps_it() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    let buffer = page.buffer();
+    buffer.begin_irreversible_action();
+    buffer.set_text("");
+    buffer.end_irreversible_action();
+    insert_at_end(&page, &"p".repeat(n(L_WRAP_EDIT) + 1));
+    assert!(paragraph_unwrapped(&page, 0));
+    let (mut start, mut end) = buffer.bounds();
+    buffer.delete(&mut start, &mut end);
+    buffer.undo();
+    assert_eq!(
+        buffer.char_count(),
+        i32::try_from(n(L_WRAP_EDIT) + 1).expect("fits")
+    );
+    assert!(
+        paragraph_unwrapped(&page, 0),
+        "undo re-inserts untagged text, re-tagged"
+    );
+}
+
+#[test]
+fn test_splitting_and_joining_a_long_paragraph_tags_each_part() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    let half = n(L_WRAP_EDIT);
+    page.buffer().set_text(&"p".repeat(2 * half + 2));
+    assert!(paragraph_unwrapped(&page, 0));
+    insert_at_offset(&page, i32::try_from(half + 1).expect("fits"), "\n");
+    assert!(
+        paragraph_unwrapped(&page, 0) && paragraph_unwrapped(&page, 1),
+        "both halves are long"
+    );
+    let at = i32::try_from(half + 1).expect("fits");
+    delete_range(&page, at, at + 1);
+    assert!(
+        paragraph_unwrapped(&page, 0),
+        "the joined paragraph stays unwrapped"
+    );
+}
+
+/// The input method's surrounding text is a bounded window around the cursor,
+/// whatever the paragraph length (design D6, ledger A54): GTK's own answer
+/// walks the whole paragraph's word boundaries on every keystroke.
+#[test]
+fn test_surrounding_text_is_a_bounded_window_around_the_cursor() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    let buffer = page.buffer();
+    buffer.set_text(&format!("short line\n{}\nafter\n", "w".repeat(50_000)));
+    let middle = buffer
+        .iter_at_line_offset(1, 25_000)
+        .expect("paragraph middle");
+    buffer.place_cursor(&middle);
+    let view: gtk4::TextView = page.source_view().clone().upcast();
+    let controllers = view.observe_controllers();
+    let im = (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index))
+        .filter_map(|item| item.downcast::<gtk4::EventControllerKey>().ok())
+        .find_map(|key| key.im_context())
+        .expect("the view's input-method context");
+    let (text, cursor, anchor) = im.surrounding_with_selection().expect("the editor answers");
+    let window = usize::try_from(SURROUNDING_WINDOW_CHARS).expect("fits");
+    assert_eq!(text.chars().count(), 2 * window);
+    assert_eq!(
+        (cursor, anchor),
+        (SURROUNDING_WINDOW_CHARS, SURROUNDING_WINDOW_CHARS)
+    );
+    // At the paragraph start the window does not cross into the line above.
+    let start = buffer.iter_at_line(1).expect("paragraph start");
+    buffer.place_cursor(&start);
+    let (text, cursor, _) = im.surrounding_with_selection().expect("answer");
+    assert_eq!((text.chars().count(), cursor), (window, 0));
 }
 
 // ─── 9. The reduced-features notice ─────────────────────────────────────

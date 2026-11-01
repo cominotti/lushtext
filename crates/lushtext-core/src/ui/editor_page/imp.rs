@@ -377,6 +377,12 @@ pub struct MinimapState {
     /// Native maps built for this tab (construction plus every rebuild after
     /// a retirement); evidence that a retirement rebuilt rather than re-bound.
     pub maps_built: Cell<u64>,
+    /// Weak references to the maps this tab retired that are still alive,
+    /// pruned at each retirement. A retired map must be finalized: one kept
+    /// alive stays bound to the document buffer and re-lays out every edited
+    /// paragraph from its validation idle. Evidence only; never upgraded to
+    /// act on a map.
+    pub retired_maps: RefCell<Vec<glib::WeakRef<sourceview5::Map>>>,
     /// Narrow drawing layer that paints semantic markers over the map edge.
     pub marker_strip: RefCell<Option<gtk4::DrawingArea>>,
     /// Last computed render model for the semantic marker strip.
@@ -1018,6 +1024,8 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().setup_focus_mode_presentation();
         self.obj().setup_frame_validation();
         self.obj().setup_document_scale_watch();
+        self.obj().setup_paragraph_wrap();
+        self.obj().setup_bounded_surrounding_text();
         self.obj().apply_invisible_characters_mode();
         self.obj().refresh_accessibility_metadata();
     }

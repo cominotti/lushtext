@@ -131,6 +131,9 @@ FLAVORS = {
     "css": ("<style>", MINIFIED_CLASS_WEIGHTS),
     "script": ("<script>", SCRIPT_CLASS_WEIGHTS),
     "markup": ("<div>", MARKUP_CLASS_WEIGHTS),
+    # Prose (the keystroke group): lowercase words, spaces and sentence
+    # punctuation, no markup.
+    "prose": ("", (("etaoinshrdlucmfwypvbgk", 0.80), (" ", 0.17), (",.", 0.03))),
 }
 MULTIBYTE_CLASS_WEIGHTS = (
     ("abcdefghijklmnoprstuvwxy", 0.40),
@@ -142,7 +145,7 @@ MULTIBYTE_CLASS_WEIGHTS = (
 SHORT_HTML_TAGS = ("div", "span", "p", "li", "a", "td", "section", "em")
 
 DELIMITERS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "u2029": " "}
-KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction")
+KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "keystroke")
 CHUNK_CHARS = 16 * 1024
 CHUNK_COUNT = 48
 TABLE_SIZE = 4096
@@ -341,6 +344,55 @@ def write_paragraph_document(path: Path, delimiter: str, seed: int, length: int,
     return writer.close()
 
 
+# The keystroke fixture (the lane's keystroke group, `explore-editing-long-
+# paragraphs`): one paragraph of exactly `length` characters between short
+# lines, with a unique marker at its start, middle and end, and a short
+# paragraph right after it that starts with its own marker, so the driver
+# places the caret by finding a marker. The short paragraph is where typing
+# must be unaffected by anything a long paragraph turns off.
+KEYSTROKE_MARKERS = {"start": "zqzkstartzqz", "middle": "zqzkmiddlezqz", "end": "zqzkendzqz", "short": "zqzkshortzqz"}
+KEYSTROKE_SHORT_PARAGRAPH_CHARS = 40
+KEYSTROKE_SHORT_LINES = 30
+
+
+def write_keystroke_document(path: Path, delimiter: str, seed: int, length: int, charset: str, flavor: str = "css") -> dict:
+    rng = SplitMix64(seed)
+    chunks = make_chunks(rng, charset, flavor)
+
+    def fill(writer: FixtureWriter, count: int) -> None:
+        while count > 0:
+            piece = chunks[rng.below(len(chunks))][:count]
+            writer.text(piece)
+            count -= len(piece)
+
+    def short_lines(writer: FixtureWriter) -> None:
+        for _ in range(KEYSTROKE_SHORT_LINES):
+            fill(writer, 30 + rng.below(50))
+            writer.end_paragraph()
+
+    start, middle, end = (KEYSTROKE_MARKERS[k] for k in ("start", "middle", "end"))
+    if length < len(start) + len(middle) + len(end) + 2:
+        raise ValueError("keystroke paragraph too short for its markers")
+    writer = FixtureWriter(path, delimiter)
+    short_lines(writer)
+    opener = FLAVORS[flavor][0]
+    if opener:
+        writer.text(opener)
+        writer.end_paragraph()
+    half = length // 2
+    writer.text(start)
+    fill(writer, half - len(start))
+    writer.text(middle)
+    fill(writer, length - half - len(middle) - len(end))
+    writer.text(end)
+    writer.end_paragraph()
+    writer.text(KEYSTROKE_MARKERS["short"])
+    fill(writer, KEYSTROKE_SHORT_PARAGRAPH_CHARS)
+    writer.end_paragraph()
+    short_lines(writer)
+    return writer.close()
+
+
 def write_minified_html(path: Path, delimiter: str, seed: int, longest: int) -> dict:
     rng = SplitMix64(seed)
     chunks = make_chunks(rng, "ascii")
@@ -447,6 +499,8 @@ def generate(
     files: list[dict] = []
     if kind == "paragraph":
         files.append(write_paragraph_document(out_dir / f"{stem}.{ext}", separator, seed, size, charset, flavor))
+    elif kind == "keystroke":
+        files.append(write_keystroke_document(out_dir / f"{stem}.{ext}", separator, seed, size, charset, flavor))
     elif kind == "minified-html":
         files.append(write_minified_html(out_dir / f"{stem}.html", separator, seed, size))
     elif kind == "dense":
@@ -503,6 +557,17 @@ def self_test() -> int:
             body = Path(flavored["files"][0]["path"]).read_text(encoding="utf-8")
             expect(body.startswith(opener) and flavored["files"][0]["longest_paragraph"] == 9_000, f"{flavor} flavour opener and length")
             expect(flavored["files"][0]["sha256"] != first["files"][0]["sha256"], f"{flavor} flavour differs from css")
+        for flavor, ext in (("prose", "txt"), ("css", "html")):
+            keyed = generate("keystroke", 5_000, 11, scope, scope / f"k-{flavor}", ext=ext, flavor=flavor)
+            lines = Path(keyed["files"][0]["path"]).read_text(encoding="utf-8").split("\n")
+            long_index = next((i for i, line in enumerate(lines) if line.startswith(KEYSTROKE_MARKERS["start"])), None)
+            expect(long_index is not None, f"keystroke {flavor}: the long paragraph starts with its marker")
+            if long_index is not None:
+                long_line = lines[long_index]
+                expect(len(long_line) == 5_000 and keyed["files"][0]["longest_paragraph"] == 5_000, f"keystroke {flavor}: exact paragraph length")
+                expect(long_line.count(KEYSTROKE_MARKERS["middle"]) == 1 and long_line.endswith(KEYSTROKE_MARKERS["end"]), f"keystroke {flavor}: middle and end markers")
+                short = lines[long_index + 1]
+                expect(short.startswith(KEYSTROKE_MARKERS["short"]) and len(short) == len(KEYSTROKE_MARKERS["short"]) + KEYSTROKE_SHORT_PARAGRAPH_CHARS, f"keystroke {flavor}: the short paragraph follows")
         multibyte = generate("paragraph", 20_000, 3, scope, scope / "m", charset="multibyte")
         mb = multibyte["files"][0]
         expect(mb["longest_paragraph"] == 20_000 and mb["bytes"] > mb["chars"], "multibyte: chars < bytes")

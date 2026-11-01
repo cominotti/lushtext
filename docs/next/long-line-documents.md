@@ -23,7 +23,7 @@ that freezes it is **paragraph length**, not file size.
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
 | C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). **Corrected 2026-10-29 (C4c):** its first-frame figure was an unseen frame on the unmapped window (A51); the real first frame was ≈ 46 ms from the request, no earlier than before C4b, and the honest fill-in 29–39 ms. |
 | C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Met (interleaved verdict 2026-10-29):** largest dispatch 13.2 ms, fill-in 20.4–25.9 ms (median 21.4), first painted frame 30.0–33.2 ms against `main`'s 45.1–47.9 ms ("C4c" below). |
-| C5 | `explore-editing-long-paragraphs` (rescoped 2026-10-30 under the hybrid policy) | Lower the per-keystroke cost of typing in long **editable** paragraphs: release the retired `GtkSourceMap` that still lays out every edited paragraph (a pre-existing defect: 7.5 ms per key at 50k), gate word wrap above a lane-derived `L_wrap_edit`, make the keystroke sweep a maintained lane group, and record the floor (one whole-paragraph Pango layout in GTK's commit handler; whole-paragraph log attributes per surrounding-text IM request). Editing above `L_protect` is deferred. Evidence and candidate ranking in the change's design. | Maintainer decisions on the wrap gate (design Open Questions 1–4); then typing within B_interact up to `L_wrap_edit` wrapped and to about 50,000 unwrapped with plain input, the rest a recorded toolkit-floor exception. |
+| C5 | `explore-editing-long-paragraphs` (rescoped 2026-10-30 under the hybrid policy; implemented 2026-10-31) | Lower the per-keystroke cost of typing in long **editable** paragraphs: release the retired `GtkSourceMap` that still laid out every edited paragraph (a pre-existing defect: 7.5 ms per key at 50k; A52), show paragraphs longer than `L_wrap_edit` (8,000) unwrapped by a no-wrap tag (its first character decides, A53) while the rest keep wrapping, answer the input method's surrounding-text request with a bounded window (GNOME's input path asked for the whole paragraph's word boundaries on every key; A54), make the keystroke sweep a maintained lane group, and record the floor (one whole-paragraph Pango layout in GTK's commit handler). Editing above `L_protect` is deferred. | Typing within B_interact up to `L_wrap_edit` wrapped and further unwrapped, on the plain and GNOME input paths, the rest a recorded toolkit-floor exception. **Met up to 20,000 characters** on both paths (`main`: about 12,000 plain, 5,000 on GNOME's path); 50,000 at the budget (7.7–11.1 ms) and 100,000 at 16–20 ms are the recorded exception ("C5" below). |
 | C6 | `bound-post-open-settle` (candidate, recorded by C0's budget verdict) | Bound the first main-loop turns after load readiness: the small-document post-open stall, the HTML first-highlight stall, the first overlay-indicator frame | The baseline fits B_settle and 2 reference frames on an idle reference run. Does not block C1–C4. |
 
 C1–C4 are drafted; none may be **implemented** before this record holds the
@@ -1027,6 +1027,130 @@ costs while typing inside one (A26 log attrs, about 95 ms per keystroke on the
 1.9M-character line). C1 does not claim them; C2 (`long-line-protected-view`)
 removes them by making such documents view-only.
 
+## C5 `explore-editing-long-paragraphs` (2026-10-31)
+
+**Posture: implemented; verdict 2026-10-31 below.** Under the hybrid policy
+(paragraphs up to `L_protect` stay editable; what misses B_interact there is a
+recorded toolkit-floor exception), C5 lowers the per-keystroke cost of typing
+in a long paragraph. Its design records the profile and every candidate
+measured; in short, a keystroke in a 50,000-character prose paragraph cost:
+
+- **one whole-paragraph Pango layout**, built inside the key press by GTK's
+  commit handler (`gtk_text_view_commit_text` → `set_virtual_cursor_pos` →
+  `create_display`) and reused by validation and paint: 16.5 ms wrapped,
+  7.6 ms unwrapped. The floor of a stock `GtkTextView`;
+- **a second, unwrapped layout of the same paragraph, 7.5 ms, from a retired
+  `GtkSourceMap` kept alive** by the minimap's reflow freeze
+  (`RenderHoldOverlay` held its live child strongly), in every editor with the
+  minimap off, the default. A pre-existing defect (A52);
+- **on GNOME's input path, about five whole-paragraph word-boundary passes**
+  (2.6 ms each): GTK's Wayland text-input module asks for the surrounding text
+  on every committed character, and the view's answer walks the paragraph from
+  its start (A54). Measured with the lane's `wayland` variant (GTK's Wayland
+  module against the headless compositor; a measurement-only variant, because
+  the maintained lane sets the input method explicitly, S7B-6);
+- under 1 ms of LushText's own work.
+
+The change: the retired map is released (`RenderHoldOverlay` refers to its
+child weakly; `MinimapEvidence::retired_maps_alive`), the input method gets a
+bounded surrounding-text window (1,000 characters each side, within the
+paragraph; the view's handler is blocked by its data), a paragraph longer than
+`L_wrap_edit` = 8,000 characters is shown unwrapped by a no-wrap tag that GTK
+reads from its first character (A53; hysteresis `REWRAP_MARGIN` = 1,000; the
+tag covers the whole paragraph so the state survives an edit before its first
+character), and the keystroke sweep is a maintained lane group with per-key
+worst and summed stalls.
+
+### Verdict (2026-10-31)
+
+Reference lane, release responsiveness builds, prose keystroke fixtures (one
+paragraph of the given length between 30 short lines), wrap preference on,
+ten keys at each position 150 ms apart, three repetitions: the change's build
+(before the whole-paragraph tag fix below)
+against a baseline that behaves as `main` 10cad94a. Each run held the
+exclusive measurement lock; load averages inside the lock 0.8–1.3 (one run
+3.3), no other heavy process. Worst = median over keys of the worst stall in
+each key's window; ranges are over start, middle and end; "short" types in a
+40-character paragraph right after the long one (milliseconds):
+
+| Length | Plain worst, before → after | Plain short | GNOME path worst, before → after | GNOME path short |
+|---|---|---|---|---|
+| 5,000 (wraps) | 5.0–5.3 → 5.0–5.7 | 0.7 → 0.0 | 6.3–7.0 → 5.3–5.4 | 2.5 → 1.4 |
+| 8,000 | 5.7–6.8 → 1.1–4.1 | 1.1 → 1.7 | 8.2–9.1 → 0.5–4.3 | 3.8 → 1.6 |
+| 10,000 | 6.9–7.3 → 0.0–3.7 | 0.5 → 2.3 | 9.2–10.4 → 1.3–4.6 | 3.8 → 1.7 |
+| 12,000 | 7.6–7.9 → 1.3–5.1 | 1.3 → 2.0 | 10.3–11.1 → 1.3–4.9 | 5.1 → 1.9 |
+| 20,000 | 8.6–10.6 → 2.3–7.2 | 1.9 → 2.1 | 14.6–15.4 → 2.5–6.6 | 6.0 → 1.8 |
+| 50,000 | 20.7–21.2 → 8.0–11.1 | 2.4 → 1.9 | 32.4–36.7 → 7.7–10.5 | 9.5 → 2.1 |
+| 100,000 | 43.7–44.6 → 16.6–19.6 | 4.5 → 2.0 | 68.6–78.0 → 15.8–18.9 | 16.7 → 2.2 |
+
+(The 8,000 fixture crosses `L_wrap_edit` at the first key typed into it, so it
+is measured unwrapped.) The widget suite then found that a tag on the first
+character alone forgot the hysteresis state when that character was deleted
+or text was typed before it; the tag now covers the whole paragraph. A
+confirmation run of the fixed build (plain, three repetitions, load 0.8) gave
+the same figures: 8,000 at 1.1–4.1 ms (p90 at most 5.6, the crossing key
+included), 50,000 at 8.0–10.4 ms. The p90 of the worst stall after the change stays under
+B_interact up to 12,000 on both paths (at most 7.3 ms plain, 6.9 ms GNOME
+path) and is 7.5–9.2 ms at 20,000.
+
+- **B_interact (8 ms) is met** at the median for every position up to 20,000
+  characters on both input paths, where `main` met it only up to about 12,000
+  (plain) and 5,000 (GNOME path). On the GNOME path the change is worth 2–4×
+  from 8,000 up, and typing in a short paragraph next to a long one, which
+  `main` slowed with the long paragraph (9.5 ms at 50,000, because the
+  surrounding text crossed into it), no longer depends on it.
+- **50,000**: 7.7–8.1 ms at the middle and end, 10.5–11.1 ms at the start
+  (p90 12.6–14.3): at the budget, not under it. **100,000**: 16–20 ms. Both are
+  the recorded exception below.
+- **`L_wrap_edit` = 8,000 is confirmed.** With bounded surrounding text a
+  wrapped keystroke at 10,000 cost 6.9–7.5 ms (p90 8.5–8.8) on the GNOME path
+  (clean run `wlb`), so 8,000 keeps the wrapped range inside the budget with a
+  margin; wrapped 5,000 costs 5.0–5.7 ms.
+- **Summed stall.** Typing at the right edge of an unwrapped paragraph (middle
+  and end positions) adds about 2 ms per frame for the ~150 ms after each key:
+  GtkTextView scrolls horizontally with `gtk_adjustment_animate_to_value`, and
+  every animation frame runs `update_im_spot_location` → caret position and
+  paints the caret, two Pango caret queries that walk the line's runs up to the
+  caret (about 1 ms each at the end of a 50,000-character line; profiled with
+  backtraces, run `endprof`). No single dispatch is over B_interact from it,
+  but the summed stall per key at the end of 50,000 / 100,000 rises from
+  27 / 60 ms to 32 / 73 ms on the plain path (on the GNOME path it still falls,
+  39 / 86 → 35 / 66 ms). Wrapped paragraphs do not scroll horizontally.
+
+### The toolkit-floor exception (C5)
+
+What remains over B_interact in an editable paragraph is GTK's:
+
+1. **The commit-handler layout.** Every keystroke lays the edited paragraph out
+   once, whole, inside the key press. Unwrapped, that crosses 8 ms at about
+   50,000 characters (start position first) and reaches 16–20 ms at 100,000.
+   No public API bounds it.
+2. **Caret queries on one long line.** `pango_layout_get_cursor_pos` and
+   `get_caret_pos` cost in proportion to the caret's offset in an unwrapped
+   line, and GtkTextView asks on every frame of its horizontal scroll
+   animation (IM spot location and caret paint): ~2 ms per frame at the end of
+   50,000 characters, ~4 ms at 100,000.
+
+Upstream reports to file (GTK): (1) the commit handler's synchronous
+whole-paragraph layout (`set_virtual_cursor_pos` builds the line display in
+the key press); (2) `gtk_text_view_value_changed` updating the IM spot
+location on every frame of an animated scroll; (3) the text view's
+`retrieve-surrounding` answer walking the whole paragraph's word boundaries
+(LushText now bounds it itself, A54). Not yet filed; filing them is the
+maintainer's call.
+
+**Re-open triggers:** a GTK or Pango release that makes the commit handler's
+layout incremental or bounded, or that changes A52–A54 (the axiom lane
+fails); the maintainer requiring wrapped 50,000-character paragraphs within
+budget (then display-only soft segmentation, design D4, is next); or editing
+above `L_protect` being requested (deferred: in-buffer segmentation, a custom
+virtualized widget, windowed edit-through).
+
+**Contaminated runs.** Until 2026-10-31 03:00 a busy-waiting helper of this
+change's own scripts ran beside the measurement lock; the design's profile and
+the first candidate pairs date from then and are comparative only. Every figure
+in this section comes from runs after it was removed.
+
 ## Axioms each change cites
 
 | Change | Axioms |
@@ -1037,6 +1161,7 @@ removes them by making such documents view-only.
 | C4 `bound-window-construction-dispatch` | A38 (keyfile write per `set_*` on the calling thread), A39 (`delay`/`apply` coalescing), A40 (no backend lock; a second backend stays stale), A41 (`changed` timing) |
 | C4c `shorten-window-content-fill-in` | A51 (a realize frame runs on the unmapped window, is never presented, and paces the first visible frame one `FRAME_INTERVAL` later), A46–A50 unchanged |
 | C4b `first-frame-window-shell` | A46 (one-time first realize; small in a minimal window), A47 (`present` measures nothing; invisible subtrees skipped), A48 (a reveal is measured in the next frame), A49 (concealed vertical revealers measure a visible child), A50 (breakpoint before map vs the snapshot swap), A21 (`window-removed` teardown) |
+| C5 `explore-editing-long-paragraphs` | A23–A28, A30, A32, A37, A42, A43, A45; added by C5: A52 (an unparented, alive text view keeps laying out its buffer), A53 (a paragraph wraps by its first character's tags), A54 (the view answers surrounding text from the paragraph start; its handler matched by signal and data; the Wayland module asks on every commit) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 
 Two probes corrected the designs that cite them, and C1/C2 must read the

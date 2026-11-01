@@ -827,6 +827,51 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a51),
     },
+    Axiom {
+        id: AxiomId::new(52),
+        name: "a52_an_unparented_text_view_keeps_laying_out_its_buffer",
+        statement: "a GtkTextView unparented (and so unrealized) but still alive stays attached \
+                    to its buffer and re-lays out the paragraphs an edit invalidates, from its \
+                    own idle; dropping its last reference finalizes it and logs nothing",
+        dependent_designs: &[
+            "explore-editing-long-paragraphs (C5, D1): a retired GtkSourceMap must be \
+             finalized; the minimap's reflow freeze (gtk-lush-widgets RenderHoldOverlay) \
+             therefore refers to its live child weakly",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a52),
+    },
+    Axiom {
+        id: AxiomId::new(53),
+        name: "a53_a_paragraph_wraps_by_its_first_character",
+        statement: "a paragraph's wrap mode is taken from the tags on its first character: a \
+                    wrap-mode-none tag on that character unwraps the whole paragraph in a \
+                    word-wrapping view while its neighbour keeps wrapping, and text inserted \
+                    before that character is untagged (A25), so the paragraph wraps again until \
+                    re-tagged",
+        dependent_designs: &[
+            "explore-editing-long-paragraphs (C5, D3): paragraphs longer than L_wrap_edit are \
+             unwrapped by a no-wrap tag read from their first character, re-applied in the same insert-text \
+             and delete-range emission",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a53),
+    },
+    Axiom {
+        id: AxiomId::new(54),
+        name: "a54_the_view_answers_surrounding_text_from_the_paragraph_start",
+        statement: "a GtkTextView answers its input method's retrieve-surrounding with text from \
+                    the cursor paragraph's start (walking word boundaries, A26); its handler, on \
+                    the input-method context its key controller exposes, stops the emission, so \
+                    a handler connected later is never called",
+        dependent_designs: &[
+            "explore-editing-long-paragraphs (C5, D6): the editor blocks the view's handler and \
+             answers with a bounded window, because GNOME's text-input path asks on every \
+             keystroke",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a54),
+    },
 ];
 
 #[cfg(test)]

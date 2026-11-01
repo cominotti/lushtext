@@ -18,9 +18,9 @@ asks for the surrounding text at every point an IBus engine does) adds
 
 ### Evidence
 
-All numbers below come from release measurement builds of `main` at 0439d4c4
-plus measurement-only instrumentation (kept outside the repository with the
-raw runs), on the reference lane: private `mutter --headless`
+All numbers below come from release measurement builds of `main` (0439d4c4,
+then 10cad94a) plus measurement-only instrumentation and environment knobs
+(kept outside the repository with the raw runs), on the reference lane: private `mutter --headless`
 1280×800@120, `GSK_RENDERER=cairo`, Adwaita Mono 11 (14.667 px), CPUs 8–23,
 caret blink off, synthetic `prose` keystroke fixtures (one paragraph of the
 swept length between 30 short lines, keys at its start, middle and end, ten
@@ -28,6 +28,14 @@ keys per position, 150 ms apart). Each measurement run held the exclusive
 measurement lock (`scripts/measure.sh`), one run per hold; load average and
 the top processes were recorded before and after every run and other agents'
 work ran beside some of them, so differences under about 1 ms are noise.
+
+**Contamination.** Until 2026-10-31 03:00 a helper of this change's own
+measurement scripts busy-waited on one CPU outside the lane's pinned set while
+runs held the lock. The profile, the baseline/released-map pairs and the first
+per-paragraph and view-wide runs date from then: they are comparative (both
+sides of each pair ran under it), not absolute. Every run labelled **clean**
+below ran after the helper was removed, at a host load average of 1–2 except
+where stated.
 
 **Profile** (per-frame `frame_layout`/`frame_paint` spans, key-press stamps,
 and an `LD_PRELOAD` shim timing every Pango entry point GTK calls, with
@@ -50,9 +58,23 @@ the validation priorities: a `GtkSourceMap` with no parent, reference count 1
 after LushText dropped its own, queued by `_gtk_text_btree_invalidate_region`
 from the insertion. With the minimap preference off (the default), every
 editor carries one: the map built at construction is retired immediately but
-stays bound. A measurement build that also calls `set_buffer(None)` on the
-retired, already unrealized map removed it (one layout per key remained,
-no CRITICAL, no warning).
+stays bound. The reference that kept it alive was LushText's: the reflow
+freeze, `gtk-lush-widgets`' `RenderHoldOverlay`, held its live child (the map)
+strongly after the map was unparented. A measurement build that also calls
+`set_buffer(None)` on the retired map removed the second layout (one layout
+per key remained, no CRITICAL, no warning).
+
+**GNOME's input path.** On GNOME, GTK 4 receives keys through the Wayland
+text-input protocol (GTK's `wayland` IM module, IBus behind the compositor).
+Its `commit` class handler calls `notify_im_change`, which emits
+`retrieve-surrounding` on every committed character, and GtkTextView's
+handler computes the cursor paragraph's word boundaries from its start: about
+five `compute_log_attrs` passes per keystroke, 2.6 ms each at 50k (ledger
+A54). The lane's `wayland` variant runs that module against the headless
+compositor. Clean runs (minimap released, wrap on for the whole view, worst
+median, ms): 5k 6.4–7.6, 10k 9.6–10.1, 20k 14.4–16.5, 50k 32.6–37.5. Every
+GNOME user pays this, so the input-method floor, not the layout floor, bounds
+most users.
 
 **Isolated Pango benchmark** (same font, the lane's wrap width, a prose
 paragraph, median of 9 `set_text` + `get_extents`, one CPU, under the
@@ -77,10 +99,11 @@ Pango property of the paragraph, not LushText's or GTK's surrounding work.
 ## Goals / Non-Goals
 
 **Goals:**
-- Remove every per-keystroke paragraph layout that is not needed to draw the
-  edited paragraph once.
+- Remove every per-keystroke paragraph layout and paragraph-length walk that is
+  not needed to draw the edited paragraph once.
 - Bring typing in long editable paragraphs within B_interact where the
-  toolkit allows, and say exactly where it does not.
+  toolkit allows, on GNOME's input path as well as the plain one, and say
+  exactly where it does not.
 - Make the measurement a maintained lane group, so thresholds are derived,
   not asserted.
 
@@ -95,38 +118,37 @@ Pango property of the paragraph, not LushText's or GTK's surrounding work.
 
 ## Decisions
 
-### D1. Release the retired minimap's buffer, and find what keeps it alive
+### D1. Release the retired minimap
 
 `retire_native_source_map` unparents the map and drops LushText's reference
-(ledger A45: unparenting unrealizes it, so no update tick runs), but the map
-survives with one reference and its `GtkTextView` stays attached to the
-document buffer through GtkSourceMap's `view` → `buffer` binding, so it
-re-lays out every edited paragraph unwrapped from an idle. The fix:
+(ledger A45: unparenting unrealizes it, so no update tick runs). The map
+nevertheless survived: the reflow freeze (`RenderHoldOverlay`, which covers
+the map while a reflow settles) kept a strong reference to its live child. An
+unparented but alive text view stays attached to its buffer and re-lays out
+the paragraphs an edit invalidates from its own validation idle (ledger A52),
+so every editor with the minimap off, the default, laid every edited
+paragraph out a second time.
 
-1. Identify the surviving reference (a signal closure, a binding, a render-hold
-   reference or a toolkit-internal one) with a failing-first widget test that
-   holds a weak reference to the retired map and asserts it is gone after
-   retirement and one main-loop drain.
-2. Remove it where it is LushText's. Whether or not the map is finalized, the
-   retirement also detaches the retired map from the document: after
-   unparenting (unrealized, A45), clear the map's buffer. The measurement build
-   did this with `set_buffer(None)` on the map and saw no CRITICAL; the
-   implementation pins the exact call by a GTK axiom probe (D5) before relying
-   on it, because A32 shows that clearing a live map's `view` with a pending
-   tick is not safe.
-3. Evidence: the minimap evidence surface counts retired maps still bound to
-   a buffer (expected 0); the lane's keystroke group would show the second
-   dispatch again if it regressed.
+The fix: `RenderHoldOverlay` refers to its live child weakly (`live_child()`
+returns `Option`), so a retired map is finalized, which detaches it from the
+buffer. No `set_buffer(None)` and no `set_view(None)` (A32) is needed. The
+minimap evidence counts retired maps still alive (`retired_maps_alive`,
+expected 0, from weak references the retirement records). Two widget tests
+(retired at construction, retired by an edit) were confirmed failing with a
+temporary strong reference before the fix.
 
-*Alternatives:* keep the map but `set_view(None)` (rejected: A32); never build
-a map while the preference is off (worth doing, but it does not fix maps
-retired by an edit-time downgrade, so it is not sufficient alone).
+*Alternatives:* `set_buffer(None)` on the retired map (works, but leaves a
+leaked widget per retirement); never build a map while the preference is off
+(saves construction work, does not cover maps retired by an edit-time
+downgrade; not needed once retirement finalizes the map).
 
 ### D2. Candidate measurements and ranking
 
-Lane, `prose`, plain variant unless stated, 90 keystrokes per cell; "worst" is
-the median over keys of the worst stall in the key's window, "summed" the
-median over keys of the summed stall time.
+Lane, `prose`, plain variant unless stated, keystrokes at start, middle and
+end; "worst" is the median over keys of the worst stall in the key's window,
+"summed" the median over keys of the summed stall time (milliseconds).
+
+**Contaminated, comparative only** (both sides under the busy helper):
 
 | Candidate | 10k on | 20k on | 50k on | 100k on | 10k off | 20k off | 50k off | 100k off |
 |---|---|---|---|---|---|---|---|---|
@@ -139,61 +161,97 @@ median over keys of the summed stall time.
 | A37 queue removed, worst | | | 17.4 | | | | 8.1 | |
 | AT bridge + listener, worst | | 5.6 | 16.4 | | | 2.7 | 8.3 | |
 
-(The current-line and A37 runs ran under heavier host load; their summed
-stalls rose with it. Removing the A37 queue failed the lane's fixed-defect
-check, as A37 predicts.) The surrounding-text input method with the map fix:
-see "Input method" below.
+(Removing the A37 queue failed the lane's fixed-defect check, as A37
+predicts.) Per-paragraph wrap gate (threshold 15,000 in the measurement build,
+wrap preference on) against the view-wide gate (wrap off), map released, worst
+median / p90: per-paragraph 50k 7.5–8.3 / ~10, the short paragraph next to it
+1.9–2.4; view-wide 50k 7.8–8.8. Equal within the noise.
+
+**Clean:**
+
+- Applying the no-wrap tag to a paragraph's first character: median 91 µs
+  (maximum 149 µs); removing it 10 µs. Crossing the threshold while typing at
+  20k shows no spike at the crossing key.
+- GNOME's input path (`wayland` variant, wrap preference on, per-paragraph
+  gate at 15,000 in both columns, worst median by position; p90 in brackets
+  where it matters):
+
+| Length | Whole-paragraph surrounding text | Bounded surrounding text (D6) |
+|---|---|---|
+| 10k (wraps) | 9.1–10.1 | 6.9–7.5 (8.5–8.8) |
+| 20k (unwrapped) | 6.8–11.9 | 2.6–6.7 |
+| 50k (unwrapped) | 18.9–24.9 | 8.3–11.1 |
+
+The verdict runs of this change's build are recorded in
+`docs/next/long-line-documents.md` (C5).
 
 Ranking by measured gain, risk and UX cost:
 
-1. **Release the retired map** — gain: one paragraph layout per keystroke
-   (−28 % summed at 50k wrapped, −26 % at 100k, half the over-budget stalls
-   at 100k); risk low (a retirement path, axiom-pinned); UX none. A defect fix
-   under the pre-existing-blockers rule.
-2. **Word wrap off above `L_wrap_edit`** — gain 2.2× (16.3 → 7.4 ms at 50k,
-   39.4 → 15.8 at 100k); risk low (an existing view property; A28 bounds
-   unwrapped x positions far above `L_protect`); UX cost real: long paragraphs
-   scroll horizontally. Recommended, behind a maintainer decision (Open
-   Question 1).
-3. Everything else measured is rejected for no gain or a regression (table in
-   the proposal); soft segmentation is deferred (D4).
+1. **Release the retired map** — one paragraph layout per keystroke; risk low;
+   UX none. A defect fix under the pre-existing-blockers rule.
+2. **Bounded surrounding text** — on GNOME's input path, 50k from 19–25 ms to
+   8–11 ms and 10k from ~10 ms to ~7 ms; risk: GTK offers no hook, so the
+   view's own handler is blocked by its data (A54 and the consumer test pin it); UX none (the input
+   method sees 1,000 characters on each side; the protocol sends at most 4,000
+   bytes around the cursor).
+3. **Per-paragraph wrap gate** — about 2× on the gated paragraph; short
+   paragraphs keep wrapping and their keystrokes are unaffected; UX cost: the
+   long paragraph scrolls horizontally.
+4. Everything else measured is rejected for no gain or a regression; soft
+   segmentation is deferred (D4).
 
-**Combination at 50k:** map released + wrap off = 7.4 ms worst median, 8.2 ms
-p90, 0 of 3 repetitions over budget at the start and middle positions and 1 of
-3 at the end (plain input) — at B_interact, not comfortably under it. With
-wrap on, nothing measured gets below one wrapped layout (16.1 ms in isolation):
-wrapped paragraphs meet B_interact up to about 20,000 characters.
+### D3. The per-paragraph wrap gate
 
-### D3. The long-paragraph wrap gate
+A paragraph longer than `L_wrap_edit` characters is shown unwrapped; every
+other paragraph follows the word-wrap preference. GtkTextLayout takes a
+paragraph's wrap mode from the tags on its **first character** (ledger A53),
+so a no-wrap tag (`wrap-mode` none, no other property) there unwraps it.
+`ui/editor_page/paragraph_wrap.rs` applies the tag to the **whole**
+paragraph, because the tag is also the hysteresis state: text inserted before
+the first character is untagged (A25) and deleting the first characters
+deletes their tags, and with only the first character tagged either edit
+forgot that a paragraph inside the band was unwrapped (the band widget test
+caught it). A paragraph is unwrapped when any character carries the tag (one
+B-tree toggle search); the gate then re-tags the untagged prefix up to the
+first tagged character. The pure decision is
+`model/paragraph_wrap.rs`: unwrapped above `L_WRAP_EDIT`, following the view
+at or below `L_WRAP_EDIT - REWRAP_MARGIN` (`REWRAP_MARGIN` = 1,000), unchanged
+in between, so typing around the threshold does not relayout the paragraph on
+each key.
 
-`DocumentScale` gains `wrap_allowed`, a presentation feature that is false
-when the longest paragraph exceeds `L_wrap_edit`. It follows every rule the
-other presentation features follow: monotone in the profile, session-held by
-`join`, applied before content reaches the view on every install path, and
-downgraded synchronously by the edit-time watch (the downgrade sets the
-view's wrap mode inside the `insert-text` after-handler, before GTK's commit
-handler lays the paragraph out, so the edit that crosses the threshold is
-already laid out unwrapped). The editor's effective wrap mode is
-`word-wrap preference ∧ wrap_allowed`; the preference itself is never written
-(no `settings_writes` call), so other documents keep wrapping. The
-reduced-features reason is "very long lines", reported like the others.
-`wrap-mode` is a default-style property, so `frame_validation.rs` already
-queues the allocation its change needs (A37).
+The gate runs in the `insert-text` and `delete-range` after-handlers, in the
+same emission as the edit and so before GTK's commit handler lays the
+paragraph out. After an insertion it re-checks the paragraph the run starts
+in, the one it ends in, and the paragraphs wholly inside the run that the
+run's own text shows are longer than the threshold (a paste); after a
+deletion, the one paragraph the deletion joined. That covers an insertion
+before the first character (untagged text, A25), a split, a join, a paste and
+an undo (which re-inserts text without tags). The handlers also run while an
+installation owns the buffer, so a long paragraph is tagged before its first
+layout; an installation of many short lines reads no line from the buffer.
+Paragraph lengths come from the buffer's own lines (A42, A43), a few
+`chars_in_line` reads per edit. Tags change no text, set no `modified` and
+record no history (A27).
 
-`L_wrap_edit` is derived on the lane by the reference sweep's bisection over
-the keystroke group: the largest paragraph length whose wrapped keystroke
-meets B_interact by the lane's existing rule (worst of plain, AT and
-probe-IM). Working value from this change's runs: about 20,000 characters
-(plain); with the probe IM the wrapped boundary is about 10,000 (this
-change's runs; C2 measured 3,500–5,000 under different load), which the
-derivation will settle.
+`DocumentScale` gains `wrap_allowed`: false once the profile's longest
+paragraph exceeds `L_wrap_edit`, monotone and session-held by `join` like the
+other presentation features, so the reduced-features notice, the
+document-properties row and the accessible description name "word wrap of the
+longest lines" with the "very long lines" reason. It reports the reduction;
+the per-paragraph tags are what apply it. The preference is never written.
 
-*Alternatives:* (a) a per-paragraph `wrap-mode` tag on long paragraphs only,
-so short paragraphs keep wrapping — better UX, but the tag must be
-re-established when an insertion at the paragraph's first character lands
-outside the run (A25) and on every split or join, and it was not measured;
-recorded as a follow-up. (b) No gate, only the exception — acceptable if the
-maintainer prefers wrapping to the budget (Open Question 1).
+**`L_wrap_edit` = 8,000.** With GNOME's input path and bounded surrounding
+text, a wrapped keystroke is at B_interact near 10,000 characters (6.9–7.5 ms
+worst median, p90 8.5–8.8); with the plain path, wrapped typing meets it up to
+about 20,000. The value keeps the wrapped range inside the budget on the GNOME
+path with a margin, and the rewrap margin keeps an unwrapped paragraph from
+wrapping again until it is at or below 7,000. The verdict run confirms it
+(programme record).
+
+*Alternatives:* (a) view-wide (`wrap-mode` none on the view while any
+paragraph exceeds the threshold): equal cost on the gated paragraph, but every
+short paragraph of the document stops wrapping; (b) no gate, only the
+exception.
 
 ### D4. Display-only soft segmentation (deferred)
 
@@ -212,65 +270,80 @@ requires wrapped 50k paragraphs within budget).
 
 ### D5. Toolkit facts and the ledger
 
-New ledger entries with `gtk-lush-axioms` probes and samples:
+New ledger entries, each with a `gtk-lush-axioms` probe and sample:
 
-- **Commit-handler layout:** typing one character into a paragraph builds
-  exactly one full line display of that paragraph, in the key dispatch
-  (`set_virtual_cursor_pos`), and the frame's validation and snapshot reuse
-  it. Pins the floor this change records.
-- **Unparented text views keep validating:** a `GtkTextView` (or
-  `GtkSourceMap`) that is unparented but alive and still attached to a buffer
-  re-validates edited paragraphs from its idle; clearing its buffer after it
-  is unrealized stops that without a warning. Pins D1.
+- **A52**: an unparented but alive `GtkTextView` (a `GtkSourceMap` too) stays
+  attached to its buffer and re-lays out edited paragraphs from its own idle;
+  dropping its last reference finalizes it and detaches it without a warning.
+  Pins D1.
+- **A53**: a paragraph's wrap mode comes from the tags on its first
+  character; text inserted before that character is untagged. Pins D3.
+- **A54**: GtkTextView answers `retrieve-surrounding` from the cursor
+  paragraph's start, and its handler, on the view's key-controller
+  input-method context, stops the emission, so a handler connected later is
+  never called: the answer can only be replaced by blocking it. The match by
+  signal and data needs `unsafe`, which `gtk-lush-axioms` forbids, so the
+  consumer widget test pins it (its answer would be the whole paragraph if the
+  match found nothing). GTK's Wayland module requests
+  surrounding text on every commit (source-cited and lane-measured; the probe
+  runner uses the simple input method). Pins D6.
 
-Existing entries cited: A23–A26, A28, A30 (surrounding text), A32, A37, A45.
+The commit-handler layout itself (one whole-paragraph layout per key, reused
+by validation and paint) is recorded from the profile in the programme record
+rather than probed: it is the floor this change measures, not a behaviour
+LushText relies on.
 
-### D6. The lane's keystroke group
+Existing entries cited: A23–A28, A30, A32, A37, A42, A43, A45.
+
+### D6. Bounded surrounding text
+
+GTK offers no way to answer `retrieve-surrounding` for a GtkTextView: the
+view's input-method context is private and its handler is connected with the
+view as data. The view's key controller exposes the context
+(`gtk_event_controller_key_get_im_context`), so
+`ui/editor_page/surrounding_text.rs` blocks the handlers on it that match the
+signal and the view (`g_signal_handlers_block_matched`; one in practice) and
+connects its own: the window of `SURROUNDING_WINDOW_CHARS` (1,000) characters
+on each side of the cursor within the cursor's paragraph, the selection's
+other end included when it is in the paragraph and at most
+`SURROUNDING_MAX_SELECTION_CHARS` (10,000) away (`model/surrounding_text.rs`,
+pure). If the context or the handler is not found (a GTK change), the editor
+logs a warning and GTK's behaviour stays. The one `unsafe` block is that
+signal match, with its SAFETY argument beside it.
+
+### D7. The lane's keystroke group
 
 C2's measurement-only patch becomes maintained: the `keystroke` fixture kind
-(markers at start, middle, end), the `keystroke` group (lengths, `prose` and
-`css` shapes, wrap on and off), the `place-*`/`key-*`/`verify` phases and the
-`verify` match counts that prove where each burst landed. Its verdict reads
-the worst stall in each key's window against B_interact, and the report adds
-the summed stall per key, because a defect like D1's lives in a second
-dispatch that the worst-stall figure hides.
-
-### Input method
-
-GTK hands a surrounding-text IM the whole paragraph on caret moves and keys
-(A30). The profile (probe IM, map released, 50k, wrap off) attributes the extra
-cost to `gtk_text_view_retrieve_surrounding_handler`: `backward_word_starts(3)`
-and `forward_word_ends(3)` run `move_multiple_steps` → `find_line_log_attrs` →
-`compute_log_attrs` over the whole paragraph (2.7 ms each at 50k), about four
-times per keystroke (from the key press and from the IM spot update), and the
-handler then slices from the paragraph start. Probe-IM runs with the map fix
-(host load average 13–30 during them, so these are upper bounds):
-
-| Probe IM, worst median / p90 | 5k | 10k | 20k | 50k |
-|---|---|---|---|---|
-| Wrap on | 2.7 / 3.7 | 5.3 / 7.0 | 11.6 / 13.5 | 32.0 / 37.5 |
-| Wrap off | 3.7 / 5.8 | 6.4 / 9.6 | 10.6 / 15.0 | 26.4 / 37.6 |
-
-The IM context of a `GtkTextView` is private, so LushText cannot answer
-`retrieve-surrounding` itself; the cost stays in the toolkit-floor exception
-above about 10,000 characters, with an upstream report asking GTK to bound the
-word-boundary search and the slice. Whether GNOME's default IBus setup asks
-for surrounding text on every key is not known on this host (`ibus-daemon` is
-not installed on the reference machine); Open Question 4.
+(markers at start, middle and end, and a short paragraph right after the long
+one), the `keystroke` group (lengths, `prose` and `css` shapes, wrap on and
+off), the `place-*`/`key-*`/`verify` phases and the `verify` match counts that
+prove where each burst landed. The report adds a "Keystrokes" table: per case
+and position, the worst stall in each key's window and the summed stall per
+key against B_interact, with a not-verified flag, because a defect like D1's
+lives in a second dispatch that the worst-stall figure hides.
 
 ## Risks / Trade-offs
 
-- [Unwrapped long paragraphs are harder to read] → the gate only applies above
-  `L_wrap_edit`, is announced once, is visible in document properties and the
-  accessible description, and leaves the preference untouched; the
-  per-paragraph tag alternative is recorded.
-- [The retired map's surviving reference is toolkit-internal] → detaching the
-  buffer still removes the layout; the weak-reference test then asserts the
-  buffer is detached instead of finalization, and the leak is reported
-  upstream.
+- [Unwrapped long paragraphs are harder to read] → only paragraphs above
+  `L_wrap_edit` are affected, the rest of the document keeps wrapping, the
+  reduction is announced once and shown in document properties and the
+  accessible description, and the preference is untouched.
+- [Unwrapped paragraphs scroll horizontally while typing at their right edge]
+  → GtkTextView animates that scroll, and every animation frame queries the
+  caret position twice at a cost that grows with the caret's offset in the
+  line (about 2 ms per frame at the end of 50,000 characters). No dispatch
+  crosses B_interact from it, but the summed stall per key at the end of a
+  50,000 / 100,000-character paragraph rises on the plain path (27 / 60 →
+  32 / 73 ms; it still falls on GNOME's path). Recorded as part of the
+  toolkit-floor exception.
+- [Blocking a GTK-internal handler] → matched by signal and data, pinned by
+  A54's probe and the consumer widget test on every toolkit update; when it is
+  not found, GTK's behaviour
+  stays and a warning is logged.
 - [Lane noise from other agents] → every verdict run holds the exclusive lock;
-  load is recorded; a threshold boundary is re-run before it counts.
-- [8 ms at 50k is met at the median, not with margin] → the exception keeps
+  load is recorded; contaminated runs are labelled and used only
+  comparatively.
+- [8 ms is met at the median, not always at p90] → the exception keeps
   covering the tail; the record states p90 and the over-budget counts.
 
 ## Migration Plan
@@ -278,16 +351,10 @@ not installed on the reference machine); Open Question 4.
 None for data. The wrap gate changes presentation only; reopening a document
 re-profiles it, as for the other gates.
 
-## Open Questions
+## Resolved Questions
 
-1. **Adopt the wrap gate?** It trades wrapping for the budget above
-   `L_wrap_edit`. Without it, wrapped paragraphs from about 20,000 characters
-   up to `L_protect` stay in the toolkit-floor exception.
-2. **View-wide or per-paragraph?** D3 recommends view-wide (measured, matches
-   the other gates); a per-paragraph tag is better UX and unmeasured.
-3. **Never build a map while the preference is off?** Independent of D1's
-   fix; saves construction work too.
-4. **How common is a surrounding-text IM?** If GNOME's default IBus engines
-   request surrounding text on every key, the IM floor (about 10,000
-   characters) and not the layout floor bounds most users; measuring it needs
-   an IBus session, which the reference lane lacks.
+The maintainer decided (2026-10-31): adopt the retired-map fix failing-first
+with an axiom; use the per-paragraph wrap gate if measurement supports it (it
+does, D2); and measure whether GNOME's input path requests surrounding text on
+every key (it does, Evidence and A54), so its floor enters the policy through
+`L_wrap_edit` and bounded surrounding text (D6).

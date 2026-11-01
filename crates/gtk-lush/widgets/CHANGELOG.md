@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Changed:** `RenderHoldOverlay` refers to its live child **weakly**, and
+  `live_child()` returns `Option<gtk4::Widget>` (`None` once the owner dropped
+  the child). A hold used to keep its child alive after the caller retired it:
+  LushText's retired minimap (a `GtkSourceMap`) survived that way, bound to the
+  document buffer, and re-laid out every edited paragraph (7.5 ms per keystroke
+  in a 50,000-character paragraph; GTK axiom A52). A capture of a dropped child
+  reports `NotReady(NotMapped)`; warming and clearing skip it.
 - Added `ViewportSliceBin::outer_request_pending()`, a read-only evidence
   accessor beside `allocation_count()` and `correction_count()`: true while a
   child-originated request waits for the idle that moves the outer scroller (or

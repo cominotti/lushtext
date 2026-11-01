@@ -25,13 +25,14 @@ fn any_profile() -> ProfileSummary {
 }
 
 /// The presentation outputs of a scale, the part the session floor governs.
-fn presentation(scale: DocumentScale) -> (bool, bool, bool, bool, bool, bool) {
+fn presentation(scale: DocumentScale) -> (bool, bool, bool, bool, bool, bool, bool) {
     (
         scale.syntax_enabled,
         scale.bracket_matching_enabled,
         scale.minimap_allowed,
         scale.invisibles_allowed,
         scale.search_highlight_allowed,
+        scale.wrap_allowed,
         scale.protected_view,
     )
 }
@@ -44,6 +45,7 @@ fn never_reenables(earlier: DocumentScale, later: DocumentScale) -> bool {
         && (!later.minimap_allowed || earlier.minimap_allowed)
         && (!later.invisibles_allowed || earlier.invisibles_allowed)
         && (!later.search_highlight_allowed || earlier.search_highlight_allowed)
+        && (!later.wrap_allowed || earlier.wrap_allowed)
         && (!earlier.protected_view || later.protected_view)
 }
 

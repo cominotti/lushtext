@@ -23,10 +23,12 @@ pub(crate) mod local_history;
 mod minimap;
 mod monitor;
 mod overscroll;
+mod paragraph_wrap;
 mod restore_position;
 pub mod save;
 mod search;
 mod style_scheme;
+mod surrounding_text;
 
 use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{
@@ -70,6 +72,7 @@ pub use minimap::MinimapEvidence;
 pub(crate) use minimap::{
     MinimapAdjustmentDiagnostics, MinimapNativeSliderDiagnostics, MinimapTextViewRect,
 };
+pub use paragraph_wrap::NO_WRAP_TAG;
 // `mod minimap;` stays private, matching the `load/`, `save/`, and
 // `buffer_replacement/` role homes in this directory. The three content-analysis
 // types are re-exported here as a precisely scoped subset because
