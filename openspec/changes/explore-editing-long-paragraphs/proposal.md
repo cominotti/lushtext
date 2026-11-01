@@ -41,7 +41,7 @@ from a profile of where a keystroke's time goes (design "Evidence").
   refers to its live child weakly, so a retired map is finalized and no longer
   lays out document text. Failing-first widget tests; ledger A52.
 - **Bounded surrounding text.** The editor answers its input method's
-  `retrieve-surrounding` with at most 1,000 characters on each side of the
+  `retrieve-surrounding` with at most 1,024 characters on each side of the
   cursor, within its paragraph, instead of GTK's whole-paragraph walk (the
   protocol sends at most 4,000 bytes around the cursor anyway). GTK offers no
   hook, so the view's own handler is blocked by its data; ledger A54 pins that

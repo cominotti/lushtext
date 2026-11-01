@@ -75,11 +75,13 @@ pub const L_SEARCH_HIGHLIGHT: u64 = 10_000;
 /// gate, `explore-editing-long-paragraphs`; `model::paragraph_wrap` holds the
 /// per-paragraph decision and its hysteresis). Every keystroke lays the
 /// edited paragraph out once, whole; a wrapped layout costs about twice an
-/// unwrapped one. With GNOME's input path (GTK's Wayland text-input module,
-/// the bounded surrounding text in place), a wrapped keystroke reaches
-/// B_interact near 10,000 characters on the reference lane, and this value
-/// keeps the wrapped tail inside it (design D3 records the derivation).
-pub const L_WRAP_EDIT: u64 = 8_000;
+/// unwrapped one.
+///
+/// A **cap**, rounded down to a power of two: with GNOME's input path
+/// (GTK's Wayland text-input module, the bounded surrounding text in place),
+/// a wrapped keystroke reaches B_interact near 10,000 characters on the
+/// reference lane (6.9–7.5 ms median, p90 8.5–8.8, design D3), so 8,192.
+pub const L_WRAP_EDIT: u64 = 8_192;
 
 /// `protected_view` holds above this paragraph length.
 ///

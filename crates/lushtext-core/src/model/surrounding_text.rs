@@ -16,15 +16,17 @@
 
 #![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
-/// Characters of context on each side of the cursor. At most four bytes each,
-/// so one side fits the text-input protocol's 4,000-byte transfer, and an
-/// input method that reconverts or completes words sees far more than the
-/// three words GTK's own answer guarantees.
-pub const SURROUNDING_WINDOW_CHARS: i32 = 1_000;
+/// Characters of context on each side of the cursor. A **coverage window**,
+/// so a power of two rounded up: the text-input protocol transfers at most
+/// 4,000 bytes around the cursor, and an input method that reconverts or
+/// completes words sees far more than the three words GTK's own answer
+/// guarantees.
+pub const SURROUNDING_WINDOW_CHARS: i32 = 1_024;
 
 /// A selection longer than this is not included: the window then spans the
-/// cursor alone, with the anchor at the cursor.
-pub const SURROUNDING_MAX_SELECTION_CHARS: i32 = 10_000;
+/// cursor alone, with the anchor at the cursor. A **cap**, a power of two
+/// rounded down: it bounds the answer's cost.
+pub const SURROUNDING_MAX_SELECTION_CHARS: i32 = 8_192;
 
 /// The window, as buffer character offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

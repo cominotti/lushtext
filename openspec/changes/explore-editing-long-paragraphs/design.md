@@ -192,7 +192,7 @@ Ranking by measured gain, risk and UX cost:
 2. **Bounded surrounding text** — on GNOME's input path, 50k from 19–25 ms to
    8–11 ms and 10k from ~10 ms to ~7 ms; risk: GTK offers no hook, so the
    view's own handler is blocked by its data (A54 and the consumer test pin it); UX none (the input
-   method sees 1,000 characters on each side; the protocol sends at most 4,000
+   method sees 1,024 characters on each side; the protocol sends at most 4,000
    bytes around the cursor).
 3. **Per-paragraph wrap gate** — about 2× on the gated paragraph; short
    paragraphs keep wrapping and their keystrokes are unaffected; UX cost: the
@@ -215,7 +215,7 @@ caught it). A paragraph is unwrapped when any character carries the tag (one
 B-tree toggle search); the gate then re-tags the untagged prefix up to the
 first tagged character. The pure decision is
 `model/paragraph_wrap.rs`: unwrapped above `L_WRAP_EDIT`, following the view
-at or below `L_WRAP_EDIT - REWRAP_MARGIN` (`REWRAP_MARGIN` = 1,000), unchanged
+at or below `L_WRAP_EDIT - REWRAP_MARGIN` (`REWRAP_MARGIN` = 1,024), unchanged
 in between, so typing around the threshold does not relayout the paragraph on
 each key.
 
@@ -240,12 +240,13 @@ document-properties row and the accessible description name "word wrap of the
 longest lines" with the "very long lines" reason. It reports the reduction;
 the per-paragraph tags are what apply it. The preference is never written.
 
-**`L_wrap_edit` = 8,000.** With GNOME's input path and bounded surrounding
+**`L_wrap_edit` = 8,192.** With GNOME's input path and bounded surrounding
 text, a wrapped keystroke is at B_interact near 10,000 characters (6.9–7.5 ms
 worst median, p90 8.5–8.8); with the plain path, wrapped typing meets it up to
-about 20,000. The value keeps the wrapped range inside the budget on the GNOME
-path with a margin, and the rewrap margin keeps an unwrapped paragraph from
-wrapping again until it is at or below 7,000. The verdict run confirms it
+about 20,000. It is a cap, so the power-of-two rule rounds
+the ~10,000 break point down to 8,192, which keeps the wrapped range inside
+the budget on the GNOME path with a margin, and the rewrap margin keeps an unwrapped paragraph from
+wrapping again until it is at or below 7,168. The verdict run confirms it
 (programme record).
 
 *Alternatives:* (a) view-wide (`wrap-mode` none on the view while any
@@ -303,10 +304,10 @@ view as data. The view's key controller exposes the context
 (`gtk_event_controller_key_get_im_context`), so
 `ui/editor_page/surrounding_text.rs` blocks the handlers on it that match the
 signal and the view (`g_signal_handlers_block_matched`; one in practice) and
-connects its own: the window of `SURROUNDING_WINDOW_CHARS` (1,000) characters
+connects its own: the window of `SURROUNDING_WINDOW_CHARS` (1,024) characters
 on each side of the cursor within the cursor's paragraph, the selection's
 other end included when it is in the paragraph and at most
-`SURROUNDING_MAX_SELECTION_CHARS` (10,000) away (`model/surrounding_text.rs`,
+`SURROUNDING_MAX_SELECTION_CHARS` (8,192) away (`model/surrounding_text.rs`,
 pure). If the context or the handler is not found (a GTK change), the editor
 logs a warning and GTK's behaviour stays. The one `unsafe` block is that
 signal match, with its SAFETY argument beside it.
