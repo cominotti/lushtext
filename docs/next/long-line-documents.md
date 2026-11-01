@@ -1212,6 +1212,81 @@ was load: no toolkit-floor exception is asked for.
   (`GDK_PRIORITY_REDRAW + 5`): about 11 s between load batches and over 30 s
   to `app-startup` readiness, on `main` as on the branch.
 
+### Verdict (2026-10-31 – 2026-11-01)
+
+Measured under the load there was, recorded before and after every run in
+`.claude/handoffs/c2-verdict/runs.log` (maintainer rule: never pause or discard
+a run for load); each run one exclusive hold through `scripts/measure.sh`,
+`main` (713cad83; 10cad94a for the first rounds, a docs-only difference) and
+the branch alternating. Toolkit: GTK 4.22.5, libadwaita 1.9.3, Pango 1.57.1,
+GtkSourceView 5.20.0, GLib 2.88.3, Mutter 50.4, cairo renderer, 1280×800 at
+120 Hz.
+
+Runs: `V-*` (full set: plain 4+3, AT and probe IM × 3, the 100 MB install;
+load 2–30), `O-*` (the cases whose single runs went over; load 9–37),
+`F-*` (the same cases, plain 3+2, load 1.2–3.6) and `Q-atim-branch` (AT and
+probe IM × 3, load 0.7–4). `eviction/reselect` is excluded (see above).
+
+**Medians, `main` → branch, plain, `F-*` (ms):**
+
+| Case | open | after open | scroll | Page Down | click | typing | find | other |
+|---|---|---|---|---|---|---|---|---|
+| 250,000 wrap on | 112 → 12.2 | 132 → 14.0 | 6 → 2.9 | 9 → 2.7 | 68 → 1.4 | 22,021 (cap) → 2.3 | 170 → 3.5 | |
+| 1.9M wrap on | 930 → 12.2 | 1,119 → 28.6 ¹ | 19 → 3.3 | 41 → 2.5 | 580 → 2.3 | 22,021 → 2.3 | 1,455 → 4.2 | |
+| 1.9M wrap off | 748 → 11.8 | 750 → 25.2 ¹ | 19 → 2.6 | 33 → 2.7 | 403 → 1.4 | 22,021 → 2.9 | 1,128 → 2.0 | |
+| CR-only | 519 → 21.7 ¹ | 770 → 8.3 | 6 → 2.2 | 3 → 1.0 | 3 → 1.0 | 9 → 1.6 | 770 → 6.5 | |
+| U+2029 | 517 → 20.9 ¹ | 769 → 10.5 | 6 → 5.2 | 2 → 1.0 | 2 → 1.4 | 7 → 1.9 | 766 → 6.5 | |
+| restore of three | 1,648 → 25.8 ¹ | 338 → 12.4 | 5 → 5.1 | 41 → 1.0 | 575 → 1.7 | 22,009 → 6.3 | 1,454 → 2.9 | restore 2,890 → 30.9 ¹, tab switch 1,114 → 4.2 |
+| reload 250,000 | 114 → 12.3 | 1 → 1.4 | 2 → 5.6 | 6 → 1.0 | 7 → 1.3 | 22,020 → 1.5 | 173 → 3.0 | reload 68 → 2.9 |
+
+¹ The phase contains the declared envelope: one hidden-tail insert per
+document per dispatch, 22.7–28.1 ms for a 1.9M-character tail plus its load
+completion (3.6–7.0 ms), the `protected_tail_insert` span. Outside those
+dispatches every median above is within budget.
+
+**The envelope (C3's gate input).** 1.9M tail: 23–28 ms per dispatch; with AT
+on, 31–49 ms. The 100 MB install (`install/100000000`, plain and AT × 2):
+1.28–1.37 s, against `main`'s 73–76 s after open.
+
+**Toolkit-floor exception (keystrokes, recorded 2026-10-30).** Re-measured:
+`keystroke/49990` key-start 17–18 ms, the 50,000-character editable paragraph
+inside the range; `keystroke/3500` 5.2–6.5 ms on the branch, 1.0 or 5.6–5.9 ms
+on `main` (bimodal by run, both within `B_interact`).
+
+**Single maxima over budget on the quiet host, each attributed** (span or
+`perf record -e cycles:u --call-graph dwarf`, evidence only):
+- Window construction in `open` (13–19 ms: `gtk_widget_init_template`,
+  `gtk_window_realize` → `icon_list_from_theme`, CSS validation): C4/C4b's
+  composition stages, the same on `main`.
+- The first frame that shows a head (17–20 ms on 1.9M wrap on, plain and
+  probe IM): layout of the 10,000-character head (`gtk_text_layout_wrap`,
+  Pango shaping, 4–9 ms) plus the cairo paint of a full screen of text
+  (`draw_text` → `_cairo_image_surface_glyphs`, FreeType autofitting of
+  first-use glyphs, 13.5–16 ms). The paint does not depend on `N_HEAD`
+  (5,000 saves about 1 ms) and the headless GL renderer cannot measure it
+  (170 ms first paint, set-up). On 1.9M wrap on its median is 17.6 ms in
+  `F-*` (14.0 ms on 250,000), 1.6 ms over `B_settle`. It is the first frame
+  of any screen of wrapped text under the cairo renderer, not a Protected View
+  cost; it is reported to the maintainer with its stack as a candidate floor,
+  not claimed as an exception.
+- Restore of three documents (22 ms): `GKeyfileSettingsBackend`'s file monitor
+  re-checking writability after the settings flush
+  (`g_keyfile_settings_backend_keyfile_writable` → `g_local_file_query_info` →
+  libmount re-parsing the mount table), GIO's keyfile backend (C4, A38–A41); and
+  the first frame of three new editor pages (CSS validation of their widgets).
+- The 100 MB install's after-open frame (22–24 ms, every load): line
+  validation and Pango shaping of the head (`gtk_text_view_validate_onscreen` →
+  `gtk_text_line_display_cache_get`); it grows with the hidden tail
+  (7 ms at 1.9M on an idle host), so it belongs with C3's hidden-tail
+  re-validation axiom (S2) and its gate.
+- Find 8.0–8.3 ms and a 3,500-character click 8.1 ms: single runs, medians
+  6.5–7.0 ms.
+
+**Verdict.** Every Protected View interaction median is within `B_interact`
+(10–100× under `main`). Settle medians are within `B_settle` outside the
+declared envelope, except the first head frame on 1.9M wrap on (17.6 ms, the
+cairo paint above). Every remaining maximum is attributed above.
+
 ## Axioms each change cites
 
 | Change | Axioms |
