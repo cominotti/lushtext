@@ -671,3 +671,31 @@ fn test_an_inline_alert_leaves_a_dense_document_margin_alone() {
         "the alert changed the dense document's margin"
     );
 }
+
+#[test]
+fn test_a_paced_reveal_never_removes_its_tag_beyond_what_it_hid() {
+    // Removing a size-affecting tag invalidates the whole range given, tagged
+    // or not, so the reveal's cleanup must not remove it from the whole
+    // buffer: that re-laid out the whole dense document after every reveal.
+    let (_window, editor, _dir) = dense_window("dense-reveal-cleanup.txt");
+    let wrap = editor.source_view().wrap_mode() != gtk4::WrapMode::None;
+    lushtext_core::ui::settings_writes::set_boolean("word-wrap", !wrap);
+    assert!(editor.load_evidence().restyle.pending);
+    let widest = std::rc::Rc::new(std::cell::Cell::new(0i32));
+    let handler = {
+        let widest = widest.clone();
+        editor.buffer().connect_remove_tag(move |_, _, start, end| {
+            widest.set(widest.get().max(end.offset() - start.offset()));
+        })
+    };
+    wait_until(SETTLE_BUDGET, || !editor.load_evidence().restyle.pending);
+    editor.buffer().disconnect(handler);
+    lushtext_core::ui::settings_writes::set_boolean("word-wrap", wrap);
+    let bound = i32::try_from(2 * V_SLICE).unwrap_or(i32::MAX);
+    assert!(
+        widest.get() <= bound,
+        "a removal spanned {} characters of a {}-character buffer",
+        widest.get(),
+        editor.buffer().char_count()
+    );
+}

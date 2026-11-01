@@ -114,8 +114,7 @@ impl LushtextEditorPage {
         let count = u32::try_from(buffer.line_count()).unwrap_or(u32::MAX);
         let visible = self.visible_paragraphs(count);
         let tag = self.restyle_tag();
-        let (start, end) = buffer.bounds();
-        buffer.remove_tag(&tag, &start, &end);
+        self.remove_restyle_tag_everywhere();
         if let Some(first) = buffer.iter_at_line(i32::try_from(visible.first).unwrap_or(i32::MAX))
             && visible.first > 0
         {
@@ -214,10 +213,29 @@ impl LushtextEditorPage {
         self.remove_restyle_tag_everywhere();
     }
 
+    /// Remove the hiding tag from every run that still carries it, and only
+    /// from those: `gtk_text_buffer_remove_tag` invalidates the whole range it
+    /// is given when the tag changes line sizes, whether or not the tag was
+    /// there, so removing it from the whole buffer made GtkTextView lay out
+    /// the whole dense document again after every paced reveal (a 23 ms
+    /// validation dispatch on the lane's dense/710 wrap toggle).
     fn remove_restyle_tag_everywhere(&self) {
         let buffer = self.buffer();
-        let (start, end) = buffer.bounds();
-        buffer.remove_tag(&self.restyle_tag(), &start, &end);
+        let tag = self.restyle_tag();
+        let mut iter = buffer.start_iter();
+        loop {
+            if !iter.has_tag(&tag) && !iter.forward_to_tag_toggle(Some(&tag)) {
+                return;
+            }
+            let start = iter;
+            if !iter.forward_to_tag_toggle(Some(&tag)) {
+                iter = buffer.end_iter();
+            }
+            buffer.remove_tag(&tag, &start, &iter);
+            if iter.is_end() {
+                return;
+            }
+        }
     }
 
     /// The paragraphs the view shows now; all of them when it is not mapped
