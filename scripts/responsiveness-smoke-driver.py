@@ -102,6 +102,24 @@ DEFAULT_BUDGETS = {
 MONITOR = os.environ.get("RESPONSIVENESS_MONITOR", "1280x800@120")
 SCREEN_W, SCREEN_H = 1280, 800
 KNOWN_KINDS = ("start", "late", "second", "frame", "input", "im", "dropped", "topk", "span", "mark")
+# Where an input arrived (`investigate-first-keys-without-frames`): the probe
+# stamps each key with the window's focus widget and each button with the
+# widget under the pointer. A key typed into either editor target reached a
+# document; only an editable one inserts.
+EDITOR_TARGETS = ("editor", "read-only-editor")
+# The probe's mark after each insertion an editor buffer makes inside a user
+# action (typing), never a load or replacement install.
+EDITOR_USER_INSERT_MARK = "editor_user_insert"
+# How long a click waits for the probe's record of where it arrived.
+CLICK_DELIVERY_TIMEOUT_S = 2.0
+# Pointer moves an editor click may spend correcting its aim by where the
+# probe saw the pointer arrive (a power of two; one correction sufficed).
+POINTER_AIM_ATTEMPTS = 4
+# How long an editor click waits for the snapshot to show a free point of the
+# text view: right after a launch the populated profile's layout (sidebar and
+# properties bottom sheet) may not have settled, and a blind fallback point
+# lands in the sidebar.
+EDITOR_POINT_WAIT_S = 3.0
 
 # Keysyms. Only these may be injected; the guard refuses any Control+letter so
 # no save chord can ever reach the app.
@@ -540,23 +558,38 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
     `no-visible-change`, never as the later input's latency. While the loop
     was stalled the late frame stays attributed, because the stall is what
     delayed it.
+
+    A text key that reached an editable editor (`inserts`, target `editor`)
+    always changes what is drawn, so that rule never applies to it: its
+    latency runs to the eventual frame and the row is flagged
+    `withheld_frame`, which fails the lane (`withheld_frame_cases`). So is
+    such a key whose first later frame starts only after the phase ended; a
+    key after which the log holds no frame at all (the session's last frame,
+    which the probe cannot write before its timings are final) stays
+    `no-frame` unflagged. A key into a protected, read-only
+    editor is flagged `protected`; its latency is reported apart from
+    editable typing (`editable_latency`).
     """
     inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
     frames = sorted(parsed["records"]["frame"], key=lambda r: int(r["frame_time_us"]))
     matched: list[tuple[dict, int | None]] = []
+    targets: list[str | None] = []
     used: set[int] = set()
     for injection in injections:
         origin = injection["inject_us"]
         wanted = injection["event"]
         handler = None
+        target = None
         for index, record in enumerate(inputs):
             if index in used or record["t_us"] < origin - 2_000:
                 continue
             if record.get("event") == wanted:
                 handler = int(record["t_us"])
+                target = record.get("target")
                 used.add(index)
                 break
         matched.append((injection, handler))
+        targets.append(target)
     results = []
     for position, (injection, handler) in enumerate(matched):
         if not injection.get("measured", True):
@@ -564,20 +597,39 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
         origin = injection["inject_us"]
         wanted = injection["event"]
         if handler is None:
-            results.append({"event": wanted, "inject_us": origin, "status": "no-input-record"})
+            # Still a text key: `input_delivery` counts it as undelivered.
+            results.append({"event": wanted, "inject_us": origin, "status": "no-input-record", **({"inserts": True} if injection.get("inserts") else {})})
             continue
+        # Where the input arrived and whether it was a text key
+        # (`input_delivery`); absent from an older probe's records.
+        delivery = {k: v for k, v in (("target", targets[position]), ("inserts", injection.get("inserts"))) if v is not None}
+        if wanted == "key-press" and targets[position] == "read-only-editor":
+            delivery["protected"] = True
+        typed_into_editor = bool(injection.get("inserts")) and targets[position] == "editor"
         frame = next((f for f in frames if int(f["frame_time_us"]) >= handler), None)
+        # A frame recorded at all after the handler: the probe writes a frame
+        # only once it or a later one has its final timings, and headless
+        # Mutter completes a lone last frame only at the next commit, so the
+        # session's last frame can be missing from the log without having
+        # been withheld.
+        frame_recorded_later = frame is not None
         if frame is not None and horizon_us is not None and int(frame["frame_time_us"]) > horizon_us:
             # The input changed nothing visible (for example Page Down at the
             # end of a short document); a later unrelated frame is not its frame.
             frame = None
         if frame is None:
-            results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-frame"})
+            withheld = {"withheld_frame": True} if typed_into_editor and frame_recorded_later else {}
+            results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-frame", **delivery, **withheld})
             continue
         next_handler = next((h for _inj, h in matched[position + 1 :] if h is not None and h > handler), None)
         if next_handler is not None and int(frame["frame_time_us"]) > next_handler and not loop_stalled(parsed, handler, next_handler, reference_frame_us):
-            results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-visible-change"})
-            continue
+            if typed_into_editor:
+                # The insertion is drawn only in this later frame: hidden
+                # latency, measured to that frame and flagged.
+                delivery["withheld_frame"] = True
+            else:
+                results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-visible-change", **delivery})
+                continue
         presented, source = frame_presented(parsed, frame, reference_frame_us)
         latency = max(0, presented - origin)
         results.append(
@@ -589,9 +641,115 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
                 "source": source,
                 "latency_us": latency,
                 "frames": math.ceil(latency / reference_frame_us) if latency else 0,
+                **delivery,
             }
         )
     return results
+
+
+def input_delivery(parsed: dict, input_to_frame_rows: list[dict], start_us: int, end_us: int) -> dict | None:
+    """Whether a phase's text keys reached a document (`investigate-first-keys-without-frames`).
+
+    `typed` counts the phase's measured text keys (printable, no Control),
+    `undelivered` those with no input record at all (they never reached the
+    application), `to_editor` those the probe saw arrive while an editable
+    editor had keyboard focus, `elsewhere` those that arrived anywhere else,
+    and `inserted` the editor insertions typing made in the phase. A probe
+    whose input records carry no targets (an older build) leaves `verified`
+    false. `None` when the phase typed no text.
+    """
+    typed = [row for row in input_to_frame_rows if row.get("inserts")]
+    if not typed:
+        return None
+    delivered = [row for row in typed if row.get("status") != "no-input-record"]
+    targets = [row.get("target") for row in delivered]
+    verified = all(target is not None for target in targets)
+    inserted = sum(1 for r in parsed["records"]["mark"] if r.get("name") == EDITOR_USER_INSERT_MARK and start_us <= int(r["t_us"]) <= end_us)
+    return {
+        "typed": len(typed),
+        "undelivered": len(typed) - len(delivered),
+        "to_editor": sum(1 for target in targets if target == "editor"),
+        "to_read_only_editor": sum(1 for target in targets if target == "read-only-editor"),
+        "elsewhere": sum(1 for target in targets if target is not None and target not in EDITOR_TARGETS),
+        "inserted": inserted,
+        "verified": verified,
+    }
+
+
+# Surfaces that can lie over the editor's text view (an overlaid workspace
+# sidebar in a narrow layout, the document-properties bottom sheet).
+EDITOR_COVERS = ("workspace-sidebar", "document-properties")
+
+
+def editor_point_in(surfaces: list, x_fraction: float = 1 / 3, y_fraction: float = 1 / 2) -> tuple[int, int] | None:
+    """`Runner.editor_point` on a snapshot's surfaces (see there)."""
+    rects = {s.get("name"): s.get("rect") for s in surfaces if isinstance(s, dict)}
+    view = rects.get("source-view")
+    if not view or int(view.get("width", 0)) <= 0 or int(view.get("height", 0)) <= 0:
+        return None
+    covers = [rects[name] for name in EDITOR_COVERS if rects.get(name)]
+
+    def covered(x: int, y: int) -> bool:
+        return any(c["x"] <= x < c["x"] + c["width"] and c["y"] <= y < c["y"] + c["height"] for c in covers)
+
+    for fx in (x_fraction, 1 / 2, 2 / 3, 5 / 6):
+        for fy in (y_fraction, 1 / 3, 1 / 6):
+            x, y = int(view["x"] + view["width"] * fx), int(view["y"] + view["height"] * fy)
+            if not covered(x, y):
+                return x, y
+    return None
+
+
+def misdirected_phase(delivery: dict | None) -> bool:
+    """A phase whose text keys never reached the application (whatever the
+    probe's vintage), or a verified phase whose text keys went elsewhere or
+    whose keys into an editable editor inserted less than one character each."""
+    if not delivery:
+        return False
+    if delivery.get("undelivered", 0) > 0:
+        return True
+    if not delivery.get("verified"):
+        return False
+    return delivery["elsewhere"] > 0 or delivery["inserted"] < delivery["to_editor"]
+
+
+def editable_latency(entry: dict) -> bool:
+    """Whether an input-to-frame row has a latency that counts as editable
+    interaction: every measured row except a key into a protected (read-only)
+    editor, which is reported apart (`protected`)."""
+    return "latency_us" in entry and not entry.get("protected")
+
+
+def protected_itf_note(phase: dict) -> str:
+    """The report-table suffix for keys typed into a protected document,
+    which are kept out of the editable input-to-frame figures."""
+    protected = phase.get("protected_input_to_frame")
+    if not protected:
+        return ""
+    return f" (protected: {protected['keys']} keys, max {protected['max_us']} us)"
+
+
+def withheld_frame_cases(rows: list[dict]) -> list[str]:
+    """`case@variant#rep:phase` of every phase where a text key typed into an
+    editable editor was drawn only in a frame that started after the next
+    key was handled, while the main loop was free, or never: the frame was
+    withheld, and the delay is latency the user sees."""
+    return [
+        f"{row['case']}@{row['variant']}#{row['rep']}:{phase.get('name')}"
+        for row in rows
+        for phase in row.get("phases", [])
+        if any(entry.get("withheld_frame") for entry in phase.get("input_to_frame", []))
+    ]
+
+
+def misdirected_cases(rows: list[dict]) -> list[str]:
+    """`case@variant#rep:phase` of every phase whose typing reached no document."""
+    return [
+        f"{row['case']}@{row['variant']}#{row['rep']}:{phase.get('name')}"
+        for row in rows
+        for phase in row.get("phases", [])
+        if misdirected_phase(phase.get("delivery"))
+    ]
 
 
 def im_summary(parsed: dict, start_us: int, end_us: int) -> dict[str, Any]:
@@ -1228,7 +1386,7 @@ def c6_verdict(rows: list[dict], budgets: dict, floors: dict[str, dict], baselin
         for row in side_rows:
             for phase in row.get("phases", []):
                 if phase.get("name") in ("scroll", "type-during-settle"):
-                    cases.setdefault(f"{row['case']}@{row['variant']} {phase['name']}", []).extend(e["latency_us"] for e in phase.get("input_to_frame", []) if "latency_us" in e)
+                    cases.setdefault(f"{row['case']}@{row['variant']} {phase['name']}", []).extend(e["latency_us"] for e in phase.get("input_to_frame", []) if editable_latency(e))
         for label, values in sorted(cases.items()):
             if values:
                 itf.append({"side": side, "case": label, "median_us": _median(values), "max_us": max(values), "events": len(values)})
@@ -1674,7 +1832,10 @@ class RemoteDesktop:
             # record; recording it (unmeasured) keeps it from standing in
             # for the key it modifies when inputs are matched to records.
             injections.append({"event": "key-press", "inject_us": self.key(KEY_CONTROL_L, True), "measured": False})
-        injections.append({"event": "key-press", "inject_us": self.key(keysym, True)})
+        # A printable key without Control inserts text where it lands: the
+        # lane checks it reached an editor and inserted (`input_delivery`).
+        inserts = not control and 0x20 <= keysym <= 0x7E
+        injections.append({"event": "key-press", "inject_us": self.key(keysym, True), **({"inserts": True} if inserts else {})})
         self.key(keysym, False)
         if control:
             self.key(KEY_CONTROL_L, False)
@@ -1686,7 +1847,12 @@ class RemoteDesktop:
         self._call("NotifyPointerAxisDiscrete", GLib.Variant("(ui)", (0, steps)))
         injections.append({"event": "scroll", "inject_us": stamp})
 
-    def click(self, x: int, y: int, injections: list[dict]) -> None:
+    def click(self, x: int, y: int, injections: list[dict], measured: bool = True) -> int:
+        """Move to screen `(x, y)` and click; returns the press's stamp.
+
+        An unmeasured click (focus) is still recorded, so its button-press
+        record cannot stand in for a later measured one.
+        """
         from gi.repository import GLib
 
         self.move_to(x, y)
@@ -1694,7 +1860,8 @@ class RemoteDesktop:
         stamp = now_us()
         self._call("NotifyPointerButton", GLib.Variant("(ib)", (BTN_LEFT, True)))
         self._call("NotifyPointerButton", GLib.Variant("(ib)", (BTN_LEFT, False)))
-        injections.append({"event": "button-press", "inject_us": stamp})
+        injections.append({"event": "button-press", "inject_us": stamp, **({} if measured else {"measured": False})})
+        return stamp
 
     def close(self) -> None:
         if self.session:
@@ -1835,7 +2002,7 @@ class Runner:
 
     # -- app lifecycle ------------------------------------------------------
 
-    def fresh_state(self, case_dir: Path, settings: dict[str, Any], backend: str = "keyfile", on_disk: bool = False, populated: bool = False) -> dict[str, str]:
+    def fresh_state(self, case_dir: Path, settings: dict[str, Any], backend: str = "keyfile", on_disk: bool = False, populated: bool = False, legacy_layout: bool = False) -> dict[str, str]:
         # The construction cases keep their XDG state on the artifact
         # filesystem, which is the home filesystem on the reference machine:
         # a GSettings keyfile write fsyncs, and the temp scope (tmpfs) would
@@ -1847,10 +2014,22 @@ class Runner:
             (state / name).mkdir()
         keyfile = state / "config/glib-2.0/settings/keyfile"
         keyfile.parent.mkdir(parents=True)
+        # The layout keys. Unmigrated, the app runs the one-shot migration
+        # from the legacy `sidebar-visible` key (default true), which showed
+        # the workspace sidebar the case asks to hide
+        # (`investigate-first-keys-without-frames`). A fresh profile
+        # (`legacy_layout`) seeds that legacy key as hidden, so its launch
+        # still runs the migration (and writes its result once, after the
+        # first frame) and renders the same layout; every other profile is
+        # seeded migrated.
+        layout: dict[str, Any] = (
+            {"sidebar-visible": False}
+            if legacy_layout
+            else {"split-view-layout-migrated": True, "workspace-sidebar-visible": False, "properties-sidebar-visible": False}
+        )
         values = {
             "window-maximized": True,
-            "workspace-sidebar-visible": False,
-            "properties-sidebar-visible": False,
+            **layout,
             "search-panel-visible": False,
             **settings,
         }
@@ -1951,6 +2130,8 @@ class Runner:
 
     def launch(self, rep_dir: Path, env: dict[str, str], files: list[Path], tag: str) -> Launch:
         stderr_path = rep_dir / f"app-{tag}.stderr"
+        # The probe log of the launch the next editor click is checked against.
+        self.current_log = Path(env["LUSHTEXT_RESPONSIVENESS_LOG"]) if env.get("LUSHTEXT_RESPONSIVENESS_LOG") else None
         spawn = now_us()
         process = subprocess.Popen(
             [str(self.binary), *map(str, files)],
@@ -2013,6 +2194,93 @@ class Runner:
             return True
         except Exception:  # noqa: BLE001
             return False
+
+    def editor_point(self, x_fraction: float = 1 / 3, y_fraction: float = 1 / 2) -> tuple[int, int] | None:
+        """A screen point inside the selected editor's text view, from the
+        snapshot's `source-view` surface (window coordinates; the lane's
+        window is maximized at the monitor's origin), outside every surface
+        that can cover it (an overlaid workspace sidebar, the document-
+        properties bottom sheet). The requested fractions come first, then a
+        few others. `None` without a free point."""
+        try:
+            # `window.surfaces` is the shell's visibility summary; the
+            # rectangles are under `visual_geometry`.
+            geometry = find_key(self.snapshot(), "visual_geometry") or {}
+        except Exception:  # noqa: BLE001 - no snapshot, no geometry
+            return None
+        return editor_point_in(geometry.get("surfaces") or [], x_fraction, y_fraction)
+
+    def editor_geometry_note(self) -> str:
+        """The snapshot's text-view and cover rectangles, for a click that
+        found no free point."""
+        try:
+            geometry = find_key(self.snapshot(), "visual_geometry") or {}
+        except Exception:  # noqa: BLE001 - no snapshot
+            return "no snapshot"
+        rects = {s.get("name"): s.get("rect") for s in geometry.get("surfaces") or [] if isinstance(s, dict)}
+        return ", ".join(f"{name} {rects.get(name)}" for name in ("source-view", *EDITOR_COVERS))
+
+    def pointer_arrival(self, event: str, since_us: int) -> dict | None:
+        """The probe's last `event` input record at or after `since_us`, once
+        the pointer stopped producing them; `None` when none arrived in
+        `CLICK_DELIVERY_TIMEOUT_S` (or the launch has no probe log)."""
+        log = getattr(self, "current_log", None)
+        if log is None:
+            return None
+        tail = ProbeTail([log])
+        deadline = time.monotonic() + CLICK_DELIVERY_TIMEOUT_S
+        while time.monotonic() < deadline:
+            found = [r for r in tail.poll()["records"]["input"] if r.get("event") == event and int(r["t_us"]) >= since_us - 2_000]
+            if found:
+                time.sleep(0.1)
+                found = [r for r in tail.poll()["records"]["input"] if r.get("event") == event and int(r["t_us"]) >= since_us - 2_000]
+                return found[-1]
+            time.sleep(0.05)
+        return None
+
+    def editor_click(self, injections: list[dict], x_fraction: float = 1 / 3, y_fraction: float = 1 / 2, measured: bool = True) -> tuple[bool, str]:
+        """Click inside the selected editor's text and prove it arrived there.
+
+        `investigate-first-keys-without-frames`: a click aimed at a fixed
+        screen point landed in the workspace sidebar, the keys after it
+        reached no document, and the lane measured a window that drew
+        nothing. The point now comes from the editor's own geometry; the
+        pointer is moved there first and corrected by where the probe saw
+        it arrive (a requested screen point arrived up to 130 px left of it
+        in window coordinates, so screen and window do not coincide), and the
+        probe's record of the press must name an editor. A probe that records
+        no motion or target (an older build) cannot prove it, and is trusted.
+        """
+        point = self.editor_point(x_fraction, y_fraction)
+        wait_until = time.monotonic() + EDITOR_POINT_WAIT_S
+        while point is None and time.monotonic() < wait_until:
+            time.sleep(0.1)
+            point = self.editor_point(x_fraction, y_fraction)
+        if point is None:
+            if getattr(self, "current_log", None) is not None:
+                # A probe build can verify the click, so a blind point would
+                # only fail later; say why instead.
+                return False, f"no-editor-point ({self.editor_geometry_note()})"
+            point = (SCREEN_W // 3, SCREEN_H // 2)
+        screen = point
+        for _ in range(POINTER_AIM_ATTEMPTS):
+            stamp = now_us()
+            self.rd.move_to(*screen)
+            motion = self.pointer_arrival("motion", stamp)
+            if motion is None or motion.get("x") is None:
+                break
+            dx, dy = point[0] - int(motion["x"]), point[1] - int(motion["y"])
+            if abs(dx) <= 1 and abs(dy) <= 1:
+                break
+            screen = (min(max(screen[0] + dx, 0), SCREEN_W - 1), min(max(screen[1] + dy, 0), SCREEN_H - 1))
+        stamp = self.rd.click(screen[0], screen[1], injections, measured)
+        press = self.pointer_arrival("button-press", stamp)
+        if press is None:
+            return (True, "ok") if getattr(self, "current_log", None) is None else (False, "click-not-delivered")
+        target = press.get("target")
+        if target is None or target in EDITOR_TARGETS:
+            return True, "ok"
+        return False, f"click-missed-editor ({target} at window {press.get('x')},{press.get('y')}; aimed at window {point[0]},{point[1]} via screen {screen[0]},{screen[1]})"
 
     # -- phases -------------------------------------------------------------
 
@@ -2172,11 +2440,10 @@ class Runner:
                 return True, "ok"
 
             def click(inj, _deadline):
-                # Inside the text area, away from the header bar: a header
-                # click starts a compositor grab and the window never gets
-                # keyboard focus (observed headless).
-                self.rd.click(SCREEN_W // 3, SCREEN_H // 2, inj)
-                return True, "ok"
+                # Inside the text, away from the header bar: a header click
+                # starts a compositor grab and the window never gets keyboard
+                # focus (observed headless).
+                return self.editor_click(inj)
 
             def pagedown(inj, _deadline):
                 for _ in range(10):
@@ -2189,7 +2456,9 @@ class Runner:
                     if where == "start":
                         self.rd.tap(KEY_HOME, inj, control=True)
                     elif where == "middle":
-                        self.rd.click(SCREEN_W // 2, SCREEN_H // 2, inj)
+                        ok, status = self.editor_click(inj, x_fraction=1 / 2)
+                        if not ok:
+                            return ok, status
                     else:
                         self.rd.tap(KEY_END, inj, control=True)
                     time.sleep(0.1)
@@ -2420,9 +2689,11 @@ class Runner:
         extra: dict = {"open_ready_us": scratch[-1]["end_us"]}
 
         def body(inj, deadline):
-            # Keyboard focus, unmeasured (a click is a button press, never
-            # matched to a key).
-            self.rd.click(SCREEN_W // 3, SCREEN_H // 2, [])
+            # Keyboard focus in the text, unmeasured (a click is a button
+            # press, never matched to a key), proven to have arrived there.
+            ok, status = self.editor_click(inj, measured=False)
+            if not ok:
+                return ok, status
             for index in range(SETTLE_TYPING_KEYS):
                 self.rd.tap(ord(SETTLE_TYPING_LETTERS[index % len(SETTLE_TYPING_LETTERS)]), inj)
                 time.sleep(SETTLE_TYPING_INTERVAL_S)
@@ -2462,8 +2733,11 @@ class Runner:
             return False
         markers = self.generator.KEYSTROKE_MARKERS
         positions = [where for where in KEYSTROKE_POSITIONS if self.wanted(f"key-{where}")]
-        # Unmeasured focus click inside the text area: keys are not delivered before.
-        self.rd.click(SCREEN_W // 3, SCREEN_H // 2, [])
+        # Unmeasured focus click inside the text: keys are not delivered before.
+        ok, status = self.editor_click([], measured=False)
+        if not ok:
+            phases.append({"name": "key-start", "kind": "interaction", "status": status})
+            return False
         time.sleep(0.3)
         self.wait_ready("app-startup", time.monotonic() + cap)
 
@@ -2582,7 +2856,8 @@ class Runner:
         backend = case.attrs.get("backend", "keyfile")
         on_disk = "profile" in case.attrs
         populated = bool(case.attrs.get("populated"))
-        state_env = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated)
+        legacy_layout = fresh_profile_runs_migration(case)
+        state_env = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated, legacy_layout)
         log_path = rep_dir / "probe.jsonl"
         post_open = bool(case.attrs.get("post_open")) and self.post_open_enabled
         frame_phases = POST_OPEN_FRAME_PHASES if post_open else None
@@ -2617,7 +2892,7 @@ class Runner:
 
         def new_state(log_name: str) -> tuple[dict[str, str], dict[str, str]]:
             """A fresh profile for another measured launch (steady ones warmed up first)."""
-            fresh = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated)
+            fresh = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated, legacy_layout)
             extra_states.append(fresh["STATE_ROOT"])
             fresh_env = self.app_env(variant, fresh, rep_dir / log_name, frame_phases=frame_phases)
             if case.attrs.get("profile") == "steady" and not self.warm_up_profile(rep_dir, fresh_env, self.cap_s):
@@ -2631,7 +2906,7 @@ class Runner:
             recoveries[0] += 1
             if recoveries[0] > 6:
                 return False
-            fresh = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated)
+            fresh = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated, legacy_layout)
             extra_states.append(fresh["STATE_ROOT"])
             rlog = rep_dir / f"probe-r{recoveries[0]}.jsonl"
             renv = self.app_env(variant, fresh, rlog, frame_phases=frame_phases)
@@ -2644,8 +2919,20 @@ class Runner:
             if ok:
                 time.sleep(1.0)
                 if self.rd.available:
-                    # Give the fresh window keyboard focus (unmeasured).
-                    self.rd.click(SCREEN_W // 3, SCREEN_H // 2, [])
+                    # Give the fresh window keyboard focus (unmeasured),
+                    # proven by the probe; the remaining paging and typing
+                    # phases must not run on a window whose keys go
+                    # elsewhere, so a miss ends the case here.
+                    focused, focus_status = False, "not attempted"
+                    for _attempt in range(3):
+                        focused, focus_status = self.editor_click([], measured=False)
+                        if focused:
+                            break
+                        time.sleep(0.5)
+                    if not focused:
+                        phases[-1]["status"] = f"focus-{focus_status}"
+                        self.failures.append(f"{case.id}@{variant}#{rep}: no editor focus after recovery ({focus_status})")
+                        return False
                     time.sleep(0.3)
                     self.wait_ready("app-startup", time.monotonic() + cap)
             return ok
@@ -2819,7 +3106,10 @@ class Runner:
         for index in range(len(files)):
             self.action("win", "select-tab", [self._uint32(index)], deadline)
             self.wait_ready("file-open-complete", deadline)
-            self.rd.click(SCREEN_W // 3, SCREEN_H // 2, [])
+            ok, status = self.editor_click([], measured=False)
+            if not ok:
+                phases.append({"name": "restore", "kind": "settle", "status": f"seed-{status}"})
+                return False
             time.sleep(0.1)
             for char in RECOVERY_TYPED:
                 self.rd.tap(ord(char), [])
@@ -3014,6 +3304,9 @@ class Runner:
                 row["stall"] = stall
                 row["frames"] = frame_gap_p95(parsed, start, end)
                 row["input_to_frame"] = input_to_frame(parsed, phase.get("injections", []), budgets["REFERENCE_FRAME_US"], end)
+                delivery = input_delivery(parsed, row["input_to_frame"], start, end)
+                if delivery is not None:
+                    row["delivery"] = delivery
                 row["im"] = im_summary(parsed, start, end)
                 if phase["name"].startswith("key-"):
                     row["keystrokes"] = keystroke_stalls(parsed, start, end, budgets["B_INTERACT_US"])
@@ -3715,7 +4008,7 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
                 for phase in row.get("phases", [])
                 if phase.get("name") in CARET_PHASES
                 for entry in phase.get("input_to_frame", [])
-                if "latency_us" in entry
+                if editable_latency(entry)
             ]
             return all(latency <= frame_limit for latency in latencies) if latencies else False
 
@@ -3825,7 +4118,7 @@ def budget_verdict(rows: list[dict], budgets: dict, tick: int, slack: int) -> di
             if kind in worst and phase["stall"]["lateness_us"] > worst[kind]:
                 worst[kind] = phase["stall"]["lateness_us"]
                 worst_where[kind] = f"{row['case']}@{row['variant']}#{row.get('rep', 0)}:{phase['name']}"
-            latencies.extend(e["latency_us"] for e in phase.get("input_to_frame", []) if "latency_us" in e)
+            latencies.extend(e["latency_us"] for e in phase.get("input_to_frame", []) if editable_latency(e))
     verdicts = {
         "B_interact": classify(worst["interaction"], tick, slack, budgets["B_INTERACT_US"]),
         "B_settle": classify(worst["settle"], tick, slack, budgets["B_SETTLE_US"]),
@@ -3944,6 +4237,13 @@ def count_frame_records(artifact_dir: Path, row: dict) -> int | None:
     return sum(len(parse_probe_log(log.read_text(encoding="utf-8", errors="replace").splitlines())["records"]["frame"]) for log in logs)
 
 
+def fresh_profile_runs_migration(case: "Case") -> bool:
+    """Whether a case's profile is seeded with the legacy layout key, so its
+    launch runs the one-shot split-view migration: the fresh construction
+    profiles that show no pane (a populated profile names its panes)."""
+    return case.attrs.get("profile") == "fresh" and not case.attrs.get("populated") and not any(key in case.settings for key in ("workspace-sidebar-visible", "properties-sidebar-visible"))
+
+
 def frameless_cases(artifact_dir: Path, rows: list[dict]) -> list[str]:
     """`case@variant#rep` of every frameless row (`frameless_row`)."""
     out = []
@@ -3957,11 +4257,21 @@ def frameless_cases(artifact_dir: Path, rows: list[dict]) -> list[str]:
     return out
 
 
-def run_failed(missing: list[str], integrity: dict, run_info: dict, warnings: dict, frameless: list[str] | None = None) -> bool:
+def run_failed(
+    missing: list[str],
+    integrity: dict,
+    run_info: dict,
+    warnings: dict,
+    frameless: list[str] | None = None,
+    misdirected: list[str] | None = None,
+    withheld: list[str] | None = None,
+) -> bool:
     """The lane fails on missing artifacts, an integrity violation, a driver
-    failure, a warning of a pre-existing blocker the programme has fixed, or a
-    measured case that wrote no `frame` record (`frameless_row`)."""
-    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions")) or bool(frameless)
+    failure, a warning of a pre-existing blocker the programme has fixed, a
+    measured case that wrote no `frame` record (`frameless_row`), a phase
+    whose typing reached no document (`misdirected_phase`), or a phase whose
+    typed text was drawn only in a withheld frame (`withheld_frame_cases`)."""
+    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions")) or bool(frameless) or bool(misdirected) or bool(withheld)
 
 
 def run_storage(artifact_dir: Path, rows: list[dict]) -> dict[str, Any]:
@@ -4050,9 +4360,12 @@ def summarise_cases(rows: list[dict]) -> list[dict]:
             if phase["frames"].get("p95_gap_us") is not None:
                 p["frame_p95"].append(phase["frames"]["p95_gap_us"])
             for e in phase.get("input_to_frame", []):
-                if "latency_us" in e:
+                if editable_latency(e):
                     p["itf_us"].append(e["latency_us"])
                     p["itf_frames"].append(e["frames"])
+                elif "latency_us" in e:
+                    # Keys into a protected document, apart from editable typing.
+                    p.setdefault("itf_protected_us", []).append(e["latency_us"])
             p["im_calls"] += phase.get("im", {}).get("calls", 0)
             mb = phase.get("im", {}).get("max_surrounding_bytes")
             if mb is not None:
@@ -4075,6 +4388,9 @@ def summarise_cases(rows: list[dict]) -> list[dict]:
                 frames = phase.pop("itf_frames")
                 phase["input_to_frame_max_us"] = max(itf) if itf else None
                 phase["input_to_frame_max_frames"] = max(frames) if frames else None
+            if "itf_protected_us" in phase:
+                protected = phase.pop("itf_protected_us")
+                phase["protected_input_to_frame"] = {"keys": len(protected), "max_us": max(protected), "median_us": nearest_rank(protected, 50)}
             if "keys" in phase:
                 keys = phase.pop("keys")
                 phase["keystroke"] = {
@@ -4158,6 +4474,8 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         c3["verdict"] = "not measured (install group runs in the full tier only)"
     missing = [name for name in ("run.json", "results.jsonl", "calibration.json", "fixtures.json", "integrity.json") if not (artifact_dir / name).exists()]
     frameless = frameless_cases(artifact_dir, rows)
+    misdirected = misdirected_cases(rows)
+    withheld = withheld_frame_cases(rows)
     # The C6 verdict (bound-post-open-settle D8) over the post-open rows; with
     # a side-labelled merge (merge-runs --from baseline=DIR --from branch=DIR)
     # it also applies the no-regression rule.
@@ -4185,12 +4503,14 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "cases": summarise_cases(rows),
         "missing_artifacts": missing,
         "frameless_cases": frameless,
+        "misdirected_typing": misdirected,
+        "withheld_typing_frames": withheld,
         "post_open": post_open_report(rows),
         "c6_verdict": c6,
     }
     (artifact_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (artifact_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
-    failed = run_failed(missing, integrity, run_info, warnings, frameless)
+    failed = run_failed(missing, integrity, run_info, warnings, frameless, misdirected, withheld)
     # Window construction is the one budget this lane can enforce
     # (bound-window-construction-dispatch): with
     # RESPONSIVENESS_CONSTRUCTION_ENFORCE=1, a LushText-owned span or a
@@ -4217,6 +4537,8 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "driver_failures": run_info.get("driver_failures", []),
         "fixed_defect_regressions": sorted(warnings.get("regressions", {})),
         "frameless_cases": frameless,
+        "misdirected_typing": misdirected,
+        "withheld_typing_frames": withheld,
         "budget_verdict": derived["budget_verdict"].get("verdict"),
         "construction_over_budget": [f"{c['case']}@{c['variant']}#{c['rep']}: {','.join(c['over_budget'])}" for c in construction_over],
         "fill_in_over_accepted": [f"{c['case']}@{c['variant']}#{c['rep']}: fill-in {c['fill_in_us']} us" for c in fill_in_over],
@@ -4483,6 +4805,10 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- `{key}` ({finding['axiom'] or 'no axiom'}), owner {finding['owner']}: {finding['count']} line(s) in {len(finding['cases'])} case(s). Example: `{finding['example']}`")
     for key, regression in report["warnings"].get("regressions", {}).items():
         lines.append(f"- **REGRESSION** `{key}` ({regression['axiom']}), fixed by {regression['fixed_by']}: {regression['count']} line(s) in {len(regression['cases'])} case(s); the lane fails. Example: `{regression['example']}`")
+    if report.get("misdirected_typing"):
+        lines.append(f"- **TYPING REACHED NO DOCUMENT** in {len(report['misdirected_typing'])} phase(s): their keys arrived outside an editor or inserted nothing, so their input-to-frame figures measure a window with nothing to draw; the lane fails: {', '.join(report['misdirected_typing'][:8])}")
+    if report.get("withheld_typing_frames"):
+        lines.append(f"- **TYPED TEXT DRAWN LATE** in {len(report['withheld_typing_frames'])} phase(s): a key typed into an editable editor was drawn only after the next key was handled while the main loop was free, or never; its latency runs to that frame and the lane fails: {', '.join(report['withheld_typing_frames'][:8])}")
     if report.get("frameless_cases"):
         lines.append(f"- **NO FRAME RECORDS** in {len(report['frameless_cases'])} measured case(s), so first-frame, frame-gap and input-to-frame figures are missing; the lane fails: {', '.join(report['frameless_cases'][:8])}")
     if report["warnings"].get("unclassified"):
@@ -4548,7 +4874,7 @@ def render_markdown(report: dict) -> str:
                 lines.append(f"| {case['case']} | {case['variant']} | {','.join(case['outcomes'])}{flags} | {name} | {phase.get('status')} | | | | |")
                 continue
             lines.append(
-                f"| {case['case']} | {case['variant']} | {','.join(case['outcomes'])}{flags} | {name} | {phase['stall_median_us']} / {phase['stall_max_us']} | {phase['frame_gap_p95_us']} | {phase['input_to_frame_max_us']} / {phase['input_to_frame_max_frames']} | {phase['im_calls']} / {phase['im_max_bytes']} | {phase['at_events']} / {phase['at_max_payload']} |"
+                f"| {case['case']} | {case['variant']} | {','.join(case['outcomes'])}{flags} | {name} | {phase['stall_median_us']} / {phase['stall_max_us']} | {phase['frame_gap_p95_us']} | {phase['input_to_frame_max_us']} / {phase['input_to_frame_max_frames']}{protected_itf_note(phase)} | {phase['im_calls']} / {phase['im_max_bytes']} | {phase['at_events']} / {phase['at_max_payload']} |"
             )
     return "\n".join(lines) + "\n"
 
@@ -4704,7 +5030,7 @@ def preflight(runner: Runner) -> dict[str, Any]:
             # click; retry until the probe IM has served a request.
             time.sleep(0.5)
             for attempt in range(4):
-                runner.rd.click(SCREEN_W // 3, SCREEN_H // 3, injections)
+                runner.editor_click(injections, y_fraction=1 / 3)
                 time.sleep(0.3)
                 runner.rd.tap(ord("a"), injections)
                 time.sleep(1.0)
@@ -5413,6 +5739,120 @@ def self_test() -> int:
     expect(len(attributed) == 2, f"unmeasured injections produce no result ({attributed})")
     expect(attributed[0].get("status") == "no-visible-change", f"a frame after the next handled input is not this input's frame ({attributed[0]})")
     expect(attributed[1].get("latency_us") == 2_000, f"the next input keeps its own frame ({attributed[1]})")
+
+    # Typing that reached no document (investigate-first-keys-without-frames):
+    # a focus click that landed in the workspace sidebar sent every typed key
+    # to the status bar's toggle, and the lane measured a window with nothing
+    # to draw. Text keys are flagged, the probe's targets ride along, and a
+    # verified phase whose keys went elsewhere or inserted nothing fails.
+    typed_inj: list[dict] = []
+    fake_rd.tap(ord("e"), typed_inj)
+    fake_rd.tap(KEY_RIGHT, typed_inj)
+    fake_rd.tap(ord("t"), typed_inj)
+    expect([e.get("inserts", False) for e in typed_inj] == [True, False, True], f"printable keys insert, navigation keys do not ({typed_inj})")
+    base = typed_inj[0]["inject_us"]
+
+    def delivery_log(target: str | None, inserted: int) -> dict:
+        lines = [json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000})]
+        for offset, inj in enumerate(typed_inj):
+            record = {"kind": "input", "t_us": inj["inject_us"] + 300, "window": 1, "event": "key-press", "event_time_ms": offset}
+            if target is not None:
+                record["target"] = target
+            lines.append(json.dumps(record))
+        for index in range(inserted):
+            lines.append(json.dumps({"kind": "mark", "t_us": base + 400 + index, "name": EDITOR_USER_INSERT_MARK}))
+        return parse_probe_log(lines)
+
+    def delivery_of(target: str | None, inserted: int) -> dict | None:
+        parsed_delivery = delivery_log(target, inserted)
+        rows_itf = input_to_frame(parsed_delivery, typed_inj, 8_333)
+        return input_delivery(parsed_delivery, rows_itf, base - 1_000, base + 10_000_000)
+
+    echoed = delivery_of("editor", 2)
+    expect(echoed == {"typed": 2, "undelivered": 0, "to_editor": 2, "to_read_only_editor": 0, "elsewhere": 0, "inserted": 2, "verified": True}, f"two keys into the editor, two insertions ({echoed})")
+    expect(not misdirected_phase(echoed), "keys that reached the editor and inserted pass")
+    sidebar = delivery_of("other", 0)
+    expect(misdirected_phase(sidebar), f"keys that reached the status bar's toggle fail ({sidebar})")
+    swallowed = delivery_of("editor", 1)
+    expect(misdirected_phase(swallowed), f"a key into an editable editor that inserted nothing fails ({swallowed})")
+    protected = delivery_of("read-only-editor", 0)
+    expect(not misdirected_phase(protected), f"keys into a read-only editor (Protected View) insert nothing and pass ({protected})")
+    older = delivery_of(None, 0)
+    expect(older is not None and not older["verified"] and not misdirected_phase(older), f"an older probe without targets is unverified, never failed ({older})")
+    expect(input_delivery(delivery_log("editor", 0), input_to_frame(delivery_log("editor", 0), [typed_inj[1]], 8_333), 0, base + 10_000_000) is None, "a phase that typed no text has no delivery")
+    # Keys that never reached the application leave no input record: the
+    # gate must not pass vacuously because there is no target to judge.
+    silent = parse_probe_log([json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000})])
+    silent_rows = input_to_frame(silent, typed_inj, 8_333)
+    expect([r.get("inserts", False) for r in silent_rows] == [True, False, True], f"a text key with no input record stays a text key ({silent_rows})")
+    unheard = input_delivery(silent, silent_rows, base - 1_000, base + 10_000_000)
+    expect(unheard is not None and unheard["undelivered"] == 2 and misdirected_phase(unheard), f"text keys with no input record at all fail ({unheard})")
+    half = parse_probe_log(
+        [json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000})]
+        + [json.dumps({"kind": "input", "t_us": typed_inj[0]["inject_us"] + 300, "window": 1, "event": "key-press", "event_time_ms": 0, "target": "editor"})]
+        + [json.dumps({"kind": "mark", "t_us": base + 400, "name": EDITOR_USER_INSERT_MARK})]
+    )
+    lost = input_delivery(half, input_to_frame(half, typed_inj, 8_333), base - 1_000, base + 10_000_000)
+    expect(lost is not None and lost["undelivered"] >= 1 and misdirected_phase(lost), f"a verified phase that lost a text key fails ({lost})")
+
+    # A text key into an editable editor always changes what is drawn: a
+    # frame that starts only after the next key was handled, while the loop
+    # was free, is that key's withheld frame, measured and flagged.
+    # Typed 50 ms apart, as the settle-typing phase types.
+    spaced_inj = [dict(inj, inject_us=50_000_000 + index * 50_000) for index, inj in enumerate(typed_inj)]
+    late_log_lines = (
+        [json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000})]
+        + [json.dumps({"kind": "input", "t_us": inj["inject_us"] + 300, "window": 1, "event": "key-press", "event_time_ms": i, "target": "editor"}) for i, inj in enumerate(spaced_inj)]
+        + [json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 1, "frame_time_us": spaced_inj[-1]["inject_us"] + 1_000, "presentation_us": spaced_inj[-1]["inject_us"] + 2_000, "refresh_interval_us": 8333, "source": "presentation"})]
+    )
+    late_log = parse_probe_log(late_log_lines)
+    late_rows = input_to_frame(late_log, spaced_inj, 8_333)
+    expect(late_rows[0].get("withheld_frame") and "latency_us" in late_rows[0], f"an inserted key drawn only after the next key is measured and flagged ({late_rows[0]})")
+    expect(late_rows[0]["latency_us"] == spaced_inj[-1]["inject_us"] + 2_000 - spaced_inj[0]["inject_us"], f"its latency runs to the eventual frame ({late_rows[0]})")
+    expect(late_rows[1].get("status") == "no-visible-change", f"a navigation key that changed nothing keeps the old rule ({late_rows[1]})")
+    beyond = input_to_frame(late_log, spaced_inj, 8_333, horizon_us=spaced_inj[-1]["inject_us"] - 1_000)
+    expect(beyond[0].get("status") == "no-frame" and beyond[0].get("withheld_frame"), f"an inserted key whose first frame starts after the phase is withheld ({beyond[0]})")
+    unrecorded = input_to_frame(parse_probe_log(late_log_lines[:-1]), spaced_inj, 8_333)
+    expect(unrecorded[-1].get("status") == "no-frame" and not unrecorded[-1].get("withheld_frame"), f"a key after which the log holds no frame is not judged ({unrecorded[-1]})")
+    late_row = {"case": "dense/500/wrap-off", "variant": "plain", "rep": 0, "phases": [{"name": "type-during-settle", "input_to_frame": late_rows}]}
+    expect(withheld_frame_cases([late_row]) == ["dense/500/wrap-off@plain#0:type-during-settle"], "the phase with a withheld frame is named")
+    expect(run_failed([], {"violations": []}, {"driver_failures": []}, {"regressions": {}}, [], [], ["x"]), "a withheld typing frame fails the lane")
+    on_time_log = parse_probe_log(
+        [json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000})]
+        + [json.dumps({"kind": "input", "t_us": inj["inject_us"] + 300, "window": 1, "event": "key-press", "event_time_ms": i, "target": "editor"}) for i, inj in enumerate(spaced_inj)]
+        + [json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": i, "frame_time_us": inj["inject_us"] + 1_000, "presentation_us": inj["inject_us"] + 2_000, "refresh_interval_us": 8333, "source": "presentation"}) for i, inj in enumerate(spaced_inj)]
+    )
+    on_time = withheld_frame_cases([{"case": "c", "variant": "v", "rep": 0, "phases": [{"name": "p", "input_to_frame": input_to_frame(on_time_log, spaced_inj, 8_333)}]}])
+    expect(on_time == [], f"keys drawn in their own frames are not withheld ({on_time})")
+
+    # A key into a protected (read-only) editor is reported apart.
+    protected_log = parse_probe_log(
+        [json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000})]
+        + [json.dumps({"kind": "input", "t_us": typed_inj[0]["inject_us"] + 300, "window": 1, "event": "key-press", "event_time_ms": 0, "target": "read-only-editor"})]
+        + [json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 1, "frame_time_us": typed_inj[0]["inject_us"] + 1_000, "presentation_us": typed_inj[0]["inject_us"] + 2_000, "refresh_interval_us": 8333, "source": "presentation"})]
+    )
+    protected_rows = input_to_frame(protected_log, typed_inj[:1], 8_333)
+    expect(protected_rows[0].get("protected") and not editable_latency(protected_rows[0]), f"a key into a protected document is kept out of editable latency ({protected_rows[0]})")
+
+    misdirected_row = {"case": "dense/500/wrap-off", "variant": "plain", "rep": 1, "phases": [{"name": "type-during-settle", "delivery": sidebar}, {"name": "click"}]}
+    expect(misdirected_cases([misdirected_row]) == ["dense/500/wrap-off@plain#1:type-during-settle"], "the misdirected phase is named")
+    expect(run_failed([], {"violations": []}, {"driver_failures": []}, {"regressions": {}}, [], ["dense/500/wrap-off@plain#1:type-during-settle"]), "typing that reached no document fails the lane")
+
+    class GeometryOnly:
+        def snapshot(self) -> dict:
+            return {"window": {"surfaces": {"workspace_sidebar_visible": True}, "visual_geometry": {"surfaces": [{"name": "workspace-sidebar", "rect": {"x": 0, "y": 94, "width": 360, "height": 673}}, {"name": "source-view", "rect": {"x": 360, "y": 94, "width": 920, "height": 673}}]}}}
+
+    expect(Runner.editor_point(GeometryOnly()) == (666, 430), f"the focus click aims inside the editor's text, past the sidebar ({Runner.editor_point(GeometryOnly())})")
+
+    class NoGeometry:
+        def snapshot(self) -> dict:
+            return {"window": {"surfaces": {"workspace_sidebar_visible": False}, "visual_geometry": {"surfaces": [{"name": "source-view", "rect": None, "absence_reason": "no-active-editor"}]}}}
+
+    expect(Runner.editor_point(NoGeometry()) is None, "no editor geometry, no point")
+    sheet = [{"name": "source-view", "rect": {"x": 0, "y": 94, "width": 1280, "height": 673}}, {"name": "document-properties", "rect": {"x": 0, "y": 347, "width": 1280, "height": 420}}]
+    expect(editor_point_in(sheet) == (426, 318), f"an open properties bottom sheet is clicked around ({editor_point_in(sheet)})")
+    overlay = [{"name": "source-view", "rect": {"x": 0, "y": 94, "width": 1280, "height": 673}}, {"name": "workspace-sidebar", "rect": {"x": 0, "y": 94, "width": 640, "height": 673}}]
+    expect(editor_point_in(overlay) == (640, 430), f"an overlaid sidebar is clicked around ({editor_point_in(overlay)})")
     stalled_log = attribution_log + [json.dumps({"kind": "late", "t_us": home_inject + 100_400, "ready_us": home_inject + 2_000, "lateness_us": 98_400})]
     stalled = input_to_frame(parse_probe_log(stalled_log), fake_inj + [right], 8_333)
     expect(stalled[0].get("latency_us") == 102_000 - 0, f"while the loop was stalled the late frame still counts ({stalled[0]})")
@@ -5544,6 +5984,14 @@ def self_test() -> int:
     expect(construction_case_id("fresh", "keyfile") == "baseline/small" and construction_case_id("steady", "dconf") == "baseline/small/steady-dconf", "construction case ids")
     populated_case = next((c for c in full if c.id == POPULATED_CASE_ID), None)
     expect(populated_case is not None and {k: populated_case.attrs.get(k) for k in ("profile", "backend", "populated")} == {"profile": "steady", "backend": "keyfile", "populated": True} and populated_case.settings.get("workspace-sidebar-visible") is True and populated_case.settings.get("properties-sidebar-visible") is True, "the populated profile shows both panes over a steady keyfile profile")
+    by_id = {c.id: c for c in full}
+    expect(
+        fresh_profile_runs_migration(by_id["baseline/small"])
+        and fresh_profile_runs_migration(by_id[construction_case_id("fresh", "dconf")])
+        and not fresh_profile_runs_migration(by_id[construction_case_id("steady", "keyfile")])
+        and not fresh_profile_runs_migration(populated_case),
+        "the fresh profiles that show no pane run the legacy split-view migration; steady and populated ones are seeded migrated",
+    )
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
         entries = seed_populated_workspace(root / "data", root / "workspace")

@@ -79,6 +79,14 @@ pub const HIGHLIGHT_UPDATED_MARK: &str = "highlight_updated";
 /// `upper`: an unspanned dispatch that ends at it was line validation.
 pub const ADJUSTMENT_UPPER_MARK: &str = "adjustment_upper";
 
+/// The mark recorded after every text insertion into an editor buffer made
+/// inside a user action (typing, paste), never by a load or replacement
+/// install (`investigate-first-keys-without-frames`): the lane counts one per
+/// typed key, so a key that reached no editor (a focus click that missed the
+/// text view) fails the phase instead of being measured as a key that drew
+/// nothing. It does not arm the settle sentinel.
+pub const EDITOR_USER_INSERT_MARK: &str = "editor_user_insert";
+
 /// The record of a `G_PRIORITY_LOW` settle sentinel idle that dispatched
 /// after the last post-open span or mark (design D1, review R25): no
 /// validation or highlighting idle, which run at higher priorities, was
@@ -133,6 +141,9 @@ pub enum ProbeInputKind {
     ButtonPress,
     /// A pointer button release.
     ButtonRelease,
+    /// A pointer motion: the lane reads where its pointer moves arrive in
+    /// window coordinates before it clicks.
+    Motion,
 }
 
 impl ProbeInputKind {
@@ -143,6 +154,36 @@ impl ProbeInputKind {
             Self::Scroll => "scroll",
             Self::ButtonPress => "button-press",
             Self::ButtonRelease => "button-release",
+            Self::Motion => "motion",
+        }
+    }
+}
+
+/// Where an input event was headed when the window's capture handler saw it
+/// (`investigate-first-keys-without-frames`): for a key, the window's focus
+/// widget; for a pointer button, the widget under the pointer. An editor is
+/// an editor page's text view or one of its descendants (its gutter), never a
+/// minimap or a preview code block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeInputTarget {
+    /// An editable editor text view.
+    Editor,
+    /// An editor text view that is not editable (Protected View, a save in
+    /// progress): typed keys reach it and insert nothing.
+    ReadOnlyEditor,
+    /// Any other widget.
+    Other,
+    /// No widget (no focus, or nothing under the pointer).
+    Nothing,
+}
+
+impl ProbeInputTarget {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Editor => "editor",
+            Self::ReadOnlyEditor => "read-only-editor",
+            Self::Other => "other",
+            Self::Nothing => "none",
         }
     }
 }
@@ -241,6 +282,12 @@ pub enum ProbeRecord {
         event: ProbeInputKind,
         /// The event's own compositor timestamp (`gdk_event_get_time`, ms).
         event_time_ms: u32,
+        /// Where the event was headed: the focus widget for a key, the
+        /// widget under the pointer for a button, `None` for a scroll.
+        target: Option<ProbeInputTarget>,
+        /// The pointer position in whole window pixels, for a button or a
+        /// motion.
+        position: Option<(i32, i32)>,
     },
     /// One probe input-method request for the surrounding text.
     Im {
@@ -378,13 +425,22 @@ impl ProbeRecord {
                 window,
                 event,
                 event_time_ms,
+                target,
+                position,
             } => {
                 let _ = write!(
                     line,
                     "{{\"kind\":\"input\",\"t_us\":{t_us},\"window\":{window},\
-                     \"event\":\"{}\",\"event_time_ms\":{event_time_ms}}}",
+                     \"event\":\"{}\",\"event_time_ms\":{event_time_ms}",
                     event.as_str()
                 );
+                if let Some(target) = target {
+                    let _ = write!(line, ",\"target\":\"{}\"", target.as_str());
+                }
+                if let Some((x, y)) = position {
+                    let _ = write!(line, ",\"x\":{x},\"y\":{y}");
+                }
+                line.push('}');
             }
             Self::Im {
                 t_us,
@@ -813,6 +869,8 @@ mod tests {
                 window: 1,
                 event: ProbeInputKind::Scroll,
                 event_time_ms: 123,
+                target: None,
+                position: None,
             },
             ProbeRecord::Im {
                 t_us: 60,
@@ -831,6 +889,22 @@ mod tests {
             ProbeRecord::Mark {
                 t_us: 90,
                 name: HIGHLIGHT_UPDATED_MARK,
+            },
+            ProbeRecord::Input {
+                t_us: 100,
+                window: 1,
+                event: ProbeInputKind::ButtonPress,
+                event_time_ms: 124,
+                target: Some(ProbeInputTarget::Other),
+                position: Some((336, 400)),
+            },
+            ProbeRecord::Input {
+                t_us: 110,
+                window: 1,
+                event: ProbeInputKind::KeyPress,
+                event_time_ms: 125,
+                target: Some(ProbeInputTarget::Editor),
+                position: None,
             },
         ]
         .map(|record| record.to_json_line());
@@ -877,6 +951,16 @@ mod tests {
         assert_eq!(
             lines[9],
             "{\"kind\":\"mark\",\"t_us\":90,\"name\":\"highlight_updated\"}\n"
+        );
+        assert_eq!(
+            lines[10],
+            "{\"kind\":\"input\",\"t_us\":100,\"window\":1,\"event\":\"button-press\",\
+             \"event_time_ms\":124,\"target\":\"other\",\"x\":336,\"y\":400}\n"
+        );
+        assert_eq!(
+            lines[11],
+            "{\"kind\":\"input\",\"t_us\":110,\"window\":1,\"event\":\"key-press\",\
+             \"event_time_ms\":125,\"target\":\"editor\"}\n"
         );
         for line in lines {
             assert_eq!(line.matches('\n').count(), 1, "{line}");

@@ -1507,6 +1507,376 @@ fn test_initial_focus_matches_a_composed_window() {
     }
 }
 
+/// Whether the window's keyboard focus is the selected editor's text view.
+fn selected_editor_has_focus(window: &LushtextWindow) -> bool {
+    let Some(editor) = window.imp().tab_view.selected_page().and_then(|page| {
+        page.child()
+            .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+            .ok()
+    }) else {
+        return false;
+    };
+    gtk4::prelude::GtkWindowExt::focus(window)
+        .is_some_and(|focus| &focus == editor.source_view().upcast_ref::<gtk4::Widget>())
+}
+
+/// A document opened from the command line or a file manager takes the
+/// keyboard: its first typed characters go into the document
+/// (`investigate-first-keys-without-frames`). GTK picks a window's initial
+/// focus when it maps, before any activation page exists, so without the
+/// handoff the keys went to the status bar's sidebar toggle, and typing after
+/// opening a document showed nothing. Staged and collapsed composition agree.
+#[test]
+fn test_an_activation_open_gives_the_opened_editor_keyboard_focus() {
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let path = dir.path().join("typed-after-open.txt");
+    fixture::write_text(&path, "type here\n");
+    for collapsed in [true, false] {
+        seed_layout(true, false, 1600, 900);
+        let app = app();
+        set_composition_collapsed_for_test(collapsed);
+        app.open(&[gio::File::for_path(&path)], "");
+        flush_events();
+        set_composition_collapsed_for_test(false);
+        let window = lushtext_windows(&app).pop().expect("a window");
+        wait_composed(&window);
+        wait_until(COMPOSED, || window.imp().tab_view.n_pages() == 1);
+        let focused = crate::common::wait_until_or_false(Duration::from_secs(2), || {
+            selected_editor_has_focus(&window)
+        });
+        let region = focus_region(&window);
+        window.destroy();
+        flush_events();
+        assert!(
+            focused,
+            "the opened document's editor has keyboard focus (collapsed {collapsed}); focus is {region}"
+        );
+    }
+}
+
+/// A window that restores its session at startup gives the selected document
+/// the keyboard too: the restored tabs open after GTK chose the initial focus.
+#[test]
+fn test_a_restored_session_gives_the_selected_editor_keyboard_focus() {
+    let dir = tempfile::tempdir().expect("session tempdir");
+    let path = dir.path().join("restored-typing.txt");
+    fixture::write_text(&path, "restored\n");
+    let data_dir = lushtext_core::services::json_store::data_dir();
+    lushtext_core::services::session_service::save(&data_dir, &session_with(&path))
+        .expect("seed the session");
+    seed_layout(true, false, 1600, 900);
+    let app = app();
+    app.activate();
+    flush_events();
+    let window = lushtext_windows(&app).pop().expect("a window");
+    wait_composed(&window);
+    wait_until(COMPOSED, || {
+        window.imp().tab_view.n_pages() == 1 && !window.session_restore_evidence().restoring
+    });
+    let focused = crate::common::wait_until_or_false(Duration::from_secs(2), || {
+        selected_editor_has_focus(&window)
+    });
+    let region = focus_region(&window);
+    window.destroy();
+    flush_events();
+    lushtext_core::services::session_service::save(&data_dir, &SessionData::default())
+        .expect("reset the session");
+    assert!(
+        focused,
+        "the restored document's editor has keyboard focus; focus is {region}"
+    );
+}
+
+/// Record the inline-alert announcement count at the moment the selected
+/// editor first takes keyboard focus.
+fn alert_announcements_at_focus(window: &LushtextWindow) -> Rc<std::cell::Cell<Option<u64>>> {
+    let at_focus: Rc<std::cell::Cell<Option<u64>>> = Rc::default();
+    let seen = Rc::clone(&at_focus);
+    window.connect_notify_local(Some("focus-widget"), move |window, _| {
+        if seen.get().is_none() && selected_editor_has_focus(window) {
+            seen.set(Some(
+                lushtext_core::ui::window::notification_evidence(window)
+                    .announcements
+                    .editor_info_bar,
+            ));
+        }
+    });
+    at_focus
+}
+
+/// A protected document's one-time "View-Only: Very Long Lines" alert is
+/// announced after the opened document took the keyboard, never before it:
+/// a screen reader interrupts speech on a focus change, so a handoff after
+/// the announcement would cut it off. Covers a command-line open and a
+/// startup session restore.
+#[test]
+fn test_the_focus_handoff_precedes_a_protected_documents_alert_announcement() {
+    let dir = tempfile::tempdir().expect("protected tempdir");
+    let path = dir.path().join("protected-focus.txt");
+    let giant = "giant ".repeat(
+        usize::try_from(lushtext_core::model::document_scale::L_PROTECT_EDIT / 6 + 2)
+            .expect("a small length"),
+    );
+    fixture::write_text(&path, &format!("short head line\n{giant}\ntail line\n"));
+    let data_dir = lushtext_core::services::json_store::data_dir();
+    for restore in [false, true] {
+        seed_layout(true, false, 1600, 900);
+        if restore {
+            lushtext_core::services::session_service::save(&data_dir, &session_with(&path))
+                .expect("seed the session");
+        }
+        let app = app();
+        // Held before the content stage, so the focus observer is connected
+        // before any activation turn or handoff can run.
+        set_composition_hold_before_for_test(Some(CompositionStage::Content));
+        if restore {
+            app.activate();
+        } else {
+            app.open(&[gio::File::for_path(&path)], "");
+        }
+        wait_until(COMPOSED, || !lushtext_windows(&app).is_empty());
+        set_composition_hold_before_for_test(None);
+        let window = lushtext_windows(&app).pop().expect("a window");
+        let at_focus = alert_announcements_at_focus(&window);
+        wait_held_before(&window, CompositionStage::Content);
+        window.release_composition_hold_for_test();
+        wait_composed(&window);
+        let announced = crate::common::wait_until_or_false(Duration::from_secs(60), || {
+            lushtext_core::ui::window::notification_evidence(&window)
+                .announcements
+                .editor_info_bar
+                >= 1
+        });
+        let region = focus_region(&window);
+        let focused = selected_editor_has_focus(&window);
+        window.destroy();
+        flush_events();
+        if restore {
+            lushtext_core::services::session_service::save(&data_dir, &SessionData::default())
+                .expect("reset the session");
+        }
+        assert!(
+            announced,
+            "the View-Only alert is announced (restore {restore})"
+        );
+        assert!(
+            focused,
+            "the protected document has the keyboard (restore {restore}); focus is {region}"
+        );
+        assert_eq!(
+            at_focus.get(),
+            Some(0),
+            "the editor took focus before any inline alert was announced (restore {restore})"
+        );
+    }
+}
+
+/// Where a held-composition restore leaves the keyboard: the focus widget
+/// right after `setup` ran (before the restore) and once composition finished.
+struct HeldRestoreFocus {
+    before: Option<gtk4::Widget>,
+    after: Option<gtk4::Widget>,
+    editor_focused: bool,
+    region: String,
+}
+
+/// Hold composition before its last reveal (the content and the sidebar are
+/// shown, composition is not complete), let `setup` put the user somewhere,
+/// restore a session with one document, then release composition. `cleanup`
+/// closes whatever `setup` opened before the window is destroyed.
+fn held_restore_focus(
+    setup: &dyn Fn(&LushtextWindow),
+    cleanup: &dyn Fn(&LushtextWindow),
+) -> HeldRestoreFocus {
+    let dir = tempfile::tempdir().expect("session tempdir");
+    let path = dir.path().join("held-restore.txt");
+    fixture::write_text(&path, "held restore\n");
+    seed_layout(true, false, 1600, 900);
+    let app = app();
+    set_composition_hold_before_for_test(Some(CompositionStage::Properties));
+    let window = LushtextWindow::new(app.upcast_ref());
+    set_composition_hold_before_for_test(None);
+    window.present();
+    wait_held_before(&window, CompositionStage::Properties);
+    wait_startup_restore_settled(&window);
+    setup(&window);
+    flush_events();
+    let before = gtk4::prelude::GtkWindowExt::focus(&window);
+    window.restore_session_for_test(session_with(&path));
+    wait_until(COMPOSED, || {
+        window.imp().tab_view.n_pages() == 1
+            && !window.session_restore_evidence().restoring
+            && no_tab_is_loading(&window)
+    });
+    window.release_composition_hold_for_test();
+    wait_composed(&window);
+    // Past the handoff's retry window (six 30 ms attempts).
+    flush_after_delay(Duration::from_millis(300));
+    let after = gtk4::prelude::GtkWindowExt::focus(&window);
+    let editor_focused = selected_editor_has_focus(&window);
+    let region = focus_region(&window);
+    cleanup(&window);
+    flush_events();
+    window.destroy();
+    flush_events();
+    HeldRestoreFocus {
+        before,
+        after,
+        editor_focused,
+        region,
+    }
+}
+
+/// Assert the restore kept the focus `setup` gave the user.
+fn assert_user_focus_kept(case: &str, outcome: &HeldRestoreFocus) {
+    assert!(
+        outcome.before.is_some(),
+        "{case}: the setup put the focus somewhere"
+    );
+    assert!(
+        !outcome.editor_focused,
+        "{case}: the restored document must not take the user's focus; focus is {}",
+        outcome.region
+    );
+    assert_eq!(
+        outcome.after, outcome.before,
+        "{case}: the user's focus widget is kept; focus is {}",
+        outcome.region
+    );
+}
+
+fn no_cleanup(_: &LushtextWindow) {}
+
+/// The control for the cases below: with nobody touching the window during a
+/// held composition, the restored document does take the keyboard.
+#[test]
+fn test_a_held_restore_hands_an_untouched_window_to_the_document() {
+    let outcome = held_restore_focus(&|_| {}, &no_cleanup);
+    assert!(
+        outcome.editor_focused,
+        "the restored document takes the keyboard; focus is {}",
+        outcome.region
+    );
+}
+
+/// Focus the user moved into the workspace sidebar is kept.
+#[test]
+fn test_a_held_restore_keeps_focus_in_the_sidebar() {
+    let outcome = held_restore_focus(
+        &|window| {
+            let sidebar = window.imp().sidebar.get();
+            assert!(
+                sidebar.child_focus(gtk4::DirectionType::TabForward),
+                "the sidebar takes focus"
+            );
+            assert!(focus_region(window).starts_with("sidebar:"));
+        },
+        &no_cleanup,
+    );
+    assert_user_focus_kept("sidebar", &outcome);
+}
+
+/// A dialog the user opened keeps the keyboard.
+#[test]
+fn test_a_held_restore_keeps_focus_in_an_open_dialog() {
+    use libadwaita::prelude::*;
+    let dialog: Rc<RefCell<Option<libadwaita::AlertDialog>>> = Rc::default();
+    let shown = Rc::clone(&dialog);
+    let outcome = held_restore_focus(
+        &move |window| {
+            let alert =
+                libadwaita::AlertDialog::new(Some("Held restore"), Some("A dialog is open"));
+            alert.add_response("close", "Close");
+            alert.present(Some(window));
+            wait_until(COMPOSED, || {
+                libadwaita::prelude::AdwApplicationWindowExt::visible_dialog(window).is_some()
+                    && gtk4::prelude::GtkWindowExt::focus(window).is_some_and(|focus| {
+                        focus.is_ancestor(&alert) || focus == *alert.upcast_ref::<gtk4::Widget>()
+                    })
+            });
+            shown.replace(Some(alert));
+        },
+        &|_| {
+            if let Some(alert) = dialog.take() {
+                alert.force_close();
+            }
+        },
+    );
+    assert_user_focus_kept("dialog", &outcome);
+}
+
+/// The command palette the user opened keeps the keyboard.
+#[test]
+fn test_a_held_restore_keeps_focus_in_the_command_palette() {
+    let outcome = held_restore_focus(
+        &|window| {
+            activate(window, "toggle-command-palette", None);
+            wait_until(COMPOSED, || window.imp().palette_revealer.reveals_child());
+            flush_after_delay(Duration::from_millis(60));
+        },
+        &|window| {
+            if window.imp().palette_revealer.reveals_child() {
+                activate(window, "toggle-command-palette", None);
+            }
+        },
+    );
+    assert_user_focus_kept("command palette", &outcome);
+}
+
+/// The Open popover (Ctrl+K) keeps the keyboard: focus in a popover the
+/// header bar owns is not the window chrome.
+#[test]
+fn test_a_held_restore_keeps_focus_in_the_open_popover() {
+    let outcome = held_restore_focus(
+        &|window| {
+            activate(window, "open-recent", None);
+            wait_until(COMPOSED, || {
+                gtk4::prelude::GtkWindowExt::focus(window).is_some_and(|focus| {
+                    focus.native().is_some_and(|native| {
+                        native.upcast_ref::<gtk4::Widget>() != window.upcast_ref::<gtk4::Widget>()
+                    })
+                })
+            });
+        },
+        &|window| window.imp().open_menu_button.popdown(),
+    );
+    assert_user_focus_kept("Open popover", &outcome);
+}
+
+/// A key the user pressed in the window keeps any focus, even on the chrome
+/// where GTK's initial focus lands (a screen-reader user tabbing through the
+/// header and status bars while the session restores).
+#[test]
+fn test_a_held_restore_keeps_focus_after_a_key_typed_into_the_chrome() {
+    let outcome = held_restore_focus(
+        &|window| {
+            let status_bar = window.imp().status_bar.get();
+            assert!(
+                status_bar.child_focus(gtk4::DirectionType::TabForward),
+                "the status bar takes focus"
+            );
+            assert!(focus_region(window).starts_with("status:"));
+            emit_user_input_latch_key(window, gtk4::gdk::Key::Tab);
+        },
+        &no_cleanup,
+    );
+    assert_user_focus_kept("key typed into the chrome", &outcome);
+    assert!(outcome.region.starts_with("status:"), "{}", outcome.region);
+}
+
+/// Emit a key press on the window's own capture-phase user-input latch, the
+/// controller a real key press reaches first.
+fn emit_user_input_latch_key(window: &LushtextWindow, key: gtk4::gdk::Key) {
+    let controllers = window.observe_controllers();
+    let latch = (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index))
+        .filter_map(|object| object.downcast::<gtk4::EventControllerKey>().ok())
+        .find(|controller| controller.name().as_deref() == Some("lushtext-user-input-latch"))
+        .expect("the window installs the user-input latch");
+    let args: [&dyn ToValue; 3] = [&key, &0u32, &gtk4::gdk::ModifierType::empty()];
+    let _: bool = glib::object::ObjectExt::emit_by_name(&latch, "key-pressed", &args);
+}
+
 // --- The evidence surface's driven proofs ----------------------------------
 
 /// Proof 1 of 3 — reading must not mutate, across every operation that takes

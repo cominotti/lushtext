@@ -4,7 +4,7 @@
 //!
 //! **Cross-cutting coordination with two owning workflows**, `WFR-COMMAND-PALETTE`
 //! and `WFR-WORKSPACE-TREE`; it carries no role name deliberately, in the shape
-//! `editor_focus.rs` already uses. Its pure half is
+//! `editor_focus/` already uses. Its pure half is
 //! [`crate::model::attention_refresh`], shared for the same reason.
 //!
 //! # Why this exists

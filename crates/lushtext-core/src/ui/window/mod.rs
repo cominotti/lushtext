@@ -211,6 +211,9 @@ impl LushtextWindow {
         stages.run("transient_dismissal", || {
             window.setup_transient_surface_dismissal();
         });
+        stages.run("opened_document_focus", || {
+            window.setup_opened_document_focus();
+        });
         stages.run("theme_selector", || window.setup_theme_selector());
         stages.run("preview_actions", || {
             preview::setup_preview_actions(&window);

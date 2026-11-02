@@ -262,7 +262,22 @@ affordance) are absent until their revealer opens. Accessible metadata is set
 when the window is constructed, so nothing changes about a surface's name,
 role or description when it appears. A keyboard path that needs a staged
 surface (`F9`, the sidebar toggle, editor focus) reveals it first, so no key
-press is lost during composition. `make accessibility-smoke` waits on
+press is lost during composition. A document opened from the command line, a file
+manager or the restored session takes keyboard focus when it opens: GTK gives
+a window its initial focus when it is shown, before any document page exists,
+and that pick (the status bar's sidebar toggle) used to keep the keyboard, so
+the first characters typed after opening a document went nowhere. The handoff
+happens only when the open added or selected a page in that window, and only
+while the focus is still where GTK put it: unset, or on the window's own
+chrome (header bar, tab strip, status bar). It never takes focus from a dialog,
+an open transient surface, a popover or menu (the Open popover, `Ctrl+K`, and
+the tab menus are the user's surfaces even though the chrome owns them), or a
+widget the user moved focus to, and once the window has received any key or
+button press since it was mapped it moves nothing: a screen-reader user
+tabbing through the chrome while a session restores keeps their place
+(`investigate-first-keys-without-frames`). The handoff happens before the
+document's inline alerts are announced, so the focus change never cuts off a
+one-time announcement such as Protected View's "View-Only: Very Long Lines". `make accessibility-smoke` waits on
 `accessibility-settled`, which includes the `window-composition` blocker.
 
 ### Protected View and the Line Inspector

@@ -19677,7 +19677,7 @@ fn test_startup_format_gate_blocks_future_session_and_resumes_after_start_fresh(
         "session restore must wait behind the startup format gate"
     );
 
-    window.open_document_from_activation(&activation_path);
+    let _ = window.open_document_from_activation(&activation_path);
     flush_events();
     assert_eq!(
         window

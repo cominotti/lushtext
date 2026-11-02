@@ -434,10 +434,10 @@ mod measurement {
     use super::LatenessWatchdog;
     use crate::services::responsiveness_log::{
         ADJUSTMENT_UPPER_MARK, DEFAULT_FRAME_PHASE_FRAMES, DEFAULT_LATE_THRESHOLD_US,
-        EVIDENCE_CHANNEL_CAPACITY, EvidenceWriter, FRAME_PHASES_ENV, FrameTimingsQueue,
-        FrameTimingsState, HIGHLIGHT_UPDATED_MARK, LatenessAggregator, ProbeImTrigger,
-        ProbeInputKind, ProbeRecord, SETTLE_SENTINEL_MARK, arms_settle_sentinel,
-        frame_phase_frames,
+        EDITOR_USER_INSERT_MARK, EVIDENCE_CHANNEL_CAPACITY, EvidenceWriter, FRAME_PHASES_ENV,
+        FrameTimingsQueue, FrameTimingsState, HIGHLIGHT_UPDATED_MARK, LatenessAggregator,
+        ProbeImTrigger, ProbeInputKind, ProbeInputTarget, ProbeRecord, SETTLE_SENTINEL_MARK,
+        arms_settle_sentinel, frame_phase_frames,
     };
 
     const LOG_ENV: &str = "LUSHTEXT_RESPONSIVENESS_LOG";
@@ -537,6 +537,19 @@ mod measurement {
             buffer.connect_local("highlight-updated", false, |_| {
                 record_mark(HIGHLIGHT_UPDATED_MARK);
                 None
+            });
+            // Typed text arrives inside a user action (GtkTextView's
+            // `gtk_text_buffer_insert_interactive_at_cursor`); load and
+            // replacement installs never open one.
+            let user_action = Rc::new(Cell::new(0u32));
+            let depth = Rc::clone(&user_action);
+            buffer.connect_begin_user_action(move |_| depth.set(depth.get().saturating_add(1)));
+            let depth = Rc::clone(&user_action);
+            buffer.connect_end_user_action(move |_| depth.set(depth.get().saturating_sub(1)));
+            buffer.connect_insert_text(move |_, _, _| {
+                if user_action.get() > 0 {
+                    record_mark(EDITOR_USER_INSERT_MARK);
+                }
             });
         }
         let observed_upper = Rc::new(Cell::new(false));
@@ -756,14 +769,18 @@ mod measurement {
         true
     }
 
-    /// Stamp `event` once, however many hooked widgets see it.
-    fn stamp_input(window: u32, event: &gtk4::gdk::Event) {
+    /// Stamp `event` once, however many hooked widgets see it. `host` is the
+    /// toplevel the event arrived in (for a hosted dialog, the window hosting
+    /// it): its focus widget is a key's target and its surface the frame a
+    /// button's or a motion's position is read in.
+    fn stamp_input(window: u32, host: &gtk4::Window, event: &gtk4::gdk::Event) {
         let kind = match event.event_type() {
             gtk4::gdk::EventType::KeyPress => ProbeInputKind::KeyPress,
             gtk4::gdk::EventType::KeyRelease => ProbeInputKind::KeyRelease,
             gtk4::gdk::EventType::Scroll => ProbeInputKind::Scroll,
             gtk4::gdk::EventType::ButtonPress => ProbeInputKind::ButtonPress,
             gtk4::gdk::EventType::ButtonRelease => ProbeInputKind::ButtonRelease,
+            gtk4::gdk::EventType::MotionNotify => ProbeInputKind::Motion,
             _ => return,
         };
         let Some(probe) = probe() else { return };
@@ -777,21 +794,29 @@ mod measurement {
             return;
         }
         probe.last_input.replace(Some(event.clone()));
+        let t_us = glib::monotonic_time();
+        let (target, position) = input_target(host, kind, event);
         probe.writer.send(ProbeRecord::Input {
-            t_us: glib::monotonic_time(),
+            t_us,
             window,
             event: kind,
             event_time_ms: event.time(),
+            target,
+            position,
         });
     }
 
     /// A capture-phase input stamp on `widget` (a window, or a dialog it
-    /// hosts).
-    fn add_input_stamp(widget: &impl IsA<gtk4::Widget>, window: u32) {
+    /// hosts), whose events arrive in the toplevel `host`.
+    fn add_input_stamp(widget: &impl IsA<gtk4::Widget>, window: u32, host: &gtk4::Window) {
         let input = gtk4::EventControllerLegacy::new();
         input.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        // Weak: the controller lives on `host` or one of its descendants.
+        let host = host.downgrade();
         input.connect_event(move |_, event| {
-            stamp_input(window, event);
+            if let Some(host) = host.upgrade() {
+                stamp_input(window, &host, event);
+            }
             glib::Propagation::Proceed
         });
         widget.add_controller(input);
@@ -813,11 +838,13 @@ mod measurement {
             if !first_hook(dialog.upcast_ref()) {
                 return;
             }
-            add_input_stamp(&dialog, id);
-            if let Some(root) = dialog.root().and_downcast::<gtk4::Window>()
-                && root != *window.upcast_ref::<gtk4::Window>()
-            {
-                hook_window(&root);
+            let host = window.upcast_ref::<gtk4::Window>();
+            match dialog.root().and_downcast::<gtk4::Window>() {
+                Some(root) if root != *host => {
+                    add_input_stamp(&dialog, id, &root);
+                    hook_window(&root);
+                }
+                _ => add_input_stamp(&dialog, id, host),
             }
         });
     }
@@ -827,7 +854,7 @@ mod measurement {
             return;
         }
         let id = next_window_id();
-        add_input_stamp(window, id);
+        add_input_stamp(window, id, window);
         hook_dialogs(window, id);
         let hooked = Rc::new(Cell::new(false));
         let hook_clock = move |widget: &gtk4::Window| {
@@ -845,6 +872,71 @@ mod measurement {
             hook_clock(window);
         }
         window.connect_realize(move |window| hook_clock(window));
+    }
+
+    /// Where an input event is headed (`ProbeInputTarget`): a key goes to the
+    /// window's focus widget, a button to the widget under the pointer. A
+    /// scroll records neither.
+    fn input_target(
+        window: &gtk4::Window,
+        kind: ProbeInputKind,
+        event: &gtk4::gdk::Event,
+    ) -> (Option<ProbeInputTarget>, Option<(i32, i32)>) {
+        match kind {
+            ProbeInputKind::KeyPress | ProbeInputKind::KeyRelease => {
+                let focus = GtkWindowExt::focus(window);
+                (Some(classify_target(focus.as_ref())), None)
+            }
+            ProbeInputKind::ButtonPress
+            | ProbeInputKind::ButtonRelease
+            | ProbeInputKind::Motion => {
+                let Some((x, y)) = event.position() else {
+                    return (Some(ProbeInputTarget::Nothing), None);
+                };
+                // The event is in surface coordinates; the window's own
+                // coordinates are offset by its CSD shadow and border.
+                let (x, y) = window.native().map_or((x, y), |native| {
+                    let (dx, dy) = native.surface_transform();
+                    (x - dx, y - dy)
+                });
+                let picked = window.pick(x, y, gtk4::PickFlags::DEFAULT);
+                // Whole pixels: enough to place a click, and `Eq` records.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "window coordinates are far inside i32; `as` saturates"
+                )]
+                let position = (x.round() as i32, y.round() as i32);
+                (Some(classify_target(picked.as_ref())), Some(position))
+            }
+            ProbeInputKind::Scroll => (None, None),
+        }
+    }
+
+    /// `Editor` (or `ReadOnlyEditor`) when `widget` is, or is inside, an
+    /// editor page's text view; a minimap or a preview code block is `Other`.
+    fn classify_target(widget: Option<&gtk4::Widget>) -> ProbeInputTarget {
+        let Some(widget) = widget else {
+            return ProbeInputTarget::Nothing;
+        };
+        let mut current = Some(widget.clone());
+        while let Some(candidate) = current {
+            if let Some(editor) =
+                candidate.downcast_ref::<crate::ui::editor_page::LushtextEditorPage>()
+            {
+                let view = editor.source_view();
+                return if widget == view.upcast_ref::<gtk4::Widget>() || widget.is_ancestor(view) {
+                    if view.is_editable() {
+                        ProbeInputTarget::Editor
+                    } else {
+                        ProbeInputTarget::ReadOnlyEditor
+                    }
+                } else {
+                    ProbeInputTarget::Other
+                };
+            }
+            current = candidate.parent();
+        }
+        ProbeInputTarget::Other
     }
 
     /// Record the layout and paint phases of a window's first frames as

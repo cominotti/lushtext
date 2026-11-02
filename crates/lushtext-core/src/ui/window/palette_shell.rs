@@ -20,7 +20,7 @@
 //! | Story | Production lines | Destination |
 //! | --- | --- | --- |
 //! | editor-memory eviction | 407 | `WFR-EDITOR-MEMORY-EVICTION`'s role home |
-//! | focus restoration | 125 | dissolved into **three** owners — two geometry restorers to `WFR-SHELL-GEOMETRY`, `restore_saved_focus` here with the overlay it belongs to, and `focus_selected_editor_after_action` to cross-cutting `editor_focus.rs` |
+//! | focus restoration | 125 | dissolved into **three** owners — two geometry restorers to `WFR-SHELL-GEOMETRY`, `restore_saved_focus` here with the overlay it belongs to, and `focus_selected_editor_after_action` to cross-cutting `editor_focus/` |
 //! | palette overlay control | 108 | here |
 //! | palette file-index build | 145 | here |
 //!

@@ -85,6 +85,12 @@ impl LushtextWindow {
         self.setup_command_palette_click_away();
     }
 
+    /// Whether a dismissible transient surface is up (the ladder's own
+    /// observation), so a caller does not take the keyboard from it.
+    pub(super) fn transient_surface_open(&self) -> bool {
+        policy::topmost_dismissible(surfaces::observed_surface_state(self)).is_some()
+    }
+
     /// Record that a child widget already handled the current Escape request.
     ///
     /// The inversion named in the module doc: control resumes in the idle
