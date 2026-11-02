@@ -51,6 +51,10 @@ The report's C6 verdict reads RESPONSIVENESS_TOOLKIT_FLOORS
 (ATTRIBUTION=AXIOM[:REPORT];...), fails the run only with
 RESPONSIVENESS_C6_ENFORCE=1, and compares the sides of a merge made with
 `responsiveness-smoke-driver.py merge-runs --from baseline=DIR --from branch=DIR`.
+The dense restyles toggle word wrap and change the font in process, through
+the measurement build's app.probe-set-word-wrap and app.probe-set-font;
+RESPONSIVENESS_RESTYLE_TRIGGER=keyfile writes the keyfile from outside
+instead (a binary without those actions, such as a baseline, needs it).
 EOF
 }
 

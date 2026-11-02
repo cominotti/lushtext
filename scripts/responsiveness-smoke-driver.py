@@ -663,6 +663,15 @@ POST_OPEN_SPAN_PREFIX = "post_open_"
 POST_OPEN_ACTIVATION = "post_open_activation"
 HIGHLIGHT_UPDATED_MARK = "highlight_updated"
 ADJUSTMENT_UPPER_MARK = "adjustment_upper"
+POST_OPEN_LANGUAGE_ATTACH = "post_open_language_attach"
+# The dispatches that lay a document out: GtkTextView's validation (the
+# vertical upper changing) and the install slices that feed it.
+LAYOUT_ATTRIBUTIONS = ("validation", "post_open_install_slice")
+# `ATTACH_DEADLINE_US` in crates/lushtext-core/src/ui/editor_page/load/policy.rs:
+# the longest a deferred language attach waits for input quiet. The
+# no-regression rule exempts that wait, and only it, from
+# activation-to-laid-out (`--self-test` checks the two agree).
+ATTACH_DEADLINE_US = 2_048_000
 SETTLE_SENTINEL_MARK = "settle_sentinel"
 # An unspanned dispatch that ends at one of these marks is attributed to it.
 MARK_ATTRIBUTION = {HIGHLIGHT_UPDATED_MARK: "highlight", ADJUSTMENT_UPPER_MARK: "validation"}
@@ -915,7 +924,12 @@ def post_open_entry(parsed: dict, origin_us: int, floor_us: int, quiet_us: int, 
         if activations:
             start = min(activations)
     settled = settle["settled_us"]
-    end = settled if settled is not None else (until_us if until_us is not None else max([int(r["t_us"]) for r in parsed["records"]["late"]] + [start]))
+    if settled is not None:
+        end = settled
+    elif until_us is not None:
+        end = until_us
+    else:
+        end = max([int(r["t_us"]) for r in parsed["records"]["late"]] + [start])
     marks = [r for r in parsed["records"]["mark"] if r.get("name") in MARK_ATTRIBUTION and int(r["t_us"]) >= origin_us]
     dispatches = []
     worst: dict[str, int] = {}
@@ -924,6 +938,9 @@ def post_open_entry(parsed: dict, origin_us: int, floor_us: int, quiet_us: int, 
         dispatch.update({"at_us": dispatch["end_us"] - start, "attribution": attribution, "source": source})
         dispatches.append(dispatch)
         worst[attribution] = max(worst.get(attribution, 0), dispatch["duration_us"])
+    layout_ends = [int(r["t_us"]) for r in parsed["records"]["mark"] if r.get("name") == ADJUSTMENT_UPPER_MARK and start <= int(r["t_us"]) <= end]
+    layout_ends += [d["end_us"] for d in dispatches if d["attribution"] in LAYOUT_ATTRIBUTIONS]
+    attaches = sorted(int(s["start_us"]) for s in spans if s.get("name") == POST_OPEN_LANGUAGE_ATTACH and start <= int(s["start_us"]) <= end)
     entry: dict[str, Any] = {
         "phase": phase,
         "kind": kind,
@@ -932,6 +949,7 @@ def post_open_entry(parsed: dict, origin_us: int, floor_us: int, quiet_us: int, 
         "activation_us": start,
         "settled_us": settled,
         "settle_us": settled - start if settled is not None else None,
+        "laid_out_us": activation_to_laid_out(start, layout_ends, attaches[0] if attaches else None) if settled is not None else None,
         "settle": settle,
         "dispatches": dispatches,
         "stage_worst_us": worst,
@@ -942,6 +960,24 @@ def post_open_entry(parsed: dict, origin_us: int, floor_us: int, quiet_us: int, 
         entry["interaction"] = dispatches[0] if dispatches else None
         entry["later"] = dispatches[1:]
     return entry
+
+
+def activation_to_laid_out(start_us: int, layout_ends: list[int], attach_us: int | None) -> int | None:
+    """Activation to fully laid out: the end of the last layout dispatch or
+    vertical-upper change, less the deferred language attach's wait.
+
+    The wait (from the last layout before the attach to the attach) is the
+    only exemption, bounded by ATTACH_DEADLINE_US: the attach waits for input
+    quiet by design, and the layout its highlighting causes counts.
+    """
+    if not layout_ends:
+        return None
+    last = max(layout_ends)
+    wait = 0
+    if attach_us is not None and last > attach_us:
+        before = max((t for t in layout_ends if t <= attach_us), default=start_us)
+        wait = min(max(attach_us - before, 0), ATTACH_DEADLINE_US)
+    return last - start_us - wait
 
 
 def post_open_entries(parsed: dict, phases: list[dict], quiet_us: int) -> list[dict]:
@@ -1007,9 +1043,8 @@ def wait_for_settle(poll: Callable[[], dict], origin_us: int, floor_us: int, qui
     """Poll the probe log until the driver-computed settle, or the cap."""
     now = now or now_us
     deadline = clock() + cap_s
-    result: dict[str, Any] = {"settled_us": None}
     while True:
-        result = compute_settle(poll(), origin_us, floor_us, quiet_us, now() - SETTLE_LOG_MARGIN_US, required, require_activity, idle_ok)
+        result: dict[str, Any] = compute_settle(poll(), origin_us, floor_us, quiet_us, now() - SETTLE_LOG_MARGIN_US, required, require_activity, idle_ok)
         if result["settled_us"] is not None:
             result["status"] = "settled"
             return result
@@ -1045,8 +1080,10 @@ def c6_verdict(rows: list[dict], budgets: dict, floors: dict[str, dict], baselin
     - every wrap/zoom/font interaction dispatch is within B_INTERACT_US and
       every later dispatch until settled within B_SETTLE_US;
     - no stage regresses: per case, the median over the repetitions of each
-      attributed stage's worst dispatch, and the median activation-to-settled
-      time, are each at most the baseline's plus one REFERENCE_FRAME_US.
+      attributed stage's worst dispatch, and the median activation-to-laid-out
+      time (the deferred language attach's wait exempt, at most
+      ATTACH_DEADLINE_US), are each at most the baseline's plus one
+      REFERENCE_FRAME_US. Activation-to-settled is reported, not gated.
       A stage only the branch has is listed as new, not compared (it is
       still under the absolute bounds).
     A dispatch attributed to a listed toolkit-floor exception is exempt from
@@ -1134,9 +1171,9 @@ def c6_verdict(rows: list[dict], budgets: dict, floors: dict[str, dict], baselin
         for key, entries in reps.items():
             stages = sorted({s for e in entries for s in e.get("stage_worst_us", {})})
             out = {stage: [e.get("stage_worst_us", {}).get(stage, 0) for e in entries] for stage in stages}
-            settles = [e["settle_us"] for e in entries if e.get("settle_us") is not None]
-            if settles:
-                out["activation-to-settled"] = settles
+            laid_out = [e["laid_out_us"] for e in entries if e.get("laid_out_us") is not None]
+            if laid_out:
+                out["activation-to-laid-out"] = laid_out
             series[key] = out
         return series
 
@@ -2140,19 +2177,38 @@ class Runner:
         sees the changed wrap, zoom or font.
         """
 
-        def wrap(_deadline: float) -> int:
+        # In-process triggers (review S4): the measurement build's
+        # app.probe-set-* actions write through the app's settings writer, so
+        # the restyle runs in the action's dispatch and is measured against
+        # B_INTERACT_US. RESPONSIVENESS_RESTYLE_TRIGGER=keyfile keeps the
+        # external keyfile write, whose GIO file-monitor dispatch comes first.
+        keyfile = os.environ.get("RESPONSIVENESS_RESTYLE_TRIGGER") == "keyfile"
+
+        def wrap(deadline: float) -> int:
             ctx["wrap"] = not ctx["wrap"]
-            self.write_settings(ctx["state_env"], {"word-wrap": ctx["wrap"]})
-            return SETTING_PROPAGATION_US
+            if keyfile:
+                self.write_settings(ctx["state_env"], {"word-wrap": ctx["wrap"]})
+                return SETTING_PROPAGATION_US
+            from gi.repository import GLib
+
+            if not self.action("app", "probe-set-word-wrap", [GLib.Variant("b", ctx["wrap"])], deadline):
+                raise RuntimeError("app.probe-set-word-wrap failed")
+            return 0
 
         def zoom(deadline: float) -> int:
             if not self.action("win", "zoom-in", None, deadline):
                 raise RuntimeError("win.zoom-in failed")
             return 0
 
-        def font(_deadline: float) -> int:
-            self.write_settings(ctx["state_env"], FONT_CHANGE_VALUES)
-            return SETTING_PROPAGATION_US
+        def font(deadline: float) -> int:
+            if keyfile:
+                self.write_settings(ctx["state_env"], FONT_CHANGE_VALUES)
+                return SETTING_PROPAGATION_US
+            from gi.repository import GLib
+
+            if not self.action("app", "probe-set-font", [GLib.Variant("s", FONT_CHANGE_VALUES["custom-font"])], deadline):
+                raise RuntimeError("app.probe-set-font failed")
+            return 0
 
         for name, trigger in (("wrap-toggle", wrap), ("zoom-step", zoom), ("font-change", font)):
             if not self.wanted(name):
@@ -2168,7 +2224,7 @@ class Runner:
                 return False
         return True
 
-    def type_during_settle(self, case: Case, rep_dir: Path, files: list[Path], phases: list[dict], launches: list[Launch], new_state: Callable[[str], tuple[dict, dict]]) -> bool:
+    def type_during_settle(self, rep_dir: Path, files: list[Path], phases: list[dict], launches: list[Launch], new_state: Callable[[str], tuple[dict, dict]]) -> bool:
         """`type-during-settle` (design D8, review R26), in a launch of its own.
 
         From load readiness one key every 50 ms, SETTLE_TYPING_KEYS keys in
@@ -2508,7 +2564,7 @@ class Runner:
                 elif ok:
                     ok = self.standard_interactions(phases, tabs=max(1, len(files)), recover=recover, ctx=ctx)
                 if ok and ctx is not None and case.attrs.get("typing"):
-                    ok = self.type_during_settle(case, rep_dir, files, phases, launches, new_state)
+                    ok = self.type_during_settle(rep_dir, files, phases, launches, new_state)
             for launch in launches:
                 if launch.process.poll() is not None and launch.process.returncode not in (0, -signal.SIGKILL):
                     crashed = True
@@ -3883,6 +3939,14 @@ def post_open_report(rows: list[dict]) -> list[dict]:
     for row in rows:
         for entry in row.get("post_open") or []:
             keys = [k["latency_us"] for k in entry.get("keys", []) if "latency_us" in k]
+            key_summary = None
+            if "keys" in entry:
+                key_summary = {
+                    "count": len(entry["keys"]),
+                    "matched": len(keys),
+                    "median_us": _median(keys) if keys else None,
+                    "max_us": max(keys, default=None),
+                }
             out.append(
                 {
                     "case": row["case"],
@@ -3893,10 +3957,11 @@ def post_open_report(rows: list[dict]) -> list[dict]:
                     "kind": entry["kind"],
                     "status": entry["status"],
                     "settle_us": entry.get("settle_us"),
+                    "laid_out_us": entry.get("laid_out_us"),
                     "worst_us": max((d["duration_us"] for d in entry.get("dispatches", [])), default=0),
                     "stage_worst_us": entry.get("stage_worst_us", {}),
                     "dispatches": [{k: d[k] for k in ("at_us", "duration_us", "attribution", "source")} for d in entry.get("dispatches", [])],
-                    "keys": {"count": len(entry.get("keys", [])), "matched": len(keys), "median_us": _median(keys) if keys else None, "max_us": max(keys) if keys else None} if "keys" in entry else None,
+                    "keys": key_summary,
                     "interaction_us": (entry.get("interaction") or {}).get("duration_us") if entry["kind"] == "interaction" else None,
                 }
             )
@@ -3935,7 +4000,7 @@ def render_post_open(report: dict) -> list[str]:
         "",
         f"**{c6['verdict']}** over {c6.get('branch_rows', 0)} branch row(s) (side `{c6.get('sides', {}).get('branch')}`) and {c6.get('baseline_rows', 0)} baseline row(s) (side `{c6.get('sides', {}).get('baseline')}`). "
         f"Rules: every open and restored-tab post-open dispatch until settled <= B_SETTLE_US {budgets['B_SETTLE_US']} us; every type-during-settle key <= B_INTERACT_US {budgets['B_INTERACT_US']} us; "
-        f"every restyle interaction dispatch <= B_INTERACT_US and each later dispatch <= B_SETTLE_US; per case, the median of each stage's worst dispatch and of activation-to-settled <= the baseline's + REFERENCE_FRAME_US {budgets['REFERENCE_FRAME_US']} us.",
+        f"every restyle interaction dispatch <= B_INTERACT_US and each later dispatch <= B_SETTLE_US; per case, the median of each stage's worst dispatch and of activation-to-laid-out (the language attach's wait exempt, at most ATTACH_DEADLINE_US) <= the baseline's + REFERENCE_FRAME_US {budgets['REFERENCE_FRAME_US']} us.",
         "",
     ]
     for failure in c6.get("failures", [])[:60]:
@@ -4571,7 +4636,7 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
     # The C6 verdict.
     budgets = dict(DEFAULT_BUDGETS)
 
-    def open_entry(dispatches: list[tuple[str, int]], settle_us: int = 500_000, status: str = "settled") -> dict:
+    def open_entry(dispatches: list[tuple[str, int]], settle_us: int = 500_000, status: str = "settled", laid_out_us: int = 400_000) -> dict:
         rows_ = []
         at = 10_000
         for attribution, duration in dispatches:
@@ -4580,7 +4645,7 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
         worst: dict[str, int] = {}
         for d in rows_:
             worst[d["attribution"]] = max(worst.get(d["attribution"], 0), d["duration_us"])
-        return {"phase": "background", "kind": "open", "status": status, "activation_us": 1_000_000, "settled_us": 1_000_000 + settle_us, "settle_us": settle_us, "dispatches": rows_, "stage_worst_us": worst}
+        return {"phase": "background", "kind": "open", "status": status, "activation_us": 1_000_000, "settled_us": 1_000_000 + settle_us, "settle_us": settle_us, "laid_out_us": laid_out_us, "dispatches": rows_, "stage_worst_us": worst}
 
     def row(side: str, rep: int, entries: list[dict], case: str = "total-size/1000000") -> dict:
         return {"case": case, "variant": "plain", "rep": rep, "side": side, "outcome": "ok", "post_open": entries, "phases": []}
@@ -4600,9 +4665,17 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
     outlier = [row("branch", r, [open_entry([("post_open_language_attach", d)])]) for r, d in enumerate((12_000, 2_000, 2_000))]
     tolerated = c6_verdict(baseline_rows + outlier, budgets, {})
     expect(not tolerated.get("regressions"), f"one slow repetition is not a regression of the median ({tolerated.get('regressions')})")
-    slow_settle = [row("branch", r, [open_entry([("post_open_language_attach", 3_000)], settle_us=520_000)]) for r in range(3)]
-    slowed = c6_verdict(baseline_rows + slow_settle, budgets, {})
-    expect(any(r.get("stage") == "activation-to-settled" for r in slowed.get("regressions", [])), f"activation-to-settled over the baseline's plus one frame regresses ({slowed.get('regressions')})")
+    slow_layout = [row("branch", r, [open_entry([("post_open_language_attach", 3_000)], laid_out_us=420_000)]) for r in range(3)]
+    slowed = c6_verdict(baseline_rows + slow_layout, budgets, {})
+    expect(any(r.get("stage") == "activation-to-laid-out" for r in slowed.get("regressions", [])), f"activation-to-laid-out over the baseline's plus one frame regresses ({slowed.get('regressions')})")
+    late_attach = [row("branch", r, [open_entry([("post_open_language_attach", 3_000)], settle_us=900_000)]) for r in range(3)]
+    attach_only = c6_verdict(baseline_rows + late_attach, budgets, {})
+    expect(not attach_only.get("regressions"), f"a later settle with the same layout time is not a regression ({attach_only.get('regressions')})")
+    expect(activation_to_laid_out(0, [10_000, 30_000, 5_000_000], 4_000_000) == 5_000_000 - ATTACH_DEADLINE_US, "the attach wait exempted is at most ATTACH_DEADLINE_US")
+    expect(activation_to_laid_out(0, [10_000, 30_000, 400_000], 300_000) == 400_000 - 270_000, "only the wait from the last layout to the attach is exempt")
+    expect(activation_to_laid_out(0, [10_000, 30_000], 300_000) == 30_000, "layout that ends before the attach is not shortened")
+    policy = (REPO_ROOT / "crates/lushtext-core/src/ui/editor_page/load/policy.rs").read_text()
+    expect(f"pub const ATTACH_DEADLINE_US: i64 = {ATTACH_DEADLINE_US:_};" in policy, "ATTACH_DEADLINE_US agrees with the load policy")
     # A toolkit-floor exception: exempt from B_settle, and the keys that
     # overlap it are exempt from B_interact; every other key is still gated.
     attach = {"at_us": 100_000, "start_us": 1_060_000, "end_us": 1_100_000, "duration_us": 40_000, "attribution": "post_open_language_attach", "source": "span"}

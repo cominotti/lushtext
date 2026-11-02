@@ -1154,9 +1154,22 @@ attributed with `perf` from the lane:
 
 - **Keys while settling** (9 of 77 branch rows, 8.6–14.8 ms; the baseline
   has more): each key waited behind one dispatch 200–300 ms after open, a
-  whole-tree CSS revalidation in the frame after the first key presses
-  (`gtk_css_node_validate` from `gdk_frame_clock_paint_idle`, after
-  `gdk_surface_handle_event`). GTK's restyle, on both sides; not LushText work.
+  whole-tree CSS revalidation (`gtk_css_node_validate` from
+  `gdk_frame_clock_paint_idle`). *Corrected 2026-11-02 (independent review
+  M4a):* not "the frame after the first key presses". The review attributed
+  it to libadwaita's `enable_animations_cb` (the settings portal's first reply
+  about 251 ms after `adw_init` setting `gtk-enable-animations`). That
+  mechanism is real and pinned as ledger **A74** (a change of the setting
+  restyles every widget: 21.3 ms against a 1.5 ms redraw on 1,600 rows), but
+  it is not what the lane measured: a measurement build that recorded every
+  `notify` of `GtkSettings` and `AdwStyleManager` saw none in that window, and
+  window activation came at 8 ms. `perf` (32 samples over the baseline rows'
+  dispatches 150–300 ms after open) places the revalidation in the frame
+  clock's flush phase, under `gdk_surface_ensure_motion` →
+  `gtk_main_do_event`: the motion GDK synthesizes after the lane's focus click
+  moved the pointer into the window, whose `:hover` change restyles the
+  widgets under the pointer. Once per pointer entry, GTK's restyle, on both
+  sides; recorded as a toolkit floor of the lane's first pointer entry.
 - **Zoom step** (4 rows, 13–16 ms; the baseline has them too): GTK's style and
   font change (CSS revalidation, fontconfig and FreeType load, the visible
   lines' re-layout). A toolkit floor.
@@ -1166,6 +1179,160 @@ attributed with `perf` from the lane:
 - **Activation to settled** is later in 12 cases of the first round: the
   accepted cost of the deferred attach (maintainer decision 2026-11-01).
 - **The language attach** (31 ms) is the A67 toolkit-floor exception.
+
+### Independent review fixes (2026-11-02)
+
+An independent review of PR #74 found two data-loss defects, a CI failure
+and four record corrections; every fix below is failing-first where a test
+can fail.
+
+- **Drag and drop under the edit lock** (data loss): the view stays editable
+  while a load, replacement or save holds the edit lock, so GtkTextView's drop
+  handler reported a refused drop as done (`insert_interactive` returns TRUE
+  when the view is editable) and a MOVE drag's source deleted its text. The
+  lock now takes the view's drop targets off while it is held, nested with
+  Protected View's own detach (one holder bit each), and the last holder
+  restores them.
+- **Ctrl+Z during the save of an edit-entered Protected View document**: the
+  lock refused the buffer's undo but the entry undo still tore Protected View
+  down, leaving the giant paragraph unfolded and editable. The entry undo is
+  unavailable while the lock is held, and the teardown runs only after the
+  undo changed the buffer.
+- **Bookmark reconcile** skipped while the lock is held or projections are
+  suspended (a refused key press still brackets a user action, and the marks
+  then sit in half-cleared text); the lock also refuses `insert-paintable` and
+  `insert-child-anchor`; the lock is a move-only token, its release
+  debug-asserts a holder; a reload leaving Protected View restores `editable`
+  before the first slice instead of re-laying out the new body at the
+  terminal.
+- **GTK Axioms CI** (A70, A72): the CI container had no fixed-pitch font, so
+  "Monospace" was proportional (Adwaita Sans), the paced inserts' random lines
+  widened the view only three times in six and column 80 sat off both
+  predictions. Reproduced locally with a fontconfig of Adwaita Sans alone. The
+  axioms were not wrong; the probes now stop at a fixed-pitch control step
+  (fixture invalid) and both axiom jobs install `adwaita-mono-fonts`. The
+  pacing claim V_SLICE and the idle pacing rest on is unaffected (six
+  widenings for six inserts with either pacing, locally and once the font is
+  present).
+- **Zoom step** (13–16 ms; M4b): `perf` over the four over-budget rows
+  (50 samples) puts 32 % of the dispatch in whole-tree CSS revalidation
+  (`gtk_css_node_validate`) after the display-wide font provider reloads, and
+  most of the rest in Pango layout and paint of the visible lines at the new
+  size. A provider scoped to the editor and preview was not adopted: GTK 4
+  offers per-widget providers only through the deprecated `GtkStyleContext`,
+  the zoom and custom font also restyle the `.monospace` file tree, search
+  results and peek, which would stop following them, and removing every CSS
+  revalidation would still leave about 9–11 ms. Recorded as a toolkit floor
+  (the visible region's re-layout at a new font size); the in-process font
+  change (below) is the same restyle and lands at the same figures.
+- **The dense/710 wrap-off 8.5 ms background dispatch** at about 64 ms (M4c):
+  `perf` (8 of 8 and 8 of 9 samples) attributes it to GtkTextView's
+  `incremental_validate_callback`, validating the lines of the two slices
+  inserted before the frame at about 48 ms together: a slice inserted while a
+  frame is due waits for that frame's allocation (the A37 allocation queue)
+  before its validation idle runs. It is under `B_SETTLE` (16 ms) and is
+  flagged only by the stage rule because `main` installs that document in one
+  dispatch. Pacing every slice by frames removes it but took 2.7 times longer
+  to install (option A of 2026-10-31), so it stays, recorded.
+- **Input-to-frame while typing during settle** (M4d): the frames after a key
+  now always win over the paced loops: a slice, replacement turn or restyle
+  reveal that would run while a counted input has not been followed by a
+  painted frame of its window waits for that frame (at most 128 ms,
+  `input_quiet::paced_idle`). The review's 42–63 ms keys were then traced:
+  **every** key over 33 ms on either side is the first key after a 1.0–1.8 s
+  stretch in which the window drew no frame at all (the frame counter is
+  contiguous across it) and that ends about 2.03 s after activation, with no
+  application dispatch of 1 ms or more between the key and its frame. Keys
+  whose frame was presented match `main` (median 12.9 ms on both sides, maximum
+  25–33 ms against 25–26 ms). The branch shows more such keys because its
+  stretch starts earlier (about 230 ms after activation, once settled,
+  against about 1,050 ms on `main`). Why the typed keys draw nothing in that
+  stretch is a lane question recorded for follow-up; it is not pacing.
+- **In-process restyle triggers** (S4): the lane toggles word wrap and
+  changes the font through the measurement build's `app.probe-set-word-wrap`
+  and `app.probe-set-font`, which write through the app's settings writer, so
+  LushText's own restyle dispatch is measured against `B_INTERACT`
+  (`RESPONSIVENESS_RESTYLE_TRIGGER=keyfile` keeps the external write, which
+  the `main` baseline binary needs).
+- **No-regression rule**: activation to *fully laid out* is gated (end of the
+  last layout dispatch or vertical-extent change), exempting only the
+  deferred language attach's wait, at most `ATTACH_DEADLINE_US`; activation
+  to settled is reported. Constants: `FLUSH_INPUT_QUIET` 250 → 256 ms,
+  `FLUSH_INPUT_DEADLINE` 5 s → 4,096 ms, `ATTACH_DEADLINE_US` 2 s → 2,048 ms;
+  `V_SLICE`, the 704 KiB synchronous threshold, the per-language syntax gates
+  and `S_SYNTAX_OTHER` are recorded exceptions deferred to
+  `power-of-two-thresholds`.
+
+#### Rerun of the affected rows (2026-11-02)
+
+`c6-baseline` against the branch with every fix above
+(`c6-bin/lushtext-branch-review1`), interleaved 4 + 3 repetitions per side,
+plain variant, the five `baseline/small` profiles and `dense/*`; 1-minute load
+0.7–2.0 before and after each run (`.claude/handoffs/c6-verdict/runs.log`,
+runs `vbase1`, `vbranch1`, `vbase2`, `vbranch2`, merged as `vverdict`). The
+baseline's restyles are triggered by the external keyfile write (its binary
+has no in-process trigger), the branch's in process; "-" is a restyle that
+recorded no interaction dispatch of 1 ms or more.
+
+| Case | Worst background dispatch, median (base / branch, us) | Slowest key, median (base / branch, us) | Activation to laid out, median (base / branch, ms) |
+|---|---|---|---|
+| baseline/small | 10083 / 7615 | 1375 / 1709 | 69 / 72 |
+| baseline/small/fresh-dconf | 9937 / 7184 | 6567 / 1590 | 70 / 70 |
+| baseline/small/steady-dconf | 9707 / 7344 | 2632 / 2543 | 70 / 72 |
+| baseline/small/steady-keyfile | 9656 / 7414 | 5958 / 4763 | 69 / 72 |
+| baseline/small/steady-populated | 11311 / 7806 | 3493 / 4766 | 72 / 71 |
+| dense/120/wrap-off | 9715 / 7873 | 1692 / 1738 | 36 / 35 |
+| dense/120/wrap-on | 9756 / 7153 | 2074 / 1729 | 38 / 45 |
+| dense/500/wrap-off | 14881 / 7096 | 6131 / 1780 | 62 / 52 |
+| dense/500/wrap-on | 10337 / 9265 | 2954 / 2100 | 70 / 86 |
+| dense/710/wrap-off | 21467 / 8864 | 6640 / 3355 | 69 / 75 |
+| dense/710/wrap-on | 14138 / 10438 | 1759 / 1673 | 88 / 101 |
+
+| Case and restyle | Interaction dispatch, median (base keyfile / branch in-process, us) |
+|---|---|
+| dense/120/wrap-off font-change | 6527 / - |
+| dense/120/wrap-off wrap-toggle | 5514 / 3060 |
+| dense/120/wrap-off zoom-step | 17726 / - |
+| dense/120/wrap-on font-change | 5312 / 9637 |
+| dense/120/wrap-on wrap-toggle | 6726 / 1598 |
+| dense/120/wrap-on zoom-step | 14355 / 1983 |
+| dense/500/wrap-off font-change | 6862 / 1001 |
+| dense/500/wrap-off wrap-toggle | 4908 / 4077 |
+| dense/500/wrap-off zoom-step | 19213 / 1045 |
+| dense/500/wrap-on font-change | 6303 / 1186 |
+| dense/500/wrap-on wrap-toggle | 6847 / 3010 |
+| dense/500/wrap-on zoom-step | 14239 / - |
+| dense/710/wrap-off font-change | 5074 / 1110 |
+| dense/710/wrap-off wrap-toggle | 5030 / 2761 |
+| dense/710/wrap-off zoom-step | 18995 / 1010 |
+| dense/710/wrap-on font-change | 6021 / 1465 |
+| dense/710/wrap-on wrap-toggle | 7251 / 7814 |
+| dense/710/wrap-on zoom-step | 14680 / - |
+
+**Not met as written; every remaining miss is attributed.**
+
+- **Keys** (9 rows, 8.7–16.8 ms): each waits behind the pointer-entry
+  restyle about 207–217 ms after open (above; 15.6–16.1 ms on dense/710
+  wrap-off, where the visible dense lines are restyled too), on both sides.
+- **Font change in process** (`dense/120/wrap-on`, 5 of 7 rows, 9.2–13.1 ms):
+  LushText's own restyle dispatch, now measured: the display-wide font
+  provider reloads and the next frame revalidates the CSS of every widget and
+  re-lays out the visible lines at the new font, as the zoom step. The other
+  dense cases change the font in 1.0–1.5 ms. Recorded with the zoom step.
+- **Zoom step** (1 row, 9.6 ms; median 1.0–2.0 ms where recorded): as above.
+- **Activation to laid out** `dense/500/wrap-on` 86 against 70 ms and
+  `dense/710/wrap-on` 101 against 88 ms (one reference frame is allowed):
+  wrapped dense documents install in `V_SLICE` slices, each validated in its
+  own dispatch, so the last validation ends one or two frames later than
+  `main`'s single install dispatch, whose own worst dispatch is 10.3–14.1 ms
+  against the branch's 9.3–10.4. The other nine cases are within a frame.
+- **dense/710 wrap-off unattributed 8.5 ms** (M4c above).
+- **Input-to-frame**: keys whose frame was presented: median 12.8–12.9 ms on
+  both sides, maximum 32.2–33.3 against 22.6–23.7 ms; one branch key above
+  33 ms. Every other key above 33 ms (branch 19 of 42, baseline 8 of 13 keys
+  measured inside a frameless stretch) is the first key after the 1.0–1.8 s
+  stretch with no frame described above.
+
 
 The 11 MiB dense document (release widget harness, 2 interleaved repetitions,
 load 1.0–3.1): main installs in 1.92–1.95 s (open) and 2.39 s (restore), and
