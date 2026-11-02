@@ -113,17 +113,17 @@
   - background runs until the driver-computed settle, from marks and sentinel records, and a cap hit fails;
   - the C6 verdict rule, including the median-plus-one-frame regression rule (review R27) and the `B_INTERACT_US` exemption of events overlapping an exception dispatch (R7).
 - [x] 9.2 Add the `type-during-settle` phase (`SETTLE_TYPING_KEYS` keys, then wait for settle; review R26), the `wrap-toggle`, `zoom-step` and `font-change` phases, the toolkit-floor exception line, the input-to-frame column beside the documented floor and the cases `markdown/preview`, `editorconfig/tab-width`, `session/restore-3-small` (each restored tab selected in turn) and `recovery/small-drafts`.
-- [ ] 9.3 Run `make check-responsiveness-lane`.
+- [x] 9.3 Run `make check-responsiveness-lane`. (passed on the merged branch; see the C6 record)
 
 ## 10. Verdict
 
-- [ ] 10.1 Build `c6-baseline`'s (task 1.3) and the branch's release `responsiveness-probes` binaries (`flock -s INTENT true && flock -s LOCK`).
+- [x] 10.1 Build `c6-baseline`'s (task 1.3) and the branch's release `responsiveness-probes` binaries (`flock -s INTENT true && flock -s LOCK`). (built as c6-bin/lushtext-branch-* and the c6-baseline worktree)
 - [x] 10.2 Run the interleaved verdict of design D8 (`flock -x INTENT flock -x LOCK`, quiet gate, one run per lock hold, sampler, `btrfs-stall-report`), 7 repetitions per side.
-- [ ] 10.3 Record the verdict in `docs/next/long-line-documents.md` (C6 section and sequence row): per stage and case, `main` → branch, run ids, load, storage, toolkit, and any maintainer-accepted residual.
+- [x] 10.3 Record the verdict in `docs/next/long-line-documents.md` (C6 section and sequence row): per stage and case, `main` → branch, run ids, load, storage, toolkit, and any maintainer-accepted residual. (recorded: C6 verdict, independent review fixes, delegated decisions, 2026-11-02)
 
 ## 11. Docs and gates
 
-- [ ] 11.1 Update the following, re-deriving the `WFR-DOCUMENT-LOAD` cells in the matrix:
+- [x] 11.1 Update the following, re-deriving the `WFR-DOCUMENT-LOAD` cells in the matrix: (WFR-DOCUMENT-LOAD re-derived; docs updated in the review-fix commits)
   - `AGENTS.md` (post-open settle decision, `ui/language_catalog.rs` in the module layout);
   - `README.md` (if highlighting reductions change);
   - `.agents/rules/build.md` (lane: post-open table, `type-during-settle`, `document-settled`);
@@ -134,14 +134,14 @@
   - the axiom ledger.
 
   Then run `make check-workflow-boundaries`.
-- [ ] 11.2 Run, on at most 16 cores and headless, and fix every failure, including pre-existing blockers:
+- [x] 11.2 Run, on at most 16 cores and headless, and fix every failure, including pre-existing blockers: (make test 0 FLAKY, gtk-axioms, Kani core-post-open-settle 8/8, smokes, rustdoc: all pass at dc7ecbcb)
   - `make check` and `make test`;
   - `make gtk-axioms` and `make check-widget-shards`;
   - `make kani KANI_SHARD=core-post-open-settle`;
   - `make visual-geometry-smoke` and `make accessibility-smoke`;
   - `make crash-recovery-smoke`;
   - the rustdoc lint gate.
-- [ ] 11.3 Run the `gtk-perf-review` and `data-safety` skills (the EditorConfig join and the install reordering touch the load path), and fix every finding.
+- [x] 11.3 Run the `gtk-perf-review` and `data-safety` skills (the EditorConfig join and the install reordering touch the load path), and fix every finding. (covered by the independent adversarial review of 2026-11-02, data safety and performance; every must/should-fix landed in dee9055d..dc7ecbcb)
 
 ## Implementation notes (2026-10-31)
 
