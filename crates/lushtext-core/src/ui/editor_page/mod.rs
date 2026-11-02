@@ -24,9 +24,18 @@ mod minimap;
 mod monitor;
 mod overscroll;
 mod paragraph_wrap;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pure Protected View policy and seams land before their executor (long-line-protected-view tasks 4.3-6.x), which wires them"
+    )
+)]
+mod protected_view;
 mod restore_position;
 pub mod save;
 mod search;
+pub(crate) use search::search_prefill_text;
 mod style_scheme;
 mod surrounding_text;
 
@@ -73,6 +82,7 @@ pub(crate) use minimap::{
     MinimapAdjustmentDiagnostics, MinimapNativeSliderDiagnostics, MinimapTextViewRect,
 };
 pub use paragraph_wrap::NO_WRAP_TAG;
+pub use protected_view::ProtectedViewEvidence;
 // `mod minimap;` stays private, matching the `load/`, `save/`, and
 // `buffer_replacement/` role homes in this directory. The three content-analysis
 // types are re-exported here as a precisely scoped subset because
@@ -406,6 +416,7 @@ impl LushtextEditorPage {
                 editor.imp().residency.evicted.set(true);
                 editor.buffer().set_modified(false);
                 editor.release_local_history_residency_for_eviction();
+                editor.release_protected_source_for_eviction();
                 editor.clear_modified_line_marks();
                 editor.refresh_minimap();
                 editor.notify_memory_policy_changed();
@@ -449,10 +460,16 @@ impl LushtextEditorPage {
         // GtkTextBuffer maintains char_count as scalar metadata. Reading it is
         // O(1), so accounting never copies or scans document text on edits.
         let character_count = u64::try_from(self.buffer().char_count()).unwrap_or(0);
+        // A protected document also holds its text source (the installed body
+        // or the edit entry's capture), retained beside the buffer.
         crate::model::editor_memory::estimate_live_editor_bytes(
             character_count,
             self.file_size(),
             self.is_evicted(),
+        )
+        .saturating_add(
+            self.protected_source()
+                .map_or(0, |source| source.retained_bytes()),
         )
     }
 

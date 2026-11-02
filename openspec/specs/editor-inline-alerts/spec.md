@@ -420,7 +420,7 @@ When a document load completes successfully, the system SHALL resolve that edito
 
 ### Requirement: Scale-gated feature reductions never occupy the inline alert slot
 The system SHALL report the features the document scale policy disables (syntax highlighting, bracket matching, the minimap, invisible characters, automatic search highlighting, and `protected_view`, which marks the document for Protected View) outside the text view's allocation path:
-- one announced status-bar message, published when the document's tab is the window's selected tab, naming the reduced features and the reason class (total size, very long lines, or dense long lines);
+- one announced status-bar message, published when the document's tab is the window's selected tab, naming the reduced features and the reason class (total size or very long lines; the batch density reduces no feature);
 - a persistent "Editor Features" row in the document properties carrying the same text;
 - the editor's accessible description.
 

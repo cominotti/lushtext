@@ -1,7 +1,7 @@
 ## Why
 
 The maintainer chose a **hybrid policy** for long paragraphs (2026-10-30):
-documents whose paragraphs reach about `L_protect` ≈ 50,000 characters stay
+documents whose paragraphs reach about `L_protect_edit` ≈ 50,000 characters stay
 editable, and every keystroke that misses B_interact (8 ms) in them is
 recorded as an explicit **toolkit-floor exception**. C2
 (`long-line-protected-view`) measured that miss (`L_EDIT_STALL` sweep, wrap on,
@@ -10,7 +10,7 @@ median per key): 5.2 ms at 5k, 6.8 ms at 10k, 9.6 ms at 20k, 20 ms at 50k and
 to say on evidence how far it can get.
 
 C5 was first drafted as an evaluation of editing paragraphs **above**
-`L_protect`. Under the hybrid policy that question is deferred (see
+`L_protect_edit`. Under the hybrid policy that question is deferred (see
 "Deferred"); this change lowers the per-keystroke cost in the editable range,
 from a profile of where a keystroke's time goes (design "Evidence").
 
@@ -76,7 +76,7 @@ batching, accessibility deferral.
 
 ## Deferred
 
-Editing paragraphs **above** `L_protect` (in-buffer segmentation with an
+Editing paragraphs **above** `L_protect_edit` (in-buffer segmentation with an
 offset map, a custom virtualized widget, windowed edit-through via the Line
 Inspector) is deferred to a later change, with re-open triggers in the
 programme record. Display-only soft segmentation (a moving fold) is deferred

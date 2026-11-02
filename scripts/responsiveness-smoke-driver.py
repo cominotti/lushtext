@@ -117,10 +117,23 @@ DENSE_REFERENCE_LENGTH = 120
 TOTAL_SIZES = {"quick": (1_000_000, 5_000_000), "full": (1_000_000, 2_000_000, 5_000_000, 10_000_000)}
 DELIMITER_LONGEST = {"quick": 250_000, "full": 1_894_586}
 SESSION_LENGTH = {"quick": 250_000, "full": 1_900_000}
-# The keystroke group (`explore-editing-long-paragraphs`): one paragraph of the
-# swept length between short lines; keystrokes at its start, middle and end,
-# and in the short paragraph right after it.
-KEYSTROKE_LENGTHS = {"quick": (10_000, 50_000), "full": (500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000, 200_000, 500_000)}
+# The keystroke group (long-line-protected-view, C2; kept by
+# explore-editing-long-paragraphs, C5): one editable paragraph of the swept
+# length between short lines, TYPE_BURST typed at its start, middle and end,
+# and in the short paragraph right after it (C5: typing there must be
+# unaffected by anything the long paragraph turns off). It re-measures the
+# toolkit-floor exception: keystrokes in editable paragraphs between
+# L_EDIT_STALL (3,500) and L_PROTECT_EDIT (50,000) miss B_interact (ledger
+# A23, A26), which C5 reduces. Quick brackets the exception; full adds the
+# points around L_EDIT_STALL and inside the range, and C5's short lengths. The
+# top length leaves room for the typed bursts: a paragraph the bursts push past
+# L_PROTECT_EDIT enters Protected View mid-case and stops taking keys (the C2
+# verdict's 49,990 case did), so it would no longer measure the editable
+# exception; for the same reason C5's pre-C2 sweep points above 50,000 are not
+# editable lengths any more.
+L_PROTECT_EDIT = 50_000
+KEYSTROKE_EDGE = 49_950
+KEYSTROKE_LENGTHS = {"quick": (3_500, 10_000, KEYSTROKE_EDGE), "full": (500, 1_000, 2_000, 2_500, 3_500, 5_000, 10_000, 20_000, KEYSTROKE_EDGE)}
 KEYSTROKE_SHAPES = (("css", "html"), ("prose", "txt"))
 KEYSTROKE_POSITIONS = ("start", "middle", "end", "short")
 KEYSTROKE_GAP_S = float(os.environ.get("RESPONSIVENESS_KEYSTROKE_GAP_S", "0.15"))
@@ -128,7 +141,7 @@ INVISIBLES_LENGTHS = {"quick": (250_000,), "full": (2_000, 10_000, 50_000, 250_0
 INSTALL_SIZES = (100_000_000, 250_000_000, 500_000_000)
 EVICTION_FILE_BYTES = 8 * 1024 * 1024
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("keystroke", "baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "reload", "install", "invisibles")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "reload", "install", "invisibles", "keystroke")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -147,6 +160,9 @@ PHASE_KINDS = {
     "tab-switch": "interaction",
     "reselect": "interaction",
     "idle": "calibration",
+    # The keystroke group: placing the caret (find the marker, close the
+    # search bar, collapse the selection) and proving where the bursts
+    # landed are navigation, not measured interactions; each burst is.
     "place-start": "navigation",
     "place-middle": "navigation",
     "place-end": "navigation",
@@ -618,7 +634,7 @@ class Case:
     group: str
     fixture: FixtureSpec | None
     settings: dict[str, Any] = field(default_factory=dict)
-    flow: str = "standard"  # standard | session | eviction | reload | install | calibration
+    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke
     length: int | None = None  # the swept paragraph length / line length / total size
     attrs: dict[str, Any] = field(default_factory=dict)
 
@@ -638,6 +654,18 @@ def paragraph_case(length: int, ext: str, wrap: bool, minimap: bool, group: str 
         settings={"word-wrap": wrap, "show-minimap": minimap, "invisible-characters-mode": invisibles},
         length=length,
         attrs={"ext": ext, "wrap": wrap, "minimap": minimap, "invisibles": invisibles, "flavor": flavor},
+    )
+
+
+def keystroke_case(length: int, flavor: str, ext: str, wrap: bool) -> Case:
+    return Case(
+        f"keystroke/{length}/{flavor}/{ext}/wrap-{'on' if wrap else 'off'}",
+        "keystroke",
+        FixtureSpec("keystroke", length, seed_for("keystroke", length, flavor), ext=ext, flavor=flavor),
+        settings={"word-wrap": wrap, "show-minimap": False},
+        flow="keystroke",
+        length=length,
+        attrs={"ext": ext, "wrap": wrap, "flavor": flavor},
     )
 
 
@@ -776,23 +804,13 @@ def build_cases(tier: str) -> list[Case]:
                     length=size,
                 )
             )
-    for length in grid["keystroke"]:
-        for flavor, ext in KEYSTROKE_SHAPES:
-            for wrap in (True, False):
-                cases.append(
-                    Case(
-                        f"keystroke/{length}/{flavor}/{ext}/wrap-{'on' if wrap else 'off'}",
-                        "keystroke",
-                        FixtureSpec("keystroke", length, seed_for("keystroke", length, flavor), ext=ext, flavor=flavor),
-                        settings={"word-wrap": wrap},
-                        flow="keystroke",
-                        length=length,
-                        attrs={"ext": ext, "wrap": wrap, "flavor": flavor},
-                    )
-                )
     for length in grid["invisibles"]:
         for mode in ("off", "all"):
             cases.append(paragraph_case(length, "txt", True, False, group="invisibles", invisibles=mode))
+    for length in grid["keystroke"]:
+        for flavor, ext in KEYSTROKE_SHAPES:
+            for wrap in (True, False):
+                cases.append(keystroke_case(length, flavor, ext, wrap))
     return cases
 
 
@@ -1398,14 +1416,26 @@ class Runner:
         (raw,) = self.bus.call(APP_ID, AUTOMATION_OBJECT_PATH, AUTOMATION_INTERFACE, "GetSnapshot", None, "(s)").unpack()
         return json.loads(raw)
 
-    def keystroke_interactions(self, phases: list[dict]) -> bool:
-        """The keystroke group: keystrokes alone.
+    def match_count(self, query: str, deadline: float) -> Any:
+        """The selected editor's occurrence count of `query` (the editor search bar)."""
+        self.action("win", "set-search-query", [self._string(query)], deadline)
+        # GtkSearchEntry delays `search-changed` (150 ms): wait past it before
+        # asking whether the search is complete.
+        time.sleep(0.6)
+        self.wait_ready("search-complete", deadline)
+        time.sleep(0.3)
+        return find_key(self.snapshot(), "editor_match_count")
 
-        Each position is placed in an unmeasured-for-verdict `place-*` phase
-        (find the position's marker, close the search bar, collapse the
-        selection to its end), then `key-*` types TYPE_BURST one key per
-        KEYSTROKE_GAP_S. `verify` finds marker + burst and records the match
-        count, proving where each burst landed.
+    def keystroke_interactions(self, phases: list[dict]) -> bool:
+        """The keystroke group: TYPE_BURST typed at three places in one long paragraph and in the short one after it.
+
+        Each position is placed in a `place-*` navigation phase (find the
+        position's marker, close the search bar, collapse the selection to its
+        end, so the caret sits just after the marker), then `key-*` types
+        TYPE_BURST one key per KEYSTROKE_GAP_S. `verify` counts marker + burst
+        for each position and the burst overall (and, as diagnostics, the marker
+        alone, the burst inside it and before it); a burst that did not land at
+        its marker fails the case.
         """
         cap = self.cap_s
         if not self.run_phase(phases, "background", cap, self.settle_after(2.0)):
@@ -1414,7 +1444,8 @@ class Runner:
             phases.append({"name": "key-start", "kind": "interaction", "status": "unavailable", "reason": self.rd.error or "RemoteDesktop unavailable"})
             return False
         markers = self.generator.KEYSTROKE_MARKERS
-        # Unmeasured focus click inside the text area.
+        positions = [where for where in KEYSTROKE_POSITIONS if self.wanted(f"key-{where}")]
+        # Unmeasured focus click inside the text area: keys are not delivered before.
         self.rd.click(SCREEN_W // 3, SCREEN_H // 2, [])
         time.sleep(0.3)
         self.wait_ready("app-startup", time.monotonic() + cap)
@@ -1423,18 +1454,11 @@ class Runner:
 
         def place(where: str):
             def body(inj, deadline):
-                if not self.action("win", "set-search-query", [self._string(markers[where])], deadline):
-                    return False, "action-failed"
-                # GtkSearchEntry delays search-changed (150 ms); next-match
-                # before it finds nothing and Escape restores the old caret.
-                time.sleep(0.6)
-                ok, status = self.wait_ready("search-complete", deadline)
-                if not ok:
-                    return ok, status
+                count = self.match_count(markers[where], deadline)
+                surface_before = find_key(self.snapshot(), "active_transient_surface")
                 self.action("win", "next-match", None, deadline)
                 time.sleep(0.3)
-                snap = self.snapshot()
-                placed[where] = {"matches": find_key(snap, "editor_match_count"), "surface_before": find_key(snap, "active_transient_surface")}
+                placed[where] = {"matches": count, "surface_before": surface_before}
                 self.rd.tap(KEY_ESCAPE, inj)
                 time.sleep(0.3)
                 self.rd.tap(KEY_RIGHT, inj)
@@ -1442,7 +1466,7 @@ class Runner:
                 snap = self.snapshot()
                 placed[where]["surface_after"] = find_key(snap, "active_transient_surface")
                 placed[where]["search_visible_after"] = find_key(snap, "editor_search_visible")
-                return True, "ok"
+                return (True, "ok") if count == 1 else (False, f"marker-matches-{count}")
 
             return body
 
@@ -1452,46 +1476,33 @@ class Runner:
                 time.sleep(KEYSTROKE_GAP_S)
             return True, "ok"
 
-        for where in KEYSTROKE_POSITIONS:
-            if not self.wanted(f"key-{where}"):
-                continue
+        for where in positions:
             if not self.run_phase(phases, f"place-{where}", cap, place(where)):
+                phases[-1]["placed"] = placed
                 return False
             if not self.run_phase(phases, f"key-{where}", cap, keys):
                 return False
         verified: dict[str, Any] = {}
 
         def verify(inj, deadline):
-            for where in KEYSTROKE_POSITIONS:
-                if not self.wanted(f"key-{where}"):
-                    continue
-                self.action("win", "set-search-query", [self._string(markers[where] + TYPE_BURST)], deadline)
-                self.wait_ready("search-complete", deadline)
-                time.sleep(0.3)
-                try:
-                    verified[where] = find_key(self.snapshot(), "editor_match_count")
-                except Exception as exc:  # noqa: BLE001
-                    verified[where] = f"error: {exc}"
-            for where in KEYSTROKE_POSITIONS:
+            for where in positions:
+                verified[where] = self.match_count(markers[where] + TYPE_BURST, deadline)
+            # Diagnostics only (not part of the verdict): where a misplaced
+            # burst went relative to its marker.
+            for where in positions:
                 m = markers[where]
                 for label, q in (("marker", m), ("inside1", m[:1] + TYPE_BURST + m[1:4]), ("before", TYPE_BURST + m)):
-                    self.action("win", "set-search-query", [self._string(q)], deadline)
-                    self.wait_ready("search-complete", deadline)
-                    time.sleep(0.3)
-                    verified[f"{where}-{label}"] = find_key(self.snapshot(), "editor_match_count")
-            self.action("win", "set-search-query", [self._string(TYPE_BURST)], deadline)
-            self.wait_ready("search-complete", deadline)
-            time.sleep(0.3)
-            snap = self.snapshot()
-            verified["burst_anywhere"] = find_key(snap, "editor_match_count")
-            verified["modified"] = find_key(snap, "modified")
+                    verified[f"{where}-{label}"] = self.match_count(q, deadline)
+            verified["burst_anywhere"] = self.match_count(TYPE_BURST, deadline)
+            verified["modified"] = find_key(self.snapshot(), "modified")
             self.rd.tap(KEY_ESCAPE, inj)
-            return True, "ok"
+            misses = keystroke_misses(verified, positions)
+            return (True, "ok") if not misses else (False, "burst-misplaced:" + ",".join(misses))
 
-        self.run_phase(phases, "verify", cap, verify)
+        ok = self.run_phase(phases, "verify", cap, verify)
         phases[-1]["verified"] = verified
         phases[-1]["placed"] = placed
-        return True
+        return ok
 
     @staticmethod
     def _string(value: str):
@@ -1636,6 +1647,8 @@ class Runner:
                         return self.wait_ready("file-open-complete", deadline)
 
                     ok = ok and self.run_phase(phases, "reselect", cap, reselect)
+                elif ok and case.flow == "keystroke":
+                    ok = self.keystroke_interactions(phases)
                 elif ok and case.flow == "reload":
                     ok = self.run_phase(phases, "background", cap, self.settle_after(1.0))
 
@@ -1646,8 +1659,6 @@ class Runner:
 
                     ok = ok and self.run_phase(phases, "reload", cap, reload)
                     ok = ok and self.standard_interactions(phases, recover=recover)
-                elif ok and case.flow == "keystroke":
-                    ok = self.keystroke_interactions(phases)
                 elif ok:
                     ok = self.standard_interactions(phases, tabs=max(1, len(files)), recover=recover)
             for launch in launches:
@@ -1925,11 +1936,11 @@ class Runner:
 
 
 def find_key(value: Any, key: str) -> Any:
-    """The first value under `key` anywhere in a JSON tree."""
+    """The first value under `key` anywhere in a JSON tree, depth first."""
     if isinstance(value, dict):
         if key in value:
             return value[key]
-        children = value.values()
+        children = list(value.values())
     elif isinstance(value, list):
         children = value
     else:
@@ -1939,6 +1950,20 @@ def find_key(value: Any, key: str) -> Any:
         if found is not None:
             return found
     return None
+
+
+def keystroke_misses(verified: dict[str, Any], positions: Iterable[str]) -> list[str]:
+    """The keystroke positions whose burst did not land right after its marker.
+
+    `verified[where]` is the count of marker + TYPE_BURST, which must be 1;
+    `verified["burst_anywhere"]`, the count of TYPE_BURST, must equal the
+    number of positions typed, so no burst also landed somewhere else.
+    """
+    positions = list(positions)
+    misses = [where for where in positions if verified.get(where) != 1]
+    if verified.get("burst_anywhere") != len(positions):
+        misses.append("burst-count")
+    return misses
 
 
 def construction_summary(records: dict[str, list[dict]], attrs: dict[str, Any], binary: Path) -> dict[str, Any] | None:
@@ -3409,6 +3434,13 @@ def self_test() -> int:
         if not condition:
             failures.append(label)
 
+    # Every keystroke length stays editable after the case types its bursts.
+    for tier, lengths in KEYSTROKE_LENGTHS.items():
+        expect(
+            max(lengths) + len(KEYSTROKE_POSITIONS) * len(TYPE_BURST) <= L_PROTECT_EDIT,
+            f"{tier} keystroke lengths stay at or below L_PROTECT_EDIT after the bursts",
+        )
+
     # Classification edges (L + T == B is within; L - eps == B is not over).
     expect(classify(6_000, 2_000, 1_000, 8_000) == "within", "L + T == B is within")
     expect(classify(6_001, 2_000, 1_000, 8_000) == "indeterminate", "L + T == B + 1 is indeterminate")
@@ -3806,6 +3838,30 @@ def self_test() -> int:
     expect(length_verdict({"value": None, "upper_bound": 10_000}, 10_000) is False, "an upper bound fails the length")
     expect(length_verdict({"value": None, "reason": "no usable cases"}, 10_000) is None, "no usable cases is undecided")
     expect(hasattr(load_generator(), "generate"), "the fixture generator loads as a module")
+
+    # The keystroke group (C2's toolkit-floor exception, reduced by C5): its case grid per
+    # tier, the override, the phases' kinds, and the landing verification.
+    for tier, lengths in (("quick", (3_500, 10_000, 49_950)), ("full", (500, 1_000, 2_000, 2_500, 3_500, 5_000, 10_000, 20_000, 49_950))):
+        grid = [c for c in build_cases(tier) if c.group == "keystroke"]
+        ids = [c.id for c in grid]
+        expected_ids = [f"keystroke/{n}/{flavor}/{ext}/wrap-{wrap}" for n in lengths for flavor, ext in (("css", "html"), ("prose", "txt")) for wrap in ("on", "off")]
+        expect(ids == expected_ids, f"keystroke {tier}: case ids {ids}")
+        expect(len(grid) == 4 * len(lengths), f"keystroke {tier}: four cases per length")
+        expect(all(c.flow == "keystroke" and c.fixture is not None and c.fixture.kind == "keystroke" and c.fixture.size == c.length for c in grid), f"keystroke {tier}: keystroke fixtures of the swept length")
+        expect(all(c.settings.get("word-wrap") is (c.id.endswith("wrap-on")) and c.settings.get("show-minimap") is False for c in grid), f"keystroke {tier}: word wrap on and off, minimap off")
+        expect(all(c.fixture.ext == c.attrs["ext"] and c.fixture.flavor == c.attrs["flavor"] for c in grid), f"keystroke {tier}: shape attrs match the fixture")
+        expect(len({c.fixture.seed for c in grid if c.attrs["wrap"]}) == 2 * len(lengths), f"keystroke {tier}: one seed per length and flavour")
+    expect(sweep_lengths("quick", "keystroke=4000,6000")["keystroke"] == (4_000, 6_000), "RESPONSIVENESS_LENGTHS replaces the keystroke grid")
+    expect(all(PHASE_KINDS[f"key-{w}"] == "interaction" and PHASE_KINDS[f"place-{w}"] == "navigation" for w in KEYSTROKE_POSITIONS) and PHASE_KINDS["verify"] == "navigation", "keystroke phases: bursts are interactions, placement and verification navigation")
+    expect(KEY_ESCAPE in ALLOWED_KEYSYMS, "Escape closes the search bar")
+    expect(set(load_generator().KEYSTROKE_MARKERS) == set(KEYSTROKE_POSITIONS), "a marker per keystroke position")
+    landed = {"start": 1, "middle": 1, "end": 1, "short": 1, "burst_anywhere": 4}
+    expect(keystroke_misses(landed, KEYSTROKE_POSITIONS) == [], "bursts at their markers pass")
+    expect(keystroke_misses({**landed, "middle": 0, "burst_anywhere": 4}, KEYSTROKE_POSITIONS) == ["middle"], "a burst away from its marker fails the case")
+    expect(keystroke_misses({**landed, "burst_anywhere": 5}, KEYSTROKE_POSITIONS) == ["burst-count"], "an extra burst fails the case")
+    expect(keystroke_misses({"end": 1, "burst_anywhere": 1}, ["end"]) == [], "only the typed positions are checked")
+    expect(keystroke_misses({"start": None, "burst_anywhere": None}, ["start"]) == ["start", "burst-count"], "a missing count fails the case")
+    expect(find_key({"a": [{"b": None}, {"search": {"editor_match_count": 2}}]}, "editor_match_count") == 2 and find_key({"a": 1}, "x") is None, "find_key searches the snapshot tree")
 
     # Window construction (C4): spans by name, stages summed, the largest
     # lateness before the first frame, and the verdict against B_settle.

@@ -16,8 +16,8 @@
 use crate::common::{
     EditorLoadDelayReset, action_state_bool, activate_action, active_editor, editor_text,
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read,
-    present_window, rect_within, test_window, test_window_with_restored_size, wait_until,
-    write_external_change_after_mtime_tick,
+    present_window, rect_within, test_window, test_window_with_restored_size,
+    wait_for_painted_frame, wait_until, write_external_change_after_mtime_tick,
 };
 use glib::prelude::ToVariant;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -859,6 +859,10 @@ fn test_non_markdown_alert_shows_above_placeholder_and_survives_escape() {
     alert.imp().dismiss_button.emit_clicked();
     flush_events();
     assert!(bar_hidden(&alert));
+    // GTK moves focus off a hidden focus widget at the next painted frame,
+    // to the first visible ancestor that takes it (an AdwGizmo here), unless
+    // focus already left the hidden copy: wait for that frame.
+    wait_for_painted_frame(&window);
     let focus = focus_widget(&window);
     assert!(
         focus.is_none(),

@@ -21,7 +21,15 @@ pub enum PrintOutcome {
     Cancelled,
     /// Printing failed before the request could complete.
     Failed(String),
+    /// The document is in Protected View: GTK would print only its visible
+    /// text, without the folded tails, so no print operation is started
+    /// (`long-line-protected-view` design D10).
+    RefusedProtectedView,
 }
+
+/// What a refused Protected View print tells the user.
+pub const PRINT_REFUSED_PROTECTED_VIEW: &str =
+    "Printing is not available in Protected View: very long lines are shown folded";
 
 /// User-visible prefix for a failed print request.
 ///
@@ -41,6 +49,7 @@ pub fn print_failure_report(outcome: &PrintOutcome) -> Option<String> {
     match outcome {
         PrintOutcome::Completed | PrintOutcome::InProgress | PrintOutcome::Cancelled => None,
         PrintOutcome::Failed(detail) => Some(format!("{PRINT_FAILURE_PREFIX}{detail}")),
+        PrintOutcome::RefusedProtectedView => Some(PRINT_REFUSED_PROTECTED_VIEW.to_string()),
     }
 }
 
@@ -62,6 +71,14 @@ mod tests {
         assert_eq!(report, "Print failed: no printers");
         assert!(report.starts_with(PRINT_FAILURE_PREFIX));
         assert!(report.ends_with("no printers"));
+    }
+
+    #[test]
+    fn a_refused_protected_view_print_reports_why() {
+        assert_eq!(
+            print_failure_report(&PrintOutcome::RefusedProtectedView).as_deref(),
+            Some(PRINT_REFUSED_PROTECTED_VIEW)
+        );
     }
 
     #[test]

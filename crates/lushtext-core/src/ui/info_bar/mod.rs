@@ -141,8 +141,32 @@ impl LushtextInfoBar {
         );
     }
 
+    /// Make hiding this bar move keyboard focus off it first, leaving the
+    /// window with no focus widget, for a host that decides where focus goes
+    /// next (the window's preview copy of the selected document's alert).
+    ///
+    /// Without it, hiding a bar that holds focus leaves focus on the hidden
+    /// button, and GTK moves it at the next painted frame to the first
+    /// visible ancestor that accepts it (`gtkwindow.c`
+    /// `maybe_unset_focus_and_default`, run at `after-paint`); a later
+    /// `set_focus(None)` does not cancel that move, only focusing a visible
+    /// widget does. Releasing focus before the hide means GTK schedules no
+    /// move. Editor bars keep the default, because their host re-focuses the
+    /// visible source view after the hide, which cancels the move.
+    pub(crate) fn set_releases_focus_when_hidden(&self, releases: bool) {
+        self.imp().releases_focus_when_hidden.set(releases);
+    }
+
     fn hide_alert(&self) {
         let imp = self.imp();
+        if imp.releases_focus_when_hidden.get()
+            && let Some(root) = self.root()
+            && root.focus().is_some_and(|focus| {
+                focus == *self.upcast_ref::<gtk4::Widget>() || focus.is_ancestor(self)
+            })
+        {
+            root.set_focus(None::<&gtk4::Widget>);
+        }
         imp.alert_revealer.set_reveal_child(false);
         imp.alert_revealer.set_visible(false);
         imp.actions_box.set_visible(false);

@@ -95,7 +95,7 @@ impl LocalHistoryReplacementTicket {
 
 impl LushtextWindow {
     pub(in crate::ui::window) fn undo_local_history_restore(&self, editor: &LushtextEditorPage) {
-        let Some(undo_text) = editor.take_local_history_restore_undo_text() else {
+        let Some((undo_text, undo_profile)) = editor.take_local_history_restore_undo_text() else {
             self.publish_status_message(
                 "There is no local-history restore to undo",
                 MessageKind::Warning,
@@ -107,6 +107,7 @@ impl LushtextWindow {
         let terminal_editor = editor.downgrade();
         let cancelled_editor = editor.downgrade();
         let window_weak = self.downgrade();
+        let returned_profile = undo_profile.clone();
         let request = BufferReplacementRequest::new_guarded_returning_body_on_cancel(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::LocalHistoryUndo,
@@ -153,10 +154,13 @@ impl LushtextWindow {
                     // was never unbound (clicks read the pending action without
                     // consuming it), and if a newer alert replaced it meanwhile,
                     // rebinding here would make that alert's button run the undo.
-                    editor.set_local_history_restore_undo_text(Some(body));
+                    editor.set_local_history_restore_undo_text(Some((body, returned_profile)));
                 }
             },
-        );
+        )
+        // Profiled by the restore's safety worker, so a giant prior body folds
+        // at insertion like every other whole-content install.
+        .with_profile(undo_profile);
         editor.replace_buffer_bounded(request);
     }
 
@@ -216,6 +220,8 @@ impl LushtextWindow {
                 },
                 move || {
                     let undo_text = undo_payload.into_guarded_string_on_worker();
+                    // Profile the prior body here, off GTK, for Undo Restore.
+                    let undo_profile = DocumentProfile::of_text(undo_text.as_str());
                     let data_dir = json_store::data_dir();
                     let result = local_history_service::capture_snapshot_for_path(
                         &data_dir,
@@ -224,7 +230,7 @@ impl LushtextWindow {
                         crate::model::local_history::LocalHistorySnapshotOrigin::RestoreSafety,
                         crate::services::local_history_service::LocalHistoryCapturePolicy::PreserveDuplicate,
                     );
-                    (result, undo_text)
+                    (result, (undo_text, undo_profile))
                 },
                 move |state, (result, undo_text)| {
                     if let Err(error) = result {

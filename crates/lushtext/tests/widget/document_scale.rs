@@ -16,8 +16,8 @@ use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use lushtext_core::config::keys;
 use lushtext_core::model::document_scale::{
-    DocumentScale, L_INVISIBLES, L_MINIMAP, L_PROTECT, L_SEARCH_HIGHLIGHT, L_SYNTAX, L_WRAP_EDIT,
-    LocalHistoryAvailability, R_BATCH, ReducedFeatures, V_BATCH,
+    DocumentScale, L_INVISIBLES, L_MINIMAP, L_PROTECT_EDIT, L_SEARCH_HIGHLIGHT, L_SYNTAX,
+    L_WRAP_EDIT, LocalHistoryAvailability, R_BATCH, ReducedFeatures, V_BATCH,
 };
 use lushtext_core::model::paragraph_boundary::DocumentProfile;
 use lushtext_core::model::paragraph_wrap::REWRAP_MARGIN;
@@ -435,9 +435,14 @@ fn test_a_merge_raising_only_density_is_recomputed() {
     delete_range(&page, offset, offset + 1);
     let after = page.document_scale_evidence();
     assert!(after.watch_window_steps > before.watch_window_steps);
+    assert!(before.worst_batch_chars <= V_BATCH);
     assert!(
-        after.scale.protected_view,
-        "density over V_BATCH sets protected_view"
+        after.worst_batch_chars > V_BATCH,
+        "the watch recomputes the density the merge raised"
+    );
+    assert!(
+        !after.scale.protected_view,
+        "density alone never sets protected_view (design D0)"
     );
 }
 
@@ -493,14 +498,18 @@ fn test_fast_keystrokes_cannot_cross_v_batch_unseen() {
     lines[0] = "e".repeat(per_line - 10);
     page.buffer().set_text(&lines.join("\n"));
     let start = page.document_scale_evidence();
-    assert!(!start.scale.protected_view);
+    assert!(start.worst_batch_chars <= V_BATCH);
     for keystroke in 1..=11 {
         insert_at_offset(&page, 0, "k");
         let now = page.document_scale_evidence();
+        assert!(!now.scale.protected_view, "density never protects");
         if keystroke <= 10 {
-            assert!(!now.scale.protected_view, "keystroke {keystroke}");
+            assert!(now.worst_batch_chars <= V_BATCH, "keystroke {keystroke}");
         } else {
-            assert!(now.scale.protected_view, "the crossing keystroke sets it");
+            assert!(
+                now.worst_batch_chars > V_BATCH,
+                "the crossing keystroke is seen"
+            );
             assert_eq!(now.watch_fast_steps, start.watch_fast_steps + 10);
             assert_eq!(now.watch_window_steps, start.watch_window_steps + 1);
         }
@@ -600,12 +609,12 @@ fn test_install_slices_do_no_watch_work() {
 }
 
 #[test]
-fn test_crossing_l_protect_changes_no_text_or_modified_state() {
+fn test_crossing_l_protect_edit_changes_no_text_or_modified_state() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
     page.buffer().set_text("seed\n");
     page.buffer().set_modified(false);
-    let addition = "p".repeat(n(L_PROTECT) + 1);
+    let addition = "p".repeat(n(L_PROTECT_EDIT) + 1);
     insert_at_end(&page, &addition);
     assert!(page.document_scale().protected_view);
     assert_eq!(editor_text(&page), format!("seed\n{addition}"));
@@ -618,6 +627,83 @@ fn test_crossing_l_protect_changes_no_text_or_modified_state() {
             .reduced
             .describe()
             .is_some_and(|text| text.contains("Protected View"))
+    );
+}
+
+/// Exactly `length` characters of lowercase prose (words, spaces and
+/// sentence punctuation), with no paragraph delimiter.
+fn prose(length: usize) -> String {
+    const WORDS: &str = "the quick brown fox writes a long paragraph, and the editor \
+                         keeps every line of it editable. ";
+    WORDS.chars().cycle().take(length).collect()
+}
+
+/// Load `body` from a file and return the page's effective scale.
+fn loaded_scale(dir: &tempfile::TempDir, name: &str, body: &str) -> DocumentScale {
+    let path = dir.path().join(name);
+    fixture::write_text(&path, body);
+    let page = LushtextEditorPage::new();
+    load_and_wait(&page, &path);
+    page.document_scale()
+}
+
+#[test]
+fn test_prose_paragraphs_up_to_l_protect_edit_stay_editable() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("prose tempdir");
+    for length in [600, 8_000, n(L_PROTECT_EDIT)] {
+        let body = format!("Title\n{}\nlast line\n", prose(length));
+        let scale = loaded_scale(&dir, &format!("prose-{length}.txt"), &body);
+        assert!(!scale.protected_view, "{length} characters stay editable");
+    }
+    let body = format!("Title\n{}\nlast line\n", prose(n(L_PROTECT_EDIT) + 1));
+    assert!(
+        loaded_scale(&dir, "prose-over.txt", &body).protected_view,
+        "one character over L_PROTECT_EDIT enters Protected View"
+    );
+}
+
+#[test]
+fn test_an_agents_md_shaped_document_stays_editable() {
+    // This repository's AGENTS.md on 2026-10-30: 87 paragraphs over 500
+    // characters, the longest 8,314, dense enough that its worst window
+    // exceeds V_BATCH. C1's key (L_PROTECT = 500, or density) protected it.
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("agents tempdir");
+    let mut body = String::new();
+    for index in 0..R_BATCH {
+        body.push_str(&prose(if index == 0 { 8_314 } else { 600 + index * 7 }));
+        body.push('\n');
+    }
+    let path = dir.path().join("AGENTS.md");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    load_and_wait(&page, &path);
+    let evidence = page.document_scale_evidence();
+    assert_eq!(evidence.longest_paragraph_chars, 8_314);
+    assert!(evidence.worst_batch_chars > V_BATCH, "the shape is dense");
+    assert!(!evidence.scale.protected_view);
+}
+
+#[test]
+fn test_a_dense_short_line_document_stays_editable() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("dense tempdir");
+    // Two windows of 500-character lines: twice V_BATCH per window.
+    let line = prose(2 * n(V_BATCH / R_BATCH as u64));
+    let body = format!("{line}\n").repeat(2 * R_BATCH);
+    let path = dir.path().join("dense.txt");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    load_and_wait(&page, &path);
+    let evidence = page.document_scale_evidence();
+    assert!(evidence.worst_batch_chars > V_BATCH);
+    assert!(!evidence.scale.protected_view);
+    assert!(
+        !evidence
+            .scale
+            .reduced
+            .contains(lushtext_core::model::document_scale::ScaleFeature::ProtectedView)
     );
 }
 

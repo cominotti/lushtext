@@ -163,6 +163,19 @@ So prefer:
 assert!(widget.property::<bool>("visible"));
 ```
 
+**Hiding the focus widget moves focus one painted frame later.** When a
+focused widget (or its ancestor) is hidden, GTK keeps focus on it and only at
+the next `after-paint` moves focus to the first visible ancestor that accepts
+it (`gtkwindow.c` `maybe_unset_focus_and_default`; libadwaita containers
+often hand that to an internal `AdwGizmo`). `set_focus(None)` after the hide
+does not cancel the move; focusing a visible widget does, and so does
+clearing focus *before* the hide. A focus assertion right after a hide
+therefore passes only while no frame has painted, and flakes under load:
+call `wait_for_painted_frame(&window)` (`tests/widget/common.rs`) before
+asserting where focus went. (Found by
+`window_preview::test_non_markdown_alert_shows_above_placeholder_and_survives_escape`,
+2026-11-01; the preview alert copy now releases focus before it hides.)
+
 If the question becomes "what does GTK consider visible, mapped, realized, or accessible here?", stop and read:
 
 - [../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md](../../gtk4-libadwaita-internals/references/lifecycle-and-ownership.md)

@@ -57,9 +57,17 @@ pub(crate) mod a51;
 pub(crate) mod a52;
 pub(crate) mod a53;
 pub(crate) mod a54;
+pub(crate) mod a59;
+pub(crate) mod a60;
+pub(crate) mod a61;
+pub(crate) mod a63;
+pub(crate) mod a64;
+pub(crate) mod a65;
+pub(crate) mod a66;
 pub(crate) mod adaptive;
 pub(crate) mod composition;
 pub(crate) mod gsettings;
+pub(crate) mod remote_input;
 pub(crate) mod text;
 
 use gtk4::prelude::*;
@@ -116,6 +124,13 @@ pub use a51::probe_a51;
 pub use a52::probe_a52;
 pub use a53::probe_a53;
 pub use a54::probe_a54;
+pub use a59::probe_a59;
+pub use a60::probe_a60;
+pub use a61::probe_a61;
+pub use a63::probe_a63;
+pub use a64::probe_a64;
+pub use a65::probe_a65;
+pub use a66::probe_a66;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);

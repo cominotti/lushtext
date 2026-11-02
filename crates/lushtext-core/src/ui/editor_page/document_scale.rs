@@ -86,6 +86,10 @@ pub struct DocumentScaleState {
     lines_before_edit: Cell<u64>,
     /// The presentation reductions the notice has already announced.
     announced: Cell<ReducedFeatures>,
+    /// The scale and watch state from just before the edit that entered
+    /// Protected View (`long-line-protected-view` design D2): what the one
+    /// bounded entry undo restores. `None` unless the session entered by edit.
+    before_protected_entry: Cell<Option<(DocumentScale, ProfileWatchState)>>,
     notice: Cell<NoticePhase>,
     /// Test evidence: cumulative watch line reads and steps.
     reads: Cell<u64>,
@@ -490,6 +494,41 @@ impl LushtextEditorPage {
         // Presentation features meet; the byte tiers stay those of the latest
         // load or save (an edit does not toggle undo, design Open Question 4).
         self.adopt_document_scale(previous, candidate.join(previous));
+        if !previous.protected_view && scale_state.scale.get().protected_view {
+            // This edit made the document protected: enter Protected View in
+            // this same emission, before any validation idle runs (design D2),
+            // keeping what the entry undo restores.
+            scale_state
+                .before_protected_entry
+                .set(Some((previous, state)));
+            let lines: Vec<u64> = match plan {
+                WatchPlan::FastPath { touched_line, .. } => vec![*touched_line],
+                _ => plan.lines_to_read().collect(),
+            };
+            let grown: Vec<(u64, u64)> = lines.into_iter().zip(reads.iter().copied()).collect();
+            self.enter_protected_view_from_edit(&grown);
+        }
+    }
+
+    /// Restore the scale and watch from just before the edit that entered
+    /// Protected View, and re-apply every gate from it: the entry undo
+    /// (design D2) removes exactly the content that edit added, so this is
+    /// the one exception to the monotone session (C1's requirement, MODIFIED
+    /// by `long-line-protected-view`). Returns false when no edit entered.
+    pub(crate) fn restore_document_scale_before_protected_entry(&self) -> bool {
+        let state = &self.imp().document_scale;
+        let Some((scale, watch)) = state.before_protected_entry.take() else {
+            return false;
+        };
+        state.watch.set(watch);
+        state.scale.set(scale);
+        self.apply_document_scale_gates();
+        if scale.minimap_allowed {
+            self.schedule_minimap_refresh();
+        }
+        self.notify_memory_policy_changed();
+        self.request_reduced_features_notice();
+        true
     }
 
     // ─── The reduced-features notice ─────────────────────────────────────

@@ -16,7 +16,7 @@ use crate::ui::accessibility;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// Stored callback for inline alert button actions.
 /// Same pattern as `SearchBar::connect_close` and `Sidebar::connect_file_activated`.
@@ -92,6 +92,9 @@ pub struct LushtextInfoBar {
     /// What this bar currently shows, so re-rendering the same alert on every
     /// projection pass is a no-op instead of relabelling and relayout.
     pub rendered: RefCell<Option<InlineActionNotification>>,
+    /// Whether hiding this bar first moves keyboard focus off it (see
+    /// `LushtextInfoBar::set_releases_focus_when_hidden`).
+    pub releases_focus_when_hidden: Cell<bool>,
 }
 
 impl Default for LushtextInfoBar {
@@ -113,6 +116,7 @@ impl Default for LushtextInfoBar {
             dismissed_callback: RefCell::new(None),
             alert_announcement_throttler: accessibility::AnnouncementThrottler::default(),
             rendered: RefCell::default(),
+            releases_focus_when_hidden: Cell::new(false),
         }
     }
 }

@@ -6,7 +6,7 @@ the budgets (B_interact 8 ms per interaction dispatch, input-to-presented-frame
 (`document-scale-policy`, archived) made feature availability a function of the
 paragraph profile; C2 (`long-line-protected-view`) makes giant paragraphs
 view-only. On 2026-10-30 the maintainer chose the **hybrid policy**: paragraphs
-up to about `L_protect` ≈ 50,000 characters stay editable, the keystrokes that
+up to about `L_protect_edit` ≈ 50,000 characters stay editable, the keystrokes that
 miss B_interact there are an explicit toolkit-floor exception, and C5 brings the
 cost back within budget as far as the toolkit allows.
 
@@ -108,7 +108,7 @@ Pango property of the paragraph, not LushText's or GTK's surrounding work.
   not asserted.
 
 **Non-Goals:**
-- Editing paragraphs above `L_protect` (deferred; proposal "Deferred").
+- Editing paragraphs above `L_protect_edit` (deferred; proposal "Deferred").
 - Changing Pango or GTK; a custom text widget.
 - Changing the user's word-wrap preference, adding a GSettings key, action,
   D-Bus member, snapshot field or persisted format.
@@ -346,6 +346,17 @@ lives in a second dispatch that the worst-stall figure hides.
   comparatively.
 - [8 ms is met at the median, not always at p90] → the exception keeps
   covering the tail; the record states p90 and the over-budget counts.
+- [50,000 at the budget, 100,000 at 16–20 ms per key] → the toolkit-floor
+  exception, **accepted by the maintainer** (C2's hybrid decision of
+  2026-10-30, "editable up to ~50k"). Since C2 merged (2026-11-01), paragraphs
+  above `L_protect_edit` = 50,000 are in Protected View and take no keys, so
+  100,000 is no longer an editable length; the lane's keystroke group sweeps
+  up to 49,950.
+- [The wrap gate and Protected View] → they compose: a protected paragraph is
+  longer than `L_wrap_edit`, so its visible head is shown unwrapped like any
+  long paragraph, its hidden tail is never laid out (A65), and the gate's tag
+  changes happen only inside edit emissions, never between the edit entry's
+  capture dispatches (A66).
 
 ## Migration Plan
 

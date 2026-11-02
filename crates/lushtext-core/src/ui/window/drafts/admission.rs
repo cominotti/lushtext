@@ -116,7 +116,7 @@ impl LushtextWindow {
         }
         Some(GuardedPreloadedDraftRestore::Content(
             attach_draft_body_disposal_probe(reservation.own(content)),
-            profile,
+            Box::new(profile),
         ))
     }
 
@@ -183,7 +183,7 @@ impl LushtextWindow {
                                 .shrink_to(u64::try_from(content.capacity()).unwrap_or(u64::MAX));
                             GuardedDraftRestoreResolution::Restore(
                                 attach_draft_body_disposal_probe(reservation.own(content)),
-                                profile,
+                                Box::new(profile),
                             )
                         }
                         FileDraftRestoreResolution::Skip(skip) => {

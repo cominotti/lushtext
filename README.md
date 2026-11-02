@@ -42,6 +42,15 @@ local history, and careful recovery behavior.
   edited paragraph on every keystroke and an unwrapped layout costs about half.
   The input method is given a bounded window of text around the cursor rather
   than the whole paragraph.
+- **Protected View for giant paragraphs.** A document with a paragraph longer
+  than 50,000 characters opens view-only: no caret, nothing can change it, and
+  each giant paragraph shows its first 10,000 characters with the rest folded
+  away, so scrolling and selecting stay fast. Find still searches every
+  character, hidden ones included; copying a selection copies the folded text
+  too; and saving writes the original bytes unchanged. A paste or join that
+  pushes a paragraph past the limit enters Protected View at once, and `Ctrl+Z`
+  undoes that one edit and leaves it again. Reopening the file after shortening
+  it elsewhere makes it editable.
 - **EditorConfig support** for indentation and save-policy overrides, with
   Preferences values used as fallback.
 

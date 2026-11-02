@@ -18,12 +18,12 @@ that freezes it is **paragraph length**, not file size.
 |---|---|---|---|
 | C0 | `probe-long-line-toolkit-costs` | Axioms A23–A37, the synthetic fixture generator, the smoke-only in-process probe, `make responsiveness-smoke`, the budget constants, and the measured values below | Values and the budget verdict recorded here (this record). |
 | C1 | `document-scale-policy` | Paragraph profile on the worker, one GTK-matching paragraph-boundary function (fixes the `\n`-only slicer), `DocumentScale` replacing `FileSizeCheck`, gates for syntax/minimap/invisibles/search highlighting at load and on edits, the minimap-detach CRITICAL fix | The context-engine stall and both CRITICALs gone, verified on the lane. **Status: implemented, in review** (branch `document-scale-policy`, PR #59); see "C1 `document-scale-policy` (implementation record)" below. |
-| C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for giant-paragraph documents, the display-only fold, the Line Inspector, find on a worker | Every interaction offered on these documents within the budgets. |
+| C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for documents whose longest paragraph exceeds `L_PROTECT_EDIT` = 50,000 (maintainer, 2026-10-30), the display-only fold, the Line Inspector, find on a worker; a recorded toolkit-floor exception for editable paragraphs between `L_EDIT_STALL` (3,500) and 50,000 | Every interaction offered on these documents within the budgets. |
 | C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
 | C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). **Corrected 2026-10-29 (C4c):** its first-frame figure was an unseen frame on the unmapped window (A51); the real first frame was ≈ 46 ms from the request, no earlier than before C4b, and the honest fill-in 29–39 ms. |
 | C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Met (interleaved verdict 2026-10-29):** largest dispatch 13.2 ms, fill-in 20.4–25.9 ms (median 21.4), first painted frame 30.0–33.2 ms against `main`'s 45.1–47.9 ms ("C4c" below). |
-| C5 | `explore-editing-long-paragraphs` (rescoped 2026-10-30 under the hybrid policy; implemented 2026-10-31) | Lower the per-keystroke cost of typing in long **editable** paragraphs: release the retired `GtkSourceMap` that still laid out every edited paragraph (a pre-existing defect: 7.5 ms per key at 50k; A52), show paragraphs longer than `L_wrap_edit` (8,192) unwrapped by a no-wrap tag (its first character decides, A53) while the rest keep wrapping, answer the input method's surrounding-text request with a bounded window (GNOME's input path asked for the whole paragraph's word boundaries on every key; A54), make the keystroke sweep a maintained lane group, and record the floor (one whole-paragraph Pango layout in GTK's commit handler). Editing above `L_protect` is deferred. | Typing within B_interact up to `L_wrap_edit` wrapped and further unwrapped, on the plain and GNOME input paths, the rest a recorded toolkit-floor exception. **Met up to 20,000 characters** on both paths (`main`: about 12,000 plain, 5,000 on GNOME's path); 50,000 at the budget (7.7–11.1 ms) and 100,000 at 16–20 ms are the recorded exception ("C5" below). |
+| C5 | `explore-editing-long-paragraphs` (rescoped 2026-10-30 under the hybrid policy; implemented 2026-10-31) | Lower the per-keystroke cost of typing in long **editable** paragraphs: release the retired `GtkSourceMap` that still laid out every edited paragraph (a pre-existing defect: 7.5 ms per key at 50k; A52), show paragraphs longer than `L_wrap_edit` (8,192) unwrapped by a no-wrap tag (its first character decides, A53) while the rest keep wrapping, answer the input method's surrounding-text request with a bounded window (GNOME's input path asked for the whole paragraph's word boundaries on every key; A54), make the keystroke sweep a maintained lane group, and record the floor (one whole-paragraph Pango layout in GTK's commit handler). Editing above `L_protect_edit` (50,000, C2's Protected View) is deferred. | Typing within B_interact up to `L_wrap_edit` wrapped and further unwrapped, on the plain and GNOME input paths, the rest a recorded toolkit-floor exception. **Met up to 20,000 characters** on both paths (`main`: about 12,000 plain, 5,000 on GNOME's path); 50,000 at the budget (7.7–11.1 ms) and 100,000 at 16–20 ms are the recorded exception ("C5" below), accepted by the maintainer ("editable up to ~50k", 2026-10-30); since C2 merged, 100,000 is in Protected View. |
 | C6 | `bound-post-open-settle` (candidate, recorded by C0's budget verdict) | Bound the first main-loop turns after load readiness: the small-document post-open stall, the HTML first-highlight stall, the first overlay-indicator frame | The baseline fits B_settle and 2 reference frames on an idle reference run. Does not block C1–C4. |
 | PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
 
@@ -872,7 +872,9 @@ save-only history 10 MB, refuse 500 MB.
   proposal's decision 4 (keep 10 MB or about 1 MiB). The size-independent ~42 ms
   first-highlight stall (C6's scope) is not removed by any cutoff.
 - `L_protect`: **500 applied**, the stall basis (`L_protect_stall`), as C2's
-  gate already takes it. Consequence for C1: any paragraph over 500 characters
+  gate already takes it. (Superseded on 2026-10-30: C2's design D0 keys
+  `protected_view` on `L_PROTECT_EDIT` = 50,000; see the C2 record below.)
+  Consequence for C1: any paragraph over 500 characters
   (ordinary Markdown prose written one paragraph per line) marks the document
   for Protected View, and the reduced-features notice says so. A maintainer
   decision may raise the C1 notice threshold until C2's user-session
@@ -1028,11 +1030,275 @@ costs while typing inside one (A26 log attrs, about 95 ms per keystroke on the
 1.9M-character line). C1 does not claim them; C2 (`long-line-protected-view`)
 removes them by making such documents view-only.
 
+## C2 `long-line-protected-view` (implementation record)
+
+### Entry threshold: measured, then decided by the maintainer (2026-10-30)
+
+Task 1.1 measured **`L_EDIT_STALL`**, the shortest paragraph length at which
+one keystroke inside it exceeds B_interact (8 ms), with a `keystroke` sweep
+(one paragraph of the swept length between 30 short lines, CSS and prose
+flavours, keystrokes at its start, middle and end, wrap on and off, C1's
+reduced features applied; plain and probe-IM variants, 2 repetitions on the
+coarse grid and 7–9 near the bracket; evidence in
+`.claude/handoffs/c2-measure/`: `sweep-table.md`, `keystroke-sweep.patch`, runs
+`coarse-*`, `near-*`, `off-*`).
+
+| Wrap | `L_EDIT_STALL` bracket | Note |
+|---|---|---|
+| on (default) | **3,500–5,000** (plain: 0/7 repetitions over at 3,500, first over at 5,000; probe IM: 2,500–3,500) | ratio 1.43 |
+| off | **10,000–14,000** | ratio 1.4 |
+
+Median per-keystroke stall over positions and shapes (max in brackets):
+
+| Length | wrap on | wrap off |
+|---|---|---|
+| 5,000 | 4.7–5.5 ms (8.8) | 0.5–3.5 ms (5.5) |
+| 10,000 | 6.5–7.4 ms (12.9) | 1.3–4.8 ms (8.6) |
+| 20,000 | 7.3–9.9 ms (13.6) | 2.8–6.7 ms (10.0) |
+| 50,000 | 18.5–21.0 ms (24.0) | 7.7–11.6 ms (16.5) |
+| 100,000 | 41.7–44.7 ms (51.0) | 16.1–19.0 ms (27.0) |
+| 200,000 | 104.5–106.9 ms (115.0) | 34.0–37.1 ms (41.5) |
+| 500,000 | 152.0–186.8 ms (195.8) | 83.4–123.8 ms (128.9) |
+
+The cost is GtkTextView's re-layout of the whole edited paragraph (A23) and
+the buffer's whole-paragraph log attrs (A26); no LushText code is on the path.
+The value is far below the tens of thousands the design expected, so the
+choice returned to the maintainer (design D0), who chose **the hybrid**:
+
+- **Editable up to `L_PROTECT_EDIT` = 50,000.** Documents whose longest
+  paragraph is at most 50,000 characters stay editable under C1's reduced
+  features. 50,000 is the length at which the median keystroke cost reaches
+  about 20 ms.
+- **Toolkit-floor exception, recorded, not a relaxed budget.** Keystrokes in
+  editable paragraphs between `L_EDIT_STALL` (3,500) and `L_PROTECT_EDIT`
+  (50,000) miss B_interact by the amounts above. B_INTERACT_US is unchanged;
+  the exception names its range and costs, rests on A23 and A26 (whose ledger
+  rows cite it), is re-measured by the lane's `keystroke` group, and is owned
+  by the optional C5.
+- **Protected View above `L_PROTECT_EDIT`**, with the one bounded undo of the
+  edit that caused entry.
+
+### Applied (tasks 1.1a, 1.1b, 2026-10-30)
+
+- **The re-key (1.1a).** `model/document_scale.rs` gained `L_EDIT_STALL`
+  (3,500, documentation of the exception's lower bound, deciding nothing) and
+  `L_PROTECT_EDIT` (50,000); `protected_view` holds exactly when the longest
+  paragraph exceeds `L_PROTECT_EDIT`. Density no longer produces
+  `ProtectedView`, and as it reduced nothing else, `ReductionReason::Density`
+  and the "dense long lines" reason class were removed (the profile and the
+  edit-time watch still track `worst_batch_chars`, which the fold will read).
+  `L_PROTECT` (500) stays the profile's first threshold. Failing first: a unit
+  test of this repository's `AGENTS.md` profile (170,427 bytes, longest
+  paragraph 8,314, worst window 132,281) failed on C1's key. The
+  `core-document-scale` Kani shard's `scale_protected_view_is_upward_closed`
+  states the new rule, it and `scale_of_a_profile_join_is_the_join_of_scales`
+  iterate the two remaining reason classes, and the other harnesses are
+  unchanged; the shard verified 9 of 9 harnesses on 2026-10-30. The
+  exception is recorded on A23 and A26 in the axiom ledger.
+- **The lane (1.1b).** The task 1.1 sweep is now the `keystroke` group of
+  `scripts/responsiveness-smoke-driver.py` and the `keystroke` fixture kind
+  (with the `prose` flavour) of `scripts/generate-long-line-fixtures.py`:
+  one paragraph of exactly the swept length between 30 short lines on each
+  side, markers at its start, middle and end; per position a `place-*`
+  navigation phase (find the marker, Escape, Right) and a `key-*` interaction
+  phase of ten keystrokes 150 ms apart; a `verify` phase that fails the case
+  when a burst did not land right after its marker. Grids: quick 3,500 and
+  50,000, full 2,500, 3,500, 5,000, 10,000, 20,000 and 50,000, CSS/`.html`
+  and prose/`.txt`, wrap on and off (`RESPONSIVENESS_LENGTHS=keystroke=...`
+  for other sweeps); the nightly workflow runs it as its own job. The
+  fixture self-test found that the measurement patch's minimum length (37)
+  produced a paragraph shorter than requested; the minimum is now 46.
+
+### Fold row window: `R_fold = R_BATCH` (task 1.2, 2026-10-30)
+
+The fold's density window counts **`R_fold` = `R_BATCH` = 224** paragraphs; no
+edge row is added. GtkTextView validates whole lines from a line start until a
+batch reaches 2000 px (A31: each step grows `upper` by 2000 px plus at most one
+line; the measured step is 2016 px = 112 × 18 px), so a batch holds at most
+`ceil(2000 / h)` lines of minimum row height `h`, **the line straddling the
+2000 px edge included**: C0's 112 is exactly `ceil(2000 / 18)`, and its double,
+224, covers `ceil(2000 / 9)` = 223 at the 50 % minimum zoom. A 2000 px window
+starting at an arbitrary pixel (task 3.4's widget check) touches at most
+`ceil((2000 + h − 1) / h)` rows: 113 at 18 px, 224 at 9 px. `R_BATCH + 1` would
+also break the fold precondition `R_fold · N_DENSE ≤ V_BATCH`
+(225 · 250 = 56,250 > 56,000). The argument assumes a row of at least 9 px at
+50 % zoom, which C0's doubling already assumed; task 3.4 should lay out one
+zoom-50 % fixture to tie it to the toolkit. The zoom range is 50–400 %
+(`ui/window/zoom.rs`); `model/protected_fold.rs` names both ends, and a
+compile-time assertion in `zoom.rs` is left to the first C2 milestone that
+edits that GTK module.
+
+`A28_SAFE_CHARS` = 59,579 is A28's overflow at the **largest** zoom
+(`floor(i32::MAX / (9011 · 4))`; the overflow length shrinks as the advance
+grows, so 400 % binds, not the smallest zoom). `N_HEAD` was the provisional
+15,000 of design D1 (an A23 extrapolation) until the verdict measured it (next
+section); it is now **10,000**, so `head_cap` = 10,000.
+
+### Pre-existing blocker found by task 1.1
+
+Typing into a 500,000-character paragraph with word wrap off logged A37's
+`Trying to snapshot GtkGizmo … without a current allocation` in 2 runs
+(`coarse-500000`: CSS wrap-off rep 0, prose wrap-off rep 1). C2 owns it under
+the pre-existing-blockers rule (task 1.7).
+
+**Fixed and re-checked (2026-10-31).** The fix (c61d9a7f) queues the view's
+allocation when a tag leaves the tag table. The lane check runs on a binary
+from before Protected View (47cf4d7b), where a 500,000-character paragraph is
+still editable: `keystroke/500000/*/wrap-off`, plain × 3, reproduced no
+defect and the lane's `FIXED_DEFECTS` check passed
+(`.claude/handoffs/c2-verdict/a37-prepv/`).
+
+### Verdict diagnostics (2026-10-31)
+
+Runs in `.claude/handoffs/c2-verdict/` (`runs.log` records the load before and
+after each run; each run is one exclusive hold through `scripts/measure.sh`).
+The measurement build records a span for each dispatch the attribution needs:
+`open_document`, `load_request`, `load_install_begin`, `load_install_slice`,
+`load_complete`, `replacement_turn` and `protected_tail_insert`.
+
+**`N_HEAD` (task 1.3).** The first branch round, with the provisional 15,000,
+put protected open and post-open dispatches at 16–42 ms and find at 9–11 ms
+(machine load 14–23). The lane's `keystroke` sweep of 2026-10-30 is task 1.3's
+measurement: it opens one visible paragraph of a swept length between short
+paragraphs. Its worst post-open dispatch is 12.7–14.8 ms at 10,000 characters
+(prose `.txt`, wrap off and on), 16.1 ms at 14,000 wrap off and 20.7 ms at
+20,000 wrap on; about 11 ms of each is the size-independent settle of a
+500-character document. `N_HEAD` is therefore 10,000. The wrap-toggle
+re-layout was not measured separately.
+
+**Renderer × `N_HEAD`** (idle machine, load 1–2; plain × 2; worst over
+open and the post-open settle, ms):
+
+| Renderer | `N_HEAD` | frame layout | frame paint | worst dispatch outside the tail insert |
+|---|---|---|---|---|
+| cairo | 10,000 | 7.0–7.5 | 3.5 (wrap off), 13.4–13.5 (wrap on) | 9.9–15.7 |
+| cairo | 5,000 | 6.6–7.4 | 2.5 (wrap off), 11.8–12.3 (wrap on) | 10.2–12.5 |
+| GL (`GSK_RENDERER=ngl`, got `GskGLRenderer`) | 10,000 | 7.8–8.5 | 169–171 | 172–174 |
+| GL | 5,000 | 7.9–10.2 | 170–172 | 172–175 |
+
+Headless Mutter does accept the GL renderer, but its first paint costs about
+170 ms whatever the head (size-independent: shader and pipeline set-up on the
+headless EGL device), so the headless lane cannot measure GPU text paint; that
+column says nothing about a desktop's GPU renderer. On cairo, the head adds
+about 1 ms between 5,000 and 10,000, and every protected dispatch outside the
+tail insert fits `B_settle` on an idle machine. The earlier "frame over 16 ms"
+was load: no toolkit-floor exception is asked for.
+
+**Attribution of the remaining long dispatches.**
+- The one-turn hidden-tail insert: 22.7–23.4 ms for a 1.9M-character tail, 2.8–3.0 ms
+  for 250,000 (`protected_tail_insert`), plus the load completion in the same
+  dispatch (3.7–6.0 ms). This is the declared envelope, C3's gate input.
+- Restore of three protected documents: GLib dispatches every ready source of a
+  priority in one main-loop iteration, so two documents' tail inserts ran back
+  to back in one dispatch (52 ms). `ui/protected_fold.rs` now admits one tail
+  insert per iteration process-wide (6761ebf0); each document's envelope then
+  stands alone (25–32 ms including its completion).
+- CR-only (`delimiters/cr`, a 5.2 MB minified `.html`): a 43–47 ms dispatch
+  was `open_document` itself, loading the HTML language definition for a
+  document whose scale then cleared it. A pending load no longer applies a
+  language; the load publication does, only when syntax is allowed (6761ebf0).
+- `eviction/reselect` exceeds its startup wait on `main` and the branch alike.
+  The case opens ten 8 MiB short-line documents. Between batches the GTK thread
+  runs about 90 dispatches a second of about 10 ms each with no frame and no
+  LushText span: GtkTextView's background line validation (priority
+  `GDK_PRIORITY_REDRAW + 5`) of the loaded documents. The loads' worker
+  completions, delivered by `spawn_blocking_then` through
+  `G_PRIORITY_DEFAULT_IDLE`, wait behind it, so the documents install in three
+  batches about 11 s apart and `app-startup` readiness takes over 30 s. Every
+  dispatch stays near 10 ms, so no budget is missed. The case cannot reach its
+  reselect phase as written, so it is excluded from the C2 verdict.
+  **Queued GTK Lush change (scheduled after C2):** the delivery priority of
+  `spawn_blocking_then` completions (`gtk-lush-tasks`, `glib::idle_add_once`,
+  `G_PRIORITY_DEFAULT_IDLE`) against GtkTextView's validation idle
+  (`GDK_PRIORITY_REDRAW + 5`): about 11 s between load batches and over 30 s
+  to `app-startup` readiness, on `main` as on the branch.
+
+### Verdict (2026-10-31 – 2026-11-01)
+
+Measured under the load there was, recorded before and after every run in
+`.claude/handoffs/c2-verdict/runs.log` (maintainer rule: never pause or discard
+a run for load); each run one exclusive hold through `scripts/measure.sh`,
+`main` (713cad83; 10cad94a for the first rounds, a docs-only difference) and
+the branch alternating. Toolkit: GTK 4.22.5, libadwaita 1.9.3, Pango 1.57.1,
+GtkSourceView 5.20.0, GLib 2.88.3, Mutter 50.4, cairo renderer, 1280×800 at
+120 Hz.
+
+Runs: `V-*` (full set: plain 4+3, AT and probe IM × 3, the 100 MB install;
+load 2–30), `O-*` (the cases whose single runs went over; load 9–37),
+`F-*` (the same cases, plain 3+2, load 1.2–3.6) and `Q-atim-branch` (AT and
+probe IM × 3, load 0.7–4). `eviction/reselect` is excluded (see above).
+
+**Medians, `main` → branch, plain, `F-*` (ms):**
+
+| Case | open | after open | scroll | Page Down | click | typing | find | other |
+|---|---|---|---|---|---|---|---|---|
+| 250,000 wrap on | 112 → 12.2 | 132 → 14.0 | 6 → 2.9 | 9 → 2.7 | 68 → 1.4 | 22,021 (cap) → 2.3 | 170 → 3.5 | |
+| 1.9M wrap on | 930 → 12.2 | 1,119 → 28.6 ¹ | 19 → 3.3 | 41 → 2.5 | 580 → 2.3 | 22,021 → 2.3 | 1,455 → 4.2 | |
+| 1.9M wrap off | 748 → 11.8 | 750 → 25.2 ¹ | 19 → 2.6 | 33 → 2.7 | 403 → 1.4 | 22,021 → 2.9 | 1,128 → 2.0 | |
+| CR-only | 519 → 21.7 ¹ | 770 → 8.3 | 6 → 2.2 | 3 → 1.0 | 3 → 1.0 | 9 → 1.6 | 770 → 6.5 | |
+| U+2029 | 517 → 20.9 ¹ | 769 → 10.5 | 6 → 5.2 | 2 → 1.0 | 2 → 1.4 | 7 → 1.9 | 766 → 6.5 | |
+| restore of three | 1,648 → 25.8 ¹ | 338 → 12.4 | 5 → 5.1 | 41 → 1.0 | 575 → 1.7 | 22,009 → 6.3 | 1,454 → 2.9 | restore 2,890 → 30.9 ¹, tab switch 1,114 → 4.2 |
+| reload 250,000 | 114 → 12.3 | 1 → 1.4 | 2 → 5.6 | 6 → 1.0 | 7 → 1.3 | 22,020 → 1.5 | 173 → 3.0 | reload 68 → 2.9 |
+
+¹ The phase contains the declared envelope: one hidden-tail insert per
+document per dispatch, 22.7–28.1 ms for a 1.9M-character tail plus its load
+completion (3.6–7.0 ms), the `protected_tail_insert` span. Outside those
+dispatches every median above is within budget.
+
+**The envelope (C3's gate input).** 1.9M tail: 23–28 ms per dispatch; with AT
+on, 31–49 ms. The 100 MB install (`install/100000000`, plain and AT × 2):
+1.28–1.37 s, against `main`'s 73–76 s after open.
+
+**Toolkit-floor exception (keystrokes, recorded 2026-10-30).** Re-measured:
+`keystroke/49990` key-start 17–18 ms, the 50,000-character editable paragraph
+inside the range; `keystroke/3500` 5.2–6.5 ms on the branch, 1.0 or 5.6–5.9 ms
+on `main` (bimodal by run, both within `B_interact`).
+
+**Single maxima over budget on the quiet host, each attributed** (span or
+`perf record -e cycles:u --call-graph dwarf`, evidence only):
+- Window construction in `open` (13–19 ms: `gtk_widget_init_template`,
+  `gtk_window_realize` → `icon_list_from_theme`, CSS validation): C4/C4b's
+  composition stages, the same on `main`.
+- The first frame that shows a head (17–20 ms on 1.9M wrap on, plain and
+  probe IM): layout of the 10,000-character head (`gtk_text_layout_wrap`,
+  Pango shaping, 4–9 ms) plus the cairo paint of a full screen of text
+  (`draw_text` → `_cairo_image_surface_glyphs`, FreeType autofitting of
+  first-use glyphs, 13.5–16 ms). The paint does not depend on `N_HEAD`
+  (5,000 saves about 1 ms) and the headless GL renderer cannot measure it
+  (170 ms first paint, set-up). On 1.9M wrap on its median is 17.6 ms in
+  `F-*` (14.0 ms on 250,000), 1.6 ms over `B_settle`. It is the first frame
+  of any screen of wrapped text under the cairo renderer, not a Protected View
+  cost. **Accepted maintainer exception (2026-11-01):** the maintainer accepted
+  this 17.6 ms first head frame (1.9M paragraph, word wrap on, 1.6 ms over
+  `B_settle`, the cairo text paint plus the head layout) as a recorded
+  exception, to be re-evaluated when the lane can measure the GPU renderer.
+- Restore of three documents (22 ms): `GKeyfileSettingsBackend`'s file monitor
+  re-checking writability after the settings flush
+  (`g_keyfile_settings_backend_keyfile_writable` → `g_local_file_query_info` →
+  libmount re-parsing the mount table), GIO's keyfile backend (C4, A38–A41); and
+  the first frame of three new editor pages (CSS validation of their widgets).
+- The 100 MB install's after-open frame (22–24 ms, every load): line
+  validation and Pango shaping of the head (`gtk_text_view_validate_onscreen` →
+  `gtk_text_line_display_cache_get`); it grows with the hidden tail
+  (7 ms at 1.9M on an idle host), so it belongs with C3's hidden-tail
+  re-validation axiom (S2) and its gate.
+- Find 8.0–8.3 ms and a 3,500-character click 8.1 ms: single runs, medians
+  6.5–7.0 ms.
+
+**Verdict.** Every Protected View interaction median is within `B_interact`
+(10–100× under `main`). Settle medians are within `B_settle` outside the
+declared envelope, except the first head frame on 1.9M wrap on (17.6 ms, the
+cairo paint above), an accepted maintainer exception (2026-11-01; re-evaluate
+when the lane can measure the GPU renderer). The keystroke toolkit-floor
+exception for editable paragraphs between `L_EDIT_STALL` and `L_PROTECT_EDIT`
+(maintainer, 2026-10-30, "editable up to ~50k"; owned by C5) is accepted, not
+a blocker. Every remaining maximum is attributed above.
+
 ## C5 `explore-editing-long-paragraphs` (2026-10-31)
 
 **Posture: implemented; verdict 2026-10-31 below.** Under the hybrid policy
-(paragraphs up to `L_protect` stay editable; what misses B_interact there is a
-recorded toolkit-floor exception), C5 lowers the per-keystroke cost of typing
+(paragraphs up to `L_protect_edit` = 50,000 stay editable, C2; what misses
+B_interact there is a recorded toolkit-floor exception), C5 lowers the per-keystroke cost of typing
 in a long paragraph. Its design records the profile and every candidate
 measured; in short, a keystroke in a 50,000-character prose paragraph cost:
 
@@ -1061,6 +1327,20 @@ reads from its first character (A53; hysteresis `REWRAP_MARGIN` = 1,024; the
 tag covers the whole paragraph so the state survives an edit before its first
 character), and the keystroke sweep is a maintained lane group with per-key
 worst and summed stalls.
+
+### Merged after C2 (2026-11-01)
+
+C5 landed after C2 (`long-line-protected-view`), which made `protected_view`
+hold above `L_protect_edit` = 50,000 (density no longer decides it). The two
+compose without either standing down: the wrap gate tags every paragraph
+longer than `L_wrap_edit` = 8,192, including a protected paragraph, so a
+folded paragraph's visible head (at most `head_cap` = 10,000 characters, below
+A28's overflow length) is shown unwrapped, like any long paragraph; its hidden
+tail is never laid out (A65) whatever its wrap mode, the fold plan does not
+depend on the wrap mode, and the gate's tag changes happen only inside
+`insert-text`/`delete-range` emissions, never between the edit entry's
+capture dispatches (A66). The keystroke group is C2's maintained group with
+C5's short-paragraph position and short lengths added.
 
 ### Verdict (2026-10-31)
 
@@ -1102,7 +1382,12 @@ path) and is 7.5–9.2 ms at 20,000.
   surrounding text crossed into it), no longer depends on it.
 - **50,000**: 7.7–8.1 ms at the middle and end, 10.5–11.1 ms at the start
   (p90 12.6–14.3): at the budget, not under it. **100,000**: 16–20 ms. Both are
-  the recorded exception below.
+  the recorded exception below, **accepted by the maintainer** ("editable up
+  to ~50k", the hybrid decision of 2026-10-30). Since C2 merged (2026-11-01),
+  a paragraph above `L_protect_edit` = 50,000 opens in Protected View and takes
+  no keys, so the 100,000 row describes a length that is no longer editable;
+  the lane's `keystroke` group now sweeps up to 49,950 (C2's edge, leaving room
+  for the bursts).
 - **`L_wrap_edit` = 8,192.** With bounded surrounding text a wrapped
   keystroke at 10,000 cost 6.9–7.5 ms (p90 8.5–8.8) on the GNOME path (clean
   run `wlb`): the cap breaks near 10,000, and the power-of-two rule
@@ -1124,6 +1409,12 @@ path) and is 7.5–9.2 ms at 20,000.
   39 / 86 → 35 / 66 ms). Wrapped paragraphs do not scroll horizontally.
 
 ### The toolkit-floor exception (C5)
+
+**Accepted maintainer exception.** The maintainer decided on 2026-10-30
+(C2's hybrid, "editable up to ~50k") that keystrokes in editable paragraphs
+up to `L_protect_edit` = 50,000 may miss B_interact as a recorded
+toolkit-floor exception; C5's remaining 50,000 figures (7.7–11.1 ms) are
+accepted under it. Above 50,000 the document is in Protected View (C2).
 
 What remains over B_interact in an editable paragraph is GTK's:
 
@@ -1150,7 +1441,8 @@ layout incremental or bounded, or that changes A52–A54 (the axiom lane
 fails); the maintainer requiring wrapped 50,000-character paragraphs within
 budget (then display-only soft segmentation, design D4, is next); or editing
 above `L_protect` being requested (deferred: in-buffer segmentation, a custom
-virtualized widget, windowed edit-through).
+virtualized widget, windowed edit-through). With C2 merged that bound is
+`L_protect_edit` (50,000).
 
 **Contaminated runs.** Until 2026-10-31 03:00 a busy-waiting helper of this
 change's own scripts ran beside the measurement lock; the design's profile and
@@ -1162,7 +1454,7 @@ in this section comes from runs after it was removed.
 | Change | Axioms |
 |---|---|
 | C1 `document-scale-policy` | A27 (tag changes do not dirty the buffer), A29 (context engine cut-off), A31 (2000 px validation batches, the source of R_batch), A32 (source-map detach CRITICAL); added by C1: A42 (paragraph delimiters and history-dependent buffer lines), A43 (`chars_in_line` cost, verified by source), A44 (same-emission language downgrade), A45 (unparent stops a pending tick) |
-| C2 `long-line-protected-view` | A23, A24, A25, A26, A28, A30, A33, A34, A35 |
+| C2 `long-line-protected-view` | A23, A24, A25, A26, A28, A30, A33, A34, A35; from C1, A42 (paragraph delimiters), A43 (`chars_in_line` cost), A44 (same-emission language downgrade), A45 (unparent stops a pending tick); added by C2 (its P1–P8): A59 (a capture-phase claim keeps presses from the view's gestures), A60 (non-editable: no input-method focus-in or key filtering), A61 (a stopped `move-cursor` holds under caret browsing), A62 (AT-SPI text and caret writes on a folded paragraph; lane-pinned like A35), A63 (one drop target, no drag source; removal), A64 (stopped key-binding signals and a captured Shift+F10 guard; action enablement does not), A65 (a hidden tail is never laid out; 13–17 ms per MiB insert), A66 (chunk-read cost by iterator positioning; the persistent byte-positioned iterator is flat) |
 | C3 `sliced-protected-install` | A24, A35, A36 |
 | C4 `bound-window-construction-dispatch` | A38 (keyfile write per `set_*` on the calling thread), A39 (`delay`/`apply` coalescing), A40 (no backend lock; a second backend stays stale), A41 (`changed` timing) |
 | C4c `shorten-window-content-fill-in` | A51 (a realize frame runs on the unmapped window, is never presented, and paces the first visible frame one `FRAME_INTERVAL` later), A46–A50 unchanged |
@@ -1209,7 +1501,7 @@ fixed here fails the lane if it reappears.
 | `GtkSourceMap` detach with a pending update tick emits `Gtk-CRITICAL` and `GLib-GObject-CRITICAL` (axiom A32) | C1 |
 | The install slicer splits only on `\n`, so CR-only and U+2029 documents install in one GTK turn | C1 |
 | Window construction stalls the main loop for about 190 ms on every open | C4: the settings writes are gone (135–151 → 22–24 ms on a fresh keyfile profile); the 22–26 ms residual is GTK `present` and template instantiation, removed by C4b (`first-frame-window-shell`: every dispatch until composition complete ≤ 10.7 ms, idle verdict 2026-10-29) |
-| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`, the trough of the editor's horizontal or vertical scrollbar. **Fixed in C0** (pre-existing-blockers rule), so it is no longer owned by C1. Root cause, confirmed against GTK 4.22.5 and GtkSourceView 5.20.0 (ledger **A37**): `GtkTextView` validates invalidated lines from an idle at `GTK_PRIORITY_RESIZE - 2`, but a change made inside a frame — the key press of the smallest reproduction (one 500-character line, wrap off, Ctrl+Home and typing) is handled in the frame clock's flush-events phase — or just before a frame that input started (`gdkframeclockidle.c` runs it from `flush_idle` at `GDK_PRIORITY_EVENTS + 1`; find in dense and 1 MB documents, where GtkSourceView's search scan changes tags from an idle) leaves that idle pending at paint time. The view is not re-allocated in that frame's layout, so `gtk_text_view_paint` flushes the validation inside the snapshot (`gtk_text_view_flush_first_validate` → `gtk_text_view_update_adjustments`): a widened line or a queued scroll changes the scroll adjustments, `GtkRange` queues its trough's allocation, and `GtkScrolledWindow` snapshots the scrollbar after its child. Lines that fit the viewport never change `upper`, which is why they never warned. The `mark-set` handlers that run inside GtkSourceView's snapshot were ruled out: disabling LushText's Notes handler left the warning in place. Fix: `ui/editor_page/frame_validation.rs` queues the view's allocation on every edit and caret move, and before the paint (at `before-paint` or after the frame clock's layout handlers) after a tag change, so `gtk_text_view_size_allocate` flushes the validation in layout. Evidence: widget tests `editor_page::test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot` (20 adjustment changes inside the paint before the fix, 0 after) and `editor_page::test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 without the tag handling, 0 with it), probe A37, and the lane: the minimal case and dense 500/2000/50000, total-size 1/5 MB and paragraph 500/15000/22000 (all phases) show no warning, nor do four more repetitions each of dense 500 and total-size 1 MB (before the fix dense 500 warned on find in 3 of 5 runs). The lane classifier now treats this warning as a **regression that fails the run** (`FIXED_DEFECTS` in `scripts/responsiveness-smoke-driver.py`), not as an owned finding. Residual: a size-changing tag that GtkSourceView applies inside its own snapshot (highlighting the visible region) is still validated in that paint; the editor validates it in the next frame's layout. **Observed once on 2026-10-13** (find in a 15,000-character wrapped paragraph beside heavy CPU load, `rr-20261013T210157Z-toolbx-1753909`) and not reproduced in 94 further runs; **explained and fixed 2026-10-14**: a second route, the overscroll idle's bottom-margin change (a default-style property: invalidates every line, queues nothing) just before a frame GTK started from its synthesized post-relayout motion, which redrew the view; `frame_validation.rs` now also queues the allocation on those properties' `notify` (see "Idle re-confirmation (2026-10-13)") | fixed in C0; residual fixed |
+| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation`, the trough of the editor's horizontal or vertical scrollbar. **Fixed in C0** (pre-existing-blockers rule), so it is no longer owned by C1. Root cause, confirmed against GTK 4.22.5 and GtkSourceView 5.20.0 (ledger **A37**): `GtkTextView` validates invalidated lines from an idle at `GTK_PRIORITY_RESIZE - 2`, but a change made inside a frame — the key press of the smallest reproduction (one 500-character line, wrap off, Ctrl+Home and typing) is handled in the frame clock's flush-events phase — or just before a frame that input started (`gdkframeclockidle.c` runs it from `flush_idle` at `GDK_PRIORITY_EVENTS + 1`; find in dense and 1 MB documents, where GtkSourceView's search scan changes tags from an idle) leaves that idle pending at paint time. The view is not re-allocated in that frame's layout, so `gtk_text_view_paint` flushes the validation inside the snapshot (`gtk_text_view_flush_first_validate` → `gtk_text_view_update_adjustments`): a widened line or a queued scroll changes the scroll adjustments, `GtkRange` queues its trough's allocation, and `GtkScrolledWindow` snapshots the scrollbar after its child. Lines that fit the viewport never change `upper`, which is why they never warned. The `mark-set` handlers that run inside GtkSourceView's snapshot were ruled out: disabling LushText's Notes handler left the warning in place. Fix: `ui/editor_page/frame_validation.rs` queues the view's allocation on every edit and caret move, and before the paint (at `before-paint` or after the frame clock's layout handlers) after a tag change, so `gtk_text_view_size_allocate` flushes the validation in layout. Evidence: widget tests `editor_page::test_typing_in_a_long_line_keeps_adjustment_changes_out_of_the_snapshot` (20 adjustment changes inside the paint before the fix, 0 after) and `editor_page::test_tag_changes_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 without the tag handling, 0 with it), probe A37, and the lane: the minimal case and dense 500/2000/50000, total-size 1/5 MB and paragraph 500/15000/22000 (all phases) show no warning, nor do four more repetitions each of dense 500 and total-size 1 MB (before the fix dense 500 warned on find in 3 of 5 runs). The lane classifier now treats this warning as a **regression that fails the run** (`FIXED_DEFECTS` in `scripts/responsiveness-smoke-driver.py`), not as an owned finding. Residual: a size-changing tag that GtkSourceView applies inside its own snapshot (highlighting the visible region) is still validated in that paint; the editor validates it in the next frame's layout. **Observed once on 2026-10-13** (find in a 15,000-character wrapped paragraph beside heavy CPU load, `rr-20261013T210157Z-toolbx-1753909`) and not reproduced in 94 further runs; **explained and fixed 2026-10-14**: a second route, the overscroll idle's bottom-margin change (a default-style property: invalidates every line, queues nothing) just before a frame GTK started from its synthesized post-relayout motion, which redrew the view; `frame_validation.rs` now also queues the allocation on those properties' `notify` (see "Idle re-confirmation (2026-10-13)"). **Recurred 2026-10-30** in the C2 keystroke sweep (2 of 2 wrap-off cases at 500,000 characters, `coarse-500000` CSS rep 0 and prose rep 1), both in `place-middle` in the frame the Escape key press started (probe-correlated): a third route. Closing find disposes the `GtkSourceSearchContext`, whose dispose removes its match tag with `gtk_text_tag_table_remove` (`gtksourcesearchcontext.c`); that invalidates the tagged ranges and emits only the table's `tag-removed`, never `remove-tag`, and with search highlighting gated off by the document scale no `tag-changed` precedes it. On a paragraph past A28's 32-bit overflow the match tag changes the line's measured width (widget reproduction: `upper` 953 with the tag, 205,765 without), so the revalidation in the paint moved the horizontal adjustment. Fix: `frame_validation.rs` also queues the view's allocation on `tag-removed`, at once like an edit (deferring it to the frame's layout handlers, as tag changes are, left 4 of the 8). Evidence: `editor_page::test_tag_table_removals_in_frames_keep_adjustment_changes_out_of_the_snapshot` (8 adjustment changes inside the paint before, 0 after). A full search-bar reproduction at 500,000 characters did not fail headless before the fix, because the headless revealer collapses at once and allocates the view in the same frame; the lane's sliding revealer does not | fixed in C0; residual fixed; C2 recurrence fixed |
 
 
 

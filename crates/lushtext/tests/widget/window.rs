@@ -12,8 +12,8 @@ use crate::common::{
     OrphanCleanupPolicyReset, accessible_hidden, action_state_bool, activate_action, editor_text,
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
     fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, seed_restored_window_size,
-    test_application, test_window_with_restored_size, wait_for_startup_data_flow, wait_until,
-    write_external_change_after_mtime_tick,
+    short_lines, test_application, test_window_with_restored_size, wait_for_startup_data_flow,
+    wait_until, write_external_change_after_mtime_tick,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::{Cast, IsA, ObjectExt, ToValue, ToVariant};
@@ -13631,15 +13631,6 @@ fn test_stale_lossy_encoding_analysis_result_is_rejected_after_buffer_change() {
     );
 }
 
-/// At least `chars` characters of `fill` in 80-character lines: large
-/// enough to need a chunked snapshot, with short paragraphs so the document
-/// scale keeps syntax on (it is held at the 5-byte file's load size, and the
-/// lossy pre-check defers to save whenever syntax is off).
-fn short_lines(fill: char, chars: usize) -> String {
-    let line = format!("{}\n", fill.to_string().repeat(79));
-    line.repeat(chars.div_ceil(80))
-}
-
 #[test]
 fn test_chunked_lossy_encoding_snapshot_discards_source_mutation() {
     ensure_gtk_init();
@@ -20730,7 +20721,9 @@ fn test_document_sized_preloaded_draft_publishes_only_after_bounded_install() {
     present_window(&window);
     let editor = active_editor(&window);
     let draft_id = editor.draft_id().expect("draft id");
-    let content = "🙂".repeat(300_000);
+    // Short paragraphs: one 300,000-character paragraph would recover into
+    // Protected View, read-only (long-line-protected-view).
+    let content = format!("{}\n", "🙂".repeat(79)).repeat(3_800);
     let gtk_thread = std::thread::current().id();
     let (drop_tx, drop_rx) = mpsc::channel();
     set_next_draft_body_disposal_probe_for_test(drop_tx);

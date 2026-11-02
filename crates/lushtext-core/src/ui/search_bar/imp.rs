@@ -19,6 +19,10 @@ use std::cell::{Cell, RefCell};
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/search-bar.ui")]
 pub struct LushtextSearchBar {
+    /// While set, find runs outside the search context (Protected View's
+    /// worker find, `long-line-protected-view` design D5): the query, option
+    /// toggles and next/previous go to this handler.
+    pub(crate) external_find: std::cell::RefCell<Option<super::ExternalFindHandler>>,
     // --- Template children ---
     /// Search entry that owns the query typed by the user.
     #[template_child]
@@ -270,6 +274,10 @@ impl LushtextSearchBar {
                 return;
             };
             let imp = bar.imp();
+            if bar.dispatch_external_find(super::ExternalFindRequest::QueryChanged) {
+                bar.emit_search_state_changed();
+                return;
+            }
             if let Some(ref settings) = *imp.search_settings.borrow() {
                 let text = entry.text();
                 if text.is_empty() {

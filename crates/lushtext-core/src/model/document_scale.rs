@@ -3,10 +3,11 @@
 //! The document scale policy: which editor features a document can afford.
 //!
 //! One GTK-free, monotone policy replaces the byte-only size classification.
-//! [`DocumentScale::for_profile`] reads a [`ProfileSummary`] (total bytes, the
-//! longest paragraph, and the wrap-off batch density of
-//! [`paragraph_boundary`](super::paragraph_boundary)) and derives two kinds of
-//! output:
+//! [`DocumentScale::for_profile`] reads a [`ProfileSummary`] of
+//! [`paragraph_boundary`](super::paragraph_boundary) and derives two kinds of
+//! output from its total bytes and its longest paragraph (the profile's
+//! wrap-off batch density decides no feature: the edit-time watch keeps it
+//! for Protected View's fold):
 //!
 //! - **Byte tiers** — open admission, undo, the live-memory multiplier and
 //!   local-history availability — depend on total bytes alone and describe the
@@ -83,21 +84,57 @@ pub const L_SEARCH_HIGHLIGHT: u64 = 10_000;
 /// reference lane (6.9–7.5 ms median, p90 8.5–8.8, design D3), so 8,192.
 pub const L_WRAP_EDIT: u64 = 8_192;
 
-/// `protected_view` holds above this paragraph length.
+/// The shortest paragraph length the profile counts (threshold 0 of
+/// `ProfileConfig::PRODUCTION`: its long-paragraph counts and offsets).
 ///
-/// C0 did not derive `L_protect` (its input-to-frame half fails at every
-/// length on the headless lane's own frame floor); the stall half,
-/// `L_protect_stall`, is 500 (500 / 710), and C2 (`long-line-protected-view`)
-/// takes that stall basis. C1 only reports the flag.
+/// C0's stall half of `L_protect` (`L_protect_stall`, 500 / 710). It no longer
+/// decides `protected_view`, which holds above [`L_PROTECT_EDIT`]: at 500 it
+/// would have made ordinary prose written one paragraph per line view-only.
 pub const L_PROTECT: u64 = 500;
+
+/// The shortest paragraph length at which one keystroke inside it was measured
+/// over `B_INTERACT_US` with word wrap on (C2 task 1.1, 2026-10-30: no plain
+/// repetition over at 3,500, the first at 5,000; with wrap off 10,000–14,000).
+///
+/// It decides nothing. It is the lower bound of the toolkit-floor exception
+/// the maintainer recorded on 2026-10-30 (ledger A23, A26; owned by C5):
+/// paragraphs between it and [`L_PROTECT_EDIT`] stay editable and their
+/// keystrokes miss `B_INTERACT_US` (median 9.6 ms at 20,000 characters, about
+/// 20 ms at 50,000). The responsiveness lane's `keystroke` group re-measures
+/// it (`docs/next/long-line-documents.md`, C2 implementation record).
+pub const L_EDIT_STALL: u64 = 3_500;
+
+/// `protected_view` holds above this paragraph length (maintainer decision,
+/// 2026-10-30, design D0 of `long-line-protected-view`).
+///
+/// The length at which the measured median keystroke cost inside the
+/// paragraph reaches about 20 ms with word wrap on (C2 task 1.1: 18.5–21.0 ms
+/// at 50,000), 2.5 × `B_INTERACT_US`. Documents whose longest paragraph is at
+/// most this long stay editable under the reduced features, above
+/// [`L_EDIT_STALL`] as a recorded toolkit-floor exception. Density never
+/// decides the flag.
+pub const L_PROTECT_EDIT: u64 = 50_000;
+
+/// Whether a longest paragraph of `longest_paragraph_chars` characters puts
+/// the document in Protected View: the one entry rule, which
+/// [`DocumentScale::for_profile`] and the worker-side fold planner share.
+#[must_use]
+pub const fn protects_by_length(longest_paragraph_chars: u64) -> bool {
+    longest_paragraph_chars > L_PROTECT_EDIT
+}
 
 /// Plain-text scroll stays within budget up to this paragraph length (C0:
 /// 500,000 / 710,000). The largest per-paragraph threshold the profile counts.
 pub const N_VISIBLE: u64 = 500_000;
 
-/// `protected_view` holds when any [`R_BATCH`] consecutive paragraphs sum to
-/// more characters than this (C0: a dense 500-character line × A31's 112 rows
-/// per 2000 px batch).
+/// The visible characters any [`R_BATCH`] consecutive paragraphs may hold
+/// before one 2000 px validation batch exceeds `B_SETTLE_US` (C0: a dense
+/// 500-character line × A31's 112 rows per batch).
+///
+/// The profile and the edit-time watch track the worst window against it; it
+/// decides no feature of this policy (since C2's D0, a dense document whose
+/// paragraphs are at most [`L_PROTECT_EDIT`] stays editable). Inside Protected
+/// View it bounds the fold.
 pub const V_BATCH: u64 = 56_000;
 
 /// Paragraphs in one density window: A31's 112 rows per 2000 px validation
@@ -240,8 +277,6 @@ pub enum ReductionReason {
     TotalSize,
     /// A very long paragraph.
     LongParagraph,
-    /// Dense long lines: a batch of consecutive paragraphs is too large.
-    Density,
 }
 
 impl ReductionReason {
@@ -251,7 +286,6 @@ impl ReductionReason {
         match self {
             Self::TotalSize => "because of the document's total size",
             Self::LongParagraph => "because of very long lines",
-            Self::Density => "because of dense long lines",
         }
     }
 }
@@ -271,7 +305,6 @@ const PRESENTATION_MASK: u16 = ScaleFeature::Undo.bit() - 1;
 pub struct ReducedFeatures {
     total_size: u16,
     long_paragraph: u16,
-    density: u16,
 }
 
 impl ReducedFeatures {
@@ -279,7 +312,6 @@ impl ReducedFeatures {
     pub const NONE: Self = Self {
         total_size: 0,
         long_paragraph: 0,
-        density: 0,
     };
 
     #[must_use]
@@ -288,7 +320,6 @@ impl ReducedFeatures {
         match reason {
             ReductionReason::TotalSize => self.total_size |= bit,
             ReductionReason::LongParagraph => self.long_paragraph |= bit,
-            ReductionReason::Density => self.density |= bit,
         }
         self
     }
@@ -308,7 +339,7 @@ impl ReducedFeatures {
     }
 
     const fn mask(self) -> u16 {
-        self.total_size | self.long_paragraph | self.density
+        self.total_size | self.long_paragraph
     }
 
     /// Whether `feature` is reduced for any reason.
@@ -323,7 +354,6 @@ impl ReducedFeatures {
         let bits = match reason {
             ReductionReason::TotalSize => self.total_size,
             ReductionReason::LongParagraph => self.long_paragraph,
-            ReductionReason::Density => self.density,
         };
         bits & feature.bit() != 0
     }
@@ -348,7 +378,6 @@ impl ReducedFeatures {
         Self {
             total_size: self.total_size & fresh,
             long_paragraph: self.long_paragraph & fresh,
-            density: self.density & fresh,
         }
     }
 
@@ -358,17 +387,14 @@ impl ReducedFeatures {
         Self {
             total_size: self.total_size & PRESENTATION_MASK,
             long_paragraph: self.long_paragraph & PRESENTATION_MASK,
-            density: self.density & PRESENTATION_MASK,
         }
     }
 
     /// The primary reason a reduced feature is reported under: a long
-    /// paragraph first, then density, then total size.
+    /// paragraph first, then total size.
     const fn primary_reason(self, feature: ScaleFeature) -> Option<ReductionReason> {
         if self.has_reason(feature, ReductionReason::LongParagraph) {
             Some(ReductionReason::LongParagraph)
-        } else if self.has_reason(feature, ReductionReason::Density) {
-            Some(ReductionReason::Density)
         } else if self.has_reason(feature, ReductionReason::TotalSize) {
             Some(ReductionReason::TotalSize)
         } else {
@@ -384,11 +410,7 @@ impl ReducedFeatures {
     #[must_use]
     pub fn describe(self) -> Option<String> {
         let mut sentences = Vec::new();
-        for reason in [
-            ReductionReason::LongParagraph,
-            ReductionReason::Density,
-            ReductionReason::TotalSize,
-        ] {
+        for reason in [ReductionReason::LongParagraph, ReductionReason::TotalSize] {
             let features: Vec<&str> = ScaleFeature::ALL
                 .into_iter()
                 .filter(|&feature| {
@@ -418,7 +440,6 @@ impl ReducedFeatures {
         Self {
             total_size: self.total_size | other.total_size,
             long_paragraph: self.long_paragraph | other.long_paragraph,
-            density: self.density | other.density,
         }
     }
 }
@@ -451,7 +472,8 @@ pub struct DocumentScale {
     /// Whether every paragraph follows the user's wrap setting; false once a
     /// paragraph longer than [`L_WRAP_EDIT`] is shown unwrapped.
     pub wrap_allowed: bool,
-    /// The document is marked for Protected View (C2 consumes it).
+    /// The document is marked for Protected View: its longest paragraph
+    /// exceeds [`L_PROTECT_EDIT`] (C2 consumes it).
     pub protected_view: bool,
     /// Which features are reduced, and why.
     pub reduced: ReducedFeatures,
@@ -468,7 +490,7 @@ impl DocumentScale {
     /// Derive every feature decision from a profile.
     #[must_use]
     pub const fn for_profile(profile: ProfileSummary) -> Self {
-        use ReductionReason::{Density, LongParagraph, TotalSize};
+        use ReductionReason::{LongParagraph, TotalSize};
         use ScaleFeature::{
             BracketMatching, Invisibles, LocalHistory, Minimap, ProtectedView, SearchHighlight,
             Syntax, Undo, WordWrap,
@@ -482,8 +504,7 @@ impl DocumentScale {
         let invisibles_by_length = longest > L_INVISIBLES;
         let search_by_length = longest > L_SEARCH_HIGHLIGHT;
         let wrap_by_length = longest > L_WRAP_EDIT;
-        let protect_by_length = longest > L_PROTECT;
-        let protect_by_density = profile.worst_batch_chars > V_BATCH;
+        let protect_by_length = protects_by_length(longest);
         let undo_enabled = bytes <= UNDO_TOTAL_BYTES;
         let local_history = if bytes > HISTORY_UNAVAILABLE_BYTES {
             LocalHistoryAvailability::Unavailable
@@ -503,7 +524,6 @@ impl DocumentScale {
             .with_if(search_by_length, SearchHighlight, LongParagraph)
             .with_if(wrap_by_length, WordWrap, LongParagraph)
             .with_if(protect_by_length, ProtectedView, LongParagraph)
-            .with_if(protect_by_density, ProtectedView, Density)
             .with_if(!undo_enabled, Undo, TotalSize)
             .with_if(
                 !matches!(local_history, LocalHistoryAvailability::Full),
@@ -525,7 +545,7 @@ impl DocumentScale {
             invisibles_allowed: !invisibles_by_length,
             search_highlight_allowed: !search_by_length,
             wrap_allowed: !wrap_by_length,
-            protected_view: protect_by_length || protect_by_density,
+            protected_view: protect_by_length,
             reduced,
         }
     }
@@ -687,7 +707,7 @@ mod tests {
             (L_INVISIBLES, ScaleFeature::Invisibles),
             (L_SEARCH_HIGHLIGHT, ScaleFeature::SearchHighlight),
             (L_WRAP_EDIT, ScaleFeature::WordWrap),
-            (L_PROTECT, ScaleFeature::ProtectedView),
+            (L_PROTECT_EDIT, ScaleFeature::ProtectedView),
         ];
         for (threshold, feature) in cases {
             assert!(by_length(threshold).allows(feature), "{feature:?} at t");
@@ -728,17 +748,37 @@ mod tests {
     }
 
     #[test]
-    fn density_threshold_sets_protected_view_only() {
-        let at = DocumentScale::for_profile(profile(0, 0, V_BATCH));
-        assert!(!at.protected_view);
-        let above = DocumentScale::for_profile(profile(0, 0, V_BATCH + 1));
-        assert!(above.protected_view);
-        assert!(
-            above
-                .reduced
-                .has_reason(ScaleFeature::ProtectedView, ReductionReason::Density)
+    fn a_dense_prose_document_like_agents_md_stays_editable() {
+        // This repository's AGENTS.md on 2026-10-30: 170,427 bytes, longest
+        // paragraph 8,314 characters, 87 paragraphs over 500, and a worst
+        // density window of 132,281 characters (over `V_BATCH`).
+        let scale = DocumentScale::for_profile(profile(170_427, 8_314, 132_281));
+        assert!(!scale.protected_view);
+        assert!(scale.allows(ScaleFeature::ProtectedView));
+        assert!(!scale.reduced.contains(ScaleFeature::ProtectedView));
+        // Inside the toolkit-floor exception: editable, whatever C0's L_protect.
+        for longest in [
+            L_PROTECT + 1,
+            L_EDIT_STALL,
+            L_EDIT_STALL + 1,
+            L_PROTECT_EDIT,
+        ] {
+            assert!(!by_length(longest).protected_view, "{longest}");
+        }
+    }
+
+    #[test]
+    fn density_alone_never_protects_or_reduces() {
+        for worst in [V_BATCH, V_BATCH + 1, u64::MAX] {
+            let scale = DocumentScale::for_profile(profile(0, 0, worst));
+            assert!(!scale.protected_view, "{worst}");
+            assert!(scale.reduced.is_empty(), "{worst}");
+        }
+        // Density adds no reason to a long-paragraph document either.
+        assert_eq!(
+            DocumentScale::for_profile(profile(0, L_PROTECT_EDIT + 1, u64::MAX)),
+            by_length(L_PROTECT_EDIT + 1)
         );
-        assert!(above.syntax_enabled && above.minimap_allowed && above.invisibles_allowed);
     }
 
     #[test]
@@ -781,7 +821,7 @@ mod tests {
 
     #[test]
     fn join_never_reenables_and_takes_byte_tiers_from_the_newer_bytes() {
-        let giant = DocumentScale::for_profile(profile(60_000_000, L_SYNTAX + 1, 0));
+        let giant = DocumentScale::for_profile(profile(60_000_000, L_PROTECT_EDIT + 1, 0));
         let saved = DocumentScale::for_total_bytes(100);
         let joined = giant.join(saved);
         assert!(!joined.syntax_enabled && !joined.bracket_matching_enabled);
@@ -819,8 +859,7 @@ mod tests {
         assert_eq!(
             long,
             "Syntax highlighting, bracket matching, the minimap, search highlighting and word \
-             wrap of the longest lines are off because of very long lines. This document is \
-             marked for Protected View because of very long lines."
+             wrap of the longest lines are off because of very long lines."
         );
         let huge = DocumentScale::for_total_bytes(60_000_000)
             .reduced
@@ -831,13 +870,15 @@ mod tests {
             huge.contains("because of the document's total size"),
             "{huge}"
         );
-        let dense = DocumentScale::for_profile(profile(0, 0, V_BATCH + 1))
+        let protected = by_length(L_PROTECT_EDIT + 1)
             .reduced
             .describe()
             .expect("reduced features describe themselves");
         assert_eq!(
-            dense,
-            "This document is marked for Protected View because of dense long lines."
+            protected,
+            "Syntax highlighting, bracket matching, the minimap, invisible characters, search \
+             highlighting and word wrap of the longest lines are off because of very long lines. \
+             This document is marked for Protected View because of very long lines."
         );
     }
 
@@ -869,18 +910,20 @@ mod tests {
         assert!(both.contains(ScaleFeature::Syntax));
         assert!(!both.is_empty());
         assert!(both.any_presentation());
-        let protected = DocumentScale::for_profile(profile(0, L_PROTECT + 1, V_BATCH + 1)).reduced;
-        assert!(protected.contains(ScaleFeature::ProtectedView));
-        assert!(!protected.contains(ScaleFeature::Syntax));
+        let protected = by_length(L_PROTECT_EDIT + 1).reduced;
+        assert!(protected.has_reason(ScaleFeature::ProtectedView, ReductionReason::LongParagraph));
+        assert!(!protected.has_reason(ScaleFeature::ProtectedView, ReductionReason::TotalSize));
     }
 
     #[test]
     fn newly_reduced_presentation_drops_byte_tiers_and_earlier_reasons() {
-        let earlier = DocumentScale::for_profile(profile(0, 0, V_BATCH + 1)).reduced;
-        let now = DocumentScale::for_profile(profile(60_000_000, 0, V_BATCH + 1)).reduced;
+        let earlier = by_length(L_SEARCH_HIGHLIGHT + 1).reduced;
+        let now =
+            DocumentScale::for_profile(profile(60_000_000, L_SEARCH_HIGHLIGHT + 1, 0)).reduced;
         let fresh = now.newly_reduced_presentation(earlier);
-        assert!(fresh.contains(ScaleFeature::Syntax));
         assert!(fresh.contains(ScaleFeature::Minimap));
+        assert!(!fresh.contains(ScaleFeature::Syntax));
+        assert!(!fresh.contains(ScaleFeature::SearchHighlight));
         assert!(!fresh.contains(ScaleFeature::Undo));
         assert!(!fresh.contains(ScaleFeature::LocalHistory));
         assert!(!fresh.contains(ScaleFeature::ProtectedView));
@@ -897,11 +940,9 @@ mod tests {
         let long = by_length(L_SYNTAX + 1).reduced.presentation_only();
         assert!(long.has_reason(ScaleFeature::Syntax, ReductionReason::LongParagraph));
         assert!(!long.contains(ScaleFeature::Invisibles));
-        let dense = DocumentScale::for_profile(profile(0, 0, V_BATCH + 1))
-            .reduced
-            .presentation_only();
-        assert!(dense.has_reason(ScaleFeature::ProtectedView, ReductionReason::Density));
-        assert!(!dense.contains(ScaleFeature::Syntax));
+        let protected = by_length(L_PROTECT_EDIT + 1).reduced.presentation_only();
+        assert!(protected.has_reason(ScaleFeature::ProtectedView, ReductionReason::LongParagraph));
+        assert!(!protected.contains(ScaleFeature::Undo));
     }
 
     #[test]
@@ -920,10 +961,10 @@ mod tests {
         let shrunk = huge.join(DocumentScale::for_total_bytes(100)).reduced;
         assert!(!shrunk.contains(ScaleFeature::Undo));
         assert!(shrunk.has_reason(ScaleFeature::Syntax, ReductionReason::TotalSize));
-        let dense = DocumentScale::for_profile(profile(0, 0, V_BATCH + 1))
+        let protected = by_length(L_PROTECT_EDIT + 1)
             .join(DocumentScale::for_total_bytes(100))
             .reduced;
-        assert!(dense.has_reason(ScaleFeature::ProtectedView, ReductionReason::Density));
+        assert!(protected.has_reason(ScaleFeature::ProtectedView, ReductionReason::LongParagraph));
     }
 
     #[test]
@@ -937,18 +978,18 @@ mod tests {
                 }
             }
         }
-        // The same long-paragraph and density reasons on both sides survive.
-        let dense = DocumentScale::for_profile(profile(0, L_SYNTAX + 1, V_BATCH + 1));
-        let twice = dense.join(dense).reduced;
+        // The same long-paragraph reasons on both sides survive.
+        let protected = by_length(L_PROTECT_EDIT + 1);
+        let twice = protected.join(protected).reduced;
         assert!(twice.has_reason(ScaleFeature::Syntax, ReductionReason::LongParagraph));
-        assert!(twice.has_reason(ScaleFeature::ProtectedView, ReductionReason::Density));
+        assert!(twice.has_reason(ScaleFeature::ProtectedView, ReductionReason::LongParagraph));
     }
 
     #[test]
     fn the_policy_constants_have_their_recorded_values() {
         // Design D7 and `docs/next/long-line-documents.md` record these; a
         // change to one is a policy decision, not a refactor.
-        let recorded: [(u64, u64); 13] = std::hint::black_box([
+        let recorded: [(u64, u64); 15] = std::hint::black_box([
             (S_SYNTAX, 1024 * 1024),
             (L_SYNTAX, 2_000),
             (S_MINIMAP, 10_000_000),
@@ -956,6 +997,8 @@ mod tests {
             (L_INVISIBLES, 50_000),
             (L_SEARCH_HIGHLIGHT, 10_000),
             (L_PROTECT, 500),
+            (L_EDIT_STALL, 3_500),
+            (L_PROTECT_EDIT, 50_000),
             (N_VISIBLE, 500_000),
             (V_BATCH, 56_000),
             (UNDO_TOTAL_BYTES, 50_000_000),
@@ -980,6 +1023,11 @@ mod tests {
             N_VISIBLE,
         ]);
         assert!(ascending.windows(2).all(|pair| pair[0] < pair[1]));
+        // The toolkit-floor exception lies between the profile's first
+        // threshold and the entry, which the profile's longest paragraph
+        // reports exactly.
+        let exception = std::hint::black_box([L_PROTECT, L_EDIT_STALL, L_PROTECT_EDIT, N_VISIBLE]);
+        assert!(exception.windows(2).all(|pair| pair[0] < pair[1]));
         let undo = std::hint::black_box(UNDO_TOTAL_BYTES);
         assert!(std::hint::black_box(HISTORY_SAVE_ONLY_BYTES) < undo);
         assert!(undo < std::hint::black_box(REFUSE_TO_OPEN));

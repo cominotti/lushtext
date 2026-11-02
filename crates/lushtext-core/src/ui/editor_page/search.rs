@@ -11,8 +11,25 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use super::LushtextEditorPage;
 
-/// Maximum selected characters copied into the in-editor Find/Replace query.
+/// Maximum selected characters a find surface copies into its query. Users
+/// sometimes press Ctrl+Shift+F with a whole document selected; the prefill
+/// runs on the GTK thread, so a larger selection is skipped instead of copied.
 const MAX_SEARCH_SELECTION_PREFILL_CHARS: i32 = 1_024;
+
+/// The selection text a find surface (the in-tab bar or the workspace search
+/// panel) prefills its query with: at most `MAX_SEARCH_SELECTION_PREFILL_CHARS`
+/// characters of selection, visible text only, so a selection across a
+/// Protected View fold never copies a hidden tail (design D5).
+pub(crate) fn search_prefill_text(buffer: &gtk4::TextBuffer) -> Option<glib::GString> {
+    let (start, end) = buffer.selection_bounds()?;
+    selection_within_prefill_limit(start.offset(), end.offset())
+        .then(|| buffer.text(&start, &end, false))
+        .filter(|text| !text.is_empty())
+}
+
+fn selection_within_prefill_limit(start_offset: i32, end_offset: i32) -> bool {
+    start_offset.abs_diff(end_offset) <= MAX_SEARCH_SELECTION_PREFILL_CHARS.unsigned_abs()
+}
 
 impl LushtextEditorPage {
     /// Open the search bar in find-only mode.
@@ -73,23 +90,33 @@ impl LushtextEditorPage {
                 search_bar.set_replace_mode(replace_mode);
                 return;
             }
-            search_bar.attach(&self.buffer(), self.source_view());
+            self.attach_search_context();
 
-            let buffer = self.buffer();
-            if let Some((start, end)) = buffer.selection_bounds() {
-                let selection_chars = end.offset().saturating_sub(start.offset());
-                if selection_chars > 0 && selection_chars <= MAX_SEARCH_SELECTION_PREFILL_CHARS {
-                    let text = buffer.text(&start, &end, true);
-                    search_bar.search_entry().set_text(text.as_str());
-                }
+            if let Some(text) = search_prefill_text(self.buffer().upcast_ref()) {
+                search_bar.search_entry().set_text(text.as_str());
             }
         }
 
-        search_bar.set_replace_mode(replace_mode);
+        // Protected View has no Replace (the buffer is immutable, design D5).
+        search_bar.set_replace_mode(replace_mode && !self.is_protected_view());
 
         let entry = search_bar.search_entry();
         entry.grab_focus();
         entry.select_region(0, -1);
+    }
+
+    /// Attach the in-tab search context, except in Protected View: a
+    /// `GtkSourceSearchContext` scans the whole buffer from an idle (25–28 s on
+    /// the reference giant line) and skips hidden text (ledger A33), so a
+    /// protected document's find runs on a worker over its text source
+    /// instead (design D5, task 6.1).
+    pub(crate) fn attach_search_context(&self) {
+        if self.is_protected_view() {
+            return;
+        }
+        self.imp()
+            .search_bar
+            .attach(&self.buffer(), self.source_view());
     }
 
     /// Save the current cursor position as a text mark for later restoration.
@@ -108,5 +135,23 @@ impl LushtextEditorPage {
             buffer.place_cursor(&iter);
             buffer.delete_mark(&mark);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SEARCH_SELECTION_PREFILL_CHARS, selection_within_prefill_limit};
+
+    #[test]
+    fn search_prefill_skips_large_selection_ranges() {
+        assert!(selection_within_prefill_limit(
+            0,
+            MAX_SEARCH_SELECTION_PREFILL_CHARS
+        ));
+        assert!(!selection_within_prefill_limit(
+            0,
+            MAX_SEARCH_SELECTION_PREFILL_CHARS + 1
+        ));
+        assert!(selection_within_prefill_limit(42, 1));
     }
 }

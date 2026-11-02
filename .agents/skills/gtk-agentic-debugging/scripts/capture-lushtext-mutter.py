@@ -17,9 +17,26 @@ SCRIPT_PATH = Path(__file__).resolve()
 SCRIPT_DIR = SCRIPT_PATH.parent
 SYSTEM_PYTHON = Path("/usr/bin/python3")
 ATSPI_REGISTRYD = Path("/usr/libexec/at-spi2-registryd")
+# The AT-SPI text wait runs after the application reported `idle`, so it waits
+# for no application work: it bounds how long the probe may take to READ the
+# tree. One walk is several synchronous AT-SPI calls per node, each answered by
+# the application's main thread, so its wall time is node count times
+# scheduler latency. Measured on the 150-223-node notes and bookmarks captures
+# (2026-10-30, interpreter startup included): 0.4-2.5 s at host load ~25, and
+# up to 5.4 s for the 223-node tree at load 50-100, already above the old fixed
+# 5 s per-probe cap. A probe is therefore bounded only by the time left before
+# this deadline, never by a shorter per-probe cap: a cap below the walk's cost
+# kills every attempt and the wait cannot make progress however long it is
+# (the `bookmarks-few` flake, where the probes were killed at load ~20). The
+# probe stops at the first node carrying the text, so it usually reads about
+# half the tree; 20 s leaves several full walks of headroom over the worst
+# measured one, and the `probe_ms=` record shows when that stops being true.
 ATSPI_TEXT_WAIT_SECONDS = 20
+# The artifact dump after the wait walks the whole tree without stopping early,
+# so it gets the same budget for the same reason (its old 15 s cap was not
+# derived from anything).
+ATSPI_TREE_DUMP_SECONDS = ATSPI_TEXT_WAIT_SECONDS
 ATSPI_TREE_PROBE_TIMEOUT_SECONDS = 2
-ATSPI_TREE_PROCESS_TIMEOUT_SECONDS = 5
 ATSPI_TREE_RETRY_INTERVAL_SECONDS = 0.2
 # How deep every AT-SPI helper walks the accessible tree, kept equal to the tree
 # dump's own default (`atspi-dump-tree.py`). LushText's editor text view sits at
@@ -1306,7 +1323,7 @@ def dump_atspi_tree(args: argparse.Namespace, artifact_dir: Path, env: dict[str,
         text=True,
         capture_output=True,
         env=env,
-        timeout=15,
+        timeout=ATSPI_TREE_DUMP_SECONDS,
     )
     (artifact_dir / "atspi-dump-tree.stdout").write_text(result.stdout, encoding="utf-8")
     (artifact_dir / "atspi-dump-tree.stderr").write_text(result.stderr, encoding="utf-8")
@@ -1326,8 +1343,8 @@ def wait_for_atspi_text(artifact_dir: Path, env: dict[str, str], expected_text: 
     stderr_path = artifact_dir / "wait-atspi-tree.stderr"
     deadline = time.monotonic() + ATSPI_TEXT_WAIT_SECONDS
     last_text = ""
-    probe_timeouts = 0
-    while time.monotonic() < deadline:
+    probe_ms: list[int] = []
+    while (remaining := deadline - time.monotonic()) > 0:
         command = [
             str(SYSTEM_PYTHON),
             str(SCRIPT_DIR / "atspi-dump-tree.py"),
@@ -1338,26 +1355,30 @@ def wait_for_atspi_text(artifact_dir: Path, env: dict[str, str], expected_text: 
             "--focus-output",
             str(focus_output),
             "--timeout",
-            str(ATSPI_TREE_PROBE_TIMEOUT_SECONDS),
+            str(min(ATSPI_TREE_PROBE_TIMEOUT_SECONDS, remaining)),
+            "--stop-at-text",
+            expected_text,
         ]
+        output.unlink(missing_ok=True)
+        probe_start = time.monotonic()
         try:
             result = subprocess.run(
                 command,
                 text=True,
                 capture_output=True,
                 env=env,
-                timeout=ATSPI_TREE_PROCESS_TIMEOUT_SECONDS,
+                timeout=remaining,
             )
         except subprocess.TimeoutExpired:
-            probe_timeouts += 1
+            probe_ms.append(round((time.monotonic() - probe_start) * 1000))
             last_text = (
-                "AT-SPI tree probe timed out before producing a bounded tree; "
-                "retrying within the fixed readiness deadline"
+                "AT-SPI tree probe was still walking the tree when the "
+                f"{ATSPI_TEXT_WAIT_SECONDS} s readiness deadline expired"
             )
             stdout_path.write_text("", encoding="utf-8")
             stderr_path.write_text(f"{last_text}\n", encoding="utf-8")
-            time.sleep(ATSPI_TREE_RETRY_INTERVAL_SECONDS)
-            continue
+            break
+        probe_ms.append(round((time.monotonic() - probe_start) * 1000))
         stdout_path.write_text(result.stdout, encoding="utf-8")
         stderr_path.write_text(result.stderr, encoding="utf-8")
         if output.exists():
@@ -1366,12 +1387,13 @@ def wait_for_atspi_text(artifact_dir: Path, env: dict[str, str], expected_text: 
                 with (artifact_dir / "automation-waits.txt").open("a", encoding="utf-8") as waits:
                     waits.write(
                         f"atspi_text={expected_text!r} present=True "
-                        f"probe_timeouts={probe_timeouts}\n"
+                        f"probes={len(probe_ms)} probe_ms={probe_ms}\n"
                     )
                 return
-        time.sleep(ATSPI_TREE_RETRY_INTERVAL_SECONDS)
+        time.sleep(min(ATSPI_TREE_RETRY_INTERVAL_SECONDS, max(0.0, deadline - time.monotonic())))
     raise RuntimeError(
-        f"Timed out waiting for AT-SPI text {expected_text!r}: {last_text[:1000]}"
+        f"Timed out waiting for AT-SPI text {expected_text!r} "
+        f"(probes={len(probe_ms)} probe_ms={probe_ms}): {last_text[:1000]}"
     )
 
 

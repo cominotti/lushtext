@@ -35,6 +35,8 @@ mod palette;
 mod paragraph_boundary;
 #[path = "properties/path_rebasing.rs"]
 mod path_rebasing;
+#[path = "properties/protected_fold.rs"]
+mod protected_fold;
 #[path = "properties/recovery_metadata.rs"]
 mod recovery_metadata;
 #[path = "properties/replace_journal_recovery.rs"]

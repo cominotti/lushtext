@@ -67,6 +67,22 @@ pub mod policy;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+pub(crate) use policy::SearchOption;
+
+/// A handler that receives the search bar's routed find requests.
+pub(crate) type ExternalFindHandler = std::rc::Rc<dyn Fn(ExternalFindRequest)>;
+
+/// A find request routed to an external handler (Protected View's worker
+/// find) instead of the search context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExternalFindRequest {
+    /// The query or an option changed.
+    QueryChanged,
+    /// Move to the next match.
+    Next,
+    /// Move to the previous match.
+    Previous,
+}
 
 glib::wrapper! {
     /// Public GTK widget wrapper for the editor find/replace bar.
@@ -171,12 +187,43 @@ impl LushtextSearchBar {
 
     /// Stage 4 — move to the next match in the buffer.
     pub fn move_next(&self) {
-        execution::select_next_match(self);
+        if !self.dispatch_external_find(ExternalFindRequest::Next) {
+            execution::select_next_match(self);
+        }
     }
 
     /// Stage 4 — move to the previous match in the buffer.
     pub fn move_prev(&self) {
-        execution::select_previous_match(self);
+        if !self.dispatch_external_find(ExternalFindRequest::Previous) {
+            execution::select_previous_match(self);
+        }
+    }
+
+    /// Route find to `handler` instead of a search context, or back
+    /// (`None`). Protected View sets it while protected (design D5).
+    pub(crate) fn set_external_find(&self, handler: Option<ExternalFindHandler>) {
+        self.imp().external_find.replace(handler);
+    }
+
+    /// Send `request` to the external find handler; false when none is set.
+    pub(crate) fn dispatch_external_find(&self, request: ExternalFindRequest) -> bool {
+        let handler = self.imp().external_find.borrow().clone();
+        handler.is_some_and(|handler| {
+            handler(request);
+            true
+        })
+    }
+
+    /// Whether a search option is on (its action state).
+    pub(crate) fn option_enabled(&self, option: SearchOption) -> bool {
+        self.imp()
+            .options_group
+            .borrow()
+            .as_ref()
+            .and_then(|group| group.lookup_action(option.action_name()))
+            .and_then(|action| action.state())
+            .and_then(|state| state.get::<bool>())
+            .unwrap_or(false)
     }
 
     /// Stage 5 — replace the current match and advance to the next one.
@@ -200,6 +247,9 @@ impl LushtextSearchBar {
 
     /// Apply one option toggle to the live session.
     pub(crate) fn apply_option_state(&self, name: &str, enabled: bool) {
+        if self.dispatch_external_find(ExternalFindRequest::QueryChanged) {
+            return;
+        }
         execution::apply_option(self, name, enabled);
     }
 
