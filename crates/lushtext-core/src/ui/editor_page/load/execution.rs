@@ -34,6 +34,7 @@
 //! counter. Both paths converge on [`complete_loaded_installation`], so the
 //! published result cannot differ between them.
 
+use crate::model::held_input::ContentDisposition;
 use crate::ui::editor_page::edit_lock::EditLock;
 use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
 use crate::ui::protected_fold::FoldedInstall;
@@ -433,7 +434,7 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         // widget that is going away, so giving state back to it can only turn a
         // teardown into a crash.
         if !disposed_during_finalization {
-            restore_load_installation_state(&editor, restore);
+            restore_load_installation_state(&editor, restore, ContentDisposition::Unpublished);
         }
         conclude_installation(&editor, session, permit);
         drop(loaded);
@@ -444,7 +445,7 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         // block this arm previously left open, which would have kept undo
         // disabled for the tab.
         buffer.end_irreversible_action();
-        restore_load_installation_state(&editor, restore);
+        restore_load_installation_state(&editor, restore, ContentDisposition::Unpublished);
         conclude_installation(&editor, session, permit);
         return;
     };
@@ -902,7 +903,7 @@ fn complete_loaded_installation_now(
     // (design D4) instead of a local-history baseline.
     let content = editor.retain_protected_source(content);
     editor.seed_local_history_from_guarded_loaded_content(content);
-    restore_load_installation_state(editor, restore);
+    restore_load_installation_state(editor, restore, ContentDisposition::WholeContent);
     editor.imp().load_state.set(EditorLoadState::Loaded);
     evidence::record_outcome(editor, LoadOutcome::Loaded);
     editor.notify_memory_policy_changed();
@@ -962,9 +963,12 @@ pub(super) fn invoke_reentrant_callbacks(slot: &RefCell<Vec<EditorCallback>>) {
 }
 
 /// Restore the projections and view flags one installation suspended.
+/// `release`: what the installation left in the buffer, for text the user
+/// typed meanwhile (`held_input.rs`).
 pub(super) fn restore_load_installation_state(
     editor: &LushtextEditorPage,
     restore: LoadInstallationState,
+    release: ContentDisposition,
 ) {
     editor
         .imp()
@@ -973,7 +977,7 @@ pub(super) fn restore_load_installation_state(
         .set(restore.projection_suspended);
     editor.set_local_history_capture_suppressed(restore.history_capture_suppressed);
     editor.set_minimap_tracking_suspended(restore.minimap_tracking_suspended);
-    editor.unlock_edits(restore.lock);
+    editor.unlock_edits(restore.lock, release);
     editor
         .source_view()
         .set_cursor_visible(restore.view.cursor_visible);

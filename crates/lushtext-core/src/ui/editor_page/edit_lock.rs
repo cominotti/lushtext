@@ -24,7 +24,11 @@
 //!   signals: keys, input-method commits, paste and primary paste,
 //!   drag-and-drop, undo and redo, and programmatic edits from any other
 //!   workflow. A refused edit never reaches the default handler, so it
-//!   changes no text, no modified flag, no undo history and no draft;
+//!   changes no text, no modified flag, no undo history and no draft.
+//!   A **typed** insertion is not refused but held, and inserted at the caret
+//!   once nothing owns the buffer (`held_input.rs`,
+//!   `keep-keystrokes-during-install`); each release says what it left in
+//!   the buffer (`ContentDisposition`), which decides whether it may;
 //! - `undo` and `redo` are refused at their own signals as well, so the undo
 //!   history is never popped for an edit the lock then refuses;
 //! - the view's drop targets are taken off while the lock is held, nested
@@ -48,6 +52,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use super::LushtextEditorPage;
 use super::protected_view::interaction_execution::DropTargetHold;
+use crate::model::held_input::ContentDisposition;
 
 /// One held edit lock, returned by [`LushtextEditorPage::lock_edits`] and
 /// consumed by [`LushtextEditorPage::unlock_edits`].
@@ -81,6 +86,11 @@ impl Drop for OwnEdit {
     }
 }
 
+/// Whether an owning workflow's own edit is in progress on the GTK thread.
+pub(super) fn own_edit_in_progress() -> bool {
+    OWN_EDITS.with(Cell::get) > 0
+}
+
 /// Run the owning workflow's own buffer edit through the lock.
 pub(crate) fn with_own_edit<R>(edit: impl FnOnce() -> R) -> R {
     OWN_EDITS.with(|depth| depth.set(depth.get().saturating_add(1)));
@@ -90,11 +100,22 @@ pub(crate) fn with_own_edit<R>(edit: impl FnOnce() -> R) -> R {
 
 impl LushtextEditorPage {
     /// Connect the refusing handlers (from `constructed`, before any other
-    /// buffer handler, so a refused edit reaches none of them).
+    /// buffer handler, so a refused edit reaches none of them). Each asks
+    /// held typing (`held_input.rs`) whether to stop it: a typed insertion is
+    /// held instead of refused, and every edit the lock refused before still
+    /// is.
     pub(super) fn setup_edit_lock(&self) {
+        self.setup_held_input_tracking();
         let buffer = self.buffer();
+        let editor = self.downgrade();
+        buffer.connect_insert_text(move |buffer, location, text| {
+            if let Some(editor) = editor.upgrade()
+                && editor.decide_insert(buffer.upcast_ref(), &*location, text)
+            {
+                buffer.stop_signal_emission_by_name("insert-text");
+            }
+        });
         for signal in [
-            "insert-text",
             "insert-paintable",
             "insert-child-anchor",
             "delete-range",
@@ -102,9 +123,10 @@ impl LushtextEditorPage {
             "redo",
         ] {
             let editor = self.downgrade();
+            let user_request = matches!(signal, "undo" | "redo");
             buffer.connect_local(signal, false, move |values| {
                 if let Some(editor) = editor.upgrade()
-                    && editor.edit_refused()
+                    && editor.decide_removal(user_request)
                     && let Some(buffer) = values
                         .first()
                         .and_then(|value| value.get::<gtk4::TextBuffer>().ok())
@@ -114,11 +136,6 @@ impl LushtextEditorPage {
                 None
             });
         }
-    }
-
-    /// Whether an edit arriving now is refused.
-    fn edit_refused(&self) -> bool {
-        self.imp().edit_lock.holders.get() > 0 && OWN_EDITS.with(Cell::get) == 0
     }
 
     /// Take the lock for a workflow that now owns the buffer. The first
@@ -135,13 +152,16 @@ impl LushtextEditorPage {
         EditLock { _held: () }
     }
 
-    /// Release a lock taken by [`Self::lock_edits`]. The last holder puts the
-    /// drop targets back, unless Protected View still holds them.
+    /// Release a lock taken by [`Self::lock_edits`], saying what the holder
+    /// left in the buffer (`release`, which decides whether text held while
+    /// it owned the buffer may go into it). The last holder puts the drop
+    /// targets back, unless Protected View still holds them, and queues the
+    /// held text's settle dispatch.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "taking the move-only token by value is what releases it exactly once"
     )]
-    pub(crate) fn unlock_edits(&self, lock: EditLock) {
+    pub(crate) fn unlock_edits(&self, lock: EditLock, release: ContentDisposition) {
         let EditLock { _held: () } = lock;
         let state = &self.imp().edit_lock;
         let holders = state.holders.get();
@@ -152,6 +172,7 @@ impl LushtextEditorPage {
         }
         self.refresh_accessibility_metadata();
         self.refresh_protected_alert_for_edit_lock();
+        self.held_input_after_release(release, holders == 1);
     }
 
     /// Whether the user can edit the document now: the view is editable and

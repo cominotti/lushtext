@@ -168,9 +168,14 @@ impl ProbeInputKind {
 pub enum ProbeInputTarget {
     /// An editable editor text view.
     Editor,
-    /// An editor text view that is not editable (Protected View, a save in
-    /// progress): typed keys reach it and insert nothing.
+    /// An editor text view that is not editable (Protected View): typed keys
+    /// reach it and insert nothing.
     ReadOnlyEditor,
+    /// An editable editor text view that holds typed input
+    /// (`keep-keystrokes-during-install`: a workflow owns its buffer, its
+    /// load is in flight, or held text waits): typed keys are inserted only
+    /// when the held text is.
+    HeldEditor,
     /// Any other widget.
     Other,
     /// No widget (no focus, or nothing under the pointer).
@@ -182,6 +187,7 @@ impl ProbeInputTarget {
         match self {
             Self::Editor => "editor",
             Self::ReadOnlyEditor => "read-only-editor",
+            Self::HeldEditor => "held-editor",
             Self::Other => "other",
             Self::Nothing => "none",
         }

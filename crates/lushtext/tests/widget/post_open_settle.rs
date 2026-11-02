@@ -159,11 +159,25 @@ fn test_the_attach_waits_for_input_quiet_until_its_deadline() {
     let path = write(&dir, "page.html", HTML);
     window.open_document(&path);
     let editor = active_editor(&window);
-    // Keys keep arriving: the attach must not run before the deadline.
+    // Keys keep arriving: the attach must not run before the deadline. The
+    // input comes from a high-priority source, which GLib dispatches before
+    // the attach's low-priority timeout whenever both are ready: input fed
+    // from the test loop between flushes left a gap whenever one dispatch of
+    // the loaded machine took longer than the quiet interval, and the attach
+    // then ran (FLAKY under load, 2026-11-02).
+    let feeding = std::rc::Rc::new(std::cell::Cell::new(true));
+    let feed = feeding.clone();
+    lushtext_core::ui::input_quiet::simulate_user_input();
+    glib::timeout_add_local_full(Duration::from_millis(1), glib::Priority::HIGH, move || {
+        if !feed.get() {
+            return glib::ControlFlow::Break;
+        }
+        lushtext_core::ui::input_quiet::simulate_user_input();
+        glib::ControlFlow::Continue
+    });
     let started = std::time::Instant::now();
     let deadline = Duration::from_micros(u64::try_from(ATTACH_DEADLINE_US).expect("positive"));
     while started.elapsed() < deadline / 2 {
-        lushtext_core::ui::input_quiet::simulate_user_input();
         flush_after_delay(Duration::from_millis(5));
     }
     assert_eq!(
@@ -171,13 +185,13 @@ fn test_the_attach_waits_for_input_quiet_until_its_deadline() {
         None,
         "the attach ran while keys arrived"
     );
-    // Under continuous input, the deadline lets it run anyway.
-    // Input keeps arriving every few milliseconds, far inside the quiet
-    // interval, so only the deadline can let the attach run.
+    // Under continuous input, the deadline lets it run anyway: input keeps
+    // arriving every millisecond, far inside the quiet interval, so only the
+    // deadline can let the attach run.
     while started.elapsed() < SETTLE_BUDGET && language_id(&editor).as_deref() != Some("html") {
-        lushtext_core::ui::input_quiet::simulate_user_input();
         flush_after_delay(Duration::from_millis(2));
     }
+    feeding.set(false);
     assert_eq!(language_id(&editor).as_deref(), Some("html"));
     assert!(
         started.elapsed() >= deadline,
@@ -517,6 +531,15 @@ fn test_install_replacement_and_save_never_toggle_editable() {
 /// the clipboard, an interactive insert (the route drag-and-drop and
 /// input-method commits take: `gtk_text_buffer_insert_interactive`), a
 /// deletion, a paintable, a child anchor, and undo.
+///
+/// The three typed routes are held and inserted at the caret once the
+/// workflow releases the buffer (`keep-keystrokes-during-install`), as
+/// [`TYPED_ROUTES`]; the others are refused.
+/// What the typed routes of [`attempt_every_edit_route`] insert, in order:
+/// the key and the interactive insert synchronously, the paste when the
+/// clipboard read completes.
+const TYPED_ROUTES: &str = "KEYDROPPASTE";
+
 fn attempt_every_edit_route(editor: &LushtextEditorPage) {
     let view = editor.source_view();
     view.emit_by_name::<()>("insert-at-cursor", &[&"KEY"]);
@@ -537,7 +560,7 @@ fn attempt_every_edit_route(editor: &LushtextEditorPage) {
 }
 
 #[test]
-fn test_every_edit_route_is_refused_while_a_dense_install_owns_the_buffer() {
+fn test_every_edit_route_is_held_or_refused_while_a_dense_install_owns_the_buffer() {
     ensure_gtk_init();
     let window = test_window();
     present_window(&window);
@@ -559,15 +582,24 @@ fn test_every_edit_route_is_refused_while_a_dense_install_owns_the_buffer() {
     attempt_every_edit_route(&editor);
     wait_until(SETTLE_BUDGET, || {
         editor.load_state() == EditorLoadState::Loaded
+            && crate::common::editor_text(&editor).len() == TYPED_ROUTES.len() + text.len()
     });
-    assert_eq!(crate::common::editor_text(&editor), text);
-    assert!(!editor.is_modified());
-    assert!(!editor.draft_dirty());
+    // Only the typed routes reached the document, at the caret, after the
+    // install; the refused ones changed nothing.
+    assert_eq!(
+        crate::common::editor_text(&editor),
+        format!("{TYPED_ROUTES}{text}")
+    );
+    assert!(editor.is_modified());
+    assert!(editor.draft_dirty());
     assert!(editor.accepts_user_edits());
+    // The refused undo popped nothing: one undo removes the typed text.
+    editor.buffer().undo();
+    assert_eq!(crate::common::editor_text(&editor), text);
 }
 
 #[test]
-fn test_every_edit_route_is_refused_while_a_save_owns_the_buffer() {
+fn test_every_edit_route_is_held_or_refused_while_a_save_owns_the_buffer() {
     ensure_gtk_init();
     let window = test_window();
     present_window(&window);
@@ -589,17 +621,28 @@ fn test_every_edit_route_is_refused_while_a_save_owns_the_buffer() {
     assert!(!editor.accepts_user_edits());
     attempt_every_edit_route(&editor);
     editor.resume_save_snapshot_for_test();
-    wait_until(SETTLE_BUDGET, || saved.get().is_some());
     let expected = format!("start\n{typed}");
+    wait_until(SETTLE_BUDGET, || {
+        saved.get().is_some()
+            && crate::common::editor_text(&editor).len() == TYPED_ROUTES.len() + expected.len()
+    });
     assert_eq!(saved.get(), Some(true));
-    assert_eq!(crate::common::editor_text(&editor), expected);
+    // The save wrote what the buffer held when it took the buffer; the typed
+    // routes went in at the caret after it, leaving the document modified.
     assert_eq!(
         lushtext_core::services::filesystem::read::text(&path).expect("saved file"),
         expected
     );
-    assert!(!editor.is_modified());
+    assert_eq!(
+        crate::common::editor_text(&editor),
+        format!("{TYPED_ROUTES}{expected}")
+    );
+    assert!(editor.is_modified());
     assert!(editor.accepts_user_edits());
-    // The refused undo did not consume the history.
+    // The refused undo did not consume the history: the typed text is one
+    // undo step, and the earlier edit is still undoable after it.
+    editor.buffer().undo();
+    assert_eq!(crate::common::editor_text(&editor), expected);
     assert!(editor.buffer().can_undo());
     editor.buffer().undo();
     assert_eq!(crate::common::editor_text(&editor), "start\n");

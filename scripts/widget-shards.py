@@ -136,11 +136,13 @@ SHARDS: dict[str, Shard] = {
         # `post_open_settle` (bound-post-open-settle) joined the same way.
         # `protected_view` (long-line-protected-view) joined on 2026-10-31
         # beside it, on the same terms, and `protected_view_surfaces`
-        # (protected-view-inspector-and-surfaces) on 2026-11-01.
+        # (protected-view-inspector-and-surfaces) on 2026-11-01, and
+        # `held_typing` (keep-keystrokes-during-install) on 2026-11-02.
         modules=(
             "attention_refresh",
             "document_scale",
             "editor_page",
+            "held_typing",
             "multi_window_drafts",
             "post_open_settle",
             "protected_view",

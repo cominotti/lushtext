@@ -586,14 +586,18 @@ fn begin_guard(editor: &LushtextEditorPage) -> ReplacementGuard {
     guard
 }
 
-fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
+fn restore_guard(
+    editor: &LushtextEditorPage,
+    guard: ReplacementGuard,
+    release: crate::model::held_input::ContentDisposition,
+) {
     let imp = editor.imp();
     imp.replacement
         .projection_suspended
         .set(guard.projection_suspended);
     editor.set_local_history_capture_suppressed(guard.history_capture_suppressed);
     editor.set_minimap_tracking_suspended(guard.minimap_tracking_suspended);
-    editor.unlock_edits(guard.lock);
+    editor.unlock_edits(guard.lock, release);
     editor
         .source_view()
         .set_cursor_visible(guard.cursor_visible);
@@ -1000,7 +1004,7 @@ fn finish_session(
     session: &Rc<RefCell<BufferReplacementSession>>,
     cancellation: Option<BufferReplacementCancelReason>,
 ) {
-    let (editor, buffer, source, guard, ticket, body, callback, metrics, profile) = {
+    let (editor, buffer, source, guard, ticket, body, callback, metrics, profile, mutated) = {
         let mut state = session.borrow_mut();
         if state.terminal {
             return;
@@ -1017,12 +1021,20 @@ fn finish_session(
             state.callback.take(),
             state.metrics,
             state.profile.take(),
+            state.mutation_started,
         )
     };
     if let Some(source) = source {
         source.remove();
     }
     buffer.end_irreversible_action();
+    // What the buffer holds now, for text typed meanwhile (`held_input.rs`):
+    // a whole new body, the untouched old one, or a cleared one.
+    let release = match (cancellation, mutated) {
+        (None, _) => crate::model::held_input::ContentDisposition::WholeContent,
+        (Some(_), true) => crate::model::held_input::ContentDisposition::Unpublished,
+        (Some(_), false) => crate::model::held_input::ContentDisposition::Unchanged,
+    };
     let outcome = match cancellation {
         None => {
             let body = body
@@ -1077,7 +1089,7 @@ fn finish_session(
     if guard_restores_on_terminal(cancellation)
         && let Some(guard) = guard
     {
-        restore_guard(&editor, guard);
+        restore_guard(&editor, guard, release);
         // The buffer is renderable again. A cancelled session with a parked
         // superseding request stays quiet: that request fires at its own
         // terminal, so rendering the cleared buffer now would be wasted.

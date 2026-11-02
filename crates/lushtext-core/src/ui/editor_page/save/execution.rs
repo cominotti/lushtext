@@ -72,7 +72,11 @@ impl SaveViewInteractivity {
     }
 
     fn restore(self, editor: &LushtextEditorPage) {
-        editor.unlock_edits(self.lock);
+        // A save never changes what the buffer holds.
+        editor.unlock_edits(
+            self.lock,
+            crate::model::held_input::ContentDisposition::Unchanged,
+        );
         editor.source_view().set_cursor_visible(self.cursor_visible);
     }
 }

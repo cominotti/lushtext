@@ -101,6 +101,10 @@ impl LushtextEditorPage {
             details.push_str(" Saving is in progress; editing is temporarily read-only.");
         }
 
+        if self.has_held_text() {
+            details.push_str(" Text you type is kept and inserted when the document is ready.");
+        }
+
         if self.is_evicted() {
             details
                 .push_str(" Content has been evicted from memory and will reload when selected.");

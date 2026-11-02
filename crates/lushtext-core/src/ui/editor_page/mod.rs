@@ -14,6 +14,7 @@ pub mod document_scale;
 pub(crate) mod edit_lock;
 mod focus_mode;
 mod frame_validation;
+mod held_input;
 // Private implementation module. GTK's GObject bindings split custom widgets
 // into an `imp` struct for instance data/lifecycle hooks and this public wrapper
 // module for the type-safe API.
@@ -75,6 +76,7 @@ pub use buffer_replacement::{
 pub use buffer_replacement::{BufferReplacementEvidence, BufferReplacementTestOutcome};
 pub(crate) use buffer_replacement::{BufferReplacementOutcome, BufferReplacementRequest};
 pub(crate) use focus_mode::approximate_char_width_pango_units;
+pub use held_input::HeldInputEvidence;
 pub use imp::{EditorLoadState, InlineAlertLifetime, PendingWarningAction};
 pub use load::{LoadEvidence, LoadInstallPhase, LoadOutcome};
 #[cfg(feature = "test-utils")]

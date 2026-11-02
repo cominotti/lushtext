@@ -132,6 +132,18 @@ Expected screen-reader behavior includes:
   active document's bounded display name, not by document contents.
 - Editor read-only states are surfaced when loading, saving, large-file policy,
   preview-only mode, or a failure state temporarily prevents editing.
+- Text typed while a document loads, saves, or has its content replaced (draft
+  recovery, a local-history restore) is kept and inserted at the caret once the
+  document is ready, as one undo step (`keep-keystrokes-during-install`). The
+  first held character publishes one status message ("Typed text will appear
+  when “name” is ready."), and while text is held the editor's description adds
+  "Text you type is kept and inserted when the document is ready." The buffer,
+  which AT reads, changes only at that insertion, so the editor stays reported
+  read-only and busy until then; the insertion is an ordinary text change.
+  Backspace removes held characters; Delete, undo and edits over a selection
+  are refused with a rate-limited warning. Held text that cannot be inserted (the
+  load failed or was cancelled, or the document opened in Protected View) is
+  discarded with a warning that says so.
 - The editor's accessible description names the features the document scale
   policy reduced for this document, grouped by reason class: for example
   "Syntax highlighting, bracket matching, the minimap and search highlighting

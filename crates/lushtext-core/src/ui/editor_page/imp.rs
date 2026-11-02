@@ -618,6 +618,8 @@ pub struct LushtextEditorPage {
     pub restyle: super::restyle::RestyleState,
     /// The buffer-level edit lock (`edit_lock.rs`).
     pub edit_lock: super::edit_lock::EditLockState,
+    /// Text typed while a workflow owns the buffer (`held_input.rs`).
+    pub held_input: super::held_input::HeldInputState,
     /// The boundary marks a sliced protected install left in the buffer,
     /// which the next clear consumes (`ui::protected_fold`, C3).
     pub(crate) protected_boundaries: crate::ui::protected_fold::BoundaryLedger,
@@ -715,6 +717,7 @@ impl Default for LushtextEditorPage {
             language_attach: LanguageAttachState::default(),
             restyle: super::restyle::RestyleState::default(),
             edit_lock: super::edit_lock::EditLockState::default(),
+            held_input: super::held_input::HeldInputState::default(),
             protected_boundaries: crate::ui::protected_fold::BoundaryLedger::default(),
             protected_view: super::protected_view::execution::ProtectedViewRuntime::default(),
             protected_drop_targets:

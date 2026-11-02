@@ -546,9 +546,13 @@ mod measurement {
             buffer.connect_begin_user_action(move |_| depth.set(depth.get().saturating_add(1)));
             let depth = Rc::clone(&user_action);
             buffer.connect_end_user_action(move |_| depth.set(depth.get().saturating_sub(1)));
-            buffer.connect_insert_text(move |_, _, _| {
+            // One mark per inserted character: the replay of held text
+            // (`keep-keystrokes-during-install`) is one insertion of many.
+            buffer.connect_insert_text(move |_, _, text| {
                 if user_action.get() > 0 {
-                    record_mark(EDITOR_USER_INSERT_MARK);
+                    for _ in text.chars() {
+                        record_mark(EDITOR_USER_INSERT_MARK);
+                    }
                 }
             });
         }
@@ -925,7 +929,9 @@ mod measurement {
             {
                 let view = editor.source_view();
                 return if widget == view.upcast_ref::<gtk4::Widget>() || widget.is_ancestor(view) {
-                    if view.is_editable() {
+                    if view.is_editable() && editor.holds_typed_input() {
+                        ProbeInputTarget::HeldEditor
+                    } else if view.is_editable() {
                         ProbeInputTarget::Editor
                     } else {
                         ProbeInputTarget::ReadOnlyEditor

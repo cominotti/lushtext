@@ -63,6 +63,13 @@ local history, and careful recovery behavior.
   background, and copy a selection in full. Even a single 500 MB line opens,
   recovers and reloads in small steps, so the window keeps responding while
   it loads.
+- **Typing while a document opens is kept.** Text you type while a large
+  document is still loading, being restored or being saved appears at the
+  cursor once the document is ready, as one undo step; Backspace corrects it
+  before then. Other edits made meanwhile (Delete, undo, typing over a
+  selection) are not applied, and a status message says so. If the document
+  fails to load or opens view-only, the typed text is not inserted and a
+  message says how much.
 - **EditorConfig support** for indentation and save-policy overrides, with
   Preferences values used as fallback.
 

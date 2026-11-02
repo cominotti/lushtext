@@ -1264,7 +1264,12 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   never "no visible change": drawn only after the next key was handled while
   the loop was free, it is measured to that frame and fails the lane as
   `withheld_typing_frames`; keys into a protected, read-only editor are
-  reported apart from editable typing; a relaunch whose editor click cannot be
+  reported apart from editable typing, and so are keys into a **held** editor
+  (`held-editor`, `keep-keystrokes-during-install`: a workflow owns its
+  buffer or its load is in flight), which are drawn only when the held text is
+  inserted; they count as keys into an editor for `misdirected_typing`, whose
+  insertion marks are one per character, so a held key never inserted fails
+  the lane; a relaunch whose editor click cannot be
   proven ends the case; every injection is paired with its probe `input`
   record by mutter's event stamp, never by arrival order (`match_injections`:
   the stamp must fall between 1 ms before the injection and 1 ms before the

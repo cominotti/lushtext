@@ -63,7 +63,7 @@ fn block_view_handler(im: &gtk4::IMContext, view: &gtk4::TextView) -> u32 {
 }
 
 /// The view's input-method context, from its key controller.
-fn view_im_context(view: &gtk4::TextView) -> Option<gtk4::IMContext> {
+pub(super) fn view_im_context(view: &gtk4::TextView) -> Option<gtk4::IMContext> {
     let controllers = view.observe_controllers();
     (0..controllers.n_items())
         .filter_map(|index| controllers.item(index))

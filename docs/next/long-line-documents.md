@@ -1516,6 +1516,74 @@ whose frame is withheld. Decided and implemented:
   Content fill-in medians: 17.5 / 17.8 / 17.4 / 17.5 ms, all within the
   three-frame target.
 
+## `keep-keystrokes-during-install` (2026-11-02)
+
+C6's buffer-level edit lock refused every edit while a load install, a
+whole-buffer replacement or a save owned the buffer, and nothing reported it;
+text typed while the file was still being read went into the buffer and the
+install's clear then deleted it. On the lane's `type-during-settle`
+(`total-size/1000000` and `total-size/5000000`, one key every 50 ms from load
+readiness) 0–3 of 60 keys were inserted in the worst phases. Now a typed
+insertion at the caret is **held** (4 KiB cap, Backspace edits the held text)
+and inserted once nothing owns the buffer, in one settle dispatch, as one user
+action (one undo step), into the document whose install completed; a broken
+episode, a failed load or an evicted tab discards it with a warning, a
+Protected View result shows `ProtectedNotice::HeldTextNotInserted`, and every
+other edit is still refused, with a rate-limited warning. Design and decisions:
+`openspec/changes/keep-keystrokes-during-install/design.md`.
+
+### Verdict (interleaved, 2026-11-02): met
+
+main ebdd6aa1 / branch / main / branch, this change's driver on both sides
+(the probe's `held-editor` target and the delivery gate `inserted >= to_editor
++ to_held_editor`), `baseline/small` in its five profiles,
+`total-size/{1000000,5000000}` (`.json` and `.txt`) and
+`dense/{120,500,710}` wrap on and off, plain, phase `type-during-settle`, 2
+repetitions per run; `.claude/handoffs/keystrokes-verdict/`, merged in
+`verdict/lane`. **The host was not idle:** a game (`dota2`) used 2.5–3.3 CPUs
+throughout. Storage was not a bottleneck in any run.
+
+| Run | Load at start → end | total-size keys typed | To the editor / held | Inserted | Phases with every key inserted | Lane |
+|---|---|---|---|---|---|---|
+| main1 | 3.92 → 3.99 | 480 | 480 / – | 280 | 3 of 8 | fails `misdirected_typing` (5 phases) |
+| branch1 | 2.78 → 4.54 | 480 | 354 / 126 | 480 | 8 of 8 | passes |
+| main2 | 4.49 → 5.53 | 480 | 480 / – | 287 | 1 of 8 | fails `misdirected_typing` (7 phases) |
+| branch2 | 4.36 → 6.67 | 480 | 295 / 185 | 480 | 8 of 8 | passes |
+
+`main`'s probe has no `held-editor` target, so its refused keys count as
+delivered to the editor and fail the gate as not inserted. Its worst phases
+inserted 0 of 60 (`total-size/5000000/txt` in three of four repetitions);
+main also failed `withheld_typing_frames` in six `total-size/5000000` phases,
+the branch in none. Every `baseline/small` and `dense` phase inserted 60 of 60
+on both sides (1,320 keys per run); on the branch no `dense` key was held,
+because those installs finish before the first key.
+
+- **Key-to-frame.** Keys that were not held stayed within 17.1–22.8 ms
+  (`input_to_frame_max`) on the branch's `total-size` rows, against 530 ms to
+  1.2 s on main's `total-size/5000000`. A held key is drawn only at the replay,
+  so the driver reports it apart (`held_input_to_frame`): median 9.4–16.7 ms,
+  max 52.8 ms (branch1 `total-size/5000000`, 75 keys) and at most 23.8 ms in
+  branch2.
+- **The replay dispatch.** 13 `held_input_replay` spans across both branch
+  runs: 193–758 µs for at most 60 held characters, against `B_SETTLE` 16 ms.
+  The lane cannot hold more than its 60 keys, so the cap-sized case was timed
+  separately (a throwaway widget probe, debug build, cairo renderer, under the
+  measurement lock, load 4.5–5.0): a 4,096-byte held text replayed at the
+  caret took 0.48–1.4 ms in one 710-character-line `dense` document (ASCII
+  and four-byte characters) and in a 5 MB short-line document (one line),
+  and 3.0–3.3 ms as 256 lines into the 5 MB document; 12 samples, none in
+  Protected View. **The dispatch stays within `B_SETTLE` at the cap, so it was
+  not split into chunks.** The frame that then lays out the inserted text costs
+  what pasting the same 4 KiB costs: up to 14 ms, and 19.7–31.5 ms for 1,024
+  emoji in one line (font fallback in the cairo renderer). That frame is the
+  edit's own cost, not the replay dispatch.
+- `c6_verdict` read `not met` on both sides in every run, from the same
+  `background` dispatches: `post_open_language_attach` on every `total-size`
+  repetition (33.9–46.1 ms, the A67 toolkit-floor exception recorded under C6)
+  and, under this load, a first-editor-frame, editor-construct, validation or
+  unattributed dispatch of 16.1–25.0 ms
+  (main1 3, main2 4, branch1 1, branch2 2). This change does not touch them.
+
 ## C2 `long-line-protected-view` (implementation record)
 
 ### Entry threshold: measured, then decided by the maintainer (2026-10-30)

@@ -204,7 +204,11 @@ pub(super) fn run_cancelled_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>
     buffer.set_modified(false);
     editor.imp().load.installation_slice_count.set(slice_count);
     if let Some(restore) = restore {
-        execution::restore_load_installation_state(&editor, restore);
+        execution::restore_load_installation_state(
+            &editor,
+            restore,
+            crate::model::held_input::ContentDisposition::Unpublished,
+        );
     }
     if editor.imp().load.user_cancel_pending.replace(false) {
         finish_user_cancelled_load(&editor);

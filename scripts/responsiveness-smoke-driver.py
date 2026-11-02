@@ -106,7 +106,9 @@ KNOWN_KINDS = ("start", "late", "second", "frame", "input", "im", "dropped", "to
 # stamps each key with the window's focus widget and each button with the
 # widget under the pointer. A key typed into either editor target reached a
 # document; only an editable one inserts.
-EDITOR_TARGETS = ("editor", "read-only-editor")
+# `held-editor` (keep-keystrokes-during-install): an editable editor whose
+# document a workflow owns; its typed keys are inserted when the held text is.
+EDITOR_TARGETS = ("editor", "read-only-editor", "held-editor")
 # The probe's mark after each insertion an editor buffer makes inside a user
 # action (typing), never a load or replacement install.
 EDITOR_USER_INSERT_MARK = "editor_user_insert"
@@ -669,6 +671,10 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
         delivery = {k: v for k, v in (("target", targets[position]), ("inserts", injection.get("inserts"))) if v is not None}
         if wanted == "key-press" and targets[position] == "read-only-editor":
             delivery["protected"] = True
+        if wanted == "key-press" and targets[position] == "held-editor":
+            # Drawn only when the held text is inserted: what this key's
+            # frame shows is not the key (keep-keystrokes-during-install).
+            delivery["held"] = True
         typed_into_editor = bool(injection.get("inserts")) and targets[position] == "editor"
         frame = next((f for f in frames if int(f["frame_time_us"]) >= handler), None)
         # A frame recorded at all after the handler: the probe writes a frame
@@ -734,6 +740,7 @@ def input_delivery(parsed: dict, input_to_frame_rows: list[dict], start_us: int,
         "undelivered": len(typed) - len(delivered),
         "to_editor": sum(1 for target in targets if target == "editor"),
         "to_read_only_editor": sum(1 for target in targets if target == "read-only-editor"),
+        "to_held_editor": sum(1 for target in targets if target == "held-editor"),
         "elsewhere": sum(1 for target in targets if target is not None and target not in EDITOR_TARGETS),
         "inserted": inserted,
         "verified": verified,
@@ -798,23 +805,30 @@ def misdirected_phase(delivery: dict | None) -> bool:
         return True
     if not delivery.get("verified"):
         return False
-    return delivery["elsewhere"] > 0 or delivery["inserted"] < delivery["to_editor"]
+    # A key into a held editor is inserted with the held text, inside the
+    # phase: it counts like a key into an editable editor.
+    return delivery["elsewhere"] > 0 or delivery["inserted"] < delivery["to_editor"] + delivery.get("to_held_editor", 0)
 
 
 def editable_latency(entry: dict) -> bool:
     """Whether an input-to-frame row has a latency that counts as editable
     interaction: every measured row except a key into a protected (read-only)
-    editor, which is reported apart (`protected`)."""
-    return "latency_us" in entry and not entry.get("protected")
+    editor, which is reported apart (`protected`), and a key into a held
+    editor, drawn only with the held text (`held`)."""
+    return "latency_us" in entry and not entry.get("protected") and not entry.get("held")
 
 
 def protected_itf_note(phase: dict) -> str:
     """The report-table suffix for keys typed into a protected document,
     which are kept out of the editable input-to-frame figures."""
+    notes = []
     protected = phase.get("protected_input_to_frame")
-    if not protected:
-        return ""
-    return f" (protected: {protected['keys']} keys, max {protected['max_us']} us)"
+    if protected:
+        notes.append(f"protected: {protected['keys']} keys, max {protected['max_us']} us")
+    held = phase.get("held_input_to_frame")
+    if held:
+        notes.append(f"held: {held['keys']} keys, max {held['max_us']} us")
+    return f" ({'; '.join(notes)})" if notes else ""
 
 
 def withheld_frame_cases(rows: list[dict]) -> list[str]:
@@ -4474,6 +4488,9 @@ def summarise_cases(rows: list[dict]) -> list[dict]:
                 if editable_latency(e):
                     p["itf_us"].append(e["latency_us"])
                     p["itf_frames"].append(e["frames"])
+                elif "latency_us" in e and e.get("held"):
+                    # Keys held while a workflow owned the document.
+                    p.setdefault("itf_held_us", []).append(e["latency_us"])
                 elif "latency_us" in e:
                     # Keys into a protected document, apart from editable typing.
                     p.setdefault("itf_protected_us", []).append(e["latency_us"])
@@ -4502,6 +4519,9 @@ def summarise_cases(rows: list[dict]) -> list[dict]:
             if "itf_protected_us" in phase:
                 protected = phase.pop("itf_protected_us")
                 phase["protected_input_to_frame"] = {"keys": len(protected), "max_us": max(protected), "median_us": nearest_rank(protected, 50)}
+            if "itf_held_us" in phase:
+                held = phase.pop("itf_held_us")
+                phase["held_input_to_frame"] = {"keys": len(held), "max_us": max(held), "median_us": nearest_rank(held, 50)}
             if "keys" in phase:
                 keys = phase.pop("keys")
                 phase["keystroke"] = {
@@ -5885,7 +5905,7 @@ def self_test() -> int:
         return input_delivery(parsed_delivery, rows_itf, base - 1_000, base + 10_000_000)
 
     echoed = delivery_of("editor", 2)
-    expect(echoed == {"typed": 2, "undelivered": 0, "to_editor": 2, "to_read_only_editor": 0, "elsewhere": 0, "inserted": 2, "verified": True}, f"two keys into the editor, two insertions ({echoed})")
+    expect(echoed == {"typed": 2, "undelivered": 0, "to_editor": 2, "to_read_only_editor": 0, "to_held_editor": 0, "elsewhere": 0, "inserted": 2, "verified": True}, f"two keys into the editor, two insertions ({echoed})")
     expect(not misdirected_phase(echoed), "keys that reached the editor and inserted pass")
     sidebar = delivery_of("other", 0)
     expect(misdirected_phase(sidebar), f"keys that reached the status bar's toggle fail ({sidebar})")
@@ -5893,6 +5913,10 @@ def self_test() -> int:
     expect(misdirected_phase(swallowed), f"a key into an editable editor that inserted nothing fails ({swallowed})")
     protected = delivery_of("read-only-editor", 0)
     expect(not misdirected_phase(protected), f"keys into a read-only editor (Protected View) insert nothing and pass ({protected})")
+    held_ok = delivery_of("held-editor", 2)
+    expect(held_ok is not None and held_ok["to_held_editor"] == 2 and not misdirected_phase(held_ok), f"held keys inserted with the held text pass ({held_ok})")
+    held_lost = delivery_of("held-editor", 1)
+    expect(misdirected_phase(held_lost), f"a held key never inserted fails ({held_lost})")
     older = delivery_of(None, 0)
     expect(older is not None and not older["verified"] and not misdirected_phase(older), f"an older probe without targets is unverified, never failed ({older})")
     expect(input_delivery(delivery_log("editor", 0), input_to_frame(delivery_log("editor", 0), [typed_inj[1]], 8_333), 0, base + 10_000_000) is None, "a phase that typed no text has no delivery")
@@ -5949,6 +5973,10 @@ def self_test() -> int:
     )
     protected_rows = input_to_frame(protected_log, typed_inj[:1], 8_333)
     expect(protected_rows[0].get("protected") and not editable_latency(protected_rows[0]), f"a key into a protected document is kept out of editable latency ({protected_rows[0]})")
+    held_log = parse_probe_log([line.replace("read-only-editor", "held-editor") for line in [json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000}), json.dumps({"kind": "input", "t_us": typed_inj[0]["inject_us"] + 300, "window": 1, "event": "key-press", "event_time_ms": 0, "target": "read-only-editor"}), json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 1, "frame_time_us": typed_inj[0]["inject_us"] + 1_000, "presentation_us": typed_inj[0]["inject_us"] + 2_000, "refresh_interval_us": 8333, "source": "presentation"})]])
+    held_rows = input_to_frame(held_log, typed_inj[:1], 8_333)
+    expect(held_rows[0].get("held") and not editable_latency(held_rows[0]) and not held_rows[0].get("withheld_frame"), f"a held key is kept out of editable latency and never flagged withheld ({held_rows[0]})")
+    expect(protected_itf_note({"held_input_to_frame": {"keys": 3, "max_us": 9, "median_us": 5}}) == " (held: 3 keys, max 9 us)", "held keys are noted in the table")
 
     misdirected_row = {"case": "dense/500/wrap-off", "variant": "plain", "rep": 1, "phases": [{"name": "type-during-settle", "delivery": sidebar}, {"name": "click"}]}
     expect(misdirected_cases([misdirected_row]) == ["dense/500/wrap-off@plain#1:type-during-settle"], "the misdirected phase is named")
