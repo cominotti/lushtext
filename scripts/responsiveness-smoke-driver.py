@@ -158,6 +158,11 @@ PHASE_KINDS = {
     "type-end": "interaction",
     "find": "interaction",
     "tab-switch": "interaction",
+    # Protected View's reading surfaces (protected-view-inspector-and-surfaces):
+    # paging the Line Inspector is an interaction; Copy Whole Line's chunked
+    # clipboard writes, served while an external reader pastes, are settles.
+    "inspect": "interaction",
+    "copy-line": "settle",
     "reselect": "interaction",
     "idle": "calibration",
     # The keystroke group: placing the caret (find the marker, close the
@@ -1398,6 +1403,8 @@ class Runner:
 
         if self.wanted("find") and not self.step(phases, "find", cap, find, recover):
             return False
+        if self.protected_tab() and not self.protected_reading(phases, cap, recover):
+            return False
         if tabs > 1:
 
             def tab_switch(_inj, deadline):
@@ -1409,6 +1416,78 @@ class Runner:
                 return True, "ok"
 
             if not self.step(phases, "tab-switch", cap, tab_switch, recover):
+                return False
+        return True
+
+    def protected_tab(self) -> bool:
+        """Whether the active tab is in Protected View (the reading phases
+        exist only there)."""
+        try:
+            window = self.snapshot().get("window") or {}
+            tabs = window.get("tabs") or []
+            active = window.get("active_tab_index")
+            tab = tabs[active] if isinstance(active, int) and 0 <= active < len(tabs) else (tabs[0] if tabs else {})
+            return bool(tab.get("protected_view"))
+        except Exception:  # noqa: BLE001 - a snapshot failure skips the phases
+            return False
+
+    def window_action_exists(self, name: str) -> bool:
+        """Whether the window exports `name` (a build before the reading
+        surfaces has neither; its phases are then recorded unavailable)."""
+        try:
+            reply = self.bus.call(APP_ID, WINDOW_OBJECT_PATH, "org.gtk.Actions", "List", None, None, 5_000)
+            return name in reply.unpack()[0]
+        except Exception:  # noqa: BLE001
+            return False
+
+    def protected_reading(self, phases: list[dict], cap: float, recover: Callable[[], bool] | None) -> bool:
+        """The Line Inspector (open, then Page Down through ten windows) and
+        Copy Whole Line read by an external Wayland client."""
+        if not self.window_action_exists("inspect-line"):
+            for name in ("inspect", "copy-line"):
+                if self.wanted(name):
+                    phases.append({"name": name, "kind": PHASE_KINDS[name], "status": "unavailable", "reason": "the build exports no win.inspect-line"})
+            return True
+
+        def inspect(inj, deadline):
+            if not self.action("win", "inspect-line", None, deadline):
+                return False, "action-failed"
+            ok, status = self.wait_ready("idle", deadline)
+            if not ok:
+                return ok, status
+            # Let the dialog's open transition (about 370 ms) finish first, so
+            # each Page Down's dispatch is measured on its own.
+            time.sleep(0.5)
+            if self.rd.available:
+                for _ in range(10):
+                    self.rd.tap(KEY_PAGE_DOWN, inj)
+                    time.sleep(0.15)
+                self.rd.tap(KEY_ESCAPE, inj)
+            return self.wait_ready("idle", deadline)
+
+        def copy_line(_inj, deadline):
+            if not self.action("win", "copy-whole-line", None, deadline):
+                return False, "action-failed"
+            ok, status = self.wait_ready("idle", deadline)
+            if not ok:
+                return ok, status
+            try:
+                pasted = subprocess.run(
+                    ["wl-paste", "--no-newline", "--type", "text/plain;charset=utf-8"],
+                    capture_output=True,
+                    timeout=max(1.0, deadline - time.monotonic()),
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                return False, f"wl-paste: {error}"
+            if pasted.returncode != 0:
+                return False, f"wl-paste exit {pasted.returncode}"
+            if not pasted.stdout:
+                return False, "wl-paste read nothing"
+            return True, f"ok {len(pasted.stdout)} bytes"
+
+        for name, body in (("inspect", inspect), ("copy-line", copy_line)):
+            if self.wanted(name) and not self.step(phases, name, cap, body, recover):
                 return False
         return True
 

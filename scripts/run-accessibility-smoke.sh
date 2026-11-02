@@ -31,6 +31,7 @@ ACCESSIBILITY_CASES=(
     editor-failed-load
     preview-mode-document-alert
     editor-too-large-policy
+    protected-view-inspector
     workspace-search-no-workspace
     workspace-search
     workspace-search-no-results
@@ -340,6 +341,7 @@ MATRIX_ROWS_BY_CASE = {
     "editor-failed-load": ["A11Y-EDITOR-ERROR", "A11Y-ERROR-SURFACES"],
     "preview-mode-document-alert": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-EDITOR-ERROR", "A11Y-ERROR-SURFACES"],
     "editor-too-large-policy": ["A11Y-EDITOR-LARGE-READONLY", "A11Y-EDITOR-ERROR"],
+    "protected-view-inspector": ["A11Y-EDITOR-PROTECTED-VIEW"],
     "workspace-search-no-workspace": ["A11Y-WORKSPACE-SEARCH-NO-CONTEXT", "A11Y-WORKSPACE-NO-CONTEXT"],
     "workspace-search": ["A11Y-WORKSPACE-SEARCH-REPRESENTATIVE"],
     "workspace-search-no-results": ["A11Y-WORKSPACE-SEARCH-DENSE-NORESULTS"],
@@ -1496,6 +1498,30 @@ run_accessibility_capture "editor-too-large-policy" \
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor_prefix "editor-too-large-policy" "editor error" "alert" "Could Not Open File:"
 assert_anchor "editor-too-large-policy" "editor" "text" "Editor for too-large-accessibility-smoke.txt"
+fi
+
+if case_selected "protected-view-inspector"; then
+DEFAULT_FIXTURE="$FIXTURE"
+FIXTURE="$ARTIFACT_DIR/fixtures/protected-view-accessibility-smoke.txt"
+# A synthetic document with one paragraph over L_PROTECT_EDIT (50,000).
+python3 -c 'import sys; open(sys.argv[1], "w").write("short head line\n" + "giant " * 12000 + "\ntail line\n")' "$FIXTURE"
+# The alert's Inspect Line button (keyboard-reachable; Ctrl+Alt+I runs the same
+# path, widget-tested) opens the Line Inspector on the folded paragraph; Next
+# Window moves it, and the window summary is the text view's label.
+run_accessibility_capture "protected-view-inspector" \
+    --step wait-predicate:file-open-complete \
+    --step wait-atspi-text:"View-Only: Very Long Lines" \
+    --step atspi-click-button:"^Inspect Line$" \
+    --step wait-predicate:accessibility-settled \
+    --step wait-atspi-text:"Line 2, columns 1–500 of 72000" \
+    --step atspi-click-button:"^Next Window$" \
+    --step wait-predicate:accessibility-settled \
+    --step wait-atspi-text:"Line 2, columns 501–1000 of 72000"
+FIXTURE="$DEFAULT_FIXTURE"
+assert_anchor "protected-view-inspector" "line inspector" "button" "Next Window"
+assert_anchor "protected-view-inspector" "line inspector" "button" "Previous Window"
+assert_anchor "protected-view-inspector" "line inspector" "button" "Copy Whole Line"
+assert_anchor_prefix "protected-view-inspector" "line inspector window" "text" "Line 2, columns 501–1000 of 72000"
 fi
 
 if case_selected "workspace-search-no-workspace"; then

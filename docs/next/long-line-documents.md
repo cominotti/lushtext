@@ -1294,6 +1294,112 @@ exception for editable paragraphs between `L_EDIT_STALL` and `L_PROTECT_EDIT`
 (maintainer, 2026-10-30, "editable up to ~50k"; owned by C5) is accepted, not
 a blocker. Every remaining maximum is attributed above.
 
+## C2b `protected-view-inspector-and-surfaces` (2026-11-01)
+
+The reading surfaces C2 deferred: the Line Inspector (worker-read windows of
+at most `N_INSPECT` characters, Previous/Next Window and Page Down/Up, Go to
+Line and Column, Copy Window), Copy Whole Line (a lazy `GdkContentProvider`
+over the shared source, one `COPY_CHUNK_BYTES` chunk per awaited write), the
+Protected View menu, the fold-marker gutter, the one inline alert (Inspect
+Line, or Undo Edit while the entry undo is available, merged with a recovered
+draft's Discard and Save), the rate-limited pre-emption notice, navigation from
+bookmarks, workspace search, local history and session restore through the
+`protected-nav` mark (the restored cursor is kept for later session saves), the
+local-history preview and note editors folded at insertion, the file-peek
+sample cut at `HEAD_CAP`, and Save As refused for an unmodified document whose
+decode does not round-trip (`LoadMetadata::decode_round_trips`).
+
+### Protected heads and C5's wrap gate (step 0, measured)
+
+C5 tags every paragraph longer than `L_wrap_edit` with no-wrap, protected heads
+included, so since C5 a protected head is shown unwrapped; C2's accepted 17.6 ms
+head-frame exception was measured wrapped. Interleaved, one exclusive hold per
+run, `main` 7f50d232 against a build that exempts protected paragraphs from the
+gate, plain, 3 + 3 repetitions each (runs `pv-inspector/wrap/{main,exempt}{1,2}`,
+load 0.8–3.0 before, inside and after each hold):
+
+| Case | Build | Worst head paint (ms) | Hidden-tail insert, declared envelope (ms) | Worst dispatch outside it (ms) |
+|---|---|---|---|---|
+| 1.9M wrap on | `main` (gate) | 3.3–3.7 | 13.7–13.9 | 8.7–12.5 |
+| 1.9M wrap on | exempt (head wraps) | 13.3–13.9 | 18.7–18.9 | 12.2–16.2 |
+| 1.9M wrap off | `main` | 3.3–3.8 | 13.8–14.0 | 8.7–12.5 |
+| 250,000 wrap on | `main` | 3.8–3.9 | 1.7–2.2 | 9.6–14.2 |
+| 250,000 wrap on | exempt | 13.8–13.9 | 2.4–2.5 | 12.4–13.8 |
+
+**Decision: keep the gate.** Wrapping the head costs a full screen of text
+painted under the cairo renderer (10 ms more per head frame), pushes one sample
+over `B_settle` and makes C3's envelope 5 ms longer, to show text the Line
+Inspector already shows wrapped. With the gate, C2's 17.6 ms head-frame
+exception does not occur on `main`. Recorded as the spec requirement "Protected
+heads follow the per-paragraph wrap gate".
+
+### Verdict (2026-11-01)
+
+Interleaved, one exclusive hold per run (`scripts/measure.sh`), `main` 7f50d232
+and the branch alternating, the branch's lane driver measuring both binaries
+(runs `pv-inspector/verdict/{branch,main}-plain{1,2}` and `-atim`; load
+0.8–3.1 before, inside and after every hold, recorded in
+`.claude/handoffs/pv-inspector/runs.log`, accepted, not gated). C2's protected
+cases (250,000 and 1.9M wrap on, 1.9M wrap off, CR-only, U+2029, restore of
+three, reload of 250,000), plain 3 + 3 repetitions per side; AT and probe IM
+2 repetitions each on 1.9M wrap on. The driver gained two phases on protected
+tabs: `inspect` (`win.inspect-line`, ten Page Downs, Escape) and `copy-line`
+(`win.copy-whole-line`, then `wl-paste` reads the whole line from the private
+session); a build without the actions records them unavailable. Toolkit as
+C2's verdict (GTK 4.22.5, libadwaita 1.9.3, cairo renderer, 1280×800 at
+120 Hz).
+
+**The new interactions (branch, worst per repetition, ms):**
+
+| Case | Variant | reps | Inspector open transition | Paging, 10 windows | Close transition | Copy Whole Line, served to `wl-paste` |
+|---|---|---|---|---|---|---|
+| 1.9M wrap on | plain | 6 | 25.7–29.8 | 4.8–7.8 (median 6.0) | 24.7–30.6 | 1.0–2.0 |
+| 1.9M wrap on | AT | 2 | 26.1–26.4 | 5.9–6.8 | 27.7–28.3 | 1.0 |
+| 1.9M wrap on | probe IM | 2 | 26.2–27.0 | 6.3–6.7 | 27.1–27.4 | 1.0 |
+| 1.9M wrap off | plain | 6 | 25.8–26.7 | 4.6–6.7 | 25.1–31.1 | 1.0–4.3 |
+| 250,000 wrap on | plain | 6 | 25.6–31.7 | 4.9–6.4 | 24.8–29.5 | 1.0–5.6 |
+| reload 250,000 | plain | 6 | 26.0–26.5 | 5.2–6.3 | 24.4–27.9 | 1.0–4.1 |
+| CR-only | plain | 6 | 25.4–26.1 | 0.0–1.7 | 26.9–31.8 | 1.0–1.6 |
+| U+2029 | plain | 6 | 25.8–26.4 | 0.0–1.4 | 24.9–29.9 | 1.3–6.3 |
+
+(The restore-of-three case's active tab is the ordinary document, so its
+`inspect` phase only posts the status message.) Every Line Inspector window
+move is within `B_interact` (a worker reads the window; the GTK dispatch sets
+at most `N_INSPECT` characters and repaints the region the dialog covers), and
+Copy Whole Line's chunked writes are within `B_settle` while another client
+reads the 1.9M-character line.
+
+**Toolkit-floor exception: the dialog's open and close transitions.** Every
+frame of `AdwDialog`'s open and close animation (about 15 frames each way)
+takes 24–32 ms under the lane's cairo renderer, for any content. `perf record
+-e cycles:u --call-graph dwarf` of the `inspect` phase (run `pv-inspector/perf1`)
+puts 14 % of the application's cycles in pixman's
+`bits_image_fetch_bilinear_affine_normal_a8` under `general_composite_rect`:
+the transformed (scaled) A8 masks the dialog's scale transition composites in
+software. It is Libadwaita's dialog transition under the cairo renderer, not
+Protected View work (paging inside the same dialog costs at most 7.8 ms), and,
+like C2's accepted 17.6 ms head-frame exception, it is to be re-evaluated when
+the lane can measure the GPU renderer. Recorded, not fixed: replacing the
+`AdwDialog` with a separate window would drop the HIG-standard dialog to work
+around a software-rendering cost.
+
+**C2's cases, `main` → branch, median / max of each repetition's worst (ms):**
+open 14.4/14.6 → 14.6/15.3 (1.9M wrap on), 17.4/18.1 → 17.0/17.9 (CR-only,
+the declared hidden-tail envelope), 17.6/18.7 → 17.0/18.9 (U+2029, the same);
+restore of three 17.5/17.7 → 15.5/15.9 (the restored position now scrolls the
+navigation mark instead of positioning an iterator inside a hidden tail);
+every interaction phase (scroll, Page Down, click, typing, find, tab switch)
+within `B_interact` on both sides, with one branch repetition of restore-three
+`type-start` at 8.2 ms (median 5.5, `main` 6.4/6.8). AT and probe IM on 1.9M
+wrap on: no phase over budget outside the dialog transition.
+
+**Deferred: task 5.1a** (lane cases for Save As of a protected document and a
+live word-wrap toggle). Both need a measurement-build hook (the file chooser,
+a runtime settings write) the lane does not have; Save As writes the source on
+the worker with no GTK snapshot, pinned by C2's widget tests. Owner: C3
+(`sliced-protected-install`), whose verdict re-measures the protected install
+and its re-layouts.
+
 ## C5 `explore-editing-long-paragraphs` (2026-10-31)
 
 **Posture: implemented; verdict 2026-10-31 below.** Under the hybrid policy

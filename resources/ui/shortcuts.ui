@@ -124,6 +124,12 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
             <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;g</property>
           </object>
         </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title" translatable="yes">Inspect Line</property>
+            <property name="accelerator">&lt;Control&gt;&lt;Alt&gt;i</property>
+          </object>
+        </child>
       </object>
     </child>
     <child>

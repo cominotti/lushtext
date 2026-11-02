@@ -1385,6 +1385,7 @@ fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
             encoding_state: DocumentEncodingState::default(),
             has_bom: false,
             file_health: Vec::new(),
+            decode_round_trips: true,
         },
         content: "stale disk bytes\n".to_string(),
     };
@@ -2469,8 +2470,12 @@ fn test_periodic_local_history_edit_cancels_chunked_snapshot_without_persistence
     let page = LushtextEditorPage::new();
     page.set_file_path(&document);
     let buffer = page.buffer();
-    buffer.set_text(&"x".repeat(2_500_000));
+    // Many short lines: a single 2.5M-character paragraph would enter
+    // Protected View, whose capture reads the text source instead of a
+    // chunked buffer snapshot.
+    buffer.set_text(&format!("{}\n", "x".repeat(999)).repeat(2_500));
     buffer.set_modified(true);
+    assert!(!page.is_protected_view());
 
     page.run_local_history_periodic_capture_for_test();
     assert!(page.local_history_evidence().periodic_snapshot_inflight);

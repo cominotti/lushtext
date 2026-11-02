@@ -577,6 +577,7 @@ fn finish_accepted_save(
     editor.set_document_encoding_state(state);
     let has_bom = state.save_encoding.writes_bom();
     editor.set_has_bom(has_bom);
+    editor.imp().document_metadata.decode_inexact.set(false);
     editor
         .imp()
         .canonical_file_path

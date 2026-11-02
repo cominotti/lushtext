@@ -81,6 +81,18 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: Some("Ctrl+F"),
         },
         CommandDef {
+            id: "win.inspect-line",
+            label: "Inspect Line",
+            category: CommandCategory::Edit,
+            shortcut: Some("Ctrl+Alt+I"),
+        },
+        CommandDef {
+            id: "win.copy-whole-line",
+            label: "Copy Whole Line",
+            category: CommandCategory::Edit,
+            shortcut: None,
+        },
+        CommandDef {
             id: "win.toggle-bookmark",
             label: "Toggle Bookmark",
             category: CommandCategory::Notes,

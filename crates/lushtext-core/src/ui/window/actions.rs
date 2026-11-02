@@ -14,7 +14,12 @@ use crate::ui::accessibility::{self, AnnouncementLane};
 use crate::ui::editor_page::BookmarkNavigationDirection;
 
 use super::{LushtextWindow, imp};
+use crate::ui::status_bar::MessageKind;
 use crate::ui::window::StagedSurface;
+
+/// Inspect Line and Copy Whole Line outside Protected View.
+const INSPECT_LINE_UNAVAILABLE: &str =
+    "Inspect Line is available in view-only documents with very long lines.";
 
 impl LushtextWindow {
     pub(super) fn setup_actions(&self) {
@@ -258,6 +263,13 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| {
                     window.imp().search_panel.navigate_prev_match();
                 })
+                .build(),
+            // Protected View's reading path (`protected-view-inspector-and-surfaces`).
+            gio::ActionEntry::builder("inspect-line")
+                .activate(|window: &Self, _, _| window.inspect_line_in_active_editor())
+                .build(),
+            gio::ActionEntry::builder("copy-whole-line")
+                .activate(|window: &Self, _, _| window.copy_whole_line_in_active_editor())
                 .build(),
             gio::ActionEntry::builder("toggle-bookmark")
                 .activate(|window: &Self, _, _| window.toggle_bookmark())
@@ -706,6 +718,34 @@ impl LushtextWindow {
         });
     }
 
+    /// `win.inspect-line`: open the Line Inspector on the first folded
+    /// paragraph in the viewport of the active protected document.
+    fn inspect_line_in_active_editor(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        if editor.is_protected_view() {
+            editor.open_line_inspector_at_viewport();
+        } else {
+            self.publish_status_message(INSPECT_LINE_UNAVAILABLE, MessageKind::Info);
+        }
+    }
+
+    /// `win.copy-whole-line`: copy that paragraph whole, lazily.
+    fn copy_whole_line_in_active_editor(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        match editor
+            .is_protected_view()
+            .then(|| editor.first_folded_paragraph_in_viewport())
+            .flatten()
+        {
+            Some(paragraph) => editor.copy_protected_whole_line(paragraph),
+            None => self.publish_status_message(INSPECT_LINE_UNAVAILABLE, MessageKind::Info),
+        }
+    }
+
     pub(super) fn setup_shortcuts(&self) {
         let controller = gtk4::ShortcutController::new();
         controller.set_scope(gtk4::ShortcutScope::Managed);
@@ -729,6 +769,7 @@ impl LushtextWindow {
             ("win.toggle-search-panel", "<Control><Shift>f"),
             ("win.search-next-match", "F4"),
             ("win.search-prev-match", "<Shift>F4"),
+            ("win.inspect-line", "<Control><Alt>i"),
             ("win.toggle-bookmark", "<Control>F2"),
             ("win.edit-bookmark-label", "<Control><Shift>F2"),
             ("win.next-bookmark", "F2"),

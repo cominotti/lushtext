@@ -21,9 +21,10 @@ use super::seams::{
 use crate::model::document_scale::protects_by_length;
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::model::protected_fold::{FoldPlan, FoldRange, FoldThresholds, plan_folds};
-use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::editor_page::{LushtextEditorPage, PendingWarningAction};
 use crate::ui::plain_disposal::DisposalOwned;
 use crate::ui::protected_fold::fold_tag;
+use crate::ui::window::LushtextWindow;
 
 /// The per-editor Protected View state.
 #[derive(Debug)]
@@ -131,7 +132,7 @@ impl LushtextEditorPage {
             view.set_cursor_visible(false);
             self.detach_protected_drop_targets();
             self.set_protected_primary_selection_off(true);
-            self.set_protected_find_routing(true);
+            self.set_protected_surfaces(true);
         } else if was_protected {
             runtime.exit_pending.set(true);
         }
@@ -152,6 +153,7 @@ impl LushtextEditorPage {
                 .replace(Some(ProtectedTextSource::retain(body)));
             // Results of a previous source do not survive it.
             self.restart_protected_find_for_new_source();
+            self.refresh_line_inspector_for_new_source();
             None
         } else {
             runtime.source.replace(None);
@@ -199,12 +201,13 @@ impl LushtextEditorPage {
         if runtime.session.get().protected {
             view.set_editable(false);
             view.set_cursor_visible(false);
+            self.request_protected_alert();
         } else if runtime.exit_pending.take() {
             view.set_editable(true);
             view.set_cursor_visible(true);
             self.restore_protected_drop_targets();
             self.set_protected_primary_selection_off(false);
-            self.set_protected_find_routing(false);
+            self.set_protected_surfaces(false);
         }
     }
 
@@ -271,7 +274,8 @@ impl LushtextEditorPage {
         // buffer from its idle (design D5).
         self.search_bar().detach();
         self.search_bar().set_replace_mode(false);
-        self.set_protected_find_routing(true);
+        self.set_protected_surfaces(true);
+        self.request_protected_alert();
         let runtime = self.imp_protected_view();
         runtime.fold_summary.set(summary);
         runtime
@@ -334,6 +338,7 @@ impl LushtextEditorPage {
             .replace(Some(ProtectedTextSource::retain(body)));
         self.notify_memory_policy_changed();
         self.restart_protected_find_for_new_source();
+        self.refresh_line_inspector_for_new_source();
     }
 
     /// Whether an edit-entered session is still capturing its source.
@@ -373,14 +378,41 @@ impl LushtextEditorPage {
         view.set_cursor_visible(true);
         self.restore_protected_drop_targets();
         self.set_protected_primary_selection_off(false);
-        self.set_protected_find_routing(false);
+        self.set_protected_surfaces(false);
         let runtime = self.imp_protected_view();
         runtime.fold_summary.set(FoldSummary::default());
         runtime.fold_plan.replace(None);
         runtime.source.replace(None);
         self.cancel_protected_source_capture();
         runtime.advance(SessionEvent::EntryUndo { is_entry_step });
+        self.withdraw_protected_alert();
         true
+    }
+
+    /// Turn the Protected View surfaces on at entry or off at exit: the worker
+    /// find routing and the fold gutter; at exit, the Line Inspector closes.
+    fn set_protected_surfaces(&self, on: bool) {
+        self.set_protected_find_routing(on);
+        self.set_fold_gutter(on);
+        if !on {
+            self.close_line_inspector();
+        }
+        self.refresh_accessibility_metadata();
+    }
+
+    /// Take the Protected View alert down after the entry undo left the view.
+    fn withdraw_protected_alert(&self) {
+        if !matches!(
+            self.pending_warning_action(),
+            Some(PendingWarningAction::UndoProtectedEntry | PendingWarningAction::InspectLine)
+        ) {
+            return;
+        }
+        if let Some(window) = self.root().and_downcast::<LushtextWindow>() {
+            window.dismiss_editor_notifications(self);
+        } else {
+            self.info_bar().render_notification(None);
+        }
     }
 
     fn imp_protected_view(&self) -> &ProtectedViewRuntime {

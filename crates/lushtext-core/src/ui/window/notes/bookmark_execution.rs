@@ -27,6 +27,7 @@
 //! Pure decisions — the target-line parse, the edit-error and
 //! preview-unavailable messages, and the raw-excerpt formatter — are in `policy`.
 
+use crate::ui::editor_page::ProtectedAction;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
@@ -248,6 +249,11 @@ impl LushtextWindow {
         let Some(editor) = self.require_saved_editor("Bookmarks require a saved file") else {
             return;
         };
+        // Protected View has no caret line (`protected-view-inspector-and-surfaces`).
+        if editor.is_protected_view() {
+            editor.notify_protected_preemption(ProtectedAction::ToggleBookmarkAtCursor);
+            return;
+        }
 
         match editor.toggle_bookmark_at_cursor() {
             BookmarkToggleState::Added(line) => self.publish_status_message(
@@ -266,6 +272,10 @@ impl LushtextWindow {
         let Some(editor) = self.require_saved_editor("Bookmarks require a saved file") else {
             return;
         };
+        if editor.is_protected_view() {
+            editor.notify_protected_preemption(ProtectedAction::ToggleBookmarkAtCursor);
+            return;
+        }
         let Some(bookmark) = editor.current_bookmark() else {
             self.publish_status_message(
                 "Move the cursor to a bookmarked line first",
@@ -1022,7 +1032,7 @@ pub(super) fn open_editor_at_line(window: &LushtextWindow, path: &Path, line: u3
         if evicted {
             window.reload_if_evicted();
         }
-    } else {
+    } else if !editor.navigate_protected_line(u64::from(line_zero_based)) {
         let buffer = editor.buffer();
         let iter = buffer
             .iter_at_line(i32::try_from(line_zero_based).unwrap_or(i32::MAX))

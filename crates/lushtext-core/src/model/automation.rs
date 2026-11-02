@@ -242,6 +242,9 @@ pub const READINESS_BLOCKER_DRAFT_AUTOSAVE: &str = "draft-autosave";
 pub const READINESS_BLOCKER_EDITOR_SEARCH: &str = "editor-search";
 /// Stable serialized blocker ID for editor file loading.
 pub const READINESS_BLOCKER_FILE_LOAD: &str = "file-load";
+/// Stable serialized blocker ID for a Line Inspector window read on its worker
+/// (`protected-view-inspector-and-surfaces`).
+pub const READINESS_BLOCKER_LINE_INSPECTOR: &str = "line-inspector";
 /// Stable serialized blocker ID for minimap layout and marker projection refresh.
 pub const READINESS_BLOCKER_MINIMAP_REFRESH: &str = "minimap-refresh";
 /// Stable serialized blocker ID for Markdown preview layout animation.
@@ -294,6 +297,7 @@ const IDLE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_MINIMAP_REFRESH,
     READINESS_BLOCKER_SAVE,
     READINESS_BLOCKER_EDITOR_SEARCH,
+    READINESS_BLOCKER_LINE_INSPECTOR,
 ];
 /// Work that must settle before automation treats startup as complete.
 ///
@@ -407,6 +411,7 @@ const ACCESSIBILITY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_WORKSPACE_SEARCH,
     READINESS_BLOCKER_EDITOR_SEARCH,
+    READINESS_BLOCKER_LINE_INSPECTOR,
     READINESS_BLOCKER_REPLACE_PREVIEW,
     READINESS_BLOCKER_MINIMAP_REFRESH,
 ];
@@ -883,6 +888,8 @@ pub struct AutomationSurfaceSnapshot {
     pub search_panel_visible: bool,
     /// Header Open popover state.
     pub open_popover_visible: bool,
+    /// Whether the active editor's Line Inspector is open (Protected View).
+    pub line_inspector_visible: bool,
     /// Side-by-side Markdown preview pane state.
     pub preview_pane_visible: bool,
     /// Preview-only Markdown mode state.
@@ -1441,6 +1448,7 @@ mod tests {
             command_palette_visible: false,
             search_panel_visible: true,
             open_popover_visible: false,
+            line_inspector_visible: false,
             preview_pane_visible: false,
             preview_mode: false,
             preview_document_alert_visible: false,

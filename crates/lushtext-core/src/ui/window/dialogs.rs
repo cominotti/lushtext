@@ -46,6 +46,7 @@
 
 use crate::ui::accessibility::{self, AnnouncementLane};
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::editor_page::ProtectedNotice;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
@@ -94,6 +95,18 @@ impl super::LushtextWindow {
         let Some(editor) = self.active_editor() else {
             return;
         };
+        // An unmodified protected document's Save As writes its source in the
+        // opened encoding; refuse it when that would not give back the bytes
+        // it was loaded from (`protected-view-inspector-and-surfaces` 3.6).
+        if editor.is_protected_view()
+            && !editor.is_modified()
+            && editor.decode_is_inexact()
+            && editor.document_encoding_state().save_encoding
+                == editor.document_encoding_state().opened_encoding
+        {
+            editor.publish_protected_notice(ProtectedNotice::SaveAsRefusedInexactDecode);
+            return;
+        }
 
         let dialog = gtk4::FileDialog::builder()
             .title("Save As")

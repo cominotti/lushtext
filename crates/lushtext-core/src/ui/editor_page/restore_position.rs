@@ -39,6 +39,11 @@ impl LushtextEditorPage {
         reason = "GtkTextIter line and line_offset values are non-negative i32 coordinates"
     )]
     pub fn cursor_position(&self) -> (u32, u32) {
+        if self.is_protected_view()
+            && let Some(position) = self.imp().restore.protected_cursor.get()
+        {
+            return position;
+        }
         let buffer = self.buffer();
         let iter = buffer.iter_at_mark(&buffer.get_insert());
         (iter.line() as u32, iter.line_offset() as u32)
@@ -71,6 +76,23 @@ impl LushtextEditorPage {
         let scroll_line = self.imp().restore.scroll_line.take();
 
         let buffer = self.buffer();
+
+        // Protected View places no caret: it keeps the requested cursor for
+        // later session saves and scrolls the navigation mark, never
+        // positioning an iterator inside a hidden tail (ledger A66).
+        if self.is_protected_view() {
+            if let Some(line) = line {
+                self.imp()
+                    .restore
+                    .protected_cursor
+                    .set(Some((line, col.unwrap_or(0))));
+            }
+            if let Some(scroll_line) = scroll_line.or(line) {
+                self.scroll_protected_navigation_to_top(u64::from(scroll_line));
+            }
+            return;
+        }
+        self.imp().restore.protected_cursor.set(None);
 
         if let Some(line) = line
             && let Some(mut iter) = buffer.iter_at_line(line as i32)

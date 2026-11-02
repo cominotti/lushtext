@@ -83,6 +83,12 @@ pub(crate) use minimap::{
 };
 pub use paragraph_wrap::NO_WRAP_TAG;
 pub use protected_view::ProtectedViewEvidence;
+pub use protected_view::inspector::{InspectorRequest, LushtextLineInspector};
+pub use protected_view::inspector_execution::WholeLineProvider;
+/// The most bytes Copy Whole Line writes to a reader per main-loop dispatch.
+pub use protected_view::policy::COPY_CHUNK_BYTES as WHOLE_LINE_CHUNK_BYTES;
+pub use protected_view::policy::classifies_toolkit_binding;
+pub(crate) use protected_view::policy::{ProtectedAction, ProtectedNotice};
 // `mod minimap;` stays private, matching the `load/`, `save/`, and
 // `buffer_replacement/` role homes in this directory. The three content-analysis
 // types are re-exported here as a precisely scoped subset because
@@ -308,6 +314,13 @@ impl LushtextEditorPage {
     /// Record whether the active on-disk representation carries a byte-order mark.
     pub fn set_has_bom(&self, has_bom: bool) {
         self.imp().document_metadata.has_bom.set(has_bom);
+    }
+
+    /// Whether saving the document unmodified would not write back the bytes
+    /// it was loaded from (`LoadMetadata::decode_round_trips`).
+    #[must_use]
+    pub fn decode_is_inexact(&self) -> bool {
+        self.imp().document_metadata.decode_inexact.get()
     }
 
     /// Current encoding-adjacent file-health findings for this tab.

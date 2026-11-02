@@ -50,7 +50,10 @@ local history, and careful recovery behavior.
   too; and saving writes the original bytes unchanged. A paste or join that
   pushes a paragraph past the limit enters Protected View at once, and `Ctrl+Z`
   undoes that one edit and leaves it again. Reopening the file after shortening
-  it elsewhere makes it editable.
+  it elsewhere makes it editable. **Inspect Line** (`Ctrl+Alt+I`, the alert,
+  the right-click menu, a click on a `⋯` gutter marker, or a find match in a
+  folded part) reads any line in windows of 500 characters, page by page, and
+  **Copy Whole Line** copies a whole giant line without slowing the editor.
 - **EditorConfig support** for indentation and save-policy overrides, with
   Preferences values used as fallback.
 

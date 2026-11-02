@@ -7,6 +7,7 @@
 //! fallback classification. It stays GTK-free so the sidebar adapter can render
 //! the result without accidentally creating editor, draft, or monitor state.
 
+use crate::model::protected_fold::HEAD_CAP;
 use std::path::{Path, PathBuf};
 
 use crate::services::filesystem::{metadata, read};
@@ -222,11 +223,23 @@ fn read_bounded_bytes(path: &Path, byte_limit: usize) -> std::io::Result<Bounded
 /// Clip preview text by line count while preserving whether the byte cap
 /// already forced truncation.
 fn truncate_preview_text(text: &str, truncated_by_bytes: bool) -> (String, usize, bool) {
+    // A line is cut at the Protected View head cap: the sample is laid out
+    // like a protected document's visible head, never longer
+    // (`protected-view-inspector-and-surfaces` task 3.2).
+    let line_cap = usize::try_from(HEAD_CAP).unwrap_or(usize::MAX);
     let mut rendered = Vec::new();
+    let mut truncated_by_line_length = false;
     let mut lines = text.lines();
     for _ in 0..PEEK_SAMPLE_LINE_LIMIT {
         let Some(line) = lines.next() else {
             break;
+        };
+        let line = match line.char_indices().nth(line_cap) {
+            Some((cut, _)) => {
+                truncated_by_line_length = true;
+                &line[..cut]
+            }
+            None => line,
         };
         rendered.push(line);
     }
@@ -240,6 +253,7 @@ fn truncate_preview_text(text: &str, truncated_by_bytes: bool) -> (String, usize
         && !sample_text.ends_with('\n')
         && !truncated_by_lines
         && !truncated_by_bytes
+        && !truncated_by_line_length
     {
         sample_text.push('\n');
     }
@@ -247,7 +261,7 @@ fn truncate_preview_text(text: &str, truncated_by_bytes: bool) -> (String, usize
     (
         sample_text,
         sample_line_count,
-        truncated_by_bytes || truncated_by_lines,
+        truncated_by_bytes || truncated_by_lines || truncated_by_line_length,
     )
 }
 
@@ -429,6 +443,28 @@ mod tests {
         assert_eq!(complete, "alpha\n");
         assert_eq!(complete_lines, 1);
         assert!(!complete_truncated);
+    }
+
+    #[test]
+    fn no_sample_line_shows_more_than_the_protected_head_cap() {
+        // `protected-view-inspector-and-surfaces` task 3.2: the peek sample of
+        // a giant-line file is laid out like a protected head, so its longest
+        // line is cut at `HEAD_CAP` characters (multibyte included).
+        let giant = "é"
+            .repeat(usize::try_from(crate::model::protected_fold::HEAD_CAP).expect("fits") + 500);
+        let source = format!("short\n{giant}\nshort\n");
+        let (sample, lines, truncated) = truncate_preview_text(&source, false);
+        let longest = sample
+            .lines()
+            .map(|line| line.chars().count())
+            .max()
+            .expect("lines");
+        assert!(
+            u64::try_from(longest).expect("fits") <= crate::model::protected_fold::HEAD_CAP,
+            "longest sample line {longest}"
+        );
+        assert_eq!(lines, 3);
+        assert!(truncated, "a cut line marks the sample truncated");
     }
 
     #[test]

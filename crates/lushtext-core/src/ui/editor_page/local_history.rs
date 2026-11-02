@@ -400,12 +400,17 @@ impl LushtextEditorPage {
         let buffer = self.buffer();
         buffer.set_modified(true);
 
-        let start = buffer.start_iter();
-        buffer.place_cursor(&start);
-        let mark = buffer.create_mark(None, &start, true);
-        self.source_view()
-            .scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
-        buffer.delete_mark(&mark);
+        if self.is_protected_view() {
+            // No caret in Protected View: scroll the navigation mark instead.
+            self.scroll_protected_navigation_to_top(0);
+        } else {
+            let start = buffer.start_iter();
+            buffer.place_cursor(&start);
+            let mark = buffer.create_mark(None, &start, true);
+            self.source_view()
+                .scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
+            buffer.delete_mark(&mark);
+        }
 
         self.clear_modified_line_marks();
         self.refresh_minimap();
@@ -601,6 +606,21 @@ impl LushtextEditorPage {
             path,
         };
 
+        // A protected document (an edit-growth entry or a recovered draft:
+        // an installed-protected one is never modified) is captured from its
+        // text source on the worker, never by snapshotting the protected
+        // buffer on GTK, which is quadratic inside a giant paragraph (ledger
+        // A66; `protected-view-inspector-and-surfaces` task 3.1).
+        if self.is_protected_view() {
+            if let Some(source) = self.protected_source() {
+                self.persist_periodic_protected_source(ticket, source, permit);
+            } else {
+                drop(permit);
+                self.reschedule_local_history_after_capture();
+            }
+            return;
+        }
+
         let editor_weak = self.downgrade();
         let finish = move |outcome: buffer_snapshot::BufferSnapshotOutcome| {
             let Some(editor) = editor_weak.upgrade() else {
@@ -679,6 +699,43 @@ impl LushtextEditorPage {
                     &data_dir,
                     &path,
                     &text,
+                    LocalHistorySnapshotOrigin::Periodic,
+                    local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+                )
+            },
+            |(editor_weak, _permit), result| {
+                if let Err(error) = result {
+                    tracing::warn!("Failed to capture periodic local-history snapshot: {error}");
+                }
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.reschedule_local_history_after_capture();
+                }
+            },
+        );
+    }
+
+    /// The protected twin of `persist_periodic_snapshot_if_current`: the
+    /// worker reads the immutable source (no copy on GTK).
+    fn persist_periodic_protected_source(
+        &self,
+        ticket: PeriodicCaptureTicket,
+        source: crate::ui::editor_page::protected_view::seams::ProtectedTextSource,
+        permit: AutomaticHistoryCapturePermit,
+    ) {
+        if !periodic_capture_is_current(&ticket, &self.periodic_capture_facts()) {
+            drop(permit);
+            self.reschedule_local_history_after_capture();
+            return;
+        }
+        let path = ticket.path;
+        spawn_blocking_then(
+            (self.downgrade(), permit),
+            move || {
+                let data_dir = json_store::data_dir();
+                local_history_service::capture_snapshot_for_path(
+                    &data_dir,
+                    &path,
+                    source.text(),
                     LocalHistorySnapshotOrigin::Periodic,
                     local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
                 )

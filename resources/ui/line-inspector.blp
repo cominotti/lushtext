@@ -1,0 +1,131 @@
+using Gtk 4.0;
+using Adw 1;
+
+// The Line Inspector (`protected-view-inspector-and-surfaces`, design D6): a
+// read-only window of at most N_INSPECT characters of one paragraph of a
+// protected document. The window text view is small by construction, so its
+// caret, selection, input-method and accessibility paths stay bounded. Its
+// accessible name and description are set below; Escape or the close button
+// dismisses it and libadwaita returns focus to the editor.
+template $LushtextLineInspector: Adw.Dialog {
+  title: _("Inspect Line");
+  content-width: 720;
+  content-height: 420;
+
+  accessibility {
+    label: _("Inspect Line");
+    description: _("A read-only window of at most 500 characters of one long line. Escape closes it.");
+  }
+
+  child: Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      title-widget: Adw.WindowTitle window_title {
+        title: _("Inspect Line");
+      };
+    }
+
+    content: Box {
+      orientation: vertical;
+      spacing: 12;
+      margin-start: 12;
+      margin-end: 12;
+      margin-top: 6;
+      margin-bottom: 12;
+
+      ScrolledWindow window_scroller {
+        vexpand: true;
+        hscrollbar-policy: never;
+
+        styles [
+          "card",
+        ]
+
+        child: TextView window_view {
+          editable: false;
+          cursor-visible: true;
+          monospace: true;
+          wrap-mode: word_char;
+          left-margin: 12;
+          right-margin: 12;
+          top-margin: 12;
+          bottom-margin: 12;
+        };
+      }
+
+      Box navigation_box {
+        orientation: horizontal;
+        spacing: 6;
+
+        Button previous_button {
+          icon-name: "go-previous-symbolic";
+          tooltip-text: _("Previous Window");
+        }
+
+        Button next_button {
+          icon-name: "go-next-symbolic";
+          tooltip-text: _("Next Window");
+        }
+
+        Label line_label {
+          label: _("_Line");
+          use-underline: true;
+          mnemonic-widget: line_spin;
+          margin-start: 6;
+        }
+
+        SpinButton line_spin {
+          numeric: true;
+          width-chars: 7;
+
+          adjustment: Adjustment {
+            lower: 1;
+            upper: 1;
+            value: 1;
+            step-increment: 1;
+            page-increment: 10;
+          };
+        }
+
+        Label column_label {
+          label: _("_Column");
+          use-underline: true;
+          mnemonic-widget: column_spin;
+          margin-start: 6;
+        }
+
+        SpinButton column_spin {
+          numeric: true;
+          width-chars: 9;
+
+          adjustment: Adjustment {
+            lower: 1;
+            upper: 1;
+            value: 1;
+            step-increment: 1;
+            page-increment: 500;
+          };
+        }
+
+        Button go_button {
+          label: _("_Go");
+          use-underline: true;
+        }
+
+        Box {
+          hexpand: true;
+        }
+
+        Button copy_window_button {
+          label: _("Copy _Window");
+          use-underline: true;
+        }
+
+        Button copy_line_button {
+          label: _("Copy Whole Li_ne");
+          use-underline: true;
+        }
+      }
+    };
+  };
+}

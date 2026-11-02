@@ -26,7 +26,7 @@ use gtk4::prelude::*;
 
 use super::policy::{
     CaptureGesture, MovementStep, PointerDevice, PressButton, PressDisposition, PressHit,
-    PressInput, ViewportAxis, ViewportMotion, press_disposition, viewport_step,
+    PressInput, ProtectedAction, ViewportAxis, ViewportMotion, press_disposition, viewport_step,
 };
 use crate::ui::editor_page::LushtextEditorPage;
 
@@ -73,6 +73,9 @@ impl LushtextEditorPage {
                     && let Some(Ok(view)) = args.first().map(glib::Value::get::<glib::Object>)
                 {
                     glib::signal::signal_stop_emission_by_name(&view, name);
+                    if let Some(action) = ProtectedAction::from_toolkit_name(name) {
+                        page.notify_protected_preemption(action);
+                    }
                 }
                 None
             });
@@ -164,13 +167,24 @@ impl LushtextEditorPage {
             if control && !shift && lower == gtk4::gdk::Key::z {
                 // `text.undo`: the entry undo while it is available; otherwise
                 // pre-empted like every other mutating action.
-                let _ = page.undo_protected_entry();
+                if !page.undo_protected_entry() {
+                    page.notify_protected_preemption(ProtectedAction::TextUndo);
+                }
                 return glib::Propagation::Stop;
             }
             let redo =
                 control && (lower == gtk4::gdk::Key::y || (shift && lower == gtk4::gdk::Key::z));
+            if redo {
+                page.notify_protected_preemption(ProtectedAction::TextRedo);
+                return glib::Propagation::Stop;
+            }
+            if key == gtk4::gdk::Key::Clear {
+                page.notify_protected_preemption(ProtectedAction::ClearText);
+                return glib::Propagation::Stop;
+            }
             let menu = (shift && key == gtk4::gdk::Key::F10) || key == gtk4::gdk::Key::Menu;
-            if redo || menu {
+            if menu {
+                page.open_protected_menu_from_keyboard();
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -183,25 +197,32 @@ impl LushtextEditorPage {
         click.set_button(0);
         click.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let page = self.downgrade();
-        click.connect_pressed(move |gesture, n_press, _, _| {
-            if !page.upgrade().is_some_and(|page| page.is_protected_view()) {
+        click.connect_pressed(move |gesture, n_press, x, y| {
+            let Some(page) = page.upgrade().filter(LushtextEditorPage::is_protected_view) else {
                 return;
-            }
+            };
+            let button = press_button(gesture.current_button());
             let input = PressInput {
                 gesture: CaptureGesture::Click,
-                button: press_button(gesture.current_button()),
+                button,
                 n_press,
-                hit: PressHit::Text,
+                hit: page.press_hit(x, y),
                 device: pointer_device(gesture.upcast_ref()),
             };
-            match press_disposition(input) {
+            let disposition = press_disposition(input);
+            if disposition != PressDisposition::Unclaimed {
+                gesture.set_state(gtk4::EventSequenceState::Claimed);
+            }
+            match disposition {
                 PressDisposition::Unclaimed => {}
-                // The inspector and the Protected View menu join with tasks
-                // 4.4 and 5.x; until then every press is only claimed.
-                PressDisposition::Claim
-                | PressDisposition::OpenMenu
-                | PressDisposition::OpenInspector { .. } => {
-                    gesture.set_state(gtk4::EventSequenceState::Claimed);
+                PressDisposition::Claim => {
+                    if button == PressButton::Middle && n_press == 1 {
+                        page.notify_protected_preemption(ProtectedAction::MiddleClickPaste);
+                    }
+                }
+                PressDisposition::OpenMenu => page.open_protected_menu_at(x, y),
+                PressDisposition::OpenInspector { paragraph } => {
+                    page.open_line_inspector(paragraph, 0);
                 }
             }
         });
@@ -212,14 +233,17 @@ impl LushtextEditorPage {
         drag.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let page = self.downgrade();
         drag.connect_drag_begin(move |gesture, _, _| {
-            if !page.upgrade().is_some_and(|page| page.is_protected_view()) {
+            let Some(page) = page.upgrade().filter(LushtextEditorPage::is_protected_view) else {
                 return;
-            }
+            };
+            let hit = gesture
+                .start_point()
+                .map_or(PressHit::Text, |(x, y)| page.press_hit(x, y));
             let input = PressInput {
                 gesture: CaptureGesture::Drag,
                 button: press_button(gesture.current_button()),
                 n_press: 1,
-                hit: PressHit::Text,
+                hit,
                 device: pointer_device(gesture.upcast_ref()),
             };
             if press_disposition(input) != PressDisposition::Unclaimed {
@@ -276,6 +300,25 @@ impl LushtextEditorPage {
                     .ok();
             },
         );
+    }
+
+    /// What a press at `(x, y)` in the view's coordinates landed on: a fold
+    /// marker when it is over the left gutter beside a folded paragraph.
+    fn press_hit(&self, x: f64, y: f64) -> PressHit {
+        if !self.x_is_over_left_gutter(x) {
+            return PressHit::Text;
+        }
+        let view = self.source_view();
+        match self.paragraph_at_widget_y(view.upcast_ref(), y) {
+            Some(paragraph)
+                if self
+                    .protected_fold_plan()
+                    .is_some_and(|plan| plan.range_of(paragraph).is_some()) =>
+            {
+                PressHit::FoldMarker { paragraph }
+            }
+            _ => PressHit::Gutter,
+        }
     }
 
     /// Take the view's drop targets off while protected (ledger A63).

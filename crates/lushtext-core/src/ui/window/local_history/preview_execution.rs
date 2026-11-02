@@ -20,6 +20,9 @@ use std::time::Duration;
 
 use crate::services::json_store;
 use gtk_lush_tasks::spawn_blocking_then;
+
+use crate::model::protected_fold::FoldPlan;
+use crate::ui::protected_fold::{insert_folded, tail_insert_admitted};
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
@@ -168,6 +171,9 @@ struct LocalHistoryPreviewInstallSession {
     snapshot: Option<GuardedLocalHistorySnapshot>,
     offset: usize,
     source_id: Option<glib::SourceId>,
+    /// The Protected View fold plan of a snapshot whose longest paragraph
+    /// exceeds `L_PROTECT_EDIT`, and the paragraph the next slice starts.
+    fold: Option<(std::sync::Arc<FoldPlan>, u64)>,
 }
 
 impl LushtextWindow {
@@ -609,8 +615,9 @@ impl LocalHistoryBrowserState {
         if accepted {
             match result {
                 Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(snapshot, profile)) => {
+                    let fold_plan = profile.fold_plan.clone();
                     self.loaded_profile.replace(Some(*profile));
-                    self.begin_preview_install(generation, snapshot);
+                    self.begin_preview_install(generation, snapshot, fold_plan);
                 }
                 Ok(GuardedLocalHistoryPreviewLoadOutcome::Missing) => {
                     self.show_preview_error("Snapshot missing");
@@ -642,10 +649,16 @@ impl LocalHistoryBrowserState {
         set_local_history_preview_accessibility(&self.preview_stack, title, false, true);
     }
 
+    /// Install a snapshot into the preview. A snapshot with a paragraph over
+    /// `L_PROTECT_EDIT` installs folded at insertion through the Protected
+    /// View executor (`protected-view-inspector-and-surfaces` task 3.1): the
+    /// preview view is already non-editable and caret-free, and its giant
+    /// paragraphs show only their heads, so no layout reaches a hidden tail.
     fn begin_preview_install(
         self: &Rc<Self>,
         generation: u64,
         snapshot: GuardedLocalHistorySnapshot,
+        fold_plan: Option<std::sync::Arc<FoldPlan>>,
     ) {
         self.preview_title
             .set_label(&format_history_time(snapshot.meta.captured_at_millis));
@@ -670,11 +683,11 @@ impl LocalHistoryBrowserState {
                 set_local_history_action_enabled(&self.restore_button, true);
                 self.loaded_snapshot.replace(Some(snapshot));
             }
-            policy::PreviewInstallPlan::Direct => {
+            policy::PreviewInstallPlan::Direct if fold_plan.is_none() => {
                 self.preview_buffer.set_text(&snapshot.text);
                 self.finish_preview_install(snapshot);
             }
-            policy::PreviewInstallPlan::Sliced => {
+            policy::PreviewInstallPlan::Direct | policy::PreviewInstallPlan::Sliced => {
                 self.preview_buffer.set_text("");
                 self.preview_install
                     .replace(Some(LocalHistoryPreviewInstallSession {
@@ -682,6 +695,7 @@ impl LocalHistoryBrowserState {
                         snapshot: Some(snapshot),
                         offset: 0,
                         source_id: None,
+                        fold: fold_plan.map(|plan| (plan, 0)),
                     }));
                 self.schedule_preview_install_slice();
             }
@@ -727,10 +741,29 @@ impl LocalHistoryBrowserState {
             return;
         };
         let end = next_replacement_boundary(&snapshot.text, session.offset);
-        debug_assert!(end.saturating_sub(session.offset) <= policy::PREVIEW_INSTALL_SLICE_BYTES);
         let mut end_iter = self.preview_buffer.end_iter();
-        self.preview_buffer
-            .insert(&mut end_iter, &snapshot.text[session.offset..end]);
+        let slice = &snapshot.text[session.offset..end];
+        if let Some((plan, paragraph)) = session.fold.as_mut() {
+            // One hidden-tail insert per main-loop iteration, process-wide
+            // (`ui/protected_fold.rs`): wait for the next one otherwise.
+            if !tail_insert_admitted() {
+                self.preview_install.replace(Some(session));
+                self.schedule_preview_install_slice();
+                return;
+            }
+            *paragraph = insert_folded(
+                self.preview_buffer.upcast_ref(),
+                &mut end_iter,
+                slice,
+                *paragraph,
+                plan,
+            );
+        } else {
+            debug_assert!(
+                end.saturating_sub(session.offset) <= policy::PREVIEW_INSTALL_SLICE_BYTES
+            );
+            self.preview_buffer.insert(&mut end_iter, slice);
+        }
         session.offset = end;
         record_preview_install_slice();
 

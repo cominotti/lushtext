@@ -134,13 +134,15 @@ SHARDS: dict[str, Shard] = {
         # took under two minutes locally, build included, so the shard stays
         # well inside the margin until the next CI measurement records it.
         # `protected_view` (long-line-protected-view) joined on 2026-10-31
-        # beside it, on the same terms.
+        # beside it, on the same terms, and `protected_view_surfaces`
+        # (protected-view-inspector-and-surfaces) on 2026-11-01.
         modules=(
             "attention_refresh",
             "document_scale",
             "editor_page",
             "multi_window_drafts",
             "protected_view",
+            "protected_view_surfaces",
             "sidebar",
             "workspace_entry_visibility",
         ),

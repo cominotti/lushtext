@@ -34,6 +34,8 @@ palette, or a direct shortcut. The complete in-app list lives under
 | Close tab | `Ctrl+W` |
 | Print | `Ctrl+P` |
 | In-tab find / replace | `Ctrl+F` / `Ctrl+H` |
+| Inspect Line (view-only documents with very long lines) | `Ctrl+Alt+I`; then Tab to Previous Window, Next Window, Line, Column, Go, Copy Window and Copy Whole Line; `Escape` closes |
+| Protected View menu | `Shift+F10` or `Menu` in a view-only document |
 | Next / previous in-tab find match | `Ctrl+G` / `Ctrl+Shift+G` |
 | Command palette | `Ctrl+Shift+P` |
 | Workspace search | `Ctrl+Shift+F` |
@@ -262,6 +264,37 @@ role or description when it appears. A keyboard path that needs a staged
 surface (`F9`, the sidebar toggle, editor focus) reveals it first, so no key
 press is lost during composition. `make accessibility-smoke` waits on
 `accessibility-settled`, which includes the `window-composition` blocker.
+
+### Protected View and the Line Inspector
+
+A document with a paragraph over 50,000 characters opens view-only
+(Protected View). Assistive technologies read the **folded view**: each giant
+paragraph's first characters, never its hidden tail. The editor's accessible
+description says so and names the reading path: "View-only: very long lines are
+shortened in this view. Press Ctrl+Alt+I to inspect or copy a whole line." One
+inline alert explains the view-only state and offers Inspect Line (or Undo Edit
+when an edit made the document view-only); a recovered draft keeps its Discard
+and Save actions and names the shortcut in its body. A blocked request (paste,
+typing, Ctrl+H, bookmark toggles, invisible characters, line endings) publishes
+one status message, at most once every four seconds per reason.
+
+The **Line Inspector** is the accessible path to folded content. It is a dialog
+holding one window of at most 500 characters of one line, with word wrap on,
+read-only, with a visible caret and selection, so screen-reader reading and
+selection stay bounded. Its text area's accessible label is the window's
+position ("Line 2, columns 150001–150500 of 300000"), which is also announced
+politely each time the window moves. Previous Window, Next Window, Line,
+Column, Go to Line and Column, Copy Window and Copy Whole Line are labelled
+controls. Copy Whole Line copies the whole line (it is written to the clipboard
+in bounded chunks when another application pastes). The fold-marker gutter
+shows `⋯` beside each shortened line; its tooltip gives the hidden-character
+count, and the renderer is labelled "Folded lines" with a description naming
+the Inspect Line shortcut (a gutter has no per-line accessible objects, so the
+count is spoken in the inspector's label instead).
+
+The main view stays focusable: C2's lane AT case measured the folded view's
+text and caret queries within budget, so the P4 fallback (making the main view
+non-focusable) is not applied.
 
 ## Visual Accessibility
 

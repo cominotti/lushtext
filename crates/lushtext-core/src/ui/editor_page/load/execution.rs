@@ -694,6 +694,7 @@ fn complete_loaded_installation_now(
         encoding_state,
         has_bom,
         file_health,
+        decode_round_trips,
     } = loaded;
     let buffer = editor.buffer();
     if DocumentScale::for_profile(summary).undo_enabled {
@@ -712,6 +713,11 @@ fn complete_loaded_installation_now(
     editor.imp().residency.evicted.set(false);
     editor.set_document_encoding_state(encoding_state);
     editor.set_has_bom(has_bom);
+    editor
+        .imp()
+        .document_metadata
+        .decode_inexact
+        .set(!decode_round_trips);
     editor.set_file_health(file_health);
     // The scale gates syntax, bracket matching, invisibles, search
     // highlighting and the minimap before a highlight idle can run.
@@ -894,6 +900,7 @@ impl LushtextEditorPage {
                     encoding_state: self.document_encoding_state(),
                     has_bom: self.has_bom(),
                     file_health: self.file_health(),
+                    decode_round_trips: true,
                 },
                 content: reservation.own(content),
             },

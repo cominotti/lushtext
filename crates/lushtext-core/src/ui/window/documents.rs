@@ -747,6 +747,18 @@ impl LushtextWindow {
                         }
                         return;
                     }
+                    Some(crate::ui::editor_page::PendingWarningAction::InspectLine) => {
+                        editor.open_line_inspector_at_viewport();
+                        return;
+                    }
+                    Some(crate::ui::editor_page::PendingWarningAction::UndoProtectedEntry) => {
+                        if editor.undo_protected_entry()
+                            && let Some(window) = window_weak.upgrade()
+                        {
+                            window.dismiss_editor_notifications(&editor);
+                        }
+                        return;
+                    }
                     Some(crate::ui::editor_page::PendingWarningAction::ShowLocalHistory) => {
                         if let Some(window) = window_weak.upgrade() {
                             window.dismiss_editor_notifications(&editor);
@@ -818,6 +830,8 @@ impl LushtextWindow {
             "next-match",
             "prev-match",
             "toggle-bookmark",
+            "inspect-line",
+            "copy-whole-line",
             "edit-bookmark-label",
             "next-bookmark",
             "prev-bookmark",

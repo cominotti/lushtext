@@ -211,6 +211,12 @@ pub struct LoadMetadata {
     pub has_bom: bool,
     /// File-health findings surfaced for the current document.
     pub file_health: Vec<FileHealthFinding>,
+    /// Whether saving the decoded text in its opened encoding and BOM state
+    /// gives back exactly the loaded bytes (`protected-view-inspector-and-
+    /// surfaces` task 3.6). False for an error-free decode that is not
+    /// injective (Shift_JIS duplicates) and for a BOM the save would add or
+    /// drop; Save As of an unmodified protected document is refused then.
+    pub decode_round_trips: bool,
 }
 
 impl LoadMetadata {
@@ -561,6 +567,12 @@ fn load_planned_text_file_with_limit(
 
     let decoded = assemble_decoded_document(payload, &analysis);
     let file_health = build_file_health(&decoded, &analysis, nul_evidence);
+    let decode_round_trips = decode_round_trips(
+        &decoded.content,
+        decoded.encoding_state.opened_encoding,
+        decoded.has_bom,
+        &bytes,
+    );
 
     Ok(LoadResult {
         metadata: LoadMetadata {
@@ -571,9 +583,27 @@ fn load_planned_text_file_with_limit(
             encoding_state: decoded.encoding_state,
             has_bom: decoded.has_bom,
             file_health,
+            decode_round_trips,
         },
         content: decoded.content,
     })
+}
+
+/// Whether `content`, decoded from `bytes` as `encoding` (with or without a
+/// BOM), saves back to exactly `bytes`. UTF-8 is decided without a pass:
+/// valid UTF-8 decodes to itself, and the BOM state is all a save can change.
+/// Every other encoding is re-encoded once on the load worker and compared.
+fn decode_round_trips(
+    content: &str,
+    encoding: DocumentEncoding,
+    has_bom: bool,
+    bytes: &[u8],
+) -> bool {
+    match encoding {
+        DocumentEncoding::Utf8 => !has_bom,
+        DocumentEncoding::Utf8Bom => has_bom,
+        _ => encode_text(content, encoding, true).is_ok_and(|encoded| encoded.as_ref() == bytes),
+    }
 }
 
 fn admitted_read_limit(plan: &FileLoadPlan, supported_limit: u64) -> u64 {
@@ -1669,6 +1699,60 @@ fn format_codepoint(character: char) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn decode_round_trips_only_when_a_save_gives_back_the_bytes() {
+        use super::decode_round_trips;
+        // UTF-8: exact unless the save would add or drop a BOM.
+        assert!(decode_round_trips(
+            "text",
+            DocumentEncoding::Utf8,
+            false,
+            b"text"
+        ));
+        assert!(decode_round_trips(
+            "text",
+            DocumentEncoding::Utf8Bom,
+            true,
+            b"\xEF\xBB\xBFtext"
+        ));
+        assert!(!decode_round_trips(
+            "text",
+            DocumentEncoding::Utf8Bom,
+            false,
+            b"text"
+        ));
+        // Windows-1252 maps every byte both ways.
+        let all: Vec<u8> = (0x20..=0xFF).collect();
+        let (decoded, _) = DocumentEncoding::Windows1252
+            .codec()
+            .decode_without_bom_handling(&all);
+        assert!(decode_round_trips(
+            &decoded,
+            DocumentEncoding::Windows1252,
+            false,
+            &all
+        ));
+        // Shift_JIS decodes the NEC-selected IBM extension 0xED40 without
+        // errors, but encodes that character back as the IBM code point.
+        let bytes = [0xED, 0x40];
+        let (decoded, had_errors) = DocumentEncoding::ShiftJis
+            .codec()
+            .decode_without_bom_handling(&bytes);
+        assert!(!had_errors);
+        assert!(!decode_round_trips(
+            &decoded,
+            DocumentEncoding::ShiftJis,
+            false,
+            &bytes
+        ));
+        assert!(decode_round_trips(
+            "abc",
+            DocumentEncoding::ShiftJis,
+            false,
+            b"abc"
+        ));
+    }
     use super::*;
     use crate::services::filesystem::{fixture, metadata as fs_metadata};
     use proptest::prelude::*;

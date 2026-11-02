@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Bookmarks in Protected View navigate without a caret
-In Protected View, existing bookmarks SHALL render in the gutter. Activating one SHALL scroll to its line through the navigation mark without moving the insert mark. `win.toggle-bookmark` and `win.notes-toggle-bookmark` SHALL be disabled, because there is no caret line, and SHALL publish the Protected View notice. Bookmark sidecars SHALL NOT be changed by opening or viewing a protected document.
+In Protected View, existing bookmarks SHALL render in the gutter. Activating one SHALL scroll to its line through the navigation mark without moving the insert mark. `win.toggle-bookmark`, `win.notes-toggle-bookmark` and `win.edit-bookmark-label` SHALL refuse in a protected document, because there is no caret line, and SHALL publish the rate-limited Protected View notice instead. Bookmark sidecars SHALL NOT be changed by opening or viewing a protected document.
 
 #### Scenario: Toggling a bookmark in a protected document
 - **WHEN** the user presses the toggle-bookmark shortcut in a protected document

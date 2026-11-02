@@ -23,6 +23,8 @@
 //! page is pre-rendered for an existing non-empty note so the first mode switch
 //! reveals already-measured content.
 
+use crate::model::paragraph_boundary::DocumentProfile;
+use crate::ui::protected_fold::insert_folded;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -773,12 +775,37 @@ fn build_note_editor_surface(
     note_view.set_right_margin(NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP);
     note_view.set_top_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
     note_view.set_bottom_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
-    note_view.buffer().set_text(initial_text);
-    accessibility::set_labelled_description(
-        &note_view,
-        "Note body editor",
-        "Editable note body text",
-    );
+    // A note body with a paragraph over `L_PROTECT_EDIT` opens read-only and
+    // folded, as a protected document does (`protected-view-inspector-and-
+    // surfaces` task 3.2): its giant paragraphs show only their heads, so no
+    // layout reaches a hidden tail, and nothing can type into one.
+    let protected_plan = DocumentProfile::of_text(initial_text).fold_plan;
+    if let Some(plan) = protected_plan.as_deref() {
+        let buffer = note_view.buffer();
+        let mut start = buffer.start_iter();
+        insert_folded(&buffer, &mut start, initial_text, 0, plan);
+        note_view.set_editable(false);
+        note_view.set_cursor_visible(false);
+        accessibility::set_labelled_description(
+            &note_view,
+            "Note body, read-only",
+            "This note has very long lines, so it opens read-only with long lines shortened",
+        );
+        let notice = gtk4::Label::new(Some(
+            "This note has very long lines, so it opens read-only with long lines shortened.",
+        ));
+        notice.set_wrap(true);
+        notice.set_xalign(0.0);
+        notice.add_css_class("dim-label");
+        content.append(&notice);
+    } else {
+        note_view.buffer().set_text(initial_text);
+        accessibility::set_labelled_description(
+            &note_view,
+            "Note body editor",
+            "Editable note body text",
+        );
+    }
     accessibility::set_multi_line(&note_view, true);
 
     let note_scroll = gtk4::ScrolledWindow::builder()

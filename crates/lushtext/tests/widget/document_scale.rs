@@ -1311,12 +1311,13 @@ fn test_notice_is_announced_again_only_for_an_additional_downgrade() {
     drain_frames(&page, 2);
     flush_events();
     assert_eq!(status_text(&window), "marker");
-    // A newly reduced feature does.
-    insert_at_end(&page, &"i".repeat(n(L_INVISIBLES) + 1));
+    // A newly reduced feature does. (Below `L_PROTECT_EDIT`: above it the
+    // Protected View alert replaces this notice.)
+    insert_at_end(&page, &"i".repeat(n(L_MINIMAP) + 1));
     wait_until(Duration::from_secs(5), || {
-        status_text(&window).contains("invisible characters")
+        status_text(&window).contains("minimap")
     });
-    assert!(features_row(&window).contains("invisible characters"));
+    assert!(features_row(&window).contains("minimap"));
 }
 
 #[test]
@@ -1327,7 +1328,9 @@ fn test_notice_announcement_is_bounded_and_content_free() {
     let secret = "SECRET-CONTENT-";
     insert_at_end(
         &page,
-        &format!("{secret}{}", "x".repeat(n(L_INVISIBLES) + 1)),
+        // Below `L_PROTECT_EDIT`, where the Protected View alert would replace
+        // the notice.
+        &format!("{secret}{}", "x".repeat(n(L_MINIMAP) + 1)),
     );
     wait_until(Duration::from_secs(5), || {
         status_text(&window).contains("because of very long lines")
