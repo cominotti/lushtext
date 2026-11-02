@@ -546,6 +546,86 @@ def frame_presented(parsed: dict, frame: dict, reference_frame_us: int) -> tuple
     return presentation, "presentation"
 
 
+# How far a compositor event stamp may trail the handler time and still be on
+# the handler's clock: past it, the stamps are on another clock and pairing
+# falls back to arrival order.
+EVENT_CLOCK_SKEW_US = 10_000_000
+# How long after an injection's D-Bus call returned mutter may still stamp
+# its event (`match_injections`).
+STAMP_AFTER_RETURN_US = 20_000
+
+
+def event_stamp_us(record: dict) -> int | None:
+    """The compositor's event time of an input record in microseconds, or
+    `None` when the record carries no stamp on the probe's monotonic clock.
+
+    Mutter stamps a virtual input event with `g_get_monotonic_time()` in
+    milliseconds while handling the injection's D-Bus call, as a `guint32`;
+    the stamp is unwrapped against the handler time `t_us` (same clock), and
+    a stamp after the handler or far before it is not on that clock."""
+    raw = record.get("event_time_ms")
+    if not raw:
+        return None
+    handler = int(record["t_us"])
+    wrap = 1 << 32
+    stamp_ms = int(raw) % wrap
+    base_ms = handler // 1000
+    stamp_ms += (base_ms - stamp_ms + wrap // 2) // wrap * wrap
+    stamp = stamp_ms * 1000
+    if stamp > handler + 1_000 or handler - stamp > EVENT_CLOCK_SKEW_US:
+        return None
+    return stamp
+
+
+def match_injections(parsed: dict, injections: list[dict]) -> list[dict | None]:
+    """The probe's `input` record of each injection, or `None` when it never
+    arrived (`sliced-protected-install` review: pairing by arrival order
+    shifted every later latency by the number of lost events).
+
+    A stamped record belongs to the injection whose window holds its stamp:
+    from one millisecond before the injection (the stamp's resolution) until
+    one millisecond before the next injection started (a millisecond stamp of
+    the next event can read up to that much below its injection), and at most
+    `STAMP_AFTER_RETURN_US` after the injection's D-Bus call returned
+    (`return_us`): mutter usually stamps while handling the call, but the
+    first wheel after a pointer move was stamped 2 ms after its call returned.
+    The first unused record of the same event kind in that window is the
+    injection's; an injection with none was not delivered. A record without a stamp on the probe's clock (an older
+    probe, or another clock) is paired as before: the first unused record of
+    the same kind arriving after the injection. Unmeasured injections (a
+    modifier press, a focusing click) consume their record either way."""
+    inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
+    stamps = [event_stamp_us(record) for record in inputs]
+    used: set[int] = set()
+    out: list[dict | None] = []
+    for position, injection in enumerate(injections):
+        origin = int(injection["inject_us"])
+        wanted = injection["event"]
+        later = [int(other["inject_us"]) for other in injections[position + 1 :] if int(other["inject_us"]) >= origin]
+        bounds = [min(later) - 1_000] if later else []
+        if injection.get("return_us"):
+            bounds.append(int(injection["return_us"]) + STAMP_AFTER_RETURN_US)
+        upper: int | None = min(bounds) if bounds else None
+        found = None
+        for index, record in enumerate(inputs):
+            if index in used or record.get("event") != wanted:
+                continue
+            stamp = stamps[index]
+            if stamp is None:
+                if record["t_us"] < origin - 2_000:
+                    continue
+            elif stamp < origin - 1_000 or (upper is not None and stamp >= upper):
+                continue
+            found = index
+            break
+        if found is None:
+            out.append(None)
+            continue
+        used.add(found)
+        out.append(inputs[found])
+    return out
+
+
 def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int, horizon_us: int | None = None) -> list[dict]:
     """For each measured injected event: origin -> first presentation of a frame started after its handler.
 
@@ -570,26 +650,10 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
     editor is flagged `protected`; its latency is reported apart from
     editable typing (`editable_latency`).
     """
-    inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
     frames = sorted(parsed["records"]["frame"], key=lambda r: int(r["frame_time_us"]))
-    matched: list[tuple[dict, int | None]] = []
-    targets: list[str | None] = []
-    used: set[int] = set()
-    for injection in injections:
-        origin = injection["inject_us"]
-        wanted = injection["event"]
-        handler = None
-        target = None
-        for index, record in enumerate(inputs):
-            if index in used or record["t_us"] < origin - 2_000:
-                continue
-            if record.get("event") == wanted:
-                handler = int(record["t_us"])
-                target = record.get("target")
-                used.add(index)
-                break
-        matched.append((injection, handler))
-        targets.append(target)
+    records = match_injections(parsed, injections)
+    matched: list[tuple[dict, int | None]] = [(injection, int(record["t_us"]) if record else None) for injection, record in zip(injections, records)]
+    targets: list[str | None] = [record.get("target") if record else None for record in records]
     results = []
     for position, (injection, handler) in enumerate(matched):
         if not injection.get("measured", True):
@@ -674,6 +738,30 @@ def input_delivery(parsed: dict, input_to_frame_rows: list[dict], start_us: int,
         "inserted": inserted,
         "verified": verified,
     }
+
+
+def scroll_delivery(input_to_frame_rows: list[dict]) -> dict | None:
+    """Whether a phase's measured wheel steps reached the application:
+    `scrolled` counts them and `undelivered` those with no input record
+    (`sliced-protected-install` review: wheels injected before the window was
+    composed never arrived, and pairing by arrival order then charged later
+    events' frames to them). `None` when the phase scrolled nothing."""
+    scrolls = [row for row in input_to_frame_rows if row.get("event") == "scroll"]
+    if not scrolls:
+        return None
+    return {"scrolled": len(scrolls), "undelivered": sum(1 for row in scrolls if row.get("status") == "no-input-record")}
+
+
+def undelivered_scroll_cases(rows: list[dict]) -> list[str]:
+    """`case@variant#rep:phase` of every phase with a wheel step that never
+    reached the application: its input-to-frame figures would measure
+    nothing."""
+    return [
+        f"{row['case']}@{row['variant']}#{row['rep']}:{phase.get('name')}"
+        for row in rows
+        for phase in row.get("phases", [])
+        if (phase.get("scroll_delivery") or {}).get("undelivered", 0) > 0
+    ]
 
 
 # Surfaces that can lie over the editor's text view (an overlaid workspace
@@ -1060,23 +1148,14 @@ def attribute_dispatch(dispatch: dict, spans: list[dict], marks: list[dict], tic
 def key_dispatch_latencies(parsed: dict, injections: list[dict]) -> list[dict]:
     """Each injected key's dispatch latency: compositor event time to its handler.
 
-    Injections are matched to `input` records in order, as input-to-frame
-    matches them (an unmeasured modifier still consumes its record). The
+    Injections are paired with `input` records by `match_injections`, as
+    input-to-frame pairs them (an unmeasured modifier still consumes its
+    record). The
     event time is the compositor's millisecond stamp on the same monotonic
     clock, so the latency is exact to a millisecond.
     """
-    inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
-    used: set[int] = set()
     out = []
-    for injection in injections:
-        record = None
-        for index, candidate in enumerate(inputs):
-            if index in used or candidate["t_us"] < injection["inject_us"] - 2_000:
-                continue
-            if candidate.get("event") == injection["event"]:
-                record = candidate
-                used.add(index)
-                break
+    for injection, record in zip(injections, match_injections(parsed, injections)):
         if not injection.get("measured", True):
             continue
         if record is None:
@@ -1778,6 +1857,9 @@ class Bus:
 class RemoteDesktop:
     """Mutter RemoteDesktop input, warmed up (the first notification is dropped)."""
 
+    # When the last D-Bus call returned (`now_us`), 0 before any call.
+    returned_us = 0
+
     def __init__(self, bus: Bus) -> None:
         self.bus = bus
         self.session: str | None = None
@@ -1797,6 +1879,9 @@ class RemoteDesktop:
 
     def _call(self, method: str, params) -> None:
         self.bus.call(RD_BUS, self.session, RD_SESSION_IFACE, method, params)
+        # Mutter stamps the event while handling this call, so the stamp is
+        # never later than its return (`match_injections`).
+        self.returned_us = now_us()
 
     def warm_up(self) -> None:
         from gi.repository import GLib
@@ -1831,11 +1916,11 @@ class RemoteDesktop:
             # The modifier press reaches the window as its own key-press
             # record; recording it (unmeasured) keeps it from standing in
             # for the key it modifies when inputs are matched to records.
-            injections.append({"event": "key-press", "inject_us": self.key(KEY_CONTROL_L, True), "measured": False})
+            injections.append({"event": "key-press", "inject_us": self.key(KEY_CONTROL_L, True), "return_us": self.returned_us, "measured": False})
         # A printable key without Control inserts text where it lands: the
         # lane checks it reached an editor and inserted (`input_delivery`).
         inserts = not control and 0x20 <= keysym <= 0x7E
-        injections.append({"event": "key-press", "inject_us": self.key(keysym, True), **({"inserts": True} if inserts else {})})
+        injections.append({"event": "key-press", "inject_us": self.key(keysym, True), "return_us": self.returned_us, **({"inserts": True} if inserts else {})})
         self.key(keysym, False)
         if control:
             self.key(KEY_CONTROL_L, False)
@@ -1845,7 +1930,7 @@ class RemoteDesktop:
 
         stamp = now_us()
         self._call("NotifyPointerAxisDiscrete", GLib.Variant("(ui)", (0, steps)))
-        injections.append({"event": "scroll", "inject_us": stamp})
+        injections.append({"event": "scroll", "inject_us": stamp, "return_us": self.returned_us})
 
     def click(self, x: int, y: int, injections: list[dict], measured: bool = True) -> int:
         """Move to screen `(x, y)` and click; returns the press's stamp.
@@ -1859,8 +1944,9 @@ class RemoteDesktop:
         time.sleep(0.05)
         stamp = now_us()
         self._call("NotifyPointerButton", GLib.Variant("(ib)", (BTN_LEFT, True)))
+        pressed_us = self.returned_us
         self._call("NotifyPointerButton", GLib.Variant("(ib)", (BTN_LEFT, False)))
-        injections.append({"event": "button-press", "inject_us": stamp, **({} if measured else {"measured": False})})
+        injections.append({"event": "button-press", "inject_us": stamp, "return_us": pressed_us, **({} if measured else {"measured": False})})
         return stamp
 
     def close(self) -> None:
@@ -2700,6 +2786,21 @@ class Runner:
             return self.settle_until(ctx, "typing", extra)(inj, deadline)
 
         return self.run_phase(phases, name, self.settle_cap_s + SETTLE_TYPING_KEYS * SETTLE_TYPING_INTERVAL_S + 5, body, extra)
+
+    def wait_composed(self, deadline: float) -> bool:
+        """Poll the automation snapshot until the window's composition ran
+        every stage (`window_construction.stages_pending == 0`); there is no
+        readiness predicate for composition alone, and every predicate that
+        waits for it also waits for the file load this phase overlaps."""
+        while time.monotonic() < deadline:
+            try:
+                if find_key(self.snapshot(), "stages_pending") == 0:
+                    return True
+            except Exception:  # noqa: BLE001 - the bus may not answer yet
+                pass
+            time.sleep(0.02)
+        return False
+
     def snapshot(self) -> dict:
         (raw,) = self.bus.call(APP_ID, AUTOMATION_OBJECT_PATH, AUTOMATION_INTERFACE, "GetSnapshot", None, "(s)").unpack()
         return json.loads(raw)
@@ -3153,6 +3254,10 @@ class Runner:
         the install completes (`sliced-protected-install`, task 6.1)."""
 
         def body(inj, deadline):
+            # Wheels injected before the window is composed never arrive
+            # (`scroll_delivery`): start once every composition stage ran.
+            if not self.wait_composed(deadline):
+                return False, "exceeded_cap"
             rounds = 0
             while time.monotonic() < deadline:
                 self.action("win", "select-tab", [self._uint32(0)], deadline)
@@ -3307,6 +3412,9 @@ class Runner:
                 delivery = input_delivery(parsed, row["input_to_frame"], start, end)
                 if delivery is not None:
                     row["delivery"] = delivery
+                scrolls = scroll_delivery(row["input_to_frame"])
+                if scrolls is not None:
+                    row["scroll_delivery"] = scrolls
                 row["im"] = im_summary(parsed, start, end)
                 if phase["name"].startswith("key-"):
                     row["keystrokes"] = keystroke_stalls(parsed, start, end, budgets["B_INTERACT_US"])
@@ -4265,13 +4373,16 @@ def run_failed(
     frameless: list[str] | None = None,
     misdirected: list[str] | None = None,
     withheld: list[str] | None = None,
+    undelivered_scrolls: list[str] | None = None,
 ) -> bool:
     """The lane fails on missing artifacts, an integrity violation, a driver
     failure, a warning of a pre-existing blocker the programme has fixed, a
     measured case that wrote no `frame` record (`frameless_row`), a phase
-    whose typing reached no document (`misdirected_phase`), or a phase whose
-    typed text was drawn only in a withheld frame (`withheld_frame_cases`)."""
-    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions")) or bool(frameless) or bool(misdirected) or bool(withheld)
+    whose typing reached no document (`misdirected_phase`), a phase whose
+    typed text was drawn only in a withheld frame (`withheld_frame_cases`),
+    or a phase with a wheel step that never arrived
+    (`undelivered_scroll_cases`)."""
+    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions")) or bool(frameless) or bool(misdirected) or bool(withheld) or bool(undelivered_scrolls)
 
 
 def run_storage(artifact_dir: Path, rows: list[dict]) -> dict[str, Any]:
@@ -4476,6 +4587,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
     frameless = frameless_cases(artifact_dir, rows)
     misdirected = misdirected_cases(rows)
     withheld = withheld_frame_cases(rows)
+    undelivered_scrolls = undelivered_scroll_cases(rows)
     # The C6 verdict (bound-post-open-settle D8) over the post-open rows; with
     # a side-labelled merge (merge-runs --from baseline=DIR --from branch=DIR)
     # it also applies the no-regression rule.
@@ -4505,12 +4617,13 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "frameless_cases": frameless,
         "misdirected_typing": misdirected,
         "withheld_typing_frames": withheld,
+        "undelivered_scrolls": undelivered_scrolls,
         "post_open": post_open_report(rows),
         "c6_verdict": c6,
     }
     (artifact_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (artifact_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
-    failed = run_failed(missing, integrity, run_info, warnings, frameless, misdirected, withheld)
+    failed = run_failed(missing, integrity, run_info, warnings, frameless, misdirected, withheld, undelivered_scrolls)
     # Window construction is the one budget this lane can enforce
     # (bound-window-construction-dispatch): with
     # RESPONSIVENESS_CONSTRUCTION_ENFORCE=1, a LushText-owned span or a
@@ -4539,6 +4652,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "frameless_cases": frameless,
         "misdirected_typing": misdirected,
         "withheld_typing_frames": withheld,
+        "undelivered_scrolls": undelivered_scrolls,
         "budget_verdict": derived["budget_verdict"].get("verdict"),
         "construction_over_budget": [f"{c['case']}@{c['variant']}#{c['rep']}: {','.join(c['over_budget'])}" for c in construction_over],
         "fill_in_over_accepted": [f"{c['case']}@{c['variant']}#{c['rep']}: fill-in {c['fill_in_us']} us" for c in fill_in_over],
@@ -4809,6 +4923,8 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- **TYPING REACHED NO DOCUMENT** in {len(report['misdirected_typing'])} phase(s): their keys arrived outside an editor or inserted nothing, so their input-to-frame figures measure a window with nothing to draw; the lane fails: {', '.join(report['misdirected_typing'][:8])}")
     if report.get("withheld_typing_frames"):
         lines.append(f"- **TYPED TEXT DRAWN LATE** in {len(report['withheld_typing_frames'])} phase(s): a key typed into an editable editor was drawn only after the next key was handled while the main loop was free, or never; its latency runs to that frame and the lane fails: {', '.join(report['withheld_typing_frames'][:8])}")
+    if report.get("undelivered_scrolls"):
+        lines.append(f"- **WHEEL STEPS NEVER ARRIVED** in {len(report['undelivered_scrolls'])} phase(s): an injected scroll has no input record, so it measures nothing; the lane fails: {', '.join(report['undelivered_scrolls'][:8])}")
     if report.get("frameless_cases"):
         lines.append(f"- **NO FRAME RECORDS** in {len(report['frameless_cases'])} measured case(s), so first-frame, frame-gap and input-to-frame figures are missing; the lane fails: {', '.join(report['frameless_cases'][:8])}")
     if report["warnings"].get("unclassified"):
@@ -6091,6 +6207,61 @@ def self_test() -> int:
     expect(slow is not None and slow["fill_in_us"] == 42_000 and slow_verdict[0]["fill_in_over"] is True and slow_verdict[0]["fill_in_within_accepted"] is False, f"a fill-in over 40 ms is flagged ({slow_verdict})")
     median = fill_in_median(shown_verdict + slow_verdict + composed_verdict, 8_333)
     expect(median == {"median_us": 32_000, "target_us": 24_999, "within_target": False, "runs": 3}, f"the fill-in median against three reference frames ({median})")
+
+    # Pairing by the compositor's event stamp (sliced-protected-install
+    # review): the mid-install phase injected three wheels 30 ms apart before
+    # the window was composed, the first two never arrived, and pairing by
+    # arrival order charged the third's record (and every later one, two
+    # places on) to them, reporting 270-300 ms input-to-frame for 13 ms.
+    pair_start = {"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000}
+    wheel_base = 50_000_000
+    wheels = [{"event": "scroll", "inject_us": wheel_base + k * 30_000, "return_us": wheel_base + k * 30_000 + 200} for k in range(6)]
+    # Only wheels 2..5 arrive, each stamped in its own call and handled 1 ms later.
+    arrived = [
+        {"kind": "input", "t_us": w["inject_us"] + 1_000, "window": 1, "event": "scroll", "event_time_ms": w["inject_us"] // 1000}
+        for w in wheels[2:]
+    ]
+    drawn = [
+        {"kind": "frame", "t_us": w["inject_us"] + 9_000, "frame_time_us": w["inject_us"] + 2_000, "presentation_us": w["inject_us"] + 9_000}
+        for w in wheels[2:]
+    ]
+    lost_log = parse_probe_log([json.dumps(r) for r in [pair_start, *arrived, *drawn]])
+    paired = match_injections(lost_log, wheels)
+    expect(paired[0] is None and paired[1] is None, f"wheels that never arrived pair with no record ({paired[:2]})")
+    expect([p["t_us"] if p else None for p in paired[2:]] == [w["inject_us"] + 1_000 for w in wheels[2:]], f"each delivered wheel pairs with its own record, not an earlier wheel's ({paired})")
+    lost_rows = input_to_frame(lost_log, wheels, 8_333)
+    expect([r.get("status") for r in lost_rows[:2]] == ["no-input-record", "no-input-record"], f"the lost wheels are reported undelivered ({lost_rows[:2]})")
+    expect([r.get("latency_us") for r in lost_rows[2:]] == [9_000] * 4, f"delivered wheels keep their own latency ({[r.get('latency_us') for r in lost_rows]})")
+    expect(scroll_delivery(lost_rows) == {"scrolled": 6, "undelivered": 2}, f"undelivered scrolls are counted ({scroll_delivery(lost_rows)})")
+    expect(scroll_delivery([r for r in lost_rows if r.get("event") != "scroll"]) is None, "a phase that scrolled nothing has no scroll delivery")
+    lost_case = {"case": "install/100000000", "variant": "plain", "rep": 0, "phases": [{"name": "mid-install", "scroll_delivery": scroll_delivery(lost_rows)}]}
+    expect(undelivered_scroll_cases([lost_case]) == ["install/100000000@plain#0:mid-install"], "the phase that lost wheels is named")
+    expect(run_failed([], {"violations": []}, {"driver_failures": []}, {"regressions": {}}, [], [], [], ["x"]), "an undelivered wheel fails the lane")
+    delivered_case = {"case": "c", "variant": "plain", "rep": 0, "phases": [{"name": "scroll", "scroll_delivery": {"scrolled": 3, "undelivered": 0}}]}
+    expect(undelivered_scroll_cases([delivered_case]) == [], "a phase whose wheels all arrived passes")
+    # A stamp after the call returned (the first wheel after a pointer move,
+    # stamped 2 ms after injection) still pairs with its own injection.
+    late_wheel = [{"event": "scroll", "inject_us": wheel_base, "return_us": wheel_base + 200}, {"event": "scroll", "inject_us": wheel_base + 50_000, "return_us": wheel_base + 50_200}]
+    late_log = parse_probe_log([json.dumps(r) for r in [pair_start] + [{"kind": "input", "t_us": w["inject_us"] + 2_200, "window": 1, "event": "scroll", "event_time_ms": w["inject_us"] // 1000 + 2} for w in late_wheel]])
+    expect([p["t_us"] if p else None for p in match_injections(late_log, late_wheel)] == [w["inject_us"] + 2_200 for w in late_wheel], "a stamp a few ms after the call returned pairs with its own wheel")
+    # Without a return stamp (an older driver) the window closes where the
+    # next injection starts, which still refuses the next wheel's record.
+    unreturned = [{"event": w["event"], "inject_us": w["inject_us"]} for w in wheels]
+    expect([p["t_us"] if p else None for p in match_injections(lost_log, unreturned)] == [None, None] + [w["inject_us"] + 1_000 for w in wheels[2:]], "without return stamps each wheel still pairs with its own record")
+    # A stamp that is not on the probe's clock falls back to arrival order.
+    foreign = [dict(r, event_time_ms=7) for r in arrived]
+    foreign_log = parse_probe_log([json.dumps(r) for r in [pair_start, *foreign]])
+    expect(match_injections(foreign_log, wheels[2:]) == [foreign_log["records"]["input"][k] for k in range(4)], "stamps on another clock pair by arrival order")
+    expect(event_stamp_us({"t_us": 5_000_000, "event_time_ms": 4_999}) == 4_999_000 and event_stamp_us({"t_us": 5_000_000}) is None, "event stamps are read in microseconds, absent ones as None")
+    # A guint32 stamp that wrapped is unwrapped against the handler time.
+    wrapped_t = (1 << 32) * 1000 + 3_000_000
+    expect(event_stamp_us({"t_us": wrapped_t, "event_time_ms": 2_999}) == wrapped_t - 1_000, "a wrapped millisecond stamp is unwrapped")
+    # Keys pair the same way: a lost key no longer shifts the next key's
+    # dispatch latency onto it.
+    keys = [{"event": "key-press", "inject_us": wheel_base + k * 100_000, "return_us": wheel_base + k * 100_000 + 300} for k in range(2)]
+    key_log = parse_probe_log([json.dumps(r) for r in [pair_start, {"kind": "input", "t_us": keys[1]["inject_us"] + 2_000, "window": 1, "event": "key-press", "event_time_ms": keys[1]["inject_us"] // 1000}]])
+    key_rows = key_dispatch_latencies(key_log, keys)
+    expect(key_rows[0].get("status") == "no-input-record" and key_rows[1].get("latency_us") == 2_000, f"a lost key does not take the next key's record ({key_rows})")
 
     # Post-open settle (bound-post-open-settle, C6). An exception here is a
     # failure, not an abort, so the other checks still report.

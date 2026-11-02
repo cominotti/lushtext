@@ -2134,14 +2134,7 @@ dispatch per repetition, median / max (ms), and `load_request` to
 language-definition parse); `main`'s second-largest dispatch, the one-turn
 tail insert (18.7 ms), is gone on the branch.
 ² `main` has no `app.probe-save-as`.
-³ Eight repetitions per side (`verdict/*-fc{1,2}` added to the four above).
-Attributed with perf (`perf-fc`, the 17.1 ms dispatch under perf): the frame's
-layout is CSS revalidation (`gtk_css_node_validate` in 10 of 21 samples) and
-Pango measuring the head in the new font, including FreeType autofitting its
-glyphs; no buffer, segment or mark code is in the stack, and the hidden tail is
-never laid out (A65). The same toolkit work is at the budget edge on `main`
-(15.4 ms); recorded as a toolkit-floor exception at the budget's edge, not a C3
-regression (C6 paces restyles; a font change is one frame of restyle).
+³ **A LushText-owned exception, not a toolkit floor** (corrected after review, 2026-11-02). The font change is the display-wide `CssProvider` restyle LushText chose for the custom monospace font (C6 recorded it as LushText's own choice, with the queued follow-up to scope the provider to the editor and preview surfaces); Perf (`perf-fc`, the 17.1 ms dispatch) shows the frame's layout as CSS revalidation (`gtk_css_node_validate` in 10 of 21 samples) and Pango measuring the head in the new font, FreeType autofitting included, with no buffer, segment or mark code in the stack; the hidden tail is never laid out (A65). Repetitions: 20 per side over two verdicts. At load 0.6–1.0 (eight per side): `main` 11.0–15.4 ms, branch 9.4–16.6 ms; at load 3.7–4.6 (twelve per side, `verdict2/*-plain{1,2}` and `*-fc{1,2}`, a game running on the desktop): `main` median 20.7, 11.1–43.7 ms, branch 19.6, 10.1–44.2 ms. The spread is continuous rather than two clusters, it widens with host load equally on both sides, and C3 adds nothing to the dispatch, so the earlier "bimodality" (branch 16.6 against `main` 15.4) is the tail of one distribution. It stays over `B_SETTLE_US` until the provider is scoped (C6's follow-up), which owns it.
 ⁴ The 500,000,000-character fixture is one byte over `REFUSE_TO_OPEN` with its
 delimiter, so it was refused on both sides and the old mid-install loop ran to
 the 180 s cap; the case now uses 499,999,999 characters (the largest document
@@ -2186,18 +2179,74 @@ see `formal-verification.md`.
 wheel steps there, back to the installing tab, until the install completes).
 Dispatch: the worst lateness after the first input is 5.8 / 6.3 / 6.6 ms at
 100 / 250 / 500 MB, within `B_INTERACT_US`; the phase's 8.6–8.8 ms worst is
-the giant tab's editor construction before the first input. Input-to-frame:
-the lane reports 270–307 ms, but that is the compositor's: mutter stamped each
-wheel event (`event_time`) 60 ms (the first after a tab switch) or 268–284 ms
-(the next two) after the driver injected it, the same pattern at 100, 250 and
-500 MB and in every repetition (`main` 63 ms for the first; its later ones
-wait out its one-turn stall). From mutter's stamp, LushText handled every
-event within 7.8 ms and presented its frame in 13.3 ms median, 23.6 ms p95
-(10,735 events), the same as the idle scroll phases (9–22 ms) and C6's
-documented double-buffered lane floor, which is reported, not gated. The
-mutter-side delay is outside what LushText's records can attribute (a CPU
-sampler of mutter during the install, `cpusample.py`, found no mutter
-process in the lane's namespace) and is recorded as a lane limitation.
+the giant tab's editor construction before the first input.
+**Input-to-frame (corrected after review, 2026-11-02).** The 270–307 ms this
+record first reported, and attributed to mutter, was a pairing error in the
+lane: the driver injected the first round of wheels before the window was
+composed, the first two never reached the application, and the driver paired
+injections with probe records by arrival order, so every later wheel was
+charged with the frame of the wheel two places on. Mutter stamps each event
+with its own monotonic time, so the driver now pairs an injection with the
+record whose stamp falls between 1 ms before the injection and 1 ms before the
+next one (at most 20 ms after the injection's D-Bus call returned; the first
+wheel after a pointer move was stamped 2 ms after its call returned), counts
+undelivered wheels (`scroll_delivery`) and fails the lane on any
+(`undelivered_scroll_cases`), and the mid-install phase starts only once the
+window's composition has run (`window_construction.stages_pending == 0`).
+Re-read with this pairing, the first verdict's 100 MB mid-install wheels lost
+exactly the first two of the first round and presented in 11.3 ms median.
+Rerun (`verdict2/*-install`, load 3.1–4.3 with a game on the desktop): every
+wheel delivered (0 of 24 and 0 of 66 lost), input-to-frame 12.2 / 16.3 / 17.3
+ms (median / p95 / max) at 100 MB and 12.5 / 16.4 / 17.5 ms at 250 MB, compositor
+stamp minus injection −1 to +1 ms; `main` meanwhile stalls 800 ms and 1.9 s in
+those phases. The p95 is at the two-frame bound and the maximum 0.8 ms over it,
+inside C6's documented double-buffered presentation floor of the headless
+lane (16.7–19.3 ms), which is reported, not gated.
+
+### Review fixes (PR #77 review, 2026-11-02)
+
+- **Draft capture during a replacement (data safety, predates C3).** An editor whose draft was behind its buffer could be snapshotted by an autosave tick while a whole-buffer replacement (a local-history restore, a draft install, a load installation) was rewriting it: the buffer then held part of the old text and part of the new, and with a sliced protected install a tail without its head. The failing-first widget test wrote a 1.83 MB partial body over the 1.96 MB pre-restore draft. `LushtextEditorPage::draft_capture_blocked()` now makes the tab ineligible (the draft policy's `buffer_untrusted` term, in both the candidate and the captured-snapshot checks), local-history periodic capture waits on it too, and the draft stays as it was until the terminal. Not the edit lock: a save holds that over a whole buffer. Session save records only a cursor position (clamped on restore) and automation no text, so neither had the hole.
+- **Ctrl+Home / Ctrl+End went to the first / last tab (pre-existing on `main`).** With #76's delivery gate the restored-session typing phase failed on both sides: AdwTabView's capture-phase Ctrl+Home, Ctrl+End and their Shift variants (first / last tab, move the tab) run whenever two tabs are open, ahead of the text view, and the switch moves focus into the other page. LushText removes those four AdwTabView shortcuts; Ctrl+Page Up / Down and Alt+digits still switch tabs.
+- **Fails closed.** A sliced install whose paragraph-start mark vanished no longer appends the head after its tail (`FoldedInstallBroken`, `debug_assert!`): the load cancels as incomplete, a replacement cancels and hands its body back, the preview shows an error, a note keeps its source. A load or replacement turn whose editor is gone while a fold plan is set aborts instead of inserting hidden tails unfolded.
+- **The local-history preview's clear is sliced.** One `set_text("")` emptied a snapshot of up to 50 MB in one dispatch; the preview now clears in bounded turns that follow the boundary ledger and then ordinary paragraph slices, and an install waits for it. A 6 MB protected preview cleared in 24 turns, the longest 84 µs (debug widget build; one `set_text("")` of an unfolded buffer of the same text took 2.6 ms there).
+- **The stand-in terminator is out of every reader.** A widget test now autosaves a recovered undelimited folded draft through both snapshot paths and compares the bytes on disk with the original (the shared `editor_text` helper re-implements `document_end_iter`, so it could not catch a leak; the test fails with `end_iter`). The print snapshot, bookmark and restyle line counts, the memory estimate and local-history availability exclude it; GtkTextView's accessible text excludes it by construction (`gtk_text_view_accessible_text_get_contents` reads with `include_hidden = FALSE`, gtktextview.c 4.22.5).
+- **Coverage wording.** The planner's whole-plan properties are tested, not proved; the property tests gained K5's visible half and K8's `head_chars + tail_chars`, and the record, the planner's rustdoc and the spec now say so (`formal-verification.md`).
+- **A77's flatness check had no noise floor.** A sample run beside a release build read 5 → 24 µs for a cost that does not grow and failed; A76/A77 now count medians under 100 µs as flat (`NOISE_FLOOR_US`).
+
+### Rerun after review (`verdict2`, 2026-11-02)
+
+`main` cdfff201 against the merged branch (`bin/branch-review`), the branch's
+driver for both (with the event-stamp pairing and the scroll-delivery gate),
+one exclusive hold per run, alternating. **Not a reference-precondition
+verdict:** a game ran on the desktop throughout (load 2.8–6.3, recorded per
+run in `.claude/handoffs/c3/runs.log`); `btrfs-stall-report`: "Storage was NOT
+a bottleneck" in every window. Every branch run passed the lane's delivery
+gates (no misdirected typing, no withheld frame, no undelivered wheel); `main`'s
+plain runs failed the typing gate on `session/restore-3` (Ctrl+Home, fixed here).
+Worst dispatch per repetition, median / max (ms):
+
+| Case | Phase | `main` | branch | budget |
+|---|---|---|---|---|
+| paragraph 1.9M wrap on | open | 12.6 / 67.8 | 9.4 / 10.1 | 16 |
+| session/restore-3 | restore | 17.8 / 25.0 | 10.2 / 14.6 | 16 |
+| protected 1.9M (12 reps) | open / save-as / font | 11.3 / —, 20.7 (max 43.7) | 10.8, 8.5 (max 21.6), 19.6 (max 44.2) | 16 ³ |
+| recovery/protected-32mib | restore / tab switch | 3,835 / 3,793 | 11.8 / 8.8 | 16 / 8 |
+| install 100 MB | mid-install, after the first input | 797–800 | 7.7–7.8 | 8 |
+| install 250 MB | mid-install, after the first input | 1,929–1,966 | 5.2–7.9 | 8 |
+| install 500 MB | mid-install, after the first input | > 180,000 (cap) | 11.1 / 21.6 ⁶ | 8 |
+| AT on: install 100 MB / 32 MiB recovery | open / restore | 983 / 1,853 | 13.3 / 11.5 | 16 |
+
+Mid-install input-to-frame (median / p95 / max ms, wheels lost): 100 MB
+12.2 / 16.3 / 17.3, 0 of 24; 250 MB 12.5 / 16.4 / 17.5, 0 of 66; 500 MB 11.4 /
+16.1 / 28.8, 0 of 186; AT on, 100 MB 12.3 / 17.4 / 22.0, 0 of 30.
+
+⁶ At load 4.1–4.7. The 500 MB tail slices took up to 11.6 and 14.7 ms here
+(3.7–4.1 ms in the load-0.6–1.0 verdict above, where the same phase's worst was
+8.7–8.8 ms), and the 21.6 ms dispatch has no LushText span or frame inside it
+(the main loop ran none of LushText's code: preemption by the desktop load).
+The phase's raw maximum also includes the window's first realize
+(`composition_realize`, 10–17 ms, C4's recorded A46 cost), which the
+mid-install phase now spans because it waits for composition.
 
 ## C5 `explore-editing-long-paragraphs` (2026-10-31)
 
