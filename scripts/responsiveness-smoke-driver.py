@@ -666,7 +666,7 @@ FULL_SCREEN_PAINT_US = (5_000, 7_000)
 INPUT_TO_FRAME_FLOOR_TEXT = "double-buffered 120 Hz headless presentation 16.7-19.3 ms plus a full-screen paint 5-7 ms (20-25 ms on any document)"
 # Toolkit-floor exceptions (design D8, review R7): `attribution=AXIOM[:report]`
 # entries separated by `;`, for example
-# `post_open_language_attach=A52:.claude/handoffs/c6-upstream-gtksourceview-language-parse.md`.
+# `post_open_language_attach=A67:.claude/handoffs/c6-upstream-gtksourceview-language-parse.md`.
 # None is accepted by default: the maintainer records each one.
 TOOLKIT_FLOORS_ENV = "RESPONSIVENESS_TOOLKIT_FLOORS"
 DEFAULT_TOOLKIT_FLOORS = ""
@@ -4474,8 +4474,8 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
         expect(first_poll == 0 and len(second["records"]["mark"]) == 1 and second["started"] and not second["malformed"], "the live tail reads complete lines only, incrementally")
 
     # Toolkit-floor exceptions are configured, not hard-coded.
-    floors = parse_toolkit_floors("post_open_language_attach=A52:.claude/handoffs/c6-upstream-gtksourceview-language-parse.md; highlight=S3")
-    expect(floors.get("post_open_language_attach", {}).get("axiom") == "A52" and floors.get("highlight", {}).get("report") is None, f"toolkit-floor list parsing ({floors})")
+    floors = parse_toolkit_floors("post_open_language_attach=A67:.claude/handoffs/c6-upstream-gtksourceview-language-parse.md; highlight=S3")
+    expect(floors.get("post_open_language_attach", {}).get("axiom") == "A67" and floors.get("highlight", {}).get("report") is None, f"toolkit-floor list parsing ({floors})")
 
     # The C6 verdict.
     budgets = dict(DEFAULT_BUDGETS)
@@ -4518,12 +4518,12 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
     typing = {"phase": "type-during-settle", "kind": "typing", "status": "settled", "activation_us": 1_000_000, "settled_us": 2_000_000, "settle_us": 1_000_000, "dispatches": [attach], "stage_worst_us": {"post_open_language_attach": 40_000},
               "keys": [{"event_us": 1_070_000, "handler_us": 1_101_000, "latency_us": 31_000}, {"event_us": 1_500_000, "handler_us": 1_503_000, "latency_us": 3_000}]}
     slow_key = dict(typing, keys=typing["keys"] + [{"event_us": 1_600_000, "handler_us": 1_609_000, "latency_us": 9_000}])
-    floor_list = {"post_open_language_attach": {"axiom": "A52", "report": "handoff.md"}}
+    floor_list = {"post_open_language_attach": {"axiom": "A67", "report": "handoff.md"}}
     exempt_rows = [row("branch", r, [open_entry([("post_open_language_attach", 40_000)]), typing]) for r in range(3)]
     exempt = c6_verdict(exempt_rows, budgets, floor_list)
     expect(exempt.get("verdict") == "met", f"an exception dispatch and the keys that waited behind it are exempt ({exempt.get('failures')})")
     lines_ = exempt.get("exceptions", [])
-    expect(any(e.get("axiom") == "A52" and e.get("overlapping_keys_us") == [31_000] for e in lines_), f"the exception line lists its axiom and the overlapping keys' latencies ({lines_})")
+    expect(any(e.get("axiom") == "A67" and e.get("overlapping_keys_us") == [31_000] for e in lines_), f"the exception line lists its axiom and the overlapping keys' latencies ({lines_})")
     not_exempt = c6_verdict([row("branch", 0, [open_entry([]), slow_key])], budgets, floor_list)
     expect(not_exempt.get("verdict") == "not met" and any("B_INTERACT" in f for f in not_exempt.get("failures", [])), f"a key that overlaps no exception is gated ({not_exempt.get('failures')})")
     unlisted = c6_verdict([row("branch", 0, [open_entry([("post_open_language_attach", 40_000)]), typing])], budgets, {})
@@ -4577,7 +4577,7 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
             import io
 
             with contextlib.redirect_stdout(io.StringIO()):
-                write_report(root / "merged", None, ["post_open_language_attach=A52:handoff.md"])
+                write_report(root / "merged", None, ["post_open_language_attach=A67:handoff.md"])
         finally:
             for k, v in saved.items():
                 os.environ.pop(k, None)
@@ -4586,7 +4586,7 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
         written = json.loads((root / "merged/report.json").read_text(encoding="utf-8"))
         markdown = (root / "merged/report.md").read_text(encoding="utf-8")
         expect(written.get("c6_verdict", {}).get("verdict") == "met" and written["c6_verdict"]["baseline_rows"] == 2, f"the merged report carries the C6 verdict ({written.get('c6_verdict', {}).get('failures')})")
-        expect("## Post-open settle (C6)" in markdown and "## C6 verdict" in markdown and "axiom A52" in markdown, "report.md renders the post-open table, the verdict and the exception line")
+        expect("## Post-open settle (C6)" in markdown and "## C6 verdict" in markdown and "axiom A67" in markdown, "report.md renders the post-open table, the verdict and the exception line")
 
 
 def self_test() -> int:

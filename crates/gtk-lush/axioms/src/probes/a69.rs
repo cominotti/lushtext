@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A54: GtkSourceView's context engine analyses a buffer in **main-loop
+//! A69: GtkSourceView's context engine analyses a buffer in **main-loop
 //! dispatches of a fixed slice** the application cannot configure
 //! (GtkSourceView 5.20 `gtksourcecontextengine.c` l. 46–67): one
 //! **first update** at `G_PRIORITY_HIGH_IDLE` (`FIRST_UPDATE_PRIORITY`) with a
@@ -31,7 +31,7 @@
 //! The sample's `--derive-s-bg-highlight` mode measures, per language, the
 //! largest synthetic short-line document whose highlighting keeps every
 //! dispatch after the language attach within LushText's `B_SETTLE_US`
-//! (`HighlightFixture`, `bisect_bytes`); the attach call itself is the A52
+//! (`HighlightFixture`, `bisect_bytes`); the attach call itself is the A67
 //! parse and is not timed.
 //!
 //! LushText's post-open settle (`bound-post-open-settle`) cannot shorten the
@@ -50,7 +50,7 @@ use gtk4::prelude::*;
 use sourceview5::prelude::*;
 
 use crate::observation::Recorder;
-use crate::probes::a53::{HighlightUpdates, html_buffer};
+use crate::probes::a68::{HighlightUpdates, html_buffer};
 use crate::probes::post_open::{MAX_ITERATIONS, short_html};
 use crate::session::flush_events;
 use crate::{AxiomId, Observation};
@@ -185,10 +185,10 @@ pub fn low_between_every_slice(trace: &[char]) -> bool {
         .all(|[left, right]| !(*left == 'H' && *right == 'H'))
 }
 
-/// Probe A54.
+/// Probe A69.
 #[must_use]
-pub fn probe_a54() -> Observation {
-    Recorder::run(AxiomId::new(54), |recorder| {
+pub fn probe_a69() -> Observation {
+    Recorder::run(AxiomId::new(69), |recorder| {
         crate::probes::text::record_text_toolkit(recorder);
         recorder.measure(
             "slices_cited_ms",
@@ -314,7 +314,7 @@ impl HighlightFixture {
     }
 
     /// Load `text` with no language and let the view settle; then attach
-    /// `language` (the attach call itself is not timed: it is the A52
+    /// `language` (the attach call itself is not timed: it is the A67
     /// parse) and time every main-loop iteration until the engine and the
     /// view are idle. Returns the longest iteration, µs, and how many engine
     /// dispatches the analysis took.
@@ -622,7 +622,7 @@ impl HighlightFixture {
         let _ = self.classified_until_quiet(&updates, false);
         buffer.set_language(Some(language));
         let mut all = self.classified_until_quiet(&updates, true);
-        for slice in crate::probes::a53::line_slices(text, chunk) {
+        for slice in crate::probes::a68::line_slices(text, chunk) {
             let started = Instant::now();
             let mut end = buffer.end_iter();
             buffer.insert(&mut end, slice);

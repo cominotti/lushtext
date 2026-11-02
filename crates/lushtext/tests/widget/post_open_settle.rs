@@ -254,7 +254,7 @@ fn test_editorconfig_tab_width_does_not_change_after_a_dense_install_starts() {
     // after the first slice, with or without the before-install refresh (that
     // refresh only covers an install starting before the map idle has run).
     // Its later changes come from a resize or the first map of a background
-    // tab, which the A58 exception runs at `G_PRIORITY_LOW` instead.
+    // tab, which the A73 exception runs at `G_PRIORITY_LOW` instead.
     ensure_gtk_init();
     let window = test_window();
     present_window(&window);

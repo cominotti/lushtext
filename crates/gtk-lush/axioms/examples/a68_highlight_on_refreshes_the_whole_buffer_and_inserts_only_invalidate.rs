@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A53: turning highlighting on refreshes the whole buffer inside
+//! Sample for A68: turning highlighting on refreshes the whole buffer inside
 //! the call, and inserts into a language-attached buffer only invalidate. Run
 //! the toggle at each size and the sliced inserts, and read the costs.
 
@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::a53::{TOGGLE_SIZES, insert_run, toggle_run};
+use gtk_lush_axioms::fixtures::a68::{TOGGLE_SIZES, insert_run, toggle_run};
 
 fn build(ui: &support::SampleUi) {
     let label = gtk4::Label::new(Some("No fixture view: the probe uses bare buffers."));
@@ -44,5 +44,5 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> std::process::ExitCode {
-    support::run(AxiomId::new(53), build)
+    support::run(AxiomId::new(68), build)
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A52: a language parses its definitions at its first attach and
+//! Sample for A67: a language parses its definitions at its first attach and
 //! shares the parse through the language object. Attach each language with a
 //! fresh private manager and read the first, shared and post-release attach
 //! costs; build the language catalog on a worker and read what it answered.
@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::a52::{LANGUAGES, SNIPPET, attach_costs, worker_catalog};
+use gtk_lush_axioms::fixtures::a67::{LANGUAGES, SNIPPET, attach_costs, worker_catalog};
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
 
@@ -56,5 +56,5 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> std::process::ExitCode {
-    support::run(AxiomId::new(52), build)
+    support::run(AxiomId::new(67), build)
 }

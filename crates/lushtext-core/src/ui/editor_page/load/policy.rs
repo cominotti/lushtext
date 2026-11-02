@@ -291,7 +291,7 @@ pub(crate) const fn publishes_user_cancellation(
 
 /// How long highlighting and validation must stay quiet before an opened
 /// document counts as settled (design D1): longer than one 2000 px batch
-/// interval and than the gap between context-engine slices (ledger A54: the
+/// interval and than the gap between context-engine slices (ledger A69: the
 /// background worker reschedules through an idle, so there is no timer gap),
 /// shorter than the debounce windows. The only time-based settle clause; it
 /// says "quiet", not "complete", because neither GtkSourceView nor
@@ -403,13 +403,13 @@ pub const fn deferred_attach_may_run(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HighlightAttachPlan {
     /// Highlighting stays on through the install: inserts into a buffer with
-    /// an attached language only invalidate (ledger A53), and the document is
+    /// an attached language only invalidate (ledger A68), and the document is
     /// within its language's total-size threshold, so the engine's analysis of
     /// it is bounded. Publishing then toggles nothing.
     KeepAttached,
     /// Highlighting goes off for the install and comes back at publish: the
     /// scale keeps syntax off for this document, and turning highlighting on
-    /// over a whole buffer costs O(document) in one dispatch (A53), so the
+    /// over a whole buffer costs O(document) in one dispatch (A68), so the
     /// install must not leave a language attached to a body it may not
     /// highlight.
     OffUntilPublish,

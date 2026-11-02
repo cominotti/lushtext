@@ -120,7 +120,7 @@ impl ChunkedLoadInstall {
 pub(crate) const PACED_SLICE_PRIORITY: glib::Priority = glib::Priority::DEFAULT_IDLE;
 
 /// Schedule the next slice of a paced (dense) installation from an idle
-/// below `GTK_TEXT_VIEW_PRIORITY_VALIDATE` (review R14, ledger A55):
+/// below `GTK_TEXT_VIEW_PRIORITY_VALIDATE` (review R14, ledger A70):
 /// GtkTextView's incremental validation idle lays out the previous slice's
 /// new lines first, so each validation dispatch holds one slice's lines, and
 /// the slices follow each other at main-loop speed (pacing by painted frames

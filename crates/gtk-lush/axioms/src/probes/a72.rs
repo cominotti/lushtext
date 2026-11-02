@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A57: the two ways of restyling a dense document without making
+//! A72: the two ways of restyling a dense document without making
 //! `GtkTextView` revalidate every line in document-sized batches
 //! (`bound-post-open-settle`, D9).
 //!
@@ -104,8 +104,8 @@ pub const SEED: u64 = 57;
 
 const QUIET: Duration = Duration::from_millis(250);
 const BUDGET: Duration = Duration::from_secs(20);
-const CSS_PROPERTY_CLASS: &str = "gtk-lush-axioms-a57-property";
-const CSS_FIXED_CLASS: &str = "gtk-lush-axioms-a57-fixed";
+const CSS_PROPERTY_CLASS: &str = "gtk-lush-axioms-a72-property";
+const CSS_FIXED_CLASS: &str = "gtk-lush-axioms-a72-fixed";
 
 /// The probe document: `LINES` dense lines, tab lines every
 /// `TAB_LINE_PERIOD`, `NEEDLE` on `NEEDLE_LINES`, ending in `\n`.
@@ -643,10 +643,10 @@ fn printed(recorder: &mut Recorder) -> Result<(i32, i32), Stop> {
     Ok((plain_pages, tagged_pages))
 }
 
-/// Probe A57.
+/// Probe A72.
 #[must_use]
-pub fn probe_a57() -> Observation {
-    Recorder::run(AxiomId::new(57), |recorder| {
+pub fn probe_a72() -> Observation {
+    Recorder::run(AxiomId::new(72), |recorder| {
         crate::probes::text::record_text_toolkit(recorder);
         settle(LAYOUT_SETTLE);
         let wrapped = tag_run(recorder, gtk4::WrapMode::Word)?;

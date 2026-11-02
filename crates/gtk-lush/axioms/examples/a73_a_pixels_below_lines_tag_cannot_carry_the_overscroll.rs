@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A58: a pixels-below-lines tag as end-of-document overscroll.
+//! Sample for A73: a pixels-below-lines tag as end-of-document overscroll.
 //! Tag the last paragraph (empty when the text ends in a newline) or the one
 //! before it, set the view's bottom margin, and watch the current-line
 //! highlight, the gutter and the map.
@@ -8,7 +8,7 @@
 mod support;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::a58::{ENDS_IN_NEWLINE, OVERSCROLL_PX};
+use gtk_lush_axioms::fixtures::a73::{ENDS_IN_NEWLINE, OVERSCROLL_PX};
 use gtk_lush_axioms::fixtures::post_open::DenseView;
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
@@ -64,5 +64,5 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> std::process::ExitCode {
-    support::run(AxiomId::new(58), build)
+    support::run(AxiomId::new(73), build)
 }

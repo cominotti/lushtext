@@ -256,7 +256,7 @@ pub mod a45 {
     pub use crate::probes::a45::{FRAMES_WAITED, TickPair};
 }
 
-/// The fixtures the post-open settle probes (A52–A58) share, for their
+/// The fixtures the post-open settle probes (A67–A73) share, for their
 /// samples.
 pub mod post_open {
     pub use crate::probes::post_open::{
@@ -266,25 +266,25 @@ pub mod post_open {
     };
 }
 
-/// The values and helpers the A52 probe drives, for its sample.
-pub mod a52 {
-    pub use crate::probes::a52::{
+/// The values and helpers the A67 probe drives, for its sample.
+pub mod a67 {
+    pub use crate::probes::a67::{
         LANGUAGES, SNIPPET, attach_costs, highlighted_buffer, snippet_tags, tagged_characters,
         worker_buffer_scheme, worker_catalog,
     };
 }
 
-/// The values and helpers the A53 probe drives, for its sample.
-pub mod a53 {
-    pub use crate::probes::a53::{
+/// The values and helpers the A68 probe drives, for its sample.
+pub mod a68 {
+    pub use crate::probes::a68::{
         HighlightUpdates, INSERT_SLICE, INSERTED_TOTAL, TOGGLE_SIZES, html_buffer, insert_run,
         toggle_run,
     };
 }
 
-/// The values and helpers the A54 probe drives, for its sample.
-pub mod a54 {
-    pub use crate::probes::a54::{
+/// The values and helpers the A69 probe drives, for its sample.
+pub mod a69 {
+    pub use crate::probes::a69::{
         B_INTERACT_US, B_SETTLE_US, ClassifiedDispatch, DERIVATION_BRACKET,
         DERIVATION_PRECISION_PERCENT, DERIVATION_REPETITIONS, DOCUMENT_BYTES, DispatchKind,
         HighlightFixture, KeyCost, all_fit, bisect_bytes, bisect_typing_bytes, engine_dispatches,
@@ -292,29 +292,29 @@ pub mod a54 {
     };
 }
 
-/// The fixture and values the A55 probe drives, and the `V_SLICE`
+/// The fixture and values the A70 probe drives, and the `V_SLICE`
 /// bisection its sample runs.
-pub mod a55 {
-    pub use crate::probes::a55::{
+pub mod a70 {
+    pub use crate::probes::a70::{
         CURVE_LINES, DERIVATION_CAP_LINES, DERIVATION_REPETITIONS, EDITOR_CLASS, EDITOR_FONT_PT,
         EDITOR_LINE_HEIGHT, PACED_INSERTS, Pacing, ValidationFixture, ViewStyle, bisect_lines,
         pacing_run,
     };
 }
 
-/// The helpers the A56 probe drives, for its sample.
-pub mod a56 {
-    pub use crate::probes::a56::{FIRST_VALUE, first_write};
+/// The helpers the A71 probe drives, for its sample.
+pub mod a71 {
+    pub use crate::probes::a71::{FIRST_VALUE, first_write};
 }
 
-/// The fixture and values the A57 probe drives, for its sample.
-pub mod a57 {
-    pub use crate::probes::a57::{DisplayCss, NEW_ZOOM, ZOOM, document, document_tag, style_css};
+/// The fixture and values the A72 probe drives, for its sample.
+pub mod a72 {
+    pub use crate::probes::a72::{DisplayCss, NEW_ZOOM, ZOOM, document, document_tag, style_css};
 }
 
-/// The fixture and values the A58 probe drives, for its sample.
-pub mod a58 {
-    pub use crate::probes::a58::{ENDS_IN_NEWLINE, ENDS_IN_TEXT, OVERSCROLL_PX};
+/// The fixture and values the A73 probe drives, for its sample.
+pub mod a73 {
+    pub use crate::probes::a73::{ENDS_IN_NEWLINE, ENDS_IN_TEXT, OVERSCROLL_PX};
 }
 
 /// The Protected View press-claim fixture and observers the A59 probe drives,

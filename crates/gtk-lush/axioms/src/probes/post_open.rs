@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The fixtures the post-open settle probes (A52–A58, LushText's
+//! The fixtures the post-open settle probes (A67–A73, LushText's
 //! `bound-post-open-settle`) and their samples share: short-line HTML and
 //! dense-line documents, a reference-sized source view without a language,
 //! timed main-context dispatches, a priority bracket that isolates the

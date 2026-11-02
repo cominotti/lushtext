@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A52: a GtkSourceView language parses its definition files when it is
+//! A67: a GtkSourceView language parses its definition files when it is
 //! first attached to a buffer, and keeps the parsed data **on the language
 //! object** for as long as a buffer's engine holds it: a second buffer
 //! attaching the same language object while the first holds it parses
@@ -259,10 +259,10 @@ pub fn spawn_worker_catalog() -> std::thread::JoinHandle<WorkerCatalog> {
     })
 }
 
-/// Probe A52.
+/// Probe A67.
 #[must_use]
-pub fn probe_a52() -> Observation {
-    Recorder::run(AxiomId::new(52), |recorder| {
+pub fn probe_a67() -> Observation {
+    Recorder::run(AxiomId::new(67), |recorder| {
         crate::probes::text::record_text_toolkit(recorder);
 
         // The catalog built on a worker first, in a process whose GTK thread

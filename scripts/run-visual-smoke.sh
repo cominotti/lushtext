@@ -1439,6 +1439,7 @@ run_capture() {
                     --window-string-action "set-command-palette-mode=files"
                     --window-string-action "set-command-palette-query=visual-smoke"
                     --wait-atspi-text "visual-smoke.txt"
+                    --wait-predicate idle
                 )
                 ;;
             command-palette-commands)
@@ -1446,6 +1447,7 @@ run_capture() {
                     --window-string-action "set-command-palette-mode=commands"
                     --window-string-action "set-command-palette-query=Save"
                     --wait-atspi-text "Save"
+                    --wait-predicate idle
                 )
                 ;;
             command-palette-notes)
@@ -1453,6 +1455,7 @@ run_capture() {
                     --window-string-action "set-command-palette-mode=notes"
                     --window-string-action "set-command-palette-query=bookmark"
                     --wait-atspi-text "Visual bookmark"
+                    --wait-predicate idle
                 )
                 ;;
             command-palette-no-results)
@@ -1460,6 +1463,7 @@ run_capture() {
                     --window-string-action "set-command-palette-mode=files"
                     --window-string-action "set-command-palette-query=missing-palette-file"
                     --wait-atspi-text "Command palette no results"
+                    --wait-predicate idle
                 )
                 ;;
             command-palette-dense-files)
@@ -1467,6 +1471,7 @@ run_capture() {
                     --window-string-action "set-command-palette-mode=files"
                     --window-string-action "set-command-palette-query=palette-dense"
                     --wait-atspi-text "palette-dense-00.rs"
+                    --wait-predicate idle
                 )
                 ;;
         esac

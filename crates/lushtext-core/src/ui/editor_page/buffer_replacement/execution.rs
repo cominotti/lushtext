@@ -791,7 +791,7 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 /// Schedule a dense body's next insertion turn from an idle below
 /// `GTK_TEXT_VIEW_PRIORITY_VALIDATE`, so GtkTextView's validation idle lays
 /// out the previous slice first and each validation holds one slice's lines
-/// (`bound-post-open-settle`, review R14, ledger A55).
+/// (`bound-post-open-settle`, review R14, ledger A70).
 fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     let session_for_source = Rc::clone(session);
     let source_id = glib::idle_add_local_full(

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A56: the **first** write through a `GKeyfileSettingsBackend` whose
+//! A71: the **first** write through a `GKeyfileSettingsBackend` whose
 //! settings file does not exist yet (a fresh profile).
 //!
 //! The probe builds the fixture's keyfile backend over a missing file —
@@ -100,7 +100,7 @@ pub struct FirstWrite {
 /// Make the first write through a backend over a missing file.
 #[must_use]
 pub fn first_write(create_dir: bool) -> Option<FirstWrite> {
-    let fixture = KeyfileSettingsFixture::fresh("a56", create_dir)?;
+    let fixture = KeyfileSettingsFixture::fresh("a71", create_dir)?;
     let existed_before = fixture.file_exists();
     let (other_id, other) = OTHER_SCHEMAS
         .iter()
@@ -162,10 +162,10 @@ fn describe(run: &FirstWrite) -> String {
     )
 }
 
-/// Probe A56.
+/// Probe A71.
 #[must_use]
-pub fn probe_a56() -> Observation {
-    Recorder::run(AxiomId::new(56), |recorder| {
+pub fn probe_a71() -> Observation {
+    Recorder::run(AxiomId::new(71), |recorder| {
         let in_directory = recorder.require(
             first_write(true),
             "control: the GTK 4 schemas are installed",

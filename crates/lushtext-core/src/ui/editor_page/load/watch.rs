@@ -10,7 +10,7 @@
 //! `G_PRIORITY_LOW` **sentinel** idle; GTK's validation idles and the context
 //! engine's first-update idle run at higher priorities, so the sentinel only
 //! dispatches in an iteration where none of them was ready. The background
-//! analysis worker shares `G_PRIORITY_LOW` (ledger A54) and emits a mark per
+//! analysis worker shares `G_PRIORITY_LOW` (ledger A69) and emits a mark per
 //! slice, which `SETTLE_QUIET_US` covers. The pure predicate over these facts
 //! is `policy::settle_stage`; the evidence surface projects it.
 

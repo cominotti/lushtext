@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A57: a dense document restyled through a lowest-priority tag
+//! Sample for A72: a dense document restyled through a lowest-priority tag
 //! (family, relative scale) or through view CSS. Toggle the tag's zoom, the
 //! view's CSS zoom, and the hidden paragraphs, and watch the view and its map.
 
@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::a57::{
+use gtk_lush_axioms::fixtures::a72::{
     DisplayCss, NEW_ZOOM, ZOOM, document, document_tag, style_css,
 };
 use gtk_lush_axioms::fixtures::post_open::DenseView;
@@ -41,7 +41,7 @@ fn build(ui: &support::SampleUi) {
         let dense = dense.clone();
         ui.add_control("Move the view under the zoom CSS", move || {
             let _ = &css;
-            dense.view.add_css_class("gtk-lush-axioms-a57-property");
+            dense.view.add_css_class("gtk-lush-axioms-a72-property");
         });
     }
     {
@@ -67,5 +67,5 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> std::process::ExitCode {
-    support::run(AxiomId::new(57), build)
+    support::run(AxiomId::new(72), build)
 }

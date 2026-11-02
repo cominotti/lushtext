@@ -56,17 +56,17 @@ pub const S_SYNTAX: u64 = 1024 * 1024;
 
 /// The largest short-line document of each measured language whose
 /// background analysis keeps every dispatch within `B_SETTLE_US` after the
-/// attach (`S_BG_HIGHLIGHT`, `bound-post-open-settle` design D4; the A52
+/// attach (`S_BG_HIGHLIGHT`, `bound-post-open-settle` design D4; the A67
 /// parse excluded). The context engine's background slice is 30 ms (ledger
-/// A54), so this is where a document first needs one.
+/// A69), so this is where a document first needs one.
 ///
-/// Derived by the A54 sample (`--derive-s-bg-highlight`: an editor-like
+/// Derived by the A69 sample (`--derive-s-bg-highlight`: an editor-like
 /// presented view, 1280x800, monospace, wrap, line numbers; synthetic
 /// short-line documents; a size passes only if all 7 repetitions stay within
 /// `B_SETTLE_US`), two runs each through `scripts/measure.sh` on 2026-10-31;
 /// each value is the lower run, which was the first (load 19.2 before, 15.3
 /// after; the second ran at 11.4 falling to 0.8). Both runs and their loads
-/// are in ledger A54 and `docs/next/long-line-documents.md` (C6).
+/// are in ledger A69 and `docs/next/long-line-documents.md` (C6).
 mod attach_threshold {
     pub const HTML: u64 = 46 * 1024;
     pub const MARKDOWN: u64 = 320 * 1024;
@@ -84,7 +84,7 @@ mod attach_threshold {
 
 /// The largest document of the two languages whose context engine re-analyses
 /// past a mid-document edit on every keystroke for which each of seven keys
-/// keeps every dispatch within `B_INTERACT_US` (the A54 sample's
+/// keeps every dispatch within `B_INTERACT_US` (the A69 sample's
 /// mid-document typing mode, through `scripts/measure.sh` on 2026-10-31).
 ///
 /// HTML is the lowest of three runs (19,456 / 16,384 / 21,504 bytes at loads

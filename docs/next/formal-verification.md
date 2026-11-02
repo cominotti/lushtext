@@ -374,7 +374,7 @@ was added, for the same reason as C4b (a finite stage order, enumerated by unit
 tests); no envelope cites it.
 
 `long-line-protected-view` (C2, axioms landed 2026-10-30) added **A59–A66**,
-its provisional P1–P8 (C6 `bound-post-open-settle` holds A52–A58): a
+its provisional P1–P8 (C6 `bound-post-open-settle` holds A67–A73): a
 capture-phase press claim keeps a text view's own click and drag gestures from
 running (A59; the touchscreen half is not pinned, the private session cannot
 inject touch); a non-editable view gives its input method no focus-in and no key

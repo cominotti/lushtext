@@ -524,16 +524,16 @@ JSONC is deferred (requires custom `.lang` file — see `docs/next/jsonc-support
   it through `LushtextEditorPage::restyle_paced` (or, for a display-wide CSS
   change, `prepare_paced_restyle_everywhere` / `start_paced_reveal_everywhere`),
   which hides the paragraphs outside the visible ones and reveals them in
-  `V_SLICE` ranges (ledger A57). A buffer tag cannot carry such a style: the
+  `V_SLICE` ranges (ledger A72). A buffer tag cannot carry such a style: the
   gutter takes its font from CSS and the empty last line has no character.
 - The end-of-document overscroll of a dense document is set before the first
   install slice; a later resize-driven `bottom-margin` change runs at
-  `G_PRIORITY_LOW` (a `pixels-below-lines` tag cannot carry it, A58), and a
+  `G_PRIORITY_LOW` (a `pixels-below-lines` tag cannot carry it, A73), and a
   view that only became shorter keeps the larger margin while it still fits
   (`bottom_margin_after_viewport_change`): an inline alert, the search bar or
   a bottom sheet must not re-lay out the whole document.
 - Never attach a language directly: call `request_language_attach`, which
-  defers the definition parse to the attach stage (A52).
+  defers the definition parse to the attach stage (A67).
 
 ## Large-Buffer Preview And Marker Guardrails
 

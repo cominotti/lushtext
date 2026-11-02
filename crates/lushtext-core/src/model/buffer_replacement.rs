@@ -10,7 +10,7 @@
 //! A slice is bounded by bytes ([`REPLACEMENT_INSERT_SLICE_BYTES`]), which
 //! bounds the insert itself, and, for a **dense** document, also by visible
 //! characters ([`V_SLICE`]), which bounds the line validation the slice's new
-//! lines cause in the frame that lays them out (ledger A31, A55). A document is
+//! lines cause in the frame that lays them out (ledger A31, A70). A document is
 //! dense when [`batch_exceeds_slice`] holds for its profile: some validation
 //! batch's worth of consecutive paragraphs holds more than `V_SLICE` visible
 //! characters. The slice-end decision itself is [`PacedSlice`], over abstract
@@ -44,12 +44,12 @@ pub const REPLACEMENT_INSERT_SLICE_BYTES: usize = 256 * 1024;
 
 /// The most visible characters one paced slice may install, so that the
 /// validation its new lines cause fits half of `B_SETTLE_US` in either wrap
-/// mode (`bound-post-open-settle`, design D6; derived by ledger A55).
+/// mode (`bound-post-open-settle`, design D6; derived by ledger A70).
 ///
 /// "Visible characters" are Unicode scalar values excluding paragraph
 /// delimiters, as `paragraph_boundary`'s profile counts them.
 ///
-/// Derived 2026-10-30 by the A55 probe (`gtk-lush-axioms`, bisected over
+/// Derived 2026-10-30 by the A70 probe (`gtk-lush-axioms`, bisected over
 /// inserts of 710-character lines, two exclusive-lock runs at load 1.3–2.5,
 /// identical): 78 lines of 710 characters fit half of `B_SETTLE_US` with
 /// wrapping off, which binds; with wrapping on no validation dispatch exceeded
@@ -57,7 +57,7 @@ pub const REPLACEMENT_INSERT_SLICE_BYTES: usize = 256 * 1024;
 ///
 /// That bare-view figure (55,380) did not hold in the application: the lane
 /// measured ~21 ms validation batches there. The editor-like re-derivation
-/// (A55: the editor's font CSS, line numbers, current-line highlight, with and
+/// (A70: the editor's font CSS, line numbers, current-line highlight, with and
 /// without a `GtkSourceMap`; host load 40–56, so magnitudes only) found a step
 /// between 11,360 characters (every repetition at most 4.0 ms) and 22,720
 /// (saturated at 8–9 ms). `V_SLICE` is therefore the last size below that

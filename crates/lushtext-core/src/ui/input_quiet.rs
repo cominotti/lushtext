@@ -6,7 +6,7 @@
 //! **Cross-cutting, no role.** Its one consumer is the deferred language
 //! attach of `WFR-DOCUMENT-LOAD`, which waits for an input-quiet interval
 //! before running the language-definition parse that cannot leave the GTK
-//! thread (ledger A52). Only discrete user input counts: key presses, button
+//! thread (ledger A67). Only discrete user input counts: key presses, button
 //! presses, scroll events and touch begins. Pointer motion, crossing events,
 //! releases and touch updates do not, because they can arrive every frame for
 //! as long as the pointer moves.

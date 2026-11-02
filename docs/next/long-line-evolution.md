@@ -102,7 +102,7 @@ input to presented frame, measured on the maintainer's desktop.
    is in its proposal: C2 owns giant-paragraph layout and the 32 MiB draft recovery, and C6
    owns everything else after open.
    **Implemented 2026-10-31** on branch `bound-post-open-settle` (record: "C6" in
-   `long-line-documents.md`): deferred language attach (the A52 parse is a toolkit-floor
+   `long-line-documents.md`): deferred language attach (the A67 parse is a toolkit-floor
    exception), per-language syntax gates, `V_SLICE` = 11,360 paced dense installs and
    restyles, the `document-settled` predicate. Queued follow-up **C6b**: the chunked
    attach-before-install, which would lift the gate for ten languages.

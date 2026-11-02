@@ -13,9 +13,9 @@
 //! `.monospace` font) invalidates **every** line, and on a dense document
 //! (`batch_exceeds_slice`) each 2000 px validation batch then costs up to
 //! 21.6 ms in the lane. Mechanism A of the design (a tag carrying the style)
-//! fails ledger A57 (the gutter takes its font from CSS, and the empty last
+//! fails ledger A72 (the gutter takes its font from CSS, and the empty last
 //! line has no character to tag), so every such change uses **mechanism B,
-//! hide and reveal**, which A57 shows keeps the top line and the insert mark:
+//! hide and reveal**, which A72 shows keeps the top line and the insert mark:
 //!
 //! 1. in the interaction dispatch, every paragraph outside the visible ones is
 //!    hidden with an `invisible` tag (hidden text adds no layout, A24), and
@@ -30,7 +30,7 @@
 //! An editor that is not mapped hides everything and reveals once it is next
 //! mapped, so only the selected editor is paced first (review R22). While a
 //! reveal runs, a default search and the minimap see only the revealed text
-//! (A33, A57); tags do not dirty the buffer or record undo (A27).
+//! (A33, A72); tags do not dirty the buffer or record undo (A27).
 //!
 //! Two guards keep hidden text from being lost or stranded:
 //!

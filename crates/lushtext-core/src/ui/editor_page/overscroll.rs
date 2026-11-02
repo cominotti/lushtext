@@ -206,7 +206,7 @@ impl LushtextEditorPage {
     /// runs at `G_PRIORITY_LOW`, after input and validation; the install
     /// already set the margin before its first slice
     /// ([`Self::set_overscroll_before_install`], `bound-post-open-settle`
-    /// D6.2, the S7 fallback, ledger A58). Every other document keeps the
+    /// D6.2, the S7 fallback, ledger A73). Every other document keeps the
     /// default-priority idle.
     pub(crate) fn schedule_dynamic_overscroll_update(&self) {
         let generation = self
@@ -235,7 +235,7 @@ impl LushtextEditorPage {
 
     /// Set the end-of-document overscroll before a dense install's first
     /// insert, while the buffer holds no line to invalidate (the S7 fallback:
-    /// the margin is fixed at install, ledger A58).
+    /// the margin is fixed at install, ledger A73).
     pub(crate) fn set_overscroll_before_install(&self) {
         self.apply_dynamic_overscroll(false);
     }

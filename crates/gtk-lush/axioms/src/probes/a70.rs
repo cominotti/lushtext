@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A55: after text is inserted below the viewport of a validated
+//! A70: after text is inserted below the viewport of a validated
 //! `GtkTextView`, the view lays the inserted lines out in its **incremental
 //! validation idle** (`GTK_TEXT_VIEW_PRIORITY_VALIDATE`,
 //! `GDK_PRIORITY_REDRAW + 5`), which runs **after** the frame clock's paint
@@ -90,7 +90,7 @@ pub struct ValidationFixture {
     /// Counts the view's frames.
     pub frames: FrameCounter,
     _shown: Presented,
-    _editor: Option<(crate::probes::a57::DisplayCss, Option<sourceview5::Map>)>,
+    _editor: Option<(crate::probes::a72::DisplayCss, Option<sourceview5::Map>)>,
 }
 
 /// LushText's editor font size, pt (`ui/theme.rs`: the system monospace
@@ -99,7 +99,7 @@ pub const EDITOR_FONT_PT: f64 = 11.0;
 /// LushText's editor line height (`ui/theme.rs`, `EDITOR_GLYPH_LINE_HEIGHT`).
 pub const EDITOR_LINE_HEIGHT: f64 = 1.18;
 /// The CSS class the editor-like fixture's view carries.
-pub const EDITOR_CLASS: &str = "gtk-lush-axioms-a55-editor";
+pub const EDITOR_CLASS: &str = "gtk-lush-axioms-a70-editor";
 
 /// How the derivation's view is dressed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,7 +135,7 @@ impl ValidationFixture {
             None
         } else {
             let css = recorder.require(
-                crate::probes::a57::DisplayCss::install(&format!(
+                crate::probes::a72::DisplayCss::install(&format!(
                     "textview.{EDITOR_CLASS}, textview.{EDITOR_CLASS} text {{ font-family: \
                      \"Monospace\"; font-size: {EDITOR_FONT_PT:.1}pt; line-height: \
                      {EDITOR_LINE_HEIGHT:.2}; }}"
@@ -425,10 +425,10 @@ pub fn bisect_lines(
     low
 }
 
-/// Probe A55.
+/// Probe A70.
 #[must_use]
-pub fn probe_a55() -> Observation {
-    Recorder::run(AxiomId::new(55), |recorder| {
+pub fn probe_a70() -> Observation {
+    Recorder::run(AxiomId::new(70), |recorder| {
         crate::probes::text::record_text_toolkit(recorder);
         let wrapped = ValidationFixture::new(recorder, gtk4::WrapMode::Word)?;
         let vupper_before = wrapped.dense.uppers().1;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A56: the first write through a keyfile backend over a missing
+//! Sample for A71: the first write through a keyfile backend over a missing
 //! file. Make the write (in an existing directory and in a missing one) and
 //! read the changed emissions on each instance.
 
@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::a56::first_write;
+use gtk_lush_axioms::fixtures::a71::first_write;
 
 fn build(ui: &support::SampleUi) {
     let label = gtk4::Label::new(Some("A private keyfile backend; no widget is involved."));
@@ -34,5 +34,5 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> std::process::ExitCode {
-    support::run(AxiomId::new(56), build)
+    support::run(AxiomId::new(71), build)
 }

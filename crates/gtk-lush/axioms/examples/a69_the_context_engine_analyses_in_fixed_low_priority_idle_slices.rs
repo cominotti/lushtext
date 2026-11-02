@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A54: the context engine analyses in fixed idle slices at
+//! Sample for A69: the context engine analyses in fixed idle slices at
 //! G_PRIORITY_LOW. Run the analysis of 1 MiB of short-line HTML and read each
 //! dispatch, then the order of the engine's slices and three armed idles.
 //!
@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use std::process::ExitCode;
 
-use gtk_lush_axioms::fixtures::a54::{
+use gtk_lush_axioms::fixtures::a69::{
     B_INTERACT_US, B_SETTLE_US, ClassifiedDispatch, DERIVATION_BRACKET, DERIVATION_REPETITIONS,
     DispatchKind, HighlightFixture, KeyCost, all_fit, bisect_bytes, bisect_typing_bytes,
     engine_dispatches, over_budget, priority_trace, worst,
@@ -374,6 +374,6 @@ fn main() -> ExitCode {
     } else if argument("typing-s-bg-highlight").is_some() || argument("typing-check").is_some() {
         typing()
     } else {
-        support::run(AxiomId::new(54), build)
+        support::run(AxiomId::new(69), build)
     }
 }

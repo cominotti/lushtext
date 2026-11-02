@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A53: with a language attached, `set_highlight_syntax(true)` refreshes the
+//! A68: with a language attached, `set_highlight_syntax(true)` refreshes the
 //! **whole buffer inside the call** (`gtksourcecontextengine.c`
 //! `enable_highlight` l. 2275–2297 adds the whole buffer to the refresh
 //! region and calls `refresh_range`, which re-applies the context classes and
@@ -202,10 +202,10 @@ fn describe_drains(drains: &[Vec<TimedDispatch>]) -> String {
     }))
 }
 
-/// Probe A53.
+/// Probe A68.
 #[must_use]
-pub fn probe_a53() -> Observation {
-    Recorder::run(AxiomId::new(53), |recorder| {
+pub fn probe_a68() -> Observation {
+    Recorder::run(AxiomId::new(68), |recorder| {
         crate::probes::text::record_text_toolkit(recorder);
         let mut toggles = Vec::new();
         for bytes in TOGGLE_SIZES {

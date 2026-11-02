@@ -22,7 +22,7 @@
 //! part of its language specifications in its own GResource bundle, and a
 //! manager whose list is loaded off the GTK thread fails to open every one of
 //! them (`Unable to open 'resource:///org/gnome/gtksourceview/language-specs/…'`,
-//! ledger A52), so its catalog would lack YAML and others. One ~4 ms dispatch
+//! ledger A67), so its catalog would lack YAML and others. One ~4 ms dispatch
 //! fits `B_SETTLE_US` and is off the activation turn.
 //!
 //! Every LushText use of a language manager goes through [`manager`]; the

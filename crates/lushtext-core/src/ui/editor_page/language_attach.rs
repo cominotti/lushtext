@@ -13,7 +13,7 @@
 //!
 //! Attaching a language with embedded definitions parses them: about 37 ms
 //! for HTML, once per language per process, and that parse cannot leave the
-//! GTK thread (ledger A52, a toolkit-floor exception with an upstream
+//! GTK thread (ledger A67, a toolkit-floor exception with an upstream
 //! report). So every site that sets a language calls
 //! `LushtextEditorPage::request_language_attach`, which records the wanted
 //! id and schedules **one** attach stage:

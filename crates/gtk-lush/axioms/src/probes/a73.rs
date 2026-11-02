@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A58: a `pixels-below-lines` tag cannot carry a view's end-of-document
+//! A73: a `pixels-below-lines` tag cannot carry a view's end-of-document
 //! overscroll, and changing `bottom-margin` instead costs a revalidation.
 //!
 //! - Applying the tag to the **empty last paragraph** of a text that ends in
@@ -203,10 +203,10 @@ fn margin_cost(recorder: &mut Recorder, wrap: gtk4::WrapMode) -> Result<(MarginC
     ))
 }
 
-/// Probe A58.
+/// Probe A73.
 #[must_use]
-pub fn probe_a58() -> Observation {
-    Recorder::run(AxiomId::new(58), |recorder| {
+pub fn probe_a73() -> Observation {
+    Recorder::run(AxiomId::new(73), |recorder| {
         crate::probes::text::record_text_toolkit(recorder);
 
         // Empty last paragraph: the tag on it, then on the paragraph before.

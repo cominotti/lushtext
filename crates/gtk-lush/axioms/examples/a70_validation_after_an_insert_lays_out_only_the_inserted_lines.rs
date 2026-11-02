@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A55: after an insert below the viewport, the view lays out only
+//! Sample for A70: after an insert below the viewport, the view lays out only
 //! the inserted lines, in its validation idle. Append dense lines below a
 //! validated document and watch the content extent grow.
 //!
@@ -16,7 +16,7 @@ mod support;
 
 use std::process::ExitCode;
 
-use gtk_lush_axioms::fixtures::a55::{
+use gtk_lush_axioms::fixtures::a70::{
     DERIVATION_CAP_LINES, DERIVATION_REPETITIONS, ValidationFixture, ViewStyle, bisect_lines,
 };
 use gtk_lush_axioms::fixtures::post_open::{
@@ -136,6 +136,6 @@ fn main() -> ExitCode {
     if std::env::args().any(|argument| argument == "--derive-v-slice") {
         derive()
     } else {
-        support::run(AxiomId::new(55), build)
+        support::run(AxiomId::new(70), build)
     }
 }
