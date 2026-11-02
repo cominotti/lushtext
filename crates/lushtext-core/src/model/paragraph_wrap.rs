@@ -7,7 +7,7 @@
 //! the key press (ledger A53's companion profile: `gtk_text_view_commit_text`
 //! places the virtual cursor). A wrapped layout of a long paragraph costs
 //! about twice an unwrapped one, so a paragraph longer than
-//! [`L_WRAP_EDIT`](super::document_scale::L_WRAP_EDIT) is shown unwrapped
+//! [`L_WRAP_EDIT`] is shown unwrapped
 //! while every other paragraph keeps the user's wrap setting.
 //!
 //! The decision has **hysteresis**: a paragraph unwraps above the threshold

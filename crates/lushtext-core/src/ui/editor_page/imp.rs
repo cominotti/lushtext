@@ -161,6 +161,10 @@ pub enum PendingWarningAction {
     UndoLocalHistoryRestore,
     /// Open the local-history browser, where a stale draft's edits were kept.
     ShowLocalHistory,
+    /// Open the Line Inspector (the Protected View alert).
+    InspectLine,
+    /// Run the Protected View entry undo (the Protected View alert).
+    UndoProtectedEntry,
 }
 
 /// Whether the editor's current inline alert survives the next successful load.
@@ -188,6 +192,11 @@ pub struct DocumentMetadataState {
     pub encoding_state: Cell<DocumentEncodingState>,
     /// Whether the current on-disk representation carried a byte-order mark.
     pub has_bom: Cell<bool>,
+    /// Whether the loaded bytes would not come back from saving the decoded
+    /// text in its encoding and BOM state (`LoadMetadata::decode_round_trips`
+    /// negated, so the default is "exact"). A successful save clears it: the
+    /// file then holds exactly what a save writes.
+    pub decode_inexact: Cell<bool>,
     /// Encoding-adjacent health findings surfaced for the current content.
     pub file_health: RefCell<Vec<FileHealthFinding>>,
     /// Per-tab invisible-character visibility mode.
@@ -294,6 +303,10 @@ pub struct RestoreState {
     pub cursor_col: Cell<Option<u32>>,
     /// Deferred scroll-to line to apply after async file load completes.
     pub scroll_line: Cell<Option<u32>>,
+    /// The cursor a restore asked for in a Protected View document, where no
+    /// caret is placed: session saves persist it instead of the unmoved insert
+    /// mark (`protected-view-inspector-and-surfaces` task 3.4).
+    pub protected_cursor: Cell<Option<(u32, u32)>>,
 }
 
 /// Debounced persistence state shared by note-sidecar projections.
@@ -610,6 +623,12 @@ pub struct LushtextEditorPage {
     pub(crate) protected_find: super::protected_view::find_execution::ProtectedFindState,
     pub(crate) protected_source_capture:
         super::protected_view::capture_execution::SourceCaptureState,
+    /// The fold-marker gutter renderer while Protected View has one.
+    pub(crate) protected_fold_gutter: RefCell<Option<sourceview5::GutterRendererText>>,
+    /// The Protected View alert and notices.
+    pub(crate) protected_notice: super::protected_view::notice_execution::ProtectedNoticeState,
+    /// The Line Inspector (`protected-view-inspector-and-surfaces`).
+    pub(crate) line_inspector: super::protected_view::inspector_execution::LineInspectorState,
     /// Memory-residency and eviction bookkeeping for this tab.
     pub residency: MemoryResidencyState,
     /// Background file-load freshness primitives (generation + cancel token).
@@ -695,6 +714,11 @@ impl Default for LushtextEditorPage {
             protected_find: super::protected_view::find_execution::ProtectedFindState::default(),
             protected_source_capture:
                 super::protected_view::capture_execution::SourceCaptureState::default(),
+            protected_fold_gutter: RefCell::default(),
+            protected_notice:
+                super::protected_view::notice_execution::ProtectedNoticeState::default(),
+            line_inspector: super::protected_view::inspector_execution::LineInspectorState::default(
+            ),
             residency: MemoryResidencyState::default(),
             load_tracking: LoadTrackingState::default(),
             applied_style_scheme_id: RefCell::new(None),
@@ -751,6 +775,7 @@ impl ObjectImpl for LushtextEditorPage {
     // children — accessing `self.source_view` in Drop panics because the
     // TemplateChild's OnceCell is already empty.
     fn dispose(&self) {
+        self.obj().close_line_inspector();
         super::save::admission::cancel_for_editor(&self.obj());
         self.obj().cancel_buffer_replacement_for_dispose();
         self.obj().dispose_load_resources();
@@ -1075,6 +1100,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().setup_paragraph_wrap();
         self.obj().setup_bounded_surrounding_text();
         self.obj().setup_protected_view_interaction();
+        self.obj().install_fold_gutter();
         self.obj().apply_invisible_characters_mode();
         self.obj().refresh_accessibility_metadata();
     }
@@ -1085,7 +1111,14 @@ impl ObjectImpl for LushtextEditorPage {
 // `GtkBoxLayout`, so such an override would be silently dead code. Passive
 // viewport geometry changes are observed through the text view's scroll
 // adjustments in `overscroll.rs` instead.
-impl WidgetImpl for LushtextEditorPage {}
+impl WidgetImpl for LushtextEditorPage {
+    fn unroot(&self) {
+        // A closed or detached tab takes its Line Inspector with it: the
+        // dialog lives in the window's dialog host, not under this page.
+        self.obj().close_line_inspector();
+        self.parent_unroot();
+    }
+}
 impl BoxImpl for LushtextEditorPage {}
 
 /// Apply formatting settings to the source view, resolving EditorConfig

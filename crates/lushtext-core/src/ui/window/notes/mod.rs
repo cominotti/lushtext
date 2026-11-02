@@ -123,6 +123,7 @@ mod browser;
 mod chrome;
 mod editor_execution;
 mod evidence;
+mod install_execution;
 mod journal;
 mod menu;
 pub(crate) mod policy;

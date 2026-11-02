@@ -49,10 +49,7 @@ fn return_snapshot_to_browser(state: RestoreWorkState) {
         &state.browser.copy_button,
         !state.restore_snapshot.text.is_empty(),
     );
-    state
-        .browser
-        .loaded_snapshot
-        .replace(Some(state.restore_snapshot));
+    state.browser.return_loaded_snapshot(state.restore_snapshot);
 }
 
 /// State passed through the restore-safety background capture.
@@ -174,7 +171,7 @@ impl LushtextWindow {
             &buffer,
             policy::PREVIEW_RESERVATION_BYTES,
         ) else {
-            browser.loaded_snapshot.replace(Some(snapshot));
+            browser.return_loaded_snapshot(snapshot);
             browser.restore_pending.set(true);
             let browser_weak = Rc::downgrade(browser);
             browser
@@ -186,10 +183,9 @@ impl LushtextWindow {
                     if !browser.restore_pending.replace(false) {
                         return;
                     }
-                    let Some(snapshot) = browser.loaded_snapshot.take() else {
-                        return;
-                    };
-                    LushtextWindow::restore_local_history_snapshot(&browser, snapshot);
+                    browser.with_owned_loaded_snapshot(|browser, snapshot| {
+                        LushtextWindow::restore_local_history_snapshot(browser, snapshot);
+                    });
                 });
             set_local_history_action_enabled(&browser.copy_button, true);
             browser.window.publish_status_message(
@@ -205,7 +201,7 @@ impl LushtextWindow {
             let browser = browser_for_restore;
             browser.restore_snapshot.take();
             let buffer_snapshot::BufferSnapshotOutcome::Captured(undo_payload) = outcome else {
-                browser.loaded_snapshot.replace(Some(snapshot));
+                browser.return_loaded_snapshot(snapshot);
                 set_local_history_action_enabled(&browser.restore_button, true);
                 set_local_history_action_enabled(&browser.copy_button, true);
                 return;
@@ -326,12 +322,12 @@ impl LushtextWindow {
                                 browser.dialog.close();
                             },
                             move |text| {
-                                cancelled_browser.loaded_snapshot.replace(Some(
+                                cancelled_browser.return_loaded_snapshot(
                                     text.map_preserving_reservation(|text| LocalHistorySnapshot {
                                         meta: restore_meta,
                                         text,
                                     }),
-                                ));
+                                );
                             },
                         )
                         .with_profile(restore_profile),

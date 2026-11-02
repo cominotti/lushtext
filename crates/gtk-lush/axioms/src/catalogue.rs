@@ -1131,6 +1131,21 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a74),
     },
+    Axiom {
+        id: AxiomId::new(75),
+        name: "a75_a_text_width_change_relays_out_every_paragraph",
+        statement: "after a wrapping text view's text width changes (a left gutter growing), \
+                    once the view settles, its last, offscreen paragraph sits exactly where a \
+                    view built at the new width puts it, and not where it sat before: every \
+                    paragraph is laid out again; the revalidation time is recorded",
+        dependent_designs: &[
+            "protected-view-inspector-and-surfaces (C2b review S4): the fold-marker gutter \
+             column keeps a fixed width, so entering or leaving Protected View never resizes \
+             the text area",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a75),
+    },
 ];
 
 #[cfg(test)]

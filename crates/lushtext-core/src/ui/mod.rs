@@ -13,6 +13,8 @@ pub(crate) mod buffer_snapshot;
 pub mod command_palette;
 pub(crate) mod construction_spans;
 pub mod editor_page;
+pub mod entry_paste_cap;
+pub mod folded_text;
 pub mod info_bar;
 pub mod input_quiet;
 pub mod language_catalog;

@@ -23,6 +23,12 @@
 //! | `capture_execution` | coordination | the edit-entry source capture: one iterator kept across bounded dispatches, re-positioned by line and byte index after a mark or tag change, joined and owned for disposal on a worker |
 //! | `find_execution` | coordination | the worker-find stage: the search bar's routed query and navigation, one worker search over the source at a time, matches published as paragraph, column and length |
 //! | `interaction_execution` | coordination | the caret-free interaction stage: stopped keybinding signals, the `move-cursor` intercept, the capture key controller and gestures, drop targets |
+//! | `inspector_execution` | coordination | the Line Inspector's worker window reads, Copy Whole Line's lazy chunked clipboard provider, navigation through the `protected-nav` mark |
+//! | `notice_execution` | coordination | the one Protected View alert and the rate-limited pre-emption notice |
+//!
+//! Called presentation surfaces in this directory, with no role: `inspector`
+//! (the Line Inspector dialog), `menu` (the Protected View menu) and
+//! `fold_gutter` (the fold-marker gutter).
 //!
 //! Called presentation surfaces outside this directory: `ui/protected_fold.rs`
 //! (the fold tag and the folded insert the install turns call), the search
@@ -53,15 +59,30 @@
 //!    in its completion and sets the clipboard with the bytes selected at the
 //!    request, so it needs no freshness check. Save writes the source verbatim
 //!    (`save/execution.rs`).
-//! 5. **Leave.** A reload from disk re-derives the session; the entry undo
+//! 5. **Read and navigate** (`inspector_execution`). The Line Inspector
+//!    reads each window on a worker, resuming in its completion only for the
+//!    latest window generation of the same session; Copy Whole Line locates
+//!    the paragraph on a worker, and its provider resumes once per chunk a
+//!    clipboard reader awaits. Navigation from other workflows scrolls the
+//!    `protected-nav` mark and never places a caret.
+//! 6. **Tell the user** (`notice_execution`). An idle after an install
+//!    terminal or an edit entry shows the one alert; a pre-empted request
+//!    publishes the rate-limited notice synchronously.
+//! 7. **Leave.** A reload from disk re-derives the session; the entry undo
 //!    (`undo_protected_entry`) ends an edit-growth session and restores the
-//!    scale held before entry.
+//!    scale held before entry. Leaving closes the inspector, hides the gutter
+//!    and withdraws the alert.
 
 pub(crate) mod capture_execution;
 pub(crate) mod evidence;
 pub(crate) mod execution;
 pub(crate) mod find_execution;
+pub(crate) mod fold_gutter;
+pub(crate) mod inspector;
+pub(crate) mod inspector_execution;
 pub(crate) mod interaction_execution;
+pub(crate) mod menu;
+pub(crate) mod notice_execution;
 pub(crate) mod policy;
 pub(crate) mod seams;
 

@@ -17,9 +17,7 @@
 
 use std::path::PathBuf;
 
-use crate::model::buffer_replacement::{
-    REPLACEMENT_INSERT_SLICE_BYTES, SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES,
-};
+use crate::model::buffer_replacement::SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES;
 use crate::model::local_history::{LocalHistorySnapshotMeta, LocalHistorySnapshotOrigin};
 use crate::services::local_history_service::LocalHistoryAvailability;
 
@@ -55,8 +53,6 @@ pub(super) const EMPTY_HEIGHT_SP: i32 = 480;
 
 /// Maximum preview body installed synchronously in one GTK turn.
 pub(super) const PREVIEW_DIRECT_THRESHOLD_BYTES: usize = SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES;
-/// Maximum UTF-8 bytes inserted by one scheduled preview slice.
-pub(super) const PREVIEW_INSTALL_SLICE_BYTES: usize = REPLACEMENT_INSERT_SLICE_BYTES;
 /// Conservative future worker-drop ownership for a browseable history body.
 pub(super) const PREVIEW_RESERVATION_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -420,7 +416,6 @@ mod tests {
             PREVIEW_DIRECT_THRESHOLD_BYTES,
             SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES
         );
-        assert_eq!(PREVIEW_INSTALL_SLICE_BYTES, REPLACEMENT_INSERT_SLICE_BYTES);
     }
 
     #[test]

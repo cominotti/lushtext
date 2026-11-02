@@ -239,6 +239,7 @@ impl ObjectSubclass for LushtextPreferences {
 impl ObjectImpl for LushtextPreferences {
     fn constructed(&self) {
         self.parent_constructed();
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.workspace_excluded_add_row);
 
         let s = &self.settings;
 

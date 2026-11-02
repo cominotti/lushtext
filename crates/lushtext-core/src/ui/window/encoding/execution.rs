@@ -32,6 +32,7 @@ use crate::model::encoding::{
 use crate::services::editor_io::{self, LossyEncodingPreview};
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::editor_page::ProtectedAction;
 use crate::ui::status_bar::MessageKind;
 
 use super::super::LushtextWindow;
@@ -273,6 +274,12 @@ pub(super) fn apply_line_ending(window: &LushtextWindow, line_ending: LineEnding
     let Some(editor) = window.active_editor() else {
         return;
     };
+    // Protected View writes its source verbatim: the separators it holds are
+    // the ones every save writes (`protected-view-inspector-and-surfaces`).
+    if editor.is_protected_view() {
+        editor.notify_protected_preemption(ProtectedAction::NormalizeLineEndings);
+        return;
+    }
 
     editor.set_save_line_ending(line_ending);
     if editor.detected_line_ending() == LineEnding::Mixed {
@@ -320,6 +327,10 @@ pub(super) fn cycle_invisible_characters(window: &LushtextWindow) {
         return;
     };
 
+    if editor.is_protected_view() {
+        editor.notify_protected_preemption(ProtectedAction::CycleInvisibleCharacters);
+        return;
+    }
     apply_invisible_mode(window, &editor, editor.invisible_characters_mode().next());
 }
 
@@ -331,6 +342,10 @@ pub(super) fn apply_invisible_mode_to_active(
     let Some(editor) = window.active_editor() else {
         return;
     };
+    if editor.is_protected_view() {
+        editor.notify_protected_preemption(ProtectedAction::CycleInvisibleCharacters);
+        return;
+    }
     apply_invisible_mode(window, &editor, mode);
 }
 

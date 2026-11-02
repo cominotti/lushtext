@@ -799,8 +799,11 @@ impl LushtextWindow {
 /// If the editor is still loading, this is a best-effort attempt — the content
 /// may not be available yet, in which case the cursor ends up at line 0.
 fn scroll_editor_to_line(editor: &LushtextEditorPage, line: u32) {
-    let buffer = editor.buffer();
     let line_0 = line.saturating_sub(1);
+    if editor.navigate_protected_line(u64::from(line_0)) {
+        return;
+    }
+    let buffer = editor.buffer();
     let line_index = i32::try_from(line_0).unwrap_or(i32::MAX);
     let iter = buffer
         .iter_at_line(line_index)

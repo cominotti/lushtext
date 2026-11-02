@@ -357,6 +357,12 @@ impl LushtextWindow {
         }
         let has_backing_file = editor.file_path().is_some();
         editor.set_draft_restored(true);
+        // A protected recovered draft shows one merged alert: the restored-draft
+        // actions plus the view-only explanation (`protected-view-inspector-and-surfaces`).
+        if editor.is_protected_view() {
+            editor.publish_protected_alert();
+            return;
+        }
         editor.emit_inline_notification(
             InlineActionNotification {
                 style: InlineNotificationStyle::Warning,

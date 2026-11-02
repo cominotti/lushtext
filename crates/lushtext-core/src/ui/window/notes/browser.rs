@@ -286,6 +286,7 @@ impl LushtextWindow {
             .build();
 
         let search_entry = gtk4::SearchEntry::new();
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&search_entry);
         install_dialog_escape_close(&dialog, &search_entry);
         search_entry.set_placeholder_text(Some("Search Notes..."));
         accessibility::set_labelled_description(

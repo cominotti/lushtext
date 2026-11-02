@@ -15,21 +15,28 @@ Window text SHALL be read off GTK from the immutable Protected View text source 
 
 ### Requirement: Secondary views of protected documents follow the same policy
 Every secondary view of a protected document SHALL follow the Protected View policy:
-- **Local-history preview:** installs the snapshot protected and folded through the same executor, and the preview view is itself non-editable and caret-free, with the same capture gesture and key pre-emption.
+- **Local-history preview:** installs the snapshot folded at insertion through the same executor (`ui/protected_fold.rs`, one hidden-tail insert per main-loop iteration), into a preview view that is non-editable and caret-free; its Copy button copies the snapshot from the retained snapshot, never from the folded view.
 - **Markdown preview:** renders a paragraph longer than its admission budget as the existing `Simplified` or limited terminal, with the omission announced.
 - **File peek:** shows only the bounded sample, and the sample's longest line SHALL NOT exceed `head_cap` visible characters.
-- **Notes editors:** a note body whose profile reaches `protected_view` SHALL open read-only with the same notice.
+- **Notes editors:** a note body whose profile reaches `protected_view` SHALL open read-only and folded at insertion, with a visible notice that its long lines are shortened.
 
 #### Scenario: Local-history preview of a giant-paragraph snapshot
 - **WHEN** the user previews a local-history snapshot whose profile reaches `protected_view`
 - **THEN** the preview view is non-editable, caret-free and folded at insertion
 
 ### Requirement: Folded lines are marked in a gutter
-A Protected View gutter renderer SHALL mark each paragraph that has a hidden tail and SHALL expose the hidden-character count in its tooltip and accessible label. Activating the marker SHALL open the Line Inspector on that paragraph. The renderer's per-frame work SHALL be bounded by the number of visible rows.
+A Protected View gutter renderer SHALL mark each paragraph that has a hidden tail and SHALL expose the hidden-character count in its tooltip; the renderer SHALL carry an accessible label and a description naming the Inspect Line shortcut (a gutter draws its rows and has no per-row accessible object, so the count is also spoken by the Line Inspector's window label). A single primary click in the left gutter beside a folded paragraph SHALL open the Line Inspector on that paragraph. The renderer's per-frame work SHALL be bounded by the number of visible rows, and it SHALL be shown only while the session is protected.
 
 #### Scenario: Activating a fold marker
 - **WHEN** the user clicks the fold marker next to a folded paragraph
 - **THEN** the Line Inspector opens on that paragraph's first window and the insert mark does not move
+
+### Requirement: Protected heads follow the per-paragraph wrap gate
+A protected paragraph's visible head SHALL follow C5's per-paragraph wrap gate like any paragraph longer than `L_WRAP_EDIT`: it is shown unwrapped. Reading a long line wrapped is the Line Inspector's job (its window wraps). Decision of `protected-view-inspector-and-surfaces`, by measurement (2026-11-01, interleaved, plain, 3 + 3 runs each, load 0.8–3.0): with the gate, the worst open-phase dispatch outside the declared hidden-tail insert on the 1.9M wrap-on fixture is 8.7–12.5 ms (head frame paint 3.3–3.7 ms) and the tail insert 13.7–13.9 ms; exempting protected heads from the gate (heads wrapped) raises them to 12.2–16.2 ms (paint 13.3–13.9 ms, one sample over `B_settle`) and 18.7–19.0 ms. The gate keeps C2's accepted 17.6 ms head-frame exception from returning.
+
+#### Scenario: A protected head is unwrapped while word wrap is on
+- **WHEN** a document whose longest paragraph exceeds `L_PROTECT_EDIT` opens with word wrap on
+- **THEN** the folded paragraph's head carries the no-wrap tag, its hidden tail is never laid out, and every other short paragraph wraps
 
 ## MODIFIED Requirements
 
@@ -58,23 +65,31 @@ The secondary-press context menu and the keyboard menu bindings SHALL open a Pro
 - **WHEN** the user single-, double- or triple-clicks or drags inside a giant paragraph's head
 - **THEN** the capture-phase gesture claims the sequence, the insert and selection-bound marks do not move, and no selection exists
 
-#### Scenario: Disabled edit action shows a notice
-- **WHEN** the user presses Ctrl+V, Ctrl+X, Ctrl+A, Ctrl+Shift+A, Ctrl+%, F7, Shift+F10, Ctrl+Z or Alt+Up in a protected document
+#### Scenario: Disabled edit action changes nothing
+- **WHEN** the user presses Ctrl+V, Ctrl+X, Ctrl+A, Ctrl+Shift+A, Ctrl+%, F7 or Alt+Up in a protected document, or Ctrl+Z while no entry undo is available
 - **THEN** nothing in the buffer changes, the insert and selection-bound marks do not move, `cursor-visible` stays false, and the Protected View notice explains that the document is view-only and how to inspect a line
+
+#### Scenario: Context-menu keys open the Protected View menu
+- **WHEN** the user presses Shift+F10 or the Menu key in a protected document
+- **THEN** the Protected View menu opens instead of GtkTextView's default context menu, nothing in the buffer changes, and the insert and selection-bound marks do not move
 
 #### Scenario: Every toolkit binding is classified
 - **WHEN** the widget test enumerates the class shortcuts of the protected GtkSourceView
 - **THEN** every bound action and signal has an `action_disposition`, and none classified as pre-empted reaches its default handler
 
 ### Requirement: Navigation into protected documents scrolls without a caret
-Navigation into a protected document SHALL scroll a LushText-owned navigation mark to the target paragraph and SHALL NOT move the insert mark. This covers session restore position, bookmark activation, local-history targets, workspace-search hits and protected find results. When the target column lies inside a hidden tail, the system SHALL scroll to the paragraph and open the Line Inspector at the window that contains the target column.
+Navigation into a protected document SHALL scroll a LushText-owned navigation mark to the target paragraph and SHALL NOT move the insert mark. This covers session restore position, bookmark activation, local-history targets, workspace-search hits and protected find results. When a navigation carries a target column inside a hidden tail (protected find results), the system SHALL scroll to the paragraph and open the Line Inspector at the window that contains the target column. Workspace-search hits and bookmarks carry a line but no column (workspace-search excerpts are bounded), so they scroll to their paragraph; the in-tab find reaches a match in a hidden tail.
 
-#### Scenario: Workspace search hit inside a hidden tail
-- **WHEN** the user activates a workspace-search hit at a column inside the hidden tail of a folded paragraph
-- **THEN** the editor scrolls to the paragraph and the Line Inspector opens on the window containing that column
+#### Scenario: Workspace search hit in a folded paragraph
+- **WHEN** the user activates a workspace-search hit on a folded paragraph of a protected document
+- **THEN** the editor scrolls the navigation mark to that paragraph and the insert mark does not move
+
+#### Scenario: Find result inside a hidden tail
+- **WHEN** the user moves to the next protected find match and it lies in a hidden tail
+- **THEN** the Line Inspector opens on the window containing the match, with the match selected; the automatic first match of a new query only scrolls, so typing a query never opens a dialog over the search bar
 
 ### Requirement: In-tab find in Protected View runs on a worker
-No `GtkSourceSearchContext` SHALL ever be attached to a protected buffer. In-tab find SHALL run on a worker over the immutable Protected View text source and SHALL find matches in hidden tails as well as in visible text. Requests SHALL be single-flight: one active request and one latest pending request, with generation freshness. Results SHALL be paragraph-and-column records delivered to GTK in batches bounded by count and bytes, under a total result cap. Activating a result SHALL scroll to it, and SHALL highlight it with a display tag only when the match lies entirely in visible text; otherwise activation SHALL open the inspector. The search counter SHALL report found and capped states. In-tab Replace SHALL be unavailable. The editor-side and window-side selection-prefill sites SHALL both read `visible=true` text under the existing prefill bound.
+No `GtkSourceSearchContext` SHALL ever be attached to a protected buffer. In-tab find SHALL run on a worker over the immutable Protected View text source and SHALL find matches in hidden tails as well as in visible text. Requests SHALL be single-flight: one active request and one latest pending request, with generation freshness. Results SHALL be paragraph-and-column records delivered to GTK in batches bounded by count and bytes, under a total result cap. Activating a result SHALL scroll to it, and SHALL highlight it with a display tag only when the match lies entirely in visible text; otherwise an explicit next or previous step SHALL open the inspector on it (an inspector already open follows every current match). The search counter SHALL report found and capped states. In-tab Replace SHALL be unavailable. The editor-side and window-side selection-prefill sites SHALL both read `visible=true` text under the existing prefill bound.
 
 #### Scenario: Find in a giant line does not block
 - **WHEN** the user searches for a string that occurs 100,000 times in a protected document whose paragraph is 1,900,000 characters long

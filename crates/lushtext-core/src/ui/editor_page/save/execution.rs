@@ -127,6 +127,10 @@ struct SaveWriteOutcome {
     formatted_profile: Option<DocumentProfile>,
     retain_formatted_as_clean: bool,
     permit: Option<SavePayloadPermit>,
+    /// The save wrote a byte-exact copy of the file the document was loaded
+    /// from, so the loaded bytes' decode facts (an inexact decode, the health
+    /// findings) still describe the saved file.
+    byte_exact_copy: bool,
 }
 
 /// Begin one admitted save: revalidate, suspend the view, then capture text.
@@ -245,17 +249,45 @@ fn write_protected_source_async(
     } = admitted;
     editor.prepare_local_history_for_save();
     let was_modified_before_save = editor.buffer().is_modified();
-    let encoding = editor.document_encoding_state().save_encoding;
+    let encoding_state = editor.document_encoding_state();
+    let encoding = encoding_state.save_encoding;
     let history_availability = editor.live_local_history_availability();
+    // An unmodified document kept in its opened encoding saves as a
+    // byte-exact copy of the file it was loaded from (review S3): exact for
+    // every encoding, where re-encoding the source is exact only when the
+    // decode round-trips.
+    let loaded_file = (!was_modified_before_save && encoding == encoding_state.opened_encoding)
+        .then(|| editor.loaded_file_identity())
+        .flatten();
+    let decode_inexact = editor.decode_is_inexact();
     spawn_blocking_then(
         editor.clone(),
         move || {
-            let write_result = editor_io::write_document_verbatim_to_path(
-                &path,
-                source.text(),
-                encoding,
-                allow_lossy,
-            )?;
+            let copied = match loaded_file.as_ref() {
+                Some(loaded) => editor_io::copy_loaded_file_to_path(loaded, &path)?,
+                None => None,
+            };
+            let byte_exact_copy = copied.is_some();
+            let write_result = match copied {
+                Some(result) => result,
+                // The loaded file changed since: re-encoding would not give
+                // back the bytes it was read from.
+                None if loaded_file.is_some() && decode_inexact => {
+                    return Err(EditorSaveError::WriteTemp {
+                        path,
+                        source: std::io::Error::other(
+                            "the file changed on disk since it was opened, and this \
+                             document's encoding cannot write the same bytes again",
+                        ),
+                    });
+                }
+                None => editor_io::write_document_verbatim_to_path(
+                    &path,
+                    source.text(),
+                    encoding,
+                    allow_lossy,
+                )?,
+            };
             let canonical_path = fs_metadata::canonical_path(&path).ok();
             if history_availability.allows_browsing() {
                 let data_dir = crate::services::json_store::data_dir();
@@ -281,6 +313,7 @@ fn write_protected_source_async(
                 formatted_profile: None,
                 retain_formatted_as_clean: false,
                 permit: Some(permit),
+                byte_exact_copy,
             })
         },
         move |editor, result| {
@@ -422,6 +455,7 @@ fn write_snapshot_async(
                 formatted_profile,
                 retain_formatted_as_clean,
                 permit: Some(permit),
+                byte_exact_copy: false,
             })
         },
         move |editor, result| {
@@ -572,6 +606,16 @@ fn finish_accepted_save(
     editor.join_saved_document_scale(outcome.size);
     editor.imp().load_state.set(EditorLoadState::Loaded);
     editor.imp().latest_load_failed.set(false);
+    editor
+        .imp()
+        .canonical_file_path
+        .replace(outcome.canonical_path.take());
+    if outcome.byte_exact_copy {
+        // The saved file holds the loaded bytes: every decode fact about them
+        // (encoding, BOM, an inexact decode, the health findings) still holds.
+        finish_accepted_save_facts(editor, &mut outcome, callback);
+        return;
+    }
     let mut state = editor.document_encoding_state();
     state.opened_encoding = state.save_encoding;
     state.detected_line_ending = state.save_line_ending;
@@ -579,10 +623,7 @@ fn finish_accepted_save(
     editor.set_document_encoding_state(state);
     let has_bom = state.save_encoding.writes_bom();
     editor.set_has_bom(has_bom);
-    editor
-        .imp()
-        .canonical_file_path
-        .replace(outcome.canonical_path);
+    editor.imp().document_metadata.decode_inexact.set(false);
     let mut findings: Vec<FileHealthFinding> = editor
         .file_health()
         .into_iter()
@@ -607,6 +648,16 @@ fn finish_accepted_save(
         );
     }
     editor.set_file_health(findings);
+    finish_accepted_save_facts(editor, &mut outcome, callback);
+}
+
+/// The accepted save's terminal facts, shared by an encoded save and a
+/// byte-exact copy.
+fn finish_accepted_save_facts(
+    editor: &LushtextEditorPage,
+    outcome: &mut SaveWriteOutcome,
+    callback: SaveCallback,
+) {
     editor.notify_memory_policy_changed();
     editor.imp().monitor.last_known_mtime.set(outcome.mtime);
     editor.clear_modified_line_marks();

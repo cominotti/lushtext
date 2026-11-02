@@ -194,16 +194,49 @@ def context_click_accessible(node) -> bool:
     return True
 
 
-def synthesize_key(key: str) -> None:
-    if key == "Shift+F10":
-        pyatspi.Registry.generateKeyboardEvent(0, "Shift_L", pyatspi.KEY_PRESS)
-        time.sleep(0.05)
-        pyatspi.Registry.generateKeyboardEvent(0, "F10", pyatspi.KEY_PRESSRELEASE)
-        time.sleep(0.05)
-        pyatspi.Registry.generateKeyboardEvent(0, "Shift_L", pyatspi.KEY_RELEASE)
-        return
+# Modifier names a chord may use (`Ctrl+Alt+I`, `Shift+F10`), as the X11
+# modifier masks AT-SPI latches around the final key.
+CHORD_MODIFIERS = {
+    "shift": 1 << 0,
+    "ctrl": 1 << 2,
+    "control": 1 << 2,
+    "alt": 1 << 3,
+    "super": 1 << 6,
+}
 
-    pyatspi.Registry.generateKeyboardEvent(0, key, pyatspi.KEY_PRESSRELEASE)
+
+def chord_parts(key: str) -> tuple[int, str]:
+    """Split `Ctrl+Alt+I` into its modifier mask and its final keysym name; a
+    single-letter final key is sent as its lower-case keysym."""
+    parts = [part for part in key.split("+") if part]
+    if not parts:
+        raise ValueError(f"empty key {key!r}")
+    *modifiers, final = parts
+    mask = 0
+    for modifier in modifiers:
+        bit = CHORD_MODIFIERS.get(modifier.lower())
+        if bit is None:
+            raise ValueError(f"unknown modifier {modifier!r} in {key!r}")
+        mask |= bit
+    if len(final) == 1:
+        final = final.lower()
+    return mask, final
+
+
+def synthesize_key(key: str) -> None:
+    """Send `key` (a keysym name, optionally with `Ctrl+`, `Alt+`, `Shift+` or
+    `Super+` modifiers). The final key goes by keysym name (`KEY_SYM`), so no
+    keycode is assumed; modifiers are latched for it and released after."""
+    mask, final = chord_parts(key)
+    if mask:
+        pyatspi.Registry.generateKeyboardEvent(mask, None, pyatspi.KEY_LOCKMODIFIERS)
+        time.sleep(0.05)
+    try:
+        pyatspi.Registry.generateKeyboardEvent(0, final, pyatspi.KEY_SYM)
+        time.sleep(0.05)
+    finally:
+        if mask:
+            pyatspi.Registry.generateKeyboardEvent(mask, None, pyatspi.KEY_UNLOCKMODIFIERS)
 
 
 def main() -> int:

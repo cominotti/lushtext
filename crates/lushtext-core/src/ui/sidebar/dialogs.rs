@@ -39,6 +39,7 @@ impl LushtextSidebar {
         dialog.set_response_enabled("create", false);
 
         let entry = gtk4::Entry::new();
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&entry);
         entry.set_placeholder_text(Some("Workspace name"));
         entry.set_activates_default(true);
         dialog.set_extra_child(Some(&entry));
@@ -156,6 +157,7 @@ impl LushtextSidebar {
         dialog.set_close_response("cancel");
 
         let entry = gtk4::Entry::new();
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&entry);
         entry.set_text(&current_name);
         entry.set_activates_default(true);
         dialog.set_extra_child(Some(&entry));

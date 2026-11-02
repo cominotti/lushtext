@@ -106,6 +106,17 @@ impl LushtextEditorPage {
                 .push_str(" Content has been evicted from memory and will reload when selected.");
         }
 
+        // Protected View (`protected-view-inspector-and-surfaces`): the text
+        // AT reads is the folded view, and the Line Inspector is the reading
+        // path to the hidden tails.
+        if self.is_protected_view() {
+            details.push_str(&format!(
+                " View-only: very long lines are shortened in this view. Press {} to \
+                 inspect or copy a whole line.",
+                super::protected_view::policy::INSPECT_LINE_SHORTCUT_LABEL
+            ));
+        }
+
         let scale = self.document_scale();
         if !scale.open_allowed {
             details.push_str(" This document is too large to open.");

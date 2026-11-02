@@ -46,6 +46,7 @@
 
 use crate::ui::accessibility::{self, AnnouncementLane};
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::editor_page::ProtectedNotice;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
@@ -94,6 +95,19 @@ impl super::LushtextWindow {
         let Some(editor) = self.active_editor() else {
             return;
         };
+        // An unmodified protected document saves as a byte-exact copy of its
+        // file (review S3). An edited one writes its source in the opened
+        // encoding, which cannot give its text back exactly when the decode
+        // does not round-trip: only that Save As is refused.
+        if editor.is_protected_view()
+            && editor.is_modified()
+            && editor.decode_is_inexact()
+            && editor.document_encoding_state().save_encoding
+                == editor.document_encoding_state().opened_encoding
+        {
+            editor.publish_protected_notice(ProtectedNotice::SaveAsRefusedInexactDecode);
+            return;
+        }
 
         let dialog = gtk4::FileDialog::builder()
             .title("Save As")

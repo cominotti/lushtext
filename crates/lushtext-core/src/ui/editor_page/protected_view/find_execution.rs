@@ -12,8 +12,9 @@
 //! its result. A match is published as (paragraph, column, length) so
 //! navigation never positions an iterator inside a hidden tail (A66): a match
 //! in a visible head is tagged and scrolled to through a `protected-nav` mark;
-//! a match in a hidden tail scrolls to its paragraph's start (the Line
-//! Inspector, task 5.x, will open on it).
+//! a match in a hidden tail scrolls to its paragraph's start and, when the
+//! user navigates to it, opens the Line Inspector on its window
+//! (`policy::navigation_target`).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -22,7 +23,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gtk4::prelude::*;
 
-use super::policy::FIND_RESULT_CAP;
+use super::policy::{
+    FIND_RESULT_CAP, N_INSPECT_WIDTH, NavigationTarget, ParagraphExtent, navigation_target,
+};
 use crate::model::paragraph_boundary::next_paragraph_break;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_bar::{ExternalFindHandler, ExternalFindRequest, SearchOption};
@@ -132,7 +135,7 @@ impl LushtextEditorPage {
                 let first = (!hits.is_empty()).then_some(0);
                 state.hits.replace(hits);
                 state.current.set(first);
-                page.publish_protected_find();
+                page.publish_protected_find(false);
             },
         );
     }
@@ -150,11 +153,15 @@ impl LushtextEditorPage {
             (Some(index), false) => (index + total - 1) % total,
         };
         state.current.set(Some(next));
-        self.publish_protected_find();
+        self.publish_protected_find(true);
     }
 
-    /// Show the current match and the counter.
-    fn publish_protected_find(&self) {
+    /// Show the current match and the counter. `activated` is an explicit
+    /// navigation (next or previous): a match in a hidden tail then opens the
+    /// Line Inspector on its window. The automatic first match of a new query
+    /// only scrolls, so typing never pops a dialog over the search bar; an
+    /// inspector that is already open follows it.
+    fn publish_protected_find(&self, activated: bool) {
         let state = self.protected_find_state();
         let total = state.hits.borrow().len();
         let current = state.current.get();
@@ -168,12 +175,13 @@ impl LushtextEditorPage {
         let Ok(line) = i32::try_from(hit.paragraph) else {
             return;
         };
-        let buffer = self.buffer();
-        let visible = self.protected_fold_plan().is_none_or(|plan| {
-            plan.range_of(hit.paragraph)
-                .is_none_or(|range| hit.column.saturating_add(hit.chars) <= range.head_chars)
-        });
-        let target = if visible {
+        let range = self
+            .protected_fold_plan()
+            .and_then(|plan| plan.range_of(hit.paragraph));
+        let visible =
+            range.is_none_or(|range| hit.column.saturating_add(hit.chars) <= range.head_chars);
+        if visible {
+            let buffer = self.buffer();
             let (Ok(column), Ok(chars)) = (i32::try_from(hit.column), i32::try_from(hit.chars))
             else {
                 return;
@@ -184,19 +192,60 @@ impl LushtextEditorPage {
             let mut end = start;
             end.forward_chars(chars);
             buffer.apply_tag(&current_match_tag(buffer.upcast_ref()), &start, &end);
-            start
-        } else {
-            let Some(start) = buffer.iter_at_line(line) else {
-                return;
-            };
-            start
+            self.scroll_protected_navigation_iter(&start, false);
+            return;
+        }
+        self.scroll_protected_navigation_mark(hit.paragraph, 0);
+        if activated || self.line_inspector_visible() {
+            let extent = range.and_then(|range| {
+                ParagraphExtent::new(range.head_chars, range.head_chars + range.tail_chars)
+            });
+            if let Some(NavigationTarget::Inspect { paragraph, .. }) = extent
+                .map(|extent| navigation_target(hit.paragraph, hit.column, extent, N_INSPECT_WIDTH))
+            {
+                self.open_line_inspector_on_match(paragraph, hit.column, hit.chars);
+            }
+        }
+    }
+
+    /// Scroll the navigation mark to `column` of `paragraph` (a visible
+    /// column; callers pass 0 for a paragraph start). Never moves the insert
+    /// mark (design D7).
+    pub(crate) fn scroll_protected_navigation_mark(&self, paragraph: u64, column: u64) {
+        self.scroll_protected_navigation(paragraph, column, false);
+    }
+
+    /// As [`Self::scroll_protected_navigation_mark`], with the paragraph at
+    /// the top of the view (a restored scroll position).
+    pub(crate) fn scroll_protected_navigation_to_top(&self, paragraph: u64) {
+        self.scroll_protected_navigation(paragraph, 0, true);
+    }
+
+    fn scroll_protected_navigation(&self, paragraph: u64, column: u64, top: bool) {
+        let buffer = self.buffer();
+        let (Ok(line), Ok(column)) = (i32::try_from(paragraph), i32::try_from(column)) else {
+            return;
         };
+        let target = buffer
+            .iter_at_line_offset(line, column)
+            .or_else(|| buffer.iter_at_line(line))
+            .unwrap_or_else(|| buffer.end_iter());
+        self.scroll_protected_navigation_iter(&target, top);
+    }
+
+    fn scroll_protected_navigation_iter(&self, target: &gtk4::TextIter, top: bool) {
+        let buffer = self.buffer();
         let mark = buffer
             .mark(NAVIGATION_MARK)
-            .unwrap_or_else(|| buffer.create_mark(Some(NAVIGATION_MARK), &target, true));
-        buffer.move_mark(&mark, &target);
-        self.source_view()
-            .scroll_to_mark(&mark, 0.1, false, 0.0, 0.0);
+            .unwrap_or_else(|| buffer.create_mark(Some(NAVIGATION_MARK), target, true));
+        buffer.move_mark(&mark, target);
+        if top {
+            self.source_view()
+                .scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
+        } else {
+            self.source_view()
+                .scroll_to_mark(&mark, 0.1, false, 0.0, 0.0);
+        }
     }
 
     fn clear_current_match_tag(&self) {

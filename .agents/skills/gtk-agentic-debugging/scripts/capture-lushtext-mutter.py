@@ -196,7 +196,9 @@ def parse_args() -> argparse.Namespace:
             "wait-predicate, wait-atspi-text, atspi-set-editor-text, "
             "atspi-click-button, atspi-focus-accessible, "
             "atspi-activate-accessible, atspi-context-click-accessible, "
-            "or atspi-key."
+            "atspi-key, or rd-key (a key chord such as Ctrl+Alt+I sent through "
+            "Mutter's RemoteDesktop keyboard, after one focus click in the "
+            "middle of the screen)."
         ),
     )
     parser.add_argument(
@@ -945,6 +947,94 @@ def wait_for_ready(bus, artifact_dir: Path, predicate: str, timeout_msec: int) -
         raise RuntimeError(f"Automation1 WaitForReady({predicate}) failed: {status}: {detail}")
 
 
+# Keysyms a `rd-key` chord may name. Letters and digits map to themselves.
+RD_MODIFIER_KEYSYMS = {
+    "shift": 0xFFE1,
+    "ctrl": 0xFFE3,
+    "control": 0xFFE3,
+    "alt": 0xFFE9,
+    "super": 0xFFEB,
+}
+RD_NAMED_KEYSYMS = {
+    "escape": 0xFF1B,
+    "return": 0xFF0D,
+    "tab": 0xFF09,
+    "space": 0x0020,
+    "menu": 0xFF67,
+    "up": 0xFF52,
+    "down": 0xFF54,
+    "left": 0xFF51,
+    "right": 0xFF53,
+    "page_up": 0xFF55,
+    "page_down": 0xFF56,
+    **{f"f{number}": 0xFFBE + number - 1 for number in range(1, 13)},
+}
+_REMOTE_DESKTOP_SESSION: dict[int, str] = {}
+
+
+def rd_chord_keysyms(chord: str) -> tuple[list[int], int]:
+    """`Ctrl+Alt+I` -> ([Control_L, Alt_L], XK_i)."""
+    *modifiers, final = [part for part in chord.split("+") if part]
+    held = []
+    for modifier in modifiers:
+        keysym = RD_MODIFIER_KEYSYMS.get(modifier.lower())
+        if keysym is None:
+            raise RuntimeError(f"unknown modifier {modifier!r} in rd-key {chord!r}")
+        held.append(keysym)
+    if len(final) == 1 and final.isalnum():
+        return held, ord(final.lower())
+    keysym = RD_NAMED_KEYSYMS.get(final.lower())
+    if keysym is None:
+        raise RuntimeError(f"unknown key {final!r} in rd-key {chord!r}")
+    return held, keysym
+
+
+def remote_desktop_key(bus, artifact_dir: Path, chord: str) -> None:
+    """Send a key chord through Mutter's RemoteDesktop virtual keyboard. The
+    first use opens the session and clicks the middle of the screen once, so
+    the window has keyboard focus (keys are not delivered before a click)."""
+    from gi.repository import GLib
+
+    rd_bus = "org.gnome.Mutter.RemoteDesktop"
+    session_iface = "org.gnome.Mutter.RemoteDesktop.Session"
+    session = _REMOTE_DESKTOP_SESSION.get(id(bus))
+    if session is None:
+        (session,) = bus_call(
+            bus, rd_bus, "/org/gnome/Mutter/RemoteDesktop", rd_bus, "CreateSession", None, "(o)"
+        ).unpack()
+        bus_call(bus, rd_bus, session, session_iface, "Start")
+        time.sleep(1.0)
+        # Warm-up: the first notification of a fresh session is dropped.
+        bus_call(bus, rd_bus, session, session_iface, "NotifyKeyboardKeysym", GLib.Variant("(ub)", (0xFFE1, True)))
+        bus_call(bus, rd_bus, session, session_iface, "NotifyKeyboardKeysym", GLib.Variant("(ub)", (0xFFE1, False)))
+        bus_call(bus, rd_bus, session, session_iface, "NotifyPointerMotionRelative", GLib.Variant("(dd)", (1.0, 1.0)))
+        time.sleep(0.5)
+        bus_call(bus, rd_bus, session, session_iface, "NotifyPointerMotionRelative", GLib.Variant("(dd)", (-10_000.0, -10_000.0)))
+        width = int(os.environ.get("LUSHTEXT_CAPTURE_WIDTH", "1400"))
+        height = int(os.environ.get("LUSHTEXT_CAPTURE_HEIGHT", "900"))
+        bus_call(bus, rd_bus, session, session_iface, "NotifyPointerMotionRelative", GLib.Variant("(dd)", (width / 2, height / 2)))
+        time.sleep(0.2)
+        bus_call(bus, rd_bus, session, session_iface, "NotifyPointerButton", GLib.Variant("(ib)", (0x110, True)))
+        bus_call(bus, rd_bus, session, session_iface, "NotifyPointerButton", GLib.Variant("(ib)", (0x110, False)))
+        time.sleep(0.3)
+        _REMOTE_DESKTOP_SESSION[id(bus)] = session
+    held, final = rd_chord_keysyms(chord)
+
+    def notify(keysym: int, pressed: bool) -> None:
+        bus_call(bus, rd_bus, session, session_iface, "NotifyKeyboardKeysym", GLib.Variant("(ub)", (keysym, pressed)))
+        time.sleep(0.03)
+
+    for keysym in held:
+        notify(keysym, True)
+    notify(final, True)
+    notify(final, False)
+    for keysym in reversed(held):
+        notify(keysym, False)
+    with (artifact_dir / "rd-keys.txt").open("a", encoding="utf-8") as keys:
+        keys.write(f"chord={chord} keysyms={[hex(k) for k in held]}+{hex(final)}\n")
+    print(f"RemoteDesktop key: {chord}", flush=True)
+
+
 def run_ordered_step(bus, artifact_dir: Path, app_env: dict[str, str], step: str) -> None:
     kind, separator, value = step.partition(":")
     if not separator or not kind or not value:
@@ -996,6 +1086,9 @@ def run_ordered_step(bus, artifact_dir: Path, app_env: dict[str, str], step: str
         wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
     elif kind == "atspi-key":
         run_atspi_key_action(artifact_dir, app_env, value)
+        wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
+    elif kind == "rd-key":
+        remote_desktop_key(bus, artifact_dir, value)
         wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
     else:
         raise RuntimeError(f"unknown --step kind: {kind}")
@@ -1589,6 +1682,9 @@ def mutter_child(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = parse_args()
+    # The screen size `rd-key` clicks the middle of.
+    os.environ["LUSHTEXT_CAPTURE_WIDTH"] = str(args.width)
+    os.environ["LUSHTEXT_CAPTURE_HEIGHT"] = str(args.height)
     configure_runtime(args)
     try:
         if args.internal_run:

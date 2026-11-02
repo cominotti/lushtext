@@ -135,7 +135,8 @@ SHARDS: dict[str, Shard] = {
         # well inside the margin until the next CI measurement records it.
         # `post_open_settle` (bound-post-open-settle) joined the same way.
         # `protected_view` (long-line-protected-view) joined on 2026-10-31
-        # beside it, on the same terms.
+        # beside it, on the same terms, and `protected_view_surfaces`
+        # (protected-view-inspector-and-surfaces) on 2026-11-01.
         modules=(
             "attention_refresh",
             "document_scale",
@@ -143,6 +144,7 @@ SHARDS: dict[str, Shard] = {
             "multi_window_drafts",
             "post_open_settle",
             "protected_view",
+            "protected_view_surfaces",
             "sidebar",
             "workspace_entry_visibility",
         ),

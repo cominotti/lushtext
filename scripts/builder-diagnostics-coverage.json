@@ -70,6 +70,14 @@
       "templates": [
         "resources/ui/shortcuts.ui"
       ]
+    },
+    {
+      "id": "line-inspector-window",
+      "test": "protected_view_surfaces::test_the_line_inspector_reads_windows_in_the_middle_of_a_giant_paragraph",
+      "state": "representative window of a giant paragraph",
+      "templates": [
+        "resources/ui/line-inspector.ui"
+      ]
     }
   ],
   "templates": [
@@ -86,6 +94,11 @@
     {
       "path": "resources/ui/info-bar.ui",
       "source": "resources/ui/info-bar.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/line-inspector.ui",
+      "source": "resources/ui/line-inspector.blp",
       "coverage": "runtime"
     },
     {

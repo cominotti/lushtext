@@ -92,7 +92,7 @@ const _: () = assert!(MAX_FIND_RECORD_BYTES <= FIND_BYTES_PER_TURN);
 /// The most bytes one whole-line clipboard write copies per GTK dispatch
 /// (design D6). At least one UTF-8 scalar, so a chunk end can always be moved
 /// back to a character boundary without becoming empty.
-pub(crate) const COPY_CHUNK_BYTES: usize = 64 * 1024;
+pub const COPY_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Characters an edit entry's source capture copies per GTK dispatch (design
 /// D4): A66 measured 0.4–1.1 ms per 64 Ki characters at every depth of a
@@ -123,6 +123,12 @@ pub(crate) enum ProtectedNotice {
     InvisiblesUnavailable,
     /// Printing was requested.
     PrintRefused,
+    /// A bookmark toggle was requested: there is no caret line.
+    BookmarkUnavailable,
+    /// Line-ending normalization was requested.
+    LineEndingsUnavailable,
+    /// Save As of an edited document whose decode does not round-trip.
+    SaveAsRefusedInexactDecode,
 }
 
 /// The text of a Protected View notice.
@@ -131,7 +137,7 @@ pub(crate) const fn notice_text(notice: ProtectedNotice) -> &'static str {
     match notice {
         ProtectedNotice::EditRefused => {
             "This document is view-only because it contains very long lines. \
-             Use Inspect Line to read or copy a line."
+             Use Inspect Line (Ctrl+Alt+I) to read or copy a line."
         }
         ProtectedNotice::ReplaceUnavailable => {
             "Replace is not available in this view-only document with very long lines."
@@ -142,6 +148,173 @@ pub(crate) const fn notice_text(notice: ProtectedNotice) -> &'static str {
         ProtectedNotice::PrintRefused => {
             "Printing view-only documents with very long lines is not supported."
         }
+        ProtectedNotice::BookmarkUnavailable => {
+            "Bookmarks cannot be added or removed in this view-only document with very long lines."
+        }
+        ProtectedNotice::LineEndingsUnavailable => {
+            "Line endings cannot be changed in this view-only document with very long lines."
+        }
+        ProtectedNotice::SaveAsRefusedInexactDecode => {
+            "Save As is not available for this edited view-only document with very long \
+             lines: its encoding cannot write its text back exactly."
+        }
+    }
+}
+
+/// What Copy Whole Line says once the line is on the clipboard: its 1-based
+/// number and length. Bounded: numbers only.
+#[must_use]
+pub(crate) fn whole_line_copied_text(paragraph: u64, chars: u64) -> String {
+    let line = paragraph.saturating_add(1);
+    if chars == 1 {
+        format!("Line {line} copied (1 character)")
+    } else {
+        format!("Line {line} copied ({chars} characters)")
+    }
+}
+
+/// The shortcut of Inspect Line (`win.inspect-line`), named in the alert,
+/// the notice and the view's accessible description.
+pub(crate) const INSPECT_LINE_SHORTCUT_LABEL: &str = "Ctrl+Alt+I";
+
+/// The quiet interval of the pre-emption notice, in microseconds: a
+/// pre-empted request publishes the notice at most once per interval, unless
+/// a different notice is due. A time window, not a size, so it is not subject
+/// to the power-of-two rule; 4 s is long enough that ten Ctrl+V presses read
+/// as one message.
+pub(crate) const NOTICE_QUIET_US: i64 = 4_000_000;
+
+/// Notice reasons, one rate-limit slot each.
+const NOTICE_REASONS: usize = 7;
+
+/// When each notice reason was last published (monotonic µs): the rate limit
+/// is per reason (review S5), so another reason in between never lets one
+/// through again inside its quiet interval.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NoticeTimes([Option<i64>; NOTICE_REASONS]);
+
+const fn notice_slot(notice: ProtectedNotice) -> usize {
+    match notice {
+        ProtectedNotice::EditRefused => 0,
+        ProtectedNotice::ReplaceUnavailable => 1,
+        ProtectedNotice::InvisiblesUnavailable => 2,
+        ProtectedNotice::PrintRefused => 3,
+        ProtectedNotice::BookmarkUnavailable => 4,
+        ProtectedNotice::LineEndingsUnavailable => 5,
+        ProtectedNotice::SaveAsRefusedInexactDecode => 6,
+    }
+}
+
+impl NoticeTimes {
+    /// When `notice` was last published.
+    #[must_use]
+    pub(crate) const fn last(&self, notice: ProtectedNotice) -> Option<i64> {
+        self.0[notice_slot(notice)]
+    }
+
+    /// Record `notice` published at `now_us`.
+    pub(crate) const fn record(&mut self, notice: ProtectedNotice, now_us: i64) {
+        self.0[notice_slot(notice)] = Some(now_us);
+    }
+}
+
+/// Whether a pre-emption notice is published now (`now_us`, monotonic), given
+/// when that same reason was last published: at most once per
+/// [`NOTICE_QUIET_US`] per reason. A clock that went backwards publishes.
+#[must_use]
+pub(crate) const fn notice_due(last_of_this_reason: Option<i64>, now_us: i64) -> bool {
+    match last_of_this_reason {
+        None => true,
+        Some(at) => now_us < at || now_us.saturating_sub(at) >= NOTICE_QUIET_US,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Protected View alert
+// ---------------------------------------------------------------------------
+
+/// What the one Protected View inline alert must say and offer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ProtectedAlertFacts {
+    pub(crate) folded_paragraphs: u64,
+    /// The entry undo is available now (an edit entered Protected View, undo
+    /// history is on, and the entry edit is still the newest step).
+    pub(crate) entry_undo_available: bool,
+    /// The document is a recovered draft: `Some(has_backing_file)`. The alert
+    /// then merges with the restored-draft alert and keeps its actions.
+    pub(crate) restored_draft: Option<bool>,
+}
+
+/// The alert's primary button, as the executor wires it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProtectedAlertPrimary {
+    /// Open the Line Inspector at the viewport.
+    InspectLine,
+    /// Run the entry undo.
+    EntryUndo,
+    /// The restored-draft alert's Discard (its secondary is Save).
+    DiscardDraft,
+}
+
+/// The alert's copy. Bounded: no document text, numbers only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProtectedAlertCopy {
+    pub(crate) title: &'static str,
+    pub(crate) body: String,
+    pub(crate) primary_label: &'static str,
+    pub(crate) primary: ProtectedAlertPrimary,
+    pub(crate) secondary_label: Option<&'static str>,
+}
+
+/// Compose the one Protected View alert (spec "Protected View is announced by
+/// one bounded inline alert"). The alert has two action buttons at most, so a
+/// recovered draft keeps Discard and Save and names Inspect Line by its
+/// shortcut, and an available entry undo takes the primary button. The copy
+/// never promises to undo "the last keystroke": the entry undo removes the
+/// whole user action that made a line too long (design D2).
+#[must_use]
+pub(crate) fn protected_alert(facts: ProtectedAlertFacts) -> ProtectedAlertCopy {
+    let lines = match facts.folded_paragraphs {
+        0 => "Long lines are shortened.".to_owned(),
+        1 => "1 long line is shortened.".to_owned(),
+        count => format!("{count} long lines are shortened."),
+    };
+    let inspect =
+        format!("Use Inspect Line ({INSPECT_LINE_SHORTCUT_LABEL}) to read or copy a whole line.");
+    match facts.restored_draft {
+        Some(has_backing_file) => ProtectedAlertCopy {
+            title: "Draft Restored, View-Only",
+            body: format!(
+                "Unsaved changes from a previous session have been restored. \
+                 The document has very long lines, so it is view-only. {lines} {inspect}"
+            ),
+            primary_label: "_Discard…",
+            primary: ProtectedAlertPrimary::DiscardDraft,
+            secondary_label: Some(if has_backing_file {
+                "_Save…"
+            } else {
+                "Save _As…"
+            }),
+        },
+        None if facts.entry_undo_available => ProtectedAlertCopy {
+            title: "View-Only: Very Long Lines",
+            body: format!(
+                "An edit made a line too long to edit, so the document is view-only. \
+                 Undo Edit removes that edit. {lines} {inspect}"
+            ),
+            primary_label: "_Undo Edit",
+            primary: ProtectedAlertPrimary::EntryUndo,
+            secondary_label: None,
+        },
+        None => ProtectedAlertCopy {
+            title: "View-Only: Very Long Lines",
+            body: format!(
+                "This document has very long lines, so it is view-only. {lines} {inspect}"
+            ),
+            primary_label: "_Inspect Line",
+            primary: ProtectedAlertPrimary::InspectLine,
+            secondary_label: None,
+        },
     }
 }
 
@@ -350,6 +523,9 @@ pub(crate) enum ProtectedAction {
     // GtkTextView keybinding signals.
     MoveCursor,
     MoveViewport,
+    /// `move-focus` (Ctrl+Tab and its variants): moves keyboard focus out
+    /// of the view, touching no mark and no text.
+    MoveFocus,
     SelectAll,
     ToggleCursorVisible,
     CutClipboard,
@@ -364,6 +540,8 @@ pub(crate) enum ProtectedAction {
     InsertEmoji,
     // GtkTextView class actions reached by bindings or the default menu.
     DeleteSelection,
+    /// `text.clear`, bound to the Clear key.
+    ClearText,
     MenuPopup,
     TextUndo,
     TextRedo,
@@ -395,9 +573,11 @@ pub(crate) enum ProtectedAction {
 /// are GtkTextView's and GtkSourceView's keybinding signals; dotted names are
 /// class actions. One action may have several names (a signal and the action
 /// the default menu uses).
-const TOOLKIT_NAMES: [(&str, ProtectedAction); 32] = [
+const TOOLKIT_NAMES: [(&str, ProtectedAction); 34] = [
     ("move-cursor", ProtectedAction::MoveCursor),
     ("move-viewport", ProtectedAction::MoveViewport),
+    ("move-focus", ProtectedAction::MoveFocus),
+    ("text.clear", ProtectedAction::ClearText),
     ("select-all", ProtectedAction::SelectAll),
     ("selection.select-all", ProtectedAction::SelectAll),
     (
@@ -449,10 +629,19 @@ impl ProtectedAction {
     }
 }
 
+/// Whether Protected View classifies the toolkit keybinding signal or class
+/// action `name` (the class-shortcut enumeration test walks the view's
+/// shortcut controllers through this; an unclassified binding fails it).
+#[must_use]
+pub fn classifies_toolkit_binding(name: &str) -> bool {
+    ProtectedAction::from_toolkit_name(name).is_some()
+}
+
 /// What an action's default handler would do to the view if it ran.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolkitEffect {
-    /// Scrolls the viewport only.
+    /// Scrolls the viewport, or moves keyboard focus out of the view; touches
+    /// no mark and no text.
     ViewportOnly,
     /// Reads the selection (none exists in Protected View).
     ReadsSelection,
@@ -491,7 +680,7 @@ impl ToolkitEffect {
 pub(crate) const fn toolkit_effect(action: ProtectedAction) -> ToolkitEffect {
     use ProtectedAction as A;
     match action {
-        A::MoveViewport => ToolkitEffect::ViewportOnly,
+        A::MoveViewport | A::MoveFocus => ToolkitEffect::ViewportOnly,
         A::CopyClipboard => ToolkitEffect::ReadsSelection,
         A::ToggleOverwrite | A::CycleInvisibleCharacters => ToolkitEffect::ChangesViewState,
         A::ToggleCursorVisible => ToolkitEffect::ShowsCaret,
@@ -509,6 +698,7 @@ pub(crate) const fn toolkit_effect(action: ProtectedAction) -> ToolkitEffect {
         | A::InsertAtCursor
         | A::InsertEmoji
         | A::DeleteSelection
+        | A::ClearText
         | A::TextUndo
         | A::TextRedo
         | A::ChangeNumber
@@ -574,11 +764,15 @@ pub(crate) const fn action_disposition(
 #[must_use]
 pub(crate) const fn preemption_notice(action: ProtectedAction) -> Option<ProtectedNotice> {
     match action {
-        ProtectedAction::MoveCursor | ProtectedAction::MoveViewport => None,
+        ProtectedAction::MoveCursor
+        | ProtectedAction::MoveViewport
+        | ProtectedAction::MoveFocus => None,
         ProtectedAction::SearchReplace | ProtectedAction::SearchReplaceAll => {
             Some(ProtectedNotice::ReplaceUnavailable)
         }
         ProtectedAction::CycleInvisibleCharacters => Some(ProtectedNotice::InvisiblesUnavailable),
+        ProtectedAction::ToggleBookmarkAtCursor => Some(ProtectedNotice::BookmarkUnavailable),
+        ProtectedAction::NormalizeLineEndings => Some(ProtectedNotice::LineEndingsUnavailable),
         _ => Some(ProtectedNotice::EditRefused),
     }
 }
@@ -1331,11 +1525,13 @@ mod tests {
 
     // --- actions -----------------------------------------------------------
 
-    const ALL_ACTIONS: [ProtectedAction; 34] = {
+    const ALL_ACTIONS: [ProtectedAction; 36] = {
         use ProtectedAction::*;
         [
             MoveCursor,
             MoveViewport,
+            MoveFocus,
+            ClearText,
             SelectAll,
             ToggleCursorVisible,
             CutClipboard,
@@ -1545,6 +1741,9 @@ mod tests {
             ProtectedNotice::ReplaceUnavailable,
             ProtectedNotice::InvisiblesUnavailable,
             ProtectedNotice::PrintRefused,
+            ProtectedNotice::BookmarkUnavailable,
+            ProtectedNotice::LineEndingsUnavailable,
+            ProtectedNotice::SaveAsRefusedInexactDecode,
         ];
         for (i, a) in notices.iter().enumerate() {
             let text = notice_text(*a);
@@ -1555,6 +1754,99 @@ mod tests {
             }
         }
         assert!(notice_text(ProtectedNotice::EditRefused).contains("Inspect Line"));
+        assert!(notice_text(ProtectedNotice::EditRefused).contains(INSPECT_LINE_SHORTCUT_LABEL));
+    }
+
+    #[test]
+    fn copy_whole_line_names_the_line_and_its_length() {
+        assert_eq!(
+            whole_line_copied_text(1, 50_007),
+            "Line 2 copied (50007 characters)"
+        );
+        assert_eq!(whole_line_copied_text(0, 1), "Line 1 copied (1 character)");
+        assert_eq!(
+            whole_line_copied_text(u64::MAX, 0),
+            format!("Line {} copied (0 characters)", u64::MAX)
+        );
+    }
+
+    #[test]
+    fn the_notice_is_rate_limited_per_reason() {
+        let edit = ProtectedNotice::EditRefused;
+        let replace = ProtectedNotice::ReplaceUnavailable;
+        let mut times = NoticeTimes::default();
+        assert!(notice_due(times.last(edit), 0));
+        times.record(edit, 1_000);
+        assert!(!notice_due(times.last(edit), 1_001));
+        assert!(!notice_due(times.last(edit), 1_000 + NOTICE_QUIET_US - 1));
+        assert!(notice_due(times.last(edit), 1_000 + NOTICE_QUIET_US));
+        // Another reason has its own slot ...
+        assert!(notice_due(times.last(replace), 1_001));
+        times.record(replace, 2);
+        // ... and publishing it does not let this one through again inside
+        // its quiet interval (review S5).
+        assert!(!notice_due(times.last(edit), 3_000));
+        // A clock that went backwards never silences the notice for good.
+        assert!(notice_due(Some(10), 5));
+        assert!(notice_due(Some(i64::MIN), i64::MAX));
+        // Every reason has a distinct slot.
+        let all = [
+            ProtectedNotice::EditRefused,
+            ProtectedNotice::ReplaceUnavailable,
+            ProtectedNotice::InvisiblesUnavailable,
+            ProtectedNotice::PrintRefused,
+            ProtectedNotice::BookmarkUnavailable,
+            ProtectedNotice::LineEndingsUnavailable,
+            ProtectedNotice::SaveAsRefusedInexactDecode,
+        ];
+        let mut slots: Vec<usize> = all.iter().map(|notice| notice_slot(*notice)).collect();
+        slots.sort_unstable();
+        slots.dedup();
+        assert_eq!(slots.len(), NOTICE_REASONS);
+    }
+
+    #[test]
+    fn the_alert_offers_one_bounded_action_set() {
+        let plain = protected_alert(ProtectedAlertFacts {
+            folded_paragraphs: 3,
+            entry_undo_available: false,
+            restored_draft: None,
+        });
+        assert_eq!(plain.primary, ProtectedAlertPrimary::InspectLine);
+        assert!(plain.body.contains("3 long lines"));
+        assert!(plain.body.contains(INSPECT_LINE_SHORTCUT_LABEL));
+        assert_eq!(plain.secondary_label, None);
+
+        let undo = protected_alert(ProtectedAlertFacts {
+            folded_paragraphs: 1,
+            entry_undo_available: true,
+            restored_draft: None,
+        });
+        assert_eq!(undo.primary, ProtectedAlertPrimary::EntryUndo);
+        assert!(undo.body.contains("1 long line is"));
+        assert!(!undo.body.to_lowercase().contains("keystroke"));
+
+        for has_backing_file in [true, false] {
+            let draft = protected_alert(ProtectedAlertFacts {
+                folded_paragraphs: 2,
+                entry_undo_available: true,
+                restored_draft: Some(has_backing_file),
+            });
+            assert_eq!(draft.primary, ProtectedAlertPrimary::DiscardDraft);
+            assert_eq!(
+                draft.secondary_label,
+                Some(if has_backing_file {
+                    "_Save…"
+                } else {
+                    "Save _As…"
+                })
+            );
+            assert!(draft.body.contains("restored"));
+            assert!(draft.body.contains(INSPECT_LINE_SHORTCUT_LABEL));
+        }
+        for copy in [plain, undo] {
+            assert!(copy.body.chars().count() <= 320, "{copy:?}");
+        }
     }
 
     // --- session -----------------------------------------------------------

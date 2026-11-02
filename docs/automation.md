@@ -75,6 +75,16 @@ settles after its result set is published; its fold is applied inside the
 install, so `file-open-complete`, `session-restore-complete` and
 `recovery-restore-complete` cover it with no new blocker.
 
+The Line Inspector (`protected-view-inspector-and-surfaces`) is the reading
+path to a protected document's folded tails: `win.inspect-line` (Ctrl+Alt+I)
+opens it on the first folded paragraph in the viewport, and
+`win.copy-whole-line` puts that paragraph on the clipboard as a lazy provider
+that writes it in bounded chunks when a reader asks. Both do nothing but post a
+status message outside Protected View. `surfaces.line_inspector_visible`
+reports whether the active editor's inspector is open (never its text), and
+each window read holds the `line-inspector` blocker, which `idle` and
+`accessibility-settled` include.
+
 `surfaces.preview_document_alert_visible` tells "preview-only with no alert"
 apart from "the alert is shown": in preview-only mode the editor column, and its
 own inline alert, is hidden, so the selected document's alert is rendered once

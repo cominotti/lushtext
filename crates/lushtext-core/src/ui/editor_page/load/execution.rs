@@ -421,6 +421,12 @@ fn conclude_installation(
     permit: Option<TransientLoadPermit>,
 ) {
     session.borrow_mut().terminal = true;
+    // A terminal that did not publish the load (cancelled, superseded) leaves
+    // the buffer without the bytes the last decode fact described; the
+    // publishing terminal sets the fact again in `complete_loaded_installation_now`.
+    if !editor.is_protected_view() || editor.imp().load.installation_incomplete.get() {
+        editor.imp().document_metadata.decode_inexact.set(false);
+    }
     clear_installation_owner(editor, session);
     finish_load_finalization(editor, permit);
 }
@@ -553,6 +559,8 @@ fn publish_load_error(
     let error_text = error.to_string();
     editor.imp().load_state.set(error_state);
     editor.imp().latest_load_failed.set(true);
+    // No bytes were loaded, so no decode fact about them stands.
+    editor.imp().document_metadata.decode_inexact.set(false);
     evidence::record_outcome(editor, LoadOutcome::Failed);
     editor.notify_memory_policy_changed();
     editor.emit_inline_notification(
@@ -803,6 +811,7 @@ fn complete_loaded_installation_now(
         encoding_state,
         has_bom,
         file_health,
+        decode_round_trips,
     } = loaded;
     let buffer = editor.buffer();
     if DocumentScale::for_profile(summary).undo_enabled {
@@ -821,6 +830,11 @@ fn complete_loaded_installation_now(
     editor.imp().residency.evicted.set(false);
     editor.set_document_encoding_state(encoding_state);
     editor.set_has_bom(has_bom);
+    editor
+        .imp()
+        .document_metadata
+        .decode_inexact
+        .set(decode_round_trips == Some(false));
     editor.set_file_health(file_health);
     // The scale gates syntax, bracket matching, invisibles, search
     // highlighting and the minimap before a highlight idle can run.
@@ -1005,6 +1019,7 @@ impl LushtextEditorPage {
                     encoding_state: self.document_encoding_state(),
                     has_bom: self.has_bom(),
                     file_health: self.file_health(),
+                    decode_round_trips: Some(!self.decode_is_inexact()),
                 },
                 content: reservation.own(content),
             },

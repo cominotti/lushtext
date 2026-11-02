@@ -847,6 +847,517 @@
         }
       ]
     },
+    "line-inspector.ui": {
+      "accessibility": [
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/3:accessibility",
+          "translatable": "yes",
+          "value": "Inspect Line"
+        },
+        {
+          "context": "",
+          "name": "description",
+          "path": "0:template:LushtextLineInspector/3:accessibility",
+          "translatable": "yes",
+          "value": "A read-only window of at most 500 characters of one long line. Escape closes it."
+        }
+      ],
+      "child_roles": [
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/0:child",
+          "type": "top"
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/6:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/2:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/3:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/4:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/5:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/6:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/7:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/8:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/9:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/10:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/11:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/12:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/13:child",
+          "type": ""
+        }
+      ],
+      "layout_properties": [],
+      "menu_attributes": [],
+      "menus": [],
+      "objects": [
+        {
+          "class": "AdwToolbarView",
+          "id": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView"
+        },
+        {
+          "class": "AdwHeaderBar",
+          "id": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/0:child/0:object:AdwHeaderBar"
+        },
+        {
+          "class": "AdwWindowTitle",
+          "id": "window_title",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/0:child/0:object:AdwHeaderBar/0:property/0:object:AdwWindowTitle#window_title"
+        },
+        {
+          "class": "GtkBox",
+          "id": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox"
+        },
+        {
+          "class": "GtkScrolledWindow",
+          "id": "window_scroller",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/6:child/0:object:GtkScrolledWindow#window_scroller"
+        },
+        {
+          "class": "GtkTextView",
+          "id": "window_view",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/6:child/0:object:GtkScrolledWindow#window_scroller/3:property/0:object:GtkTextView#window_view"
+        },
+        {
+          "class": "GtkBox",
+          "id": "navigation_box",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box"
+        },
+        {
+          "class": "GtkButton",
+          "id": "previous_button",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/2:child/0:object:GtkButton#previous_button"
+        },
+        {
+          "class": "GtkButton",
+          "id": "next_button",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/3:child/0:object:GtkButton#next_button"
+        },
+        {
+          "class": "GtkButton",
+          "id": "previous_folded_button",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/4:child/0:object:GtkButton#previous_folded_button"
+        },
+        {
+          "class": "GtkButton",
+          "id": "next_folded_button",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/5:child/0:object:GtkButton#next_folded_button"
+        },
+        {
+          "class": "GtkLabel",
+          "id": "line_label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/6:child/0:object:GtkLabel#line_label"
+        },
+        {
+          "class": "GtkSpinButton",
+          "id": "line_spin",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/7:child/0:object:GtkSpinButton#line_spin"
+        },
+        {
+          "class": "GtkAdjustment",
+          "id": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/7:child/0:object:GtkSpinButton#line_spin/2:property/0:object:GtkAdjustment"
+        },
+        {
+          "class": "GtkLabel",
+          "id": "column_label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/8:child/0:object:GtkLabel#column_label"
+        },
+        {
+          "class": "GtkSpinButton",
+          "id": "column_spin",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/9:child/0:object:GtkSpinButton#column_spin"
+        },
+        {
+          "class": "GtkAdjustment",
+          "id": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/9:child/0:object:GtkSpinButton#column_spin/2:property/0:object:GtkAdjustment"
+        },
+        {
+          "class": "GtkButton",
+          "id": "go_button",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/10:child/0:object:GtkButton#go_button"
+        },
+        {
+          "class": "GtkBox",
+          "id": "",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/11:child/0:object:GtkBox"
+        },
+        {
+          "class": "GtkButton",
+          "id": "copy_window_button",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/12:child/0:object:GtkButton#copy_window_button"
+        },
+        {
+          "class": "GtkButton",
+          "id": "copy_line_button",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/13:child/0:object:GtkButton#copy_line_button"
+        }
+      ],
+      "properties": [
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:template:LushtextLineInspector/0:property",
+          "translatable": "yes",
+          "value": "Inspect Line"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/3:accessibility/0:property",
+          "translatable": "yes",
+          "value": "Inspect Line"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/0:child/0:object:AdwHeaderBar/0:property/0:object:AdwWindowTitle#window_title/0:property",
+          "translatable": "yes",
+          "value": "Inspect Line"
+        },
+        {
+          "context": "",
+          "name": "orientation",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/0:property",
+          "translatable": "",
+          "value": "1"
+        },
+        {
+          "context": "",
+          "name": "margin-start",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/2:property",
+          "translatable": "",
+          "value": "12"
+        },
+        {
+          "context": "",
+          "name": "margin-end",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/3:property",
+          "translatable": "",
+          "value": "12"
+        },
+        {
+          "context": "",
+          "name": "margin-top",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/4:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "margin-bottom",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/5:property",
+          "translatable": "",
+          "value": "12"
+        },
+        {
+          "context": "",
+          "name": "vexpand",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/6:child/0:object:GtkScrolledWindow#window_scroller/0:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "hscrollbar-policy",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/6:child/0:object:GtkScrolledWindow#window_scroller/1:property",
+          "translatable": "",
+          "value": "2"
+        },
+        {
+          "context": "",
+          "name": "wrap-mode",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/6:child/0:object:GtkScrolledWindow#window_scroller/3:property/0:object:GtkTextView#window_view/3:property",
+          "translatable": "",
+          "value": "3"
+        },
+        {
+          "context": "",
+          "name": "orientation",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/0:property",
+          "translatable": "",
+          "value": "0"
+        },
+        {
+          "context": "",
+          "name": "icon-name",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/2:child/0:object:GtkButton#previous_button/0:property",
+          "translatable": "",
+          "value": "go-previous-symbolic"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/2:child/0:object:GtkButton#previous_button/1:property",
+          "translatable": "yes",
+          "value": "Previous Window"
+        },
+        {
+          "context": "",
+          "name": "icon-name",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/3:child/0:object:GtkButton#next_button/0:property",
+          "translatable": "",
+          "value": "go-next-symbolic"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/3:child/0:object:GtkButton#next_button/1:property",
+          "translatable": "yes",
+          "value": "Next Window"
+        },
+        {
+          "context": "",
+          "name": "icon-name",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/4:child/0:object:GtkButton#previous_folded_button/0:property",
+          "translatable": "",
+          "value": "go-up-symbolic"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/4:child/0:object:GtkButton#previous_folded_button/1:property",
+          "translatable": "yes",
+          "value": "Previous Folded Line (Alt+Up)"
+        },
+        {
+          "context": "",
+          "name": "icon-name",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/5:child/0:object:GtkButton#next_folded_button/0:property",
+          "translatable": "",
+          "value": "go-down-symbolic"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/5:child/0:object:GtkButton#next_folded_button/1:property",
+          "translatable": "yes",
+          "value": "Next Folded Line (Alt+Down)"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/6:child/0:object:GtkLabel#line_label/0:property",
+          "translatable": "yes",
+          "value": "_Line"
+        },
+        {
+          "context": "",
+          "name": "margin-start",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/6:child/0:object:GtkLabel#line_label/3:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "width-chars",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/7:child/0:object:GtkSpinButton#line_spin/1:property",
+          "translatable": "",
+          "value": "7"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/8:child/0:object:GtkLabel#column_label/0:property",
+          "translatable": "yes",
+          "value": "_Column"
+        },
+        {
+          "context": "",
+          "name": "margin-start",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/8:child/0:object:GtkLabel#column_label/3:property",
+          "translatable": "",
+          "value": "6"
+        },
+        {
+          "context": "",
+          "name": "width-chars",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/9:child/0:object:GtkSpinButton#column_spin/1:property",
+          "translatable": "",
+          "value": "9"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/10:child/0:object:GtkButton#go_button/0:property",
+          "translatable": "yes",
+          "value": "_Go"
+        },
+        {
+          "context": "",
+          "name": "hexpand",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/11:child/0:object:GtkBox/0:property",
+          "translatable": "",
+          "value": "true"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/12:child/0:object:GtkButton#copy_window_button/0:property",
+          "translatable": "yes",
+          "value": "Copy _Window"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/13:child/0:object:GtkButton#copy_line_button/0:property",
+          "translatable": "yes",
+          "value": "Copy Whole Li_ne"
+        }
+      ],
+      "roots": [
+        {
+          "class": "LushtextLineInspector",
+          "parent": "AdwDialog",
+          "path": "0:template:LushtextLineInspector",
+          "tag": "template"
+        }
+      ],
+      "style_classes": [
+        {
+          "name": "card",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/6:child/0:object:GtkScrolledWindow#window_scroller/2:style/0:class"
+        }
+      ],
+      "translations": [
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:template:LushtextLineInspector/0:property",
+          "value": "Inspect Line"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/3:accessibility/0:property",
+          "value": "Inspect Line"
+        },
+        {
+          "context": "",
+          "name": "description",
+          "path": "0:template:LushtextLineInspector/3:accessibility/1:property",
+          "value": "A read-only window of at most 500 characters of one long line. Escape closes it."
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/0:child/0:object:AdwHeaderBar/0:property/0:object:AdwWindowTitle#window_title/0:property",
+          "value": "Inspect Line"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/2:child/0:object:GtkButton#previous_button/1:property",
+          "value": "Previous Window"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/3:child/0:object:GtkButton#next_button/1:property",
+          "value": "Next Window"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/4:child/0:object:GtkButton#previous_folded_button/1:property",
+          "value": "Previous Folded Line (Alt+Up)"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/5:child/0:object:GtkButton#next_folded_button/1:property",
+          "value": "Next Folded Line (Alt+Down)"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/6:child/0:object:GtkLabel#line_label/0:property",
+          "value": "_Line"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/8:child/0:object:GtkLabel#column_label/0:property",
+          "value": "_Column"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/10:child/0:object:GtkButton#go_button/0:property",
+          "value": "_Go"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/12:child/0:object:GtkButton#copy_window_button/0:property",
+          "value": "Copy _Window"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextLineInspector/4:property/0:object:AdwToolbarView/1:property/0:object:GtkBox/7:child/0:object:GtkBox#navigation_box/13:child/0:object:GtkButton#copy_line_button/0:property",
+          "value": "Copy Whole Li_ne"
+        }
+      ]
+    },
     "markdown-preview.ui": {
       "accessibility": [],
       "child_roles": [
@@ -4855,6 +5366,11 @@
         },
         {
           "internal-child": "",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/5:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child",
           "type": ""
         },
@@ -4997,6 +5513,11 @@
           "class": "AdwShortcutsItem",
           "id": "",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem"
+        },
+        {
+          "class": "AdwShortcutsItem",
+          "id": "",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/5:child/0:object:AdwShortcutsItem"
         },
         {
           "class": "AdwShortcutsSection",
@@ -5185,6 +5706,13 @@
         {
           "context": "",
           "name": "title",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/5:child/0:object:AdwShortcutsItem/0:property",
+          "translatable": "yes",
+          "value": "Inspect Line"
+        },
+        {
+          "context": "",
+          "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/0:property",
           "translatable": "yes",
           "value": "Notes"
@@ -5360,6 +5888,12 @@
           "name": "title",
           "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem/0:property",
           "value": "Previous Match"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/5:child/0:object:AdwShortcutsItem/0:property",
+          "value": "Inspect Line"
         },
         {
           "context": "",

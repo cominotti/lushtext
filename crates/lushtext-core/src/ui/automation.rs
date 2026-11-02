@@ -26,7 +26,7 @@ use crate::model::automation::{
     AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP, READINESS_BLOCKER_CLOSE_SAFETY,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX, READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_DOCUMENT_SETTLE, READINESS_BLOCKER_DRAFT_AUTOSAVE,
-    READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
+    READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD, READINESS_BLOCKER_LINE_INSPECTOR,
     READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_WINDOW_COMPOSITION, READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
@@ -853,8 +853,17 @@ fn window_readiness_blocker(
             editor
                 .search_bar()
                 .search_context()
-                .is_some_and(|context| context.occurrences_count() < 0),
+                .is_some_and(|context| context.occurrences_count() < 0)
+                // Protected View's worker find holds the same blocker (design D5).
+                || editor.protected_find_pending(),
             READINESS_BLOCKER_EDITOR_SEARCH,
+        ) {
+            return Some(blocker);
+        }
+        if let Some(blocker) = included_blocker(
+            predicate,
+            editor.line_inspector_read_pending(),
+            READINESS_BLOCKER_LINE_INSPECTOR,
         ) {
             return Some(blocker);
         }
@@ -2184,6 +2193,9 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
         command_palette_visible: imp.palette_revealer.reveals_child(),
         search_panel_visible: imp.search_panel_revealer.reveals_child(),
         open_popover_visible: open_popover_visible(window),
+        line_inspector_visible: window
+            .active_editor()
+            .is_some_and(|editor| editor.line_inspector_visible()),
         preview_pane_visible: imp.preview_visible.get(),
         preview_mode: imp.preview_mode.get(),
         preview_document_alert_visible: notification_evidence(window)

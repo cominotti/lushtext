@@ -299,3 +299,11 @@ The project SHALL add deterministic service, integration, and widget coverage fo
 - **WHEN** one bookmark sidecar is corrupt and another is valid
 - **THEN** the notes or bookmark browser remains usable
 - **AND** the user receives visible partial-recovery feedback
+
+### Requirement: Bookmarks in Protected View navigate without a caret
+In Protected View, existing bookmarks SHALL render in the gutter. Activating one SHALL scroll to its line through the navigation mark without moving the insert mark. `win.toggle-bookmark`, `win.notes-toggle-bookmark` and `win.edit-bookmark-label` SHALL refuse in a protected document, because there is no caret line, and SHALL publish the rate-limited Protected View notice instead. Bookmark sidecars SHALL NOT be changed by opening or viewing a protected document.
+
+#### Scenario: Toggling a bookmark in a protected document
+- **WHEN** the user presses the toggle-bookmark shortcut in a protected document
+- **THEN** no bookmark is added or removed and the notice is shown
+

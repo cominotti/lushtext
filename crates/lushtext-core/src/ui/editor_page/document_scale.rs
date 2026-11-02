@@ -609,6 +609,12 @@ impl LushtextEditorPage {
         }
         state.notice.set(NoticePhase::Idle);
         let reduced = state.scale.get().reduced;
+        // The Protected View alert replaces this notice for a protected
+        // document, so it never shows both (`protected-view-inspector-and-surfaces`).
+        if self.is_protected_view() {
+            state.announced.set(reduced.presentation_only());
+            return;
+        }
         let Some(description) = reduced.describe() else {
             return;
         };

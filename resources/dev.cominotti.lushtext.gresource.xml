@@ -11,6 +11,7 @@
     <file compressed="true" preprocess="xml-stripblanks">ui/sidebar.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/workspace-section.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/search-bar.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ui/line-inspector.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/search-panel.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/command-palette.ui</file>
     <file compressed="true" preprocess="xml-stripblanks">ui/open-popover.ui</file>

@@ -33,6 +33,24 @@ pub struct ProtectedViewEvidence {
     /// Whether a find request is running on its worker (holds the
     /// `editor-search` readiness blocker).
     pub find_pending: bool,
+    /// Whether the Line Inspector is open.
+    pub inspector_visible: bool,
+    /// Whether an inspector window read runs on its worker (holds the
+    /// `line-inspector` readiness blocker).
+    pub inspector_read_pending: bool,
+    /// The inspector's window: (paragraph, first column, end column).
+    pub inspector_window: Option<(u64, u64, u64)>,
+    /// Inspector windows published.
+    pub inspector_windows_published: u64,
+    /// Whole-line copies put on the clipboard.
+    pub whole_line_copies: u64,
+    /// Pre-emption notices published (rate-limited).
+    pub notices_published: u64,
+    /// Protected View alerts published.
+    pub alerts_published: u64,
+    /// Whether fold markers are drawn: Protected View with the marker column
+    /// shown (it is shown while the gutter shows line numbers or marks).
+    pub fold_gutter_installed: bool,
 }
 
 impl LushtextEditorPage {
@@ -40,6 +58,8 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn protected_view_evidence(&self) -> ProtectedViewEvidence {
         let session = self.protected_session();
+        let inspector_counts = self.line_inspector_counts();
+        let notice_counts = self.protected_notice_counts();
         ProtectedViewEvidence {
             protected: session.protected,
             entered_by_edit: session.entered_by_edit,
@@ -53,6 +73,14 @@ impl LushtextEditorPage {
             find_matches: self.protected_find_counts().0,
             find_current: self.protected_find_counts().1,
             find_pending: self.protected_find_pending(),
+            inspector_visible: self.line_inspector_visible(),
+            inspector_read_pending: self.line_inspector_read_pending(),
+            inspector_window: self.line_inspector_window(),
+            inspector_windows_published: inspector_counts.0,
+            whole_line_copies: inspector_counts.1,
+            notices_published: notice_counts.0,
+            alerts_published: notice_counts.1,
+            fold_gutter_installed: self.fold_markers_shown(),
         }
     }
 }

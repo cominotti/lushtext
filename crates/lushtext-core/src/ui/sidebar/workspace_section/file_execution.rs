@@ -180,6 +180,7 @@ impl super::LushtextWorkspaceSection {
             .unwrap_or_default();
 
         let entry = gtk4::Entry::new();
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&entry);
         entry.set_text(&name);
         entry.set_hexpand(true);
         let is_new = imp.is_new_item.get();

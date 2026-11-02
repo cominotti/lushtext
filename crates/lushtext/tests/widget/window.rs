@@ -6284,6 +6284,7 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
             encoding_state: DocumentEncodingState::default(),
             has_bom: false,
             file_health: Vec::new(),
+            decode_round_trips: None,
         },
         content: content.to_string(),
     };
@@ -11554,6 +11555,7 @@ fn test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destina
             encoding_state: DocumentEncodingState::default(),
             has_bom: false,
             file_health: Vec::new(),
+            decode_round_trips: None,
         },
         content: "source disk bytes\n".to_string(),
     };

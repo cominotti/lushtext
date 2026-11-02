@@ -211,6 +211,13 @@ pub struct LoadMetadata {
     pub has_bom: bool,
     /// File-health findings surfaced for the current document.
     pub file_health: Vec<FileHealthFinding>,
+    /// Whether saving the decoded text in its opened encoding and BOM state
+    /// gives back exactly the loaded bytes (`protected-view-inspector-and-
+    /// surfaces` task 3.6): `Some(false)` for an error-free decode that is not
+    /// injective (Shift_JIS duplicates) and for a BOM the save would add or
+    /// drop. Computed only for a protected profile, whose edited Save As is
+    /// refused when it is false; `None` for every other document.
+    pub decode_round_trips: Option<bool>,
 }
 
 impl LoadMetadata {
@@ -561,6 +568,17 @@ fn load_planned_text_file_with_limit(
 
     let decoded = assemble_decoded_document(payload, &analysis);
     let file_health = build_file_health(&decoded, &analysis, nul_evidence);
+    // Only a protected document needs the answer (its unmodified Save As is
+    // a byte-exact copy, its edited one is refused when this is false), so
+    // only a protected profile pays the pass (review S2).
+    let decode_round_trips = analysis.profile.fold_plan.is_some().then(|| {
+        decode_round_trips(
+            &decoded.content,
+            decoded.encoding_state.opened_encoding,
+            decoded.has_bom,
+            &bytes,
+        )
+    });
 
     Ok(LoadResult {
         metadata: LoadMetadata {
@@ -571,9 +589,71 @@ fn load_planned_text_file_with_limit(
             encoding_state: decoded.encoding_state,
             has_bom: decoded.has_bom,
             file_health,
+            decode_round_trips,
         },
         content: decoded.content,
     })
+}
+
+/// Bytes one round-trip comparison encodes at a time: the comparison never
+/// holds a whole re-encoded copy of the document (review S2). A power of two.
+const ROUND_TRIP_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Whether `content`, decoded from `bytes` as `encoding` (with or without a
+/// BOM), saves back to exactly `bytes`. UTF-8 is decided without a pass:
+/// valid UTF-8 decodes to itself, and the BOM state is all a save can change.
+/// Every other encoding is re-encoded on the load worker in
+/// [`ROUND_TRIP_CHUNK_BYTES`] pieces, each compared with the loaded bytes at
+/// once and dropped, so the pass allocates one chunk and stops at the first
+/// difference.
+fn decode_round_trips(
+    content: &str,
+    encoding: DocumentEncoding,
+    has_bom: bool,
+    bytes: &[u8],
+) -> bool {
+    match encoding {
+        DocumentEncoding::Utf8 => !has_bom,
+        DocumentEncoding::Utf8Bom => has_bom,
+        DocumentEncoding::Utf16Le | DocumentEncoding::Utf16Be => {
+            let little_endian = encoding == DocumentEncoding::Utf16Le;
+            let Some(mut rest) = bytes.strip_prefix(bom_bytes_for_encoding(encoding)) else {
+                return false;
+            };
+            for unit in content.encode_utf16() {
+                let unit = if little_endian {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                };
+                match rest.split_first_chunk::<2>() {
+                    Some((head, tail)) if *head == unit => rest = tail,
+                    _ => return false,
+                }
+            }
+            rest.is_empty()
+        }
+        _ => {
+            let mut encoder = encoding.codec().new_encoder();
+            let mut chunk = vec![0u8; ROUND_TRIP_CHUNK_BYTES];
+            let mut source = content;
+            let mut compared = 0usize;
+            loop {
+                let (result, read, written, _) = encoder.encode_from_utf8(source, &mut chunk, true);
+                let Some(expected) = bytes.get(compared..compared + written) else {
+                    return false;
+                };
+                if expected != &chunk[..written] {
+                    return false;
+                }
+                compared += written;
+                source = &source[read..];
+                if result == encoding_rs::CoderResult::InputEmpty {
+                    return compared == bytes.len();
+                }
+            }
+        }
+    }
 }
 
 fn admitted_read_limit(plan: &FileLoadPlan, supported_limit: u64) -> u64 {
@@ -756,6 +836,88 @@ fn write_encoded_document(
         bytes_written,
         modified_at_secs: mtime,
     })
+}
+
+/// What a document was loaded from: its file and that file's size and
+/// modification time when it was read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadedFileIdentity {
+    /// The file the document was loaded from.
+    pub path: PathBuf,
+    /// Its size when loaded.
+    pub byte_size: u64,
+    /// Its modification time (seconds) when loaded.
+    pub modified_at_secs: Option<u64>,
+}
+
+/// Save an **unmodified** document to `path` as a byte-exact copy of the file
+/// it was loaded from (`protected-view-inspector-and-surfaces` review S3):
+/// exact for every encoding, BOM state and line-ending mix, because no byte is
+/// decoded or encoded again. The bytes are read with a bound of the loaded
+/// size, and taken only while the file still has that size and modification
+/// time, then written through the same guarded durable write as any save.
+///
+/// Returns `Ok(None)`, writing nothing, when the file changed (or vanished)
+/// since it was loaded: the bytes on disk are then no longer what the editor
+/// shows, and the caller decides.
+///
+/// **Threading:** blocking I/O; call from a worker.
+///
+/// # Errors
+///
+/// Returns the write's error, classified as every save's is.
+pub fn copy_loaded_file_to_path(
+    loaded: &LoadedFileIdentity,
+    path: &Path,
+) -> Result<Option<EditorWriteResult>, EditorSaveError> {
+    delay_save_write_for_test();
+    let unchanged = |facts: &FileFacts| {
+        facts.byte_size == loaded.byte_size && facts.modified_at_secs == loaded.modified_at_secs
+    };
+    let Ok(before) = fs_metadata::file_facts(&loaded.path) else {
+        return Ok(None);
+    };
+    if !unchanged(&before) {
+        return Ok(None);
+    }
+    let Ok(bytes) =
+        fs_read::bounded_bytes(&loaded.path, loaded.byte_size, loaded.byte_size, || false)
+    else {
+        return Ok(None);
+    };
+    let after = fs_metadata::file_facts(&loaded.path);
+    if u64::try_from(bytes.len()).ok() != Some(loaded.byte_size)
+        || !after.as_ref().is_ok_and(unchanged)
+    {
+        return Ok(None);
+    }
+    if same_file_target(&loaded.path, path) {
+        // Saving an unchanged file onto itself: its bytes are already there.
+        return Ok(Some(EditorWriteResult {
+            bytes_written: loaded.byte_size,
+            modified_at_secs: loaded.modified_at_secs,
+        }));
+    }
+    write_bytes_to_path(path, &bytes)?;
+    let mtime = fs_metadata::file_facts(path)
+        .ok()
+        .and_then(|facts| facts.modified_at_secs);
+    Ok(Some(EditorWriteResult {
+        bytes_written: loaded.byte_size,
+        modified_at_secs: mtime,
+    }))
+}
+
+/// Whether `a` and `b` name the same file (by canonical path when both
+/// resolve, else literally).
+fn same_file_target(a: &Path, b: &Path) -> bool {
+    match (
+        fs_metadata::canonical_path(a),
+        fs_metadata::canonical_path(b),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 #[cfg(feature = "test-utils")]
@@ -1555,6 +1717,23 @@ fn encode_text(
             bytes.extend_from_slice(text.as_bytes());
             Cow::Owned(bytes)
         }
+        // encoding_rs encodes to UTF-16's "output encoding", which is UTF-8:
+        // its `encode` would write UTF-8 after a UTF-16 byte-order mark.
+        DocumentEncoding::Utf16Le | DocumentEncoding::Utf16Be => {
+            let little_endian = encoding == DocumentEncoding::Utf16Le;
+            let bom = bom_bytes_for_encoding(encoding);
+            let mut bytes =
+                Vec::with_capacity(bom.len().saturating_add(text.len().saturating_mul(2)));
+            bytes.extend_from_slice(bom);
+            for unit in text.encode_utf16() {
+                bytes.extend_from_slice(&if little_endian {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
+            }
+            Cow::Owned(bytes)
+        }
         _ => {
             let (encoded, _, _) = encoding.codec().encode(text);
             if encoding.writes_bom() {
@@ -1669,6 +1848,105 @@ fn format_codepoint(character: char) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn decode_round_trips_only_when_a_save_gives_back_the_bytes() {
+        use super::decode_round_trips;
+        // UTF-8: exact unless the save would add or drop a BOM.
+        assert!(decode_round_trips(
+            "text",
+            DocumentEncoding::Utf8,
+            false,
+            b"text"
+        ));
+        assert!(decode_round_trips(
+            "text",
+            DocumentEncoding::Utf8Bom,
+            true,
+            b"\xEF\xBB\xBFtext"
+        ));
+        assert!(!decode_round_trips(
+            "text",
+            DocumentEncoding::Utf8Bom,
+            false,
+            b"text"
+        ));
+        // Windows-1252 maps every byte both ways.
+        let all: Vec<u8> = (0x20..=0xFF).collect();
+        let (decoded, _) = DocumentEncoding::Windows1252
+            .codec()
+            .decode_without_bom_handling(&all);
+        assert!(decode_round_trips(
+            &decoded,
+            DocumentEncoding::Windows1252,
+            false,
+            &all
+        ));
+        // Shift_JIS decodes the NEC-selected IBM extension 0xED40 without
+        // errors, but encodes that character back as the IBM code point.
+        let bytes = [0xED, 0x40];
+        let (decoded, had_errors) = DocumentEncoding::ShiftJis
+            .codec()
+            .decode_without_bom_handling(&bytes);
+        assert!(!had_errors);
+        assert!(!decode_round_trips(
+            &decoded,
+            DocumentEncoding::ShiftJis,
+            false,
+            &bytes
+        ));
+        assert!(decode_round_trips(
+            "abc",
+            DocumentEncoding::ShiftJis,
+            false,
+            b"abc"
+        ));
+        // A difference past the first comparison chunk is still found, and an
+        // exact multi-chunk body still round-trips.
+        let long: Vec<u8> = (0..3 * super::ROUND_TRIP_CHUNK_BYTES)
+            .map(|index| b'a' + u8::try_from(index % 26).expect("fits"))
+            .collect();
+        let (decoded, _) = DocumentEncoding::Windows1252
+            .codec()
+            .decode_without_bom_handling(&long);
+        assert!(decode_round_trips(
+            &decoded,
+            DocumentEncoding::Windows1252,
+            false,
+            &long
+        ));
+        let mut longer = long.clone();
+        longer.push(b'z');
+        assert!(!decode_round_trips(
+            &decoded,
+            DocumentEncoding::Windows1252,
+            false,
+            &longer
+        ));
+        // UTF-16: exact with its BOM, not without one (a save adds it).
+        for (encoding, little_endian) in [
+            (DocumentEncoding::Utf16Le, true),
+            (DocumentEncoding::Utf16Be, false),
+        ] {
+            let text = "A\u{e9}\u{1f600}";
+            let mut bytes = bom_bytes_for_encoding(encoding).to_vec();
+            for unit in text.encode_utf16() {
+                bytes.extend(if little_endian {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
+            }
+            assert!(decode_round_trips(text, encoding, true, &bytes));
+            assert!(!decode_round_trips(text, encoding, false, &bytes[2..]));
+            assert!(!decode_round_trips(
+                text,
+                encoding,
+                true,
+                &bytes[..bytes.len() - 1]
+            ));
+        }
+    }
     use super::*;
     use crate::services::filesystem::{fixture, metadata as fs_metadata};
     use proptest::prelude::*;
@@ -2916,6 +3194,28 @@ mod tests {
         );
         assert!(fixture::read_bytes(&utf16le_path).starts_with(&[0xFF, 0xFE]));
         assert!(fixture::read_bytes(&utf16be_path).starts_with(&[0xFE, 0xFF]));
+    }
+
+    #[test]
+    fn utf16_saves_write_utf16_code_units_after_the_bom() {
+        // encoding_rs encodes UTF-16 as UTF-8 (its output encoding), so a
+        // save must not go through `Encoding::encode` for UTF-16.
+        let dir = tempfile::tempdir().expect("utf16 tempdir");
+        for (encoding, expected) in [
+            (
+                DocumentEncoding::Utf16Le,
+                vec![0xFF, 0xFE, b'A', 0x00, 0xE9, 0x00, 0x3D, 0xD8, 0x00, 0xDE],
+            ),
+            (
+                DocumentEncoding::Utf16Be,
+                vec![0xFE, 0xFF, 0x00, b'A', 0x00, 0xE9, 0xD8, 0x3D, 0xDE, 0x00],
+            ),
+        ] {
+            let path = dir.path().join(format!("{}.txt", encoding.label()));
+            write_document_verbatim_to_path(&path, "A\u{e9}\u{1f600}", encoding, false)
+                .expect("utf16 save");
+            assert_eq!(fixture::read_bytes(&path), expected, "{encoding:?}");
+        }
     }
 
     #[test]

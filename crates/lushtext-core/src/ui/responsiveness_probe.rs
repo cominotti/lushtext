@@ -470,6 +470,11 @@ mod measurement {
         frame_phase_frames: u32,
         /// The armed `G_PRIORITY_LOW` settle sentinel, if any.
         sentinel: RefCell<Option<glib::SourceId>>,
+        /// The last input event recorded: a window and the dialog it hosts
+        /// both stamp the same event, which is recorded once.
+        last_input: RefCell<Option<gtk4::gdk::Event>>,
+        /// Windows and dialogs already hooked (weakly held).
+        hooked: RefCell<Vec<glib::WeakRef<gtk4::Widget>>>,
         _watchdog: RefCell<Option<LatenessWatchdog>>,
     }
 
@@ -678,6 +683,8 @@ mod measurement {
             next_window: Cell::new(1),
             frame_phase_frames: frame_phase_frames(std::env::var(FRAME_PHASES_ENV).ok().as_deref()),
             sentinel: RefCell::new(None),
+            last_input: RefCell::new(None),
+            hooked: RefCell::new(Vec::new()),
             _watchdog: RefCell::new(None),
         });
         PROBE.with(|slot| slot.replace(Some(Rc::clone(&probe))));
@@ -729,35 +736,108 @@ mod measurement {
         })
     }
 
-    fn hook_window(window: &gtk4::Window) {
-        let id = next_window_id();
+    /// Whether `widget` is hooked for the first time now (and remember it).
+    fn first_hook(widget: &gtk4::Widget) -> bool {
+        let Some(probe) = probe() else { return false };
+        let mut hooked = probe.hooked.borrow_mut();
+        hooked.retain(|weak| weak.upgrade().is_some());
+        if hooked
+            .iter()
+            .any(|weak| weak.upgrade().as_ref() == Some(widget))
+        {
+            return false;
+        }
+        hooked.push(widget.downgrade());
+        true
+    }
+
+    /// Stamp `event` once, however many hooked widgets see it. `host` is the
+    /// toplevel the event arrived in (for a hosted dialog, the window hosting
+    /// it): its focus widget is a key's target and its surface the frame a
+    /// button's or a motion's position is read in.
+    fn stamp_input(window: u32, host: &gtk4::Window, event: &gtk4::gdk::Event) {
+        let kind = match event.event_type() {
+            gtk4::gdk::EventType::KeyPress => ProbeInputKind::KeyPress,
+            gtk4::gdk::EventType::KeyRelease => ProbeInputKind::KeyRelease,
+            gtk4::gdk::EventType::Scroll => ProbeInputKind::Scroll,
+            gtk4::gdk::EventType::ButtonPress => ProbeInputKind::ButtonPress,
+            gtk4::gdk::EventType::ButtonRelease => ProbeInputKind::ButtonRelease,
+            gtk4::gdk::EventType::MotionNotify => ProbeInputKind::Motion,
+            _ => return,
+        };
+        let Some(probe) = probe() else { return };
+        // The same event object (held, so its address is not reused).
+        if probe
+            .last_input
+            .borrow()
+            .as_ref()
+            .is_some_and(|last| last.as_ptr() == event.as_ptr())
+        {
+            return;
+        }
+        probe.last_input.replace(Some(event.clone()));
+        let t_us = glib::monotonic_time();
+        let (target, position) = input_target(host, kind, event);
+        probe.writer.send(ProbeRecord::Input {
+            t_us,
+            window,
+            event: kind,
+            event_time_ms: event.time(),
+            target,
+            position,
+        });
+    }
+
+    /// A capture-phase input stamp on `widget` (a window, or a dialog it
+    /// hosts), whose events arrive in the toplevel `host`.
+    fn add_input_stamp(widget: &impl IsA<gtk4::Widget>, window: u32, host: &gtk4::Window) {
         let input = gtk4::EventControllerLegacy::new();
         input.set_propagation_phase(gtk4::PropagationPhase::Capture);
-        input.connect_event(move |controller, event| {
-            let kind = match event.event_type() {
-                gtk4::gdk::EventType::KeyPress => Some(ProbeInputKind::KeyPress),
-                gtk4::gdk::EventType::KeyRelease => Some(ProbeInputKind::KeyRelease),
-                gtk4::gdk::EventType::Scroll => Some(ProbeInputKind::Scroll),
-                gtk4::gdk::EventType::ButtonPress => Some(ProbeInputKind::ButtonPress),
-                gtk4::gdk::EventType::ButtonRelease => Some(ProbeInputKind::ButtonRelease),
-                gtk4::gdk::EventType::MotionNotify => Some(ProbeInputKind::Motion),
-                _ => None,
-            };
-            if let Some(kind) = kind {
-                let t_us = glib::monotonic_time();
-                let (target, position) = input_target(controller.widget().as_ref(), kind, event);
-                record(ProbeRecord::Input {
-                    t_us,
-                    window: id,
-                    event: kind,
-                    event_time_ms: event.time(),
-                    target,
-                    position,
-                });
+        // Weak: the controller lives on `host` or one of its descendants.
+        let host = host.downgrade();
+        input.connect_event(move |_, event| {
+            if let Some(host) = host.upgrade() {
+                stamp_input(window, &host, event);
             }
             glib::Propagation::Proceed
         });
-        window.add_controller(input);
+        widget.add_controller(input);
+    }
+
+    /// Stamp the input of every `AdwDialog` the window presents (the Line
+    /// Inspector, the history browser): a hosted dialog's events reach it
+    /// through the window, a floating one is its own toplevel, which is hooked
+    /// as a window. Each dialog is hooked once.
+    fn hook_dialogs(window: &gtk4::Window, id: u32) {
+        use libadwaita::prelude::AdwApplicationWindowExt;
+        let Some(adw_window) = window.downcast_ref::<libadwaita::ApplicationWindow>() else {
+            return;
+        };
+        adw_window.connect_visible_dialog_notify(move |window| {
+            let Some(dialog) = window.visible_dialog() else {
+                return;
+            };
+            if !first_hook(dialog.upcast_ref()) {
+                return;
+            }
+            let host = window.upcast_ref::<gtk4::Window>();
+            match dialog.root().and_downcast::<gtk4::Window>() {
+                Some(root) if root != *host => {
+                    add_input_stamp(&dialog, id, &root);
+                    hook_window(&root);
+                }
+                _ => add_input_stamp(&dialog, id, host),
+            }
+        });
+    }
+
+    fn hook_window(window: &gtk4::Window) {
+        if !first_hook(window.upcast_ref()) {
+            return;
+        }
+        let id = next_window_id();
+        add_input_stamp(window, id, window);
+        hook_dialogs(window, id);
         let hooked = Rc::new(Cell::new(false));
         let hook_clock = move |widget: &gtk4::Window| {
             if hooked.get() {
@@ -780,18 +860,13 @@ mod measurement {
     /// window's focus widget, a button to the widget under the pointer. A
     /// scroll records neither.
     fn input_target(
-        window: Option<&gtk4::Widget>,
+        window: &gtk4::Window,
         kind: ProbeInputKind,
         event: &gtk4::gdk::Event,
     ) -> (Option<ProbeInputTarget>, Option<(i32, i32)>) {
-        let Some(window) = window else {
-            return (None, None);
-        };
         match kind {
             ProbeInputKind::KeyPress | ProbeInputKind::KeyRelease => {
-                let focus = window
-                    .downcast_ref::<gtk4::Window>()
-                    .and_then(GtkWindowExt::focus);
+                let focus = GtkWindowExt::focus(window);
                 (Some(classify_target(focus.as_ref())), None)
             }
             ProbeInputKind::ButtonPress

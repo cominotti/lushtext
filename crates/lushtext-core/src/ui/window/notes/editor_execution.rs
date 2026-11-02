@@ -23,6 +23,7 @@
 //! page is pre-rendered for an existing non-empty note so the first mode switch
 //! reveals already-measured content.
 
+use super::install_execution::NoteBody;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -428,7 +429,7 @@ impl LushtextWindow {
         content.append(&path_label);
 
         let start = NoteEditorStart::derive(existing_note, recovered_text);
-        let (surface, note_view) = build_note_editor_surface(
+        let (surface, note_body) = build_note_editor_surface(
             start.initial_text,
             &MarkdownPreviewRenderContext::new(Some(path.to_path_buf()), workspace_folders.clone()),
             start.initial_mode,
@@ -436,7 +437,7 @@ impl LushtextWindow {
         );
         install_note_save_response_state(
             &dialog,
-            &note_view.buffer(),
+            &note_body,
             start.presentation,
             start.initial_text,
         );
@@ -472,11 +473,10 @@ impl LushtextWindow {
                     },
                 );
             } else if response == RESPONSE_SAVE {
-                let buffer = note_view.buffer();
                 let path_for_save = path.clone();
                 let existing_note_for_save = existing_note.clone();
                 let window_weak = window.downgrade();
-                let snapshot = snapshot_note_buffer_text(buffer, move |outcome| {
+                let snapshot = note_body.snapshot_text(move |outcome| {
                     let Some(window_for_save) = window_weak.upgrade() else {
                         return;
                     };
@@ -596,7 +596,7 @@ impl LushtextWindow {
         content.append(&folder_label);
 
         let start = NoteEditorStart::derive(existing_note, recovered_text);
-        let (surface, note_view) = build_note_editor_surface(
+        let (surface, note_body) = build_note_editor_surface(
             start.initial_text,
             &MarkdownPreviewRenderContext::new(None, vec![folder.to_path_buf()]),
             start.initial_mode,
@@ -604,7 +604,7 @@ impl LushtextWindow {
         );
         install_note_save_response_state(
             &dialog,
-            &note_view.buffer(),
+            &note_body,
             start.presentation,
             start.initial_text,
         );
@@ -639,11 +639,10 @@ impl LushtextWindow {
                     },
                 );
             } else if response == RESPONSE_SAVE {
-                let buffer = note_view.buffer();
                 let folder_for_save = folder.clone();
                 let existing_note_for_save = existing_note.clone();
                 let window_weak = window.downgrade();
-                let snapshot = snapshot_note_buffer_text(buffer, move |outcome| {
+                let snapshot = note_body.snapshot_text(move |outcome| {
                     let Some(window_for_save) = window_weak.upgrade() else {
                         return;
                     };
@@ -735,7 +734,7 @@ fn build_note_editor_surface(
     render_context: &MarkdownPreviewRenderContext,
     initial_mode: NoteViewMode,
     empty_preview_description: &'static str,
-) -> (gtk4::Box, gtk4::TextView) {
+) -> (gtk4::Box, Rc<NoteBody>) {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
 
     let stack = gtk4::Stack::new();
@@ -773,12 +772,23 @@ fn build_note_editor_surface(
     note_view.set_right_margin(NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP);
     note_view.set_top_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
     note_view.set_bottom_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
-    note_view.buffer().set_text(initial_text);
     accessibility::set_labelled_description(
         &note_view,
         "Note body editor",
         "Editable note body text",
     );
+    // A note body with a paragraph over `L_PROTECT_EDIT` opens read-only and
+    // folded, as a protected document does (`protected-view-inspector-and-
+    // surfaces` task 3.2): its giant paragraphs show only their heads, so no
+    // layout reaches a hidden tail, and nothing can type into one. A body that
+    // could hold one is profiled on a worker and installed in bounded turns
+    // (`install_execution.rs`); the notice says what is happening meanwhile.
+    let notice = gtk4::Label::new(None);
+    notice.set_wrap(true);
+    notice.set_xalign(0.0);
+    notice.add_css_class("dim-label");
+    content.append(&notice);
+    let note_body = NoteBody::install(&note_view, &notice, initial_text);
     accessibility::set_multi_line(&note_view, true);
 
     let note_scroll = gtk4::ScrolledWindow::builder()
@@ -829,12 +839,16 @@ fn build_note_editor_surface(
     // once up front so either initial mode has stable geometry without doing a
     // second markdown pass during setup.
     if !initial_text.trim().is_empty() {
-        render_note_preview(
-            &preview,
-            &note_view.buffer(),
-            render_context,
-            empty_preview_description,
-        );
+        let preview = preview.clone();
+        let render_context = render_context.clone();
+        note_body.when_installed(move |note_body, _| {
+            render_note_preview(
+                &preview,
+                note_body,
+                &render_context,
+                empty_preview_description,
+            );
+        });
     }
     stack.add_titled(&preview, Some("render"), "Render");
 
@@ -849,19 +863,25 @@ fn build_note_editor_surface(
         }
     }
 
-    let buffer = note_view.buffer();
+    let body_for_render = Rc::downgrade(&note_body);
     let preview_for_render = preview;
     let render_context_clone = render_context.clone();
     stack.connect_notify_local(Some("visible-child-name"), move |stack, _| {
         if stack.visible_child_name().as_deref() == Some("render") {
             accessibility::set_value_text(stack, "Render mode");
             let preview = preview_for_render.clone();
-            let buffer = buffer.clone();
+            let Some(note_body) = body_for_render.upgrade() else {
+                return;
+            };
             let render_context = render_context_clone.clone();
             glib::idle_add_local_once(move || {
+                if note_body.is_installing() {
+                    // The install renders once it completes.
+                    return;
+                }
                 render_note_preview(
                     &preview,
-                    &buffer,
+                    &note_body,
                     &render_context,
                     empty_preview_description,
                 );
@@ -872,7 +892,7 @@ fn build_note_editor_surface(
     });
 
     content.append(&stack);
-    (content, note_view)
+    (content, note_body)
 }
 
 /// Wires the Save response to the note buffer's normalized dirty-state policy.
@@ -881,12 +901,43 @@ fn build_note_editor_surface(
 /// handler weakly references the dialog so late changes cannot keep it alive.
 fn install_note_save_response_state(
     dialog: &libadwaita::AlertDialog,
-    buffer: &gtk4::TextBuffer,
+    note_body: &Rc<NoteBody>,
     presentation: NoteEditorPresentation,
     initial_text: &str,
 ) {
-    dialog.set_response_enabled(RESPONSE_SAVE, presentation.save_enabled_for(initial_text));
+    if !note_body.is_installing() {
+        dialog.set_response_enabled(RESPONSE_SAVE, presentation.save_enabled_for(initial_text));
+        connect_note_save_response_refresh(dialog, &note_body.buffer(), presentation);
+        return;
+    }
+    // Save stays off while the body installs: a capture of a partly
+    // installed buffer must never be saved, and no refresh may run on one.
+    dialog.set_response_enabled(RESPONSE_SAVE, false);
+    let dialog_weak = dialog.downgrade();
+    note_body.when_installed(move |note_body, text| {
+        let Some(dialog) = dialog_weak.upgrade() else {
+            return;
+        };
+        let presentation = Arc::new(presentation);
+        if let Some(text) = text.cloned() {
+            let for_worker = Arc::clone(&presentation);
+            spawn_blocking_then(
+                dialog.clone(),
+                move || for_worker.save_enabled_for(&text),
+                |dialog, enabled| dialog.set_response_enabled(RESPONSE_SAVE, enabled),
+            );
+        }
+        let presentation = Arc::try_unwrap(presentation).unwrap_or_else(|shared| (*shared).clone());
+        connect_note_save_response_refresh(&dialog, &note_body.buffer(), presentation);
+    });
+}
 
+/// Keep Save sensitivity current while the user edits an installed body.
+fn connect_note_save_response_refresh(
+    dialog: &libadwaita::AlertDialog,
+    buffer: &gtk4::TextBuffer,
+    presentation: NoteEditorPresentation,
+) {
     let refresh = NoteSaveResponseRefresh::new(dialog, presentation);
     dialog.connect_closed({
         let refresh = refresh.clone();
@@ -998,14 +1049,14 @@ impl NoteSaveResponseRefresh {
 /// Render one note body into the shared markdown preview widget.
 fn render_note_preview(
     preview: &LushtextMarkdownPreview,
-    buffer: &gtk4::TextBuffer,
+    note_body: &NoteBody,
     render_context: &MarkdownPreviewRenderContext,
     empty_preview_description: &'static str,
 ) {
     preview.replace_source_snapshot(None);
     let preview_weak = preview.downgrade();
     let render_context = render_context.clone();
-    let snapshot = snapshot_note_buffer_text(buffer.clone(), move |outcome| {
+    let snapshot = note_body.snapshot_text(move |outcome| {
         let Some(preview) = preview_weak.upgrade() else {
             return;
         };
@@ -1023,7 +1074,9 @@ fn render_note_preview(
 }
 
 /// Snapshot note editor text without monopolizing the GTK main loop.
-fn snapshot_note_buffer_text<F: FnOnce(buffer_snapshot::BufferSnapshotOutcome) + 'static>(
+pub(super) fn snapshot_note_buffer_text<
+    F: FnOnce(buffer_snapshot::BufferSnapshotOutcome) + 'static,
+>(
     buffer: gtk4::TextBuffer,
     callback: F,
 ) -> Option<buffer_snapshot::BufferSnapshotHandle> {

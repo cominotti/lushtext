@@ -121,6 +121,8 @@ impl ObjectSubclass for LushtextSearchBar {
 impl ObjectImpl for LushtextSearchBar {
     fn constructed(&self) {
         self.parent_constructed();
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.search_entry);
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.replace_entry);
 
         // Use revealers instead of visibility so the hidden replace row still
         // contributes natural width and the entry column does not shift.

@@ -131,6 +131,7 @@ impl LushtextEditorPage {
             self.hold_drop_targets(DropTargetHold::EditLock);
         }
         self.refresh_accessibility_metadata();
+        self.refresh_protected_alert_for_edit_lock();
         EditLock { _held: () }
     }
 
@@ -150,6 +151,7 @@ impl LushtextEditorPage {
             self.release_drop_targets(DropTargetHold::EditLock);
         }
         self.refresh_accessibility_metadata();
+        self.refresh_protected_alert_for_edit_lock();
     }
 
     /// Whether the user can edit the document now: the view is editable and

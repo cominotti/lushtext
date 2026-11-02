@@ -609,6 +609,10 @@ fn iter_at_line_or_last(buffer: &sourceview5::Buffer, line: u32) -> gtk4::TextIt
 
 /// Move the cursor to `line` and keep the focused editor in view.
 fn scroll_cursor_to_line(editor: &LushtextEditorPage, line: u32) {
+    if editor.navigate_protected_line(u64::from(line)) {
+        editor.source_view().grab_focus();
+        return;
+    }
     let iter = iter_at_line_or_last(&editor.buffer(), line);
     editor.buffer().place_cursor(&iter);
     let mark = editor.buffer().create_mark(None, &iter, true);
