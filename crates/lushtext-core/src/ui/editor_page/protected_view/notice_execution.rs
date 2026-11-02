@@ -20,8 +20,8 @@ use std::cell::Cell;
 use gtk4::prelude::*;
 
 use super::policy::{
-    ProtectedAction, ProtectedAlertFacts, ProtectedAlertPrimary, ProtectedNotice, notice_due,
-    notice_text, preemption_notice, protected_alert,
+    NoticeTimes, ProtectedAction, ProtectedAlertFacts, ProtectedAlertPrimary, ProtectedNotice,
+    notice_due, notice_text, preemption_notice, protected_alert,
 };
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::{InlineAlertLifetime, LushtextEditorPage, PendingWarningAction};
@@ -31,8 +31,8 @@ use crate::ui::window::LushtextWindow;
 /// The editor's notice state.
 #[derive(Debug, Default)]
 pub(crate) struct ProtectedNoticeState {
-    /// The last notice published, and when (monotonic µs).
-    last_notice: Cell<Option<(ProtectedNotice, i64)>>,
+    /// When each notice reason was last published (monotonic µs).
+    notice_times: Cell<NoticeTimes>,
     /// Notices published (evidence).
     notices_published: Cell<u64>,
     /// Protected View alerts published (evidence).
@@ -54,13 +54,15 @@ impl LushtextEditorPage {
     pub(crate) fn publish_protected_notice(&self, notice: ProtectedNotice) {
         let state = self.protected_notice_state();
         let now = glib::monotonic_time();
-        if !notice_due(notice, state.last_notice.get(), now) {
+        let mut times = state.notice_times.get();
+        if !notice_due(times.last(notice), now) {
             return;
         }
         let Some(window) = self.root().and_downcast::<LushtextWindow>() else {
             return;
         };
-        state.last_notice.set(Some((notice, now)));
+        times.record(notice, now);
+        state.notice_times.set(times);
         state
             .notices_published
             .set(state.notices_published.get().saturating_add(1));

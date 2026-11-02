@@ -205,6 +205,7 @@ impl ObjectImpl for LushtextCommandPalette {
         // after template children are initialized, so models and signals are
         // safe to wire here.
         self.parent_constructed();
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.search_entry);
 
         let selection = gtk4::SingleSelection::new(Some(self.results_store.clone()));
         selection.set_autoselect(true);

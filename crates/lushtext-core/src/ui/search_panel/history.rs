@@ -135,6 +135,7 @@ impl LushtextSearchPanel {
         dialog.set_close_response("cancel");
 
         let name_entry = gtk4::Entry::new();
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&name_entry);
         name_entry.set_text(&query_text);
         name_entry.set_activates_default(true);
         dialog.set_extra_child(Some(&name_entry));

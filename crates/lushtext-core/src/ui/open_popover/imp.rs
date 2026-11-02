@@ -251,6 +251,7 @@ impl ObjectSubclass for LushtextOpenPopover {
 impl ObjectImpl for LushtextOpenPopover {
     fn constructed(&self) {
         self.parent_constructed();
+        crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.search_entry);
 
         // GNOME Text Editor uses no persistent row selection in this popover.
         // Keep activation and focus navigation, but avoid an accent-colored

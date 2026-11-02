@@ -1074,6 +1074,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().setup_paragraph_wrap();
         self.obj().setup_bounded_surrounding_text();
         self.obj().setup_protected_view_interaction();
+        self.obj().install_fold_gutter();
         self.obj().apply_invisible_characters_mode();
         self.obj().refresh_accessibility_metadata();
     }

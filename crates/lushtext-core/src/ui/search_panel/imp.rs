@@ -439,6 +439,13 @@ impl ObjectSubclass for LushtextSearchPanel {
 impl ObjectImpl for LushtextSearchPanel {
     fn constructed(&self) {
         self.parent_constructed();
+        for entry in [
+            self.search_entry.upcast_ref::<gtk4::Editable>(),
+            self.glob_entry.upcast_ref(),
+            self.replace_entry.upcast_ref(),
+        ] {
+            crate::ui::entry_paste_cap::cap_single_line_inserts(entry);
+        }
 
         // Assemble dropdown popover: sections → box → scrolled window → popover → parent to entry.
         self.dropdown_box.append(&self.saved_header);

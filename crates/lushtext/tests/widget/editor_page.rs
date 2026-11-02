@@ -1385,7 +1385,7 @@ fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
             encoding_state: DocumentEncodingState::default(),
             has_bom: false,
             file_health: Vec::new(),
-            decode_round_trips: true,
+            decode_round_trips: None,
         },
         content: "stale disk bytes\n".to_string(),
     };

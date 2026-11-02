@@ -318,6 +318,13 @@ pub mod a66 {
     };
 }
 
+/// The width-change fixture the A74 probe uses, for its sample.
+pub mod a74 {
+    pub use crate::probes::a74::{
+        NARROW_GUTTER, WIDE_GUTTER, last_paragraph_extent, set_gutter_width, settle_validated, text,
+    };
+}
+
 /// Height every probe row requests, so row geometry is predictable.
 ///
 /// GTK adds the row's own CSS padding on top, so a row is drawn taller than

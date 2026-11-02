@@ -5,11 +5,19 @@ A document installed in Protected View SHALL never become modified through LushT
 - EditorConfig-driven formatting and its mirror-back into the buffer;
 - line-ending normalization. The buffer already holds the original separators, so a document whose line endings are `Mixed` SHALL be written as it is, instead of being refused with `EditorSaveError::MixedLineEndings`, because normalization is unavailable in Protected View and refusing would leave a recovered or edit-growth document unsaveable.
 
-The loader already refuses decodes with errors. When the document's encoding can still decode without errors yet not round-trip exactly, Save As of an unmodified protected document SHALL be refused with a notice instead of writing different bytes. A document that entered Protected View through an edit or through draft recovery SHALL keep its modified state, and Save, Save As and close-with-changes SHALL keep working, without transformations.
+An **unmodified** protected document saved in its opened encoding SHALL be written as a byte-exact copy of the file it was loaded from (read on the worker, bounded by the loaded size, only while that file still has the loaded size and modification time, and written through the same guarded durable write), which is exact for every encoding, BOM state and line-ending mix. When that file changed since it was loaded, the save SHALL write the source as above, unless the decode does not round-trip, in which case the save SHALL fail before writing. The loader already refuses decodes with errors; whether an error-free decode round-trips SHALL be computed, on the load worker, only for a protected profile, comparing the re-encoded text with the loaded bytes in bounded chunks without materializing a re-encoded copy. Save As of an **edited** protected document whose decode does not round-trip SHALL be refused with a notice instead of writing different bytes. A document that entered Protected View through an edit or through draft recovery SHALL keep its modified state, and Save, Save As and close-with-changes SHALL keep working, without transformations.
 
 #### Scenario: Byte-identity round trip
 - **WHEN** a synthetic protected file (UTF-8 with and without BOM, CRLF, CR-only, mixed line endings, U+2029 separators, and a 1.9M-character paragraph) is opened and saved with Save As to a new path
 - **THEN** the new file's bytes equal the source file's bytes
+
+#### Scenario: An inexact decode saves as a byte-exact copy
+- **WHEN** an unmodified protected Shift_JIS document holding a code that decodes without errors but encodes back differently is saved with Save As
+- **THEN** the new file's bytes equal the loaded file's bytes, and the document still reports its decode as inexact
+
+#### Scenario: An edited inexact decode is refused
+- **WHEN** an edited protected document whose decode does not round-trip is saved with Save As
+- **THEN** Save As is refused with a notice and nothing is written
 
 #### Scenario: Save-time formatting does not apply
 - **WHEN** an `.editorconfig` requests trailing-whitespace trimming and a final newline, and a protected document is saved with Save As

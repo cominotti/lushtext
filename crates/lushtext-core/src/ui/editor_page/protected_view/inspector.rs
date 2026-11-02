@@ -29,6 +29,12 @@ pub(crate) struct InspectorPresentation {
     pub(crate) paragraph_chars: u64,
     pub(crate) has_previous: bool,
     pub(crate) has_next: bool,
+    /// Characters of this line the editor hides (0 when it is not folded):
+    /// what the fold marker's tooltip says, reachable from the keyboard here.
+    pub(crate) hidden_chars: u64,
+    /// A folded line before / after this one exists.
+    pub(crate) has_previous_folded: bool,
+    pub(crate) has_next_folded: bool,
 }
 
 /// The heading's subtitle, also the window's accessible label and the
@@ -38,12 +44,19 @@ pub(crate) fn presentation_summary(presentation: &InspectorPresentation) -> Stri
     if presentation.paragraph_chars == 0 {
         return format!("Line {}, empty", presentation.line);
     }
-    format!(
+    let window = format!(
         "Line {}, columns {}–{} of {}",
         presentation.line,
         presentation.start + 1,
         presentation.end,
         presentation.paragraph_chars
+    );
+    if presentation.hidden_chars == 0 {
+        return window;
+    }
+    format!(
+        "{window}; {} characters hidden in the editor",
+        presentation.hidden_chars
     )
 }
 
@@ -59,6 +72,10 @@ pub enum InspectorRequest {
     },
     CopyWindow,
     CopyWholeLine,
+    /// The nearest folded line before the shown one (Alt+Up).
+    PreviousFoldedLine,
+    /// The nearest folded line after the shown one (Alt+Down).
+    NextFoldedLine,
 }
 
 type RequestHandler = Box<dyn Fn(InspectorRequest)>;
@@ -81,6 +98,10 @@ mod imp {
         pub previous_button: TemplateChild<gtk4::Button>,
         #[template_child]
         pub next_button: TemplateChild<gtk4::Button>,
+        #[template_child]
+        pub previous_folded_button: TemplateChild<gtk4::Button>,
+        #[template_child]
+        pub next_folded_button: TemplateChild<gtk4::Button>,
         #[template_child]
         pub line_spin: TemplateChild<gtk4::SpinButton>,
         #[template_child]
@@ -112,6 +133,8 @@ mod imp {
     impl ObjectImpl for LushtextLineInspector {
         fn constructed(&self) {
             self.parent_constructed();
+            crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.line_spin);
+            crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.column_spin);
             self.obj().wire();
         }
     }
@@ -152,6 +175,8 @@ impl LushtextLineInspector {
         let imp = self.imp();
         accessibility::set_label(&*imp.previous_button, "Previous Window");
         accessibility::set_label(&*imp.next_button, "Next Window");
+        accessibility::set_label(&*imp.previous_folded_button, "Previous Folded Line");
+        accessibility::set_label(&*imp.next_folded_button, "Next Folded Line");
         accessibility::set_label(&*imp.line_spin, "Line");
         accessibility::set_label(&*imp.column_spin, "Column");
         accessibility::set_label(&*imp.go_button, "Go to Line and Column");
@@ -169,11 +194,18 @@ impl LushtextLineInspector {
         };
         connect(&imp.previous_button, |_| InspectorRequest::PreviousWindow);
         connect(&imp.next_button, |_| InspectorRequest::NextWindow);
+        connect(&imp.previous_folded_button, |_| {
+            InspectorRequest::PreviousFoldedLine
+        });
+        connect(&imp.next_folded_button, |_| {
+            InspectorRequest::NextFoldedLine
+        });
         connect(&imp.go_button, Self::go_to_request);
         connect(&imp.copy_window_button, |_| InspectorRequest::CopyWindow);
         connect(&imp.copy_line_button, |_| InspectorRequest::CopyWholeLine);
         // Page Down / Page Up (and Alt+Right / Alt+Left) page through the
-        // line from anywhere in the dialog: the window text is at most
+        // line, and Alt+Down / Alt+Up move to the next or previous folded
+        // line, from anywhere in the dialog: the window text is at most
         // N_INSPECT characters, so its own paging has nothing to do. Capture
         // phase, so the text view's bindings never see the keys.
         let paging = gtk4::EventControllerKey::new();
@@ -193,6 +225,12 @@ impl LushtextLineInspector {
                 }
                 gtk4::gdk::Key::Right if alt => InspectorRequest::NextWindow,
                 gtk4::gdk::Key::Left if alt => InspectorRequest::PreviousWindow,
+                gtk4::gdk::Key::Down | gtk4::gdk::Key::KP_Down if alt => {
+                    InspectorRequest::NextFoldedLine
+                }
+                gtk4::gdk::Key::Up | gtk4::gdk::Key::KP_Up if alt => {
+                    InspectorRequest::PreviousFoldedLine
+                }
                 _ => return glib::Propagation::Proceed,
             };
             dialog.request(request);
@@ -235,6 +273,10 @@ impl LushtextLineInspector {
         accessibility::set_label(&*imp.window_view, &summary);
         imp.previous_button.set_sensitive(presentation.has_previous);
         imp.next_button.set_sensitive(presentation.has_next);
+        imp.previous_folded_button
+            .set_sensitive(presentation.has_previous_folded);
+        imp.next_folded_button
+            .set_sensitive(presentation.has_next_folded);
         let to_f64 = |value: u64| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
         imp.line_spin
             .adjustment()

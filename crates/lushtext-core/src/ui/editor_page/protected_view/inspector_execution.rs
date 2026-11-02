@@ -6,17 +6,18 @@
 //!
 //! The inspector shows one window of at most `N_INSPECT` characters of one
 //! paragraph. Every window is read **on a worker** from the session's
-//! [`ProtectedTextSource`] (never from the protected buffer, ledger A66), under
+//! `ProtectedTextSource` (never from the protected buffer, ledger A66), under
 //! a generation: a newer request supersedes an older one, and a completion
 //! publishes only while its generation and the Protected View session it was
 //! dispatched under are both current. While a read runs, the editor holds the
 //! `line-inspector` readiness blocker.
 //!
-//! Copy Whole Line locates the paragraph's byte range on a worker, then
-//! installs a [`WholeLineProvider`] on the clipboard: a lazy
+//! Copy Whole Line copies the paragraph's bytes out of the source on a worker
+//! (only the paragraph, so the clipboard never keeps the whole document alive),
+//! then installs a `SourceTextProvider` on the clipboard: a lazy
 //! `GdkContentProvider` that writes the paragraph to a reader's stream one
-//! `COPY_CHUNK_BYTES` chunk per main-loop dispatch, from a clone of the source
-//! (`Arc`, no copy). The line is never materialized on the GTK thread.
+//! `COPY_CHUNK_BYTES` chunk per main-loop dispatch. The line is never
+//! materialized on the GTK thread.
 
 use std::cell::{Cell, RefCell};
 
@@ -24,9 +25,10 @@ use gtk4::prelude::*;
 use libadwaita::prelude::AdwDialogExt;
 
 use super::inspector::{InspectorPresentation, InspectorRequest, LushtextLineInspector};
-use super::policy::{COPY_CHUNK_BYTES, N_INSPECT_WIDTH, inspector_window_containing};
-use super::seams::{InspectorWindowText, ProtectedTextSource};
+use super::policy::{N_INSPECT_WIDTH, inspector_window_containing, whole_line_copied_text};
+use super::seams::InspectorWindowText;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::folded_text::SourceTextProvider;
 
 /// The window the inspector shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +165,12 @@ impl LushtextEditorPage {
                 }
             }
             InspectorRequest::CopyWholeLine => self.copy_protected_whole_line(shown.paragraph),
+            InspectorRequest::PreviousFoldedLine | InspectorRequest::NextFoldedLine => {
+                let next = request == InspectorRequest::NextFoldedLine;
+                if let Some(paragraph) = self.neighbouring_folded_paragraph(shown.paragraph, next) {
+                    self.read_inspector_window(paragraph, 0, true);
+                }
+            }
         }
     }
 
@@ -250,6 +258,10 @@ impl LushtextEditorPage {
         state
             .windows_published
             .set(state.windows_published.get().saturating_add(1));
+        let hidden_chars = self
+            .protected_fold_plan()
+            .and_then(|plan| plan.range_of(read.paragraph))
+            .map_or(0, |range| range.tail_chars);
         let presentation = InspectorPresentation {
             line: read.paragraph + 1,
             lines,
@@ -258,6 +270,13 @@ impl LushtextEditorPage {
             paragraph_chars: read.paragraph_chars,
             has_previous: read.window.start > 0,
             has_next: read.window.end < read.paragraph_chars,
+            hidden_chars,
+            has_previous_folded: self
+                .neighbouring_folded_paragraph(read.paragraph, false)
+                .is_some(),
+            has_next_folded: self
+                .neighbouring_folded_paragraph(read.paragraph, true)
+                .is_some(),
         };
         dialog.present_window(&presentation, &read.text, announce);
         if let Some((paragraph, column, chars)) = state.highlight.take()
@@ -265,6 +284,23 @@ impl LushtextEditorPage {
             && read.window.contains(column)
         {
             dialog.select_window_range(column - read.window.start, chars);
+        }
+    }
+
+    /// The nearest folded paragraph after (`next`) or before `paragraph`: one
+    /// binary search of the fold plan.
+    fn neighbouring_folded_paragraph(&self, paragraph: u64, next: bool) -> Option<u64> {
+        let plan = self.protected_fold_plan()?;
+        let ranges = plan.ranges();
+        if next {
+            let index = ranges.partition_point(|range| range.paragraph <= paragraph);
+            ranges.get(index).map(|range| range.paragraph)
+        } else {
+            let index = ranges.partition_point(|range| range.paragraph < paragraph);
+            index
+                .checked_sub(1)
+                .and_then(|index| ranges.get(index))
+                .map(|range| range.paragraph)
         }
     }
 
@@ -308,16 +344,24 @@ impl LushtextEditorPage {
         let Some(ticket) = self.protected_view_ticket() else {
             return;
         };
-        let located_source = source.clone();
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
-            move || located_source.paragraph(paragraph),
-            move |page, located| {
+            // The paragraph's bytes are copied into their own allocation here,
+            // so the clipboard never keeps the whole source alive (review S1).
+            move || {
+                source.paragraph(paragraph).map(|located| {
+                    let bytes = std::sync::Arc::<[u8]>::from(
+                        &source.text().as_bytes()[located.start_byte..located.end_byte],
+                    );
+                    (bytes, located.chars)
+                })
+            },
+            move |page, copied| {
                 if !page.protected_view_current(&ticket) {
                     return;
                 }
-                let Some(located) = located else { return };
-                let provider = WholeLineProvider::new(source, located.start_byte, located.end_byte);
+                let Some((bytes, chars)) = copied else { return };
+                let provider = SourceTextProvider::ready(bytes);
                 if page
                     .source_view()
                     .clipboard()
@@ -328,8 +372,27 @@ impl LushtextEditorPage {
                     state
                         .whole_line_copies
                         .set(state.whole_line_copies.get().saturating_add(1));
+                    page.announce_whole_line_copied(paragraph, chars);
                 }
             },
+        );
+    }
+
+    /// Say that Copy Whole Line put the line on the clipboard (review S6): in
+    /// the status bar and to assistive technology, which an Info status
+    /// message alone does not reach.
+    fn announce_whole_line_copied(&self, paragraph: u64, chars: u64) {
+        let text = whole_line_copied_text(paragraph, chars);
+        if let Some(window) = self
+            .root()
+            .and_downcast::<crate::ui::window::LushtextWindow>()
+        {
+            window.publish_status_message(&text, crate::ui::status_bar::MessageKind::Info);
+        }
+        crate::ui::accessibility::announce(
+            self.source_view(),
+            &text,
+            gtk4::AccessibleAnnouncementPriority::Medium,
         );
     }
 
@@ -367,121 +430,5 @@ impl LushtextEditorPage {
     fn line_inspector_state(&self) -> &LineInspectorState {
         use glib::subclass::prelude::ObjectSubclassIsExt;
         &self.imp().line_inspector
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The lazy whole-line clipboard provider
-// ---------------------------------------------------------------------------
-
-/// MIME types the provider offers: UTF-8 text only. No `GType` is offered, so
-/// no reader can make GTK materialize the line as one `GValue`.
-const WHOLE_LINE_MIME_TYPES: [&str; 2] = ["text/plain;charset=utf-8", "text/plain"];
-
-mod provider_imp {
-    use std::cell::{Cell, RefCell};
-    use std::future::Future;
-    use std::pin::Pin;
-
-    use gtk4::gdk;
-    use gtk4::gdk::subclass::prelude::*;
-    use gtk4::prelude::*;
-
-    use super::{COPY_CHUNK_BYTES, ProtectedTextSource, WHOLE_LINE_MIME_TYPES};
-
-    #[derive(Default)]
-    pub struct WholeLineProvider {
-        pub(super) source: RefCell<Option<ProtectedTextSource>>,
-        pub(super) range: Cell<(usize, usize)>,
-        pub(super) chunks_written: std::rc::Rc<Cell<u64>>,
-    }
-
-    #[glib::object_subclass]
-    impl ObjectSubclass for WholeLineProvider {
-        const NAME: &'static str = "LushtextWholeLineProvider";
-        type Type = super::WholeLineProvider;
-        type ParentType = gdk::ContentProvider;
-    }
-
-    impl ObjectImpl for WholeLineProvider {}
-
-    impl ContentProviderImpl for WholeLineProvider {
-        fn formats(&self) -> gdk::ContentFormats {
-            gdk::ContentFormats::new(&WHOLE_LINE_MIME_TYPES)
-        }
-
-        fn write_mime_type_future(
-            &self,
-            mime_type: &str,
-            stream: &gio::OutputStream,
-            io_priority: glib::Priority,
-        ) -> Pin<Box<dyn Future<Output = Result<(), glib::Error>> + 'static>> {
-            let source = self.source.borrow().clone();
-            let (from, to) = self.range.get();
-            let known = WHOLE_LINE_MIME_TYPES.contains(&mime_type);
-            let stream = stream.clone();
-            let chunks = std::rc::Rc::clone(&self.chunks_written);
-            Box::pin(async move {
-                let source = match source {
-                    Some(source) if known => source,
-                    _ => {
-                        return Err(glib::Error::new(
-                            gio::IOErrorEnum::NotSupported,
-                            "unsupported clipboard format",
-                        ));
-                    }
-                };
-                let bytes = source.text().as_bytes();
-                let mut at = from;
-                // One chunk per main-loop dispatch: each write is awaited.
-                while at < to {
-                    let end = (at + COPY_CHUNK_BYTES).min(to);
-                    let chunk = glib::Bytes::from(&bytes[at..end]);
-                    let written = stream.write_bytes_future(&chunk, io_priority).await?;
-                    chunks.set(chunks.get().saturating_add(1));
-                    let written = usize::try_from(written).unwrap_or(0);
-                    if written == 0 {
-                        return Err(glib::Error::new(
-                            gio::IOErrorEnum::BrokenPipe,
-                            "clipboard reader stopped",
-                        ));
-                    }
-                    at += written;
-                }
-                Ok(())
-            })
-        }
-    }
-}
-
-glib::wrapper! {
-    /// A clipboard provider that streams one paragraph of a protected
-    /// document's source in `COPY_CHUNK_BYTES` chunks.
-    pub struct WholeLineProvider(ObjectSubclass<provider_imp::WholeLineProvider>)
-        @extends gtk4::gdk::ContentProvider;
-}
-
-impl WholeLineProvider {
-    fn new(source: ProtectedTextSource, from: usize, to: usize) -> Self {
-        use glib::subclass::prelude::ObjectSubclassIsExt;
-        let provider: Self = glib::Object::new();
-        provider.imp().source.replace(Some(source));
-        provider.imp().range.set((from, to));
-        provider
-    }
-
-    /// Chunks written to readers so far.
-    #[must_use]
-    pub fn chunks_written(&self) -> u64 {
-        use glib::subclass::prelude::ObjectSubclassIsExt;
-        self.imp().chunks_written.get()
-    }
-
-    /// Bytes of the line the provider serves.
-    #[must_use]
-    pub fn line_bytes(&self) -> usize {
-        use glib::subclass::prelude::ObjectSubclassIsExt;
-        let (from, to) = self.imp().range.get();
-        to - from
     }
 }

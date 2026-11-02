@@ -25,7 +25,7 @@ that freezes it is **paragraph length**, not file size.
 | C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Met (interleaved verdict 2026-10-29):** largest dispatch 13.2 ms, fill-in 20.4–25.9 ms (median 21.4), first painted frame 30.0–33.2 ms against `main`'s 45.1–47.9 ms ("C4c" below). |
 | C5 | `explore-editing-long-paragraphs` (rescoped 2026-10-30 under the hybrid policy; implemented 2026-10-31) | Lower the per-keystroke cost of typing in long **editable** paragraphs: release the retired `GtkSourceMap` that still laid out every edited paragraph (a pre-existing defect: 7.5 ms per key at 50k; A52), show paragraphs longer than `L_wrap_edit` (8,192) unwrapped by a no-wrap tag (its first character decides, A53) while the rest keep wrapping, answer the input method's surrounding-text request with a bounded window (GNOME's input path asked for the whole paragraph's word boundaries on every key; A54), make the keystroke sweep a maintained lane group, and record the floor (one whole-paragraph Pango layout in GTK's commit handler). Editing above `L_protect_edit` (50,000, C2's Protected View) is deferred. | Typing within B_interact up to `L_wrap_edit` wrapped and further unwrapped, on the plain and GNOME input paths, the rest a recorded toolkit-floor exception. **Met up to 20,000 characters** on both paths (`main`: about 12,000 plain, 5,000 on GNOME's path); 50,000 at the budget (7.7–11.1 ms) and 100,000 at 16–20 ms are the recorded exception ("C5" below), accepted by the maintainer ("editable up to ~50k", 2026-10-30); since C2 merged, 100,000 is in Protected View. |
 | C6 | `bound-post-open-settle` (candidate, recorded by C0's budget verdict) | Bound the first main-loop turns after load readiness: the small-document post-open stall, the HTML first-highlight stall, the first overlay-indicator frame | The baseline fits B_settle and 2 reference frames on an idle reference run. Does not block C1–C4. |
-| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
+| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
 
 C1–C4 are drafted; none may be **implemented** before this record holds the
 values they use (`responsiveness-measurement` spec).
@@ -1326,12 +1326,26 @@ load 0.8–3.0 before, inside and after each hold):
 | 250,000 wrap on | `main` | 3.8–3.9 | 1.7–2.2 | 9.6–14.2 |
 | 250,000 wrap on | exempt | 13.8–13.9 | 2.4–2.5 | 12.4–13.8 |
 
+The exempt build's hidden-tail insert is also about 5 ms slower than `main`'s
+(18.7–18.9 against 13.7–13.9 ms on 1.9M wrap on). That difference is not the
+head's wrapping, which runs only when the head is laid out, after the insert:
+the exempt build's only change is an early return in the `insert-text`
+handler, and the two binaries were built minutes apart from different trees,
+so it is recorded as build-to-build variation of that one envelope, not as a
+cost of wrapping.
+
 **Decision: keep the gate.** Wrapping the head costs a full screen of text
 painted under the cairo renderer (10 ms more per head frame), pushes one sample
 over `B_settle` and makes C3's envelope 5 ms longer, to show text the Line
 Inspector already shows wrapped. With the gate, C2's 17.6 ms head-frame
 exception does not occur on `main`. Recorded as the spec requirement "Protected
 heads follow the per-paragraph wrap gate".
+
+**Follow-up idea (queued, not scheduled): a shorter wrapped head.** With word
+wrap on, a protected head could keep fewer than `L_PROTECT` characters and wrap
+them: a head short enough to fill a few wrapped rows would read like the rest
+of the document while costing less than the unwrapped 500-character head's
+paint. Needs its own measurement against `B_settle`; owner none yet.
 
 ### Verdict (2026-11-01)
 
@@ -1349,7 +1363,7 @@ session); a build without the actions records them unavailable. Toolkit as
 C2's verdict (GTK 4.22.5, libadwaita 1.9.3, cairo renderer, 1280×800 at
 120 Hz).
 
-**The new interactions (branch, worst per repetition, ms):**
+**The new interactions (branch, worst per repetition, ms)** — *superseded by the corrected, per-input verdict under "Review fixes and corrected verdict" below: these paging figures are stall windows, not inputs, and the plain runs predate the driver's 0.5 s wait after the dialog opens:*
 
 | Case | Variant | reps | Inspector open transition | Paging, 10 windows | Close transition | Copy Whole Line, served to `wl-paste` |
 |---|---|---|---|---|---|---|
@@ -1377,9 +1391,13 @@ puts 14 % of the application's cycles in pixman's
 `bits_image_fetch_bilinear_affine_normal_a8` under `general_composite_rect`:
 the transformed (scaled) A8 masks the dialog's scale transition composites in
 software. It is Libadwaita's dialog transition under the cairo renderer, not
-Protected View work (paging inside the same dialog costs at most 7.8 ms), and,
-like C2's accepted 17.6 ms head-frame exception, it is to be re-evaluated when
-the lane can measure the GPU renderer. Recorded, not fixed: replacing the
+Protected View work (paging inside the same dialog costs at most 7.8 ms), and
+**it applies to every `AdwDialog` LushText presents under that renderer**
+(Preferences, the local-history browser, the note editors, every alert), not
+only to the inspector: the cost is the transition's, whatever the content.
+Like C2's accepted 17.6 ms head-frame exception, it is to be re-measured with a
+GL renderer (`GSK_RENDERER=ngl` or `vulkan`) when the lane can run one
+headless; owner: the lane, no change scheduled. Recorded, not fixed: replacing the
 `AdwDialog` with a separate window would drop the HIG-standard dialog to work
 around a software-rendering cost.
 
@@ -1392,6 +1410,111 @@ every interaction phase (scroll, Page Down, click, typing, find, tab switch)
 within `B_interact` on both sides, with one branch repetition of restore-three
 `type-start` at 8.2 ms (median 5.5, `main` 6.4/6.8). AT and probe IM on 1.9M
 wrap on: no phase over budget outside the dialog transition.
+
+### Review fixes and corrected verdict (2026-11-02)
+
+An independent review of PR #75 found three must-fix and seven should-fix
+defects; all are fixed in the second commit, each bug with a test that failed
+first (`.claude/handoffs/pv-inspector/review-ff-unit.log`,
+`review-ff-widget-head.log`, the widget tests run against 04f702ae):
+
+- **Folded surfaces copied visible text only (M1).** A copy across a folded
+  paragraph in the local-history preview put 10,326 of 56,716 bytes on the
+  clipboard, after GTK had first copied the whole selection, hidden tails
+  included, into a second buffer on the GTK thread. The preview and the note
+  editors now copy from their source on a worker (`ui/folded_text.rs`: Ctrl+C,
+  Ctrl+X, the menu and the primary selection; a drag of a selection that
+  reaches a hidden tail does not start).
+- **The note editor profiled and installed up to 16 MiB in one dispatch (M3).**
+  It now profiles on a worker and installs in bounded turns through the
+  preview's slice step (`ui/window/notes/install_execution.rs`), measured below.
+- **The paging evidence (M2) was not per input.** The probe never saw input
+  delivered to an `AdwDialog`, so all eleven inspector injections were
+  `no-input-record`, and the plain runs predated the driver's 0.5 s wait, so
+  Page Downs 1–3 were counted in the open transition. The probe now stamps the
+  input of every dialog the window presents, once per event.
+- Should-fix: Copy Whole Line copies only the paragraph's bytes (S1); one
+  insertion into a single-line entry is cut at 16 KiB with a notice (S1b; 16
+  rather than 64 because `GtkEntryBuffer` itself stops at 65,535 characters);
+  the round-trip check runs only for protected profiles, in 64 KiB chunks (S2);
+  an unmodified protected document's Save As is a byte-exact copy of its file,
+  refused only when edited with a decode that does not round-trip (S3); the
+  fold-marker column has a fixed width from construction, so no entry or exit
+  resizes the text area (S4, new axiom A74); the inspector steps between folded
+  lines and states each line's hidden count, notices are rate-limited per
+  reason, and the accessibility smoke drives Ctrl+Alt+I and Shift+F10 (S5);
+  Copy Whole Line announces "Line N copied (X characters)" (S6).
+- Found on the way, pre-existing: **UTF-16 documents were saved as UTF-8**
+  after a UTF-16 byte-order mark (`encoding_rs`'s output encoding for UTF-16 is
+  UTF-8); **a click in a protected document never focused it** (the capture
+  gesture claimed the press before GtkTextView's own gesture could), so the
+  keyboard kept acting on whatever had focus, which is why the earlier
+  verdict's paging and typing on protected documents produced no frame or no
+  visible change; and the smoke tooling's `atspi-key` never delivered a key
+  under Wayland (AT-SPI sends keycode 0), replaced for chords by `rd-key:`
+  (Mutter RemoteDesktop).
+
+**Corrected verdict.** Interleaved, one exclusive hold per run, `main`
+7f50d232 against the review-fix build (`bin/branch-review`), the committed
+driver and the dialog-stamping probe, same cases and repetitions as above (runs
+`pv-inspector/verdict2/{branch,main}-plain{1,2}` and `-atim`; load 0.5–1.5
+before and after every hold, `runs.log`). Every inspector injection is now
+matched (0 without a record). Per input, ms; a Page Down after the line's last
+window changes nothing and is listed separately:
+
+| Case | Variant | reps | Page Down input-to-frame (ms) | worst dispatch per Page Down (ms) | open transition (ms) | close transition (ms) | Escape input-to-frame (ms) | Copy Whole Line (ms) | Page Downs past the last window | inputs with no record |
+|---|---|---|---|---|---|---|---|---|---|---|
+| delimiters/cr | plain | 6 | 3.5–12.8 (med 10.8) | 1.2–5.7 (med 3.1) | 25.9–29.4 (med 28.4) | 28.6–31.7 (med 30.7) | 3.7–38.0 (med 11.3) | 1.2–3.9 (med 3.2) | 40 | 0 |
+| delimiters/u2029 | plain | 6 | 2.7–13.2 (med 10.3) | 0.0–6.3 (med 3.5) | 27.6–29.5 (med 28.5) | 25.6–32.6 (med 31.2) | 9.5–40.5 (med 30.8) | 1.0–5.4 (med 3.7) | 30 | 0 |
+| paragraph/1900000/css/txt/wrap-off/minimap-off | plain | 6 | 2.4–14.5 (med 10.3) | 0.0–7.9 (med 3.2) | 27.9–29.3 (med 28.7) | 29.4–33.8 (med 32.2) | 7.0–43.0 (med 39.6) | 1.0–4.3 (med 2.4) | 0 | 0 |
+| paragraph/1900000/css/txt/wrap-on/minimap-off | at | 2 | 3.0–12.7 (med 9.7) | 0.0–5.2 (med 2.9) | 30.2–31.5 (med 30.8) | 29.6–31.9 (med 30.8) | 34.5–41.6 (med 38.1) | 1.7–3.7 (med 2.7) | 0 | 0 |
+| paragraph/1900000/css/txt/wrap-on/minimap-off | plain | 6 | 2.5–14.8 (med 10.0) | 0.0–6.5 (med 2.8) | 27.9–29.2 (med 28.7) | 31.3–33.8 (med 32.0) | 4.9–43.6 (med 40.3) | 1.0–5.1 (med 3.9) | 0 | 0 |
+| paragraph/1900000/css/txt/wrap-on/minimap-off | probe-im | 2 | 4.5–13.4 (med 10.2) | 0.0–6.1 (med 3.5) | 28.0–28.2 (med 28.1) | 32.5–33.7 (med 33.1) | 42.1–46.6 (med 44.3) | 2.8–3.2 (med 3.0) | 0 | 0 |
+| paragraph/250000/css/txt/wrap-on/minimap-off | plain | 6 | 2.4–13.7 (med 9.6) | 0.0–6.5 (med 3.0) | 27.8–30.1 (med 28.9) | 29.9–35.0 (med 32.9) | 37.0–44.0 (med 41.7) | 2.5–4.1 (med 2.9) | 0 | 0 |
+| reload/250000 | plain | 6 | 2.5–14.0 (med 9.7) | 0.0–6.5 (med 3.0) | 28.2–29.6 (med 29.0) | 30.4–33.8 (med 32.6) | 35.0–41.2 (med 39.8) | 1.5–3.1 (med 2.2) | 0 | 0 |
+| session/restore-3 | plain | 6 | 2.3–12.8 (med 9.8) | 0.0–0.0 (med 0.0) | 0.0–0.0 (med 0.0) | 0.0–0.0 (med 0.0) | 9.2–37.5 (med 21.2) | 1.3–5.6 (med 2.8) | 0 | 0 |
+
+Every Page Down inside the Line Inspector is presented within two 120 Hz frames
+(at most 14.8 ms from injection) and its dispatch stays within `B_interact`
+(at most 7.9 ms); the open and close transitions (25–35 ms) and Escape's
+input-to-frame (up to 47 ms, the close transition) are the recorded
+`AdwDialog` exception. Copy Whole Line, now copying the paragraph on a worker
+and served to `wl-paste`, stays within 5.6 ms.
+
+C2's cases, `main` → review-fix build, median / max of each repetition's worst
+dispatch (ms): open within 0.6 ms of `main` everywhere (1.9M wrap on 14.2/14.4
+→ 14.3/15.0; CR-only 17.5/18.0 → 17.0/17.7; U+2029 16.9/17.0 → 16.8/17.8, the
+declared hidden-tail envelope), restore of three 16.9/17.5 → 15.5/16.2; reload
+of 250,000 open 8.7/8.8 → 9.9/13.4 (one repetition), within `B_settle`. Every
+interaction phase stays within `B_interact`: with the focus fix, paging,
+Ctrl+Home and typing on a protected document now reach the view (viewport
+scroll and the rate-limited notice), so CR-only and U+2029 paging is 6.1–7.3 ms
+(`main` 1.0, where nothing scrolled) and typing 1.7–6.8 ms (`main` 1.0–2.8). In
+two U+2029 repetitions the open's hidden-tail insert (the declared envelope,
+19.1 ms) fell after the phase boundary and is charged to `background`. AT and
+probe IM on 1.9M wrap on: no phase over budget outside the dialog transition.
+The lane's mutter log prints
+`meta_window_set_stack_position_no_sync: assertion 'window->stack_position >= 0'`
+once per `copy-line` phase on the branch (never on `main`, which has no such
+phase): it is the compositor's reaction to `wl-paste`'s own short-lived
+surface, at the phase's start, not to LushText.
+
+**Note editor install (M3) and gutter (S4), measured** in an optimized widget
+build (`CARGO_PROFILE_{DEV,TEST}_OPT_LEVEL=3`, one exclusive hold):
+a document note of 40,000 short lines and one 60,000-character paragraph
+installs in 4 turns, the longest 3.5–3.6 ms (two runs), where it used to be
+one dispatch (`test_a_long_line_note_installs_folded_in_bounded_turns_and_copies_from_its_text`).
+On a document of thirty 40,000-character wrapped lines, an edit-growth entry
+is one 9.1–9.4 ms dispatch with nothing after it and leaves the gutter's width
+alone; its entry undo is a 1.9–2.1 ms dispatch followed by a 139 ms one, which
+`perf` (`cycles:u`, run `pv-inspector/perf2`) puts in Pango's layout of the
+restored 40,000-character paragraph (`default_break` 22 %): the toolkit floor
+of an editable paragraph below `L_PROTECT_EDIT`, C2's recorded exception, not a
+whole-document relayout. For comparison, a gutter width change of the same
+document (what showing the marker column at entry did) is a 230–241 ms
+dispatch: every paragraph laid out again, new ledger axiom **A74**
+(`make gtk-axioms`: the last, offscreen paragraph of a wrapping view lands
+exactly where a fresh view at the new width puts it).
 
 **Deferred: task 5.1a** (lane cases for Save As of a protected document and a
 live word-wrap toggle). Both need a measurement-build hook (the file chooser,

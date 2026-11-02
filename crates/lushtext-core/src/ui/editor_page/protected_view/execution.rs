@@ -370,8 +370,7 @@ impl LushtextEditorPage {
         }
         buffer.undo();
         let tag = fold_tag(buffer.upcast_ref());
-        let (start, end) = buffer.bounds();
-        buffer.remove_tag(&tag, &start, &end);
+        remove_tag_where_applied(buffer.upcast_ref(), &tag);
         self.restore_document_scale_before_protected_entry();
         let view = self.source_view();
         view.set_editable(true);
@@ -418,6 +417,31 @@ impl LushtextEditorPage {
     fn imp_protected_view(&self) -> &ProtectedViewRuntime {
         use glib::subclass::prelude::ObjectSubclassIsExt;
         &self.imp().protected_view
+    }
+}
+
+/// Remove `tag` from the runs that carry it, and only those, so the change
+/// touches only the folded paragraphs rather than every line of the buffer.
+/// The toggles are found through the btree's tag summaries, not by a
+/// character walk.
+fn remove_tag_where_applied(buffer: &gtk4::TextBuffer, tag: &gtk4::TextTag) {
+    let mut start = buffer.start_iter();
+    loop {
+        if !start.has_tag(tag) && !start.forward_to_tag_toggle(Some(tag)) {
+            return;
+        }
+        let mut end = start;
+        if !end.forward_to_tag_toggle(Some(tag)) {
+            end = buffer.end_iter();
+        }
+        let resume = end.offset();
+        let done = end.is_end();
+        buffer.remove_tag(tag, &start, &end);
+        if done {
+            return;
+        }
+        // A tag change invalidates every iterator: resume by offset.
+        start = buffer.iter_at_offset(resume);
     }
 }
 

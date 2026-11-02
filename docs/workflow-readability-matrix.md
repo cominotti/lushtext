@@ -2443,7 +2443,7 @@ projection must stand down for either workflow's suspension.
 
 - facade: `ui/window/notes/mod.rs` (**178** physical lines of the 370 budget)
 - seam value objects: `ui/window/notes/seams.rs`
-- coordination: `ui/window/notes/journal.rs` (the migration ledger), `ui/window/notes/source_execution.rs` (bounded note-source construction for both the browser and the command palette), `ui/window/notes/query_execution.rs` (the browser query), `ui/window/notes/bookmark_execution.rs` (bookmark lifecycle and editor note resolution), `ui/window/notes/editor_execution.rs` (document and folder note editors)
+- coordination: `ui/window/notes/journal.rs` (the migration ledger), `ui/window/notes/source_execution.rs` (bounded note-source construction for both the browser and the command palette), `ui/window/notes/query_execution.rs` (the browser query), `ui/window/notes/bookmark_execution.rs` (bookmark lifecycle and editor note resolution), `ui/window/notes/editor_execution.rs` (document and folder note editors), `ui/window/notes/install_execution.rs` (`execution`, stage-order-qualified: the note body's worker profile and sliced, folded install, and where its text is read; `protected-view-inspector-and-surfaces` review M3)
 - policy: `ui/window/notes/policy.rs`
 - evidence: `ui/window/notes/evidence.rs`
 - test policy: `ui/window/notes/test_policy.rs`
@@ -3073,6 +3073,14 @@ Inspector dialog, `resources/ui/line-inspector.blp`),
 `crates/lushtext-core/src/ui/editor_page/protected_view/menu.rs` (the Protected
 View menu) and `crates/lushtext-core/src/ui/editor_page/protected_view/fold_gutter.rs`
 (the fold-marker gutter renderer).
+
+**Cross-cutting coordination beside this row, carrying no role:**
+`ui/folded_text.rs` (copies of a folded read-only surface served from its
+source, with its lazy chunked `SourceTextProvider`, which Copy Whole Line also
+uses, and the slice step the local-history preview and the note editors share;
+its owners are this row, `WFR-LOCAL-HISTORY` and `WFR-NOTES-BOOKMARKS`) and
+`ui/entry_paste_cap.rs` (the 16 KiB cap on one insertion into a single-line
+entry, called wherever such an entry is built).
 
 ## Completion Rule
 

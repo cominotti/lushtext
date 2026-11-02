@@ -34,7 +34,7 @@ palette, or a direct shortcut. The complete in-app list lives under
 | Close tab | `Ctrl+W` |
 | Print | `Ctrl+P` |
 | In-tab find / replace | `Ctrl+F` / `Ctrl+H` |
-| Inspect Line (view-only documents with very long lines) | `Ctrl+Alt+I`; then Tab to Previous Window, Next Window, Line, Column, Go, Copy Window and Copy Whole Line; `Escape` closes |
+| Inspect Line (view-only documents with very long lines) | `Ctrl+Alt+I`; `Page Down`/`Page Up` move the window, `Alt+Down`/`Alt+Up` go to the next or previous folded line; Tab reaches Previous Window, Next Window, Previous Folded Line, Next Folded Line, Line, Column, Go, Copy Window and Copy Whole Line; `Escape` closes |
 | Protected View menu | `Shift+F10` or `Menu` in a view-only document |
 | Next / previous in-tab find match | `Ctrl+G` / `Ctrl+Shift+G` |
 | Command palette | `Ctrl+Shift+P` |
@@ -282,15 +282,33 @@ The **Line Inspector** is the accessible path to folded content. It is a dialog
 holding one window of at most 500 characters of one line, with word wrap on,
 read-only, with a visible caret and selection, so screen-reader reading and
 selection stay bounded. Its text area's accessible label is the window's
-position ("Line 2, columns 150001–150500 of 300000"), which is also announced
-politely each time the window moves. Previous Window, Next Window, Line,
+position and, for a folded line, what the editor hides ("Line 2, columns
+150001–150500 of 300000; 299500 characters hidden in the editor"), which is
+also announced politely each time the window moves. Previous Window, Next
+Window, Previous Folded Line and Next Folded Line (`Alt+Up`/`Alt+Down`), Line,
 Column, Go to Line and Column, Copy Window and Copy Whole Line are labelled
-controls. Copy Whole Line copies the whole line (it is written to the clipboard
-in bounded chunks when another application pastes). The fold-marker gutter
-shows `⋯` beside each shortened line; its tooltip gives the hidden-character
-count, and the renderer is labelled "Folded lines" with a description naming
-the Inspect Line shortcut (a gutter has no per-line accessible objects, so the
-count is spoken in the inspector's label instead).
+controls, so every shortened line and its hidden count are reachable from the
+keyboard. Copy Whole Line copies the whole line (it is written to the
+clipboard in bounded chunks when another application pastes) and says so in
+the status bar and to assistive technology: "Line 2 copied (300000
+characters)". The fold-marker gutter shows `⋯` beside each shortened line
+while the gutter shows line numbers or marks; its tooltip gives the
+hidden-character count, and the renderer is labelled "Folded lines" with a
+description naming the Inspect Line shortcut (a gutter has no per-line
+accessible objects, so the count is spoken in the inspector's label instead).
+
+The **local-history preview and the note editors** show a body with a
+paragraph over 50,000 characters folded and read-only (a note says so in a
+line above its body, and its text view is labelled "Note body, read-only").
+Selecting and copying there (Ctrl+C, the context menu, the primary selection)
+copies the selected text in full, hidden tails included, from the snapshot or
+note itself; a drag of such a selection does not start, because it would carry
+only the visible characters.
+
+A paste of more than 16 KiB into a single-line field (Find, Replace, the
+command palette, the Open popover, names, the inspector's position fields) is
+cut at 16 KiB, and a status message (announced) says so: a much longer line
+would stall the window every time it is laid out again.
 
 The main view stays focusable: C2's lane AT case measured the folded view's
 text and caret queries within budget, so the P4 fallback (making the main view

@@ -87,6 +87,12 @@ pub struct NotesEvidence {
     pub palette_note_source_busy: bool,
     /// Whether a compact palette note-source request is parked on admission.
     pub palette_note_source_awaiting_admission: bool,
+    /// Note-body install turns run so far, process-wide: a body that could
+    /// hold a paragraph over `L_PROTECT_EDIT` installs in several.
+    pub note_body_install_slices: u64,
+    /// The longest note-body install turn so far, process-wide, in
+    /// microseconds.
+    pub largest_note_body_install_slice_us: u64,
 }
 
 /// Bounded live-editor capture evidence for one explicit budget.
@@ -205,6 +211,11 @@ impl LushtextWindow {
             folder_note_available,
             palette_note_source_busy,
             palette_note_source_awaiting_admission,
+            note_body_install_slices: super::install_execution::NOTE_BODY_INSTALL_SLICES
+                .load(std::sync::atomic::Ordering::Acquire),
+            largest_note_body_install_slice_us:
+                super::install_execution::NOTE_BODY_LARGEST_SLICE_US
+                    .load(std::sync::atomic::Ordering::Acquire),
         }
     }
 

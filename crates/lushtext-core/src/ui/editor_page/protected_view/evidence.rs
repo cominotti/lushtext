@@ -7,8 +7,6 @@
 //! runtime (the entry-undo availability reads the buffer's `can-undo`
 //! property, which does no work).
 
-use glib::subclass::prelude::ObjectSubclassIsExt;
-
 use crate::ui::editor_page::LushtextEditorPage;
 
 /// The observable Protected View state of one editor.
@@ -50,7 +48,8 @@ pub struct ProtectedViewEvidence {
     pub notices_published: u64,
     /// Protected View alerts published.
     pub alerts_published: u64,
-    /// Whether the fold-marker gutter renderer is shown.
+    /// Whether fold markers are drawn: Protected View with the marker column
+    /// shown (it is shown while the gutter shows line numbers or marks).
     pub fold_gutter_installed: bool,
 }
 
@@ -81,12 +80,7 @@ impl LushtextEditorPage {
             whole_line_copies: inspector_counts.1,
             notices_published: notice_counts.0,
             alerts_published: notice_counts.1,
-            fold_gutter_installed: self
-                .imp()
-                .protected_fold_gutter
-                .borrow()
-                .as_ref()
-                .is_some_and(gtk4::prelude::WidgetExt::is_visible),
+            fold_gutter_installed: self.fold_markers_shown(),
         }
     }
 }

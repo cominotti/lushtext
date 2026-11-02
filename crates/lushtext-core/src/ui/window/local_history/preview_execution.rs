@@ -22,12 +22,12 @@ use crate::services::json_store;
 use gtk_lush_tasks::spawn_blocking_then;
 
 use crate::model::protected_fold::FoldPlan;
-use crate::ui::protected_fold::{insert_folded, tail_insert_admitted};
+use crate::ui::folded_text::{FoldedTextSurface, InstallSlice, SurfaceText, install_slice};
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
+use std::sync::Arc;
 
-use crate::model::buffer_replacement::next_replacement_boundary;
 use crate::model::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
 use crate::services::local_history_service;
 use crate::ui::editor_page::LushtextEditorPage;
@@ -50,6 +50,21 @@ fn current_window_height(window: &LushtextWindow) -> i32 {
 
 pub(super) type GuardedLocalHistorySnapshot =
     crate::ui::plain_disposal::DisposalOwned<LocalHistorySnapshot>;
+
+/// The snapshot the preview shows, shared with the folded preview's copy
+/// workers (`ui/folded_text.rs`). A restore takes it back owned
+/// (`LocalHistoryBrowserState::with_owned_loaded_snapshot`).
+pub(super) type LoadedSnapshot = Arc<GuardedLocalHistorySnapshot>;
+
+impl SurfaceText for GuardedLocalHistorySnapshot {
+    fn surface_text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// How long a restore waits before taking the snapshot again while a copy
+/// worker still holds it (a copy cuts its range in milliseconds).
+const OWNED_SNAPSHOT_RETRY_MS: u64 = 4;
 
 pub(super) enum GuardedLocalHistoryPreviewLoadOutcome {
     /// The snapshot and its paragraph profile, computed on the reading worker
@@ -145,7 +160,10 @@ pub(super) struct LocalHistoryBrowserState {
     /// Snapshot metadata backing the current list rows.
     snapshots: Vec<LocalHistorySnapshotMeta>,
     /// Last fully loaded snapshot preview.
-    pub(super) loaded_snapshot: RefCell<Option<GuardedLocalHistorySnapshot>>,
+    pub(super) loaded_snapshot: RefCell<Option<LoadedSnapshot>>,
+    /// Copy routing of the preview view: copies of a folded snapshot are cut
+    /// from the snapshot, not from the buffer (`ui/folded_text.rs`).
+    preview_copy: Rc<FoldedTextSurface>,
     /// Paragraph profile of the last loaded snapshot (worker-computed).
     pub(super) loaded_profile: RefCell<Option<DocumentProfile>>,
     /// One-active/one-latest ownership for snapshot body reads.
@@ -168,7 +186,7 @@ pub(super) struct LocalHistoryBrowserState {
 
 struct LocalHistoryPreviewInstallSession {
     generation: u64,
-    snapshot: Option<GuardedLocalHistorySnapshot>,
+    snapshot: Option<LoadedSnapshot>,
     offset: usize,
     source_id: Option<glib::SourceId>,
     /// The Protected View fold plan of a snapshot whose longest paragraph
@@ -242,6 +260,7 @@ impl LushtextWindow {
         preview_view.set_right_margin(14);
         preview_view.set_top_margin(12);
         preview_view.set_bottom_margin(12);
+        let preview_copy = FoldedTextSurface::attach(&preview_view);
 
         let preview_stack = gtk4::Stack::new();
         preview_stack.set_hexpand(true);
@@ -328,6 +347,7 @@ impl LushtextWindow {
             back_button,
             snapshots,
             loaded_snapshot: RefCell::new(None),
+            preview_copy,
             loaded_profile: RefCell::new(None),
             preview_loads: RefCell::default(),
             preview_admission: RefCell::default(),
@@ -381,12 +401,14 @@ impl LushtextWindow {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
-                let Some(snapshot) = state.loaded_snapshot.borrow_mut().take() else {
+                if state.loaded_snapshot.borrow().is_none() {
                     return;
-                };
+                }
                 set_local_history_action_enabled(&state.restore_button, false);
                 set_local_history_action_enabled(&state.copy_button, false);
-                LushtextWindow::restore_local_history_snapshot(&state, snapshot);
+                state.with_owned_loaded_snapshot(|state, snapshot| {
+                    LushtextWindow::restore_local_history_snapshot(state, snapshot);
+                });
             }
         });
 
@@ -660,6 +682,15 @@ impl LocalHistoryBrowserState {
         snapshot: GuardedLocalHistorySnapshot,
         fold_plan: Option<std::sync::Arc<FoldPlan>>,
     ) {
+        let snapshot: LoadedSnapshot = Arc::new(snapshot);
+        // A folded snapshot's copies are cut from the snapshot itself; an
+        // unfolded one is copied by GTK, which then sees every character.
+        self.preview_copy
+            .set_folded_source(fold_plan.clone().map(|plan| {
+                let weak = Arc::downgrade(&snapshot);
+                let source: std::sync::Weak<dyn SurfaceText> = weak;
+                (source, plan)
+            }));
         self.preview_title
             .set_label(&format_history_time(snapshot.meta.captured_at_millis));
         self.preview_meta.set_label(&policy::format_snapshot_meta(
@@ -740,31 +771,20 @@ impl LocalHistoryBrowserState {
         let Some(snapshot) = session.snapshot.as_ref() else {
             return;
         };
-        let end = next_replacement_boundary(&snapshot.text, session.offset);
-        let mut end_iter = self.preview_buffer.end_iter();
-        let slice = &snapshot.text[session.offset..end];
-        if let Some((plan, paragraph)) = session.fold.as_mut() {
-            // One hidden-tail insert per main-loop iteration, process-wide
-            // (`ui/protected_fold.rs`): wait for the next one otherwise.
-            if !tail_insert_admitted() {
-                self.preview_install.replace(Some(session));
-                self.schedule_preview_install_slice();
-                return;
-            }
-            *paragraph = insert_folded(
-                self.preview_buffer.upcast_ref(),
-                &mut end_iter,
-                slice,
-                *paragraph,
-                plan,
-            );
-        } else {
-            debug_assert!(
-                end.saturating_sub(session.offset) <= policy::PREVIEW_INSTALL_SLICE_BYTES
-            );
-            self.preview_buffer.insert(&mut end_iter, slice);
+        let text = snapshot.text.as_str();
+        // One hidden-tail insert per main-loop iteration, process-wide
+        // (`ui/protected_fold.rs`): a deferred turn waits for the next one.
+        if install_slice(
+            self.preview_buffer.upcast_ref(),
+            text,
+            &mut session.offset,
+            &mut session.fold,
+        ) == InstallSlice::Deferred
+        {
+            self.preview_install.replace(Some(session));
+            self.schedule_preview_install_slice();
+            return;
         }
-        session.offset = end;
         record_preview_install_slice();
 
         if policy::preview_install_is_complete(session.offset, snapshot.text.len()) {
@@ -776,7 +796,7 @@ impl LocalHistoryBrowserState {
         }
     }
 
-    fn finish_preview_install(&self, snapshot: GuardedLocalHistorySnapshot) {
+    fn finish_preview_install(&self, snapshot: LoadedSnapshot) {
         self.preview_stack.set_visible_child_name("content");
         set_local_history_preview_accessibility(
             &self.preview_stack,
@@ -805,11 +825,62 @@ impl LocalHistoryBrowserState {
         record_preview_install_cancellation();
     }
 
+    /// Put a snapshot a restore did not consume back as the loaded one, and
+    /// route the folded preview's copies through it again.
+    pub(super) fn return_loaded_snapshot(&self, snapshot: GuardedLocalHistorySnapshot) {
+        let snapshot: LoadedSnapshot = Arc::new(snapshot);
+        let plan = self
+            .loaded_profile
+            .borrow()
+            .as_ref()
+            .and_then(|profile| profile.fold_plan.clone());
+        self.preview_copy.set_folded_source(plan.map(|plan| {
+            let weak = Arc::downgrade(&snapshot);
+            let source: std::sync::Weak<dyn SurfaceText> = weak;
+            (source, plan)
+        }));
+        self.loaded_snapshot.replace(Some(snapshot));
+    }
+
+    /// Run `then` with the loaded snapshot taken back owned (a restore moves
+    /// it into the editor). A folded preview's copy worker may still hold a
+    /// clone for the few milliseconds it cuts its range; the snapshot then
+    /// stays loaded and the take is retried shortly.
+    pub(super) fn with_owned_loaded_snapshot(
+        self: &Rc<Self>,
+        then: impl FnOnce(&Rc<Self>, GuardedLocalHistorySnapshot) + 'static,
+    ) {
+        let Some(shared) = self.loaded_snapshot.take() else {
+            return;
+        };
+        match Arc::try_unwrap(shared) {
+            Ok(snapshot) => {
+                self.preview_copy.set_folded_source(None);
+                then(self, snapshot);
+            }
+            Err(shared) => {
+                self.loaded_snapshot.replace(Some(shared));
+                let weak = Rc::downgrade(self);
+                glib::timeout_add_local_once(
+                    Duration::from_millis(OWNED_SNAPSHOT_RETRY_MS),
+                    move || {
+                        if let Some(state) = weak.upgrade()
+                            && !state.disposed.get()
+                        {
+                            state.with_owned_loaded_snapshot(then);
+                        }
+                    },
+                );
+            }
+        }
+    }
+
     fn dispose_preview_runtime(&self) {
         if self.disposed.replace(true) {
             return;
         }
         self.preview_loads.borrow_mut().invalidate();
+        self.preview_copy.set_folded_source(None);
         self.preview_admission.borrow_mut().take();
         self.preview_capacity_wakeup.cancel();
         self.restore_pending.set(false);
@@ -831,7 +902,7 @@ fn retire_local_history_preview_result(
     }
 }
 
-fn retire_local_history_snapshot(snapshot: GuardedLocalHistorySnapshot) {
+fn retire_local_history_snapshot(snapshot: LoadedSnapshot) {
     drop(snapshot);
 }
 

@@ -71,6 +71,18 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                   </object>
                 </child>
                 <child>
+                  <object class="GtkButton" id="previous_folded_button">
+                    <property name="icon-name">go-up-symbolic</property>
+                    <property name="tooltip-text" translatable="yes">Previous Folded Line (Alt+Up)</property>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkButton" id="next_folded_button">
+                    <property name="icon-name">go-down-symbolic</property>
+                    <property name="tooltip-text" translatable="yes">Next Folded Line (Alt+Down)</property>
+                  </object>
+                </child>
+                <child>
                   <object class="GtkLabel" id="line_label">
                     <property name="label" translatable="yes">_Line</property>
                     <property name="use-underline">true</property>

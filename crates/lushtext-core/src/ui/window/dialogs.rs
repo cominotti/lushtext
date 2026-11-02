@@ -95,11 +95,12 @@ impl super::LushtextWindow {
         let Some(editor) = self.active_editor() else {
             return;
         };
-        // An unmodified protected document's Save As writes its source in the
-        // opened encoding; refuse it when that would not give back the bytes
-        // it was loaded from (`protected-view-inspector-and-surfaces` 3.6).
+        // An unmodified protected document saves as a byte-exact copy of its
+        // file (review S3). An edited one writes its source in the opened
+        // encoding, which cannot give its text back exactly when the decode
+        // does not round-trip: only that Save As is refused.
         if editor.is_protected_view()
-            && !editor.is_modified()
+            && editor.is_modified()
             && editor.decode_is_inexact()
             && editor.document_encoding_state().save_encoding
                 == editor.document_encoding_state().opened_encoding

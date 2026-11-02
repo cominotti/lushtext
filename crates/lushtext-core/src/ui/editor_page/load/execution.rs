@@ -717,7 +717,7 @@ fn complete_loaded_installation_now(
         .imp()
         .document_metadata
         .decode_inexact
-        .set(!decode_round_trips);
+        .set(decode_round_trips == Some(false));
     editor.set_file_health(file_health);
     // The scale gates syntax, bracket matching, invisibles, search
     // highlighting and the minimap before a highlight idle can run.
@@ -900,7 +900,7 @@ impl LushtextEditorPage {
                     encoding_state: self.document_encoding_state(),
                     has_bom: self.has_bom(),
                     file_health: self.file_health(),
-                    decode_round_trips: true,
+                    decode_round_trips: Some(!self.decode_is_inexact()),
                 },
                 content: reservation.own(content),
             },

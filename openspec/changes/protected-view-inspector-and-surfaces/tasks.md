@@ -23,6 +23,8 @@
 - [x] 3.4 Session restore: scroll through the navigation mark, keep the persisted cursor offset on later session saves, no draft for installed-protected tabs; widget test restoring three protected documents and switching tabs.
 - [x] 3.5 Workspace-search hits and local-history targets navigate through the navigation mark without moving the insert mark.
 - [x] 3.6 The round-trip exactness fact in `LoadMetadata`; Save As of an unmodified protected document whose decode does not round-trip is refused with a notice.
+- [x] 3.6a *(review S2, S3)* Compute the round-trip fact only for protected profiles, chunked; Save As of an unmodified protected document is a byte-exact copy of its file; the refusal is kept only for an edited document whose decode does not round-trip. (Pre-existing blocker fixed on the way: UTF-16 saves went through encoding_rs, whose output encoding for UTF-16 is UTF-8.)
+- [x] 3.7 *(review M1, M3, S1, S1b, S4, S5, S6)* Folded preview and note copies served from their text (Ctrl+C, menu, primary; drag of a folded selection not started); note bodies profiled on a worker and installed in bounded turns; Copy Whole Line copies only the paragraph's bytes and announces the copy; single-line entries cap one insertion at 16 KiB with a notice; the fold gutter keeps a fixed width; the inspector steps between folded lines and states each line's hidden count; notices rate-limited per reason; the accessibility smoke drives Ctrl+Alt+I and Shift+F10.
 
 ## 4. Accessibility, automation and docs
 

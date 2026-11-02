@@ -32,6 +32,7 @@ ACCESSIBILITY_CASES=(
     preview-mode-document-alert
     editor-too-large-policy
     protected-view-inspector
+    protected-view-menu
     workspace-search-no-workspace
     workspace-search
     workspace-search-no-results
@@ -342,6 +343,7 @@ MATRIX_ROWS_BY_CASE = {
     "preview-mode-document-alert": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-EDITOR-ERROR", "A11Y-ERROR-SURFACES"],
     "editor-too-large-policy": ["A11Y-EDITOR-LARGE-READONLY", "A11Y-EDITOR-ERROR"],
     "protected-view-inspector": ["A11Y-EDITOR-PROTECTED-VIEW"],
+    "protected-view-menu": ["A11Y-EDITOR-PROTECTED-VIEW"],
     "workspace-search-no-workspace": ["A11Y-WORKSPACE-SEARCH-NO-CONTEXT", "A11Y-WORKSPACE-NO-CONTEXT"],
     "workspace-search": ["A11Y-WORKSPACE-SEARCH-REPRESENTATIVE"],
     "workspace-search-no-results": ["A11Y-WORKSPACE-SEARCH-DENSE-NORESULTS"],
@@ -405,7 +407,7 @@ while index < len(capture_args):
     if flag in {"--app-action", "--window-action", "--window-string-action", "--window-bool-action"}:
         actions.append(row)
     elif flag == "--step":
-        if value and value.startswith(("app-action:", "window-action:", "window-string-action:", "window-bool-action:", "atspi-click-button:", "atspi-focus-accessible:", "atspi-activate-accessible:", "atspi-context-click-accessible:", "atspi-key:")):
+        if value and value.startswith(("app-action:", "window-action:", "window-string-action:", "window-bool-action:", "atspi-click-button:", "atspi-focus-accessible:", "atspi-activate-accessible:", "atspi-context-click-accessible:", "atspi-key:", "rd-key:")):
             actions.append(row)
         elif value and value.startswith(("wait-window-action:", "wait-predicate:", "wait-atspi-text:")):
             waits.append(row)
@@ -1505,23 +1507,43 @@ DEFAULT_FIXTURE="$FIXTURE"
 FIXTURE="$ARTIFACT_DIR/fixtures/protected-view-accessibility-smoke.txt"
 # A synthetic document with one paragraph over L_PROTECT_EDIT (50,000).
 python3 -c 'import sys; open(sys.argv[1], "w").write("short head line\n" + "giant " * 12000 + "\ntail line\n")' "$FIXTURE"
-# The alert's Inspect Line button (keyboard-reachable; Ctrl+Alt+I runs the same
-# path, widget-tested) opens the Line Inspector on the folded paragraph; Next
-# Window moves it, and the window summary is the text view's label.
+# Ctrl+Alt+I (win.inspect-line) opens the Line Inspector on the folded
+# paragraph in view; Next Window moves it, and the window summary, which
+# states what the editor hides, is the text view's label.
 run_accessibility_capture "protected-view-inspector" \
     --step wait-predicate:file-open-complete \
     --step wait-atspi-text:"View-Only: Very Long Lines" \
-    --step atspi-click-button:"^Inspect Line$" \
+    --step rd-key:Ctrl+Alt+I \
     --step wait-predicate:accessibility-settled \
     --step wait-atspi-text:"Line 2, columns 1–500 of 72000" \
     --step atspi-click-button:"^Next Window$" \
     --step wait-predicate:accessibility-settled \
-    --step wait-atspi-text:"Line 2, columns 501–1000 of 72000"
+    --step wait-atspi-text:"Line 2, columns 501–1000 of 72000; 62000 characters hidden in the editor"
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Next Window"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Previous Window"
+assert_anchor "protected-view-inspector" "line inspector" "button" "Next Folded Line"
+assert_anchor "protected-view-inspector" "line inspector" "button" "Previous Folded Line"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Copy Whole Line"
-assert_anchor_prefix "protected-view-inspector" "line inspector window" "text" "Line 2, columns 501–1000 of 72000"
+assert_anchor_prefix "protected-view-inspector" "line inspector window" "text" "Line 2, columns 501–1000 of 72000; 62000 characters hidden"
+fi
+
+if case_selected "protected-view-menu"; then
+DEFAULT_FIXTURE="$FIXTURE"
+FIXTURE="$ARTIFACT_DIR/fixtures/protected-view-menu-accessibility-smoke.txt"
+python3 -c 'import sys; open(sys.argv[1], "w").write("short head line\n" + "giant " * 12000 + "\ntail line\n")' "$FIXTURE"
+# Shift+F10 on the caret-free editor opens the Protected View menu; the fold
+# marker column carries its accessible label.
+run_accessibility_capture "protected-view-menu" \
+    --step wait-predicate:file-open-complete \
+    --step wait-atspi-text:"View-Only: Very Long Lines" \
+    --step rd-key:Shift+F10 \
+    --step wait-predicate:accessibility-settled \
+    --step wait-atspi-text:"Protected View menu"
+FIXTURE="$DEFAULT_FIXTURE"
+record_focus_anchor "protected-view-menu" "Protected View menu"
+assert_anchor "protected-view-menu" "protected view menu" "menu" "Protected View menu"
+assert_anchor "protected-view-menu" "fold gutter" "grouping" "Folded lines"
 fi
 
 if case_selected "workspace-search-no-workspace"; then

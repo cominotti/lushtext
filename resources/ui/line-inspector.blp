@@ -67,6 +67,16 @@ template $LushtextLineInspector: Adw.Dialog {
           tooltip-text: _("Next Window");
         }
 
+        Button previous_folded_button {
+          icon-name: "go-up-symbolic";
+          tooltip-text: _("Previous Folded Line (Alt+Up)");
+        }
+
+        Button next_folded_button {
+          icon-name: "go-down-symbolic";
+          tooltip-text: _("Next Folded Line (Alt+Down)");
+        }
+
         Label line_label {
           label: _("_Line");
           use-underline: true;

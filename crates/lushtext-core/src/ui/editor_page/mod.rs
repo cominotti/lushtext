@@ -59,6 +59,8 @@ pub use crate::ui::buffer_snapshot::{
     BufferSnapshotTestTrigger, buffer_snapshot_evidence, coalesce_snapshot_payload_for_test,
     snapshot_buffer_text_async_for_test,
 };
+/// Copy Whole Line's clipboard provider (the shared source-text provider).
+pub use crate::ui::folded_text::SourceTextProvider as WholeLineProvider;
 pub use bookmarks::{
     BookmarkEditError, BookmarkEditOutcome, BookmarkNavigationDirection, BookmarkToggleState,
 };
@@ -84,7 +86,6 @@ pub(crate) use minimap::{
 pub use paragraph_wrap::NO_WRAP_TAG;
 pub use protected_view::ProtectedViewEvidence;
 pub use protected_view::inspector::{InspectorRequest, LushtextLineInspector};
-pub use protected_view::inspector_execution::WholeLineProvider;
 /// The most bytes Copy Whole Line writes to a reader per main-loop dispatch.
 pub use protected_view::policy::COPY_CHUNK_BYTES as WHOLE_LINE_CHUNK_BYTES;
 pub use protected_view::policy::classifies_toolkit_binding;
@@ -321,6 +322,20 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn decode_is_inexact(&self) -> bool {
         self.imp().document_metadata.decode_inexact.get()
+    }
+
+    /// The file the document was last loaded from or saved to, with that
+    /// file's size and modification time then: what a byte-exact Save As copy
+    /// checks before it copies.
+    #[must_use]
+    pub(crate) fn loaded_file_identity(
+        &self,
+    ) -> Option<crate::services::editor_io::LoadedFileIdentity> {
+        Some(crate::services::editor_io::LoadedFileIdentity {
+            path: self.file_path()?,
+            byte_size: self.imp().file_size.get()?,
+            modified_at_secs: self.imp().monitor.last_known_mtime.get(),
+        })
     }
 
     /// Current encoding-adjacent file-health findings for this tab.

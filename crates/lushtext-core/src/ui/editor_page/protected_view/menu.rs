@@ -15,6 +15,9 @@ use crate::ui::editor_page::LushtextEditorPage;
 /// The menu's private action group on the source view.
 const MENU_GROUP: &str = "protected";
 
+/// The menu's accessible name.
+const PROTECTED_MENU_LABEL: &str = "Protected View menu";
+
 impl LushtextEditorPage {
     /// Open the menu at a secondary click at `(x, y)` in the view's
     /// coordinates, for the paragraph there.
@@ -57,6 +60,7 @@ impl LushtextEditorPage {
         menu.append_section(None, &editing);
         let popover = gtk4::PopoverMenu::from_model(Some(&menu));
         popover.set_has_arrow(false);
+        crate::ui::accessibility::set_label(&popover, PROTECTED_MENU_LABEL);
         popover.set_parent(view);
         popover.set_pointing_to(Some(&point));
         popover.connect_closed(|popover| {

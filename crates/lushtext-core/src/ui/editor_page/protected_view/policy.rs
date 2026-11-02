@@ -127,7 +127,7 @@ pub(crate) enum ProtectedNotice {
     BookmarkUnavailable,
     /// Line-ending normalization was requested.
     LineEndingsUnavailable,
-    /// Save As of an unmodified document whose decode does not round-trip.
+    /// Save As of an edited document whose decode does not round-trip.
     SaveAsRefusedInexactDecode,
 }
 
@@ -155,9 +155,21 @@ pub(crate) const fn notice_text(notice: ProtectedNotice) -> &'static str {
             "Line endings cannot be changed in this view-only document with very long lines."
         }
         ProtectedNotice::SaveAsRefusedInexactDecode => {
-            "Save As is not available for this view-only document with very long lines: \
-             its encoding would not write back the same bytes."
+            "Save As is not available for this edited view-only document with very long \
+             lines: its encoding cannot write its text back exactly."
         }
+    }
+}
+
+/// What Copy Whole Line says once the line is on the clipboard: its 1-based
+/// number and length. Bounded: numbers only.
+#[must_use]
+pub(crate) fn whole_line_copied_text(paragraph: u64, chars: u64) -> String {
+    let line = paragraph.saturating_add(1);
+    if chars == 1 {
+        format!("Line {line} copied (1 character)")
+    } else {
+        format!("Line {line} copied ({chars} characters)")
     }
 }
 
@@ -172,52 +184,49 @@ pub(crate) const INSPECT_LINE_SHORTCUT_LABEL: &str = "Ctrl+Alt+I";
 /// as one message.
 pub(crate) const NOTICE_QUIET_US: i64 = 4_000_000;
 
-/// Whether a pre-emption notice is published now (`now_us`, monotonic), given
-/// the last one published (its notice and time). A different notice is always
-/// published; the same one at most once per [`NOTICE_QUIET_US`]. A clock that
-/// went backwards publishes.
-#[must_use]
-pub(crate) const fn notice_due(
-    notice: ProtectedNotice,
-    last: Option<(ProtectedNotice, i64)>,
-    now_us: i64,
-) -> bool {
-    match last {
-        None => true,
-        Some((previous, at)) => {
-            !notice_eq(previous, notice)
-                || now_us < at
-                || now_us.saturating_sub(at) >= NOTICE_QUIET_US
-        }
+/// Notice reasons, one rate-limit slot each.
+const NOTICE_REASONS: usize = 7;
+
+/// When each notice reason was last published (monotonic µs): the rate limit
+/// is per reason (review S5), so another reason in between never lets one
+/// through again inside its quiet interval.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NoticeTimes([Option<i64>; NOTICE_REASONS]);
+
+const fn notice_slot(notice: ProtectedNotice) -> usize {
+    match notice {
+        ProtectedNotice::EditRefused => 0,
+        ProtectedNotice::ReplaceUnavailable => 1,
+        ProtectedNotice::InvisiblesUnavailable => 2,
+        ProtectedNotice::PrintRefused => 3,
+        ProtectedNotice::BookmarkUnavailable => 4,
+        ProtectedNotice::LineEndingsUnavailable => 5,
+        ProtectedNotice::SaveAsRefusedInexactDecode => 6,
     }
 }
 
-const fn notice_eq(a: ProtectedNotice, b: ProtectedNotice) -> bool {
-    matches!(
-        (a, b),
-        (ProtectedNotice::EditRefused, ProtectedNotice::EditRefused)
-            | (
-                ProtectedNotice::ReplaceUnavailable,
-                ProtectedNotice::ReplaceUnavailable
-            )
-            | (
-                ProtectedNotice::InvisiblesUnavailable,
-                ProtectedNotice::InvisiblesUnavailable
-            )
-            | (ProtectedNotice::PrintRefused, ProtectedNotice::PrintRefused)
-            | (
-                ProtectedNotice::BookmarkUnavailable,
-                ProtectedNotice::BookmarkUnavailable
-            )
-            | (
-                ProtectedNotice::LineEndingsUnavailable,
-                ProtectedNotice::LineEndingsUnavailable
-            )
-            | (
-                ProtectedNotice::SaveAsRefusedInexactDecode,
-                ProtectedNotice::SaveAsRefusedInexactDecode
-            )
-    )
+impl NoticeTimes {
+    /// When `notice` was last published.
+    #[must_use]
+    pub(crate) const fn last(&self, notice: ProtectedNotice) -> Option<i64> {
+        self.0[notice_slot(notice)]
+    }
+
+    /// Record `notice` published at `now_us`.
+    pub(crate) const fn record(&mut self, notice: ProtectedNotice, now_us: i64) {
+        self.0[notice_slot(notice)] = Some(now_us);
+    }
+}
+
+/// Whether a pre-emption notice is published now (`now_us`, monotonic), given
+/// when that same reason was last published: at most once per
+/// [`NOTICE_QUIET_US`] per reason. A clock that went backwards publishes.
+#[must_use]
+pub(crate) const fn notice_due(last_of_this_reason: Option<i64>, now_us: i64) -> bool {
+    match last_of_this_reason {
+        None => true,
+        Some(at) => now_us < at || now_us.saturating_sub(at) >= NOTICE_QUIET_US,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1749,20 +1758,51 @@ mod tests {
     }
 
     #[test]
+    fn copy_whole_line_names_the_line_and_its_length() {
+        assert_eq!(
+            whole_line_copied_text(1, 50_007),
+            "Line 2 copied (50007 characters)"
+        );
+        assert_eq!(whole_line_copied_text(0, 1), "Line 1 copied (1 character)");
+        assert_eq!(
+            whole_line_copied_text(u64::MAX, 0),
+            format!("Line {} copied (0 characters)", u64::MAX)
+        );
+    }
+
+    #[test]
     fn the_notice_is_rate_limited_per_reason() {
         let edit = ProtectedNotice::EditRefused;
-        assert!(notice_due(edit, None, 0));
-        assert!(!notice_due(edit, Some((edit, 1_000)), 1_001));
-        assert!(!notice_due(edit, Some((edit, 0)), NOTICE_QUIET_US - 1));
-        assert!(notice_due(edit, Some((edit, 0)), NOTICE_QUIET_US));
-        assert!(notice_due(
-            ProtectedNotice::ReplaceUnavailable,
-            Some((edit, 0)),
-            1
-        ));
+        let replace = ProtectedNotice::ReplaceUnavailable;
+        let mut times = NoticeTimes::default();
+        assert!(notice_due(times.last(edit), 0));
+        times.record(edit, 1_000);
+        assert!(!notice_due(times.last(edit), 1_001));
+        assert!(!notice_due(times.last(edit), 1_000 + NOTICE_QUIET_US - 1));
+        assert!(notice_due(times.last(edit), 1_000 + NOTICE_QUIET_US));
+        // Another reason has its own slot ...
+        assert!(notice_due(times.last(replace), 1_001));
+        times.record(replace, 2);
+        // ... and publishing it does not let this one through again inside
+        // its quiet interval (review S5).
+        assert!(!notice_due(times.last(edit), 3_000));
         // A clock that went backwards never silences the notice for good.
-        assert!(notice_due(edit, Some((edit, 10)), 5));
-        assert!(notice_due(edit, Some((edit, i64::MIN)), i64::MAX));
+        assert!(notice_due(Some(10), 5));
+        assert!(notice_due(Some(i64::MIN), i64::MAX));
+        // Every reason has a distinct slot.
+        let all = [
+            ProtectedNotice::EditRefused,
+            ProtectedNotice::ReplaceUnavailable,
+            ProtectedNotice::InvisiblesUnavailable,
+            ProtectedNotice::PrintRefused,
+            ProtectedNotice::BookmarkUnavailable,
+            ProtectedNotice::LineEndingsUnavailable,
+            ProtectedNotice::SaveAsRefusedInexactDecode,
+        ];
+        let mut slots: Vec<usize> = all.iter().map(|notice| notice_slot(*notice)).collect();
+        slots.sort_unstable();
+        slots.dedup();
+        assert_eq!(slots.len(), NOTICE_REASONS);
     }
 
     #[test]

@@ -212,6 +212,15 @@ impl LushtextEditorPage {
             let disposition = press_disposition(input);
             if disposition != PressDisposition::Unclaimed {
                 gesture.set_state(gtk4::EventSequenceState::Claimed);
+                // A claimed press never reaches GtkTextView's own gesture,
+                // which is what focuses the view: focus it here, so the
+                // keyboard (Page Down, Shift+F10, Ctrl+C) acts on the document
+                // the user clicked.
+                if button != PressButton::Middle
+                    && let Some(view) = gesture.widget()
+                {
+                    view.grab_focus();
+                }
             }
             match disposition {
                 PressDisposition::Unclaimed => {}
