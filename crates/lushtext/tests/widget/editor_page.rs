@@ -16,6 +16,7 @@ use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
 use lushtext_core::model::encoding::{DocumentEncoding, DocumentEncodingState};
 use lushtext_core::model::formatting_overrides::FormattingOverrides;
 use lushtext_core::model::paragraph_boundary::DocumentProfile;
+use lushtext_core::model::protected_install::PROTECTED_TAIL_SLICE_BYTES;
 use lushtext_core::services::editor_io::{self, EditorLoadError, LoadResult};
 use lushtext_core::services::local_history_service;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
@@ -4968,13 +4969,16 @@ fn test_empty_file_loads_to_an_empty_buffer_without_slicing() {
 }
 
 #[test]
-fn test_a_paragraph_larger_than_the_slice_budget_installs_in_one_turn() {
+fn test_a_paragraph_larger_than_the_slice_budget_installs_in_hidden_tail_slices() {
     // The paragraph-boundary contract, measured rather than asserted. GTK
-    // validates layout a paragraph at a time, so a slice that stopped inside one
-    // would re-lay-out the whole paragraph on every later slice — the quadratic
-    // behavior that once froze crash recovery of a 33 MB single-line draft. A
-    // paragraph over the slice budget must therefore install in exactly one
-    // turn, and a same-sized document made of ordinary lines must slice.
+    // validates layout a paragraph at a time, so a slice that stopped inside a
+    // *visible* paragraph would re-lay-out it on every later slice — the
+    // quadratic behavior that once froze crash recovery of a 33 MB single-line
+    // draft. A paragraph over the slice budget is far over `L_PROTECT_EDIT`, so
+    // it is protected: its head goes in once and its hidden tail in bounded
+    // slices that are never laid out (`sliced-protected-install`, ledger A77),
+    // one hidden slice per turn. A same-sized document of ordinary lines
+    // slices at paragraph ends.
     ensure_gtk_init();
     let _settings = enable_minimap_for_tests(false);
     let dir = tempfile::tempdir().expect("paragraph budget tempdir");
@@ -5002,8 +5006,16 @@ fn test_a_paragraph_larger_than_the_slice_budget_installs_in_one_turn() {
         "a payload over the synchronous threshold must take the bounded path"
     );
     assert_eq!(
-        single.installation_slice_count, 1,
-        "one oversized paragraph must install in exactly one turn"
+        single.installation_slice_count, single.protected.tail_slices,
+        "one oversized paragraph installs one hidden-tail slice per turn"
+    );
+    assert!(
+        single.protected.tail_slices
+            >= u64::try_from(one_line.len() / PROTECTED_TAIL_SLICE_BYTES).expect("fits")
+    );
+    assert!(
+        usize::try_from(single.protected.largest_tail_slice_bytes).expect("fits")
+            <= PROTECTED_TAIL_SLICE_BYTES
     );
 
     let page = LushtextEditorPage::new();
@@ -5022,8 +5034,8 @@ fn test_a_paragraph_larger_than_the_slice_budget_installs_in_one_turn() {
     );
 
     // Linear, not quadratic: the sliced document pays roughly one pass per
-    // slice, so its cost stays within a small multiple of the single-turn
-    // install of the same bytes. A mid-paragraph cut would make this ratio grow
+    // slice, so its cost stays within a small multiple of the install of the
+    // same bytes as one paragraph. A mid-paragraph cut would make this ratio grow
     // with the slice count instead.
     eprintln!(
         "load-install-linearity single_slices={} single_ms={} many_slices={} many_ms={}",

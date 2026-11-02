@@ -39,6 +39,8 @@ mod paragraph_boundary;
 mod path_rebasing;
 #[path = "properties/protected_fold.rs"]
 mod protected_fold;
+#[path = "properties/protected_install.rs"]
+mod protected_install;
 #[path = "properties/recovery_metadata.rs"]
 mod recovery_metadata;
 #[path = "properties/replace_journal_recovery.rs"]

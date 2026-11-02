@@ -31,6 +31,7 @@ pub mod paragraph_profile_watch;
 pub mod paragraph_wrap;
 pub mod plain_disposal;
 pub mod protected_fold;
+pub mod protected_install;
 pub mod recent_document;
 pub mod responsiveness_budget;
 pub mod session;

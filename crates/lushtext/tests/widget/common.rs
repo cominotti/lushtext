@@ -612,13 +612,24 @@ pub fn activate_action(window: &lushtext_core::ui::window::LushtextWindow, name:
     flush_events();
 }
 
-/// The full text of an editor's buffer, hidden characters included.
+/// The full document text of an editor's buffer, hidden characters
+/// included, up to the stand-in terminator a protected install may put after
+/// an undelimited last paragraph (`ui::protected_fold`, ledger A79), which is
+/// not document text.
 pub fn editor_text(editor: &lushtext_core::ui::editor_page::LushtextEditorPage) -> String {
     use gtk4::prelude::TextBufferExt;
     let buffer = editor.buffer();
-    buffer
-        .text(&buffer.start_iter(), &buffer.end_iter(), true)
-        .to_string()
+    let mut end = buffer.end_iter();
+    let mut last = end;
+    if last.backward_char()
+        && let Some(tag) = buffer
+            .tag_table()
+            .lookup(lushtext_core::ui::protected_fold::TERMINATOR_TAG_NAME)
+        && last.has_tag(&tag)
+    {
+        end = last;
+    }
+    buffer.text(&buffer.start_iter(), &end, true).to_string()
 }
 
 /// A `GtkListView` of `rows` labels reading `row 0000`, `row 0001`, …, with the

@@ -16,7 +16,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use gio::prelude::SettingsExt;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::prelude::{ListBoxRowExt, TextBufferExt, WidgetExt};
+use gtk4::prelude::{Cast, ListBoxRowExt, WidgetExt};
 use libadwaita::prelude::ActionRowExt;
 use libadwaita::prelude::PreferencesGroupExt;
 
@@ -181,8 +181,10 @@ fn format_file_size(bytes: Option<u64>) -> String {
 
 fn format_document_statistics(editor: &LushtextEditorPage) -> String {
     let buffer = editor.buffer();
-    let line_count = buffer.line_count().max(1);
-    let char_count = buffer.char_count();
+    // A protected install's stand-in terminator is not document text.
+    let end = crate::ui::protected_fold::document_end_iter(buffer.upcast_ref());
+    let line_count = (end.line() + 1).max(1);
+    let char_count = end.offset();
     format!(
         "{} {}, {} {}",
         line_count,

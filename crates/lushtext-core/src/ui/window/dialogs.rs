@@ -193,6 +193,17 @@ impl super::LushtextWindow {
     #[cfg(feature = "test-utils")]
     pub fn cancel_open_file_for_test(&self) {}
 
+    /// Save the active document as `path` without the file chooser: the
+    /// responsiveness lane's stand-in for a chooser that cannot run headless
+    /// (`app.probe-save-as`, `sliced-protected-install` task 7.6).
+    /// Measurement build only.
+    #[cfg(feature = "responsiveness-probes")]
+    pub(crate) fn save_active_as_for_probe(&self, path: &Path) {
+        if let Some(editor) = self.active_editor() {
+            self.handle_save_as_selection(&editor, &gio::File::for_path(path));
+        }
+    }
+
     /// Test helper for the file chooser's successful Save As result.
     #[cfg(feature = "test-utils")]
     pub fn select_save_as_destination_for_test(&self, path: &Path) {

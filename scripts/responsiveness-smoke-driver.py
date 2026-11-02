@@ -150,10 +150,25 @@ KEYSTROKE_SHAPES = (("css", "html"), ("prose", "txt"))
 KEYSTROKE_POSITIONS = ("start", "middle", "end", "short")
 KEYSTROKE_GAP_S = float(os.environ.get("RESPONSIVENESS_KEYSTROKE_GAP_S", "0.15"))
 INVISIBLES_LENGTHS = {"quick": (250_000,), "full": (2_000, 10_000, 50_000, 250_000, 1_900_000)}
-INSTALL_SIZES = (100_000_000, 250_000_000, 500_000_000)
+# The largest is the largest document LushText opens: its paragraph plus the
+# fixture's LF delimiter is exactly `REFUSE_TO_OPEN` (500,000,000) bytes. A
+# 500,000,000-character paragraph is one byte over and is refused, which made
+# that case measure nothing on either side (`sliced-protected-install`).
+INSTALL_SIZES = (100_000_000, 250_000_000, 499_999_999)
+# C2's draft-recovery shape (design D13), as the crash-recovery smoke's
+# lazy-aggregate fixture builds it: two recovered single-paragraph drafts of
+# 32 MiB each (`sliced-protected-install`, task 6.1).
+PROTECTED_RECOVERY_DRAFT_BYTES = 32 * 1024 * 1024
+PROTECTED_RECOVERY_DRAFTS = 2
+# The protected document Save As and the live word-wrap toggle are measured
+# on (C2b task 5.1a, carried as C3 task 7.6).
+PROTECTED_SAVE_AS_LENGTH = 1_900_000
+# Short lines of the small tab an install case opens beside its giant
+# document, for the mid-install tab switch and scroll.
+MID_INSTALL_SMALL_LINES = 400
 EVICTION_FILE_BYTES = 8 * 1024 * 1024
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -177,6 +192,11 @@ PHASE_KINDS = {
     "copy-line": "settle",
     "reselect": "interaction",
     "idle": "calibration",
+    # The sliced protected install (sliced-protected-install, C3): the tab
+    # switches and scrolls issued while an install runs are interactions;
+    # Save As of a protected document is a settle.
+    "mid-install": "interaction",
+    "save-as": "settle",
     # The post-open phases (bound-post-open-settle, C6) have their own kinds,
     # so C0's budget verdict, which reads `interaction` and `settle`, is
     # unchanged by them; the C6 verdict reads their post-open entries.
@@ -1253,7 +1273,7 @@ class Case:
     group: str
     fixture: FixtureSpec | None
     settings: dict[str, Any] = field(default_factory=dict)
-    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke
+    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke | seeded-recovery
     length: int | None = None  # the swept paragraph length / line length / total size
     attrs: dict[str, Any] = field(default_factory=dict)
 
@@ -1423,6 +1443,7 @@ def build_cases(tier: str) -> list[Case]:
                     length=size,
                 )
             )
+    cases.extend(protected_cases())
     for length in grid["invisibles"]:
         for mode in ("off", "all"):
             cases.append(paragraph_case(length, "txt", True, False, group="invisibles", invisibles=mode))
@@ -1432,6 +1453,73 @@ def build_cases(tier: str) -> list[Case]:
             for wrap in (True, False):
                 cases.append(keystroke_case(length, flavor, ext, wrap))
     return cases
+
+
+def protected_cases() -> list[Case]:
+    """The cases `sliced-protected-install` (C3) added; both tiers run them.
+
+    `recovery/protected-32mib` recovers two seeded 32 MiB single-paragraph
+    drafts at startup (C2 design D13); `protected/save-as-wrap` opens a
+    1.9M-character protected document, saves it as a new file through the
+    measurement build's `app.probe-save-as` and toggles word wrap live
+    (`app.probe-set-word-wrap`).
+    """
+    return [
+        Case(
+            "recovery/protected-32mib",
+            "recovery",
+            FixtureSpec("paragraph", PROTECTED_RECOVERY_DRAFT_BYTES, seed_for("protected-recovery")),
+            settings={"word-wrap": True, "show-minimap": False},
+            flow="seeded-recovery",
+            length=PROTECTED_RECOVERY_DRAFT_BYTES,
+            attrs={"drafts": PROTECTED_RECOVERY_DRAFTS},
+        ),
+        Case(
+            f"protected/{PROTECTED_SAVE_AS_LENGTH}/save-as-wrap",
+            "protected",
+            FixtureSpec("paragraph", PROTECTED_SAVE_AS_LENGTH, seed_for("protected-save-as"), ext="txt"),
+            settings={"word-wrap": True, "show-minimap": False},
+            length=PROTECTED_SAVE_AS_LENGTH,
+            attrs={"post_open": True, "restyle": True, "save_as": True, "wrap": True},
+        ),
+    ]
+
+
+def untitled_draft_id(index: int) -> str:
+    """An untitled draft id of the shape LushText mints (`untitled-` and 16
+    hex digits)."""
+    return f"untitled-{index:016x}"
+
+
+def seed_untitled_drafts(data_dir: Path, body: Path, count: int) -> list[str]:
+    """Seed `count` recovered untitled drafts whose body is `body`, with the
+    manifest and the session that restore them, in LushText's enveloped JSON
+    (`services/json_format.rs`). Returns the draft ids."""
+    drafts = data_dir / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    ids = [untitled_draft_id(index + 1) for index in range(count)]
+    # C2's recovery shape (design D13, the crash-recovery smoke's lazy
+    # aggregate): the giant paragraph is the draft's last, with no delimiter
+    # after it, so it is the buffer's last line.
+    data = body.read_bytes().rstrip(b"\r\n")
+    for draft_id in ids:
+        (drafts / f"{draft_id}.draft").write_bytes(data)
+    manifest = {
+        "kind": "dev.cominotti.lushtext.draft-manifest",
+        "version": 1,
+        "data": {"drafts": [{"draft_id": draft_id, "original_path": None, "original_mtime_secs": None, "saved_at_secs": 1} for draft_id in ids]},
+    }
+    (drafts / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    session = {
+        "kind": "dev.cominotti.lushtext.session",
+        "version": 1,
+        "data": {
+            "tabs": [{"path": None, "draft_id": draft_id, "cursor_line": 0, "cursor_col": 0, "scroll_line": 0, "pinned": False} for draft_id in ids],
+            "active_tab_index": 0,
+        },
+    }
+    (data_dir / "session.json").write_text(json.dumps(session, indent=2) + "\n", encoding="utf-8")
+    return ids
 
 
 def post_open_cases() -> list[Case]:
@@ -2587,6 +2675,18 @@ class Runner:
                     ok = self.open_phase(phases, relaunch, cap, predicate="session-restore-complete") and self.standard_interactions(phases, tabs=len(files), recover=recover, ctx=ctx)
             elif case.flow == "recovery":
                 ok = self.recovery_flow(rep_dir, env, files, phases, launches, cap, attach, state_env, ctx, recover)
+            elif case.flow == "seeded-recovery":
+                seed_untitled_drafts(Path(state_env["LUSHTEXT_DATA_DIR"]), files[0], int(case.attrs.get("drafts", 1)))
+                launch = self.launch(rep_dir, env, [], "restore")
+                launches.append(launch)
+                attach(launch, log_path, state_env)
+                cap = self.install_cap_s
+                ok = self.open_phase(phases, launch, cap, predicate="recovery-restore-complete")
+                ok = ok and self.run_phase(phases, "background", cap, self.settle_after(2.0))
+                if ok and self.rd.available:
+                    self.run_phase(phases, "scroll", cap, lambda inj, d: (self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2), [self.rd.wheel(1, inj) or time.sleep(0.05) for _ in range(40)], (True, "ok"))[2])
+                if ok:
+                    ok = self.run_phase(phases, "tab-switch", cap, self.select_tabs(int(case.attrs.get("drafts", 1))))
             elif case.flow == "calibration":
                 ok = self.run_calibration(rep_dir, state_env, phases, launches)
             else:
@@ -2609,7 +2709,14 @@ class Runner:
                     def preview(deadline: float) -> bool:
                         return self.action("win", "set-preview-pane-visible", [self._bool(True)], deadline)
 
-                ok = self.open_phase(phases, launch, cap, after_bus=preview)
+                mid_install = None
+                if case.flow == "install":
+                    # Interactions while the giant document installs: a tab
+                    # switch to the small tab, a scroll there, and back.
+                    def mid_install(deadline: float) -> bool:
+                        return self.run_phase(phases, "mid-install", min(cap, deadline - time.monotonic()), self.mid_install_interactions())
+
+                ok = self.open_phase(phases, launch, cap, after_bus=preview or mid_install)
                 if ok and preview is not None:
                     ok = preview(time.monotonic() + cap)
                     if not ok:
@@ -2618,6 +2725,15 @@ class Runner:
                     ok = self.run_phase(phases, "background", cap, self.settle_after(2.0))
                     if ok and self.rd.available:
                         self.run_phase(phases, "scroll", cap, lambda inj, d: (self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2), [self.rd.wheel(1, inj) or time.sleep(0.05) for _ in range(40)], (True, "ok"))[2])
+                    if ok and self.wanted("reload"):
+                        # The clear of the installed protected tail, then
+                        # its re-install (`sliced-protected-install`, D4).
+                        def reload_install(_inj, deadline):
+                            self.rewrite_fixture(case, files[-1])
+                            time.sleep(1.5)
+                            return self.wait_ready("file-open-complete", deadline)
+
+                        ok = self.run_phase(phases, "reload", cap, reload_install)
                 elif ok and case.flow == "eviction":
                     ok = self.run_phase(phases, "background", cap, self.settle_after(2.0))
 
@@ -2642,6 +2758,8 @@ class Runner:
                     ok = self.standard_interactions(phases, recover=recover, ctx=ctx, settle_then=lambda deadline: self.wait_ready("visual-geometry-settled", deadline))
                 elif ok:
                     ok = self.standard_interactions(phases, tabs=max(1, len(files)), recover=recover, ctx=ctx)
+                if ok and case.attrs.get("save_as") and self.wanted("save-as"):
+                    ok = self.run_phase(phases, "save-as", cap, self.save_as_copy(files[0], rep_dir / "save-as-copy.txt"))
                 if ok and ctx is not None and case.attrs.get("typing"):
                     ok = self.type_during_settle(rep_dir, files, phases, launches, new_state)
             for launch in launches:
@@ -2725,6 +2843,73 @@ class Runner:
         from gi.repository import GLib
 
         return GLib.Variant("b", value)
+
+    def select_tabs(self, tabs: int) -> Callable[[Any, float], tuple[bool, str]]:
+        """A phase body: select each tab in turn and back to the first."""
+
+        def body(_inj, deadline):
+            for index in list(range(tabs)) + [0]:
+                self.action("win", "select-tab", [self._uint32(index)], deadline)
+                ok, status = self.wait_ready("file-open-complete", deadline)
+                if not ok:
+                    return ok, status
+            return True, "ok"
+
+        return body
+
+    def mid_install_interactions(self) -> Callable[[list[dict], float], tuple[bool, str]]:
+        """A phase body run while an install is in progress: switch to the
+        small first tab, scroll it, switch back to the installing tab, until
+        the install completes (`sliced-protected-install`, task 6.1)."""
+
+        def body(inj, deadline):
+            rounds = 0
+            while time.monotonic() < deadline:
+                self.action("win", "select-tab", [self._uint32(0)], deadline)
+                if self.rd.available:
+                    self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2)
+                    for _ in range(3):
+                        self.rd.wheel(1, inj)
+                        time.sleep(0.03)
+                self.action("win", "select-tab", [self._uint32(1)], deadline)
+                rounds += 1
+                ok, status = self.wait_ready("file-open-complete", min(deadline, time.monotonic() + 0.2))
+                if ok:
+                    return True, f"ok ({rounds} rounds)"
+                if status == "workflow-failure":
+                    # A refused or failed load never completes: stop at once
+                    # instead of switching tabs until the cap.
+                    return False, status
+            return False, "exceeded_cap"
+
+        return body
+
+    def save_as_copy(self, source: Path, copy: Path) -> Callable[[Any, float], tuple[bool, str]]:
+        """A phase body: Save As of the active document to `copy` through the
+        measurement build's `app.probe-save-as`, waiting until the copy holds
+        exactly the source's bytes (a mismatch fails the case: file bytes
+        must never change)."""
+
+        def body(_inj, deadline):
+            from gi.repository import GLib
+
+            expected = source.stat().st_size
+            if not self.action("app", "probe-save-as", [GLib.Variant("s", str(copy))], deadline):
+                return False, "unavailable"
+            while time.monotonic() < deadline:
+                if copy.exists() and copy.stat().st_size == expected:
+                    break
+                time.sleep(0.02)
+            else:
+                return False, "exceeded_cap"
+            if hashlib.sha256(copy.read_bytes()).hexdigest() != hashlib.sha256(source.read_bytes()).hexdigest():
+                self.failures.append(f"Save As changed the bytes of {source.name}")
+                return False, "integrity-failure"
+            ok, status = self.wait_ready("idle", deadline)
+            copy.unlink(missing_ok=True)
+            return ok, status
+
+        return body
 
     def rewrite_fixture(self, case: Case, path: Path) -> None:
         spec = case.fixture
@@ -2881,6 +3066,14 @@ class Runner:
             return [self.record_skip(case, "*", "not enough available memory")]
         if case.fixture is not None:
             files = self.make_fixture(case.fixture, case.id)
+        if case.flow == "install" and files:
+            # A small document opened first, for the mid-install tab switch
+            # and scroll (`sliced-protected-install`, task 6.1).
+            small = files[0].parent / "small.txt"
+            data = "".join(f"short line {line} of the small tab\n" for line in range(MID_INSTALL_SMALL_LINES)).encode()
+            small.write_bytes(data)
+            self.ledger.record(small, hashlib.sha256(data).hexdigest())
+            files = [small, *files]
         try:
             variants = ["plain"] if case.flow == "calibration" else self.variants
             for variant in variants:
@@ -3923,15 +4116,44 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         if r.get("group") == "baseline" and r.get("case") != "baseline/calibration"
     ]
     construction = construction_verdicts([r for r in rows if r.get("group") == "baseline"], budgets["B_SETTLE_US"])
+    # The sliced protected install (sliced-protected-install, C3): every
+    # phase of the install, recovery and protected cases, its largest stall
+    # against its budget, and its duration (the open phase's is the time to
+    # fully installed).
+    def c3_phases(row: dict) -> dict:
+        out = {}
+        for phase in row.get("phases", []):
+            if "stall" not in phase:
+                continue
+            out[phase["name"]] = {
+                "stall_us": phase["stall"]["lateness_us"],
+                "duration_us": (phase["end_us"] - phase["start_us"]) if phase.get("end_us") and phase.get("start_us") else None,
+                "budget_us": budgets["B_SETTLE_US"] if PHASE_KINDS.get(phase["name"], "settle") not in ("interaction",) else budgets["B_INTERACT_US"],
+            }
+        return out
+
     install = [
-        {"case": r["case"], "variant": r["variant"], "outcome": r["outcome"], "open_stall_us": next((p["stall"]["lateness_us"] for p in r.get("phases", []) if p.get("name") == "open" and "stall" in p), None)}
+        {
+            "case": r["case"],
+            "variant": r["variant"],
+            "rep": r.get("rep"),
+            "outcome": r["outcome"],
+            "open_stall_us": next((p["stall"]["lateness_us"] for p in r.get("phases", []) if p.get("name") in ("open", "restore") and "stall" in p), None),
+            "phases": c3_phases(r),
+        }
         for r in rows
-        if r.get("group") == "install"
+        if r.get("group") in ("install", "protected") or r.get("case") == "recovery/protected-32mib"
     ]
     c3 = {"measured": install}
     if install:
-        stalls = [i["open_stall_us"] for i in install if i["open_stall_us"] is not None]
-        c3["verdict"] = "needed" if any(s > budgets["B_SETTLE_US"] for s in stalls) else "not needed"
+        over = [
+            f"{i['case']}@{i['variant']}#{i['rep']}:{name}"
+            for i in install
+            for name, phase in i["phases"].items()
+            if phase["stall_us"] is not None and phase["stall_us"] > phase["budget_us"]
+        ]
+        c3["over_budget"] = over
+        c3["verdict"] = f"over budget in {len(over)} phase(s)" if over else "every phase within its budget"
     else:
         c3["verdict"] = "not measured (install group runs in the full tier only)"
     missing = [name for name in ("run.json", "results.jsonl", "calibration.json", "fixtures.json", "integrity.json") if not (artifact_dir / name).exists()]
@@ -4838,6 +5060,36 @@ def self_test() -> int:
     def expect(condition: bool, label: str) -> None:
         if not condition:
             failures.append(label)
+
+    # The sliced protected install's cases (sliced-protected-install, C3):
+    # both tiers run them, and the seeded drafts are enveloped JSON LushText
+    # restores (an untitled id, a manifest entry and a session tab per draft).
+    for tier in ("quick", "full"):
+        ids = {case.id for case in build_cases(tier)}
+        expect(
+            {"recovery/protected-32mib", f"protected/{PROTECTED_SAVE_AS_LENGTH}/save-as-wrap"} <= ids,
+            f"the {tier} tier runs the protected recovery and Save As cases",
+        )
+    with tempfile.TemporaryDirectory() as seeded:
+        body = Path(seeded) / "body.txt"
+        body.write_text("x" * 64 + "\n", encoding="utf-8")
+        data_dir = Path(seeded) / "data"
+        seeded_ids = seed_untitled_drafts(data_dir, body, 2)
+        manifest = json.loads((data_dir / "drafts/manifest.json").read_text(encoding="utf-8"))
+        session = json.loads((data_dir / "session.json").read_text(encoding="utf-8"))
+        expect(
+            seeded_ids == ["untitled-0000000000000001", "untitled-0000000000000002"]
+            and all((data_dir / "drafts" / f"{draft_id}.draft").read_bytes() == body.read_bytes().rstrip(b"\n") for draft_id in seeded_ids),
+            f"seeded draft bodies and ids ({seeded_ids})",
+        )
+        expect(
+            manifest["kind"] == "dev.cominotti.lushtext.draft-manifest"
+            and [entry["draft_id"] for entry in manifest["data"]["drafts"]] == seeded_ids
+            and session["kind"] == "dev.cominotti.lushtext.session"
+            and [tab["draft_id"] for tab in session["data"]["tabs"]] == seeded_ids,
+            "the seeded manifest and session are enveloped and name every draft",
+        )
+    expect(PHASE_KINDS.get("mid-install") == "interaction" and PHASE_KINDS.get("save-as") == "settle", "the C3 phases have kinds")
 
     # Every keystroke length stays editable after the case types its bursts.
     for tier, lengths in KEYSTROKE_LENGTHS.items():

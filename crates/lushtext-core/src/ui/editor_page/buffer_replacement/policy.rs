@@ -13,6 +13,18 @@
 //! Nothing here touches GTK, so the workflow's freshness, phase, cancellation,
 //! and terminal rules stay inside the default mutation scope.
 
+/// Whether a body's fold plan makes the replacement sliced through the
+/// protected executor at any size: a hidden tail that could exceed one tail
+/// slice (`sliced-protected-install`, C3). Calls the shared
+/// `model::protected_install::hidden_tail_requires_slicing`, never a copy.
+pub(super) fn protected_install_is_sliced(
+    plan: Option<&crate::model::protected_fold::FoldPlan>,
+) -> bool {
+    plan.is_some_and(|plan| {
+        crate::model::protected_install::hidden_tail_requires_slicing(plan.hidden_chars())
+    })
+}
+
 /// Workflow family that owns one replacement ticket.
 ///
 /// Part of the caller-facing seam: the ticket a caller hands in comes back on

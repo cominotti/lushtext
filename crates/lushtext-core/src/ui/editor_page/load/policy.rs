@@ -20,9 +20,18 @@
 //! `GtkTextBuffer` validates layout a whole paragraph at a time, so a slice that
 //! stops mid-paragraph re-lays-out everything already installed in that
 //! paragraph on every later slice — quadratic work that once froze crash
-//! recovery of a 33 MB single-line draft for minutes. A paragraph larger than
-//! the slice budget therefore installs or clears in **one** turn; that single
-//! long turn costs no more than the first render of that paragraph pays anyway.
+//! recovery of a 33 MB single-line draft for minutes. A **visible** paragraph
+//! larger than the slice budget therefore installs or clears in **one** turn;
+//! that single long turn costs no more than the first render of that paragraph
+//! pays anyway.
+//!
+//! **The one exception: a hidden tail** (`sliced-protected-install`, C3). A
+//! protected body (`protected_install_is_sliced`) is installed through
+//! `ui::protected_fold::FoldedInstall`, whose slices may end inside a folded
+//! paragraph, but only inside its hidden tail, which GTK never lays out
+//! (ledger A24, A65, A77); the head goes in once, after the tail. The clear
+//! side deletes the tail ranges the install recorded, from each paragraph's start,
+//! before the paragraph-aligned clear below runs (`delete_buffer_slice`).
 //!
 //! The install side of that rule is
 //! [`next_install_boundary`](crate::model::file_load::next_install_boundary),
@@ -199,6 +208,27 @@ pub(crate) fn requires_chunked_install(
     incoming_dense
         || incoming_bytes > SYNCHRONOUS_INSTALL_THRESHOLD_BYTES
         || existing_bytes > u64::try_from(SYNCHRONOUS_INSTALL_THRESHOLD_BYTES).unwrap_or(u64::MAX)
+}
+
+/// Whether a body's fold plan makes its install sliced through the protected
+/// executor: a hidden tail that could exceed one tail slice
+/// (`model::protected_install::hidden_tail_requires_slicing`). Such a body is
+/// installed in bounded turns at any size.
+pub(crate) fn protected_install_is_sliced(
+    plan: Option<&crate::model::protected_fold::FoldPlan>,
+) -> bool {
+    plan.is_some_and(|plan| {
+        crate::model::protected_install::hidden_tail_requires_slicing(plan.hidden_chars())
+    })
+}
+
+/// Whether the next install slice waits at the paced idle priority, below
+/// GtkTextView's validation (`PACED_SLICE_PRIORITY`): a dense body's slices
+/// (`bound-post-open-settle`, D6) and a protected body's (C3), whose tail
+/// slices then follow each other at main-loop speed instead of one timeout
+/// apart.
+pub(crate) const fn install_slices_are_paced(dense: bool, protected: bool) -> bool {
+    dense || protected
 }
 
 /// How many characters one clear slice may delete.

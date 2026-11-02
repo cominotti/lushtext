@@ -634,6 +634,24 @@ mod measurement {
             }
         });
         app.add_action(&font);
+        // Save As without the file chooser (`sliced-protected-install` task
+        // 7.6): `app.probe-save-as(s)` saves the active window's document to
+        // the given path through the chooser's own completion.
+        let save_as = gio::SimpleAction::new("probe-save-as", Some(glib::VariantTy::STRING));
+        let app_weak = app.downgrade();
+        save_as.connect_activate(move |_, value| {
+            let Some(path) = value.and_then(glib::Variant::get::<String>) else {
+                return;
+            };
+            if let Some(window) = app_weak
+                .upgrade()
+                .and_then(|app| app.active_window())
+                .and_then(|window| window.downcast::<crate::ui::window::LushtextWindow>().ok())
+            {
+                window.save_active_as_for_probe(std::path::Path::new(&path));
+            }
+        });
+        app.add_action(&save_as);
     }
 
     pub(super) fn install(app: &gtk4::Application) {

@@ -502,6 +502,10 @@ impl LushtextEditorPage {
             self.protected_source()
                 .map_or(0, |source| source.retained_bytes()),
         )
+        // The boundary marks a sliced protected install left (C3, task 4.7).
+        .saturating_add(crate::model::editor_memory::protected_boundary_bytes(
+            self.imp().protected_boundaries.live_boundaries(),
+        ))
     }
 
     /// Current least-recently-used generation assigned by the owning window.

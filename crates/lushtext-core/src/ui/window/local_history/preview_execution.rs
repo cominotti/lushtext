@@ -23,6 +23,7 @@ use gtk_lush_tasks::spawn_blocking_then;
 
 use crate::model::protected_fold::FoldPlan;
 use crate::ui::folded_text::{FoldedTextSurface, InstallSlice, SurfaceText, install_slice};
+use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall};
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
@@ -174,6 +175,9 @@ pub(super) struct LocalHistoryBrowserState {
     preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
     /// Current browser-local sliced GTK installation, when required.
     preview_install: RefCell<Option<LocalHistoryPreviewInstallSession>>,
+    /// The boundary marks a sliced protected preview left in
+    /// `preview_buffer`, deleted after the buffer is emptied.
+    preview_boundaries: BoundaryLedger,
     /// Whether dialog teardown invalidated all preview work.
     disposed: Cell<bool>,
     /// Active safety capture for a pending restore, disposed with the dialog.
@@ -189,9 +193,9 @@ struct LocalHistoryPreviewInstallSession {
     snapshot: Option<LoadedSnapshot>,
     offset: usize,
     source_id: Option<glib::SourceId>,
-    /// The Protected View fold plan of a snapshot whose longest paragraph
-    /// exceeds `L_PROTECT_EDIT`, and the paragraph the next slice starts.
-    fold: Option<(std::sync::Arc<FoldPlan>, u64)>,
+    /// The sliced install of a snapshot whose longest paragraph exceeds
+    /// `L_PROTECT_EDIT` (`ui::protected_fold::FoldedInstall`, C3).
+    fold: Option<FoldedInstall>,
 }
 
 impl LushtextWindow {
@@ -353,6 +357,7 @@ impl LushtextWindow {
             preview_admission: RefCell::default(),
             preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup::default(),
             preview_install: RefCell::new(None),
+            preview_boundaries: BoundaryLedger::default(),
             disposed: Cell::new(false),
             restore_snapshot: RefCell::new(None),
             restore_pending: Cell::new(false),
@@ -504,7 +509,7 @@ impl LocalHistoryBrowserState {
         self.preview_title.set_label("Loading snapshot…");
         self.preview_meta
             .set_label(&policy::format_snapshot_meta(meta.origin, meta.byte_len));
-        self.preview_buffer.set_text("");
+        self.clear_preview_buffer();
         self.preview_stack.set_visible_child_name("loading");
         set_local_history_preview_accessibility(
             &self.preview_stack,
@@ -699,7 +704,7 @@ impl LocalHistoryBrowserState {
         ));
         match policy::preview_install_plan(snapshot.text.len()) {
             policy::PreviewInstallPlan::Empty => {
-                self.preview_buffer.set_text("");
+                self.clear_preview_buffer();
                 self.preview_stack.set_visible_child_name("empty");
                 set_local_history_preview_accessibility(
                     &self.preview_stack,
@@ -715,22 +720,34 @@ impl LocalHistoryBrowserState {
                 self.loaded_snapshot.replace(Some(snapshot));
             }
             policy::PreviewInstallPlan::Direct if fold_plan.is_none() => {
+                self.clear_preview_buffer();
                 self.preview_buffer.set_text(&snapshot.text);
                 self.finish_preview_install(snapshot);
             }
             policy::PreviewInstallPlan::Direct | policy::PreviewInstallPlan::Sliced => {
-                self.preview_buffer.set_text("");
+                self.clear_preview_buffer();
                 self.preview_install
                     .replace(Some(LocalHistoryPreviewInstallSession {
                         generation,
                         snapshot: Some(snapshot),
                         offset: 0,
                         source_id: None,
-                        fold: fold_plan.map(|plan| (plan, 0)),
+                        fold: fold_plan.map(|plan| {
+                            FoldedInstall::new(plan, self.preview_buffer.upcast_ref(), false)
+                        }),
                     }));
                 self.schedule_preview_install_slice();
             }
         }
+    }
+
+    /// Empty the preview buffer, then delete the boundary marks a sliced
+    /// protected preview left in it (deleting them while their slices were
+    /// still there would merge the slices by copying, ledger A76).
+    fn clear_preview_buffer(&self) {
+        self.preview_buffer.set_text("");
+        self.preview_boundaries
+            .forget(self.preview_buffer.upcast_ref());
     }
 
     fn schedule_preview_install_slice(self: &Rc<Self>) {
@@ -779,6 +796,7 @@ impl LocalHistoryBrowserState {
             text,
             &mut session.offset,
             &mut session.fold,
+            &self.preview_boundaries,
         ) == InstallSlice::Deferred
         {
             self.preview_install.replace(Some(session));

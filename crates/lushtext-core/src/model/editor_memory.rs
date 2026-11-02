@@ -52,6 +52,22 @@ pub fn estimate_live_editor_bytes(
         .max(known_file_bytes.unwrap_or(0))
 }
 
+/// What one boundary mark of a sliced protected install costs the live
+/// editor, charged per live boundary on top of
+/// [`estimate_live_editor_bytes`] (`sliced-protected-install`, task 4.7): a
+/// `GtkTextMark` object, its btree mark segment and the ledger's entry, about
+/// 100 bytes together.
+///
+/// Kind: cap (a conservative per-object charge), rounded up to a power of
+/// two.
+pub const PROTECTED_BOUNDARY_BYTES: u64 = 128;
+
+/// The live-editor charge of `boundaries` boundary marks.
+#[must_use]
+pub const fn protected_boundary_bytes(boundaries: u64) -> u64 {
+    boundaries.saturating_mul(PROTECTED_BOUNDARY_BYTES)
+}
+
 /// Scalar residency and safety facts for one open editor page.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EditorResidency {

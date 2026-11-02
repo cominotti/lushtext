@@ -278,6 +278,18 @@ and Save actions and names the shortcut in its body. A blocked request (paste,
 typing, Ctrl+H, bookmark toggles, invisible characters, line endings) publishes
 one status message, at most once every four seconds per reason.
 
+**While such a document opens** (or is recovered, reloaded or restored), each
+giant paragraph's hidden tail goes into the buffer in slices of at most
+256 KiB, and the paragraph's visible head goes in last
+(`sliced-protected-install`). Each slice is one accessible `TextChanged`
+insertion event whose payload is that slice's text (the event is emitted before
+the slice is hidden), so a listener receives the tail in bounded pieces rather
+than as one event the size of the whole paragraph; the clear before a reload
+or eviction emits bounded deletion events that carry no hidden characters
+(ledger A78). Assistive technologies should treat these events as the document
+loading, as they already do for any large document; the tab reports the
+document as loading until the install completes.
+
 The **Line Inspector** is the accessible path to folded content. It is a dialog
 holding one window of at most 500 characters of one line, with word wrap on,
 read-only, with a visible caret and selection, so screen-reader reading and

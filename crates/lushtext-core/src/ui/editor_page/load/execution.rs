@@ -36,6 +36,7 @@
 
 use crate::ui::editor_page::edit_lock::EditLock;
 use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
+use crate::ui::protected_fold::FoldedInstall;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -97,9 +98,9 @@ pub(crate) struct ChunkedLoadInstall {
     pub(super) phase: LoadInstallPhase,
     pub(super) terminal: bool,
     pub(super) slice_count: u64,
-    /// The index of the paragraph the next slice starts, so a protected
-    /// body's fold plan applies at insertion (`ui::protected_fold`).
-    pub(super) next_paragraph: u64,
+    /// The sliced install of a protected body (`ui::protected_fold`, C3):
+    /// its tails go in hidden, slice by slice. `None` for an ordinary body.
+    pub(super) folded: Option<FoldedInstall>,
 }
 
 impl ChunkedLoadInstall {
@@ -212,10 +213,22 @@ fn run_install_slice_now(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     }
 }
 
-/// Delete one bounded slice of the buffer, ending on a paragraph boundary.
+/// Delete one bounded slice of the buffer: the last recorded ranges of a
+/// protected tail while the editor's boundary ledger holds any (C3, design
+/// D4), then slices ending on a paragraph boundary.
 ///
 /// Returns whether the buffer is now empty.
-pub(super) fn delete_buffer_slice(buffer: &sourceview5::Buffer) -> bool {
+pub(super) fn delete_buffer_slice(
+    editor: &LushtextEditorPage,
+    buffer: &sourceview5::Buffer,
+) -> bool {
+    let ledger = &editor.imp().protected_boundaries;
+    let turn =
+        crate::ui::editor_page::edit_lock::with_own_edit(|| ledger.clear_turn(buffer.upcast_ref()));
+    if turn.is_some() {
+        evidence::record_protected_clear_turn(editor);
+        return buffer.char_count() == 0 && ledger.is_empty();
+    }
     let remaining = buffer.char_count();
     if remaining <= 0 {
         return true;
@@ -234,8 +247,15 @@ pub(super) fn delete_buffer_slice(buffer: &sourceview5::Buffer) -> bool {
 }
 
 fn run_existing_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
-    let buffer = session.borrow().buffer.clone();
-    let cleared = delete_buffer_slice(&buffer);
+    let (editor, buffer) = {
+        let state = session.borrow();
+        (state.editor.upgrade(), state.buffer.clone())
+    };
+    let Some(editor) = editor else {
+        retirement::abort_installation(session, AbortDisposition::Dispose);
+        return;
+    };
+    let cleared = delete_buffer_slice(&editor, &buffer);
     if session.borrow().phase != LoadInstallPhase::ClearingExisting {
         return;
     }
@@ -264,7 +284,7 @@ fn run_existing_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
 }
 
 fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
-    let (buffer, mark, start, paragraph, loaded) = {
+    let (editor, buffer, mark, start, loaded, mut folded) = {
         let mut state = session.borrow_mut();
         let Some(mark) = state.end_mark.clone() else {
             drop(state);
@@ -277,33 +297,35 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
             return;
         };
         (
+            state.editor.upgrade(),
             state.buffer.clone(),
             mark,
             state.byte_offset,
-            state.next_paragraph,
             loaded,
+            state.folded.take(),
         )
     };
     let budget = session.borrow().budget;
-    let end = next_slice_boundary(&loaded.content, start, budget);
     let content_len = loaded.content.len();
-    let mut iter = buffer.iter_at_mark(&mark);
     // GtkTextBuffer emits signals synchronously. Keep the session unborrowed so
     // a reentrant cancellation can move it to bounded cleanup without panicking.
-    let next_paragraph = {
+    let end = {
         let _span = PostOpenSpan::begin("post_open_install_slice");
         crate::ui::editor_page::edit_lock::with_own_edit(|| {
-            if let Some(plan) = loaded.metadata.profile.fold_plan.as_deref() {
-                crate::ui::protected_fold::insert_folded(
-                    buffer.upcast_ref(),
-                    &mut iter,
-                    &loaded.content[start..end],
-                    paragraph,
-                    plan,
-                )
+            if let (Some(install), Some(editor)) = (folded.as_mut(), &editor) {
+                let append = || buffer.iter_at_mark(&mark);
+                let end = install.step(
+                    &append,
+                    &loaded.content,
+                    budget,
+                    &editor.imp().protected_boundaries,
+                );
+                evidence::record_protected_install(editor, install.metrics());
+                end
             } else {
-                buffer.insert(&mut iter, &loaded.content[start..end]);
-                paragraph
+                let end = next_slice_boundary(&loaded.content, start, budget);
+                buffer.insert(&mut buffer.iter_at_mark(&mark), &loaded.content[start..end]);
+                end
             }
         })
     };
@@ -316,15 +338,16 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
             return;
         }
         state.byte_offset = end;
-        state.next_paragraph = next_paragraph;
+        state.folded = folded;
         state.slice_count = state.slice_count.saturating_add(1);
         state.loaded = Some(loaded);
         end == content_len
     };
 
+    let protected = session.borrow().folded.is_some();
     if reached_end {
         finish_chunked_install(session);
-    } else if budget == SliceBudget::PACED {
+    } else if policy::install_slices_are_paced(budget == SliceBudget::PACED, protected) {
         schedule_paced_insert_slice(session);
     } else {
         schedule_install_slice(session);
@@ -531,7 +554,8 @@ fn install_guarded_load_now(
     let chunked = policy::requires_chunked_install(
         loaded.content.len(),
         editor.buffer().char_count(),
-        policy::batch_exceeds_slice(summary),
+        policy::batch_exceeds_slice(summary)
+            || policy::protected_install_is_sliced(loaded.metadata.profile.fold_plan.as_deref()),
     );
     if !chunked
         && loaded.metadata.profile.fold_plan.is_some()
@@ -619,17 +643,22 @@ pub(super) fn install_loaded_direct(
                 Some(plan) => {
                     buffer.set_text("");
                     let mut start = buffer.start_iter();
-                    crate::ui::protected_fold::insert_folded(
+                    crate::ui::protected_fold::insert_folded_document(
                         buffer.upcast_ref(),
                         &mut start,
                         &loaded.content,
-                        0,
                         plan,
                     );
                 }
                 None => buffer.set_text(&loaded.content),
             }
         });
+        // The old text is gone, so the marks a sliced protected install left
+        // are collapsed and go without merging anything (C3).
+        editor
+            .imp()
+            .protected_boundaries
+            .forget(buffer.upcast_ref());
     }
     if editor.imp().load.dispose_during_finalization.get() {
         buffer.end_irreversible_action();
@@ -658,6 +687,12 @@ fn start_chunked_install(
     );
     let buffer = editor.buffer();
     buffer.begin_irreversible_action();
+    let folded = loaded
+        .metadata
+        .profile
+        .fold_plan
+        .clone()
+        .map(|plan| FoldedInstall::new(plan, buffer.upcast_ref(), true));
     let session = Rc::new(RefCell::new(ChunkedLoadInstall {
         editor: editor.downgrade(),
         buffer,
@@ -672,7 +707,7 @@ fn start_chunked_install(
         phase: LoadInstallPhase::ClearingExisting,
         terminal: false,
         slice_count: 0,
-        next_paragraph: 0,
+        folded,
     }));
     editor.imp().load.installation_slice_count.set(0);
     editor
