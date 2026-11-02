@@ -1117,6 +1117,20 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a73),
     },
+    Axiom {
+        id: AxiomId::new(74),
+        name: "a74_a_gtk_enable_animations_change_restyles_every_widget",
+        statement: "after GtkSettings:gtk-enable-animations changes, libadwaita reloads a style \
+                    provider, so the next frame restyles every widget and costs more than twice \
+                    a redraw or a gtk-cursor-blink change, growing with the number of widgets",
+        dependent_designs: &[
+            "bound-post-open-settle (C6) review M4a: considered as the cause of the restyle \
+             the keys typed during a document's settle wait for, and ruled out (no settings \
+             notify in the lane; the cause is the pointer's first entry, :hover)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a74),
+    },
 ];
 
 #[cfg(test)]
@@ -1131,10 +1145,10 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a73() {
+    fn the_catalogue_covers_every_ledger_id_up_to_a74() {
         // A55-A58 were C6's draft ids, renumbered to A67-A73 when C5's
         // A52-A54 landed; ids are never reused.
-        for number in (1..=54).chain(59..=73) {
+        for number in (1..=54).chain(59..=74) {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }

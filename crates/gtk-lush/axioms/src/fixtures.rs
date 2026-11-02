@@ -334,6 +334,11 @@ pub mod a73 {
     pub use crate::probes::a73::{ENDS_IN_NEWLINE, ENDS_IN_TEXT, OVERSCROLL_PX};
 }
 
+/// The fixture the A74 probe drives, for its sample.
+pub mod a74 {
+    pub use crate::probes::a74::{LARGE_ROWS, rows};
+}
+
 /// The Protected View press-claim fixture and observers the A59 probe drives,
 /// for its sample.
 pub mod a59 {

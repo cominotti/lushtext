@@ -388,6 +388,10 @@ fn tag_run(recorder: &mut Recorder, wrap: gtk4::WrapMode) -> Result<TagRun, Stop
     let view_char =
         f64::from(context.metrics(None, None).approximate_char_width()) / f64::from(pango::SCALE);
     let zoomed = pango::FontDescription::from_string(&format!("Monospace {}", BASE_PT * ZOOM));
+    recorder.control(
+        crate::probes::post_open::fixed_pitch(&tagged.dense.view, Some(&zoomed)),
+        crate::probes::post_open::FIXED_PITCH_CONTROL,
+    )?;
     let tag_char = f64::from(
         context
             .metrics(Some(&zoomed), None)

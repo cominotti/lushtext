@@ -13,6 +13,14 @@
   cursor paragraph's start, and a handler connected after the view's is never
   called. New helpers under `fixtures::a54`.
 
+- A74 probe and sample (`bound-post-open-settle` review): a change of
+  `gtk-enable-animations` restyles every widget (checked as a candidate cause
+  of the lane's post-open restyle and ruled out). New fixture
+  `fixtures::a74`.
+- A70 and A72 stop at a fixed-pitch control step (`FIXED_PITCH_CONTROL`)
+  when "Monospace" resolves to a proportional face, instead of reporting a
+  violated axiom.
+
 ## 0.0.0
 
 - First functional in-tree pre-publication implementation: the axiom

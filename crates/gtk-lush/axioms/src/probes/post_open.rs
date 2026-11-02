@@ -433,6 +433,30 @@ impl DenseView {
     }
 }
 
+/// Whether `font` (the widget's own CSS font when `None`) lays out at a fixed
+/// pitch in `widget`'s Pango context: ten `i` as wide as ten `M`.
+///
+/// The probes that read columns or line widths from character counts assume
+/// the "Monospace" family resolves to a fixed-pitch face, as it does in every
+/// GNOME runtime. A host without one (a minimal container whose only font is
+/// a sans face) resolves "Monospace" to a proportional face; the probes make
+/// this a control step, so such a host reports an invalid fixture rather than
+/// a violated axiom.
+#[must_use]
+pub fn fixed_pitch(widget: &impl IsA<gtk4::Widget>, font: Option<&pango::FontDescription>) -> bool {
+    let layout = widget.create_pango_layout(None);
+    layout.set_font_description(font);
+    let width = |text: &str| {
+        layout.set_text(text);
+        layout.size().0
+    };
+    width("iiiiiiiiii") == width("MMMMMMMMMM")
+}
+
+/// The control step every monospace-dependent probe takes.
+pub const FIXED_PITCH_CONTROL: &str =
+    "control: the Monospace font is fixed-pitch (install a monospace font, such as Adwaita Mono)";
+
 /// Counts `after-paint` emissions of one frame clock while it is alive.
 pub struct FrameCounter {
     clock: gtk4::gdk::FrameClock,

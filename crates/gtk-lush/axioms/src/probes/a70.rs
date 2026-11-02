@@ -160,6 +160,10 @@ impl ValidationFixture {
             "control: the dense view was presented",
         )?;
         settle(LAYOUT_SETTLE);
+        recorder.control(
+            crate::probes::post_open::fixed_pitch(&dense.view, None),
+            crate::probes::post_open::FIXED_PITCH_CONTROL,
+        )?;
         let frames = recorder.require(
             FrameCounter::watch(&dense.view),
             "control: the view has a frame clock",
