@@ -1146,6 +1146,21 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a75),
     },
+    Axiom {
+        id: AxiomId::new(80),
+        name: "a80_validation_holds_back_lower_priority_idles",
+        statement: "while a text view has lines left to validate, its incremental validation \
+                    idle is ready again after every batch, so a G_PRIORITY_DEFAULT_IDLE source \
+                    does not dispatch until the whole buffer is validated, on screen or on a \
+                    hidden stack page alike, while a source one step above the validation idle \
+                    dispatches before the next batch",
+        dependent_designs: &[
+            "spawn-completion-priority: gtk-lush-tasks delivers spawn_blocking_then completions \
+             from one source one step above the validation idle, one completion per dispatch",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a80),
+    },
 ];
 
 #[cfg(test)]
