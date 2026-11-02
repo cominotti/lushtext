@@ -112,6 +112,14 @@ generations stop blocking readiness once their bounded completion releases
 active ownership. A watcher generation that ends in a reported startup or
 disconnect failure is settled as unavailable rather than remaining a
 permanently pending lifecycle operation.
+`document-settled` waits for the selected editor's opened document to settle
+after `file-open-complete`: its deferred language attach has run, and
+GtkSourceView highlighting and GtkTextView line validation have been quiet for
+the settle-quiet period (100 ms), with a low-priority sentinel dispatched after
+the last `highlight-updated` or vertical-adjustment change. Debounces started by
+user edits do not hold it, and a restored tab that is not selected is not waited
+on (it attaches its language once shown). Each tab snapshot reports the stage as
+`tabs[].settle_stage` and `tabs[].settled` (`bound-post-open-settle`).
 The compatibility `preview-animation` blocker remains pending through the
 current Markdown planner/projection/image generation, one deferred latest
 render, off-main plain-payload retirement, bounded detached GTK retirement,

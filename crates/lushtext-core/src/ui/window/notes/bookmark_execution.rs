@@ -43,6 +43,7 @@ use crate::model::bookmark::BookmarkRecord;
 use crate::model::palette::PaletteNoteTarget;
 use crate::services::{bookmark_excerpt, bookmark_service, json_store};
 use crate::ui::accessibility;
+use crate::ui::editor_page::EditorLoadState;
 use crate::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
 };
@@ -249,6 +250,16 @@ impl LushtextWindow {
         let Some(editor) = self.require_saved_editor("Bookmarks require a saved file") else {
             return;
         };
+        // A bookmark placed while the file is still loading names a line of
+        // the empty placeholder buffer, and the sidecar read that follows the
+        // load replaces it: the toggle would be silently lost.
+        if editor.load_state() == EditorLoadState::Loading {
+            self.publish_status_message(
+                "Bookmarks are available once the file has loaded",
+                MessageKind::Warning,
+            );
+            return;
+        }
         // Protected View has no caret line (`protected-view-inspector-and-surfaces`).
         if editor.is_protected_view() {
             editor.notify_protected_preemption(ProtectedAction::ToggleBookmarkAtCursor);

@@ -143,6 +143,12 @@ PROOF_STRENGTH_RAISED_IN = "; raised by runs 38087161968, 38088387193 (max of th
 # measure them. core-document-scale's runs predate the join rewrite of
 # c2e33d74 (same harnesses, 5.6 local minutes before and after).
 DOCUMENT_SCALE_MEASURED_IN = "runs 39440638502, 39446126819 (max of the two)"
+# bound-post-open-settle (C6) added the paced slice and restyle shard.
+# PROVISIONAL: a local estimate until two dispatched kani.yml runs measure it
+# (replace these figures and this note with their run ids).
+POST_OPEN_SETTLE_MEASURED_IN = (
+    "provisional: local make kani 10.6 min / 1.69 GiB (2026-10-30), pending two dispatched runs"
+)
 # long-line-protected-view (C2) added core-protected-fold, core-protected-fold-shape
 # and core-protected-fold-mapping. PENDING DISPATCH:
 # these figures are a LOCAL `make kani KANI_MEASURE` run on the reference
@@ -328,6 +334,17 @@ SHARDS: dict[str, Shard] = {
         ci_minutes=13.6,
         ci_peak_gib=2.2,
         measured_in=GEOMETRY_POLICY_MEASURED_IN,
+    ),
+    "core-post-open-settle": Shard(
+        "lushtext-core",
+        (
+            "model::buffer_replacement::kani_proofs::",
+            "ui::editor_page::load::policy::kani_proofs::",
+        ),
+        gate="scheduled",
+        ci_minutes=11.0,
+        ci_peak_gib=2.0,
+        measured_in=POST_OPEN_SETTLE_MEASURED_IN,
     ),
     "core-document-scale": Shard(
         "lushtext-core",
@@ -546,6 +563,8 @@ WATCH_READS_SECONDS = 651.83
 WATCH_STEP_SECONDS = 672.86
 WATCH_UNSOUND_SECONDS = 778.55
 _SCALE = "model::document_scale::kani_proofs::"
+_PACED = "model::buffer_replacement::kani_proofs::"
+_SETTLE = "ui::editor_page::load::policy::kani_proofs::"
 _BOUNDARY = "model::paragraph_boundary::kani_proofs::"
 _WATCH = "model::paragraph_profile_watch::kani_proofs::"
 _FOLD = "model::protected_fold::kani_proofs::"
@@ -719,9 +738,30 @@ ORACLES: dict[str, Oracle] = {
             _h(_SCALE + "scale_byte_tiers_match_the_retired_tiers", 0.13, "ci"),
             _h(_SCALE + "scale_protected_view_is_upward_closed", 0.18, "ci"),
             _h(_SCALE + "scale_is_monotone", 0.49, "ci"),
+            _h(_SCALE + "scale_is_monotone_in_the_language_threshold", 0.27, "ci"),
             _h(_SCALE + "scale_join_is_a_meet_on_presentation_features", 0.54, "ci"),
             _h(_SCALE + "scale_of_a_profile_join_is_the_join_of_scales", 0.77, "ci"),
         ),
+    ),
+    "crates/lushtext-core/src/model/buffer_replacement.rs": Oracle(
+        _CORE,
+        (
+            _h(_PACED + "the_paced_budget_follows_batch_density", 0.02, "ci"),
+            _h(_PACED + "paced_slices_without_the_visible_budget_exceed_v_slice", 1.12, "ci"),
+            _h(_PACED + "paced_slices_cover_the_paragraphs_exactly", 247.11, "ci"),
+            _h(_PACED + "paced_slices_hold_both_budgets_unless_one_paragraph", 41.31, "ci"),
+        ),
+        functions=("admit", "for_profile", "batch_exceeds_slice"),
+    ),
+    "crates/lushtext-core/src/ui/editor_page/load/policy.rs": Oracle(
+        _CORE,
+        (
+            _h(_SETTLE + "settled_needs_every_clause", 0.11, "ci"),
+            _h(_SETTLE + "restyle_ranges_cover_the_document_exactly_once", 12.42, "ci"),
+            _h(_SETTLE + "restyle_ranges_hold_v_slice_unless_one_paragraph", 253.74, "ci"),
+            _h(_SETTLE + "restyle_ranges_take_the_visible_paragraphs_first_then_alternate", 14.31, "ci"),
+        ),
+        functions=("next_restyle_range", "settle_stage", "new", "is_done"),
     ),
     "crates/lushtext-core/src/model/paragraph_boundary.rs": Oracle(
         _CORE,

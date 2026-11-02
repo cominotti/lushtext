@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sample for A74: a wrapping text view of many long paragraphs with a left
+//! Sample for A75: a wrapping text view of many long paragraphs with a left
 //! gutter. Widen or narrow the gutter and watch the last (offscreen)
 //! paragraph's position move once the view has laid every paragraph out
 //! again; the readout shows how long that revalidation took.
@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use gtk_lush_axioms::AxiomId;
 use gtk_lush_axioms::fixtures::TextViewFixture;
-use gtk_lush_axioms::fixtures::a74::{
+use gtk_lush_axioms::fixtures::a75::{
     NARROW_GUTTER, WIDE_GUTTER, last_paragraph_extent, set_gutter_width, settle_validated, text,
 };
 use gtk4::prelude::*;
@@ -44,5 +44,5 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> std::process::ExitCode {
-    support::run(AxiomId::new(74), build)
+    support::run(AxiomId::new(75), build)
 }

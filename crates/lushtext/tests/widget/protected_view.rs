@@ -363,6 +363,62 @@ fn test_entry_undo_removes_the_typed_group_and_leaves_protected_view() {
     assert!(!page.undo_protected_entry());
 }
 
+#[test]
+fn test_entry_undo_waits_while_a_save_holds_the_edit_lock() {
+    // Ctrl+Z during the save of an edit-entered session: the edit lock
+    // refuses the buffer's undo, and the entry undo used to tear Protected
+    // View down anyway, leaving the giant paragraph unfolded and editable.
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("save-undo.txt");
+    let body = "short\nline\n";
+    fixture::write_text(&path, body);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    load_and_wait(&page, &path);
+    paste_at_line_end(&page, 0, &"g".repeat(n(L_PROTECT_EDIT) + 1));
+    assert!(page.is_protected_view(), "the paste entered Protected View");
+    assert!(page.protected_entry_undo_available());
+    let grown = editor_text(&page);
+
+    let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+    let saved_result = saved.clone();
+    page.save_file_async(move |result| saved_result.set(Some(result.is_ok())));
+    // One dispatch at a time: a draining wait could run the save's completion.
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !page.edits_locked() {
+        assert!(
+            saved.get().is_none(),
+            "the save finished before it was observed"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the save never took the lock"
+        );
+        context.iteration(true);
+    }
+    assert!(
+        !page.protected_entry_undo_available(),
+        "no entry undo is offered while the save holds the lock"
+    );
+    assert!(!page.undo_protected_entry(), "the entry undo refused");
+    assert!(page.is_protected_view(), "still protected");
+    assert!(!page.source_view().is_editable(), "still caret-free");
+    assert_eq!(editor_text(&page), grown, "nothing undone");
+
+    wait_until(Duration::from_secs(10), || saved.get().is_some());
+    assert_eq!(saved.get(), Some(true));
+    assert!(
+        page.protected_entry_undo_available(),
+        "offered again after the save"
+    );
+    assert!(page.undo_protected_entry());
+    flush_events();
+    assert_eq!(editor_text(&page), body);
+    assert!(!page.is_protected_view());
+}
+
 // ─── Install entry and the reload exit (tasks 4.3, 3.3a) ───────────────────
 
 #[test]
@@ -422,6 +478,53 @@ fn test_loading_a_protected_file_enters_protected_view_without_entry_undo() {
         page.protected_view_evidence().source_bytes,
         None,
         "an editable document keeps no source"
+    );
+}
+
+#[test]
+fn test_a_reload_leaving_protected_view_restores_editable_before_the_new_body() {
+    // `editable` invalidates every line (A37): restored at the install
+    // terminal, it re-laid out the whole new body once more.
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("leave.txt");
+    fixture::write_text(&path, &body_with_giants(&[n(L_PROTECT_EDIT) + 1]));
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    load_and_wait(&page, &path);
+    assert!(page.is_protected_view());
+
+    // Large enough to install in several slices.
+    let small = format!("NEWBODY\n{}", crate::common::short_lines('s', 2_000_000));
+    fixture::write_text(&path, &small);
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let handler = {
+        let seen = seen.clone();
+        let buffer = page.buffer();
+        page.source_view().connect_editable_notify(move |view| {
+            let start = buffer.start_iter();
+            let mut end = start;
+            end.forward_chars(7);
+            seen.borrow_mut().push((
+                view.is_editable(),
+                buffer.text(&start, &end, true).to_string(),
+            ));
+        })
+    };
+    load_and_wait(&page, &path);
+    page.source_view().disconnect(handler);
+    assert!(!page.is_protected_view());
+    assert!(page.source_view().is_editable());
+    assert_eq!(
+        seen.borrow().len(),
+        1,
+        "editable changed once: {:?}",
+        seen.borrow()
+    );
+    assert!(
+        seen.borrow().iter().all(|(_, head)| head != "NEWBODY"),
+        "editable changed after the new body was installed: {:?}",
+        seen.borrow()
     );
 }
 

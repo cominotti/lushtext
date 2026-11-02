@@ -474,8 +474,16 @@ pub(super) fn connect_bookmark_activated<F: Fn(BookmarkRecord) + 'static>(
 }
 
 /// Reconcile persisted bookmark lines after the user edits the buffer.
+///
+/// Skipped while a workflow owns the buffer (the edit lock, or a load or
+/// replacement suspending projections): GTK still brackets a refused key
+/// press in a user action, and the marks then sit where the half-cleared or
+/// half-installed text left them, so reconciling would persist those lines.
 #[must_use]
 pub(super) fn reconcile_bookmarks_after_edit(editor: &LushtextEditorPage) -> bool {
+    if editor.edits_locked() || editor.load_projection_suspended() {
+        return false;
+    }
     let mut changed = false;
     for entry in editor.imp().bookmarks.entries.borrow_mut().iter_mut() {
         if let Some(line) = current_mark_line(editor, &entry.mark) {

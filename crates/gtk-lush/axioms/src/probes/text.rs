@@ -28,10 +28,10 @@ pub enum ParagraphKind {
 
 /// A small deterministic generator (xorshift64*), so the same seed always
 /// builds the same paragraph on every host.
-struct Generator(u64);
+pub(crate) struct Generator(u64);
 
 impl Generator {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
 
@@ -43,7 +43,7 @@ impl Generator {
     }
 
     /// A value in `0..bound` (`bound` > 0).
-    fn below(&mut self, bound: u64) -> u64 {
+    pub(crate) fn below(&mut self, bound: u64) -> u64 {
         self.next() % bound
     }
 
@@ -82,7 +82,7 @@ pub fn paragraph(kind: ParagraphKind, chars: usize, seed: u64) -> String {
     text
 }
 
-fn ascii_word(generator: &mut Generator) -> String {
+pub(crate) fn ascii_word(generator: &mut Generator) -> String {
     let length = 2 + generator.below(8);
     let mut word: String = (0..length)
         .map(|_| char::from(generator.pick(ASCII_LETTERS)))

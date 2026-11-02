@@ -104,7 +104,10 @@ pub(crate) fn load_css() {
     ] {
         let p = font_provider.clone();
         let s = settings.clone();
-        settings.connect_changed(Some(key), move |_, _| apply_font_css(&p, &s));
+        settings.connect_changed(Some(key), move |_, _| {
+            // Dense documents take the font change paced (D9).
+            crate::ui::editor_page::restyle::restyle_everywhere(|| apply_font_css(&p, &s));
+        });
     }
     if let Some(iface) = desktop_interface_settings() {
         let p = font_provider;
@@ -115,7 +118,8 @@ pub(crate) fn load_css() {
             // font provider is display-wide, so this signal is global too.
             let _keepalive = &iface_keepalive;
             if s.boolean(config::keys::USE_SYSTEM_FONT) {
-                apply_font_css(&p, &s);
+                // The desktop font is a font change too (D9).
+                crate::ui::editor_page::restyle::restyle_everywhere(|| apply_font_css(&p, &s));
             }
         });
     }

@@ -8,6 +8,7 @@
 //! exactly-once terminal cleanup. Every decision it makes about *what* to do
 //! next is delegated to [`super::policy`]; what remains here is *how*.
 
+use crate::ui::editor_page::edit_lock::EditLock;
 use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
 use crate::ui::editor_page::protected_view::policy::WholeContentInstall;
 use std::cell::RefCell;
@@ -20,7 +21,8 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
 use crate::model::buffer_replacement::{
-    BufferReplacementMode, BufferReplacementPlan, next_clear_char_count, next_replacement_boundary,
+    BufferReplacementMode, BufferReplacementPlan, SliceBudget, next_clear_char_count,
+    next_slice_boundary,
 };
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::ui::editor_page::LushtextEditorPage;
@@ -329,9 +331,8 @@ impl BufferReplacementRequest {
 }
 
 /// The editor projections one replacement suspends, captured for exact restore.
-#[derive(Clone, Copy)]
 struct ReplacementGuard {
-    editable: bool,
+    lock: EditLock,
     cursor_visible: bool,
     highlight_syntax: bool,
     minimap_tracking_suspended: bool,
@@ -357,6 +358,8 @@ pub(crate) struct BufferReplacementSession {
     terminal: bool,
     pub(super) metrics: BufferReplacementMetrics,
     profile: Option<DocumentProfile>,
+    /// The two slice budgets of this body.
+    budget: SliceBudget,
     /// The body's Protected View fold plan, shared with `profile`, which the
     /// install turns apply at insertion (`ui::protected_fold`).
     fold_plan: Option<std::sync::Arc<crate::model::protected_fold::FoldPlan>>,
@@ -476,7 +479,19 @@ fn protected_install_kind(workflow: BufferReplacementWorkflow) -> Option<WholeCo
 // --- stage 2: begin ---------------------------------------------------------
 
 fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
-    let plan = BufferReplacementPlan::for_sizes(editor.buffer().char_count(), request.body.len());
+    // A dense body is sliced at any size, each slice bounded by visible
+    // characters too (`bound-post-open-settle`, D6.1).
+    let budget = request
+        .profile
+        .as_ref()
+        .map_or(SliceBudget::BYTES_ONLY, |profile| {
+            SliceBudget::for_profile(profile.summary())
+        });
+    let plan = BufferReplacementPlan::for_text(
+        editor.buffer().char_count(),
+        request.body.len(),
+        budget == SliceBudget::PACED,
+    );
     let guard = begin_guard(editor);
     if let Some(profile) = &request.profile {
         editor.prepare_for_incoming_profile(profile);
@@ -507,6 +522,7 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
             .and_then(|profile| profile.fold_plan.clone()),
         next_paragraph: 0,
         profile: request.profile,
+        budget,
     }));
     editor
         .imp()
@@ -525,7 +541,10 @@ fn begin_guard(editor: &LushtextEditorPage) -> ReplacementGuard {
     let view = editor.source_view();
     let buffer = editor.buffer();
     let guard = ReplacementGuard {
-        editable: view.is_editable(),
+        // The buffer-level lock, not `set_editable(false)`: restoring
+        // `editable` would invalidate every line of the replaced document
+        // (edit_lock.rs).
+        lock: editor.lock_edits(),
         cursor_visible: view.is_cursor_visible(),
         highlight_syntax: buffer.is_highlight_syntax(),
         minimap_tracking_suspended: imp.minimap.tracking_suspended.replace(true),
@@ -538,7 +557,12 @@ fn begin_guard(editor: &LushtextEditorPage) -> ReplacementGuard {
     if editor.search_bar().search_context().is_some() {
         editor.search_bar().detach();
     }
-    view.set_editable(false);
+    // The old text's modified-line marks would collapse onto the first line
+    // as it is cleared, and GtkSourceView sorts every mark of a line in each
+    // frame's gutter and background paint: up to 2,000 marks made each frame
+    // of a dense replacement cost hundreds of milliseconds. The new text gets
+    // its own marks from its workflow's terminal.
+    editor.clear_modified_line_marks();
     view.set_cursor_visible(false);
     buffer.set_highlight_syntax(false);
     editor.refresh_accessibility_metadata();
@@ -552,19 +576,23 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
         .set(guard.projection_suspended);
     editor.set_local_history_capture_suppressed(guard.history_capture_suppressed);
     editor.set_minimap_tracking_suspended(guard.minimap_tracking_suspended);
-    editor.source_view().set_editable(guard.editable);
+    editor.unlock_edits(guard.lock);
     editor
         .source_view()
         .set_cursor_visible(guard.cursor_visible);
     editor.reassert_protected_view_properties();
     let syntax_enabled = editor.document_scale().syntax_enabled;
-    editor
-        .buffer()
-        .set_highlight_syntax(guard.highlight_syntax && syntax_enabled);
+    {
+        let _span =
+            crate::ui::responsiveness_probe::PostOpenSpan::begin("post_open_highlight_attach");
+        editor
+            .buffer()
+            .set_highlight_syntax(guard.highlight_syntax && syntax_enabled);
+    }
     if editor.buffer().language().is_none() {
         // A cancelled install of a gated body cleared the language up front;
         // if the session still allows syntax, the path's language comes back.
-        editor.reapply_language();
+        editor.request_language_attach();
     }
     if editor.is_search_visible() && editor.search_bar().search_context().is_none() {
         editor.attach_search_context();
@@ -659,7 +687,7 @@ fn delete_one_slice(buffer: &sourceview5::Buffer, count: i32) -> (bool, u64) {
         let _ = end.forward_line();
     }
     let deleted = u64::try_from(end.offset()).unwrap_or(0);
-    buffer.delete(&mut start, &mut end);
+    crate::ui::editor_page::edit_lock::with_own_edit(|| buffer.delete(&mut start, &mut end));
     (buffer.char_count() == 0, deleted)
 }
 
@@ -714,21 +742,24 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
             state.next_paragraph,
         )
     };
-    let end = next_replacement_boundary(&body, start);
+    let budget = session.borrow().budget;
+    let end = next_slice_boundary(&body, start, budget);
     let body_len = body.len();
     let mut iter = buffer.end_iter();
-    let next_paragraph = if let Some(plan) = fold_plan.as_deref() {
-        crate::ui::protected_fold::insert_folded(
-            buffer.upcast_ref(),
-            &mut iter,
-            &body[start..end],
-            paragraph,
-            plan,
-        )
-    } else {
-        buffer.insert(&mut iter, &body[start..end]);
-        paragraph
-    };
+    let next_paragraph = crate::ui::editor_page::edit_lock::with_own_edit(|| {
+        if let Some(plan) = fold_plan.as_deref() {
+            crate::ui::protected_fold::insert_folded(
+                buffer.upcast_ref(),
+                &mut iter,
+                &body[start..end],
+                paragraph,
+                plan,
+            )
+        } else {
+            buffer.insert(&mut iter, &body[start..end]);
+            paragraph
+        }
+    });
     session.borrow_mut().next_paragraph = next_paragraph;
 
     {
@@ -752,9 +783,29 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
     if insertion_is_complete(end, body_len) {
         finish_session(session, None);
+    } else if budget == SliceBudget::PACED {
+        schedule_paced_turn(session);
     } else {
         schedule_turn(session);
     }
+}
+
+/// Schedule a dense body's next insertion turn from an idle below
+/// `GTK_TEXT_VIEW_PRIORITY_VALIDATE`, so GtkTextView's validation idle lays
+/// out the previous slice first and each validation holds one slice's lines
+/// (`bound-post-open-settle`, review R14, ledger A70). A turn waits for the
+/// frame that shows the latest key first (`input_quiet::paced_idle`).
+fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let (session_for_step, session_for_store) = (Rc::clone(session), Rc::downgrade(session));
+    crate::ui::input_quiet::paced_idle(
+        crate::ui::editor_page::load::PACED_SLICE_PRIORITY,
+        move || run_turn(&session_for_step),
+        move |source_id| {
+            if let Some(session) = session_for_store.upgrade() {
+                session.borrow_mut().source_id = Some(source_id);
+            }
+        },
+    );
 }
 
 fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
@@ -783,7 +834,7 @@ fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
         state.mutation_started = true;
         state.fold_plan.clone()
     };
-    match fold_plan.as_deref() {
+    crate::ui::editor_page::edit_lock::with_own_edit(|| match fold_plan.as_deref() {
         // A protected body: every folded tail goes in hidden, in this same
         // dispatch as its head (design D1).
         Some(plan) => {
@@ -798,7 +849,7 @@ fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
             );
         }
         None => buffer.set_text(&body),
-    }
+    });
     let mut state = session.borrow_mut();
     if state.terminal || state.phase != ReplacementPhase::Clearing {
         drop(state);

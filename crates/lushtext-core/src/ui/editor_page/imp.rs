@@ -33,6 +33,7 @@ use std::sync::atomic::AtomicBool;
 use super::buffer_replacement::BufferReplacementState;
 use super::document_scale::DocumentScaleState;
 use super::frame_validation::FrameValidationState;
+use super::language_attach::LanguageAttachState;
 use super::minimap::{
     MinimapAnalysisCache, MinimapAnalysisSession, MinimapAvailability, MinimapMarker,
 };
@@ -263,6 +264,15 @@ pub struct LoadState {
     pub installation_slice_count: Cell<u64>,
     /// Whether the newest installation took the bounded slicing path.
     pub installation_chunked: Cell<bool>,
+    /// EditorConfig overrides the planning worker resolved, applied by the
+    /// install after any clear and before the first insert
+    /// (`bound-post-open-settle`, D6.2, review R17).
+    pub pending_formatting: Cell<Option<crate::model::formatting_overrides::FormattingOverrides>>,
+    /// Whether the newest install applied EditorConfig before its first
+    /// insert (evidence).
+    pub formatting_applied_before_insert: Cell<bool>,
+    /// The settle watch's marks and sentinel (`bound-post-open-settle`, D1).
+    pub settle: super::load::watch::SettleWatchState,
     /// How the newest load for this editor ended.
     pub outcome: Cell<super::load::LoadOutcome>,
     /// Whether the token the previous request carried was already cancelled
@@ -598,6 +608,12 @@ pub struct LushtextEditorPage {
     /// scale (session floor), the edit-time paragraph watch, and the
     /// reduced-features notice.
     pub document_scale: DocumentScaleState,
+    /// The deferred language attach stage (`bound-post-open-settle`, D2).
+    pub language_attach: LanguageAttachState,
+    /// The paced restyle of a dense document (`bound-post-open-settle`, D9).
+    pub restyle: super::restyle::RestyleState,
+    /// The buffer-level edit lock (`edit_lock.rs`).
+    pub edit_lock: super::edit_lock::EditLockState,
     /// The Protected View session (`long-line-protected-view`).
     pub(crate) protected_view: super::protected_view::execution::ProtectedViewRuntime,
     /// The view's drop targets while Protected View has them off (A63).
@@ -689,6 +705,9 @@ impl Default for LushtextEditorPage {
             load_state: Cell::new(EditorLoadState::Untitled),
             latest_load_failed: Cell::new(false),
             document_scale: DocumentScaleState::default(),
+            language_attach: LanguageAttachState::default(),
+            restyle: super::restyle::RestyleState::default(),
+            edit_lock: super::edit_lock::EditLockState::default(),
             protected_view: super::protected_view::execution::ProtectedViewRuntime::default(),
             protected_drop_targets:
                 super::protected_view::interaction_execution::DetachedDropTargets::default(),
@@ -760,6 +779,8 @@ impl ObjectImpl for LushtextEditorPage {
         super::save::admission::cancel_for_editor(&self.obj());
         self.obj().cancel_buffer_replacement_for_dispose();
         self.obj().dispose_load_resources();
+        self.obj().dispose_language_attach();
+        self.obj().dispose_restyle();
         if let Some(snapshot) = self.save.snapshot.take() {
             snapshot.dispose();
         }
@@ -821,6 +842,10 @@ impl ObjectImpl for LushtextEditorPage {
             .downcast::<sourceview5::Buffer>()
             .expect("GtkSourceView buffer");
         buffer.set_highlight_syntax(true);
+        // First buffer handlers, so a refused edit reaches no other one.
+        self.obj().setup_edit_lock();
+        crate::ui::responsiveness_probe::observe_editor(&self.source_view);
+        self.obj().setup_settle_watch();
 
         let settings = &self.settings;
         let invisible_mode = crate::model::encoding::InvisibleCharactersMode::from_id(
@@ -867,30 +892,31 @@ impl ObjectImpl for LushtextEditorPage {
             let id = settings.connect_changed(Some(key), move |_, _| {
                 if let Some(editor) = editor_weak.upgrade() {
                     let overrides = editor.imp().formatting_overrides.get();
-                    apply_formatting_settings(
-                        &editor.imp().source_view,
-                        &editor.imp().settings,
-                        overrides,
-                    );
+                    // A tab-width change re-lays out every line: paced on a
+                    // dense document (`bound-post-open-settle`, D9).
+                    editor.restyle_paced(|editor| {
+                        apply_formatting_settings(
+                            &editor.imp().source_view,
+                            &editor.imp().settings,
+                            overrides,
+                        );
+                    });
                 }
             });
             self.preference_bindings.signals.track(settings, id);
         }
 
-        // Keep this one-way from settings to the view. `mapping` converts the
-        // stored boolean Variant into the GtkWrapMode property value; the
-        // separate handler below only refreshes minimap geometry.
-        settings
-            .bind(keys::WORD_WRAP, &*self.source_view, "wrap-mode")
-            .get_only()
-            .mapping(|variant, _| {
-                let enabled = variant.get::<bool>()?;
-                Some(word_wrap_mode(enabled).to_value())
-            })
-            .build();
+        // One-way from settings to the view. On a dense document the wrap
+        // change is paced (`bound-post-open-settle`, D9: hide around the
+        // visible paragraphs, then reveal outward), so it is a handler, not a
+        // binding; the same handler refreshes minimap geometry.
+        self.source_view
+            .set_wrap_mode(word_wrap_mode(settings.boolean(keys::WORD_WRAP)));
         let editor_weak: glib::WeakRef<super::LushtextEditorPage> = self.obj().downgrade();
-        let id = settings.connect_changed(Some(keys::WORD_WRAP), move |_, _| {
+        let id = settings.connect_changed(Some(keys::WORD_WRAP), move |settings, _| {
             if let Some(editor) = editor_weak.upgrade() {
+                let mode = word_wrap_mode(settings.boolean(keys::WORD_WRAP));
+                editor.restyle_paced(|editor| editor.source_view().set_wrap_mode(mode));
                 editor.invalidate_minimap_analysis_request(false);
                 editor.sync_minimap_wrap_mode();
                 editor.schedule_minimap_refresh();

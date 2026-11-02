@@ -1,103 +1,139 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A74: a change of a wrapping `GtkTextView`'s text width (here, a left
-//! gutter growing) re-lays out **every** paragraph, offscreen ones included:
-//! once the view settles, the last paragraph's position equals that of a view
-//! built at the new width from the start, and differs from its position before
-//! the change. The time the view spends revalidating is recorded (cost
-//! evidence).
+//! A74: a change of `GtkSettings:gtk-enable-animations` restyles **every
+//! widget** of a libadwaita application. Libadwaita's style manager follows
+//! the setting (`enable_animations_cb`) by reloading a style provider of its
+//! own, so the next frame revalidates the CSS of every widget of every window,
+//! and its cost grows with the number of widgets; a frame after a redraw with
+//! no style change, or after a change of a setting GTK does not style from
+//! (`gtk-cursor-blink`), does not.
 //!
-//! Protected View (C2b) therefore never resizes its gutter at an entry or an
-//! exit: the fold-marker column is allocated at a fixed width when the editor
-//! is built (`protected-view-inspector-and-surfaces` review S4).
+//! The probe presents a window of [`SMALL_ROWS`] and then [`LARGE_ROWS`]
+//! labelled rows, and records the longest frame-painting dispatch after a
+//! plain redraw, after toggling `gtk-cursor-blink` (the control) and after
+//! toggling `gtk-enable-animations`, each the median of [`REPETITIONS`].
+//!
+//! `bound-post-open-settle`'s independent review (M4a) named this restyle as
+//! the cause of the whole-tree revalidation about 200 ms after a document
+//! opens in the responsiveness lane. The lane ruled it out: the measurement
+//! build recorded no `notify` of any `GtkSettings` or `AdwStyleManager`
+//! property in that window (2026-11-02). `perf` places that revalidation in
+//! the frame clock's flush phase, under `gdk_surface_ensure_motion`: the
+//! motion GDK synthesizes after the lane's focus click moved the pointer into
+//! the window, whose `:hover` change restyles the widgets under the pointer.
+//! The axiom stays pinned because it holds and a desktop that toggles
+//! animations restyles every libadwaita window.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gtk4::prelude::*;
 
 use crate::observation::Recorder;
-use crate::probes::text::{ParagraphKind, TextViewFixture, paragraph};
+use crate::probes::post_open::{FrameCounter, REFERENCE_WINDOW, median, watch_until_quiet};
 use crate::session::{Presented, settle};
 use crate::{AxiomId, Observation};
 
 use super::LAYOUT_SETTLE;
 
-/// Paragraphs in the fixture: far more than one screen holds.
-pub const PARAGRAPHS: usize = 60;
-/// Characters per paragraph: several wrapped rows each.
-pub const PARAGRAPH_CHARS: usize = 2_000;
-/// The gutter's width before the change, in pixels.
-pub const NARROW_GUTTER: i32 = 8;
-/// The gutter's width after the change, in pixels.
-pub const WIDE_GUTTER: i32 = 96;
-/// Most settles to wait for the view's idle validation to finish.
-const MAX_SETTLES: u32 = 50;
+/// Rows in the smaller window.
+pub const SMALL_ROWS: usize = 200;
+/// Rows in the larger window.
+pub const LARGE_ROWS: usize = 1_600;
+/// Repetitions per measurement (the median is recorded).
+pub const REPETITIONS: usize = 5;
+/// How long a measurement waits for the main context to go quiet.
+const QUIET: Duration = Duration::from_millis(60);
+/// The most a measurement waits.
+const BUDGET: Duration = Duration::from_secs(3);
 
-/// The fixture's text.
-#[must_use]
-pub fn text() -> String {
-    (0..PARAGRAPHS)
-        .map(|index| {
-            paragraph(
-                ParagraphKind::Ascii,
-                PARAGRAPH_CHARS,
-                74 + u64::try_from(index).unwrap_or(0),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Longest frame-painting dispatch after each kind of change, µs.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RestyleCosts {
+    /// After `queue_draw` alone.
+    pub redraw: u128,
+    /// After toggling `gtk-cursor-blink`.
+    pub cursor_blink: u128,
+    /// After toggling `gtk-enable-animations`.
+    pub enable_animations: u128,
 }
 
-/// Install (once) a left gutter on `view` and give it `width`.
-pub fn set_gutter_width(view: &gtk4::TextView, width: i32) {
-    let gutter = view.gutter(gtk4::TextWindowType::Left).unwrap_or_else(|| {
-        let gutter = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        view.set_gutter(gtk4::TextWindowType::Left, Some(&gutter));
-        gutter.upcast()
-    });
-    gutter.set_size_request(width, -1);
-}
-
-/// The last paragraph's buffer y and height.
+/// A scrolled column of `rows` rows, each a box with two labels.
 #[must_use]
-pub fn last_paragraph_extent(fixture: &TextViewFixture) -> (i32, i32) {
-    let last = fixture.buffer.end_iter();
-    fixture.view.line_yrange(&last)
-}
-
-/// Settle until the last paragraph's extent stops moving (the view's idle
-/// validation reached it), returning the extent and the time it took.
-#[must_use]
-pub fn settle_validated(fixture: &TextViewFixture) -> ((i32, i32), Duration) {
-    let started = Instant::now();
-    let mut last = last_paragraph_extent(fixture);
-    let mut stable = 0;
-    for _ in 0..MAX_SETTLES {
-        settle(LAYOUT_SETTLE);
-        let now = last_paragraph_extent(fixture);
-        stable = if now == last { stable + 1 } else { 0 };
-        last = now;
-        if stable >= 2 {
-            break;
-        }
+pub fn rows(count: usize) -> gtk4::ScrolledWindow {
+    let column = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+    for row in 0..count {
+        let line = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        line.add_css_class("toolbar");
+        line.append(&gtk4::Label::new(Some(&format!("Row {row}"))));
+        let detail = gtk4::Label::new(Some("detail"));
+        detail.add_css_class("dim-label");
+        line.append(&detail);
+        column.append(&line);
     }
-    (last, started.elapsed())
+    gtk4::ScrolledWindow::builder()
+        .child(&column)
+        .hexpand(true)
+        .vexpand(true)
+        .build()
 }
 
-fn fixture_at(
+fn longest_frame(frames: &FrameCounter, change: impl FnOnce()) -> u128 {
+    change();
+    watch_until_quiet(Some(frames), QUIET, BUDGET, || 0.0)
+        .iter()
+        .filter(|watched| watched.dispatch.frames > 0)
+        .map(|watched| watched.dispatch.micros)
+        .max()
+        .unwrap_or_default()
+}
+
+/// Measure the three costs on a window of `count` rows.
+pub fn measure(
     recorder: &mut Recorder,
-    gutter: i32,
-    text: &str,
-) -> Result<(TextViewFixture, Presented), crate::observation::Stop> {
-    let fixture = TextViewFixture::new(gtk4::WrapMode::WordChar);
-    set_gutter_width(&fixture.view, gutter);
-    let shown = Presented::checked(
+    count: usize,
+) -> Result<RestyleCosts, crate::observation::Stop> {
+    let content = rows(count);
+    let shown = Presented::checked_sized(
         recorder,
-        &fixture.scrolled,
-        "control: the text view was presented",
+        &content,
+        REFERENCE_WINDOW,
+        "control: the rows were presented",
     )?;
-    fixture.buffer.set_text(text);
-    Ok((fixture, shown))
+    settle(LAYOUT_SETTLE);
+    let frames = recorder.require(
+        FrameCounter::watch(&content),
+        "control: the window has a frame clock",
+    )?;
+    let settings = recorder.require(
+        gtk4::Settings::default(),
+        "control: the default display has settings",
+    )?;
+    let mut costs = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..REPETITIONS {
+        costs
+            .0
+            .push(longest_frame(&frames, || shown.window().queue_draw()));
+        costs.1.push(longest_frame(&frames, || {
+            settings.set_gtk_cursor_blink(!settings.is_gtk_cursor_blink());
+            shown.window().queue_draw();
+        }));
+        costs.2.push(longest_frame(&frames, || {
+            settings.set_gtk_enable_animations(!settings.is_gtk_enable_animations());
+            shown.window().queue_draw();
+        }));
+    }
+    Ok(RestyleCosts {
+        redraw: median(&costs.0),
+        cursor_blink: median(&costs.1),
+        enable_animations: median(&costs.2),
+    })
+}
+
+fn describe(costs: RestyleCosts) -> String {
+    format!(
+        "redraw {} us, gtk-cursor-blink {} us, gtk-enable-animations {} us",
+        costs.redraw, costs.cursor_blink, costs.enable_animations
+    )
 }
 
 /// Probe A74.
@@ -105,31 +141,28 @@ fn fixture_at(
 pub fn probe_a74() -> Observation {
     Recorder::run(AxiomId::new(74), |recorder| {
         crate::probes::text::record_text_toolkit(recorder);
-        let text = text();
-        let (changed, _shown) = fixture_at(recorder, NARROW_GUTTER, &text)?;
-        let (before, first_validation) = settle_validated(&changed);
-        set_gutter_width(&changed.view, WIDE_GUTTER);
-        let (after, revalidation) = settle_validated(&changed);
-        let (fresh, _fresh_shown) = fixture_at(recorder, WIDE_GUTTER, &text)?;
-        let (reference, _) = settle_validated(&fresh);
+        let small = measure(recorder, SMALL_ROWS)?;
         recorder.measure(
-            "extents",
-            format!(
-                "last paragraph (y, height): before {before:?}, after {after:?}, fresh view at \
-                 the new width {reference:?}; first validation {} ms, revalidation after the \
-                 width change {} ms",
-                first_validation.as_millis(),
-                revalidation.as_millis()
-            ),
+            "small_window",
+            format!("{SMALL_ROWS} rows: {}", describe(small)),
+        );
+        let large = measure(recorder, LARGE_ROWS)?;
+        recorder.measure(
+            "large_window",
+            format!("{LARGE_ROWS} rows: {}", describe(large)),
         );
         recorder.control(
-            before != reference,
-            "control: the two widths lay the document out differently",
+            small.redraw > 0 && large.redraw > 0,
+            "control: every redraw painted a frame",
         )?;
         recorder.axiom(
-            after == reference,
-            "after the text width changes, the last (offscreen) paragraph sits exactly where a \
-             view built at the new width puts it: every paragraph was laid out again",
+            large.enable_animations > 2 * large.redraw.max(large.cursor_blink),
+            "after gtk-enable-animations changes, the next frame costs more than twice a redraw \
+             or a gtk-cursor-blink change",
+        )?;
+        recorder.axiom(
+            large.enable_animations > 2 * small.enable_animations,
+            "that frame's cost grows with the number of widgets (every widget is restyled)",
         )
     })
 }

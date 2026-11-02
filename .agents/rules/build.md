@@ -1273,7 +1273,18 @@ while an owned one is reported as a finding; so does a measured case that
   `scripts/responsiveness-smoke-driver.py merge-runs --artifact-dir <out> --from
   <part>...` and then `scripts/responsiveness-smoke-driver.py report
   --artifact-dir <out> [--axiom-observations <make gtk-axioms log>]`;
-  repetitions of a case measured by several parts accumulate. The reference
+  repetitions of a case measured by several parts accumulate. The post-open
+  cases (`bound-post-open-settle`) run the `background` phase until the
+  driver-computed settle (the probe's `highlight_updated`/`adjustment_upper`
+  marks and `settle_sentinel` records, the same clauses as the
+  `document-settled` predicate, so a baseline build without the predicate is
+  measured identically), capped; add `type-during-settle` and, on dense cases,
+  `wrap-toggle`, `zoom-step` and `font-change`; and report a "Post-open settle"
+  table attributing every dispatch by its `post_open_*` span or mark. The C6
+  verdict is computed by `report` from side-labelled runs
+  (`merge-runs --from baseline=DIR --from branch=DIR`), with toolkit-floor
+  exceptions passed as `--toolkit-floor ATTR=AXIOM[:REPORT]`; input-to-frame is
+  printed beside the documented headless floor and never gated. The reference
   values come from the reduced sweep `scripts/responsiveness-reference-sweep.py`
   (bisection over length, bracketing repetitions and variants only at each
   boundary; design D7 of `probe-long-line-toolkit-costs`), which drives the lane

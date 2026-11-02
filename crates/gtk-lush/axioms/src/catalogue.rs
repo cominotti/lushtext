@@ -1002,8 +1002,138 @@ const CATALOGUE: &[Axiom] = &[
         probe: Some(probes::probe_a66),
     },
     Axiom {
+        id: AxiomId::new(67),
+        name: "a67_a_language_parse_is_shared_by_its_buffers_and_stays_on_the_gtk_thread",
+        statement: "a GtkSourceView language parses its definitions at its first attach and keeps \
+                    the parse on the language object while a buffer holds it (a second buffer's \
+                    attach parses nothing; an attach after the last buffer released it parses \
+                    again); a buffer built on a worker takes the default style-scheme manager's \
+                    classic scheme and an attach adds an idle to the global default main \
+                    context, so the parse cannot leave the GTK thread; a private language \
+                    manager built on a worker loads its list and guesses a language, and a \
+                    second manager's language highlights exactly as the default manager's",
+        dependent_designs: &[
+            "bound-post-open-settle (C6) D2: the language attach stays a GTK dispatch, deferred to \
+             a low-priority idle after input-quiet and recorded as a toolkit-floor exception; the \
+             language catalog is built on a worker",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a67),
+    },
+    Axiom {
+        id: AxiomId::new(68),
+        name: "a68_highlight_on_refreshes_the_whole_buffer_and_inserts_only_invalidate",
+        statement: "with a language attached, set_highlight_syntax(true) refreshes the whole \
+                    buffer inside the call, so its cost grows with the buffer; inserting into a \
+                    language-attached buffer only invalidates, and the analysis runs afterwards \
+                    from the engine's idles",
+        dependent_designs: &[
+            "bound-post-open-settle (C6) D3: the publish order keeps the engine attached through a \
+             sliced install instead of paying the document-sized toggle at publish",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a68),
+    },
+    Axiom {
+        id: AxiomId::new(69),
+        name: "a69_the_context_engine_analyses_in_fixed_low_priority_idle_slices",
+        statement: "GtkSourceView's context engine analyses in a 10 ms first update at \
+                    G_PRIORITY_HIGH_IDLE, then a 30 ms incremental worker at G_PRIORITY_LOW that \
+                    reschedules as a continuing idle (no timeout, no gap); a \
+                    G_PRIORITY_DEFAULT_IDLE idle runs before its next slice, a G_PRIORITY_LOW \
+                    idle runs between every two slices, and a G_PRIORITY_LOW + 1 idle waits for \
+                    the end",
+        dependent_designs: &[
+            "bound-post-open-settle (C6) D4 and R25: background highlighting is gated by total \
+             size because the slices cannot be shortened, and the settle sentinel cannot rely on \
+             outranking the worker",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a69),
+    },
+    Axiom {
+        id: AxiomId::new(70),
+        name: "a70_validation_after_an_insert_lays_out_only_the_inserted_lines",
+        statement: "after an insert below the viewport, GtkTextView lays out only the inserted, \
+                    invalid lines, in its incremental validation idle at \
+                    GTK_TEXT_VIEW_PRIORITY_VALIDATE, whose cost grows with their visible \
+                    characters in either wrap mode; inserts made back to back are validated \
+                    together, and when each insert waits for the after-paint of the frame after \
+                    the previous one, or for an idle below the validation idle queued by it, each \
+                    validation dispatch holds one insert's lines",
+        dependent_designs: &[
+            "bound-post-open-settle (C6) D6: a dense install is sliced at V_SLICE visible \
+             characters and paced from an idle below the validation idle, so no validation \
+             dispatch holds more than one slice",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a70),
+    },
+    Axiom {
+        id: AxiomId::new(71),
+        name: "a71_the_first_keyfile_write_adds_no_monitor_changed",
+        statement: "the first write through a keyfile settings backend whose file does not exist \
+                    yet creates the file (and its directory), emits changed on a peer instance \
+                    once inside set_*, and the file's creation adds no changed on any instance \
+                    of that backend",
+        dependent_designs: &[
+            "bound-post-open-settle (C6) D7: the dispatch after a fresh profile's first settings \
+             flush is not the backend's monitor re-delivering the write",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a71),
+    },
+    Axiom {
+        id: AxiomId::new(72),
+        name: "a72_a_tag_carried_document_style_against_hide_and_reveal",
+        statement: "a lowest-priority tag carrying family, relative scale and tabs lays out every \
+                    non-empty line exactly as the view-wide CSS font and tabs (the empty last line \
+                    keeps the view font), re-tagging a range changes only its lines in at most two \
+                    validation dispatches, a GtkSourceMap's font scales with it, printing ignores \
+                    it and columns follow the tag font, while GtkSourceView's tab stops and the \
+                    line-number renderer follow the view font; hiding the paragraphs outside the \
+                    visible window, changing the view and revealing them in ranges keeps the top \
+                    line and the insert mark, while a default search and the map see only the \
+                    revealed paragraphs",
+        dependent_designs: &[
+            "bound-post-open-settle (C6) D9: which mechanism paces a user-started restyle of a \
+             dense document",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a72),
+    },
+    Axiom {
+        id: AxiomId::new(73),
+        name: "a73_a_pixels_below_lines_tag_cannot_carry_the_overscroll",
+        statement: "a pixels-below-lines tag on the empty last paragraph is a no-op, on the \
+                    paragraph before it puts the space above the last line, and on a non-empty \
+                    last paragraph becomes part of that line's y-range (current-line highlight, \
+                    gutter) and reaches a GtkSourceMap unscaled; the print compositor ignores \
+                    it; a bottom-margin change revalidates the whole document",
+        dependent_designs: &[
+            "bound-post-open-settle (C6) D6.2: a dense document's overscroll is a margin set once \
+             before the install, and later resize-driven changes are recorded against this axiom",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a73),
+    },
+    Axiom {
         id: AxiomId::new(74),
-        name: "a74_a_text_width_change_relays_out_every_paragraph",
+        name: "a74_a_gtk_enable_animations_change_restyles_every_widget",
+        statement: "after GtkSettings:gtk-enable-animations changes, libadwaita reloads a style \
+                    provider, so the next frame restyles every widget and costs more than twice \
+                    a redraw or a gtk-cursor-blink change, growing with the number of widgets",
+        dependent_designs: &[
+            "bound-post-open-settle (C6) review M4a: considered as the cause of the restyle \
+             the keys typed during a document's settle wait for, and ruled out (no settings \
+             notify in the lane; the cause is the pointer's first entry, :hover)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a74),
+    },
+    Axiom {
+        id: AxiomId::new(75),
+        name: "a75_a_text_width_change_relays_out_every_paragraph",
         statement: "after a wrapping text view's text width changes (a left gutter growing), \
                     once the view settles, its last, offscreen paragraph sits exactly where a \
                     view built at the new width puts it, and not where it sat before: every \
@@ -1014,7 +1144,7 @@ const CATALOGUE: &[Axiom] = &[
              the text area",
         ],
         slow: false,
-        probe: Some(probes::probe_a74),
+        probe: Some(probes::probe_a75),
     },
 ];
 
@@ -1030,8 +1160,10 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a51() {
-        for number in 1..=51 {
+    fn the_catalogue_covers_every_ledger_id_up_to_a74() {
+        // A55-A58 were C6's draft ids, renumbered to A67-A73 when C5's
+        // A52-A54 landed; ids are never reused.
+        for number in (1..=54).chain(59..=74) {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }

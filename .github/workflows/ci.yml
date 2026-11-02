@@ -247,7 +247,8 @@ jobs:
             git \
             mutter \
             dbus-daemon \
-            python3
+            python3 \
+            adwaita-mono-fonts
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.1
@@ -256,6 +257,10 @@ jobs:
         with:
           shared-key: fedora-44
 
+      # adwaita-mono-fonts: the text probes (A70, A72) read columns and line
+      # widths from character counts, so "Monospace" must resolve to a
+      # fixed-pitch face as in every GNOME runtime; without it the container's
+      # only font is proportional and those probes stop at a control step.
       # Probes marked slow in the catalogue (seconds-long fixtures, such as
       # the A29 context-engine cut-off) are skipped here and reported as
       # `skipped (slow): <id>`; the nightly responsiveness workflow runs them.

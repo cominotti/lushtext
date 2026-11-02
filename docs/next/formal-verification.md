@@ -374,7 +374,7 @@ was added, for the same reason as C4b (a finite stage order, enumerated by unit
 tests); no envelope cites it.
 
 `long-line-protected-view` (C2, axioms landed 2026-10-30) added **A59–A66**,
-its provisional P1–P8 (C6 `bound-post-open-settle` holds A52–A58): a
+its provisional P1–P8 (C6 `bound-post-open-settle` holds A67–A73): a
 capture-phase press claim keeps a text view's own click and drag gestures from
 running (A59; the touchscreen half is not pinned, the private session cannot
 inject touch); a non-editable view gives its input method no focus-in and no key
@@ -1729,6 +1729,26 @@ within 25 minutes and 12 GiB):
 `core-document-scale` was measured before the `join` rewrite that removed the
 splice's unkillable mutants (same harnesses; 5.6 local minutes before and
 after). No bound was weakened for the budget: the split alone fit.
+
+**`bound-post-open-settle` (C6, 2026-10-30).** A new shard,
+`core-post-open-settle` (gate `scheduled`), holds eight allocation-free
+harnesses: the two-budget slice-end decision (`model/buffer_replacement/
+kani_proofs.rs`: exact coverage, both budgets unless a single over-budget
+paragraph, the longest admissible prefix, a `should_panic` pin that the byte
+budget alone exceeds `V_SLICE`, and the density routing) and the paced-restyle
+plan and settle predicate (`ui/editor_page/load/policy/kani_proofs.rs`: exact
+coverage, visible paragraphs first then the alternation, `V_SLICE` per range
+unless one paragraph, and every settle clause), over at most six paragraphs
+with symbolic lengths and budgets. The text scanner that produces the lengths
+stays pinned by C1's harnesses (review R15). Local `make kani`: 10.6 min /
+1.69 GiB peak, every harness SUCCESSFUL; the slowest are the restyle
+`V_SLICE` bound (254 s) and slice coverage (247 s). **The CI figures in
+`scripts/kani-shards.py` are provisional** (the local wall time) until two
+dispatched `kani.yml` runs measure the shard. `DocumentScale` gained a
+language input (`SyntaxLanguage`); `scale_is_monotone` and the two join
+harnesses are now stated over every language, and
+`scale_is_monotone_in_the_language_threshold` is new (shard
+`core-document-scale`).
 
 **Proof strength (6K.4, measured 2026-10-28/29).** Each module was mutated and
 run against both oracles of `scripts/proof-strength.py`: the Kani arm with every

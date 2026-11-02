@@ -713,6 +713,8 @@ impl ObjectImpl for LushtextWindow {
         self.parent_constructed();
 
         let obj = self.obj();
+        // The deferred language attach waits for input-quiet on any window.
+        crate::ui::input_quiet::install(&*obj);
         let settings = &self.settings;
         let stage_start = construction_spans::now_us();
 

@@ -30,13 +30,23 @@ Kinds (``--size`` unit in brackets):
 ``eviction`` [bytes per document]
     Enough short-line text documents of ``size`` bytes each that LushText's
     conservative live-editor estimate (four bytes per character,
-    ``model/editor_memory.rs``) crosses its 256 MiB budget, plus two.
+    ``model/editor_memory.rs``) crosses its 256 MiB budget, plus two. With
+    ``--count`` exactly that many (the lane's small session and draft cases).
+``markdown`` [bytes]
+    An ordinary Markdown document of exactly ``size`` bytes (``.md``):
+    headings, paragraphs with inline emphasis, code and links, lists, fenced
+    code blocks, tables and block quotes, so the side-by-side preview renders
+    every block kind it supports.
 ``keystroke`` [characters of the edited paragraph]
     One paragraph of exactly ``size`` characters between two runs of short
     lines, with a unique marker at its start, middle and end
     (``KEYSTROKE_MARKERS``), so the lane places the caret by finding a marker
     and types beside it. It measures the cost of one keystroke inside an
     editable paragraph (C2's ``L_EDIT_STALL`` and toolkit-floor exception).
+
+The Python API also writes an ``.editorconfig`` beside the documents
+(``editorconfig={"tab_width": 8, ...}``, ``root = true``); the manifest
+records it under ``editorconfig``, outside ``files``, so it is never opened.
 
 ``--flavor css|script|markup|prose`` picks the giant paragraph's character mix:
 the three markup flavours open the sub-language GtkSourceView's html context
@@ -160,7 +170,7 @@ MULTIBYTE_CLASS_WEIGHTS = (
 SHORT_HTML_TAGS = ("div", "span", "p", "li", "a", "td", "section", "em")
 
 DELIMITERS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "u2029": " "}
-KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "keystroke")
+KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "markdown", "keystroke")
 CHUNK_CHARS = 16 * 1024
 CHUNK_COUNT = 48
 TABLE_SIZE = 4096
@@ -481,6 +491,94 @@ def write_short_text(path: Path, delimiter: str, seed: int, total_bytes: int) ->
     return writer.close()
 
 
+MARKDOWN_WORDS = (
+    "editor", "buffer", "paragraph", "preview", "highlight", "layout", "frame", "dispatch", "settle",
+    "workspace", "session", "draft", "budget", "slice", "install", "language", "context", "engine",
+    "validation", "adjustment", "scroll", "caret", "keyboard", "window", "toolkit", "render", "table",
+)
+MARKDOWN_BLOCK_KINDS = 6
+
+
+def markdown_sentence(rng: SplitMix64, words: int) -> str:
+    out = []
+    for index in range(words):
+        word = MARKDOWN_WORDS[rng.below(len(MARKDOWN_WORDS))]
+        style = rng.below(40)
+        if style == 0:
+            word = f"**{word}**"
+        elif style == 1:
+            word = f"*{word}*"
+        elif style == 2:
+            word = f"`{word}_{rng.below(100)}`"
+        elif style == 3:
+            word = f"[{word}](https://example.invalid/{rng.below(1000)})"
+        out.append(word.capitalize() if index == 0 else word)
+    return " ".join(out) + "."
+
+
+def write_markdown_block(writer: FixtureWriter, rng: SplitMix64, section: int) -> None:
+    def line(text: str = "") -> None:
+        writer.text(text)
+        writer.end_paragraph()
+
+    line(f"## Section {section}: {MARKDOWN_WORDS[section % len(MARKDOWN_WORDS)]}")
+    line()
+    line(" ".join(markdown_sentence(rng, 8 + rng.below(16)) for _ in range(3 + rng.below(3))))
+    line()
+    kind = section % MARKDOWN_BLOCK_KINDS
+    if kind == 0:
+        for item in range(3 + rng.below(4)):
+            line(f"- {markdown_sentence(rng, 4 + rng.below(8))}")
+            if item % 2:
+                line(f"  - {markdown_sentence(rng, 3 + rng.below(5))}")
+    elif kind == 1:
+        for item in range(3 + rng.below(4)):
+            line(f"{item + 1}. {markdown_sentence(rng, 4 + rng.below(8))}")
+    elif kind == 2:
+        line("```rust")
+        for statement in range(4 + rng.below(6)):
+            line(f"    let value_{statement} = compute_{rng.below(50)}(&buffer, {rng.below(1000)});")
+        line("```")
+    elif kind == 3:
+        line("| Name | Size | Note |")
+        line("| --- | ---: | --- |")
+        for _ in range(3 + rng.below(5)):
+            line(f"| {MARKDOWN_WORDS[rng.below(len(MARKDOWN_WORDS))]} | {rng.below(100_000)} | {markdown_sentence(rng, 3 + rng.below(4))} |")
+    elif kind == 4:
+        for _ in range(2 + rng.below(2)):
+            line(f"> {markdown_sentence(rng, 6 + rng.below(10))}")
+    else:
+        line(f"- [ ] {markdown_sentence(rng, 4 + rng.below(6))}")
+        line(f"- [x] {markdown_sentence(rng, 4 + rng.below(6))}")
+    line()
+
+
+def write_markdown(path: Path, delimiter: str, seed: int, total_bytes: int) -> dict:
+    rng = SplitMix64(seed)
+    writer = FixtureWriter(path, delimiter)
+    writer.text("# Responsiveness lane Markdown fixture")
+    writer.end_paragraph()
+    writer.end_paragraph()
+    section = 0
+    # The largest block is well under 2 KiB, so a block never overshoots.
+    while writer.stats.bytes + 2048 < total_bytes:
+        section += 1
+        write_markdown_block(writer, rng, section)
+    pad = total_bytes - writer.stats.bytes
+    if pad > 0:
+        words = (" ".join(MARKDOWN_WORDS) + " ") * (pad // 64 + 2)
+        writer.text(words[:pad])
+    return writer.close()
+
+
+def write_editorconfig(out_dir: Path, properties: dict) -> dict:
+    """A root `.editorconfig` for every file beside it."""
+    body = "root = true\n\n[*]\n" + "".join(f"{key} = {value}\n" for key, value in properties.items())
+    path = out_dir / ".editorconfig"
+    path.write_text(body, encoding="utf-8")
+    return {"path": str(path), "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(), "properties": dict(properties)}
+
+
 def eviction_count(per_file_bytes: int) -> int:
     per_estimate = per_file_bytes * ESTIMATE_BYTES_PER_CHAR
     return EDITOR_MEMORY_UPPER_BUDGET_BYTES // per_estimate + 2
@@ -506,6 +604,7 @@ def generate(
     charset: str = "ascii",
     flavor: str = "css",
     count: int | None = None,
+    editorconfig: dict | None = None,
 ) -> dict:
     if kind not in KINDS:
         raise ValueError(f"unknown kind {kind!r}")
@@ -520,7 +619,7 @@ def generate(
     separator = DELIMITERS[delimiter]
     # short-line markup defaults to .html (syntax on); the responsiveness lane
     # also opens the same bytes as .txt to subtract the plain-text cost.
-    ext = ext or ("html" if kind == "short-html" else "txt")
+    ext = ext or {"short-html": "html", "markdown": "md"}.get(kind, "txt")
     stem = f"{kind}-{size}-{charset}-{flavor}-{delimiter}-s{seed}"
     files: list[dict] = []
     if kind == "paragraph":
@@ -543,6 +642,9 @@ def generate(
     elif kind == "eviction":
         for index in range(count or eviction_count(size)):
             files.append(write_short_text(out_dir / f"{stem}-doc{index:02}.txt", separator, seed + index, size))
+    elif kind == "markdown":
+        files.append(write_markdown(out_dir / f"{stem}.{ext}", separator, seed, size))
+    manifest_editorconfig = write_editorconfig(out_dir, editorconfig) if editorconfig else None
     return {
         "generator_version": GENERATOR_VERSION,
         "kind": kind,
@@ -552,6 +654,7 @@ def generate(
         "charset": charset,
         "flavor": flavor,
         "find_marker": FIND_MARKER if kind in ("paragraph", "minified-html", "session") else None,
+        "editorconfig": manifest_editorconfig,
         "keystroke_markers": dict(KEYSTROKE_MARKERS) if kind == "keystroke" else None,
         "files": files,
     }
@@ -663,6 +766,23 @@ def self_test() -> int:
         eviction = generate("eviction", 64 * 1024, 2, scope, scope / "e", count=2)
         expect(len(eviction["files"]) == 2 and eviction["files"][0]["longest_paragraph"] < 200, "eviction: short lines")
 
+        markdown = generate("markdown", 200_000, 4, scope, scope / "md")
+        md = markdown["files"][0]
+        md_text = Path(md["path"]).read_text(encoding="utf-8")
+        expect(md["bytes"] == 200_000 and md["path"].endswith(".md"), f"markdown: exact size, .md ({md['bytes']})")
+        expect(md_text.startswith("# ") and "```rust" in md_text and "| --- |" in md_text and "\n> " in md_text and "\n1. " in md_text and "- [x] " in md_text, "markdown: every block kind")
+        expect(md["longest_paragraph"] < 2048, f"markdown: ordinary line lengths ({md['longest_paragraph']})")
+        expect(generate("markdown", 200_000, 4, scope, scope / "md2")["files"][0]["sha256"] == md["sha256"], "markdown: deterministic")
+        expect(markdown["editorconfig"] is None, "no .editorconfig unless asked")
+        configured = generate("dense", 710, 5, scope, scope / "ec", count=4, editorconfig={"indent_style": "space", "tab_width": 8})
+        ec = configured["editorconfig"]
+        ec_text = Path(ec["path"]).read_text(encoding="utf-8") if ec else ""
+        expect(ec is not None and Path(ec["path"]).parent == Path(configured["files"][0]["path"]).parent, "editorconfig: beside the fixture")
+        expect(ec_text.startswith("root = true") and "tab_width = 8" in ec_text and "[*]" in ec_text, f"editorconfig: root and properties ({ec_text!r})")
+        expect(all(not f["path"].endswith(".editorconfig") for f in configured["files"]), "editorconfig: never a document to open")
+        small = generate("eviction", 16_000, 2, scope, scope / "small", count=3)
+        expect(len(small["files"]) == 3 and all(f["bytes"] <= 16_000 for f in small["files"]), "eviction --count: exactly that many small documents")
+
         try:
             generate("paragraph", 100, 1, scope, scope.parent / "outside-scope")
         except ValueError:
@@ -693,7 +813,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--scope", type=Path, help="the run's temporary scope (default $TMPDIR)")
     parser.add_argument("--out", type=Path, help="output directory inside the scope")
-    parser.add_argument("--ext", choices=("txt", "html"), help="default: html for short-html, txt otherwise")
+    parser.add_argument("--ext", choices=("txt", "html", "md"), help="default: html for short-html, md for markdown, txt otherwise")
     parser.add_argument("--delimiter", default="lf", choices=tuple(DELIMITERS))
     parser.add_argument("--charset", default="ascii", choices=("ascii", "multibyte"))
     parser.add_argument("--flavor", default="css", choices=tuple(FLAVORS))

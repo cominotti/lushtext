@@ -48,7 +48,12 @@ impl LushtextEditorPage {
         let saving = self.is_saving();
         let too_large = !self.document_scale().open_allowed;
         let disabled = preview_only || failed || self.is_evicted() || too_large;
-        let read_only = preview_only || loading || saving || disabled || !view.is_editable();
+        let read_only = preview_only
+            || loading
+            || saving
+            || disabled
+            || !view.is_editable()
+            || self.edits_locked();
 
         // GtkSourceView already owns GTK_ACCESSIBLE_ROLE_TEXT_BOX; setting the
         // same role again emits a GTK critical while adding no extra semantics.

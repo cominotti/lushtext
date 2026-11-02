@@ -201,7 +201,7 @@ Each surface asks `ProtectedViewFacts`, and otherwise follows C1's `DocumentScal
 - **Automation**: projects from `evidence.rs`.
 
 ### D11. Axioms beyond C0 and C1
-Added to the ledger with `gtk-lush-axioms` probes and samples, numbered after the last applied entry. **P1–P8 are A59–A66** (P1 = A59, P2 = A60, P3 = A61, P4 = A62, P5 = A63, P6 = A64, P7 = A65, P8 = A66; C6 `bound-post-open-settle` holds A52–A58); `sliced-protected-install` cites them by their provisional names:
+Added to the ledger with `gtk-lush-axioms` probes and samples, numbered after the last applied entry. **P1–P8 are A59–A66** (P1 = A59, P2 = A60, P3 = A61, P4 = A62, P5 = A63, P6 = A64, P7 = A65, P8 = A66; C6 `bound-post-open-settle` holds A67–A73); `sliced-protected-install` cites them by their provisional names:
 - P1: a capture-phase claim prevents insert-mark motion, IM reset, middle-click primary paste, the default context menu and drag start; an unclaimed touchscreen drag scrolls without moving a mark;
 - P2: non-editable means no IM focus-in and no key-controller IM;
 - P3: a `move-cursor` intercept holds under `gtk-keynav-use-caret` (extends A34);

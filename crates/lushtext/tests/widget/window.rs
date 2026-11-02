@@ -11651,6 +11651,50 @@ fn test_save_as_stale_canonical_refresh_does_not_reinsert_previous_destination()
 }
 
 #[test]
+fn test_save_as_canonical_refresh_does_not_make_the_next_save_stale() {
+    // A Save As adopts the canonical target its write resolved; the canonical
+    // refresh it starts then lands while a second Save As is writing. It used
+    // to re-adopt the same identity anyway, which advanced the path generation
+    // and made the second save complete stale: its bytes were written but the
+    // tab stayed modified at the first path (a flake under CPU load in
+    // `test_workspace_row_state_window_updates_save_as_rename_and_delete`).
+    ensure_gtk_init();
+    let _refresh_reset = CanonicalRefreshDelayReset;
+    let _write_reset = SaveWriteDelayReset;
+    set_canonical_refresh_delay_for_test(200);
+    let dir = tempfile::tempdir().expect("save-as refresh race tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+
+    let window = test_window();
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    editor.buffer().set_text("first\n");
+    editor.buffer().set_modified(true);
+    window.select_save_as_destination_for_test(&first_path);
+    wait_until(Duration::from_secs(10), || {
+        editor.file_path() == Some(first_path.clone()) && !editor.is_modified()
+    });
+
+    // The second write outlasts the first refresh's delay, so the refresh
+    // completes while the second save is in flight.
+    editor_io::set_save_write_delay_for_test(800);
+    editor.buffer().set_text("second\n");
+    editor.buffer().set_modified(true);
+    window.select_save_as_destination_for_test(&second_path);
+    wait_until(Duration::from_secs(10), || !editor.is_saving());
+
+    assert_eq!(editor.file_path(), Some(second_path.clone()));
+    assert!(
+        !editor.is_modified(),
+        "the second Save As wrote its bytes and must leave the tab clean"
+    );
+    assert_eq!(fixture::read_text(&second_path), "second\n");
+}
+
+#[test]
 fn test_save_as_canonical_refresh_after_tab_close_does_not_reopen_path_key() {
     ensure_gtk_init();
     let _reset = CanonicalRefreshDelayReset;
@@ -12690,8 +12734,11 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("history-bounded-restore.txt");
     fixture::write_text(&path, "current\n");
-    let restore_target = format!("restored 🙂 {}\n", "r".repeat(500)).repeat(22_000);
-    let working_copy = format!("working é {}\n", "w".repeat(500)).repeat(22_000);
+    // Short lines keep both bodies below `V_SLICE` per validation batch, so
+    // the restore takes the byte-sliced path this test bounds; the paced path
+    // of dense bodies is covered in `post_open_settle.rs`.
+    let restore_target = format!("restored 🙂 {}\n", "r".repeat(28)).repeat(260_000);
+    let working_copy = format!("working é {}\n", "w".repeat(28)).repeat(270_000);
     assert!(restore_target.len() > 10 * 1024 * 1024);
     assert!(working_copy.len() > 10 * 1024 * 1024);
     let data_dir = json_store::data_dir();
@@ -12799,7 +12846,7 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     });
     assert_eq!(editor_text(&editor), working_copy);
     assert!(editor.is_modified());
-    assert!(editor.source_view().is_editable());
+    assert!(editor.accepts_user_edits());
     assert!(editor.buffer_replacement_evidence().slice_count > 1);
     let undo_diagnostic = editor
         .buffer_replacement_evidence()
@@ -17040,6 +17087,18 @@ fn test_startup_migration_reconcile_re_resolves_open_editor_notes() {
     );
 }
 
+/// Wait until the active document accepts a bookmark toggle: a toggle is
+/// refused while the file is loading, and the sidecar read that follows the
+/// load decides the live bookmark set.
+fn wait_for_bookmarkable_document(window: &LushtextWindow) {
+    wait_until(Duration::from_secs(10), || {
+        let evidence = window.notes_evidence();
+        evidence.active_document_file_backed
+            && evidence.active_document_sidecar_resolved
+            && active_editor(window).load_state() == EditorLoadState::Loaded
+    });
+}
+
 #[test]
 fn test_pending_bookmark_write_is_flushed_when_a_tab_detaches() {
     // Regression for a confirmed pre-existing defect: bookmark persistence is
@@ -17057,9 +17116,7 @@ fn test_pending_bookmark_write_is_flushed_when_a_tab_detaches() {
     let window = test_window();
     present_window(&window);
     window.open_document(&path);
-    wait_until(Duration::from_secs(10), || {
-        window.notes_evidence().active_document_file_backed
-    });
+    wait_for_bookmarkable_document(&window);
 
     activate_action(&window, "toggle-bookmark");
     flush_events();
@@ -17122,9 +17179,7 @@ fn test_notes_evidence_reads_stay_side_effect_free_across_mutation() {
     // Stage: opening a saved document makes the availability decisions flip and
     // takes the palette note-source coordinator under `borrow_mut()`.
     window.open_document(&note_path);
-    wait_until(Duration::from_secs(10), || {
-        window.notes_evidence().active_document_file_backed
-    });
+    wait_for_bookmarkable_document(&window);
     let opened = window.notes_evidence();
     assert!(opened.document_note_available);
     let _ = window.notes_evidence();
@@ -20745,14 +20800,14 @@ fn test_document_sized_preloaded_draft_publishes_only_after_bounded_install() {
 
     assert!(editor.buffer_replacement_evidence().in_progress);
     assert!(!editor.is_draft_restored());
-    assert!(!editor.source_view().is_editable());
+    assert!(!editor.accepts_user_edits());
     assert_ne!(editor_text(&editor), content);
 
     wait_until(Duration::from_secs(10), || editor.is_draft_restored());
 
     assert_eq!(editor_text(&editor), content);
     assert!(editor.is_modified());
-    assert!(editor.source_view().is_editable());
+    assert!(editor.accepts_user_edits());
     assert!(!editor.buffer_replacement_evidence().in_progress);
     assert!(editor.buffer_replacement_evidence().slice_count > 1);
     let diagnostic = editor

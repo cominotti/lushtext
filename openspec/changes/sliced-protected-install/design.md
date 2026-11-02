@@ -225,7 +225,7 @@ The `data-safety` skill runs explicitly over the change before sign-off.
 ## Migration Plan
 
 1. Pass the gate (D1). If it is not met, record the result and stop. There is nothing to roll back.
-2. Land the axioms (S1–S3, final ids allocated after C0's A23–A36, C1's A42–A45, C6's A52–A58 and C2's A59–A66) with their probes, samples and, for S3, the lane's AT case. Run `make gtk-axioms` first.
+2. Land the axioms (S1–S3, final ids allocated after C0's A23–A36, C1's A42–A45, C6's A67–A73 and C2's A59–A66) with their probes, samples and, for S3, the lane's AT case. Run `make gtk-axioms` first.
 3. Land the planner, its Kani harnesses and its property tests.
 4. Wire the executor and evidence. Revise the spec and docs in the same change.
 5. Run the responsiveness sweep and record the results.
@@ -239,5 +239,5 @@ To roll back, revert the change. C2's one-turn executor is still the fallback pa
 - **Half adoption.** If only clearing, or only installing, is over budget, should the change ship that half alone (as D1 proposes) or wait until both halves need it?
 - **Gate evidence source.** Is the reference lane (private headless mutter, cairo, ≤ 16 cores) sufficient for the gate, or should the gate also require a consented isolated-XDG run on the maintainer's session, as PROPOSAL.md decision 8 suggests for C2?
 - **Disposition if not adopted.** Archive the change with a "not adopted" note, or leave it open in `openspec/changes/` as a dormant conditional that re-evaluates on a budget or toolkit change?
-- **Final ledger ids.** S1–S3 are provisional names. C0 takes A23–A36, C1's A42–A45, C6's A52–A58 and C2's A59–A66 take the next ids, and `stop-expander-bind-time-child-scans` (provisionally T1) takes the next free id whenever it lands, so the final ids are fixed in application order when this change is applied.
+- **Final ledger ids.** S1–S3 are provisional names. C0 takes A23–A36, C1's A42–A45, C6's A67–A73 and C2's A59–A66 take the next ids, and `stop-expander-bind-time-child-scans` (provisionally T1) takes the next free id whenever it lands, so the final ids are fixed in application order when this change is applied.
 - **Mid-install interaction budget.** With B_settle = 16 ms and a 120 Hz frame, an input that arrives just after a slice starts can wait two frames. Is B_settle per install dispatch acceptable for that, or should install slices be held to B_interact (8 ms) while the window has pending input?

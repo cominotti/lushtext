@@ -235,10 +235,29 @@ fn begin_load_request_now(
 
     let planning_ticket = ticket.clone();
     let cancel_for_plan = Arc::clone(&ticket.cancel_token);
+    // The planning worker also guesses the language id from the catalog's
+    // glob table and resolves EditorConfig, so neither runs on the GTK thread
+    // nor arrives after the install (`bound-post-open-settle`, D2 and D6.2).
+    let glob_table = crate::ui::language_catalog::glob_table();
+    let resolve_editorconfig =
+        crate::ui::settings_writes::shared().boolean(crate::config::keys::USE_EDITORCONFIG);
     spawn_blocking_then(
         editor.downgrade(),
-        move || editor_io::plan_text_file(&file_path, &cancel_for_plan),
-        move |editor_weak, result| {
+        move || {
+            let plan = editor_io::plan_text_file(&file_path, &cancel_for_plan);
+            let joined = PlanningJoin {
+                language_guess: glob_table.map(|table| {
+                    file_path
+                        .to_str()
+                        .and_then(|name| table.guess(name))
+                        .map(str::to_owned)
+                }),
+                editorconfig: resolve_editorconfig
+                    .then(|| crate::services::editorconfig::resolve_for_path(&file_path)),
+            };
+            (plan, joined)
+        },
+        move |editor_weak, (result, joined)| {
             // This early return cannot drop a stored planning terminal, for two
             // independent reasons, and both must stay true. First,
             // `finish_load_planning` below is outside the `if`/`else`, so even a
@@ -260,6 +279,7 @@ fn begin_load_request_now(
             };
             if planning_ticket.is_current(&editor) {
                 let load_generation = planning_ticket.load_generation;
+                joined.adopt(&editor);
                 match result {
                     Ok(plan) => submit(&editor, planning_ticket, plan, reopen_as, error_state),
                     Err(error) => {
@@ -277,6 +297,26 @@ fn begin_load_request_now(
             finish_load_planning(&editor);
         },
     );
+}
+
+/// What the planning worker resolves beside the plan.
+struct PlanningJoin {
+    /// The language id the catalog's glob table guesses for the path: `None`
+    /// when the catalog was not ready, `Some(None)` for no language.
+    language_guess: Option<Option<String>>,
+    /// The path's EditorConfig overrides, when EditorConfig is in use.
+    editorconfig: Option<crate::model::formatting_overrides::FormattingOverrides>,
+}
+
+impl PlanningJoin {
+    /// Record both on a current editor: the guess at once, the formatting for
+    /// the install to apply after any clear and before the first insert.
+    fn adopt(self, editor: &LushtextEditorPage) {
+        if let Some(guess) = self.language_guess {
+            editor.set_requested_language_guess(guess.as_deref());
+        }
+        editor.imp().load.pending_formatting.set(self.editorconfig);
+    }
 }
 
 /// Park the newest request behind work that must finish first.

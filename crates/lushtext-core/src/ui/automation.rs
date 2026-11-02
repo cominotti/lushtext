@@ -25,18 +25,20 @@ use crate::model::automation::{
     AutomationWindowSnapshot, AutomationWorkflowEventsSnapshot, AutomationWorkflowObservation,
     AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP, READINESS_BLOCKER_CLOSE_SAFETY,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX, READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
-    READINESS_BLOCKER_DRAFT_AUTOSAVE, READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
-    READINESS_BLOCKER_LINE_INSPECTOR, READINESS_BLOCKER_MINIMAP_REFRESH,
-    READINESS_BLOCKER_PREVIEW_ANIMATION, READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE,
-    READINESS_BLOCKER_SESSION_RESTORE, READINESS_BLOCKER_WINDOW_COMPOSITION,
-    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
-    READINESS_BLOCKER_WORKSPACE_PERSIST, READINESS_BLOCKER_WORKSPACE_SEARCH,
-    READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION, READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
+    READINESS_BLOCKER_DOCUMENT_SETTLE, READINESS_BLOCKER_DRAFT_AUTOSAVE,
+    READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD, READINESS_BLOCKER_LINE_INSPECTOR,
+    READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
+    READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
+    READINESS_BLOCKER_WINDOW_COMPOSITION, READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_PATH_REVEAL, READINESS_BLOCKER_WORKSPACE_PERSIST,
+    READINESS_BLOCKER_WORKSPACE_SEARCH, READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
 use crate::model::palette::SearchMode;
 use crate::services::action_catalog;
 use crate::services::local_history_service::LocalHistoryAvailability;
 use crate::services::notifications::NotificationSeverity;
+use crate::ui::editor_page::load::policy::SettleStage;
 use crate::ui::editor_page::{
     EditorLoadState, LushtextEditorPage, MinimapAdjustmentDiagnostics,
     MinimapNativeSliderDiagnostics, MinimapProjectedBounds, MinimapTextViewRect,
@@ -873,6 +875,19 @@ fn window_readiness_blocker(
             return Some(blocker);
         }
     }
+    // Only the selected editor's settle: a restored tab that is not shown
+    // attaches its language once it is first mapped (review R8), so waiting
+    // on it would never end. Cheap accessor, identical by construction to
+    // `LoadEvidence::settle_stage`.
+    if let Some(blocker) = included_blocker(
+        predicate,
+        window
+            .active_editor()
+            .is_some_and(|editor| editor.document_settle_stage() != SettleStage::Settled),
+        READINESS_BLOCKER_DOCUMENT_SETTLE,
+    ) {
+        return Some(blocker);
+    }
 
     None
 }
@@ -992,6 +1007,13 @@ fn tab_snapshot(index: u32, active: bool, page: &libadwaita::TabPage) -> Automat
             .is_some(),
         evicted: editor.as_ref().is_some_and(LushtextEditorPage::is_evicted),
         pinned: page.is_pinned(),
+        settle_stage: load_evidence
+            .as_ref()
+            .map_or("unknown", |load| load.settle_stage.as_str())
+            .to_string(),
+        settled: load_evidence
+            .as_ref()
+            .is_some_and(|load| load.settle_stage == SettleStage::Settled),
         protected_view: protected_evidence.protected,
         protected_view_reason: protected_evidence.protected.then(|| {
             if protected_evidence.entered_by_edit {

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Kani harnesses over the document scale policy:
-//! [`DocumentScale::for_profile`], [`DocumentScale::for_total_bytes`] and
-//! [`DocumentScale::join`].
+//! [`DocumentScale::for_profile`], [`DocumentScale::for_profile_in`],
+//! [`DocumentScale::for_total_bytes`] and [`DocumentScale::join`].
 //!
-//! Domain: every `u64` component of every profile, unbounded. The policy has
+//! Domain: every `u64` component of every profile, unbounded, in every
+//! [`SyntaxLanguage`] (`bound-post-open-settle` added the language input; the
+//! monotonicity and join harnesses are stated over it). The policy has
 //! no loops, so no unwind bound is needed. The tier harness compares with the
 //! frozen transcription of the retired byte-only classification
 //! (`retired_byte_tiers`), not with production code.
@@ -13,8 +15,14 @@
 
 use super::{
     DocumentScale, LocalHistoryAvailability, ProfileSummary, ReductionReason, ScaleFeature,
-    retired_byte_tiers,
+    SyntaxLanguage, retired_byte_tiers,
 };
+
+fn any_language() -> SyntaxLanguage {
+    let index: usize = kani::any();
+    kani::assume(index < SyntaxLanguage::ALL.len());
+    SyntaxLanguage::ALL[index]
+}
 
 fn any_profile() -> ProfileSummary {
     ProfileSummary {
@@ -65,9 +73,10 @@ fn scale_is_monotone() {
     kani::assume(small.total_bytes <= large.total_bytes);
     kani::assume(small.longest_paragraph_chars <= large.longest_paragraph_chars);
     kani::assume(small.worst_batch_chars <= large.worst_batch_chars);
+    let language = any_language();
     let (s, l) = (
-        DocumentScale::for_profile(small),
-        DocumentScale::for_profile(large),
+        DocumentScale::for_profile_in(small, language),
+        DocumentScale::for_profile_in(large, language),
     );
     assert!(never_reenables(s, l));
     assert!(!l.open_allowed || s.open_allowed);
@@ -89,6 +98,39 @@ fn scale_is_monotone() {
     kani::cover!(
         l.local_history == LocalHistoryAvailability::Unavailable,
         "history unavailable"
+    );
+}
+
+/// A language with a lower total-size threshold never enables a feature a
+/// language with a higher one disables, and the language changes nothing but
+/// the total-size syntax and bracket-matching decisions.
+#[kani::proof]
+fn scale_is_monotone_in_the_language_threshold() {
+    let profile = any_profile();
+    let (low, high) = (any_language(), any_language());
+    kani::assume(low.syntax_size_threshold() <= high.syntax_size_threshold());
+    let (strict, lax) = (
+        DocumentScale::for_profile_in(profile, low),
+        DocumentScale::for_profile_in(profile, high),
+    );
+    assert!(never_reenables(lax, strict));
+    assert!(byte_tiers(strict) == byte_tiers(lax));
+    assert!(strict.minimap_allowed == lax.minimap_allowed);
+    assert!(strict.invisibles_allowed == lax.invisibles_allowed);
+    assert!(strict.search_highlight_allowed == lax.search_highlight_allowed);
+    assert!(strict.protected_view == lax.protected_view);
+    assert!(
+        strict.syntax_enabled
+            == (lax.syntax_enabled && profile.total_bytes <= low.syntax_size_threshold())
+    );
+    // Plain text keeps C1's threshold.
+    assert!(
+        DocumentScale::for_profile_in(profile, SyntaxLanguage::PlainText)
+            == DocumentScale::for_profile(profile)
+    );
+    kani::cover!(
+        strict.syntax_enabled != lax.syntax_enabled,
+        "the language decides syntax"
     );
 }
 
@@ -116,9 +158,9 @@ fn scale_protected_view_is_upward_closed() {
 
 #[kani::proof]
 fn scale_join_is_a_meet_on_presentation_features() {
-    let a = DocumentScale::for_profile(any_profile());
-    let b = DocumentScale::for_profile(any_profile());
-    let c = DocumentScale::for_profile(any_profile());
+    let a = DocumentScale::for_profile_in(any_profile(), any_language());
+    let b = DocumentScale::for_profile_in(any_profile(), any_language());
+    let c = DocumentScale::for_profile_in(any_profile(), any_language());
     // Commutative, associative and idempotent on the presentation features.
     assert!(presentation(a.join(b)) == presentation(b.join(a)));
     assert!(a.join(b).reduced.any_presentation() == b.join(a).reduced.any_presentation());
@@ -140,8 +182,10 @@ fn scale_join_is_a_meet_on_presentation_features() {
 fn scale_of_a_profile_join_is_the_join_of_scales() {
     let p = any_profile();
     let q = any_profile();
-    let joined = DocumentScale::for_profile(p).join(DocumentScale::for_profile(q));
-    let of_max = DocumentScale::for_profile(p.max(q));
+    let language = any_language();
+    let joined =
+        DocumentScale::for_profile_in(p, language).join(DocumentScale::for_profile_in(q, language));
+    let of_max = DocumentScale::for_profile_in(p.max(q), language);
     assert!(presentation(of_max) == presentation(joined));
     for feature in ScaleFeature::ALL {
         if feature.is_presentation() {

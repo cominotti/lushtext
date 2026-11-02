@@ -273,6 +273,72 @@ pub mod a45 {
     pub use crate::probes::a45::{FRAMES_WAITED, TickPair};
 }
 
+/// The fixtures the post-open settle probes (A67–A73) share, for their
+/// samples.
+pub mod post_open {
+    pub use crate::probes::post_open::{
+        DENSE_LINE_CHARS, DENSE_LINES, DenseView, FrameCounter, HALF_SETTLE_US, REFERENCE_WINDOW,
+        SHORT_LINE_MAX, TimedDispatch, dense_text, short_document, short_html, short_json,
+        short_markdown, short_rust, timed_drain,
+    };
+}
+
+/// The values and helpers the A67 probe drives, for its sample.
+pub mod a67 {
+    pub use crate::probes::a67::{
+        LANGUAGES, SNIPPET, attach_costs, highlighted_buffer, snippet_tags, tagged_characters,
+        worker_buffer_scheme, worker_catalog,
+    };
+}
+
+/// The values and helpers the A68 probe drives, for its sample.
+pub mod a68 {
+    pub use crate::probes::a68::{
+        HighlightUpdates, INSERT_SLICE, INSERTED_TOTAL, TOGGLE_SIZES, html_buffer, insert_run,
+        toggle_run,
+    };
+}
+
+/// The values and helpers the A69 probe drives, for its sample.
+pub mod a69 {
+    pub use crate::probes::a69::{
+        B_INTERACT_US, B_SETTLE_US, ClassifiedDispatch, DERIVATION_BRACKET,
+        DERIVATION_PRECISION_PERCENT, DERIVATION_REPETITIONS, DOCUMENT_BYTES, DispatchKind,
+        HighlightFixture, KeyCost, all_fit, bisect_bytes, bisect_typing_bytes, engine_dispatches,
+        over_budget, priority_trace, worst,
+    };
+}
+
+/// The fixture and values the A70 probe drives, and the `V_SLICE`
+/// bisection its sample runs.
+pub mod a70 {
+    pub use crate::probes::a70::{
+        CURVE_LINES, DERIVATION_CAP_LINES, DERIVATION_REPETITIONS, EDITOR_CLASS, EDITOR_FONT_PT,
+        EDITOR_LINE_HEIGHT, PACED_INSERTS, Pacing, ValidationFixture, ViewStyle, bisect_lines,
+        pacing_run,
+    };
+}
+
+/// The helpers the A71 probe drives, for its sample.
+pub mod a71 {
+    pub use crate::probes::a71::{FIRST_VALUE, first_write};
+}
+
+/// The fixture and values the A72 probe drives, for its sample.
+pub mod a72 {
+    pub use crate::probes::a72::{DisplayCss, NEW_ZOOM, ZOOM, document, document_tag, style_css};
+}
+
+/// The fixture and values the A73 probe drives, for its sample.
+pub mod a73 {
+    pub use crate::probes::a73::{ENDS_IN_NEWLINE, ENDS_IN_TEXT, OVERSCROLL_PX};
+}
+
+/// The fixture the A74 probe drives, for its sample.
+pub mod a74 {
+    pub use crate::probes::a74::{LARGE_ROWS, rows};
+}
+
 /// The Protected View press-claim fixture and observers the A59 probe drives,
 /// for its sample.
 pub mod a59 {
@@ -318,9 +384,9 @@ pub mod a66 {
     };
 }
 
-/// The width-change fixture the A74 probe uses, for its sample.
-pub mod a74 {
-    pub use crate::probes::a74::{
+/// The width-change fixture the A75 probe uses, for its sample.
+pub mod a75 {
+    pub use crate::probes::a75::{
         NARROW_GUTTER, WIDE_GUTTER, last_paragraph_extent, set_gutter_width, settle_validated, text,
     };
 }

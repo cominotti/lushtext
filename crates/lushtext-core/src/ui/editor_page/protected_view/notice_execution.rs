@@ -85,6 +85,24 @@ impl LushtextEditorPage {
         });
     }
 
+    /// The edit lock was taken or released: the entry undo's availability
+    /// follows it (a save holds the lock and refuses the undo), so an alert
+    /// offering Undo Edit while locked, or Inspect Line where Undo Edit is
+    /// available again, is republished with the action that works now.
+    pub(crate) fn refresh_protected_alert_for_edit_lock(&self) {
+        if !self.is_protected_view() {
+            return;
+        }
+        let shown = match self.pending_warning_action() {
+            Some(PendingWarningAction::UndoProtectedEntry) => true,
+            Some(PendingWarningAction::InspectLine) => false,
+            _ => return,
+        };
+        if shown != self.protected_entry_undo_available() {
+            self.request_protected_alert();
+        }
+    }
+
     /// Show the Protected View alert for the current session (replacing the
     /// restored-draft alert of a recovered draft with the merged one).
     pub(crate) fn publish_protected_alert(&self) {

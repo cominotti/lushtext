@@ -69,6 +69,47 @@ impl KeyfileSettingsFixture {
         })
     }
 
+    /// The fixture over a settings file that **does not exist yet**, the
+    /// state of a fresh profile: under a fresh directory named for `tag`,
+    /// which is created only when `create_dir` (otherwise neither the
+    /// directory nor the file exists). `None` when the GTK 4 schema is not
+    /// installed.
+    #[must_use]
+    pub fn fresh(tag: &str, create_dir: bool) -> Option<Self> {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let schema = gio::SettingsSchemaSource::default()?.lookup(SCHEMA_ID, true)?;
+        let dir = std::env::temp_dir().join(format!(
+            "gtk-lush-axioms-gsettings-fresh-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        if create_dir {
+            std::fs::create_dir_all(&dir).ok()?;
+        }
+        let path = dir.join("keyfile");
+        let backend = gio::keyfile_settings_backend_new(path.to_str()?, "/", None);
+        Some(Self {
+            dir,
+            path,
+            backend,
+            schema,
+        })
+    }
+
+    /// A settings instance of another installed schema, `schema_id`, on the
+    /// fixture's one backend; `None` when that schema is not installed.
+    #[must_use]
+    pub fn settings_for(&self, schema_id: &str) -> Option<gio::Settings> {
+        let schema = gio::SettingsSchemaSource::default()?.lookup(schema_id, true)?;
+        Some(gio::Settings::new_full(&schema, Some(&self.backend), None))
+    }
+
+    /// Whether the settings file exists.
+    #[must_use]
+    pub fn file_exists(&self) -> bool {
+        self.path.is_file()
+    }
+
     /// A new settings instance on the fixture's one backend.
     #[must_use]
     pub fn settings(&self) -> gio::Settings {

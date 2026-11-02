@@ -4,15 +4,192 @@
 //!
 //! GTK adapters own sources, widgets, and terminal callbacks. This module owns
 //! the calibrated direct-versus-sliced decision and UTF-8-safe per-turn bounds.
+//!
+//! ## Two slice budgets (`bound-post-open-settle`, design D6)
+//!
+//! A slice is bounded by bytes ([`REPLACEMENT_INSERT_SLICE_BYTES`]), which
+//! bounds the insert itself, and, for a **dense** document, also by visible
+//! characters ([`V_SLICE`]), which bounds the line validation the slice's new
+//! lines cause in the frame that lays them out (ledger A31, A70). A document is
+//! dense when [`batch_exceeds_slice`] holds for its profile: some validation
+//! batch's worth of consecutive paragraphs holds more than `V_SLICE` visible
+//! characters. The slice-end decision itself is [`PacedSlice`], over abstract
+//! `(bytes, visible characters)` paragraph lengths, which Kani checks
+//! (`buffer_replacement/kani_proofs.rs`); the text scanner that produces those
+//! lengths is `paragraph_boundary`'s, pinned by C1's proofs.
+
+#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
+
+#[cfg(kani)]
+mod kani_proofs;
+
+use super::paragraph_boundary::{ProfileSummary, next_paragraph_break};
 
 /// Maximum old/new document size that may be replaced synchronously.
-pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 1024 * 1024;
+///
+/// The largest short-line body whose one-turn install fits half of
+/// `B_SETTLE_US` (`bound-post-open-settle` task 3.1). Measured on the
+/// responsiveness lane (probe build, 2026-10-30, load 13 falling to 5.5): the
+/// direct install of the 1,000,000-byte short-line fixture took 11.1 ms
+/// (10.9 µs per KiB), and each 256 KiB slice of the 5,000,000-byte fixture
+/// 2.3–2.6 ms (9–10 µs per KiB). At the worst rate, 8,000 µs covers 734 KiB;
+/// 704 KiB keeps about 4 % of margin. The former value, 1 MiB, took 11.1 ms.
+///
+/// Kind: byte threshold. Rounding: down to a whole KiB, not to a power of two
+/// (512 KiB would cost a sliced install of documents that fit); a recorded
+/// exception, deferred to `power-of-two-thresholds`.
+pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 704 * 1024;
 
 /// Maximum existing buffer characters deleted in one GTK turn.
 pub const REPLACEMENT_CLEAR_SLICE_CHARS: i32 = 64 * 1024;
 
 /// Maximum replacement UTF-8 bytes considered in one GTK insertion turn.
 pub const REPLACEMENT_INSERT_SLICE_BYTES: usize = 256 * 1024;
+
+/// The most visible characters one paced slice may install, so that the
+/// validation its new lines cause fits half of `B_SETTLE_US` in either wrap
+/// mode (`bound-post-open-settle`, design D6; derived by ledger A70).
+///
+/// "Visible characters" are Unicode scalar values excluding paragraph
+/// delimiters, as `paragraph_boundary`'s profile counts them.
+///
+/// Derived 2026-10-30 by the A70 probe (`gtk-lush-axioms`, bisected over
+/// inserts of 710-character lines, two exclusive-lock runs at load 1.3–2.5,
+/// identical): 78 lines of 710 characters fit half of `B_SETTLE_US` with
+/// wrapping off, which binds; with wrapping on no validation dispatch exceeded
+/// 3.64 ms, because GtkTextView caps a batch at 2000 px (A31).
+///
+/// That bare-view figure (55,380) did not hold in the application: the lane
+/// measured ~21 ms validation batches there. The editor-like re-derivation
+/// (A70: the editor's font CSS, line numbers, current-line highlight, with and
+/// without a `GtkSourceMap`; host load 40–56, so magnitudes only) found a step
+/// between 11,360 characters (every repetition at most 4.0 ms) and 22,720
+/// (saturated at 8–9 ms). `V_SLICE` is therefore the last size below that
+/// step, 16 lines of 710 characters. The responsiveness lane confirmed it on
+/// the probe build (2026-10-31, `dense/{120,500,710}` in both wrap modes and
+/// all three input variants, load 1.3): every validation dispatch until settle
+/// at most 11.6 ms, every post-open dispatch at most 15.0 ms.
+///
+/// Kind: visible-character count. Rounding: a whole number of 710-character
+/// lines (16), the last measured size below the step, not a power of two; a
+/// recorded exception, deferred to `power-of-two-thresholds`.
+pub const V_SLICE: u64 = 11_360;
+
+/// Whether a document's densest validation batch holds more than [`V_SLICE`]
+/// visible characters (`bound-post-open-settle`, design D6 and D9).
+///
+/// Such a document is installed in paced slices even below the byte
+/// threshold, and its user-started invalidations (word wrap, zoom, font, tab
+/// width) are paced. A document of short lines stays direct however many
+/// characters it holds: validation cost is per batch (ledger A31), not per
+/// document.
+#[must_use]
+pub const fn batch_exceeds_slice(summary: ProfileSummary) -> bool {
+    summary.worst_batch_chars > V_SLICE
+}
+
+/// One paragraph as the slicer sees it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ParagraphLength {
+    /// UTF-8 bytes, its delimiter included.
+    pub bytes: u64,
+    /// Visible characters: Unicode scalar values, its delimiter excluded.
+    pub chars: u64,
+}
+
+/// The two budgets of one slice.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SliceBudget {
+    /// The most UTF-8 bytes a slice may hold.
+    pub bytes: u64,
+    /// The most visible characters a slice may hold.
+    pub chars: u64,
+}
+
+impl SliceBudget {
+    /// The byte budget alone: what every document that is not dense uses.
+    pub const BYTES_ONLY: Self = Self {
+        bytes: REPLACEMENT_INSERT_SLICE_BYTES as u64,
+        chars: u64::MAX,
+    };
+
+    /// Both budgets: what a dense document uses.
+    pub const PACED: Self = Self {
+        bytes: REPLACEMENT_INSERT_SLICE_BYTES as u64,
+        chars: V_SLICE,
+    };
+
+    /// The budget for a document with `summary`.
+    #[must_use]
+    pub const fn for_profile(summary: ProfileSummary) -> Self {
+        if batch_exceeds_slice(summary) {
+            Self::PACED
+        } else {
+            Self::BYTES_ONLY
+        }
+    }
+}
+
+/// The slice-end decision, one paragraph at a time.
+///
+/// A slice takes whole paragraphs in order while both budgets hold. The first
+/// paragraph is always taken, so a paragraph larger than either budget is
+/// installed alone, in one turn: GTK lays a paragraph out whole, so splitting
+/// it would re-lay-out the growing line on every later slice (the existing
+/// giant-paragraph exception, owned by C2 and C3). Allocation-free, so Kani
+/// checks it over symbolic paragraph sequences.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PacedSlice {
+    budget: SliceBudget,
+    bytes: u64,
+    chars: u64,
+    paragraphs: u32,
+}
+
+impl PacedSlice {
+    /// An empty slice under `budget`.
+    #[must_use]
+    pub const fn new(budget: SliceBudget) -> Self {
+        Self {
+            budget,
+            bytes: 0,
+            chars: 0,
+            paragraphs: 0,
+        }
+    }
+
+    /// Whether `paragraph` joins this slice; when it does not, the slice ends
+    /// before it.
+    pub const fn admit(&mut self, paragraph: ParagraphLength) -> bool {
+        let bytes = self.bytes.saturating_add(paragraph.bytes);
+        let chars = self.chars.saturating_add(paragraph.chars);
+        if self.paragraphs > 0 && (bytes > self.budget.bytes || chars > self.budget.chars) {
+            return false;
+        }
+        self.bytes = bytes;
+        self.chars = chars;
+        self.paragraphs = self.paragraphs.saturating_add(1);
+        true
+    }
+
+    /// The bytes the slice holds.
+    #[must_use]
+    pub const fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// The visible characters the slice holds.
+    #[must_use]
+    pub const fn chars(&self) -> u64 {
+        self.chars
+    }
+
+    /// The paragraphs the slice holds.
+    #[must_use]
+    pub const fn paragraphs(&self) -> u32 {
+        self.paragraphs
+    }
+}
 
 /// Execution shape for one whole-buffer replacement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,13 +211,23 @@ pub struct BufferReplacementPlan {
 
 impl BufferReplacementPlan {
     /// Classify one replacement from the conservative existing character charge
-    /// and exact incoming UTF-8 byte length.
+    /// and exact incoming UTF-8 byte length, for a text that is not dense.
     #[must_use]
     pub fn for_sizes(existing_chars: i32, replacement_bytes: usize) -> Self {
+        Self::for_text(existing_chars, replacement_bytes, false)
+    }
+
+    /// Classify one replacement from the conservative existing character charge,
+    /// the exact incoming UTF-8 byte length, and whether the incoming text is
+    /// dense ([`batch_exceeds_slice`]): a dense text is sliced at any size, so
+    /// each slice's validation stays bounded.
+    #[must_use]
+    pub fn for_text(existing_chars: i32, replacement_bytes: usize, dense: bool) -> Self {
         let existing_bytes = usize::try_from(existing_chars.max(0))
             .unwrap_or(usize::MAX)
             .saturating_mul(4);
-        let mode = if existing_bytes <= SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES
+        let mode = if !dense
+            && existing_bytes <= SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES
             && replacement_bytes <= SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES
         {
             BufferReplacementMode::Direct
@@ -87,13 +274,181 @@ pub fn next_replacement_boundary(text: &str, start: usize) -> usize {
     )
 }
 
+/// Return the next paragraph-aligned boundary under `budget`: the end of the
+/// slice [`PacedSlice`] chooses from the paragraphs starting at `start`.
+///
+/// With [`SliceBudget::BYTES_ONLY`] this is [`next_replacement_boundary`],
+/// which it delegates to (the backwards search finds the same end without
+/// walking every paragraph); with a visible-character budget it walks the
+/// paragraphs forwards, at most one budget of characters plus one paragraph.
+#[must_use]
+pub fn next_slice_boundary(text: &str, start: usize, budget: SliceBudget) -> usize {
+    if budget.chars == u64::MAX && budget.bytes == SliceBudget::BYTES_ONLY.bytes {
+        return next_replacement_boundary(text, start);
+    }
+    let mut slice = PacedSlice::new(budget);
+    let mut end = start;
+    while end < text.len() {
+        let (content_end, next_start) = next_paragraph_break(text, end)
+            .map_or((text.len(), text.len()), |found| {
+                (found.content_end, found.next_start)
+            });
+        let paragraph = ParagraphLength {
+            bytes: u64::try_from(next_start - end).unwrap_or(u64::MAX),
+            chars: u64::try_from(text[end..content_end].chars().count()).unwrap_or(u64::MAX),
+        };
+        if !slice.admit(paragraph) {
+            break;
+        }
+        end = next_start;
+    }
+    end.max(start.min(text.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::paragraph_boundary::DocumentProfile;
+
+    /// `lines` lines of `width` visible characters each, `\n`-ended.
+    fn lines_of(width: usize, lines: usize) -> String {
+        format!("{}\n", "d".repeat(width)).repeat(lines)
+    }
+
+    #[test]
+    fn a_dense_document_below_the_byte_threshold_is_sliced() {
+        // 160 lines of 710 characters: 113 kB, far below the byte threshold,
+        // but one validation batch holds far more than V_SLICE characters.
+        let text = lines_of(710, 160);
+        assert!(text.len() < SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES);
+        let summary = DocumentProfile::of_text(&text).summary();
+        assert!(batch_exceeds_slice(summary), "{summary:?}");
+        assert_eq!(
+            BufferReplacementPlan::for_text(0, text.len(), batch_exceeds_slice(summary)).mode,
+            BufferReplacementMode::Sliced
+        );
+        let mut start = 0;
+        let mut slices = 0;
+        while start < text.len() {
+            let end = next_slice_boundary(&text, start, SliceBudget::for_profile(summary));
+            let chars = u64::try_from(text[start..end].chars().filter(|c| *c != '\n').count())
+                .expect("fits");
+            assert!(chars <= V_SLICE, "slice of {chars} visible characters");
+            assert!(text[..end].ends_with('\n'));
+            start = end;
+            slices += 1;
+        }
+        assert!(slices > 1, "a dense document must take several slices");
+    }
+
+    #[test]
+    fn a_short_line_document_with_many_characters_stays_direct() {
+        // More than V_SLICE characters in total, but 40-character lines keep
+        // every validation batch far below it (review R13).
+        let text = lines_of(40, 2_000);
+        let summary = DocumentProfile::of_text(&text).summary();
+        assert!(u64::try_from(text.len()).expect("fits") > V_SLICE);
+        assert!(!batch_exceeds_slice(summary), "{summary:?}");
+        assert_eq!(SliceBudget::for_profile(summary), SliceBudget::BYTES_ONLY);
+        assert_eq!(
+            BufferReplacementPlan::for_text(0, text.len(), false).mode,
+            BufferReplacementMode::Direct
+        );
+    }
+
+    #[test]
+    fn the_byte_budget_alone_is_the_existing_slicer() {
+        for text in [
+            lines_of(999, 600),
+            format!(
+                "head\n{}\ntail",
+                "b".repeat(3 * REPLACEMENT_INSERT_SLICE_BYTES)
+            ),
+            format!(
+                "{}\r\n{}",
+                "a".repeat(REPLACEMENT_INSERT_SLICE_BYTES - 1),
+                "b\r\n".repeat(8)
+            ),
+        ] {
+            let mut start = 0;
+            while start < text.len() {
+                let fast = next_replacement_boundary(&text, start);
+                // A walker under the same byte budget (any chars budget it can
+                // never reach) must cut exactly where the backwards search does.
+                let walked = next_slice_boundary(
+                    &text,
+                    start,
+                    SliceBudget {
+                        bytes: SliceBudget::BYTES_ONLY.bytes,
+                        chars: u64::MAX - 1,
+                    },
+                );
+                assert_eq!(walked, fast, "at {start}");
+                assert_eq!(
+                    next_slice_boundary(&text, start, SliceBudget::BYTES_ONLY),
+                    fast
+                );
+                start = fast;
+            }
+        }
+    }
+
+    #[test]
+    fn a_paragraph_over_the_visible_budget_goes_alone() {
+        let giant = "g".repeat(usize::try_from(V_SLICE).expect("fits") * 2);
+        let text = format!("a\n{giant}\nb\n");
+        let first = next_slice_boundary(&text, 0, SliceBudget::PACED);
+        assert_eq!(&text[..first], "a\n");
+        let second = next_slice_boundary(&text, first, SliceBudget::PACED);
+        assert_eq!(&text[first..second], format!("{giant}\n"));
+        assert_eq!(
+            next_slice_boundary(&text, second, SliceBudget::PACED),
+            text.len()
+        );
+        assert_eq!(
+            next_slice_boundary(&text, text.len(), SliceBudget::PACED),
+            text.len()
+        );
+    }
+
+    #[test]
+    fn a_paced_slice_admits_the_first_paragraph_and_stops_at_either_budget() {
+        let budget = SliceBudget {
+            bytes: 10,
+            chars: 6,
+        };
+        let mut slice = PacedSlice::new(budget);
+        assert!(slice.admit(ParagraphLength {
+            bytes: 40,
+            chars: 39
+        }));
+        assert!(!slice.admit(ParagraphLength { bytes: 1, chars: 0 }));
+        let mut slice = PacedSlice::new(budget);
+        assert!(slice.admit(ParagraphLength { bytes: 4, chars: 3 }));
+        assert!(slice.admit(ParagraphLength { bytes: 4, chars: 3 }));
+        assert!(
+            !slice.admit(ParagraphLength { bytes: 1, chars: 1 }),
+            "chars"
+        );
+        let mut slice = PacedSlice::new(budget);
+        assert!(slice.admit(ParagraphLength { bytes: 8, chars: 1 }));
+        assert!(
+            !slice.admit(ParagraphLength { bytes: 3, chars: 1 }),
+            "bytes"
+        );
+        assert_eq!(
+            (slice.bytes(), slice.chars(), slice.paragraphs()),
+            (8, 1, 1)
+        );
+    }
 
     #[test]
     fn plan_uses_both_existing_and_incoming_sizes() {
         let direct = BufferReplacementPlan::for_sizes(12, 12);
+        assert_eq!(
+            BufferReplacementPlan::for_text(12, 12, true).mode,
+            BufferReplacementMode::Sliced
+        );
         assert_eq!(direct.mode, BufferReplacementMode::Direct);
         assert!(!direct.clear_only);
 

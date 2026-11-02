@@ -36,6 +36,7 @@ use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::InlineActionNotification;
 use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use crate::ui::responsiveness_probe::PostOpenSpan;
 use crate::ui::sidebar::seams::SidebarFileRowStateSnapshot;
 use crate::ui::status_bar::MessageKind;
 
@@ -198,6 +199,7 @@ impl LushtextWindow {
         intent: OpenDocumentIntent,
         planning_terminal: Option<Box<dyn FnOnce()>>,
     ) -> Option<(libadwaita::TabPage, bool)> {
+        let _span = PostOpenSpan::begin("post_open_activation");
         let tab_view = &self.imp().tab_view;
         let key = open_path_key(path);
         if let Some(page) = self.find_open_document_page(&key, intent) {
@@ -238,11 +240,15 @@ impl LushtextWindow {
         }
 
         self.imp().open_paths.borrow_mut().insert(key);
-        let editor_page = LushtextEditorPage::new();
+        let editor_page = {
+            let _span = PostOpenSpan::begin("post_open_editor_construct");
+            LushtextEditorPage::new()
+        };
         self.wire_info_bar(&editor_page);
         self.wire_note_callbacks(&editor_page);
+        // EditorConfig is resolved by the load's planning worker and applied
+        // before the first insert (`bound-post-open-settle`, D6.2).
         editor_page.set_file_path_for_pending_load(path);
-        self.resolve_editorconfig_for_editor(&editor_page, path);
         self.assign_draft_id(&editor_page);
 
         let page = tab_view.append(&editor_page);
@@ -1258,7 +1264,15 @@ impl LushtextWindow {
                     .open_paths
                     .borrow_mut()
                     .insert(canonical.clone());
-                editor.set_file_path_with_canonical(&updated_for_apply, Some(canonical));
+                // Re-stating an identity the editor already holds must not
+                // advance it. A Save As adopts the canonical target its write
+                // resolved, so this refresh usually confirms it; advancing the
+                // path generation anyway made a save queued in between (a
+                // second Save As, or Ctrl+S) complete stale, its written bytes
+                // reported as not saved and the tab left modified.
+                if editor.canonical_file_path().as_deref() != Some(canonical.as_path()) {
+                    editor.set_file_path_with_canonical(&updated_for_apply, Some(canonical));
+                }
                 window.reconcile_open_paths_from_tabs();
                 window.refresh_sidebar_file_row_states();
                 window.refresh_open_popover_rows();

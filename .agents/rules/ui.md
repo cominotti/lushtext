@@ -516,6 +516,25 @@ When a GtkGrid layout has toggle-visible rows sharing columns (e.g., Find/Replac
 Supported via GtkSourceView built-in language specs: JSON, TOML, YAML, Markdown.
 JSONC is deferred (requires custom `.lang` file — see `docs/next/jsonc-support.md`).
 
+## Dense Documents After Open (`bound-post-open-settle`)
+
+- A default-style property of the editor view (wrap mode, tabs, margins) and
+  the `.monospace` font each invalidate **every** line. On a dense document
+  (`batch_exceeds_slice`) never change one directly after the install: route
+  it through `LushtextEditorPage::restyle_paced` (or, for a display-wide CSS
+  change, `prepare_paced_restyle_everywhere` / `start_paced_reveal_everywhere`),
+  which hides the paragraphs outside the visible ones and reveals them in
+  `V_SLICE` ranges (ledger A72). A buffer tag cannot carry such a style: the
+  gutter takes its font from CSS and the empty last line has no character.
+- The end-of-document overscroll of a dense document is set before the first
+  install slice; a later resize-driven `bottom-margin` change runs at
+  `G_PRIORITY_LOW` (a `pixels-below-lines` tag cannot carry it, A73), and a
+  view that only became shorter keeps the larger margin while it still fits
+  (`bottom_margin_after_viewport_change`): an inline alert, the search bar or
+  a bottom sheet must not re-lay out the whole document.
+- Never attach a language directly: call `request_language_attach`, which
+  defers the definition parse to the attach stage (A67).
+
 ## Large-Buffer Preview And Marker Guardrails
 
 Markdown preview, minimap long-line markers, encoding-warning previews, and
@@ -579,3 +598,4 @@ draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
 - Replace-preview rows and other large derived result sets should be generated
   from owned data on a worker, with a pending state and stale-result rejection
   keyed by generation counters.
+- **Never toggle `editable` (or any default-style property) to make a document read-only while a workflow owns it.** Hold the buffer-level edit lock (`LushtextEditorPage::lock_edits` / `unlock_edits`, a move-only token kept in the workflow's restore state) and run the workflow's own edits inside `edit_lock::with_own_edit`. A new path into the buffer that bypasses the buffer's signals (a drop, an undo that reports success) must be refused while the lock is held too: the lock takes the view's drop targets off and Protected View's entry undo checks `edits_locked()`. `GtkTextView::set_editable` invalidates every line on each change (ledger A37), so a toggle around a dense install, replacement or save re-lays out the whole document in over-budget batches.

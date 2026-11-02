@@ -34,6 +34,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(kani)]
+mod kani_proofs;
+
 use crate::model::file_load::SYNCHRONOUS_INSTALL_THRESHOLD_BYTES;
 use crate::ui::editor_page::EditorLoadState;
 
@@ -181,12 +184,20 @@ pub(crate) const fn installation_is_current(
 /// Whether decoded text must be installed in bounded main-loop slices.
 ///
 /// Either side of the swap can be large: installing a big payload in one turn
-/// blocks the main loop, and so does deleting a big existing buffer.
-pub(crate) fn requires_chunked_install(incoming_bytes: usize, existing_chars: i32) -> bool {
+/// blocks the main loop, and so does deleting a big existing buffer. A dense
+/// payload ([`batch_exceeds_slice`]) is sliced at any size.
+pub(crate) fn requires_chunked_install(
+    incoming_bytes: usize,
+    existing_chars: i32,
+    incoming_dense: bool,
+) -> bool {
     let existing_bytes = u64::try_from(existing_chars)
         .unwrap_or(u64::MAX)
         .saturating_mul(MAX_UTF8_BYTES_PER_CHAR);
-    incoming_bytes > SYNCHRONOUS_INSTALL_THRESHOLD_BYTES
+    // A dense document is paced by visible characters at any size, so each
+    // slice's validation stays bounded (`bound-post-open-settle`, D6.1).
+    incoming_dense
+        || incoming_bytes > SYNCHRONOUS_INSTALL_THRESHOLD_BYTES
         || existing_bytes > u64::try_from(SYNCHRONOUS_INSTALL_THRESHOLD_BYTES).unwrap_or(u64::MAX)
 }
 
@@ -276,9 +287,421 @@ pub(crate) const fn publishes_user_cancellation(
     was_loading && installation_active
 }
 
+// ─── Post-open settle (`bound-post-open-settle`, design D1, D2, D9) ─────
+
+/// How long highlighting and validation must stay quiet before an opened
+/// document counts as settled (design D1): longer than one 2000 px batch
+/// interval and than the gap between context-engine slices (ledger A69: the
+/// background worker reschedules through an idle, so there is no timer gap),
+/// shorter than the debounce windows. The only time-based settle clause; it
+/// says "quiet", not "complete", because neither GtkSourceView nor
+/// GtkTextView exposes a completion signal.
+///
+/// Kind: wall-clock interval, µs. Rounding: 100 ms, not a power of two;
+/// deferred to `power-of-two-thresholds`.
+pub const SETTLE_QUIET_US: i64 = 100_000;
+
+/// How long the window must have seen no key press, button press, scroll
+/// start or touch begin before a deferred language attach may run (design
+/// D2's fallback): two reference frames.
+///
+/// Kind: wall-clock interval, µs, derived (2 × `REFERENCE_FRAME_US`, 16,666);
+/// no rounding of its own.
+pub const INPUT_QUIET_US: i64 = 2 * crate::model::responsiveness_budget::REFERENCE_FRAME_US as i64;
+
+/// The ceiling on that wait, from the editor's first frame: after it the
+/// attach runs at the next low-priority dispatch whatever the input (review R6).
+///
+/// Kind: wall-clock ceiling, µs. Value: 2,048 ms, a power of two in
+/// milliseconds (rounded up from the 2 s first chosen).
+pub const ATTACH_DEADLINE_US: i64 = 2_048_000;
+
+/// The facts the settle predicate reads, all live state of one editor.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SettleFacts {
+    /// The editor's load published (or failed) and the open completed.
+    pub open_complete: bool,
+    /// The language attach stage ran (or no attach was requested).
+    pub language_attached: bool,
+    /// A load slice, publish, attach or post-open debounce is still pending.
+    pub post_open_work_pending: bool,
+    /// When the last highlight-updated or adjustment-`upper` change was seen,
+    /// monotonic µs, or `None`.
+    pub last_mark_us: Option<i64>,
+    /// When the settle sentinel last dispatched, monotonic µs, or `None`.
+    pub last_sentinel_us: Option<i64>,
+}
+
+/// Which stage an opened document is in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettleStage {
+    /// The load is still installing or publishing.
+    Opening,
+    /// Installed; the language attach stage has not run yet.
+    AttachPending,
+    /// Highlighting or validation work is still arriving.
+    Quieting,
+    /// Every clause holds.
+    Settled,
+}
+
+impl SettleStage {
+    /// The stable lower-case name automation reports.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Opening => "opening",
+            Self::AttachPending => "attach-pending",
+            Self::Quieting => "quieting",
+            Self::Settled => "settled",
+        }
+    }
+}
+
+/// The settle stage at `now_us` (design D1): open complete, attach run, no
+/// post-open work pending, `SETTLE_QUIET_US` since the last mark, and a
+/// sentinel dispatched after it.
+#[must_use]
+pub const fn settle_stage(facts: SettleFacts, now_us: i64) -> SettleStage {
+    if !facts.open_complete || facts.post_open_work_pending {
+        return SettleStage::Opening;
+    }
+    if !facts.language_attached {
+        return SettleStage::AttachPending;
+    }
+    let quiet = match facts.last_mark_us {
+        None => true,
+        Some(mark) => now_us.saturating_sub(mark) >= SETTLE_QUIET_US,
+    };
+    let sentinel_after_mark = match (facts.last_sentinel_us, facts.last_mark_us) {
+        (Some(sentinel), Some(mark)) => sentinel >= mark,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    if quiet && sentinel_after_mark {
+        SettleStage::Settled
+    } else {
+        SettleStage::Quieting
+    }
+}
+
+/// Whether a deferred language attach may run now (design D2 fallback):
+/// after the editor's first frame, and either input-quiet or past the
+/// deadline.
+#[must_use]
+pub const fn deferred_attach_may_run(
+    now_us: i64,
+    first_frame_us: Option<i64>,
+    last_input_us: Option<i64>,
+) -> bool {
+    let Some(first_frame) = first_frame_us else {
+        return false;
+    };
+    if now_us.saturating_sub(first_frame) >= ATTACH_DEADLINE_US {
+        return true;
+    }
+    match last_input_us {
+        None => true,
+        Some(input) => now_us.saturating_sub(input) >= INPUT_QUIET_US,
+    }
+}
+
+// ─── Highlight attach (`bound-post-open-settle`, D3) ─────────────────────
+
+/// In which order an install meets the highlighting engine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HighlightAttachPlan {
+    /// Highlighting stays on through the install: inserts into a buffer with
+    /// an attached language only invalidate (ledger A68), and the document is
+    /// within its language's total-size threshold, so the engine's analysis of
+    /// it is bounded. Publishing then toggles nothing.
+    KeepAttached,
+    /// Highlighting goes off for the install and comes back at publish: the
+    /// scale keeps syntax off for this document, and turning highlighting on
+    /// over a whole buffer costs O(document) in one dispatch (A68), so the
+    /// install must not leave a language attached to a body it may not
+    /// highlight.
+    OffUntilPublish,
+}
+
+/// The highlight order for an incoming body the scale does or does not let
+/// highlight (design D3).
+#[must_use]
+pub const fn highlight_attach_plan(syntax_allowed: bool) -> HighlightAttachPlan {
+    if syntax_allowed {
+        HighlightAttachPlan::KeepAttached
+    } else {
+        HighlightAttachPlan::OffUntilPublish
+    }
+}
+
+// ─── Paced restyle of dense documents (`bound-post-open-settle`, D9) ─────
+
+pub use crate::model::buffer_replacement::batch_exceeds_slice;
+
+/// A half-open run of buffer paragraphs (GTK lines), `first..end`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ParagraphSpan {
+    /// The first paragraph.
+    pub first: u32,
+    /// One past the last paragraph.
+    pub end: u32,
+}
+
+impl ParagraphSpan {
+    /// How many paragraphs the span holds.
+    #[must_use]
+    pub const fn len(self) -> u32 {
+        self.end.saturating_sub(self.first)
+    }
+
+    /// Whether the span holds no paragraph.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.end <= self.first
+    }
+}
+
+/// Which side of the visible paragraphs the next outward range comes from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestyleSide {
+    Below,
+    Above,
+}
+
+/// Where a paced restyle is: everything before `above` and from `below` on
+/// is still to do, and the visible paragraphs come first.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RestyleCursor {
+    /// Paragraphs `0..above` are still to restyle.
+    above: u32,
+    /// Paragraphs `below..count` are still to restyle.
+    below: u32,
+    /// The end of the visible paragraphs, clamped to `count`.
+    visible_end: u32,
+    count: u32,
+    next: RestyleSide,
+}
+
+impl RestyleCursor {
+    /// A restyle of a `count`-paragraph document whose visible paragraphs
+    /// are `visible` (clamped to the document).
+    #[must_use]
+    pub const fn new(visible: ParagraphSpan, count: u32) -> Self {
+        let first = if visible.first < count {
+            visible.first
+        } else {
+            count
+        };
+        let end = if visible.end < first {
+            first
+        } else if visible.end > count {
+            count
+        } else {
+            visible.end
+        };
+        Self {
+            above: first,
+            below: first,
+            visible_end: end,
+            count,
+            next: RestyleSide::Below,
+        }
+    }
+
+    /// Whether every paragraph has been handed out.
+    #[must_use]
+    pub const fn is_done(self) -> bool {
+        self.above == 0 && self.below >= self.count
+    }
+}
+
+/// The next paragraph-aligned range of a paced restyle, and the cursor after
+/// it; `None` once every paragraph has been handed out (design D9, review R21).
+///
+/// The visible paragraphs go first, forwards, in ranges of at most `v_slice`
+/// visible characters; then ranges alternate below and above them, outwards,
+/// one side continuing alone once the other is exhausted. A range takes whole
+/// paragraphs while their sum stays within `v_slice`, and always takes at
+/// least one, so a single paragraph over the budget goes alone (C2's
+/// exception). `paragraph_chars(i)` is paragraph `i`'s visible characters.
+/// Allocation-free; Kani checks it over a six-paragraph model
+/// (`policy/kani_proofs.rs`).
+pub fn next_restyle_range(
+    cursor: RestyleCursor,
+    v_slice: u64,
+    paragraph_chars: impl Fn(u32) -> u64,
+) -> Option<(RestyleCursor, ParagraphSpan)> {
+    if cursor.is_done() {
+        return None;
+    }
+    let mut next = cursor;
+    let in_visible = cursor.below < cursor.visible_end;
+    let side = if in_visible || cursor.above == 0 {
+        RestyleSide::Below
+    } else if cursor.below >= cursor.count {
+        RestyleSide::Above
+    } else {
+        cursor.next
+    };
+    let span = match side {
+        RestyleSide::Below => {
+            let limit = if in_visible {
+                cursor.visible_end
+            } else {
+                cursor.count
+            };
+            let first = cursor.below;
+            let mut end = first;
+            let mut chars = 0u64;
+            while end < limit {
+                let total = chars.saturating_add(paragraph_chars(end));
+                if end > first && total > v_slice {
+                    break;
+                }
+                chars = total;
+                end += 1;
+            }
+            next.below = end;
+            ParagraphSpan { first, end }
+        }
+        RestyleSide::Above => {
+            let end = cursor.above;
+            let mut first = end;
+            let mut chars = 0u64;
+            while first > 0 {
+                let total = chars.saturating_add(paragraph_chars(first - 1));
+                if first < end && total > v_slice {
+                    break;
+                }
+                chars = total;
+                first -= 1;
+            }
+            next.above = first;
+            ParagraphSpan { first, end }
+        }
+    };
+    if !in_visible {
+        next.next = match side {
+            RestyleSide::Below => RestyleSide::Above,
+            RestyleSide::Above => RestyleSide::Below,
+        };
+    }
+    Some((next, span))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ranges(visible: ParagraphSpan, lengths: &[u64], v_slice: u64) -> Vec<(u32, u32)> {
+        let count = u32::try_from(lengths.len()).expect("fits");
+        let mut cursor = RestyleCursor::new(visible, count);
+        let mut out = Vec::new();
+        while let Some((next, range)) = next_restyle_range(cursor, v_slice, |i| lengths[i as usize])
+        {
+            out.push((range.first, range.end));
+            cursor = next;
+        }
+        assert!(cursor.is_done());
+        out
+    }
+
+    #[test]
+    fn a_restyle_starts_with_the_visible_paragraphs_and_alternates_outwards() {
+        let visible = ParagraphSpan { first: 3, end: 5 };
+        assert_eq!(
+            ranges(visible, &[10; 8], 10),
+            vec![
+                (3, 4),
+                (4, 5),
+                (5, 6),
+                (2, 3),
+                (6, 7),
+                (1, 2),
+                (7, 8),
+                (0, 1)
+            ]
+        );
+        // Ranges grow to the budget, and the exhausted side stops alternating.
+        assert_eq!(
+            ranges(visible, &[10; 8], 25),
+            vec![(3, 5), (5, 7), (1, 3), (7, 8), (0, 1)]
+        );
+        // A paragraph over the budget goes alone.
+        assert_eq!(
+            ranges(ParagraphSpan { first: 0, end: 1 }, &[1, 99, 1, 1], 10),
+            vec![(0, 1), (1, 2), (2, 4)]
+        );
+        assert!(ranges(ParagraphSpan::default(), &[], 10).is_empty());
+        // A visible span past the end is clamped.
+        assert_eq!(
+            ranges(ParagraphSpan { first: 9, end: 12 }, &[1, 1], 1),
+            vec![(1, 2), (0, 1)]
+        );
+    }
+
+    #[test]
+    fn settle_needs_open_attach_quiet_and_a_later_sentinel() {
+        let settled = SettleFacts {
+            open_complete: true,
+            language_attached: true,
+            post_open_work_pending: false,
+            last_mark_us: Some(1_000),
+            last_sentinel_us: Some(2_000),
+        };
+        let quiet = 1_000 + SETTLE_QUIET_US;
+        assert_eq!(settle_stage(settled, quiet), SettleStage::Settled);
+        assert_eq!(settle_stage(settled, quiet - 1), SettleStage::Quieting);
+        let early_sentinel = SettleFacts {
+            last_sentinel_us: Some(500),
+            ..settled
+        };
+        assert_eq!(settle_stage(early_sentinel, quiet), SettleStage::Quieting);
+        let no_sentinel = SettleFacts {
+            last_sentinel_us: None,
+            ..settled
+        };
+        assert_eq!(settle_stage(no_sentinel, quiet), SettleStage::Quieting);
+        let unattached = SettleFacts {
+            language_attached: false,
+            ..settled
+        };
+        assert_eq!(settle_stage(unattached, quiet), SettleStage::AttachPending);
+        let pending = SettleFacts {
+            post_open_work_pending: true,
+            ..settled
+        };
+        assert_eq!(settle_stage(pending, quiet), SettleStage::Opening);
+        let no_mark = SettleFacts {
+            last_mark_us: None,
+            ..settled
+        };
+        assert_eq!(settle_stage(no_mark, 0), SettleStage::Settled);
+        assert_eq!(SettleStage::AttachPending.as_str(), "attach-pending");
+    }
+
+    #[test]
+    fn a_deferred_attach_waits_for_its_frame_and_input_quiet_until_the_deadline() {
+        assert!(!deferred_attach_may_run(10_000_000, None, None));
+        assert!(deferred_attach_may_run(1_000, Some(0), None));
+        assert!(!deferred_attach_may_run(1_000, Some(0), Some(900)));
+        assert!(deferred_attach_may_run(
+            900 + INPUT_QUIET_US,
+            Some(0),
+            Some(900)
+        ));
+        assert!(deferred_attach_may_run(
+            ATTACH_DEADLINE_US,
+            Some(0),
+            Some(ATTACH_DEADLINE_US)
+        ));
+        assert!(!deferred_attach_may_run(
+            ATTACH_DEADLINE_US - 1,
+            Some(0),
+            Some(ATTACH_DEADLINE_US - 1)
+        ));
+    }
 
     fn token() -> Arc<AtomicBool> {
         Arc::new(AtomicBool::new(false))
@@ -316,22 +739,44 @@ mod tests {
 
     #[test]
     fn chunked_install_triggers_on_either_side_of_the_swap() {
-        assert!(!requires_chunked_install(1, 1));
+        assert!(!requires_chunked_install(1, 1, false));
         assert!(requires_chunked_install(
             SYNCHRONOUS_INSTALL_THRESHOLD_BYTES + 1,
-            0
+            0,
+            false
         ));
         assert!(!requires_chunked_install(
             SYNCHRONOUS_INSTALL_THRESHOLD_BYTES,
-            0
+            0,
+            false
         ));
 
         let threshold_chars =
             i32::try_from(SYNCHRONOUS_INSTALL_THRESHOLD_BYTES / 4).expect("threshold fits i32");
-        assert!(!requires_chunked_install(0, threshold_chars));
-        assert!(requires_chunked_install(0, threshold_chars + 1));
+        assert!(!requires_chunked_install(0, threshold_chars, false));
+        assert!(requires_chunked_install(0, threshold_chars + 1, false));
         // A negative character count cannot be trusted into the multiply.
-        assert!(requires_chunked_install(0, -1));
+        assert!(requires_chunked_install(0, -1, false));
+    }
+
+    #[test]
+    fn highlighting_stays_attached_only_for_a_body_the_scale_lets_highlight() {
+        assert_eq!(
+            highlight_attach_plan(true),
+            HighlightAttachPlan::KeepAttached
+        );
+        assert_eq!(
+            highlight_attach_plan(false),
+            HighlightAttachPlan::OffUntilPublish
+        );
+    }
+
+    #[test]
+    fn a_dense_payload_is_chunked_at_any_size() {
+        // Review R13: density, not size, decides; a small dense document is
+        // sliced, a small short-line one stays direct.
+        assert!(requires_chunked_install(1, 0, true));
+        assert!(!requires_chunked_install(1, 0, false));
     }
 
     #[test]

@@ -10,7 +10,7 @@
 //! **Its width never changes at a Protected View entry or exit** (review S4).
 //! The text area's width follows the gutter's, and a wrapping GtkTextView
 //! whose text width changes lays every paragraph out again, offscreen ones
-//! included (ledger A74): on a document of long lines, the whole-document
+//! included (ledger A75): on a document of long lines, the whole-document
 //! relayout Protected View exists to avoid (a 230 ms dispatch on thirty
 //! 40,000-character lines, `test_entry_and_undo_leave_the_gutter_width_alone_evidence`). So the renderer is inserted when the editor is built, at a fixed
 //! width, and is visible exactly while the gutter shows line numbers or line

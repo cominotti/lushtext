@@ -920,7 +920,11 @@ fn test_file_that_grew_in_memory_uses_chunked_save_snapshot_policy() {
 }
 
 #[test]
-fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() {
+fn test_chunked_save_snapshot_refuses_a_mutation_and_writes_the_captured_text() {
+    // The save holds the buffer-level edit lock (`edit_lock.rs`) for its
+    // whole capture, so an edit arriving mid-capture is refused: the save
+    // writes the text it started capturing, and the buffer, the modified flag
+    // and the file all agree afterwards.
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
     let file = tempfile::NamedTempFile::new().expect("temp file");
@@ -928,7 +932,8 @@ fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() 
     page.set_file_path(file.path());
     page.source_view().set_editable(true);
     page.source_view().set_cursor_visible(true);
-    page.buffer().set_text(&short_lines('x', 2_500_001));
+    let captured = short_lines('x', 2_500_001);
+    page.buffer().set_text(&captured);
     page.buffer().set_modified(true);
     page.reset_transient_save_admission_for_test();
     page.pause_next_save_snapshot_for_test();
@@ -940,29 +945,27 @@ fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() 
     });
     wait_for_save_snapshot(&page);
     assert!(page.save_evidence().capture_in_flight);
-    assert!(!page.source_view().is_editable());
+    assert!(!page.accepts_user_edits());
     assert!(!page.source_view().is_cursor_visible());
     let mut end = page.buffer().end_iter();
     page.buffer()
         .insert(&mut end, "mutated during save capture");
+    assert_eq!(
+        page.buffer().char_count(),
+        i32::try_from(captured.chars().count()).expect("char count"),
+        "the edit was refused"
+    );
     page.resume_save_snapshot_for_test();
     wait_for_save_result(&page, &result);
 
-    assert!(matches!(
-        result.borrow().as_ref(),
-        Some(Err(
-            lushtext_core::ui::editor_page::EditorSaveError::SnapshotCancelled
-        ))
-    ));
+    assert!(matches!(result.borrow().as_ref(), Some(Ok(()))));
     assert!(!page.is_saving());
     assert!(!page.save_evidence().capture_in_flight);
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert!(page.source_view().is_cursor_visible());
-    assert!(page.is_modified());
-    assert_eq!(
-        fs_read::text(file.path()).expect("read original"),
-        "old on disk"
-    );
+    assert!(!page.is_modified());
+    assert_eq!(editor_buffer_text(&page), captured);
+    assert_eq!(fs_read::text(file.path()).expect("read saved"), captured);
 }
 
 #[test]
@@ -1469,7 +1472,7 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
     });
     assert!(page.load_evidence().projection_suspended);
     assert!(!page.minimap_evidence().projection_attached);
-    assert!(!page.source_view().is_editable());
+    assert!(!page.accepts_user_edits());
     wait_until(Duration::from_secs(15), || {
         page.load_state() == EditorLoadState::Loaded
     });
@@ -1481,7 +1484,7 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
     assert!(page.minimap_evidence().projection_attached);
     assert!(!page.is_modified());
     assert!(!page.draft_dirty());
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert!(
         main_loop_progress.get() > 0,
         "the GTK main loop must run between bounded installation slices"
@@ -1704,7 +1707,7 @@ fn test_chunked_load_cancellation_clears_partial_text_and_releases_admission() {
     page.cancel_load();
     assert_eq!(page.load_state(), EditorLoadState::Loading);
     assert!(page.load_evidence().installation_active);
-    assert!(!page.source_view().is_editable());
+    assert!(!page.accepts_user_edits());
     wait_until(Duration::from_secs(5), || {
         !page.load_evidence().installation_active && page.load_evidence().active_count == 0
     });
@@ -1712,7 +1715,7 @@ fn test_chunked_load_cancellation_clears_partial_text_and_releases_admission() {
     assert_eq!(editor_buffer_text(&page), "");
     assert_eq!(page.load_state(), EditorLoadState::Failed);
     assert!(!page.load_evidence().projection_suspended);
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     let info = page.info_bar().imp();
     assert_eq!(info.alert_title.label().as_str(), "Loading Cancelled");
     assert!(info.alert_revealer.reveals_child());
@@ -1965,7 +1968,7 @@ fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
 
     assert!(!page.is_evicted());
     assert!(page.buffer_replacement_evidence().in_progress);
-    assert!(!page.source_view().is_editable());
+    assert!(!page.accepts_user_edits());
     assert_ne!(
         page.estimated_live_buffer_bytes(),
         EVICTED_EDITOR_BOOKKEEPING_BYTES
@@ -1979,7 +1982,7 @@ fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
         EVICTED_EDITOR_BOOKKEEPING_BYTES
     );
     assert!(page.buffer_replacement_evidence().slice_count > 1);
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     let diagnostic = page
         .buffer_replacement_evidence()
         .last_terminal
@@ -2062,11 +2065,11 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
     });
 
     wait_until_observing_each_dispatch(std::time::Duration::from_secs(10), || {
-        page.is_saving() && !page.source_view().is_editable()
+        page.is_saving() && !page.accepts_user_edits()
     });
     assert!(page.is_saving());
     assert!(page.is_modified());
-    assert!(!page.source_view().is_editable());
+    assert!(!page.accepts_user_edits());
     assert!(!page.source_view().is_cursor_visible());
     assert!(gtk4::test_accessible_has_state(
         page.source_view(),
@@ -2077,7 +2080,7 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
     assert!(sentinel.get());
     assert!(!page.is_saving());
     assert!(!page.is_modified());
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert!(page.source_view().is_cursor_visible());
     assert!(!gtk4::test_accessible_has_state(
         page.source_view(),
@@ -2125,12 +2128,12 @@ fn test_document_sized_save_formatting_stays_inflight_until_bounded_install_fini
     });
     assert!(page.is_saving());
     assert!(!done.get());
-    assert!(!page.source_view().is_editable());
+    assert!(!page.accepts_user_edits());
 
     wait_until(Duration::from_secs(15), || done.get());
     assert!(!page.is_saving());
     assert!(!page.is_modified());
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert_eq!(editor_buffer_text(&page), expected);
     assert_eq!(
         fs_read::text(tmp.path()).expect("formatted save should reach disk"),
@@ -2253,10 +2256,10 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
         first_done_clone.set(true);
     });
     wait_until(std::time::Duration::from_secs(2), || {
-        page.is_saving() && !page.source_view().is_editable()
+        page.is_saving() && !page.accepts_user_edits()
     });
     assert!(page.is_saving());
-    assert!(!page.source_view().is_editable());
+    assert!(!page.accepts_user_edits());
     assert!(!page.source_view().is_cursor_visible());
     assert!(gtk4::test_accessible_has_state(
         page.source_view(),
@@ -2282,7 +2285,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
 
     wait_until(std::time::Duration::from_secs(2), || first_done.get());
     assert!(!page.is_saving());
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert!(page.source_view().is_cursor_visible());
     assert!(!gtk4::test_accessible_has_state(
         page.source_view(),
@@ -2313,7 +2316,7 @@ fn test_failed_save_restores_previous_modified_state() {
     wait_until(std::time::Duration::from_secs(2), || done.get());
     assert!(!page.is_saving());
     assert!(page.is_modified());
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert!(!gtk4::test_accessible_has_state(
         page.source_view(),
         gtk4::AccessibleState::Busy
@@ -4614,7 +4617,7 @@ fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup(
         Rc::clone(&outcomes),
     );
     assert!(page.buffer_replacement_evidence().in_progress);
-    assert!(!page.source_view().is_editable());
+    assert!(!page.accepts_user_edits());
 
     let main_loop_progressed = Rc::new(Cell::new(false));
     let main_loop_progressed_clone = Rc::clone(&main_loop_progressed);
@@ -4627,7 +4630,7 @@ fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup(
     wait_until(Duration::from_secs(10), || outcomes.borrow().len() == 1);
 
     assert_eq!(editor_buffer_text(&page), expected);
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert!(!page.buffer_replacement_evidence().in_progress);
     let outcomes = outcomes.borrow();
     assert_eq!(outcomes[0].body.as_deref(), Some(expected.as_str()));
@@ -4660,7 +4663,7 @@ fn test_bounded_buffer_replacement_stale_partial_body_is_cleared_not_published()
         Some(BufferReplacementCancelReason::Stale)
     );
     assert!(outcomes.borrow()[0].body.is_none());
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
 }
 
 #[test]
@@ -4733,7 +4736,7 @@ fn assert_changed_reentrant_replacement(initial: &str, expected_first_signal: &'
 
     assert!(signal_count.get() > 1);
     assert_eq!(editor_buffer_text(&page), latest);
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert!(page.is_modified());
     assert!(!page.buffer_replacement_evidence().in_progress);
     assert!(!page.buffer_replacement_evidence().projection_suspended);
@@ -4752,7 +4755,7 @@ fn assert_changed_reentrant_replacement(initial: &str, expected_first_signal: &'
         "buffer-replacement-reentrant-evidence first_signal={expected_first_signal} terminal_outcomes={} final_generation={} editable={} modified={} projection_suspended={}",
         outcomes.len(),
         outcomes[1].ticket.generation,
-        page.source_view().is_editable(),
+        page.accepts_user_edits(),
         page.is_modified(),
         page.buffer_replacement_evidence().projection_suspended,
     );
@@ -5475,7 +5478,7 @@ fn test_save_failing_before_rename_keeps_previous_bytes_and_leaves_the_tab_modif
         "an unwritten save must leave the tab modified"
     );
     assert!(!page.is_saving());
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert_eq!(
         page.save_evidence().write_classification,
         SaveWriteClassification::FailedBeforeRename
@@ -5520,7 +5523,7 @@ fn test_save_failing_after_rename_reports_durability_unconfirmed_not_a_lost_save
         "the bytes reached the destination; only the directory sync is unconfirmed"
     );
     assert!(!page.is_saving());
-    assert!(page.source_view().is_editable());
+    assert!(page.accepts_user_edits());
     assert_eq!(
         page.save_evidence().write_classification,
         SaveWriteClassification::DurabilityUnconfirmed

@@ -39,9 +39,13 @@ mod kani_proofs;
 
 use super::paragraph_boundary::ProfileSummary;
 
-/// Syntax highlighting and bracket matching turn off above this many bytes.
+/// Syntax highlighting and bracket matching turn off above this many bytes in
+/// a document **without a language** ([`SyntaxLanguage::PlainText`]); a
+/// document with one uses its language's derived threshold
+/// ([`SyntaxLanguage::syntax_size_threshold`], `bound-post-open-settle`).
 ///
-/// **Not derived by C0**: the reference sweep found a size-independent ~42 ms
+/// A plain-text document has no context engine, so no background analysis to
+/// bound; its value is C1's, unchanged. **Not derived by C0**: the reference sweep found a size-independent ~42 ms
 /// first-highlight stall on `.html` at every size down to its 16,000-byte
 /// floor, which no size cutoff removes (`S_syntax` "not derived";
 /// `S_syntax_interact` 16,000 bytes is the interaction-only figure). Task 0.1
@@ -49,6 +53,171 @@ use super::paragraph_boundary::ProfileSummary;
 /// the origin proposal's decision 4: about 1 MiB, GNOME Text Editor's figure,
 /// in place of the former 10 MB. Recorded as an open question in the design.
 pub const S_SYNTAX: u64 = 1024 * 1024;
+
+/// The largest short-line document of each measured language whose
+/// background analysis keeps every dispatch within `B_SETTLE_US` after the
+/// attach (`S_BG_HIGHLIGHT`, `bound-post-open-settle` design D4; the A67
+/// parse excluded). The context engine's background slice is 30 ms (ledger
+/// A69), so this is where a document first needs one.
+///
+/// Derived by the A69 sample (`--derive-s-bg-highlight`: an editor-like
+/// presented view, 1280x800, monospace, wrap, line numbers; synthetic
+/// short-line documents; a size passes only if all 7 repetitions stay within
+/// `B_SETTLE_US`), two runs each through `scripts/measure.sh` on 2026-10-31;
+/// each value is the lower run, which was the first (load 19.2 before, 15.3
+/// after; the second ran at 11.4 falling to 0.8). Both runs and their loads
+/// are in ledger A69 and `docs/next/long-line-documents.md` (C6).
+///
+/// Kind: byte thresholds per language. Rounding: down to a whole KiB (512 B
+/// for TypeScript, whose measured value is below 11 KiB), not to a power of
+/// two; a recorded exception, deferred to `power-of-two-thresholds`.
+mod attach_threshold {
+    pub const HTML: u64 = 46 * 1024;
+    pub const MARKDOWN: u64 = 320 * 1024;
+    pub const RUST: u64 = 184 * 1024;
+    pub const JSON: u64 = 24 * 1024;
+    pub const C: u64 = 84 * 1024;
+    pub const PYTHON: u64 = 48 * 1024;
+    pub const JAVASCRIPT: u64 = 18 * 1024;
+    pub const TYPESCRIPT: u64 = 21 * 512;
+    pub const YAML: u64 = 144 * 1024;
+    pub const XML: u64 = 132 * 1024;
+    pub const CSS: u64 = 37 * 1024;
+    pub const SHELL: u64 = 39 * 1024;
+}
+
+/// The largest document of the two languages whose context engine re-analyses
+/// past a mid-document edit on every keystroke for which each of seven keys
+/// keeps every dispatch within `B_INTERACT_US` (the A69 sample's
+/// mid-document typing mode, through `scripts/measure.sh` on 2026-10-31).
+///
+/// HTML is the lowest of three runs (19,456 / 16,384 / 21,504 bytes at loads
+/// 30, 27 and 12 before). JSON is the lower of runs one and three (20,480 /
+/// 22,528): its second run failed already at 4,096 bytes, which every other
+/// run of either language passed with every key under 6 ms, so that run was
+/// disturbed by the load (27 falling to 8) and is recorded, not used. The
+/// other ten measured languages showed no per-key dispatch above 2.8 ms at
+/// their higher attach threshold.
+///
+/// Kind: byte thresholds. Rounding: HTML 16 KiB is a power of two as
+/// measured; JSON's 20 KiB is rounded down to a whole KiB, a recorded
+/// exception deferred to `power-of-two-thresholds`.
+mod typing_threshold {
+    pub const HTML: u64 = 16 * 1024;
+    pub const JSON: u64 = 20 * 1024;
+}
+
+const fn min_u64(a: u64, b: u64) -> u64 {
+    if a < b { a } else { b }
+}
+
+/// The total-size syntax threshold of a language that was not measured: the
+/// median of the twelve measured attach thresholds (maintainer decision of
+/// 2026-10-31; a unit test recomputes it).
+///
+/// Kind: byte threshold. Rounding: the median rounded down to a whole KiB,
+/// not to a power of two; a recorded exception, deferred to
+/// `power-of-two-thresholds`.
+pub const S_SYNTAX_OTHER: u64 = 47 * 1024;
+
+/// The language class a document's total-size syntax threshold depends on
+/// (`bound-post-open-settle`, maintainer decision of 2026-10-31: per-language
+/// thresholds, each min(attach threshold, mid-document typing threshold)).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SyntaxLanguage {
+    /// No language: no context engine runs.
+    #[default]
+    PlainText,
+    /// GtkSourceView's `html`.
+    Html,
+    /// GtkSourceView's `markdown`.
+    Markdown,
+    /// GtkSourceView's `rust`.
+    Rust,
+    /// GtkSourceView's `json`.
+    Json,
+    /// GtkSourceView's `c`.
+    C,
+    /// GtkSourceView's `python3` and `python`.
+    Python,
+    /// GtkSourceView's `js`.
+    JavaScript,
+    /// GtkSourceView's `typescript`.
+    TypeScript,
+    /// GtkSourceView's `yaml`.
+    Yaml,
+    /// GtkSourceView's `xml`.
+    Xml,
+    /// GtkSourceView's `css`.
+    Css,
+    /// GtkSourceView's `sh`.
+    Shell,
+    /// Any other language: [`S_SYNTAX_OTHER`].
+    Other,
+}
+
+impl SyntaxLanguage {
+    /// Every class.
+    pub const ALL: [Self; 14] = [
+        Self::PlainText,
+        Self::Html,
+        Self::Markdown,
+        Self::Rust,
+        Self::Json,
+        Self::C,
+        Self::Python,
+        Self::JavaScript,
+        Self::TypeScript,
+        Self::Yaml,
+        Self::Xml,
+        Self::Css,
+        Self::Shell,
+        Self::Other,
+    ];
+
+    /// The class of a GtkSourceView language id; `None` is plain text.
+    #[must_use]
+    pub fn from_language_id(id: Option<&str>) -> Self {
+        match id {
+            None => Self::PlainText,
+            Some("html") => Self::Html,
+            Some("markdown") => Self::Markdown,
+            Some("rust") => Self::Rust,
+            Some("json") => Self::Json,
+            Some("c") => Self::C,
+            Some("python3" | "python") => Self::Python,
+            Some("js") => Self::JavaScript,
+            Some("typescript") => Self::TypeScript,
+            Some("yaml") => Self::Yaml,
+            Some("xml") => Self::Xml,
+            Some("css") => Self::Css,
+            Some("sh") => Self::Shell,
+            Some(_) => Self::Other,
+        }
+    }
+
+    /// Syntax highlighting and bracket matching turn off above this many
+    /// bytes.
+    #[must_use]
+    pub const fn syntax_size_threshold(self) -> u64 {
+        match self {
+            Self::PlainText => S_SYNTAX,
+            Self::Html => min_u64(attach_threshold::HTML, typing_threshold::HTML),
+            Self::Markdown => attach_threshold::MARKDOWN,
+            Self::Rust => attach_threshold::RUST,
+            Self::Json => min_u64(attach_threshold::JSON, typing_threshold::JSON),
+            Self::C => attach_threshold::C,
+            Self::Python => attach_threshold::PYTHON,
+            Self::JavaScript => attach_threshold::JAVASCRIPT,
+            Self::TypeScript => attach_threshold::TYPESCRIPT,
+            Self::Yaml => attach_threshold::YAML,
+            Self::Xml => attach_threshold::XML,
+            Self::Css => attach_threshold::CSS,
+            Self::Shell => attach_threshold::SHELL,
+            Self::Other => S_SYNTAX_OTHER,
+        }
+    }
+}
 
 /// Syntax highlighting and bracket matching turn off above this paragraph
 /// length (C0: 2,000 / 3,000; ledger A29 is the context-engine behaviour it
@@ -487,9 +656,18 @@ impl DocumentScale {
         worst_batch_chars: 0,
     });
 
-    /// Derive every feature decision from a profile.
+    /// Derive every feature decision from a profile of a document without a
+    /// language ([`SyntaxLanguage::PlainText`]).
     #[must_use]
     pub const fn for_profile(profile: ProfileSummary) -> Self {
+        Self::for_profile_in(profile, SyntaxLanguage::PlainText)
+    }
+
+    /// Derive every feature decision from a profile of a document in
+    /// `language`: the language chooses the total-size syntax threshold, and
+    /// nothing else.
+    #[must_use]
+    pub const fn for_profile_in(profile: ProfileSummary, language: SyntaxLanguage) -> Self {
         use ReductionReason::{LongParagraph, TotalSize};
         use ScaleFeature::{
             BracketMatching, Invisibles, LocalHistory, Minimap, ProtectedView, SearchHighlight,
@@ -497,7 +675,7 @@ impl DocumentScale {
         };
         let bytes = profile.total_bytes;
         let longest = profile.longest_paragraph_chars;
-        let syntax_by_size = bytes > S_SYNTAX;
+        let syntax_by_size = bytes > language.syntax_size_threshold();
         let syntax_by_length = longest > L_SYNTAX;
         let minimap_by_size = bytes > S_MINIMAP;
         let minimap_by_length = longest > L_MINIMAP;
@@ -744,6 +922,91 @@ mod tests {
         assert_eq!(
             DocumentScale::for_total_bytes(HISTORY_UNAVAILABLE_BYTES + 1).local_history,
             LocalHistoryAvailability::Unavailable
+        );
+    }
+
+    #[test]
+    fn the_unmeasured_default_is_the_median_of_the_measured_attach_thresholds() {
+        let mut measured = [
+            attach_threshold::HTML,
+            attach_threshold::MARKDOWN,
+            attach_threshold::RUST,
+            attach_threshold::JSON,
+            attach_threshold::C,
+            attach_threshold::PYTHON,
+            attach_threshold::JAVASCRIPT,
+            attach_threshold::TYPESCRIPT,
+            attach_threshold::YAML,
+            attach_threshold::XML,
+            attach_threshold::CSS,
+            attach_threshold::SHELL,
+        ];
+        measured.sort_unstable();
+        let middle = measured.len() / 2;
+        assert_eq!(
+            S_SYNTAX_OTHER,
+            u64::midpoint(measured[middle - 1], measured[middle])
+        );
+        // The per-key typing cost gates HTML and JSON below their attach cost.
+        assert_eq!(
+            SyntaxLanguage::Html.syntax_size_threshold(),
+            typing_threshold::HTML
+        );
+        assert!(SyntaxLanguage::Other.syntax_size_threshold() < S_SYNTAX);
+    }
+
+    #[test]
+    fn each_language_keeps_syntax_at_its_threshold_and_drops_it_above() {
+        for language in SyntaxLanguage::ALL {
+            let threshold = language.syntax_size_threshold();
+            let at = DocumentScale::for_profile_in(profile(threshold, 0, 0), language);
+            assert!(
+                at.syntax_enabled && at.bracket_matching_enabled,
+                "{language:?}"
+            );
+            let above = DocumentScale::for_profile_in(profile(threshold + 1, 0, 0), language);
+            assert!(!above.syntax_enabled && !above.bracket_matching_enabled);
+            assert!(
+                above
+                    .reduced
+                    .has_reason(ScaleFeature::Syntax, ReductionReason::TotalSize)
+            );
+        }
+        assert_eq!(
+            SyntaxLanguage::from_language_id(None),
+            SyntaxLanguage::PlainText
+        );
+        assert_eq!(
+            SyntaxLanguage::from_language_id(Some("html")),
+            SyntaxLanguage::Html
+        );
+        assert_eq!(
+            SyntaxLanguage::from_language_id(Some("markdown")),
+            SyntaxLanguage::Markdown
+        );
+        assert_eq!(
+            SyntaxLanguage::from_language_id(Some("rust")),
+            SyntaxLanguage::Rust
+        );
+        assert_eq!(
+            SyntaxLanguage::from_language_id(Some("json")),
+            SyntaxLanguage::Json
+        );
+        assert_eq!(
+            SyntaxLanguage::from_language_id(Some("c")),
+            SyntaxLanguage::C
+        );
+        assert_eq!(
+            SyntaxLanguage::from_language_id(Some("python")),
+            SyntaxLanguage::Python
+        );
+        assert_eq!(
+            SyntaxLanguage::from_language_id(Some("go")),
+            SyntaxLanguage::Other
+        );
+        assert_eq!(
+            DocumentScale::for_profile(profile(S_SYNTAX + 1, 0, 0)),
+            DocumentScale::for_profile_in(profile(S_SYNTAX + 1, 0, 0), SyntaxLanguage::PlainText)
         );
     }
 

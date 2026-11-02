@@ -11,6 +11,7 @@ mod bookmarks;
 mod buffer_replacement;
 mod document_identity;
 pub mod document_scale;
+pub(crate) mod edit_lock;
 mod focus_mode;
 mod frame_validation;
 // Private implementation module. GTK's GObject bindings split custom widgets
@@ -18,6 +19,7 @@ mod frame_validation;
 // module for the type-safe API.
 mod imp;
 mod invisibles;
+pub mod language_attach;
 pub mod load;
 pub(crate) mod local_history;
 mod minimap;
@@ -33,6 +35,7 @@ mod paragraph_wrap;
 )]
 mod protected_view;
 mod restore_position;
+pub mod restyle;
 pub mod save;
 mod search;
 pub(crate) use search::search_prefill_text;
@@ -696,7 +699,17 @@ impl LushtextEditorPage {
             self.set_save_encoding(save_encoding);
         }
         self.imp().formatting_overrides.set(overrides);
-        imp::apply_formatting_settings(&self.imp().source_view, &self.imp().settings, overrides);
+        // After an install, a re-resolution (Save As, rename, the
+        // `use-editorconfig` toggle) is paced on a dense document
+        // (`bound-post-open-settle`, D6.2 and D9); during an install the
+        // buffer holds no line yet, so it applies directly.
+        self.restyle_paced(|editor| {
+            imp::apply_formatting_settings(
+                &editor.imp().source_view,
+                &editor.imp().settings,
+                overrides,
+            );
+        });
     }
 
     /// Clear all EditorConfig overrides and fall back to GSettings values.

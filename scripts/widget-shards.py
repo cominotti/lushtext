@@ -133,6 +133,7 @@ SHARDS: dict[str, Shard] = {
         # (document-scale-policy) joined after that measurement: its 30 tests
         # took under two minutes locally, build included, so the shard stays
         # well inside the margin until the next CI measurement records it.
+        # `post_open_settle` (bound-post-open-settle) joined the same way.
         # `protected_view` (long-line-protected-view) joined on 2026-10-31
         # beside it, on the same terms, and `protected_view_surfaces`
         # (protected-view-inspector-and-surfaces) on 2026-11-01.
@@ -141,6 +142,7 @@ SHARDS: dict[str, Shard] = {
             "document_scale",
             "editor_page",
             "multi_window_drafts",
+            "post_open_settle",
             "protected_view",
             "protected_view_surfaces",
             "sidebar",

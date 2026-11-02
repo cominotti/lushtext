@@ -34,6 +34,7 @@
 //! counter. Both paths converge on [`complete_loaded_installation`], so the
 //! published result cannot differ between them.
 
+use crate::ui::editor_page::edit_lock::EditLock;
 use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -43,15 +44,16 @@ use gtk4::glib;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
+use crate::model::buffer_replacement::{SliceBudget, next_slice_boundary};
 use crate::model::document_scale::DocumentScale;
 use crate::model::encoding::FileHealthFindingKind;
-use crate::model::file_load::next_install_boundary;
 use crate::services::editor_io::{self, EditorLoadError};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::imp::EditorCallback;
 use crate::ui::editor_page::{
     EditorLoadState, InlineAlertLifetime, LushtextEditorPage, PendingWarningAction,
 };
+use crate::ui::responsiveness_probe::PostOpenSpan;
 
 use super::admission::{self, GuardedLoadResult, TransientLoadPermit};
 use super::policy::{
@@ -64,15 +66,13 @@ use super::{evidence, retirement};
 /// The save workflow keeps its own equivalent in `save/execution.rs`. They are
 /// deliberately not shared: each workflow owns the flags it suspended, so
 /// neither has to reach into the other's state.
-#[derive(Clone, Copy)]
 pub(super) struct ViewInteractivityState {
-    editable: bool,
     cursor_visible: bool,
 }
 
 /// Projection and view flags restored after one complete or cancelled install.
-#[derive(Clone, Copy)]
 pub(super) struct LoadInstallationState {
+    lock: EditLock,
     view: ViewInteractivityState,
     minimap_tracking_suspended: bool,
     history_capture_suppressed: bool,
@@ -88,8 +88,12 @@ pub(crate) struct ChunkedLoadInstall {
     pub(super) byte_offset: usize,
     pub(super) generation: u64,
     pub(super) source_id: Option<glib::SourceId>,
+    /// The two slice budgets; a dense document also bounds visible
+    /// characters (`bound-post-open-settle`, D6.1).
+    pub(super) budget: SliceBudget,
     pub(super) permit: Option<TransientLoadPermit>,
-    pub(super) restore: LoadInstallationState,
+    /// Taken once, by the terminal that gives the suspension back.
+    pub(super) restore: Option<LoadInstallationState>,
     pub(super) phase: LoadInstallPhase,
     pub(super) terminal: bool,
     pub(super) slice_count: u64,
@@ -108,6 +112,32 @@ impl ChunkedLoadInstall {
     pub(super) fn phase(&self) -> LoadInstallPhase {
         self.phase
     }
+}
+
+/// The priority a paced slice waits at: `G_PRIORITY_DEFAULT_IDLE` (200), below
+/// GtkTextView's incremental validation idle (`GTK_TEXT_VIEW_PRIORITY_VALIDATE`,
+/// 125) and above the settle sentinel (`G_PRIORITY_LOW`). Shared with the paced
+/// whole-buffer replacement.
+pub(crate) const PACED_SLICE_PRIORITY: glib::Priority = glib::Priority::DEFAULT_IDLE;
+
+/// Schedule the next slice of a paced (dense) installation from an idle
+/// below `GTK_TEXT_VIEW_PRIORITY_VALIDATE` (review R14, ledger A70):
+/// GtkTextView's incremental validation idle lays out the previous slice's
+/// new lines first, so each validation dispatch holds one slice's lines, and
+/// the slices follow each other at main-loop speed (pacing by painted frames
+/// took 16.7 s for an 11 MiB document against main's 1.9 s). A slice waits
+/// for the frame that shows the latest key first (`input_quiet::paced_idle`).
+fn schedule_paced_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
+    let (session_for_step, session_for_store) = (Rc::clone(session), Rc::downgrade(session));
+    crate::ui::input_quiet::paced_idle(
+        PACED_SLICE_PRIORITY,
+        move || run_install_slice(&session_for_step),
+        move |source_id| {
+            if let Some(session) = session_for_store.upgrade() {
+                session.borrow_mut().source_id = Some(source_id);
+            }
+        },
+    );
 }
 
 /// Schedule the next bounded slice of one installation.
@@ -199,7 +229,7 @@ pub(super) fn delete_buffer_slice(buffer: &sourceview5::Buffer) -> bool {
     if policy::clear_slice_extends_to_paragraph_end(end.is_end(), end.starts_line()) {
         let _ = end.forward_line();
     }
-    buffer.delete(&mut start, &mut end);
+    crate::ui::editor_page::edit_lock::with_own_edit(|| buffer.delete(&mut start, &mut end));
     buffer.char_count() == 0
 }
 
@@ -218,6 +248,17 @@ fn run_existing_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         }
         state.end_mark = Some(mark);
         state.phase = LoadInstallPhase::Installing;
+        let editor = state.editor.upgrade();
+        let budget_is_paced = state.budget == SliceBudget::PACED;
+        drop(state);
+        // The old text is gone and nothing new is in: formatting applied now
+        // invalidates no line (review R17).
+        if let Some(editor) = editor {
+            apply_pending_formatting(&editor);
+            if budget_is_paced {
+                editor.set_overscroll_before_install();
+            }
+        }
     }
     schedule_install_slice(session);
 }
@@ -243,22 +284,28 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
             loaded,
         )
     };
-    let end = next_install_boundary(&loaded.content, start);
+    let budget = session.borrow().budget;
+    let end = next_slice_boundary(&loaded.content, start, budget);
     let content_len = loaded.content.len();
     let mut iter = buffer.iter_at_mark(&mark);
     // GtkTextBuffer emits signals synchronously. Keep the session unborrowed so
     // a reentrant cancellation can move it to bounded cleanup without panicking.
-    let next_paragraph = if let Some(plan) = loaded.metadata.profile.fold_plan.as_deref() {
-        crate::ui::protected_fold::insert_folded(
-            buffer.upcast_ref(),
-            &mut iter,
-            &loaded.content[start..end],
-            paragraph,
-            plan,
-        )
-    } else {
-        buffer.insert(&mut iter, &loaded.content[start..end]);
-        paragraph
+    let next_paragraph = {
+        let _span = PostOpenSpan::begin("post_open_install_slice");
+        crate::ui::editor_page::edit_lock::with_own_edit(|| {
+            if let Some(plan) = loaded.metadata.profile.fold_plan.as_deref() {
+                crate::ui::protected_fold::insert_folded(
+                    buffer.upcast_ref(),
+                    &mut iter,
+                    &loaded.content[start..end],
+                    paragraph,
+                    plan,
+                )
+            } else {
+                buffer.insert(&mut iter, &loaded.content[start..end]);
+                paragraph
+            }
+        })
     };
 
     let reached_end = {
@@ -277,6 +324,8 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
 
     if reached_end {
         finish_chunked_install(session);
+    } else if budget == SliceBudget::PACED {
+        schedule_paced_insert_slice(session);
     } else {
         schedule_install_slice(session);
     }
@@ -295,7 +344,7 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
             state.end_mark.take(),
             state.source_id.take(),
             state.loaded.take(),
-            state.restore,
+            state.restore.take(),
             state.permit.take(),
             state.slice_count,
             state.generation,
@@ -314,6 +363,12 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     let Some(editor) = editor else {
         drop(loaded);
         drop(permit);
+        return;
+    };
+    let Some(restore) = restore else {
+        // Another terminal already gave the suspension back.
+        conclude_installation(&editor, session, permit);
+        drop(loaded);
         return;
     };
     editor.imp().load.installation_slice_count.set(slice_count);
@@ -366,6 +421,12 @@ fn conclude_installation(
     permit: Option<TransientLoadPermit>,
 ) {
     session.borrow_mut().terminal = true;
+    // A terminal that did not publish the load (cancelled, superseded) leaves
+    // the buffer without the bytes the last decode fact described; the
+    // publishing terminal sets the fact again in `complete_loaded_installation_now`.
+    if !editor.is_protected_view() || editor.imp().load.installation_incomplete.get() {
+        editor.imp().document_metadata.decode_inexact.set(false);
+    }
     clear_installation_owner(editor, session);
     finish_load_finalization(editor, permit);
 }
@@ -466,8 +527,12 @@ fn install_guarded_load_now(
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
-    let chunked =
-        policy::requires_chunked_install(loaded.content.len(), editor.buffer().char_count());
+    let summary = loaded.metadata.summary();
+    let chunked = policy::requires_chunked_install(
+        loaded.content.len(),
+        editor.buffer().char_count(),
+        policy::batch_exceeds_slice(summary),
+    );
     if !chunked
         && loaded.metadata.profile.fold_plan.is_some()
         && !crate::ui::protected_fold::tail_insert_admitted()
@@ -494,6 +559,8 @@ fn publish_load_error(
     let error_text = error.to_string();
     editor.imp().load_state.set(error_state);
     editor.imp().latest_load_failed.set(true);
+    // No bytes were loaded, so no decode fact about them stands.
+    editor.imp().document_metadata.decode_inexact.set(false);
     evidence::record_outcome(editor, LoadOutcome::Failed);
     editor.notify_memory_policy_changed();
     editor.emit_inline_notification(
@@ -524,7 +591,8 @@ pub(super) fn install_loaded_direct(
     permit: Option<TransientLoadPermit>,
 ) {
     editor.imp().load.installation_slice_count.set(0);
-    let restore = begin_load_installation(editor, false);
+    let plan = highlight_plan_for(editor, &loaded);
+    let restore = begin_load_installation(editor, false, plan);
     // The direct path leaves the minimap projection attached, so a body the
     // scale keeps from the map or the context engine is gated before the
     // first byte enters the buffer.
@@ -536,24 +604,32 @@ pub(super) fn install_loaded_direct(
         },
     );
     let buffer = editor.buffer();
+    // A direct install's old text is small by the same threshold, so its
+    // formatting goes on before the one `set_text` (D6.2).
+    apply_pending_formatting(editor);
     editor.imp().load.finalizing.set(true);
     editor.imp().load.dispose_during_finalization.set(false);
     buffer.begin_irreversible_action();
-    match loaded.metadata.profile.fold_plan.as_deref() {
-        // A protected body: every folded tail goes in hidden, in this same
-        // dispatch as its head (design D1).
-        Some(plan) => {
-            buffer.set_text("");
-            let mut start = buffer.start_iter();
-            crate::ui::protected_fold::insert_folded(
-                buffer.upcast_ref(),
-                &mut start,
-                &loaded.content,
-                0,
-                plan,
-            );
-        }
-        None => buffer.set_text(&loaded.content),
+    {
+        let _span = PostOpenSpan::begin("post_open_install_direct");
+        crate::ui::editor_page::edit_lock::with_own_edit(|| {
+            match loaded.metadata.profile.fold_plan.as_deref() {
+                // A protected body: every folded tail goes in hidden, in this same
+                // dispatch as its head (design D1).
+                Some(plan) => {
+                    buffer.set_text("");
+                    let mut start = buffer.start_iter();
+                    crate::ui::protected_fold::insert_folded(
+                        buffer.upcast_ref(),
+                        &mut start,
+                        &loaded.content,
+                        0,
+                        plan,
+                    );
+                }
+                None => buffer.set_text(&loaded.content),
+            }
+        });
     }
     if editor.imp().load.dispose_during_finalization.get() {
         buffer.end_irreversible_action();
@@ -570,8 +646,10 @@ fn start_chunked_install(
     loaded: GuardedLoadResult,
     permit: Option<TransientLoadPermit>,
 ) {
-    let restore = begin_load_installation(editor, true);
+    let plan = highlight_plan_for(editor, &loaded);
+    let restore = begin_load_installation(editor, true, plan);
     editor.prepare_for_incoming_profile(&loaded.metadata.profile);
+    let loaded_summary = loaded.metadata.summary();
     editor.begin_protected_install(
         &loaded.metadata.profile,
         ProtectedInstallSource::Load {
@@ -588,8 +666,9 @@ fn start_chunked_install(
         byte_offset: 0,
         generation,
         source_id: None,
+        budget: SliceBudget::for_profile(loaded_summary),
         permit,
-        restore,
+        restore: Some(restore),
         phase: LoadInstallPhase::ClearingExisting,
         terminal: false,
         slice_count: 0,
@@ -604,17 +683,47 @@ fn start_chunked_install(
     schedule_install_slice(&session);
 }
 
+/// Apply the EditorConfig overrides the planning worker resolved, if any,
+/// before the install's first insert (`bound-post-open-settle`, D6.2).
+fn apply_pending_formatting(editor: &LushtextEditorPage) {
+    let pending = editor.imp().load.pending_formatting.take();
+    editor
+        .imp()
+        .load
+        .formatting_applied_before_insert
+        .set(pending.is_some());
+    if let Some(overrides) = pending {
+        editor.apply_editorconfig_overrides(overrides);
+    }
+}
+
+/// The highlight order for one install (`policy::highlight_attach_plan`).
+fn highlight_plan_for(
+    editor: &LushtextEditorPage,
+    loaded: &GuardedLoadResult,
+) -> policy::HighlightAttachPlan {
+    policy::highlight_attach_plan(
+        editor
+            .scale_for_incoming_profile(&loaded.metadata.profile)
+            .syntax_enabled,
+    )
+}
+
 /// Suspend the projections and view flags one installation must not trigger.
 fn begin_load_installation(
     editor: &LushtextEditorPage,
     suspend_minimap_projection: bool,
+    highlight: policy::HighlightAttachPlan,
 ) -> LoadInstallationState {
     editor.invalidate_minimap_analysis_content();
     let imp = editor.imp();
     let view = editor.source_view();
     let restore = LoadInstallationState {
+        // The buffer-level lock, not `set_editable(false)`: restoring
+        // `editable` would invalidate every line of the installed document
+        // (edit_lock.rs).
+        lock: editor.lock_edits(),
         view: ViewInteractivityState {
-            editable: view.is_editable(),
             cursor_visible: view.is_cursor_visible(),
         },
         minimap_tracking_suspended: imp.minimap.tracking_suspended.replace(true),
@@ -627,9 +736,16 @@ fn begin_load_installation(
     if editor.search_bar().search_context().is_some() {
         editor.search_bar().detach();
     }
-    view.set_editable(false);
+    // The old text's modified-line marks would collapse onto the first line
+    // as it is cleared, and GtkSourceView sorts every mark of a line in each
+    // frame's gutter and background paint: up to 2,000 marks made each frame
+    // of a dense replacement cost hundreds of milliseconds. The new text gets
+    // its own marks from its workflow's terminal.
+    editor.clear_modified_line_marks();
     view.set_cursor_visible(false);
-    editor.buffer().set_highlight_syntax(false);
+    if highlight == policy::HighlightAttachPlan::OffUntilPublish {
+        editor.buffer().set_highlight_syntax(false);
+    }
     editor.refresh_accessibility_metadata();
     restore
 }
@@ -681,6 +797,7 @@ fn complete_loaded_installation_now(
     loaded: GuardedLoadResult,
     restore: LoadInstallationState,
 ) {
+    let _span = PostOpenSpan::begin("post_open_publish");
     let GuardedLoadResult {
         metadata: loaded,
         content,
@@ -769,6 +886,8 @@ fn complete_loaded_installation_now(
         callback();
     }
     invoke_reentrant_callbacks(&editor.imp().load.file_loaded_callbacks);
+    // Settle is read after the publish: its sentinel must follow it.
+    editor.record_settle_mark();
 }
 
 /// Invoke every listener in `slot`, tolerating re-entrant registration.
@@ -799,7 +918,7 @@ pub(super) fn restore_load_installation_state(
         .set(restore.projection_suspended);
     editor.set_local_history_capture_suppressed(restore.history_capture_suppressed);
     editor.set_minimap_tracking_suspended(restore.minimap_tracking_suspended);
-    editor.source_view().set_editable(restore.view.editable);
+    editor.unlock_edits(restore.lock);
     editor
         .source_view()
         .set_cursor_visible(restore.view.cursor_visible);

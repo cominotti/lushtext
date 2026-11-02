@@ -55,6 +55,71 @@ pub const TOP_K_RECORD_INTERVAL_US: i64 = 5_000_000;
 /// How many worst stalls a `topk` record carries.
 pub const TOP_K: usize = 16;
 
+/// The post-open stage spans (`bound-post-open-settle`, design D1), in stage
+/// order. Each wraps the LushText call that runs the stage, from the
+/// activation turn that creates an editor page until the document settles;
+/// the driver attributes a dispatch to the span that contains it.
+pub const POST_OPEN_SPANS: [&str; 9] = [
+    "post_open_activation",
+    "post_open_editor_construct",
+    "post_open_language_catalog",
+    "post_open_language_attach",
+    "post_open_install_direct",
+    "post_open_install_slice",
+    "post_open_publish",
+    "post_open_highlight_attach",
+    "post_open_first_editor_frame",
+];
+
+/// The mark recorded on every `GtkSourceBuffer::highlight-updated` of an
+/// editor buffer: an unspanned dispatch that ends at it was highlighting.
+pub const HIGHLIGHT_UPDATED_MARK: &str = "highlight_updated";
+
+/// The mark recorded on every change of an editor's vertical adjustment
+/// `upper`: an unspanned dispatch that ends at it was line validation.
+pub const ADJUSTMENT_UPPER_MARK: &str = "adjustment_upper";
+
+/// The record of a `G_PRIORITY_LOW` settle sentinel idle that dispatched
+/// after the last post-open span or mark (design D1, review R25): no
+/// validation or highlighting idle, which run at higher priorities, was
+/// ready when it ran.
+pub const SETTLE_SENTINEL_MARK: &str = "settle_sentinel";
+
+/// The environment variable that sets how many of each window's first
+/// frames record their phase spans; the lane sets it only for post-open
+/// cases.
+pub const FRAME_PHASES_ENV: &str = "LUSHTEXT_RESPONSIVENESS_FRAME_PHASES";
+
+/// How many of each window's first frames record their phase spans when
+/// [`FRAME_PHASES_ENV`] is unset or unreadable.
+pub const DEFAULT_FRAME_PHASE_FRAMES: u32 = 4;
+
+/// The largest frame-phase window [`FRAME_PHASES_ENV`] may ask for: two
+/// minutes of 120 Hz frames, so a typo cannot leave the handlers on forever.
+pub const MAX_FRAME_PHASE_FRAMES: u32 = 14_400;
+
+/// The frame-phase window an [`FRAME_PHASES_ENV`] value asks for: a positive
+/// integer, clamped to [`MAX_FRAME_PHASE_FRAMES`]; anything else is the
+/// default.
+#[must_use]
+pub fn frame_phase_frames(value: Option<&str>) -> u32 {
+    value
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|frames| *frames > 0)
+        .map_or(DEFAULT_FRAME_PHASE_FRAMES, |frames| {
+            frames.min(MAX_FRAME_PHASE_FRAMES)
+        })
+}
+
+/// Whether a span or mark arms the settle sentinel: every post-open span and
+/// every mark except the sentinel's own record.
+#[must_use]
+pub fn arms_settle_sentinel(name: &str) -> bool {
+    name.starts_with("post_open_")
+        || name == HIGHLIGHT_UPDATED_MARK
+        || name == ADJUSTMENT_UPPER_MARK
+}
+
 /// The input event kinds the probe stamps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeInputKind {
@@ -205,6 +270,15 @@ pub enum ProbeRecord {
         /// When it ended.
         end_us: i64,
     },
+    /// One named instant (`bound-post-open-settle`): a
+    /// [`HIGHLIGHT_UPDATED_MARK`], an [`ADJUSTMENT_UPPER_MARK`] or a
+    /// [`SETTLE_SENTINEL_MARK`]; an identifier, never content.
+    Mark {
+        /// When the probe recorded it.
+        t_us: i64,
+        /// The mark's name.
+        name: &'static str,
+    },
     /// Records the channel dropped since the previous written record.
     Dropped {
         /// When the writer noticed.
@@ -338,6 +412,12 @@ impl ProbeRecord {
                     line,
                     "{{\"kind\":\"span\",\"t_us\":{t_us},\"name\":\"{name}\",\
                      \"start_us\":{start_us},\"end_us\":{end_us}}}"
+                );
+            }
+            Self::Mark { t_us, name } => {
+                let _ = write!(
+                    line,
+                    "{{\"kind\":\"mark\",\"t_us\":{t_us},\"name\":\"{name}\"}}"
                 );
             }
             Self::Dropped { t_us, count } => {
@@ -682,6 +762,7 @@ const fn record_time(record: &ProbeRecord) -> i64 {
         | ProbeRecord::Input { t_us, .. }
         | ProbeRecord::Im { t_us, .. }
         | ProbeRecord::Span { t_us, .. }
+        | ProbeRecord::Mark { t_us, .. }
         | ProbeRecord::Dropped { t_us, .. } => *t_us,
     }
 }
@@ -747,6 +828,10 @@ mod tests {
                 start_us: 5,
                 end_us: 75,
             },
+            ProbeRecord::Mark {
+                t_us: 90,
+                name: HIGHLIGHT_UPDATED_MARK,
+            },
         ]
         .map(|record| record.to_json_line());
         assert_eq!(
@@ -789,9 +874,47 @@ mod tests {
             "{\"kind\":\"span\",\"t_us\":80,\"name\":\"window_construction\",\
              \"start_us\":5,\"end_us\":75}\n"
         );
+        assert_eq!(
+            lines[9],
+            "{\"kind\":\"mark\",\"t_us\":90,\"name\":\"highlight_updated\"}\n"
+        );
         for line in lines {
             assert_eq!(line.matches('\n').count(), 1, "{line}");
         }
+    }
+
+    #[test]
+    fn post_open_span_names_are_unique_prefixed_and_arm_the_sentinel() {
+        let mut names = POST_OPEN_SPANS.to_vec();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), POST_OPEN_SPANS.len(), "{POST_OPEN_SPANS:?}");
+        for name in POST_OPEN_SPANS {
+            assert!(name.starts_with("post_open_"), "{name}");
+            assert!(arms_settle_sentinel(name), "{name}");
+        }
+        assert!(arms_settle_sentinel(HIGHLIGHT_UPDATED_MARK));
+        assert!(arms_settle_sentinel(ADJUSTMENT_UPPER_MARK));
+        // The sentinel's own record, and construction spans, re-arm nothing.
+        assert!(!arms_settle_sentinel(SETTLE_SENTINEL_MARK));
+        assert!(!arms_settle_sentinel("window_construction"));
+        assert!(!arms_settle_sentinel("frame_layout"));
+    }
+
+    #[test]
+    fn the_frame_phase_window_defaults_to_four_and_is_bounded() {
+        assert_eq!(DEFAULT_FRAME_PHASE_FRAMES, 4);
+        assert_eq!(frame_phase_frames(None), 4);
+        assert_eq!(frame_phase_frames(Some("")), 4);
+        assert_eq!(frame_phase_frames(Some("0")), 4);
+        assert_eq!(frame_phase_frames(Some("-3")), 4);
+        assert_eq!(frame_phase_frames(Some("many")), 4);
+        assert_eq!(frame_phase_frames(Some("1")), 1);
+        assert_eq!(frame_phase_frames(Some(" 240 ")), 240);
+        assert_eq!(
+            frame_phase_frames(Some("4294967295")),
+            MAX_FRAME_PHASE_FRAMES
+        );
     }
 
     #[test]

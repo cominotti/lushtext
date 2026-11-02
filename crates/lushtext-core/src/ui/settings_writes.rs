@@ -34,7 +34,11 @@
 //!   flush is one `apply()`, one backend write for every pending key (A39). It
 //!   runs no earlier than the first presented frame of the first window, at
 //!   most once per [`PERSISTENCE_WINDOW`] (a trailing debounce), on a
-//!   low-priority idle. It runs on the GTK thread: the keyfile backend takes no
+//!   low-priority idle, after [`FLUSH_INPUT_QUIET`] without user input (or
+//!   once [`FLUSH_INPUT_DEADLINE`] has passed): under the keyfile backend
+//!   the write is followed by GIO's own file-monitor dispatch, whose
+//!   writability check parses the mount table (10–13 ms on a host with many
+//!   mounts), and a key typed then waited behind it. It runs on the GTK thread: the keyfile backend takes no
 //!   lock, so a worker flush through the shared backend would race it, and one
 //!   through a private backend object would leave every other reader stale
 //!   until a file-monitor round trip (A40).
@@ -66,6 +70,19 @@ const SCHEMA_KEYS_HINT: usize = 64;
 
 /// The quiet time after the last write before pending values are flushed.
 pub const PERSISTENCE_WINDOW: Duration = Duration::from_millis(500);
+
+/// The input-quiet interval a flush waits for (`ui::input_quiet`): longer than
+/// the gap between keys of steady typing, so the flush and the keyfile
+/// backend's monitor dispatch that follows it land between keystrokes.
+/// Kind: wall-clock interval. Value: 256 ms, a power of two in milliseconds
+/// (rounded up from the 250 ms first chosen; `power-of-two-thresholds`).
+pub const FLUSH_INPUT_QUIET: Duration = Duration::from_millis(256);
+
+/// How long a flush waits for input quiet before it runs anyway, so
+/// continuous input delays persistence by at most this much. Kind:
+/// wall-clock ceiling. Value: 4,096 ms, a power of two in milliseconds
+/// (rounded down from the 5 s first chosen, so persistence is never later).
+pub const FLUSH_INPUT_DEADLINE: Duration = Duration::from_millis(4_096);
 
 /// What the settings writer reports to the shell-geometry evidence and the
 /// automation snapshot: counts only, never a key or a value.
@@ -178,14 +195,42 @@ impl SettingsWriter {
                 if writer.flush_idle.borrow().is_some() {
                     return;
                 }
-                let id = glib::idle_add_local_full(glib::Priority::LOW, || {
+                writer.flush_when_input_quiet(glib::monotonic_time());
+            });
+    }
+
+    /// Flush from a low-priority idle once input has been quiet for
+    /// [`FLUSH_INPUT_QUIET`], or once [`FLUSH_INPUT_DEADLINE`] has passed
+    /// since `armed_us`; until then wait in a timeout. Either source sits in
+    /// `flush_idle`, which [`Self::flush_now`] removes.
+    fn flush_when_input_quiet(&self, armed_us: i64) {
+        let quiet_us = i64::try_from(FLUSH_INPUT_QUIET.as_micros()).unwrap_or(i64::MAX);
+        let deadline_us = i64::try_from(FLUSH_INPUT_DEADLINE.as_micros()).unwrap_or(i64::MAX);
+        let now = glib::monotonic_time();
+        let since_input =
+            crate::ui::input_quiet::last_input_us().map_or(quiet_us, |input| now - input);
+        let since_armed = now - armed_us;
+        let id = if since_input >= quiet_us || since_armed >= deadline_us {
+            glib::idle_add_local_full(glib::Priority::LOW, || {
+                let writer = instance();
+                writer.flush_idle.replace(None);
+                writer.flush();
+                glib::ControlFlow::Break
+            })
+        } else {
+            let wait_us = (quiet_us - since_input)
+                .min(deadline_us - since_armed)
+                .max(1);
+            glib::timeout_add_local_once(
+                Duration::from_micros(u64::try_from(wait_us).unwrap_or(1)),
+                move || {
                     let writer = instance();
                     writer.flush_idle.replace(None);
-                    writer.flush();
-                    glib::ControlFlow::Break
-                });
-                writer.flush_idle.replace(Some(id));
-            });
+                    writer.flush_when_input_quiet(armed_us);
+                },
+            )
+        };
+        self.flush_idle.replace(Some(id));
     }
 
     /// Persist every pending value in one backend write.

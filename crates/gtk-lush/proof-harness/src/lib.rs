@@ -640,7 +640,10 @@ pub fn flush_after_delay(delay: Duration) {
 ///
 /// # Panics
 ///
-/// Panics when the predicate does not become true before `timeout`.
+/// Panics when the predicate does not become true before `timeout`. The
+/// panic names the caller's location, so a test with several waits reports
+/// the one that timed out.
+#[track_caller]
 pub fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {

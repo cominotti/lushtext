@@ -88,8 +88,13 @@ impl LushtextEditorPage {
     /// session makes the view non-editable and caret-free now, while the
     /// buffer still holds nothing of the body (setting `editable` invalidates
     /// every line, A37). A reload from disk re-derives: a body below
-    /// `L_PROTECT_EDIT` leaves Protected View, applied at the install terminal
-    /// by [`reassert_protected_view_properties`](Self::reassert_protected_view_properties).
+    /// `L_PROTECT_EDIT` leaves Protected View. The view becomes editable here
+    /// too, before the first slice, so that invalidation never covers the new
+    /// body (at the terminal it re-laid out the whole document); the edit
+    /// lock the install holds keeps the user out until then. The rest of the
+    /// exit (caret, drop targets, primary selection, find routing) is applied
+    /// at the install terminal by
+    /// [`reassert_protected_view_properties`](Self::reassert_protected_view_properties).
     pub(crate) fn begin_protected_install(
         &self,
         profile: &DocumentProfile,
@@ -135,6 +140,7 @@ impl LushtextEditorPage {
             self.set_protected_surfaces(true);
         } else if was_protected {
             runtime.exit_pending.set(true);
+            self.source_view().set_editable(true);
         }
     }
 
@@ -203,6 +209,10 @@ impl LushtextEditorPage {
             view.set_cursor_visible(false);
             self.request_protected_alert();
         } else if runtime.exit_pending.take() {
+            // A reload made the view editable before its first slice
+            // (`begin_protected_install`), so this is a no-op there and
+            // invalidates nothing; an abandoned (cancelled) protected install
+            // gets it back here, over a buffer its cancellation cleared.
             view.set_editable(true);
             view.set_cursor_visible(true);
             self.restore_protected_drop_targets();
@@ -350,11 +360,16 @@ impl LushtextEditorPage {
     /// Whether the entry undo is available now (the alert's Undo and Ctrl+Z,
     /// design D2): the session entered by an edit and that edit is still the
     /// newest undo step. Protected View admits no other buffer change, so
-    /// "the buffer can undo" is "the entry edit is the newest step".
+    /// "the buffer can undo" is "the entry edit is the newest step". Never
+    /// while a workflow holds the edit lock (a save): the lock refuses the
+    /// undo, so offering it would tear Protected View down over a giant
+    /// paragraph the undo never removed.
     #[must_use]
     pub fn protected_entry_undo_available(&self) -> bool {
-        self.protected_session()
-            .entry_undo_available(self.buffer().can_undo())
+        !self.edits_locked()
+            && self
+                .protected_session()
+                .entry_undo_available(self.buffer().can_undo())
     }
 
     /// Undo the edit that entered Protected View and leave it (design D2):
@@ -365,10 +380,22 @@ impl LushtextEditorPage {
     pub fn undo_protected_entry(&self) -> bool {
         let buffer = self.buffer();
         let is_entry_step = buffer.can_undo();
-        if !self.protected_session().entry_undo_available(is_entry_step) {
+        if !self.protected_entry_undo_available() {
             return false;
         }
+        // Tear down only once the undo has changed the buffer: an undo
+        // something refused would leave the giant paragraph, unfolded and
+        // editable.
+        let changed = std::rc::Rc::new(Cell::new(false));
+        let handler = {
+            let changed = std::rc::Rc::clone(&changed);
+            buffer.connect_changed(move |_| changed.set(true))
+        };
         buffer.undo();
+        buffer.disconnect(handler);
+        if !changed.get() {
+            return false;
+        }
         let tag = fold_tag(buffer.upcast_ref());
         remove_tag_where_applied(buffer.upcast_ref(), &tag);
         self.restore_document_scale_before_protected_entry();

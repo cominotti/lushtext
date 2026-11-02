@@ -60,13 +60,7 @@ impl LushtextEditorPage {
         self.imp().file_size.set(None);
         self.imp().load_state.set(EditorLoadState::Loading);
         self.imp().latest_load_failed.set(false);
-        // No language yet: the load's publication applies it once the body's
-        // profile says whether syntax is allowed, so a document whose scale
-        // gates syntax (every Protected View document) never pays for loading
-        // its language definition (about 30 ms for HTML, measured by the C2
-        // verdict inside `open_document`). `document_language_id` names the
-        // path's language meanwhile.
-        self.republish_document_identity_without_language();
+        self.republish_document_identity();
     }
 
     /// Re-derive the projections that follow any document-identity change.
@@ -78,62 +72,37 @@ impl LushtextEditorPage {
     /// preview follows a language flip (Save As to `notes.md`, a rename to
     /// `.txt`); during `open_document` no listener is registered yet.
     fn republish_document_identity(&self) {
-        self.reapply_language();
-        self.republish_document_identity_without_language();
-    }
-
-    fn republish_document_identity_without_language(&self) {
+        self.request_language_attach();
         self.schedule_minimap_refresh();
         self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
         self.fire_content_republished();
     }
 
-    /// Detect and apply syntax language from the current file path.
-    ///
-    /// The language is a projection of the path, so a path GtkSourceView cannot
-    /// classify clears it: renaming `notes.md` to `notes.txt` must stop the tab
-    /// claiming to be Markdown. An untitled tab has no path and keeps whatever
-    /// language it has.
-    ///
-    /// A language the document scale gated off is never re-applied, from any
-    /// caller: a rename or Save As changes the path, not the paragraphs the
-    /// gate measured.
-    pub(crate) fn reapply_language(&self) {
-        if !self.document_scale().syntax_enabled {
-            return;
-        }
-        let buffer = self.buffer();
-        if let Some(ref file_path) = *self.imp().file_path.borrow() {
-            let lang_manager = sourceview5::LanguageManager::default();
-            let language = lang_manager.guess_language(file_path.to_str(), None::<&str>);
-            if buffer.language() != language {
-                buffer.set_language(language.as_ref());
-            }
-        }
-    }
-
-    /// The id of the document's language: the buffer's own, or, while the
-    /// document scale holds syntax off (the gate clears the buffer language,
-    /// ledger A44) or a load is pending (its publication sets the language),
-    /// the language its path names.
+    /// The id of the document's language: the requested one while its
+    /// attach stage is pending (`bound-post-open-settle`, review R2), the
+    /// buffer's own, or, while the document scale holds syntax off (the gate
+    /// clears the buffer language, ledger A44), the language its path names.
     ///
     /// The gate removes highlighting, not the document's kind: a 2 MiB
     /// `notes.md` is still Markdown, and the Markdown preview must still
-    /// recognise it.
+    /// recognise it. A pending attach changes nothing for the kind either.
     #[must_use]
     pub fn document_language_id(&self) -> Option<gtk4::glib::GString> {
+        if self.language_attach_pending()
+            && let Some(id) = self.requested_language().id()
+        {
+            return Some(id.into());
+        }
         if let Some(language) = self.buffer().language() {
             return Some(language.id());
         }
-        if self.document_scale().syntax_enabled
-            && self.imp().load_state.get() != EditorLoadState::Loading
-        {
+        if self.document_scale().syntax_enabled {
             return None;
         }
         let path = self.imp().file_path.borrow();
         let path = path.as_ref()?;
-        sourceview5::LanguageManager::default()
+        crate::ui::language_catalog::manager()
             .guess_language(path.to_str(), None::<&str>)
             .map(|language| language.id())
     }

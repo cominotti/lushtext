@@ -29,6 +29,8 @@ mod inline_footnotes;
 mod markdown_plan;
 #[path = "properties/note.rs"]
 mod note;
+#[path = "properties/paced_slices.rs"]
+mod paced_slices;
 #[path = "properties/palette.rs"]
 mod palette;
 #[path = "properties/paragraph_boundary.rs"]

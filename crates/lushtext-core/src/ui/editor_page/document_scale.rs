@@ -45,7 +45,7 @@ use gtk4::prelude::*;
 use sourceview5::prelude::*;
 use std::cell::Cell;
 
-use crate::model::document_scale::{DocumentScale, ReducedFeatures};
+use crate::model::document_scale::{DocumentScale, ReducedFeatures, SyntaxLanguage};
 use crate::model::paragraph_boundary::{
     DocumentProfile, ParagraphDelimiter, ProfileConfig, ProfileSummary, paragraph_chars_from_line,
 };
@@ -53,10 +53,12 @@ use crate::model::paragraph_profile_watch::{
     DeleteFacts, InsertFacts, ProfileWatchState, WatchPlan, complete, plan_delete, plan_insert,
 };
 use crate::ui::accessibility as a11y;
+use crate::ui::responsiveness_probe::PostOpenSpan;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
 
 use super::LushtextEditorPage;
+use super::language_attach::RequestedLanguage;
 
 /// Most characters of the notice (and so of its announcement).
 pub const REDUCED_FEATURES_NOTICE_LIMIT: usize = 320;
@@ -236,11 +238,38 @@ impl LushtextEditorPage {
         }
     }
 
+    /// Whether the document is dense: some validation batch's worth of
+    /// paragraphs holds more than `V_SLICE` visible characters
+    /// (`bound-post-open-settle`, D6 and D9). Read from the live watch.
+    pub(crate) fn is_dense_document(&self) -> bool {
+        let state = &self.imp().document_scale;
+        crate::model::buffer_replacement::batch_exceeds_slice(
+            state.watch.get().summary(state.total_bytes.get()),
+        )
+    }
+
+    /// The language class the total-size syntax threshold depends on
+    /// (`bound-post-open-settle`): the requested language when known, else
+    /// the buffer's.
+    pub(crate) fn syntax_language(&self) -> SyntaxLanguage {
+        match self.requested_language() {
+            RequestedLanguage::Id(id) => SyntaxLanguage::from_language_id(Some(&id)),
+            RequestedLanguage::Plain => SyntaxLanguage::PlainText,
+            RequestedLanguage::Unknown => SyntaxLanguage::from_language_id(
+                self.buffer()
+                    .language()
+                    .map(|language| language.id())
+                    .as_deref(),
+            ),
+        }
+    }
+
     /// The scale an incoming body would leave this tab with, without
     /// applying it: its presentation features joined into the session, the
     /// current byte tiers kept.
     pub(crate) fn scale_for_incoming_profile(&self, profile: &DocumentProfile) -> DocumentScale {
-        DocumentScale::for_profile(profile.summary()).join(self.document_scale())
+        DocumentScale::for_profile_in(profile.summary(), self.syntax_language())
+            .join(self.document_scale())
     }
 
     /// Start a new document session from a load's worker profile.
@@ -250,7 +279,7 @@ impl LushtextEditorPage {
     /// default): it reloads byte-identical clean content, and features a
     /// session lost do not come back because memory pressure evicted the tab.
     pub(crate) fn begin_document_scale_session(&self, summary: ProfileSummary, keep_floor: bool) {
-        let loaded = DocumentScale::for_profile(summary);
+        let loaded = DocumentScale::for_profile_in(summary, self.syntax_language());
         let state = &self.imp().document_scale;
         let previous = state.scale.get();
         let (scale, watch) = if keep_floor {
@@ -328,6 +357,7 @@ impl LushtextEditorPage {
     /// Clear the language and its highlighting: removing a language removes
     /// its tags and changes no text (ledger A27).
     fn clear_language_for_scale(&self) {
+        self.cancel_language_attach();
         let buffer = self.buffer();
         buffer.set_highlight_syntax(false);
         if buffer.language().is_some() {
@@ -353,7 +383,8 @@ impl LushtextEditorPage {
         let scale = self.document_scale();
         let buffer = self.buffer();
         if scale.syntax_enabled {
-            self.reapply_language();
+            self.request_language_attach();
+            let _span = PostOpenSpan::begin("post_open_highlight_attach");
             buffer.set_highlight_syntax(true);
         } else {
             self.clear_language_for_scale();
@@ -490,7 +521,10 @@ impl LushtextEditorPage {
         let next = complete(state, ProfileConfig::PRODUCTION, plan, reads);
         scale_state.watch.set(next);
         let previous = scale_state.scale.get();
-        let candidate = DocumentScale::for_profile(next.summary(scale_state.total_bytes.get()));
+        let candidate = DocumentScale::for_profile_in(
+            next.summary(scale_state.total_bytes.get()),
+            self.syntax_language(),
+        );
         // Presentation features meet; the byte tiers stay those of the latest
         // load or save (an edit does not toggle undo, design Open Question 4).
         self.adopt_document_scale(previous, candidate.join(previous));
