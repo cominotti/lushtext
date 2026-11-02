@@ -766,6 +766,24 @@ pub fn test_window_with_restored_size(
     test_window()
 }
 
+/// Queue a redraw of `window` and wait until its frame clock has painted one
+/// frame. GTK runs work it deferred to `after-paint` in that frame, such as
+/// moving focus off a focused widget that was hidden (`gtkwindow.c`
+/// `maybe_unset_focus_and_default`), so an assertion about focus after a hide
+/// must wait for it rather than rely on no frame having painted yet.
+pub fn wait_for_painted_frame(window: &impl IsA<gtk4::Widget>) {
+    let clock = window
+        .frame_clock()
+        .expect("a realized window has a frame clock");
+    let painted = std::rc::Rc::new(std::cell::Cell::new(false));
+    let seen = std::rc::Rc::clone(&painted);
+    let handler = clock.connect_after_paint(move |_| seen.set(true));
+    window.queue_draw();
+    wait_until(Duration::from_secs(5), || painted.get());
+    clock.disconnect(handler);
+    flush_events();
+}
+
 /// Record `project(window)` at every `after-paint` of `window`'s frame clock,
 /// from its realize on, skipping frames where it returns `None`. The handler
 /// runs after the window's own handlers (connected earlier, in `constructed`),

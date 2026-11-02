@@ -39,7 +39,12 @@ local history, and careful recovery behavior.
   notice says which features are off and why. Undo is off and Local History is
   unavailable above 50 MB, files above 500 MB are refused, and the file's bytes
   are never changed. Documents separated only by `\r` or by U+2029 now load in
-  bounded slices like any other.
+  bounded slices like any other. A paragraph longer than 8,192 characters is
+  shown unwrapped (it wraps again once it is 1,024 characters shorter), while
+  every other paragraph keeps your wrap setting, because GTK lays out the whole
+  edited paragraph on every keystroke and an unwrapped layout costs about half.
+  The input method is given a bounded window of text around the cursor rather
+  than the whole paragraph.
 - **Protected View for giant paragraphs.** A document with a paragraph longer
   than 50,000 characters opens view-only: no caret, nothing can change it, and
   each giant paragraph shows its first 10,000 characters with the rest folded

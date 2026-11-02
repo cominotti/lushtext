@@ -4,6 +4,7 @@
 
 use std::cell::Cell;
 
+use gtk4::glib;
 use gtk4::prelude::*;
 
 /// Result of attempting to capture a render hold.
@@ -36,9 +37,14 @@ pub enum RenderHoldNotReady {
 /// cover: capture child pixels, show them in a `GtkPicture`, hide the live
 /// child, warm the live child under the cover, and clear the cover while
 /// restoring opacity. Callers own when those phases happen.
+///
+/// The hold refers to its live child **weakly**: it never keeps a child alive
+/// after its owner dropped it. A caller that retires a child (unparents and
+/// drops it) gets it finalized; a child pinned by its hold kept running, for
+/// example a retired `GtkSourceMap` that went on laying out the document.
 pub struct RenderHoldOverlay {
     overlay: gtk4::Overlay,
-    live_child: gtk4::Widget,
+    live_child: glib::WeakRef<gtk4::Widget>,
     cover: gtk4::Picture,
     active: Cell<bool>,
     warmed: Cell<bool>,
@@ -64,7 +70,7 @@ impl RenderHoldOverlay {
 
         Self {
             overlay: overlay.clone(),
-            live_child: live_child.clone().upcast(),
+            live_child: live_child.upcast_ref::<gtk4::Widget>().downgrade(),
             cover,
             active: Cell::new(false),
             warmed: Cell::new(false),
@@ -78,10 +84,10 @@ impl RenderHoldOverlay {
         &self.overlay
     }
 
-    /// Return the live child being covered.
+    /// Return the live child being covered, or `None` once its owner dropped it.
     #[must_use]
-    pub const fn live_child(&self) -> &gtk4::Widget {
-        &self.live_child
+    pub fn live_child(&self) -> Option<gtk4::Widget> {
+        self.live_child.upgrade()
     }
 
     /// Return the non-targetable cover picture for diagnostics.
@@ -123,7 +129,7 @@ impl RenderHoldOverlay {
         W: IsA<gtk4::Widget>,
     {
         self.clear();
-        self.live_child = live_child.clone().upcast();
+        self.live_child = live_child.upcast_ref::<gtk4::Widget>().downgrade();
     }
 
     /// Capture the live child into the cover picture.
@@ -135,36 +141,36 @@ impl RenderHoldOverlay {
         if self.is_active() {
             return RenderHoldCapture::AlreadyHolding;
         }
+        // A dropped live child is not mapped either.
+        let Some(live_child) = self.live_child.upgrade() else {
+            return RenderHoldCapture::NotReady(RenderHoldNotReady::NotMapped);
+        };
         if !self.overlay.is_mapped()
-            || !self.live_child.is_mapped()
+            || !live_child.is_mapped()
             || !self.overlay.is_drawable()
-            || !self.live_child.is_drawable()
+            || !live_child.is_drawable()
         {
             return RenderHoldCapture::NotReady(RenderHoldNotReady::NotMapped);
         }
         if self.overlay.width() <= 0
             || self.overlay.height() <= 0
-            || self.live_child.width() <= 0
-            || self.live_child.height() <= 0
+            || live_child.width() <= 0
+            || live_child.height() <= 0
         {
             return RenderHoldCapture::NotReady(RenderHoldNotReady::EmptyAllocation);
         }
-        let Some(child_bounds) = self.live_child.compute_bounds(&self.overlay) else {
+        let Some(child_bounds) = live_child.compute_bounds(&self.overlay) else {
             return RenderHoldCapture::NotReady(RenderHoldNotReady::EmptyAllocation);
         };
         if child_bounds.width() <= 0.0 || child_bounds.height() <= 0.0 {
             return RenderHoldCapture::NotReady(RenderHoldNotReady::EmptyAllocation);
         }
-        let Some(renderer) = self
-            .live_child
-            .native()
-            .and_then(|native| native.renderer())
-        else {
+        let Some(renderer) = live_child.native().and_then(|native| native.renderer()) else {
             return RenderHoldCapture::NotReady(RenderHoldNotReady::MissingRenderer);
         };
 
         let snapshot = gtk4::Snapshot::new();
-        self.overlay.snapshot_child(&self.live_child, &snapshot);
+        self.overlay.snapshot_child(&live_child, &snapshot);
         let Some(node) = snapshot.to_node() else {
             return RenderHoldCapture::NotReady(RenderHoldNotReady::EmptySnapshot);
         };
@@ -181,8 +187,8 @@ impl RenderHoldOverlay {
         let texture = renderer.render_texture(&node, Some(&viewport));
         self.cover.set_paintable(Some(&texture));
         self.cover.set_visible(true);
-        self.original_opacity.set(self.live_child.opacity());
-        self.live_child.set_opacity(0.0);
+        self.original_opacity.set(live_child.opacity());
+        live_child.set_opacity(0.0);
         self.active.set(true);
         self.warmed.set(false);
         RenderHoldCapture::Captured
@@ -193,8 +199,10 @@ impl RenderHoldOverlay {
         if !self.cover.is_visible() {
             return;
         }
-        self.live_child.set_opacity(self.original_opacity.get());
-        self.live_child.queue_draw();
+        if let Some(live_child) = self.live_child.upgrade() {
+            live_child.set_opacity(self.original_opacity.get());
+            live_child.queue_draw();
+        }
         self.warmed.set(true);
     }
 
@@ -205,8 +213,10 @@ impl RenderHoldOverlay {
 
     /// Clear the cover and restore live-child opacity.
     pub fn clear(&self) {
-        if self.active.get() || self.cover.is_visible() {
-            self.live_child.set_opacity(self.original_opacity.get());
+        if (self.active.get() || self.cover.is_visible())
+            && let Some(live_child) = self.live_child.upgrade()
+        {
+            live_child.set_opacity(self.original_opacity.get());
         }
         self.cover.set_paintable(None::<&gtk4::gdk::Paintable>);
         self.cover.set_visible(false);
@@ -228,9 +238,10 @@ impl RenderHoldOverlay {
 
     #[cfg(test)]
     fn force_active_for_test(&self) {
+        let live_child = self.live_child.upgrade().expect("live child");
         self.cover.set_visible(true);
-        self.original_opacity.set(self.live_child.opacity());
-        self.live_child.set_opacity(0.0);
+        self.original_opacity.set(live_child.opacity());
+        live_child.set_opacity(0.0);
         self.active.set(true);
         self.warmed.set(false);
     }
@@ -309,5 +320,32 @@ mod tests {
         assert!(!hold.is_warmed());
         assert_eq!(label.opacity(), 0.42);
         assert!(!hold.cover_is_visible());
+    }
+
+    #[test]
+    #[ignore = "requires an initialized GTK display"]
+    fn a_dropped_live_child_is_not_kept_alive() {
+        if !gtk_available() {
+            return;
+        }
+        let overlay = gtk4::Overlay::new();
+        let label = gtk4::Label::new(Some("live"));
+        overlay.set_child(Some(&label));
+        let hold = RenderHoldOverlay::new(&overlay, &label);
+        let weak = label.downgrade();
+
+        overlay.set_child(None::<&gtk4::Widget>);
+        drop(label);
+
+        assert!(
+            weak.upgrade().is_none(),
+            "the hold must not keep its child alive"
+        );
+        assert!(hold.live_child().is_none());
+        assert_eq!(
+            hold.capture(),
+            RenderHoldCapture::NotReady(RenderHoldNotReady::NotMapped)
+        );
+        hold.clear();
     }
 }

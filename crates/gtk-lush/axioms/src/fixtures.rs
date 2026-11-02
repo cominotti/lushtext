@@ -251,6 +251,23 @@ pub mod a44 {
     pub use crate::probes::a44::{DowngradingView, INSERTED_CHARS, tags_in_range};
 }
 
+/// The fixture and helpers the A54 probe drives, for its sample.
+pub mod a54 {
+    pub use crate::probes::a54::{
+        PARAGRAPH_CHARS, WINDOW_CHARS, connect_bounded_answer, fixture, view_im_context,
+    };
+}
+
+/// The fixture the A53 probe drives, for its sample.
+pub mod a53 {
+    pub use crate::probes::a53::{FirstCharacterWrap, PARAGRAPH_CHARS};
+}
+
+/// The fixture the A52 probe drives, for its sample.
+pub mod a52 {
+    pub use crate::probes::a52::{APPENDED_CHARS, PARAGRAPH_CHARS, SharedBufferViews};
+}
+
 /// The fixture the A45 probe drives, for its sample.
 pub mod a45 {
     pub use crate::probes::a45::{FRAMES_WAITED, TickPair};

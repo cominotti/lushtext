@@ -117,6 +117,15 @@ impl LushtextEditorPage {
         if source_map.parent().is_some() {
             imp.minimap_overlay.set_child(None::<&gtk4::Widget>);
         }
+        // Nothing else may keep the map: a retired map that stays alive also
+        // stays bound to the document buffer (through its view's `buffer`
+        // binding) and re-lays out every edited paragraph from its validation
+        // idle. The reflow freeze refers to its live child weakly for this
+        // reason. The weak reference below is evidence only.
+        let mut retired = imp.minimap.retired_maps.borrow_mut();
+        retired.retain(|map| map.upgrade().is_some());
+        retired.push(source_map.downgrade());
+        drop(retired);
         drop(source_map);
     }
 

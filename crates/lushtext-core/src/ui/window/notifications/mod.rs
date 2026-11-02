@@ -221,6 +221,11 @@ impl LushtextWindow {
     /// acts only while the projection ticket is still current.
     pub(super) fn wire_preview_document_alert(&self) {
         let alert = &*self.imp().preview_document_alert;
+        // The window decides where focus goes when the copy hides (the
+        // preview text, the editor, or nowhere), so the copy lets go of focus
+        // before it hides instead of leaving GTK a deferred move to an
+        // ancestor at the next painted frame.
+        alert.set_releases_focus_when_hidden(true);
         let forward = |action: InlineAlertAction| {
             let window_weak = self.downgrade();
             move || {

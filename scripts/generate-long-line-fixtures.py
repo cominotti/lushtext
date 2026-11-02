@@ -370,8 +370,12 @@ def write_paragraph_document(path: Path, delimiter: str, seed: int, length: int,
 
 
 # The keystroke fixture's caret anchors: no flavour's character mix contains
-# both `q` and `z`, so none occurs by chance in the generated text.
-KEYSTROKE_MARKERS = {"start": "zqzkstartzqz", "middle": "zqzkmiddlezqz", "end": "zqzkendzqz"}
+# both `q` and `z`, so none occurs by chance in the generated text. The short
+# paragraph right after the long one starts with its own marker: it is where
+# typing must be unaffected by anything a long paragraph turns off
+# (`explore-editing-long-paragraphs`).
+KEYSTROKE_MARKERS = {"start": "zqzkstartzqz", "middle": "zqzkmiddlezqz", "end": "zqzkendzqz", "short": "zqzkshortzqz"}
+KEYSTROKE_SHORT_PARAGRAPH_CHARS = 40
 KEYSTROKE_SHORT_LINES = 30
 # The start marker must fit the paragraph's first half, the middle and end
 # markers its second half, so the paragraph is exactly `size` characters.
@@ -386,6 +390,7 @@ def write_keystroke_document(path: Path, delimiter: str, seed: int, length: int,
     The paragraph starts with the start marker, holds the middle marker at
     ``length // 2`` and ends with the end marker; a flavour with an opener
     (``<style>`` for css) gets it on its own line just before the paragraph.
+    A short paragraph, starting with the short marker, follows it.
     """
     if length < KEYSTROKE_MIN_LENGTH:
         raise ValueError(f"keystroke paragraph must be at least {KEYSTROKE_MIN_LENGTH} characters for its markers")
@@ -416,6 +421,9 @@ def write_keystroke_document(path: Path, delimiter: str, seed: int, length: int,
     writer.text(middle)
     fill(writer, length - half - len(middle) - len(end))
     writer.text(end)
+    writer.end_paragraph()
+    writer.text(KEYSTROKE_MARKERS["short"])
+    fill(writer, KEYSTROKE_SHORT_PARAGRAPH_CHARS)
     writer.end_paragraph()
     short_lines(writer)
     return writer.close()
@@ -679,6 +687,17 @@ def self_test() -> int:
             body = Path(flavored["files"][0]["path"]).read_text(encoding="utf-8")
             expect(body.startswith(opener) and flavored["files"][0]["longest_paragraph"] == 9_000, f"{flavor} flavour opener and length")
             expect(flavored["files"][0]["sha256"] != first["files"][0]["sha256"], f"{flavor} flavour differs from css")
+        for flavor, ext in (("prose", "txt"), ("css", "html")):
+            keyed = generate("keystroke", 5_000, 11, scope, scope / f"k-{flavor}", ext=ext, flavor=flavor)
+            lines = Path(keyed["files"][0]["path"]).read_text(encoding="utf-8").split("\n")
+            long_index = next((i for i, line in enumerate(lines) if line.startswith(KEYSTROKE_MARKERS["start"])), None)
+            expect(long_index is not None, f"keystroke {flavor}: the long paragraph starts with its marker")
+            if long_index is not None:
+                long_line = lines[long_index]
+                expect(len(long_line) == 5_000 and keyed["files"][0]["longest_paragraph"] == 5_000, f"keystroke {flavor}: exact paragraph length")
+                expect(long_line.count(KEYSTROKE_MARKERS["middle"]) == 1 and long_line.endswith(KEYSTROKE_MARKERS["end"]), f"keystroke {flavor}: middle and end markers")
+                short = lines[long_index + 1]
+                expect(short.startswith(KEYSTROKE_MARKERS["short"]) and len(short) == len(KEYSTROKE_MARKERS["short"]) + KEYSTROKE_SHORT_PARAGRAPH_CHARS, f"keystroke {flavor}: the short paragraph follows")
         multibyte = generate("paragraph", 20_000, 3, scope, scope / "m", charset="multibyte")
         mb = multibyte["files"][0]
         expect(mb["longest_paragraph"] == 20_000 and mb["bytes"] > mb["chars"], "multibyte: chars < bytes")
@@ -729,13 +748,13 @@ def self_test() -> int:
                     expect(edited[0].index(KEYSTROKE_MARKERS["middle"]) == size // 2, f"{label}: the middle marker at the middle")
                     expect(entry["longest_paragraph"] == size or size < 80, f"{label}: the longest paragraph")
                     opener_lines = 1 if FLAVORS[flavor][0] else 0
-                    expect(entry["paragraphs"] == 2 * KEYSTROKE_SHORT_LINES + opener_lines + 1, f"{label}: paragraph count")
+                    expect(entry["paragraphs"] == 2 * KEYSTROKE_SHORT_LINES + opener_lines + 2, f"{label}: paragraph count")
                     others = {"lf": ("\r", "\u2029"), "cr": ("\n", "\u2029"), "crlf": ("\u2029",), "u2029": ("\n", "\r")}[delimiter]
                     expect(not any(other in data for other in others), f"{label}: only its delimiter")
                     if delimiter == "crlf":
                         expect(data.count("\r\n") == data.count("\r") == data.count("\n"), f"{label}: CR and LF only as pairs")
                     if flavor == "prose":
-                        expect(not any(c in data for c in "<>") and "zqz" not in data.replace(KEYSTROKE_MARKERS["start"], "").replace(KEYSTROKE_MARKERS["middle"], "").replace(KEYSTROKE_MARKERS["end"], ""), f"{label}: prose has no markup and no stray marker text")
+                        expect(not any(c in data for c in "<>") and "zqz" not in data.replace(KEYSTROKE_MARKERS["start"], "").replace(KEYSTROKE_MARKERS["middle"], "").replace(KEYSTROKE_MARKERS["end"], "").replace(KEYSTROKE_MARKERS["short"], ""), f"{label}: prose has no markup and no stray marker text")
         try:
             generate("keystroke", KEYSTROKE_MIN_LENGTH - 1, 4, scope, scope / "k-short")
         except ValueError:

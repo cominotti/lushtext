@@ -108,7 +108,9 @@ caller can wait for a `scroll_to` to land without counting frames.
 
 `RenderHoldOverlay` captures already-rendered child pixels into a non-targetable
 cover picture, hides the live child, lets callers warm the live child beneath
-the cover, and clears the cover with paired opacity restoration.
+the cover, and clears the cover with paired opacity restoration. It refers to
+the live child weakly, so a caller that retires the child (unparents and drops
+it) gets it finalized; `live_child()` returns `None` after that.
 
 The crate does not schedule reflow timing, own readiness predicates, or encode
 application-specific minimap behavior.

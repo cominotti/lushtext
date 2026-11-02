@@ -129,20 +129,25 @@ DENSE_REFERENCE_LENGTH = 120
 TOTAL_SIZES = {"quick": (1_000_000, 5_000_000), "full": (1_000_000, 2_000_000, 5_000_000, 10_000_000)}
 DELIMITER_LONGEST = {"quick": 250_000, "full": 1_894_586}
 SESSION_LENGTH = {"quick": 250_000, "full": 1_900_000}
-# The keystroke group (long-line-protected-view, C2): one editable paragraph of
-# the swept length between short lines, TYPE_BURST typed at its start, middle
-# and end. It re-measures C2's toolkit-floor exception: keystrokes in editable
-# paragraphs between L_EDIT_STALL (3,500) and L_PROTECT_EDIT (50,000) miss
-# B_interact (ledger A23, A26). Quick brackets the exception; full adds the
-# points around L_EDIT_STALL and inside the range. The top length leaves room
-# for the three typed bursts: a paragraph the bursts push past L_PROTECT_EDIT
-# enters Protected View mid-case and stops taking keys (the C2 verdict's
-# 49,990 case did), so it would no longer measure the editable exception.
+# The keystroke group (long-line-protected-view, C2; kept by
+# explore-editing-long-paragraphs, C5): one editable paragraph of the swept
+# length between short lines, TYPE_BURST typed at its start, middle and end,
+# and in the short paragraph right after it (C5: typing there must be
+# unaffected by anything the long paragraph turns off). It re-measures the
+# toolkit-floor exception: keystrokes in editable paragraphs between
+# L_EDIT_STALL (3,500) and L_PROTECT_EDIT (50,000) miss B_interact (ledger
+# A23, A26), which C5 reduces. Quick brackets the exception; full adds the
+# points around L_EDIT_STALL and inside the range, and C5's short lengths. The
+# top length leaves room for the typed bursts: a paragraph the bursts push past
+# L_PROTECT_EDIT enters Protected View mid-case and stops taking keys (the C2
+# verdict's 49,990 case did), so it would no longer measure the editable
+# exception; for the same reason C5's pre-C2 sweep points above 50,000 are not
+# editable lengths any more.
 L_PROTECT_EDIT = 50_000
 KEYSTROKE_EDGE = 49_950
-KEYSTROKE_LENGTHS = {"quick": (3_500, KEYSTROKE_EDGE), "full": (2_500, 3_500, 5_000, 10_000, 20_000, KEYSTROKE_EDGE)}
+KEYSTROKE_LENGTHS = {"quick": (3_500, 10_000, KEYSTROKE_EDGE), "full": (500, 1_000, 2_000, 2_500, 3_500, 5_000, 10_000, 20_000, KEYSTROKE_EDGE)}
 KEYSTROKE_SHAPES = (("css", "html"), ("prose", "txt"))
-KEYSTROKE_POSITIONS = ("start", "middle", "end")
+KEYSTROKE_POSITIONS = ("start", "middle", "end", "short")
 KEYSTROKE_GAP_S = float(os.environ.get("RESPONSIVENESS_KEYSTROKE_GAP_S", "0.15"))
 INVISIBLES_LENGTHS = {"quick": (250_000,), "full": (2_000, 10_000, 50_000, 250_000, 1_900_000)}
 INSTALL_SIZES = (100_000_000, 250_000_000, 500_000_000)
@@ -184,6 +189,8 @@ PHASE_KINDS = {
     "key-start": "interaction",
     "key-middle": "interaction",
     "key-end": "interaction",
+    "place-short": "navigation",
+    "key-short": "interaction",
     "verify": "navigation",
 }
 # The C6 cases (design D8): a ~200 kB Markdown document with the side-by-side
@@ -393,6 +400,36 @@ def phase_stall(parsed: dict, start_us: int, end_us: int) -> dict[str, Any]:
         "late_records": seen,
         "worst_at_us": worst_at,
         "ticks": ticks,
+    }
+
+
+def keystroke_stalls(parsed: dict, start_us: int, end_us: int, b_interact_us: int) -> dict[str, Any]:
+    """Per-keystroke stalls of one `key-*` phase (the keystroke group).
+
+    Each key press opens a window that ends at the next press (the last at
+    the phase end). Per window: the worst stall, and the summed stall time of
+    every late dispatch in it. The sum matters because a keystroke's work can
+    land in two dispatches that are each under B_interact (a second text view
+    re-laying the paragraph out from an idle) and the worst-stall figure alone
+    hides the second one.
+    """
+    presses = sorted(int(r["t_us"]) for r in parsed["records"]["input"] if r.get("event") == "key-press" and start_us <= int(r["t_us"]) <= end_us)
+    worst: list[int] = []
+    summed: list[int] = []
+    for index, press in enumerate(presses):
+        window_end = presses[index + 1] if index + 1 < len(presses) else end_us
+        stalls = [int(r["lateness_us"]) for r in overlapping_lates(parsed, press, window_end - 1) if int(r["t_us"]) >= press]
+        worst.append(max(stalls, default=0))
+        summed.append(sum(stalls))
+    return {
+        "keys": len(presses),
+        "worst_us": worst,
+        "summed_us": summed,
+        "worst_median_us": nearest_rank(worst, 50),
+        "worst_p90_us": nearest_rank(worst, 90),
+        "summed_median_us": nearest_rank(summed, 50),
+        "over_budget_keys": sum(1 for value in worst if value > b_interact_us),
+        "summed_over_budget_keys": sum(1 for value in summed if value > b_interact_us),
     }
 
 
@@ -2184,13 +2221,14 @@ class Runner:
         return find_key(self.snapshot(), "editor_match_count")
 
     def keystroke_interactions(self, phases: list[dict]) -> bool:
-        """The keystroke group: TYPE_BURST typed at three places in one paragraph.
+        """The keystroke group: TYPE_BURST typed at three places in one long paragraph and in the short one after it.
 
         Each position is placed in a `place-*` navigation phase (find the
         position's marker, close the search bar, collapse the selection to its
         end, so the caret sits just after the marker), then `key-*` types
         TYPE_BURST one key per KEYSTROKE_GAP_S. `verify` counts marker + burst
-        for each position and the burst overall; a burst that did not land at
+        for each position and the burst overall (and, as diagnostics, the marker
+        alone, the burst inside it and before it); a burst that did not land at
         its marker fails the case.
         """
         cap = self.cap_s
@@ -2211,14 +2249,17 @@ class Runner:
         def place(where: str):
             def body(inj, deadline):
                 count = self.match_count(markers[where], deadline)
+                surface_before = find_key(self.snapshot(), "active_transient_surface")
                 self.action("win", "next-match", None, deadline)
                 time.sleep(0.3)
-                placed[where] = {"matches": count}
+                placed[where] = {"matches": count, "surface_before": surface_before}
                 self.rd.tap(KEY_ESCAPE, inj)
                 time.sleep(0.3)
                 self.rd.tap(KEY_RIGHT, inj)
                 time.sleep(0.5)
-                placed[where]["search_visible_after"] = find_key(self.snapshot(), "editor_search_visible")
+                snap = self.snapshot()
+                placed[where]["surface_after"] = find_key(snap, "active_transient_surface")
+                placed[where]["search_visible_after"] = find_key(snap, "editor_search_visible")
                 return (True, "ok") if count == 1 else (False, f"marker-matches-{count}")
 
             return body
@@ -2240,6 +2281,12 @@ class Runner:
         def verify(inj, deadline):
             for where in positions:
                 verified[where] = self.match_count(markers[where] + TYPE_BURST, deadline)
+            # Diagnostics only (not part of the verdict): where a misplaced
+            # burst went relative to its marker.
+            for where in positions:
+                m = markers[where]
+                for label, q in (("marker", m), ("inside1", m[:1] + TYPE_BURST + m[1:4]), ("before", TYPE_BURST + m)):
+                    verified[f"{where}-{label}"] = self.match_count(q, deadline)
             verified["burst_anywhere"] = self.match_count(TYPE_BURST, deadline)
             verified["modified"] = find_key(self.snapshot(), "modified")
             self.rd.tap(KEY_ESCAPE, inj)
@@ -2648,6 +2695,8 @@ class Runner:
                 row["frames"] = frame_gap_p95(parsed, start, end)
                 row["input_to_frame"] = input_to_frame(parsed, phase.get("injections", []), budgets["REFERENCE_FRAME_US"], end)
                 row["im"] = im_summary(parsed, start, end)
+                if phase["name"].startswith("key-"):
+                    row["keystrokes"] = keystroke_stalls(parsed, start, end, budgets["B_INTERACT_US"])
                 if variant == "at":
                     row["at"] = at_summary(at_events, start, end)
             phase_rows.append(row)
@@ -3651,6 +3700,14 @@ def summarise_cases(rows: list[dict]) -> list[dict]:
         entry["noisy"] = entry.get("noisy", False) or bool(row.get("noisy"))
         entry["storage"] = row.get("storage", "unchecked")
         for phase in row.get("phases", []):
+            if phase.get("name") == "verify" and isinstance(phase.get("verified"), dict):
+                # A burst counts only when the search found it exactly once next
+                # to its position's marker.
+                unverified = entry.setdefault("unverified_positions", set())
+                for position in KEYSTROKE_POSITIONS:
+                    count = phase["verified"].get(position)
+                    if count is not None and count != 1:
+                        unverified.add(position)
             if "stall" not in phase:
                 if phase.get("status") in ("unavailable",):
                     entry["phases"].setdefault(phase["name"], {"status": "unavailable"})
@@ -3658,6 +3715,10 @@ def summarise_cases(rows: list[dict]) -> list[dict]:
             p = entry["phases"].setdefault(phase["name"], {"stalls": [], "frame_p95": [], "itf_us": [], "itf_frames": [], "im_calls": 0, "im_max_bytes": None, "at_events": 0, "at_max_payload": None, "status": []})
             p["stalls"].append(phase["stall"]["lateness_us"])
             p["status"].append(phase.get("status"))
+            if "keystrokes" in phase:
+                keys = p.setdefault("keys", {"worst": [], "summed": []})
+                keys["worst"].extend(phase["keystrokes"]["worst_us"])
+                keys["summed"].extend(phase["keystrokes"]["summed_us"])
             if phase["frames"].get("p95_gap_us") is not None:
                 p["frame_p95"].append(phase["frames"]["p95_gap_us"])
             for e in phase.get("input_to_frame", []):
@@ -3686,6 +3747,16 @@ def summarise_cases(rows: list[dict]) -> list[dict]:
                 frames = phase.pop("itf_frames")
                 phase["input_to_frame_max_us"] = max(itf) if itf else None
                 phase["input_to_frame_max_frames"] = max(frames) if frames else None
+            if "keys" in phase:
+                keys = phase.pop("keys")
+                phase["keystroke"] = {
+                    "keys": len(keys["worst"]),
+                    "worst_median_us": nearest_rank(keys["worst"], 50),
+                    "worst_p90_us": nearest_rank(keys["worst"], 90),
+                    "summed_median_us": nearest_rank(keys["summed"], 50),
+                }
+        if "unverified_positions" in entry:
+            entry["unverified_positions"] = sorted(entry["unverified_positions"])
         out.append(entry)
     return out
 
@@ -4083,6 +4154,26 @@ def render_markdown(report: dict) -> str:
             f"{entry.get('largest_composition_dispatch_us')} | {dispatches} | {stages} | {frames} |"
         )
     lines += [""] + render_post_open(report)
+    keystroke_rows = [
+        (case, name, phase["keystroke"])
+        for case in report["cases"]
+        for name, phase in case["phases"].items()
+        if phase.get("keystroke")
+    ]
+    if keystroke_rows:
+        lines += [
+            "",
+            "## Keystrokes",
+            "",
+            "Per keystroke: the worst stall between this key and the next, and the summed stall time of every late dispatch in that window.",
+            "",
+            "| Case | Variant | Phase | Keys | Worst median / p90 (us) | Summed median (us) |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        for case, name, keys in keystroke_rows:
+            position = name.removeprefix("key-")
+            verified = "" if position not in case.get("unverified_positions", []) else " (burst not verified: excluded)"
+            lines.append(f"| {case['case']} | {case['variant']} | {name}{verified} | {keys['keys']} | {keys['worst_median_us']} / {keys['worst_p90_us']} | {keys['summed_median_us']} |")
     lines += ["", "## Cases", "", "| Case | Variant | Outcomes | Phase | Stall median / max (us) | Frame p95 gap | Input-to-frame max (us / frames) | IM calls / max bytes | AT events / max payload |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case in report["cases"]:
         flags = (" noisy" if case.get("noisy") else "") + (f" storage:{case.get('storage')}" if case.get("storage") not in (None, "unchecked", "clean") else "")
@@ -4610,6 +4701,22 @@ def self_test() -> int:
     expect(classify(9_001, 2_000, 1_000, 8_000) == "over", "L - eps == B + 1 is over")
     expect(nearest_rank([5, 1, 9, 3], 95) == 9 and nearest_rank([5, 1, 9, 3], 50) == 3, "nearest-rank percentile")
 
+    # Keystroke windows: two sub-budget dispatches after one key sum above
+    # B_interact, which the worst stall alone does not show.
+    keys = {
+        "records": {
+            "input": [{"t_us": 0, "event": "key-press"}, {"t_us": 150_000, "event": "key-press"}, {"t_us": 150_500, "event": "key-release"}],
+            "late": [
+                {"t_us": 6_000, "ready_us": 0, "lateness_us": 6_000},
+                {"t_us": 40_000, "ready_us": 35_000, "lateness_us": 5_000},
+                {"t_us": 152_000, "ready_us": 150_000, "lateness_us": 2_000},
+            ],
+        }
+    }
+    per_key = keystroke_stalls(keys, 0, 300_000, 8_000)
+    expect(per_key["keys"] == 2 and per_key["worst_us"] == [6_000, 2_000], "keystroke windows split at the next press")
+    expect(per_key["summed_us"] == [11_000, 2_000] and per_key["over_budget_keys"] == 0 and per_key["summed_over_budget_keys"] == 1, "a second dispatch shows in the summed stall")
+
     # Probe log parsing and phase attribution (a stall overlapping the phase start counts).
     log = [
         json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000}),
@@ -4985,9 +5092,9 @@ def self_test() -> int:
     expect(length_verdict({"value": None, "reason": "no usable cases"}, 10_000) is None, "no usable cases is undecided")
     expect(hasattr(load_generator(), "generate"), "the fixture generator loads as a module")
 
-    # The keystroke group (C2's toolkit-floor exception): its case grid per
+    # The keystroke group (C2's toolkit-floor exception, reduced by C5): its case grid per
     # tier, the override, the phases' kinds, and the landing verification.
-    for tier, lengths in (("quick", (3_500, 49_950)), ("full", (2_500, 3_500, 5_000, 10_000, 20_000, 49_950))):
+    for tier, lengths in (("quick", (3_500, 10_000, 49_950)), ("full", (500, 1_000, 2_000, 2_500, 3_500, 5_000, 10_000, 20_000, 49_950))):
         grid = [c for c in build_cases(tier) if c.group == "keystroke"]
         ids = [c.id for c in grid]
         expected_ids = [f"keystroke/{n}/{flavor}/{ext}/wrap-{wrap}" for n in lengths for flavor, ext in (("css", "html"), ("prose", "txt")) for wrap in ("on", "off")]
@@ -5001,10 +5108,10 @@ def self_test() -> int:
     expect(all(PHASE_KINDS[f"key-{w}"] == "interaction" and PHASE_KINDS[f"place-{w}"] == "navigation" for w in KEYSTROKE_POSITIONS) and PHASE_KINDS["verify"] == "navigation", "keystroke phases: bursts are interactions, placement and verification navigation")
     expect(KEY_ESCAPE in ALLOWED_KEYSYMS, "Escape closes the search bar")
     expect(set(load_generator().KEYSTROKE_MARKERS) == set(KEYSTROKE_POSITIONS), "a marker per keystroke position")
-    landed = {"start": 1, "middle": 1, "end": 1, "burst_anywhere": 3}
+    landed = {"start": 1, "middle": 1, "end": 1, "short": 1, "burst_anywhere": 4}
     expect(keystroke_misses(landed, KEYSTROKE_POSITIONS) == [], "bursts at their markers pass")
-    expect(keystroke_misses({**landed, "middle": 0, "burst_anywhere": 3}, KEYSTROKE_POSITIONS) == ["middle"], "a burst away from its marker fails the case")
-    expect(keystroke_misses({**landed, "burst_anywhere": 4}, KEYSTROKE_POSITIONS) == ["burst-count"], "an extra burst fails the case")
+    expect(keystroke_misses({**landed, "middle": 0, "burst_anywhere": 4}, KEYSTROKE_POSITIONS) == ["middle"], "a burst away from its marker fails the case")
+    expect(keystroke_misses({**landed, "burst_anywhere": 5}, KEYSTROKE_POSITIONS) == ["burst-count"], "an extra burst fails the case")
     expect(keystroke_misses({"end": 1, "burst_anywhere": 1}, ["end"]) == [], "only the typed positions are checked")
     expect(keystroke_misses({"start": None, "burst_anywhere": None}, ["start"]) == ["start", "burst-count"], "a missing count fails the case")
     expect(find_key({"a": [{"b": None}, {"search": {"editor_match_count": 2}}]}, "editor_match_count") == 2 and find_key({"a": 1}, "x") is None, "find_key searches the snapshot tree")

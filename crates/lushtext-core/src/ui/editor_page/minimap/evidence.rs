@@ -99,6 +99,9 @@ pub struct MinimapEvidence {
     pub map_present: bool,
     /// Native maps built so far (construction plus rebuilds).
     pub maps_built: u64,
+    /// Retired maps still alive (expected 0): each one would stay bound to
+    /// the document buffer and lay out every edited paragraph again.
+    pub retired_maps_alive: usize,
     /// Whether a width-reflow settle burst is still pending.
     pub reflow_settle_pending: bool,
     /// Whether any queued minimap work is still pending.
@@ -212,6 +215,12 @@ impl LushtextEditorPage {
             projection_attached,
             map_present: source_map.is_some(),
             maps_built: minimap.maps_built.get(),
+            retired_maps_alive: minimap
+                .retired_maps
+                .borrow()
+                .iter()
+                .filter(|map| map.upgrade().is_some())
+                .count(),
             reflow_settle_pending,
             work_pending,
             viewport_bounds,

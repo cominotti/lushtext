@@ -139,7 +139,16 @@ Expected screen-reader behavior includes:
   and reasons only, never document content, and is bounded by the fixed feature
   set. A document refused by open admission keeps its `disabled` state and the
   sentence "This document is too large to open."; the former "Large document
-  mode is active." sentence (the retired 1 MB tier) is gone.
+  mode is active." sentence (the retired 1 MB tier) is gone. A paragraph
+  longer than the wrap threshold (8,192 characters) is shown unwrapped while
+  the rest of the document keeps wrapping; the list then names "word wrap of
+  the longest lines" under "very long lines". The word-wrap preference is not
+  changed.
+- The input method receives a bounded window of text around the cursor
+  (1,024 characters on each side, within the cursor's paragraph) when it asks
+  for surrounding text, instead of the whole paragraph; input methods that
+  read surrounding text (GNOME's IBus path) see what GTK's text-input protocol
+  sends anyway.
 - The reduced-features notice is an announced status-bar message (warning
   style) carrying the same list, published when the document's tab is the
   selected one, plus a persistent "Editor Features" row in the document

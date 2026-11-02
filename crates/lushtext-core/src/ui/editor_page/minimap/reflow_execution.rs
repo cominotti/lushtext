@@ -176,7 +176,11 @@ impl LushtextEditorPage {
         let render_hold = self.imp().minimap.render_hold.borrow();
         if let Some(render_hold) = render_hold.as_ref() {
             render_hold.warm_live_child();
-            debug_assert!(render_hold.live_child().opacity() >= 0.99);
+            debug_assert!(
+                render_hold
+                    .live_child()
+                    .is_none_or(|child| child.opacity() >= 0.99)
+            );
         }
     }
 
@@ -204,7 +208,11 @@ impl LushtextEditorPage {
         let render_hold = self.imp().minimap.render_hold.borrow();
         if let Some(render_hold) = render_hold.as_ref() {
             render_hold.clear();
-            debug_assert!(render_hold.live_child().opacity() >= 0.99);
+            debug_assert!(
+                render_hold
+                    .live_child()
+                    .is_none_or(|child| child.opacity() >= 0.99)
+            );
             debug_assert!(!render_hold.cover_is_visible());
         }
     }

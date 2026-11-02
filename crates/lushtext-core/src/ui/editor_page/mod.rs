@@ -25,6 +25,7 @@ pub(crate) mod local_history;
 mod minimap;
 mod monitor;
 mod overscroll;
+mod paragraph_wrap;
 #[cfg_attr(
     not(test),
     expect(
@@ -39,6 +40,7 @@ pub mod save;
 mod search;
 pub(crate) use search::search_prefill_text;
 mod style_scheme;
+mod surrounding_text;
 
 use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{
@@ -82,6 +84,7 @@ pub use minimap::MinimapEvidence;
 pub(crate) use minimap::{
     MinimapAdjustmentDiagnostics, MinimapNativeSliderDiagnostics, MinimapTextViewRect,
 };
+pub use paragraph_wrap::NO_WRAP_TAG;
 pub use protected_view::ProtectedViewEvidence;
 // `mod minimap;` stays private, matching the `load/`, `save/`, and
 // `buffer_replacement/` role homes in this directory. The three content-analysis

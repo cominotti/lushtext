@@ -230,10 +230,12 @@ fn project_preview_document_alert(
     let alert = &*imp.preview_document_alert;
     let selected_owner = selected_editor.map(LushtextEditorPage::notification_owner_id);
     let plan = policy::plan_preview_document_alert(preview_only, selected_owner, selected_view);
-    // GTK leaves focus on a button that hides itself, so focus on the copy is
-    // stranded once it hides. (The copy's own Dismiss can instead leave the
-    // window with no focus; the forward handles that, because only a click on
-    // the copy may move focus from nothing.)
+    // The copy releases focus before it hides (`set_releases_focus_when_hidden`,
+    // so GTK schedules no move to an ancestor at the next painted frame), which
+    // leaves the window with no focus: read whether focus was on it before the
+    // render that may hide it. (The copy's own Dismiss hides it before
+    // forwarding; the forward handles that, because only a click on the copy
+    // may move focus from nothing.)
     let focus_on_copy = focus_is_on(window, alert);
     alert.render_notification(plan.as_ref().and(selected_view));
     let hidden_now = plan.is_none();
@@ -304,10 +306,10 @@ pub(super) fn forward_preview_document_alert(window: &LushtextWindow, action: In
     match selected {
         Some(editor) if current => {
             editor.info_bar().activate(action);
-            // The copy's own Dismiss hides it before forwarding, which can
-            // leave the window with no focus widget at all. That is stranded
-            // too, but only here: a resolve the user did not start from the
-            // copy must not move focus.
+            // The copy's own Dismiss hides it before forwarding, releasing
+            // focus, which leaves the window with no focus widget at all. That
+            // is stranded too, but only here: a resolve the user did not start
+            // from the copy must not move focus.
             if imp.preview_mode.get()
                 && imp
                     .notification_projection
