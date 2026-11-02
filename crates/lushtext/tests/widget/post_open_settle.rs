@@ -516,7 +516,7 @@ fn test_install_replacement_and_save_never_toggle_editable() {
 /// (`insert-at-cursor`, the keybinding signal typing reaches), a paste from
 /// the clipboard, an interactive insert (the route drag-and-drop and
 /// input-method commits take: `gtk_text_buffer_insert_interactive`), a
-/// deletion, and undo.
+/// deletion, a paintable, a child anchor, and undo.
 fn attempt_every_edit_route(editor: &LushtextEditorPage) {
     let view = editor.source_view();
     view.emit_by_name::<()>("insert-at-cursor", &[&"KEY"]);
@@ -524,6 +524,12 @@ fn attempt_every_edit_route(editor: &LushtextEditorPage) {
     view.emit_paste_clipboard();
     let buffer = editor.buffer();
     let _ = buffer.insert_interactive_at_cursor("DROP", true);
+    // A paintable and a child anchor each add U+FFFC through their own
+    // signals, not `insert-text`.
+    let mut at = buffer.end_iter();
+    buffer.insert_paintable(&mut at, &gtk4::gdk::Paintable::new_empty(1, 1));
+    let mut at = buffer.end_iter();
+    buffer.insert_child_anchor(&mut at, &gtk4::TextChildAnchor::new());
     let (mut start, mut end) = buffer.bounds();
     buffer.delete(&mut start, &mut end);
     buffer.undo();
@@ -597,6 +603,134 @@ fn test_every_edit_route_is_refused_while_a_save_owns_the_buffer() {
     assert!(editor.buffer().can_undo());
     editor.buffer().undo();
     assert_eq!(crate::common::editor_text(&editor), "start\n");
+}
+
+#[test]
+fn test_a_user_action_during_a_replacement_leaves_bookmark_lines_alone() {
+    // GTK brackets a key press in a user action even when the edit lock
+    // refuses the insert; the bookmark reconcile then read marks the
+    // half-cleared buffer had moved, and persisted those lines.
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = dense(710, 400);
+    let path = write(&dir, "dense-bookmark.txt", &text);
+    let editor = opened(&window, &path);
+    wait_until(SETTLE_BUDGET, || {
+        let evidence = window.notes_evidence();
+        evidence.active_document_file_backed && evidence.active_document_sidecar_resolved
+    });
+    let buffer = editor.buffer();
+    buffer.place_cursor(&buffer.iter_at_line(300).expect("line 300"));
+    let _ = editor.toggle_bookmark_at_cursor();
+    assert_eq!(editor.bookmark_records().first().map(|b| b.line), Some(300));
+    let changes = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let counted = changes.clone();
+    editor.connect_bookmarks_changed(move || counted.set(counted.get() + 1));
+
+    let outcomes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    editor.replace_buffer_for_test(
+        text,
+        1,
+        std::rc::Rc::new(std::cell::Cell::new(true)),
+        outcomes.clone(),
+    );
+    // One dispatch at a time until the old text is partly cleared.
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + SETTLE_BUDGET;
+    while editor.buffer().line_count() > 300 && outcomes.borrow().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the clear never started"
+        );
+        context.iteration(true);
+    }
+    assert!(
+        outcomes.borrow().is_empty(),
+        "the replacement already finished"
+    );
+    buffer.begin_user_action();
+    buffer.end_user_action();
+    assert_eq!(
+        changes.get(),
+        0,
+        "a user action during the replacement reconciled the bookmarks"
+    );
+    wait_until(SETTLE_BUDGET, || !outcomes.borrow().is_empty());
+}
+
+/// The view's text `GtkDropTarget`s (GtkTextView's own, which accepts a
+/// string), as GTK's drop dispatch would find them.
+fn drop_targets(editor: &LushtextEditorPage) -> Vec<gtk4::DropTarget> {
+    let controllers = editor.source_view().observe_controllers();
+    (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index))
+        .filter_map(|item| item.downcast::<gtk4::DropTarget>().ok())
+        .filter(|target| {
+            target
+                .formats()
+                .is_some_and(|formats| formats.contains_type(glib::Type::STRING))
+        })
+        .collect()
+}
+
+/// Drive every drop target's `drop` with `text`, as GTK's drop dispatch does
+/// (the ledger A63 probe's method). Returns whether any target reported the
+/// drop done. (`motion` is not driven: without a real `GdkDrop` the view's
+/// motion handler reads a null drop.)
+fn drop_text(editor: &LushtextEditorPage, text: &str) -> bool {
+    let mut accepted = false;
+    for target in drop_targets(editor) {
+        accepted |= target.emit_by_name::<bool>(
+            "drop",
+            &[&glib::BoxedValue(text.to_value()), &5.0f64, &5.0f64],
+        );
+    }
+    accepted
+}
+
+#[test]
+fn test_a_drop_is_refused_while_a_save_owns_the_buffer() {
+    // The view stays editable under the edit lock, so GtkTextView's drop
+    // handler reported a drop the buffer refused as done
+    // (`gtk_text_buffer_insert_interactive` returns TRUE), and a MOVE drag's
+    // source then deleted its text: gone from both ends.
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write(&dir, "save-drop.txt", "start\n");
+    let editor = opened(&window, &path);
+    let typed = crate::common::short_lines('x', 2_500_001);
+    let mut end = editor.buffer().end_iter();
+    let _ = editor.buffer().insert_interactive(&mut end, &typed, true);
+    editor.reset_transient_save_admission_for_test();
+    editor.pause_next_save_snapshot_for_test();
+    let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+    let saved_result = saved.clone();
+    editor.save_file_async(move |result| saved_result.set(Some(result.is_ok())));
+    wait_until(SETTLE_BUDGET, || editor.save_evidence().capture_in_flight);
+    assert!(!editor.accepts_user_edits());
+    assert!(
+        !drop_text(&editor, "DROPPED"),
+        "a drop was reported done while the save held the edit lock"
+    );
+    editor.resume_save_snapshot_for_test();
+    wait_until(SETTLE_BUDGET, || saved.get().is_some());
+    assert_eq!(saved.get(), Some(true));
+    assert_eq!(
+        crate::common::editor_text(&editor),
+        format!("start\n{typed}")
+    );
+    // Unlocked again: the drop target is back and a drop lands.
+    assert!(editor.accepts_user_edits());
+    assert!(
+        !drop_targets(&editor).is_empty(),
+        "the drop target did not come back"
+    );
+    assert!(drop_text(&editor, "DROPPED"));
+    assert!(crate::common::editor_text(&editor).contains("DROPPED"));
 }
 
 #[test]

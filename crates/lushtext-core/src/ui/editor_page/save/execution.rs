@@ -19,6 +19,7 @@
 //! still be admitted; [`SaveCompletionTicket`] decides whether a *completed*
 //! worker result may still mutate the editor. Both stay.
 
+use crate::ui::editor_page::edit_lock::EditLock;
 use crate::ui::editor_page::protected_view::seams::ProtectedTextSource;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -51,8 +52,8 @@ use super::{SaveCallback, evidence};
 /// The load workflow keeps its own equivalent inside `LoadInstallationState`.
 /// They are deliberately not shared: each workflow owns the flags it suspended,
 /// so neither has to reach into the other's residual state.
-#[derive(Clone, Copy)]
 pub(super) struct SaveViewInteractivity {
+    lock: EditLock,
     cursor_visible: bool,
 }
 
@@ -60,18 +61,18 @@ impl SaveViewInteractivity {
     fn suspend(editor: &LushtextEditorPage) -> Self {
         let view = editor.source_view();
         let captured = Self {
+            // The buffer-level lock, not `set_editable(false)`: restoring
+            // `editable` would invalidate every line of the saved document
+            // (edit_lock.rs).
+            lock: editor.lock_edits(),
             cursor_visible: view.is_cursor_visible(),
         };
-        // The buffer-level lock, not `set_editable(false)`: restoring
-        // `editable` would invalidate every line of the saved document
-        // (edit_lock.rs).
-        editor.lock_edits();
         view.set_cursor_visible(false);
         captured
     }
 
     fn restore(self, editor: &LushtextEditorPage) {
-        editor.unlock_edits();
+        editor.unlock_edits(self.lock);
         editor.source_view().set_cursor_visible(self.cursor_visible);
     }
 }

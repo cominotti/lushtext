@@ -267,19 +267,31 @@ impl LushtextEditorPage {
         if state.source.borrow().is_some() || state.cursor.get().is_none() {
             return;
         }
-        let generation = state.generation.get();
-        let editor = self.downgrade();
-        let source = glib::idle_add_local_full(glib::Priority::LOW, move || {
-            let Some(editor) = editor.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if editor.imp().restyle.generation.get() != generation || !editor.reveal_one_range() {
-                editor.imp().restyle.source.borrow_mut().take();
-                return glib::ControlFlow::Break;
-            }
-            glib::ControlFlow::Continue
-        });
-        state.source.replace(Some(source));
+        self.queue_reveal(state.generation.get());
+    }
+
+    /// Queue the next reveal dispatch at `G_PRIORITY_LOW`; it waits for the
+    /// frame that shows the latest key first (`input_quiet::paced_idle`).
+    fn queue_reveal(&self, generation: u64) {
+        let (editor, store) = (self.downgrade(), self.downgrade());
+        crate::ui::input_quiet::paced_idle(
+            glib::Priority::LOW,
+            move || {
+                let Some(editor) = editor.upgrade() else {
+                    return;
+                };
+                let state = &editor.imp().restyle;
+                state.source.borrow_mut().take();
+                if state.generation.get() == generation && editor.reveal_one_range() {
+                    editor.queue_reveal(generation);
+                }
+            },
+            move |source| {
+                if let Some(editor) = store.upgrade() {
+                    editor.imp().restyle.source.replace(Some(source));
+                }
+            },
+        );
     }
 
     /// Reveal the next range that is still hidden; returns whether another

@@ -74,11 +74,15 @@ pub const PERSISTENCE_WINDOW: Duration = Duration::from_millis(500);
 /// The input-quiet interval a flush waits for (`ui::input_quiet`): longer than
 /// the gap between keys of steady typing, so the flush and the keyfile
 /// backend's monitor dispatch that follows it land between keystrokes.
-pub const FLUSH_INPUT_QUIET: Duration = Duration::from_millis(250);
+/// Kind: wall-clock interval. Value: 256 ms, a power of two in milliseconds
+/// (rounded up from the 250 ms first chosen; `power-of-two-thresholds`).
+pub const FLUSH_INPUT_QUIET: Duration = Duration::from_millis(256);
 
 /// How long a flush waits for input quiet before it runs anyway, so
-/// continuous input delays persistence by at most this much.
-pub const FLUSH_INPUT_DEADLINE: Duration = Duration::from_secs(5);
+/// continuous input delays persistence by at most this much. Kind:
+/// wall-clock ceiling. Value: 4,096 ms, a power of two in milliseconds
+/// (rounded down from the 5 s first chosen, so persistence is never later).
+pub const FLUSH_INPUT_DEADLINE: Duration = Duration::from_millis(4_096);
 
 /// What the settings writer reports to the shell-geometry evidence and the
 /// automation snapshot: counts only, never a key or a value.

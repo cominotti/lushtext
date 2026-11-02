@@ -8,6 +8,7 @@
 //! exactly-once terminal cleanup. Every decision it makes about *what* to do
 //! next is delegated to [`super::policy`]; what remains here is *how*.
 
+use crate::ui::editor_page::edit_lock::EditLock;
 use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
 use crate::ui::editor_page::protected_view::policy::WholeContentInstall;
 use std::cell::RefCell;
@@ -330,8 +331,8 @@ impl BufferReplacementRequest {
 }
 
 /// The editor projections one replacement suspends, captured for exact restore.
-#[derive(Clone, Copy)]
 struct ReplacementGuard {
+    lock: EditLock,
     cursor_visible: bool,
     highlight_syntax: bool,
     minimap_tracking_suspended: bool,
@@ -540,6 +541,10 @@ fn begin_guard(editor: &LushtextEditorPage) -> ReplacementGuard {
     let view = editor.source_view();
     let buffer = editor.buffer();
     let guard = ReplacementGuard {
+        // The buffer-level lock, not `set_editable(false)`: restoring
+        // `editable` would invalidate every line of the replaced document
+        // (edit_lock.rs).
+        lock: editor.lock_edits(),
         cursor_visible: view.is_cursor_visible(),
         highlight_syntax: buffer.is_highlight_syntax(),
         minimap_tracking_suspended: imp.minimap.tracking_suspended.replace(true),
@@ -558,9 +563,6 @@ fn begin_guard(editor: &LushtextEditorPage) -> ReplacementGuard {
     // of a dense replacement cost hundreds of milliseconds. The new text gets
     // its own marks from its workflow's terminal.
     editor.clear_modified_line_marks();
-    // The buffer-level lock, not `set_editable(false)`: restoring `editable`
-    // would invalidate every line of the replaced document (edit_lock.rs).
-    editor.lock_edits();
     view.set_cursor_visible(false);
     buffer.set_highlight_syntax(false);
     editor.refresh_accessibility_metadata();
@@ -574,7 +576,7 @@ fn restore_guard(editor: &LushtextEditorPage, guard: ReplacementGuard) {
         .set(guard.projection_suspended);
     editor.set_local_history_capture_suppressed(guard.history_capture_suppressed);
     editor.set_minimap_tracking_suspended(guard.minimap_tracking_suspended);
-    editor.unlock_edits();
+    editor.unlock_edits(guard.lock);
     editor
         .source_view()
         .set_cursor_visible(guard.cursor_visible);
@@ -791,17 +793,19 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 /// Schedule a dense body's next insertion turn from an idle below
 /// `GTK_TEXT_VIEW_PRIORITY_VALIDATE`, so GtkTextView's validation idle lays
 /// out the previous slice first and each validation holds one slice's lines
-/// (`bound-post-open-settle`, review R14, ledger A70).
+/// (`bound-post-open-settle`, review R14, ledger A70). A turn waits for the
+/// frame that shows the latest key first (`input_quiet::paced_idle`).
 fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let session_for_source = Rc::clone(session);
-    let source_id = glib::idle_add_local_full(
+    let (session_for_step, session_for_store) = (Rc::clone(session), Rc::downgrade(session));
+    crate::ui::input_quiet::paced_idle(
         crate::ui::editor_page::load::PACED_SLICE_PRIORITY,
-        move || {
-            run_turn(&session_for_source);
-            glib::ControlFlow::Break
+        move || run_turn(&session_for_step),
+        move |source_id| {
+            if let Some(session) = session_for_store.upgrade() {
+                session.borrow_mut().source_id = Some(source_id);
+            }
         },
     );
-    session.borrow_mut().source_id = Some(source_id);
 }
 
 fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {

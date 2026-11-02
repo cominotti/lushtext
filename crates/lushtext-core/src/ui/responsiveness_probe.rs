@@ -600,6 +600,37 @@ mod measurement {
         })
     }
 
+    /// The lane's in-process restyle triggers (`bound-post-open-settle`,
+    /// review S4): `app.probe-set-word-wrap(b)` and `app.probe-set-font(s)`
+    /// write the setting through the coalescing writer, whose shared instance
+    /// every reader uses, so the restyle runs in the action's own dispatch,
+    /// the way a Preferences switch does. An external keyfile write instead
+    /// reached the app through GIO's file monitor, whose writability check
+    /// (about 5-8.5 ms, mount-table parsing) the lane then charged to the
+    /// restyle. Measurement build only, never in the action catalog.
+    fn install_restyle_triggers(app: &gtk4::Application) {
+        use gtk4::gio;
+        use gtk4::prelude::*;
+        let wrap = gio::SimpleAction::new("probe-set-word-wrap", Some(glib::VariantTy::BOOLEAN));
+        wrap.connect_activate(|_, value| {
+            if let Some(on) = value.and_then(glib::Variant::get::<bool>) {
+                crate::ui::settings_writes::set_boolean(crate::config::keys::WORD_WRAP, on);
+            }
+        });
+        app.add_action(&wrap);
+        let font = gio::SimpleAction::new("probe-set-font", Some(glib::VariantTy::STRING));
+        font.connect_activate(|_, value| {
+            if let Some(name) = value.and_then(glib::Variant::get::<String>) {
+                crate::ui::settings_writes::set_boolean(
+                    crate::config::keys::USE_SYSTEM_FONT,
+                    false,
+                );
+                crate::ui::settings_writes::set_string(crate::config::keys::CUSTOM_FONT, &name);
+            }
+        });
+        app.add_action(&font);
+    }
+
     pub(super) fn install(app: &gtk4::Application) {
         if probe().is_some() {
             return;
@@ -637,6 +668,7 @@ mod measurement {
             _watchdog: RefCell::new(None),
         });
         PROBE.with(|slot| slot.replace(Some(Rc::clone(&probe))));
+        install_restyle_triggers(app);
         probe.writer.send(ProbeRecord::Start {
             t_us: glib::monotonic_time(),
             pid: std::process::id(),

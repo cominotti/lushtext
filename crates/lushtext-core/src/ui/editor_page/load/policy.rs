@@ -296,16 +296,25 @@ pub(crate) const fn publishes_user_cancellation(
 /// shorter than the debounce windows. The only time-based settle clause; it
 /// says "quiet", not "complete", because neither GtkSourceView nor
 /// GtkTextView exposes a completion signal.
+///
+/// Kind: wall-clock interval, µs. Rounding: 100 ms, not a power of two;
+/// deferred to `power-of-two-thresholds`.
 pub const SETTLE_QUIET_US: i64 = 100_000;
 
 /// How long the window must have seen no key press, button press, scroll
 /// start or touch begin before a deferred language attach may run (design
 /// D2's fallback): two reference frames.
+///
+/// Kind: wall-clock interval, µs, derived (2 × `REFERENCE_FRAME_US`, 16,666);
+/// no rounding of its own.
 pub const INPUT_QUIET_US: i64 = 2 * crate::model::responsiveness_budget::REFERENCE_FRAME_US as i64;
 
 /// The ceiling on that wait, from the editor's first frame: after it the
 /// attach runs at the next low-priority dispatch whatever the input (review R6).
-pub const ATTACH_DEADLINE_US: i64 = 2_000_000;
+///
+/// Kind: wall-clock ceiling, µs. Value: 2,048 ms, a power of two in
+/// milliseconds (rounded up from the 2 s first chosen).
+pub const ATTACH_DEADLINE_US: i64 = 2_048_000;
 
 /// The facts the settle predicate reads, all live state of one editor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

@@ -34,6 +34,7 @@
 //! counter. Both paths converge on [`complete_loaded_installation`], so the
 //! published result cannot differ between them.
 
+use crate::ui::editor_page::edit_lock::EditLock;
 use crate::ui::editor_page::protected_view::execution::ProtectedInstallSource;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -65,14 +66,13 @@ use super::{evidence, retirement};
 /// The save workflow keeps its own equivalent in `save/execution.rs`. They are
 /// deliberately not shared: each workflow owns the flags it suspended, so
 /// neither has to reach into the other's state.
-#[derive(Clone, Copy)]
 pub(super) struct ViewInteractivityState {
     cursor_visible: bool,
 }
 
 /// Projection and view flags restored after one complete or cancelled install.
-#[derive(Clone, Copy)]
 pub(super) struct LoadInstallationState {
+    lock: EditLock,
     view: ViewInteractivityState,
     minimap_tracking_suspended: bool,
     history_capture_suppressed: bool,
@@ -92,7 +92,8 @@ pub(crate) struct ChunkedLoadInstall {
     /// characters (`bound-post-open-settle`, D6.1).
     pub(super) budget: SliceBudget,
     pub(super) permit: Option<TransientLoadPermit>,
-    pub(super) restore: LoadInstallationState,
+    /// Taken once, by the terminal that gives the suspension back.
+    pub(super) restore: Option<LoadInstallationState>,
     pub(super) phase: LoadInstallPhase,
     pub(super) terminal: bool,
     pub(super) slice_count: u64,
@@ -124,14 +125,19 @@ pub(crate) const PACED_SLICE_PRIORITY: glib::Priority = glib::Priority::DEFAULT_
 /// GtkTextView's incremental validation idle lays out the previous slice's
 /// new lines first, so each validation dispatch holds one slice's lines, and
 /// the slices follow each other at main-loop speed (pacing by painted frames
-/// took 16.7 s for an 11 MiB document against main's 1.9 s).
+/// took 16.7 s for an 11 MiB document against main's 1.9 s). A slice waits
+/// for the frame that shows the latest key first (`input_quiet::paced_idle`).
 fn schedule_paced_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
-    let session_for_source = Rc::clone(session);
-    let source_id = glib::idle_add_local_full(PACED_SLICE_PRIORITY, move || {
-        run_install_slice(&session_for_source);
-        glib::ControlFlow::Break
-    });
-    session.borrow_mut().source_id = Some(source_id);
+    let (session_for_step, session_for_store) = (Rc::clone(session), Rc::downgrade(session));
+    crate::ui::input_quiet::paced_idle(
+        PACED_SLICE_PRIORITY,
+        move || run_install_slice(&session_for_step),
+        move |source_id| {
+            if let Some(session) = session_for_store.upgrade() {
+                session.borrow_mut().source_id = Some(source_id);
+            }
+        },
+    );
 }
 
 /// Schedule the next bounded slice of one installation.
@@ -338,7 +344,7 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
             state.end_mark.take(),
             state.source_id.take(),
             state.loaded.take(),
-            state.restore,
+            state.restore.take(),
             state.permit.take(),
             state.slice_count,
             state.generation,
@@ -357,6 +363,12 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     let Some(editor) = editor else {
         drop(loaded);
         drop(permit);
+        return;
+    };
+    let Some(restore) = restore else {
+        // Another terminal already gave the suspension back.
+        conclude_installation(&editor, session, permit);
+        drop(loaded);
         return;
     };
     editor.imp().load.installation_slice_count.set(slice_count);
@@ -648,7 +660,7 @@ fn start_chunked_install(
         source_id: None,
         budget: SliceBudget::for_profile(loaded_summary),
         permit,
-        restore,
+        restore: Some(restore),
         phase: LoadInstallPhase::ClearingExisting,
         terminal: false,
         slice_count: 0,
@@ -699,6 +711,10 @@ fn begin_load_installation(
     let imp = editor.imp();
     let view = editor.source_view();
     let restore = LoadInstallationState {
+        // The buffer-level lock, not `set_editable(false)`: restoring
+        // `editable` would invalidate every line of the installed document
+        // (edit_lock.rs).
+        lock: editor.lock_edits(),
         view: ViewInteractivityState {
             cursor_visible: view.is_cursor_visible(),
         },
@@ -718,9 +734,6 @@ fn begin_load_installation(
     // of a dense replacement cost hundreds of milliseconds. The new text gets
     // its own marks from its workflow's terminal.
     editor.clear_modified_line_marks();
-    // The buffer-level lock, not `set_editable(false)`: restoring `editable`
-    // would invalidate every line of the installed document (edit_lock.rs).
-    editor.lock_edits();
     view.set_cursor_visible(false);
     if highlight == policy::HighlightAttachPlan::OffUntilPublish {
         editor.buffer().set_highlight_syntax(false);
@@ -891,7 +904,7 @@ pub(super) fn restore_load_installation_state(
         .set(restore.projection_suspended);
     editor.set_local_history_capture_suppressed(restore.history_capture_suppressed);
     editor.set_minimap_tracking_suspended(restore.minimap_tracking_suspended);
-    editor.unlock_edits();
+    editor.unlock_edits(restore.lock);
     editor
         .source_view()
         .set_cursor_visible(restore.view.cursor_visible);

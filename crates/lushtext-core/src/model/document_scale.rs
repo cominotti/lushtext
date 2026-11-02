@@ -67,6 +67,10 @@ pub const S_SYNTAX: u64 = 1024 * 1024;
 /// each value is the lower run, which was the first (load 19.2 before, 15.3
 /// after; the second ran at 11.4 falling to 0.8). Both runs and their loads
 /// are in ledger A69 and `docs/next/long-line-documents.md` (C6).
+///
+/// Kind: byte thresholds per language. Rounding: down to a whole KiB (512 B
+/// for TypeScript, whose measured value is below 11 KiB), not to a power of
+/// two; a recorded exception, deferred to `power-of-two-thresholds`.
 mod attach_threshold {
     pub const HTML: u64 = 46 * 1024;
     pub const MARKDOWN: u64 = 320 * 1024;
@@ -94,6 +98,10 @@ mod attach_threshold {
 /// disturbed by the load (27 falling to 8) and is recorded, not used. The
 /// other ten measured languages showed no per-key dispatch above 2.8 ms at
 /// their higher attach threshold.
+///
+/// Kind: byte thresholds. Rounding: HTML 16 KiB is a power of two as
+/// measured; JSON's 20 KiB is rounded down to a whole KiB, a recorded
+/// exception deferred to `power-of-two-thresholds`.
 mod typing_threshold {
     pub const HTML: u64 = 16 * 1024;
     pub const JSON: u64 = 20 * 1024;
@@ -106,6 +114,10 @@ const fn min_u64(a: u64, b: u64) -> u64 {
 /// The total-size syntax threshold of a language that was not measured: the
 /// median of the twelve measured attach thresholds (maintainer decision of
 /// 2026-10-31; a unit test recomputes it).
+///
+/// Kind: byte threshold. Rounding: the median rounded down to a whole KiB,
+/// not to a power of two; a recorded exception, deferred to
+/// `power-of-two-thresholds`.
 pub const S_SYNTAX_OTHER: u64 = 47 * 1024;
 
 /// The language class a document's total-size syntax threshold depends on

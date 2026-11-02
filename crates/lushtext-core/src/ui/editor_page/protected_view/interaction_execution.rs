@@ -53,12 +53,25 @@ const STOPPED_SIGNALS: [&str; 18] = [
     "push-snippet",
 ];
 
-/// The drop targets taken off the view while protected, to restore on exit,
-/// and whether the buffer's primary selection clipboard is off.
+/// The drop targets taken off the view while protected or while the edit lock
+/// is held, to restore when neither holds them, and whether the buffer's
+/// primary selection clipboard is off.
 #[derive(Debug, Default)]
 pub(crate) struct DetachedDropTargets {
     controllers: RefCell<Vec<gtk4::EventController>>,
+    /// The holders, a bit per [`DropTargetHold`].
+    holds: std::cell::Cell<u8>,
     primary_removed: std::cell::Cell<bool>,
+}
+
+/// Who keeps the view's drop targets off. Each holds them independently, so
+/// the targets come back only when the last one releases them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DropTargetHold {
+    /// A Protected View session (ledger A63).
+    ProtectedView = 1,
+    /// A workflow holding the edit lock (`edit_lock.rs`).
+    EditLock = 2,
 }
 
 impl LushtextEditorPage {
@@ -280,11 +293,31 @@ impl LushtextEditorPage {
 
     /// Take the view's drop targets off while protected (ledger A63).
     pub(in crate::ui::editor_page) fn detach_protected_drop_targets(&self) {
-        let view = self.source_view();
-        let detached = &self.imp_detached_drop_targets().controllers;
-        if !detached.borrow().is_empty() {
+        self.hold_drop_targets(DropTargetHold::ProtectedView);
+    }
+
+    /// Put the drop targets back when the session leaves Protected View
+    /// (still off while the edit lock holds them).
+    pub(in crate::ui::editor_page) fn restore_protected_drop_targets(&self) {
+        self.release_drop_targets(DropTargetHold::ProtectedView);
+    }
+
+    /// Whether the view's drop targets are off now.
+    #[must_use]
+    pub fn drop_targets_detached(&self) -> bool {
+        self.imp_detached_drop_targets().holds.get() != 0
+    }
+
+    /// Take the drop targets off for `hold`; the first holder detaches them.
+    pub(in crate::ui::editor_page) fn hold_drop_targets(&self, hold: DropTargetHold) {
+        let state = self.imp_detached_drop_targets();
+        let holds = state.holds.get();
+        state.holds.set(holds | hold as u8);
+        if holds != 0 {
             return;
         }
+        let view = self.source_view();
+        let detached = &state.controllers;
         let controllers = view.observe_controllers();
         let found: Vec<gtk4::EventController> = (0..controllers.n_items())
             .filter_map(|index| controllers.item(index))
@@ -299,10 +332,16 @@ impl LushtextEditorPage {
         detached.replace(found);
     }
 
-    /// Put the drop targets back when the session leaves Protected View.
-    pub(in crate::ui::editor_page) fn restore_protected_drop_targets(&self) {
+    /// Release `hold`; the last holder puts the drop targets back.
+    pub(in crate::ui::editor_page) fn release_drop_targets(&self, hold: DropTargetHold) {
+        let state = self.imp_detached_drop_targets();
+        let holds = state.holds.get() & !(hold as u8);
+        state.holds.set(holds);
+        if holds != 0 {
+            return;
+        }
         let view = self.source_view();
-        for controller in self.imp_detached_drop_targets().controllers.take() {
+        for controller in state.controllers.take() {
             view.add_controller(controller);
         }
     }

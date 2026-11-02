@@ -34,6 +34,10 @@ use super::paragraph_boundary::{ProfileSummary, next_paragraph_break};
 /// (10.9 µs per KiB), and each 256 KiB slice of the 5,000,000-byte fixture
 /// 2.3–2.6 ms (9–10 µs per KiB). At the worst rate, 8,000 µs covers 734 KiB;
 /// 704 KiB keeps about 4 % of margin. The former value, 1 MiB, took 11.1 ms.
+///
+/// Kind: byte threshold. Rounding: down to a whole KiB, not to a power of two
+/// (512 KiB would cost a sliced install of documents that fit); a recorded
+/// exception, deferred to `power-of-two-thresholds`.
 pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 704 * 1024;
 
 /// Maximum existing buffer characters deleted in one GTK turn.
@@ -65,6 +69,10 @@ pub const REPLACEMENT_INSERT_SLICE_BYTES: usize = 256 * 1024;
 /// the probe build (2026-10-31, `dense/{120,500,710}` in both wrap modes and
 /// all three input variants, load 1.3): every validation dispatch until settle
 /// at most 11.6 ms, every post-open dispatch at most 15.0 ms.
+///
+/// Kind: visible-character count. Rounding: a whole number of 710-character
+/// lines (16), the last measured size below the step, not a power of two; a
+/// recorded exception, deferred to `power-of-two-thresholds`.
 pub const V_SLICE: u64 = 11_360;
 
 /// Whether a document's densest validation batch holds more than [`V_SLICE`]
