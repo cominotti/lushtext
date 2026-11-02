@@ -51,6 +51,22 @@ Two more facts bound what "tagged at insertion" means:
 - Changing file bytes, persisted formats, GSettings, automation actions or snapshot fields.
 - Upstream GTK fixes. Reports may be filed, but nothing waits on them.
 
+## Revision after review against `main` 8cd1441a (2026-11-02)
+
+Written before C2, C2b, C5 and C6 landed; reviewed against them before implementation. What changed, and why:
+
+- **The gate is already met (D1).** C2's verdict measured the one-turn hidden-tail insert at 23–28 ms for a 1.9M-character tail (31–49 ms with AT on), 1.28–1.37 s for the 100 MB install, and A65 a 32 MiB recovered tail at one GTK turn of 0.4–0.55 s, all against `B_SETTLE_US` = 16 ms. Both halves are adopted: the clear of a protected tail was one paragraph-sized turn too (a head's clear slice ran to the line end, `delete_buffer_slice`), and its measurement is part of this change's verdict.
+- **The head goes in after its tail (D2).** The A77 probe measured what the design assumed away: every hidden append re-lays out the paragraph's visible head, 3.1 ms per slice for a 10,000-character head with wrapping on and 1.4 ms off (flat in the hidden size, so "bounded by visible text" holds, but paid once per slice). With the tail appended to an empty paragraph first, the re-layout per slice is 5–9 µs, and the head is laid out once (3.0 / 1.5 ms). A76 shows a head inserted at a left-gravity mark at the paragraph start lands before the fold tag's toggle-on, untagged. So the planner still plans in byte order (head, then tail slices), and the executor defers the head to the turn of the last tail slice. The first lane trials then found GTK's real constraint (new axiom **A79**): `gtk_text_view_get_iter_at_location` for a point **below** the layout maps it to the last line's end and `gtk_text_iter_set_visible_line_index` walks that line one hidden byte per step at the end iterator (≈ 42 ns per byte), and GtkSourceView's gutter and below-text layer ask for that point on every drawn frame whenever the visible area extends below the text. With the delimiter inserted after the tail, a growing protected paragraph was the buffer's last line for the whole install: 316–364 ms frames at 1.9M characters, 182 s of stalls at 100 MB (perf, `perf-p19`, `perf-i100`). So **the paragraph's delimiter goes in before its tail** (the planner's delimiter slice then skips it), found by a bounded scan of at most `PROTECTED_TAIL_SCAN_BYTES` (32 MiB) per turn; and **a body whose last paragraph is folded and undelimited gets a stand-in `\n` under an invisible, non-editable terminator tag**, kept after the install. That last case is not C3's alone: on `main` the 32 MiB recovery (C2's D13 shape, no trailing delimiter) costs 3.5 s per frame after its install, a pre-existing blocker fixed here. The stand-in is not document text: `ui::protected_fold::document_end_iter` stops before it and `ui::buffer_snapshot` (every save, draft, local-history and preview snapshot), the properties panel's statistics and the widget tests' `editor_text` read through it; the protected source, not the buffer, is what every protected save writes; every clear deletes it with the buffer; the read-only history preview and the editable note bodies never get one. An intermediate attempt (the head's first character, then its first 1,024 characters, before the tail) is recorded in the probe A77 and removed: the walk was A79's, not the head's.
+- **Final ids**: A76 (segment separation, with the deferred-head placement), A77 (hidden-append re-layout), A78 (AT payloads, extends A35). C6's ids are A52–A58 and A67–A74, C2b took A75.
+- **Boundaries per paragraph (D3, D4).** Only a tail that needs more than one slice is marked: one mark at the paragraph start plus one after every tail slice, so the recorded ranges cover the whole paragraph content (the first range holds the head and the first tail slice) and a clear never meets an unbounded remainder. A tail that fits one slice goes in right after its head in the same turn, unmarked (C2's shape), and several such paragraphs share one turn within the slice budget (a widget test caught the first draft taking one turn per folded paragraph of a dense document, 405 turns for 801 paragraphs, and leaving two marks on each). A clear turn deletes, from the first paragraph's start, as many leading ranges as fit `PROTECTED_CLEAR_SLICE_BYTES` (at least one) in one `delete`, and drops the marks that deletion collapsed in the same turn: they no longer separate two char segments, so nothing merges. **Forwards, not from the end (D4 revised):** A76 measured a range deletion's cost growing with the text before it in its paragraph: from the end of an 8 MiB tail of 64 KiB ranges, 46 µs rising to 600–900 µs; from the start, 42 µs falling to 6 µs. At 500 MB a backwards clear would have reached tens of milliseconds per range.
+- **Slice size (D5).** `for_settle_budget(B_SETTLE_US, 26 µs/KiB, 100 %)` is 315,076 bytes, above `MAX_SLICE_BYTES`, so both constants are the 256 KiB cap, a power of two (`.agents/rules/rust.md`). The Open Question about 16 KiB slices does not arise.
+- **Scheduling (C6).** Protected install turns wait at `load::PACED_SLICE_PRIORITY` (`G_PRIORITY_DEFAULT_IDLE`, below GtkTextView's validation) through `input_quiet::paced_idle`, as dense installs do, instead of a 1 ms timeout per slice (400 timeouts would add 0.4 s to a 100 MB install). C2's one-tail-insert-per-iteration admission now applies per tail slice. A protected body whose hidden text could exceed one tail slice (`hidden_tail_requires_slicing`) is sliced at any size, so the direct path never inserts more than one slice of hidden text.
+- **Edit lock (C6).** Every install and clear turn runs inside `edit_lock::with_own_edit`, so the buffer-level lock refuses user edits for the whole session while the install's own edits pass.
+- **C2b surfaces.** The local-history preview and note bodies install through the same `FoldedInstall` (`folded_text::install_slice`); the preview drops its boundary marks after each `set_text("")`, a note body keeps its inert marks until the buffer is freed.
+- **C5's wrap gate** runs in the same `insert-text` emission as each slice; with the head last it tags the paragraph once its first slice makes it long, and re-tags the head's prefix when the head goes in (A53: the first character decides). It reads `chars_in_line`, O(segments).
+- **Kani, as implemented (D5).** K7 (clear plan), K8b (C2's fold of one paragraph, any `u64` length), K10 (no panic and admissibility of `for_settle_budget`, every `u64`) and K11 (`should_panic`, the rounding guard) are proved in shard `core-protected-install`. The whole-plan harnesses K1–K6, K8 and K9 ran out of memory (16 GiB) or past 20 minutes in CBMC at every domain tried (documents of 10, 6 and 4 bytes, with C2's real fold and with any well-formed plan); their properties, and K10's fit and optimality (128-bit arithmetic by symbolic divisors), are property-tested on every input instead. Recorded in `docs/next/formal-verification.md` with the runs; one-step harnesses over a symbolic cursor are the deferred follow-up.
+- **Evidence (D7)**: `LoadEvidence::protected` and `BufferReplacementEvidence::protected` (`ProtectedSliceEvidence`: tail slices, largest slice, live boundaries, ranges remaining, clear turns).
+
 ## Decisions
 
 ### D1. The adoption gate is the first task, and it can close the change
@@ -72,9 +88,9 @@ Alternative considered: adopt unconditionally because 16 ms is tight. Rejected. 
 
 A slice may end inside a paragraph **only** at or after C2's fold point for that paragraph. The head of the paragraph is everything before the fold point, at most N_visible characters. It goes in **one** visible slice, together with any whole short paragraphs that fit the budget. Tail slices are inserted with the protected tag applied by `insert_with_tags`, so tail text is untagged only inside that one synchronous call (see Context) and never across a dispatch or in a layout. That is the same guarantee as C2's single-turn executor (A65). Every synchronous `insert-text` handler LushText owns (C1's profile handler, C2's edit-growth entry) treats an install slice as installation (D6), so none of them reacts to the momentarily untagged run.
 
-Why this does not bring back the quadratic re-layout: invisible text is left out of the paragraph's PangoLayout (A24, from C0). After every tail slice the visible text of the paragraph is the same fixed head. A new axiom pins the cost of re-validating the paragraph after a hidden append (provisionally **S2**): it is bounded by the visible text plus the segment count, not by the hidden bytes. If that probe fails, this design is not viable. The gate then closes the change and the failure is filed upstream.
+Why this does not bring back the quadratic re-layout: invisible text is left out of the paragraph's PangoLayout (A24, from C0). After every tail slice the visible text of the paragraph is the same fixed head (and, with the head deferred as the revision above records, empty). A new axiom pins the cost of re-validating the paragraph after a hidden append (**A77**, provisionally S2): it is bounded by the visible text plus the segment count, not by the hidden bytes. If that probe fails, this design is not viable. The gate then closes the change and the failure is filed upstream.
 
-One path can still read the whole paragraph, hidden text included: log attrs (A26), which cursor and word motion compute over the logical paragraph. Nothing in the install may move an iterator by cursor or word position inside a protected paragraph, so no slice pays O(paragraph). The S2 probe holds the insert mark fixed and runs no cursor motion, and the lane's per-slice timing is the evidence that no other per-slice path does.
+One path can still read the whole paragraph, hidden text included: log attrs (A26), which cursor and word motion compute over the logical paragraph. Nothing in the install may move an iterator by cursor or word position inside a protected paragraph, so no slice pays O(paragraph). The A77 probe holds the insert mark fixed and runs no cursor motion, and the lane's per-slice timing is the evidence that no other per-slice path does.
 
 Alternative considered: slice the head too. Rejected. The head is visible, so slicing it is exactly the quadratic case, and the head is already bounded by N_visible.
 
@@ -86,7 +102,7 @@ After each tail slice, the executor creates an anonymous **left-gravity** `GtkTe
 - A right-gravity mark would end up after `new`. `prev` and `new` would be adjacent and merge. So the gravity is part of the contract, and a probe pins it.
 - The toggles between slices cancel through the zero-byte mark (verified above). The tail ends up as one tag range over K char segments, so C2's predicate "the tail carries the protected tag" stays unchanged.
 
-New axiom, provisionally **S1**, pinned by a probe:
+New axiom **A76** (provisionally S1), pinned by a probe:
 
 - two char segments separated by a zero-byte mark segment are not merged by `cleanup_line`;
 - inserting at a left-gravity mark's iterator places the text after the mark.
@@ -103,11 +119,11 @@ Segment structure is private to GTK, so, like A36, the absence of the merge is o
 
 Alternatives considered:
 
-- **(a) Alternate two protected tags with identical properties.** The toggles of different tags do not cancel, so the toggle segments themselves separate the char segments, and no marks are needed. Kept as the **fallback** if S1 fails. Its cost: C2's tag predicates, the fold evidence and the AT documentation must accept two tags.
+- **(a) Alternate two protected tags with identical properties.** The toggles of different tags do not cancel, so the toggle segments themselves separate the char segments, and no marks are needed. Kept as the **fallback** if A76 fails. Its cost: C2's tag predicates, the fold evidence and the AT documentation must accept two tags.
 - **(b) Larger slices.** This reduces K but not the per-slice O(M) copy. Rejected.
 - **(c) No mitigation.** The merge copies about M²/(2·slice) bytes, roughly 500 GB for 500 MB. Rejected.
 
-### D4. Protected clearing follows the recorded boundaries, from the end
+### D4. Protected clearing follows the recorded boundaries (from each paragraph's start, revised above)
 
 Any clear of a buffer that holds protected tails uses a clear plan derived from the boundary ledger the install recorded. Clears happen on eviction, close, reload, replacement, or cancellation of a partial install.
 
@@ -115,7 +131,7 @@ Any clear of a buffer that holds protected tails uses a clear plan derived from 
 - The recorded tail ranges are deleted first, from the end of the buffer backwards. Marks survive a deletion of the text around them, so after each deletion the surviving neighbours are still separated by marks and no merge happens.
 - Only then do heads and ordinary paragraphs take today's forward paragraph-aligned clear slices. Deleting the tails first matters: today's clear extends a slice that starts inside a paragraph to the next line start, so a head's slice would otherwise delete the whole tail in one turn.
 - When every range is gone, the collapsed boundaries are deleted (D3).
-- AT-SPI deletion payloads are bounded by the slice in the same way as insertion payloads. New axiom, provisionally **S3**, extending C0's A35: the AT-SPI `TextChanged` event emitted for an insertion or deletion is built from the inserted or deleted range only (so a slice bounds its size and its cost), and does not depend on the text that remains in the paragraph. The insert event carries the slice's text, because it is emitted before the tag is applied; the delete event of a hidden range carries no hidden characters. As for A35, there is no in-crate probe, because GtkTextView's accessible-text emission is reachable only through an AT-SPI bus with a listener, which the probe runner does not start. S3 is pinned by the lane's AT case, and its ledger row says so.
+- AT-SPI deletion payloads are bounded by the slice in the same way as insertion payloads. New axiom, **A78**, provisionally S3, extending C0's A35: the AT-SPI `TextChanged` event emitted for an insertion or deletion is built from the inserted or deleted range only (so a slice bounds its size and its cost), and does not depend on the text that remains in the paragraph. The insert event carries the slice's text, because it is emitted before the tag is applied; the delete event of a hidden range carries no hidden characters. As for A35, there is no in-crate probe, because GtkTextView's accessible-text emission is reachable only through an AT-SPI bus with a listener, which the probe runner does not start. A78 is pinned by the lane's AT case, and its ledger row says so.
 
 The ledger is per-buffer editor state, not install-session state: it is created by the install, outlives the install terminal (eviction, reload and close clear the buffer much later), and is emptied by the clear that deletes its ranges. It holds marks and counts only, never text. Load's `ClearingExisting` and `ClearingCancelled` phases and buffer replacement's clear turns consume it.
 
@@ -212,7 +228,7 @@ The `data-safety` skill runs explicitly over the change before sign-off.
 
 ## Risks / Trade-offs
 
-- **[S1 or S2 fails on the probe, or on a later GTK]** → The design is not viable as written. The S1 fallback is the alternating tags (D3a). If S2 fails, the gate closes the change and the upstream report is filed. A probe failure after a toolkit update reopens this design under the ledger rule.
+- **[A76 or A77 fails on the probe, or on a later GTK]** → The design is not viable as written. The A76 fallback is the alternating tags (D3a). If A77 fails, the gate closes the change and the upstream report is filed. A probe failure after a toolkit update reopens this design under the ledger rule.
 - **[K boundary marks slow other line operations]** → Iterator offset lookups inside a protected paragraph walk O(K) segments. Protected View exposes no caret and runs no in-buffer search (C2), so only the executor, save snapshot and navigation touch them, each with bounded K. The precondition widget test asserts K ≤ ⌈tail / (slice − 3)⌉.
 - **[A per-slice path reads the whole paragraph]** (log attrs, A26, or an iterator offset lookup over one giant segment) → The boundaries keep every char segment at most one slice long, the executor runs no cursor or word motion inside a protected paragraph, and the lane's per-slice timing at 500 MB is flat across the tail or the gate fails.
 - **[An interaction during a long install misses the frame budget]** → Each dispatch is at most B_settle, so an input arriving mid-install waits at most one slice. Whether that meets input-to-presented-frame ≤ 2 frames is measured by the sweep's mid-install interaction, not assumed.
@@ -225,7 +241,7 @@ The `data-safety` skill runs explicitly over the change before sign-off.
 ## Migration Plan
 
 1. Pass the gate (D1). If it is not met, record the result and stop. There is nothing to roll back.
-2. Land the axioms (S1–S3, final ids allocated after C0's A23–A36, C1's A42–A45, C6's A67–A73 and C2's A59–A66) with their probes, samples and, for S3, the lane's AT case. Run `make gtk-axioms` first.
+2. Land the axioms (A76–A78, final ids allocated after C0's A23–A36, C1's A42–A45, C6's A67–A73 and C2's A59–A66) with their probes, samples and, for A78, the lane's AT case. Run `make gtk-axioms` first.
 3. Land the planner, its Kani harnesses and its property tests.
 4. Wire the executor and evidence. Revise the spec and docs in the same change.
 5. Run the responsiveness sweep and record the results.
@@ -234,10 +250,12 @@ To roll back, revert the change. C2's one-turn executor is still the fallback pa
 
 ## Open Questions
 
-- **Final slice constants.** The values of the tail slice bytes and the protected clear slice bytes are set by C0's AT-on measurement. Is the maintainer willing to accept a tail slice as small as 16 KiB, which means about 32,000 boundaries for 500 MB, if that is what B_settle with AT on requires?
-- **Mark boundaries or alternating tags (D3).** The default is marks, and the S1 probe decides. Does the maintainer prefer the alternating tags regardless, to keep the buffer free of anonymous marks?
-- **Half adoption.** If only clearing, or only installing, is over budget, should the change ship that half alone (as D1 proposes) or wait until both halves need it?
-- **Gate evidence source.** Is the reference lane (private headless mutter, cairo, ≤ 16 cores) sufficient for the gate, or should the gate also require a consented isolated-XDG run on the maintainer's session, as PROPOSAL.md decision 8 suggests for C2?
-- **Disposition if not adopted.** Archive the change with a "not adopted" note, or leave it open in `openspec/changes/` as a dormant conditional that re-evaluates on a budget or toolkit change?
-- **Final ledger ids.** S1–S3 are provisional names. C0 takes A23–A36, C1's A42–A45, C6's A67–A73 and C2's A59–A66 take the next ids, and `stop-expander-bind-time-child-scans` (provisionally T1) takes the next free id whenever it lands, so the final ids are fixed in application order when this change is applied.
-- **Mid-install interaction budget.** With B_settle = 16 ms and a 120 Hz frame, an input that arrives just after a slice starts can wait two frames. Is B_settle per install dispatch acceptable for that, or should install slices be held to B_interact (8 ms) while the window has pending input?
+Answered at implementation (2026-11-02), deciding for the user's experience as the brief asked:
+
+- **Final slice constants.** 256 KiB for both, the capped derivation; no 16 KiB slice is needed.
+- **Marks or alternating tags.** Marks: A76 holds, and the marks are inert for every other reader of the buffer.
+- **Half adoption.** Both halves are adopted: the install was over budget by measurement, and the clear's one-turn deletion of a paragraph was the same unbounded shape.
+- **Gate evidence source.** The reference lane, as for C2.
+- **Disposition if not adopted.** Not applicable.
+- **Final ledger ids.** A76–A78.
+- **Mid-install interaction budget.** Install slices wait at the paced idle priority behind the frame that shows the latest input (`input_quiet::paced_idle`), so an input waits at most the slice in progress; the verdict measures it.

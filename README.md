@@ -60,7 +60,9 @@ local history, and careful recovery behavior.
   copies a whole giant line without slowing the editor. Save As of an
   unchanged document writes a byte-for-byte copy of its file. Local-history
   previews and notes with giant paragraphs open folded too, load in the
-  background, and copy a selection in full.
+  background, and copy a selection in full. Even a single 500 MB line opens,
+  recovers and reloads in small steps, so the window keeps responding while
+  it loads.
 - **EditorConfig support** for indentation and save-policy overrides, with
   Preferences values used as fallback.
 

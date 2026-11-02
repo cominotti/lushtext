@@ -32,6 +32,7 @@ palette, or a direct shortcut. The complete in-app list lives under
 | Open recent documents | `Ctrl+K` |
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab | `Ctrl+W` |
+| Switch tabs | `Ctrl+Page Up` / `Ctrl+Page Down`, `Alt+1`…`Alt+9`; `Ctrl+Home` / `Ctrl+End` (with `Shift`, select to) stay with the document's start and end, never the first or last tab, with any number of tabs open |
 | Print | `Ctrl+P` |
 | In-tab find / replace | `Ctrl+F` / `Ctrl+H` |
 | Inspect Line (view-only documents with very long lines) | `Ctrl+Alt+I`; `Page Down`/`Page Up` move the window, `Alt+Down`/`Alt+Up` go to the next or previous folded line; Tab reaches Previous Window, Next Window, Previous Folded Line, Next Folded Line, Line, Column, Go, Copy Window and Copy Whole Line; `Escape` closes |
@@ -292,6 +293,18 @@ when an edit made the document view-only); a recovered draft keeps its Discard
 and Save actions and names the shortcut in its body. A blocked request (paste,
 typing, Ctrl+H, bookmark toggles, invisible characters, line endings) publishes
 one status message, at most once every four seconds per reason.
+
+**While such a document opens** (or is recovered, reloaded or restored), each
+giant paragraph's hidden tail goes into the buffer in slices of at most
+256 KiB, and the paragraph's visible head goes in last
+(`sliced-protected-install`). Each slice is one accessible `TextChanged`
+insertion event whose payload is that slice's text (the event is emitted before
+the slice is hidden), so a listener receives the tail in bounded pieces rather
+than as one event the size of the whole paragraph; the clear before a reload
+or eviction emits bounded deletion events that carry no hidden characters
+(ledger A78). Assistive technologies should treat these events as the document
+loading, as they already do for any large document; the tab reports the
+document as loading until the install completes.
 
 The **Line Inspector** is the accessible path to folded content. It is a dialog
 holding one window of at most 500 characters of one line, with word wrap on,

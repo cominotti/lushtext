@@ -563,9 +563,24 @@ draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
   paragraphs, so a slice that stops mid-paragraph re-lays-out everything
   already installed in that paragraph on every later slice — quadratic work
   that froze crash recovery of a 33 MB single-line draft for minutes. A
-  paragraph larger than the slice byte budget installs or clears in one turn;
-  that single long turn matches the unavoidable layout cost its first render
-  pays anyway.
+  visible paragraph larger than the slice byte budget installs or clears in
+  one turn; that single long turn matches the unavoidable layout cost its first
+  render pays anyway. **The one exception is a protected hidden tail**
+  (`sliced-protected-install`, C3): install a protected body only through
+  `ui::protected_fold::FoldedInstall`, which slices the tail at most
+  `PROTECTED_TAIL_SLICE_BYTES` apart with a left-gravity boundary mark after
+  each slice (never remove a boundary that still separates two text runs: the
+  merge copies both, A36/A76) and inserts the head once, after its tail
+  (A77). Clear such a buffer through its `BoundaryLedger` first
+  (`clear_turn`, each paragraph from its start: a deletion's cost grows with the text before it in the paragraph, A76), and drop the ledger with
+  `forget` only after the buffer's text is already gone. Never let a
+  paragraph with a hidden run be the buffer's last line: GTK maps a point
+  below the layout to the last line's end and walks its hidden bytes one per
+  step on every GtkSourceView frame (A79); the protected executor inserts a
+  sliced paragraph's delimiter before its tail and puts a stand-in terminator
+  after a folded, undelimited last paragraph. Read the whole document text
+  of an editor buffer only through `ui::buffer_snapshot` or
+  `ui::protected_fold::document_end_iter`, which stop before that stand-in.
 - Features whose GTK cost grows with paragraph length read the editor's
   `document_scale()` (`model/document_scale.rs`): syntax highlighting (clear the
   language, not only `highlight-syntax`), bracket matching, invisible-character

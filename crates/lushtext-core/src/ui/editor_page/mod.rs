@@ -490,7 +490,11 @@ impl LushtextEditorPage {
 
         // GtkTextBuffer maintains char_count as scalar metadata. Reading it is
         // O(1), so accounting never copies or scans document text on edits.
-        let character_count = u64::try_from(self.buffer().char_count()).unwrap_or(0);
+        // The stand-in terminator after a folded last paragraph is not text.
+        let character_count = u64::try_from(crate::ui::protected_fold::document_char_count(
+            self.buffer().upcast_ref(),
+        ))
+        .unwrap_or(0);
         // A protected document also holds its text source (the installed body
         // or the edit entry's capture), retained beside the buffer.
         crate::model::editor_memory::estimate_live_editor_bytes(
@@ -502,6 +506,10 @@ impl LushtextEditorPage {
             self.protected_source()
                 .map_or(0, |source| source.retained_bytes()),
         )
+        // The boundary marks a sliced protected install left (C3, task 4.7).
+        .saturating_add(crate::model::editor_memory::protected_boundary_bytes(
+            self.imp().protected_boundaries.live_boundaries(),
+        ))
     }
 
     /// Current least-recently-used generation assigned by the owning window.

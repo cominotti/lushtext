@@ -1961,8 +1961,109 @@ Shards (local `KANI_MEASURE`, pending two dispatched runs):
 `core-protected-view-navigation` (H4n) 13.26 min / 1.41 GiB, both `scheduled`.
 No counterexample was found. Proof strength for the module has not run yet.
 
+### Sliced protected install (`sliced-protected-install`, C3 of the long-line programme, 2026-11-02)
+
+`model/protected_install.rs` is the GTK-free planner that cuts a protected
+body into visible slices, one head per folded paragraph and hidden-tail slices
+of at most `tail_slice_bytes`; `ProtectedInstallLimits::for_settle_budget`
+derives that size from `B_SETTLE_US` (256 KiB, the cap, binds in production).
+Shard `core-protected-install` (`protected_install/kani_proofs.rs`):
+
+- **K7** (`protected_clear_plan_covers_the_buffer_once`) the clear plan over
+  up to 4 recorded ranges of 0..=15 bytes and a clear budget of 4..=7: each
+  paragraph's ranges deleted from its first, each once, every turn maximal and
+  within the budget unless one range alone exceeds it. (Revised from "from the
+  end": ledger A76 measured a backwards clear's per-range cost growing with
+  the text before the range.)
+- **K8b** (`one_paragraph_fold_shows_its_head_cap`): C2's real
+  `fold_step`/`fold_finish` fold a lone paragraph of any `u64` length, with
+  density parameters that cannot bind on one paragraph, to exactly
+  `min(length, head_cap)` visible characters, the fold the planner's
+  giant-paragraph harness and property tests build directly. It found a
+  harness overflow (`2 * n_dense` for `n_dense` near `u64::MAX`), fixed with
+  `checked_mul`.
+- **K10** (`settle_budget_derivation_fits_and_never_overflows`) over every
+  `u64` input: no panic or overflow, an `Ok` within
+  `MIN_TAIL_SLICE_BYTES..=MAX_SLICE_BYTES` and accepted by
+  `ProtectedInstallLimits::new` (so it composes with the planner's per-slice
+  bound). That an `Ok` fits the budget with its margin and is the largest that
+  does (or the cap), and `Err` exactly when the minimum does not fit, is
+  **property-tested** over every magnitude of `u64`
+  (`settle_budget_derivation_fits_and_is_the_largest`, 4,096 cases): stated in
+  the harness, CBMC's 128-bit multiplications and divisions by symbolic
+  divisors did not finish in 20 minutes. Production calls it with constants,
+  pinned by a unit test.
+- **K11** (`unrounded_tail_end_splits_a_scalar`, `should_panic`): the same
+  stepper with the rounding removed ends a tail slice inside a scalar; the
+  covers report it reached inside a 3- and a 4-byte scalar (and, with the
+  12-byte domain, a 2-byte one). Domain: one undelimited 12-byte paragraph of
+  one 2-, 3- or 4-byte scalar, `head_cap` 1..=3, tail budget 4..=7, the first
+  two slices. It pins the guard from the other side: K3's property (below)
+  fails if production stops rounding, and this fails if the stepper stops
+  honouring its rounding argument.
+
+**Not proved by Kani: the whole-plan properties K1–K6, K8 and K9** (progress,
+exact bytes, no slice end inside a scalar or a CRLF, homogeneity, the per-slice
+bounds, `last_of_tail`, the visible/hidden switch at the head's end, and the
+slice-count bound). Written as design D5 asked, over every document of a few
+bytes run through the whole planner, they did not fit CBMC on the reference
+workstation in any domain tried (runs `kani-3` … `kani-7` in
+`.claude/handoffs/c3/`):
+
+| Domain | Fold in front of the planner | Result |
+|---|---|---|
+| documents ≤ 10 bytes, giant paragraph ≤ 10 bytes | C2's real `fold_step`, symbolic thresholds | K1 still in symbolic execution after 10 min at 7 GB |
+| documents ≤ 6 bytes | C2's real `fold_step` | K1 out of memory (16 GiB) in propositional reduction, 241 s |
+| documents ≤ 6 bytes | any well-formed plan (a superset of C2's) | K1 out of memory (16 GiB), 230 s |
+| documents ≤ 4 bytes, unwind 6 | any well-formed plan | K1 fails its unwinding assertion (more slices than the bound), 389 s |
+| giant paragraph ≤ 6 bytes, unwind 10 | its fold built directly | K8 out of memory (16 GiB), 635 s |
+
+These properties are **tested, not proved**: the property tests
+(`tests/properties/protected_install.rs`: many paragraphs of every delimiter
+and scalar length, C2's fold plans at small thresholds, small and production
+budgets, and multi-megabyte tails) assert them on generated inputs, which
+samples the domain and covers none of it exhaustively. What they assert, per
+property: K1 progress and termination; K2 exact bytes; K3 no slice end inside
+a scalar or a CRLF; K4 homogeneity and `last_of_tail`; K5 both halves (a hidden
+slice within `tail_slice_bytes` and, but for a tail's last, at least
+`tail_slice_bytes − 3`; a visible slice within the byte and character budget,
+or one whole unfolded paragraph of at most `N_visible` characters — this
+visible half was added after review, 2026-11-02); K6 consecutive tail slices;
+K8 the head ending exactly at the fold point and every tail byte hidden, plus
+`head_chars + tail_chars` equal to the paragraph's characters (also added after
+review); K9 the slice count with `step = B − 3`. Not asserted by them: K8's
+"the head holds exactly `N_visible` characters", because C2's density rule may
+shorten a head on a dense document; K8b proves C2's fold of a lone paragraph,
+where that rule does not bind. The widget tests' byte-identity checks cover the
+executor over every fixture shape. An earlier version of this paragraph said
+every property was asserted on every input; it overstated the coverage, which
+the review of PR #77 caught. Deferred (inventory below): one-step harnesses over
+a symbolic cursor, which the per-slice properties' locality (design D5) would
+make sufficient.
+
+**K9's bound, failing first (task 3.6).** The naive `⌈len / B⌉ + 1` cannot hold
+for any planner that keeps slices within `B` and on scalar boundaries: a tail
+of 4-byte scalars with `B = 5` takes one scalar per slice, 9 slices for a
+36-byte tail against `⌈36 / 5⌉ = 8`. The unit test
+`the_slice_count_bound_uses_the_rounded_step` pins that counterexample; the
+property tests state the bound with `step = B − 3`.
+
+**Shard measured locally** (`make kani KANI_SHARD=core-protected-install
+KANI_MEASURE=…`, Kani 0.68.0, reference workstation, 2026-11-02): 4.54 min,
+peak RSS 7.94 GiB; K10 0.28 s, K8b 1.46 s, K7 7.12 s, K11 249.29 s. `scheduled`,
+`PENDING DISPATCH` until two dispatched `kani.yml` runs replace the local
+figures. Proof strength (task 3.11) has not run for the module: with four
+harnesses, three of them on the planner's edges, it would measure the
+property tests, not Kani; deferred with the one-step harnesses.
+
 ## 4. Deferral inventory
 
+- `sliced-protected-install` (C3): the planner's whole-plan properties
+  K1–K6, K8 and K9 are property-tested, not Kani-proved (CBMC out of memory or
+  over 20 minutes in every domain tried, section "Sliced protected install"
+  above). Follow-up: one-step harnesses from a symbolic, well-formed
+  `ProtectedInstallCursor` over a few bytes around it. The harness file as
+  written is kept at `.claude/handoffs/c3/kani_proofs-whole-plan-harnesses.rs`.
 - Multi-process safety of the draft journal and the target guard (axiom A6).
   K8 showed two concrete losses when two processes open the same draft over
   one data directory (phase 4, K8); accepted with documentation because a

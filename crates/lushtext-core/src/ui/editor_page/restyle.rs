@@ -111,7 +111,10 @@ impl LushtextEditorPage {
             source.remove();
         }
         let buffer = self.buffer();
-        let count = u32::try_from(buffer.line_count()).unwrap_or(u32::MAX);
+        let count = u32::try_from(crate::ui::protected_fold::document_line_count(
+            buffer.upcast_ref(),
+        ))
+        .unwrap_or(u32::MAX);
         let visible = self.visible_paragraphs(count);
         let tag = self.restyle_tag();
         self.remove_restyle_tag_everywhere();
@@ -322,8 +325,16 @@ impl LushtextEditorPage {
             let start = buffer.iter_at_line(i32::try_from(range.first).unwrap_or(i32::MAX));
             let end = buffer
                 .iter_at_line(i32::try_from(range.end).unwrap_or(i32::MAX))
-                .filter(|_| range.end < u32::try_from(buffer.line_count()).unwrap_or(0))
-                .unwrap_or_else(|| buffer.end_iter());
+                .filter(|_| {
+                    range.end
+                        < u32::try_from(crate::ui::protected_fold::document_line_count(
+                            buffer.upcast_ref(),
+                        ))
+                        .unwrap_or(0)
+                })
+                .unwrap_or_else(|| {
+                    crate::ui::protected_fold::document_end_iter(buffer.upcast_ref())
+                });
             if let Some(start) = start {
                 // Visible characters, as `V_SLICE` counts them: the range's
                 // characters less one delimiter per paragraph.

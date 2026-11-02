@@ -264,6 +264,10 @@ pub struct LoadState {
     pub installation_slice_count: Cell<u64>,
     /// Whether the newest installation took the bounded slicing path.
     pub installation_chunked: Cell<bool>,
+    /// The newest load's sliced protected install counts (C3).
+    pub protected_install: Cell<crate::ui::protected_fold::FoldedInstallMetrics>,
+    /// Ledger clear turns the newest load's clears ran (C3).
+    pub protected_clear_turns: Cell<u64>,
     /// EditorConfig overrides the planning worker resolved, applied by the
     /// install after any clear and before the first insert
     /// (`bound-post-open-settle`, D6.2, review R17).
@@ -614,6 +618,9 @@ pub struct LushtextEditorPage {
     pub restyle: super::restyle::RestyleState,
     /// The buffer-level edit lock (`edit_lock.rs`).
     pub edit_lock: super::edit_lock::EditLockState,
+    /// The boundary marks a sliced protected install left in the buffer,
+    /// which the next clear consumes (`ui::protected_fold`, C3).
+    pub(crate) protected_boundaries: crate::ui::protected_fold::BoundaryLedger,
     /// The Protected View session (`long-line-protected-view`).
     pub(crate) protected_view: super::protected_view::execution::ProtectedViewRuntime,
     /// The view's drop targets while Protected View has them off (A63).
@@ -708,6 +715,7 @@ impl Default for LushtextEditorPage {
             language_attach: LanguageAttachState::default(),
             restyle: super::restyle::RestyleState::default(),
             edit_lock: super::edit_lock::EditLockState::default(),
+            protected_boundaries: crate::ui::protected_fold::BoundaryLedger::default(),
             protected_view: super::protected_view::execution::ProtectedViewRuntime::default(),
             protected_drop_targets:
                 super::protected_view::interaction_execution::DetachedDropTargets::default(),

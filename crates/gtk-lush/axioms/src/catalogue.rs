@@ -576,7 +576,7 @@ const CATALOGUE: &[Axiom] = &[
         dependent_designs: &[
             "long-line-protected-view (C2): the accessibility contract of a folded paragraph (P4 \
              extends this axiom)",
-            "sliced-protected-install (C3): per-slice AT payloads (S3 extends this axiom)",
+            "sliced-protected-install (C3): per-slice AT payloads (A78 extends this axiom)",
         ],
         slow: false,
         probe: None,
@@ -1145,6 +1145,71 @@ const CATALOGUE: &[Axiom] = &[
         ],
         slow: false,
         probe: Some(probes::probe_a75),
+    },
+    Axiom {
+        id: AxiomId::new(76),
+        name: "a76_a_left_gravity_mark_keeps_slices_from_merging",
+        statement: "text inserted at a left-gravity mark lands after it (before a right-gravity \
+                    one); text inserted at a left-gravity mark at the start of a tagged run lands \
+                    before the run, untagged; appending tagged slices costs a flat time per \
+                    append when a left-gravity mark follows each slice, and a growing one \
+                    without (A36), and deleting the slices between marks from the start costs \
+                    a flat time per range, from the end a growing one (recorded); the merge half \
+                    is cost-only, like A36",
+        dependent_designs: &[
+            "sliced-protected-install (C3): boundary marks between hidden-tail slices (design \
+             D3), the deferred head (D2) and the backwards clear (D4)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a76),
+    },
+    Axiom {
+        id: AxiomId::new(77),
+        name: "a77_a_hidden_append_relays_out_only_visible_text",
+        statement: "after each hidden slice appended to a paragraph (slices separated by \
+                    left-gravity marks), the view's re-layout of the paragraph costs a flat time \
+                    as the hidden tail grows, with the head in place, with only its first \
+                    character in place, and with the head inserted after the tail; with a \
+                    visible character before the hidden run, mapping x = 0 of the line to an \
+                    iterator and a GtkSourceView snapshot also cost a flat time; the costs of \
+                    every order and the one-turn install's first layout per MiB are recorded",
+        dependent_designs: &[
+            "sliced-protected-install (C3): a hidden tail may be split across dispatches \
+             without a re-layout that grows with the tail; the tail-first order (design D2)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a77),
+    },
+    Axiom {
+        id: AxiomId::new(78),
+        name: "a78_atspi_text_changed_is_bounded_by_the_changed_run",
+        statement: "(extends A35) the AT-SPI TextChanged event GtkTextView emits for an insertion \
+                    or a deletion carries the inserted or deleted run (the inserted slice's text \
+                    before it is hidden; no hidden characters on deletion), never the rest of \
+                    the paragraph (unpinned in-crate, like A35; the responsiveness lane's AT \
+                    case records the payload sizes of a sliced install and clear)",
+        dependent_designs: &[
+            "sliced-protected-install (C3): the AT cost of each install and clear slice is \
+             bounded by the slice",
+        ],
+        slow: false,
+        probe: None,
+    },
+    Axiom {
+        id: AxiomId::new(79),
+        name: "a79_a_point_below_the_layout_walks_the_last_lines_hidden_bytes",
+        statement: "gtk_text_view_get_iter_at_location for a point below the layout, when the \
+                    buffer's last line holds a hidden run, costs time growing with the hidden \
+                    bytes (gtk_text_iter_set_visible_line_index stepping at the end iterator); \
+                    with a delimiter after the hidden run it stays under a millisecond",
+        dependent_designs: &[
+            "sliced-protected-install (C3): a sliced paragraph's delimiter goes in before its \
+             tail, an undelimited last paragraph gets a stand-in terminator while its tail goes \
+             in, and the cost on an installed undelimited last paragraph is a recorded toolkit \
+             floor",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a79),
     },
     Axiom {
         id: AxiomId::new(80),

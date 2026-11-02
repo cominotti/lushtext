@@ -306,13 +306,13 @@ impl LushtextWindow {
             // `require_draft_dirty = false` because close is the last pass and
             // there is none after it to catch a modified tab. Calling the owner
             // rather than restating the terms is what keeps the
-            // `installation_incomplete` data-safety guard single-sourced: an added
+            // `buffer_untrusted` data-safety guard single-sourced: an added
             // term reaches this path, where a missed one is worst, automatically.
             if !policy::draft_candidate_is_eligible(
                 editor.is_modified(),
                 editor.draft_dirty(),
                 editor.is_evicted(),
-                editor.has_incomplete_load_installation(),
+                editor.draft_capture_blocked(),
                 false,
             ) {
                 continue;

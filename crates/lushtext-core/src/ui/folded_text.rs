@@ -45,10 +45,11 @@ use std::task::{Poll, Waker};
 
 use gtk4::prelude::*;
 
+use crate::model::buffer_replacement::SliceBudget;
 use crate::model::buffer_replacement::next_replacement_boundary;
 use crate::model::protected_fold::FoldPlan;
 use crate::ui::editor_page::WHOLE_LINE_CHUNK_BYTES as COPY_CHUNK_BYTES;
-use crate::ui::protected_fold::{insert_folded, tail_insert_admitted};
+use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall, tail_insert_admitted};
 
 /// MIME types a [`SourceTextProvider`] offers: UTF-8 text only. No `GType` is
 /// offered, so no reader can make GTK materialize the text as one `GValue`.
@@ -590,31 +591,39 @@ pub(crate) enum InstallSlice {
     Deferred,
     /// One slice was inserted; `offset` advanced.
     Inserted,
+    /// The sliced protected install broke (`FoldedInstallBroken`): nothing
+    /// more may be inserted, and the caller cancels the install.
+    Broken,
 }
 
-/// Insert the next slice of `text` (from `*offset`, ending after a paragraph
-/// delimiter or at a UTF-8-safe slice budget, `next_replacement_boundary`) at
-/// the end of `buffer`. With a fold plan the slice goes in folded, its
-/// paragraph counter carried in `fold.1`, and only when no other tail went in
-/// during this iteration (`tail_insert_admitted`).
+/// Insert the next slice of `text` (from `*offset`) at the end of `buffer`.
+/// Without a fold plan the slice ends after a paragraph delimiter or at a
+/// UTF-8-safe slice budget (`next_replacement_boundary`); with one it is the
+/// next step of the sliced protected install (`ui::protected_fold::
+/// FoldedInstall`, C3), whose boundary marks `ledger` records, and it runs only
+/// when no other tail went in during this iteration (`tail_insert_admitted`).
 pub(crate) fn install_slice(
     buffer: &gtk4::TextBuffer,
     text: &str,
     offset: &mut usize,
-    fold: &mut Option<(Arc<FoldPlan>, u64)>,
+    fold: &mut Option<FoldedInstall>,
+    ledger: &BoundaryLedger,
 ) -> InstallSlice {
-    let end = next_replacement_boundary(text, *offset);
-    let mut end_iter = buffer.end_iter();
-    let slice = &text[*offset..end];
-    if let Some((plan, paragraph)) = fold.as_mut() {
+    if let Some(install) = fold.as_mut() {
         if !tail_insert_admitted() {
             return InstallSlice::Deferred;
         }
-        *paragraph = insert_folded(buffer, &mut end_iter, slice, *paragraph, plan);
+        let append = || buffer.end_iter();
+        match install.step(&append, text, SliceBudget::BYTES_ONLY, ledger) {
+            Ok(end) => *offset = end,
+            Err(_) => return InstallSlice::Broken,
+        }
     } else {
-        buffer.insert(&mut end_iter, slice);
+        let end = next_replacement_boundary(text, *offset);
+        let mut end_iter = buffer.end_iter();
+        buffer.insert(&mut end_iter, &text[*offset..end]);
+        *offset = end;
     }
-    *offset = end;
     InstallSlice::Inserted
 }
 

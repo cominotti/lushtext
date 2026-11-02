@@ -626,8 +626,13 @@ pub(crate) fn buffer_requires_chunked_snapshot(buffer: &impl IsA<gtk4::TextBuffe
 /// Copy the whole buffer immediately for workflows already below the threshold.
 #[must_use]
 pub(crate) fn snapshot_buffer_text_direct(buffer: &impl IsA<gtk4::TextBuffer>) -> String {
+    let buffer = buffer.upcast_ref();
     buffer
-        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .text(
+            &buffer.start_iter(),
+            &crate::ui::protected_fold::document_end_iter(buffer),
+            true,
+        )
         .to_string()
 }
 
@@ -967,11 +972,14 @@ fn run_snapshot_slice(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
     // mutation. The mark is the cross-turn position; both iterators below are
     // local to this slice and are discarded before yielding.
     let start = buffer.iter_at_mark(&mark);
+    // The document ends before a protected install's stand-in terminator,
+    // which is not document text (`ui::protected_fold::document_end_iter`).
+    let document_end = crate::ui::protected_fold::document_end_iter(buffer.upcast_ref());
     let mut end = start;
-    if !end.forward_chars(BUFFER_SNAPSHOT_CHUNK_CHARS) {
-        end = buffer.end_iter();
+    if !end.forward_chars(BUFFER_SNAPSHOT_CHUNK_CHARS) || end > document_end {
+        end = document_end;
     }
-    let reached_end = end == buffer.end_iter();
+    let reached_end = end == document_end;
     let chunk = buffer.text(&start, &end, true);
     buffer.move_mark(&mark, &end);
 

@@ -578,9 +578,11 @@ fn bookmark_line_occupied_by_other(
 /// Return the current buffer line count in the 1-based domain used by dialogs.
 #[must_use]
 fn buffer_line_count(editor: &LushtextEditorPage) -> u32 {
-    u32::try_from(editor.buffer().line_count())
-        .unwrap_or(1)
-        .max(1)
+    u32::try_from(crate::ui::protected_fold::document_line_count(
+        editor.buffer().upcast_ref(),
+    ))
+    .unwrap_or(1)
+    .max(1)
 }
 
 /// Convert the source-mark name back into a bookmark ID.

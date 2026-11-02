@@ -1265,7 +1265,16 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   the loop was free, it is measured to that frame and fails the lane as
   `withheld_typing_frames`; keys into a protected, read-only editor are
   reported apart from editable typing; a relaunch whose editor click cannot be
-  proven ends the case), seeds `split-view-layout-migrated` so the
+  proven ends the case; every injection is paired with its probe `input`
+  record by mutter's event stamp, never by arrival order (`match_injections`:
+  the stamp must fall between 1 ms before the injection and 1 ms before the
+  next one, at most 20 ms after the injection's D-Bus call returned), because
+  in `sliced-protected-install` two wheels injected before the window was
+  composed never arrived and arrival-order pairing charged every later wheel
+  with the frame of the wheel two places on (270–300 ms for 12 ms); a phase
+  with a wheel step that left no input record fails the lane as
+  `undelivered_scrolls`, and the mid-install phase starts only once the
+  window's composition has run), seeds `split-view-layout-migrated` so the
   case's declared layout is the one rendered (without it the legacy
   `sidebar-visible` migration showed the workspace sidebar; the fresh profiles
   that show no pane seed that legacy key hidden instead, so the one-shot

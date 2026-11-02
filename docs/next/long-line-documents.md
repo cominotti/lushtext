@@ -19,7 +19,7 @@ that freezes it is **paragraph length**, not file size.
 | C0 | `probe-long-line-toolkit-costs` | Axioms A23–A37, the synthetic fixture generator, the smoke-only in-process probe, `make responsiveness-smoke`, the budget constants, and the measured values below | Values and the budget verdict recorded here (this record). |
 | C1 | `document-scale-policy` | Paragraph profile on the worker, one GTK-matching paragraph-boundary function (fixes the `\n`-only slicer), `DocumentScale` replacing `FileSizeCheck`, gates for syntax/minimap/invisibles/search highlighting at load and on edits, the minimap-detach CRITICAL fix | The context-engine stall and both CRITICALs gone, verified on the lane. **Status: implemented, in review** (branch `document-scale-policy`, PR #59); see "C1 `document-scale-policy` (implementation record)" below. |
 | C2 | `long-line-protected-view` | Protected View (view-only, caret-free) for documents whose longest paragraph exceeds `L_PROTECT_EDIT` = 50,000 (maintainer, 2026-10-30), the display-only fold, the Line Inspector, find on a worker; a recorded toolkit-floor exception for editable paragraphs between `L_EDIT_STALL` (3,500) and 50,000 | Every interaction offered on these documents within the budgets. |
-| C3 | `sliced-protected-install` (conditional) | Sliced install of a giant protected paragraph | Adopted only if the lane's `install` case, run against C2, exceeds B_settle. |
+| C3 | `sliced-protected-install` (adopted 2026-11-02, both halves) | Sliced install and clear of giant protected paragraphs: hidden tails in 256 KiB slices separated by boundary marks (A76), the head after its tail (A77), the delimiter before it and a stand-in terminator after an undelimited last paragraph (A79, a GTK defect), forwards clears per paragraph | Every protected install, recovery, restore and clear dispatch within B_settle at 1.9M characters, 32 MiB and 100–500 MB. **Met** (interleaved verdict 2026-11-02, "C3" below): largest dispatch 8.6–11.2 ms against `main`'s 14–1,901 ms, the 32 MiB recovery 3.5 s per frame → 10 ms. |
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
 | C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). **Corrected 2026-10-29 (C4c):** its first-frame figure was an unseen frame on the unmapped window (A51); the real first frame was ≈ 46 ms from the request, no earlier than before C4b, and the honest fill-in 29–39 ms. |
 | C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Met (interleaved verdict 2026-10-29):** largest dispatch 13.2 ms, fill-in 20.4–25.9 ms (median 21.4), first painted frame 30.0–33.2 ms against `main`'s 45.1–47.9 ms ("C4c" below). |
@@ -2021,11 +2021,243 @@ dispatch: every paragraph laid out again, new ledger axiom **A75**
 exactly where a fresh view at the new width puts it).
 
 **Deferred: task 5.1a** (lane cases for Save As of a protected document and a
-live word-wrap toggle). Both need a measurement-build hook (the file chooser,
+live word-wrap toggle; **done in C3**, task 7.6, `protected/1900000/save-as-wrap`). Both need a measurement-build hook (the file chooser,
 a runtime settings write) the lane does not have; Save As writes the source on
 the worker with no GTK snapshot, pinned by C2's widget tests. Owner: C3
 (`sliced-protected-install`), whose verdict re-measures the protected install
 and its re-layouts.
+
+## C3 `sliced-protected-install` (2026-11-02)
+
+Branch `sliced-protected-install` on `main` 8cd1441a (C2, C2b, C5, C6 merged).
+**Adopted, both halves** (design D1): C2's verdict had already measured the
+one-turn hidden-tail insert over `B_SETTLE_US` (23–28 ms at 1.9M characters,
+0.76 s at 100 MB, 3.5 s per frame after a 32 MiB recovery), and the clear of a
+protected tail was one paragraph-sized turn too.
+
+### What was built
+
+- `model/protected_install.rs`: the GTK-free planner (visible slices, one
+  head per folded paragraph, hidden-tail slices of at most
+  `PROTECTED_TAIL_SLICE_BYTES` ending on a scalar boundary and never inside a
+  CRLF), the clear plan (`clear_ranges_for_turn`), and
+  `ProtectedInstallLimits::for_settle_budget`. `for_settle_budget(B_SETTLE_US,
+  26 µs/KiB, 100 %)` is 315,076 bytes, above `MAX_SLICE_BYTES`, so both slice
+  constants are the 256 KiB cap, a power of two.
+- `ui/protected_fold.rs::FoldedInstall` executes it for load, buffer
+  replacement, the local-history preview and note bodies: a tail that needs
+  several slices goes in one slice per turn, each followed by a left-gravity
+  boundary mark (A76: no segment merge copies a slice); the paragraph's
+  **delimiter goes in before its tail** and its **head after it**, at a
+  left-gravity mark at the paragraph start (A76), so no slice re-lays out the
+  head (A77) and the growing paragraph is never the buffer's last line (A79).
+  A tail that fits one slice goes in after its head in the same turn,
+  unmarked, and several share a turn within the slice budget.
+- `BoundaryLedger` (one per editor) keeps the marks and range sizes, never
+  text; a clear deletes from each paragraph's start forwards, as many ranges
+  as fit `PROTECTED_CLEAR_SLICE_BYTES` per turn (A76: a backwards clear's
+  per-range cost grows with the text before the range).
+- **The stand-in terminator.** A body whose last paragraph is folded and has
+  no delimiter gets a `\n` under an invisible, non-editable tag
+  (`lushtext-protected-install-terminator`), kept after the install.
+  `document_end_iter` stops before it, and every buffer snapshot (save, draft,
+  local history, preview), the properties panel's statistics and the widget
+  tests read through it.
+- Protected install turns are paced at `PACED_SLICE_PRIORITY` through
+  `input_quiet::paced_idle`, inside `edit_lock::with_own_edit`; C2's
+  one-tail-insert-per-iteration admission now applies per slice.
+- Evidence: `LoadEvidence::protected` and `BufferReplacementEvidence::protected`
+  (`ProtectedSliceEvidence`), and the editor's memory estimate charges 128
+  bytes per live boundary.
+- Lane: the `protected` group (Save As of a protected document through the
+  measurement build's `app.probe-save-as`, a live word-wrap toggle, zoom and
+  font change: C2b task 5.1a, carried here as task 7.6), the
+  `recovery/protected-32mib` case (C2's D13 shape: two recovered single-paragraph
+  drafts of 32 MiB, no trailing delimiter), and the install cases' small first
+  tab, mid-install tab switches and scrolls, and reload (clear plus
+  re-install).
+
+### What the implementation found
+
+- **A79, a GTK defect (toolkit floor, upstream report drafted).**
+  `gtk_text_view_get_iter_at_location` for a point below the layout takes the
+  last line and asks `gtk_text_iter_set_visible_line_index` for the line's full
+  byte count; at the end iterator the loop subtracts one byte per iteration,
+  so it walks the last line's hidden bytes one at a time (probe A79: 43.9 /
+  88.0 / 175.1 ms at 1 / 2 / 4 MiB undelimited, 4 µs delimited; about 42 ns
+  per byte). GtkSourceView's gutter and below-text layer ask for that point on
+  every drawn frame while the visible area extends below the text. The first
+  lane trials (tail first, delimiter after it) froze for 316–364 ms per frame
+  at 1.9M characters and 182 s in total at 100 MB (perf, `perf-p19`,
+  `perf-i100`), and `main` pays 3.5 s per frame after the 32 MiB recovery, a
+  pre-existing blocker. The delimiter-first order and the stand-in terminator
+  keep every protected paragraph off the last line. Failing first on `main`
+  (`c3-ff` worktree): one insert of 2,990,000 bytes, one clear of 3,000,861
+  characters, and a below-the-layout lookup of 69.7 ms for a 1M-character
+  undelimited paragraph. Upstream draft:
+  `.claude/handoffs/c3/upstream-gtk-set-visible-line-index.md`.
+- A dense document took one turn per folded paragraph (405 turns for 801
+  paragraphs, two marks each) until one-slice tails went in unmarked and
+  batched (widget test `..._dense_small_tails_are_batched`).
+- Backwards clearing grew per range (A76); the clear is forwards.
+- A tail slice's insert grows with the paragraph's segment count (A77: bounded
+  by the visible text and the segments): 1.84 ms for the first tenth of the
+  slices to 2.18 ms for the last at 100 MB (382 slices) and 1.86 → 2.77 ms at
+  250 MB (954 slices), and 1.90 → 3.74 ms (4.1 ms at most) at the 500 MB open limit (1,908 slices): linear in the slice count, within `B_SETTLE_US` up to the largest document LushText opens.
+
+### Verdict (interleaved, 2026-11-02)
+
+`main` 8cd1441a against the branch build (`bin/branch-final`), the branch's
+driver for both, one exclusive hold per run (`scripts/measure.sh`),
+alternating; load 0.6–1.0 before and after every hold (`runs.log`). Worst
+dispatch per repetition, median / max (ms), and `load_request` to
+`load_complete` (ms, median):
+
+| Case | Phase | `main` | branch | budget |
+|---|---|---|---|---|
+| paragraph 1.9M wrap on | open | 14.5 / 14.6 | 8.9 / 9.2 | 16 |
+| paragraph 1.9M wrap off | open | 14.7 / 15.1 | 8.6 / 10.0 | 16 |
+| paragraph 250,000 | open | 8.7 / 9.1 | 8.9 / 9.7 | 16 |
+| delimiters/cr | open | 31.3 / 31.6 | 31.0 / 32.1 | 16 ¹ |
+| delimiters/u2029 | open | 31.3 / 32.0 | 31.2 / 32.8 | 16 ¹ |
+| session/restore-3 | restore | 14.6 / 15.9 | 8.8 / 8.9 | 16 |
+| reload/250000 | reload | 5.0 / 6.6 | 5.8 / 7.1 | 16 |
+| protected 1.9M ⁵ | open | 14.5 / 14.8 | 8.8 / 8.9 | 16 |
+| protected 1.9M ⁵ | save-as | — ² | 5.9 / 10.3 | 16 |
+| protected 1.9M ⁵ | wrap-toggle | 3.4 / 4.2 | 2.1 / 4.4 | 16 |
+| protected 1.9M ⁵ | zoom-step | 11.9 / 14.3 | 11.9 / 14.9 | 16 |
+| protected 1.9M ⁵ | font-change | 13.9 / 15.4 | 15.0 / 16.6 | 16 ³ |
+| recovery/protected-32mib | restore | 3,526 / 3,563 | 10.0 / 11.2 | 16 |
+| recovery/protected-32mib | scroll | 1,769 / 1,780 | 1.0 / 2.1 | 8 |
+| recovery/protected-32mib | tab-switch | 3,528 / 3,546 | 7.3 / 8.7 | 8 |
+| install 100 MB | open (mid-install) | 756 / 758 | 8.7 / 8.8 | 16 |
+| install 100 MB | reload | 5.8 / 6.2 | 3.7 / 6.3 | 16 |
+| install 250 MB | open (mid-install) | 1,896 / 1,901 | 8.9 / 9.1 | 16 |
+| install 250 MB | reload | 3.1 / 4.3 | 5.1 / 7.2 | 16 |
+| install 500 MB ⁴ | open (mid-install) | > 180,000 (cap) | 8.7 / 8.8 | 16 |
+| install 500 MB ⁴ | reload | — | 8.0 / 8.4 | 16 |
+| AT on: install 100 MB | open | 894 / 898 | 10.1 / 10.1 | 16 |
+| AT on: recovery 32 MiB | restore | 3,523 / 3,529 | 10.4 / 10.6 | 16 |
+| AT on: paragraph 1.9M | open | 12.3 / 14.6 | 10.1 / 10.1 | 16 |
+
+¹ Both sides: the 31 ms dispatch is `post_open_language_attach` of the
+`.html` fixture (C6's recorded A67 toolkit-floor exception, the HTML
+language-definition parse); `main`'s second-largest dispatch, the one-turn
+tail insert (18.7 ms), is gone on the branch.
+² `main` has no `app.probe-save-as`.
+³ **A LushText-owned exception, not a toolkit floor** (corrected after review, 2026-11-02). The font change is the display-wide `CssProvider` restyle LushText chose for the custom monospace font (C6 recorded it as LushText's own choice, with the queued follow-up to scope the provider to the editor and preview surfaces); Perf (`perf-fc`, the 17.1 ms dispatch) shows the frame's layout as CSS revalidation (`gtk_css_node_validate` in 10 of 21 samples) and Pango measuring the head in the new font, FreeType autofitting included, with no buffer, segment or mark code in the stack; the hidden tail is never laid out (A65). Repetitions: 20 per side over two verdicts. At load 0.6–1.0 (eight per side): `main` 11.0–15.4 ms, branch 9.4–16.6 ms; at load 3.7–4.6 (twelve per side, `verdict2/*-plain{1,2}` and `*-fc{1,2}`, a game running on the desktop): `main` median 20.7, 11.1–43.7 ms, branch 19.6, 10.1–44.2 ms. The spread is continuous rather than two clusters, it widens with host load equally on both sides, and C3 adds nothing to the dispatch, so the earlier "bimodality" (branch 16.6 against `main` 15.4) is the tail of one distribution. It stays over `B_SETTLE_US` until the provider is scoped (C6's follow-up), which owns it.
+⁴ The 500,000,000-character fixture is one byte over `REFUSE_TO_OPEN` with its
+delimiter, so it was refused on both sides and the old mid-install loop ran to
+the 180 s cap; the case now uses 499,999,999 characters (the largest document
+LushText opens) and stops at a `workflow-failure`. Rerun interleaved (`verdict/{branch,main}-install500`): `main` inserted the tail in one 3.7 s turn and did not reach `file-open-complete` within the 180 s cap in either repetition; the branch installed it in 7.3 s (request to complete), largest dispatch 8.8 ms.
+
+⁵ Eight repetitions per side; the other rows four (two runs of two), the
+install and AT rows two.
+
+Every inspector open is the recorded `AdwDialog` transition exception (C2b),
+unchanged on both sides. AT payloads (A78): the 100 MB install's insert events
+carry at most one slice (262,144 bytes; 780 events), the head goes in as one
+event, and nothing carries a whole tail.
+
+**Total time.** To fully installed (`load_request` to `load_complete`,
+median): 100 MB 2,286 → 1,490 ms and 250 MB 4,803 → 3,412 ms (phase
+duration), the 32 MiB recovery 11.3 s → 0.75 s, CR-only 160 → 145 ms, U+2029
+161 → 147 ms; 1.9M characters 30.1 → 33.1 ms (wrap on) and 30.6 → 35.4 ms (wrap
+off), three restored 1.9M documents 71.7 → 88.3 ms. **Decision:** the 3–5 ms
+(one document) and 17 ms (three) are the frames GTK draws between slices
+(0.4–1 ms each) and the head's one layout running in its own dispatch rather
+than inside the insert; each slice measured 1.9 ms against the 6.7 ms its
+cost model allows, so a turn could take two, but the model is the
+conservative one C2 and A65 measured (13–17 µs/KiB on slower runs) and
+doubling the slice to 512 KiB would put a slow host's turn at the budget. The
+user gets a drawn, scrollable window throughout in exchange for at most
+17 ms over a 70–90 ms open; budgets are not traded for throughput.
+
+**Storage and load.** `btrfs-stall-report` over every run window: "Storage was
+NOT a bottleneck" in every window but `branch-plain1`, which shows up to three
+tasks in D state on btrfs commits (IO pressure under 1 %); its figures match
+`branch-plain2`'s.
+
+**Formal verification.** Shard `core-protected-install`: K7 (clear plan), K8b
+(C2's fold of one paragraph), K10 (the slice derivation never panics and is
+admissible) and K11 (the rounding guard, `should_panic`), 4.54 min / 7.94 GiB
+locally. The whole-plan properties (progress, exact bytes, scalar and CRLF
+safety, homogeneity, per-slice bounds, `last_of_tail`, the head/tail switch,
+the slice count) did not fit CBMC at any domain tried and are property-tested;
+see `formal-verification.md`.
+
+**Mid-install interactions** (tab switches to the small first tab, three
+wheel steps there, back to the installing tab, until the install completes).
+Dispatch: the worst lateness after the first input is 5.8 / 6.3 / 6.6 ms at
+100 / 250 / 500 MB, within `B_INTERACT_US`; the phase's 8.6–8.8 ms worst is
+the giant tab's editor construction before the first input.
+**Input-to-frame (corrected after review, 2026-11-02).** The 270–307 ms this
+record first reported, and attributed to mutter, was a pairing error in the
+lane: the driver injected the first round of wheels before the window was
+composed, the first two never reached the application, and the driver paired
+injections with probe records by arrival order, so every later wheel was
+charged with the frame of the wheel two places on. Mutter stamps each event
+with its own monotonic time, so the driver now pairs an injection with the
+record whose stamp falls between 1 ms before the injection and 1 ms before the
+next one (at most 20 ms after the injection's D-Bus call returned; the first
+wheel after a pointer move was stamped 2 ms after its call returned), counts
+undelivered wheels (`scroll_delivery`) and fails the lane on any
+(`undelivered_scroll_cases`), and the mid-install phase starts only once the
+window's composition has run (`window_construction.stages_pending == 0`).
+Re-read with this pairing, the first verdict's 100 MB mid-install wheels lost
+exactly the first two of the first round and presented in 11.3 ms median.
+Rerun (`verdict2/*-install`, load 3.1–4.3 with a game on the desktop): every
+wheel delivered (0 of 24 and 0 of 66 lost), input-to-frame 12.2 / 16.3 / 17.3
+ms (median / p95 / max) at 100 MB and 12.5 / 16.4 / 17.5 ms at 250 MB, compositor
+stamp minus injection −1 to +1 ms; `main` meanwhile stalls 800 ms and 1.9 s in
+those phases. The p95 is at the two-frame bound and the maximum 0.8 ms over it,
+inside C6's documented double-buffered presentation floor of the headless
+lane (16.7–19.3 ms), which is reported, not gated.
+
+### Review fixes (PR #77 review, 2026-11-02)
+
+- **Draft capture during a replacement (data safety, predates C3).** An editor whose draft was behind its buffer could be snapshotted by an autosave tick while a whole-buffer replacement (a local-history restore, a draft install, a load installation) was rewriting it: the buffer then held part of the old text and part of the new, and with a sliced protected install a tail without its head. The failing-first widget test wrote a 1.83 MB partial body over the 1.96 MB pre-restore draft. `LushtextEditorPage::draft_capture_blocked()` now makes the tab ineligible (the draft policy's `buffer_untrusted` term, in both the candidate and the captured-snapshot checks), local-history periodic capture waits on it too, and the draft stays as it was until the terminal. Not the edit lock: a save holds that over a whole buffer. Session save records only a cursor position (clamped on restore) and automation no text, so neither had the hole.
+- **Ctrl+Home / Ctrl+End went to the first / last tab (pre-existing on `main`).** With #76's delivery gate the restored-session typing phase failed on both sides: AdwTabView's capture-phase Ctrl+Home, Ctrl+End and their Shift variants (first / last tab, move the tab) run whenever two tabs are open, ahead of the text view, and the switch moves focus into the other page. LushText removes those four AdwTabView shortcuts; Ctrl+Page Up / Down and Alt+digits still switch tabs.
+- **Fails closed.** A sliced install whose paragraph-start mark vanished no longer appends the head after its tail (`FoldedInstallBroken`, `debug_assert!`): the load cancels as incomplete, a replacement cancels and hands its body back, the preview shows an error, a note keeps its source. A load or replacement turn whose editor is gone while a fold plan is set aborts instead of inserting hidden tails unfolded.
+- **The local-history preview's clear is sliced.** One `set_text("")` emptied a snapshot of up to 50 MB in one dispatch; the preview now clears in bounded turns that follow the boundary ledger and then ordinary paragraph slices, and an install waits for it. A 6 MB protected preview cleared in 24 turns, the longest 84 µs (debug widget build; one `set_text("")` of an unfolded buffer of the same text took 2.6 ms there).
+- **The stand-in terminator is out of every reader.** A widget test now autosaves a recovered undelimited folded draft through both snapshot paths and compares the bytes on disk with the original (the shared `editor_text` helper re-implements `document_end_iter`, so it could not catch a leak; the test fails with `end_iter`). The print snapshot, bookmark and restyle line counts, the memory estimate and local-history availability exclude it; GtkTextView's accessible text excludes it by construction (`gtk_text_view_accessible_text_get_contents` reads with `include_hidden = FALSE`, gtktextview.c 4.22.5).
+- **Coverage wording.** The planner's whole-plan properties are tested, not proved; the property tests gained K5's visible half and K8's `head_chars + tail_chars`, and the record, the planner's rustdoc and the spec now say so (`formal-verification.md`).
+- **A77's flatness check had no noise floor.** A sample run beside a release build read 5 → 24 µs for a cost that does not grow and failed; A76/A77 now count medians under 100 µs as flat (`NOISE_FLOOR_US`).
+
+### Rerun after review (`verdict2`, 2026-11-02)
+
+`main` cdfff201 against the merged branch (`bin/branch-review`), the branch's
+driver for both (with the event-stamp pairing and the scroll-delivery gate),
+one exclusive hold per run, alternating. **Not a reference-precondition
+verdict:** a game ran on the desktop throughout (load 2.8–6.3, recorded per
+run in `.claude/handoffs/c3/runs.log`); `btrfs-stall-report`: "Storage was NOT
+a bottleneck" in every window. Every branch run passed the lane's delivery
+gates (no misdirected typing, no withheld frame, no undelivered wheel); `main`'s
+plain runs failed the typing gate on `session/restore-3` (Ctrl+Home, fixed here).
+Worst dispatch per repetition, median / max (ms):
+
+| Case | Phase | `main` | branch | budget |
+|---|---|---|---|---|
+| paragraph 1.9M wrap on | open | 12.6 / 67.8 | 9.4 / 10.1 | 16 |
+| session/restore-3 | restore | 17.8 / 25.0 | 10.2 / 14.6 | 16 |
+| protected 1.9M (12 reps) | open / save-as / font | 11.3 / —, 20.7 (max 43.7) | 10.8, 8.5 (max 21.6), 19.6 (max 44.2) | 16 ³ |
+| recovery/protected-32mib | restore / tab switch | 3,835 / 3,793 | 11.8 / 8.8 | 16 / 8 |
+| install 100 MB | mid-install, after the first input | 797–800 | 7.7–7.8 | 8 |
+| install 250 MB | mid-install, after the first input | 1,929–1,966 | 5.2–7.9 | 8 |
+| install 500 MB | mid-install, after the first input | > 180,000 (cap) | 11.1 / 21.6 ⁶ | 8 |
+| AT on: install 100 MB / 32 MiB recovery | open / restore | 983 / 1,853 | 13.3 / 11.5 | 16 |
+
+Mid-install input-to-frame (median / p95 / max ms, wheels lost): 100 MB
+12.2 / 16.3 / 17.3, 0 of 24; 250 MB 12.5 / 16.4 / 17.5, 0 of 66; 500 MB 11.4 /
+16.1 / 28.8, 0 of 186; AT on, 100 MB 12.3 / 17.4 / 22.0, 0 of 30.
+
+⁶ At load 4.1–4.7. The 500 MB tail slices took up to 11.6 and 14.7 ms here
+(3.7–4.1 ms in the load-0.6–1.0 verdict above, where the same phase's worst was
+8.7–8.8 ms), and the 21.6 ms dispatch has no LushText span or frame inside it
+(the main loop ran none of LushText's code: preemption by the desktop load).
+The phase's raw maximum also includes the window's first realize
+(`composition_realize`, 10–17 ms, C4's recorded A46 cost), which the
+mid-install phase now spans because it waits for composition.
 
 ## C5 `explore-editing-long-paragraphs` (2026-10-31)
 
@@ -2285,7 +2517,7 @@ are `V-A-compare.md` and `V-B-compare.md`.
 |---|---|
 | C1 `document-scale-policy` | A27 (tag changes do not dirty the buffer), A29 (context engine cut-off), A31 (2000 px validation batches, the source of R_batch), A32 (source-map detach CRITICAL); added by C1: A42 (paragraph delimiters and history-dependent buffer lines), A43 (`chars_in_line` cost, verified by source), A44 (same-emission language downgrade), A45 (unparent stops a pending tick) |
 | C2 `long-line-protected-view` | A23, A24, A25, A26, A28, A30, A33, A34, A35; from C1, A42 (paragraph delimiters), A43 (`chars_in_line` cost), A44 (same-emission language downgrade), A45 (unparent stops a pending tick); added by C2 (its P1–P8): A59 (a capture-phase claim keeps presses from the view's gestures), A60 (non-editable: no input-method focus-in or key filtering), A61 (a stopped `move-cursor` holds under caret browsing), A62 (AT-SPI text and caret writes on a folded paragraph; lane-pinned like A35), A63 (one drop target, no drag source; removal), A64 (stopped key-binding signals and a captured Shift+F10 guard; action enablement does not), A65 (a hidden tail is never laid out; 13–17 ms per MiB insert), A66 (chunk-read cost by iterator positioning; the persistent byte-positioned iterator is flat) |
-| C3 `sliced-protected-install` | A24, A35, A36 |
+| C3 `sliced-protected-install` | A24, A35, A36, A53, A65; added by C3: A76 (a left-gravity mark keeps slices from merging; forward deletion cost), A77 (a hidden append re-lays out only visible text), A78 (AT payloads bounded by the run, extends A35), A79 (a point below the layout walks the last line's hidden bytes; GTK defect) |
 | C4 `bound-window-construction-dispatch` | A38 (keyfile write per `set_*` on the calling thread), A39 (`delay`/`apply` coalescing), A40 (no backend lock; a second backend stays stale), A41 (`changed` timing) |
 | C4c `shorten-window-content-fill-in` | A51 (a realize frame runs on the unmapped window, is never presented, and paces the first visible frame one `FRAME_INTERVAL` later), A46–A50 unchanged |
 | C4b `first-frame-window-shell` | A46 (one-time first realize; small in a minimal window), A47 (`present` measures nothing; invisible subtrees skipped), A48 (a reveal is measured in the next frame), A49 (concealed vertical revealers measure a visible child), A50 (breakpoint before map vs the snapshot swap), A21 (`window-removed` teardown) |

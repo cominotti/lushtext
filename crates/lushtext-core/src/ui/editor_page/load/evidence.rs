@@ -112,6 +112,10 @@ pub struct LoadEvidence {
     pub installation_incomplete: bool,
     /// Whether signal-emitting final projection owns the editor lifecycle.
     pub finalizing: bool,
+    /// The sliced protected install and clear (`sliced-protected-install`,
+    /// design D7): tail slices, the largest slice, live boundaries, ranges a
+    /// clear still has to delete. Not projected into automation snapshots.
+    pub protected: crate::ui::protected_fold::ProtectedSliceEvidence,
     /// Whether installation is suppressing document-amplifying projections.
     pub projection_suspended: bool,
 
@@ -188,6 +192,11 @@ impl LushtextEditorPage {
             installation_chunked: imp.load.installation_chunked.get(),
             installation_incomplete: imp.load.installation_incomplete.get(),
             finalizing: imp.load.finalizing.get(),
+            protected: crate::ui::protected_fold::ProtectedSliceEvidence::read(
+                imp.load.protected_install.get(),
+                imp.load.protected_clear_turns.get(),
+                &imp.protected_boundaries,
+            ),
             projection_suspended: imp.load.projection_suspended.get(),
             load_state: imp.load_state.get(),
             outcome: imp.load.outcome.get(),
@@ -235,7 +244,25 @@ pub(super) fn record_retired_request_cancellation(editor: &LushtextEditorPage, c
 
 /// Record which installation path the accepted payload took.
 pub(super) fn record_install_started(editor: &LushtextEditorPage, chunked: bool) {
-    editor.imp().load.installation_chunked.set(chunked);
+    let load = &editor.imp().load;
+    load.installation_chunked.set(chunked);
+    load.protected_install
+        .set(crate::ui::protected_fold::FoldedInstallMetrics::default());
+    load.protected_clear_turns.set(0);
+}
+
+/// Record the newest sliced protected install's counts (C3).
+pub(super) fn record_protected_install(
+    editor: &LushtextEditorPage,
+    metrics: crate::ui::protected_fold::FoldedInstallMetrics,
+) {
+    editor.imp().load.protected_install.set(metrics);
+}
+
+/// Record one ledger clear turn (C3).
+pub(super) fn record_protected_clear_turn(editor: &LushtextEditorPage) {
+    let turns = &editor.imp().load.protected_clear_turns;
+    turns.set(turns.get().saturating_add(1));
 }
 
 /// Record how the newest load for this editor ended.

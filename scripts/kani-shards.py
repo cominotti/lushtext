@@ -179,6 +179,15 @@ PROTECTED_VIEW_MEASURED_IN = (
     "(Kani 0.68.0; core-protected-view 1.09 min / 3.34 GiB; core-protected-view-navigation "
     "13.26 min / 1.41 GiB), not runner measurements"
 )
+# sliced-protected-install (C3), the protected install planner's harnesses
+# K7, K8b, K10, K11 (the whole-plan K1-K6, K8, K9 are property-tested). PENDING DISPATCH until two dispatched kani.yml runs replace these
+# local figures (task 3.10).
+PROTECTED_INSTALL_MINUTES = 4.6
+PROTECTED_INSTALL_PEAK_GIB = 8.0
+PROTECTED_INSTALL_MEASURED_IN = (
+    "PENDING DISPATCH: local make kani KANI_MEASURE run on the reference workstation, 2026-11-02 "
+    "(Kani 0.68.0; core-protected-install 4.54 min / 7.94 GiB), not runner measurements"
+)
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -435,6 +444,14 @@ SHARDS: dict[str, Shard] = {
     ),
     # The scheduled rest is split again: the fold-shape harnesses alone took
     # 12 of the 17.3 local minutes the combined group did.
+    "core-protected-install": Shard(
+        "lushtext-core",
+        ("model::protected_install::kani_proofs::",),
+        gate="scheduled",
+        ci_minutes=PROTECTED_INSTALL_MINUTES,
+        ci_peak_gib=PROTECTED_INSTALL_PEAK_GIB,
+        measured_in=PROTECTED_INSTALL_MEASURED_IN,
+    ),
     "core-protected-fold-shape": Shard(
         "lushtext-core",
         ("model::protected_fold::kani_proofs::folds_hide_",),
@@ -569,6 +586,7 @@ _BOUNDARY = "model::paragraph_boundary::kani_proofs::"
 _WATCH = "model::paragraph_profile_watch::kani_proofs::"
 _FOLD = "model::protected_fold::kani_proofs::"
 _PV = "ui::editor_page::protected_view::policy::kani_proofs::"
+_PI = "model::protected_install::kani_proofs::"
 _SHELL_POLICY_HARNESSES = (
     _h(_SHELL + "focus_mode_renders_no_secondary_surface", 0.11, "ci"),
     _h(_SHELL + "layout_never_renders_an_unrequested_surface", 0.2, "ci"),
@@ -793,6 +811,15 @@ ORACLES: dict[str, Oracle] = {
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r1", 36.29, "ci"),
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r2", 54.16, "ci"),
             _h(_FOLD + "fold_plan_is_independent_of_install_slicing_r3", 361.16, "local"),
+        ),
+    ),
+    "crates/lushtext-core/src/model/protected_install.rs": Oracle(
+        _CORE,
+        (
+            _h(_PI + "settle_budget_derivation_fits_and_never_overflows", 0.28, "ci"),
+            _h(_PI + "one_paragraph_fold_shows_its_head_cap", 1.46, "ci"),
+            _h(_PI + "protected_clear_plan_covers_the_buffer_once", 7.12, "ci"),
+            _h(_PI + "unrounded_tail_end_splits_a_scalar", 249.29, "local"),
         ),
     ),
     "crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs": Oracle(

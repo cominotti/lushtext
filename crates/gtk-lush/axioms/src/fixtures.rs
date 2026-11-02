@@ -391,6 +391,27 @@ pub mod a75 {
     };
 }
 
+/// The slice appends and range deletions the A76 probe times, for its sample.
+pub mod a76 {
+    pub use crate::probes::a76::{
+        SLICE_BYTES, SLICES, append_tagged_slices, delete_ranges_backwards, delete_ranges_forwards,
+        ends, slice_text,
+    };
+}
+
+/// The sliced hidden installs the A77 probe times, for its sample.
+pub mod a77 {
+    pub use crate::probes::a77::{
+        HEAD_CHARS, SlicedInstall, head, line_start_lookup_us, relayout_us, slice_text,
+        sliced_install,
+    };
+}
+
+/// The below-the-layout lookup the A79 probe times, for its sample.
+pub mod a79 {
+    pub use crate::probes::a79::{HIDDEN_MIB, below_layout_lookup_us, install};
+}
+
 /// Height every probe row requests, so row geometry is predictable.
 ///
 /// GTK adds the row's own CSS padding on top, so a row is drawn taller than

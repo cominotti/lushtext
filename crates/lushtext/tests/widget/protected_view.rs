@@ -656,9 +656,14 @@ fn recover_draft(
     let draft_chars = draft.chars().count();
     let window = test_window();
     present_window(&window);
+    // The recovered body, plus the stand-in terminator after an undelimited
+    // folded last paragraph (`ui::protected_fold`, A79), once the bounded
+    // replacement has finished.
     wait_until(Duration::from_secs(60), || {
-        usize::try_from(active_editor(&window).buffer().char_count())
-            .is_ok_and(|chars| chars == draft_chars)
+        let editor = active_editor(&window);
+        !editor.buffer_replacement_evidence().in_progress
+            && usize::try_from(editor.buffer().char_count())
+                .is_ok_and(|chars| chars == draft_chars || chars == draft_chars + 1)
     });
     flush_events();
     let editor = active_editor(&window);
@@ -939,7 +944,8 @@ fn test_an_edit_entered_session_finds_and_copies_its_hidden_tail() {
 #[test]
 fn test_eviction_releases_the_source_and_the_reload_retains_a_new_one() {
     ensure_gtk_init();
-    let body = body_with_giants(&[n(L_PROTECT_EDIT) * 2]);
+    // A tail over one protected slice, so the install leaves boundaries.
+    let body = body_with_giants(&[1_000_000]);
     let dir = tempfile::tempdir().expect("protected-view tempdir");
     let path = dir.path().join("evict.txt");
     fixture::write_text(&path, &body);
@@ -959,8 +965,15 @@ fn test_eviction_releases_the_source_and_the_reload_retains_a_new_one() {
             chars,
             page.file_size(),
             false
-        ) + before.source_bytes.expect("source"),
-        "the source is charged to the live-editor estimate"
+        ) + before.source_bytes.expect("source")
+            + lushtext_core::model::editor_memory::protected_boundary_bytes(
+                page.load_evidence().protected.boundaries_live
+            ),
+        "the source and the boundary marks are charged to the live-editor estimate"
+    );
+    assert!(
+        page.load_evidence().protected.boundaries_live > 0,
+        "the body was installed sliced"
     );
 
     page.evict();
@@ -1153,4 +1166,530 @@ fn test_the_automation_snapshot_counts_protected_find_matches() {
     let snapshot = lushtext_core::ui::automation::app_snapshot(&app);
     let search = snapshot.window.expect("window snapshot").search;
     assert_eq!(search.editor_match_count, Some(2));
+}
+
+// ─── Sliced protected install (`sliced-protected-install`, C3) ─────────────
+
+use lushtext_core::model::buffer_replacement::SliceBudget;
+use lushtext_core::model::protected_install::{
+    PRODUCTION_LIMITS, PROTECTED_CLEAR_SLICE_BYTES, PROTECTED_TAIL_SLICE_BYTES,
+    ProtectedInstallCursor, SliceKind, plan_protected_install,
+};
+
+/// The hidden-tail slices the planner gives `body`, and the boundary marks
+/// the executor leaves: one per slice plus one paragraph-start mark, for
+/// every tail that needs more than one slice (a one-slice tail goes in with
+/// its head, unmarked).
+fn expected_slices_and_boundaries(
+    body: &str,
+    plan: &lushtext_core::model::protected_fold::FoldPlan,
+) -> (u64, u64) {
+    let mut cursor = ProtectedInstallCursor::new();
+    let (mut slices, mut boundaries, mut run) = (0, 0, 0);
+    while let Some(slice) = plan_protected_install(
+        body,
+        plan.ranges(),
+        &mut cursor,
+        SliceBudget::BYTES_ONLY,
+        PRODUCTION_LIMITS,
+    ) {
+        if slice.kind == SliceKind::HiddenTail {
+            run += 1;
+            if slice.last_of_tail {
+                slices += run;
+                if run > 1 {
+                    boundaries += run + 1;
+                }
+                run = 0;
+            }
+        }
+    }
+    (slices, boundaries)
+}
+
+/// The largest insertion and deletion `page`'s buffer sees, in bytes and
+/// characters, recorded from the signals' before-handlers.
+#[derive(Default)]
+struct BufferRuns {
+    largest_insert_bytes: std::cell::Cell<usize>,
+    largest_delete_chars: std::cell::Cell<i32>,
+}
+
+fn watch_buffer_runs(page: &LushtextEditorPage) -> std::rc::Rc<BufferRuns> {
+    let runs = std::rc::Rc::new(BufferRuns::default());
+    let buffer = page.buffer();
+    let inserted = std::rc::Rc::clone(&runs);
+    buffer.connect_insert_text(move |_, _, text| {
+        let largest = &inserted.largest_insert_bytes;
+        largest.set(largest.get().max(text.len()));
+    });
+    let deleted = std::rc::Rc::clone(&runs);
+    buffer.connect_delete_range(move |_, start, end| {
+        let largest = &deleted.largest_delete_chars;
+        largest.set(largest.get().max(end.offset() - start.offset()));
+    });
+    runs
+}
+
+fn usize_of(value: u64) -> usize {
+    usize::try_from(value).expect("fits usize")
+}
+
+#[test]
+fn test_a_protected_tail_goes_in_and_out_in_bounded_slices() {
+    // Failing first on C2's one-turn executor: its 3,000,000-character tail
+    // went in with one `insert_with_tags`, and a reload's clear deleted the
+    // whole paragraph in one turn (its head's clear slice ran to the line end).
+    ensure_gtk_init();
+    let body = body_with_giants(&[3_000_000]);
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("sliced.txt");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    let runs = watch_buffer_runs(&page);
+    load_and_wait(&page, &path);
+    assert!(page.is_protected_view());
+    assert_eq!(editor_text(&page), body);
+    assert!(
+        runs.largest_insert_bytes.get() <= PROTECTED_TAIL_SLICE_BYTES,
+        "the largest insertion was {} bytes",
+        runs.largest_insert_bytes.get()
+    );
+
+    load_and_wait(&page, &path);
+    assert_eq!(editor_text(&page), body, "the reload is byte-identical");
+    let clear_bound = PROTECTED_CLEAR_SLICE_BYTES + usize_of(HEAD_CAP);
+    assert!(
+        usize::try_from(runs.largest_delete_chars.get()).expect("non-negative") <= clear_bound,
+        "the largest deletion was {} characters",
+        runs.largest_delete_chars.get()
+    );
+}
+
+/// The fold tag's ranges on `line`, as character columns.
+fn fold_tag_runs(page: &LushtextEditorPage, line: i32) -> Vec<(i32, i32)> {
+    let buffer = page.buffer();
+    let tag = buffer
+        .tag_table()
+        .lookup(lushtext_core::ui::protected_fold::FOLD_TAG_NAME)
+        .expect("the fold tag exists");
+    let mut iter = buffer.iter_at_line(line).expect("line exists");
+    let mut end = iter;
+    if !end.ends_line() {
+        end.forward_to_line_end();
+    }
+    let mut runs = Vec::new();
+    let mut run_start = iter.has_tag(&tag).then_some(iter.line_offset());
+    while iter < end && iter.forward_to_tag_toggle(Some(&tag)) {
+        if iter > end {
+            break;
+        }
+        match run_start.take() {
+            Some(start) => runs.push((start, iter.line_offset())),
+            None => run_start = Some(iter.line_offset()),
+        }
+    }
+    if let Some(start) = run_start {
+        runs.push((start, end.line_offset()));
+    }
+    runs
+}
+
+/// Install `body` through the sliced protected path and check byte identity,
+/// the fold, the slice and boundary counts, one tag range per tail, and that
+/// no protected paragraph showed more than its head at any main-loop turn.
+fn assert_sliced_install(body: &str, name: &str) -> lushtext_core::ui::editor_page::LoadEvidence {
+    ensure_gtk_init();
+    let profile = DocumentProfile::of_text(body);
+    let plan = profile
+        .fold_plan
+        .as_deref()
+        .unwrap_or_else(|| panic!("{name}: the fixture must be protected"))
+        .clone();
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join(format!("{name}.txt"));
+    fixture::write_text(&path, body);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    // Between the install's turns, every folded paragraph shows at most its
+    // head: the tail is never laid out untagged across a dispatch (D2).
+    let overshow = std::rc::Rc::new(std::cell::Cell::new(None));
+    let watcher = {
+        let (page, plan, overshow) = (page.clone(), plan.clone(), std::rc::Rc::clone(&overshow));
+        glib::timeout_add_local(Duration::from_millis(1), move || {
+            let lines = visible_lengths(&page);
+            for range in plan.ranges() {
+                if let Some(&shown) = lines.get(usize_of(range.paragraph))
+                    && shown > range.head_chars
+                {
+                    overshow.set(Some((range.paragraph, shown)));
+                }
+            }
+            glib::ControlFlow::Continue
+        })
+    };
+    load_and_wait(&page, &path);
+    watcher.remove();
+    assert_eq!(
+        overshow.get(),
+        None,
+        "{name}: a paragraph showed past its head"
+    );
+    assert_eq!(editor_text(&page), body, "{name}: byte identity");
+    let visible = visible_lengths(&page);
+    for range in plan.ranges() {
+        let line = i32::try_from(range.paragraph).expect("fits");
+        assert_eq!(
+            visible[usize_of(range.paragraph)],
+            range.head_chars,
+            "{name}: line {line} head"
+        );
+        let head = i32::try_from(range.head_chars).expect("fits");
+        let tail = i32::try_from(range.tail_chars).expect("fits");
+        assert_eq!(
+            fold_tag_runs(&page, line),
+            vec![(head, head + tail)],
+            "{name}: line {line}'s tail is one fold-tag range"
+        );
+    }
+    let evidence = page.load_evidence();
+    let protected = evidence.protected;
+    assert!(evidence.installation_chunked, "{name}: sliced");
+    let (slices, boundaries) = expected_slices_and_boundaries(body, &plan);
+    assert_eq!(
+        protected.tail_slices, slices,
+        "{name}: every planned tail slice"
+    );
+    assert!(
+        usize_of(protected.largest_tail_slice_bytes) <= PROTECTED_TAIL_SLICE_BYTES,
+        "{name}: {protected:?}"
+    );
+    assert_eq!(
+        protected.boundaries_live, boundaries,
+        "{name}: one boundary per slice plus one per paragraph start, for multi-slice tails"
+    );
+    // The install never ran the edit-time entry (C1's watch, C2's growth).
+    let view = page.protected_view_evidence();
+    assert!(view.protected && !view.entered_by_edit, "{name}: {view:?}");
+    assert!(!view.entry_undo_available, "{name}");
+    assert!(!page.buffer().is_modified(), "{name}: unmodified");
+    evidence
+}
+
+#[test]
+fn test_sliced_protected_installs_are_byte_identical_and_folded() {
+    let giant = |len: usize| "g".repeat(len);
+    let head = usize_of(HEAD_CAP);
+    let budget = PROTECTED_TAIL_SLICE_BYTES;
+    assert_sliced_install(&format!("a\r{}\rb\r", giant(600_000)), "cr-only");
+    assert_sliced_install(&format!("a\u{2029}{}\u{2029}b", giant(600_000)), "u2029");
+    // A `\r\n` right at the end of a tail slice's window, and one byte inside.
+    assert_sliced_install(
+        &format!("x\n{}\r\ny\n", giant(head + budget)),
+        "crlf-at-edge",
+    );
+    assert_sliced_install(
+        &format!("x\n{}\r\ny\n", giant(head + budget - 1)),
+        "crlf-inside",
+    );
+    // Multibyte scalars at every byte phase of the slice ends.
+    for phase in 0..4 {
+        let tail = "é€𝄞a".repeat(70_000);
+        assert_sliced_install(&format!("{}{tail}\nend", "p".repeat(phase)), "multibyte");
+    }
+    // Several protected paragraphs among short ones, the last unterminated.
+    let mixed = format!(
+        "{}{}",
+        body_with_giants(&[700_000, 120_000, 650_000]),
+        giant(400_000)
+    );
+    assert_sliced_install(&mixed, "mixed");
+}
+
+/// Check that a cancelled load left nothing partial: an empty, unsaveable
+/// buffer with no boundary left.
+fn cancel_and_check(page: &LushtextEditorPage, name: &str) {
+    let evidence = page.load_evidence();
+    assert_eq!(
+        page.buffer().char_count(),
+        0,
+        "{name}: nothing partial stays"
+    );
+    assert!(
+        evidence.installation_incomplete,
+        "{name}: saving stays blocked"
+    );
+    assert_eq!(
+        evidence.protected.boundaries_live, 0,
+        "{name}: no boundary left"
+    );
+}
+
+/// Cancel `page`'s load from a high-priority idle, so between two of its
+/// turns, once `signal` has been emitted `count` times on its buffer
+/// (`apply-tag` once per hidden-tail slice, `delete-range` once per clear
+/// turn). Returns the handler to disconnect.
+fn cancel_after(
+    page: &LushtextEditorPage,
+    signal: &'static str,
+    count: u32,
+) -> glib::SignalHandlerId {
+    let seen = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let page_weak = page.downgrade();
+    page.buffer().connect_local(signal, false, move |values| {
+        // `apply-tag` counts the fold tag only (C5's wrap gate applies its
+        // own tag in the same emissions).
+        let other_tag = values
+            .get(1)
+            .and_then(|value| value.get::<gtk4::TextTag>().ok())
+            .is_some_and(|tag| {
+                tag.name().as_deref() != Some(lushtext_core::ui::protected_fold::FOLD_TAG_NAME)
+            });
+        if other_tag {
+            return None;
+        }
+        seen.set(seen.get() + 1);
+        if seen.get() == count {
+            let page_weak = page_weak.clone();
+            glib::idle_add_local_full(glib::Priority::HIGH, move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.cancel_load();
+                }
+                glib::ControlFlow::Break
+            });
+        }
+        None
+    })
+}
+
+#[test]
+fn test_cancelling_a_sliced_protected_install_leaves_nothing_saveable() {
+    ensure_gtk_init();
+    let body = body_with_giants(&[3_000_000, 2_000_000]);
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("cancel.txt");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    for (slices, name) in [
+        (1, "after the first tail slice"),
+        (3, "between tail slices"),
+    ] {
+        let handler = cancel_after(&page, "apply-tag", slices);
+        page.load_file_async(&path);
+        wait_until(Duration::from_secs(60), || {
+            let evidence = page.load_evidence();
+            !evidence.installation_active && evidence.installation_incomplete
+        });
+        page.buffer().disconnect(handler);
+        flush_events();
+        let evidence = page.load_evidence();
+        assert!(
+            evidence.protected.tail_slices >= u64::from(slices),
+            "{name}: {:?}",
+            evidence.protected
+        );
+        cancel_and_check(&page, name);
+        load_and_wait(&page, &path);
+        assert_eq!(
+            editor_text(&page),
+            body,
+            "{name}: the re-install is byte-identical"
+        );
+    }
+    // While a reload clears the protected buffer.
+    let handler = cancel_after(&page, "delete-range", 2);
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(60), || {
+        let evidence = page.load_evidence();
+        !evidence.installation_active && evidence.installation_incomplete
+    });
+    page.buffer().disconnect(handler);
+    cancel_and_check(&page, "while clearing");
+    load_and_wait(&page, &path);
+    assert_eq!(editor_text(&page), body, "after a cancelled clear");
+}
+
+#[test]
+fn test_no_boundary_mark_outlives_eviction_reload_or_replacement() {
+    ensure_gtk_init();
+    let body = body_with_giants(&[1_000_000]);
+    let dir = tempfile::tempdir().expect("protected-view tempdir");
+    let path = dir.path().join("marks.txt");
+    fixture::write_text(&path, &body);
+    let page = LushtextEditorPage::new();
+    let _window = present(&page);
+    load_and_wait(&page, &path);
+    let installed = page.load_evidence().protected.boundaries_live;
+    assert!(
+        installed > 2,
+        "a sliced tail leaves boundaries: {installed}"
+    );
+
+    page.evict();
+    wait_until(Duration::from_secs(30), || page.is_evicted());
+    assert_eq!(
+        page.load_evidence().protected.boundaries_live,
+        0,
+        "eviction"
+    );
+
+    load_and_wait(&page, &path);
+    assert_eq!(
+        page.load_evidence().protected.boundaries_live,
+        installed,
+        "a reload leaves exactly its own install's boundaries"
+    );
+    load_and_wait(&page, &path);
+    assert_eq!(page.load_evidence().protected.boundaries_live, installed);
+
+    let outcomes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    page.replace_buffer_for_test(
+        "plain replacement\n".to_string(),
+        1,
+        std::rc::Rc::new(std::cell::Cell::new(true)),
+        std::rc::Rc::clone(&outcomes),
+    );
+    wait_until(Duration::from_secs(30), || !outcomes.borrow().is_empty());
+    assert_eq!(editor_text(&page), "plain replacement\n");
+    let replaced = page.buffer_replacement_evidence();
+    assert_eq!(replaced.protected.boundaries_live, 0, "replacement");
+    assert!(replaced.protected.clear_turns >= 1, "{replaced:?}");
+}
+
+/// A recovered undelimited folded last paragraph of `giant` characters ends
+/// the buffer with the stand-in terminator, outside the document text.
+fn assert_terminated_recovery(name: &str, giant: usize) {
+    // A point below the layout maps to the last line's end and GTK then
+    // walks that line once per hidden byte (ledger A79), on every frame
+    // GtkSourceView draws below the text: 3.5 s frames recovering a
+    // 33.5M-character draft on `main`. A stand-in terminator, which is not
+    // document text, keeps the folded paragraph off the last line.
+    let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(giant));
+    let (_window, editor, _path, _dir) = recover_draft(&draft);
+    let buffer = editor.buffer();
+    let raw = buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string();
+    assert_eq!(
+        raw,
+        format!("{draft}\n"),
+        "{name}: one stand-in after the body"
+    );
+    assert_eq!(
+        editor_text(&editor),
+        draft,
+        "{name}: the document text is the draft"
+    );
+    let mut last = buffer.end_iter();
+    assert!(last.backward_char());
+    let terminator = buffer
+        .tag_table()
+        .lookup(lushtext_core::ui::protected_fold::TERMINATOR_TAG_NAME)
+        .expect("the terminator tag exists");
+    assert!(last.has_tag(&terminator), "{name}: the stand-in is tagged");
+    let started = std::time::Instant::now();
+    let _ = editor.source_view().iter_at_location(0, 100_000);
+    assert!(
+        started.elapsed() < Duration::from_millis(5),
+        "{name}: a point below the text maps at once: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn test_an_undelimited_folded_last_paragraph_is_never_the_last_line_direct() {
+    assert_terminated_recovery("direct", n(L_PROTECT_EDIT) + 1);
+}
+
+#[test]
+fn test_an_undelimited_folded_last_paragraph_is_never_the_last_line_sliced() {
+    assert_terminated_recovery("sliced", 1_000_000);
+}
+
+/// The stand-in terminator never reaches the bytes on disk (review of PR #77:
+/// the test helper `editor_text` re-implements `document_end_iter`, so it
+/// cannot catch a leak). A recovered undelimited folded draft is written back
+/// by the draft autosave, which snapshots the buffer (drafts have no protected
+/// source path), and the body on disk must be the original bytes, with no
+/// trailing `\n`. `giant` picks the snapshot: below 2.5M characters a direct
+/// read, above it the chunked capture.
+fn assert_autosaved_draft_is_byte_identical(name: &str, giant: usize) {
+    use lushtext_core::services::{draft_service, json_store};
+    let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(giant));
+    let (window, editor, path, _dir) = recover_draft(&draft);
+    assert!(editor.is_protected_view(), "{name}: protected");
+    let buffer = editor.buffer();
+    assert_eq!(
+        usize::try_from(buffer.char_count()).expect("fits"),
+        draft.chars().count() + 1,
+        "{name}: the buffer holds the stand-in"
+    );
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&path);
+    // Overwrite the recovered body, so only a real write can restore it.
+    draft_service::fixture::write_body(&data_dir, &draft_id, "stale").expect("stale body");
+    editor.set_draft_dirty(true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(60), || {
+        let evidence = window.draft_evidence();
+        !evidence.autosave_inflight
+            && !evidence.mutation_inflight
+            && !editor.draft_dirty()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read body")
+                .as_deref()
+                != Some("stale")
+    });
+    let written = draft_service::read_draft(&data_dir, &draft_id)
+        .expect("read body")
+        .expect("a body");
+    assert_eq!(written.len(), draft.len(), "{name}: same length on disk");
+    assert!(
+        written.as_bytes() == draft.as_bytes(),
+        "{name}: the same bytes on disk"
+    );
+}
+
+#[test]
+fn test_an_autosaved_folded_draft_is_byte_identical_direct_snapshot() {
+    assert_autosaved_draft_is_byte_identical("direct", 1_000_000);
+}
+
+#[test]
+fn test_an_autosaved_folded_draft_is_byte_identical_chunked_snapshot() {
+    assert_autosaved_draft_is_byte_identical("chunked", 3_000_000);
+}
+
+#[test]
+fn test_recovering_a_protected_draft_inserts_its_tail_in_bounded_slices() {
+    let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(3_000_000));
+    let (_window, editor, _path, _dir) = recover_draft(&draft);
+    assert_eq!(editor_text(&editor), draft);
+    let protected = editor.buffer_replacement_evidence().protected;
+    assert!(protected.tail_slices >= 3_000_000 / PROTECTED_TAIL_SLICE_BYTES as u64);
+    assert!(usize_of(protected.largest_tail_slice_bytes) <= PROTECTED_TAIL_SLICE_BYTES);
+    assert_eq!(protected.boundaries_live, protected.tail_slices + 1);
+}
+
+#[test]
+fn test_a_dense_protected_document_folds_small_tails_without_boundaries() {
+    // Many folded paragraphs whose tails each fit one slice (a dense window
+    // beside a giant): they go in head then tail, several per turn, with no
+    // boundary mark; only the giant's tail is sliced and marked.
+    let dense_row = "d".repeat(4_000);
+    let dense: String = (0..400).map(|_| format!("{dense_row}\n")).collect();
+    let body = format!("{dense}{}\n{dense}", "g".repeat(1_200_000));
+    let evidence = assert_sliced_install(&body, "dense-with-giant");
+    let folded = DocumentProfile::of_text(&body)
+        .fold_plan
+        .expect("protected")
+        .folded_paragraphs();
+    assert!(folded > 700, "{folded}");
+    assert!(
+        evidence.installation_slice_count < folded / 4,
+        "small tails batch into turns: {} turns for {folded} folded paragraphs",
+        evidence.installation_slice_count
+    );
 }

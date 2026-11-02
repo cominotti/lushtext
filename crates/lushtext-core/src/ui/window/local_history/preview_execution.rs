@@ -23,6 +23,7 @@ use gtk_lush_tasks::spawn_blocking_then;
 
 use crate::model::protected_fold::FoldPlan;
 use crate::ui::folded_text::{FoldedTextSurface, InstallSlice, SurfaceText, install_slice};
+use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall};
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
@@ -111,6 +112,10 @@ pub(super) fn guard_local_history_preview_on_worker(
 
 pub(super) static PREVIEW_INSTALL_SLICES: AtomicUsize = AtomicUsize::new(0);
 pub(super) static PREVIEW_INSTALL_CANCELLATIONS: AtomicUsize = AtomicUsize::new(0);
+pub(super) static PREVIEW_CLEAR_TURNS: AtomicUsize = AtomicUsize::new(0);
+pub(super) static PREVIEW_LARGEST_CLEAR_TURN: AtomicUsize = AtomicUsize::new(0);
+pub(super) static PREVIEW_LONGEST_CLEAR_TURN_US: AtomicUsize = AtomicUsize::new(0);
+pub(super) static PREVIEW_BROKEN_INSTALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "test-utils")]
 fn preview_install_delay() -> u64 {
     super::test_policy::preview_install_delay_ms()
@@ -174,6 +179,12 @@ pub(super) struct LocalHistoryBrowserState {
     preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
     /// Current browser-local sliced GTK installation, when required.
     preview_install: RefCell<Option<LocalHistoryPreviewInstallSession>>,
+    /// The boundary marks a sliced protected preview left in
+    /// `preview_buffer`, which the bounded clear follows.
+    preview_boundaries: BoundaryLedger,
+    /// The idle running the bounded clear of a large preview buffer
+    /// (`clear_preview_buffer`); an install waits while it is armed.
+    preview_clear: RefCell<Option<glib::SourceId>>,
     /// Whether dialog teardown invalidated all preview work.
     disposed: Cell<bool>,
     /// Active safety capture for a pending restore, disposed with the dialog.
@@ -189,9 +200,9 @@ struct LocalHistoryPreviewInstallSession {
     snapshot: Option<LoadedSnapshot>,
     offset: usize,
     source_id: Option<glib::SourceId>,
-    /// The Protected View fold plan of a snapshot whose longest paragraph
-    /// exceeds `L_PROTECT_EDIT`, and the paragraph the next slice starts.
-    fold: Option<(std::sync::Arc<FoldPlan>, u64)>,
+    /// The sliced install of a snapshot whose longest paragraph exceeds
+    /// `L_PROTECT_EDIT` (`ui::protected_fold::FoldedInstall`, C3).
+    fold: Option<FoldedInstall>,
 }
 
 impl LushtextWindow {
@@ -353,6 +364,8 @@ impl LushtextWindow {
             preview_admission: RefCell::default(),
             preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup::default(),
             preview_install: RefCell::new(None),
+            preview_boundaries: BoundaryLedger::default(),
+            preview_clear: RefCell::new(None),
             disposed: Cell::new(false),
             restore_snapshot: RefCell::new(None),
             restore_pending: Cell::new(false),
@@ -504,7 +517,7 @@ impl LocalHistoryBrowserState {
         self.preview_title.set_label("Loading snapshot…");
         self.preview_meta
             .set_label(&policy::format_snapshot_meta(meta.origin, meta.byte_len));
-        self.preview_buffer.set_text("");
+        self.clear_preview_buffer();
         self.preview_stack.set_visible_child_name("loading");
         set_local_history_preview_accessibility(
             &self.preview_stack,
@@ -699,7 +712,7 @@ impl LocalHistoryBrowserState {
         ));
         match policy::preview_install_plan(snapshot.text.len()) {
             policy::PreviewInstallPlan::Empty => {
-                self.preview_buffer.set_text("");
+                self.clear_preview_buffer();
                 self.preview_stack.set_visible_child_name("empty");
                 set_local_history_preview_accessibility(
                     &self.preview_stack,
@@ -714,22 +727,83 @@ impl LocalHistoryBrowserState {
                 set_local_history_action_enabled(&self.restore_button, true);
                 self.loaded_snapshot.replace(Some(snapshot));
             }
-            policy::PreviewInstallPlan::Direct if fold_plan.is_none() => {
+            policy::PreviewInstallPlan::Direct
+                if fold_plan.is_none() && self.clear_preview_buffer() =>
+            {
                 self.preview_buffer.set_text(&snapshot.text);
                 self.finish_preview_install(snapshot);
             }
             policy::PreviewInstallPlan::Direct | policy::PreviewInstallPlan::Sliced => {
-                self.preview_buffer.set_text("");
+                self.clear_preview_buffer();
                 self.preview_install
                     .replace(Some(LocalHistoryPreviewInstallSession {
                         generation,
                         snapshot: Some(snapshot),
                         offset: 0,
                         source_id: None,
-                        fold: fold_plan.map(|plan| (plan, 0)),
+                        fold: fold_plan.map(|plan| {
+                            FoldedInstall::new(plan, self.preview_buffer.upcast_ref(), false)
+                        }),
                     }));
                 self.schedule_preview_install_slice();
             }
+        }
+    }
+
+    /// Empty the preview buffer. A small buffer with no boundary marks goes
+    /// in one `set_text("")`; a large one (a snapshot of up to 50 MB) is
+    /// cleared in bounded turns from an idle, following the boundary ledger
+    /// from each protected paragraph's start and then ordinary paragraph
+    /// slices, as the editor's clears do (`sliced-protected-install` review:
+    /// one `set_text("")` here deleted the whole document in one dispatch).
+    /// Returns whether the buffer is empty now; an install started meanwhile
+    /// waits for the clear (`run_preview_install_slice`).
+    fn clear_preview_buffer(self: &Rc<Self>) -> bool {
+        if self.preview_clear.borrow().is_some() {
+            return false;
+        }
+        if self.preview_boundaries.is_empty()
+            && self.preview_buffer.char_count() <= PREVIEW_DIRECT_CLEAR_CHARS
+        {
+            self.preview_buffer.set_text("");
+            return true;
+        }
+        self.schedule_preview_clear_turn();
+        false
+    }
+
+    fn schedule_preview_clear_turn(self: &Rc<Self>) {
+        let state_weak = Rc::downgrade(self);
+        let source = glib::idle_add_local_once(move || {
+            if let Some(state) = state_weak.upgrade() {
+                state.preview_clear.borrow_mut().take();
+                state.run_preview_clear_turn();
+            }
+        });
+        self.preview_clear.replace(Some(source));
+    }
+
+    fn run_preview_clear_turn(self: &Rc<Self>) {
+        if self.disposed.get() {
+            return;
+        }
+        let started_us = glib::monotonic_time();
+        let buffer: &gtk4::TextBuffer = self.preview_buffer.upcast_ref();
+        let deleted = clear_preview_turn(buffer, &self.preview_boundaries);
+        let ended_us = glib::monotonic_time();
+        crate::ui::responsiveness_probe::record_span(
+            "local_history_preview_clear_turn",
+            started_us,
+            ended_us,
+        );
+        PREVIEW_LONGEST_CLEAR_TURN_US.fetch_max(
+            usize::try_from(ended_us.saturating_sub(started_us)).unwrap_or(usize::MAX),
+            Ordering::AcqRel,
+        );
+        PREVIEW_CLEAR_TURNS.fetch_add(1, Ordering::Release);
+        PREVIEW_LARGEST_CLEAR_TURN.fetch_max(deleted, Ordering::AcqRel);
+        if buffer.char_count() > 0 || !self.preview_boundaries.is_empty() {
+            self.schedule_preview_clear_turn();
         }
     }
 
@@ -771,19 +845,39 @@ impl LocalHistoryBrowserState {
         let Some(snapshot) = session.snapshot.as_ref() else {
             return;
         };
+        if self.preview_clear.borrow().is_some() {
+            // The previous snapshot is still being cleared in bounded turns.
+            self.preview_install.replace(Some(session));
+            self.schedule_preview_install_slice();
+            return;
+        }
         let text = snapshot.text.as_str();
         // One hidden-tail insert per main-loop iteration, process-wide
         // (`ui/protected_fold.rs`): a deferred turn waits for the next one.
-        if install_slice(
+        match install_slice(
             self.preview_buffer.upcast_ref(),
             text,
             &mut session.offset,
             &mut session.fold,
-        ) == InstallSlice::Deferred
-        {
-            self.preview_install.replace(Some(session));
-            self.schedule_preview_install_slice();
-            return;
+            &self.preview_boundaries,
+        ) {
+            InstallSlice::Deferred => {
+                self.preview_install.replace(Some(session));
+                self.schedule_preview_install_slice();
+                return;
+            }
+            InstallSlice::Broken => {
+                // Fail closed: the partial preview is not the snapshot.
+                if let Some(snapshot) = session.snapshot.take() {
+                    retire_local_history_snapshot(snapshot);
+                }
+                PREVIEW_BROKEN_INSTALLS.fetch_add(1, Ordering::Release);
+                record_preview_install_cancellation();
+                self.clear_preview_buffer();
+                self.show_preview_error("Snapshot Could Not Be Shown");
+                return;
+            }
+            InstallSlice::Inserted => {}
         }
         record_preview_install_slice();
 
@@ -886,12 +980,44 @@ impl LocalHistoryBrowserState {
         self.restore_pending.set(false);
         self.restore_capacity_wakeup.cancel();
         self.cancel_preview_install();
+        if let Some(source) = self.preview_clear.borrow_mut().take() {
+            source.remove();
+        }
         if let Some(snapshot) = self.loaded_snapshot.take() {
             retire_local_history_snapshot(snapshot);
         }
         set_local_history_action_enabled(&self.restore_button, false);
         set_local_history_action_enabled(&self.copy_button, false);
     }
+}
+
+/// Characters a preview buffer may hold and still be emptied in one
+/// `set_text("")`: one ordinary clear slice of the editor's replacement.
+const PREVIEW_DIRECT_CLEAR_CHARS: i32 =
+    crate::model::buffer_replacement::REPLACEMENT_CLEAR_SLICE_CHARS;
+
+/// One bounded clear turn of the preview buffer: the next boundary-ledger
+/// ranges while the ledger holds any, then a slice of at most one clear slice
+/// of characters extended to the next paragraph start (a whole paragraph is
+/// at most one unmarked protected tail slice, or one visible paragraph).
+/// Returns the characters (or, for a ledger turn, bytes) deleted.
+fn clear_preview_turn(buffer: &gtk4::TextBuffer, ledger: &BoundaryLedger) -> usize {
+    if let Some(turn) = ledger.clear_turn(buffer) {
+        return usize::try_from(turn.deleted_bytes).unwrap_or(usize::MAX);
+    }
+    let count = crate::model::buffer_replacement::next_clear_char_count(buffer.char_count());
+    if count == 0 {
+        return 0;
+    }
+    let mut start = buffer.start_iter();
+    let mut end = start;
+    let _ = end.forward_chars(count);
+    if !end.is_end() && !end.starts_line() {
+        let _ = end.forward_line();
+    }
+    let deleted = usize::try_from(end.offset()).unwrap_or(0);
+    buffer.delete(&mut start, &mut end);
+    deleted
 }
 
 fn retire_local_history_preview_result(

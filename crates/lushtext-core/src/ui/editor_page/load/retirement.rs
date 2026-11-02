@@ -186,7 +186,7 @@ pub(super) fn run_cancelled_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>
         abort_installation(session, AbortDisposition::Dispose);
         return;
     };
-    if !execution::delete_buffer_slice(&buffer) {
+    if !execution::delete_buffer_slice(&editor, &buffer) {
         execution::schedule_install_slice(session);
         return;
     }

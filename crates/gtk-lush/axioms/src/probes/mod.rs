@@ -73,6 +73,9 @@ pub(crate) mod a72;
 pub(crate) mod a73;
 pub(crate) mod a74;
 pub(crate) mod a75;
+pub(crate) mod a76;
+pub(crate) mod a77;
+pub(crate) mod a79;
 pub(crate) mod a80;
 pub(crate) mod adaptive;
 pub(crate) mod composition;
@@ -151,6 +154,9 @@ pub use a72::probe_a72;
 pub use a73::probe_a73;
 pub use a74::probe_a74;
 pub use a75::probe_a75;
+pub use a76::probe_a76;
+pub use a77::probe_a77;
+pub use a79::probe_a79;
 pub use a80::probe_a80;
 
 /// Settle after an adjustment or height change, before reading it back.

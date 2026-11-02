@@ -50,11 +50,11 @@
 //!    does **not** queue, so a burst of ticks during one long pass cannot fan
 //!    out. A tick also holds (and says so once) any id another window claims.
 //! 3. **Collect candidates.** `policy::draft_candidate_is_eligible` decides.
-//!    Its `installation_incomplete` term is a data-safety guard, not an
-//!    optimisation: a cancelled load installation empties the buffer and clears
-//!    `modified` without clearing `draft_dirty`, so one keystroke afterwards
-//!    would otherwise make a near-empty buffer look ordinary and the pass would
-//!    write it over a draft holding real work. Each candidate is assigned a
+//!    Its `buffer_untrusted` term is a data-safety guard, not an optimisation:
+//!    a cancelled load installation empties the buffer without clearing
+//!    `draft_dirty`, and an installation or replacement in progress holds a
+//!    mixture of old and new text, so either would be written over a draft
+//!    holding real work. Each candidate is assigned a
 //!    `DraftMutationIntent` **before** any document-sized work, so a later delete
 //!    can invalidate it.
 //!    **Register new ids first.** One batched manifest commit registers every
@@ -161,7 +161,7 @@
 //! | `ProcessDraftJournal` (`admission`) | **owned here, shared by every window of the application**: the journal lane, draft-id claims, which window restored the session and schedules cleanup, and session-save ordering. The per-window `mutation_inflight` / `orphan_cleanup_inflight` flags are its projections |
 //! | `ui/window/documents.rs` duplicate-path detection | owned by the document-load workflow; it asks the other windows of the application before opening, and presents the owner's tab (`journal_core::draft_open_decision`) |
 //! | `ui/window/startup_data.rs` — the startup format-upgrade gate | **owned by neither** this row nor session restore. Its census home is `WFR-NOTES-BOOKMARKS`; it *calls* `start_autosave_timer` |
-//! | `imp().load.installation_incomplete` | owned by migrated `WFR-DOCUMENT-LOAD`, read through its `has_incomplete_load_installation()` operation. This is the data-safety guard in stage 3 |
+//! | `imp().load.installation_incomplete`, the load and replacement ownership of the buffer | owned by migrated `WFR-DOCUMENT-LOAD` and `WFR-BUFFER-REPLACEMENT`, read through the editor's `draft_capture_blocked()` operation. This is the data-safety guard in stage 3 |
 //! | `ui/editor_page/buffer_replacement/` | called through `replace_buffer_bounded` to install a recovered body; its session, guard, and terminal are not this workflow's |
 //! | `imp().local_history.*` | owned by `WFR-LOCAL-HISTORY`. A restored draft seeds its baseline through that workflow's named operation |
 //! | `ui/buffer_snapshot` and its chunked threshold | cross-cutting (slot 7). This workflow supplies its own byte budget and never duplicates the threshold |

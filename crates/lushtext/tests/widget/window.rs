@@ -12879,6 +12879,179 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     });
 }
 
+/// A draft must never be written from a buffer a whole-buffer replacement is
+/// still rewriting (`sliced-protected-install` review). Mid-replacement the
+/// buffer holds the old text's unremoved suffix, or the new text's installed
+/// prefix, so an autosave tick there wrote that mixture over the draft that
+/// held the pre-restore edits, and a crash before the next tick recovered it.
+/// The persisted draft must stay the pre-restore text until the terminal.
+#[test]
+fn test_autosave_during_a_local_history_restore_keeps_the_previous_draft() {
+    ensure_gtk_init();
+    let _policy = DraftPipelinePolicyReset;
+    let _first_dirty = FirstDirtyAutosaveDelayReset;
+    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history-restore-draft.txt");
+    fixture::write_text(&path, "current\n");
+    // Below the chunked-snapshot threshold, so a capture is one synchronous
+    // read (a chunked one cancels on the first replacement edit), and above
+    // the direct-replacement threshold, so the restore takes many turns.
+    let restore_target = format!("restored {}\n", "r".repeat(40)).repeat(40_000);
+    let working_copy = format!("working {}\n", "w".repeat(40)).repeat(40_000);
+    assert!(restore_target.len() > 1024 * 1024);
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        &restore_target,
+        LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed restore target");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    editor.set_local_history_availability_for_test(
+        local_history_service::LocalHistoryAvailability::SaveOnly,
+    );
+    editor.buffer().set_text(&working_copy);
+    editor.buffer().set_modified(true);
+    let draft_id = editor.draft_id().expect("a file-backed draft id");
+    let journal_idle = |window: &LushtextWindow| {
+        let evidence = window.draft_evidence();
+        !evidence.autosave_inflight && !evidence.mutation_inflight
+    };
+    let persisted =
+        || draft_service::read_draft(&json_store::data_dir(), &draft_id).expect("read draft body");
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        journal_idle(&window) && persisted().as_deref() == Some(working_copy.as_str())
+    });
+    // Still draft-dirty, as an editor with edits newer than its draft is.
+    editor.set_draft_dirty(true);
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    wait_for_local_history_preview_text(&child, &restore_target);
+    let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+    wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
+    restore_button.emit_clicked();
+    wait_until(Duration::from_secs(30), || {
+        let evidence = editor.buffer_replacement_evidence();
+        evidence.in_progress && evidence.slice_count >= 2
+    });
+    assert!(editor.draft_capture_blocked());
+    window.autosave_tick_for_test();
+    // Every capture the tick started completes while the replacement runs
+    // (one synchronous snapshot), and its write finishes before the journal
+    // is idle again.
+    wait_until(Duration::from_secs(10), || journal_idle(&window));
+    let during = persisted();
+    assert!(
+        during.as_deref() == Some(working_copy.as_str()),
+        "an autosave tick during the restore wrote {} bytes over the pre-restore draft \
+         ({} bytes)",
+        during.as_ref().map_or(0, String::len),
+        working_copy.len()
+    );
+    wait_until(Duration::from_secs(60), || {
+        !editor.buffer_replacement_evidence().in_progress
+    });
+    assert_eq!(editor_text(&editor), restore_target);
+    assert!(
+        editor.draft_dirty(),
+        "the restored text is still owed a draft"
+    );
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        journal_idle(&window) && persisted().as_deref() == Some(restore_target.as_str())
+    });
+}
+
+/// Selecting another snapshot empties the preview of the previous one in
+/// bounded turns (`sliced-protected-install` review: one `set_text("")` deleted
+/// a protected snapshot of up to 50 MB in one dispatch). The clear follows the
+/// boundary marks the sliced protected install left, then ordinary paragraph
+/// slices; the next snapshot installs only once the buffer is empty.
+#[test]
+fn test_switching_local_history_snapshots_clears_a_protected_preview_in_bounded_turns() {
+    use lushtext_core::model::protected_install::PROTECTED_CLEAR_SLICE_BYTES;
+    ensure_gtk_init();
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history-preview-clear.txt");
+    fixture::write_text(&path, "current\n");
+    let giant = 6_000_000;
+    let older = format!("older head\n{}\nolder tail\n", "o".repeat(giant));
+    let newer = format!("newer head\n{}\nnewer tail\n", "n".repeat(giant));
+    let data_dir = json_store::data_dir();
+    for body in [&older, &newer] {
+        local_history_service::capture_snapshot_for_path(
+            &data_dir,
+            &path,
+            body,
+            LocalHistorySnapshotOrigin::Save,
+            local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+        )
+        .expect("seed a protected snapshot");
+    }
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    wait_for_local_history_preview_text_within(&child, &newer, Duration::from_secs(60));
+    let sidebar = find_adw_sidebar(&child).expect("snapshot sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.item(1).is_some());
+    let before = local_history_preview_install_evidence();
+    sidebar.set_selected(1);
+    wait_for_local_history_preview_text_within(&child, &older, Duration::from_secs(60));
+    let after = local_history_preview_install_evidence();
+    let turns = after.clear_turns - before.clear_turns;
+    assert!(
+        turns >= giant / PROTECTED_CLEAR_SLICE_BYTES,
+        "the 6 MB preview was cleared in {turns} turns"
+    );
+    // A ledger turn deletes at most one clear slice of ranges, or one range
+    // (a tail slice, at most the clear slice) with the head it carries; an
+    // ordinary turn one clear slice of characters to the next line start.
+    assert!(
+        after.largest_clear_turn <= 2 * PROTECTED_CLEAR_SLICE_BYTES,
+        "one clear turn deleted {}",
+        after.largest_clear_turn
+    );
+    assert_eq!(after.broken_installs, before.broken_installs);
+    // The same buffer emptied in one call, as before the change, for the
+    // record (debug build; the per-turn bound is what is asserted).
+    let reference = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+    reference.set_text(&newer);
+    let started = std::time::Instant::now();
+    reference.set_text("");
+    eprintln!(
+        "local-history preview clear: {turns} turns, longest {} us, largest {} bytes; \
+         one set_text(\"\") of an unfolded buffer of the same text: {} us",
+        after.longest_clear_turn_us,
+        after.largest_clear_turn,
+        started.elapsed().as_micros()
+    );
+}
+
 /// A cancelled "Undo Restore" must not rebind the warning-primary button of an
 /// alert that replaced "Restored from Local History" while the undo ran.
 #[test]

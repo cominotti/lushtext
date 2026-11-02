@@ -36,6 +36,7 @@ use crate::model::paragraph_boundary::DocumentProfile;
 use crate::model::protected_fold::FoldPlan;
 use crate::ui::buffer_snapshot;
 use crate::ui::folded_text::{FoldedTextSurface, InstallSlice, SurfaceText, install_slice};
+use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall};
 
 /// Note-body install turns run, process-wide (evidence).
 pub(super) static NOTE_BODY_INSTALL_SLICES: AtomicU64 = AtomicU64::new(0);
@@ -165,7 +166,8 @@ impl NoteBody {
             body: Rc::downgrade(self),
             text,
             offset: 0,
-            fold: plan.map(|plan| (plan, 0)),
+            fold: plan.map(|plan| FoldedInstall::new(plan, &self.view.buffer(), false)),
+            boundaries: BoundaryLedger::default(),
         };
         session.schedule();
     }
@@ -206,7 +208,11 @@ struct InstallSession {
     body: Weak<NoteBody>,
     text: Arc<String>,
     offset: usize,
-    fold: Option<(Arc<FoldPlan>, u64)>,
+    fold: Option<FoldedInstall>,
+    /// The boundary marks of the sliced protected install (C3). A note body
+    /// is installed once and never cleared by an install, so they stay in the
+    /// buffer until it is freed, as inert marks.
+    boundaries: BoundaryLedger,
 }
 
 impl InstallSession {
@@ -225,6 +231,7 @@ impl InstallSession {
             &self.text,
             &mut self.offset,
             &mut self.fold,
+            &self.boundaries,
         );
         if step == InstallSlice::Inserted {
             let ended_us = glib::monotonic_time();
@@ -236,6 +243,17 @@ impl InstallSession {
             NOTE_BODY_INSTALL_SLICES.fetch_add(1, Ordering::Release);
             let elapsed = u64::try_from(ended_us.saturating_sub(started_us)).unwrap_or(0);
             NOTE_BODY_LARGEST_SLICE_US.fetch_max(elapsed, Ordering::AcqRel);
+        }
+        if step == InstallSlice::Broken {
+            // Fail closed: a folded note's text is its source
+            // (`snapshot_text`), never this buffer, so the note stays whole;
+            // the partial buffer is emptied rather than shown as the note.
+            let text = Arc::clone(&self.text);
+            body.view.buffer().set_text("");
+            self.boundaries.forget(&body.view.buffer());
+            drop(self);
+            body.finish_install(&text);
+            return;
         }
         if self.offset >= self.text.len() {
             let text = Arc::clone(&self.text);

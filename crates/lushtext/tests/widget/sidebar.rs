@@ -603,7 +603,7 @@ fn test_close_tab_for_path_defers_teardown_until_the_page_detaches() {
             editor.is_modified(),
             editor.draft_dirty(),
             editor.is_evicted(),
-            editor.has_incomplete_load_installation(),
+            editor.draft_capture_blocked(),
             false,
         ),
         "a tab surviving a cancelled close must still be autosaved; this is the \

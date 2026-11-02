@@ -26,6 +26,7 @@ use crate::model::buffer_replacement::{
 };
 use crate::model::paragraph_boundary::DocumentProfile;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::protected_fold::FoldedInstall;
 
 use super::evidence;
 use super::policy::{
@@ -360,11 +361,12 @@ pub(crate) struct BufferReplacementSession {
     profile: Option<DocumentProfile>,
     /// The two slice budgets of this body.
     budget: SliceBudget,
-    /// The body's Protected View fold plan, shared with `profile`, which the
-    /// install turns apply at insertion (`ui::protected_fold`).
+    /// The body's Protected View fold plan, shared with `profile`, which a
+    /// direct replacement applies at insertion (`ui::protected_fold`).
     fold_plan: Option<std::sync::Arc<crate::model::protected_fold::FoldPlan>>,
-    /// The index of the paragraph the next install turn starts.
-    next_paragraph: u64,
+    /// The sliced install of a protected body (C3), which the install turns
+    /// step; `None` for an ordinary body.
+    folded: Option<FoldedInstall>,
 }
 
 /// Content-free terminal evidence retained by one editor.
@@ -384,6 +386,10 @@ pub struct BufferReplacementState {
     pub(super) pending: RefCell<Option<BufferReplacementRequest>>,
     pub projection_suspended: std::cell::Cell<bool>,
     pub(super) slice_count: std::cell::Cell<u64>,
+    /// The newest session's sliced protected install counts (C3).
+    pub(super) protected_install: std::cell::Cell<crate::ui::protected_fold::FoldedInstallMetrics>,
+    /// Ledger clear turns the newest session ran (C3).
+    pub(super) protected_clear_turns: std::cell::Cell<u64>,
     #[cfg(feature = "test-utils")]
     stale_after_slices: std::cell::Cell<Option<u64>>,
     /// Last terminal reached, for the evidence surface to report.
@@ -487,10 +493,15 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         .map_or(SliceBudget::BYTES_ONLY, |profile| {
             SliceBudget::for_profile(profile.summary())
         });
+    let fold_plan = request
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.fold_plan.clone());
     let plan = BufferReplacementPlan::for_text(
         editor.buffer().char_count(),
         request.body.len(),
-        budget == SliceBudget::PACED,
+        budget == SliceBudget::PACED
+            || super::policy::protected_install_is_sliced(fold_plan.as_deref()),
     );
     let guard = begin_guard(editor);
     if let Some(profile) = &request.profile {
@@ -501,6 +512,9 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
     }
     let buffer = editor.buffer();
     buffer.begin_irreversible_action();
+    let folded = fold_plan
+        .clone()
+        .map(|plan| FoldedInstall::new(plan, buffer.upcast_ref(), true));
     let session = Rc::new(RefCell::new(BufferReplacementSession {
         editor: editor.downgrade(),
         buffer,
@@ -516,11 +530,8 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         mutation_started: false,
         terminal: false,
         metrics: BufferReplacementMetrics::for_one_retained_body(),
-        fold_plan: request
-            .profile
-            .as_ref()
-            .and_then(|profile| profile.fold_plan.clone()),
-        next_paragraph: 0,
+        fold_plan,
+        folded,
         profile: request.profile,
         budget,
     }));
@@ -530,6 +541,12 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         .active
         .replace(Some(Rc::clone(&session)));
     editor.imp().replacement.slice_count.set(0);
+    editor
+        .imp()
+        .replacement
+        .protected_install
+        .set(crate::ui::protected_fold::FoldedInstallMetrics::default());
+    editor.imp().replacement.protected_clear_turns.set(0);
     match plan.mode {
         BufferReplacementMode::Direct => run_direct(&session),
         BufferReplacementMode::Sliced => schedule_turn(&session),
@@ -672,8 +689,35 @@ fn run_turn_now(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
 }
 
-/// Delete one bounded slice, ending on a paragraph boundary.
-fn delete_one_slice(buffer: &sourceview5::Buffer, count: i32) -> (bool, u64) {
+/// Delete one bounded slice: the last recorded ranges of a protected tail
+/// while the editor's boundary ledger holds any (C3, design D4), then a slice
+/// ending on a paragraph boundary. Returns whether the buffer is now empty
+/// and the characters (or, for a ledger turn, bytes) deleted.
+fn delete_one_slice(
+    editor: Option<&LushtextEditorPage>,
+    buffer: &sourceview5::Buffer,
+    count: i32,
+) -> (bool, u64) {
+    if let Some(editor) = editor {
+        let ledger = &editor.imp().protected_boundaries;
+        let turn = crate::ui::editor_page::edit_lock::with_own_edit(|| {
+            ledger.clear_turn(buffer.upcast_ref())
+        });
+        if let Some(turn) = turn {
+            editor.imp().replacement.protected_clear_turns.set(
+                editor
+                    .imp()
+                    .replacement
+                    .protected_clear_turns
+                    .get()
+                    .saturating_add(1),
+            );
+            return (
+                buffer.char_count() == 0 && ledger.is_empty(),
+                turn.deleted_bytes,
+            );
+        }
+    }
     if count == 0 {
         return (true, 0);
     }
@@ -692,7 +736,7 @@ fn delete_one_slice(buffer: &sourceview5::Buffer, count: i32) -> (bool, u64) {
 }
 
 fn run_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let (buffer, count) = {
+    let (editor, buffer, count) = {
         let mut state = session.borrow_mut();
         let count = next_clear_char_count(state.buffer.char_count());
         if count > 0 {
@@ -701,9 +745,9 @@ fn run_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
             // partial-mutation cleanup path.
             state.mutation_started = true;
         }
-        (state.buffer.clone(), count)
+        (state.editor.upgrade(), state.buffer.clone(), count)
     };
-    let (cleared, deleted) = delete_one_slice(&buffer, count);
+    let (cleared, deleted) = delete_one_slice(editor.as_ref(), &buffer, count);
     let body_is_empty = {
         let mut state = session.borrow_mut();
         if state.terminal {
@@ -726,8 +770,16 @@ fn run_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 }
 
 fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let (buffer, start, body, fold_plan, paragraph) = {
+    let (editor, buffer, start, body, mut folded) = {
         let mut state = session.borrow_mut();
+        if state.folded.is_some() && state.editor.upgrade().is_none() {
+            // A protected body goes in folded only, through the editor's
+            // boundary ledger: with the editor gone, end the session rather
+            // than insert its hidden tails as plain visible text.
+            drop(state);
+            cancel_session(session, BufferReplacementCancelReason::Disposed, true);
+            return;
+        }
         let Some(body) = state.body.take() else {
             drop(state);
             cancel_session(session, BufferReplacementCancelReason::Stale, false);
@@ -735,32 +787,45 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
         };
         state.mutation_started = true;
         (
+            state.editor.upgrade(),
             state.buffer.clone(),
             state.byte_offset,
             body,
-            state.fold_plan.clone(),
-            state.next_paragraph,
+            state.folded.take(),
         )
     };
     let budget = session.borrow().budget;
-    let end = next_slice_boundary(&body, start, budget);
     let body_len = body.len();
-    let mut iter = buffer.end_iter();
-    let next_paragraph = crate::ui::editor_page::edit_lock::with_own_edit(|| {
-        if let Some(plan) = fold_plan.as_deref() {
-            crate::ui::protected_fold::insert_folded(
-                buffer.upcast_ref(),
-                &mut iter,
-                &body[start..end],
-                paragraph,
-                plan,
-            )
+    let end = crate::ui::editor_page::edit_lock::with_own_edit(|| {
+        if let (Some(install), Some(editor)) = (folded.as_mut(), editor.as_ref()) {
+            let append = || buffer.end_iter();
+            let end = install.step(&append, &body, budget, &editor.imp().protected_boundaries);
+            editor
+                .imp()
+                .replacement
+                .protected_install
+                .set(install.metrics());
+            end.ok()
         } else {
-            buffer.insert(&mut iter, &body[start..end]);
-            paragraph
+            let end = next_slice_boundary(&body, start, budget);
+            buffer.insert(&mut buffer.end_iter(), &body[start..end]);
+            Some(end)
         }
     });
-    session.borrow_mut().next_paragraph = next_paragraph;
+    let Some(end) = end else {
+        // The sliced protected install broke (`FoldedInstallBroken`): cancel
+        // the session, which clears the partial buffer and hands the body back
+        // to its caller, rather than finish with a document that is not it.
+        {
+            let mut state = session.borrow_mut();
+            state.folded = folded;
+            state.body = Some(body);
+        }
+        cancel_session(session, BufferReplacementCancelReason::Stale, false);
+        return;
+    };
+    let protected = folded.is_some();
+    session.borrow_mut().folded = folded;
 
     {
         let mut state = session.borrow_mut();
@@ -783,7 +848,7 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
     if insertion_is_complete(end, body_len) {
         finish_session(session, None);
-    } else if budget == SliceBudget::PACED {
+    } else if budget == SliceBudget::PACED || protected {
         schedule_paced_turn(session);
     } else {
         schedule_turn(session);
@@ -840,16 +905,23 @@ fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
         Some(plan) => {
             buffer.set_text("");
             let mut start = buffer.start_iter();
-            crate::ui::protected_fold::insert_folded(
+            crate::ui::protected_fold::insert_folded_document(
                 buffer.upcast_ref(),
                 &mut start,
                 &body,
-                0,
                 plan,
             );
         }
         None => buffer.set_text(&body),
     });
+    if let Some(editor) = editor.as_ref() {
+        // The old text is gone, so the marks a sliced protected install left
+        // are collapsed and go without merging anything (C3).
+        editor
+            .imp()
+            .protected_boundaries
+            .forget(buffer.upcast_ref());
+    }
     let mut state = session.borrow_mut();
     if state.terminal || state.phase != ReplacementPhase::Clearing {
         drop(state);
@@ -898,9 +970,12 @@ fn cancel_session(
 }
 
 fn run_cancelled_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let buffer = session.borrow().buffer.clone();
+    let (editor, buffer) = {
+        let state = session.borrow();
+        (state.editor.upgrade(), state.buffer.clone())
+    };
     let count = next_clear_char_count(buffer.char_count());
-    let (cleared, deleted) = delete_one_slice(&buffer, count);
+    let (cleared, deleted) = delete_one_slice(editor.as_ref(), &buffer, count);
     {
         let mut state = session.borrow_mut();
         if state.terminal || state.phase != ReplacementPhase::ClearingCancelled {

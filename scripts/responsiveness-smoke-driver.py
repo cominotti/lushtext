@@ -168,7 +168,22 @@ KEYSTROKE_SHAPES = (("css", "html"), ("prose", "txt"))
 KEYSTROKE_POSITIONS = ("start", "middle", "end", "short")
 KEYSTROKE_GAP_S = float(os.environ.get("RESPONSIVENESS_KEYSTROKE_GAP_S", "0.15"))
 INVISIBLES_LENGTHS = {"quick": (250_000,), "full": (2_000, 10_000, 50_000, 250_000, 1_900_000)}
-INSTALL_SIZES = (100_000_000, 250_000_000, 500_000_000)
+# The largest is the largest document LushText opens: its paragraph plus the
+# fixture's LF delimiter is exactly `REFUSE_TO_OPEN` (500,000,000) bytes. A
+# 500,000,000-character paragraph is one byte over and is refused, which made
+# that case measure nothing on either side (`sliced-protected-install`).
+INSTALL_SIZES = (100_000_000, 250_000_000, 499_999_999)
+# C2's draft-recovery shape (design D13), as the crash-recovery smoke's
+# lazy-aggregate fixture builds it: two recovered single-paragraph drafts of
+# 32 MiB each (`sliced-protected-install`, task 6.1).
+PROTECTED_RECOVERY_DRAFT_BYTES = 32 * 1024 * 1024
+PROTECTED_RECOVERY_DRAFTS = 2
+# The protected document Save As and the live word-wrap toggle are measured
+# on (C2b task 5.1a, carried as C3 task 7.6).
+PROTECTED_SAVE_AS_LENGTH = 1_900_000
+# Short lines of the small tab an install case opens beside its giant
+# document, for the mid-install tab switch and scroll.
+MID_INSTALL_SMALL_LINES = 400
 EVICTION_FILE_BYTES = 8 * 1024 * 1024
 # `save/during-validation` (spawn-completion-priority D5): the short-line
 # documents (`short-code`, below C6's density bound, so installed unpaced and
@@ -180,7 +195,7 @@ SAVE_BACKLOG_DOCUMENTS = 2
 SAVE_BACKLOG_LEAD_S = 1.0
 SAVE_SCRATCH_TEXT = "scratch document the save case writes\n"
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -204,6 +219,11 @@ PHASE_KINDS = {
     "copy-line": "settle",
     "reselect": "interaction",
     "idle": "calibration",
+    # The sliced protected install (sliced-protected-install, C3): the tab
+    # switches and scrolls issued while an install runs are interactions;
+    # Save As of a protected document is a settle.
+    "mid-install": "interaction",
+    "save-as": "settle",
     # The post-open phases (bound-post-open-settle, C6) have their own kinds,
     # so C0's budget verdict, which reads `interaction` and `settle`, is
     # unchanged by them; the C6 verdict reads their post-open entries.
@@ -535,6 +555,86 @@ def frame_presented(parsed: dict, frame: dict, reference_frame_us: int) -> tuple
     return presentation, "presentation"
 
 
+# How far a compositor event stamp may trail the handler time and still be on
+# the handler's clock: past it, the stamps are on another clock and pairing
+# falls back to arrival order.
+EVENT_CLOCK_SKEW_US = 10_000_000
+# How long after an injection's D-Bus call returned mutter may still stamp
+# its event (`match_injections`).
+STAMP_AFTER_RETURN_US = 20_000
+
+
+def event_stamp_us(record: dict) -> int | None:
+    """The compositor's event time of an input record in microseconds, or
+    `None` when the record carries no stamp on the probe's monotonic clock.
+
+    Mutter stamps a virtual input event with `g_get_monotonic_time()` in
+    milliseconds while handling the injection's D-Bus call, as a `guint32`;
+    the stamp is unwrapped against the handler time `t_us` (same clock), and
+    a stamp after the handler or far before it is not on that clock."""
+    raw = record.get("event_time_ms")
+    if not raw:
+        return None
+    handler = int(record["t_us"])
+    wrap = 1 << 32
+    stamp_ms = int(raw) % wrap
+    base_ms = handler // 1000
+    stamp_ms += (base_ms - stamp_ms + wrap // 2) // wrap * wrap
+    stamp = stamp_ms * 1000
+    if stamp > handler + 1_000 or handler - stamp > EVENT_CLOCK_SKEW_US:
+        return None
+    return stamp
+
+
+def match_injections(parsed: dict, injections: list[dict]) -> list[dict | None]:
+    """The probe's `input` record of each injection, or `None` when it never
+    arrived (`sliced-protected-install` review: pairing by arrival order
+    shifted every later latency by the number of lost events).
+
+    A stamped record belongs to the injection whose window holds its stamp:
+    from one millisecond before the injection (the stamp's resolution) until
+    one millisecond before the next injection started (a millisecond stamp of
+    the next event can read up to that much below its injection), and at most
+    `STAMP_AFTER_RETURN_US` after the injection's D-Bus call returned
+    (`return_us`): mutter usually stamps while handling the call, but the
+    first wheel after a pointer move was stamped 2 ms after its call returned.
+    The first unused record of the same event kind in that window is the
+    injection's; an injection with none was not delivered. A record without a stamp on the probe's clock (an older
+    probe, or another clock) is paired as before: the first unused record of
+    the same kind arriving after the injection. Unmeasured injections (a
+    modifier press, a focusing click) consume their record either way."""
+    inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
+    stamps = [event_stamp_us(record) for record in inputs]
+    used: set[int] = set()
+    out: list[dict | None] = []
+    for position, injection in enumerate(injections):
+        origin = int(injection["inject_us"])
+        wanted = injection["event"]
+        later = [int(other["inject_us"]) for other in injections[position + 1 :] if int(other["inject_us"]) >= origin]
+        bounds = [min(later) - 1_000] if later else []
+        if injection.get("return_us"):
+            bounds.append(int(injection["return_us"]) + STAMP_AFTER_RETURN_US)
+        upper: int | None = min(bounds) if bounds else None
+        found = None
+        for index, record in enumerate(inputs):
+            if index in used or record.get("event") != wanted:
+                continue
+            stamp = stamps[index]
+            if stamp is None:
+                if record["t_us"] < origin - 2_000:
+                    continue
+            elif stamp < origin - 1_000 or (upper is not None and stamp >= upper):
+                continue
+            found = index
+            break
+        if found is None:
+            out.append(None)
+            continue
+        used.add(found)
+        out.append(inputs[found])
+    return out
+
+
 def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int, horizon_us: int | None = None) -> list[dict]:
     """For each measured injected event: origin -> first presentation of a frame started after its handler.
 
@@ -559,26 +659,10 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
     editor is flagged `protected`; its latency is reported apart from
     editable typing (`editable_latency`).
     """
-    inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
     frames = sorted(parsed["records"]["frame"], key=lambda r: int(r["frame_time_us"]))
-    matched: list[tuple[dict, int | None]] = []
-    targets: list[str | None] = []
-    used: set[int] = set()
-    for injection in injections:
-        origin = injection["inject_us"]
-        wanted = injection["event"]
-        handler = None
-        target = None
-        for index, record in enumerate(inputs):
-            if index in used or record["t_us"] < origin - 2_000:
-                continue
-            if record.get("event") == wanted:
-                handler = int(record["t_us"])
-                target = record.get("target")
-                used.add(index)
-                break
-        matched.append((injection, handler))
-        targets.append(target)
+    records = match_injections(parsed, injections)
+    matched: list[tuple[dict, int | None]] = [(injection, int(record["t_us"]) if record else None) for injection, record in zip(injections, records)]
+    targets: list[str | None] = [record.get("target") if record else None for record in records]
     results = []
     for position, (injection, handler) in enumerate(matched):
         if not injection.get("measured", True):
@@ -663,6 +747,30 @@ def input_delivery(parsed: dict, input_to_frame_rows: list[dict], start_us: int,
         "inserted": inserted,
         "verified": verified,
     }
+
+
+def scroll_delivery(input_to_frame_rows: list[dict]) -> dict | None:
+    """Whether a phase's measured wheel steps reached the application:
+    `scrolled` counts them and `undelivered` those with no input record
+    (`sliced-protected-install` review: wheels injected before the window was
+    composed never arrived, and pairing by arrival order then charged later
+    events' frames to them). `None` when the phase scrolled nothing."""
+    scrolls = [row for row in input_to_frame_rows if row.get("event") == "scroll"]
+    if not scrolls:
+        return None
+    return {"scrolled": len(scrolls), "undelivered": sum(1 for row in scrolls if row.get("status") == "no-input-record")}
+
+
+def undelivered_scroll_cases(rows: list[dict]) -> list[str]:
+    """`case@variant#rep:phase` of every phase with a wheel step that never
+    reached the application: its input-to-frame figures would measure
+    nothing."""
+    return [
+        f"{row['case']}@{row['variant']}#{row['rep']}:{phase.get('name')}"
+        for row in rows
+        for phase in row.get("phases", [])
+        if (phase.get("scroll_delivery") or {}).get("undelivered", 0) > 0
+    ]
 
 
 # Surfaces that can lie over the editor's text view (an overlaid workspace
@@ -1049,23 +1157,14 @@ def attribute_dispatch(dispatch: dict, spans: list[dict], marks: list[dict], tic
 def key_dispatch_latencies(parsed: dict, injections: list[dict]) -> list[dict]:
     """Each injected key's dispatch latency: compositor event time to its handler.
 
-    Injections are matched to `input` records in order, as input-to-frame
-    matches them (an unmeasured modifier still consumes its record). The
+    Injections are paired with `input` records by `match_injections`, as
+    input-to-frame pairs them (an unmeasured modifier still consumes its
+    record). The
     event time is the compositor's millisecond stamp on the same monotonic
     clock, so the latency is exact to a millisecond.
     """
-    inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
-    used: set[int] = set()
     out = []
-    for injection in injections:
-        record = None
-        for index, candidate in enumerate(inputs):
-            if index in used or candidate["t_us"] < injection["inject_us"] - 2_000:
-                continue
-            if candidate.get("event") == injection["event"]:
-                record = candidate
-                used.add(index)
-                break
+    for injection, record in zip(injections, match_injections(parsed, injections)):
         if not injection.get("measured", True):
             continue
         if record is None:
@@ -1420,7 +1519,7 @@ class Case:
     group: str
     fixture: FixtureSpec | None
     settings: dict[str, Any] = field(default_factory=dict)
-    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke | save
+    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke | seeded-recovery | save
     length: int | None = None  # the swept paragraph length / line length / total size
     attrs: dict[str, Any] = field(default_factory=dict)
 
@@ -1597,6 +1696,7 @@ def build_cases(tier: str) -> list[Case]:
                     length=size,
                 )
             )
+    cases.extend(protected_cases())
     for length in grid["invisibles"]:
         for mode in ("off", "all"):
             cases.append(paragraph_case(length, "txt", True, False, group="invisibles", invisibles=mode))
@@ -1606,6 +1706,73 @@ def build_cases(tier: str) -> list[Case]:
             for wrap in (True, False):
                 cases.append(keystroke_case(length, flavor, ext, wrap))
     return cases
+
+
+def protected_cases() -> list[Case]:
+    """The cases `sliced-protected-install` (C3) added; both tiers run them.
+
+    `recovery/protected-32mib` recovers two seeded 32 MiB single-paragraph
+    drafts at startup (C2 design D13); `protected/save-as-wrap` opens a
+    1.9M-character protected document, saves it as a new file through the
+    measurement build's `app.probe-save-as` and toggles word wrap live
+    (`app.probe-set-word-wrap`).
+    """
+    return [
+        Case(
+            "recovery/protected-32mib",
+            "recovery",
+            FixtureSpec("paragraph", PROTECTED_RECOVERY_DRAFT_BYTES, seed_for("protected-recovery")),
+            settings={"word-wrap": True, "show-minimap": False},
+            flow="seeded-recovery",
+            length=PROTECTED_RECOVERY_DRAFT_BYTES,
+            attrs={"drafts": PROTECTED_RECOVERY_DRAFTS},
+        ),
+        Case(
+            f"protected/{PROTECTED_SAVE_AS_LENGTH}/save-as-wrap",
+            "protected",
+            FixtureSpec("paragraph", PROTECTED_SAVE_AS_LENGTH, seed_for("protected-save-as"), ext="txt"),
+            settings={"word-wrap": True, "show-minimap": False},
+            length=PROTECTED_SAVE_AS_LENGTH,
+            attrs={"post_open": True, "restyle": True, "save_as": True, "wrap": True},
+        ),
+    ]
+
+
+def untitled_draft_id(index: int) -> str:
+    """An untitled draft id of the shape LushText mints (`untitled-` and 16
+    hex digits)."""
+    return f"untitled-{index:016x}"
+
+
+def seed_untitled_drafts(data_dir: Path, body: Path, count: int) -> list[str]:
+    """Seed `count` recovered untitled drafts whose body is `body`, with the
+    manifest and the session that restore them, in LushText's enveloped JSON
+    (`services/json_format.rs`). Returns the draft ids."""
+    drafts = data_dir / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    ids = [untitled_draft_id(index + 1) for index in range(count)]
+    # C2's recovery shape (design D13, the crash-recovery smoke's lazy
+    # aggregate): the giant paragraph is the draft's last, with no delimiter
+    # after it, so it is the buffer's last line.
+    data = body.read_bytes().rstrip(b"\r\n")
+    for draft_id in ids:
+        (drafts / f"{draft_id}.draft").write_bytes(data)
+    manifest = {
+        "kind": "dev.cominotti.lushtext.draft-manifest",
+        "version": 1,
+        "data": {"drafts": [{"draft_id": draft_id, "original_path": None, "original_mtime_secs": None, "saved_at_secs": 1} for draft_id in ids]},
+    }
+    (drafts / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    session = {
+        "kind": "dev.cominotti.lushtext.session",
+        "version": 1,
+        "data": {
+            "tabs": [{"path": None, "draft_id": draft_id, "cursor_line": 0, "cursor_col": 0, "scroll_line": 0, "pinned": False} for draft_id in ids],
+            "active_tab_index": 0,
+        },
+    }
+    (data_dir / "session.json").write_text(json.dumps(session, indent=2) + "\n", encoding="utf-8")
+    return ids
 
 
 def post_open_cases() -> list[Case]:
@@ -1706,6 +1873,9 @@ class Bus:
 class RemoteDesktop:
     """Mutter RemoteDesktop input, warmed up (the first notification is dropped)."""
 
+    # When the last D-Bus call returned (`now_us`), 0 before any call.
+    returned_us = 0
+
     def __init__(self, bus: Bus) -> None:
         self.bus = bus
         self.session: str | None = None
@@ -1725,6 +1895,9 @@ class RemoteDesktop:
 
     def _call(self, method: str, params) -> None:
         self.bus.call(RD_BUS, self.session, RD_SESSION_IFACE, method, params)
+        # Mutter stamps the event while handling this call, so the stamp is
+        # never later than its return (`match_injections`).
+        self.returned_us = now_us()
 
     def warm_up(self) -> None:
         from gi.repository import GLib
@@ -1759,11 +1932,11 @@ class RemoteDesktop:
             # The modifier press reaches the window as its own key-press
             # record; recording it (unmeasured) keeps it from standing in
             # for the key it modifies when inputs are matched to records.
-            injections.append({"event": "key-press", "inject_us": self.key(KEY_CONTROL_L, True), "measured": False})
+            injections.append({"event": "key-press", "inject_us": self.key(KEY_CONTROL_L, True), "return_us": self.returned_us, "measured": False})
         # A printable key without Control inserts text where it lands: the
         # lane checks it reached an editor and inserted (`input_delivery`).
         inserts = not control and 0x20 <= keysym <= 0x7E
-        injections.append({"event": "key-press", "inject_us": self.key(keysym, True), **({"inserts": True} if inserts else {})})
+        injections.append({"event": "key-press", "inject_us": self.key(keysym, True), "return_us": self.returned_us, **({"inserts": True} if inserts else {})})
         self.key(keysym, False)
         if control:
             self.key(KEY_CONTROL_L, False)
@@ -1773,7 +1946,7 @@ class RemoteDesktop:
 
         stamp = now_us()
         self._call("NotifyPointerAxisDiscrete", GLib.Variant("(ui)", (0, steps)))
-        injections.append({"event": "scroll", "inject_us": stamp})
+        injections.append({"event": "scroll", "inject_us": stamp, "return_us": self.returned_us})
 
     def click(self, x: int, y: int, injections: list[dict], measured: bool = True) -> int:
         """Move to screen `(x, y)` and click; returns the press's stamp.
@@ -1787,8 +1960,9 @@ class RemoteDesktop:
         time.sleep(0.05)
         stamp = now_us()
         self._call("NotifyPointerButton", GLib.Variant("(ib)", (BTN_LEFT, True)))
+        pressed_us = self.returned_us
         self._call("NotifyPointerButton", GLib.Variant("(ib)", (BTN_LEFT, False)))
-        injections.append({"event": "button-press", "inject_us": stamp, **({} if measured else {"measured": False})})
+        injections.append({"event": "button-press", "inject_us": stamp, "return_us": pressed_us, **({} if measured else {"measured": False})})
         return stamp
 
     def close(self) -> None:
@@ -2628,6 +2802,21 @@ class Runner:
             return self.settle_until(ctx, "typing", extra)(inj, deadline)
 
         return self.run_phase(phases, name, self.settle_cap_s + SETTLE_TYPING_KEYS * SETTLE_TYPING_INTERVAL_S + 5, body, extra)
+
+    def wait_composed(self, deadline: float) -> bool:
+        """Poll the automation snapshot until the window's composition ran
+        every stage (`window_construction.stages_pending == 0`); there is no
+        readiness predicate for composition alone, and every predicate that
+        waits for it also waits for the file load this phase overlaps."""
+        while time.monotonic() < deadline:
+            try:
+                if find_key(self.snapshot(), "stages_pending") == 0:
+                    return True
+            except Exception:  # noqa: BLE001 - the bus may not answer yet
+                pass
+            time.sleep(0.02)
+        return False
+
     def snapshot(self) -> dict:
         (raw,) = self.bus.call(APP_ID, AUTOMATION_OBJECT_PATH, AUTOMATION_INTERFACE, "GetSnapshot", None, "(s)").unpack()
         return json.loads(raw)
@@ -2892,6 +3081,18 @@ class Runner:
                 ok = self.save_during_validation_flow(rep_dir, env, files, phases, launches, cap, state_env)
             elif case.flow == "recovery":
                 ok = self.recovery_flow(rep_dir, env, files, phases, launches, cap, attach, state_env, ctx, recover)
+            elif case.flow == "seeded-recovery":
+                seed_untitled_drafts(Path(state_env["LUSHTEXT_DATA_DIR"]), files[0], int(case.attrs.get("drafts", 1)))
+                launch = self.launch(rep_dir, env, [], "restore")
+                launches.append(launch)
+                attach(launch, log_path, state_env)
+                cap = self.install_cap_s
+                ok = self.open_phase(phases, launch, cap, predicate="recovery-restore-complete")
+                ok = ok and self.run_phase(phases, "background", cap, self.settle_after(2.0))
+                if ok and self.rd.available:
+                    self.run_phase(phases, "scroll", cap, lambda inj, d: (self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2), [self.rd.wheel(1, inj) or time.sleep(0.05) for _ in range(40)], (True, "ok"))[2])
+                if ok:
+                    ok = self.run_phase(phases, "tab-switch", cap, self.select_tabs(int(case.attrs.get("drafts", 1))))
             elif case.flow == "calibration":
                 ok = self.run_calibration(rep_dir, state_env, phases, launches)
             else:
@@ -2914,7 +3115,14 @@ class Runner:
                     def preview(deadline: float) -> bool:
                         return self.action("win", "set-preview-pane-visible", [self._bool(True)], deadline)
 
-                ok = self.open_phase(phases, launch, cap, after_bus=preview)
+                mid_install = None
+                if case.flow == "install":
+                    # Interactions while the giant document installs: a tab
+                    # switch to the small tab, a scroll there, and back.
+                    def mid_install(deadline: float) -> bool:
+                        return self.run_phase(phases, "mid-install", min(cap, deadline - time.monotonic()), self.mid_install_interactions())
+
+                ok = self.open_phase(phases, launch, cap, after_bus=preview or mid_install)
                 if ok and preview is not None:
                     ok = preview(time.monotonic() + cap)
                     if not ok:
@@ -2923,6 +3131,15 @@ class Runner:
                     ok = self.run_phase(phases, "background", cap, self.settle_after(2.0))
                     if ok and self.rd.available:
                         self.run_phase(phases, "scroll", cap, lambda inj, d: (self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2), [self.rd.wheel(1, inj) or time.sleep(0.05) for _ in range(40)], (True, "ok"))[2])
+                    if ok and self.wanted("reload"):
+                        # The clear of the installed protected tail, then
+                        # its re-install (`sliced-protected-install`, D4).
+                        def reload_install(_inj, deadline):
+                            self.rewrite_fixture(case, files[-1])
+                            time.sleep(1.5)
+                            return self.wait_ready("file-open-complete", deadline)
+
+                        ok = self.run_phase(phases, "reload", cap, reload_install)
                 elif ok and case.flow == "eviction":
                     ok = self.run_phase(phases, "background", cap, self.settle_after(2.0))
 
@@ -2947,6 +3164,8 @@ class Runner:
                     ok = self.standard_interactions(phases, recover=recover, ctx=ctx, settle_then=lambda deadline: self.wait_ready("visual-geometry-settled", deadline))
                 elif ok:
                     ok = self.standard_interactions(phases, tabs=max(1, len(files)), recover=recover, ctx=ctx)
+                if ok and case.attrs.get("save_as") and self.wanted("save-as"):
+                    ok = self.run_phase(phases, "save-as", cap, self.save_as_copy(files[0], rep_dir / "save-as-copy.txt"))
                 if ok and ctx is not None and case.attrs.get("typing"):
                     ok = self.type_during_settle(rep_dir, files, phases, launches, new_state)
             for launch in launches:
@@ -3094,6 +3313,77 @@ class Runner:
 
         return GLib.Variant("b", value)
 
+    def select_tabs(self, tabs: int) -> Callable[[Any, float], tuple[bool, str]]:
+        """A phase body: select each tab in turn and back to the first."""
+
+        def body(_inj, deadline):
+            for index in list(range(tabs)) + [0]:
+                self.action("win", "select-tab", [self._uint32(index)], deadline)
+                ok, status = self.wait_ready("file-open-complete", deadline)
+                if not ok:
+                    return ok, status
+            return True, "ok"
+
+        return body
+
+    def mid_install_interactions(self) -> Callable[[list[dict], float], tuple[bool, str]]:
+        """A phase body run while an install is in progress: switch to the
+        small first tab, scroll it, switch back to the installing tab, until
+        the install completes (`sliced-protected-install`, task 6.1)."""
+
+        def body(inj, deadline):
+            # Wheels injected before the window is composed never arrive
+            # (`scroll_delivery`): start once every composition stage ran.
+            if not self.wait_composed(deadline):
+                return False, "exceeded_cap"
+            rounds = 0
+            while time.monotonic() < deadline:
+                self.action("win", "select-tab", [self._uint32(0)], deadline)
+                if self.rd.available:
+                    self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2)
+                    for _ in range(3):
+                        self.rd.wheel(1, inj)
+                        time.sleep(0.03)
+                self.action("win", "select-tab", [self._uint32(1)], deadline)
+                rounds += 1
+                ok, status = self.wait_ready("file-open-complete", min(deadline, time.monotonic() + 0.2))
+                if ok:
+                    return True, f"ok ({rounds} rounds)"
+                if status == "workflow-failure":
+                    # A refused or failed load never completes: stop at once
+                    # instead of switching tabs until the cap.
+                    return False, status
+            return False, "exceeded_cap"
+
+        return body
+
+    def save_as_copy(self, source: Path, copy: Path) -> Callable[[Any, float], tuple[bool, str]]:
+        """A phase body: Save As of the active document to `copy` through the
+        measurement build's `app.probe-save-as`, waiting until the copy holds
+        exactly the source's bytes (a mismatch fails the case: file bytes
+        must never change)."""
+
+        def body(_inj, deadline):
+            from gi.repository import GLib
+
+            expected = source.stat().st_size
+            if not self.action("app", "probe-save-as", [GLib.Variant("s", str(copy))], deadline):
+                return False, "unavailable"
+            while time.monotonic() < deadline:
+                if copy.exists() and copy.stat().st_size == expected:
+                    break
+                time.sleep(0.02)
+            else:
+                return False, "exceeded_cap"
+            if hashlib.sha256(copy.read_bytes()).hexdigest() != hashlib.sha256(source.read_bytes()).hexdigest():
+                self.failures.append(f"Save As changed the bytes of {source.name}")
+                return False, "integrity-failure"
+            ok, status = self.wait_ready("idle", deadline)
+            copy.unlink(missing_ok=True)
+            return ok, status
+
+        return body
+
     def rewrite_fixture(self, case: Case, path: Path) -> None:
         spec = case.fixture
         assert spec is not None
@@ -3200,6 +3490,9 @@ class Runner:
                 delivery = input_delivery(parsed, row["input_to_frame"], start, end)
                 if delivery is not None:
                     row["delivery"] = delivery
+                scrolls = scroll_delivery(row["input_to_frame"])
+                if scrolls is not None:
+                    row["scroll_delivery"] = scrolls
                 row["im"] = im_summary(parsed, start, end)
                 if phase["name"].startswith("key-"):
                     row["keystrokes"] = keystroke_stalls(parsed, start, end, budgets["B_INTERACT_US"])
@@ -3252,6 +3545,14 @@ class Runner:
             return [self.record_skip(case, "*", "not enough available memory")]
         if case.fixture is not None:
             files = self.make_fixture(case.fixture, case.id)
+        if case.flow == "install" and files:
+            # A small document opened first, for the mid-install tab switch
+            # and scroll (`sliced-protected-install`, task 6.1).
+            small = files[0].parent / "small.txt"
+            data = "".join(f"short line {line} of the small tab\n" for line in range(MID_INSTALL_SMALL_LINES)).encode()
+            small.write_bytes(data)
+            self.ledger.record(small, hashlib.sha256(data).hexdigest())
+            files = [small, *files]
         try:
             variants = ["plain"] if case.flow == "calibration" else self.variants
             for variant in variants:
@@ -4150,13 +4451,16 @@ def run_failed(
     frameless: list[str] | None = None,
     misdirected: list[str] | None = None,
     withheld: list[str] | None = None,
+    undelivered_scrolls: list[str] | None = None,
 ) -> bool:
     """The lane fails on missing artifacts, an integrity violation, a driver
     failure, a warning of a pre-existing blocker the programme has fixed, a
     measured case that wrote no `frame` record (`frameless_row`), a phase
-    whose typing reached no document (`misdirected_phase`), or a phase whose
-    typed text was drawn only in a withheld frame (`withheld_frame_cases`)."""
-    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions")) or bool(frameless) or bool(misdirected) or bool(withheld)
+    whose typing reached no document (`misdirected_phase`), a phase whose
+    typed text was drawn only in a withheld frame (`withheld_frame_cases`),
+    or a phase with a wheel step that never arrived
+    (`undelivered_scroll_cases`)."""
+    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions")) or bool(frameless) or bool(misdirected) or bool(withheld) or bool(undelivered_scrolls)
 
 
 def run_storage(artifact_dir: Path, rows: list[dict]) -> dict[str, Any]:
@@ -4317,22 +4621,52 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         if r.get("group") == "baseline" and r.get("case") != "baseline/calibration"
     ]
     construction = construction_verdicts([r for r in rows if r.get("group") == "baseline"], budgets["B_SETTLE_US"])
+    # The sliced protected install (sliced-protected-install, C3): every
+    # phase of the install, recovery and protected cases, its largest stall
+    # against its budget, and its duration (the open phase's is the time to
+    # fully installed).
+    def c3_phases(row: dict) -> dict:
+        out = {}
+        for phase in row.get("phases", []):
+            if "stall" not in phase:
+                continue
+            out[phase["name"]] = {
+                "stall_us": phase["stall"]["lateness_us"],
+                "duration_us": (phase["end_us"] - phase["start_us"]) if phase.get("end_us") and phase.get("start_us") else None,
+                "budget_us": budgets["B_SETTLE_US"] if PHASE_KINDS.get(phase["name"], "settle") not in ("interaction",) else budgets["B_INTERACT_US"],
+            }
+        return out
+
     install = [
-        {"case": r["case"], "variant": r["variant"], "outcome": r["outcome"], "open_stall_us": next((p["stall"]["lateness_us"] for p in r.get("phases", []) if p.get("name") == "open" and "stall" in p), None)}
+        {
+            "case": r["case"],
+            "variant": r["variant"],
+            "rep": r.get("rep"),
+            "outcome": r["outcome"],
+            "open_stall_us": next((p["stall"]["lateness_us"] for p in r.get("phases", []) if p.get("name") in ("open", "restore") and "stall" in p), None),
+            "phases": c3_phases(r),
+        }
         for r in rows
-        if r.get("group") == "install"
+        if r.get("group") in ("install", "protected") or r.get("case") == "recovery/protected-32mib"
     ]
     save_runs = save_during_validation_rows(rows)
     c3 = {"measured": install}
     if install:
-        stalls = [i["open_stall_us"] for i in install if i["open_stall_us"] is not None]
-        c3["verdict"] = "needed" if any(s > budgets["B_SETTLE_US"] for s in stalls) else "not needed"
+        over = [
+            f"{i['case']}@{i['variant']}#{i['rep']}:{name}"
+            for i in install
+            for name, phase in i["phases"].items()
+            if phase["stall_us"] is not None and phase["stall_us"] > phase["budget_us"]
+        ]
+        c3["over_budget"] = over
+        c3["verdict"] = f"over budget in {len(over)} phase(s)" if over else "every phase within its budget"
     else:
         c3["verdict"] = "not measured (install group runs in the full tier only)"
     missing = [name for name in ("run.json", "results.jsonl", "calibration.json", "fixtures.json", "integrity.json") if not (artifact_dir / name).exists()]
     frameless = frameless_cases(artifact_dir, rows)
     misdirected = misdirected_cases(rows)
     withheld = withheld_frame_cases(rows)
+    undelivered_scrolls = undelivered_scroll_cases(rows)
     # The C6 verdict (bound-post-open-settle D8) over the post-open rows; with
     # a side-labelled merge (merge-runs --from baseline=DIR --from branch=DIR)
     # it also applies the no-regression rule.
@@ -4363,12 +4697,13 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "frameless_cases": frameless,
         "misdirected_typing": misdirected,
         "withheld_typing_frames": withheld,
+        "undelivered_scrolls": undelivered_scrolls,
         "post_open": post_open_report(rows),
         "c6_verdict": c6,
     }
     (artifact_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (artifact_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
-    failed = run_failed(missing, integrity, run_info, warnings, frameless, misdirected, withheld)
+    failed = run_failed(missing, integrity, run_info, warnings, frameless, misdirected, withheld, undelivered_scrolls)
     # Window construction is the one budget this lane can enforce
     # (bound-window-construction-dispatch): with
     # RESPONSIVENESS_CONSTRUCTION_ENFORCE=1, a LushText-owned span or a
@@ -4397,6 +4732,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "frameless_cases": frameless,
         "misdirected_typing": misdirected,
         "withheld_typing_frames": withheld,
+        "undelivered_scrolls": undelivered_scrolls,
         "budget_verdict": derived["budget_verdict"].get("verdict"),
         "construction_over_budget": [f"{c['case']}@{c['variant']}#{c['rep']}: {','.join(c['over_budget'])}" for c in construction_over],
         "fill_in_over_accepted": [f"{c['case']}@{c['variant']}#{c['rep']}: fill-in {c['fill_in_us']} us" for c in fill_in_over],
@@ -4710,6 +5046,8 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- **TYPING REACHED NO DOCUMENT** in {len(report['misdirected_typing'])} phase(s): their keys arrived outside an editor or inserted nothing, so their input-to-frame figures measure a window with nothing to draw; the lane fails: {', '.join(report['misdirected_typing'][:8])}")
     if report.get("withheld_typing_frames"):
         lines.append(f"- **TYPED TEXT DRAWN LATE** in {len(report['withheld_typing_frames'])} phase(s): a key typed into an editable editor was drawn only after the next key was handled while the main loop was free, or never; its latency runs to that frame and the lane fails: {', '.join(report['withheld_typing_frames'][:8])}")
+    if report.get("undelivered_scrolls"):
+        lines.append(f"- **WHEEL STEPS NEVER ARRIVED** in {len(report['undelivered_scrolls'])} phase(s): an injected scroll has no input record, so it measures nothing; the lane fails: {', '.join(report['undelivered_scrolls'][:8])}")
     if report.get("frameless_cases"):
         lines.append(f"- **NO FRAME RECORDS** in {len(report['frameless_cases'])} measured case(s), so first-frame, frame-gap and input-to-frame figures are missing; the lane fails: {', '.join(report['frameless_cases'][:8])}")
     if report["warnings"].get("unclassified"):
@@ -5305,6 +5643,36 @@ def self_test() -> int:
     save_runs = save_during_validation_rows([save_row, {"group": "eviction", "phases": []}])
     expect(save_runs == [{"case": "save/during-validation", "variant": "plain", "rep": 0, "outcome": "ok", "status": "ok", "save_latency_us": 4_321, "loads_pending_at_save": True, "stall_max_us": 900, "input_to_frame_max_us": 7_000}], "save rows keep latency, backlog state, stall and editable input-to-frame")
     expect("## Save during validation" in "\n".join(render_save_during_validation(save_runs)) and render_save_during_validation([]) == [], "the save table renders only when the case ran")
+
+    # The sliced protected install's cases (sliced-protected-install, C3):
+    # both tiers run them, and the seeded drafts are enveloped JSON LushText
+    # restores (an untitled id, a manifest entry and a session tab per draft).
+    for tier in ("quick", "full"):
+        ids = {case.id for case in build_cases(tier)}
+        expect(
+            {"recovery/protected-32mib", f"protected/{PROTECTED_SAVE_AS_LENGTH}/save-as-wrap"} <= ids,
+            f"the {tier} tier runs the protected recovery and Save As cases",
+        )
+    with tempfile.TemporaryDirectory() as seeded:
+        body = Path(seeded) / "body.txt"
+        body.write_text("x" * 64 + "\n", encoding="utf-8")
+        data_dir = Path(seeded) / "data"
+        seeded_ids = seed_untitled_drafts(data_dir, body, 2)
+        manifest = json.loads((data_dir / "drafts/manifest.json").read_text(encoding="utf-8"))
+        session = json.loads((data_dir / "session.json").read_text(encoding="utf-8"))
+        expect(
+            seeded_ids == ["untitled-0000000000000001", "untitled-0000000000000002"]
+            and all((data_dir / "drafts" / f"{draft_id}.draft").read_bytes() == body.read_bytes().rstrip(b"\n") for draft_id in seeded_ids),
+            f"seeded draft bodies and ids ({seeded_ids})",
+        )
+        expect(
+            manifest["kind"] == "dev.cominotti.lushtext.draft-manifest"
+            and [entry["draft_id"] for entry in manifest["data"]["drafts"]] == seeded_ids
+            and session["kind"] == "dev.cominotti.lushtext.session"
+            and [tab["draft_id"] for tab in session["data"]["tabs"]] == seeded_ids,
+            "the seeded manifest and session are enveloped and name every draft",
+        )
+    expect(PHASE_KINDS.get("mid-install") == "interaction" and PHASE_KINDS.get("save-as") == "settle", "the C3 phases have kinds")
 
     # Every keystroke length stays editable after the case types its bursts.
     for tier, lengths in KEYSTROKE_LENGTHS.items():
@@ -5980,6 +6348,61 @@ def self_test() -> int:
     expect(slow is not None and slow["fill_in_us"] == 42_000 and slow_verdict[0]["fill_in_over"] is True and slow_verdict[0]["fill_in_within_accepted"] is False, f"a fill-in over 40 ms is flagged ({slow_verdict})")
     median = fill_in_median(shown_verdict + slow_verdict + composed_verdict, 8_333)
     expect(median == {"median_us": 32_000, "target_us": 24_999, "within_target": False, "runs": 3}, f"the fill-in median against three reference frames ({median})")
+
+    # Pairing by the compositor's event stamp (sliced-protected-install
+    # review): the mid-install phase injected three wheels 30 ms apart before
+    # the window was composed, the first two never arrived, and pairing by
+    # arrival order charged the third's record (and every later one, two
+    # places on) to them, reporting 270-300 ms input-to-frame for 13 ms.
+    pair_start = {"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000}
+    wheel_base = 50_000_000
+    wheels = [{"event": "scroll", "inject_us": wheel_base + k * 30_000, "return_us": wheel_base + k * 30_000 + 200} for k in range(6)]
+    # Only wheels 2..5 arrive, each stamped in its own call and handled 1 ms later.
+    arrived = [
+        {"kind": "input", "t_us": w["inject_us"] + 1_000, "window": 1, "event": "scroll", "event_time_ms": w["inject_us"] // 1000}
+        for w in wheels[2:]
+    ]
+    drawn = [
+        {"kind": "frame", "t_us": w["inject_us"] + 9_000, "frame_time_us": w["inject_us"] + 2_000, "presentation_us": w["inject_us"] + 9_000}
+        for w in wheels[2:]
+    ]
+    lost_log = parse_probe_log([json.dumps(r) for r in [pair_start, *arrived, *drawn]])
+    paired = match_injections(lost_log, wheels)
+    expect(paired[0] is None and paired[1] is None, f"wheels that never arrived pair with no record ({paired[:2]})")
+    expect([p["t_us"] if p else None for p in paired[2:]] == [w["inject_us"] + 1_000 for w in wheels[2:]], f"each delivered wheel pairs with its own record, not an earlier wheel's ({paired})")
+    lost_rows = input_to_frame(lost_log, wheels, 8_333)
+    expect([r.get("status") for r in lost_rows[:2]] == ["no-input-record", "no-input-record"], f"the lost wheels are reported undelivered ({lost_rows[:2]})")
+    expect([r.get("latency_us") for r in lost_rows[2:]] == [9_000] * 4, f"delivered wheels keep their own latency ({[r.get('latency_us') for r in lost_rows]})")
+    expect(scroll_delivery(lost_rows) == {"scrolled": 6, "undelivered": 2}, f"undelivered scrolls are counted ({scroll_delivery(lost_rows)})")
+    expect(scroll_delivery([r for r in lost_rows if r.get("event") != "scroll"]) is None, "a phase that scrolled nothing has no scroll delivery")
+    lost_case = {"case": "install/100000000", "variant": "plain", "rep": 0, "phases": [{"name": "mid-install", "scroll_delivery": scroll_delivery(lost_rows)}]}
+    expect(undelivered_scroll_cases([lost_case]) == ["install/100000000@plain#0:mid-install"], "the phase that lost wheels is named")
+    expect(run_failed([], {"violations": []}, {"driver_failures": []}, {"regressions": {}}, [], [], [], ["x"]), "an undelivered wheel fails the lane")
+    delivered_case = {"case": "c", "variant": "plain", "rep": 0, "phases": [{"name": "scroll", "scroll_delivery": {"scrolled": 3, "undelivered": 0}}]}
+    expect(undelivered_scroll_cases([delivered_case]) == [], "a phase whose wheels all arrived passes")
+    # A stamp after the call returned (the first wheel after a pointer move,
+    # stamped 2 ms after injection) still pairs with its own injection.
+    late_wheel = [{"event": "scroll", "inject_us": wheel_base, "return_us": wheel_base + 200}, {"event": "scroll", "inject_us": wheel_base + 50_000, "return_us": wheel_base + 50_200}]
+    late_log = parse_probe_log([json.dumps(r) for r in [pair_start] + [{"kind": "input", "t_us": w["inject_us"] + 2_200, "window": 1, "event": "scroll", "event_time_ms": w["inject_us"] // 1000 + 2} for w in late_wheel]])
+    expect([p["t_us"] if p else None for p in match_injections(late_log, late_wheel)] == [w["inject_us"] + 2_200 for w in late_wheel], "a stamp a few ms after the call returned pairs with its own wheel")
+    # Without a return stamp (an older driver) the window closes where the
+    # next injection starts, which still refuses the next wheel's record.
+    unreturned = [{"event": w["event"], "inject_us": w["inject_us"]} for w in wheels]
+    expect([p["t_us"] if p else None for p in match_injections(lost_log, unreturned)] == [None, None] + [w["inject_us"] + 1_000 for w in wheels[2:]], "without return stamps each wheel still pairs with its own record")
+    # A stamp that is not on the probe's clock falls back to arrival order.
+    foreign = [dict(r, event_time_ms=7) for r in arrived]
+    foreign_log = parse_probe_log([json.dumps(r) for r in [pair_start, *foreign]])
+    expect(match_injections(foreign_log, wheels[2:]) == [foreign_log["records"]["input"][k] for k in range(4)], "stamps on another clock pair by arrival order")
+    expect(event_stamp_us({"t_us": 5_000_000, "event_time_ms": 4_999}) == 4_999_000 and event_stamp_us({"t_us": 5_000_000}) is None, "event stamps are read in microseconds, absent ones as None")
+    # A guint32 stamp that wrapped is unwrapped against the handler time.
+    wrapped_t = (1 << 32) * 1000 + 3_000_000
+    expect(event_stamp_us({"t_us": wrapped_t, "event_time_ms": 2_999}) == wrapped_t - 1_000, "a wrapped millisecond stamp is unwrapped")
+    # Keys pair the same way: a lost key no longer shifts the next key's
+    # dispatch latency onto it.
+    keys = [{"event": "key-press", "inject_us": wheel_base + k * 100_000, "return_us": wheel_base + k * 100_000 + 300} for k in range(2)]
+    key_log = parse_probe_log([json.dumps(r) for r in [pair_start, {"kind": "input", "t_us": keys[1]["inject_us"] + 2_000, "window": 1, "event": "key-press", "event_time_ms": keys[1]["inject_us"] // 1000}]])
+    key_rows = key_dispatch_latencies(key_log, keys)
+    expect(key_rows[0].get("status") == "no-input-record" and key_rows[1].get("latency_us") == 2_000, f"a lost key does not take the next key's record ({key_rows})")
 
     # Post-open settle (bound-post-open-settle, C6). An exception here is a
     # failure, not an abort, so the other checks still report.

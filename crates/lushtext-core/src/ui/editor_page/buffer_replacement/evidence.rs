@@ -87,6 +87,11 @@ pub struct BufferReplacementEvidence {
     /// `None` is the honest answer for a disposed page, not a zero.
     pub buffer_char_count: Option<i32>,
 
+    // --- sliced protected install (C3, design D7) ---
+    /// Hidden-tail slices, the largest slice, live boundaries and the ranges
+    /// a clear still has to delete. Not projected into automation snapshots.
+    pub protected: crate::ui::protected_fold::ProtectedSliceEvidence,
+
     // --- last terminal ---
     /// How the most recent session for this editor ended.
     pub last_terminal: Option<BufferReplacementTerminalDiagnostic>,
@@ -153,6 +158,11 @@ impl LushtextEditorPage {
             inserted_bytes: metrics.inserted_bytes,
             peak_retained_bodies: metrics.peak_retained_bodies,
             buffer_char_count,
+            protected: crate::ui::protected_fold::ProtectedSliceEvidence::read(
+                imp.replacement.protected_install.get(),
+                imp.replacement.protected_clear_turns.get(),
+                &imp.protected_boundaries,
+            ),
             last_terminal,
         }
     }
