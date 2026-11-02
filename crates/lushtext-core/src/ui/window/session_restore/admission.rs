@@ -247,9 +247,12 @@ impl LushtextWindow {
 
         execution::settle_restore_selection(self, &mut runtime);
         // The restored document takes the keyboard from GTK's initial focus
-        // (`investigate-first-keys-without-frames`); a focus the user moved
-        // into the content while the restore ran is kept.
-        self.hand_focus_to_opened_document();
+        // (`investigate-first-keys-without-frames`) when the restore created a
+        // page in this window; a focus the user chose, or any key or button
+        // the user pressed, while the restore ran is kept.
+        if runtime.policy.metrics().pages_created > 0 {
+            self.hand_focus_to_opened_document();
+        }
 
         let first_terminal_projection = runtime.policy.note_terminal_projection_publication();
         debug_assert!(

@@ -538,6 +538,10 @@ pub struct LushtextWindow {
     /// after `stop-search`, the shell consumes that event without closing the
     /// next surface underneath the palette.
     pub transient_child_escape_handled: Cell<bool>,
+    /// Whether the window has seen a key or button press since it was last
+    /// mapped: then the opened-document handoff keeps the user's focus
+    /// (`editor_focus::setup_opened_document_focus`).
+    pub user_input_since_map: Cell<bool>,
     /// Set of file paths with open tabs, for O(1) duplicate detection in `open_document`.
     pub open_paths: RefCell<HashSet<PathBuf>>,
     /// Depth counter for tab storms that should rebuild derived projections once.
@@ -651,6 +655,7 @@ impl Default for LushtextWindow {
                 crate::ui::plain_disposal::DisposalCapacityWakeup::default(),
             saved_focus: RefCell::new(None),
             transient_child_escape_handled: Cell::new(false),
+            user_input_since_map: Cell::new(false),
             open_paths: RefCell::new(HashSet::new()),
             tab_projection_refresh_defer_depth: Cell::new(0),
             editor_memory: EditorMemoryState::default(),

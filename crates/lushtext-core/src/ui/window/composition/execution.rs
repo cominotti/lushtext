@@ -98,6 +98,10 @@ struct CompositionRuntime {
     /// Work that waits until the content stage revealed the content stack:
     /// the opened document's keyboard handoff, which must not force it.
     after_content: Vec<AfterActivation>,
+    /// Whether an activation turn of the current batch added or selected a
+    /// page in this window, carried to the batch's last turn, which hands the
+    /// opened document the keyboard only then.
+    activation_opened_here: bool,
     /// The stage a test policy holds composition before, if any.
     hold_before: Option<CompositionStage>,
     /// How long the `composition-hold` build holds after the first frame.
@@ -806,9 +810,15 @@ impl LushtextWindow {
             let files: Vec<_> = runtime.activation.drain(..take).collect();
             (files, !runtime.activation.is_empty())
         };
+        let mut opened_here = self
+            .imp()
+            .composition
+            .runtime
+            .borrow()
+            .activation_opened_here;
         for file in &files {
             if let Some(path) = file.path() {
-                self.open_document_from_activation(&path);
+                opened_here |= self.open_document_from_activation(&path);
             } else {
                 self.report_unsupported_open_file(file);
             }
@@ -817,11 +827,17 @@ impl LushtextWindow {
         // (a remote file, a path another window owns) must not leave it shown.
         self.sync_tab_bar_visibility();
         if more {
+            self.imp()
+                .composition
+                .runtime
+                .borrow_mut()
+                .activation_opened_here = opened_here;
             self.queue_activation_turn();
             return;
         }
         let (deferred, awaits_shown) = {
             let mut runtime = self.imp().composition.runtime.borrow_mut();
+            runtime.activation_opened_here = false;
             let awaits_shown = runtime.activation_shown == ActivationShown::Awaiting;
             if awaits_shown {
                 runtime.activation_shown = ActivationShown::Drained;
@@ -836,12 +852,16 @@ impl LushtextWindow {
         for work in deferred {
             work(self);
         }
-        if !files.is_empty() {
+        if opened_here {
             // The opened document takes the keyboard from GTK's initial focus
-            // (`investigate-first-keys-without-frames`), then the window is
-            // raised once its activation finished, as the pre-composition
-            // `open` handler did after opening its files.
+            // (`investigate-first-keys-without-frames`) when one of the turns
+            // added or selected a page in this window (not when another window
+            // owned the path and was presented instead).
             self.hand_focus_to_opened_document();
+        }
+        if !files.is_empty() {
+            // The window is raised once its activation finished, as the
+            // pre-composition `open` handler did after opening its files.
             self.present();
         }
     }

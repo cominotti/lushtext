@@ -150,7 +150,7 @@ impl LushtextWindow {
     /// double-click, `Enter`, Save As handoff, and file-peek promotion all
     /// reuse the same duplicate-tab and editor-focus behavior.
     pub fn open_document(&self, path: &Path) {
-        self.open_document_with_intent(path, OpenDocumentIntent::InApp);
+        let _ = self.open_document_with_intent(path, OpenDocumentIntent::InApp);
     }
 
     /// Open a file requested by desktop, CLI, or file-manager activation.
@@ -158,11 +158,16 @@ impl LushtextWindow {
     /// Unlike ordinary in-app opens, explicit activation bypasses failed
     /// placeholders for the same path so the requested file can load in a fresh
     /// selected tab while any recoverable failed buffer remains visible.
-    pub fn open_document_from_activation(&self, path: &Path) {
+    ///
+    /// Returns whether a page was added or selected in **this** window: not
+    /// when the open waits for the startup gate, and not when another window
+    /// owns the path and was presented instead.
+    #[must_use = "whether the open added or selected a page in this window"]
+    pub fn open_document_from_activation(&self, path: &Path) -> bool {
         if self.queue_activation_open_if_startup_pending(path) {
-            return;
+            return false;
         }
-        self.open_document_with_intent(path, OpenDocumentIntent::ExternalActivation);
+        self.open_document_with_intent(path, OpenDocumentIntent::ExternalActivation)
     }
 
     /// Open a file while restoring startup session state without updating recent history.
@@ -187,10 +192,12 @@ impl LushtextWindow {
         let _ = self.open_document_from_session_restore(path, || {});
     }
 
-    fn open_document_with_intent(&self, path: &Path, intent: OpenDocumentIntent) {
+    /// Open `path`; whether a page was added or selected in this window.
+    fn open_document_with_intent(&self, path: &Path, intent: OpenDocumentIntent) -> bool {
         crate::ui::responsiveness_probe::span("open_document", || {
-            let _ = self.open_document_with_intent_and_planning_terminal(path, intent, None);
-        });
+            self.open_document_with_intent_and_planning_terminal(path, intent, None)
+                .is_some()
+        })
     }
 
     fn open_document_with_intent_and_planning_terminal(

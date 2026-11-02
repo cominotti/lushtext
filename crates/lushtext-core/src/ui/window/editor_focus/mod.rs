@@ -28,6 +28,15 @@
 //! session left the keyboard on that toggle, and the first characters typed
 //! after opening it went nowhere.
 //!
+//! The handoff runs only when the open added or selected a page in this
+//! window, and its decision is the pure `policy::opened_document_takes_focus`:
+//! the focus must still be where GTK put it (unset, or on the window's own
+//! chrome, never inside a popover or menu), no dialog or transient surface may
+//! be up, and the window must not have seen a key or button press since it was
+//! mapped (`setup_opened_document_focus`'s latch). The latch keeps any focus a
+//! user chose, including a screen-reader user tabbing through the chrome while
+//! a session restores.
+//!
 //! It is the same disposition `.agents/rules/workflow-convention.md` gives
 //! cross-cutting pure policy: it stays in a shared location and the matrix
 //! names the workflows that share it. Moving it beside any one of them would
@@ -49,6 +58,22 @@ use crate::ui::editor_page::LushtextEditorPage;
 use super::LushtextWindow;
 use crate::ui::window::StagedSurface;
 
+mod policy;
+
+use policy::{OpenedDocumentFocus, OpenedDocumentFocusFacts, opened_document_takes_focus};
+
+/// The name of the two capture-phase controllers that latch user input for
+/// the opened-document handoff (`setup_opened_document_focus`).
+const USER_INPUT_LATCH_CONTROLLER: &str = "lushtext-user-input-latch";
+
+/// Whether one handoff attempt finished (focused, or decided not to) or the
+/// editor could not take focus yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HandoffAttempt {
+    Done,
+    Retry,
+}
+
 /// Delay between focus retries after tab selection or adaptive layout changes.
 ///
 /// Thirty milliseconds keeps retries below perceptible interaction latency while
@@ -58,74 +83,115 @@ pub(super) const EDITOR_FOCUS_RETRY_INTERVAL: Duration = Duration::from_millis(3
 /// GTK's normal focus model. Six attempts covers roughly 180ms of settling.
 pub(super) const EDITOR_FOCUS_MAX_ATTEMPTS: u8 = 6;
 
-/// Where the window's keyboard focus sits when an open selects a document.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum OpenedDocumentFocus {
-    /// No widget has focus.
-    Unset,
-    /// The window chrome: the header bar, the tab strip, or the status bar,
-    /// where GTK's initial focus lands.
-    Chrome,
-    /// Anywhere the user can have put it: an editor, the workspace sidebar,
-    /// the properties panel, a search or palette entry.
-    Elsewhere,
-}
-
-/// Whether an open that selected a document hands the keyboard to its editor:
-/// only while the focus is unset or on the chrome, and no dialog or transient
-/// surface is up, so it never takes the keyboard from something the user is
-/// working in.
-pub(super) const fn opened_document_takes_focus(
-    focus: OpenedDocumentFocus,
-    dialog_visible: bool,
-    transient_surface_open: bool,
-) -> bool {
-    !dialog_visible
-        && !transient_surface_open
-        && matches!(
-            focus,
-            OpenedDocumentFocus::Unset | OpenedDocumentFocus::Chrome
-        )
-}
-
 impl LushtextWindow {
-    /// Give the keyboard to the selected document's editor after an activation
-    /// or session restore opened it, when `opened_document_takes_focus` allows.
-    /// The editor is focused in this dispatch when it can take focus, so a key
-    /// already queued behind it lands in the document; otherwise the retrying
-    /// handoff finishes the job.
-    /// While the content stage has not revealed the content yet (a restore
-    /// that finished first), the handoff waits for it instead of forcing it.
-    pub(super) fn hand_focus_to_opened_document(&self) {
-        self.after_content_revealed(Self::hand_focus_to_selected_document_now);
+    /// Install the user-input latch `opened_document_takes_focus` reads: a key
+    /// or button press anywhere in the window, seen in the capture phase before
+    /// any child handles it, marks the window touched until it is mapped again.
+    /// Neither controller claims or stops anything.
+    pub(super) fn setup_opened_document_focus(&self) {
+        let keys = gtk4::EventControllerKey::new();
+        keys.set_name(Some(USER_INPUT_LATCH_CONTROLLER));
+        keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let window_weak = self.downgrade();
+        keys.connect_key_pressed(move |_, _, _, _| {
+            if let Some(window) = window_weak.upgrade() {
+                window.imp().user_input_since_map.set(true);
+            }
+            glib::Propagation::Proceed
+        });
+        self.add_controller(keys);
+
+        let buttons = gtk4::GestureClick::new();
+        buttons.set_name(Some(USER_INPUT_LATCH_CONTROLLER));
+        buttons.set_button(0);
+        buttons.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let window_weak = self.downgrade();
+        buttons.connect_pressed(move |_, _, _, _| {
+            if let Some(window) = window_weak.upgrade() {
+                window.imp().user_input_since_map.set(true);
+            }
+        });
+        self.add_controller(buttons);
+
+        self.connect_map(|window| window.imp().user_input_since_map.set(false));
     }
 
-    fn hand_focus_to_selected_document_now(&self) {
+    /// Give the keyboard to the selected document's editor after an activation
+    /// or session restore opened a page in this window, when
+    /// `opened_document_takes_focus` allows. The editor is focused in this
+    /// dispatch when it can take focus, so a key already queued behind it
+    /// lands in the document; otherwise a short retry finishes the job,
+    /// re-deciding on every attempt.
+    /// While the content stage has not revealed the content yet (a restore
+    /// that finished first), the handoff waits for it instead of forcing it,
+    /// and decides then.
+    pub(super) fn hand_focus_to_opened_document(&self) {
+        self.after_content_revealed(|window| {
+            if window.hand_focus_to_selected_document_now() == HandoffAttempt::Retry {
+                window.retry_opened_document_handoff();
+            }
+        });
+    }
+
+    fn hand_focus_to_selected_document_now(&self) -> HandoffAttempt {
         let Some(editor) = self.active_editor() else {
-            return;
+            return HandoffAttempt::Done;
         };
-        let decision = opened_document_takes_focus(
-            self.opened_document_focus(),
-            libadwaita::prelude::AdwApplicationWindowExt::visible_dialog(self).is_some(),
-            self.transient_surface_open(),
-        );
-        if !decision {
-            return;
+        let facts = OpenedDocumentFocusFacts {
+            focus: self.opened_document_focus(),
+            user_input_since_map: self.imp().user_input_since_map.get(),
+            dialog_visible: libadwaita::prelude::AdwApplicationWindowExt::visible_dialog(self)
+                .is_some(),
+            transient_surface_open: self.transient_surface_open(),
+        };
+        if !opened_document_takes_focus(facts) {
+            return HandoffAttempt::Done;
         }
         // The content is revealed by now (`after_content_revealed`), so this
         // forces nothing; it keeps rule 11's contract for staged focus.
         self.ensure_composed(StagedSurface::Content);
-        let source_view = editor.source_view();
-        if !source_view.grab_focus() {
-            self.focus_selected_editor_after_action();
+        if editor.source_view().grab_focus() {
+            HandoffAttempt::Done
+        } else {
+            HandoffAttempt::Retry
         }
     }
 
+    /// Retry a handoff whose editor could not take focus yet (not mapped),
+    /// deciding again each time, so a key or a focus change in between wins.
+    fn retry_opened_document_handoff(&self) {
+        let window_weak = self.downgrade();
+        let attempts = std::rc::Rc::new(std::cell::Cell::new(0u8));
+        glib::timeout_add_local(EDITOR_FOCUS_RETRY_INTERVAL, move || {
+            let Some(window) = window_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let next_attempt = attempts.get().saturating_add(1);
+            attempts.set(next_attempt);
+            if window.hand_focus_to_selected_document_now() == HandoffAttempt::Done
+                || next_attempt >= EDITOR_FOCUS_MAX_ATTEMPTS
+            {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
     /// Classify the window's focus widget for `opened_document_takes_focus`.
+    /// Only a widget in the window's own surface can be chrome: a menu or
+    /// popover opened from the header bar or the tab strip has its own native,
+    /// and focus in it is the user's.
     fn opened_document_focus(&self) -> OpenedDocumentFocus {
         let Some(focus) = gtk4::prelude::GtkWindowExt::focus(self) else {
             return OpenedDocumentFocus::Unset;
         };
+        let in_window_surface = focus.native().is_some_and(|native| {
+            native.upcast_ref::<gtk4::Widget>() == self.upcast_ref::<gtk4::Widget>()
+        });
+        if !in_window_surface {
+            return OpenedDocumentFocus::Elsewhere;
+        }
         let imp = self.imp();
         let chrome: [&gtk4::Widget; 3] = [
             imp.header_bar.upcast_ref(),

@@ -80,7 +80,18 @@
 //!   handler stamps the activation's shown frame and stays connected until
 //!   both are known.
 //! - **Activation turns**: each turn is an idle that re-arms while files remain;
-//!   the last one queues a frame, which stamps the activation shown.
+//!   the last one queues a frame, which stamps the activation shown. When any
+//!   turn of the batch added or selected a page in this window (not when
+//!   another window owned the path and was presented instead), the last turn
+//!   hands the opened document the keyboard
+//!   (`investigate-first-keys-without-frames`, the cross-cutting
+//!   `editor_focus` module, shared with `WFR-SESSION-RESTORE`).
+//! - **After content** (`after_content_revealed`): work that needs the
+//!   content stack shown but must not force it — the opened document's
+//!   keyboard handoff, from an activation or a session restore that finished
+//!   before stage B1 — is queued and resumes in stage B1's reveal, right after
+//!   the content stack becomes visible; when the content is already shown it
+//!   runs at once. Teardown drops the queue.
 //!
 //! ## Forced reveals
 //!
