@@ -192,6 +192,74 @@ fn test_adoption_task_completion_returns_to_main_loop_with_freshness() {
     assert!(accepted.get());
 }
 
+/// Lines in the validation-backlog document: enough that a hidden text view
+/// takes many 2000 px validation batches (ledger A31) to lay it out.
+const BACKLOG_LINES: usize = 1 << 15;
+
+/// A worker completion reaches the main loop while a text view still has
+/// lines to validate. GtkTextView's incremental validation idle
+/// (`GDK_PRIORITY_REDRAW + 5`) is ready again after every batch, so a
+/// completion delivered below it waits for the whole backlog (ledger A80): a
+/// document restored into a background tab held back every later load,
+/// save and draft completion for seconds. The view here sits on a hidden
+/// stack page, like a background tab of an `AdwTabView`.
+#[test]
+fn test_adoption_task_completion_is_not_held_behind_text_validation() {
+    ensure_gtk_init();
+    let app = test_application();
+    let view = gtk4::TextView::new();
+    view.set_monospace(true);
+    let scrolled = gtk4::ScrolledWindow::builder().child(&view).build();
+    let stack = gtk4::Stack::new();
+    stack.add_named(&gtk4::Label::new(Some("visible page")), Some("visible"));
+    stack.add_named(&scrolled, Some("background"));
+    stack.set_visible_child_name("visible");
+    let window = libadwaita::ApplicationWindow::builder()
+        .application(&app)
+        .default_width(640)
+        .default_height(480)
+        .content(&stack)
+        .build();
+    present_window(&window);
+    let last_line_y = {
+        let view = view.clone();
+        move || view.line_yrange(&view.buffer().end_iter()).0
+    };
+
+    let text: String = (0..BACKLOG_LINES)
+        .map(|line| format!("background row {line:>6} of a large restored document\n"))
+        .collect();
+    view.buffer().set_text(&text);
+    let delivered_at_y = Rc::new(Cell::new(None::<i32>));
+    spawn_blocking_then((), || (), {
+        let delivered_at_y = Rc::clone(&delivered_at_y);
+        let last_line_y = last_line_y.clone();
+        move |(), ()| delivered_at_y.set(Some(last_line_y()))
+    });
+
+    // Let the backlog finish: the last line's y stops growing.
+    let mut previous = -1;
+    let settled = wait_until_or_false(Duration::from_secs(30), || {
+        let now = last_line_y();
+        let still = now == previous && delivered_at_y.get().is_some();
+        previous = now;
+        still
+    });
+    assert!(settled, "the background view finished validating");
+    let final_y = last_line_y();
+    assert!(
+        final_y >= 16 * 2000,
+        "the document took at least 16 validation batches (final y {final_y})"
+    );
+    let delivered = delivered_at_y.get().expect("the completion ran");
+    assert!(
+        delivered < final_y / 2,
+        "the completion ran at y {delivered} of {final_y}: it waited for the validation backlog"
+    );
+    window.destroy();
+    flush_events();
+}
+
 fn long_viewport_text() -> String {
     (0..80)
         .map(|line| format!("viewport row {line} with a long adoption surface sample"))

@@ -460,11 +460,13 @@ CSS and Display access require GTK to be initialized. Initialization happens dur
 Background I/O uses `gtk_lush_tasks::spawn_blocking_then(state, work, then)`:
 1. `state` — non-Send GTK object, wrapped in `ThreadGuard` automatically
 2. `work` — `FnOnce() -> T + Send`, runs on a background thread
-3. `then` — `FnOnce(state, T)`, runs on the main thread via `glib::idle_add_once`
+3. `then` — `FnOnce(state, T)`, runs on the main thread from one completion source at `gtk_lush_tasks::completion_priority()` (`GDK_PRIORITY_REDRAW + 4`), one completion per dispatch (`spawn-completion-priority`)
 
 Both `state` and `then` are wrapped in `glib::thread_guard::ThreadGuard` by `gtk-lush-tasks` to safely cross thread boundaries. `ThreadGuard` implements `Send` and asserts same-thread access on `.into_inner()`.
 
-**Concurrency guard:** `spawn_blocking_then` limits outstanding work to `DEFAULT_MAX_CONCURRENT_SPAWNS = 8` via a global `AtomicUsize` counter. The slot stays held until the GLib idle completion consumes the result, so large completed results cannot pile up outside the cap. When at limit, work waits in a GTK-main-thread FIFO and starts when a slot releases.
+**Concurrency guard:** `spawn_blocking_then` limits outstanding work to `DEFAULT_MAX_CONCURRENT_SPAWNS = 8` via a global `AtomicUsize` counter. The slot stays held until the completion has consumed the result, so large completed results cannot pile up outside the cap. When at limit, work waits in a GTK-main-thread FIFO and starts when a slot releases.
+
+**Completion priority:** completions run one step above GtkTextView's incremental validation idle (`GDK_PRIORITY_REDRAW + 5`), which stays ready batch after batch until a view (a background tab's too) has laid out its whole buffer, so a `G_PRIORITY_DEFAULT_IDLE` completion used to wait for every validating view's whole backlog (ledger A80). They stay below frames, resizes and input, and one source delivers one completion per dispatch, so a frame or an event dispatches between two of them. A completion callback runs ahead of text layout: keep it within `B_SETTLE_US` and move larger work into bounded continuations. Hand-offs between bounded stages (the load and save admission drains and their permit releases) run at the same priority; paced work that must follow validation (the post-open install slices, `PACED_SLICE_PRIORITY`, A70) stays below it.
 
 **Fire-and-forget pattern:** For tiny non-critical cleanup with no main-thread callback (for example temp file cleanup after a failed inline-create flow), raw `std::thread::spawn` is acceptable. Persistent app state writes should still go through `spawn_blocking_then` so they respect the concurrency guard and serialize correctly.
 

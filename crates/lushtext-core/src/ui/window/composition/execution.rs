@@ -453,11 +453,21 @@ impl LushtextWindow {
     /// Run `work` once the content stage revealed the content stack, or now
     /// when it is shown; it never forces the stage (design D5 of
     /// `first-frame-window-shell`: reads and projections force nothing).
+    ///
+    /// "Revealed" is the stack's own `visible` property, which only the
+    /// content stage sets, never `gtk_widget_is_visible`, which is also false
+    /// while the window itself is not shown yet. Asking the latter lost the
+    /// work whenever it was requested after a collapsed or early content
+    /// stage but before stage P presented the window: the content stage had
+    /// already drained `after_content`, so nothing ran it. An activation open
+    /// released by the startup gate's completion, which arrives before stage P
+    /// now that completions run at `gtk_lush_tasks::completion_priority()`,
+    /// then left the keyboard on the status bar (`spawn-completion-priority`).
     pub(in crate::ui::window) fn after_content_revealed(
         &self,
         work: impl FnOnce(&LushtextWindow) + 'static,
     ) {
-        if !self.imp().content_stack.is_visible() {
+        if !self.imp().content_stack.get_visible() {
             let mut runtime = self.imp().composition.runtime.borrow_mut();
             if !runtime.torn_down {
                 runtime.after_content.push(Box::new(work));

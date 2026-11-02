@@ -77,7 +77,13 @@ impl Drop for SavePayloadPermit {
             return;
         };
         debug_assert!(self.weight > 0, "admitted saves carry a byte charge");
-        glib::idle_add_once(move || release_on_main(request_id));
+        // At the completion priority: a release is a hand-off between bounded
+        // stages, and below GtkTextView's validation idle it would wait for
+        // every validating view's whole backlog (ledger A80).
+        glib::idle_add_full(gtk_lush_tasks::completion_priority(), move || {
+            release_on_main(request_id);
+            glib::ControlFlow::Break
+        });
     }
 }
 
@@ -281,7 +287,11 @@ fn schedule_drain() {
         }
     });
     if should_schedule {
-        glib::idle_add_local_once(drain);
+        // At the completion priority, like the permit release (ledger A80).
+        glib::idle_add_local_full(gtk_lush_tasks::completion_priority(), || {
+            drain();
+            glib::ControlFlow::Break
+        });
     }
 }
 
