@@ -170,8 +170,17 @@ KEYSTROKE_GAP_S = float(os.environ.get("RESPONSIVENESS_KEYSTROKE_GAP_S", "0.15")
 INVISIBLES_LENGTHS = {"quick": (250_000,), "full": (2_000, 10_000, 50_000, 250_000, 1_900_000)}
 INSTALL_SIZES = (100_000_000, 250_000_000, 500_000_000)
 EVICTION_FILE_BYTES = 8 * 1024 * 1024
+# `save/during-validation` (spawn-completion-priority D5): the short-line
+# documents (`short-code`, below C6's density bound, so installed unpaced and
+# validated afterwards) whose validation backlog the save runs during, how long after their
+# activation the save starts (their installs are under way, every view still
+# validating), and the scratch document the case saves. The scratch file lives
+# in the case's state directory, never in the fixture ledger.
+SAVE_BACKLOG_DOCUMENTS = 2
+SAVE_BACKLOG_LEAD_S = 1.0
+SAVE_SCRATCH_TEXT = "scratch document the save case writes\n"
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -1411,7 +1420,7 @@ class Case:
     group: str
     fixture: FixtureSpec | None
     settings: dict[str, Any] = field(default_factory=dict)
-    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke
+    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke | save
     length: int | None = None  # the swept paragraph length / line length / total size
     attrs: dict[str, Any] = field(default_factory=dict)
 
@@ -1558,6 +1567,13 @@ def build_cases(tier: str) -> list[Case]:
                 FixtureSpec("eviction", EVICTION_FILE_BYTES, seed_for("eviction")),
                 settings={"word-wrap": True, "show-minimap": False},
                 flow="eviction",
+            ),
+            Case(
+                "save/during-validation",
+                "save",
+                FixtureSpec("short-code", EVICTION_FILE_BYTES, seed_for("save-backlog"), count=SAVE_BACKLOG_DOCUMENTS),
+                settings={"word-wrap": True, "show-minimap": False},
+                flow="save",
             ),
             Case(
                 "reload/250000",
@@ -2872,6 +2888,8 @@ class Runner:
                     launches.append(relaunch)
                     attach(relaunch, rep_dir / "probe-restore.jsonl", state_env)
                     ok = self.open_phase(phases, relaunch, cap, predicate="session-restore-complete") and self.standard_interactions(phases, tabs=len(files), recover=recover, ctx=ctx)
+            elif case.flow == "save":
+                ok = self.save_during_validation_flow(rep_dir, env, files, phases, launches, cap, state_env)
             elif case.flow == "recovery":
                 ok = self.recovery_flow(rep_dir, env, files, phases, launches, cap, attach, state_env, ctx, recover)
             elif case.flow == "calibration":
@@ -2961,6 +2979,66 @@ class Runner:
         (rep_dir / "phases.json").write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
         self.append_result(row)
         return row
+
+    def save_during_validation_flow(self, rep_dir: Path, env: dict[str, str], files: list[Path], phases: list[dict], launches: list[Launch], cap: float, state_env: dict[str, str]) -> bool:
+        """`save/during-validation` (spawn-completion-priority D5).
+
+        Open a small scratch document, then hand the fixtures to the running
+        instance through a second activation, so their installs and every
+        view's validation backlog start after the scratch tab exists. With the
+        backlog under way, select the scratch tab, type one character into it
+        and activate `win.save` (the Ctrl+S action; the lane never injects a
+        Control+letter chord). The phase records `save_latency_us`, from that
+        activation until the scratch file's bytes change on disk. Only the
+        scratch file, in the case's state directory, is ever written.
+        """
+        scratch = Path(state_env["STATE_ROOT"]) / "scratch" / "save-target.txt"
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        scratch.write_text(SAVE_SCRATCH_TEXT, encoding="utf-8")
+        launch = self.launch(rep_dir, env, [scratch], "main")
+        launches.append(launch)
+        if not self.open_phase(phases, launch, cap):
+            return False
+        # A second activation forwards the files to the running instance and
+        # exits; it never starts up, so it writes no probe log of its own.
+        opener_env = {k: v for k, v in env.items() if k != "LUSHTEXT_RESPONSIVENESS_LOG"}
+        with (rep_dir / "app-opener.stderr").open("wb") as opener_stderr:
+            opener = subprocess.Popen([str(self.binary), *map(str, files)], stdout=subprocess.DEVNULL, stderr=opener_stderr, env=opener_env, start_new_session=True)
+            try:
+                opener.wait(timeout=cap)
+            except subprocess.TimeoutExpired:
+                opener.kill()
+                opener.wait(timeout=10)
+                phases.append({"name": "save", "kind": "interaction", "status": "opener-hung"})
+                return False
+        extra: dict[str, Any] = {}
+
+        def body(injections, deadline):
+            time.sleep(SAVE_BACKLOG_LEAD_S)
+            if not self.action("win", "select-tab", [self._uint32(0)], deadline):
+                return False, "select-tab-failed"
+            time.sleep(0.3)
+            if self.rd.available:
+                focused, status = self.editor_click(injections, measured=False)
+                if not focused:
+                    return False, f"focus-{status}"
+                self.rd.tap(ord("s"), injections)
+                time.sleep(0.2)
+            before = scratch.read_bytes()
+            # Whether the documents were still loading when the save started:
+            # a save after the backlog measures nothing.
+            extra["loads_pending_at_save"] = not self.wait_ready("file-open-complete", time.monotonic() + 0.05)[0]
+            started = now_us()
+            if not self.action("win", "save", None, deadline):
+                return False, "save-action-failed"
+            while time.monotonic() < deadline:
+                if scratch.read_bytes() != before:
+                    extra["save_latency_us"] = now_us() - started
+                    return True, "ok"
+                time.sleep(0.002)
+            return False, "save-never-landed"
+
+        return self.run_phase(phases, "save", cap, body, extra)
 
     def recovery_flow(self, rep_dir: Path, env: dict[str, str], files: list[Path], phases: list[dict], launches: list[Launch], cap: float, attach: Callable, state_env: dict[str, str], ctx: dict | None, recover: Callable[[], bool]) -> bool:
         """`recovery/small-drafts`: file-backed drafts recovered at startup.
@@ -4244,6 +4322,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         for r in rows
         if r.get("group") == "install"
     ]
+    save_runs = save_during_validation_rows(rows)
     c3 = {"measured": install}
     if install:
         stalls = [i["open_stall_us"] for i in install if i["open_stall_us"] is not None]
@@ -4278,6 +4357,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "window_construction_c4": window,
         "construction_c4": construction,
         "install_c3": c3,
+        "save_during_validation": save_runs,
         "cases": summarise_cases(rows),
         "missing_artifacts": missing,
         "frameless_cases": frameless,
@@ -4549,6 +4629,49 @@ def merge_runs(out: Path, sources: list, quiet: bool = False) -> int:
     return 0
 
 
+def save_during_validation_rows(rows: list[dict]) -> list[dict[str, Any]]:
+    """One entry per `save/during-validation` run (spawn-completion-priority D5)."""
+    runs = []
+    for r in rows:
+        if r.get("group") != "save":
+            continue
+        phase = next((p for p in r.get("phases", []) if p.get("name") == "save"), {})
+        latencies = [e["latency_us"] for e in phase.get("input_to_frame") or [] if editable_latency(e)]
+        runs.append(
+            {
+                "case": r["case"],
+                "variant": r["variant"],
+                "rep": r["rep"],
+                "outcome": r["outcome"],
+                "status": phase.get("status"),
+                "save_latency_us": phase.get("save_latency_us"),
+                "loads_pending_at_save": phase.get("loads_pending_at_save"),
+                "stall_max_us": (phase.get("stall") or {}).get("lateness_us"),
+                "input_to_frame_max_us": max(latencies) if latencies else None,
+            }
+        )
+    return runs
+
+
+def render_save_during_validation(runs: list[dict[str, Any]]) -> list[str]:
+    if not runs:
+        return []
+    lines = [
+        "",
+        "## Save during validation",
+        "",
+        "`save/during-validation`: Ctrl+S (`win.save`) on a scratch document while two 8 MiB short-line documents (unpaced installs) validate. Latency runs from the save until the scratch bytes change on disk; the stall is the phase's worst watchdog lateness.",
+        "",
+        "| Case | Variant | Rep | Status | Loads pending at save | Save latency (us) | Stall max (us) | Input-to-frame max (us) |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for run in runs:
+        lines.append(
+            f"| {run['case']} | {run['variant']} | {run['rep']} | {run['status']} | {run['loads_pending_at_save']} | {run['save_latency_us']} | {run['stall_max_us']} | {run['input_to_frame_max_us']} |"
+        )
+    return lines
+
+
 def render_markdown(report: dict) -> str:
     run = report["run"]
     lines = [
@@ -4644,6 +4767,7 @@ def render_markdown(report: dict) -> str:
             position = name.removeprefix("key-")
             verified = "" if position not in case.get("unverified_positions", []) else " (burst not verified: excluded)"
             lines.append(f"| {case['case']} | {case['variant']} | {name}{verified} | {keys['keys']} | {keys['worst_median_us']} / {keys['worst_p90_us']} | {keys['summed_median_us']} |")
+    lines += render_save_during_validation(report.get("save_during_validation") or [])
     lines += ["", "## Cases", "", "| Case | Variant | Outcomes | Phase | Stall median / max (us) | Frame p95 gap | Input-to-frame max (us / frames) | IM calls / max bytes | AT events / max payload |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case in report["cases"]:
         flags = (" noisy" if case.get("noisy") else "") + (f" storage:{case.get('storage')}" if case.get("storage") not in (None, "unchecked", "clean") else "")
@@ -5164,6 +5288,23 @@ def self_test() -> int:
     def expect(condition: bool, label: str) -> None:
         if not condition:
             failures.append(label)
+
+    # `save/during-validation` runs in both tiers, and its run rows reach the
+    # report table (spawn-completion-priority D5).
+    for tier in ("quick", "full"):
+        saves = [c for c in build_cases(tier) if c.id == "save/during-validation"]
+        expect(len(saves) == 1 and saves[0].flow == "save" and saves[0].fixture is not None and saves[0].fixture.count == SAVE_BACKLOG_DOCUMENTS, f"{tier}: one save/during-validation case over the backlog documents")
+    save_row = {
+        "case": "save/during-validation",
+        "group": "save",
+        "variant": "plain",
+        "rep": 0,
+        "outcome": "ok",
+        "phases": [{"name": "save", "status": "ok", "save_latency_us": 4_321, "loads_pending_at_save": True, "stall": {"lateness_us": 900}, "input_to_frame": [{"latency_us": 7_000}, {"latency_us": 9_000, "protected": True}]}],
+    }
+    save_runs = save_during_validation_rows([save_row, {"group": "eviction", "phases": []}])
+    expect(save_runs == [{"case": "save/during-validation", "variant": "plain", "rep": 0, "outcome": "ok", "status": "ok", "save_latency_us": 4_321, "loads_pending_at_save": True, "stall_max_us": 900, "input_to_frame_max_us": 7_000}], "save rows keep latency, backlog state, stall and editable input-to-frame")
+    expect("## Save during validation" in "\n".join(render_save_during_validation(save_runs)) and render_save_during_validation([]) == [], "the save table renders only when the case ran")
 
     # Every keystroke length stays editable after the case types its bursts.
     for tier, lengths in KEYSTROKE_LENGTHS.items():
