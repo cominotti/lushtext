@@ -27,9 +27,9 @@ package = "gtk-lush-tasks"
 lab_workflow = "Tasks page: bounded worker dispatch, main-thread completion, freshness rejection, panic-safe result wrapping."
 standalone_example = "crates/gtk-lush/tasks/examples/tasks.rs"
 stock_fixture_status = "Not selected for timed stock fixture; async behavior is covered by lab workflow and crate example."
-tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --bins; make gtk-lush-examples; make gtk-lush-doctests; cargo test -p lushtext --test widget gtk_lush_adoption."
-friction_status = "No blocking friction. Panic safety is caller-owned by returning Result from catch_unwind."
-api_decision = "Keep dispatcher API; do not add a framework-level task runtime."
+tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --bins; make gtk-lush-examples; make gtk-lush-doctests; cargo test -p gtk-lush-tasks (completion delivered while a stand-in validation idle is pending, one completion per dispatch); cargo test -p lushtext --test widget gtk_lush_adoption (test_adoption_task_completion_is_not_held_behind_text_validation: a completion is not held behind a hidden GtkTextView's validation backlog, ledger A80)."
+friction_status = "No blocking friction. Panic safety is caller-owned by returning Result from catch_unwind. Completions run ahead of text validation and default-idle work, so a completion callback must fit the consumer's per-dispatch budget."
+api_decision = "Keep dispatcher API; do not add a framework-level task runtime. completion_priority() (spawn-completion-priority) names the delivery priority so consumers can schedule their own stage hand-offs beside it."
 follow_up = "None for this phase."
 
 [[crates]]

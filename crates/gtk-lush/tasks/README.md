@@ -24,5 +24,32 @@ The worker cap covers both running worker closures and completed results waiting
 for their GTK-thread completion callback. When capacity is exhausted, work waits
 in a main-thread FIFO until a completion or panic releases a slot.
 
+## Completion Delivery
+
+Completions run on the GTK main thread from one GLib source at
+`completion_priority()`, which is `GDK_PRIORITY_REDRAW + 4`. The source runs one
+completion per dispatch, in the order the workers finished.
+
+- **Why that priority.** `GtkTextView` lays out the lines below its viewport
+  from an idle at `GDK_PRIORITY_REDRAW + 5`. That idle stays ready, batch after
+  batch, until the whole buffer is laid out, and it does so for a view on a
+  hidden page too. A completion at `G_PRIORITY_DEFAULT_IDLE` would wait for
+  every validating view's whole backlog, which takes seconds for a large
+  document. One step above it, a completion runs before the next batch.
+- **What it never delays.** The priority is still below the frame clock's
+  paint, GTK's resize and input events, so a completion never delays a frame or
+  an event.
+- **Why one per dispatch.** GLib dispatches every ready source of the top
+  priority in one iteration. A single delivery source keeps the main loop's
+  priority check between two completions. Because a worker slot is held until
+  its completion has run, at most `DEFAULT_MAX_CONCURRENT_SPAWNS` results ever
+  wait.
+
+A completion callback therefore runs ahead of text layout and default-idle
+work. Keep each one within your per-dispatch budget, and move larger work into
+bounded continuations. An application may schedule its own hand-offs between
+bounded stages, such as an admission drain or a permit release, at
+`completion_priority()` for the same reason.
+
 The crate does not create a runtime, message loop, actor system, or application
 state framework.

@@ -144,8 +144,16 @@ Main-thread-safe background work with staleness-proof completion.
 - **Replaces in LushText:** the former `services::async_task`; per-call-site
   generation/weak-identity checks remain explicit in their workflow modules.
 - **Acceptance:** all async-backed widget tests pass unmodified in timing;
-  the low-priority idle completion contract (required by `wait_until`) is
+  the idle completion contract (required by `wait_until`) is
   preserved and documented as a stability guarantee.
+- **Delivery priority (`spawn-completion-priority`, 2026-11-02):** completions
+  moved from one `G_PRIORITY_DEFAULT_IDLE` idle each to one delivery source at
+  `completion_priority()` (`GDK_PRIORITY_REDRAW + 4`), one completion per
+  dispatch, because GtkTextView's validation idle held every completion back
+  while a large buffer was laid out (ledger A80). `wait_until`'s drain still
+  observes them, since it dispatches every ready source. Recorded as an
+  internal-platform behaviour change; the `0.0.0` API gained only
+  `completion_priority()`.
 
 ### 4.4 `gtk-lush-viewport`
 
