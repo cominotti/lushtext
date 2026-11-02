@@ -1342,6 +1342,32 @@ and 3.52 s (restore), with worst dispatches of 10.9–11.0 ms (open) and
 32–35 ms (restore: the local-history dialog's close animation in the cairo
 renderer, on both sides).
 
+### Decisions on the remaining misses (2026-11-02, delegated by the maintainer)
+
+The maintainer delegated programme decisions on 2026-11-01 ("decide without
+asking, reviewed by a subagent, user experience first"). With the independent
+review's must-fixes landed, the remaining misses are decided as follows:
+
+- **Activation to laid out, dense/500 and dense/710 wrap-on, 13–15 ms later
+  than main** (over the one-frame allowance): **accepted as a recorded
+  exception.** The branch's worst dispatch on those cases is 9.3–10.4 ms
+  against main's 10.3–14.1 ms. A user notices a stall; a settle that ends
+  less than one frame later is invisible. Revisit when `power-of-two-thresholds`
+  re-measures `V_SLICE`.
+- **Keys behind the pointer-entry restyle (~210 ms after activation, both
+  sides)** and **the dense/710 wrap-off 8.5 ms two-slice validation**:
+  recorded toolkit costs, as attributed above.
+- **Font change and zoom on dense/120 wrap-on (9.2–13.1 ms, 9.6 ms):** the
+  display-wide `CssProvider` restyle is LushText's own choice (32 % of the zoom
+  dispatch is CSS revalidation). Recorded, with a queued follow-up to scope the
+  font provider to the editor and preview surfaces without losing the
+  `.monospace` file tree, search results and peek.
+- **Typed keys draw no frame for 1.0–1.8 s about 2 s after activation, on main
+  and the branch:** not caused by C6, but if it is real outside the lane it is a
+  severe pre-existing defect (no key echo). Queued as the **next change, top
+  priority** (`investigate-first-keys-without-frames`): reproduce outside the
+  lane's injection path, attribute with perf, fix or prove it a lane artefact.
+
 ## C2 `long-line-protected-view` (implementation record)
 
 ### Entry threshold: measured, then decided by the maintainer (2026-10-30)
