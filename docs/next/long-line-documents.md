@@ -1366,7 +1366,65 @@ review's must-fixes landed, the remaining misses are decided as follows:
   and the branch:** not caused by C6, but if it is real outside the lane it is a
   severe pre-existing defect (no key echo). Queued as the **next change, top
   priority** (`investigate-first-keys-without-frames`): reproduce outside the
-  lane's injection path, attribute with perf, fix or prove it a lane artefact.
+  lane's injection path, attribute with perf, fix or prove it a lane artefact. **Resolved by that change (2026-11-02, below).**
+
+## `investigate-first-keys-without-frames` (2026-11-02)
+
+The 1.0–1.8 s stretch without frames in `type-during-settle` was **a lane
+artefact with a real app defect behind it**. Evidence is in the change's design
+and in `.claude/handoffs/first-keys-verdict/`.
+
+- **The lane typed into nothing.** The focus click, requested at screen (426,
+  400), arrived at window (336–338, 400), inside the workspace sidebar. The
+  sidebar was shown because the lane never seeded `split-view-layout-migrated`,
+  so the app migrated the legacy `sidebar-visible` (true) over the case's
+  `workspace-sidebar-visible=false`. All 60 keys went to the status bar's sidebar
+  toggle, and none was inserted. A `WAYLAND_DEBUG` trace shows no commit
+  damaging the text after the click. The frames on either side of the stretch
+  are GtkScrolledWindow's overlay-indicator fades: a fade-in after load, then a
+  fade-out from 2 s after the last adjustment change (`INDICATOR_FADE_OUT_DELAY`,
+  polled every 500 ms). That is the fixed end at about 2.03 s. Every key over
+  33 ms in the C6 verdict was attributed to the first fade-out frame.
+- **Real defect:** a document opened from the command line, a file manager or
+  the startup session did not take keyboard focus. GTK picks the initial focus
+  at `gtk_window_show`, before any page exists, and nothing moved it to the
+  document. Typing straight after opening a document went to the status bar's
+  toggle, not late but never. This is fixed: the opened or restored document
+  takes focus unless a dialog, a transient surface or the user's own focus
+  holds it (`opened_document_takes_focus`). Widget tests failed first.
+- **Lane gates.**
+  - Editor clicks aim at an uncovered point of the snapshot's `source-view`
+    rectangle and correct the pointer by the probe's new `motion` records. A
+    requested screen point arrives up to 146 px off in window coordinates; 640
+    arrives at 640. A click fails its phase unless the probe's press record
+    names an editor.
+  - Typing phases report `delivery`, and a run whose typing reached no
+    document fails (`misdirected_typing`).
+  - The lane seeds `split-view-layout-migrated`. **Lane figures from before this
+    change were measured with the workspace sidebar shown (a 920 px editor);**
+    they are not directly comparable with later ones.
+- **Interleaved verification** (main b6330aa3 / branch / main / branch, 2
+  repetitions each, `baseline/small` in its five profiles and `dense/{120,500,710}`
+  wrap on and off, plain, this change's driver on both sides, loads 0.6–4.0 at
+  start and 0.7–1.3 at end). Results for `type-during-settle`:
+
+  | Run | Keys | Median | p95 | Max | Over 33 ms |
+  |---|---|---|---|---|---|
+  | main1 | 1,310 | 5.9 ms | 18.7 ms | 25.6 ms | 0 |
+  | branch1 | 1,310 | 6.4 ms | 16.9 ms | 25.7 ms | 0 |
+  | main2 | 1,285 | 6.6 ms | 19.3 ms | 32.9 ms | 0 |
+  | branch2 | 1,310 | 6.0 ms | 17.1 ms | 26.3 ms | 0 |
+
+  The C6 verdict runs had 28 and 23 keys over 33 ms, all at the stretch. On the
+  branch every typing phase delivered 60 of 60 keys to the editor, with 60
+  insertions. `main`'s probe records no targets, so its delivery is unverified.
+  One `main` repetition of `baseline/small/steady-populated` still had 26 keys
+  that drew nothing, 3.2–4.5 s after activation; no branch repetition had any.
+  No frameless stretch remains on either side. A last branch run on the final
+  build, which defers a restore's focus handoff until the content stage revealed
+  the content, had the same profile: 1,310 keys, median 6.5 ms, max 25.3 ms,
+  none over 33 ms, and 60 of 60 delivered and inserted in every repetition.
+
 
 ## C2 `long-line-protected-view` (implementation record)
 

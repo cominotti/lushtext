@@ -1251,7 +1251,17 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   `mutter --headless --virtual-monitor 1280x800@120` with an affinity of at most
   16 CPUs taken from the inherited mask (never widened), drives input through
   Mutter's RemoteDesktop API (click inside the text area first: keys are not
-  delivered before), disables the caret blink (under headless Mutter the blink's
+  delivered before; every editor click aims at an uncovered point of the
+  snapshot's `visual_geometry` `source-view` rectangle, corrects the pointer by
+  the probe's `motion` records (a requested screen point does not always arrive
+  at the same window point), and fails its phase unless the probe's record of
+  the press names an editor, and a phase whose text keys arrived outside an editor or inserted
+  nothing fails the lane as `misdirected_typing`: in
+  `investigate-first-keys-without-frames` a click at a fixed screen point landed
+  in the workspace sidebar and the lane measured 1–2 s "frameless" stretches of
+  a window that had nothing to draw), seeds `split-view-layout-migrated` so the
+  case's declared layout is the one rendered (without it the legacy
+  `sidebar-visible` migration showed the workspace sidebar), disables the caret blink (under headless Mutter the blink's
   frames get no presentation feedback and GTK paces them at its 60 Hz fallback,
   which would add up to 16.7 ms to every input), sets `GTK_IM_MODULE` explicitly for every variant (never
   GTK's Wayland text-input default, S7B-6), never saves (an app holding typed
