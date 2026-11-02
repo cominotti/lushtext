@@ -591,6 +591,9 @@ pub(crate) enum InstallSlice {
     Deferred,
     /// One slice was inserted; `offset` advanced.
     Inserted,
+    /// The sliced protected install broke (`FoldedInstallBroken`): nothing
+    /// more may be inserted, and the caller cancels the install.
+    Broken,
 }
 
 /// Insert the next slice of `text` (from `*offset`) at the end of `buffer`.
@@ -611,7 +614,10 @@ pub(crate) fn install_slice(
             return InstallSlice::Deferred;
         }
         let append = || buffer.end_iter();
-        *offset = install.step(&append, text, SliceBudget::BYTES_ONLY, ledger);
+        match install.step(&append, text, SliceBudget::BYTES_ONLY, ledger) {
+            Ok(end) => *offset = end,
+            Err(_) => return InstallSlice::Broken,
+        }
     } else {
         let end = next_replacement_boundary(text, *offset);
         let mut end_iter = buffer.end_iter();

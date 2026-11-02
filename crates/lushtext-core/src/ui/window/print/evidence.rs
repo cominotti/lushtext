@@ -105,7 +105,11 @@ fn document_facts(editor: &LushtextEditorPage) -> Option<PrintDocumentFacts> {
     // duplicated.
     let content = (!buffer_snapshot::char_count_requires_chunked_snapshot(char_count)).then(|| {
         buffer
-            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .text(
+                &buffer.start_iter(),
+                &crate::ui::protected_fold::document_end_iter(buffer.upcast_ref()),
+                true,
+            )
             .to_string()
     });
 

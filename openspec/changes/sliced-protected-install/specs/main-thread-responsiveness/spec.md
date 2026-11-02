@@ -86,7 +86,9 @@ Clearing a buffer that holds protected tails SHALL first delete each protected p
 - **THEN** the cancellation clear removes exactly the installed ranges and boundaries, and no partial body becomes editable, saveable, or visible as a completed load
 
 ### Requirement: Sliced protected installation preserves document bytes exactly
-Slicing SHALL only choose offsets and SHALL never transform text. After a completed sliced install, the buffer's document text, hidden text included, SHALL equal the decoded document byte for byte, for every slice budget and every placement of paragraph delimiters and multibyte characters. Saving or Save As after a sliced install SHALL write exactly the source bytes. The planner that chooses the offsets SHALL be GTK-free and Kani-proved, as the requirement "The protected install slice plan is proved over a stated domain" states.
+Slicing SHALL only choose offsets and SHALL never transform text. After a completed sliced install, the buffer's document text, hidden text included, SHALL equal the decoded document byte for byte, for every slice budget and every placement of paragraph delimiters and multibyte characters. Saving or Save As after a sliced install SHALL write exactly the source bytes. The planner that chooses the offsets SHALL be GTK-free and checked as the requirement "The protected install slice plan is proved over a stated domain" states (Kani for the parts it proves, property tests for the rest).
+
+While a load installation or a whole-buffer replacement owns an editor's buffer, no draft, close-time capture or local-history periodic capture SHALL snapshot that buffer: the buffer then holds neither the old document nor the new one. The existing draft SHALL stay unchanged until the installation or replacement reaches its terminal. A sliced protected install that can no longer place a paragraph's head where the body puts it SHALL fail closed, cancelling as incomplete, and a turn whose editor is gone while a fold plan is set SHALL end the install rather than insert hidden text unfolded.
 
 #### Scenario: Mixed delimiters and multibyte text round-trip
 - **WHEN** a synthetic protected document with CR-only, `\r\n` straddling a budget, U+2029, and multibyte characters at every byte phase is installed through the sliced path
@@ -101,6 +103,18 @@ Slicing SHALL only choose offsets and SHALL never transform text. After a comple
 - **WHEN** the user saves a protected document to a new path after a sliced install
 - **THEN** the new file's bytes equal the original file's bytes
 
+#### Scenario: A recovered folded draft is written back byte for byte
+- **WHEN** a recovered draft whose folded last paragraph has no delimiter is written by the draft autosave, which snapshots the buffer
+- **THEN** the body on disk equals the original draft byte for byte, without the stand-in terminator
+
+#### Scenario: An autosave during a replacement keeps the previous draft
+- **WHEN** an editor whose draft is behind its buffer starts a bounded whole-buffer replacement (a local-history restore) and an autosave tick runs before the replacement's terminal
+- **THEN** the persisted draft still holds the pre-replacement text, and the next pass after the terminal writes the replaced text
+
+#### Scenario: A broken sliced install fails closed
+- **WHEN** a sliced protected install finds its paragraph-start mark deleted
+- **THEN** it inserts no head after the tail and cancels as incomplete, so the partial buffer is cleared and cannot be saved or drafted
+
 ### Requirement: The protected install slice plan is proved over a stated domain
 The sliced protected install SHALL take its slices from one GTK-free, I/O-free planner, and Kani harnesses SHALL check that production planner, C1's paragraph-boundary function and C2's fold placement step directly, never a copy. Each hidden-tail slice SHALL end at the previous slice's end plus `tail_slice_bytes`, or at the tail end if that is nearer, rounded down to the nearest boundary that is a char boundary and not between `\r` and `\n`; `tail_slice_bytes` SHALL be at least 4, so every slice advances. The tail and clear slice budgets SHALL be derived from B_settle and the measured per-KiB costs by one pure, integer-only function. The harnesses SHALL apply only when the adoption gate adopted this change, and only for the adopted half.
 
@@ -110,6 +124,8 @@ The proofs hold on these domains, which the harnesses and the planner's rustdoc 
 - every `u64` input of the budget derivation.
 
 Larger sizes SHALL be covered by property tests of the same assertions, and no rustdoc or spec text SHALL claim the Kani result beyond these domains.
+
+**As implemented (2026-11-02):** Kani proves the clear plan, C2's fold of one paragraph of any `u64` length, the budget derivation's freedom from panics and its admissibility, and the `should_panic` rounding-guard harness. The whole-plan scenarios below ("The slices reproduce the exact bytes", "No boundary splits a scalar or a CRLF pair", the planner half of "Every slice fits the budget derived from B_settle", the boundary half of "Boundaries and the clear plan are placed exactly", "The tag boundary falls exactly at N_visible" and "The slice count of one giant paragraph is bounded") did not fit CBMC at any domain tried and are checked by property tests on generated inputs instead, which sample those domains rather than cover them; the derivation's fit and optimality are property-tested too. This is a recorded deferral (`docs/next/formal-verification.md`), not a proof.
 
 #### Scenario: The slices reproduce the exact bytes
 - **WHEN** Kani plans any input of the document domain

@@ -60,3 +60,15 @@
 - [x] 7.4 Update `docs/next/long-line-documents.md`: C3 adopted (or half adopted), with its evidence and its remaining deferrals. Update `docs/next/formal-verification.md`: the `core-protected-install` shard and its measured budget, K1–K11 with their stated domains and why the bounds suffice, the K9 failing-first counterexample from 3.6, any other counterexample with its triage (code, domain or envelope wrong), the proof-strength results from 3.11, and the new axioms. (Done.)
 - [x] 7.5 Run `make check`, `make test`, `make gtk-axioms`, `make kani KANI_SHARD=core-protected-install`, `make check-kani-shards`, and `openspec validate sliced-protected-install --strict`. Fix every failure, pre-existing blockers included. (Done: every gate and the accessibility, visual, visual-geometry and crash-recovery smokes pass; `make test` with 0 FLAKY.)
 - [x] 7.6 Carried from `protected-view-inspector-and-surfaces` task 5.1a: add the lane cases for Save As of a protected document (a measurement-build hook standing in for the file chooser) and a live word-wrap toggle (a runtime settings write), with driver self-tests, and measure them in this change's verdict.
+
+## 8. Review fixes (PR #77 review, 2026-11-02)
+
+- [x] 8.1 Merge `main` cdfff201; resolve and re-derive the `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY` and `WFR-BUFFER-REPLACEMENT` rows; `make check-workflow-boundaries`.
+- [x] 8.2 Draft capture ineligible while a load installation or replacement owns the buffer (`draft_capture_blocked`, the draft policy's `buffer_untrusted` term); local-history periodic capture waits on it too. Failing-first widget test `test_autosave_during_a_local_history_restore_keeps_the_previous_draft`.
+- [x] 8.3 Lane: mid-install wheels start after window composition; injections pair with probe records by mutter's event stamp; undelivered scrolls are counted and fail the lane; driver self-tests; mid-install cases rerun.
+- [x] 8.4 End-to-end byte identity of an autosaved folded draft (direct and chunked snapshots).
+- [x] 8.5 `FoldedInstallBroken` fails closed; a turn whose editor is gone while a fold plan is set aborts; the local-history preview clears in bounded, ledger-first turns.
+- [x] 8.6 Property assertions for K5's visible half and K8's `head_chars + tail_chars`; coverage wording corrected.
+- [x] 8.7 Stand-in off-by-ones (print snapshot, bookmark and restyle line counts, memory estimate, local-history availability); accessible text checked against `gtktextview.c`.
+- [x] 8.8 Font-change figure re-labelled as a LushText-owned exception tied to C6's display-wide CssProvider follow-up, with more repetitions.
+- [x] 8.9 Upstream GTK draft: standalone C reproducer, GtkSourceView 5.20.0 call sites, the line-end visibility caveat (not filed).

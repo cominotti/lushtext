@@ -49,13 +49,23 @@ pub(super) const DRAFT_MUTATION_WAIT_POLL_INTERVAL: Duration = Duration::from_mi
 
 /// Whether one tab's buffer may be written to its draft right now.
 ///
-/// The `installation_incomplete` term is a **data-safety guard**, not an
-/// optimisation. A cancelled bounded load installation empties the buffer and
-/// clears `modified` **without** clearing `draft_dirty`, so one keystroke
-/// afterwards would otherwise make a near-empty buffer look like an ordinary
-/// dirty candidate — and the pass would write it over a draft that still holds
-/// real unsaved work. Migrated `WFR-DOCUMENT-SAVE` refuses on the same flag with
-/// `EditorSaveError::IncompleteLoadInstallation`.
+/// The `buffer_untrusted` term is a **data-safety guard**, not an
+/// optimisation (`LushtextEditorPage::draft_capture_blocked`). It holds in two
+/// cases:
+///
+/// - a cancelled bounded load installation empties the buffer and clears
+///   `modified` **without** clearing `draft_dirty`, so one keystroke afterwards
+///   would otherwise make a near-empty buffer look like an ordinary dirty
+///   candidate — and the pass would write it over a draft that still holds
+///   real unsaved work. Migrated `WFR-DOCUMENT-SAVE` refuses on the same flag
+///   with `EditorSaveError::IncompleteLoadInstallation`;
+/// - a load installation or a whole-buffer replacement owns the buffer
+///   (`sliced-protected-install` review). Mid-replacement the buffer holds part
+///   of the old text, part of the new, or, for a protected body, a tail
+///   without its head (the head goes in after the tail, ledger A76), so an
+///   editor that was already draft-dirty would write that mixture over its
+///   intact draft. The draft stays as it was until the terminal, and the next
+///   pass writes the replaced text.
 ///
 /// `require_draft_dirty` is what separates the two collection passes: an autosave
 /// writes only tabs whose draft is behind the buffer, while a close writes every
@@ -65,10 +75,10 @@ pub const fn draft_candidate_is_eligible(
     modified: bool,
     draft_dirty: bool,
     evicted: bool,
-    installation_incomplete: bool,
+    buffer_untrusted: bool,
     require_draft_dirty: bool,
 ) -> bool {
-    modified && !evicted && !installation_incomplete && (draft_dirty || !require_draft_dirty)
+    modified && !evicted && !buffer_untrusted && (draft_dirty || !require_draft_dirty)
 }
 
 /// Whether a captured snapshot still describes the editor it came from.
@@ -76,7 +86,9 @@ pub const fn draft_candidate_is_eligible(
 /// Chunked capture spans main-loop turns, so identity and generation are both
 /// re-read afterwards. A mismatch is *unconfirmed*, never "close enough": the
 /// close path blocks rather than publishing stale text, and the autosave path
-/// re-arms rather than writing it.
+/// re-arms rather than writing it. `buffer_untrusted` is the same guard as
+/// [`draft_candidate_is_eligible`]'s: a replacement that began while the
+/// capture yielded makes its text unconfirmed too.
 #[must_use]
 pub(super) fn captured_snapshot_is_current(
     live_draft_id: Option<&str>,
@@ -85,13 +97,13 @@ pub(super) fn captured_snapshot_is_current(
     expected_dirty_generation: u64,
     modified: bool,
     evicted: bool,
-    installation_incomplete: bool,
+    buffer_untrusted: bool,
 ) -> bool {
     live_draft_id == Some(expected_draft_id)
         && live_dirty_generation == expected_dirty_generation
         && modified
         && !evicted
-        && !installation_incomplete
+        && !buffer_untrusted
 }
 
 /// What an autosave tick does when the lane is already owned.

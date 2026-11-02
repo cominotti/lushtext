@@ -310,7 +310,7 @@ impl LushtextWindow {
                 editor.is_modified(),
                 editor.draft_dirty(),
                 editor.is_evicted(),
-                editor.has_incomplete_load_installation(),
+                editor.draft_capture_blocked(),
                 require_draft_dirty,
             ) {
                 continue;
@@ -393,7 +393,7 @@ impl LushtextWindow {
                         candidate.dirty_generation,
                         editor.is_modified(),
                         editor.is_evicted(),
-                        editor.has_incomplete_load_installation(),
+                        editor.draft_capture_blocked(),
                     ) {
                         let mut failures = failures;
                         failures.snapshot_cancelled += 1;
@@ -649,7 +649,7 @@ impl LushtextWindow {
                         candidate.dirty_generation,
                         editor.is_modified(),
                         editor.is_evicted(),
-                        editor.has_incomplete_load_installation(),
+                        editor.draft_capture_blocked(),
                     ) {
                         window.imp().drafts.autosave_pending.set(true);
                         window.drive_dirty_draft_pipeline(candidates, accepted, failures);

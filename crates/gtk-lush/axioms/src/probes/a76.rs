@@ -48,6 +48,13 @@ pub const FLAT_RATIO: u128 = 2;
 /// The last window's median must be at least this many times the first's for
 /// the cost to count as growing.
 pub const GROWTH_RATIO: u128 = 3;
+/// Microseconds under which a per-operation cost is scheduling noise, never
+/// growth: the costs these probes separate grow into milliseconds (A36, A76,
+/// A77), while one preemption or timer interrupt on a loaded host moves a
+/// 5 us median to tens of microseconds (the A77 `tail_first` wrap-off sample
+/// once read 5 -> 24 us beside a release build, and failed a check of a cost
+/// that does not grow).
+pub const NOISE_FLOOR_US: u128 = 100;
 
 /// One slice of ASCII text.
 #[must_use]
@@ -141,18 +148,22 @@ pub fn ends(costs: &[u128]) -> (u128, u128) {
     )
 }
 
-/// Whether the per-operation cost stays flat across the run.
+/// Whether the per-operation cost stays flat across the run: the last
+/// window's median is within `FLAT_RATIO` of the first's, or below
+/// `NOISE_FLOOR_US`.
 #[must_use]
 pub fn is_flat(costs: &[u128]) -> bool {
     let (first, last) = ends(costs);
-    last <= first.max(1).saturating_mul(FLAT_RATIO)
+    last <= first.max(1).saturating_mul(FLAT_RATIO).max(NOISE_FLOOR_US)
 }
 
-/// Whether the per-operation cost grows across the run.
+/// Whether the per-operation cost grows across the run: the last window's
+/// median is at least `GROWTH_RATIO` times the first's and above
+/// `NOISE_FLOOR_US`.
 #[must_use]
 pub fn is_growing(costs: &[u128]) -> bool {
     let (first, last) = ends(costs);
-    last >= first.max(1).saturating_mul(GROWTH_RATIO)
+    last >= first.max(1).saturating_mul(GROWTH_RATIO) && last > NOISE_FLOOR_US
 }
 
 /// Probe A76.
@@ -268,4 +279,31 @@ pub fn probe_a76() -> Observation {
              range, costs a flat time per range",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(first: u128, last: u128) -> Vec<u128> {
+        let mut costs = vec![first; WINDOW];
+        costs.extend(vec![last; WINDOW]);
+        costs
+    }
+
+    #[test]
+    fn microsecond_noise_is_flat_and_not_growth() {
+        // The A77 sample that once failed beside a release build.
+        assert!(is_flat(&run(5, 24)));
+        assert!(!is_growing(&run(5, 24)));
+    }
+
+    #[test]
+    fn millisecond_growth_is_growth_and_not_flat() {
+        // A76's merged appends: 451 -> 1481 us.
+        assert!(is_growing(&run(451, 1_481)));
+        assert!(!is_flat(&run(451, 1_481)));
+        // A flat millisecond cost (A77's head-first re-layout).
+        assert!(is_flat(&run(3_101, 3_077)));
+    }
 }

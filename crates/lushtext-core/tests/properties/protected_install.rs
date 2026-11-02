@@ -5,13 +5,18 @@
 //! paragraphs of every delimiter and scalar length, C2's fold plans at small
 //! thresholds, small and production slice budgets, and multi-megabyte tails.
 //!
-//! Every whole-plan property of design D5 (K1–K6, K8, K9; Kani could not
-//! check them at any domain tried, `docs/next/formal-verification.md`) is
-//! checked on each input:
-//! progress and exact coverage, scalar and CRLF safety, homogeneity, the
-//! per-slice bounds, the boundary placement (`last_of_tail`), the head ending
-//! exactly at the fold point, the slice-count bound with `step = B − 3`, and
-//! the clear plan's coverage.
+//! The whole-plan properties of design D5 (K1–K6, K8, K9; Kani could not
+//! check them at any domain tried, `docs/next/formal-verification.md`) are
+//! checked on each input: progress and exact coverage, scalar and CRLF safety,
+//! homogeneity, the per-slice bounds (hidden slices within `tail_slice_bytes`
+//! and, but for a tail's last, at least `tail_slice_bytes − 3`; a visible slice
+//! within the budget or one whole unfolded paragraph of at most `N_visible`
+//! characters), the boundary placement (`last_of_tail`), the head ending
+//! exactly at the fold point, a fold's head and tail covering its paragraph
+//! (`head_chars + tail_chars`), the slice-count bound with `step = B − 3`, and
+//! the clear plan's coverage. Not checked here: K8's "the head holds exactly
+//! `N_visible` characters", which depends on C2's density rule, which may
+//! shorten a head (K8b proves C2's fold of a lone paragraph).
 
 use lushtext_core::model::buffer_replacement::SliceBudget;
 use lushtext_core::model::paragraph_boundary::next_paragraph_break;
@@ -43,9 +48,30 @@ fn folds(text: &str, thresholds: FoldThresholds) -> Vec<FoldRange> {
     plan_folds(&lengths, thresholds)
 }
 
-fn check(text: &str, ranges: &[FoldRange], budget: SliceBudget, limits: ProtectedInstallLimits) {
+/// Every whole-plan property on one input. `head_cap` is C2's `N_visible`
+/// for the fold plan `ranges` came from: a paragraph it did not fold has at
+/// most that many characters.
+fn check(
+    text: &str,
+    ranges: &[FoldRange],
+    budget: SliceBudget,
+    limits: ProtectedInstallLimits,
+    head_cap: u64,
+) {
     let bytes = text.as_bytes();
     let spans = spans(text);
+    // K8, the fold's half: a folded paragraph's head and tail are its whole
+    // content (`head_chars + tail_chars` = the paragraph's characters).
+    for range in ranges {
+        let (start, end) = spans[usize::try_from(range.paragraph).expect("fits")];
+        assert_eq!(
+            range.head_chars + range.tail_chars,
+            text[start..end].chars().count() as u64,
+            "a fold covers its paragraph exactly"
+        );
+    }
+    // Paragraph starts after the first, for K5's visible half.
+    let paragraph_starts: Vec<usize> = spans.iter().skip(1).map(|(start, _)| *start).collect();
     let tails: Vec<(usize, usize)> = ranges
         .iter()
         .map(|range| {
@@ -105,6 +131,32 @@ fn check(text: &str, ranges: &[FoldRange], budget: SliceBudget, limits: Protecte
                             && *tail_start >= start
                             && *tail_start < end)
                 );
+                // K5, the visible half: a visible slice fits the budget (bytes
+                // and visible characters, delimiters excluded), or it is one
+                // whole paragraph unit, which C2 left unfolded and so holds at
+                // most `N_visible` characters.
+                let visible_chars: u64 = spans
+                    .iter()
+                    .map(|(p_start, p_end)| {
+                        let (lo, hi) = ((*p_start).max(start), (*p_end).min(end));
+                        if lo < hi {
+                            text[lo..hi].chars().count() as u64
+                        } else {
+                            0
+                        }
+                    })
+                    .sum();
+                let fits = (end - start) as u64 <= budget.bytes && visible_chars <= budget.chars;
+                if !fits {
+                    assert!(
+                        !paragraph_starts.iter().any(|p| *p > start && *p < end),
+                        "an over-budget visible slice at {start}..{end} holds one paragraph"
+                    );
+                    assert!(
+                        visible_chars <= head_cap,
+                        "an over-budget visible paragraph at {start}..{end} has {visible_chars} characters, more than N_visible {head_cap}"
+                    );
+                }
             }
         }
         start = end;
@@ -179,7 +231,7 @@ proptest! {
     ) {
         let ranges = folds(&text, thresholds);
         let limits = ProtectedInstallLimits::new(tail, tail).expect("valid limits");
-        check(&text, &ranges, budget, limits);
+        check(&text, &ranges, budget, limits, thresholds.head_cap());
     }
 
     #[test]
@@ -214,7 +266,7 @@ proptest! {
         let thresholds = FoldThresholds::PRODUCTION;
         let ranges = folds(&text, thresholds);
         prop_assert!(!ranges.is_empty());
-        check(&text, &ranges, SliceBudget::BYTES_ONLY, PRODUCTION_LIMITS);
+        check(&text, &ranges, SliceBudget::BYTES_ONLY, PRODUCTION_LIMITS, thresholds.head_cap());
     }
 }
 

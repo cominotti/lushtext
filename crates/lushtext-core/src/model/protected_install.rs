@@ -29,13 +29,16 @@
 //! # Domain of the proofs
 //!
 //! Kani (`protected_install/kani_proofs.rs`, shard `core-protected-install`)
-//! proves the planner's properties on every valid UTF-8 string of at most 10
-//! bytes over `a`, `é`, `€`, `𝄞`, `\r`, `\n` and U+2029, with every fold plan
-//! C2's `fold_step` produces for `N_visible` 1..=3 and density parameters
-//! within its preconditions, a tail budget of 4..=7 bytes and a visible budget
-//! of 1..=12 bytes; and the slice-count bound on one paragraph of up to 12
-//! bytes. The property tests (`tests/properties/protected_install.rs`) check
-//! the same assertions at production budgets and multi-megabyte tails.
+//! proves only the clear plan (K7), C2's fold of one paragraph of any `u64`
+//! length (K8b), the slice-budget derivation's freedom from panics and its
+//! admissibility (K10), and, `should_panic`, that removing the rounding guard
+//! splits a scalar (K11). **The planner's whole-plan properties are not
+//! Kani-proved**: written over documents of a few bytes, they ran out of
+//! memory or time in CBMC at every domain tried
+//! (`docs/next/formal-verification.md`). They are property-tested
+//! (`tests/properties/protected_install.rs`) on generated documents of every
+//! delimiter and scalar length, at small and production budgets and with
+//! multi-megabyte tails; that file lists which properties it asserts.
 
 #![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 

@@ -772,6 +772,14 @@ fn run_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     let (editor, buffer, start, body, mut folded) = {
         let mut state = session.borrow_mut();
+        if state.folded.is_some() && state.editor.upgrade().is_none() {
+            // A protected body goes in folded only, through the editor's
+            // boundary ledger: with the editor gone, end the session rather
+            // than insert its hidden tails as plain visible text.
+            drop(state);
+            cancel_session(session, BufferReplacementCancelReason::Disposed, true);
+            return;
+        }
         let Some(body) = state.body.take() else {
             drop(state);
             cancel_session(session, BufferReplacementCancelReason::Stale, false);
@@ -797,13 +805,25 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
                 .replacement
                 .protected_install
                 .set(install.metrics());
-            end
+            end.ok()
         } else {
             let end = next_slice_boundary(&body, start, budget);
             buffer.insert(&mut buffer.end_iter(), &body[start..end]);
-            end
+            Some(end)
         }
     });
+    let Some(end) = end else {
+        // The sliced protected install broke (`FoldedInstallBroken`): cancel
+        // the session, which clears the partial buffer and hands the body back
+        // to its caller, rather than finish with a document that is not it.
+        {
+            let mut state = session.borrow_mut();
+            state.folded = folded;
+            state.body = Some(body);
+        }
+        cancel_session(session, BufferReplacementCancelReason::Stale, false);
+        return;
+    };
     let protected = folded.is_some();
     session.borrow_mut().folded = folded;
 

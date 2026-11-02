@@ -796,6 +796,22 @@ impl LushtextWindow {
         }
 
         self.add_controller(controller);
+
+        // In a text editor Ctrl+Home and Ctrl+End go to the document's start
+        // and end, and the Shift variants select to them. AdwTabView binds all
+        // four as capture-phase shortcuts (first / last tab, move the tab
+        // first / last) that run whenever the window holds two or more tabs,
+        // ahead of the text view, and the switch moves keyboard focus into
+        // the other page (adw-tab-view.c 1.9.3, `select_page_cb`,
+        // `set_selected_page`): the responsiveness lane's restored-session
+        // typing went to a widget of the first tab rather than the document.
+        // Ctrl+Page Up / Page Down and Alt+digits still switch tabs.
+        self.imp().tab_view.remove_shortcuts(
+            libadwaita::TabViewShortcuts::CONTROL_HOME
+                | libadwaita::TabViewShortcuts::CONTROL_END
+                | libadwaita::TabViewShortcuts::CONTROL_SHIFT_HOME
+                | libadwaita::TabViewShortcuts::CONTROL_SHIFT_END,
+        );
     }
 
     /// Register fullscreen/unfullscreen/toggle-fullscreen actions and wire

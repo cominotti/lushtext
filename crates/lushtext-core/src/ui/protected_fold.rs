@@ -127,6 +127,25 @@ pub(crate) fn document_end_iter(buffer: &gtk4::TextBuffer) -> gtk4::TextIter {
     end
 }
 
+/// Whether `buffer` ends with the stand-in terminator.
+fn ends_with_terminator(buffer: &gtk4::TextBuffer) -> bool {
+    document_end_iter(buffer) != buffer.end_iter()
+}
+
+/// The document's characters in `buffer`: `char_count()` less the stand-in
+/// terminator. Readers of a document size (the memory estimate, history
+/// availability) use it, so the stand-in never counts as text.
+pub(crate) fn document_char_count(buffer: &gtk4::TextBuffer) -> i32 {
+    buffer.char_count() - i32::from(ends_with_terminator(buffer))
+}
+
+/// The document's lines in `buffer`: `line_count()` less the empty line the
+/// stand-in terminator opens after the body's last paragraph. Readers of the
+/// document's line range (bookmarks, restyle bands) use it.
+pub(crate) fn document_line_count(buffer: &gtk4::TextBuffer) -> i32 {
+    buffer.line_count() - i32::from(ends_with_terminator(buffer))
+}
+
 /// Append the stand-in terminator after a body whose last paragraph is
 /// folded and has no delimiter, at `at` (the install's end).
 fn append_terminator(buffer: &gtk4::TextBuffer, at: &mut gtk4::TextIter) {
@@ -474,6 +493,12 @@ pub(crate) struct FoldedInstall {
     terminate: bool,
 }
 
+/// A sliced protected install that can no longer place its text where the
+/// body puts it (`FoldedInstall::step`): the caller cancels the install as
+/// incomplete rather than insert a document that is not the body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FoldedInstallBroken;
+
 impl Drop for FoldedInstall {
     fn drop(&mut self) {
         // A cancelled install leaves no insertion mark behind.
@@ -513,13 +538,21 @@ impl FoldedInstall {
     /// mark or the buffer end). Returns the byte offset installed so far; the
     /// body is complete when it equals `text.len()`. Runs inside the caller's
     /// own edit.
+    ///
+    /// # Errors
+    ///
+    /// [`FoldedInstallBroken`] when a sliced paragraph's head can no longer go
+    /// in where it belongs because its paragraph-start mark was deleted. The
+    /// caller cancels the install as incomplete: appending the head instead
+    /// would leave tail, delimiter, head in the buffer, a document that is
+    /// not the body.
     pub(crate) fn step(
         &mut self,
         append: &dyn Fn() -> gtk4::TextIter,
         text: &str,
         budget: SliceBudget,
         ledger: &BoundaryLedger,
-    ) -> usize {
+    ) -> Result<usize, FoldedInstallBroken> {
         let buffer = self.buffer.clone();
         let mut turn = PacedSlice::new(budget);
         loop {
@@ -532,16 +565,16 @@ impl FoldedInstall {
                 budget,
                 PRODUCTION_LIMITS,
             ) else {
-                self.insert_pending_head(append, text, ledger);
-                return text.len();
+                self.insert_pending_head(append, text, ledger)?;
+                return Ok(text.len());
             };
             match slice.kind {
                 SliceKind::Visible => {
                     if !turn.admit(run_length(&text[start..slice.end])) {
                         self.cursor = before;
-                        return start;
+                        return Ok(start);
                     }
-                    self.insert_pending_head(append, text, ledger);
+                    self.insert_pending_head(append, text, ledger)?;
                     // A sliced paragraph's delimiter is already in.
                     let skip = std::mem::take(&mut self.delimiter_inserted);
                     buffer.insert(&mut append(), &text[start + skip..slice.end]);
@@ -571,7 +604,7 @@ impl FoldedInstall {
                         };
                         if !turn.admit(folded) {
                             self.cursor = head.before;
-                            return head.start;
+                            return Ok(head.start);
                         }
                         buffer.insert(&mut append(), &text[head.start..head.end]);
                         self.insert_tail(&buffer, &mut append(), &text[start..slice.end]);
@@ -588,11 +621,11 @@ impl FoldedInstall {
                                 self.cursor = head.before;
                                 let resume = head.start;
                                 self.pending_head = None;
-                                return resume;
+                                return Ok(resume);
                             }
                             _ => {
                                 self.cursor = before;
-                                return start;
+                                return Ok(start);
                             }
                         }
                     }
@@ -614,7 +647,7 @@ impl FoldedInstall {
                             Err(resume) => {
                                 head.scan_from = resume;
                                 self.cursor = before;
-                                return start;
+                                return Ok(start);
                             }
                         };
                         // The head goes in after the tail, at this mark
@@ -647,9 +680,9 @@ impl FoldedInstall {
                     ledger.record_slice(boundary, (slice.end - start) as u64);
                     if slice.last_of_tail {
                         self.drop_tail_mark();
-                        self.insert_pending_head(append, text, ledger);
+                        self.insert_pending_head(append, text, ledger)?;
                     }
-                    return slice.end;
+                    return Ok(slice.end);
                 }
             }
         }
@@ -685,25 +718,37 @@ impl FoldedInstall {
     /// toggle (A76), so it stays visible and the tail stays hidden; or, for a
     /// head whose tail has no slice at all (a plan the text does not match),
     /// where the install appends, which is still that paragraph's end.
+    ///
+    /// Fails closed when the paragraph-start mark was deleted (nothing in
+    /// LushText deletes it while the install runs, so this is a defect, which
+    /// `debug_assert!` reports in debug builds): the head is not inserted.
     fn insert_pending_head(
         &mut self,
         append: &dyn Fn() -> gtk4::TextIter,
         text: &str,
         ledger: &BoundaryLedger,
-    ) {
+    ) -> Result<(), FoldedInstallBroken> {
         let Some(head) = self.pending_head.take() else {
-            return;
+            return Ok(());
         };
         if head.end == head.start {
-            return;
+            return Ok(());
         }
         let mut at = match head.mark {
-            Some(mark) if !mark.is_deleted() => {
+            Some(mark) if mark.is_deleted() => {
+                debug_assert!(
+                    false,
+                    "a sliced protected paragraph lost its paragraph-start mark"
+                );
+                return Err(FoldedInstallBroken);
+            }
+            Some(mark) => {
                 ledger.record_head((head.end - head.start) as u64);
                 self.buffer.iter_at_mark(&mark)
             }
-            _ => append(),
+            None => append(),
         };
         self.buffer.insert(&mut at, &text[head.start..head.end]);
+        Ok(())
     }
 }

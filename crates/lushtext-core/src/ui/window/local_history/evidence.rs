@@ -44,6 +44,16 @@ pub struct LocalHistoryPreviewInstallEvidence {
     pub slices: usize,
     /// Sliced installations cancelled by supersession or disposal.
     pub cancellations: usize,
+    /// Bounded clear turns that emptied a large preview buffer
+    /// (`sliced-protected-install` review: the clear was one `set_text("")`).
+    pub clear_turns: usize,
+    /// The most characters one clear turn deleted (a boundary-ledger turn
+    /// counts its bytes, which bound its characters).
+    pub largest_clear_turn: usize,
+    /// The longest clear turn, in microseconds.
+    pub longest_clear_turn_us: usize,
+    /// Installs that failed closed (`FoldedInstallBroken`).
+    pub broken_installs: usize,
 }
 
 /// Read the process-local preview installation counters.
@@ -54,6 +64,12 @@ pub fn local_history_preview_install_evidence() -> LocalHistoryPreviewInstallEvi
         slices: super::preview_execution::PREVIEW_INSTALL_SLICES.load(Ordering::Acquire),
         cancellations: super::preview_execution::PREVIEW_INSTALL_CANCELLATIONS
             .load(Ordering::Acquire),
+        clear_turns: super::preview_execution::PREVIEW_CLEAR_TURNS.load(Ordering::Acquire),
+        largest_clear_turn: super::preview_execution::PREVIEW_LARGEST_CLEAR_TURN
+            .load(Ordering::Acquire),
+        longest_clear_turn_us: super::preview_execution::PREVIEW_LONGEST_CLEAR_TURN_US
+            .load(Ordering::Acquire),
+        broken_installs: super::preview_execution::PREVIEW_BROKEN_INSTALLS.load(Ordering::Acquire),
     }
 }
 

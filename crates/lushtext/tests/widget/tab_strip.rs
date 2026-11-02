@@ -356,3 +356,32 @@ fn test_bulk_close_spends_every_authorization_it_deposits() {
         "the projection-refresh batch must have been released"
     );
 }
+
+/// Ctrl+Home / Ctrl+End belong to the document (start / end, and with Shift
+/// the selection to them), never to the tab view: AdwTabView's capture-phase
+/// versions switched to the first tab and moved keyboard focus into it while
+/// the user meant the start of the document (found by the responsiveness
+/// lane's restored-session typing). Ctrl+Page Up / Page Down still switch tabs.
+#[test]
+fn test_ctrl_home_and_end_are_left_to_the_document() {
+    use libadwaita::TabViewShortcuts;
+    ensure_gtk_init();
+    let window = crate::common::test_window();
+    let shortcuts = window.imp().tab_view.shortcuts();
+    for (name, flag) in [
+        ("Ctrl+Home", TabViewShortcuts::CONTROL_HOME),
+        ("Ctrl+End", TabViewShortcuts::CONTROL_END),
+        ("Ctrl+Shift+Home", TabViewShortcuts::CONTROL_SHIFT_HOME),
+        ("Ctrl+Shift+End", TabViewShortcuts::CONTROL_SHIFT_END),
+    ] {
+        assert!(!shortcuts.contains(flag), "{name} must reach the editor");
+    }
+    for (name, flag) in [
+        ("Ctrl+Page Up", TabViewShortcuts::CONTROL_PAGE_UP),
+        ("Ctrl+Page Down", TabViewShortcuts::CONTROL_PAGE_DOWN),
+        ("Alt+1..9", TabViewShortcuts::ALT_DIGITS),
+    ] {
+        assert!(shortcuts.contains(flag), "{name} still switches tabs");
+    }
+    window.close();
+}

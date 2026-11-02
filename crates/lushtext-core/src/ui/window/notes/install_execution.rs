@@ -244,6 +244,17 @@ impl InstallSession {
             let elapsed = u64::try_from(ended_us.saturating_sub(started_us)).unwrap_or(0);
             NOTE_BODY_LARGEST_SLICE_US.fetch_max(elapsed, Ordering::AcqRel);
         }
+        if step == InstallSlice::Broken {
+            // Fail closed: a folded note's text is its source
+            // (`snapshot_text`), never this buffer, so the note stays whole;
+            // the partial buffer is emptied rather than shown as the note.
+            let text = Arc::clone(&self.text);
+            body.view.buffer().set_text("");
+            self.boundaries.forget(&body.view.buffer());
+            drop(self);
+            body.finish_install(&text);
+            return;
+        }
         if self.offset >= self.text.len() {
             let text = Arc::clone(&self.text);
             drop(self);

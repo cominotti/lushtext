@@ -2018,13 +2018,28 @@ workstation in any domain tried (runs `kani-3` … `kani-7` in
 | documents ≤ 4 bytes, unwind 6 | any well-formed plan | K1 fails its unwinding assertion (more slices than the bound), 389 s |
 | giant paragraph ≤ 6 bytes, unwind 10 | its fold built directly | K8 out of memory (16 GiB), 635 s |
 
-Every one of these properties is asserted on every input of the property tests
-instead (`tests/properties/protected_install.rs`: many paragraphs of every
-delimiter and scalar length, C2's fold plans at small thresholds, small and
-production budgets, and multi-megabyte tails), and by the widget tests'
-byte-identity check over every fixture shape. Deferred (inventory below): one-step
-harnesses over a symbolic cursor, which the per-slice properties' locality
-(design D5) makes sufficient.
+These properties are **tested, not proved**: the property tests
+(`tests/properties/protected_install.rs`: many paragraphs of every delimiter
+and scalar length, C2's fold plans at small thresholds, small and production
+budgets, and multi-megabyte tails) assert them on generated inputs, which
+samples the domain and covers none of it exhaustively. What they assert, per
+property: K1 progress and termination; K2 exact bytes; K3 no slice end inside
+a scalar or a CRLF; K4 homogeneity and `last_of_tail`; K5 both halves (a hidden
+slice within `tail_slice_bytes` and, but for a tail's last, at least
+`tail_slice_bytes − 3`; a visible slice within the byte and character budget,
+or one whole unfolded paragraph of at most `N_visible` characters — this
+visible half was added after review, 2026-11-02); K6 consecutive tail slices;
+K8 the head ending exactly at the fold point and every tail byte hidden, plus
+`head_chars + tail_chars` equal to the paragraph's characters (also added after
+review); K9 the slice count with `step = B − 3`. Not asserted by them: K8's
+"the head holds exactly `N_visible` characters", because C2's density rule may
+shorten a head on a dense document; K8b proves C2's fold of a lone paragraph,
+where that rule does not bind. The widget tests' byte-identity checks cover the
+executor over every fixture shape. An earlier version of this paragraph said
+every property was asserted on every input; it overstated the coverage, which
+the review of PR #77 caught. Deferred (inventory below): one-step harnesses over
+a symbolic cursor, which the per-slice properties' locality (design D5) would
+make sufficient.
 
 **K9's bound, failing first (task 3.6).** The naive `⌈len / B⌉ + 1` cannot hold
 for any planner that keeps slices within `B` and on scalar boundaries: a tail

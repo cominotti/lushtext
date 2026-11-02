@@ -1608,6 +1608,60 @@ fn test_an_undelimited_folded_last_paragraph_is_never_the_last_line_sliced() {
     assert_terminated_recovery("sliced", 1_000_000);
 }
 
+/// The stand-in terminator never reaches the bytes on disk (review of PR #77:
+/// the test helper `editor_text` re-implements `document_end_iter`, so it
+/// cannot catch a leak). A recovered undelimited folded draft is written back
+/// by the draft autosave, which snapshots the buffer (drafts have no protected
+/// source path), and the body on disk must be the original bytes, with no
+/// trailing `\n`. `giant` picks the snapshot: below 2.5M characters a direct
+/// read, above it the chunked capture.
+fn assert_autosaved_draft_is_byte_identical(name: &str, giant: usize) {
+    use lushtext_core::services::{draft_service, json_store};
+    let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(giant));
+    let (window, editor, path, _dir) = recover_draft(&draft);
+    assert!(editor.is_protected_view(), "{name}: protected");
+    let buffer = editor.buffer();
+    assert_eq!(
+        usize::try_from(buffer.char_count()).expect("fits"),
+        draft.chars().count() + 1,
+        "{name}: the buffer holds the stand-in"
+    );
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&path);
+    // Overwrite the recovered body, so only a real write can restore it.
+    draft_service::fixture::write_body(&data_dir, &draft_id, "stale").expect("stale body");
+    editor.set_draft_dirty(true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(60), || {
+        let evidence = window.draft_evidence();
+        !evidence.autosave_inflight
+            && !evidence.mutation_inflight
+            && !editor.draft_dirty()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read body")
+                .as_deref()
+                != Some("stale")
+    });
+    let written = draft_service::read_draft(&data_dir, &draft_id)
+        .expect("read body")
+        .expect("a body");
+    assert_eq!(written.len(), draft.len(), "{name}: same length on disk");
+    assert!(
+        written.as_bytes() == draft.as_bytes(),
+        "{name}: the same bytes on disk"
+    );
+}
+
+#[test]
+fn test_an_autosaved_folded_draft_is_byte_identical_direct_snapshot() {
+    assert_autosaved_draft_is_byte_identical("direct", 1_000_000);
+}
+
+#[test]
+fn test_an_autosaved_folded_draft_is_byte_identical_chunked_snapshot() {
+    assert_autosaved_draft_is_byte_identical("chunked", 3_000_000);
+}
+
 #[test]
 fn test_recovering_a_protected_draft_inserts_its_tail_in_bounded_slices() {
     let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(3_000_000));

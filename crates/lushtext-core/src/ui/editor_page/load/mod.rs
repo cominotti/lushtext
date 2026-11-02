@@ -316,4 +316,19 @@ impl LushtextEditorPage {
     pub fn has_incomplete_load_installation(&self) -> bool {
         self.imp().load.installation_incomplete.get()
     }
+
+    /// Whether the buffer may not be captured as the document's text right
+    /// now: an interrupted installation left it partial
+    /// ([`Self::has_incomplete_load_installation`]), or a load installation or
+    /// whole-buffer replacement owns it, mid-way between the old text and the
+    /// new (`sliced-protected-install` review). Draft capture and local-history
+    /// periodic capture refuse while it holds and keep what they last wrote.
+    ///
+    /// Not the edit lock: a save holds that while the buffer is whole.
+    #[must_use]
+    pub fn draft_capture_blocked(&self) -> bool {
+        self.has_incomplete_load_installation()
+            || self.load_projection_suspended()
+            || self.buffer_replacement_in_progress()
+    }
 }

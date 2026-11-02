@@ -216,7 +216,9 @@ impl LushtextEditorPage {
     pub(crate) fn live_local_history_availability(
         &self,
     ) -> local_history_service::LocalHistoryAvailability {
-        self.live_local_history_availability_for_chars(self.buffer().char_count())
+        self.live_local_history_availability_for_chars(
+            crate::ui::protected_fold::document_char_count(self.buffer().upcast_ref()),
+        )
     }
 
     /// Classify live local-history admission from an already-read character count.
@@ -583,9 +585,13 @@ impl LushtextEditorPage {
         }
 
         let buffer = self.buffer();
-        if !self
-            .live_local_history_availability()
-            .allows_automatic_capture()
+        // A load installation or whole-buffer replacement owns the buffer, which
+        // holds neither the old text nor the new: capture it on the next tick
+        // instead (the same guard draft capture uses).
+        if self.draft_capture_blocked()
+            || !self
+                .live_local_history_availability()
+                .allows_automatic_capture()
         {
             self.schedule_local_history_periodic_capture();
             return;

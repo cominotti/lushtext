@@ -286,6 +286,14 @@ fn run_existing_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
 fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     let (editor, buffer, mark, start, loaded, mut folded) = {
         let mut state = session.borrow_mut();
+        if state.folded.is_some() && state.editor.upgrade().is_none() {
+            // A protected body is only ever inserted folded, which needs the
+            // editor's boundary ledger: with the editor gone, abort rather
+            // than insert its hidden tails as plain visible text.
+            drop(state);
+            retirement::abort_installation(session, AbortDisposition::Dispose);
+            return;
+        }
         let Some(mark) = state.end_mark.clone() else {
             drop(state);
             retirement::abort_installation(session, AbortDisposition::Cancel);
@@ -321,15 +329,27 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
                     &editor.imp().protected_boundaries,
                 );
                 evidence::record_protected_install(editor, install.metrics());
-                end
+                end.ok()
             } else {
                 let end = next_slice_boundary(&loaded.content, start, budget);
                 buffer.insert(&mut buffer.iter_at_mark(&mark), &loaded.content[start..end]);
-                end
+                Some(end)
             }
         })
     };
 
+    let Some(end) = end else {
+        // The sliced protected install broke (`FoldedInstallBroken`): cancel
+        // it as incomplete, so the partial buffer is cleared and nothing that
+        // is not the file can be saved or drafted.
+        {
+            let mut state = session.borrow_mut();
+            state.loaded = Some(loaded);
+            state.folded = folded;
+        }
+        retirement::abort_installation(session, AbortDisposition::Cancel);
+        return;
+    };
     let reached_end = {
         let mut state = session.borrow_mut();
         if state.terminal || state.phase != LoadInstallPhase::Installing {
