@@ -1033,7 +1033,8 @@ removes them by making such documents view-only.
 
 ## C6 `bound-post-open-settle` (implementation record)
 
-**Status:** implementing on branch `bound-post-open-settle`, from `main`
+**Status:** in review (PR from branch `bound-post-open-settle`, with C2 and C5
+merged from `main` `7f50d232`); implemented from `main`
 `0439d4c4`, on which C1 (`document-scale-policy`) is merged and archived
 (task 1.1: no C1 edits go to C1's branch; D4's derived `S_SYNTAX` and D6's
 boundary are made here).
@@ -1102,6 +1103,77 @@ run failed already at 4,096 bytes, which every other run of either language
 passed with every key under 6 ms, so that run (load 27 falling to 8) is
 recorded as disturbed rather than used (coordinator, 2026-10-31). Taking it literally would have turned JSON highlighting off at
 every size.
+
+### Verdict (2026-11-01)
+
+Interleaved, `c6-baseline` against the branch at `d461e328`, release
+`responsiveness-probes` builds, 4 + 3 repetitions per side, plain variant,
+under the load there was (1-minute load 0.9–2.7 before and after each run;
+`.claude/handoffs/c6-verdict/runs.log`). The first full round (22 cases,
+`nverdict`) found the misses below; the affected rows (the five
+`baseline/small` profiles and `dense/*`) were rerun after the fixes and both
+merges (`rverdict`).
+
+| Case | Worst background dispatch, median (base / branch, us) | Slowest key, median (base / branch, us) | Activation to settled, median (base / branch, ms) |
+|---|---|---|---|
+| baseline/small | 9912 / 6960 | 1601 / 1665 | 176 / 171 |
+| baseline/small/fresh-dconf | 9737 / 7317 | 8039 / 1515 | 177 / 169 |
+| baseline/small/steady-dconf | 9760 / 7657 | 6826 / 5087 | 174 / 172 |
+| baseline/small/steady-keyfile | 9782 / 7094 | 5323 / 4504 | 175 / 171 |
+| baseline/small/steady-populated | 10244 / 7758 | 2261 / 7392 | 176 / 174 |
+| dense/120/wrap-off | 10110 / 6989 | 5092 / 9939 | 143 / 129 |
+| dense/120/wrap-on | 9874 / 7287 | 6192 / 1782 | 147 / 140 |
+| dense/500/wrap-off | 14914 / 7183 | 6280 / 1920 | 162 / 162 |
+| dense/500/wrap-on | 10290 / 9269 | 2314 / 2237 | 176 / 185 |
+| dense/710/wrap-off | 21520 / 8822 | 6084 / 1831 | 175 / 170 |
+| dense/710/wrap-on | 14112 / 9459 | 3020 / 1667 | 197 / 201 |
+
+| Case and restyle | Worst dispatch, median (base / branch, us) |
+|---|---|
+| dense/120/wrap-off font-change | 7783 / 8088 |
+| dense/120/wrap-off wrap-toggle | 5012 / 6695 |
+| dense/120/wrap-off zoom-step | 0 / 0 |
+| dense/120/wrap-on font-change | 7929 / 8280 |
+| dense/120/wrap-on wrap-toggle | 6470 / 6524 |
+| dense/120/wrap-on zoom-step | 0 / 13437 |
+| dense/500/wrap-off font-change | 11476 / 8467 |
+| dense/500/wrap-off wrap-toggle | 7225 / 7008 |
+| dense/500/wrap-off zoom-step | 0 / 0 |
+| dense/500/wrap-on font-change | 9419 / 10381 |
+| dense/500/wrap-on wrap-toggle | 5692 / 6908 |
+| dense/500/wrap-on zoom-step | 0 / 0 |
+| dense/710/wrap-off font-change | 10305 / 8220 |
+| dense/710/wrap-off wrap-toggle | 6669 / 6507 |
+| dense/710/wrap-off zoom-step | 15813 / 0 |
+| dense/710/wrap-on font-change | 10203 / 11692 |
+| dense/710/wrap-on wrap-toggle | 8654 / 5373 |
+| dense/710/wrap-on zoom-step | 0 / 0 |
+
+**Not met as written.** What remains over budget on the branch, each
+attributed with `perf` from the lane:
+
+- **Keys while settling** (9 of 77 branch rows, 8.6–14.8 ms; the baseline
+  has more): each key waited behind one dispatch 200–300 ms after open, a
+  whole-tree CSS revalidation in the frame after the first key presses
+  (`gtk_css_node_validate` from `gdk_frame_clock_paint_idle`, after
+  `gdk_surface_handle_event`). GTK's restyle, on both sides; not LushText work.
+- **Zoom step** (4 rows, 13–16 ms; the baseline has them too): GTK's style and
+  font change (CSS revalidation, fontconfig and FreeType load, the visible
+  lines' re-layout). A toolkit floor.
+- **Font change** (1 row, 11.5 ms) and the lane's wrap and font triggers in
+  general: GIO's keyfile-backend monitor dispatch, which the lane's external
+  keyfile write causes before LushText's restyle runs.
+- **Activation to settled** is later in 12 cases of the first round: the
+  accepted cost of the deferred attach (maintainer decision 2026-11-01).
+- **The language attach** (31 ms) is the A67 toolkit-floor exception.
+
+The 11 MiB dense document (release widget harness, 2 interleaved repetitions,
+load 1.0–3.1): main installs in 1.92–1.95 s (open) and 2.39 s (restore), and
+is fully laid out at 4.56–4.60 s and 4.41 s, with worst dispatches of
+45–54 ms and 36–39 ms. The branch installs and is laid out at 3.87 s (open)
+and 3.52 s (restore), with worst dispatches of 10.9–11.0 ms (open) and
+32–35 ms (restore: the local-history dialog's close animation in the cairo
+renderer, on both sides).
 
 ## C2 `long-line-protected-view` (implementation record)
 

@@ -118,7 +118,7 @@
 ## 10. Verdict
 
 - [ ] 10.1 Build `c6-baseline`'s (task 1.3) and the branch's release `responsiveness-probes` binaries (`flock -s INTENT true && flock -s LOCK`).
-- [ ] 10.2 Run the interleaved verdict of design D8 (`flock -x INTENT flock -x LOCK`, quiet gate, one run per lock hold, sampler, `btrfs-stall-report`), 7 repetitions per side.
+- [x] 10.2 Run the interleaved verdict of design D8 (`flock -x INTENT flock -x LOCK`, quiet gate, one run per lock hold, sampler, `btrfs-stall-report`), 7 repetitions per side.
 - [ ] 10.3 Record the verdict in `docs/next/long-line-documents.md` (C6 section and sequence row): per stage and case, `main` → branch, run ids, load, storage, toolkit, and any maintainer-accepted residual.
 
 ## 11. Docs and gates
