@@ -1507,6 +1507,86 @@ fn test_initial_focus_matches_a_composed_window() {
     }
 }
 
+/// Whether the window's keyboard focus is the selected editor's text view.
+fn selected_editor_has_focus(window: &LushtextWindow) -> bool {
+    let Some(editor) = window.imp().tab_view.selected_page().and_then(|page| {
+        page.child()
+            .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+            .ok()
+    }) else {
+        return false;
+    };
+    gtk4::prelude::GtkWindowExt::focus(window)
+        .is_some_and(|focus| &focus == editor.source_view().upcast_ref::<gtk4::Widget>())
+}
+
+/// A document opened from the command line or a file manager takes the
+/// keyboard: its first typed characters go into the document
+/// (`investigate-first-keys-without-frames`). GTK picks a window's initial
+/// focus when it maps, before any activation page exists, so without the
+/// handoff the keys went to the status bar's sidebar toggle, and typing after
+/// opening a document showed nothing. Staged and collapsed composition agree.
+#[test]
+fn test_an_activation_open_gives_the_opened_editor_keyboard_focus() {
+    let dir = tempfile::tempdir().expect("activation tempdir");
+    let path = dir.path().join("typed-after-open.txt");
+    fixture::write_text(&path, "type here\n");
+    for collapsed in [true, false] {
+        seed_layout(true, false, 1600, 900);
+        let app = app();
+        set_composition_collapsed_for_test(collapsed);
+        app.open(&[gio::File::for_path(&path)], "");
+        flush_events();
+        set_composition_collapsed_for_test(false);
+        let window = lushtext_windows(&app).pop().expect("a window");
+        wait_composed(&window);
+        wait_until(COMPOSED, || window.imp().tab_view.n_pages() == 1);
+        let focused = crate::common::wait_until_or_false(Duration::from_secs(2), || {
+            selected_editor_has_focus(&window)
+        });
+        let region = focus_region(&window);
+        window.destroy();
+        flush_events();
+        assert!(
+            focused,
+            "the opened document's editor has keyboard focus (collapsed {collapsed}); focus is {region}"
+        );
+    }
+}
+
+/// A window that restores its session at startup gives the selected document
+/// the keyboard too: the restored tabs open after GTK chose the initial focus.
+#[test]
+fn test_a_restored_session_gives_the_selected_editor_keyboard_focus() {
+    let dir = tempfile::tempdir().expect("session tempdir");
+    let path = dir.path().join("restored-typing.txt");
+    fixture::write_text(&path, "restored\n");
+    let data_dir = lushtext_core::services::json_store::data_dir();
+    lushtext_core::services::session_service::save(&data_dir, &session_with(&path))
+        .expect("seed the session");
+    seed_layout(true, false, 1600, 900);
+    let app = app();
+    app.activate();
+    flush_events();
+    let window = lushtext_windows(&app).pop().expect("a window");
+    wait_composed(&window);
+    wait_until(COMPOSED, || {
+        window.imp().tab_view.n_pages() == 1 && !window.session_restore_evidence().restoring
+    });
+    let focused = crate::common::wait_until_or_false(Duration::from_secs(2), || {
+        selected_editor_has_focus(&window)
+    });
+    let region = focus_region(&window);
+    window.destroy();
+    flush_events();
+    lushtext_core::services::session_service::save(&data_dir, &SessionData::default())
+        .expect("reset the session");
+    assert!(
+        focused,
+        "the restored document's editor has keyboard focus; focus is {region}"
+    );
+}
+
 // --- The evidence surface's driven proofs ----------------------------------
 
 /// Proof 1 of 3 — reading must not mutate, across every operation that takes

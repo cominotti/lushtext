@@ -260,7 +260,13 @@ affordance) are absent until their revealer opens. Accessible metadata is set
 when the window is constructed, so nothing changes about a surface's name,
 role or description when it appears. A keyboard path that needs a staged
 surface (`F9`, the sidebar toggle, editor focus) reveals it first, so no key
-press is lost during composition. `make accessibility-smoke` waits on
+press is lost during composition. A document opened from the command line, a file
+manager or the restored session takes keyboard focus when it opens: GTK gives
+a window its initial focus when it is shown, before any document page exists,
+and that pick (the status bar's sidebar toggle) used to keep the keyboard, so
+the first characters typed after opening a document went nowhere. The handoff
+never takes focus from a dialog, an open transient surface, or a widget the
+user moved focus to (`investigate-first-keys-without-frames`). `make accessibility-smoke` waits on
 `accessibility-settled`, which includes the `window-composition` blocker.
 
 ## Visual Accessibility

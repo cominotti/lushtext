@@ -95,6 +95,9 @@ struct CompositionRuntime {
     /// Work that waits until the queued activation opens have run: the
     /// session restore, so a CLI tab keeps its place and selection (D5).
     after_activation: Vec<AfterActivation>,
+    /// Work that waits until the content stage revealed the content stack:
+    /// the opened document's keyboard handoff, which must not force it.
+    after_content: Vec<AfterActivation>,
     /// The stage a test policy holds composition before, if any.
     hold_before: Option<CompositionStage>,
     /// How long the `composition-hold` build holds after the first frame.
@@ -443,6 +446,23 @@ impl LushtextWindow {
         }
     }
 
+    /// Run `work` once the content stage revealed the content stack, or now
+    /// when it is shown; it never forces the stage (design D5 of
+    /// `first-frame-window-shell`: reads and projections force nothing).
+    pub(in crate::ui::window) fn after_content_revealed(
+        &self,
+        work: impl FnOnce(&LushtextWindow) + 'static,
+    ) {
+        if !self.imp().content_stack.is_visible() {
+            let mut runtime = self.imp().composition.runtime.borrow_mut();
+            if !runtime.torn_down {
+                runtime.after_content.push(Box::new(work));
+            }
+            return;
+        }
+        work(self);
+    }
+
     /// Leave composition when the window leaves its application (ledger A21):
     /// remove every source and handler, so no stage runs afterwards.
     pub(in crate::ui::window) fn tear_down_composition(&self) {
@@ -454,6 +474,7 @@ impl LushtextWindow {
             runtime.torn_down = true;
             runtime.activation.clear();
             runtime.after_activation.clear();
+            runtime.after_content.clear();
             (
                 runtime.dispatch.take(),
                 runtime.activation_turn.take(),
@@ -684,6 +705,11 @@ impl LushtextWindow {
                 // the editor's background opacity needs it transparent.
                 imp.content_box.remove_css_class("shell-chrome-opaque");
                 imp.content_stack.set_visible(true);
+                let deferred =
+                    std::mem::take(&mut imp.composition.runtime.borrow_mut().after_content);
+                for work in deferred {
+                    work(self);
+                }
                 self.queue_activation_turn();
             }
             CompositionStage::Workspace => imp.sidebar.set_visible(true),
@@ -811,8 +837,11 @@ impl LushtextWindow {
             work(self);
         }
         if !files.is_empty() {
-            // Raise the window once its activation finished, as the
-            // pre-composition `open` handler did after opening its files.
+            // The opened document takes the keyboard from GTK's initial focus
+            // (`investigate-first-keys-without-frames`), then the window is
+            // raised once its activation finished, as the pre-composition
+            // `open` handler did after opening its files.
+            self.hand_focus_to_opened_document();
             self.present();
         }
     }

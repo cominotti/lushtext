@@ -13,6 +13,21 @@
 //! | `recent_open.rs`, on recent-row activation | `WFR-RECENT-DOCUMENTS` |
 //! | `recent_open.rs`, on keyboard dismissal | `WFR-RECENT-DOCUMENTS` |
 //!
+//! `hand_focus_to_opened_document` has **two** owning workflows, for the same
+//! reason (`investigate-first-keys-without-frames`):
+//!
+//! | Caller | Owning workflow |
+//! | --- | --- |
+//! | `composition/execution.rs`, after an activation's last open turn | `WFR-WINDOW-COMPOSITION` |
+//! | `session_restore/admission.rs`, at the restore's terminal | `WFR-SESSION-RESTORE` |
+//!
+//! GTK gives a window its initial focus when it is shown (`gtk_window_show`
+//! moves focus forward from nothing), before any document page exists: the
+//! first focusable widget is the status bar's sidebar toggle. Without a
+//! handoff, a document opened from the command line, a file manager, or the
+//! session left the keyboard on that toggle, and the first characters typed
+//! after opening it went nowhere.
+//!
 //! It is the same disposition `.agents/rules/workflow-convention.md` gives
 //! cross-cutting pure policy: it stays in a shared location and the matrix
 //! names the workflows that share it. Moving it beside any one of them would
@@ -43,7 +58,90 @@ pub(super) const EDITOR_FOCUS_RETRY_INTERVAL: Duration = Duration::from_millis(3
 /// GTK's normal focus model. Six attempts covers roughly 180ms of settling.
 pub(super) const EDITOR_FOCUS_MAX_ATTEMPTS: u8 = 6;
 
+/// Where the window's keyboard focus sits when an open selects a document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OpenedDocumentFocus {
+    /// No widget has focus.
+    Unset,
+    /// The window chrome: the header bar, the tab strip, or the status bar,
+    /// where GTK's initial focus lands.
+    Chrome,
+    /// Anywhere the user can have put it: an editor, the workspace sidebar,
+    /// the properties panel, a search or palette entry.
+    Elsewhere,
+}
+
+/// Whether an open that selected a document hands the keyboard to its editor:
+/// only while the focus is unset or on the chrome, and no dialog or transient
+/// surface is up, so it never takes the keyboard from something the user is
+/// working in.
+pub(super) const fn opened_document_takes_focus(
+    focus: OpenedDocumentFocus,
+    dialog_visible: bool,
+    transient_surface_open: bool,
+) -> bool {
+    !dialog_visible
+        && !transient_surface_open
+        && matches!(
+            focus,
+            OpenedDocumentFocus::Unset | OpenedDocumentFocus::Chrome
+        )
+}
+
 impl LushtextWindow {
+    /// Give the keyboard to the selected document's editor after an activation
+    /// or session restore opened it, when `opened_document_takes_focus` allows.
+    /// The editor is focused in this dispatch when it can take focus, so a key
+    /// already queued behind it lands in the document; otherwise the retrying
+    /// handoff finishes the job.
+    /// While the content stage has not revealed the content yet (a restore
+    /// that finished first), the handoff waits for it instead of forcing it.
+    pub(super) fn hand_focus_to_opened_document(&self) {
+        self.after_content_revealed(Self::hand_focus_to_selected_document_now);
+    }
+
+    fn hand_focus_to_selected_document_now(&self) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        let decision = opened_document_takes_focus(
+            self.opened_document_focus(),
+            libadwaita::prelude::AdwApplicationWindowExt::visible_dialog(self).is_some(),
+            self.transient_surface_open(),
+        );
+        if !decision {
+            return;
+        }
+        // The content is revealed by now (`after_content_revealed`), so this
+        // forces nothing; it keeps rule 11's contract for staged focus.
+        self.ensure_composed(StagedSurface::Content);
+        let source_view = editor.source_view();
+        if !source_view.grab_focus() {
+            self.focus_selected_editor_after_action();
+        }
+    }
+
+    /// Classify the window's focus widget for `opened_document_takes_focus`.
+    fn opened_document_focus(&self) -> OpenedDocumentFocus {
+        let Some(focus) = gtk4::prelude::GtkWindowExt::focus(self) else {
+            return OpenedDocumentFocus::Unset;
+        };
+        let imp = self.imp();
+        let chrome: [&gtk4::Widget; 3] = [
+            imp.header_bar.upcast_ref(),
+            imp.tab_bar.upcast_ref(),
+            imp.status_bar.upcast_ref(),
+        ];
+        if chrome
+            .iter()
+            .any(|region| focus == **region || focus.is_ancestor(*region))
+        {
+            OpenedDocumentFocus::Chrome
+        } else {
+            OpenedDocumentFocus::Elsewhere
+        }
+    }
+
     /// Move keyboard focus to the editor selected when a shell action runs.
     ///
     /// Command-palette activation restores its saved focus after running the
