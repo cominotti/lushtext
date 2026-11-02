@@ -650,6 +650,16 @@ notes.
 
 ### Budget verdict (idle, 2026-10-29)
 
+> **Measured with the workspace sidebar shown** (annotated 2026-11-02 by
+> `investigate-first-keys-without-frames`). The lane did not yet seed
+> `split-view-layout-migrated`, so every launch ran the one-shot migration of
+> the legacy `sidebar-visible` (default true): the workspace sidebar was shown
+> in every profile that asked to hide it (a 920 px editor), and the migration
+> hid the document-properties surface, so the populated profile showed the
+> sidebar alone. Since that change the populated profile shows both panes as
+> asked, which at the lane's 1280 px puts the properties panel in the bottom
+> sheet. These figures are not directly comparable with later runs.
+
 **Met: every dispatch from `open` until composition complete is within
 B_settle, in every profile and repetition. Open: the content fill-in is above
 the accepted 40 ms (maintainer decision below).**
@@ -785,6 +795,16 @@ reference precondition): first painted frame 46.7 → 31.4 ms from the request,
 composition complete 82.1 → 52.9 ms, honest fill-in 36.1 → 21.6 ms.
 
 ### Verdict (2026-10-29): met
+
+> **Measured with the workspace sidebar shown** (annotated 2026-11-02 by
+> `investigate-first-keys-without-frames`). The lane did not yet seed
+> `split-view-layout-migrated`, so every launch ran the one-shot migration of
+> the legacy `sidebar-visible` (default true): the workspace sidebar was shown
+> in every profile that asked to hide it (a 920 px editor), and the migration
+> hid the document-properties surface, so the populated profile showed the
+> sidebar alone. Since that change the populated profile shows both panes as
+> asked, which at the lane's 1280 px puts the properties panel in the bottom
+> sheet. These figures are not directly comparable with later runs.
 
 **Met, on the interleaved set:** every dispatch until the later of
 composition complete and activation shown is within B_settle in every profile
@@ -1106,6 +1126,16 @@ every size.
 
 ### Verdict (2026-11-01)
 
+> **Measured with the workspace sidebar shown** (annotated 2026-11-02 by
+> `investigate-first-keys-without-frames`). The lane did not yet seed
+> `split-view-layout-migrated`, so every launch ran the one-shot migration of
+> the legacy `sidebar-visible` (default true): the workspace sidebar was shown
+> in every profile that asked to hide it (a 920 px editor), and the migration
+> hid the document-properties surface, so the populated profile showed the
+> sidebar alone. Since that change the populated profile shows both panes as
+> asked, which at the lane's 1280 px puts the properties panel in the bottom
+> sheet. These figures are not directly comparable with later runs.
+
 Interleaved, `c6-baseline` against the branch at `d461e328`, release
 `responsiveness-probes` builds, 4 + 3 repetitions per side, plain variant,
 under the load there was (1-minute load 0.9–2.7 before and after each run;
@@ -1403,28 +1433,88 @@ and in `.claude/handoffs/first-keys-verdict/`.
   - The lane seeds `split-view-layout-migrated`. **Lane figures from before this
     change were measured with the workspace sidebar shown (a 920 px editor);**
     they are not directly comparable with later ones.
-- **Interleaved verification** (main b6330aa3 / branch / main / branch, 2
-  repetitions each, `baseline/small` in its five profiles and `dense/{120,500,710}`
-  wrap on and off, plain, this change's driver on both sides, loads 0.6–4.0 at
-  start and 0.7–1.3 at end). Results for `type-during-settle`:
+- **Interleaved verification, first round** (main b6330aa3 / branch / main /
+  branch, 2 repetitions each, `baseline/small` in its five profiles and
+  `dense/{120,500,710}` wrap on and off, plain, this change's driver on both
+  sides, loads 0.6–4.0 at start and 0.7–1.3 at end). `type-during-settle`,
+  counting only keys with a measured latency:
 
-  | Run | Keys | Median | p95 | Max | Over 33 ms |
-  |---|---|---|---|---|---|
-  | main1 | 1,310 | 5.9 ms | 18.7 ms | 25.6 ms | 0 |
-  | branch1 | 1,310 | 6.4 ms | 16.9 ms | 25.7 ms | 0 |
-  | main2 | 1,285 | 6.6 ms | 19.3 ms | 32.9 ms | 0 |
-  | branch2 | 1,310 | 6.0 ms | 17.1 ms | 26.3 ms | 0 |
+  | Run | Keys typed | Measured | Median | p95 | Max | Over 33 ms | Excluded |
+  |---|---|---|---|---|---|---|---|
+  | main1 | 1,320 | 1,310 | 5.9 ms | 18.7 ms | 25.6 ms | 0 | 10 `no-frame` |
+  | branch1 | 1,320 | 1,310 | 6.4 ms | 16.9 ms | 25.7 ms | 0 | 10 `no-frame` |
+  | main2 | 1,320 | 1,285 | 6.6 ms | 19.3 ms | 32.9 ms | 0 | 9 `no-frame`, 26 `no-visible-change` |
+  | branch2 | 1,320 | 1,310 | 6.0 ms | 17.1 ms | 26.3 ms | 0 | 10 `no-frame` |
 
-  The C6 verdict runs had 28 and 23 keys over 33 ms, all at the stretch. On the
-  branch every typing phase delivered 60 of 60 keys to the editor, with 60
-  insertions. `main`'s probe records no targets, so its delivery is unverified.
-  One `main` repetition of `baseline/small/steady-populated` still had 26 keys
-  that drew nothing, 3.2–4.5 s after activation; no branch repetition had any.
-  No frameless stretch remains on either side. A last branch run on the final
-  build, which defers a restore's focus handoff until the content stage revealed
-  the content, had the same profile: 1,310 keys, median 6.5 ms, max 25.3 ms,
-  none over 33 ms, and 60 of 60 delivered and inserted in every repetition.
+  The exclusions: a `no-frame` key is the last key of a `baseline/small`
+  phase, after which the log holds no frame (the probe writes a frame only
+  once it or a later one has final timings, and headless Mutter completes a
+  lone last frame only at the next commit); a `no-visible-change` key had its
+  first frame start only after the next key was handled. The C6 verdict runs
+  had 28 and 23 keys over 33 ms, all at the stretch. On the branch every
+  typing phase delivered 60 of 60 keys to the editor, with 60 insertions.
+  **main2's 26 `no-visible-change` keys, all in one repetition of
+  `baseline/small/steady-populated` 3.2–4.5 s after activation, are the
+  artefact's signature** (keys that drew nothing). `main`'s probe could
+  neither aim its clicks nor say where keys arrived, so `main`'s delivery is
+  unknown on every row, and its clean rows do not show that its keys reached
+  the document.
 
+### Review round (2026-11-02, after merging main 8cd1441a)
+
+An independent review found the delivery gate vacuous for keys that leave no
+input record, the focus policy too eager, and the lane blind to typed text
+whose frame is withheld. Decided and implemented:
+
+- **Focus policy.** A user-input latch: once the window has seen a key or
+  button press since it was mapped, the handoff moves nothing (an Orca user
+  tabbing through the chrome during a restore keeps their place). Focus in a
+  popover or menu is never chrome (`focus.native() == window`), so the Open
+  popover and the tab menus are user surfaces. An activation hands off only
+  when it added or selected a page in this window; a restore only when it
+  created one. The decision is the pure
+  `ui/window/editor_focus/policy.rs::opened_document_takes_focus`. Six widget
+  tests during a held composition (sidebar, dialog, palette, Open popover, a
+  key into the chrome, and the untouched control); the popover and key cases
+  failed first. A seventh proves the handoff precedes a protected document's
+  one-time "View-Only: Very Long Lines" announcement, for a CLI open and a
+  restore.
+- **Lane gates.** Text keys with no input record count as `undelivered` and
+  fail the phase whatever the probe's vintage. A text key into an editable
+  editor is never `no-visible-change`: drawn only after the next key was
+  handled (loop free), or after the phase, it is measured to that frame,
+  flagged `withheld_frame`, and fails the run (`withheld_typing_frames`).
+  Keys into a protected editor are reported apart
+  (`protected_input_to_frame`). A recovery whose editor click cannot be
+  proven ends the case; an editor click waits up to 3 s for a free point of
+  the text view instead of falling back to a blind screen point.
+- **Fresh profiles** that show no pane seed the legacy `sidebar-visible=false`
+  unmigrated, so their launch still runs the one-shot split-view migration;
+  every other profile is seeded migrated.
+- **Interleaved rerun** (main 8cd1441a / branch / main / branch, the merged
+  driver on both sides, same cases, plain, 2 repetitions;
+  `.claude/handoffs/first-keys-verdict/r2/`). Loads at measurement start and
+  end: main1 1.72 → 1.04, branch1 1.48 → 0.78, main2 1.23 → 0.65, branch2
+  1.69 → 0.95; storage was not a bottleneck in any run. **main1 and branch1
+  started with another agent's single-threaded `cbmc` at 99 % CPU**, outside
+  the reference precondition, so only main2 and branch2 are verdict-grade.
+
+  | Run | Keys typed | Measured | Median | p95 | Max | Over 33 ms | Excluded | Delivery |
+  |---|---|---|---|---|---|---|---|---|
+  | main1 (cbmc) | 1,320 | 1,310 | 6.3 ms | 18.9 ms | 24.9 ms | 0 | 10 `no-frame` | unverified |
+  | branch1 (cbmc) | 1,260 | 1,251 | 6.7 ms | 17.9 ms | 27.4 ms | 0 | 9 `no-frame` | 1,260 / 1,260 inserted |
+  | main2 | 1,320 | 1,310 | 5.7 ms | 17.9 ms | 25.3 ms | 0 | 10 `no-frame` | unverified |
+  | branch2 | 1,260 | 1,251 | 6.6 ms | 18.0 ms | 24.5 ms | 0 | 9 `no-frame` | 1,260 / 1,260 inserted |
+
+  No run had a withheld typing frame, an undelivered key, or a misdirected
+  phase. Each branch run lost one of its 22 typing phases before typing: the
+  populated profile's focus click found no free point of the text view right
+  after launch and fell back to a blind point in the sidebar, which the gate
+  rejected (`click-missed-editor`) rather than measure. The 3 s wait above
+  fixes it: 4 of 4 populated repetitions on the branch then delivered and
+  inserted 60 of 60 keys (median 5.5 ms, max 21.6 ms, none over 33 ms).
+  Content fill-in medians: 17.5 / 17.8 / 17.4 / 17.5 ms, all within the
+  three-frame target.
 
 ## C2 `long-line-protected-view` (implementation record)
 

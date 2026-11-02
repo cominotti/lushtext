@@ -88,26 +88,37 @@ and checks where the press arrived (D4).
 **D1. Focus handoff on open, not a change to GTK's initial pick.** At show time no document page
 exists, so no initial pick can name one. The handoff runs:
 - after an activation's last open turn, in composition's `run_activation_turn`, before
-  `present()`;
-- at a session restore's terminal, in `finish_session_restore`, after the selection settles.
+  `present()`, when a turn of the batch added or selected a page in this window (not when another
+  window owned the path and was presented instead, nor for an open held by the startup gate);
+- at a session restore's terminal, in `finish_session_restore`, after the selection settles,
+  when the restore created a page.
 
 It focuses the selected editor's text view in that dispatch when the view can take focus, so a
-key already queued lands in the document, and falls back to the existing retrying
-`focus_selected_editor_after_action` otherwise. A restore can finish before the content stage
+key already queued lands in the document; otherwise it retries briefly (six 30 ms attempts),
+deciding again on every attempt, so input in between wins. A restore can finish before the content stage
 (B1) has revealed the content. The handoff then waits for that reveal
 (`after_content_revealed`) instead of forcing it: reads and projections must never force a stage
 (`first-frame-window-shell` D5). The first full test run caught exactly that forced reveal in
 `test_reads_and_projections_during_composition_force_nothing`.
 
 **D2. The handoff never takes focus from the user.** The pure
-`opened_document_takes_focus(focus, dialog_visible, transient_surface_open)` allows it only when
-the focus is unset or on the chrome (header bar, tab strip, status bar), where GTK's initial pick
-lands, and no AdwDialog or dismissible transient surface (palette, editor search, search panel,
-header menus) is up. A focus the user put in the sidebar, the properties panel or another editor
-is kept. When an activation arrives in a window whose editor already has focus, AdwTabView moves
+`opened_document_takes_focus(OpenedDocumentFocusFacts)` (`ui/window/editor_focus/policy.rs`)
+allows it only when all of these hold:
+- the focus is unset or on the window's own chrome (header bar, tab strip, status bar), where
+  GTK's initial pick lands. Only a widget in the window's own surface counts as chrome
+  (`focus.native() == window`): focus in a popover or menu the chrome owns (the Open popover,
+  `Ctrl+K`; the tab context and overflow menus; the main menu) is the user's;
+- no AdwDialog or dismissible transient surface (palette, editor search, search panel) is up;
+- the window has seen no key or button press since it was mapped. A capture-phase
+  `EventControllerKey` and `GestureClick` on the window (claiming nothing) set the latch; `map`
+  clears it. Any deliberate focus is kept, however it looks, including an Orca user tabbing
+  through the chrome while a session restores.
+
+A focus the user put in the sidebar, the properties panel or another editor is kept. When an activation arrives in a window whose editor already has focus, AdwTabView moves
 focus to the newly selected page itself. The decision is cross-cutting, with two owning workflows
-(`WFR-WINDOW-COMPOSITION`, `WFR-SESSION-RESTORE`), so it lives in `editor_focus.rs`, which already
-carries no role for the same reason.
+(`WFR-WINDOW-COMPOSITION`, `WFR-SESSION-RESTORE`), so it stays in the role-less, cross-cutting
+`editor_focus/`; its pure half is `editor_focus/policy.rs`, named so the `ui/**/policy.rs`
+mutation scope reaches it.
 
 **D3. Probe fields, not a new probe stream.** Input records gain an optional `target` and, for
 buttons and pointer motions (a new `motion` input kind), `x`/`y`. A key's target is the window's focus widget; a button's is
@@ -123,7 +134,9 @@ snapshot's `visual_geometry` `source-view` rectangle and picks a point inside it
 width unless asked otherwise. The point must not lie under a surface that can cover the text
 view: an overlaid workspace sidebar, or the document-properties bottom sheet, which the populated
 profile opens over the lower half of the editor. The lane then moves the pointer there and reads
-the probe's last `motion` record. It corrects the screen point by the difference, at most
+the probe's last `motion` record. Right after a launch the snapshot may not yet show a free point
+(the populated profile's layout settling), so the click waits up to `EDITOR_POINT_WAIT_S` (3 s)
+for one and, on a probe build, fails as `no-editor-point` rather than click a blind point. It corrects the screen point by the difference, at most
 `POINTER_AIM_ATTEMPTS` (4) moves. It clicks and waits up to 2 s (`CLICK_DELIVERY_TIMEOUT_S`) for
 the button-press record, and fails the phase unless that record names an editor. Every click the
 driver makes is aimed at the text, so all of them use it: the standard `click` phase,
@@ -135,12 +148,33 @@ driver makes is aimed at the text, so all of them use it: the standard `click` p
 - `to_editor`, `to_read_only_editor`, `elsewhere`: where the probe saw them arrive;
 - `inserted`: the `editor_user_insert` marks in the phase.
 
-A verified phase with any key `elsewhere`, or with fewer insertions than keys into an editable
-editor, is misdirected. `report` lists it under `misdirected_typing` and the run fails, like
-`frameless_cases`.
+- `undelivered`: flagged keys with no input record at all.
 
-**D6. Seed the layout flag.** `fresh_state` writes `split-view-layout-migrated=true`, so every
-case renders the sidebar and properties visibility it records in `settings.json`.
+A phase with any undelivered key (whatever the probe's vintage: a phase whose keys never reached
+the application must not pass because there is no target to judge), or a verified phase with any
+key `elsewhere` or with fewer insertions than keys into an editable editor, is misdirected.
+`report` lists it under `misdirected_typing` and the run fails, like `frameless_cases`.
+
+**D5a. Typed text is never "no visible change".** A text key into an editable editor always
+changes what is drawn. `input_to_frame` therefore never applies the `no-visible-change` rule to
+it: its latency runs to the eventual frame and the row is flagged `withheld_frame`, as is such a
+key whose first recorded frame starts after the phase. A phase with a withheld frame is listed
+under `withheld_typing_frames` and fails the run. A key after which the log holds no frame at all
+is left `no-frame` and unjudged: the probe writes a frame only once it or a later one is final,
+and headless Mutter completes a lone last frame only at the next commit, so the last key of a
+quiet phase has no record without having been withheld. Keys into a protected, read-only editor
+are flagged `protected` and reported apart (`protected_input_to_frame`), outside the editable
+input-to-frame figures and verdicts.
+
+**D5b. A recovery that cannot focus the editor ends the case.** After a relaunch the driver
+retries its proven editor click; if none lands, the case stops with a driver failure instead of
+running its paging and typing phases on a window whose keys go elsewhere.
+
+**D6. Seed the layout.** `fresh_state` writes `split-view-layout-migrated=true` with the case's
+pane visibility, so every case renders the sidebar and properties visibility it records in
+`settings.json`. The fresh construction profiles that show no pane instead seed the legacy
+`sidebar-visible=false` unmigrated, so their launch still runs the one-shot split-view migration
+(and writes its result once, after the first frame) and renders the same layout.
 
 ## Risks / Trade-offs
 
@@ -151,18 +185,29 @@ case renders the sidebar and properties visibility it records in `settings.json`
 - A future layout where the text view is covered at 1/3 of its width (an overlay, a minimap on
   the left) would make the aimed click fail loudly rather than measure silently. That is the
   intended failure.
-- The focus handoff takes focus from the status bar's toggle even if the user deliberately
-  tabbed to it within the first few dozen milliseconds after opening a document. That is
-  negligible, and the same race exists in every editor that focuses its document on open.
+- The user-input latch also keeps the focus after an incidental key or click in the window
+  before the document opened (a click to raise it, say). The document then stays where GTK's
+  focus left it, the pre-change behaviour, which is the safe side: the handoff is a convenience
+  and must never take the keyboard from a deliberate choice.
 
 ## Verification
 
 - Widget tests: `window_composition::test_an_activation_open_gives_the_opened_editor_keyboard_focus`
   (collapsed and staged) and `test_a_restored_session_gives_the_selected_editor_keyboard_focus`,
-  both failing before the fix with focus `status:GtkToggleButton`.
+  both failing before the fix with focus `status:GtkToggleButton`. During a composition held
+  before its last reveal, a restore keeps the user's focus in the sidebar, an open dialog, the
+  command palette, the Open popover, and on the chrome after a key press
+  (`test_a_held_restore_keeps_focus_*`); the Open popover and key cases failed first without the
+  native check and the latch. `test_a_held_restore_hands_an_untouched_window_to_the_document` is
+  the control. Unit tests in `editor_focus/policy.rs` cover every input combination.
+  `test_the_focus_handoff_precedes_a_protected_documents_alert_announcement` proves, for a
+  command-line open and a session restore of a protected document, that the editor takes focus
+  before the one-time "View-Only: Very Long Lines" alert is announced, so a screen reader's
+  focus-change interruption cannot cut that announcement off.
 - Driver self-tests: the `inserts` flag, target pass-through, the delivery counts, the
-  misdirected verdict (sidebar, swallowed key, Protected View, older probe), `run_failed`, and
-  the editor aim.
+  misdirected verdict (sidebar, swallowed key, Protected View, older probe, no input records at
+  all, a lost key), withheld frames (a late frame, a frame after the phase, no frame in the log),
+  protected keys, `run_failed`, the fresh profiles' migration seed, and the editor aim.
 - An interleaved lane run, main/branch/main/branch, on `baseline/small` and `dense/{120,500,710}`
   with this driver on both sides, with load recorded. The handoff's `first-keys-verdict` holds
   the runs and `docs/next/long-line-documents.md` the result.

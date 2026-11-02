@@ -13,13 +13,16 @@
 ## 3. Fix the app (failing first)
 
 - [x] 3.1 Widget tests: an activation open and a startup session restore give the opened editor keyboard focus. Both fail on `main` with focus `status:GtkToggleButton`.
-- [x] 3.2 `opened_document_takes_focus` and `hand_focus_to_opened_document` in `ui/window/editor_focus.rs`, called after an activation's last open turn and at the restore terminal, with a unit test of the decision.
+- [x] 3.2 `opened_document_takes_focus` and `hand_focus_to_opened_document` in `ui/window/editor_focus/`, called after an activation's last open turn and at the restore terminal, with a unit test of the decision.
+- [x] 3.3 Review fixes: the user-input latch (any key or button press since map keeps the focus), focus in a popover is never chrome (`focus.native() == window`), hand off only when the open added or selected a page in this window (or the restore created one), and re-decide on every retry. The pure decision moves to `editor_focus/policy.rs`. Failing-first widget tests during a held composition: sidebar, dialog, palette, Open popover, a key typed into the chrome.
 
 ## 4. Fix the lane and gate it
 
 - [x] 4.1 `editor_click`: aim at an uncovered point of the snapshot's `visual_geometry` `source-view` rectangle, correct the pointer by the probe's `motion` records, and fail the phase unless the press arrived on an editor. Use it for every driver click.
 - [x] 4.2 Flag text keys, carry targets through `input_to_frame`, report `delivery` per phase, and fail the run on `misdirected_typing`. Add self-tests.
-- [x] 4.3 Seed `split-view-layout-migrated` in `fresh_state`.
+- [x] 4.3 Seed `split-view-layout-migrated` in `fresh_state`; the fresh profiles that show no pane seed the legacy `sidebar-visible=false` instead, so the one-shot migration stays exercised.
+- [x] 4.4 Review fixes: text keys with no input record count as undelivered and fail the phase; an inserted key with no visible change is measured to its eventual frame and flagged `withheld_frame`, which fails the run; keys into a protected editor are reported apart; a recovery whose editor click fails ends the case; an editor click waits for a free point of the text view instead of a blind fallback. Self-tests for each.
+- [x] 5.4 Review round: interleaved rerun on the merged tree (main 8cd1441a), with load recorded, and the corrected record in `docs/next/long-line-documents.md`.
 
 ## 5. Verify and record
 

@@ -35,10 +35,12 @@ Investigation found two separate problems. One is in the lane and one is in the 
 ## What Changes
 
 - **App:** after an activation's last open turn, and at a session restore's terminal, the
-  selected document's editor takes keyboard focus. It does so only when focus is unset or on the
-  window chrome (header bar, tab strip, status bar), and no dialog or transient surface is up.
-  The pure decision is `opened_document_takes_focus` in `ui/window/editor_focus.rs`, which has
-  two owning workflows: window composition and session restore.
+  selected document's editor takes keyboard focus when the open added or selected a page in that
+  window. It does so only when focus is unset or on the window's own chrome (header bar, tab
+  strip, status bar; never a popover or menu they own), no dialog or transient surface is up, and
+  the window has seen no key or button press since it was mapped. The pure decision is
+  `opened_document_takes_focus` in `ui/window/editor_focus/policy.rs`, which has two owning
+  workflows: window composition and session restore.
 - **Probe:** each input record carries where the input was headed:
   - `target`: `editor`, `read-only-editor`, `other` or `none`. For a key this is the focus
     widget; for a button, the widget under the pointer.
