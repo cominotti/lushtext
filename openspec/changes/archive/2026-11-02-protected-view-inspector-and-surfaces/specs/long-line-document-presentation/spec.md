@@ -65,9 +65,13 @@ The secondary-press context menu and the keyboard menu bindings SHALL open a Pro
 - **WHEN** the user single-, double- or triple-clicks or drags inside a giant paragraph's head
 - **THEN** the capture-phase gesture claims the sequence, the insert and selection-bound marks do not move, and no selection exists
 
-#### Scenario: Disabled edit action shows a notice
-- **WHEN** the user presses Ctrl+V, Ctrl+X, Ctrl+A, Ctrl+Shift+A, Ctrl+%, F7, Shift+F10, Ctrl+Z or Alt+Up in a protected document
+#### Scenario: Disabled edit action changes nothing
+- **WHEN** the user presses Ctrl+V, Ctrl+X, Ctrl+A, Ctrl+Shift+A, Ctrl+%, F7 or Alt+Up in a protected document, or Ctrl+Z while no entry undo is available
 - **THEN** nothing in the buffer changes, the insert and selection-bound marks do not move, `cursor-visible` stays false, and the Protected View notice explains that the document is view-only and how to inspect a line
+
+#### Scenario: Context-menu keys open the Protected View menu
+- **WHEN** the user presses Shift+F10 or the Menu key in a protected document
+- **THEN** the Protected View menu opens instead of GtkTextView's default context menu, nothing in the buffer changes, and the insert and selection-bound marks do not move
 
 #### Scenario: Every toolkit binding is classified
 - **WHEN** the widget test enumerates the class shortcuts of the protected GtkSourceView
@@ -80,7 +84,7 @@ Navigation into a protected document SHALL scroll a LushText-owned navigation ma
 - **WHEN** the user activates a workspace-search hit on a folded paragraph of a protected document
 - **THEN** the editor scrolls the navigation mark to that paragraph and the insert mark does not move
 
-#### Scenario: Find navigation to a match in a hidden tail
+#### Scenario: Find result inside a hidden tail
 - **WHEN** the user moves to the next protected find match and it lies in a hidden tail
 - **THEN** the Line Inspector opens on the window containing the match, with the match selected; the automatic first match of a new query only scrolls, so typing a query never opens a dialog over the search bar
 
