@@ -1526,10 +1526,12 @@ install's clear then deleted it. On the lane's `type-during-settle`
 readiness) 0–3 of 60 keys were inserted in the worst phases. Now a typed
 insertion at the caret is **held** (4 KiB cap, Backspace edits the held text)
 and inserted once nothing owns the buffer, in one settle dispatch, as one user
-action (one undo step), into the document whose install completed; a broken
-episode, a failed load or an evicted tab discards it with a warning, a
-Protected View result shows `ProtectedNotice::HeldTextNotInserted`, and every
-other edit is still refused, with a rate-limited warning. Design and decisions:
+action (one undo action, like typing), into the document whose install
+completed. **Held text is never discarded:** a broken episode, a failed load,
+an evicted tab, a Protected View result or a refused insert opens it in a new
+Untitled tab with a warning naming why, and every close collector counts it as
+unsaved (the review fixes below). Every other edit is still refused, with a
+rate-limited warning. Design and decisions:
 `openspec/changes/keep-keystrokes-during-install/design.md`.
 
 ### Verdict (interleaved, 2026-11-02): met
@@ -1583,6 +1585,72 @@ because those installs finish before the first key.
   and, under this load, a first-editor-frame, editor-construct, validation or
   unattributed dispatch of 16.1–25.0 ms
   (main1 3, main2 4, branch1 1, branch2 2). This change does not touch them.
+
+### Review fixes (PR #78, 2026-11-02)
+
+An independent review found that held text could still be lost, and the fixes
+make **the user's text is never lost** hold for it: (1) held text counted as
+unsaved nowhere, so closing a tab or the window between a save's release and
+the replay closed without asking; every collector now asks
+`has_unsaved_changes()`, a close settles held text first (the Save Changes
+dialog then asks and its Save writes it) or is refused while a workflow owns
+the buffer, and `app.quit` (Ctrl+Q), which skipped every close confirmation
+(pre-existing), now closes each window through its own; (2) discard verdicts
+now rescue the text into a new Untitled tab (the Preserved Drafts "Open"
+path, draft-dirty) with a notice naming the cause; (3) the drop targets were
+back while a load planned or text waited, so a MOVE drag's source could
+delete text the buffer never took; they are now off for the whole held window.
+Also: a tab holding typed input is never evicted; the settle waits for a
+pending draft restore; reloads keep the caret, and a save-only episode replays
+where the first character was held; the preedit is read at the settle and reset
+after 1,024 ms; the input method's surrounding text includes the held text and
+a `delete-surrounding` inside it edits it; a tab moved to another window is no
+longer torn down (pre-existing: its load was cancelled) and is adopted by the
+receiving window; a refused replay is rescued; one user action overflowing the
+cap is refused whole; the settle runs at priority 124, above line validation
+(A70), and a load's terminals queue it directly. Each fix has a widget test that
+failed with the fix reverted (11 tests, `held_typing.rs`).
+
+**Budget evidence** (throwaway widget probe, debug build, cairo renderer,
+measurement lock, load 5.9–6.9 with a game on 2.4 CPUs, 3 repetitions,
+`.claude/handoffs/keystrokes-verdict/budget/`), each replay against a **4 KiB
+paste control** (the same text pasted at the same caret into the same document,
+loaded):
+
+| Fixture | Held / pasted | Replay dispatch | Paste | Worst dispatch in the 200 ms after (replay / paste) |
+|---|---|---|---|---|
+| `dense` 710 × 400, ASCII | 4,096 B | 0.71–0.84 ms | 0.68–2.4 ms | 8.5–9.3 / 3.2–13.1 ms |
+| `dense` 710 × 400, four-byte | 1,024 emoji | 0.66–0.72 ms | 0.57–0.61 ms | 23.8–29.0 / 18.3–49.2 ms |
+| 5 MB short lines, one line | 4,096 B | 0.37–0.39 ms | 0.46–0.78 ms | 2.6–4.8 / 2.4–4.5 ms |
+| 5 MB short lines, 256 lines | 4,096 B | 2.9–3.5 ms | 3.7–10.7 ms | 2.9–3.8 / 3.2–7.8 ms |
+| `.rs`, the replay crosses `L_SYNTAX` (syntax off) | 4,096 B | 0.89–1.19 ms | 2.5–3.0 ms | 6.2–8.5 / 3.8–14.5 ms |
+| 48,000-character paragraph, the replay crosses `L_PROTECT_EDIT` (enters Protected View) | 4,096 B | 2.7–3.1 ms (13.6 cold) | 2.2–6.8 ms | 5.5–10.3 / 4.3–10.2 ms |
+
+The replay dispatch stays within `B_SETTLE` at the cap, including when it
+downgrades the document's scale or enters Protected View, and the work after
+it is the same size as after the paste control (the four-byte rows are font
+fallback in the cairo renderer). "The frame after costs what a paste costs" is
+now measured rather than assumed.
+
+**Lane rerun (interleaved, non-verdict: loaded host).** The review fixes
+change what the lane sees only through the settle dispatch's priority and
+hook, so the affected rows were rerun against the previous branch build
+(d8cfbd0e): review / previous / review / previous, 2 repetitions each, the same
+cases and phase as the verdict above, under the measurement lock
+(`.claude/handoffs/keystrokes-verdict/{review,prev}{1,2}/`, merged in
+`verdict-review/lane`). **The host was far from idle**: load 11.2–25.6 at the
+run boundaries, another agent's ten CPU-bound loops plus a game, CPU contention
+22–37 % of the time; storage was not a bottleneck in any run. Every run passed
+its lane, and every phase of every case inserted every key on both sides (1,800
+keys per run). Whether keys were held depends on whether the install outlasted
+the first key, which varied with the load on both sides: held keys in
+`total-size` 0 (review1), 282 (prev1), 271 (review2) and 0 (prev2). Keys that
+were not held: `input_to_frame` max 17.7–29.4 ms. Held keys, drawn at the
+replay: median 10.7–12.1 ms; their maximum is the install's remaining time
+under the load, 139 ms (prev1, load 20–23) and 295–449 ms (review2, load
+24–26), not the replay. `held_input_replay` spans 133–888 µs (8 replays). No
+regression is attributable to the change; a verdict-grade comparison needs an
+idle host.
 
 ## C2 `long-line-protected-view` (implementation record)
 

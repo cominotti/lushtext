@@ -201,6 +201,22 @@ impl LushtextWindow {
         }
     }
 
+    /// Whether a draft restore is still queued or reading its body for
+    /// `editor`: held typing waits for it, so text typed while a recovered
+    /// document loads goes into the recovered text, not to set-aside.
+    pub(crate) fn draft_restore_pending_for(&self, editor: &LushtextEditorPage) -> bool {
+        let pending = self.imp().drafts.restore_pending_ids.borrow();
+        if pending.is_empty() {
+            return false;
+        }
+        editor
+            .draft_id()
+            .is_some_and(|draft_id| pending.contains_key(&draft_id))
+            || editor
+                .file_path()
+                .is_some_and(|path| pending.contains_key(&draft_service::draft_id_for_path(&path)))
+    }
+
     /// Whether a restore of `draft_id` is still queued or reading its body.
     pub(super) fn draft_restore_is_pending(&self, draft_id: &str) -> bool {
         self.imp()

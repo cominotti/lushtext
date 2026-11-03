@@ -53,7 +53,8 @@ pub(super) fn page_has_saving_editor(page: &libadwaita::TabPage) -> bool {
         .is_ok_and(|editor| editor.is_saving())
 }
 
-/// Collect close targets, but only return the modified editors among them.
+/// Collect close targets, but only return those whose close would lose text
+/// (modified, or with typed text held).
 pub(super) fn collect_modified_close_targets(
     targets: &[libadwaita::TabPage],
 ) -> Vec<(libadwaita::TabPage, LushtextEditorPage)> {
@@ -61,7 +62,7 @@ pub(super) fn collect_modified_close_targets(
         .iter()
         .filter_map(|page| {
             let editor = page.child().downcast::<LushtextEditorPage>().ok()?;
-            editor.is_modified().then(|| (page.clone(), editor))
+            editor.has_unsaved_changes().then(|| (page.clone(), editor))
         })
         .collect()
 }

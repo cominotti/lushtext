@@ -32,6 +32,17 @@ impl LushtextEditorPage {
         self.imp().restore.scroll_line.set(Some(scroll_line));
     }
 
+    /// Reload `path` into this editor keeping the caret's line and column and
+    /// the scroll position (Reload, Replace All's reload, Discard Changes), so
+    /// the document reappears where the user was, and text typed during the
+    /// reload is inserted there rather than at the start of the document.
+    pub fn reload_preserving_position(&self, path: &std::path::Path) {
+        let (line, column) = self.cursor_position();
+        let scroll_line = self.visible_top_line();
+        self.set_restore_position(line, column, scroll_line);
+        self.load_file_async(path);
+    }
+
     /// Read the current cursor position as (line, column).
     #[must_use]
     #[expect(

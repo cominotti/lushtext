@@ -129,9 +129,6 @@ pub(crate) enum ProtectedNotice {
     LineEndingsUnavailable,
     /// Save As of an edited document whose decode does not round-trip.
     SaveAsRefusedInexactDecode,
-    /// Text typed while the document was loading was not inserted: the
-    /// document opened view-only (`keep-keystrokes-during-install`).
-    HeldTextNotInserted,
 }
 
 /// The text of a Protected View notice.
@@ -161,10 +158,6 @@ pub(crate) const fn notice_text(notice: ProtectedNotice) -> &'static str {
             "Save As is not available for this edited view-only document with very long \
              lines: its encoding cannot write its text back exactly."
         }
-        ProtectedNotice::HeldTextNotInserted => {
-            "Text typed while this document was opening was not inserted: it is view-only \
-             because it contains very long lines."
-        }
     }
 }
 
@@ -192,7 +185,7 @@ pub(crate) const INSPECT_LINE_SHORTCUT_LABEL: &str = "Ctrl+Alt+I";
 pub(crate) const NOTICE_QUIET_US: i64 = 4_000_000;
 
 /// Notice reasons, one rate-limit slot each.
-const NOTICE_REASONS: usize = 8;
+const NOTICE_REASONS: usize = 7;
 
 /// When each notice reason was last published (monotonic µs): the rate limit
 /// is per reason (review S5), so another reason in between never lets one
@@ -209,7 +202,6 @@ const fn notice_slot(notice: ProtectedNotice) -> usize {
         ProtectedNotice::BookmarkUnavailable => 4,
         ProtectedNotice::LineEndingsUnavailable => 5,
         ProtectedNotice::SaveAsRefusedInexactDecode => 6,
-        ProtectedNotice::HeldTextNotInserted => 7,
     }
 }
 
@@ -1752,7 +1744,6 @@ mod tests {
             ProtectedNotice::BookmarkUnavailable,
             ProtectedNotice::LineEndingsUnavailable,
             ProtectedNotice::SaveAsRefusedInexactDecode,
-            ProtectedNotice::HeldTextNotInserted,
         ];
         for (i, a) in notices.iter().enumerate() {
             let text = notice_text(*a);
@@ -1807,7 +1798,6 @@ mod tests {
             ProtectedNotice::BookmarkUnavailable,
             ProtectedNotice::LineEndingsUnavailable,
             ProtectedNotice::SaveAsRefusedInexactDecode,
-            ProtectedNotice::HeldTextNotInserted,
         ];
         let mut slots: Vec<usize> = all.iter().map(|notice| notice_slot(*notice)).collect();
         slots.sort_unstable();

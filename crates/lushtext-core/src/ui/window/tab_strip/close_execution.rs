@@ -8,7 +8,9 @@
 //! runs
 //!
 //! 1. **select** the eligible targets from the layout policy,
-//! 2. **refuse** outright if any target has a save in flight,
+//! 2. **refuse** outright if any target has a save in flight, or typed text
+//!    held while a workflow still owns its buffer (held text no workflow owns
+//!    is settled into its document first, so stage 3 sees it as modified),
 //! 3. **ask once** for the whole modified batch rather than once per tab,
 //! 4. **authorize** the batch by depositing one consumable token per page,
 //! 5. **request** each close, right to left, and
@@ -59,17 +61,17 @@ impl LushtextWindow {
         if let Some(window) = window
             && window.consume_preconfirmed_tab_close(page)
         {
-            tab_view.close_page_finish(page, true);
+            finish_tab_close(Some(window), tab_view, page, true);
             return glib::Propagation::Stop;
         }
 
         let child = page.child();
         let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
-            tab_view.close_page_finish(page, true);
+            finish_tab_close(window, tab_view, page, true);
             return glib::Propagation::Stop;
         };
-        if !editor.is_modified() {
-            tab_view.close_page_finish(page, true);
+        if !editor.has_unsaved_changes() {
+            finish_tab_close(window, tab_view, page, true);
             return glib::Propagation::Stop;
         }
         let Some(window) = window else {
@@ -79,10 +81,23 @@ impl LushtextWindow {
         let tab_view = tab_view.clone();
         let page = page.clone();
         let page_for_finish = page.clone();
+        let window_for_finish = window.downgrade();
         window.confirm_close_tab(&page, editor, move |confirmed| {
-            tab_view.close_page_finish(&page_for_finish, confirmed);
+            let window = window_for_finish.upgrade();
+            finish_tab_close(window.as_ref(), &tab_view, &page_for_finish, confirmed);
         });
         glib::Propagation::Stop
+    }
+
+    /// A page another window's tab view transferred here: adopt it with the
+    /// bookkeeping a page opened in this window gets.
+    pub(in crate::ui::window) fn handle_tab_attached(&self, page: &libadwaita::TabPage) {
+        let Some(editor) = page.child().downcast::<LushtextEditorPage>().ok() else {
+            return;
+        };
+        if TRANSFERRING_EDITORS.with(|set| set.borrow_mut().remove(&editor_key(&editor))) {
+            self.adopt_transferred_tab(page, &editor);
+        }
     }
 
     /// The close stage order's terminal: clean up all window bookkeeping after
@@ -90,6 +105,15 @@ impl LushtextWindow {
     ///
     /// This is the **only** place a tab's teardown runs. See the module doc.
     pub(in crate::ui::window) fn handle_tab_detached(&self, page: &libadwaita::TabPage) {
+        // A detach this window did not confirm as a close is a transfer to
+        // another window's tab view: the window's bookkeeping goes, but the
+        // editor lives on there with its load, file monitor and held text.
+        let closing = self
+            .imp()
+            .tab_management
+            .closing_pages
+            .borrow_mut()
+            .remove(&surfaces::tab_page_key(page));
         self.forget_tab_page(page);
         if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
             // Bookmarks live in a sidecar the debounce holds only weakly, so a
@@ -108,8 +132,12 @@ impl LushtextWindow {
             self.dismiss_editor_notifications(editor);
             editor.notify_memory_policy_changed();
             self.untrack_editor_memory(editor);
-            editor.cancel_load();
-            editor.stop_file_monitor();
+            if closing {
+                editor.cancel_load();
+                editor.stop_file_monitor();
+            } else {
+                TRANSFERRING_EDITORS.with(|set| set.borrow_mut().insert(editor_key(editor)));
+            }
         }
         if !self.tab_projection_refresh_deferred() {
             self.refresh_tab_model_projections();
@@ -169,6 +197,14 @@ impl LushtextWindow {
         targets.sort_by_key(|page| Reverse(self.imp().tab_view.page_position(page)));
         if targets.iter().any(surfaces::page_has_saving_editor) {
             self.publish_save_in_progress_warning();
+            surfaces::refresh_tab_context_menu(self, None);
+            return;
+        }
+        let editors: Vec<LushtextEditorPage> = targets
+            .iter()
+            .filter_map(|page| page.child().downcast::<LushtextEditorPage>().ok())
+            .collect();
+        if !self.settle_held_text_for_close(&editors) {
             surfaces::refresh_tab_context_menu(self, None);
             return;
         }
@@ -238,4 +274,35 @@ impl LushtextWindow {
         }
         self.end_tab_projection_refresh_batch();
     }
+}
+
+thread_local! {
+    /// Editors detached by a transfer, awaiting the receiving window's
+    /// `page-attached` (which `AdwTabView` emits in the same call).
+    static TRANSFERRING_EDITORS: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn editor_key(editor: &LushtextEditorPage) -> usize {
+    use glib::object::ObjectType;
+    editor.as_ptr() as usize
+}
+
+/// Finish an `AdwTabView` close request, recording a confirmed close so the
+/// detach terminal tears the page down (and does not take it for a transfer).
+fn finish_tab_close(
+    window: Option<&LushtextWindow>,
+    tab_view: &libadwaita::TabView,
+    page: &libadwaita::TabPage,
+    confirmed: bool,
+) {
+    if confirmed && let Some(window) = window {
+        window
+            .imp()
+            .tab_management
+            .closing_pages
+            .borrow_mut()
+            .insert(surfaces::tab_page_key(page));
+    }
+    tab_view.close_page_finish(page, confirmed);
 }

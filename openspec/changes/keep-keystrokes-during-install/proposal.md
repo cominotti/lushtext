@@ -33,15 +33,20 @@ The programme's goal for this change: **no typed character is ever silently lost
   are refused, and a rate-limited status warning says so.
 - **Where the held text goes.** It belongs to the editor it was typed into and is inserted only into
   a whole document: a completed load, replacement or save, or a reload that failed and kept the
-  previous text. When the episode ends with the buffer partial or emptied (a cancelled load, a
-  cancelled replacement that had cleared the buffer, a failed first load, an evicted tab), the held
-  text is discarded with a status warning that names how many characters were not inserted. When the
-  document ends up in Protected View (C2), it is discarded with a Protected View notice.
+  previous text. When the document cannot take it (a cancelled load, a cancelled replacement that had
+  cleared the buffer, a failed first load, an evicted tab, Protected View), the held text is **never
+  discarded**: it opens in a new Untitled tab, modified and draft-dirty, and a warning names why and
+  where it went.
+- **A close never drops held text.** Every close collector counts held text as unsaved; a close
+  settles it into the document first (so Save Changes asks and its Save writes it) or is refused
+  while a workflow still owns the buffer. `app.quit` (Ctrl+Q) now closes each window through its
+  confirmation instead of skipping it (pre-existing). A tab moved to another window keeps its load
+  and its held text (pre-existing teardown on transfer).
 - **Feedback while held.** The first held character of an episode publishes one status message
   saying the typed text will appear when the document is ready, and the editor's accessible
   description says so while text is held.
-- **Bounded.** The held buffer is a power-of-two cap of 4 KiB of UTF-8 (`HELD_TEXT_CAP_BYTES`); an
-  insertion that does not fit whole is refused whole, never split.
+- **Bounded.** The held buffer is a power-of-two cap of 4 KiB of UTF-8 (`HELD_TEXT_CAP_BYTES`); a
+  user action that does not fit whole is refused whole, never split.
 - **Lane.** The measurement probe classifies keys that arrive while the editor holds input as
   `held-editor`; the driver counts them as keys into an editor, so the delivery gate requires their
   insertion, and reports their input-to-frame apart, like Protected View keys. The probe's
@@ -66,8 +71,10 @@ The programme's goal for this change: **no typed character is ever silently lost
 - `ui/editor_page/edit_lock.rs` (the lock's handlers call the capture; `unlock_edits` takes the
   release's content disposition), its callers in `load/execution.rs`, `load/retirement.rs`,
   `buffer_replacement/execution.rs` and `save/execution.rs`, `accessibility.rs`,
-  `protected_view/policy.rs` (one notice), `surrounding_text.rs` (the input-method context lookup is
-  shared).
+  `surrounding_text.rs` (held text in the surrounding text, `delete-surrounding` edits it), window
+  close paths (`dialogs.rs`, `imp.rs`, `tab_strip/`), `app.rs` (`app.quit`), `documents.rs`
+  (transfer adoption, reloads keep the caret), `search.rs` (Replace All's reload filter),
+  `drafts/journal.rs` (pending restore query).
 - Measurement build: `ui/responsiveness_probe.rs`, `services/responsiveness_log.rs`,
   `scripts/responsiveness-smoke-driver.py`.
 - Docs: `AGENTS.md`, `crates/lushtext-core/src/ui/editor_page/AGENTS.md`, `docs/accessibility.md`,

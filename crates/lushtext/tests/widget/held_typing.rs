@@ -16,9 +16,12 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use libadwaita::prelude::{AdwApplicationWindowExt, AlertDialogExt};
 use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use lushtext_core::ui::window::LushtextWindow;
 use std::time::Duration;
+
+use crate::post_open_settle::{drop_targets, drop_text};
 
 /// A load, a paced install and the settle dispatch after it.
 const BUDGET: Duration = Duration::from_secs(30);
@@ -192,28 +195,53 @@ fn test_an_insertion_over_the_cap_is_refused_whole() {
 }
 
 #[test]
-fn test_typing_into_a_document_that_opens_protected_shows_the_notice() {
+fn test_typing_into_a_document_that_opens_protected_goes_to_a_new_tab() {
     let (window, dir) = presented();
     // One paragraph above L_PROTECT_EDIT (50,000): Protected View.
     let text = format!("{}\nshort\n", "g".repeat(60_000));
     let path = write(&dir, "protected-held.txt", &text);
     window.open_document(&path);
     let editor = active_editor(&window);
-    type_keys(&editor, "lost?");
+    type_keys(&editor, "kept?");
     wait_settled(&editor);
     assert!(editor.is_protected_view(), "the document opened protected");
     assert!(
-        !editor_text(&editor).contains("lost?"),
+        !editor_text(&editor).contains("kept?"),
         "held text went into a view-only document"
     );
     let evidence = editor.held_input_evidence();
-    assert_eq!(evidence.discarded_view_only, 1);
-    assert_eq!(evidence.discarded_chars, 5);
+    assert_eq!(evidence.rescued_view_only, 1);
+    assert_eq!(evidence.rescued_chars, 5);
     assert_eq!(evidence.replays, 0);
+    assert_rescued_into_new_tab(&window, "kept?");
+}
+
+/// The held text is in a new Untitled tab, modified and draft-dirty (the
+/// Preserved Drafts "Open" path), never dropped.
+fn assert_rescued_into_new_tab(window: &LushtextWindow, typed: &str) {
+    let tab_view = &window.imp().tab_view;
+    let rescue = || {
+        (0..tab_view.n_pages())
+            .filter_map(|i| {
+                tab_view
+                    .nth_page(i)
+                    .child()
+                    .downcast::<LushtextEditorPage>()
+                    .ok()
+            })
+            .find(|e| e.file_path().is_none() && editor_text(e) == typed)
+    };
+    wait_until(BUDGET, || rescue().is_some());
+    let rescued = rescue().expect("the rescue tab");
+    assert!(rescued.is_modified(), "the rescued text is unsaved work");
+    assert!(
+        rescued.draft_dirty(),
+        "the rescued text reaches its own draft"
+    );
 }
 
 #[test]
-fn test_a_cancelled_install_does_not_receive_the_held_text() {
+fn test_a_cancelled_install_does_not_receive_the_held_text_and_a_tab_does() {
     let (window, dir) = presented();
     let text = dense(710, 400);
     let path = write(&dir, "cancel-held.txt", &text);
@@ -224,9 +252,10 @@ fn test_a_cancelled_install_does_not_receive_the_held_text() {
     assert_eq!(editor.load_state(), EditorLoadState::Failed);
     assert!(!editor_text(&editor).contains("orphan"));
     let evidence = editor.held_input_evidence();
-    assert_eq!(evidence.discarded_no_document, 1);
-    assert_eq!(evidence.discarded_chars, 6);
+    assert_eq!(evidence.rescued_no_document, 1);
+    assert_eq!(evidence.rescued_chars, 6);
     assert_eq!(evidence.replays, 0);
+    assert_rescued_into_new_tab(&window, "orphan");
 }
 
 #[test]
@@ -278,4 +307,334 @@ fn test_typing_during_a_replacement_is_inserted_after_it() {
     assert!(installed.contains("after"), "the held text was inserted");
     assert_eq!(editor.held_input_evidence().replays, 1);
     assert!(caret >= 5, "the caret follows the inserted text");
+}
+
+/// Open `path`, wait for its load, and return the editor.
+fn opened(window: &LushtextWindow, path: &std::path::Path) -> LushtextEditorPage {
+    window.open_document(path);
+    let editor = active_editor(window);
+    wait_settled(&editor);
+    editor
+}
+
+/// A document whose save snapshots in chunks (above the direct-snapshot
+/// size), so `pause_next_save_snapshot_for_test` can hold the save. Short
+/// lines: one giant paragraph would enter Protected View.
+fn chunked_save_document() -> String {
+    short_lines('s', 2_500_001)
+}
+
+/// Start a save whose snapshot waits until `resume_save_snapshot_for_test`,
+/// so the save holds the buffer while the test types.
+fn hold_a_save(editor: &LushtextEditorPage) -> std::rc::Rc<std::cell::Cell<Option<bool>>> {
+    editor.reset_transient_save_admission_for_test();
+    editor.pause_next_save_snapshot_for_test();
+    let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+    let saved_result = saved.clone();
+    editor.save_file_async(move |result| saved_result.set(Some(result.is_ok())));
+    wait_until(BUDGET, || editor.save_evidence().capture_in_flight);
+    assert!(editor.edits_locked(), "the save holds the edit lock");
+    saved
+}
+
+/// Let the held save finish, stepping one dispatch at a time, and stop in the
+/// gap between its release and the held text's settle dispatch.
+fn finish_save_into_the_gap(
+    editor: &LushtextEditorPage,
+    saved: &std::rc::Rc<std::cell::Cell<Option<bool>>>,
+) {
+    editor.resume_save_snapshot_for_test();
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + BUDGET;
+    while saved.get().is_none() || editor.is_saving() {
+        assert!(std::time::Instant::now() < deadline, "the save never ended");
+        context.iteration(true);
+    }
+    assert_eq!(saved.get(), Some(true));
+    assert!(
+        editor.has_held_text() && !editor.edits_locked(),
+        "stopped in the release-to-settle gap"
+    );
+}
+
+fn alert_dialog(window: &LushtextWindow) -> Option<libadwaita::AlertDialog> {
+    window
+        .visible_dialog()
+        .and_then(|dialog| dialog.downcast::<libadwaita::AlertDialog>().ok())
+}
+
+fn wait_for_save_changes_dialog(window: &LushtextWindow) -> libadwaita::AlertDialog {
+    wait_until(BUDGET, || {
+        alert_dialog(window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading == "Save Changes?")
+    });
+    alert_dialog(window).expect("the Save Changes dialog")
+}
+
+fn choose_save(dialog: &libadwaita::AlertDialog) {
+    dialog.emit_by_name::<()>("response", &[&"save"]);
+}
+
+#[test]
+fn test_closing_a_tab_in_the_release_gap_asks_and_saves_the_held_text() {
+    let (window, dir) = presented();
+    let body = chunked_save_document();
+    let path = write(&dir, "gap-tab.txt", &body);
+    let editor = opened(&window, &path);
+    let saved = hold_a_save(&editor);
+    type_keys(&editor, "typed");
+    finish_save_into_the_gap(&editor, &saved);
+    assert!(
+        !editor.is_modified(),
+        "the held text is not in the buffer yet"
+    );
+    assert!(editor.has_unsaved_changes(), "held text counts as unsaved");
+    // While text is held the drop targets stay off: a MOVE drag's source
+    // would otherwise delete text the buffer never took.
+    assert!(
+        drop_targets(&editor).is_empty(),
+        "drop targets came back early"
+    );
+    let page = window.imp().tab_view.selected_page().expect("the tab");
+    window.imp().tab_view.close_page(&page);
+    let dialog = wait_for_save_changes_dialog(&window);
+    assert_eq!(window.imp().tab_view.n_pages(), 1);
+    choose_save(&dialog);
+    wait_until(BUDGET, || window.imp().tab_view.n_pages() == 0);
+    assert_eq!(
+        lushtext_core::services::filesystem::read::text(&path).expect("saved file"),
+        format!("typed{body}"),
+        "Save wrote the held text"
+    );
+}
+
+#[test]
+fn test_closing_the_window_in_the_release_gap_asks_and_saves_the_held_text() {
+    let (window, dir) = presented();
+    crate::common::wait_for_startup_data_flow(&window);
+    let body = chunked_save_document();
+    let path = write(&dir, "gap-window.txt", &body);
+    let editor = opened(&window, &path);
+    let saved = hold_a_save(&editor);
+    type_keys(&editor, "typed");
+    finish_save_into_the_gap(&editor, &saved);
+    window.close();
+    let dialog = wait_for_save_changes_dialog(&window);
+    choose_save(&dialog);
+    wait_until(BUDGET, || {
+        lushtext_core::services::filesystem::read::text(&path)
+            .is_ok_and(|t| t == format!("typed{body}"))
+    });
+}
+
+#[test]
+fn test_closing_a_loading_tab_with_held_text_is_refused_and_the_text_is_kept() {
+    let (window, dir) = presented();
+    let text = dense(710, 400);
+    let path = write(&dir, "loading-close.txt", &text);
+    let editor = open_until_installing(&window, &path);
+    type_keys(&editor, "wait");
+    let page = window.imp().tab_view.selected_page().expect("the tab");
+    // The refusal is synchronous: the close-page handler finishes it at once.
+    window.imp().tab_view.close_page(&page);
+    assert_eq!(
+        window.imp().tab_view.n_pages(),
+        1,
+        "the close was not refused"
+    );
+    // Refused, not asked: a Save now would write a half-installed buffer.
+    assert!(
+        alert_dialog(&window).is_none(),
+        "a dialog asked while a workflow owns the buffer"
+    );
+    assert_eq!(editor.held_input_evidence().held_chars, 4);
+    wait_settled(&editor);
+    assert_eq!(editor_text(&editor), format!("wait{text}"));
+    // Closing the window while a load owns the buffer is refused the same way.
+    let other = write(&dir, "loading-close-2.txt", &text);
+    let editor = open_until_installing(&window, &other);
+    type_keys(&editor, "w");
+    window.close();
+    assert!(
+        alert_dialog(&window).is_none(),
+        "no dialog while a workflow owns the buffer"
+    );
+    assert!(window.is_visible(), "the window closed with held text");
+    wait_settled(&editor);
+    assert_eq!(editor_text(&editor), format!("w{text}"));
+}
+
+#[test]
+fn test_quit_asks_before_dropping_unsaved_documents() {
+    let (window, dir) = presented();
+    crate::common::wait_for_startup_data_flow(&window);
+    let path = write(&dir, "quit.txt", "start\n");
+    let editor = opened(&window, &path);
+    type_keys(&editor, "x");
+    assert!(editor.is_modified());
+    let app = window.application().expect("the window's application");
+    app.activate_action("quit", None);
+    let dialog = wait_for_save_changes_dialog(&window);
+    choose_save(&dialog);
+    wait_until(BUDGET, || {
+        lushtext_core::services::filesystem::read::text(&path).is_ok_and(|t| t == "xstart\n")
+    });
+}
+
+#[test]
+fn test_a_load_holds_the_drop_targets_until_the_held_text_is_in() {
+    let (window, dir) = presented();
+    let text = dense(710, 400);
+    let path = write(&dir, "drop-held.txt", &text);
+    window.open_document(&path);
+    let editor = active_editor(&window);
+    assert_eq!(editor.load_state(), EditorLoadState::Loading);
+    assert!(!editor.edits_locked(), "still planning: no install yet");
+    // A drop reported done here would let a MOVE drag's source delete text
+    // the install then clears.
+    assert!(
+        !drop_text(&editor, "DROPPED"),
+        "a drop was accepted while loading"
+    );
+    type_keys(&editor, "a");
+    wait_settled(&editor);
+    assert_eq!(editor_text(&editor), format!("a{text}"));
+    assert!(
+        !drop_targets(&editor).is_empty(),
+        "the drop targets came back"
+    );
+}
+
+#[test]
+fn test_a_tab_moved_to_another_window_keeps_its_load_and_held_text() {
+    let (window, dir) = presented();
+    let text = dense(710, 400);
+    let path = write(&dir, "transfer-held.txt", &text);
+    let app = window
+        .application()
+        .and_downcast::<libadwaita::Application>()
+        .expect("application");
+    let other = LushtextWindow::new(&app);
+    present_window(&other);
+    let editor = open_until_installing(&window, &path);
+    type_keys(&editor, "moved");
+    let page = window.imp().tab_view.selected_page().expect("the tab");
+    window
+        .imp()
+        .tab_view
+        .transfer_page(&page, &other.imp().tab_view, 0);
+    assert_eq!(
+        editor.load_state(),
+        EditorLoadState::Loading,
+        "precondition: the transfer happens mid-install"
+    );
+    wait_settled(&editor);
+    assert_eq!(
+        editor.load_state(),
+        EditorLoadState::Loaded,
+        "the transfer cancelled the load"
+    );
+    assert_eq!(editor_text(&editor), format!("moved{text}"));
+    assert!(
+        other.imp().open_paths.borrow().contains(&path),
+        "the receiving window does not know the tab's path"
+    );
+    assert!(
+        !window.imp().open_paths.borrow().contains(&path),
+        "the source window still claims the path"
+    );
+}
+
+#[test]
+fn test_a_save_only_episode_replays_where_the_first_character_was_held() {
+    let (window, dir) = presented();
+    let body = chunked_save_document();
+    let path = write(&dir, "anchor.txt", &format!("one\n{body}"));
+    let editor = opened(&window, &path);
+    let buffer = editor.buffer();
+    buffer.place_cursor(&buffer.iter_at_line(1).expect("line 1"));
+    let saved = hold_a_save(&editor);
+    type_keys(&editor, "ab");
+    // A click elsewhere while the save holds the buffer.
+    buffer.place_cursor(&buffer.end_iter());
+    editor.resume_save_snapshot_for_test();
+    wait_until(BUDGET, || saved.get().is_some());
+    wait_settled(&editor);
+    assert_eq!(editor_text(&editor), format!("one\nab{body}"));
+}
+
+#[test]
+fn test_typing_right_after_the_replay_never_undoes_installed_text() {
+    let (window, dir) = presented();
+    let text = dense(710, 400);
+    let path = write(&dir, "undo-after.txt", &text);
+    let editor = open_until_installing(&window, &path);
+    type_keys(&editor, "held");
+    wait_settled(&editor);
+    type_keys(&editor, "Z");
+    assert_eq!(editor_text(&editor), format!("heldZ{text}"));
+    // One undo action, like typing: the typing after it may coalesce with
+    // it, but undo never reaches the installed document.
+    let buffer = editor.buffer();
+    let mut steps = 0;
+    while buffer.can_undo() {
+        buffer.undo();
+        steps += 1;
+        assert!(steps <= 2, "more undo steps than the typed text");
+        assert!(editor_text(&editor).ends_with(&text));
+    }
+    assert_eq!(editor_text(&editor), text);
+}
+
+#[test]
+fn test_an_overflowing_paste_is_never_partly_held() {
+    let (window, dir) = presented();
+    let text = dense(710, 400);
+    let path = write(&dir, "paste-held.txt", &text);
+    let editor = open_until_installing(&window, &path);
+    type_keys(&editor, "k");
+    // One user action, two segments: the second overflows the cap.
+    let half = "p".repeat(lushtext_core::model::held_input::HELD_TEXT_CAP_BYTES / 2 + 1);
+    let buffer = editor.buffer();
+    buffer.begin_user_action();
+    let _ = buffer.insert_interactive_at_cursor(&half, true);
+    let _ = buffer.insert_interactive_at_cursor(&half, true);
+    buffer.end_user_action();
+    assert_eq!(
+        editor.held_input_evidence().held_chars,
+        1,
+        "a paste was partly held"
+    );
+    assert_eq!(editor.held_input_evidence().overflows, 1);
+    wait_settled(&editor);
+    assert_eq!(editor_text(&editor), format!("k{text}"));
+}
+
+#[test]
+fn test_an_input_method_sees_and_edits_the_held_text() {
+    let (window, dir) = presented();
+    let text = dense(710, 400);
+    let path = write(&dir, "ime-held.txt", &text);
+    let editor = open_until_installing(&window, &path);
+    type_keys(&editor, "viet");
+    let view: gtk4::TextView = editor.source_view().clone().upcast();
+    let controllers = view.observe_controllers();
+    let im = (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index))
+        .filter_map(|item| item.downcast::<gtk4::EventControllerKey>().ok())
+        .find_map(|key| key.im_context())
+        .expect("the view's input-method context");
+    let (surrounding, cursor, _) = im.surrounding_with_selection().expect("an answer");
+    let before = &surrounding[..usize::try_from(cursor).expect("cursor")];
+    assert!(
+        before.ends_with("viet"),
+        "the held text is not before the cursor: {before:?}"
+    );
+    // Telex: delete the last character, then commit the composed one.
+    assert!(im.delete_surrounding(-1, 1));
+    assert_eq!(editor.held_input_evidence().held_chars, 3);
+    type_keys(&editor, "ê");
+    wait_settled(&editor);
+    assert_eq!(editor_text(&editor), format!("vieê{text}"));
 }

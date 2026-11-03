@@ -134,16 +134,22 @@ Expected screen-reader behavior includes:
   preview-only mode, or a failure state temporarily prevents editing.
 - Text typed while a document loads, saves, or has its content replaced (draft
   recovery, a local-history restore) is kept and inserted at the caret once the
-  document is ready, as one undo step (`keep-keystrokes-during-install`). The
+  document is ready, as one undo action like typing (`keep-keystrokes-during-install`). The
   first held character publishes one status message ("Typed text will appear
   when “name” is ready."), and while text is held the editor's description adds
   "Text you type is kept and inserted when the document is ready." The buffer,
   which AT reads, changes only at that insertion, so the editor stays reported
   read-only and busy until then; the insertion is an ordinary text change.
   Backspace removes held characters; Delete, undo and edits over a selection
-  are refused with a rate-limited warning. Held text that cannot be inserted (the
-  load failed or was cancelled, or the document opened in Protected View) is
-  discarded with a warning that says so.
+  are refused with a rate-limited warning. Held text that cannot go into the
+  document (the load failed or was cancelled, the tab was unloaded from memory,
+  or the document opened in Protected View) is never discarded: it opens in a
+  new Untitled tab, which is selected, and a warning on the status bar's
+  announced lane names why and where the text went. Closing a tab or window, or
+  quitting, with held text asks through the Save Changes dialog, or is refused
+  with a warning while the document is still busy. An input method's
+  surrounding text includes the held text, so a composing input method
+  (Telex) edits what it committed rather than document text.
 - The editor's accessible description names the features the document scale
   policy reduced for this document, grouped by reason class: for example
   "Syntax highlighting, bracket matching, the minimap and search highlighting

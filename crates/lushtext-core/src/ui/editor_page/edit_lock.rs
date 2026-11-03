@@ -32,7 +32,8 @@
 //! - `undo` and `redo` are refused at their own signals as well, so the undo
 //!   history is never popped for an edit the lock then refuses;
 //! - the view's drop targets are taken off while the lock is held, nested
-//!   with Protected View's own detach (`DropTargetHold`). A drop the buffer
+//!   with Protected View's own detach and held typing's longer window
+//!   (`DropTargetHold`). A drop the buffer
 //!   refused would otherwise still be reported done: `GtkTextView`'s drop
 //!   handler calls `gtk_text_buffer_insert_interactive`, which returns TRUE
 //!   for a refused insert because the view is editable, so a MOVE drag's

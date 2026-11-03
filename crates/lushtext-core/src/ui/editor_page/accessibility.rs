@@ -19,6 +19,10 @@ const EDITOR_IDENTITY_LIMIT: usize = 96;
 impl LushtextEditorPage {
     /// Refresh accessible metadata for the source editor from the current tab state.
     pub(crate) fn refresh_accessibility_metadata(&self) {
+        // Every load, replacement and save state change refreshes the
+        // metadata, so held typing follows the same calls (drop targets, and
+        // the settle hook in a load's terminals).
+        self.sync_held_input_window();
         self.apply_editor_accessibility(false);
     }
 

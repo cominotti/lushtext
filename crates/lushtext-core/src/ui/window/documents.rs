@@ -271,8 +271,13 @@ impl LushtextWindow {
         let record_recent = intent.records_recent();
         let editor_weak = editor_page.downgrade();
         editor_page.connect_load_completed_once(move || {
-            if let Some(window) = window_weak.upgrade()
-                && let Some(editor) = editor_weak.upgrade()
+            // The window the tab is in now: a tab moved to another window
+            // mid-load completes there (`adopt_transferred_tab`).
+            if let Some(editor) = editor_weak.upgrade()
+                && let Some(window) = editor
+                    .root()
+                    .and_downcast::<Self>()
+                    .or_else(|| window_weak.upgrade())
             {
                 if record_recent {
                     window.record_recent_open_for_editor(&editor, &path_for_recent);
@@ -574,7 +579,7 @@ impl LushtextWindow {
             if let Some(window) = window_weak.upgrade() {
                 window.dismiss_editor_notifications(&editor);
             }
-            editor.load_file_async(&path);
+            editor.reload_preserving_position(&path);
         });
     }
 
@@ -589,6 +594,33 @@ impl LushtextWindow {
                 .is_some_and(|e| e.is_modified() && e.file_path().is_some());
             simple.set_enabled(enabled);
         }
+    }
+
+    /// Adopt a tab another window transferred into this one: the wiring and
+    /// bookkeeping `open_document` and `new_tab` give a page they create.
+    /// The source window kept the editor's load and file monitor running.
+    pub(super) fn adopt_transferred_tab(
+        &self,
+        page: &libadwaita::TabPage,
+        editor: &LushtextEditorPage,
+    ) {
+        if let Some(path) = editor.file_path() {
+            let mut paths = self.imp().open_paths.borrow_mut();
+            paths.insert(open_path_key(&path));
+            if let Some(canonical_path) = editor.canonical_file_path() {
+                paths.insert(canonical_path);
+            }
+        }
+        self.wire_info_bar(editor);
+        self.wire_note_callbacks(editor);
+        self.wire_modified_indicator(page, editor);
+        self.wire_preview_projection(page, editor);
+        self.configure_tab_page(page);
+        self.track_editor_memory(editor);
+        if !self.tab_projection_refresh_deferred() {
+            self.refresh_tab_model_projections();
+        }
+        self.save_session_debounced();
     }
 
     /// Create a new untitled tab.
@@ -797,7 +829,7 @@ impl LushtextWindow {
                     window.dismiss_editor_notifications(&editor);
                 }
                 if let Some(ref path) = editor.file_path() {
-                    editor.load_file_async(path);
+                    editor.reload_preserving_position(path);
                 }
             }
         });

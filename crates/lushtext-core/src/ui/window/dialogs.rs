@@ -389,7 +389,8 @@ impl super::LushtextWindow {
 
     // --- Save changes confirmation ---
 
-    /// Collect all modified editor pages in the tab view.
+    /// Collect every editor page whose close would lose the user's text: the
+    /// document is modified or typed text is held for it.
     #[must_use]
     pub fn modified_editors(&self) -> Vec<(libadwaita::TabPage, LushtextEditorPage)> {
         let tab_view = &self.imp().tab_view;
@@ -398,12 +399,54 @@ impl super::LushtextWindow {
             let page = tab_view.nth_page(i);
             let child = page.child();
             if let Some(editor) = child.downcast_ref::<LushtextEditorPage>()
-                && editor.is_modified()
+                && editor.has_unsaved_changes()
             {
                 result.push((page, editor.clone()));
             }
         }
         result
+    }
+
+    /// Settle the held text of every editor in `editors` before a close
+    /// collects them (`LushtextEditorPage::flush_held_text_for_close`), and
+    /// refuse the close with a notice when a workflow still owns one's
+    /// buffer. Returns whether the close may go on.
+    pub(crate) fn settle_held_text_for_close<'a>(
+        &self,
+        editors: impl IntoIterator<Item = &'a LushtextEditorPage>,
+    ) -> bool {
+        let editors: Vec<&LushtextEditorPage> = editors.into_iter().collect();
+        let mut busy = None;
+        for editor in editors {
+            if editor.flush_held_text_for_close()
+                == crate::model::held_input::CloseDisposition::Busy
+                && busy.is_none()
+            {
+                busy = Some(editor.clone());
+            }
+        }
+        if let Some(editor) = busy {
+            self.publish_status_message(
+                &editor.held_text_close_refusal_text(),
+                MessageKind::Warning,
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Every editor in the tab view, for a window-wide close.
+    pub(crate) fn all_editors(&self) -> Vec<LushtextEditorPage> {
+        let tab_view = &self.imp().tab_view;
+        (0..tab_view.n_pages())
+            .filter_map(|i| {
+                tab_view
+                    .nth_page(i)
+                    .child()
+                    .downcast::<LushtextEditorPage>()
+                    .ok()
+            })
+            .collect()
     }
 
     /// Return whether any open editor is currently saving on a background thread.
@@ -765,7 +808,14 @@ impl super::LushtextWindow {
             confirm_close(false);
             return;
         }
-        if !editor.is_modified() {
+        // Held text first: settled into the document (which makes it
+        // modified, so the dialog below asks and its Save writes the text),
+        // or the close is refused while a workflow still owns the buffer.
+        if !self.settle_held_text_for_close([editor]) {
+            confirm_close(false);
+            return;
+        }
+        if !editor.has_unsaved_changes() {
             confirm_close(true);
             return;
         }
@@ -862,6 +912,9 @@ struct CloseSafetyEditorFingerprint {
     owner_id: usize,
     draft_generation: u64,
     modified: bool,
+    /// Typed text held for the editor: a change of it means the user typed
+    /// while the close ran, which the close must not drop.
+    held_chars: u64,
     path: Option<PathBuf>,
 }
 
@@ -896,6 +949,7 @@ fn close_safety_editor_fingerprint_for(
         owner_id: editor.notification_owner_id(),
         draft_generation: editor.draft_dirty_generation(),
         modified: editor.is_modified(),
+        held_chars: editor.held_char_count(),
         path: editor.file_path(),
     }
 }

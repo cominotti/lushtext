@@ -67,9 +67,10 @@ local history, and careful recovery behavior.
   document is still loading, being restored or being saved appears at the
   cursor once the document is ready, as one undo step; Backspace corrects it
   before then. Other edits made meanwhile (Delete, undo, typing over a
-  selection) are not applied, and a status message says so. If the document
-  fails to load or opens view-only, the typed text is not inserted and a
-  message says how much.
+  selection) are not applied, and a status message says so. Typed text is
+  never lost: if the document fails to load or opens view-only, the text opens
+  in a new Untitled tab and a message says so, and closing or quitting
+  (Ctrl+Q included) asks to save it first.
 - **EditorConfig support** for indentation and save-policy overrides, with
   Preferences values used as fallback.
 

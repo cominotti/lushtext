@@ -72,6 +72,9 @@ pub(crate) enum DropTargetHold {
     ProtectedView = 1,
     /// A workflow holding the edit lock (`edit_lock.rs`).
     EditLock = 2,
+    /// Held typing's window: a load in flight or typed text held
+    /// (`held_input.rs`), which outlasts the lock on both sides.
+    HeldInput = 4,
 }
 
 impl LushtextEditorPage {

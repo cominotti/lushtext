@@ -361,6 +361,12 @@ pub struct TabManagementState {
     /// Pages can be created during session restore before the explicit tab
     /// workflow setup runs, so this guard prevents duplicate signal hookups.
     pub configured_pages: RefCell<HashSet<usize>>,
+    /// Pages whose close this window confirmed (`close_page_finish(.., true)`).
+    ///
+    /// `AdwTabView` reports a close and a transfer to another window with the
+    /// same `page-detached`; only a page in this set is torn down, so a
+    /// transferred tab keeps its load, its file monitor and its held text.
+    pub closing_pages: RefCell<HashSet<usize>>,
 }
 
 impl Default for TabManagementState {
@@ -370,6 +376,7 @@ impl Default for TabManagementState {
             target_page: RefCell::new(None),
             preconfirmed_close_pages: RefCell::new(HashSet::new()),
             configured_pages: RefCell::new(HashSet::new()),
+            closing_pages: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -1091,6 +1098,15 @@ impl ObjectImpl for LushtextWindow {
         });
 
         let window_weak = obj.downgrade();
+        self.tab_view.connect_page_attached(move |_, page, _| {
+            if let Some(window) = window_weak.upgrade()
+                && !window.imp().disposing.get()
+            {
+                window.handle_tab_attached(page);
+            }
+        });
+
+        let window_weak = obj.downgrade();
         self.tab_view.connect_page_detached(move |_, page, _| {
             if let Some(window) = window_weak.upgrade()
                 && !window.imp().disposing.get()
@@ -1288,6 +1304,12 @@ impl WindowImpl for LushtextWindow {
         window.clear_close_discard_drafts();
         if window.has_saving_editors() {
             window.publish_save_in_progress_warning();
+            return glib::Propagation::Stop;
+        }
+        // Held typed text is settled into its document (or a new tab) before
+        // the unsaved documents are collected; a close is refused while a
+        // workflow still owns a buffer that has text held for it.
+        if !window.settle_held_text_for_close(&window.all_editors()) {
             return glib::Propagation::Stop;
         }
         let modified = window.modified_editors();

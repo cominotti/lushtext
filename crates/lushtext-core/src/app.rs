@@ -144,7 +144,7 @@ mod imp {
             // request and its hold.
             self.obj().drop_pending_window_request();
             // Backstop for exits that close no window through its confirmed
-            // close (`app.quit`, the session ending): persist the settings
+            // close (`app.quit` with no window yet, the session ending): persist the settings
             // writer's pending values before the process goes.
             crate::ui::settings_writes::flush_now();
             self.parent_shutdown();
@@ -223,10 +223,32 @@ impl LushtextApplication {
         app
     }
 
+    /// `app.quit` (Ctrl+Q): close every window through its own close
+    /// confirmation and close-safety path, so quitting with modified documents
+    /// or held typed text asks first, exactly as closing each window does. The
+    /// process ends when the last window is destroyed. `quit()` itself would
+    /// skip `close_request`, the Save Changes dialog, and the draft and
+    /// session flush.
+    pub fn request_quit(&self) {
+        self.drop_pending_window_request();
+        let windows: Vec<crate::ui::window::LushtextWindow> = self
+            .windows()
+            .into_iter()
+            .filter_map(|window| window.downcast().ok())
+            .collect();
+        if windows.is_empty() {
+            self.quit();
+            return;
+        }
+        for window in windows {
+            window.close();
+        }
+    }
+
     /// Install app-level actions and accelerators available before a window owns focus.
     fn setup_actions(&self) {
         let action_quit = gio::ActionEntry::builder("quit")
-            .activate(|app: &Self, _, _| app.quit())
+            .activate(|app: &Self, _, _| app.request_quit())
             .build();
 
         let action_prefs = gio::ActionEntry::builder("preferences")

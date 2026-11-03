@@ -705,7 +705,7 @@ fn test_a_user_action_during_a_replacement_leaves_bookmark_lines_alone() {
 
 /// The view's text `GtkDropTarget`s (GtkTextView's own, which accepts a
 /// string), as GTK's drop dispatch would find them.
-fn drop_targets(editor: &LushtextEditorPage) -> Vec<gtk4::DropTarget> {
+pub(crate) fn drop_targets(editor: &LushtextEditorPage) -> Vec<gtk4::DropTarget> {
     let controllers = editor.source_view().observe_controllers();
     (0..controllers.n_items())
         .filter_map(|index| controllers.item(index))
@@ -722,7 +722,7 @@ fn drop_targets(editor: &LushtextEditorPage) -> Vec<gtk4::DropTarget> {
 /// (the ledger A63 probe's method). Returns whether any target reported the
 /// drop done. (`motion` is not driven: without a real `GdkDrop` the view's
 /// motion handler reads a null drop.)
-fn drop_text(editor: &LushtextEditorPage, text: &str) -> bool {
+pub(crate) fn drop_text(editor: &LushtextEditorPage, text: &str) -> bool {
     let mut accepted = false;
     for target in drop_targets(editor) {
         accepted |= target.emit_by_name::<bool>(

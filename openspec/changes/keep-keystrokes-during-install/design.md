@@ -18,13 +18,14 @@ inserted. Most keys fall in the sliced install.
 
 ## Goals / Non-Goals
 
-**Goals:** no typed character silently lost; typed text appears at the caret the document is shown
-with, in order, as one undo step; data safety for drafts, the modified state, the lock's ordering,
+**Goals:** **the user's text is never lost**: no typed character is discarded, a document that
+cannot take held text gets it in a new tab, and no close or quit drops it; typed text appears at the
+caret the document is shown with, in order, as one undo action; data safety for drafts, the modified state, the lock's ordering,
 C2's entry rules and supersession; immediate visible and accessible feedback for anything that is
 still refused; the replay dispatch within `B_SETTLE`.
 
 **Non-Goals:** holding edits other than typing (deletions of document text, undo, moves, Replace);
-keeping held text across a crash or a tab close (it is in memory for the install's duration only);
+keeping held text across a crash (it is in memory for the install's duration only);
 changing the lock for programmatic edits.
 
 ## Decisions
@@ -59,7 +60,7 @@ An insertion is held when all of these hold:
    GtkSourceView's move-lines and change-case all delete before inserting in one user action; holding
    only their insert would replay a fragment of a different edit. Such an action is *tainted* by its
    refused deletion and its inserts are refused;
-6. it **fits** the held buffer whole (D6).
+6. it **fits** the held buffer whole, with everything else its user action held (D6).
 
 A held insertion is appended to the editor's held text and its emission is stopped, exactly as the
 lock stops it today, so it changes no text, modified flag, undo history or draft.
@@ -75,7 +76,8 @@ Backspace while held text exists removes the held text's last character (GtkText
 keybinding signal, handled before its class handler, stopped). This is what the user means: they are
 correcting what they just typed. Backspace with nothing held, Delete, word deletions, cut, undo, redo
 and every tainted or misplaced insert are refused, as the lock refuses them now, and publish one
-rate-limited status warning (`HeldNotice::EditNotApplied`). They are not replayed: a deletion's target
+rate-limited status warning (`HeldNotice::EditNotApplied`). The warning says "typed text is kept"
+only when text is actually held; otherwise it says only that the edit was not applied. They are not replayed: a deletion's target
 was computed on a buffer that the install is replacing, so replaying it at the final caret could
 delete text the user never saw.
 
@@ -86,20 +88,36 @@ character of an episode is held and again whenever the last lock holder releases
 It decides with the pure `settle_verdict`:
 
 - **Wait** while a workflow still holds the buffer: the lock is held (its release queues the dispatch
-  again) or a load is in flight (the dispatch re-arms itself on a 16 ms timeout, so a load's failure,
-  cancellation or completion is seen without a hook in every terminal);
+  again) or a load is in flight. A load's terminals queue the dispatch directly: every load state
+  change refreshes the editor's accessibility metadata, which calls `sync_held_input_window`, and
+  that queues the dispatch at once when held text no longer has an owner. The 16 ms re-arm remains
+  only for what has no hook;
+- **Wait** while a draft restore is still queued or reading its body for the editor
+  (`draft_restore_pending_for`): the recovered text, not the file, is the document the user typed
+  into, and replaying first would make the restore's freshness check divert the recovered work to
+  set-aside;
 - **Wait** while an input-method preedit is in progress, so the replay's caret move does not reset a
-  composition the user is in the middle of (the same 16 ms re-arm);
+  composition the user is in the middle of. The preedit is read from the input method at the
+  dispatch (`preedit_string`), not tracked from signals, and a composition still in progress after
+  `PREEDIT_DEADLINE_MS` (1,024 ms, a power of two) is reset (`gtk_im_context_reset`, which commits or
+  drops it as the input method chooses; a commit is held like any typed text);
 - **Replay** when the document is whole and editable (D5);
-- **Discard** otherwise (D5).
+- **Rescue** otherwise (D5): the text never goes nowhere.
+
+The dispatch runs at `GDK_PRIORITY_REDRAW + 4` (124), one above GtkTextView's line validation
+(`+ 5`, ledger A70), so it is not held back behind a document's validation batches. (The tasks
+crate's completion priority from `spawn-completion-priority` has not landed on `main`; when it
+does, the dispatch can take it.)
 
 The release itself never replays: `unlock_edits` runs in the middle of a terminal (the load sets
 `Loaded`, the caret, the modified flag and the draft baseline around it), so the replay waits for the
 dispatch after the terminal has finished.
 
 The replay inserts the held text with `gtk_text_buffer_insert_interactive_at_cursor` (`editable` =
-the view's), inside one explicit user action: GtkSourceView's undo manager records one action, so
-**one Ctrl+Z removes the replay** and nothing installed before it. It runs after the lock is released
+the view's), inside one explicit user action: **one undo action, like typing**; typing that follows
+contiguously may coalesce with it, as GtkSourceView coalesces typed characters, but undo never
+reaches anything installed before it. Its result is checked: a refused insert (the view stopped
+being editable) is rescued (D5), never dropped. It runs after the lock is released
 and the projections are restored, so the buffer's `changed` and `modified-changed` handlers mark the
 document modified and draft-dirty and the next autosave writes it; the document-scale watch and the
 paragraph-wrap and Protected View edit entries see it as an ordinary edit. The view then scrolls the
@@ -108,7 +126,13 @@ caret on screen when it has keyboard focus, as typing does.
 Where the caret is: the install terminal places it (start of document, or the restored session
 position, `apply_restore_position`) before it releases the lock, and the caret was invisible during
 the install. So the held text appears where the caret is when the document is shown, which is the
-coordinator's stated expectation.
+coordinator's stated expectation. A reload of an open document (Reload after an external change,
+Replace All's reload, Discard Changes) keeps the caret's line and column and the scroll position
+(`reload_preserving_position`), so text typed during it goes where the user was, not to the start.
+An episode in which **no** release published a whole document (only `Unchanged`, a save) replays at
+a mark placed at the caret when its first character was held (`ReplayAnchor::FirstHold`): the
+content did not move, so that position still names where the user typed, whatever a later click
+moved the caret to.
 
 ### D5. Which document gets the text: the episode's content disposition
 
@@ -128,25 +152,35 @@ document the user meant), `Unchanged` keeps it. At the settle dispatch:
 
 | Document | Verdict |
 | --- | --- |
-| Protected View, or the view not editable | discard, Protected View notice `HeldTextNotInserted` |
-| broken episode, `Failed` load, incomplete installation, evicted | discard, status warning naming the count |
+| Protected View, or the view not editable | rescue: "it is view-only because it contains very long lines" |
+| evicted | rescue: "it was unloaded from memory" |
+| `Failed` load, incomplete installation | rescue: "it did not finish loading" |
+| broken episode | rescue: "its content was replaced before it was ready" |
 | otherwise (`Loaded`, `Untitled`, a reload failure that kept the old text) | replay |
 
-A cancelled or failed first load leaves an empty or partial buffer whose save is already refused
-(`installation_incomplete`), but inserting the held text would make a document that consists of only
-the typed text; a later retry would then race the user's edit. Discarding with a warning is the safe
-choice; the warning says how many characters were not inserted.
+**No verdict discards the text.** A rescue opens it in a new Untitled tab through the Preserved
+Drafts "Open" path (`LushtextWindow::open_set_aside_draft`: a new tab, a bounded replacement,
+modified and draft-dirty, so autosave writes its own draft) and publishes a warning that is never
+rate-limited, because it is the one place the user learns where the text went: "N typed characters
+could not go into “name” (why); they are in a new Untitled tab." A cancelled or failed first load
+leaves an empty or partial buffer whose save is already refused (`installation_incomplete`);
+inserting the held text there would make a document that consists of only the typed text, and a
+later retry would race the user's edit, so the text goes to its own tab instead. An editor in no
+window waits (the dispatch re-arms) rather than lose the text.
 
 Protected View (C2): a document whose profile is protected is entered at install begin
 (`begin_protected_install`), so its view is not editable from then on and GtkTextView refuses typing
 before any signal; Protected View's own pre-emption notice covers those keys. Text held before that
-(while the load was planning) is discarded at the settle with the Protected View notice. A replay into
+(while the load was planning) is rescued at the settle (the retired `HeldTextNotInserted` notice
+said it was not inserted; the rescue warning says where it is). A replay into
 an editable document that the replay itself makes protected enters through C1's edit watch like any
 other edit (C2's edit entry, with its entry undo).
 
-Closing a tab cancels its load and drops its held text with the page, as it drops the load: the user
-asked for the document to go. A crash during an install loses at most the held text, which was never
-shown or drafted. Both are recorded, not prevented.
+A close never drops held text (D10), and a tab moved to another window keeps it (D11). A crash
+during an install loses at most the held text, which was never shown or drafted; that is recorded,
+not prevented. A tab holding typed input is never evicted from memory
+(`eligible_for_memory_eviction`, and the eviction's own freshness check between its turns, which
+reads `has_held_text` because the eviction's lock is held while it runs).
 
 ### D6. The cap and its overflow
 
@@ -154,9 +188,12 @@ shown or drafted. Both are recorded, not prevented.
 `.agents/rules/rust.md`). Derivation: the longest hold is one settle (the lane's cap is 10 s); a fast
 typist at 20 characters per second fills 200 bytes of ASCII, 800 of four-byte UTF-8, so 4 KiB is five
 times the worst typing. It is also small enough that the replay insert stays far inside `B_SETTLE`
-on any document the edit watch lets the user edit (D8). Overflow: an insertion that does not fit
-**whole** is refused whole (never split: half a paste is worse than none) and publishes
-`HeldNotice::Overflow` at once; the held text already kept is still replayed.
+on any document the edit watch lets the user edit (D8). Overflow is decided per **user action**:
+the held length is recorded at the outermost `begin-user-action`, and an insertion that does not fit
+truncates the held text back to that length and refuses the rest of the action, so a paste that GTK
+delivers in several segments is never partly held (half a paste is worse than none). It publishes
+`HeldNotice::Overflow` at once, saying that the clipboard still has the text and it can be pasted
+again when the document is ready; text held by earlier actions is still replayed.
 
 ### D7. Feedback and accessibility
 
@@ -169,9 +206,13 @@ on any document the edit watch lets the user edit (D8). Overflow: an insertion t
   as C6 has it: the buffer does not change until the replay, and AT reads the buffer. The replay's
   insertion is an ordinary text change, which AT reports as inserted text.
 - Input method: the preedit is drawn by the view at the caret and never enters the buffer; its commit
-  is a typed insertion (D2). The replay waits for a preedit to end (D4). `retrieve-surrounding`
-  answers from the buffer, which does not contain held text; an input method that reads surrounding
-  text sees the document as it is, which is the same as for a refused key today.
+  is a typed insertion (D2). The replay waits for a preedit to end, at most 1,024 ms (D4). The
+  editor's `retrieve-surrounding` answer (`surrounding_text.rs`) puts the held text, bounded to the
+  surrounding window, before the cursor, and the view's `delete-surrounding` handler is replaced the
+  same way: a deletion that falls inside the held text edits it. An input method that composes by
+  deleting what it committed (Telex for Vietnamese) would otherwise delete document text the user
+  never meant, or be refused and leave the held text garbled. A deletion outside the held text keeps
+  GTK's behaviour, which the lock and D3 then refuse.
 
 ### D8. The replay dispatch fits `B_SETTLE`
 
@@ -180,6 +221,18 @@ re-validating the caret's paragraph, which is what a single typed character cost
 plus the inserted characters' layout. On documents where a keystroke fits `B_INTERACT` (the edit
 watch's rule), 4 KiB more of text in the paragraph fits `B_SETTLE`; in the lane the held text is at
 most 60 characters. The lane verdict checks it (tasks 4).
+
+Measured (a throwaway widget probe, debug build, cairo renderer, under the measurement lock, load
+5.9–6.9 with a game on 2.4 CPUs, three repetitions, `.claude/handoffs/keystrokes-verdict/budget/`),
+against a **4 KiB paste control**: the same text pasted at the same caret into the same document,
+loaded. Replay dispatch / paste: `dense` 710 × 400 ASCII 0.7–0.8 / 0.7–2.4 ms, four-byte 0.7 /
+0.6 ms, 5 MB one line 0.4 / 0.5–0.8 ms, 256 lines into 5 MB 2.9–3.5 / 3.7–10.7 ms; the dispatches in
+the 200 ms after are the same size for both (up to 29 ms replayed, 49 ms pasted, four-byte font
+fallback), so "the frame after costs what a paste costs" is measured, not assumed. Two replays that
+change the document's scale: one that grows a 48,000-character paragraph past `L_PROTECT_EDIT` and
+**enters Protected View** took 2.7–3.1 ms (13.6 ms on the first, cold repetition; the paste 2.2–6.8
+ms), and one that grows a `.rs` paragraph past `L_SYNTAX` and **turns syntax off** took 0.9–1.2 ms
+(paste 2.5–3.0). All within `B_SETTLE`.
 
 ### D9. Lane
 
@@ -190,11 +243,52 @@ the delivery gate requires `inserted >= to_editor + to_held_editor`, so a held k
 replayed fails the phase. The `editor_user_insert` mark is recorded once per inserted **character**
 (the replay is one insertion of many), which is what the delivery requirement already says.
 
+### D10. A close never drops held text
+
+Every close collector asks `LushtextEditorPage::has_unsaved_changes()`, which is `is_modified() ||
+has_held_text()`: tab close (`handle_tab_close_request`, `confirm_close_tab`), Close Others and bulk
+close (`tab_strip/close_execution.rs`, `collect_modified_close_targets`), window close
+(`close_request`, `modified_editors`). The close-safety fingerprint includes the held character
+count, so typing during the close transaction aborts it like any other change.
+
+Before collecting, a close calls `settle_held_text_for_close`, which asks each editor's
+`flush_held_text_for_close()` (the pure `close_disposition`):
+
+- **Nothing held:** the close goes on as before.
+- **Held, no workflow owns the buffer** (the gap between a release and its settle dispatch, or an
+  active composition): the composition is reset and the settle runs synchronously. The document is
+  then modified, so the normal Save Changes dialog asks and its Save includes the text (or the text
+  was rescued into its own tab, which the window close then collects).
+- **Held, a workflow owns the buffer** (a load, a replacement, a save, or a pending draft restore):
+  the close is refused, as `is_saving` already refuses it, with "Typed text is waiting for “name”;
+  close it when the document is ready."
+
+`app.quit` (Ctrl+Q) called `GApplication::quit`, which skipped `close_request`, the Save Changes
+dialog and the close-safety flush entirely (pre-existing). It now calls `request_quit`, which
+closes every window through its own close confirmation; the process ends when the last window is
+destroyed, and with no window it quits at once.
+
+### D11. A tab moved to another window is not a teardown
+
+`AdwTabView` reports a close and a transfer to another tab view with the same `page-detached`. The
+detach terminal tore every detached page down, so moving a tab to another window cancelled its
+load (and its held text was then rescued or lost) and stopped its file monitor (pre-existing). A
+close the window confirmed now records its page (`closing_pages`, inserted at
+`close_page_finish(.., true)`); a detach of any other page is a transfer: the source window drops
+its bookkeeping (open paths, notifications, memory tracking), the editor keeps its load, monitor and
+held text, and the receiving window's `page-attached` adopts it with the wiring a page it opened
+gets (`adopt_transferred_tab`: open paths, info bar, notes, modified indicator, preview projection,
+tab configuration, memory tracking, session). The draft-id claim follows on its own: a claim whose
+owner no longer has an editor for the id passes to the asking window.
+
 ## Risks / Trade-offs
 
 - [The held window covers `Loading`] A load that stays queued behind admission keeps typing held for
-  as long. → The text is kept, not lost, and the status message says it will appear; a load always
-  reaches a terminal (completion, failure, cancellation, disposal).
+  as long, and a close of that tab is refused meanwhile (D10). → The text is kept, not lost, and the
+  status message says it will appear; a load always reaches a terminal (completion, failure,
+  cancellation, disposal).
+- [A rescue opens a tab the user did not ask for] → It is selected and announced; the alternative is
+  losing the text.
 - [The taint rule refuses typing over a selection] → Refused with a warning; selections are hidden
   with the caret during an install, so this is rare, and replaying only the insert would be wrong.
 - [GtkSourceView auto-indent or an input method that inserts then deletes in one action] → The insert

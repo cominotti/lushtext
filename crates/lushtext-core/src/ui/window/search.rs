@@ -743,7 +743,7 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
         if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
             && let Some(path) = editor.file_path()
             && affected_paths.contains(&path)
-            && !editor.is_modified()
+            && !editor.has_unsaved_changes()
             && !editor.is_saving()
         {
             let editor_weak = editor.downgrade();
@@ -761,7 +761,7 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
                         return;
                     };
                     if editor.file_path().as_deref() != Some(path.as_path())
-                        || editor.is_modified()
+                        || editor.has_unsaved_changes()
                         || editor.is_saving()
                     {
                         return;
@@ -769,7 +769,7 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
                     // Update mtime before reload to suppress the file monitor's
                     // "changed" warning for writes made by Replace All/Undo.
                     editor.imp().monitor.last_known_mtime.set(modified_at_secs);
-                    editor.load_file_async(&path);
+                    editor.reload_preserving_position(&path);
                 },
             );
         }

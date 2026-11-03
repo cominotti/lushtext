@@ -424,7 +424,11 @@ impl LushtextEditorPage {
             },
             String::new(),
             move |editor| {
+                // Held text is the user's: a page holding it is never evicted.
+                // (`has_held_text`, not `holds_typed_input`: this eviction's
+                // own edit lock is held while the check runs between turns.)
                 editor.imp().residency.policy_generation.get() == generation
+                    && !editor.has_held_text()
                     && !editor.is_evicted()
                     && !editor.is_saving()
                     && editor.load_state() == EditorLoadState::Loaded
@@ -469,6 +473,7 @@ impl LushtextEditorPage {
         !active
             && !self.is_evicted()
             && !self.is_modified()
+            && !self.holds_typed_input()
             && !self.is_saving()
             && self.load_state() == EditorLoadState::Loaded
             && !self.latest_load_failed()
