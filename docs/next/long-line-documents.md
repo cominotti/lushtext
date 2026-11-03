@@ -2785,3 +2785,5 @@ each fixed with a failing-first self-test case:
 
 Where this work goes next, in priority order, is in
 [`long-line-evolution.md`](./long-line-evolution.md).
+
+**Coordinator note at landing (2026-11-03).** In the re-verdict, `baseline/small/steady-populated` `type-during-settle` shows a worst-stall median of 4.9 ms on main against 12.2 ms on the branch, and a max of 16.6 ms against 20.8 ms. Both sides exceed B_settle in that phase; input-to-frame improved (19.4 → 18.1 ms), and no completion or hand-off exceeded 4.8 ms. The shift is **not attributed**. It is handed to the EV change (`defer-background-tab-layout`), which works on exactly the populated profile, to be attributed with perf and fixed or recorded. The design's A69 citation for equal-priority co-dispatch points at the context-engine row; EV should cite or add a general equal-priority co-dispatch axiom.

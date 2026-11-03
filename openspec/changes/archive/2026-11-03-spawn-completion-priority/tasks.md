@@ -34,7 +34,7 @@
 ## 6. Verification and ship
 
 - [x] 6.1 `make fmt`, `make check-fmt`, `make check-clippy`, `make check-workflow-boundaries`, `make check-automation-docs`, `cargo check -p lushtext --bins --locked`, the rustdoc gate, `make test` (0 FLAKY), `make gtk-axioms`, and the GTK Lush policy, doctests, examples, MSRV and API-advisory checks.
-- [ ] 6.2 The smoke lanes the commit hooks require, last, before each commit. Then signed conventional commits, push, PR (not merged).
+- [x] 6.2 The smoke lanes the commit hooks require, last, before each commit. Then signed conventional commits, push, PR (not merged). (done: smokes passed before each commit; PR #79 landed by fast-forward at 92d77176)
 
 ## 7. Review fixes (independent review of PR #79)
 
