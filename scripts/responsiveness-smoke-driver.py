@@ -187,6 +187,10 @@ PROTECTED_SAVE_AS_LENGTH = 1_900_000
 # document, for the mid-install tab switch and scroll.
 MID_INSTALL_SMALL_LINES = 400
 EVICTION_FILE_BYTES = 8 * 1024 * 1024
+# The tab `eviction/reselect`'s `switch-hidden` phase selects: one the run
+# never selects before (the activation selects the last file, `reselect` the
+# first).
+EVICTION_NEVER_SHOWN_TAB = 4
 # `save/during-validation` (spawn-completion-priority D5): the short-line
 # documents (`short-code`, below C6's density bound, so installed unpaced and
 # validated afterwards) whose validation backlog the save runs during, how long after their
@@ -220,6 +224,9 @@ PHASE_KINDS = {
     "inspect": "interaction",
     "copy-line": "settle",
     "reselect": "interaction",
+    # `defer-background-tab-layout`: switching to a large tab that was never
+    # shown (its view laid nothing out while hidden), then scrolling it.
+    "switch-hidden": "interaction",
     "idle": "calibration",
     # The sliced protected install (sliced-protected-install, C3): the tab
     # switches and scrolls issued while an install runs are interactions;
@@ -3162,6 +3169,22 @@ class Runner:
                         return self.wait_ready("file-open-complete", deadline)
 
                     ok = ok and self.run_phase(phases, "reselect", cap, reselect)
+
+                    def switch_hidden(inj, deadline):
+                        # A tab the run never selected: its view laid nothing
+                        # out while hidden (`defer-background-tab-layout`), so
+                        # this is the first layout of its document.
+                        self.action("win", "select-tab", [self._uint32(EVICTION_NEVER_SHOWN_TAB)], deadline)
+                        ok, status = self.wait_ready("file-open-complete", deadline)
+                        if ok and self.rd.available:
+                            self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2)
+                            for _ in range(10):
+                                self.rd.wheel(1, inj)
+                                time.sleep(0.05)
+                        return ok, status
+
+                    if ok and self.wanted("switch-hidden"):
+                        ok = self.run_phase(phases, "switch-hidden", cap, switch_hidden)
                 elif ok and case.flow == "keystroke":
                     ok = self.keystroke_interactions(phases)
                 elif ok and case.flow == "reload":
@@ -4004,7 +4027,7 @@ def rows_for(rows: list[dict], group: str, length: int | None = None, **attrs: A
     return selected
 
 
-INTERACTION_PHASES = ("scroll", "click", "pagedown", "type-start", "type-middle", "type-end", "find", "tab-switch", "reselect")
+INTERACTION_PHASES = ("scroll", "click", "pagedown", "type-start", "type-middle", "type-end", "find", "tab-switch", "reselect", "switch-hidden")
 
 
 # The derived value each in-driver bisection series refines.
