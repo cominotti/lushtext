@@ -191,6 +191,13 @@ EVICTION_FILE_BYTES = 8 * 1024 * 1024
 # never selects before (the activation selects the last file, `reselect` the
 # first).
 EVICTION_NEVER_SHOWN_TAB = 4
+# The `switch-hidden` cases beside `eviction/reselect` (review of
+# `defer-background-tab-layout`): one never-shown document behind a small
+# selected one, a 1.9M-character paragraph (Protected View) and a dense
+# 11 MiB document of 2,000-character lines (paced, C6).
+SWITCH_HIDDEN_GIANT_LENGTH = 1_900_000
+SWITCH_HIDDEN_DENSE_LINE = 2_000
+SWITCH_HIDDEN_DENSE_LINES = 11 * 1024 * 1024 // (SWITCH_HIDDEN_DENSE_LINE + 1)
 # `save/during-validation` (spawn-completion-priority D5): the short-line
 # documents (`short-code`, below C6's density bound, so installed unpaced and
 # validated afterwards) whose validation backlog the save runs during, how long after their
@@ -657,6 +664,13 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
     was stalled the late frame stays attributed, because the stall is what
     delayed it.
 
+    A wheel (`scroll`) that moved no editor view (no `adjustment_value` mark
+    from its handler until the frame it would be credited with: the view was
+    already at its end) changed nothing visible either, and is reported as
+    `no-visible-change` rather than charged with whatever frame came next
+    (review of `defer-background-tab-layout`). A log with no such mark at all
+    (a probe from before the mark) keeps the earlier attribution.
+
     A text key that reached an editable editor (`inserts`, target `editor`)
     always changes what is drawn, so that rule never applies to it: its
     latency runs to the eventual frame and the row is flagged
@@ -669,6 +683,7 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
     editable typing (`editable_latency`).
     """
     frames = sorted(parsed["records"]["frame"], key=lambda r: int(r["frame_time_us"]))
+    value_marks = sorted(int(r["t_us"]) for r in parsed["records"]["mark"] if r.get("name") == ADJUSTMENT_VALUE_MARK)
     records = match_injections(parsed, injections)
     matched: list[tuple[dict, int | None]] = [(injection, int(record["t_us"]) if record else None) for injection, record in zip(injections, records)]
     targets: list[str | None] = [record.get("target") if record else None for record in records]
@@ -716,6 +731,9 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
             else:
                 results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-visible-change", **delivery})
                 continue
+        if wanted == "scroll" and value_marks and not any(handler <= t <= int(frame["frame_time_us"]) for t in value_marks):
+            results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-visible-change", **delivery})
+            continue
         presented, source = frame_presented(parsed, frame, reference_frame_us)
         latency = max(0, presented - origin)
         results.append(
@@ -964,6 +982,9 @@ POST_OPEN_SPAN_PREFIX = "post_open_"
 POST_OPEN_ACTIVATION = "post_open_activation"
 HIGHLIGHT_UPDATED_MARK = "highlight_updated"
 ADJUSTMENT_UPPER_MARK = "adjustment_upper"
+# A change of an editor's vertical adjustment value (a scroll moved the view);
+# `input_to_frame` credits a wheel only with a frame after one.
+ADJUSTMENT_VALUE_MARK = "adjustment_value"
 POST_OPEN_LANGUAGE_ATTACH = "post_open_language_attach"
 # The dispatches that lay a document out: GtkTextView's validation (the
 # vertical upper changing) and the install slices that feed it.
@@ -1540,7 +1561,7 @@ class Case:
     group: str
     fixture: FixtureSpec | None
     settings: dict[str, Any] = field(default_factory=dict)
-    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke | seeded-recovery | save
+    flow: str = "standard"  # standard | session | eviction | switch-hidden | reload | install | calibration | keystroke | seeded-recovery | save
     length: int | None = None  # the swept paragraph length / line length / total size
     attrs: dict[str, Any] = field(default_factory=dict)
 
@@ -1687,6 +1708,22 @@ def build_cases(tier: str) -> list[Case]:
                 FixtureSpec("eviction", EVICTION_FILE_BYTES, seed_for("eviction")),
                 settings={"word-wrap": True, "show-minimap": False},
                 flow="eviction",
+            ),
+            Case(
+                "eviction/switch-hidden-giant",
+                "eviction",
+                FixtureSpec("paragraph", SWITCH_HIDDEN_GIANT_LENGTH, seed_for("switch-hidden-giant")),
+                settings={"word-wrap": True, "show-minimap": False},
+                flow="switch-hidden",
+                length=SWITCH_HIDDEN_GIANT_LENGTH,
+            ),
+            Case(
+                "eviction/switch-hidden-dense",
+                "eviction",
+                FixtureSpec("dense", SWITCH_HIDDEN_DENSE_LINE, seed_for("switch-hidden-dense"), count=SWITCH_HIDDEN_DENSE_LINES),
+                settings={"word-wrap": True, "show-minimap": False},
+                flow="switch-hidden",
+                length=SWITCH_HIDDEN_DENSE_LINE,
             ),
             Case(
                 "save/during-validation",
@@ -2458,6 +2495,23 @@ class Runner:
             return recover()
         return False
 
+    def switch_hidden(self, tab: int) -> Callable[[Any, float], tuple[bool, str]]:
+        """A phase body: select tab `tab`, one the run never selected (its view
+        laid nothing out while hidden, `defer-background-tab-layout`, so this is
+        the first layout of its document), then scroll it."""
+
+        def body(inj, deadline):
+            self.action("win", "select-tab", [self._uint32(tab)], deadline)
+            ok, status = self.wait_ready("file-open-complete", deadline)
+            if ok and self.rd.available:
+                self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2)
+                for _ in range(10):
+                    self.rd.wheel(1, inj)
+                    time.sleep(0.05)
+            return ok, status
+
+        return body
+
     def settle_after(self, seconds: float) -> Callable[[Any, float], tuple[bool, str]]:
         """A background phase body: wait `seconds`, then for app startup readiness."""
 
@@ -3170,21 +3224,14 @@ class Runner:
 
                     ok = ok and self.run_phase(phases, "reselect", cap, reselect)
 
-                    def switch_hidden(inj, deadline):
-                        # A tab the run never selected: its view laid nothing
-                        # out while hidden (`defer-background-tab-layout`), so
-                        # this is the first layout of its document.
-                        self.action("win", "select-tab", [self._uint32(EVICTION_NEVER_SHOWN_TAB)], deadline)
-                        ok, status = self.wait_ready("file-open-complete", deadline)
-                        if ok and self.rd.available:
-                            self.rd.move_to(SCREEN_W // 2, SCREEN_H // 2)
-                            for _ in range(10):
-                                self.rd.wheel(1, inj)
-                                time.sleep(0.05)
-                        return ok, status
-
                     if ok and self.wanted("switch-hidden"):
-                        ok = self.run_phase(phases, "switch-hidden", cap, switch_hidden)
+                        ok = self.run_phase(phases, "switch-hidden", cap, self.switch_hidden(EVICTION_NEVER_SHOWN_TAB))
+                elif ok and case.flow == "switch-hidden":
+                    # The small document (selected by the activation) first,
+                    # then the large one never shown behind it.
+                    ok = self.run_phase(phases, "background", cap, self.settle_after(2.0))
+                    if ok and self.wanted("switch-hidden"):
+                        ok = self.run_phase(phases, "switch-hidden", cap, self.switch_hidden(0))
                 elif ok and case.flow == "keystroke":
                     ok = self.keystroke_interactions(phases)
                 elif ok and case.flow == "reload":
@@ -3583,14 +3630,16 @@ class Runner:
             return [self.record_skip(case, "*", "not enough available memory")]
         if case.fixture is not None:
             files = self.make_fixture(case.fixture, case.id)
-        if case.flow == "install" and files:
+        if case.flow in ("install", "switch-hidden") and files:
             # A small document opened first, for the mid-install tab switch
             # and scroll (`sliced-protected-install`, task 6.1).
             small = files[0].parent / "small.txt"
             data = "".join(f"short line {line} of the small tab\n" for line in range(MID_INSTALL_SMALL_LINES)).encode()
             small.write_bytes(data)
             self.ledger.record(small, hashlib.sha256(data).hexdigest())
-            files = [small, *files]
+            # `switch-hidden` opens it last, so the activation selects it and
+            # the large document is never shown until the phase selects it.
+            files = [small, *files] if case.flow == "install" else [*files, small]
         try:
             variants = ["plain"] if case.flow == "calibration" else self.variants
             for variant in variants:
@@ -6172,6 +6221,26 @@ def self_test() -> int:
     expect(len(attributed) == 2, f"unmeasured injections produce no result ({attributed})")
     expect(attributed[0].get("status") == "no-visible-change", f"a frame after the next handled input is not this input's frame ({attributed[0]})")
     expect(attributed[1].get("latency_us") == 2_000, f"the next input keeps its own frame ({attributed[1]})")
+
+    # A wheel that moved no view (the `recovery/protected-32mib` "....V"
+    # artefact): charged with the next frame only once an `adjustment_value`
+    # mark shows the view moved; a log without the mark keeps the old rule.
+    def wheel_log(moved: bool) -> list[str]:
+        return [
+            json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000}),
+            json.dumps({"kind": "mark", "t_us": 500_000, "name": ADJUSTMENT_VALUE_MARK}),
+            json.dumps({"kind": "input", "t_us": 1_000_000, "window": 1, "event": "scroll", "event_time_ms": 0}),
+            *([json.dumps({"kind": "mark", "t_us": 1_000_100, "name": ADJUSTMENT_VALUE_MARK})] if moved else []),
+            json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 1, "frame_time_us": 1_380_000, "presentation_us": 1_381_000, "refresh_interval_us": 8333, "source": "presentation"}),
+        ]
+
+    wheel = [{"event": "scroll", "inject_us": 999_000}]
+    still = input_to_frame(parse_probe_log(wheel_log(False)), wheel, 8_333)
+    expect(still[0].get("status") == "no-visible-change", f"a wheel that moved nothing is not charged a later frame ({still})")
+    moved = input_to_frame(parse_probe_log(wheel_log(True)), wheel, 8_333)
+    expect(moved[0].get("latency_us") == 382_000, f"a wheel that moved the view keeps its frame ({moved})")
+    unmarked = input_to_frame(parse_probe_log([line for line in wheel_log(False) if ADJUSTMENT_VALUE_MARK not in line]), wheel, 8_333)
+    expect(unmarked[0].get("latency_us") == 382_000, f"an older probe's wheels keep the old attribution ({unmarked})")
 
     # Typing that reached no document (investigate-first-keys-without-frames):
     # a focus click that landed in the workspace sidebar sent every typed key
