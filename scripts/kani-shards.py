@@ -188,6 +188,15 @@ PROTECTED_INSTALL_MEASURED_IN = (
     "PENDING DISPATCH: local make kani KANI_MEASURE run on the reference workstation, 2026-11-02 "
     "(Kani 0.68.0; core-protected-install 4.54 min / 7.94 GiB), not runner measurements"
 )
+# spawn-completion-priority's review fix added the two settle-evidence
+# harnesses to widgets-slice-loop-requests: 9.8 min / 1.64 GiB locally against
+# the shard's 7.6 min on the runner before; the runner figure is scaled by that
+# ratio (+4.1 min, the two harnesses' 279 s) until a dispatched run replaces it.
+SETTLE_EVIDENCE_MINUTES = 11.7
+SETTLE_EVIDENCE_MEASURED_IN = (
+    "; PENDING DISPATCH: local make kani KANI_MEASURE run on the reference workstation, 2026-11-03 "
+    "(Kani 0.68.0; widgets-slice-loop-requests 9.8 min / 1.64 GiB with the settle-evidence harnesses)"
+)
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -235,11 +244,12 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_learning_frame_",
             "kani_proofs::slice_loop_one_reconfiguring_",
             "kani_proofs::slice_loop_two_reconfiguring_",
+            "kani_proofs::slice_loop_settle_evidence_",
         ),
         gate="scheduled",
-        ci_minutes=7.6,
+        ci_minutes=SETTLE_EVIDENCE_MINUTES,
         ci_peak_gib=1.7,
-        measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
+        measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + SETTLE_EVIDENCE_MEASURED_IN,
     ),
     "widgets-slice-loop-requests-two": Shard(
         "gtk-lush-widgets",
@@ -558,6 +568,8 @@ _SLICE_LOOP = (
     _h(_W + "slice_bin_rests_from_any_origin", 48.02, "local"),
     _h(_W + "slice_bin_rests_after_any_outer_jump", 80.36, "local"),
     _h(_W + "slice_bin_honours_a_request_from_any_origin", 341.54, "local"),
+    _h(_W + "slice_loop_settle_evidence_waits_for_the_reslice", 190.38, "local"),
+    _h(_W + "slice_loop_settle_evidence_without_the_reslice_is_stale", 88.4, "local"),
 )
 _JOURNAL = "services::draft_service::kani_proofs::"
 _RETENTION = "services::draft_service::set_aside_retention::kani_proofs::"

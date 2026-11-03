@@ -143,7 +143,10 @@ impl Drop for TransientLoadPermit {
         // stages, and below GtkTextView's validation idle it would wait for
         // every validating view's whole backlog (ledger A80).
         glib::idle_add_full(gtk_lush_tasks::completion_priority(), move || {
-            release_on_main(request_id);
+            crate::ui::responsiveness_probe::span(
+                crate::ui::responsiveness_probe::TASK_HANDOFF_SPAN,
+                || release_on_main(request_id),
+            );
             glib::ControlFlow::Break
         });
     }
@@ -471,7 +474,10 @@ fn schedule_drain() {
     if should_schedule {
         // At the completion priority, like the permit release (ledger A80).
         glib::idle_add_local_full(gtk_lush_tasks::completion_priority(), || {
-            drain();
+            crate::ui::responsiveness_probe::span(
+                crate::ui::responsiveness_probe::TASK_HANDOFF_SPAN,
+                drain,
+            );
             glib::ControlFlow::Break
         });
     }

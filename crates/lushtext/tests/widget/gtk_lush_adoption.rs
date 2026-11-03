@@ -557,6 +557,55 @@ fn test_adoption_slice_bin_reports_a_forwarded_request_until_its_idle_applies_it
 }
 
 #[test]
+fn test_adoption_slice_bin_reports_a_forwarded_request_until_it_reslices() {
+    // The forwarding idle moves the outer scroller, but the bin re-slices from
+    // that value only in the next layout pass. A caller polling between the
+    // two (the workspace path reveal does, every 16 ms) must still see the
+    // request pending: the rows there are drawn where the old band put them.
+    let fixture = SliceAdoptionFixture::present(1);
+    let bin = &fixture.bins[0];
+    let adjustment = fixture.adjustment();
+    for _ in 0..6 {
+        fixture.force_layout();
+    }
+    assert!(!bin.outer_request_pending());
+    let resting = adjustment.value();
+    let target = SLICE_ADOPTION_ROWS - 1;
+    fixture.lists[0].scroll_to(target, gtk4::ListScrollFlags::NONE, None);
+    let mut at_move = None;
+    let moved = observed_between_dispatches(Duration::from_secs(5), || {
+        let moved = (adjustment.value() - resting).abs() > SCROLL_TOLERANCE;
+        if moved && at_move.is_none() {
+            at_move = Some((bin.outer_request_pending(), bin.allocation_count()));
+        }
+        moved
+    });
+    assert!(
+        moved,
+        "the forwarded scroll_to must move the outer scroller"
+    );
+    let (pending_at_move, allocations_at_move) = at_move.expect("observed at the move");
+    assert!(
+        pending_at_move,
+        "right after the forwarding idle moved the outer scroller, before any frame, the \
+         bin must still report the request pending: it has not re-sliced yet"
+    );
+    wait_until(Duration::from_secs(5), || !bin.outer_request_pending());
+    assert!(
+        bin.allocation_count() > allocations_at_move,
+        "the request may stop being pending only once the bin has re-sliced"
+    );
+    let label = format!("row {target:04}");
+    let row = mapped_row_with_label(&fixture.lists[0], &label);
+    assert!(
+        row.as_ref().is_some_and(|row| fixture.fully_visible(row)),
+        "once nothing is pending the requested row is where it is drawn: {:?}",
+        row.and_then(|row| row.compute_bounds(&fixture.scroller))
+    );
+    drop(fixture.window);
+}
+
+#[test]
 fn test_adoption_two_slice_bins_requesting_in_one_turn_do_not_add_up() {
     // Two bins in one scroller each forward a child request measured against
     // the same outer value. Their idles run one after the other, so if each
