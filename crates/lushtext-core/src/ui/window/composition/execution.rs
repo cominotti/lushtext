@@ -20,6 +20,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use glib::translate::IntoGlib;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 
@@ -173,6 +174,24 @@ impl CompositionState {
 
 // --- The application side: the request, stage W and stage C ---------------
 
+/// The priority every composition stage dispatch (W, C, R+P, the reveals)
+/// runs at: one step above `G_PRIORITY_DEFAULT_IDLE`, still below the frame
+/// clock and input.
+///
+/// GLib dispatches every ready source of the top priority in one iteration
+/// (ledger A69), so a stage at `G_PRIORITY_DEFAULT_IDLE` shared its dispatch
+/// with any other default-idle source that became ready at the same time.
+/// Once worker completions arrived ahead of default-idle work
+/// (`gtk_lush_tasks::completion_priority`, ledger A80), the session load
+/// completed before stage P, and its first restore turn ran in P's iteration:
+/// present plus two page activations took 16.5–26 ms against P's 1.5–2 ms
+/// alone (`session/restore-3-small`, `spawn-completion-priority`). One step
+/// above, a stage always has its iteration to itself and the default-idle
+/// work runs in the next one.
+fn stage_priority() -> glib::Priority {
+    glib::Priority::from(glib::Priority::DEFAULT_IDLE.into_glib() - 1)
+}
+
 /// Record a window request from `open` (with files) or `activate` (without),
 /// and return without window work (design D1).
 pub(crate) fn request_window(app: &LushtextApplication, files: Vec<gio::File>) {
@@ -200,7 +219,7 @@ pub(crate) fn request_window(app: &LushtextApplication, files: Vec<gio::File>) {
     if PROCESS_WARMED.with(Cell::get) {
         schedule_construct(app_weak);
     } else {
-        glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+        glib::idle_add_local_full(stage_priority(), move || {
             run_warm(app_weak.clone());
             glib::ControlFlow::Break
         });
@@ -253,7 +272,7 @@ fn warm_first_frame_resources() {
 }
 
 fn schedule_construct(app_weak: glib::WeakRef<LushtextApplication>) {
-    glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+    glib::idle_add_local_full(stage_priority(), move || {
         run_construct(&app_weak);
         glib::ControlFlow::Break
     });
@@ -526,7 +545,7 @@ impl LushtextWindow {
 
     // --- Lifecycle stages R and P, in one dispatch -------------------------
 
-    /// Queue stages R and P in one `G_PRIORITY_DEFAULT_IDLE` dispatch.
+    /// Queue stages R and P in one dispatch, at `stage_priority()`.
     ///
     /// They share it because realizing alone schedules a frame that runs
     /// before the next default-idle source on the still unmapped window: that
@@ -535,7 +554,7 @@ impl LushtextWindow {
     /// `shorten-window-content-fill-in` D1).
     fn queue_realize_and_present(&self) {
         let window_weak = self.downgrade();
-        let source = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+        let source = glib::idle_add_local_full(stage_priority(), move || {
             if let Some(window) = window_weak.upgrade() {
                 window.imp().composition.runtime.borrow_mut().dispatch = None;
                 window.run_realize_and_present();
@@ -673,7 +692,7 @@ impl LushtextWindow {
     /// Queue one dispatch that reveals `stages`, after the painted frame.
     fn queue_reveal_dispatch(&self, stages: StageSet) {
         let window_weak = self.downgrade();
-        let source = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+        let source = glib::idle_add_local_full(stage_priority(), move || {
             if let Some(window) = window_weak.upgrade() {
                 window.run_reveal_dispatch(stages);
             }

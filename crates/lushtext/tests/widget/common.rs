@@ -292,9 +292,10 @@ pub fn realized_list_rows(list: &gtk4::ListView) -> Vec<gtk4::Widget> {
 /// question. This wraps the shared helper rather than hand-rolling a poll loop,
 /// because `wait_until`'s mechanism is load-bearing and is the opposite of the
 /// obvious one: it sleeps briefly and *then* drains every ready main-loop
-/// source, which is what dispatches `spawn_blocking_then`'s low-priority
-/// `idle_add_once` completion. A loop that drains first and sleeps after
-/// starves exactly the terminal it is waiting for.
+/// source, which is what dispatches `spawn_blocking_then`'s completions (one
+/// per dispatch, at `gtk_lush_tasks::completion_priority()`). A loop that
+/// drains first and sleeps after starves exactly the terminal it is waiting
+/// for.
 pub fn wait_until_or_false(budget: Duration, predicate: impl FnMut() -> bool) -> bool {
     let mut predicate = predicate;
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

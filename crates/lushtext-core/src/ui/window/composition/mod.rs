@@ -67,7 +67,9 @@
 //!
 //! ## Where control leaves, and where it comes back
 //!
-//! - **1 → 2 → 3 → 4+5**: each is a `G_PRIORITY_DEFAULT_IDLE` source, and
+//! - **1 → 2 → 3 → 4+5**: each is an idle one step above
+//!   `G_PRIORITY_DEFAULT_IDLE` (`execution`'s stage priority, so no other
+//!   default-idle source shares a stage's dispatch), and
 //!   control resumes in `execution`'s `run_warm`, `run_construct` and
 //!   `run_realize_and_present`.
 //! - **4+5 → 6**: `present` maps the window; R and P are *observed* through
