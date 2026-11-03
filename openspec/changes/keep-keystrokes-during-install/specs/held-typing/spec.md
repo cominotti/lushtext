@@ -92,3 +92,26 @@ Every close collector (closing a tab, closing other or several tabs, closing the
 #### Scenario: Quit asks before dropping unsaved documents
 - **WHEN** the user quits with a modified document open
 - **THEN** the Save Changes dialog appears, and its Save writes the document
+
+### Requirement: A partial buffer is never saved
+A document whose buffer a workflow has changed without the user (a sliced load installation in progress or left incomplete, a memory eviction, a whole-buffer replacement cancelled after it began) SHALL NOT be reported as modified by the user unless it holds typed text or a recovered draft, and no save (Ctrl+S, the Save Changes dialog, Save As) SHALL write such a buffer or pre-empt a load in flight.
+
+#### Scenario: Closing a tab during a large install asks nothing
+- **WHEN** the user closes a tab while its document is installed in slices and nothing is held
+- **THEN** no Save Changes dialog appears, the tab closes and the file is unchanged
+
+#### Scenario: The close dialog never saves the installing document
+- **WHEN** the user closes the window with an edited document and another being installed
+- **THEN** the dialog offers only the edited document, its Save writes it, and the installing document's file is unchanged
+
+#### Scenario: Ctrl+S during an install writes nothing
+- **WHEN** the user presses Ctrl+S while the document is installed
+- **THEN** the save is refused, the file is unchanged and the install completes
+
+#### Scenario: Save As during a load writes nothing
+- **WHEN** the user chooses Save As while the file is still read or installed, even onto the file itself
+- **THEN** the save is refused, the file is unchanged and the load completes
+
+#### Scenario: An eviction cut short leaves nothing to save
+- **WHEN** a memory eviction goes stale after it began clearing the buffer
+- **THEN** the document is treated as evicted and reloads, and no save writes the emptied buffer

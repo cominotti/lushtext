@@ -166,4 +166,25 @@ impl LushtextEditorPage {
     pub(crate) fn buffer_replacement_projection_suspended(&self) -> bool {
         self.imp().replacement.projection_suspended.get()
     }
+
+    /// Whether a memory eviction is emptying the buffer right now: its
+    /// deletions are not the user's (`LushtextEditorPage::is_modified`).
+    #[must_use]
+    pub(crate) fn memory_eviction_in_progress(&self) -> bool {
+        self.imp()
+            .replacement
+            .active
+            .borrow()
+            .as_ref()
+            .is_some_and(|session| {
+                session.borrow().ticket.workflow == BufferReplacementWorkflow::MemoryEviction
+            })
+    }
+
+    /// Whether a cancelled replacement emptied the buffer and nothing whole
+    /// was published since (`BufferReplacementState::left_partial`).
+    #[must_use]
+    pub(crate) fn replacement_left_buffer_partial(&self) -> bool {
+        self.imp().replacement.left_partial.get()
+    }
 }

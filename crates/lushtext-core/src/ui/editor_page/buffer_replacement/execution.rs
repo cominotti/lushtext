@@ -385,6 +385,12 @@ pub struct BufferReplacementState {
     pub(super) active: RefCell<Option<Rc<RefCell<BufferReplacementSession>>>>,
     pub(super) pending: RefCell<Option<BufferReplacementRequest>>,
     pub projection_suspended: std::cell::Cell<bool>,
+    /// Whether the newest session was cancelled after it started mutating, so
+    /// its bounded clear emptied the buffer and nothing published a whole
+    /// document since: the buffer holds neither the old text nor the new.
+    /// Cleared by a completed replacement or a published load. While it holds
+    /// and the user has not typed since, no save may write the buffer.
+    pub left_partial: std::cell::Cell<bool>,
     pub(super) slice_count: std::cell::Cell<u64>,
     /// The newest session's sliced protected install counts (C3).
     pub(super) protected_install: std::cell::Cell<crate::ui::protected_fold::FoldedInstallMetrics>,
@@ -1085,6 +1091,17 @@ fn finish_session(
         // The installed body's profile joins the session before the guard
         // restores highlighting, so a gated feature is never switched back on.
         editor.join_installed_profile(profile);
+    }
+    match cancellation {
+        None => editor.imp().replacement.left_partial.set(false),
+        Some(reason) if mutated && reason != BufferReplacementCancelReason::Disposed => {
+            // The cancelled clear emptied the buffer: the emptiness is the
+            // workflow's, not an edit of the user's, so the tab is not
+            // modified, and a save may not write it over the file.
+            buffer.set_modified(false);
+            editor.imp().replacement.left_partial.set(true);
+        }
+        Some(_) => {}
     }
     if guard_restores_on_terminal(cancellation)
         && let Some(guard) = guard

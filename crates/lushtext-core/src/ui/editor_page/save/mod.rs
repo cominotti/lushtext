@@ -105,7 +105,12 @@
 //! The two failure modes this closes are asymmetric and both bad: a plain save
 //! that wrongly claims an explicit destination skips the path comparison
 //! protecting it from writing a stale target, and a Save As that stops
-//! pre-empting the pending load races a load into a just-saved buffer.
+//! withdrawing a reload queued during final projection races that reload into
+//! a just-saved buffer. No save pre-empts a load in flight: every save is
+//! refused while one is (`LoadInProgress`), and while the buffer is not a
+//! whole document (`LushtextEditorPage::buffer_holds_no_whole_document`: a
+//! load installation owns or left it, the document is evicted, or a cancelled
+//! replacement emptied it) — writing it would truncate the file.
 //!
 //! ## State this workflow shares with others
 //!

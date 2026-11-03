@@ -378,6 +378,11 @@ pub enum EditorSaveError {
     LoadInProgress,
     #[error("The last file-load installation was incomplete; retry loading before saving")]
     IncompleteLoadInstallation,
+    /// The buffer is not the document: it was evicted from memory, or a
+    /// cancelled whole-buffer replacement emptied it. Writing it would
+    /// truncate the file.
+    #[error("The document is not in memory; reopen it before saving")]
+    DocumentNotInMemory,
     #[error("Save already in progress")]
     SaveInProgress,
     #[error("Buffer changed while the save snapshot was being captured")]

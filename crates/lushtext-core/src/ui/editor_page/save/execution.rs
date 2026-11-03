@@ -172,9 +172,9 @@ pub(super) fn begin_admitted_save(
     // here without re-checking would write that partial decode over the user's
     // file. Refuse exactly as the queue stage does, and let the retry come from
     // the user once the load settles.
-    if editor.imp().load.installation_incomplete.get() {
+    if let Some(refusal) = admission::whole_document_refusal(editor) {
         admission::finish_queued_save_without_admission(editor, ticket.save_generation);
-        callback(Err(EditorSaveError::IncompleteLoadInstallation));
+        callback(Err(refusal));
         return;
     }
     evidence::record_admitted_ticket(editor, ticket);

@@ -122,7 +122,7 @@
 //!
 //! | State | Ownership from this workflow's side |
 //! | --- | --- |
-//! | `imp().load*`, `load_tracking`, `cancel_load`, `dispose_load_resources` | **owned here.** The save workflow calls `cancel_load` when a Save As pre-empts an in-flight load; it does not touch the state |
+//! | `imp().load*`, `load_tracking`, `cancel_load`, `dispose_load_resources` | **owned here.** The save workflow calls `cancel_load` at admission and when a Save As withdraws a reload queued during final projection (no save pre-empts a load in flight); it does not touch the state. `install_owns_changes` (set by a sliced install, cleared by the publish or the cancelled clear) makes `is_modified()` false and refuses every save |
 //! | `imp().restore.*` and the restore-position group | cross-cutting editor-page state with five owning workflows; lives in `super::restore_position`. Load **calls** `apply_restore_position` from its publish stage and owns none of it |
 //! | `set_file_path`, `set_file_path_with_canonical`, `set_file_path_for_pending_load`, `reapply_language` | shared document identity and metadata in `super::document_identity`, also used by rename, minimap, encoding, accessibility, and local history. Load **calls** the provisional-path operation from the window side before stage 1 and owns none of the group. Load's publish stage writes `file_size` and the canonical path, jointly with save's accept terminal, and starts the document-scale session (`super::document_scale`, cross-cutting `WFR-DOCUMENT-SCALE`) from the worker profile |
 //! | `ui::plain_disposal` and its file-load reservation lane | cross-cutting (slot 7). Load reserves and owns; it does not restructure the lane |
@@ -195,7 +195,8 @@ impl LushtextEditorPage {
     /// Cancel any in-progress file load. Safe to call even if no load is active.
     ///
     /// Stage 8 as the user reaches it, and the operation the save workflow calls
-    /// when a Save As pre-empts a load it does not depend on.
+    /// at admission and when a Save As withdraws a reload queued during final
+    /// projection.
     pub fn cancel_load(&self) {
         retirement::cancel_load(self);
     }

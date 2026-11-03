@@ -1654,6 +1654,53 @@ under the load, 139 ms (prev1, load 20–23) and 295–449 ms (review2, load
 regression is attributable to the change; a verdict-grade comparison needs an
 idle host.
 
+### Landing: merge of `main` 44b1f067 (2026-11-03)
+
+`main` brought `spawn-completion-priority` (PR #79): task completions and the
+load/save hand-offs at `gtk_lush_tasks::completion_priority()` (124), with
+aging, and the lane's per-completion spans. The merge auto-resolved; the
+driver keeps both feature sets (`held-editor` delivery gates and
+`save/during-validation`), and the completion summary now also counts
+`held_input_replay` spans and the worst watchdog lateness of an iteration
+overlapping one (`replay_combined_max_us`).
+
+**Settle priority: 123, one above the completions.** The hard-coded 124 became
+a derivation from the tasks crate. At the completion priority itself a replay
+and a completion ready together run in one GLib iteration (A69), and their
+bounds add past `B_SETTLE`: a replay that enters Protected View took up to
+13.6 ms (D8), a completion up to 4.8 ms (PR #79's verdict). So the replay runs
+at `completion_priority() - 1`, still above line validation (A70), and its
+iteration dispatches nothing else of the application's. The lane did not catch
+a combined iteration on an idle host either way:
+
+| Interleave (main 44b1f067 vs branch, 2 reps x 2, load 0.8-3.7) | Settle at | Branch: misdirected phases | Held keys | Replays (max) | Iteration over a replay | Completions max / combined (branch, main) |
+|---|---|---|---|---|---|---|
+| `L` | 124 | 0 (main 1) | 67 | 2 (170 us) | no late tick | 4.6 / 4.2 ms, 4.3 / 3.3 ms |
+| `L2` | 123 | 0 (main 0) | 34 | 2 (162 us) | no late tick | 5.0 / 3.5 ms, 4.8 / 4.4 ms |
+
+Cases `baseline/small`, `total-size/{1M,5M}`, `dense/{120,500,710}` (phase
+type-during-settle) and `save/during-validation`, under the measurement lock
+(`.claude/handoffs/keystrokes-verdict/{L,L2}-*`). Every hand-off dispatch was
+within `B_SETTLE_US` on both sides; `save/during-validation` saved in
+2.1-4.9 ms on both sides (stall 19.3-21.0 ms on both: the validation backlog,
+not the save). On an idle host most installs finish before the first key, so
+few keys are held; main's misdirected phase is the defect this change fixes.
+
+**Data safety (pre-existing, design D12).** A tab mid-install reported
+`is_modified()` (GtkTextBuffer's flag), so closing it asked Save Changes and
+the window close offered it. Its Save and Ctrl+S were refused, but two other
+routes **wrote a buffer that was not the document**: a Save As during a load
+pre-empted it and wrote the still-empty buffer, **truncating the file** it named
+when that was the file being opened; and a memory eviction that went stale after
+its first clear turn left an emptied, `Loaded`, "modified" tab whose Ctrl+S
+**truncated the file**. Now `is_modified()` excludes a workflow's changes while it
+runs (a live sliced install, an eviction in progress), no save pre-empts a
+load in flight, every save refuses a buffer that is not a whole document
+(`buffer_holds_no_whole_document`, new `EditorSaveError::DocumentNotInMemory`),
+a replacement cancelled after it mutated clears the modified flag, and a stale
+eviction is an eviction (reloaded at once when shown). Five widget tests in
+`held_typing.rs`; four failed on the pre-fix tree (the Ctrl+S one is a guard).
+
 ## C2 `long-line-protected-view` (implementation record)
 
 ### Entry threshold: measured, then decided by the maintainer (2026-10-30)

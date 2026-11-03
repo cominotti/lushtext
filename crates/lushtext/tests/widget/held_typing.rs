@@ -638,3 +638,153 @@ fn test_an_input_method_sees_and_edits_the_held_text() {
     wait_settled(&editor);
     assert_eq!(editor_text(&editor), format!("vieê{text}"));
 }
+
+// --- A partial install is never the user's modification -------------------
+//
+// While a load installs a document in slices the buffer holds part of the
+// file, and GtkTextBuffer's modified flag says only that the buffer changed.
+// Without held text or a recovered draft the tab is not modified by the user:
+// its close asks nothing, and no save, from Ctrl+S, the Save Changes dialog or
+// Save As, may write the partial (or still empty) buffer over a file.
+
+/// The file's bytes, read back.
+fn bytes(path: &std::path::Path) -> String {
+    lushtext_core::services::filesystem::read::text(path).expect("the file")
+}
+
+/// Wait for any save the test started to end and the load to settle.
+fn wait_quiet(editor: &LushtextEditorPage) {
+    wait_until(BUDGET, || {
+        !editor.is_saving() && editor.load_state() != EditorLoadState::Loading
+    });
+}
+
+#[test]
+fn test_a_tab_mid_install_is_not_modified_and_closes_without_asking() {
+    let (window, dir) = presented();
+    let body = chunked_save_document();
+    let path = write(&dir, "install-close.txt", &body);
+    let editor = open_until_installing(&window, &path);
+    assert!(
+        !editor.is_modified() && !editor.has_unsaved_changes(),
+        "a partial install reported a modification the user never made"
+    );
+    let page = window.imp().tab_view.selected_page().expect("the tab");
+    window.imp().tab_view.close_page(&page);
+    assert!(
+        alert_dialog(&window).is_none(),
+        "closing a loading tab asked to save a partial buffer"
+    );
+    wait_until(BUDGET, || window.imp().tab_view.n_pages() == 0);
+    assert_eq!(bytes(&path), body, "the file changed");
+}
+
+#[test]
+fn test_the_close_dialog_saves_the_edited_document_and_never_the_installing_one() {
+    let (window, dir) = presented();
+    crate::common::wait_for_startup_data_flow(&window);
+    let edited_path = write(&dir, "edited.txt", "edited\n");
+    let edited = opened(&window, &edited_path);
+    edited
+        .buffer()
+        .insert(&mut edited.buffer().start_iter(), "user ");
+    assert!(edited.is_modified());
+    let body = chunked_save_document();
+    let path = write(&dir, "install-window-close.txt", &body);
+    let installing = open_until_installing(&window, &path);
+    assert!(
+        window
+            .modified_editors()
+            .iter()
+            .all(|(_, editor)| editor != &installing),
+        "the installing tab was offered for saving"
+    );
+    window.close();
+    let dialog = wait_for_save_changes_dialog(&window);
+    choose_save(&dialog);
+    wait_until(BUDGET, || bytes(&edited_path) == "user edited\n");
+    wait_until(BUDGET, || !window.is_visible());
+    assert_eq!(bytes(&path), body, "the installing document's file changed");
+}
+
+#[test]
+fn test_ctrl_s_during_an_install_is_refused_and_writes_nothing() {
+    let (window, dir) = presented();
+    let body = chunked_save_document();
+    let path = write(&dir, "install-ctrl-s.txt", &body);
+    let editor = open_until_installing(&window, &path);
+    let refused = std::rc::Rc::new(std::cell::Cell::new(None));
+    let result = refused.clone();
+    editor.save_file_async(move |outcome| result.set(Some(outcome.is_err())));
+    assert_eq!(refused.get(), Some(true), "the save was not refused");
+    gtk4::prelude::WidgetExt::activate_action(&window, "win.save", None).expect("win.save");
+    wait_quiet(&editor);
+    assert_eq!(bytes(&path), body, "Ctrl+S wrote a partial install");
+    assert_eq!(editor_text(&editor), body, "the install did not complete");
+    assert!(!editor.is_modified());
+}
+
+#[test]
+fn test_save_as_during_an_install_never_writes_the_partial_buffer() {
+    let (window, dir) = presented();
+    let body = chunked_save_document();
+    // While the file is still read the buffer is empty: a Save As onto the
+    // file would truncate it.
+    let read_path = write(&dir, "read-save-as.txt", &body);
+    window.open_document(&read_path);
+    let reading = active_editor(&window);
+    assert_eq!(reading.load_state(), EditorLoadState::Loading);
+    assert_eq!(reading.buffer().char_count(), 0, "the read phase is over");
+    window.select_save_as_destination_for_test(&read_path);
+    wait_quiet(&reading);
+    assert_eq!(
+        bytes(&read_path),
+        body,
+        "Save As truncated the file it was reading"
+    );
+    assert_eq!(editor_text(&reading), body, "Save As cancelled the read");
+    // Mid-install, onto the file being installed.
+    let path = write(&dir, "install-save-as.txt", &body);
+    let editor = open_until_installing(&window, &path);
+    window.select_save_as_destination_for_test(&path);
+    wait_quiet(&editor);
+    assert_eq!(bytes(&path), body, "Save As wrote a partial install");
+    assert_eq!(
+        editor_text(&editor),
+        body,
+        "Save As cancelled the install it refused"
+    );
+}
+
+#[test]
+fn test_an_eviction_cut_short_never_leaves_an_emptied_buffer_to_save() {
+    let (window, dir) = presented();
+    let body = chunked_save_document();
+    let path = write(&dir, "evict-cancel.txt", &body);
+    let editor = opened(&window, &path);
+    editor.evict();
+    assert!(editor.buffer_replacement_evidence().in_progress);
+    assert!(
+        !editor.is_modified(),
+        "an eviction in progress reported a modification"
+    );
+    // One clear turn, then anything that advances the page's memory-policy
+    // generation (an access, an edit elsewhere) makes the eviction stale.
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + BUDGET;
+    while editor.buffer().char_count() == i32::try_from(body.chars().count()).expect("fits") {
+        assert!(std::time::Instant::now() < deadline, "no clear turn ran");
+        context.iteration(true);
+    }
+    editor.set_memory_estimate_for_test(None);
+    wait_until(BUDGET, || !editor.buffer_replacement_evidence().in_progress);
+    assert!(
+        editor.is_evicted() || editor_text(&editor) == body,
+        "a stale eviction left a partial buffer that is neither the document nor evicted"
+    );
+    let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+    let result = saved.clone();
+    editor.save_file_async(move |outcome| result.set(Some(outcome.is_ok())));
+    wait_until(BUDGET, || saved.get().is_some() && !editor.is_saving());
+    assert_eq!(bytes(&path), body, "a save wrote an emptied buffer");
+}

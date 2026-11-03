@@ -71,6 +71,8 @@ local history, and careful recovery behavior.
   never lost: if the document fails to load or opens view-only, the text opens
   in a new Untitled tab and a message says so, and closing or quitting
   (Ctrl+Q included) asks to save it first.
+  A document that is still loading is never saved half-loaded: closing it
+  asks nothing, and Save and Save As wait until it has finished loading.
 - **EditorConfig support** for indentation and save-policy overrides, with
   Preferences values used as fallback.
 

@@ -731,6 +731,7 @@ fn start_chunked_install(
         folded,
     }));
     editor.imp().load.installation_slice_count.set(0);
+    editor.imp().load.install_owns_changes.set(true);
     editor
         .imp()
         .load
@@ -883,6 +884,8 @@ fn complete_loaded_installation_now(
     editor.imp().canonical_file_path.replace(canonical_path);
     editor.imp().latest_load_failed.set(false);
     editor.imp().load.installation_incomplete.set(false);
+    editor.imp().load.install_owns_changes.set(false);
+    editor.imp().replacement.left_partial.set(false);
     editor.imp().residency.evicted.set(false);
     editor.set_document_encoding_state(encoding_state);
     editor.set_has_bom(has_bom);

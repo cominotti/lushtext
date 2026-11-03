@@ -17,7 +17,8 @@
 //!   expected when the save was queued, `QueuedSaveFacts` captures the live
 //!   editor state observed when admission is decided, and
 //!   `queued_save_is_current` validates the pair as a unit.
-//! - **Save-stage decisions.** Whether a save may pre-empt an in-flight load,
+//! - **Save-stage decisions.** Whether a save withdraws a reload queued
+//!   during final projection (no save pre-empts a load in flight),
 //!   whether the worker's formatted text must be mirrored back into the buffer,
 //!   and how the write outcome is retained.
 
@@ -276,7 +277,9 @@ impl SaveAdmissionPolicy {
     }
 }
 
-/// Whether a save may pre-empt an in-flight load instead of refusing.
+/// Whether a save, once past the refusal gates, withdraws a load that is not
+/// in flight: a reload a file-loaded callback queued reentrantly during final
+/// projection.
 ///
 /// This is the **named derivation** half of the archetype-defect fix, and it is
 /// deliberately not the load-bearing half. One request property — the user gave
@@ -291,12 +294,13 @@ impl SaveAdmissionPolicy {
 /// nothing to the compiler; what it adds is that the inference lives in the code
 /// under a name, rather than being implied by one boolean serving two meanings.
 ///
-/// The reasoning: a save with an explicit destination does not depend on the
-/// in-flight load's result, because the user named the target and the buffer is
-/// already what they want written — so the load is cancelled and the save
-/// proceeds. A save *without* an explicit destination targets the very path the
-/// load is still establishing, so it must refuse rather than write bytes derived
-/// from a half-installed buffer.
+/// The reasoning: a save with an explicit destination writes the buffer the
+/// user sees wherever they named, so a reload queued behind it is withdrawn. A
+/// save *without* one targets the path a reload is establishing and leaves it.
+/// No save pre-empts a load in flight (`load_state == Loading`): until the load
+/// publishes, the buffer is the file being read, empty or partial, and a Save
+/// As that pre-empted it wrote that buffer, truncating the file it named
+/// (`keep-keystrokes-during-install`, data safety).
 #[must_use]
 pub(crate) const fn save_may_preempt_pending_load(explicit_destination: bool) -> bool {
     explicit_destination
@@ -547,12 +551,12 @@ mod tests {
         repathed.current_path = Some(PathBuf::from("/tmp/moved.md"));
 
         // A plain save whose editor was re-pathed must not write the stale
-        // target, and must not pre-empt an in-flight load.
+        // target, and leaves a queued reload alone.
         assert!(!queued_save_is_current(&ticket, &repathed));
         assert!(!save_may_preempt_pending_load(ticket.explicit_destination));
 
-        // A Save As deliberately writes elsewhere, and is the only kind that may
-        // pre-empt an in-flight load.
+        // A Save As deliberately writes elsewhere, and is the only kind that
+        // withdraws a queued reload.
         ticket.explicit_destination = true;
         assert!(queued_save_is_current(&ticket, &repathed));
         assert!(save_may_preempt_pending_load(ticket.explicit_destination));

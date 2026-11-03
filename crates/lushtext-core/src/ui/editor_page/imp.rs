@@ -258,6 +258,12 @@ pub struct LoadState {
     /// The buffer is intentionally cleared on that path, so saving must remain
     /// blocked until a retry installs one exact payload successfully.
     pub installation_incomplete: Cell<bool>,
+    /// Whether the buffer's changes since the last published document are a
+    /// sliced load installation's, not the user's: set when a chunked install
+    /// starts touching the buffer, cleared when a load publishes or a
+    /// cancelled install has emptied the buffer. While it holds no save may
+    /// write the buffer (`is_modified()` is false while the session is live).
+    pub install_owns_changes: Cell<bool>,
     /// Whether bounded cleanup must publish the user-cancelled terminal state.
     pub user_cancel_pending: Cell<bool>,
     /// Completed main-loop slices for the newest installation.

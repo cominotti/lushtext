@@ -11539,9 +11539,14 @@ fn test_file_chooser_save_as_uri_preserves_modified_editor_identity() {
 }
 
 #[test]
-fn test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destination() {
+fn test_file_chooser_save_as_during_a_pending_load_is_refused_and_writes_nothing() {
+    // A Save As used to pre-empt a pending load: it cancelled the load and
+    // wrote the buffer, which until the load publishes is the file being read
+    // (empty, here) or part of it, never the document (data safety,
+    // `keep-keystrokes-during-install` D12). Now it is refused like Ctrl+S,
+    // the load finishes, and a Save As after it writes the loaded document.
     ensure_gtk_init();
-    let dir = tempfile::tempdir().expect("save-as stale load tempdir");
+    let dir = tempfile::tempdir().expect("save-as pending load tempdir");
     let source = dir.path().join("source.txt");
     let destination = dir.path().join("destination.txt");
     fixture::write_text(&source, "source disk bytes\n");
@@ -11549,39 +11554,32 @@ fn test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destina
     let window = test_window();
     window.open_document(&source);
     let editor = active_editor(&window);
-    let stale_generation = editor.load_evidence().generation;
-    editor.buffer().set_text("save before load settles\n");
-    editor.buffer().set_modified(true);
+    assert_eq!(editor.load_state(), EditorLoadState::Loading);
+
+    window.select_save_as_destination_for_test(&destination);
+    wait_until(Duration::from_secs(10), || {
+        editor.load_state() == EditorLoadState::Loaded && !editor.is_saving()
+    });
+    assert!(
+        !fs_metadata::exists(&destination),
+        "a Save As during the load wrote the unloaded buffer"
+    );
+    assert_eq!(editor.file_path(), Some(source.clone()));
+    assert_eq!(editor_buffer_text(&editor), "source disk bytes\n");
+    assert_eq!(
+        fs_read::text(&source).expect("read source"),
+        "source disk bytes\n"
+    );
 
     window.select_save_as_destination_for_test(&destination);
     wait_until(Duration::from_secs(10), || {
         fs_metadata::exists(&destination)
             && editor.file_path() == Some(destination.clone())
             && !editor.is_saving()
-            && !editor.is_modified()
     });
-
-    let stale_result = editor_io::LoadResult {
-        metadata: editor_io::LoadMetadata {
-            size: 18,
-            profile: lushtext_core::model::paragraph_boundary::DocumentProfile::EMPTY,
-            canonical_path: Some(fs_metadata::canonical_path(&source).expect("canonical source")),
-            mtime: Some(123),
-            encoding_state: DocumentEncodingState::default(),
-            has_bom: false,
-            file_health: Vec::new(),
-            decode_round_trips: None,
-        },
-        content: "source disk bytes\n".to_string(),
-    };
-    assert!(
-        !editor.apply_load_result_for_test(stale_generation, Ok(stale_result)),
-        "Save As must cancel the pending load generation before adopting the destination",
-    );
-    assert_eq!(editor_buffer_text(&editor), "save before load settles\n");
     assert_eq!(
         fs_read::text(&destination).expect("read save-as destination"),
-        "save before load settles\n"
+        "source disk bytes\n"
     );
 }
 

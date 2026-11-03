@@ -104,10 +104,17 @@ It decides with the pure `settle_verdict`:
 - **Replay** when the document is whole and editable (D5);
 - **Rescue** otherwise (D5): the text never goes nowhere.
 
-The dispatch runs at `GDK_PRIORITY_REDRAW + 4` (124), one above GtkTextView's line validation
-(`+ 5`, ledger A70), so it is not held back behind a document's validation batches. (The tasks
-crate's completion priority from `spawn-completion-priority` has not landed on `main`; when it
-does, the dispatch can take it.)
+The dispatch runs one above the tasks crate's completion priority
+(`gtk_lush_tasks::completion_priority() - 1`, 123; `spawn-completion-priority`), so it is not held
+back behind a document's validation batches (`GDK_PRIORITY_REDRAW + 5`, ledger A70). It was 124,
+the completion priority itself, until the landing merge measured the alternative: GLib dispatches
+every ready source of the top priority in one iteration (A69), so at 124 a replay and a task
+completion or a load/save hand-off ready together run back to back and their bounds add. The
+replay's worst measured dispatch is 13.6 ms (a replay that enters Protected View, cold, D8) and a
+completion's 4.8 ms (`spawn-completion-priority`'s verdict): together past `B_SETTLE` (16 ms). The
+lane rows at 124 (interleaved against `main` 44b1f067, idle host) saw no such iteration (worst
+iteration overlapping a replay: no late tick; completions 4.6 ms), but the bound is what decides:
+at 123 the replay's iteration dispatches nothing else of the application's.
 
 The release itself never replays: `unlock_edits` runs in the middle of a terminal (the load sets
 `Loaded`, the caret, the modified flag and the draft baseline around it), so the replay waits for the
@@ -280,6 +287,57 @@ held text, and the receiving window's `page-attached` adopts it with the wiring 
 gets (`adopt_transferred_tab`: open paths, info bar, notes, modified indicator, preview projection,
 tab configuration, memory tracking, session). The draft-id claim follows on its own: a claim whose
 owner no longer has an editor for the id passes to the asking window.
+
+### D12. A partial buffer is never the user's modification, and never saved
+
+Found while landing (pre-existing, data safety). GtkTextBuffer's modified flag says only that the
+buffer changed, and three workflows change it without the user:
+
+- **A sliced load installation.** A tab mid-install reported `is_modified()`, so its close asked
+  Save Changes and the window close offered it for saving. Ctrl+S and the dialog's Save were
+  refused (`LoadInProgress`), so nothing partial reached disk that way, but the dialog asked about a
+  change the user never made.
+- **Save As during a load.** A Save As pre-empted the load (`save_may_preempt_pending_load`): it
+  cancelled it and wrote the buffer. While the file was still read the buffer was **empty**, so a
+  Save As onto the file being opened **truncated it to zero bytes** (failing-first:
+  `test_save_as_during_an_install_never_writes_the_partial_buffer`); mid-install it cancelled the
+  install and left an emptied tab.
+- **A memory eviction that went stale** after its first clear turn (an access, any
+  memory-policy change): the cancelled clear emptied the buffer, the eviction terminal ignored the
+  cancelled outcome, and the tab was left `Loaded`, not evicted and **modified**, so Ctrl+S or the
+  dialog's Save **truncated the file** (failing-first:
+  `test_an_eviction_cut_short_never_leaves_an_emptied_buffer_to_save`). Any replacement cancelled
+  after it started mutating leaves the same emptied buffer.
+
+The rules:
+
+- `is_modified()` is the buffer's flag **unless** a workflow is changing the buffer right now: a
+  sliced install session is live (its cancelled clear included) or a memory eviction is emptying
+  it. Both install terminals clear the buffer's flag (the publish, the cancelled clear), so text the
+  user types into a buffer an install left behind is modified again and its close asks (the
+  cancelled-install autosave guard, `test_incomplete_load_installation_blocks_draft_autosave_over_a_good_draft`,
+  depends on it). Held text and recovered drafts still count
+  (`has_unsaved_changes`; a draft recovery is a replacement whose terminal sets the flag), so a close
+  of an installing tab with neither asks nothing and closes.
+- A replacement cancelled after it mutated clears the buffer's modified flag and records
+  `left_partial` (cleared by a completed replacement or a published load). A stale eviction is
+  treated as an eviction: the page is marked evicted and reloads (at once when it is shown).
+- **No save pre-empts a load in flight**: Save As is refused with `LoadInProgress` like Ctrl+S. The
+  derivation now only decides whether a save withdraws a reload queued during final projection.
+- Every save is refused, at the queue and again at admission after `cancel_load`, while the buffer is
+  not a whole document (`buffer_holds_no_whole_document`): an install owns it or left it
+  (`install_owns_changes`, set when the chunked session starts and cleared only by the publish or
+  the cancelled clear, or `installation_incomplete`: `IncompleteLoadInstallation`), the page is evicted, or a cancelled replacement emptied it and the
+  user has not typed since (`DocumentNotInMemory`, new). Typing into an emptied buffer makes it the
+  user's text again, which saves.
+
+Widget tests (shard `editor-page`, `held_typing`): a tab mid-install is not modified and closes
+without asking; the window-close dialog saves the edited document and never the installing one;
+Ctrl+S during an install writes nothing (already refused on `main`: a guard); Save As during the
+read and mid-install writes nothing and lets the load finish; a stale eviction leaves no emptied
+buffer to save. `test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destination`
+(window) pinned the old pre-emption and is rewritten for the new contract
+(`test_file_chooser_save_as_during_a_pending_load_is_refused_and_writes_nothing`). All but the Ctrl+S guard failed on the pre-fix tree.
 
 ## Risks / Trade-offs
 

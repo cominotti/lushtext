@@ -90,6 +90,22 @@ impl Drop for SavePayloadPermit {
     }
 }
 
+/// The refusal for a buffer that is not a whole document
+/// (`LushtextEditorPage::buffer_holds_no_whole_document`): an interrupted or
+/// live load installation, or a document out of memory. Checked at the queue
+/// and again at admission, after `cancel_load`.
+pub(super) fn whole_document_refusal(editor: &LushtextEditorPage) -> Option<EditorSaveError> {
+    if editor.imp().load.installation_incomplete.get()
+        || editor.imp().load.install_owns_changes.get()
+    {
+        Some(EditorSaveError::IncompleteLoadInstallation)
+    } else if editor.buffer_holds_no_whole_document() {
+        Some(EditorSaveError::DocumentNotInMemory)
+    } else {
+        None
+    }
+}
+
 /// Queue one save request, publishing save ownership before yielding.
 ///
 /// This is the workflow's stage 1. It refuses the request outright when the
@@ -105,26 +121,17 @@ pub(crate) fn queue_save_request(
     callback: SaveCallback,
 ) {
     let may_preempt_pending_load = save_may_preempt_pending_load(explicit_destination);
+    // Every save, Save As included, is refused while a load is in flight:
+    // until it publishes, the buffer is the file being read (still empty, or
+    // the previous text) or part of it, never the document the user chose to
+    // write. A Save As used to pre-empt the load here, and wrote that buffer:
+    // onto the file being read, an empty buffer truncated it.
     if editor.imp().load_state.get() == EditorLoadState::Loading {
-        if may_preempt_pending_load {
-            // This is the first of two `cancel_load()` calls, and they are not
-            // duplication: they sit on opposite sides of the refusal gates
-            // below and observe different state. This one runs *before* the
-            // `installation_incomplete` gate on purpose — cancelling a live
-            // chunked install is what sets that flag, because the cancelled
-            // path deliberately empties the buffer, so the gate then refuses
-            // this save instead of queueing a write of content that is about to
-            // be cleared. `cancel_load` also advances the load generation on
-            // every call, which `SaveCompletionTicket` captures, so merging the
-            // two calls changes observable values as well as ordering.
-            editor.cancel_load();
-        } else {
-            callback(Err(EditorSaveError::LoadInProgress));
-            return;
-        }
+        callback(Err(EditorSaveError::LoadInProgress));
+        return;
     }
-    if editor.imp().load.installation_incomplete.get() {
-        callback(Err(EditorSaveError::IncompleteLoadInstallation));
+    if let Some(refusal) = whole_document_refusal(editor) {
+        callback(Err(refusal));
         return;
     }
     if editor.buffer_replacement_in_progress() {
@@ -137,10 +144,9 @@ pub(crate) fn queue_save_request(
     }
 
     if may_preempt_pending_load {
-        // The second call, *after* the gates. It covers the paths where
-        // `load_state` was not `Loading` — most importantly during final
-        // projection, where it withdraws a reload a file-loaded callback queued
-        // reentrantly and returns without advancing the generation.
+        // After the gates, so `load_state` is not `Loading`: during final
+        // projection this withdraws a reload a file-loaded callback queued
+        // reentrantly, and returns without advancing the generation.
         editor.cancel_load();
     }
     // Publish queued ownership before yielding so duplicate saves and an

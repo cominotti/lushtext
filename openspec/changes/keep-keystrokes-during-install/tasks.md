@@ -41,3 +41,10 @@
 - [x] 6.7 Replay result checked (a refused insert is rescued); paste atomicity per user action; notice wording; settle at priority 124 with the load terminals' hook; D4 undo wording and a typing-after-replay test.
 - [x] 6.8 Budget evidence: a 4 KiB paste control on the same fixtures, and replays that enter Protected View or downgrade the document scale.
 - [x] 6.9 Gates, `make test`, `make gtk-axioms`, smokes, the affected lane rows interleaved, docs, push.
+
+## 7. Landing (merge of `main` 44b1f067, PR #79)
+
+- [x] 7.1 Merge `main` (completion priority, completion spans, `save/during-validation`); the driver keeps `held-editor` and the save case; self-tests pass.
+- [x] 7.2 The settle dispatch is derived from `gtk_lush_tasks::completion_priority()` (one above it, 123: a replay co-dispatched with a completion could exceed `B_SETTLE`, D4); the lane's completion summary counts `held_input_replay` spans and the worst iteration overlapping one.
+- [x] 7.3 Data safety (D12, pre-existing): a partial install is not modified; no save pre-empts a load in flight; no save writes a buffer that is not a whole document; a stale eviction is an eviction. Failing-first widget tests.
+- [x] 7.4 Lane rows interleaved against `main` 44b1f067 (settle at 124, then 123), gates, `make test` (0 FLAKY), `make gtk-axioms`, smokes, record, push.

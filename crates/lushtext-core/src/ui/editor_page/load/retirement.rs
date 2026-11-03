@@ -202,6 +202,7 @@ pub(super) fn run_cancelled_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>
     execution::clear_installation_owner(&editor, session);
     buffer.end_irreversible_action();
     buffer.set_modified(false);
+    editor.imp().load.install_owns_changes.set(false);
     editor.imp().load.installation_slice_count.set(slice_count);
     if let Some(restore) = restore {
         execution::restore_load_installation_state(

@@ -1194,6 +1194,14 @@ supplies the readability**: `save_may_preempt_pending_load` is `bool -> bool` an
 proves nothing to the compiler, but it puts the inference in the code under a
 name rather than leaving one boolean silently serving two meanings.
 
+Since `keep-keystrokes-during-install` (design D12) the derivation no longer
+lets a Save As pre-empt a load in flight: every save is refused while one is,
+because a Save As that cancelled the load wrote the still-empty buffer and
+truncated the file it named. It now only decides whether a save withdraws a
+reload queued during final projection. The admission stage gained one helper,
+`whole_document_refusal`, checked at the queue and again after `cancel_load`;
+no role, seam or evidence field changed.
+
 Both failure modes are pinned by a pure test rather than left to review: a plain
 save that wrongly claimed an explicit destination would skip the path comparison
 protecting it from writing a stale target, and a Save As that stopped pre-empting

@@ -408,9 +408,41 @@ impl LushtextEditorPage {
             )
     }
 
+    /// Whether the user changed the document since it was last loaded or
+    /// saved.
+    ///
+    /// Not GtkTextBuffer's modified flag alone: a live sliced load
+    /// installation (its cancelled clear included) and a memory eviction change
+    /// the buffer too, and a tab mid-install holds part of the file, not an
+    /// edit. Such a tab is not modified: its close asks nothing, and no save
+    /// may write its buffer (`buffer_holds_no_whole_document`). Text typed
+    /// meanwhile is held, not in the buffer (`has_unsaved_changes`). Both
+    /// terminals clear the flag (the publish and the cancelled clear), so
+    /// whatever the user types afterwards is modified again.
     #[must_use]
     pub fn is_modified(&self) -> bool {
-        self.buffer().is_modified()
+        self.buffer().is_modified() && !self.buffer_is_being_replaced_by_a_workflow()
+    }
+
+    /// Whether a load installation or a memory eviction is changing the
+    /// buffer right now, so its changes are not the user's.
+    fn buffer_is_being_replaced_by_a_workflow(&self) -> bool {
+        self.imp().load.installation.borrow().is_some() || self.memory_eviction_in_progress()
+    }
+
+    /// Whether the buffer cannot be written as the document: a load
+    /// installation owns it or left it partial (`install_owns_changes`,
+    /// `installation_incomplete`), a memory eviction is emptying it or emptied
+    /// it, or a cancelled replacement emptied it and the user has not typed
+    /// since. Every save refuses while it holds.
+    #[must_use]
+    pub(crate) fn buffer_holds_no_whole_document(&self) -> bool {
+        let load = &self.imp().load;
+        load.install_owns_changes.get()
+            || load.installation_incomplete.get()
+            || self.buffer_is_being_replaced_by_a_workflow()
+            || self.is_evicted()
+            || (self.replacement_left_buffer_partial() && !self.buffer().is_modified())
     }
 
     /// Evict buffer content to free memory. The tab reloads from disk when re-focused.
@@ -438,7 +470,7 @@ impl LushtextEditorPage {
                 let Some(editor) = editor_weak.upgrade() else {
                     return;
                 };
-                if !matches!(
+                let completed = matches!(
                     outcome,
                     BufferReplacementOutcome::Complete {
                         ticket: BufferReplacementTicket {
@@ -447,7 +479,15 @@ impl LushtextEditorPage {
                         },
                         ..
                     } if current_generation == generation
-                ) {
+                );
+                // An eviction that went stale after its first clear turn
+                // (an access, any policy change) still empties the buffer:
+                // the document is out of memory either way, so it is evicted
+                // and reloads, instead of an emptied, "modified" tab whose
+                // save would truncate the file.
+                let emptied = matches!(outcome, BufferReplacementOutcome::Cancelled { .. })
+                    && editor.replacement_left_buffer_partial();
+                if !completed && !emptied {
                     return;
                 }
                 editor.imp().residency.evicted.set(true);
@@ -458,8 +498,29 @@ impl LushtextEditorPage {
                 editor.refresh_minimap();
                 editor.notify_memory_policy_changed();
                 editor.refresh_accessibility_metadata();
+                if emptied {
+                    editor.reload_emptied_eviction_if_shown();
+                }
             },
         ));
+    }
+
+    /// A stale eviction emptied a page the user may already be looking at
+    /// (the access that made it stale is usually the tab's selection, whose
+    /// reload check ran while the page was not yet evicted): reload it now if
+    /// it is shown. A hidden page reloads when it is selected.
+    fn reload_emptied_eviction_if_shown(&self) {
+        let editor = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(editor) = editor.upgrade()
+                && editor.is_evicted()
+                && editor.is_mapped()
+                && editor.load_state() != EditorLoadState::Loading
+                && let Some(path) = editor.file_path()
+            {
+                editor.load_file_async(&path);
+            }
+        });
     }
 
     #[must_use]
