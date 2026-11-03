@@ -117,9 +117,14 @@ The selected tab of a window that is still composing counts as laid out
 before (D6). Background slices co-dispatch at their one priority (A81), but
 they lay nothing out: the worst dispatch while nine of them ran was 6.7 ms.
 
-After the worker read, the transient load permit keeps only what the load
-still holds outside the buffer, its decoded body plus the fixed overhead, and
-gives back its reading slot (`FileLoadAdmissionPolicy::retain_for_install`):
+After the worker read, the transient load permit keeps what the load still
+owns beyond the live editor budget, its decoded body plus four bytes for each
+character not yet installed plus the fixed overhead
+(`model::file_load::install_retained_weight`; review: keeping only the body let
+about 1.1 GiB of loads overlap against the 256 MiB bound, because the 8×
+weight's residency term covered the buffer the install was filling), and
+gives back its reading slot (`FileLoadAdmissionPolicy::retain_for_install`).
+An oversize load keeps running alone until released:
 `MAX_ADMITTED_FILE_LOADS` mirrors the worker cap, and an install uses no
 worker. The buffer's own bytes are the live editor budget's, and the protected
 residency rule still counts an installing body as a payload. This is the
@@ -169,14 +174,64 @@ restore or activation ending without one, project the surfaces again. Under
 ten CPU spinners the test failed 2 of 5 runs without the deferral and 0 of 5
 with it.
 
+### D7. Review fixes (independent review of 31aeb90a)
+
+- **No swap while an assistive technology listens (M2).** With an AT-SPI
+  listener, `gtk_text_view_set_buffer` sends the whole old and the whole new
+  text as one `TextChanged` each: measured with a PyGObject probe under the
+  lane's AT setup (a tree walk realizes the contexts, as an AT does), 8 MiB
+  detach 12–19 ms and attach 9–17 ms, 32 MiB 69–82 ms, 100 MiB 180–220 ms; with
+  no listener detach 2.6–4.2 ms (8 MiB of 41-byte lines), 9–11 ms (32 MiB),
+  25–28 ms (100 MiB, 2,557,503 lines), 0.5–1.1 ms for 100 MiB of 4,000-character
+  lines, and attach under 0.2 ms at every size. `ui/at_listeners.rs` mirrors
+  GTK's listener table (`gtk_at_spi_root_has_event_listeners`) on its own
+  accessibility-bus connection; while it is non-empty no view is detached, so
+  hidden tabs lay out in GTK's own bounded batches (CPU, no long dispatch).
+  When a listener appears, a detached view of at most 2^20 characters attaches
+  at once; a larger one attaches when shown (the one emission a loaded
+  document sends anyway). Without a listener a document of more than 2^18
+  lines is never detached (6.8–7.0 ms for 261,491 lines on the reference
+  machine, under half `B_SETTLE_US`).
+- **Primary selection (M1 and the hidden selection).** Protected View's
+  bookkeeping records nothing while detached and the attach applies it (M1:
+  entering it while detached removed an absent registration and left the
+  provider on PRIMARY). A detach holds one extra reference on the document's
+  registration, so GTK's removal does not clear PRIMARY
+  (`gtk_text_buffer_remove_selection_clipboard` clears it when the refcount
+  reaches zero and the document owned it); the attach or an unrealize returns
+  it.
+- **Document-buffer reads (M3, M4, should-fix).** Bookmark navigation scrolls
+  through `scroll_to_document_iter`; print builds its compositor over the
+  document buffer with the view's settings; held-typing replay and the search
+  bar's match scroll act on the view only while it shows the document.
+- **Exact position.** The kept position inside a wrapped paragraph is the
+  start of the display line at the top (a walk over the paragraph's display
+  lines; `iter_at_location` answers nothing over a margin).
+- **A dense document's reattach is paced (found by the review verdict).**
+  `eviction/switch-hidden-dense` (11 MiB of 2,000-character lines) measured the
+  first switch at 27–29 ms in 3 of 5 branch repetitions against `main`'s
+  17–20 ms: a reattached view lays the document out again from nothing (A83),
+  and on a dense document each 2000 px batch is the cost C6's restyle pacing
+  exists for. The attach now uses the restyle's hide-and-reveal
+  (`restyle::prepare_paced_reattach`): only the paragraphs from the kept line
+  that fit one `V_SLICE` stay visible, the rest is revealed outward at
+  `G_PRIORITY_LOW` once mapped, and the kept-line hold lasts until the reveal
+  is done. Remeasured: 14.6–17.6 ms against `main`'s 15.7–20.3 ms; the worst
+  dispatch is the first frame of the newly shown tab.
+- **Pacing aging.** A background slice that waited 256 ms behind visible work
+  runs once at `PACED_SLICE_PRIORITY` (`input_quiet::paced_idle_aging`).
+- **The activation's present.** The span-less 35–52 ms after the second open of
+  `install/100000000` (V2, `bin/branch-8`) is the tail of the activation turn:
+  `sync_tab_bar_visibility`, the focus handoff and `gtk_window_present`, which
+  on Wayland blocks until the compositor answers an xdg-activation token
+  request. The turn now presents only a window that is not active.
+
 ## Risks / Trade-offs
 
-- **Accessibility.** With an AT-SPI listener registered, each detach and
-  attach emits one text change carrying the whole old or new contents (A83).
-  A background tab is attached once, when first shown (its sliced install
-  emitted no events while detached, so the total payload is what a loaded
-  document always sent); a shown tab is detached again only when seen laying
-  out while hidden. Measured in the lane's `at` variant (record).
+- **Accessibility.** With an AT-SPI listener registered, a swap sends the whole
+  old or new contents (A83); no view is detached while a listener listens (D7).
+  A view detached before the listener appeared and too large to attach at once
+  sends its document once, when first shown.
 - **Re-layout on show.** A detached tab lays out its document again when shown:
   its first frame validates only the visible part; the rest follows in 2000 px
   batches. Measured as `switch-hidden`.
@@ -189,7 +244,9 @@ with it.
   GTK's primary-selection provider from the old buffer to the new one, and
   Protected View keeps it off the document; the swap restores it first and the
   attach takes it off again (found by `make test`, pinned by a failing-first
-  widget test).
+  widget test), a detach holds a reference so a hidden selection keeps
+  PRIMARY, and Protected View entered while detached is applied by the attach
+  (D7).
 - **A view-level call with a document iterator on a detached view** would log
   a `Gtk-CRITICAL` (buffer mismatch); every scroll goes through
   `scroll_to_document_iter`, and the widget and smoke lanes fail on any

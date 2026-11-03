@@ -300,9 +300,15 @@ one-time announcement such as Protected View's "View-Only: Very Long Lines":
 while the handoff is pending, or the restore or activation that will request
 it is still running, the selected document's alert is held and announced when
 it finishes (`defer-background-tab-layout`; the order used to hold only by
-timing). A background tab's editor shows no text to assistive technology until
-its tab is first shown (its view holds an empty placeholder); when it is
-shown, GTK reports the document's text as inserted, once. `make accessibility-smoke` waits on
+timing). While no assistive technology listens, a background tab's editor
+shows no text until its tab is first shown (its view holds an empty
+placeholder, `defer-background-tab-layout`). While one listens
+(`ui/at_listeners.rs` mirrors GTK's AT-SPI event-listener table), no view is
+ever given the placeholder, because each swap would send the whole document as
+one text change in one main-loop dispatch: every tab's editor exposes its
+document as before, and a view that held the placeholder when the listener
+appeared gets its document back at once (up to 2^20 characters) or when its
+tab is first shown, when GTK reports its text as inserted, once. `make accessibility-smoke` waits on
 `accessibility-settled`, which includes the `window-composition` blocker.
 
 ### Protected View and the Line Inspector

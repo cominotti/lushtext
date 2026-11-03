@@ -270,9 +270,22 @@ impl LushtextEditorPage {
             return;
         };
         let view = self.source_view();
+        // A dense document is laid out again from nothing (A83) in 2000 px
+        // batches of up to ~28 ms: reveal it outward from the kept line in
+        // `V_SLICE` ranges instead, as a restyle does (`restyle.rs`).
+        let top_line = state
+            .kept_top
+            .borrow()
+            .as_ref()
+            .filter(|mark| !mark.is_deleted())
+            .map_or(0, |mark| document.iter_at_mark(mark).line());
+        let paced = self.prepare_paced_reattach(u32::try_from(top_line).unwrap_or(0));
         crate::ui::responsiveness_probe::span("view_attach", || {
             view.set_buffer(Some(&document));
         });
+        if paced {
+            self.start_paced_reveal();
+        }
         // GTK registered the primary selection on the document again: give
         // back the reference the detach held.
         self.release_primary_hold();
@@ -311,8 +324,22 @@ impl LushtextEditorPage {
                 editor.reassert_top_line(false);
             }
         });
+        let sentinel = self.arm_laid_out_sentinel(laid_out_priority());
+        *self.imp().view_attachment.restoring.borrow_mut() = Some(TopLineRestore {
+            mark,
+            adjustment,
+            handler,
+            sentinel: Some(sentinel),
+            since_us,
+        });
+    }
+
+    /// The idle that ends a hold once nothing is left to lay out: at
+    /// `priority`, below validation (or below a paced reveal's
+    /// `G_PRIORITY_LOW`, `restyle.rs`, while one runs).
+    fn arm_laid_out_sentinel(&self, priority: glib::Priority) -> glib::SourceId {
         let editor_weak = self.downgrade();
-        let sentinel = glib::idle_add_local_full(laid_out_priority(), move || {
+        glib::idle_add_local_full(priority, move || {
             if let Some(editor) = editor_weak.upgrade() {
                 if let Some(restore) = editor.imp().view_attachment.restoring.borrow_mut().as_mut()
                 {
@@ -321,14 +348,7 @@ impl LushtextEditorPage {
                 editor.reassert_top_line(true);
             }
             glib::ControlFlow::Break
-        });
-        *self.imp().view_attachment.restoring.borrow_mut() = Some(TopLineRestore {
-            mark,
-            adjustment,
-            handler,
-            sentinel: Some(sentinel),
-            since_us,
-        });
+        })
     }
 
     fn reassert_top_line(&self, laid_out: bool) {
@@ -356,7 +376,15 @@ impl LushtextEditorPage {
             // first allocation instead.
             view.scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
         }
-        if laid_out {
+        if laid_out && self.restyle_evidence().pending {
+            // A paced reveal (a dense document's reattach) still adds the
+            // paragraphs above and below: keep holding until it is done.
+            let sentinel = self
+                .arm_laid_out_sentinel(glib::Priority::from(glib::Priority::LOW.into_glib() + 1));
+            if let Some(restore) = self.imp().view_attachment.restoring.borrow_mut().as_mut() {
+                restore.sentinel = Some(sentinel);
+            }
+        } else if laid_out {
             self.stop_holding_top_line();
         }
     }

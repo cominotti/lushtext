@@ -5,7 +5,8 @@
 //! **Cross-cutting, no role.** Its callers are the word-wrap preference
 //! projection, the zoom and font CSS (`ui/theme.rs`, through
 //! [`prepare_paced_restyle_everywhere`] and [`start_paced_reveal_everywhere`]),
-//! and the tab-width formatting (EditorConfig and the preference), so it serves
+//! the tab-width formatting (EditorConfig and the preference), and a hidden
+//! tab's reattach (`view_attachment`, through `prepare_paced_reattach`), so it serves
 //! several workflows; its pure plan, `next_restyle_range`, lives in the
 //! document-load workflow's `policy.rs` beside `batch_exceeds_slice`.
 //!
@@ -97,6 +98,43 @@ impl LushtextEditorPage {
     /// dense; returns whether it did. Pair with [`Self::start_paced_reveal`]
     /// after the change.
     pub(crate) fn prepare_paced_restyle(&self) -> bool {
+        self.prepare_paced_restyle_around(None)
+    }
+
+    /// [`Self::prepare_paced_restyle`] for a view about to get its document
+    /// back (`view_attachment`, review of `defer-background-tab-layout`): a
+    /// reattached view lays the whole document out again from nothing (A83),
+    /// which on a dense document is the same 2000 px batches a restyle pays
+    /// (27–29 ms on `eviction/switch-hidden-dense`). The view is not mapped
+    /// yet, so the paragraphs kept visible are the ones from `top_line` that
+    /// fit one reveal's `V_SLICE` characters; the reveal then runs once the
+    /// view is mapped.
+    pub(crate) fn prepare_paced_reattach(&self, top_line: u32) -> bool {
+        if !self.is_dense_document() {
+            return false;
+        }
+        let buffer = self.buffer();
+        let count = u32::try_from(crate::ui::protected_fold::document_line_count(
+            buffer.upcast_ref(),
+        ))
+        .unwrap_or(u32::MAX);
+        let first = top_line.min(count);
+        let mut end = first;
+        let mut chars = 0u64;
+        while end < count && chars < V_SLICE {
+            let Some(line) = buffer.iter_at_line(i32::try_from(end).unwrap_or(i32::MAX)) else {
+                break;
+            };
+            chars = chars.saturating_add(u64::try_from(line.chars_in_line()).unwrap_or(0));
+            end += 1;
+        }
+        self.prepare_paced_restyle_around(Some(ParagraphSpan {
+            first,
+            end: end.max(first.saturating_add(1)).min(count),
+        }))
+    }
+
+    fn prepare_paced_restyle_around(&self, shown: Option<ParagraphSpan>) -> bool {
         // A selection already there would let a copy read around the hidden
         // paragraphs (module docs), so that restyle runs unpaced.
         if !self.is_dense_document()
@@ -115,7 +153,7 @@ impl LushtextEditorPage {
             buffer.upcast_ref(),
         ))
         .unwrap_or(u32::MAX);
-        let visible = self.visible_paragraphs(count);
+        let visible = shown.unwrap_or_else(|| self.visible_paragraphs(count));
         let tag = self.restyle_tag();
         self.remove_restyle_tag_everywhere();
         if let Some(first) = buffer.iter_at_line(i32::try_from(visible.first).unwrap_or(i32::MAX))

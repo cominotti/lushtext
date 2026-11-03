@@ -565,3 +565,52 @@ fn test_a_background_slice_ages_into_the_paced_priority() {
     assert!(!cancelled.get(), "a removed slice never runs");
     busy.remove();
 }
+
+/// Review verdict (`eviction/switch-hidden-dense`): a reattached view lays a
+/// dense document out again from nothing in 2000 px batches of up to 28 ms
+/// (A83), so the attach hides what it cannot show and reveals it outward from
+/// the kept line in `V_SLICE` ranges, as a restyle does; nothing stays hidden
+/// and no text changes.
+#[test]
+fn test_showing_a_never_shown_dense_tab_reveals_it_in_paced_ranges() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dense = dir.path().join("dense.txt");
+    let small = dir.path().join("small.txt");
+    let body = format!("{}\n", "d".repeat(710)).repeat(400);
+    fixture::write_text(&dense, &body);
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&dense);
+    window.open_document(&small);
+    let (dense, small) = (editor_at(&window, 0), editor_at(&window, 1));
+    wait_loaded(&dense);
+    wait_loaded(&small);
+    flush_events();
+    assert!(!dense.view_shows_document(), "never shown: placeholder");
+    let before = dense.load_evidence().restyle.restyles;
+
+    show_first_tab(&window);
+    assert!(dense.view_shows_document());
+    assert_eq!(
+        dense.load_evidence().restyle.restyles,
+        before + 1,
+        "the reattach is paced like a restyle"
+    );
+    wait_until(Duration::from_secs(20), || {
+        !dense.load_evidence().restyle.pending
+    });
+    let evidence = dense.load_evidence().restyle;
+    assert!(!evidence.pending, "everything is revealed");
+    assert!(evidence.reveals > 1, "in several ranges: {evidence:?}");
+    let buffer = dense.buffer();
+    assert_eq!(
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .as_str(),
+        body,
+        "the visible text is the whole document again"
+    );
+    assert!(!dense.is_modified());
+}

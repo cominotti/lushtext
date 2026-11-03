@@ -33,3 +33,17 @@
 - [x] 5.2 Record the verdict in `docs/next/long-line-documents.md` (EV row and section).
 - [x] 5.3 Gates: fmt, check-fmt, clippy, workflow boundaries, automation docs, bins, rustdoc, `make test` (1,559 widget tests, 0 FLAKY), `make gtk-axioms` (72 held), Kani `core-post-open-settle` (8 of 8; the shard over `load/policy.rs`), and the accessibility, visual, visual-geometry and crash-recovery smokes.
 - [x] 5.4 Data-safety self-review: every save, draft, session, search, print, eviction and held-typing path reads or writes `buffer()` (the document); a detach or attach changes no text, modified flag, undo state or caret (A83, and the widget tests read the document whole while its view shows the placeholder); `is_modified`, close prompts and drafts are buffer-level; the kept top line is a left-gravity mark in the document, deleted on every exit; the transient permit is released exactly once from either the reading or the installing state, including stale, cancelled and disposed terminals.
+
+## 6. Review fixes (review of 31aeb90a)
+
+- [x] 6.1 M1: Protected View's primary-selection state records nothing while the view is detached and the attach applies it. Failing-first `background_tab_layout::test_protected_view_entered_while_detached_keeps_the_primary_provider_off` (the CRITICAL, then GTK's provider on PRIMARY).
+- [x] 6.2 A detach holds a reference on the document's primary-selection registration (GTK clears PRIMARY at refcount zero); failing-first `test_detaching_a_hidden_view_keeps_the_users_primary_selection`.
+- [x] 6.3 M2: `ui/at_listeners.rs` (GTK's listener table mirrored); no detach while a listener listens, small detached views attach when one appears; `VIEW_DETACH_MAX_LINES` 2^18 measured (design D7); widget tests for both (the line cap failing-first).
+- [x] 6.4 M3 and M4: bookmark scroll through `scroll_to_document_iter`; print compositor over the document buffer (evidence field `compositor_char_count`); failing-first `window::test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode` and `window::test_printing_a_never_shown_tab_prints_its_document`. Held-typing replay and the search bar's match scroll check `view_shows_document()`.
+- [x] 6.5 Admission: `install_retained_weight` (body + 4 × characters not yet installed + overhead), exclusivity kept; unit tests for the bound and for overlapping installs.
+- [x] 6.6 Exact position inside a wrapped paragraph; failing-first `test_a_detached_view_comes_back_inside_a_long_wrapped_paragraph`.
+- [x] 6.7 Pacing aging (256 ms); `test_a_background_slice_ages_into_the_paced_priority`.
+- [x] 6.8 Lane: `eviction/switch-hidden-giant` and `eviction/switch-hidden-dense`; the `adjustment_value` mark and the wheel rule (driver self-test).
+- [x] 6.9 Activation present only for a window that is not active (the span-less tail after the second open, design D7).
+- [x] 6.11 A dense document's reattach is paced like a restyle (`restyle::prepare_paced_reattach`), and the kept-line hold lasts until its reveal is done; `test_showing_a_never_shown_dense_tab_reveals_it_in_paced_ranges` (and the wrapped-paragraph test, which failed with the reveal and without the longer hold).
+- [ ] 6.10 Verdict from the final commit against `main` f79e7a5d, load recorded; record corrected.
