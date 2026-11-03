@@ -1226,6 +1226,56 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a80),
     },
+    Axiom {
+        id: AxiomId::new(81),
+        name: "a81_equal_priority_sources_share_one_iteration",
+        statement: "GLib dispatches every ready source of the top priority in one main-loop \
+                    iteration, so that iteration lasts the sum of their callbacks, while a \
+                    ready source one step lower, or one of the same priority added during the \
+                    dispatch, runs in a later iteration",
+        dependent_designs: &[
+            "spawn-completion-priority: composition stages and the language catalog build run \
+             at priorities of their own so they never share a dispatch with a restore turn",
+            "keep-keystrokes-during-install: the held-typing settle priority",
+            "defer-background-tab-layout: several validating views lay out one batch each per \
+             iteration, so a hidden validating tab lengthens every iteration of the visible one",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a81),
+    },
+    Axiom {
+        id: AxiomId::new(82),
+        name: "a82_a_hidden_tab_page_lays_out_its_text_view",
+        statement: "an AdwTabView page never selected is neither mapped nor realized, yet a text \
+                    view in a scrolled window on it has a layout (the scroller's adjustments \
+                    create it) and validates text loaded into its buffer in full while hidden, \
+                    as does a source view in no widget tree; a page selected once and hidden again stays realized and validates the same \
+                    way; the first page appended to an empty tab view is selected by the tab view",
+        dependent_designs: &[
+            "defer-background-tab-layout: leaving a background tab unselected cannot keep its \
+             editor from laying out its document, so its view is given an empty buffer while \
+             hidden (A83)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a82),
+    },
+    Axiom {
+        id: AxiomId::new(83),
+        name: "a83_an_empty_buffer_stops_a_hidden_view_laying_out",
+        statement: "giving a hidden text view an empty buffer stops its validation at once and \
+                    leaves the document buffer's text, modified flag, undo state and caret \
+                    unchanged; setting the document buffer back lays the whole buffer out again \
+                    and brings the view back at the buffer start, where scrolling to a kept mark \
+                    restores the old top line, but one queued right after the reattach lands \
+                    elsewhere unless scrolled to again as the view lays out; an unmapped validating view notifies its vertical \
+                    adjustment's upper",
+        dependent_designs: &[
+            "defer-background-tab-layout: a background editor's view holds an empty buffer until \
+             its tab is shown, and again once it is seen laying out while hidden",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a83),
+    },
 ];
 
 #[cfg(test)]

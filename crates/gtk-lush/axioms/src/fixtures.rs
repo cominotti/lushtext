@@ -695,3 +695,21 @@ pub mod a80 {
         ABOVE_VALIDATE_PRIORITY, Delivery, DeliveryFixture, DeliveryTrace, Host, LINES,
     };
 }
+
+/// The trace the A81 probe records, for its sample.
+pub mod a81 {
+    pub use crate::probes::a81::{BUSY, CoDispatchTrace, Iteration, LABELS, trace_co_dispatch};
+}
+
+/// The fixture and values the A82 probe drives, for its sample.
+pub mod a82 {
+    pub use crate::probes::a82::{
+        LINES, LowerDelivery, TabPageView, TabViewFixture, describe, load_and_trace,
+        trace_lower_delivery,
+    };
+}
+
+/// The fixture the A83 probe drives, for its sample.
+pub mod a83 {
+    pub use crate::probes::a83::{BufferState, DetachFixture};
+}
