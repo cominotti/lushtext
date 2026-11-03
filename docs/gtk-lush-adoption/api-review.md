@@ -15,7 +15,19 @@ spikes for `gtk4-rs` and Kooha.
   ordinary gtk-rs widgets. No runtime or non-GTK scheduler will be added.
 - `gtk-lush-tasks`: keep caller-owned freshness. The lab wraps simulated
   panics as `Result` values, which keeps the crate from becoming an executor or
-  app-level error framework.
+  app-level error framework. Accepted limitation (`spawn-completion-priority`):
+  completions are delivered one per dispatch, from one source at
+  `completion_priority()`, above GtkTextView's validation idle (ledger A80).
+  So a completion callback runs ahead of text layout and must fit the
+  consumer's per-dispatch budget, and a completion cannot wait, inside a
+  nested main loop, for another completion. The worker cap does not bound how
+  long the source stays ready (a deep FIFO or a spawn chain refills it), so the
+  source ages: after eight completions in a row or 16 ms of them it yields until
+  the loop has reached `G_PRIORITY_DEFAULT_IDLE` once, or for 16 ms when a
+  validation backlog keeps the loop above that. An earlier draft of this entry's
+  change claimed the cap alone bounded it to eight dispatches; review disproved
+  that. Measurement builds may enable the `completion-observer` feature
+  (`set_completion_observer`) to see each completion's span.
 - `gtk-lush-viewport`: keep adjustment-derived observer value objects.
   Consumers still own reactions to page-size and lower-edge changes.
 - `gtk-lush-widgets`: keep `RenderHoldCapture::NotReady` as normal output.

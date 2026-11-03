@@ -32,6 +32,13 @@ Kinds (``--size`` unit in brackets):
     conservative live-editor estimate (four bytes per character,
     ``model/editor_memory.rs``) crosses its 256 MiB budget, plus two. With
     ``--count`` exactly that many (the lane's small session and draft cases).
+``short-code`` [bytes per document]
+    ``--count`` (default 2) documents of ``size`` bytes of short lines of 8 to
+    71 characters (about 40 on average, like source code), below C6's density
+    bound (``V_SLICE`` visible characters per ``R_batch`` = 224 lines, about 50
+    per line), so LushText installs them in unpaced byte slices and every view
+    validates them afterwards: the validation backlog the lane's
+    ``save/during-validation`` case saves during (``spawn-completion-priority``).
 ``markdown`` [bytes]
     An ordinary Markdown document of exactly ``size`` bytes (``.md``):
     headings, paragraphs with inline emphasis, code and links, lists, fenced
@@ -170,7 +177,7 @@ MULTIBYTE_CLASS_WEIGHTS = (
 SHORT_HTML_TAGS = ("div", "span", "p", "li", "a", "td", "section", "em")
 
 DELIMITERS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "u2029": " "}
-KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "markdown", "keystroke")
+KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "short-code", "markdown", "keystroke")
 CHUNK_CHARS = 16 * 1024
 CHUNK_COUNT = 48
 TABLE_SIZE = 4096
@@ -491,6 +498,38 @@ def write_short_text(path: Path, delimiter: str, seed: int, total_bytes: int) ->
     return writer.close()
 
 
+# `short-code`: line lengths 8 + below(64), so at most 71 and about 40 on
+# average; C6's density bound is V_SLICE (11,360) visible characters over
+# R_batch (224) lines (`model/buffer_replacement.rs`).
+SHORT_CODE_MIN_LINE = 8
+SHORT_CODE_LINE_SPREAD = 64
+DENSITY_BATCH_LINES = 224
+DENSITY_SLICE_CHARS = 11_360
+
+
+def write_short_code(path: Path, delimiter: str, seed: int, total_bytes: int) -> dict:
+    rng = SplitMix64(seed)
+    chunks = make_chunks(rng, "ascii")
+    writer = FixtureWriter(path, delimiter)
+    while writer.stats.bytes + 128 < total_bytes:
+        chunk = chunks[rng.below(len(chunks))]
+        start = rng.below(len(chunk) - 120)
+        writer.text(chunk[start : start + SHORT_CODE_MIN_LINE + rng.below(SHORT_CODE_LINE_SPREAD)])
+        writer.end_paragraph()
+    return writer.close()
+
+
+def densest_batch_chars(text: str, lines: int = DENSITY_BATCH_LINES) -> int:
+    """The most characters any `lines` consecutive lines hold, delimiters excluded."""
+    lengths = [len(line) for line in text.split("\n")]
+    window = sum(lengths[:lines])
+    best = window
+    for index in range(lines, len(lengths)):
+        window += lengths[index] - lengths[index - lines]
+        best = max(best, window)
+    return best
+
+
 MARKDOWN_WORDS = (
     "editor", "buffer", "paragraph", "preview", "highlight", "layout", "frame", "dispatch", "settle",
     "workspace", "session", "draft", "budget", "slice", "install", "language", "context", "engine",
@@ -642,6 +681,9 @@ def generate(
     elif kind == "eviction":
         for index in range(count or eviction_count(size)):
             files.append(write_short_text(out_dir / f"{stem}-doc{index:02}.txt", separator, seed + index, size))
+    elif kind == "short-code":
+        for index in range(count or 2):
+            files.append(write_short_code(out_dir / f"{stem}-doc{index:02}.txt", separator, seed + index, size))
     elif kind == "markdown":
         files.append(write_markdown(out_dir / f"{stem}.{ext}", separator, seed, size))
     manifest_editorconfig = write_editorconfig(out_dir, editorconfig) if editorconfig else None
@@ -765,6 +807,13 @@ def self_test() -> int:
         expect(eviction_count(8 * 1024 * 1024) * 8 * 1024 * 1024 * 4 > EDITOR_MEMORY_UPPER_BUDGET_BYTES, "eviction crosses the budget")
         eviction = generate("eviction", 64 * 1024, 2, scope, scope / "e", count=2)
         expect(len(eviction["files"]) == 2 and eviction["files"][0]["longest_paragraph"] < 200, "eviction: short lines")
+
+        code = generate("short-code", 256 * 1024, 6, scope, scope / "sc")
+        code_text = Path(code["files"][0]["path"]).read_text(encoding="utf-8")
+        expect(len(code["files"]) == 2 and all(f["bytes"] <= 256 * 1024 for f in code["files"]), "short-code: two documents of at most size bytes")
+        expect(code["files"][0]["longest_paragraph"] < SHORT_CODE_MIN_LINE + SHORT_CODE_LINE_SPREAD, f"short-code: short lines ({code['files'][0]['longest_paragraph']})")
+        expect(densest_batch_chars(code_text) <= DENSITY_SLICE_CHARS, f"short-code: below C6's density bound ({densest_batch_chars(code_text)})")
+        expect(generate("short-code", 256 * 1024, 6, scope, scope / "sc2")["files"][0]["sha256"] == code["files"][0]["sha256"], "short-code: deterministic")
 
         markdown = generate("markdown", 200_000, 4, scope, scope / "md")
         md = markdown["files"][0]

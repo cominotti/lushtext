@@ -688,3 +688,10 @@ pub fn row_index_range(rows: &[gtk4::Widget]) -> Option<(u32, u32)> {
         Some((low, high)) => Some((low.min(index), high.max(index))),
     })
 }
+
+/// The fixture and values the A80 probe drives, for its sample.
+pub mod a80 {
+    pub use crate::probes::a80::{
+        ABOVE_VALIDATE_PRIORITY, Delivery, DeliveryFixture, DeliveryTrace, Host, LINES,
+    };
+}

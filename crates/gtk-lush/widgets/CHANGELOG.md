@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Changed:** `ViewportSliceBin::outer_request_pending()` stays true after the
+  forwarding idle has moved the outer scroller, until the bin's next allocation
+  has re-sliced from that value. It used to turn false as the idle ran, a frame
+  before the band and the rows followed the outer, so a caller settling on it
+  could read stale geometry (LushText's workspace path reveal saw its header
+  at y 150 and then at −14,435 with the same outer value). A clamped no-op
+  move leaves nothing pending. Reproduced first by a failing adoption-lab test.
 - **Changed:** `RenderHoldOverlay` refers to its live child **weakly**, and
   `live_child()` returns `Option<gtk4::Widget>` (`None` once the owner dropped
   the child). A hold used to keep its child alive after the caller retired it:

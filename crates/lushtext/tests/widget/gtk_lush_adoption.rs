@@ -192,6 +192,74 @@ fn test_adoption_task_completion_returns_to_main_loop_with_freshness() {
     assert!(accepted.get());
 }
 
+/// Lines in the validation-backlog document: enough that a hidden text view
+/// takes many 2000 px validation batches (ledger A31) to lay it out.
+const BACKLOG_LINES: usize = 1 << 15;
+
+/// A worker completion reaches the main loop while a text view still has
+/// lines to validate. GtkTextView's incremental validation idle
+/// (`GDK_PRIORITY_REDRAW + 5`) is ready again after every batch, so a
+/// completion delivered below it waits for the whole backlog (ledger A80): a
+/// document restored into a background tab held back every later load,
+/// save and draft completion for seconds. The view here sits on a hidden
+/// stack page, like a background tab of an `AdwTabView`.
+#[test]
+fn test_adoption_task_completion_is_not_held_behind_text_validation() {
+    ensure_gtk_init();
+    let app = test_application();
+    let view = gtk4::TextView::new();
+    view.set_monospace(true);
+    let scrolled = gtk4::ScrolledWindow::builder().child(&view).build();
+    let stack = gtk4::Stack::new();
+    stack.add_named(&gtk4::Label::new(Some("visible page")), Some("visible"));
+    stack.add_named(&scrolled, Some("background"));
+    stack.set_visible_child_name("visible");
+    let window = libadwaita::ApplicationWindow::builder()
+        .application(&app)
+        .default_width(640)
+        .default_height(480)
+        .content(&stack)
+        .build();
+    present_window(&window);
+    let last_line_y = {
+        let view = view.clone();
+        move || view.line_yrange(&view.buffer().end_iter()).0
+    };
+
+    let text: String = (0..BACKLOG_LINES)
+        .map(|line| format!("background row {line:>6} of a large restored document\n"))
+        .collect();
+    view.buffer().set_text(&text);
+    let delivered_at_y = Rc::new(Cell::new(None::<i32>));
+    spawn_blocking_then((), || (), {
+        let delivered_at_y = Rc::clone(&delivered_at_y);
+        let last_line_y = last_line_y.clone();
+        move |(), ()| delivered_at_y.set(Some(last_line_y()))
+    });
+
+    // Let the backlog finish: the last line's y stops growing.
+    let mut previous = -1;
+    let settled = wait_until_or_false(Duration::from_secs(30), || {
+        let now = last_line_y();
+        let still = now == previous && delivered_at_y.get().is_some();
+        previous = now;
+        still
+    });
+    assert!(settled, "the background view finished validating");
+    let final_y = last_line_y();
+    assert!(
+        final_y >= 16 * 2000,
+        "the document took at least 16 validation batches (final y {final_y})"
+    );
+    let delivered = delivered_at_y.get().expect("the completion ran");
+    assert!(
+        delivered < final_y / 2,
+        "the completion ran at y {delivered} of {final_y}: it waited for the validation backlog"
+    );
+    window.destroy();
+    flush_events();
+}
+
 fn long_viewport_text() -> String {
     (0..80)
         .map(|line| format!("viewport row {line} with a long adoption surface sample"))
@@ -484,6 +552,55 @@ fn test_adoption_slice_bin_reports_a_forwarded_request_until_its_idle_applies_it
         bin.correction_count(),
         corrections,
         "an honoured request is not a correction"
+    );
+    drop(fixture.window);
+}
+
+#[test]
+fn test_adoption_slice_bin_reports_a_forwarded_request_until_it_reslices() {
+    // The forwarding idle moves the outer scroller, but the bin re-slices from
+    // that value only in the next layout pass. A caller polling between the
+    // two (the workspace path reveal does, every 16 ms) must still see the
+    // request pending: the rows there are drawn where the old band put them.
+    let fixture = SliceAdoptionFixture::present(1);
+    let bin = &fixture.bins[0];
+    let adjustment = fixture.adjustment();
+    for _ in 0..6 {
+        fixture.force_layout();
+    }
+    assert!(!bin.outer_request_pending());
+    let resting = adjustment.value();
+    let target = SLICE_ADOPTION_ROWS - 1;
+    fixture.lists[0].scroll_to(target, gtk4::ListScrollFlags::NONE, None);
+    let mut at_move = None;
+    let moved = observed_between_dispatches(Duration::from_secs(5), || {
+        let moved = (adjustment.value() - resting).abs() > SCROLL_TOLERANCE;
+        if moved && at_move.is_none() {
+            at_move = Some((bin.outer_request_pending(), bin.allocation_count()));
+        }
+        moved
+    });
+    assert!(
+        moved,
+        "the forwarded scroll_to must move the outer scroller"
+    );
+    let (pending_at_move, allocations_at_move) = at_move.expect("observed at the move");
+    assert!(
+        pending_at_move,
+        "right after the forwarding idle moved the outer scroller, before any frame, the \
+         bin must still report the request pending: it has not re-sliced yet"
+    );
+    wait_until(Duration::from_secs(5), || !bin.outer_request_pending());
+    assert!(
+        bin.allocation_count() > allocations_at_move,
+        "the request may stop being pending only once the bin has re-sliced"
+    );
+    let label = format!("row {target:04}");
+    let row = mapped_row_with_label(&fixture.lists[0], &label);
+    assert!(
+        row.as_ref().is_some_and(|row| fixture.fully_visible(row)),
+        "once nothing is pending the requested row is where it is drawn: {:?}",
+        row.and_then(|row| row.compute_bounds(&fixture.scroller))
     );
     drop(fixture.window);
 }

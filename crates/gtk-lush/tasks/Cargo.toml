@@ -25,6 +25,11 @@ performance-roots = ["src"]
 [lints]
 workspace = true
 
+[features]
+# Measurement builds only: `set_completion_observer` reports every
+# completion's span (LushText's `responsiveness-probes` build enables it).
+completion-observer = []
+
 [dependencies]
 glib = { workspace = true }
 

@@ -52,6 +52,11 @@ pub struct ViewportSliceBin {
     /// The batch of outer scroll requests the child made and an idle has yet
     /// to apply; `Some` exactly while that idle is scheduled.
     pending_outer: Cell<Option<PendingOuterMove>>,
+    /// True from the moment the forwarding idle moves the outer scroller until
+    /// this bin's next allocation re-slices from the new value. In between, the
+    /// rows are still drawn where the old band put them, so the request is not
+    /// yet at rest (see `outer_request_pending`).
+    awaiting_reslice: Cell<bool>,
     /// True while an idle re-slice for an outer page change is scheduled, so
     /// several page notifications in one turn schedule one re-slice.
     page_reslice_scheduled: Cell<bool>,
@@ -104,6 +109,7 @@ impl ObjectSubclass for ViewportSliceBin {
             viewport_top: Cell::new(0.0),
             measured_outer_value: Cell::new(0.0),
             pending_outer: Cell::new(None),
+            awaiting_reslice: Cell::new(false),
             page_reslice_scheduled: Cell::new(false),
             deferred: Cell::new(None),
             content_inset: Cell::new(0.0),
@@ -202,6 +208,9 @@ impl WidgetImpl for ViewportSliceBin {
     }
 
     fn unroot(&self) {
+        // Off the root nothing will re-slice this bin; a move it was waiting
+        // for no longer describes anything it draws.
+        self.awaiting_reslice.set(false);
         self.disconnect_outer();
         self.outer.replace(None);
         // The theme may differ under the next root; relearn the inset there.
@@ -250,6 +259,13 @@ impl WidgetImpl for ViewportSliceBin {
     }
 
     fn size_allocate(&self, width: i32, height: i32, _baseline: i32) {
+        // This allocation re-derives the band from the outer scroller's
+        // current value, which consumes a move the forwarding idle made. Even
+        // a later move by someone else is consumed here: the band is derived
+        // from whatever the outer holds now, and that move re-queued this
+        // allocation itself. Cleared before the early returns, so a bin whose
+        // child cannot be laid out does not report a request forever.
+        self.awaiting_reslice.set(false);
         let Some(child) = self.child.borrow().as_ref().cloned() else {
             return;
         };
@@ -678,9 +694,12 @@ impl ViewportSliceBin {
     }
 
     /// Backs `ViewportSliceBin::outer_request_pending`: a batch awaiting its
-    /// idle, or a divergence deferred to the next allocation.
+    /// idle, an outer move awaiting this bin's re-slice, or a divergence
+    /// deferred to the next allocation.
     pub(super) fn outer_request_pending(&self) -> bool {
-        self.pending_outer.get().is_some() || self.deferred.get().is_some()
+        self.pending_outer.get().is_some()
+            || self.awaiting_reslice.get()
+            || self.deferred.get().is_some()
     }
 
     /// Translate a child-originated scroll request into an outer scroll so the
@@ -746,7 +765,15 @@ impl ViewportSliceBin {
             let Some(outer) = imp.outer_scrolled_window() else {
                 return;
             };
-            outer.vadjustment().set_value(batch.anchor + batch.delta);
+            let adjustment = outer.vadjustment();
+            let before = adjustment.value();
+            adjustment.set_value(batch.anchor + batch.delta);
+            // A move is consumed only by the re-slice it queues (through the
+            // outer's `value-changed`); a clamped no-op queues none and leaves
+            // nothing to wait for.
+            if (adjustment.value() - before).abs() >= ADJUSTMENT_EPSILON {
+                imp.awaiting_reslice.set(true);
+            }
         });
     }
 }

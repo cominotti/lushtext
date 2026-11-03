@@ -63,8 +63,9 @@
 //!
 //! ## Where control leaves, and where it comes back
 //!
-//! - **Stage 2 → 3, idle drain.** Queueing schedules a `glib::idle_add_local_once`
-//!   and returns. Control resumes in `admission::drain`.
+//! - **Stage 2 → 3, idle drain.** Queueing schedules an idle at
+//!   `gtk_lush_tasks::completion_priority()` (above GtkTextView's validation
+//!   idle, ledger A80) and returns. Control resumes in `admission::drain`.
 //! - **Stage 4, chunked capture.** A buffer over the threshold yields between
 //!   slices. Control resumes in the snapshot callback installed by
 //!   `begin_admitted_save`, which either continues to stage 5 or finishes
@@ -76,8 +77,8 @@
 //!   inverts a second time through the bounded buffer-replacement workflow.
 //!   Control resumes in that replacement's terminal callback, which is the only
 //!   place the tab is marked clean on this path.
-//! - **Charge release.** Dropping a `SavePayloadPermit` posts
-//!   `glib::idle_add_once`; control resumes in `admission::release_on_main`,
+//! - **Charge release.** Dropping a `SavePayloadPermit` posts an idle at the
+//!   completion priority; control resumes in `admission::release_on_main`,
 //!   which re-arms the drain. Every terminal converges here, so cancellation,
 //!   worker failure, stale completion, and success all release exactly once.
 //!

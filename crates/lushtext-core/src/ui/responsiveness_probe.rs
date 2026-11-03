@@ -82,6 +82,17 @@ pub fn install(app: &impl gtk4::prelude::IsA<gtk4::Application>) {
 #[inline]
 pub(crate) fn record_span(_name: &'static str, _start_us: i64, _end_us: i64) {}
 
+/// The span every `spawn_blocking_then` completion is recorded as in the
+/// measurement build (`gtk_lush_tasks::set_completion_observer`).
+#[cfg_attr(not(feature = "responsiveness-probes"), allow(dead_code))]
+pub(crate) const TASK_COMPLETION_SPAN: &str = "task_completion";
+
+/// The span an admission drain or a payload-permit release scheduled at
+/// `gtk_lush_tasks::completion_priority()` is recorded as: those hand-offs
+/// co-dispatch with the completion source in one main-loop iteration (ledger
+/// A69), so the lane measures the iteration around both.
+pub(crate) const TASK_HANDOFF_SPAN: &str = "task_handoff";
+
 /// Run `work` and record it as one span named `name` in the measurement
 /// build, so the lane can attribute a long dispatch to the work inside it.
 /// Without the `responsiveness-probes` feature it only runs `work`.
@@ -711,6 +722,12 @@ mod measurement {
         });
         PROBE.with(|slot| slot.replace(Some(Rc::clone(&probe))));
         install_restyle_triggers(app);
+        // Every `spawn_blocking_then` completion as one `task_completion`
+        // span (`spawn-completion-priority`), so the lane measures each
+        // hand-off dispatch against B_settle and attributes a long one to it.
+        gtk_lush_tasks::set_completion_observer(|start_us, end_us| {
+            super::record_span(super::TASK_COMPLETION_SPAN, start_us, end_us);
+        });
         probe.writer.send(ProbeRecord::Start {
             t_us: glib::monotonic_time(),
             pid: std::process::id(),

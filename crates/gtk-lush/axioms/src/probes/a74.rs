@@ -12,6 +12,13 @@
 //! labelled rows, and records the longest frame-painting dispatch after a
 //! plain redraw, after toggling `gtk-cursor-blink` (the control) and after
 //! toggling `gtk-enable-animations`, each the median of [`REPETITIONS`].
+//! The two windows are measured in [`ROUNDS`] alternating rounds, small then
+//! large, and each cost is the median over every round, so a change in host
+//! load or a move between performance and efficiency cores during the probe
+//! affects both windows alike. Measured one after the other, a
+//! `make gtk-axioms` under load 4-5 once recorded every small-window frame at
+//! four times its usual cost (12.9 ms against about 3 ms), and the growth
+//! check failed (`spawn-completion-priority` verification, 2026-11-02).
 //!
 //! `bound-post-open-settle`'s independent review (M4a) named this restyle as
 //! the cause of the whole-tree revalidation about 200 ms after a document
@@ -39,8 +46,11 @@ use super::LAYOUT_SETTLE;
 pub const SMALL_ROWS: usize = 200;
 /// Rows in the larger window.
 pub const LARGE_ROWS: usize = 1_600;
-/// Repetitions per measurement (the median is recorded).
+/// Repetitions per measurement and round.
 pub const REPETITIONS: usize = 5;
+/// Alternating small/large rounds; every cost is the median over all of
+/// them.
+pub const ROUNDS: usize = 3;
 /// How long a measurement waits for the main context to go quiet.
 const QUIET: Duration = Duration::from_millis(60);
 /// The most a measurement waits.
@@ -87,11 +97,31 @@ fn longest_frame(frames: &FrameCounter, change: impl FnOnce()) -> u128 {
         .unwrap_or_default()
 }
 
-/// Measure the three costs on a window of `count` rows.
-pub fn measure(
+/// Every sample of the three costs, one entry per repetition.
+#[derive(Clone, Debug, Default)]
+struct RestyleSamples {
+    redraw: Vec<u128>,
+    cursor_blink: Vec<u128>,
+    enable_animations: Vec<u128>,
+}
+
+impl RestyleSamples {
+    fn medians(&self) -> RestyleCosts {
+        RestyleCosts {
+            redraw: median(&self.redraw),
+            cursor_blink: median(&self.cursor_blink),
+            enable_animations: median(&self.enable_animations),
+        }
+    }
+}
+
+/// Measure the three costs on a window of `count` rows, [`REPETITIONS`]
+/// times, adding the samples to `samples`.
+fn sample(
     recorder: &mut Recorder,
     count: usize,
-) -> Result<RestyleCosts, crate::observation::Stop> {
+    samples: &mut RestyleSamples,
+) -> Result<(), crate::observation::Stop> {
     let content = rows(count);
     let shown = Presented::checked_sized(
         recorder,
@@ -108,25 +138,20 @@ pub fn measure(
         gtk4::Settings::default(),
         "control: the default display has settings",
     )?;
-    let mut costs = (Vec::new(), Vec::new(), Vec::new());
     for _ in 0..REPETITIONS {
-        costs
-            .0
+        samples
+            .redraw
             .push(longest_frame(&frames, || shown.window().queue_draw()));
-        costs.1.push(longest_frame(&frames, || {
+        samples.cursor_blink.push(longest_frame(&frames, || {
             settings.set_gtk_cursor_blink(!settings.is_gtk_cursor_blink());
             shown.window().queue_draw();
         }));
-        costs.2.push(longest_frame(&frames, || {
+        samples.enable_animations.push(longest_frame(&frames, || {
             settings.set_gtk_enable_animations(!settings.is_gtk_enable_animations());
             shown.window().queue_draw();
         }));
     }
-    Ok(RestyleCosts {
-        redraw: median(&costs.0),
-        cursor_blink: median(&costs.1),
-        enable_animations: median(&costs.2),
-    })
+    Ok(())
 }
 
 fn describe(costs: RestyleCosts) -> String {
@@ -141,12 +166,17 @@ fn describe(costs: RestyleCosts) -> String {
 pub fn probe_a74() -> Observation {
     Recorder::run(AxiomId::new(74), |recorder| {
         crate::probes::text::record_text_toolkit(recorder);
-        let small = measure(recorder, SMALL_ROWS)?;
+        let (mut small_samples, mut large_samples) =
+            (RestyleSamples::default(), RestyleSamples::default());
+        for _ in 0..ROUNDS {
+            sample(recorder, SMALL_ROWS, &mut small_samples)?;
+            sample(recorder, LARGE_ROWS, &mut large_samples)?;
+        }
+        let (small, large) = (small_samples.medians(), large_samples.medians());
         recorder.measure(
             "small_window",
             format!("{SMALL_ROWS} rows: {}", describe(small)),
         );
-        let large = measure(recorder, LARGE_ROWS)?;
         recorder.measure(
             "large_window",
             format!("{LARGE_ROWS} rows: {}", describe(large)),

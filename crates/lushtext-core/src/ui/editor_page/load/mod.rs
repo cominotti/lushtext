@@ -78,9 +78,9 @@
 //!   thread; control resumes in the planning completion closure inside
 //!   `admission::begin_load_request`, which either submits or publishes the
 //!   failure.
-//! - **Stage 3 → 4, idle drain.** Submitting schedules a
-//!   `glib::idle_add_local_once` and returns; control resumes in
-//!   `admission::drain`.
+//! - **Stage 3 → 4, idle drain.** Submitting schedules an idle at
+//!   `gtk_lush_tasks::completion_priority()` (above GtkTextView's validation
+//!   idle, ledger A80) and returns; control resumes in `admission::drain`.
 //! - **Stage 4, disposal-capacity wakeup.** When the disposal lane has no room
 //!   for the decoded body, the grant is returned to the queue and a capacity
 //!   wakeup is armed; control resumes in `admission::schedule_drain` once the
@@ -97,8 +97,8 @@
 //!   `retirement::run_cancelled_clear_slice`, **which is where a cancelled
 //!   load's content is cleared**, and which restarts a parked request when it
 //!   finishes.
-//! - **Charge release.** Dropping a `TransientLoadPermit` posts
-//!   `glib::idle_add_once`; control resumes in `admission::release_on_main`,
+//! - **Charge release.** Dropping a `TransientLoadPermit` posts an idle at
+//!   the completion priority; control resumes in `admission::release_on_main`,
 //!   which re-arms this lane's drain and the save lane's. Every terminal
 //!   converges here, so worker failure, stale completion, cancellation,
 //!   disposal, and success all release exactly once.

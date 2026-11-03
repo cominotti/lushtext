@@ -6371,8 +6371,19 @@ fn test_selected_restore_tab_gets_bounded_priority_after_capacity_releases() {
     let completion_order = Rc::new(RefCell::new(Vec::new()));
     let order = Rc::clone(&completion_order);
     second.connect_file_loaded(move || order.borrow_mut().push("second"));
+    // Read the other loads' state from inside third's completion: the drain
+    // that waits below may run every remaining stage in one go, because worker
+    // completions and admission hand-offs no longer wait for the validation
+    // backlog of the documents already installed (ledger A80), so the main
+    // loop need not go idle between third's completion and second's.
+    let second_state_at_third = Rc::new(Cell::new(None));
     let order = Rc::clone(&completion_order);
-    third.connect_file_loaded(move || order.borrow_mut().push("third"));
+    let second_for_third = second.clone();
+    let observed = Rc::clone(&second_state_at_third);
+    third.connect_file_loaded(move || {
+        order.borrow_mut().push("third");
+        observed.set(Some(second_for_third.load_state()));
+    });
 
     // Each wait covers an async worker load plus a bounded, sliced install
     // of a 2 MiB document, and the drain behind it: above S_syntax the
@@ -6387,7 +6398,11 @@ fn test_selected_restore_tab_gets_bounded_priority_after_capacity_releases() {
 
     assert_eq!(completion_order.borrow().first().copied(), Some("third"));
     assert_eq!(third.load_state(), EditorLoadState::Loaded);
-    assert_eq!(second.load_state(), EditorLoadState::Loading);
+    assert_eq!(
+        second_state_at_third.get(),
+        Some(EditorLoadState::Loading),
+        "second was still loading when the selected third tab completed"
+    );
     wait_until(Duration::from_secs(60), || {
         second.load_state() == EditorLoadState::Loaded
     });

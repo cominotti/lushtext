@@ -94,9 +94,10 @@ fn quiesce_lanes(budget: std::time::Duration) -> bool {
     // Uses the **shared** `wait_until` rather than a private poll loop. Its
     // mechanism is load-bearing and is the opposite of the obvious one: it
     // sleeps briefly and *then* drains every ready main-loop source, which is
-    // what dispatches `spawn_blocking_then`'s low-priority `idle_add_once`
-    // completion. A hand-rolled loop that drains first and sleeps after — which
-    // this helper was — starves exactly the terminal it is waiting for.
+    // what dispatches `spawn_blocking_then`'s completions (one per dispatch,
+    // at `gtk_lush_tasks::completion_priority()`). A hand-rolled loop that
+    // drains first and sleeps after — which this helper was — starves exactly
+    // the terminal it is waiting for.
     //
     // `wait_until` panics on timeout; this wrapper catches that so a caller can
     // degrade to a monotonic assertion instead of claiming an identity the lane

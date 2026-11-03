@@ -187,8 +187,17 @@ PROTECTED_SAVE_AS_LENGTH = 1_900_000
 # document, for the mid-install tab switch and scroll.
 MID_INSTALL_SMALL_LINES = 400
 EVICTION_FILE_BYTES = 8 * 1024 * 1024
+# `save/during-validation` (spawn-completion-priority D5): the short-line
+# documents (`short-code`, below C6's density bound, so installed unpaced and
+# validated afterwards) whose validation backlog the save runs during, how long after their
+# activation the save starts (their installs are under way, every view still
+# validating), and the scratch document the case saves. The scratch file lives
+# in the case's state directory, never in the fixture ledger.
+SAVE_BACKLOG_DOCUMENTS = 2
+SAVE_BACKLOG_LEAD_S = 1.0
+SAVE_SCRATCH_TEXT = "scratch document the save case writes\n"
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -1524,7 +1533,7 @@ class Case:
     group: str
     fixture: FixtureSpec | None
     settings: dict[str, Any] = field(default_factory=dict)
-    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke | seeded-recovery
+    flow: str = "standard"  # standard | session | eviction | reload | install | calibration | keystroke | seeded-recovery | save
     length: int | None = None  # the swept paragraph length / line length / total size
     attrs: dict[str, Any] = field(default_factory=dict)
 
@@ -1671,6 +1680,13 @@ def build_cases(tier: str) -> list[Case]:
                 FixtureSpec("eviction", EVICTION_FILE_BYTES, seed_for("eviction")),
                 settings={"word-wrap": True, "show-minimap": False},
                 flow="eviction",
+            ),
+            Case(
+                "save/during-validation",
+                "save",
+                FixtureSpec("short-code", EVICTION_FILE_BYTES, seed_for("save-backlog"), count=SAVE_BACKLOG_DOCUMENTS),
+                settings={"word-wrap": True, "show-minimap": False},
+                flow="save",
             ),
             Case(
                 "reload/250000",
@@ -3075,6 +3091,8 @@ class Runner:
                     launches.append(relaunch)
                     attach(relaunch, rep_dir / "probe-restore.jsonl", state_env)
                     ok = self.open_phase(phases, relaunch, cap, predicate="session-restore-complete") and self.standard_interactions(phases, tabs=len(files), recover=recover, ctx=ctx)
+            elif case.flow == "save":
+                ok = self.save_during_validation_flow(rep_dir, env, files, phases, launches, cap, state_env)
             elif case.flow == "recovery":
                 ok = self.recovery_flow(rep_dir, env, files, phases, launches, cap, attach, state_env, ctx, recover)
             elif case.flow == "seeded-recovery":
@@ -3194,6 +3212,66 @@ class Runner:
         (rep_dir / "phases.json").write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
         self.append_result(row)
         return row
+
+    def save_during_validation_flow(self, rep_dir: Path, env: dict[str, str], files: list[Path], phases: list[dict], launches: list[Launch], cap: float, state_env: dict[str, str]) -> bool:
+        """`save/during-validation` (spawn-completion-priority D5).
+
+        Open a small scratch document, then hand the fixtures to the running
+        instance through a second activation, so their installs and every
+        view's validation backlog start after the scratch tab exists. With the
+        backlog under way, select the scratch tab, type one character into it
+        and activate `win.save` (the Ctrl+S action; the lane never injects a
+        Control+letter chord). The phase records `save_latency_us`, from that
+        activation until the scratch file's bytes change on disk. Only the
+        scratch file, in the case's state directory, is ever written.
+        """
+        scratch = Path(state_env["STATE_ROOT"]) / "scratch" / "save-target.txt"
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        scratch.write_text(SAVE_SCRATCH_TEXT, encoding="utf-8")
+        launch = self.launch(rep_dir, env, [scratch], "main")
+        launches.append(launch)
+        if not self.open_phase(phases, launch, cap):
+            return False
+        # A second activation forwards the files to the running instance and
+        # exits; it never starts up, so it writes no probe log of its own.
+        opener_env = {k: v for k, v in env.items() if k != "LUSHTEXT_RESPONSIVENESS_LOG"}
+        with (rep_dir / "app-opener.stderr").open("wb") as opener_stderr:
+            opener = subprocess.Popen([str(self.binary), *map(str, files)], stdout=subprocess.DEVNULL, stderr=opener_stderr, env=opener_env, start_new_session=True)
+            try:
+                opener.wait(timeout=cap)
+            except subprocess.TimeoutExpired:
+                opener.kill()
+                opener.wait(timeout=10)
+                phases.append({"name": "save", "kind": "interaction", "status": "opener-hung"})
+                return False
+        extra: dict[str, Any] = {}
+
+        def body(injections, deadline):
+            time.sleep(SAVE_BACKLOG_LEAD_S)
+            if not self.action("win", "select-tab", [self._uint32(0)], deadline):
+                return False, "select-tab-failed"
+            time.sleep(0.3)
+            if self.rd.available:
+                focused, status = self.editor_click(injections, measured=False)
+                if not focused:
+                    return False, f"focus-{status}"
+                self.rd.tap(ord("s"), injections)
+                time.sleep(0.2)
+            before = scratch.read_bytes()
+            # Whether the documents were still loading when the save started:
+            # a save after the backlog measures nothing.
+            extra["loads_pending_at_save"] = not self.wait_ready("file-open-complete", time.monotonic() + 0.05)[0]
+            started = now_us()
+            if not self.action("win", "save", None, deadline):
+                return False, "save-action-failed"
+            while time.monotonic() < deadline:
+                if scratch.read_bytes() != before:
+                    extra["save_latency_us"] = now_us() - started
+                    return True, "ok"
+                time.sleep(0.002)
+            return False, "save-never-landed"
+
+        return self.run_phase(phases, "save", cap, body, extra)
 
     def recovery_flow(self, rep_dir: Path, env: dict[str, str], files: list[Path], phases: list[dict], launches: list[Launch], cap: float, attach: Callable, state_env: dict[str, str], ctx: dict | None, recover: Callable[[], bool]) -> bool:
         """`recovery/small-drafts`: file-backed drafts recovered at startup.
@@ -3461,6 +3539,7 @@ class Runner:
             "renderer_actual": actual_renderer(launches),
             "phases": phase_rows,
             "post_open": post_open,
+            "task_completions": task_completion_summary(parsed, budgets["B_SETTLE_US"]),
         }
 
     # -- sweep --------------------------------------------------------------
@@ -4591,6 +4670,8 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         for r in rows
         if r.get("group") in ("install", "protected") or r.get("case") == "recovery/protected-32mib"
     ]
+    save_runs = save_during_validation_rows(rows)
+    task_completions = task_completion_verdict(rows, budgets["B_SETTLE_US"])
     c3 = {"measured": install}
     if install:
         over = [
@@ -4632,6 +4713,8 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "window_construction_c4": window,
         "construction_c4": construction,
         "install_c3": c3,
+        "save_during_validation": save_runs,
+        "task_completions": task_completions,
         "cases": summarise_cases(rows),
         "missing_artifacts": missing,
         "frameless_cases": frameless,
@@ -4679,6 +4762,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "fill_in_median": fill_in_median(construction, budgets["REFERENCE_FRAME_US"]),
         "construction_enforced": construction_enforced,
         "c6_verdict": c6.get("verdict") if c6 else None,
+        "task_completion_verdict": task_completions.get("verdict"),
     }
     # The C6 verdict is a record for docs/next/long-line-documents.md, not a
     # gate, unless RESPONSIVENESS_C6_ENFORCE=1 asks for one.
@@ -4905,6 +4989,126 @@ def merge_runs(out: Path, sources: list, quiet: bool = False) -> int:
     return 0
 
 
+def save_during_validation_rows(rows: list[dict]) -> list[dict[str, Any]]:
+    """One entry per `save/during-validation` run (spawn-completion-priority D5)."""
+    runs = []
+    for r in rows:
+        if r.get("group") != "save":
+            continue
+        phase = next((p for p in r.get("phases", []) if p.get("name") == "save"), {})
+        latencies = [e["latency_us"] for e in phase.get("input_to_frame") or [] if editable_latency(e)]
+        runs.append(
+            {
+                "case": r["case"],
+                "variant": r["variant"],
+                "rep": r["rep"],
+                "outcome": r["outcome"],
+                "status": phase.get("status"),
+                "save_latency_us": phase.get("save_latency_us"),
+                "loads_pending_at_save": phase.get("loads_pending_at_save"),
+                "stall_max_us": (phase.get("stall") or {}).get("lateness_us"),
+                "input_to_frame_max_us": max(latencies) if latencies else None,
+            }
+        )
+    return runs
+
+
+TASK_COMPLETION_SPAN = "task_completion"
+TASK_HANDOFF_SPAN = "task_handoff"
+
+
+def task_completion_summary(parsed: dict, b_settle_us: int) -> dict[str, Any]:
+    """Every `spawn_blocking_then` completion and completion-priority hand-off.
+
+    `task_completion` spans are the completion callbacks themselves (the
+    `completion-observer` hook of gtk-lush-tasks); `task_handoff` spans are the
+    admission drains and permit releases LushText schedules at the same
+    priority. Those co-dispatch with the completion source in one main-loop
+    iteration (ledger A69), so the combined dispatch is the watchdog's worst
+    lateness over any late record overlapping a completion or hand-off span:
+    the whole iteration that held the loop, not only the callback.
+    """
+    spans = parsed["records"]["span"]
+    completions = [int(r["end_us"]) - int(r["start_us"]) for r in spans if r.get("name") == TASK_COMPLETION_SPAN]
+    handoffs = [int(r["end_us"]) - int(r["start_us"]) for r in spans if r.get("name") == TASK_HANDOFF_SPAN]
+    windows = [(int(r["start_us"]), int(r["end_us"])) for r in spans if r.get("name") in (TASK_COMPLETION_SPAN, TASK_HANDOFF_SPAN)]
+    combined = 0
+    for late in parsed["records"]["late"]:
+        ready = int(late.get("ready_us", late["t_us"] - late["lateness_us"]))
+        if any(start <= int(late["t_us"]) and ready <= end for start, end in windows):
+            combined = max(combined, int(late["lateness_us"]))
+    return {
+        "completions": len(completions),
+        "completion_max_us": max(completions, default=None),
+        "completions_over_b_settle": sum(1 for d in completions if d > b_settle_us),
+        "handoffs": len(handoffs),
+        "handoff_max_us": max(handoffs, default=None),
+        "combined_dispatch_max_us": combined if windows else None,
+        "combined_over_b_settle": bool(windows) and combined > b_settle_us,
+    }
+
+
+def task_completion_verdict(rows: list[dict], b_settle_us: int) -> dict[str, Any]:
+    """The run's hand-off verdict: every completion and every iteration around
+    one within B_SETTLE_US (spawn-completion-priority)."""
+    measured = [r for r in rows if r.get("task_completions") and r["task_completions"]["completions"] + r["task_completions"]["handoffs"] > 0]
+    if not measured:
+        return {"verdict": "not measured (no completion spans: a build without the completion observer?)", "rows": 0}
+    worst = lambda key: max((r["task_completions"][key] or 0 for r in measured), default=0)
+    over = [
+        f"{r['case']}@{r['variant']}#{r['rep']}"
+        for r in measured
+        if r["task_completions"]["completions_over_b_settle"] or r["task_completions"]["combined_over_b_settle"]
+    ]
+    return {
+        "rows": len(measured),
+        "completions": sum(r["task_completions"]["completions"] for r in measured),
+        "handoffs": sum(r["task_completions"]["handoffs"] for r in measured),
+        "completion_max_us": worst("completion_max_us"),
+        "handoff_max_us": worst("handoff_max_us"),
+        "combined_dispatch_max_us": worst("combined_dispatch_max_us"),
+        "over_b_settle": over,
+        "verdict": f"over B_SETTLE_US in {len(over)} run(s)" if over else "every hand-off dispatch within B_SETTLE_US",
+    }
+
+
+def render_task_completions(verdict: dict[str, Any] | None, b_settle_us: int) -> list[str]:
+    if not verdict or not verdict.get("rows"):
+        return []
+    lines = [
+        "",
+        "## Task completions against B_settle",
+        "",
+        f"Every `spawn_blocking_then` completion (`task_completion` span) and completion-priority hand-off (`task_handoff`: admission drains and permit releases), and the worst watchdog lateness of an iteration overlapping one (the combined dispatch, A69), against B_SETTLE_US {b_settle_us} us. Verdict: **{verdict['verdict']}**.",
+        "",
+        "| Runs | Completions | Hand-offs | Completion max (us) | Hand-off max (us) | Combined dispatch max (us) |",
+        "| --- | --- | --- | --- | --- | --- |",
+        f"| {verdict['rows']} | {verdict['completions']} | {verdict['handoffs']} | {verdict['completion_max_us']} | {verdict['handoff_max_us']} | {verdict['combined_dispatch_max_us']} |",
+    ]
+    if verdict["over_b_settle"]:
+        lines += ["", "Over B_SETTLE_US: " + ", ".join(verdict["over_b_settle"])]
+    return lines
+
+
+def render_save_during_validation(runs: list[dict[str, Any]]) -> list[str]:
+    if not runs:
+        return []
+    lines = [
+        "",
+        "## Save during validation",
+        "",
+        "`save/during-validation`: Ctrl+S (`win.save`) on a scratch document while two 8 MiB short-line documents (unpaced installs) validate. Latency runs from the save until the scratch bytes change on disk; the stall is the phase's worst watchdog lateness.",
+        "",
+        "| Case | Variant | Rep | Status | Loads pending at save | Save latency (us) | Stall max (us) | Input-to-frame max (us) |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for run in runs:
+        lines.append(
+            f"| {run['case']} | {run['variant']} | {run['rep']} | {run['status']} | {run['loads_pending_at_save']} | {run['save_latency_us']} | {run['stall_max_us']} | {run['input_to_frame_max_us']} |"
+        )
+    return lines
+
+
 def render_markdown(report: dict) -> str:
     run = report["run"]
     lines = [
@@ -5002,6 +5206,8 @@ def render_markdown(report: dict) -> str:
             position = name.removeprefix("key-")
             verified = "" if position not in case.get("unverified_positions", []) else " (burst not verified: excluded)"
             lines.append(f"| {case['case']} | {case['variant']} | {name}{verified} | {keys['keys']} | {keys['worst_median_us']} / {keys['worst_p90_us']} | {keys['summed_median_us']} |")
+    lines += render_save_during_validation(report.get("save_during_validation") or [])
+    lines += render_task_completions(report.get("task_completions"), report["budgets"]["B_SETTLE_US"])
     lines += ["", "## Cases", "", "| Case | Variant | Outcomes | Phase | Stall median / max (us) | Frame p95 gap | Input-to-frame max (us / frames) | IM calls / max bytes | AT events / max payload |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case in report["cases"]:
         flags = (" noisy" if case.get("noisy") else "") + (f" storage:{case.get('storage')}" if case.get("storage") not in (None, "unchecked", "clean") else "")
@@ -5522,6 +5728,50 @@ def self_test() -> int:
     def expect(condition: bool, label: str) -> None:
         if not condition:
             failures.append(label)
+
+    # `save/during-validation` runs in both tiers, and its run rows reach the
+    # report table (spawn-completion-priority D5).
+    for tier in ("quick", "full"):
+        saves = [c for c in build_cases(tier) if c.id == "save/during-validation"]
+        expect(len(saves) == 1 and saves[0].flow == "save" and saves[0].fixture is not None and saves[0].fixture.count == SAVE_BACKLOG_DOCUMENTS, f"{tier}: one save/during-validation case over the backlog documents")
+    save_row = {
+        "case": "save/during-validation",
+        "group": "save",
+        "variant": "plain",
+        "rep": 0,
+        "outcome": "ok",
+        "phases": [{"name": "save", "status": "ok", "save_latency_us": 4_321, "loads_pending_at_save": True, "stall": {"lateness_us": 900}, "input_to_frame": [{"latency_us": 7_000}, {"latency_us": 9_000, "protected": True}]}],
+    }
+    save_runs = save_during_validation_rows([save_row, {"group": "eviction", "phases": []}])
+    expect(save_runs == [{"case": "save/during-validation", "variant": "plain", "rep": 0, "outcome": "ok", "status": "ok", "save_latency_us": 4_321, "loads_pending_at_save": True, "stall_max_us": 900, "input_to_frame_max_us": 7_000}], "save rows keep latency, backlog state, stall and editable input-to-frame")
+    expect("## Save during validation" in "\n".join(render_save_during_validation(save_runs)) and render_save_during_validation([]) == [], "the save table renders only when the case ran")
+
+    # Task completions (spawn-completion-priority review): each completion and
+    # hand-off span against B_settle, and the iteration around them.
+    tc_parsed = {
+        "records": {
+            "span": [
+                {"kind": "span", "name": TASK_COMPLETION_SPAN, "start_us": 1_000, "end_us": 3_000},
+                {"kind": "span", "name": TASK_COMPLETION_SPAN, "start_us": 10_000, "end_us": 30_000},
+                {"kind": "span", "name": TASK_HANDOFF_SPAN, "start_us": 40_000, "end_us": 41_000},
+                {"kind": "span", "name": "template", "start_us": 50_000, "end_us": 90_000},
+            ],
+            "late": [
+                {"t_us": 32_000, "lateness_us": 22_000},
+                {"t_us": 95_000, "lateness_us": 40_000},
+            ],
+        }
+    }
+    tc = task_completion_summary(tc_parsed, 16_000)
+    expect(tc == {"completions": 2, "completion_max_us": 20_000, "completions_over_b_settle": 1, "handoffs": 1, "handoff_max_us": 1_000, "combined_dispatch_max_us": 22_000, "combined_over_b_settle": True}, f"task completion summary ({tc})")
+    tc_quiet = task_completion_summary({"records": {"span": [{"name": TASK_COMPLETION_SPAN, "start_us": 0, "end_us": 500}], "late": []}}, 16_000)
+    expect(tc_quiet["combined_dispatch_max_us"] == 0 and not tc_quiet["combined_over_b_settle"], "a quiet completion is within budget")
+    tc_rows = [{"case": "a", "variant": "plain", "rep": 0, "task_completions": tc}, {"case": "b", "variant": "plain", "rep": 0, "task_completions": tc_quiet}, {"case": "c", "variant": "plain", "rep": 0}]
+    tc_verdict = task_completion_verdict(tc_rows, 16_000)
+    expect(tc_verdict["rows"] == 2 and tc_verdict["over_b_settle"] == ["a@plain#0"] and tc_verdict["verdict"] == "over B_SETTLE_US in 1 run(s)", f"task completion verdict ({tc_verdict})")
+    expect(task_completion_verdict(tc_rows[1:], 16_000)["verdict"] == "every hand-off dispatch within B_SETTLE_US", "a quiet run meets the hand-off rule")
+    expect(task_completion_verdict([], 16_000)["rows"] == 0 and render_task_completions(task_completion_verdict([], 16_000), 16_000) == [], "no table without completion spans")
+    expect("## Task completions against B_settle" in "\n".join(render_task_completions(tc_verdict, 16_000)), "the task completion table renders")
 
     # The sliced protected install's cases (sliced-protected-install, C3):
     # both tiers run them, and the seeded drafts are enveloped JSON LushText

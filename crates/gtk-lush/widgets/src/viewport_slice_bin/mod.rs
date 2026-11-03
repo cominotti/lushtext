@@ -113,16 +113,21 @@ impl ViewportSliceBin {
     /// scroller.
     ///
     /// True from the allocation in which the bin reads a child-originated
-    /// request (a `scroll_to`, keyboard focus scrolling) until the idle that
-    /// moves the outer adjustment has run, and while the bin holds back a
-    /// divergence it has not yet told apart from a settle (it is handed back
-    /// and classified on the next allocation). False at rest.
+    /// request (a `scroll_to`, keyboard focus scrolling) until the bin has
+    /// re-sliced from the outer value the request moved it to: through the
+    /// idle that moves the outer adjustment **and** the bin's next allocation,
+    /// because between the two the outer holds its new value while the rows
+    /// are still drawn where the old band put them. Also true while the bin
+    /// holds back a divergence it has not yet told apart from a settle (it is
+    /// handed back and classified on the next allocation). False at rest.
     ///
     /// Evidence, like [`Self::allocation_count`] and
-    /// [`Self::correction_count`]: it reads two cells and never allocates,
+    /// [`Self::correction_count`]: it reads three cells and never allocates,
     /// queues a layout, or touches an adjustment. A caller waiting for a
     /// `scroll_to` to land waits on this rather than on elapsed frames or on
     /// the outer value holding still, which it does in the gap before the idle.
+    /// Once it is false the band and the child's allocation describe the
+    /// current outer value; the frame that draws them is the next one.
     #[must_use]
     pub fn outer_request_pending(&self) -> bool {
         self.imp().outer_request_pending()

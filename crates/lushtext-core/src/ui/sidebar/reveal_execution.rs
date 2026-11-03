@@ -27,9 +27,11 @@
 //!    batched reconciliation pending, and only then decides `not-found` or
 //!    `beyond-entry-cap` from the listing the scan actually produced.
 //! 2. **Settle resumption.** After the list's own `scroll_to`, the slice bin
-//!    forwards the request to the outer scroller from an idle. The poll ends the
-//!    reveal `revealed` on the first frame in which the row is mapped, drawn wholly
-//!    inside the outer viewport, and the bin reports no pending request; it counts
+//!    forwards the request to the outer scroller from an idle, and re-slices from
+//!    the new outer value in the next layout. The poll ends the reveal `revealed`
+//!    once the row is mapped, drawn wholly inside the outer viewport, and the bin
+//!    reports no pending request (which covers that re-slice, so the bounds read
+//!    are the current outer value's allocation); it counts
 //!    only frames the clock actually produced, so a loaded compositor does not
 //!    shorten the budget. `REVEAL_SETTLE_FRAME_BUDGET` frames (or the wall budget,
 //!    when frames stop) end it `unsettled`, a real finding that is never retried.
@@ -355,6 +357,14 @@ impl LushtextSidebar {
 
     /// Settle check: revealed once the row is mapped, wholly inside the outer
     /// viewport, and the bin has nothing pending.
+    ///
+    /// The bin reports a forwarded request pending until its allocation has
+    /// re-sliced from the outer value the request moved it to, so the row
+    /// bounds read here are the allocation of the current outer value, not
+    /// the previous band's. No later frame is awaited on top of that: for a row
+    /// that is already visible nothing changes, the clock produces no frame,
+    /// and such a wait ran out the wall budget (`unsettled`) in the
+    /// `workspace-tree-reveal-at-rest` scenarios.
     fn check_settle(
         &self,
         section: &WorkspaceSection,

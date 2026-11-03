@@ -306,6 +306,10 @@ mod slice_loop {
         /// add up.
         pub request_anchor: i32,
         pub idle_scheduled: bool,
+        /// The forwarding idle moved the outer scroller and this bin has not
+        /// re-sliced from the new value yet
+        /// (`ViewportSliceBin::awaiting_reslice`).
+        pub awaiting_reslice: bool,
         pub needs_allocation: bool,
         /// Page and upper the adjustment holds after the child's allocation.
         pub page: i32,
@@ -382,6 +386,11 @@ mod slice_loop {
         /// `extend-closed-loop-geometry-verification` (neither), for the
         /// pinned counterexample.
         pub anchor_facts: bool,
+        /// Run the bin as it ships (an outer move its idle made stays pending
+        /// until the bin's next allocation re-slices) or as it was before
+        /// `spawn-completion-priority`'s review fix (pending ended with the
+        /// idle), for the pinned counterexample.
+        pub reslice_ack: bool,
         /// Content above the first bin's header and below the last bin (the
         /// bin-independence harnesses place one bin at any origin in any
         /// outer range; zero everywhere else).
@@ -428,6 +437,7 @@ mod slice_loop {
                 pending: 0,
                 request_anchor: 0,
                 idle_scheduled: false,
+                awaiting_reslice: false,
                 needs_allocation: true,
                 page: 0,
                 upper: 0,
@@ -451,6 +461,7 @@ mod slice_loop {
                 viewport,
                 bins,
                 anchor_facts: true,
+                reslice_ack: true,
                 above: 0,
                 below: 0,
                 outer_writes: 0,
@@ -499,6 +510,8 @@ mod slice_loop {
             let (top, height) = self.band(index);
             let bin = &mut self.bins[index];
             bin.needs_allocation = false;
+            // This allocation re-slices from the current outer value.
+            bin.awaiting_reslice = false;
             let held = bin
                 .deferred
                 .take()
@@ -713,6 +726,7 @@ mod slice_loop {
                 if moved != self.outer {
                     self.outer = moved;
                     self.outer_writes += 1;
+                    self.bins[index].awaiting_reslice = self.reslice_ack;
                     for bin in &mut self.bins {
                         bin.needs_allocation = true;
                     }
@@ -732,9 +746,18 @@ mod slice_loop {
         }
 
         pub fn at_rest(&self) -> bool {
-            self.bins
-                .iter()
-                .all(|bin| !bin.needs_allocation && !bin.idle_scheduled && bin.deferred.is_none())
+            self.bins.iter().all(|bin| {
+                !bin.needs_allocation
+                    && !bin.idle_scheduled
+                    && !bin.awaiting_reslice
+                    && bin.deferred.is_none()
+            })
+        }
+
+        /// `ViewportSliceBin::outer_request_pending` of bin `index`.
+        pub fn outer_request_pending(&self, index: usize) -> bool {
+            let bin = &self.bins[index];
+            bin.idle_scheduled || bin.awaiting_reslice || bin.deferred.is_some()
         }
     }
 
@@ -867,6 +890,55 @@ fn slice_loop_honours_a_request_with_one_bin() {
 #[kani::unwind(4)]
 fn slice_loop_honours_a_request_with_two_bins() {
     assert_request_is_honoured::<2>();
+}
+
+/// Settle evidence after a request (`ViewportSliceBin::outer_request_pending`),
+/// polled where a caller polls it: after each frame's idles, before the next
+/// frame's layout. Whenever bin 0 reports nothing pending, its child holds the
+/// band the current outer value gives it, so geometry read then is current.
+/// Returns whether that held in each of the three frames after the request.
+fn settle_evidence_is_current(reslice_ack: bool) -> bool {
+    let mut model = slice_loop::Loop::<1>::any();
+    model.reslice_ack = reslice_ack;
+    model.frame(slice_loop::resting_child);
+    model.frame(slice_loop::resting_child);
+    let target: i32 = kani::any();
+    let bin = model.bins[0];
+    // A5: only a list that shows rows can request.
+    kani::assume(bin.page > 0);
+    kani::assume((0..=bin.upper - bin.page).contains(&target));
+    kani::assume((target - bin.child).abs() >= 1);
+    model.bins[0].needs_allocation = true;
+    let current = |model: &slice_loop::Loop<1>| {
+        model.outer_request_pending(0) || model.bins[0].child == band_top(model, 0)
+    };
+    model.frame(|_| slice_loop::Reaction::with(Some(target), 0, 0));
+    let mut held = current(&model);
+    kani::cover!(
+        model.outer_writes > 0,
+        "the request moved the outer scroller"
+    );
+    model.frame(slice_loop::resting_child);
+    held &= current(&model);
+    model.frame(slice_loop::resting_child);
+    held &= current(&model);
+    held
+}
+
+/// The shipped bin: nothing is reported settled before the bin has re-sliced.
+#[kani::proof]
+#[kani::unwind(4)]
+fn slice_loop_settle_evidence_waits_for_the_reslice() {
+    assert!(settle_evidence_is_current(true));
+}
+
+/// The pre-fix bin, which ended the pending state with the idle: a caller
+/// polling between the idle and the next layout reads the old band.
+#[kani::proof]
+#[kani::should_panic]
+#[kani::unwind(4)]
+fn slice_loop_settle_evidence_without_the_reslice_is_stale() {
+    assert!(settle_evidence_is_current(false));
 }
 
 /// A request the child applies in the very first allocation, while the bin is
