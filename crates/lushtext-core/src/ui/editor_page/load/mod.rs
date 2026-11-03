@@ -142,7 +142,7 @@ use super::save;
 pub(crate) mod admission;
 pub mod evidence;
 mod execution;
-pub(crate) use execution::PACED_SLICE_PRIORITY;
+pub(crate) use execution::{PACED_SLICE_PRIORITY, background_slice_priority};
 pub mod policy;
 mod retirement;
 #[cfg(feature = "test-utils")]

@@ -148,10 +148,8 @@ impl LushtextEditorPage {
         let restore_undo_available = state.restore_undo_text.borrow().is_some();
         // A disposed page has no source view, so this is the honest `None`.
         let buffer_char_count = self
-            .imp()
-            .source_view
-            .try_get()
-            .map(|view| view.buffer().char_count());
+            .live_document_buffer()
+            .map(|buffer| buffer.char_count());
         let availability = self.local_history_availability();
         // Derived from the `try_get()` count above rather than re-reading the
         // buffer: `live_local_history_availability` would deref the template

@@ -3075,7 +3075,7 @@ fn test_minimap_pending_refresh_marks_work_pending() {
         // `insert-text` handler schedules the debounced marker refresh — rather
         // than setting the pending flag through a test-only actuation seam.
         use gtk4::prelude::TextBufferExt;
-        page.source_view().buffer().insert_at_cursor("x");
+        page.buffer().insert_at_cursor("x");
     }
     assert!(page.minimap_evidence().work_pending);
 }

@@ -83,6 +83,23 @@ impl OpenDocumentIntent {
 
 impl LushtextWindow {
     /// Return whether this page currently owns the selected tab.
+    /// Before the window is mapped, keep only the selected tab's editor view
+    /// laying out its document (`editor_page::view_attachment`); once mapped,
+    /// each page's `map` and `unmap` decide.
+    pub(super) fn follow_selection_in_unmapped_window(&self) {
+        if self.is_mapped() {
+            return;
+        }
+        let tab_view = &self.imp().tab_view;
+        let selected = tab_view.selected_page();
+        for index in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(index);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                editor.follow_unmapped_window_selection(selected.as_ref() == Some(&page));
+            }
+        }
+    }
+
     pub(crate) fn is_selected_editor(&self, editor: &LushtextEditorPage) -> bool {
         self.imp().tab_view.selected_page().is_some_and(|page| {
             page.child().as_ptr() == editor.upcast_ref::<gtk4::Widget>().as_ptr()

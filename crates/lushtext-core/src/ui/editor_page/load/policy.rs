@@ -222,13 +222,42 @@ pub(crate) fn protected_install_is_sliced(
     })
 }
 
-/// Whether the next install slice waits at the paced idle priority, below
-/// GtkTextView's validation (`PACED_SLICE_PRIORITY`): a dense body's slices
+/// How the next install or replacement slice is queued.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InstallSlicePacing {
+    /// From an idle **below** GtkTextView's validation (`PACED_SLICE_PRIORITY`):
+    /// the view lays out each slice before the next goes in (ledger A70).
+    BehindValidation,
+    /// From an idle one step **below** that (`background_slice_priority`):
+    /// nothing lays this body out, and it waits for the visible tab's paced
+    /// slices and validation to finish first.
+    BehindVisibleWork,
+    /// From a 1 ms timeout: an ordinary body.
+    Timeout,
+}
+
+/// How the next slice is queued: a dense body's slices
 /// (`bound-post-open-settle`, D6) and a protected body's (C3), whose tail
 /// slices then follow each other at main-loop speed instead of one timeout
-/// apart.
-pub(crate) const fn install_slices_are_paced(dense: bool, protected: bool) -> bool {
-    dense || protected
+/// apart, are paced; an ordinary body's follow a timeout.
+///
+/// A paced body going into a **background** tab — one whose view shows an
+/// empty placeholder (`defer-background-tab-layout`, ledger A83) and which is
+/// not its window's selected tab (`laid_out` is false) — waits one priority
+/// step lower still, so the visible tab's install and layout take the CPU
+/// first (above validation, a long background install starved the visible
+/// view's layout; measured, design D4). Each slice is still bounded by its
+/// budget.
+pub(crate) const fn install_slice_pacing(
+    dense: bool,
+    laid_out: bool,
+    protected: bool,
+) -> InstallSlicePacing {
+    match (dense || protected, laid_out) {
+        (true, true) => InstallSlicePacing::BehindValidation,
+        (true, false) => InstallSlicePacing::BehindVisibleWork,
+        (false, _) => InstallSlicePacing::Timeout,
+    }
 }
 
 /// How many characters one clear slice may delete.
@@ -623,6 +652,25 @@ pub fn next_restyle_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_background_paced_body_waits_behind_the_visible_tabs_work() {
+        use InstallSlicePacing::{BehindValidation, BehindVisibleWork, Timeout};
+        for protected in [false, true] {
+            for dense in [false, true] {
+                for laid_out in [false, true] {
+                    let expected = match (dense || protected, laid_out) {
+                        (false, _) => Timeout,
+                        (true, true) => BehindValidation,
+                        (true, false) => BehindVisibleWork,
+                    };
+                    assert_eq!(install_slice_pacing(dense, laid_out, protected), expected);
+                }
+            }
+        }
+        assert_eq!(install_slice_pacing(true, false, false), BehindVisibleWork);
+        assert_eq!(install_slice_pacing(false, false, false), Timeout);
+    }
 
     fn ranges(visible: ParagraphSpan, lengths: &[u64], v_slice: u64) -> Vec<(u32, u32)> {
         let count = u32::try_from(lengths.len()).expect("fits");

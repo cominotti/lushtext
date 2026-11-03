@@ -702,6 +702,9 @@ pub struct LushtextEditorPage {
     pub focus_mode: FocusModeEditorState,
     /// Frame-clock wiring that keeps line validation out of the snapshot.
     pub frame_validation: FrameValidationState,
+    /// Which buffer the view shows: the document, or an empty placeholder
+    /// while the tab is hidden (`defer-background-tab-layout`).
+    pub(crate) view_attachment: super::view_attachment::ViewAttachmentState,
 }
 
 impl Default for LushtextEditorPage {
@@ -761,6 +764,7 @@ impl Default for LushtextEditorPage {
             minimap: MinimapState::default(),
             focus_mode: FocusModeEditorState::default(),
             frame_validation: FrameValidationState::default(),
+            view_attachment: super::view_attachment::ViewAttachmentState::default(),
         }
     }
 }
@@ -858,6 +862,7 @@ impl ObjectImpl for LushtextEditorPage {
             .buffer()
             .downcast::<sourceview5::Buffer>()
             .expect("GtkSourceView buffer");
+        let _ = self.view_attachment.document.set(buffer.clone());
         buffer.set_highlight_syntax(true);
         // First buffer handlers, so a refused edit reaches no other one.
         self.obj().setup_edit_lock();
@@ -1120,6 +1125,9 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().install_fold_gutter();
         self.obj().apply_invisible_characters_mode();
         self.obj().refresh_accessibility_metadata();
+        // Last: every handler above connected to the document buffer; from
+        // here until the tab is shown the view lays out an empty placeholder.
+        self.obj().setup_view_attachment();
     }
 }
 
@@ -1129,6 +1137,18 @@ impl ObjectImpl for LushtextEditorPage {
 // viewport geometry changes are observed through the text view's scroll
 // adjustments in `overscroll.rs` instead.
 impl WidgetImpl for LushtextEditorPage {
+    fn map(&self) {
+        // The tab is shown: the view lays out the document from its first
+        // frame (`view_attachment`), before the children map.
+        self.obj().attach_view();
+        self.parent_map();
+    }
+
+    fn unmap(&self) {
+        self.parent_unmap();
+        self.obj().watch_hidden_validation();
+    }
+
     fn unroot(&self) {
         // A closed or detached tab takes its Line Inspector with it: the
         // dialog lives in the window's dialog host, not under this page.

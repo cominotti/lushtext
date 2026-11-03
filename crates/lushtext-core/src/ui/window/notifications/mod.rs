@@ -41,7 +41,10 @@
 //!      ledger records the alert key each editor was announced for
 //!      (`policy::inline_alert_announcement_due`); re-renders, tab switches,
 //!      and other tabs' activity speak nothing, and a changed or re-raised
-//!      alert is new.
+//!      alert is new. While the opened document is about to take the
+//!      keyboard (`opened_document_focus_pending`: a handoff, a session
+//!      restore or activation opens still running) the alert stays due, and
+//!      the handoff's end projects again: a focus change cuts speech off.
 //! 3. **Acknowledge.** Only a status update that actually won the lane pulses it
 //!    and is announced. A progress heartbeat published underneath a
 //!    higher-priority transient message must not flash or speak for a message

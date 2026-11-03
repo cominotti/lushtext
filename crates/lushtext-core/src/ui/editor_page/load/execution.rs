@@ -59,7 +59,8 @@ use crate::ui::responsiveness_probe::PostOpenSpan;
 
 use super::admission::{self, GuardedLoadResult, TransientLoadPermit};
 use super::policy::{
-    self, AbortDisposition, InstallSliceAction, LoadInstallPhase, LoadOutcome, LoadRequestTicket,
+    self, AbortDisposition, InstallSliceAction, InstallSlicePacing, LoadInstallPhase, LoadOutcome,
+    LoadRequestTicket,
 };
 use super::{evidence, retirement};
 
@@ -122,6 +123,14 @@ impl ChunkedLoadInstall {
 /// whole-buffer replacement.
 pub(crate) const PACED_SLICE_PRIORITY: glib::Priority = glib::Priority::DEFAULT_IDLE;
 
+/// The priority a paced slice into a **background** tab waits at, one step
+/// below `PACED_SLICE_PRIORITY` (`defer-background-tab-layout`): its view
+/// lays nothing out, and it runs only once no visible tab's paced slice is
+/// ready, so the visible document installs and lays out first.
+pub(crate) fn background_slice_priority() -> glib::Priority {
+    glib::Priority::from(glib::ffi::G_PRIORITY_DEFAULT_IDLE + 1)
+}
+
 /// Schedule the next slice of a paced (dense) installation from an idle
 /// below `GTK_TEXT_VIEW_PRIORITY_VALIDATE` (review R14, ledger A70):
 /// GtkTextView's incremental validation idle lays out the previous slice's
@@ -129,10 +138,17 @@ pub(crate) const PACED_SLICE_PRIORITY: glib::Priority = glib::Priority::DEFAULT_
 /// the slices follow each other at main-loop speed (pacing by painted frames
 /// took 16.7 s for an 11 MiB document against main's 1.9 s). A slice waits
 /// for the frame that shows the latest key first (`input_quiet::paced_idle`).
-fn schedule_paced_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
+///
+/// A background tab's view lays nothing out (`defer-background-tab-layout`),
+/// so its slices wait at `background_slice_priority`, behind the visible
+/// tab's (`policy::install_slice_pacing`).
+fn schedule_paced_insert_slice(
+    session: &Rc<RefCell<ChunkedLoadInstall>>,
+    priority: glib::Priority,
+) {
     let (session_for_step, session_for_store) = (Rc::clone(session), Rc::downgrade(session));
     crate::ui::input_quiet::paced_idle(
-        PACED_SLICE_PRIORITY,
+        priority,
         move || run_install_slice(&session_for_step),
         move |source_id| {
             if let Some(session) = session_for_store.upgrade() {
@@ -366,12 +382,21 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     };
 
     let protected = session.borrow().folded.is_some();
+    let laid_out = editor
+        .as_ref()
+        .is_some_and(LushtextEditorPage::install_follows_layout);
     if reached_end {
         finish_chunked_install(session);
-    } else if policy::install_slices_are_paced(budget == SliceBudget::PACED, protected) {
-        schedule_paced_insert_slice(session);
     } else {
-        schedule_install_slice(session);
+        match policy::install_slice_pacing(budget == SliceBudget::PACED, laid_out, protected) {
+            InstallSlicePacing::BehindValidation => {
+                schedule_paced_insert_slice(session, PACED_SLICE_PRIORITY);
+            }
+            InstallSlicePacing::BehindVisibleWork => {
+                schedule_paced_insert_slice(session, background_slice_priority());
+            }
+            InstallSlicePacing::Timeout => schedule_install_slice(session),
+        }
     }
 }
 
@@ -505,7 +530,18 @@ pub(super) fn accept_admitted_load_outcome(
         return;
     }
     match result {
-        Ok(loaded) => install_guarded_load(editor, ticket.load_generation, loaded, Some(permit)),
+        Ok(loaded) => {
+            // The read is done: from here the load holds only its decoded
+            // body outside the buffer, and no worker (design D4 of
+            // `defer-background-tab-layout`).
+            let mut permit = permit;
+            permit.retain_for_install(
+                u64::try_from(loaded.content.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(crate::model::file_load::TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES),
+            );
+            install_guarded_load(editor, ticket.load_generation, loaded, Some(permit));
+        }
         Err(EditorLoadError::Cancelled) => {}
         Err(error) => publish_load_error(editor, &error, error_state),
     }

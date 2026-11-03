@@ -93,7 +93,11 @@ pub struct FileLoadAdmissionGrant {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FileLoadAdmissionSnapshot {
     pub queued_count: usize,
+    /// Grants still reading and decoding on a worker.
     pub active_count: usize,
+    /// Grants whose decoded body is being installed into its buffer
+    /// ([`FileLoadAdmissionPolicy::retain_for_install`]).
+    pub installing_count: usize,
     pub active_weight: u64,
     pub high_water_weight: u64,
     pub exclusive_active: bool,
@@ -107,6 +111,9 @@ pub struct FileLoadAdmissionPolicy {
     queued: BTreeMap<(u64, u64), FileLoadAdmissionRequest>,
     queued_by_id: BTreeMap<u64, (u64, u64)>,
     active: BTreeMap<u64, FileLoadAdmissionGrant>,
+    /// Grants past their worker read, by request id, with the weight they
+    /// still hold and whether they still run alone.
+    installing: BTreeMap<u64, FileLoadAdmissionGrant>,
     active_weight: u64,
     high_water_weight: u64,
     exclusive_active: bool,
@@ -129,6 +136,7 @@ impl FileLoadAdmissionPolicy {
             queued: BTreeMap::new(),
             queued_by_id: BTreeMap::new(),
             active: BTreeMap::new(),
+            installing: BTreeMap::new(),
             active_weight: 0,
             high_water_weight: 0,
             exclusive_active: false,
@@ -190,7 +198,9 @@ impl FileLoadAdmissionPolicy {
             || self.exclusive_active
             || external_exclusive_active
             || (protected_residency_over_budget
-                && (!self.active.is_empty() || external_active_weight > 0))
+                && (!self.active.is_empty()
+                    || !self.installing.is_empty()
+                    || external_active_weight > 0))
         {
             return None;
         }
@@ -235,9 +245,40 @@ impl FileLoadAdmissionPolicy {
         Some(grant)
     }
 
+    /// One grant's worker read is done and its decoded body goes into its
+    /// buffer (`defer-background-tab-layout`): it no longer holds a reading
+    /// slot (`max_active` mirrors the worker cap, and an install uses no
+    /// worker), and its charge shrinks to `retained_weight`, what the install
+    /// still holds outside the buffer: the decoded body and its overhead,
+    /// never more than it was granted. The buffer's own bytes are the live
+    /// editor budget's. An oversize grant stops running alone once what it
+    /// retains fits the budget. Returns false for an unknown or already
+    /// installing grant.
+    pub fn retain_for_install(&mut self, request_id: u64, retained_weight: u64) -> bool {
+        let Some(mut grant) = self.active.remove(&request_id) else {
+            return false;
+        };
+        let retained = retained_weight.min(grant.weight);
+        self.active_weight = self
+            .active_weight
+            .saturating_sub(grant.weight)
+            .saturating_add(retained);
+        grant.weight = retained;
+        if grant.exclusive && retained <= self.budget {
+            grant.exclusive = false;
+            self.exclusive_active = false;
+        }
+        self.installing.insert(request_id, grant);
+        true
+    }
+
     /// Release one active request, returning false for stale or duplicate drops.
     pub fn release(&mut self, request_id: u64) -> bool {
-        let Some(grant) = self.active.remove(&request_id) else {
+        let Some(grant) = self
+            .active
+            .remove(&request_id)
+            .or_else(|| self.installing.remove(&request_id))
+        else {
             return false;
         };
         self.active_weight = self.active_weight.saturating_sub(grant.weight);
@@ -253,6 +294,7 @@ impl FileLoadAdmissionPolicy {
         FileLoadAdmissionSnapshot {
             queued_count: self.queued.len(),
             active_count: self.active.len(),
+            installing_count: self.installing.len(),
             active_weight: self.active_weight,
             high_water_weight: self.high_water_weight,
             exclusive_active: self.exclusive_active,
@@ -261,7 +303,7 @@ impl FileLoadAdmissionPolicy {
 
     fn request_fits(&self, request: FileLoadAdmissionRequest, external_weight: u64) -> bool {
         if request.weight > self.budget {
-            self.active.is_empty() && external_weight == 0
+            self.active.is_empty() && self.installing.is_empty() && external_weight == 0
         } else {
             self.active_weight
                 .saturating_add(external_weight)
@@ -348,6 +390,93 @@ mod tests {
             }
             assert!(slices > 1, "{delimiter:?} document installed in one turn");
         }
+    }
+
+    #[test]
+    fn an_installing_grant_frees_its_reading_slot_and_keeps_only_its_retained_weight() {
+        let mut policy = FileLoadAdmissionPolicy::new(100, 1);
+        policy.queue(request(1, 1, 1, 65, FileLoadPriority::Normal));
+        policy.queue(request(2, 2, 2, 65, FileLoadPriority::Normal));
+        assert_eq!(
+            policy.admit_next(false).map(|grant| grant.request_id),
+            Some(1)
+        );
+        assert_eq!(
+            policy.admit_next(false),
+            None,
+            "one reading slot, and no budget"
+        );
+
+        assert!(policy.retain_for_install(1, 9));
+        assert!(
+            !policy.retain_for_install(1, 9),
+            "a grant moves to installing once"
+        );
+        let snapshot = policy.snapshot();
+        assert_eq!(snapshot.active_count, 0);
+        assert_eq!(snapshot.installing_count, 1);
+        assert_eq!(snapshot.active_weight, 9);
+        assert_eq!(
+            policy.admit_next(false).map(|grant| grant.request_id),
+            Some(2)
+        );
+        assert_eq!(policy.snapshot().active_weight, 74);
+        assert_eq!(policy.snapshot().high_water_weight, 74);
+
+        assert!(policy.release(1));
+        assert!(
+            !policy.release(1),
+            "an installing grant is released exactly once"
+        );
+        assert_eq!(policy.snapshot().active_weight, 65);
+        assert!(policy.release(2));
+        assert_eq!(policy.snapshot().active_weight, 0);
+        assert_eq!(policy.snapshot().installing_count, 0);
+    }
+
+    #[test]
+    fn an_installing_grant_never_grows_and_drops_exclusivity_once_it_fits() {
+        let mut policy = FileLoadAdmissionPolicy::new(10, 8);
+        policy.queue(request(1, 1, 1, 11, FileLoadPriority::Normal));
+        policy.queue(request(2, 2, 2, 4, FileLoadPriority::Normal));
+        assert!(
+            policy
+                .admit_next(false)
+                .is_some_and(|grant| grant.exclusive)
+        );
+        assert_eq!(policy.admit_next(false), None);
+        // Retaining more than was granted keeps the grant's charge.
+        assert!(policy.retain_for_install(1, 20));
+        assert_eq!(policy.snapshot().active_weight, 11);
+        assert!(
+            policy.snapshot().exclusive_active,
+            "an oversize body still runs alone"
+        );
+        assert_eq!(policy.admit_next(false), None);
+        assert!(policy.release(1));
+
+        policy.queue(request(3, 3, 3, 11, FileLoadPriority::Normal));
+        assert_eq!(
+            policy.admit_next(false).map(|grant| grant.request_id),
+            Some(2)
+        );
+        assert!(policy.release(2));
+        assert!(
+            policy
+                .admit_next(false)
+                .is_some_and(|grant| grant.exclusive)
+        );
+        assert!(policy.retain_for_install(3, 5));
+        let snapshot = policy.snapshot();
+        assert!(
+            !snapshot.exclusive_active,
+            "its retained body fits the budget"
+        );
+        assert_eq!(snapshot.active_weight, 5);
+        assert!(
+            !policy.retain_for_install(99, 1),
+            "an unknown grant changes nothing"
+        );
     }
 
     #[test]

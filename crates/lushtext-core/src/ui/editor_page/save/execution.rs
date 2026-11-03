@@ -695,12 +695,10 @@ pub(super) fn capture_in_flight(editor: &LushtextEditorPage) -> bool {
 /// through `try_get()` here rather than the panicking accessor. A page with no
 /// buffer left has nothing to capture, which is `Direct`.
 pub(super) fn capture_mode(editor: &LushtextEditorPage) -> SaveCaptureMode {
-    let Some(view) = editor.imp().source_view.try_get() else {
+    let Some(buffer) = editor.live_document_buffer() else {
         return SaveCaptureMode::Direct;
     };
-    save_capture_mode(buffer_snapshot::buffer_requires_chunked_snapshot(
-        &view.buffer(),
-    ))
+    save_capture_mode(buffer_snapshot::buffer_requires_chunked_snapshot(&buffer))
 }
 
 #[cfg(feature = "test-utils")]

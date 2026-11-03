@@ -2523,7 +2523,7 @@ fn minimap_marker_strip(editor: &LushtextEditorPage) -> gtk4::DrawingArea {
 /// without a test-only actuation seam. Shared rather than copied: two readiness
 /// blockers assert the same precondition.
 fn drive_pending_minimap_refresh(editor: &LushtextEditorPage) {
-    editor.source_view().buffer().insert_at_cursor("x");
+    editor.buffer().insert_at_cursor("x");
     assert!(
         editor.minimap_evidence().work_pending,
         "an edit must leave the debounced minimap refresh pending"

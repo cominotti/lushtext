@@ -166,7 +166,12 @@ pub(super) fn project_notification_surfaces(
         selected_view.as_ref(),
     );
 
-    if let Some((editor, notification, surface)) = perceivable {
+    // The opened document takes the keyboard first (`editor_focus`): an alert
+    // announced before the handoff would be cut off by the focus change. It
+    // stays due, and the handoff's end projects the surfaces again.
+    if let Some((editor, notification, surface)) = perceivable
+        && !window.opened_document_focus_pending()
+    {
         announce_once(window, &editor, &notification, surface);
     }
 }

@@ -239,12 +239,11 @@ impl LushtextEditorPage {
             .mark(NAVIGATION_MARK)
             .unwrap_or_else(|| buffer.create_mark(Some(NAVIGATION_MARK), target, true));
         buffer.move_mark(&mark, target);
+        let target = buffer.iter_at_mark(&mark);
         if top {
-            self.source_view()
-                .scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
+            self.scroll_to_document_iter(&target, 0.0, true, 0.0, 0.0);
         } else {
-            self.source_view()
-                .scroll_to_mark(&mark, 0.1, false, 0.0, 0.0);
+            self.scroll_to_document_iter(&target, 0.1, false, 0.0, 0.0);
         }
     }
 

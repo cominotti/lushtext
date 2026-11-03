@@ -68,6 +68,11 @@ impl LushtextEditorPage {
         reason = "Cursor offsets and scroll positions are derived from non-negative GTK coordinates and persisted as u32 session data"
     )]
     pub fn visible_top_line(&self) -> u32 {
+        // A hidden tab's view shows a placeholder: its top line is the one it
+        // kept, read without laying anything out (`view_attachment`).
+        if let Some(line) = self.detached_top_line() {
+            return line;
+        }
         let view = self.source_view();
         let Some(vadj) = view.vadjustment() else {
             return 0;
@@ -117,10 +122,7 @@ impl LushtextEditorPage {
         if let Some(scroll_line) = scroll_line
             && let Some(iter) = buffer.iter_at_line(scroll_line as i32)
         {
-            let mark = buffer.create_mark(None, &iter, true);
-            self.source_view()
-                .scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
-            buffer.delete_mark(&mark);
+            self.scroll_to_document_iter(&iter, 0.0, true, 0.0, 0.0);
         }
     }
 }

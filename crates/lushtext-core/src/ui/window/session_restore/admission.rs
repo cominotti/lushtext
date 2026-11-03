@@ -252,6 +252,10 @@ impl LushtextWindow {
         // the user pressed, while the restore ran is kept.
         if runtime.policy.metrics().pages_created > 0 {
             self.hand_focus_to_opened_document();
+        } else {
+            // No handoff follows: an alert held back while the restore ran
+            // is announced now (`opened_document_focus_pending`).
+            self.render_notifications();
         }
 
         let first_terminal_projection = runtime.policy.note_terminal_projection_publication();

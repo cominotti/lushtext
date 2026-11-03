@@ -98,7 +98,7 @@ fn active_print_target(window: &LushtextWindow) -> Option<LushtextEditorPage> {
 /// trap `active_print_target` avoids one level up. Reaching a disposed editor
 /// through a still-live window is exactly what happens while a tab is torn down.
 fn document_facts(editor: &LushtextEditorPage) -> Option<PrintDocumentFacts> {
-    let buffer = editor.imp().source_view.try_get()?.buffer();
+    let buffer = editor.live_document_buffer()?;
     let char_count = buffer.char_count();
     // Bounded: decline a document-sized copy rather than take one on every read.
     // The threshold is the shared limit `ui::buffer_snapshot` owns — called, not

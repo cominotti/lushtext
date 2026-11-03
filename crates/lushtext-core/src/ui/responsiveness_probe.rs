@@ -90,7 +90,7 @@ pub(crate) const TASK_COMPLETION_SPAN: &str = "task_completion";
 /// The span an admission drain or a payload-permit release scheduled at
 /// `gtk_lush_tasks::completion_priority()` is recorded as: those hand-offs
 /// co-dispatch with the completion source in one main-loop iteration (ledger
-/// A69), so the lane measures the iteration around both.
+/// A81), so the lane measures the iteration around both.
 pub(crate) const TASK_HANDOFF_SPAN: &str = "task_handoff";
 
 /// Run `work` and record it as one span named `name` in the measurement

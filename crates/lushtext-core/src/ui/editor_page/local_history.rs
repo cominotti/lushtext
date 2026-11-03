@@ -408,10 +408,7 @@ impl LushtextEditorPage {
         } else {
             let start = buffer.start_iter();
             buffer.place_cursor(&start);
-            let mark = buffer.create_mark(None, &start, true);
-            self.source_view()
-                .scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
-            buffer.delete_mark(&mark);
+            self.scroll_to_document_iter(&start, 0.0, true, 0.0, 0.0);
         }
 
         self.clear_modified_line_marks();

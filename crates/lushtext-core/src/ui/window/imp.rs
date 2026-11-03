@@ -549,6 +549,9 @@ pub struct LushtextWindow {
     /// mapped: then the opened-document handoff keeps the user's focus
     /// (`editor_focus::setup_opened_document_focus`).
     pub user_input_since_map: Cell<bool>,
+    /// An opened-document focus handoff was requested and has not finished
+    /// (`editor_focus`): the selected editor's inline alert waits for it.
+    pub opened_document_handoff_pending: Cell<bool>,
     /// Set of file paths with open tabs, for O(1) duplicate detection in `open_document`.
     pub open_paths: RefCell<HashSet<PathBuf>>,
     /// Depth counter for tab storms that should rebuild derived projections once.
@@ -663,6 +666,7 @@ impl Default for LushtextWindow {
             saved_focus: RefCell::new(None),
             transient_child_escape_handled: Cell::new(false),
             user_input_since_map: Cell::new(false),
+            opened_document_handoff_pending: Cell::new(false),
             open_paths: RefCell::new(HashSet::new()),
             tab_projection_refresh_defer_depth: Cell::new(0),
             editor_memory: EditorMemoryState::default(),
@@ -1084,6 +1088,7 @@ impl ObjectImpl for LushtextWindow {
                             .selection_generation
                             .set(session.selection_generation.get().wrapping_add(1));
                     }
+                    window.follow_selection_in_unmapped_window();
                     if window.tab_projection_refresh_deferred() {
                         return;
                     }

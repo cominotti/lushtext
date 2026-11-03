@@ -247,6 +247,9 @@ impl LushtextEditorPage {
         if !state.active.get() || !state.typewriter_scrolling.get() {
             return;
         }
+        if !self.view_shows_document() {
+            return;
+        }
         let buffer = self.buffer();
         self.source_view()
             .scroll_to_mark(&buffer.get_insert(), 0.0, true, 0.0, 0.5);

@@ -809,8 +809,5 @@ fn scroll_editor_to_line(editor: &LushtextEditorPage, line: u32) {
         .iter_at_line(line_index)
         .unwrap_or_else(|| buffer.end_iter());
     buffer.place_cursor(&iter);
-    let mut scroll_iter = iter;
-    editor
-        .source_view()
-        .scroll_to_iter(&mut scroll_iter, 0.0, true, 0.0, 0.3);
+    editor.scroll_to_document_iter(&iter, 0.0, true, 0.0, 0.3);
 }

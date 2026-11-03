@@ -617,10 +617,6 @@ fn scroll_cursor_to_line(editor: &LushtextEditorPage, line: u32) {
     }
     let iter = iter_at_line_or_last(&editor.buffer(), line);
     editor.buffer().place_cursor(&iter);
-    let mark = editor.buffer().create_mark(None, &iter, true);
-    editor
-        .source_view()
-        .scroll_to_mark(&mark, 0.2, true, 0.0, 0.0);
-    editor.buffer().delete_mark(&mark);
+    editor.scroll_to_document_iter(&iter, 0.2, true, 0.0, 0.0);
     editor.source_view().grab_focus();
 }

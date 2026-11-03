@@ -179,7 +179,7 @@ impl CompositionState {
 /// clock and input.
 ///
 /// GLib dispatches every ready source of the top priority in one iteration
-/// (ledger A69), so a stage at `G_PRIORITY_DEFAULT_IDLE` shared its dispatch
+/// (ledger A81), so a stage at `G_PRIORITY_DEFAULT_IDLE` shared its dispatch
 /// with any other default-idle source that became ready at the same time.
 /// Once worker completions arrived ahead of default-idle work
 /// (`gtk_lush_tasks::completion_priority`, ledger A80), the session load
@@ -854,7 +854,9 @@ impl LushtextWindow {
         }
         // The strip followed the queue; a turn whose files added no page
         // (a remote file, a path another window owns) must not leave it shown.
-        self.sync_tab_bar_visibility();
+        crate::ui::responsiveness_probe::span("activation_tab_bar", || {
+            self.sync_tab_bar_visibility();
+        });
         if more {
             self.imp()
                 .composition
@@ -887,11 +889,15 @@ impl LushtextWindow {
             // added or selected a page in this window (not when another window
             // owned the path and was presented instead).
             self.hand_focus_to_opened_document();
+        } else {
+            // No handoff follows: an alert held back while the opens were
+            // queued is announced now (`opened_document_focus_pending`).
+            self.render_notifications();
         }
         if !files.is_empty() {
             // The window is raised once its activation finished, as the
             // pre-composition `open` handler did after opening its files.
-            self.present();
+            crate::ui::responsiveness_probe::span("activation_present", || self.present());
         }
     }
 }

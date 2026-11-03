@@ -858,10 +858,23 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
     if insertion_is_complete(end, body_len) {
         finish_session(session, None);
-    } else if budget == SliceBudget::PACED || protected {
-        schedule_paced_turn(session);
     } else {
-        schedule_turn(session);
+        use crate::ui::editor_page::load::policy::{InstallSlicePacing, install_slice_pacing};
+        let laid_out = editor
+            .as_ref()
+            .is_some_and(LushtextEditorPage::install_follows_layout);
+        match install_slice_pacing(budget == SliceBudget::PACED, laid_out, protected) {
+            InstallSlicePacing::BehindValidation => {
+                schedule_paced_turn(session, crate::ui::editor_page::load::PACED_SLICE_PRIORITY);
+            }
+            InstallSlicePacing::BehindVisibleWork => {
+                schedule_paced_turn(
+                    session,
+                    crate::ui::editor_page::load::background_slice_priority(),
+                );
+            }
+            InstallSlicePacing::Timeout => schedule_turn(session),
+        }
     }
 }
 
@@ -870,10 +883,14 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 /// out the previous slice first and each validation holds one slice's lines
 /// (`bound-post-open-settle`, review R14, ledger A70). A turn waits for the
 /// frame that shows the latest key first (`input_quiet::paced_idle`).
-fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+///
+/// A background tab's view lays nothing out (`defer-background-tab-layout`),
+/// so its turns wait at `load::background_slice_priority`, behind the visible
+/// tab's (`load::policy::install_slice_pacing`).
+fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>, priority: glib::Priority) {
     let (session_for_step, session_for_store) = (Rc::clone(session), Rc::downgrade(session));
     crate::ui::input_quiet::paced_idle(
-        crate::ui::editor_page::load::PACED_SLICE_PRIORITY,
+        priority,
         move || run_turn(&session_for_step),
         move |source_id| {
             if let Some(session) = session_for_store.upgrade() {

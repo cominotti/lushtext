@@ -18,7 +18,7 @@
 //! immutable [`LanguageGlobTable`], which load-planning workers read.
 //!
 //! "Of its own" needs a priority no other source shares: GLib dispatches every
-//! ready source of the top priority in one iteration (ledger A69). At
+//! ready source of the top priority in one iteration (ledger A81). At
 //! `G_PRIORITY_DEFAULT_IDLE` the build shared stage W's dispatch on `main`
 //! (11.3 ms together). Once worker completions arrived ahead of default-idle
 //! work (`spawn-completion-priority`, ledger A80), it shared the first

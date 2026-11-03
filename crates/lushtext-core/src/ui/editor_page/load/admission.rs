@@ -128,6 +128,28 @@ impl TransientLoadPermit {
     }
 }
 
+impl TransientLoadPermit {
+    /// The worker read is done and the decoded body goes into the buffer:
+    /// keep only `retained_weight` of the charge and give the reading slot
+    /// back (`FileLoadAdmissionPolicy::retain_for_install`), then re-arm both
+    /// lanes' drains, since capacity was freed. On the GTK thread.
+    pub(super) fn retain_for_install(&mut self, retained_weight: u64) {
+        let Some(request_id) = self.request_id else {
+            return;
+        };
+        let retained = COORDINATOR.with_borrow_mut(|coordinator| {
+            coordinator
+                .policy
+                .retain_for_install(request_id, retained_weight)
+        });
+        if retained {
+            self.weight = self.weight.min(retained_weight);
+            schedule_drain();
+            save::admission::schedule_drain_for_external_change();
+        }
+    }
+}
+
 impl Drop for TransientLoadPermit {
     fn drop(&mut self) {
         let Some(request_id) = self.request_id.take() else {

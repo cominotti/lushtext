@@ -140,6 +140,7 @@ SHARDS: dict[str, Shard] = {
         # `held_typing` (keep-keystrokes-during-install) on 2026-11-02.
         modules=(
             "attention_refresh",
+            "background_tab_layout",
             "document_scale",
             "editor_page",
             "held_typing",

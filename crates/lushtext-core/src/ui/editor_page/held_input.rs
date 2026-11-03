@@ -23,7 +23,7 @@
 //!   drag's source never deletes text the buffer did not take.
 //! - **Settle.** A dispatch one above `gtk_lush_tasks::completion_priority()`
 //!   (above GtkTextView's line validation, ledger A70, and never in the same
-//!   iteration as a task completion, A69), queued at the first held character,
+//!   iteration as a task completion, A81), queued at the first held character,
 //!   whenever the last lock holder releases, and whenever the editor's state
 //!   changes while nothing owns the buffer (a load's terminal), decides with
 //!   `settle_verdict`: wait (a workflow still owns the buffer, a load is in
@@ -74,7 +74,7 @@ const SETTLE_RETRY_INTERVAL_MS: u64 = 16;
 /// batches.
 ///
 /// Not the completion priority itself: GLib dispatches every ready source of
-/// the top priority in one iteration (A69), so at 124 a replay and a task
+/// the top priority in one iteration (A81), so at 124 a replay and a task
 /// completion or load/save hand-off ready together would run back to back, and
 /// their bounds add past `B_SETTLE`: a replay that enters Protected View took
 /// up to 13.6 ms (design D8), a completion up to 4.8 ms

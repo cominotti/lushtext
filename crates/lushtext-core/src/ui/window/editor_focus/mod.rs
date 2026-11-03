@@ -126,10 +126,36 @@ impl LushtextWindow {
     /// that finished first), the handoff waits for it instead of forcing it,
     /// and decides then.
     pub(super) fn hand_focus_to_opened_document(&self) {
+        self.imp().opened_document_handoff_pending.set(true);
         self.after_content_revealed(|window| {
             if window.hand_focus_to_selected_document_now() == HandoffAttempt::Retry {
                 window.retry_opened_document_handoff();
+            } else {
+                window.finish_opened_document_handoff();
             }
+        });
+    }
+
+    /// Whether the selected document is about to take the keyboard: a
+    /// handoff is pending, or a session restore or activation opens that will
+    /// request one are still running. An inline alert is announced only after
+    /// that (`notifications::execution`): a screen reader interrupts speech on
+    /// a focus change, so an announcement before the handoff would be cut off.
+    /// The ordering used to hold only because a selected document's install
+    /// waited behind its own layout; a view that lays nothing out while its
+    /// tab is not yet shown (`defer-background-tab-layout`) installs sooner.
+    pub(in crate::ui::window) fn opened_document_focus_pending(&self) -> bool {
+        self.imp().opened_document_handoff_pending.get()
+            || self.imp().session.restore_runtime.borrow().is_some()
+            || self.composition_activation_adds_pages()
+    }
+
+    /// The handoff finished (focused, or decided not to): project the
+    /// notification surfaces again, so an alert it held back is announced.
+    pub(in crate::ui::window) fn finish_opened_document_handoff(&self) {
+        self.imp().opened_document_handoff_pending.set(false);
+        crate::ui::responsiveness_probe::span("focus_handoff_render", || {
+            self.render_notifications();
         });
     }
 
@@ -150,7 +176,10 @@ impl LushtextWindow {
         // The content is revealed by now (`after_content_revealed`), so this
         // forces nothing; it keeps rule 11's contract for staged focus.
         self.ensure_composed(StagedSurface::Content);
-        if editor.source_view().grab_focus() {
+        let focused = crate::ui::responsiveness_probe::span("focus_handoff_grab", || {
+            editor.source_view().grab_focus()
+        });
+        if focused {
             HandoffAttempt::Done
         } else {
             HandoffAttempt::Retry
@@ -171,6 +200,7 @@ impl LushtextWindow {
             if window.hand_focus_to_selected_document_now() == HandoffAttempt::Done
                 || next_attempt >= EDITOR_FOCUS_MAX_ATTEMPTS
             {
+                window.finish_opened_document_handoff();
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue

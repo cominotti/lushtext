@@ -42,6 +42,7 @@ mod search;
 pub(crate) use search::search_prefill_text;
 mod style_scheme;
 mod surrounding_text;
+mod view_attachment;
 
 use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{
@@ -146,6 +147,11 @@ impl LushtextEditorPage {
     pub fn buffer(&self) -> sourceview5::Buffer {
         // GtkSourceView exposes the generic GtkTextBuffer API. This checked
         // GObject cast confirms source-specific behavior is available.
+        // The document buffer, whatever the view shows: a hidden tab's view
+        // holds an empty placeholder (`view_attachment`).
+        if let Some(document) = self.imp().view_attachment.document.get() {
+            return document.clone();
+        }
         self.source_view()
             .buffer()
             .downcast::<sourceview5::Buffer>()

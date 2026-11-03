@@ -136,10 +136,9 @@ impl LushtextEditorPage {
         let published_slice_count = imp.replacement.slice_count.get();
         // A disposed page has no source view, so this is the honest `None`
         // rather than the panicking `source_view()` accessor.
-        let buffer_char_count = imp
-            .source_view
-            .try_get()
-            .map(|view| view.buffer().char_count());
+        let buffer_char_count = self
+            .live_document_buffer()
+            .map(|buffer| buffer.char_count());
 
         BufferReplacementEvidence {
             in_progress,
