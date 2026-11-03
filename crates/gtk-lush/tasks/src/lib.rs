@@ -8,7 +8,8 @@
 //! only recovered in the main-thread completion callback.
 //!
 //! Completions are delivered from one GLib source at [`completion_priority`],
-//! one completion per main-loop dispatch, in the order the workers finished.
+//! one completion per main-loop dispatch, in the order the workers finished,
+//! yielding to lower priorities after eight in a row or 16 ms of them.
 //! That priority sits one step above `GtkTextView`'s incremental validation
 //! idle, so a completion does not wait for a text view to lay out a large
 //! buffer, and below frames, resizes and input, which it never delays. See
@@ -40,10 +41,11 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use glib::Object;
 use glib::prelude::*;
@@ -88,9 +90,23 @@ const COMPLETION_PRIORITY_VALUE: i32 = 124;
 /// or an event. The delivery source runs **one completion per dispatch**: GLib
 /// dispatches every ready source of the top priority in one iteration, and
 /// one source keeps the main loop's priority check between two completions.
-/// At most [`DEFAULT_MAX_CONCURRENT_SPAWNS`] completed results exist at once,
-/// because a worker slot is held until its completion has run, so the source
-/// holds back lower-priority work only for as many dispatches.
+///
+/// The worker cap does **not** bound how long the source stays ready: a FIFO
+/// deeper than [`DEFAULT_MAX_CONCURRENT_SPAWNS`], or a completion that spawns
+/// its successor, refills the queue as fast as it drains. So the source
+/// **ages**: after eight consecutive completions, or 16 ms of continuous
+/// occupancy, whichever comes first, it detaches and lets the main loop
+/// reach `G_PRIORITY_DEFAULT_IDLE` once before it returns at this priority.
+/// A source between the two that is ready after every dispatch (the
+/// validation idle over a large backlog) keeps the loop from getting there;
+/// the yield then ends after 16 ms instead, so that source runs for at most
+/// that long before completions resume. Lower-priority work therefore waits
+/// for at most eight completions or 16 ms of them, then gets the loop.
+///
+/// GLib dispatches only the top ready priority, so a `DEFAULT_IDLE` source
+/// waits behind a validation backlog whatever this crate does; the yield
+/// gives each lower priority the loop whenever the loop would reach it
+/// without completions.
 ///
 /// A completion callback is application code that now runs ahead of text
 /// validation and default-idle work: keep each one within the application's
@@ -103,6 +119,54 @@ const COMPLETION_PRIORITY_VALUE: i32 = 124;
 #[must_use]
 pub fn completion_priority() -> glib::Priority {
     glib::Priority::from(COMPLETION_PRIORITY_VALUE)
+}
+
+/// Completions the delivery source runs back to back before it yields.
+///
+/// The worker cap bounds how many *finished* results exist at once, not how
+/// long the source stays ready: a FIFO deeper than the cap, or a completion
+/// that spawns its successor, refills the queue as fast as it drains, so
+/// without a yield the source would hold every lower priority back for the
+/// whole chain. After this many consecutive completions (or
+/// [`COMPLETION_RUN_BUDGET`] of them, whichever comes first) the source
+/// detaches and lets the main loop reach lower priorities once.
+const COMPLETIONS_BEFORE_YIELD: usize = 8;
+
+/// Longest continuous occupancy of one run of completions before the source
+/// yields: one `B_settle` (16 ms), the per-dispatch budget LushText holds its
+/// main loop to.
+const COMPLETION_RUN_BUDGET: Duration = Duration::from_millis(16);
+
+/// Longest a yield waits for the main loop to reach `G_PRIORITY_DEFAULT_IDLE`
+/// before the source returns at [`completion_priority`] anyway. A source
+/// between the two that is ready again after every dispatch — `GtkTextView`'s
+/// validation idle over a large backlog (ledger A80) — would otherwise keep a
+/// yield at `DEFAULT_IDLE` waiting for its whole backlog, which is the wait
+/// this crate's priority exists to avoid.
+const YIELD_DEADLINE: Duration = Duration::from_millis(16);
+
+/// Install `observer`, called on the GTK thread after every completion with
+/// the completion's start and end in `glib::monotonic_time()` microseconds.
+///
+/// For measurement builds (the `completion-observer` feature): it lets an
+/// application attribute a long main-loop dispatch to the completion inside
+/// it. The first observer installed stays; a later call returns `false`.
+#[cfg(feature = "completion-observer")]
+pub fn set_completion_observer(observer: fn(start_us: i64, end_us: i64)) -> bool {
+    observer::OBSERVER.set(observer).is_ok()
+}
+
+#[cfg(feature = "completion-observer")]
+mod observer {
+    use std::sync::OnceLock;
+
+    pub(super) static OBSERVER: OnceLock<fn(i64, i64)> = OnceLock::new();
+
+    pub(super) fn report(start_us: i64, end_us: i64) {
+        if let Some(observer) = OBSERVER.get() {
+            observer(start_us, end_us);
+        }
+    }
 }
 
 /// One finished worker's result, ready for its GTK-thread callback.
@@ -138,8 +202,26 @@ fn deliver(completion: Completion) {
     }
 }
 
+/// The current run of back-to-back completions: how many ran and when the
+/// first started. Main-thread only, like the delivery source.
+#[derive(Clone, Copy, Default)]
+struct CompletionRun {
+    delivered: usize,
+    started: Option<Instant>,
+}
+
+thread_local! {
+    static COMPLETION_RUN: Cell<CompletionRun> = const {
+        Cell::new(CompletionRun { delivered: 0, started: None })
+    };
+    /// The two sources of a pending yield: the `DEFAULT_IDLE` hop and the
+    /// [`YIELD_DEADLINE`] fallback. Whichever runs first removes the other.
+    static YIELD_SOURCES: RefCell<Option<(glib::SourceId, glib::SourceId)>> =
+        const { RefCell::new(None) };
+}
+
 /// The delivery source's dispatch: run the oldest completion, then stay
-/// attached only while more are waiting.
+/// attached while more are waiting, or yield once the run has aged.
 fn deliver_one_completion() -> glib::ControlFlow {
     let next = {
         let mut lane = lock_completions();
@@ -150,16 +232,81 @@ fn deliver_one_completion() -> glib::ControlFlow {
         next
     };
     let Some(completion) = next else {
+        COMPLETION_RUN.set(CompletionRun::default());
         return glib::ControlFlow::Break;
     };
-    completion();
+    let mut run = COMPLETION_RUN.get();
+    let started = *run.started.get_or_insert_with(Instant::now);
+    run_completion(completion);
+    run.delivered += 1;
     let mut lane = lock_completions();
     if lane.queue.is_empty() {
         lane.armed = false;
-        glib::ControlFlow::Break
-    } else {
-        glib::ControlFlow::Continue
+        COMPLETION_RUN.set(CompletionRun::default());
+        return glib::ControlFlow::Break;
     }
+    drop(lane);
+    if run.delivered >= COMPLETIONS_BEFORE_YIELD || started.elapsed() >= COMPLETION_RUN_BUDGET {
+        // Aged: detach (the lane stays `armed`, so workers do not attach a
+        // second source) and come back after the main loop has reached lower
+        // priorities once, or after the deadline.
+        COMPLETION_RUN.set(CompletionRun::default());
+        yield_to_lower_priorities();
+        return glib::ControlFlow::Break;
+    }
+    COMPLETION_RUN.set(run);
+    glib::ControlFlow::Continue
+}
+
+/// Run one completion, reporting its span to the observer when the
+/// `completion-observer` feature installed one.
+fn run_completion(completion: Completion) {
+    #[cfg(feature = "completion-observer")]
+    {
+        let started_us = glib::monotonic_time();
+        completion();
+        observer::report(started_us, glib::monotonic_time());
+    }
+    #[cfg(not(feature = "completion-observer"))]
+    completion();
+}
+
+/// Detach for one main-loop pass: a `G_PRIORITY_DEFAULT_IDLE` hop, which runs
+/// in the first iteration that reaches that priority, and a
+/// [`YIELD_DEADLINE`] timeout at [`completion_priority`] for when a source in
+/// between never lets the loop get there. The first to run re-attaches the
+/// delivery source and removes the other.
+fn yield_to_lower_priorities() {
+    let hop = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, || {
+        resume_after_yield(YieldEnd::Hop);
+        glib::ControlFlow::Break
+    });
+    let deadline = glib::timeout_add_local_full(YIELD_DEADLINE, completion_priority(), || {
+        resume_after_yield(YieldEnd::Deadline);
+        glib::ControlFlow::Break
+    });
+    YIELD_SOURCES.set(Some((hop, deadline)));
+}
+
+/// Which of a yield's two sources ended it.
+#[derive(Clone, Copy)]
+enum YieldEnd {
+    Hop,
+    Deadline,
+}
+
+/// End a yield from inside one of its two sources: remove the other (the one
+/// running returns `Break`, which removes it) and re-attach the delivery
+/// source at [`completion_priority`].
+fn resume_after_yield(end: YieldEnd) {
+    let Some((hop, deadline)) = YIELD_SOURCES.take() else {
+        return;
+    };
+    match end {
+        YieldEnd::Hop => deadline.remove(),
+        YieldEnd::Deadline => hop.remove(),
+    }
+    glib::idle_add_local_full(completion_priority(), deliver_one_completion);
 }
 
 thread_local! {
@@ -267,7 +414,9 @@ where
 /// started when an active result has been consumed by the GLib main loop.
 ///
 /// The result is delivered at [`completion_priority`], one completion per
-/// main-loop dispatch, in the order the workers finished.
+/// main-loop dispatch, in the order the workers finished; the delivery source
+/// yields to lower priorities after eight completions in a row or 16 ms of
+/// them (see [`completion_priority`]).
 pub fn spawn_blocking_then<S, T, W, F>(state: S, work: W, then: F)
 where
     S: 'static,
@@ -680,6 +829,132 @@ mod tests {
         assert!(glib::MainContext::default().iteration(false));
         assert_eq!(delivered.get(), 2);
         iterate(4);
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        clear_pending_tasks();
+    }
+
+    /// Tasks in the chain the aging tests run: far deeper than the worker cap.
+    const CHAIN_TASKS: usize = 64;
+
+    /// What an always-ready source at `priority` observed while a chain of
+    /// [`CHAIN_TASKS`] quick tasks completed: how many of its dispatches ran
+    /// during the chain, and the longest run of completions delivered with no
+    /// dispatch of it in between. Each worker sleeps 300 µs and each
+    /// completion busy-waits 2 ms, so a finished result is always waiting and
+    /// the delivery source never runs dry on its own (the reviewer's
+    /// `starve-experiment.rs`).
+    fn chain_beside_always_ready(priority: glib::Priority) -> (u32, usize) {
+        let done = Rc::new(Cell::new(0usize));
+        let dispatches = Rc::new(Cell::new(0u32));
+        let run = Rc::new(Cell::new(0usize));
+        let longest_run = Rc::new(Cell::new(0usize));
+        {
+            let (done, dispatches, run) =
+                (Rc::clone(&done), Rc::clone(&dispatches), Rc::clone(&run));
+            glib::idle_add_local_full(priority, move || {
+                if done.get() >= CHAIN_TASKS {
+                    return glib::ControlFlow::Break;
+                }
+                if done.get() > 0 {
+                    dispatches.set(dispatches.get() + 1);
+                }
+                run.set(0);
+                glib::ControlFlow::Continue
+            });
+        }
+        for _ in 0..CHAIN_TASKS {
+            let (done, run, longest_run) =
+                (Rc::clone(&done), Rc::clone(&run), Rc::clone(&longest_run));
+            spawn_blocking_then(
+                (),
+                || std::thread::sleep(Duration::from_micros(300)),
+                move |(), ()| {
+                    done.set(done.get() + 1);
+                    run.set(run.get() + 1);
+                    longest_run.set(longest_run.get().max(run.get()));
+                    let started = Instant::now();
+                    while started.elapsed() < Duration::from_millis(2) {}
+                },
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while done.get() < CHAIN_TASKS && Instant::now() < deadline {
+            if !glib::MainContext::default().iteration(false) {
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        }
+        assert_eq!(
+            done.get(),
+            CHAIN_TASKS,
+            "the chain completed beside an always-ready source at {priority:?}"
+        );
+        iterate(8);
+        (dispatches.get(), longest_run.get())
+    }
+
+    #[test]
+    fn a_completion_chain_yields_to_an_always_ready_validation_idle() {
+        let _counter_guard = lock_counter();
+        clear_pending_tasks();
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        let (batches, longest_run) =
+            chain_beside_always_ready(glib::Priority::from(VALIDATE_PRIORITY));
+        assert!(
+            batches > 0,
+            "validation ran no batch during a {CHAIN_TASKS}-task chain"
+        );
+        assert!(
+            longest_run <= COMPLETIONS_BEFORE_YIELD,
+            "{longest_run} completions ran with no validation batch in between"
+        );
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        clear_pending_tasks();
+    }
+
+    #[cfg(feature = "completion-observer")]
+    #[test]
+    fn the_observer_reports_each_completion_span() {
+        static SPANS: AtomicUsize = AtomicUsize::new(0);
+        fn observe(start_us: i64, end_us: i64) {
+            assert!(end_us >= start_us);
+            SPANS.fetch_add(1, Ordering::Relaxed);
+        }
+        let _counter_guard = lock_counter();
+        clear_pending_tasks();
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        assert!(set_completion_observer(observe));
+        assert!(
+            !set_completion_observer(observe),
+            "the first observer stays"
+        );
+        let (sender, receiver) = mpsc::channel();
+        spawn_blocking_then(
+            (),
+            || 1,
+            move |(), value| {
+                let _ = sender.send(value);
+            },
+        );
+        assert_eq!(pump_until(&receiver, Duration::from_secs(1)), Some(1));
+        assert!(SPANS.load(Ordering::Relaxed) >= 1);
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        clear_pending_tasks();
+    }
+
+    #[test]
+    fn a_completion_chain_yields_to_a_default_idle() {
+        let _counter_guard = lock_counter();
+        clear_pending_tasks();
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        let (dispatches, longest_run) = chain_beside_always_ready(glib::Priority::DEFAULT_IDLE);
+        assert!(
+            dispatches > 0,
+            "a default idle ran no dispatch during a {CHAIN_TASKS}-task chain"
+        );
+        assert!(
+            longest_run <= COMPLETIONS_BEFORE_YIELD,
+            "{longest_run} completions ran with no default-idle dispatch in between"
+        );
         ACTIVE_THREADS.store(0, Ordering::Relaxed);
         clear_pending_tasks();
     }

@@ -41,9 +41,15 @@ completion per dispatch, in the order the workers finished.
   an event.
 - **Why one per dispatch.** GLib dispatches every ready source of the top
   priority in one iteration. A single delivery source keeps the main loop's
-  priority check between two completions. Because a worker slot is held until
-  its completion has run, at most `DEFAULT_MAX_CONCURRENT_SPAWNS` results ever
-  wait.
+  priority check between two completions.
+- **Why it yields.** The worker cap bounds how many results wait at once, not
+  how long the source stays ready: a FIFO deeper than the cap, or a completion
+  that spawns its successor, refills the queue as fast as it drains. So after
+  eight completions in a row, or 16 ms of them, the source detaches until the
+  main loop has reached `G_PRIORITY_DEFAULT_IDLE` once, then returns. When a
+  source in between is ready after every dispatch (a text view validating a
+  large backlog), the yield ends after 16 ms instead, so that source runs for
+  at most that long before completions resume.
 
 A completion callback therefore runs ahead of text layout and default-idle
 work. Keep each one within your per-dispatch budget, and move larger work into
