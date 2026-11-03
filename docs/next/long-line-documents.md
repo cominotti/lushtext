@@ -26,7 +26,7 @@ that freezes it is **paragraph length**, not file size.
 | C6b | `chunked-highlight-attach` (queued follow-up, maintainer decision 2026-10-31; not implemented in C6) | Attach the language to the **empty** buffer, then install the text in paragraph-aligned chunks of at most 8 KiB, letting each chunk's first context-engine update run before the next: no background analysis slice runs and every dispatch stayed at 7.7–11.9 ms at every size probed (16 KiB chunks already exceed B_settle; ledger A69) | Lifts C6's per-language total-size syntax gate for the ten languages with no per-key cost (markdown, rust, c, python3, js, typescript, yaml, xml, css, sh) to any size within the other `DocumentScale` limits. It **inverts D2's order**: the text appears only after the deferred attach and its A67 parse, so first-frame and fill-in must be re-measured. HTML and JSON **stay gated** by their mid-document per-key re-analysis cost, which chunking does not change. Needs a second, 8 KiB highlight cut inside the `V_SLICE` slice plan. |
 | C5 | `explore-editing-long-paragraphs` (rescoped 2026-10-30 under the hybrid policy; implemented 2026-10-31) | Lower the per-keystroke cost of typing in long **editable** paragraphs: release the retired `GtkSourceMap` that still laid out every edited paragraph (a pre-existing defect: 7.5 ms per key at 50k; A52), show paragraphs longer than `L_wrap_edit` (8,192) unwrapped by a no-wrap tag (its first character decides, A53) while the rest keep wrapping, answer the input method's surrounding-text request with a bounded window (GNOME's input path asked for the whole paragraph's word boundaries on every key; A54), make the keystroke sweep a maintained lane group, and record the floor (one whole-paragraph Pango layout in GTK's commit handler). Editing above `L_protect_edit` (50,000, C2's Protected View) is deferred. | Typing within B_interact up to `L_wrap_edit` wrapped and further unwrapped, on the plain and GNOME input paths, the rest a recorded toolkit-floor exception. **Met up to 20,000 characters** on both paths (`main`: about 12,000 plain, 5,000 on GNOME's path); 50,000 at the budget (7.7–11.1 ms) and 100,000 at 16–20 ms are the recorded exception ("C5" below), accepted by the maintainer ("editable up to ~50k", 2026-10-30); since C2 merged, 100,000 is in Protected View. |
 | C6 | `bound-post-open-settle` (proposed 2026-10-30) | Bound every dispatch from the activation turn until the opened document is settled, including the validation of dense documents of short lines that stay editable (handed over by C2's revision, open question 11). The proposal's attribution, exploratory on `main` b7f56d45: small `.txt` post-open dispatches are already ≤ 14.9 ms. The over-budget sources are the HTML language-definition parse in the activation dispatch (36–40 ms; the "first highlight"), the highlight attach after a sliced install (71 ms at 5 MB), GtkSourceView's background analysis slices (40–47 ms), and the validation of dense 710-character lines (21.6 ms). Every LushText projection costs < 0.3 ms. | Every post-open dispatch until `document-settled` ≤ B_settle and every input during settle dispatched within B_interact, interleaved with `main`, 4 profiles × 7 repetitions (design D8). Every wrap toggle, zoom step and font change on a dense document is paced the same way. Input-to-frame is reported, not gated, against the documented double-buffered lane floor. Coordinator decisions of 2026-10-30 (the maintainer may override): budgets are not relaxed, so large HTML above `S_BG_HIGHLIGHT` loses highlighting through `DocumentScale`; a language parse that cannot leave the GTK thread is deferred to an input-quiet idle and recorded as a toolkit-floor exception with an upstream report. Does not block C1–C4. |
-| SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
+| SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80), aging after eight completions or 16 ms (review); `ViewportSliceBin`'s pending-request evidence covers the re-slice (review, pre-existing); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
 | EV | `defer-background-tab-layout` (queued 2026-11-02, coordinator decision; **next after C3**, it touches C3's install files) | The real cause of `eviction/reselect`'s 6–11 s batches, attributed in SC (perf on `main` cdfff201: 69.5 % of the application's CPU in `incremental_validate_callback`): (1) the transient load permit (`8 × 8 MiB + 1 MiB` = 65 MiB of the 256 MiB budget, so three loads at a time) is held through an installation that C6 paces below the validation idle, so the next document is not even read until every validating view has laid out its whole buffer; (2) **background tabs validate fully**: restoring many large files spends the CPU laying out tabs nobody is looking at (A80: a view on a hidden `GtkStack` page validates its whole buffer) | The selected document of a restore of ten 8 MiB documents is usable within the open budget, background documents do not delay it, and no background tab lays out its whole buffer before it is shown (or the cost is recorded against a toolkit floor) |
 | PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
 
@@ -2524,25 +2524,95 @@ are `V-A-compare.md` and `V-B-compare.md`.
   `main`) and one restore turn of two page activations under load (24 ms;
   19 ms on `main`). Each is a single source, and neither is a completion or a
   coalesced dispatch.
-- **Open: one unreproduced visual-geometry failure.** In one full
-  `make visual-geometry-smoke` under load,
-  `workspace-tree-reveal--desktop--force-light--beyond-cap` failed
-  `revealed-row-at-rest`. The workspace section header moved from y 150 to
-  y −14,435 after `workspace-path-revealed` readiness, that is the outer
-  scroller landed after the reveal reported settled.
-  - The other five full lanes on the branch passed, and the reveal scenarios
-    alone passed 10 times out of 10.
-  - The artifacts of the failing run were lost when the lane was re-run, so
-    the cause is not attributed. It is not proven to be SC.
-  - It is a candidate race between the reveal's settle check
-    (`outer_request_pending`) and a late admitted scan completion. It needs a
-    loop of full lanes against `main` and the branch.
+- **The visual-geometry failure: resolved (see "Review fixes" below).** One
+  full `make visual-geometry-smoke` under load failed
+  `workspace-tree-reveal--desktop--force-light--beyond-cap`
+  `revealed-row-at-rest`: the section header moved from y 150 to y −14,435
+  after `workspace-path-revealed`. The independent review reproduced it and
+  attributed it to a pre-existing race between the reveal's settle check and
+  the slice bin's forwarding idle, not to SC.
 - **Two lane-gate failures, identical on both sides, not caused by SC.**
   - The `session/restore-3` type-start misdirected-typing gate. It is
     AdwTabView's capture-phase Ctrl+Home/End, fixed in C3's PR #77.
   - Keys refused during an install under load (`total-size/*` type-during-settle,
     round 2 only). This predates C6 and the coordinator queued it as its own
     change after C3.
+
+### Review fixes (2026-11-03)
+
+An independent review of PR #79 (evidence in
+`.claude/handoffs/lush-priority/review-vg/`) found two defects. Both are fixed
+in this change, failing first.
+
+- **The completion source had no bound.** The first version claimed that the
+  worker cap kept the source to "at most eight dispatches in a row". It does
+  not. A FIFO deeper than the cap, or a completion that spawns its successor,
+  refills the queue as fast as it drains. The reviewer's 64-task chain
+  (`starve-experiment.rs`) starved every priority from 125 to 200 for the
+  whole chain: validation, C6's paced slices, composition stages, restore
+  turns, the `ViewportSliceBin` idles. The source now **ages** (design D6):
+  - After eight consecutive completions, or 16 ms of continuous occupancy, it
+    detaches and comes back after a `G_PRIORITY_DEFAULT_IDLE` hop.
+  - When a source in between keeps the loop from reaching 200, it comes back
+    after a 16 ms deadline at 124 instead. A validation backlog does that
+    (A80), and a hop at 200 alone would wait for the whole backlog.
+  - Two unit tests built from the experiment failed on the unaged source, with
+    0 validation batches and 0 default-idle dispatches during the chain. They
+    pass now, with at most eight completions between two lower-priority
+    dispatches.
+  - The reviewer's combined form (an always-ready 125 **and** a 200 idle during
+    one chain) cannot show progress at 200 under any scheduler, because GLib
+    dispatches only the top ready priority. On `main` the chain itself would
+    never finish. The design records this.
+- **The reveal could settle one layout early (pre-existing).**
+  `ViewportSliceBin::outer_request_pending()` turned false when the forwarding
+  idle moved the outer scroller, before the bin re-sliced from that value. The
+  bin now keeps the request pending until its next `size_allocate` consumes
+  the move.
+  - Proof: an adoption-lab test that polls right after the idle failed first,
+    2 of 2. The Kani slice loop has two new harnesses in
+    `widgets-slice-loop-requests`: settle evidence is current whenever nothing
+    is pending, plus a `should_panic` pin of the pre-fix accessor. Every
+    `gtk-lush-widgets` shard was rerun locally, at 5.2–11.1 min and at most
+    1.92 GiB each.
+  - A "confirm in a later frame" guard in the reveal was tried and dropped. For
+    an already-visible row nothing changes, so the clock produces no frame. The
+    guard ran out the wall budget (`unsettled`) in 3 `workspace-tree-reveal-at-rest`
+    cases in each of the first two loop runs, and both runs were discarded.
+  - **Visual-geometry loop: 10 of 10 full lanes pass on the branch**, 0
+    failures. Five ran unloaded (load 1.9–5.6) and five beside 10 CPU spinners
+    on the lane's 16 CPUs (load 12.5–16.6). The table is
+    `.claude/handoffs/lush-priority/vg-review/table.tsv`.
+- **Hand-off dispatches are now measured, not assumed.** The measurement build
+  records every completion as a `task_completion` span (the
+  `completion-observer` feature) and every admission drain and permit release
+  as a `task_handoff` span. Drains and releases at 124 co-dispatch with the
+  completion source (A69), so the report also takes the watchdog's worst
+  lateness over any iteration overlapping either: the combined dispatch.
+
+**Re-verdict (interleaved, `main` ebdd6aa1 against the reviewed branch,
+2026-11-03).** Release measurement builds, one run per exclusive hold through
+`scripts/measure.sh`, 3 + 2 repetitions per side, with the load as it was:
+8.9→3.6, 3.6→1.6, 1.6→0.9 and 0.9→1.4 over the four runs. Cases:
+`baseline/small` (all five profiles), `session/restore-3`,
+`session/restore-3-small`, `recovery/small-drafts`, `save/during-validation`
+and `total-size/1000000` (css and txt). Artifacts: `RV-*`; the comparison
+table is `RV-compare.md`.
+
+- **Every hand-off dispatch is within `B_SETTLE_US`.** Over 57 runs: 2,897
+  completions with a worst of **4.8 ms**, 924 hand-offs with a worst of
+  0.1 ms, and a worst combined dispatch of **4.2 ms**.
+- **`save/during-validation`.** Save latency is 2.4–4.7 ms on the branch and
+  3.82–3.87 s on `main`, as before the aging.
+- **No regression beyond one reference frame.** Every phase's median stall and
+  input-to-frame maximum is within 8.3 ms of `main`. The C6 no-regression rule
+  reports none. Its absolute-rule failures are the language-attach floor
+  (A67, 31 ms on `total-size/1000000`), on both sides.
+- The largest median shift is `baseline/small/steady-populated`
+  type-during-settle, at 4.9 ms on `main` and 12.2 ms on the branch (maxima
+  16.6 and 20.8 ms). Its input-to-frame maximum improves, from 19.4 to
+  18.1 ms. No completion or combined dispatch in it exceeds 4.8 ms, so the
+  stall is not a hand-off.
 
 ## Axioms each change cites
 

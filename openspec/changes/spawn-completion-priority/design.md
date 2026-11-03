@@ -74,10 +74,22 @@ time.
   completions back to back, with no frame or event between them. One source
   returning `Continue` puts the main loop's priority check between every two
   completions.
-- **Bounded.** A slot is held until its completion has run, so at most eight
-  completed results exist at once. The source can hold lower priorities back
-  for at most as many dispatches as there are results waiting. Each dispatch is
-  one callback that already ran in one dispatch before this change.
+- **Bounded by aging, not by the cap** (corrected after review). A slot is held
+  until its completion has run, so at most eight completed results exist at
+  once, but that does not bound how long the source stays ready: a FIFO deeper
+  than the cap, or a completion that spawns its successor, refills the queue as
+  fast as it drains. The first version claimed "at most eight dispatches in a
+  row"; the reviewer's experiment (`starve-experiment.rs`, a 64-task chain)
+  kept the source armed for the whole chain and starved every priority from 125
+  to 200 — validation, C6's paced slices, composition stages, restore turns, the
+  `ViewportSliceBin` idles. D6 adds the bound. Each dispatch is one callback
+  that already ran in one dispatch before this change.
+- **Co-dispatch at 124 (A69).** D4's admission drains and permit releases are
+  sources at the same priority, so GLib dispatches them in the same iteration as
+  the completion source: one iteration can run a completion, a drain and a
+  release back to back. The lane measures that combined dispatch (D5): the
+  watchdog's worst lateness over any iteration overlapping a `task_completion`
+  or `task_handoff` span.
 
 ### D2. No per-spawn priority, and no time budget
 
@@ -85,10 +97,12 @@ time.
   completion keeps its slot, and the slot cap is shared, so one starved
   low-priority completion blocks the start of every later spawn, loads and saves
   included. Every completion has to be prompt for any of them to be.
-- **A time-budgeted source** (deliver until N ms elapsed, then yield) was
-  rejected. Yielding returns to the same priority, so it buys nothing over one
-  per dispatch, and it would add a threshold to tune. One per dispatch has no
-  threshold and the smallest worst case.
+- **A time-budgeted source that yields to its own priority** (deliver until N ms
+  elapsed, then yield) was rejected: yielding back to 124 buys nothing over one
+  per dispatch. The review showed one per dispatch is not enough on its own,
+  because nothing below 124 runs while the source stays ready. D6's aging yields
+  to a **lower** priority instead, which is a different mechanism with the two
+  thresholds the review fixed (eight completions, `B_settle`).
 
 ### D3. Public API: `completion_priority()`
 
@@ -126,9 +140,46 @@ reports:
   dispatches included, against `B_settle`;
 - the typed key's input-to-frame.
 
+Every case also records each completion as a `task_completion` span (the
+`completion-observer` feature of `gtk-lush-tasks`, enabled only by the
+`responsiveness-probes` build) and each drain and release as a `task_handoff`
+span. The report's "Task completions against B_settle" table gives the worst
+completion, the worst hand-off, and the worst combined dispatch (the watchdog's
+lateness over an iteration overlapping either, A69), with the verdict "every
+hand-off dispatch within B_SETTLE_US" or the runs over it.
+
 This is the measured save case the coordinator required (condition a). The
 lane's "never saves" rule is narrowed to "never writes a fixture", and the case
 verifies the fixture digests as every case does.
+
+### D6. Aging (added after review)
+
+After **eight consecutive completions, or `B_settle` (16 ms) of continuous
+occupancy, whichever comes first**, the delivery source detaches. The lane stays
+`armed`, so workers do not attach a second source. It arms two sources and the
+first to run ends the yield, removes the other, and re-attaches the delivery
+source at 124:
+
+- a hop at `G_PRIORITY_DEFAULT_IDLE` (200), which runs in the first iteration
+  that reaches that priority, so 125–200 each get the loop once;
+- a 16 ms timeout at 124, for when a source between the two is ready after every
+  dispatch. Validation over a large backlog is exactly that (A80): a yield
+  waiting only for 200 would wait for the whole backlog, which is the wait this
+  change exists to remove. Under a backlog, validation therefore gets up to
+  16 ms per run of completions, then completions resume.
+
+GLib dispatches only the top ready priority, so a default idle waits behind a
+validation backlog whatever the completion source does. The reviewer's combined
+experiment — an always-ready 125 **and** a 200 idle during one chain, with the
+125 ready until the chain ends — therefore cannot show progress at 200 under any
+scheduler: on `main` the chain itself would never finish. The unit tests prove
+the two halves separately: a 64-task chain beside an always-ready 125 lets
+validation run and still completes, and the same chain beside an always-ready
+200 lets that idle run; in both, at most eight completions run with no
+lower-priority dispatch in between
+(`a_completion_chain_yields_to_an_always_ready_validation_idle`,
+`a_completion_chain_yields_to_a_default_idle`, failing first on the unaged
+source: 0 batches and 0 dispatches).
 
 ## Risks / Trade-offs
 
@@ -139,7 +190,9 @@ verifies the fixture digests as every case does.
   ready source, so they observe completions as before.
 - **Completions now preempt C6's paced slices and GtkSourceView's background
   analysis** (`G_PRIORITY_LOW`, A69). That happens only while results are
-  waiting, at most eight dispatches in a row, each bounded.
+  waiting, and for at most eight completions or 16 ms of them before the source
+  yields (D6). Background analysis at `G_PRIORITY_LOW` (300) still waits for the
+  whole chain: a yield reaches 200, not 300.
 - **A slow completion callback now runs ahead of validation.** Its cost is the
   same as before, but it can no longer hide behind a backlog. The lane's
   `B_settle` check covers this (condition a).
@@ -152,10 +205,14 @@ verifies the fixture digests as every case does.
   and widget tests wait from the test body, not from inside a completion. The
   crate's rustdoc states the rule.
 - **A chain of quick spawns.** A completion that spawns work which finishes at
-  once keeps the source busy for as long as the chain lasts. Frames and input
-  still run between every two completions, and validation resumes when the
-  chain ends. Before this change, the same chain at priority 200 held back only
-  other default-idle work.
+  once used to keep the source busy for as long as the chain lasted (the
+  review's finding; the first version of this section said validation "resumes
+  when the chain ends"). With D6 a chain runs in runs of at most eight
+  completions or 16 ms, each followed by one pass of the main loop down to 200,
+  or by up to 16 ms of validation when a backlog stops it there.
+- **Aging adds latency under a validation backlog.** A ninth queued completion
+  can wait up to 16 ms behind validation. That is one `B_settle`, against the
+  seconds the backlog cost before this change.
 
 ## Found while verifying
 
@@ -205,6 +262,30 @@ failures. Both are fixed in this change, under the pre-existing-blockers rule.
   dispatch on `main` (11.3 ms together). With stage W one step up, it shared
   the first restore turn's or activation turn's dispatch instead (14–19 ms). It
   now runs at `G_PRIORITY_DEFAULT_IDLE - 2`, a priority nothing else uses.
+
+- **The workspace path reveal could report `revealed` one frame early**
+  (independent review, reproduced; pre-existing on `main`). The reveal's settle
+  check ends once `ViewportSliceBin::outer_request_pending()` is false. The bin's
+  forwarding idle moved the outer adjustment and cleared its pending batch
+  **before** the bin re-sliced from the new value in the next layout, so a poll
+  between the two read the old band: the review's failing visual-geometry run
+  saw the section header at y 150 after `workspace-path-revealed`, then at
+  −14,435 with the same outer value. The bin now keeps the request pending
+  (`awaiting_reslice`) from the idle's move until its next `size_allocate`
+  consumes it; a move the outer scroller clamps to no change leaves nothing
+  pending. A further "confirm in a later frame" guard in the reveal was tried
+  and dropped: for an already-visible row nothing changes, the clock produces
+  no frame, and the guard ran out the wall budget (`unsettled`) in 3 of the 4
+  `workspace-tree-reveal-at-rest` cases of the first loop run. Proved
+  failing first by the adoption-lab test
+  `test_adoption_slice_bin_reports_a_forwarded_request_until_it_reslices`
+  (polled right after the idle, before any frame: not pending, 2 of 2
+  attempts), and in the Kani slice loop by
+  `slice_loop_settle_evidence_waits_for_the_reslice` with the `should_panic`
+  pin `slice_loop_settle_evidence_without_the_reslice_is_stale` (the pre-fix
+  accessor).
+- **The cap did not bound the completion source** (independent review): see D1
+  and D6.
 
 ## Out of scope (queued)
 

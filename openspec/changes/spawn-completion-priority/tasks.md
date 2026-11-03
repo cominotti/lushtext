@@ -35,3 +35,10 @@
 
 - [x] 6.1 `make fmt`, `make check-fmt`, `make check-clippy`, `make check-workflow-boundaries`, `make check-automation-docs`, `cargo check -p lushtext --bins --locked`, the rustdoc gate, `make test` (0 FLAKY), `make gtk-axioms`, and the GTK Lush policy, doctests, examples, MSRV and API-advisory checks.
 - [ ] 6.2 The smoke lanes the commit hooks require, last, before each commit. Then signed conventional commits, push, PR (not merged).
+
+## 7. Review fixes (independent review of PR #79)
+
+- [x] 7.1 Aging in the delivery source: after eight completions or 16 ms, yield through a `G_PRIORITY_DEFAULT_IDLE` hop with a 16 ms deadline at `completion_priority()`. Failing-first unit tests from the reviewer's `starve-experiment.rs` (an always-ready 125, and separately an always-ready 200, during a 64-task chain). Correct D1, D2, the risks, the README, the rustdoc and `api-review.md`; record the drop of "low-priority" in `docs/next/gtk-lush.md` as a behaviour change.
+- [x] 7.2 Per-completion `task_completion` and per-hand-off `task_handoff` spans in the measurement build (`completion-observer` feature), the combined-dispatch measure (A69), and the report's "Task completions against B_settle" verdict, with driver self-tests.
+- [x] 7.3 `ViewportSliceBin::outer_request_pending()` true until the bin's next allocation consumes the idle's outer move (a later-frame confirmation in the reveal was tried and dropped: an already-visible reveal produces no frame). Failing-first adoption-lab widget test; Kani model and two harnesses (one `should_panic`); every `gtk-lush-widgets` shard rerun; CHANGELOG and delta spec.
+- [x] 7.4 Ten full `make visual-geometry-smoke` runs on the branch, half under extra CPU load, 0 failures; the affected verdict rows re-run interleaved with load recorded.

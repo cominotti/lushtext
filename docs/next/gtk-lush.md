@@ -144,16 +144,29 @@ Main-thread-safe background work with staleness-proof completion.
 - **Replaces in LushText:** the former `services::async_task`; per-call-site
   generation/weak-identity checks remain explicit in their workflow modules.
 - **Acceptance:** all async-backed widget tests pass unmodified in timing;
-  the idle completion contract (required by `wait_until`) is
-  preserved and documented as a stability guarantee.
+  the low-priority idle completion contract (required by `wait_until`) is
+  preserved and documented as a stability guarantee. **Amended by
+  `spawn-completion-priority` (2026-11-02), a deliberate behaviour change of
+  that guarantee:** completions are no longer delivered at low priority. What
+  the guarantee keeps is that they are delivered through GLib main-loop
+  dispatch, so `wait_until`'s drain of every ready source still observes them;
+  what it drops is "low-priority": completions now run ahead of
+  `G_PRIORITY_DEFAULT_IDLE` work and of GtkTextView's validation, and a
+  consumer that relied on queued default idles running before a completion can
+  no longer rely on it.
 - **Delivery priority (`spawn-completion-priority`, 2026-11-02):** completions
   moved from one `G_PRIORITY_DEFAULT_IDLE` idle each to one delivery source at
   `completion_priority()` (`GDK_PRIORITY_REDRAW + 4`), one completion per
   dispatch, because GtkTextView's validation idle held every completion back
   while a large buffer was laid out (ledger A80). `wait_until`'s drain still
   observes them, since it dispatches every ready source. Recorded as an
-  internal-platform behaviour change; the `0.0.0` API gained only
-  `completion_priority()`.
+  internal-platform behaviour change; the `0.0.0` API gained
+  `completion_priority()` and, behind the measurement-only
+  `completion-observer` feature, `set_completion_observer`. After review the
+  source also **ages** (eight completions in a row or 16 ms, then one pass of
+  the loop down to `G_PRIORITY_DEFAULT_IDLE`, or 16 ms of a validation backlog),
+  because the worker cap does not bound how long a deep FIFO or spawn chain
+  keeps it ready.
 
 ### 4.4 `gtk-lush-viewport`
 

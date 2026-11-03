@@ -34,7 +34,14 @@ touches C3's files. This change fixes the starvation class itself.
   below frames, resizes and input. The source delivers **one completion per
   dispatch**, in the order the workers finished. A new public
   `completion_priority()` names that priority. The worker cap is unchanged, so
-  at most eight completed results exist at once.
+  at most eight completed results exist at once. That cap does not bound how
+  long the source stays ready (review), so the source **ages**: after eight
+  completions in a row or 16 ms of them it yields to `G_PRIORITY_DEFAULT_IDLE`
+  once, or for 16 ms under a validation backlog. A measurement-only
+  `completion-observer` feature reports each completion's span to the lane.
+- `ViewportSliceBin::outer_request_pending()` stays true until the bin has
+  re-sliced from the outer value its forwarding idle set (review: the workspace
+  path reveal could report settled one frame early; pre-existing on `main`).
 - LushText schedules the load and save admission drains and their permit
   releases at `completion_priority()`, because they are hand-offs between
   bounded stages. C6's install pacing stays below the validation idle
@@ -59,7 +66,9 @@ None.
 
 ### Modified Capabilities
 
-- `gtk-lush-tasks`: completion delivery priority and one completion per dispatch.
+- `gtk-lush-tasks`: completion delivery priority, one completion per dispatch,
+  aging, and the measurement-only completion observer.
+- `gtk-lush-viewport-slice`: the pending-request evidence covers the re-slice.
 - `gtk-axiom-ledger`: A80.
 - `main-thread-responsiveness`: bounded-stage hand-offs are not held behind
   text validation.
