@@ -21,3 +21,13 @@ below the validation idle. Every hand-off dispatch SHALL stay within
 - **WHEN** a paced installation queues its next slice
 - **THEN** the slice waits at `PACED_SLICE_PRIORITY`, below the validation idle,
   as before
+
+#### Scenario: A composition stage dispatches alone
+- **WHEN** a worker completion makes default-idle work ready before a window
+  composition stage runs, such as the session load queuing the first restore
+  turn before stage P
+- **THEN** the stage runs at a priority one step above `G_PRIORITY_DEFAULT_IDLE`,
+  in an iteration of its own, and the default-idle work runs in the next one
+- **AND** the language catalog's one-off build runs at
+  `G_PRIORITY_DEFAULT_IDLE - 2`, a priority no other source uses, so it never
+  shares a stage's or a turn's dispatch

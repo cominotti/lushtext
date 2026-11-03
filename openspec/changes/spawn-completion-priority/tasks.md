@@ -15,9 +15,11 @@
 ## 3. LushText hand-offs
 
 - [x] 3.1 The load and save admission drains and their permit releases run at `completion_priority()`. Their facades' resumption-point narration is updated.
-- [x] 3.2 Update `AGENTS.md` (Async I/O Pattern), `.agents/rules/widget-wiring.md`, `.agents/rules/build.md` (the CI widget-helper wording), the `plain_disposal` widget-test comment and `docs/next/gtk-lush.md`, wherever they describe the completion as a low-priority or `idle_add_once` idle. `tests/widget/common.rs` is C3's file and is corrected after C3 merges (design, "Out of scope").
+- [x] 3.2 Update `AGENTS.md` (Async I/O Pattern), `.agents/rules/widget-wiring.md`, `.agents/rules/build.md` (the CI widget-helper wording), the `plain_disposal` widget-test comment and `docs/next/gtk-lush.md`, wherever they describe the completion as a low-priority or `idle_add_once` idle. `tests/widget/common.rs` was C3's file and is corrected after C3 merged.
 
 - [x] 3.3 Fix what the first `make test` exposed (design, "Found while verifying"): `after_content_revealed` reads the content stack's own `visible` property, and the restore-priority widget test reads second's state inside third's completion. The focus tests pass 5/5 and the priority test 3/3 in isolation. `make gtk-axioms` then found A74's growth check sensitive to load; the probe now alternates its small and large rounds.
+
+- [x] 3.4 Run the composition stages one step above `G_PRIORITY_DEFAULT_IDLE`, so the first session-restore turn, now ready earlier, never shares a stage's dispatch (design, "Found while verifying"). The language catalog's one-off build runs at `G_PRIORITY_DEFAULT_IDLE - 2` for the same reason. Re-measured against `main` ebdd6aa1.
 
 ## 4. Lane case
 

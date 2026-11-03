@@ -2456,6 +2456,13 @@ source waits for the whole backlog. SC fixes that class:
   `window_composition` focus tests failed in about half of the runs with the
   earlier completions. They now pass 5/5.
 - A restore-priority widget test relied on an idle gap.
+- After merging C3, a composition stage could share its dispatch with the
+  first session-restore turn: the session load now completes before stage P,
+  and GLib runs every ready source of the top priority in one iteration (A69).
+  The result was 16.5–26 ms in 4 of 9 `session/restore-3-small` runs. The
+  composition stages now run one step above `G_PRIORITY_DEFAULT_IDLE`. The
+  language catalog's one-off build, which shared stage W's dispatch on `main`
+  and a turn's dispatch after that, now runs at `G_PRIORITY_DEFAULT_IDLE - 2`.
 - A74's growth check failed once in `make gtk-axioms` under load, because the
   small and large windows were measured one after the other. The probe now
   alternates them over three rounds.
@@ -2504,6 +2511,32 @@ are `V-A-compare.md` and `V-B-compare.md`.
   frame. One exception was re-measured: `paragraph/1900000` wrap-off scroll,
   median 25.7 ms on `main` against 39.6 ms on the branch, both with a 59 ms
   maximum. Focused scroll-only interleave (`RESPONSIVENESS_PHASES=scroll`, 2 × 5 repetitions per side, load 5–9; the scroll then follows the open, so its input-to-frame includes the post-open settle): `main` median 252 ms (174–284), the branch 237 ms (182–257). There is no regression, and the full-sequence difference was noise.
+- **After merging C3** (`main` ebdd6aa1, with the composition and catalog
+  priorities in place, 2 × 3 repetitions per side, load 3.6–7.4):
+  - `session/restore-3-small` restore median goes from 13.1 to 11.1 ms;
+  - `recovery/small-drafts` restore goes from 11.2 to 10.9 ms;
+  - `recovery/protected-32mib` tab-switch goes from 21.4 to 9.2 ms;
+  - the `baseline/small` profiles stay within one reference frame, except
+    steady-populated background (9.9 → 14.5 ms).
+
+  The worst dispatches left on the branch are the first frame after
+  composition (window measure and frame layout, 12–28 ms; 13–20 ms on
+  `main`) and one restore turn of two page activations under load (24 ms;
+  19 ms on `main`). Each is a single source, and neither is a completion or a
+  coalesced dispatch.
+- **Open: one unreproduced visual-geometry failure.** In one full
+  `make visual-geometry-smoke` under load,
+  `workspace-tree-reveal--desktop--force-light--beyond-cap` failed
+  `revealed-row-at-rest`. The workspace section header moved from y 150 to
+  y −14,435 after `workspace-path-revealed` readiness, that is the outer
+  scroller landed after the reveal reported settled.
+  - The other five full lanes on the branch passed, and the reveal scenarios
+    alone passed 10 times out of 10.
+  - The artifacts of the failing run were lost when the lane was re-run, so
+    the cause is not attributed. It is not proven to be SC.
+  - It is a candidate race between the reveal's settle check
+    (`outer_request_pending`) and a late admitted scan completion. It needs a
+    loop of full lanes against `main` and the branch.
 - **Two lane-gate failures, identical on both sides, not caused by SC.**
   - The `session/restore-3` type-start misdirected-typing gate. It is
     AdwTabView's capture-phase Ctrl+Home/End, fixed in C3's PR #77.

@@ -188,6 +188,24 @@ failures. Both are fixed in this change, under the pre-existing-blockers rule.
   over all rounds. The check then held three times out of three in isolation,
   and the lane passed.
 
+- **A composition stage shared its dispatch with a session-restore turn**
+  (found by the sanity interleave after merging C3, against `main` ebdd6aa1).
+  GLib dispatches every ready source of the top priority in one iteration
+  (A69). The session load's completion now arrives before stage P, so the
+  first restore turn (a `G_PRIORITY_DEFAULT_IDLE` idle) was ready in P's
+  iteration. Present plus two page activations took 16.5–26 ms in 4 of 9
+  `session/restore-3-small` runs, against at most 11.8 ms on `main`. The
+  composition stages (W, C, R+P, the reveals) now run one step above
+  `G_PRIORITY_DEFAULT_IDLE`, so each has its iteration to itself and
+  default-idle work runs in the next. They stay below the frame clock and
+  input.
+- **The language catalog's build shared a turn's dispatch for the same
+  reason.** The build is a one-off of about 4.5 ms that C6 meant to run in "a
+  dispatch of its own". At `G_PRIORITY_DEFAULT_IDLE` it shared stage W's
+  dispatch on `main` (11.3 ms together). With stage W one step up, it shared
+  the first restore turn's or activation turn's dispatch instead (14–19 ms). It
+  now runs at `G_PRIORITY_DEFAULT_IDLE - 2`, a priority nothing else uses.
+
 ## Out of scope (queued)
 
 `eviction/reselect`'s cause, recorded in `docs/next/long-line-documents.md` as
@@ -198,7 +216,7 @@ the next change after C3, because it touches C3's install files:
 2. hidden tabs lay out their whole document. Restoring many large files spends
    the CPU laying out tabs nobody is looking at.
 
-`crates/lushtext/tests/widget/common.rs` still describes the completion as a
-"low-priority `idle_add_once`". C3 edits that file, so its comment is corrected
-after C3 merges. The mechanism the comment teaches, sleep and then drain every
-ready source, is unchanged.
+`crates/lushtext/tests/widget/common.rs` described the completion as a
+"low-priority `idle_add_once`". C3 edited that file, so its comment was
+corrected after C3 merged, in this branch. The mechanism the comment teaches,
+sleep and then drain every ready source, is unchanged.
