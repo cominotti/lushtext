@@ -1049,11 +1049,9 @@ pub(super) fn open_editor_at_line(window: &LushtextWindow, path: &Path, line: u3
             .iter_at_line(i32::try_from(line_zero_based).unwrap_or(i32::MAX))
             .unwrap_or_else(|| buffer.end_iter());
         buffer.place_cursor(&iter);
-        let mark = buffer.create_mark(None, &iter, true);
-        editor
-            .source_view()
-            .scroll_to_mark(&mark, 0.2, true, 0.0, 0.0);
-        buffer.delete_mark(&mark);
+        // The view may show its placeholder (a tab never shown, such as one
+        // selected in preview-only mode): scroll through the document.
+        editor.scroll_to_document_iter(&iter, 0.2, true, 0.0, 0.0);
     }
     window.ensure_composed(StagedSurface::Content);
     editor.source_view().grab_focus();

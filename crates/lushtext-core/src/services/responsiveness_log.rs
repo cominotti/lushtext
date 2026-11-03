@@ -79,6 +79,13 @@ pub const HIGHLIGHT_UPDATED_MARK: &str = "highlight_updated";
 /// `upper`: an unspanned dispatch that ends at it was line validation.
 pub const ADJUSTMENT_UPPER_MARK: &str = "adjustment_upper";
 
+/// The mark recorded on every change of an editor's vertical adjustment
+/// `value` (a scroll): the lane credits a wheel only with a frame after the
+/// wheel moved the view (review of `defer-background-tab-layout`: a wheel at
+/// a document's end was charged with an unrelated frame 45 frames later). It
+/// does not arm the settle sentinel.
+pub const ADJUSTMENT_VALUE_MARK: &str = "adjustment_value";
+
 /// The mark recorded after every text insertion into an editor buffer made
 /// inside a user action (typing, paste), never by a load or replacement
 /// install (`investigate-first-keys-without-frames`): the lane counts one per

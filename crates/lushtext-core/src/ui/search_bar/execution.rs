@@ -279,12 +279,27 @@ fn select_and_reveal(
 }
 
 /// Scroll the attached view so the insert mark is on screen.
+///
+/// The insert mark is the document's: a view showing its placeholder
+/// (`view_attachment`) keeps the match as the line it shows when attached.
 fn scroll_to_current_match(bar: &LushtextSearchBar) {
     if let Some(ref weak_view) = *bar.imp().view_ref.borrow()
         && let Some(view) = weak_view.upgrade()
     {
-        let buffer = view.buffer();
-        view.scroll_mark_onscreen(&buffer.get_insert());
+        let editor = view
+            .ancestor(crate::ui::editor_page::LushtextEditorPage::static_type())
+            .and_downcast::<crate::ui::editor_page::LushtextEditorPage>();
+        match editor {
+            Some(editor) if !editor.view_shows_document() => {
+                let buffer = editor.buffer();
+                let insert = buffer.iter_at_mark(&buffer.get_insert());
+                editor.scroll_to_document_iter(&insert, 0.0, false, 0.0, 0.0);
+            }
+            _ => {
+                let buffer = view.buffer();
+                view.scroll_mark_onscreen(&buffer.get_insert());
+            }
+        }
     }
 }
 

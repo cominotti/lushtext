@@ -889,7 +889,7 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
 /// tab's (`load::policy::install_slice_pacing`).
 fn schedule_paced_turn(session: &Rc<RefCell<BufferReplacementSession>>, priority: glib::Priority) {
     let (session_for_step, session_for_store) = (Rc::clone(session), Rc::downgrade(session));
-    crate::ui::input_quiet::paced_idle(
+    crate::ui::editor_page::load::queue_paced_slice(
         priority,
         move || run_turn(&session_for_step),
         move |source_id| {

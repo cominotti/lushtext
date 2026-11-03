@@ -4,9 +4,12 @@
 //!
 //! This module owns the GtkSourceView `PrintCompositor` and the
 //! `gtk4::PrintOperation` lifecycle, and it is where GTK's result vocabulary is
-//! mapped onto the workflow's own once. Printed output follows the editor view,
-//! so the compositor is built `from_view` and inherits the editor's font, tab
-//! width, syntax highlighting, and wrap mode rather than re-deriving them.
+//! mapped onto the workflow's own once. Printed output follows the editor view:
+//! the compositor takes the view's font, tab width, line numbers and wrap mode
+//! and the document's syntax highlighting, as `PrintCompositor::from_view`
+//! does, but over the **document** buffer: a tab never shown (preview-only
+//! mode) has a view on an empty placeholder (`view_attachment`), and
+//! `from_view` printed that blank page (review M4).
 
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
@@ -21,7 +24,7 @@ pub(super) fn run_native_print_operation(
     window: &LushtextWindow,
     editor: &LushtextEditorPage,
 ) -> PrintOutcome {
-    let compositor = sourceview5::PrintCompositor::from_view(editor.source_view());
+    let compositor = print_compositor(editor);
     let op = gtk4::PrintOperation::new();
 
     // GTK calls `paginate` repeatedly until it returns true; only then is the
@@ -45,6 +48,28 @@ pub(super) fn run_native_print_operation(
     // scope is the call itself.
     let _modal = crate::ui::window::ModalSurfaceGuard::acquire();
     classify_operation_result(op.run(gtk4::PrintOperationAction::PrintDialog, Some(window)))
+}
+
+/// The compositor for one editor page: `gtk_source_print_compositor_new_from_view`'s
+/// settings, read from the view, over the document buffer.
+pub(super) fn print_compositor(editor: &LushtextEditorPage) -> sourceview5::PrintCompositor {
+    let view = editor.source_view();
+    let buffer = editor.buffer();
+    let compositor = sourceview5::PrintCompositor::builder()
+        .buffer(&buffer)
+        .tab_width(view.tab_width())
+        .highlight_syntax(buffer.is_highlight_syntax())
+        .wrap_mode(view.wrap_mode())
+        .print_line_numbers(u32::from(view.shows_line_numbers()))
+        .build();
+    if let Some(font) = view.pango_context().font_description() {
+        let font = font.to_string();
+        compositor.set_body_font_name(&font);
+        compositor.set_line_numbers_font_name(Some(&font));
+        compositor.set_header_font_name(Some(&font));
+        compositor.set_footer_font_name(Some(&font));
+    }
+    compositor
 }
 
 /// Map GTK's print result onto the workflow's outcome vocabulary.

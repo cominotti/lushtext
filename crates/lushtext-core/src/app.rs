@@ -125,6 +125,9 @@ mod imp {
             // The language catalog loads the language list on a worker while
             // the window is constructed (`bound-post-open-settle`, R3).
             crate::ui::language_catalog::start();
+            // Whether an assistive technology listens (asynchronous): a
+            // hidden tab's view swaps buffers only while none does.
+            crate::ui::at_listeners::start();
 
             // Apply persisted color scheme before any window is created so
             // the first paint uses the correct theme.

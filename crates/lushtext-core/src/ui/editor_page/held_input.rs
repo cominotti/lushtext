@@ -667,7 +667,9 @@ impl LushtextEditorPage {
             self.rescue_held_text(Some(NoDocumentCause::Replaced));
             return;
         }
-        if view.has_focus() {
+        // A detached view shows the placeholder, whose marks are not the
+        // document's (`view_attachment`).
+        if view.has_focus() && self.view_shows_document() {
             view.scroll_mark_onscreen(&buffer.get_insert());
         }
         self.update_held_evidence(|e| {

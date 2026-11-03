@@ -33,6 +33,31 @@
 //!
 //! The placeholder takes the document's style scheme before each detach, so
 //! a detach or reattach never changes the view's CSS.
+//!
+//! **When a view is never detached** (review M2): `gtk_text_view_set_buffer`
+//! reports the whole old buffer removed and the new one inserted to the
+//! accessible, and while an assistive technology listens GTK copies that text
+//! into a D-Bus signal: about 2 ms per MiB for either direction in one
+//! dispatch (8 MiB: 9–19 ms; 100 MiB: 180–220 ms, measured 2026-11-03). So
+//! no view is detached while [`crate::ui::at_listeners::listeners_active`];
+//! hidden tabs then lay out in GTK's own bounded validation batches, which
+//! costs CPU but no long dispatch. When a listener appears, a detached view
+//! whose document is small ([`AT_ATTACH_MAX_CHARS`]) attaches at once, and a
+//! larger one attaches when shown. Without a listener the swap walks the
+//! document's lines (2.6–4.2 ms for 204,601 lines, 27–28 ms for 2,557,503), so
+//! a view whose document has more than [`VIEW_DETACH_MAX_LINES`] lines is
+//! never detached either. Attaching without a listener costs under 0.2 ms at
+//! any size.
+//!
+//! **The primary selection.** A realized view moves GTK's primary-selection
+//! provider from its old buffer to its new one, and removing it from the
+//! document clears the user's PRIMARY selection when the document owned it
+//! (`gtk_text_buffer_remove_selection_clipboard`). A detach therefore holds
+//! one extra reference on the document's registration, so GTK's removal only
+//! drops it to one: a selection in a hidden tab stays pasteable. The attach,
+//! or an unrealize, gives the reference back. Protected View keeps the
+//! provider off the document altogether; while detached it records nothing
+//! and the attach applies it.
 
 use gtk4::glib;
 use gtk4::glib::translate::IntoGlib;
@@ -64,6 +89,28 @@ pub(crate) struct ViewAttachmentState {
     /// How many times the view was detached and attached (evidence).
     detaches: std::cell::Cell<u64>,
     attaches: std::cell::Cell<u64>,
+    /// The detach holds one reference on the document's primary-selection
+    /// registration, so GTK's removal does not clear the user's PRIMARY.
+    primary_hold: std::cell::Cell<bool>,
+}
+
+/// The most lines a document may have for its view to be detached: the swap
+/// walks every line (27–28 ms for 2,557,503 lines on the reference machine,
+/// 6.8–7.0 ms for 261,491 lines of 400 characters), so this keeps a detach
+/// under half of `B_SETTLE_US` there.
+pub(crate) const VIEW_DETACH_MAX_LINES: i32 = 1 << 18;
+
+/// The most characters a detached view's document may have to be attached at
+/// once when an assistive technology starts listening (about 2 ms per MiB
+/// with a listener; a larger document attaches when its tab is shown).
+pub(crate) const AT_ATTACH_MAX_CHARS: i32 = 1 << 20;
+
+/// Whether a view may be given the placeholder now: no assistive technology
+/// listens (a swap would send the whole document to it) and the document is
+/// short enough for the swap's line walk (module docs).
+#[must_use]
+pub(crate) const fn view_detach_allowed(at_listening: bool, document_lines: i32) -> bool {
+    !at_listening && document_lines <= VIEW_DETACH_MAX_LINES
 }
 
 /// A reattached view held at its kept top line until it is laid out.
@@ -94,7 +141,50 @@ impl LushtextEditorPage {
         placeholder.set_highlight_syntax(false);
         placeholder.set_highlight_matching_brackets(false);
         let _ = state.placeholder.set(placeholder);
+        // An unrealized view holds no primary-selection registration, so the
+        // reference a detach kept on the document goes back too.
+        self.source_view().connect_unrealize(glib::clone!(
+            #[weak(rename_to = editor)]
+            self,
+            move |_| editor.release_primary_hold()
+        ));
+        let editor_weak = self.downgrade();
+        crate::ui::at_listeners::subscribe(move |listening| {
+            let Some(editor) = editor_weak.upgrade() else {
+                return false;
+            };
+            editor.follow_at_listeners(listening);
+            true
+        });
         self.detach_view_now();
+    }
+
+    /// An assistive technology started or stopped listening. Started: a
+    /// detached view whose document is small attaches now, so it never sends
+    /// a large text change later; a larger one waits until it is shown.
+    /// Stopped: a hidden attached view is detached again when next seen
+    /// laying out.
+    fn follow_at_listeners(&self, listening: bool) {
+        if self.in_destruction() || self.imp().source_view.try_get().is_none() {
+            return;
+        }
+        if listening {
+            self.stop_hidden_validation_watch();
+            if !self.view_shows_document() && self.buffer().char_count() <= AT_ATTACH_MAX_CHARS {
+                self.attach_view();
+            }
+        } else if !self.is_mapped() && self.view_shows_document() {
+            self.watch_hidden_validation();
+        }
+    }
+
+    pub(super) fn release_primary_hold(&self) {
+        let state = &self.imp().view_attachment;
+        if state.primary_hold.replace(false)
+            && let Some(document) = state.document.get()
+        {
+            document.remove_selection_clipboard(&self.source_view().primary_clipboard());
+        }
     }
 
     /// The document buffer while the page's template children are alive, for
@@ -181,8 +271,11 @@ impl LushtextEditorPage {
         };
         let view = self.source_view();
         crate::ui::responsiveness_probe::span("view_attach", || {
-            self.set_view_buffer(view, &document);
+            view.set_buffer(Some(&document));
         });
+        // GTK registered the primary selection on the document again: give
+        // back the reference the detach held.
+        self.release_primary_hold();
         state.attaches.set(state.attaches.get().saturating_add(1));
         if self.is_protected_view() {
             // Protected View keeps GTK's primary-selection provider off the
@@ -288,6 +381,13 @@ impl LushtextEditorPage {
         if !self.view_shows_document() || self.in_destruction() {
             return;
         }
+        if !view_detach_allowed(
+            crate::ui::at_listeners::listeners_active(),
+            self.buffer().line_count(),
+        ) {
+            // Never detached (module docs): nothing to watch for.
+            return;
+        }
         self.stop_hidden_validation_watch();
         let view = self.source_view();
         // Keep the top line now, while the layout still describes what the
@@ -303,7 +403,7 @@ impl LushtextEditorPage {
                 (!restore.mark.is_deleted()).then(|| self.buffer().iter_at_mark(&restore.mark))
             });
         self.stop_holding_top_line();
-        let top = held.unwrap_or_else(|| view.line_at_y(view.visible_rect().y()).0);
+        let top = held.unwrap_or_else(|| visible_top_iter(view));
         self.keep_top(&self.buffer(), &top);
         let mut watch = Vec::new();
         for adjustment in [view.vadjustment(), view.hadjustment()]
@@ -358,25 +458,31 @@ impl LushtextEditorPage {
         else {
             return;
         };
-        if !self.view_shows_document() {
+        if !self.view_shows_document()
+            || !view_detach_allowed(
+                crate::ui::at_listeners::listeners_active(),
+                document.line_count(),
+            )
+        {
             return;
         }
         let view = self.source_view();
         placeholder.set_style_scheme(document.style_scheme().as_ref());
-        crate::ui::responsiveness_probe::span("view_detach", || {
-            self.set_view_buffer(view, placeholder);
-        });
-        state.detaches.set(state.detaches.get().saturating_add(1));
-    }
-
-    /// `gtk_text_view_set_buffer`, keeping Protected View's primary-selection
-    /// bookkeeping true: a realized view removes the primary-selection
-    /// clipboard from its old buffer and adds it to the new one, and removing
-    /// one the document no longer has (Protected View took it off) is a
-    /// `Gtk-CRITICAL`. So it is put back first; the attach takes it off again.
-    fn set_view_buffer(&self, view: &sourceview5::View, buffer: &sourceview5::Buffer) {
+        // A realized view removes its primary-selection registration from the
+        // document. Protected View took it off already, and removing an absent
+        // one is a `Gtk-CRITICAL`: put it back first (the attach takes it off
+        // again). Otherwise hold one more reference, so the removal does not
+        // clear the user's PRIMARY selection (module docs).
         self.set_protected_primary_selection_off(false);
-        view.set_buffer(Some(buffer));
+        let hold = view.is_realized() && !self.is_protected_view();
+        if hold {
+            document.add_selection_clipboard(&view.primary_clipboard());
+        }
+        crate::ui::responsiveness_probe::span("view_detach", || {
+            view.set_buffer(Some(placeholder));
+        });
+        state.primary_hold.set(hold);
+        state.detaches.set(state.detaches.get().saturating_add(1));
     }
 
     fn forget_kept_top(&self) {
@@ -446,5 +552,49 @@ impl LushtextEditorPage {
             .filter(|mark| !mark.is_deleted())
             .map_or(0, |mark| self.buffer().iter_at_mark(mark).line());
         Some(u32::try_from(line).unwrap_or(0))
+    }
+}
+
+/// The most display lines `visible_top_iter` walks inside one paragraph: a
+/// wrapped paragraph is at most `L_wrap_edit` (8,192) characters, so a few
+/// hundred display lines at the narrowest width.
+const MAX_DISPLAY_LINE_STEPS: u32 = 1 << 12;
+
+/// The position at the top of the view's visible area: inside a long wrapped
+/// paragraph, the start of the display line shown at the top, not the
+/// paragraph start (without wrapping a display line is a paragraph). Walks
+/// the paragraph's display lines from its start (`iter_at_location` answers
+/// nothing over a margin, so it cannot be used here).
+fn visible_top_iter(view: &sourceview5::View) -> gtk4::TextIter {
+    let top = view.visible_rect().y();
+    let (paragraph, _) = view.line_at_y(top);
+    if view.wrap_mode() == gtk4::WrapMode::None {
+        return paragraph;
+    }
+    let mut shown = paragraph;
+    for _ in 0..MAX_DISPLAY_LINE_STEPS {
+        let mut next = shown;
+        if !view.forward_display_line(&mut next)
+            || next.line() != paragraph.line()
+            || view.iter_location(&next).y() > top
+        {
+            break;
+        }
+        shown = next;
+    }
+    shown
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_view_is_detached_only_without_a_listener_and_within_the_line_cap() {
+        assert!(view_detach_allowed(false, 0));
+        assert!(view_detach_allowed(false, VIEW_DETACH_MAX_LINES));
+        assert!(!view_detach_allowed(false, VIEW_DETACH_MAX_LINES + 1));
+        assert!(!view_detach_allowed(true, 0));
+        assert!(!view_detach_allowed(true, VIEW_DETACH_MAX_LINES));
     }
 }

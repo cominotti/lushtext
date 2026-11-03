@@ -54,6 +54,10 @@ pub struct PrintDocumentFacts {
     pub modified: bool,
     /// Draft identity active for this tab before printing began.
     pub draft_id: Option<String>,
+    /// Character count of the buffer the print compositor is built over
+    /// (`execution::print_compositor`): the document's, whatever the view
+    /// shows.
+    pub compositor_char_count: i32,
 }
 
 /// Everything a test or probe may observe about the print workflow.
@@ -120,5 +124,9 @@ fn document_facts(editor: &LushtextEditorPage) -> Option<PrintDocumentFacts> {
         char_count,
         modified: editor.is_modified(),
         draft_id: editor.draft_id(),
+        compositor_char_count: sourceview5::prelude::PrintCompositorExt::buffer(
+            &super::execution::print_compositor(editor),
+        )
+        .char_count(),
     })
 }

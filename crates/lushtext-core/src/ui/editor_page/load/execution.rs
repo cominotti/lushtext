@@ -131,6 +131,35 @@ pub(crate) fn background_slice_priority() -> glib::Priority {
     glib::Priority::from(glib::ffi::G_PRIORITY_DEFAULT_IDLE + 1)
 }
 
+/// How long a background slice waits behind visible work before it runs at
+/// `PACED_SLICE_PRIORITY` instead, once (review: without it a background
+/// install could wait indefinitely behind `G_PRIORITY_DEFAULT_IDLE` work and
+/// keep its body charged against the load budget). A power of two, about 15
+/// frames at 60 Hz: long enough that a visible install or layout keeps the
+/// CPU, short enough that a background install keeps moving.
+pub(crate) const BACKGROUND_SLICE_AGE: Duration = Duration::from_millis(1 << 8);
+
+/// Queue one paced slice at `priority` (`input_quiet::paced_idle`); a
+/// background slice ages into `PACED_SLICE_PRIORITY` after
+/// `BACKGROUND_SLICE_AGE` (`input_quiet::paced_idle_aging`).
+pub(crate) fn queue_paced_slice(
+    priority: glib::Priority,
+    step: impl FnOnce() + 'static,
+    store: impl Fn(glib::SourceId) + 'static,
+) {
+    if priority == background_slice_priority() {
+        crate::ui::input_quiet::paced_idle_aging(
+            priority,
+            PACED_SLICE_PRIORITY,
+            BACKGROUND_SLICE_AGE,
+            step,
+            store,
+        );
+    } else {
+        crate::ui::input_quiet::paced_idle(priority, step, store);
+    }
+}
+
 /// Schedule the next slice of a paced (dense) installation from an idle
 /// below `GTK_TEXT_VIEW_PRIORITY_VALIDATE` (review R14, ledger A70):
 /// GtkTextView's incremental validation idle lays out the previous slice's
@@ -147,7 +176,7 @@ fn schedule_paced_insert_slice(
     priority: glib::Priority,
 ) {
     let (session_for_step, session_for_store) = (Rc::clone(session), Rc::downgrade(session));
-    crate::ui::input_quiet::paced_idle(
+    queue_paced_slice(
         priority,
         move || run_install_slice(&session_for_step),
         move |source_id| {
@@ -531,15 +560,13 @@ pub(super) fn accept_admitted_load_outcome(
     }
     match result {
         Ok(loaded) => {
-            // The read is done: from here the load holds only its decoded
-            // body outside the buffer, and no worker (design D4 of
-            // `defer-background-tab-layout`).
+            // The read is done: from here the load holds its decoded body and
+            // the residency of the characters not yet installed, and no worker
+            // (design D4 of `defer-background-tab-layout`).
             let mut permit = permit;
-            permit.retain_for_install(
-                u64::try_from(loaded.content.len())
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(crate::model::file_load::TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES),
-            );
+            permit.retain_for_install(crate::model::file_load::install_retained_weight(
+                u64::try_from(loaded.content.len()).unwrap_or(u64::MAX),
+            ));
             install_guarded_load(editor, ticket.load_generation, loaded, Some(permit));
         }
         Err(EditorLoadError::Cancelled) => {}

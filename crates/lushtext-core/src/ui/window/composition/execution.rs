@@ -894,9 +894,16 @@ impl LushtextWindow {
             // queued is announced now (`opened_document_focus_pending`).
             self.render_notifications();
         }
-        if !files.is_empty() {
+        if !files.is_empty() && !self.is_active() {
             // The window is raised once its activation finished, as the
             // pre-composition `open` handler did after opening its files.
+            // Only when it is not the active window already: on Wayland
+            // `gtk_window_present` of a mapped window blocks the GTK thread
+            // until the compositor answers an xdg-activation token request
+            // (`gdk_wayland_toplevel_focus`), so a busy compositor's latency
+            // landed in this dispatch (35–52 ms with no LushText span after
+            // the second open of `install/100000000`, review of
+            // `defer-background-tab-layout`), to raise a window already raised.
             crate::ui::responsiveness_probe::span("activation_present", || self.present());
         }
     }

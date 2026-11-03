@@ -151,9 +151,28 @@ impl LushtextEditorPage {
     /// Take the buffer's primary selection clipboard off while protected
     /// (`off`), so the primary selection never offers GTK's visible-only text
     /// of a folded range (C6 review finding), or put it back.
+    ///
+    /// While the view shows its placeholder (`view_attachment`), GTK's
+    /// registration is on the placeholder, not the document, and this records
+    /// nothing: the state stays "on the document" and the attach applies
+    /// Protected View's choice (review M1: entering Protected View while
+    /// detached removed an absent registration, a `Gtk-CRITICAL`, and the
+    /// attach then left the provider on PRIMARY). Entering it while detached
+    /// does give back the reference the detach held, so the protected
+    /// document offers nothing meanwhile.
     pub(in crate::ui::editor_page) fn set_protected_primary_selection_off(&self, off: bool) {
         let view = self.source_view();
         let state = &self.imp_detached_drop_targets().primary_removed;
+        if !self.view_shows_document() {
+            debug_assert!(
+                !state.get(),
+                "a detached view's document keeps no protected state"
+            );
+            if off {
+                self.release_primary_hold();
+            }
+            return;
+        }
         if off == state.get() || (off && !view.is_realized()) {
             return;
         }

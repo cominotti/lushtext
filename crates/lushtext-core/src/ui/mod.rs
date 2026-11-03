@@ -8,6 +8,7 @@
 //! than a visible widget.
 
 pub mod accessibility;
+pub mod at_listeners;
 pub mod automation;
 pub(crate) mod buffer_snapshot;
 pub mod command_palette;

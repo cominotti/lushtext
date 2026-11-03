@@ -246,3 +246,322 @@ fn test_a_protected_tab_detaches_and_reattaches_without_primary_selection_critic
     assert!(protected.view_shows_document());
     assert!(protected.is_protected_view());
 }
+
+fn giant_paragraph() -> String {
+    "giant ".repeat(
+        usize::try_from(lushtext_core::model::document_scale::L_PROTECT_EDIT / 6 + 2)
+            .expect("a small length"),
+    )
+}
+
+/// The content type GTK's primary-selection provider offers for the whole
+/// document selected, or "none" (the selection is cleared again after).
+fn primary_type_with_all_selected(editor: &LushtextEditorPage) -> String {
+    let buffer = editor.buffer();
+    let (start, end) = (buffer.start_iter(), buffer.end_iter());
+    buffer.select_range(&start, &end);
+    flush_after_delay(Duration::from_millis(50));
+    let name = primary_type(editor);
+    let start = buffer.start_iter();
+    buffer.select_range(&start, &start);
+    flush_after_delay(Duration::from_millis(50));
+    name
+}
+
+fn primary_type(editor: &LushtextEditorPage) -> String {
+    editor
+        .source_view()
+        .primary_clipboard()
+        .content()
+        .map_or_else(|| "none".to_owned(), |c| c.type_().name().to_owned())
+}
+
+/// Open `small` (selected), then re-lay out `editor`'s hidden view until it
+/// is detached.
+fn hide_until_detached(window: &LushtextWindow, editor: &LushtextEditorPage, small: &Path) {
+    window.open_document(small);
+    wait_loaded(&editor_at(window, 1));
+    editor.source_view().set_pixels_above_lines(4);
+    wait_until(Duration::from_secs(10), || !editor.view_shows_document());
+    assert!(!editor.view_shows_document(), "detached while hidden");
+    assert!(editor.source_view().is_realized());
+}
+
+fn show_first_tab(window: &LushtextWindow) {
+    window
+        .imp()
+        .tab_view
+        .set_selected_page(&window.imp().tab_view.nth_page(0));
+    flush_after_delay(Duration::from_millis(200));
+}
+
+/// Review M1: Protected View entered while the realized view showed its
+/// placeholder removed a primary-selection registration the document did not
+/// have (`Gtk-CRITICAL gtk_text_buffer_remove_selection_clipboard`), and once
+/// attached GTK's provider stayed on PRIMARY, offering visible-only folded
+/// text.
+#[test]
+fn test_protected_view_entered_while_detached_keeps_the_primary_provider_off() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("doc.txt");
+    let small = dir.path().join("small.txt");
+    dense_document(&path, 'd');
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    flush_after_delay(Duration::from_millis(100));
+    hide_until_detached(&window, &editor, &small);
+
+    fixture::write_text(&path, &format!("head\n{}\ntail\n", giant_paragraph()));
+    editor.load_file_async(&path);
+    wait_loaded(&editor);
+    flush_after_delay(Duration::from_millis(200));
+    assert!(editor.is_protected_view());
+    assert!(!editor.view_shows_document());
+
+    show_first_tab(&window);
+    assert!(editor.view_shows_document());
+    assert_eq!(
+        primary_type_with_all_selected(&editor),
+        "none",
+        "a protected document offers nothing on PRIMARY"
+    );
+}
+
+/// Detaching a realized hidden view moves GTK's primary-selection provider
+/// off the document, which cleared the user's PRIMARY selection when the
+/// hidden document owned it; the detach holds a reference so it stays.
+#[test]
+fn test_detaching_a_hidden_view_keeps_the_users_primary_selection() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("doc.txt");
+    let small = dir.path().join("small.txt");
+    dense_document(&path, 'p');
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    let buffer = editor.buffer();
+    let start = buffer.start_iter();
+    let end = buffer.iter_at_offset(40);
+    buffer.select_range(&start, &end);
+    flush_after_delay(Duration::from_millis(50));
+    let owned = primary_type(&editor);
+    assert_ne!(owned, "none", "the selection owns PRIMARY");
+
+    hide_until_detached(&window, &editor, &small);
+    assert_eq!(primary_type(&editor), owned, "still offered while detached");
+    show_first_tab(&window);
+    assert!(editor.view_shows_document());
+    assert_eq!(primary_type(&editor), owned, "and after the attach");
+    // GTK's own registration is back exactly once: clearing the selection
+    // withdraws the provider.
+    let start = buffer.start_iter();
+    buffer.select_range(&start, &start);
+    flush_after_delay(Duration::from_millis(50));
+    assert_eq!(primary_type(&editor), "none");
+}
+
+/// Review M2: with an assistive technology listening, a swap sends the
+/// whole document as one text change (about 2 ms per MiB in one dispatch),
+/// so no view is detached, and a detached view with a small document attaches
+/// as soon as a listener appears.
+#[test]
+fn test_no_view_is_detached_while_an_assistive_technology_listens() {
+    use lushtext_core::ui::at_listeners;
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("doc.txt");
+    let small = dir.path().join("small.txt");
+    dense_document(&path, 'q');
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    hide_until_detached(&window, &editor, &small);
+    let (detaches, attaches) = editor.view_attachment_counts();
+
+    at_listeners::simulate_listener(true);
+    assert!(at_listeners::listeners_active());
+    assert!(
+        editor.view_shows_document(),
+        "a small detached document attaches when a listener appears"
+    );
+    assert_eq!(editor.view_attachment_counts(), (detaches, attaches + 1));
+    editor.source_view().set_pixels_above_lines(8);
+    flush_after_delay(Duration::from_millis(500));
+    assert!(
+        editor.view_shows_document(),
+        "a hidden view laying out stays attached while a listener listens"
+    );
+    assert_eq!(editor.view_attachment_counts().0, detaches);
+
+    at_listeners::simulate_listener(false);
+    assert!(!at_listeners::listeners_active());
+    editor.source_view().set_pixels_above_lines(2);
+    wait_until(Duration::from_secs(10), || !editor.view_shows_document());
+    assert!(
+        !editor.view_shows_document(),
+        "detached again once it stopped"
+    );
+}
+
+/// Review M2: without a listener the swap walks every line of the document
+/// (27–28 ms for 2.56 million lines), so a document over the line cap
+/// (`VIEW_DETACH_MAX_LINES`, 2^18) is never detached.
+#[test]
+fn test_a_document_over_the_line_cap_is_never_detached() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("many-lines.txt");
+    let small = dir.path().join("small.txt");
+    fixture::write_text(&path, &"x\n".repeat((1 << 18) + 1));
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    assert!(editor.view_shows_document());
+    let (detaches, _) = editor.view_attachment_counts();
+    window.open_document(&small);
+    wait_loaded(&editor_at(&window, 1));
+    editor.source_view().set_pixels_above_lines(4);
+    flush_after_delay(Duration::from_millis(500));
+    assert!(editor.view_shows_document(), "too many lines to detach");
+    assert_eq!(editor.view_attachment_counts().0, detaches);
+}
+
+/// The kept position inside a long wrapped paragraph is the display line at
+/// the top, not the paragraph start (review: the reattached view jumped back
+/// to the paragraph's first line).
+#[test]
+fn test_a_detached_view_comes_back_inside_a_long_wrapped_paragraph() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("wrapped.txt");
+    let small = dir.path().join("small.txt");
+    // Paragraphs under the wrap gate (`L_wrap_edit`, 8,192), each many
+    // display lines tall.
+    let paragraph = format!("{}\n", "wrapped words ".repeat(560));
+    fixture::write_text(&path, &paragraph.repeat(96));
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    let view = editor.source_view();
+    assert_ne!(view.wrap_mode(), gtk4::WrapMode::None);
+    // The start of the display line at the top of the view.
+    let top_offset = |view: &sourceview5::View| {
+        let top = view.visible_rect().y();
+        let (mut shown, _) = view.line_at_y(top);
+        let paragraph = shown.line();
+        loop {
+            let mut next = shown;
+            if !view.forward_display_line(&mut next)
+                || next.line() != paragraph
+                || view.iter_location(&next).y() > top
+            {
+                break shown.offset();
+            }
+            shown = next;
+        }
+    };
+    // Within one display line (at most a few hundred characters at the
+    // harness's monitor width), far less than the half paragraph a
+    // paragraph-start position would be off by.
+    const DISPLAY_LINE_CHARS: i32 = 1000;
+    let paragraph_chars = i32::try_from(paragraph.chars().count()).expect("fits");
+    let target = editor
+        .buffer()
+        .iter_at_offset(48 * paragraph_chars + paragraph_chars / 2);
+    // A scroll queued before the lines above it have heights lands elsewhere
+    // (A83), so it is repeated until the view is there.
+    wait_until(Duration::from_secs(20), || {
+        editor.scroll_to_document_iter(&target, 0.0, true, 0.0, 0.0);
+        (top_offset(view) - target.offset()).abs() < DISPLAY_LINE_CHARS
+    });
+    let kept = top_offset(view);
+    assert!(
+        kept - 48 * paragraph_chars > paragraph_chars / 4,
+        "scrolled inside the paragraph: {kept}"
+    );
+
+    hide_until_detached(&window, &editor, &small);
+    show_first_tab(&window);
+    wait_until(Duration::from_secs(10), || {
+        (top_offset(view) - kept).abs() < DISPLAY_LINE_CHARS
+    });
+    let shown = top_offset(view);
+    assert!(
+        (shown - kept).abs() < DISPLAY_LINE_CHARS,
+        "the reattached view shows the kept display line: {shown} vs {kept}"
+    );
+}
+
+/// A background slice waiting behind ever-ready `G_PRIORITY_DEFAULT_IDLE`
+/// work runs at that priority after `BACKGROUND_SLICE_AGE`, and removing the
+/// stored source still cancels it.
+#[test]
+fn test_a_background_slice_ages_into_the_paced_priority() {
+    use lushtext_core::ui::input_quiet::paced_idle_aging;
+    ensure_gtk_init();
+    let busy = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, || {
+        std::thread::sleep(Duration::from_millis(1));
+        glib::ControlFlow::Continue
+    });
+    let low = glib::Priority::from(glib::ffi::G_PRIORITY_DEFAULT_IDLE + 1);
+    let age = Duration::from_millis(1 << 8);
+    let ran = std::rc::Rc::new(std::cell::Cell::new(None::<Instant>));
+    let flag = std::rc::Rc::clone(&ran);
+    let queued = Instant::now();
+    paced_idle_aging(
+        low,
+        glib::Priority::DEFAULT_IDLE,
+        age,
+        move || flag.set(Some(Instant::now())),
+        |_| {},
+    );
+    let cancelled = std::rc::Rc::new(std::cell::Cell::new(false));
+    let cancelled_flag = std::rc::Rc::clone(&cancelled);
+    let stored = std::rc::Rc::new(std::cell::RefCell::new(None::<glib::SourceId>));
+    let store = std::rc::Rc::clone(&stored);
+    paced_idle_aging(
+        low,
+        glib::Priority::DEFAULT_IDLE,
+        age,
+        move || cancelled_flag.set(true),
+        move |id| {
+            store.replace(Some(id));
+        },
+    );
+    stored
+        .borrow_mut()
+        .take()
+        .expect("a stored source")
+        .remove();
+
+    let context = glib::MainContext::default();
+    while ran.get().is_none() && queued.elapsed() < Duration::from_secs(5) {
+        context.iteration(false);
+    }
+    let waited = ran.get().expect("the aged slice ran") - queued;
+    assert!(waited >= age, "it waited its age first: {waited:?}");
+    let until = Instant::now() + age;
+    while Instant::now() < until {
+        context.iteration(false);
+    }
+    assert!(!cancelled.get(), "a removed slice never runs");
+    busy.remove();
+}

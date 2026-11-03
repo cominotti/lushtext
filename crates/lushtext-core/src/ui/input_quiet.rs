@@ -151,6 +151,36 @@ pub fn paced_idle(
     queue_paced_idle(priority, step, &store);
 }
 
+/// [`paced_idle`] at `priority`, aged: if it has not run `age` after it was
+/// queued (higher-priority work kept it waiting that long), its step is queued
+/// once more as a [`paced_idle`] at `aged_priority`, from a timeout at that
+/// priority, and runs from whichever dispatches first. `store` always receives
+/// the source that holds the step, so removing the stored source cancels it:
+/// the aging timeout holds the step only weakly, and a source whose step was
+/// taken does nothing (and stores nothing) when it dispatches.
+pub fn paced_idle_aging(
+    priority: glib::Priority,
+    aged_priority: glib::Priority,
+    age: std::time::Duration,
+    step: impl FnOnce() + 'static,
+    store: impl Fn(glib::SourceId) + 'static,
+) {
+    let step: PacedStep = Rc::new(Cell::new(Some(Box::new(step))));
+    let store: Rc<dyn Fn(glib::SourceId)> = Rc::new(store);
+    let weak_step = Rc::downgrade(&step);
+    let aging_store = Rc::clone(&store);
+    queue_paced_idle(priority, step, &store);
+    glib::timeout_add_local_full(age, aged_priority, move || {
+        if let Some(waiting) = weak_step.upgrade()
+            && let Some(step) = waiting.take()
+        {
+            let aged: PacedStep = Rc::new(Cell::new(Some(step)));
+            queue_paced_idle(aged_priority, aged, &aging_store);
+        }
+        glib::ControlFlow::Break
+    });
+}
+
 /// The one step a [`paced_idle`] runs, taken when it runs.
 type PacedStep = Rc<Cell<Option<Box<dyn FnOnce()>>>>;
 
@@ -158,9 +188,17 @@ fn queue_paced_idle(priority: glib::Priority, step: PacedStep, store: &Rc<dyn Fn
     let id = {
         let store = Rc::clone(store);
         glib::idle_add_local_full(priority, move || {
+            if !step_pending(&step) {
+                // Taken by an aged copy (`paced_idle_aging`), which the caller
+                // holds instead.
+                return glib::ControlFlow::Break;
+            }
             if input_awaits_frame() {
                 let (step, poll_store) = (Rc::clone(&step), Rc::clone(&store));
                 let id = glib::timeout_add_local_full(INPUT_FRAME_POLL, priority, move || {
+                    if !step_pending(&step) {
+                        return glib::ControlFlow::Break;
+                    }
                     if input_awaits_frame() {
                         return glib::ControlFlow::Continue;
                     }
@@ -175,6 +213,13 @@ fn queue_paced_idle(priority: glib::Priority, step: PacedStep, store: &Rc<dyn Fn
         })
     };
     store(id);
+}
+
+fn step_pending(step: &PacedStep) -> bool {
+    let taken = step.take();
+    let pending = taken.is_some();
+    step.set(taken);
+    pending
 }
 
 /// The monotonic time of the last counted input on any window, or `None`.

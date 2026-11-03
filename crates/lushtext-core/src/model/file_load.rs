@@ -25,7 +25,18 @@ pub const TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES: u64 = 1024 * 1024;
 /// single-byte decode, and the live editor's four-byte-per-character residency
 /// estimate while decoded ownership overlaps installation. It is a policy
 /// bound rather than an allocator/RSS measurement.
+///
+/// Once the worker read is done the raw source is gone, and the charge
+/// shrinks to [`install_retained_weight`]: the decoded body plus that same
+/// four-byte-per-character residency for every character the install has not
+/// yet put into the buffer (the live editor budget only learns of them once
+/// installed), so what this budget admits still covers every byte the load
+/// owns while it overlaps the install (`defer-background-tab-layout`, review).
 pub const TRANSIENT_LOAD_SOURCE_MULTIPLIER: u64 = 8;
+
+/// The live editor's residency estimate per character (four UTF-8 bytes at
+/// most), which a load still charges for characters not yet installed.
+pub const LIVE_RESIDENCY_BYTES_PER_CHAR: u64 = 4;
 
 /// Maximum UTF-8 body bytes produced from one admitted source byte.
 ///
@@ -52,6 +63,18 @@ const MAX_CONSECUTIVE_ACTIVE_BYPASSES: u8 = 2;
 pub const fn transient_load_weight(source_bytes: u64) -> u64 {
     source_bytes
         .saturating_mul(TRANSIENT_LOAD_SOURCE_MULTIPLIER)
+        .saturating_add(TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES)
+}
+
+/// The charge a load keeps once its worker read is done
+/// ([`FileLoadAdmissionPolicy::retain_for_install`]): the decoded body, the
+/// live editor's four-byte residency for each of its characters not yet
+/// installed (at most one per byte, and none is installed yet), and the fixed
+/// overhead. Never more than the grant it replaces.
+#[must_use]
+pub const fn install_retained_weight(body_bytes: u64) -> u64 {
+    body_bytes
+        .saturating_add(body_bytes.saturating_mul(LIVE_RESIDENCY_BYTES_PER_CHAR))
         .saturating_add(TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES)
 }
 
@@ -248,11 +271,12 @@ impl FileLoadAdmissionPolicy {
     /// One grant's worker read is done and its decoded body goes into its
     /// buffer (`defer-background-tab-layout`): it no longer holds a reading
     /// slot (`max_active` mirrors the worker cap, and an install uses no
-    /// worker), and its charge shrinks to `retained_weight`, what the install
-    /// still holds outside the buffer: the decoded body and its overhead,
-    /// never more than it was granted. The buffer's own bytes are the live
-    /// editor budget's. An oversize grant stops running alone once what it
-    /// retains fits the budget. Returns false for an unknown or already
+    /// worker), and its charge shrinks to `retained_weight`
+    /// ([`install_retained_weight`]: the decoded body plus the residency of
+    /// the characters not yet installed), never more than it was granted. An
+    /// oversize grant keeps running alone until it is released: its install
+    /// still overlaps a body and a buffer of a size the budget never admitted
+    /// alongside other loads. Returns false for an unknown or already
     /// installing grant.
     pub fn retain_for_install(&mut self, request_id: u64, retained_weight: u64) -> bool {
         let Some(mut grant) = self.active.remove(&request_id) else {
@@ -264,10 +288,6 @@ impl FileLoadAdmissionPolicy {
             .saturating_sub(grant.weight)
             .saturating_add(retained);
         grant.weight = retained;
-        if grant.exclusive && retained <= self.budget {
-            grant.exclusive = false;
-            self.exclusive_active = false;
-        }
         self.installing.insert(request_id, grant);
         true
     }
@@ -435,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn an_installing_grant_never_grows_and_drops_exclusivity_once_it_fits() {
+    fn an_installing_grant_never_grows_and_an_oversize_one_keeps_running_alone() {
         let mut policy = FileLoadAdmissionPolicy::new(10, 8);
         policy.queue(request(1, 1, 1, 11, FileLoadPriority::Normal));
         policy.queue(request(2, 2, 2, 4, FileLoadPriority::Normal));
@@ -469,14 +489,65 @@ mod tests {
         assert!(policy.retain_for_install(3, 5));
         let snapshot = policy.snapshot();
         assert!(
-            !snapshot.exclusive_active,
-            "its retained body fits the budget"
+            snapshot.exclusive_active,
+            "an oversize load keeps running alone while it installs"
         );
         assert_eq!(snapshot.active_weight, 5);
+        policy.queue(request(4, 4, 4, 1, FileLoadPriority::Normal));
+        assert_eq!(policy.admit_next(false), None, "nothing joins it");
+        assert!(policy.release(3));
+        assert_eq!(
+            policy.admit_next(false).map(|grant| grant.request_id),
+            Some(4)
+        );
         assert!(
             !policy.retain_for_install(99, 1),
             "an unknown grant changes nothing"
         );
+    }
+
+    #[test]
+    fn the_install_charge_covers_the_body_and_the_residency_not_yet_installed() {
+        let mib = 1024 * 1024;
+        assert_eq!(
+            install_retained_weight(0),
+            TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES
+        );
+        // A UTF-8 body as large as its source: body + 4 bytes per character.
+        assert_eq!(
+            install_retained_weight(32 * mib),
+            5 * 32 * mib + TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES
+        );
+        assert!(install_retained_weight(32 * mib) <= transient_load_weight(32 * mib));
+        assert_eq!(install_retained_weight(u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn installing_loads_never_overcommit_the_budget_with_live_residency() {
+        // The review's case: eight 24 MiB UTF-8 loads against 256 MiB. With
+        // only the body retained, every one of them was admitted while each
+        // install still owed its buffer's 4-byte residency (the read slot freed for each).
+        let mib = 1024 * 1024;
+        let budget = TRANSIENT_LOAD_SHARED_BUDGET_BYTES;
+        let mut policy = FileLoadAdmissionPolicy::new(budget, MAX_ADMITTED_FILE_LOADS);
+        for id in 1..=8 {
+            policy.queue(request(
+                id,
+                id,
+                id,
+                transient_load_weight(24 * mib),
+                FileLoadPriority::Normal,
+            ));
+        }
+        let mut installing = 0u64;
+        while let Some(grant) = policy.admit_next(false) {
+            assert!(policy.retain_for_install(grant.request_id, install_retained_weight(24 * mib)));
+            installing += 1;
+        }
+        // Body + residency per install, bounded by the shared budget.
+        assert!(installing * install_retained_weight(24 * mib) <= budget);
+        assert!(policy.snapshot().active_weight <= budget);
+        assert!(installing < 8, "not all eight overlap: {installing}");
     }
 
     #[test]

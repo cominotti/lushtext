@@ -444,11 +444,12 @@ mod measurement {
 
     use super::LatenessWatchdog;
     use crate::services::responsiveness_log::{
-        ADJUSTMENT_UPPER_MARK, DEFAULT_FRAME_PHASE_FRAMES, DEFAULT_LATE_THRESHOLD_US,
-        EDITOR_USER_INSERT_MARK, EVIDENCE_CHANNEL_CAPACITY, EvidenceWriter, FRAME_PHASES_ENV,
-        FrameTimingsQueue, FrameTimingsState, HIGHLIGHT_UPDATED_MARK, LatenessAggregator,
-        ProbeImTrigger, ProbeInputKind, ProbeInputTarget, ProbeRecord, SETTLE_SENTINEL_MARK,
-        arms_settle_sentinel, frame_phase_frames,
+        ADJUSTMENT_UPPER_MARK, ADJUSTMENT_VALUE_MARK, DEFAULT_FRAME_PHASE_FRAMES,
+        DEFAULT_LATE_THRESHOLD_US, EDITOR_USER_INSERT_MARK, EVIDENCE_CHANNEL_CAPACITY,
+        EvidenceWriter, FRAME_PHASES_ENV, FrameTimingsQueue, FrameTimingsState,
+        HIGHLIGHT_UPDATED_MARK, LatenessAggregator, ProbeImTrigger, ProbeInputKind,
+        ProbeInputTarget, ProbeRecord, SETTLE_SENTINEL_MARK, arms_settle_sentinel,
+        frame_phase_frames,
     };
 
     const LOG_ENV: &str = "LUSHTEXT_RESPONSIVENESS_LOG";
@@ -574,6 +575,7 @@ mod measurement {
                 && let Some(adjustment) = view.vadjustment()
             {
                 adjustment.connect_upper_notify(|_| record_mark(ADJUSTMENT_UPPER_MARK));
+                adjustment.connect_value_changed(|_| record_mark(ADJUSTMENT_VALUE_MARK));
             }
             if first_frame.replace(true) {
                 return;

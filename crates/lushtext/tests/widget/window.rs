@@ -21166,3 +21166,130 @@ fn test_preview_target_actions_keep_adwaita_shell_modes_mutually_exclusive() {
         gtk4::AccessibleState::Hidden
     ));
 }
+
+/// Open `paths` in order in preview-only mode: none of their editors is ever
+/// shown, so their views keep the placeholder (`defer-background-tab-layout`).
+fn open_never_shown_markdown(window: &LushtextWindow, first: &Path, rest: &[&Path]) {
+    window.open_document(first);
+    wait_until(Duration::from_secs(10), || {
+        active_editor(window).load_state() == EditorLoadState::Loaded
+    });
+    activate_action(window, "toggle-preview-mode");
+    wait_until(Duration::from_secs(5), || window.imp().preview_mode.get());
+    for path in rest {
+        window.open_document(path);
+        wait_until(Duration::from_secs(10), || {
+            let editor = active_editor(window);
+            editor.file_path().as_deref() == Some(*path)
+                && editor.load_state() == EditorLoadState::Loaded
+                && !editor.load_evidence().installation_active
+        });
+    }
+    flush_events();
+    assert!(window.imp().preview_mode.get(), "still preview-only");
+}
+
+/// Review M4: a never-shown tab's view lays out an empty placeholder, and a
+/// compositor built from the view printed that blank page.
+#[test]
+fn test_printing_a_never_shown_tab_prints_its_document() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("print tempdir");
+    let first = dir.path().join("first.md");
+    let hidden = dir.path().join("hidden.md");
+    fixture::write_text(&first, "# First\n");
+    fixture::write_text(&hidden, "# Hidden\n\nprinted body\n");
+    let window = test_window();
+    present_window(&window);
+    open_never_shown_markdown(&window, &first, &[&hidden]);
+    let editor = active_editor(&window);
+    assert!(
+        !editor.view_shows_document(),
+        "the tab was never shown, so its view holds the placeholder"
+    );
+
+    let captured: Rc<RefCell<Vec<PrintEvidence>>> = Rc::default();
+    let captured_for_runner = Rc::clone(&captured);
+    with_print_runner_for_test(
+        move |evidence| {
+            captured_for_runner.borrow_mut().push(evidence.clone());
+            PrintOutcome::Completed
+        },
+        || activate_action(&window, "print"),
+    );
+    let observations = captured.borrow();
+    let document = observations[0].document.as_ref().expect("a document");
+    assert!(document.char_count > 0);
+    assert_eq!(
+        document.compositor_char_count, document.char_count,
+        "the compositor prints the document, not the view's placeholder"
+    );
+}
+
+/// Review M3: opening a bookmark scrolled the view to a document mark while
+/// the view showed its placeholder (a `Gtk-CRITICAL` from
+/// `gtk_text_view_scroll_to_mark`, which the widget runner fails on).
+#[test]
+fn test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode() {
+    ensure_gtk_init();
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("deep-bookmark.md");
+    let other = left_folder.join("other.md");
+    let body: String = (0..400).map(|line| format!("line {line}\n")).collect();
+    fixture::write_text(&path, &body);
+    fixture::write_text(&other, "# Other\n");
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            300,
+            Some("deep line".to_string()),
+        )],
+    )
+    .expect("save bookmark");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 4);
+    open_never_shown_markdown(&window, &other, &[&path]);
+    let tab_view = &window.imp().tab_view;
+    tab_view.set_selected_page(&tab_view.nth_page(0));
+    flush_events();
+    let bookmarked = tab_view
+        .nth_page(1)
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("editor page");
+    assert!(!bookmarked.view_shows_document());
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let dialog_child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&dialog_child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
+    let row_open_button = sidebar
+        .item(0)
+        .and_then(|item| item.suffix())
+        .and_then(|suffix| suffix.downcast::<gtk4::Button>().ok())
+        .expect("bookmark row open suffix");
+    wait_until(Duration::from_secs(5), || row_open_button.is_sensitive());
+    row_open_button.emit_clicked();
+    flush_events();
+
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_path() == Some(path.clone())
+            && active_editor(&window).cursor_position().0 == 300
+    });
+    assert_eq!(active_editor(&window).cursor_position().0, 300);
+    // Shown again, the view comes back at the bookmarked line.
+    activate_action(&window, "toggle-preview-mode");
+    flush_after_delay(Duration::from_millis(500));
+    wait_until(Duration::from_secs(10), || {
+        bookmarked.view_shows_document() && bookmarked.visible_top_line().abs_diff(300) <= 40
+    });
+    assert!(bookmarked.view_shows_document());
+}
