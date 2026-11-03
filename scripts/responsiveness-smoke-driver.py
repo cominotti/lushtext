@@ -3525,6 +3525,7 @@ class Runner:
             "renderer_actual": actual_renderer(launches),
             "phases": phase_rows,
             "post_open": post_open,
+            "task_completions": task_completion_summary(parsed, budgets["B_SETTLE_US"]),
         }
 
     # -- sweep --------------------------------------------------------------
@@ -4650,6 +4651,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         if r.get("group") in ("install", "protected") or r.get("case") == "recovery/protected-32mib"
     ]
     save_runs = save_during_validation_rows(rows)
+    task_completions = task_completion_verdict(rows, budgets["B_SETTLE_US"])
     c3 = {"measured": install}
     if install:
         over = [
@@ -4692,6 +4694,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "construction_c4": construction,
         "install_c3": c3,
         "save_during_validation": save_runs,
+        "task_completions": task_completions,
         "cases": summarise_cases(rows),
         "missing_artifacts": missing,
         "frameless_cases": frameless,
@@ -4739,6 +4742,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "fill_in_median": fill_in_median(construction, budgets["REFERENCE_FRAME_US"]),
         "construction_enforced": construction_enforced,
         "c6_verdict": c6.get("verdict") if c6 else None,
+        "task_completion_verdict": task_completions.get("verdict"),
     }
     # The C6 verdict is a record for docs/next/long-line-documents.md, not a
     # gate, unless RESPONSIVENESS_C6_ENFORCE=1 asks for one.
@@ -4989,6 +4993,83 @@ def save_during_validation_rows(rows: list[dict]) -> list[dict[str, Any]]:
     return runs
 
 
+TASK_COMPLETION_SPAN = "task_completion"
+TASK_HANDOFF_SPAN = "task_handoff"
+
+
+def task_completion_summary(parsed: dict, b_settle_us: int) -> dict[str, Any]:
+    """Every `spawn_blocking_then` completion and completion-priority hand-off.
+
+    `task_completion` spans are the completion callbacks themselves (the
+    `completion-observer` hook of gtk-lush-tasks); `task_handoff` spans are the
+    admission drains and permit releases LushText schedules at the same
+    priority. Those co-dispatch with the completion source in one main-loop
+    iteration (ledger A69), so the combined dispatch is the watchdog's worst
+    lateness over any late record overlapping a completion or hand-off span:
+    the whole iteration that held the loop, not only the callback.
+    """
+    spans = parsed["records"]["span"]
+    completions = [int(r["end_us"]) - int(r["start_us"]) for r in spans if r.get("name") == TASK_COMPLETION_SPAN]
+    handoffs = [int(r["end_us"]) - int(r["start_us"]) for r in spans if r.get("name") == TASK_HANDOFF_SPAN]
+    windows = [(int(r["start_us"]), int(r["end_us"])) for r in spans if r.get("name") in (TASK_COMPLETION_SPAN, TASK_HANDOFF_SPAN)]
+    combined = 0
+    for late in parsed["records"]["late"]:
+        ready = int(late.get("ready_us", late["t_us"] - late["lateness_us"]))
+        if any(start <= int(late["t_us"]) and ready <= end for start, end in windows):
+            combined = max(combined, int(late["lateness_us"]))
+    return {
+        "completions": len(completions),
+        "completion_max_us": max(completions, default=None),
+        "completions_over_b_settle": sum(1 for d in completions if d > b_settle_us),
+        "handoffs": len(handoffs),
+        "handoff_max_us": max(handoffs, default=None),
+        "combined_dispatch_max_us": combined if windows else None,
+        "combined_over_b_settle": bool(windows) and combined > b_settle_us,
+    }
+
+
+def task_completion_verdict(rows: list[dict], b_settle_us: int) -> dict[str, Any]:
+    """The run's hand-off verdict: every completion and every iteration around
+    one within B_SETTLE_US (spawn-completion-priority)."""
+    measured = [r for r in rows if r.get("task_completions") and r["task_completions"]["completions"] + r["task_completions"]["handoffs"] > 0]
+    if not measured:
+        return {"verdict": "not measured (no completion spans: a build without the completion observer?)", "rows": 0}
+    worst = lambda key: max((r["task_completions"][key] or 0 for r in measured), default=0)
+    over = [
+        f"{r['case']}@{r['variant']}#{r['rep']}"
+        for r in measured
+        if r["task_completions"]["completions_over_b_settle"] or r["task_completions"]["combined_over_b_settle"]
+    ]
+    return {
+        "rows": len(measured),
+        "completions": sum(r["task_completions"]["completions"] for r in measured),
+        "handoffs": sum(r["task_completions"]["handoffs"] for r in measured),
+        "completion_max_us": worst("completion_max_us"),
+        "handoff_max_us": worst("handoff_max_us"),
+        "combined_dispatch_max_us": worst("combined_dispatch_max_us"),
+        "over_b_settle": over,
+        "verdict": f"over B_SETTLE_US in {len(over)} run(s)" if over else "every hand-off dispatch within B_SETTLE_US",
+    }
+
+
+def render_task_completions(verdict: dict[str, Any] | None, b_settle_us: int) -> list[str]:
+    if not verdict or not verdict.get("rows"):
+        return []
+    lines = [
+        "",
+        "## Task completions against B_settle",
+        "",
+        f"Every `spawn_blocking_then` completion (`task_completion` span) and completion-priority hand-off (`task_handoff`: admission drains and permit releases), and the worst watchdog lateness of an iteration overlapping one (the combined dispatch, A69), against B_SETTLE_US {b_settle_us} us. Verdict: **{verdict['verdict']}**.",
+        "",
+        "| Runs | Completions | Hand-offs | Completion max (us) | Hand-off max (us) | Combined dispatch max (us) |",
+        "| --- | --- | --- | --- | --- | --- |",
+        f"| {verdict['rows']} | {verdict['completions']} | {verdict['handoffs']} | {verdict['completion_max_us']} | {verdict['handoff_max_us']} | {verdict['combined_dispatch_max_us']} |",
+    ]
+    if verdict["over_b_settle"]:
+        lines += ["", "Over B_SETTLE_US: " + ", ".join(verdict["over_b_settle"])]
+    return lines
+
+
 def render_save_during_validation(runs: list[dict[str, Any]]) -> list[str]:
     if not runs:
         return []
@@ -5106,6 +5187,7 @@ def render_markdown(report: dict) -> str:
             verified = "" if position not in case.get("unverified_positions", []) else " (burst not verified: excluded)"
             lines.append(f"| {case['case']} | {case['variant']} | {name}{verified} | {keys['keys']} | {keys['worst_median_us']} / {keys['worst_p90_us']} | {keys['summed_median_us']} |")
     lines += render_save_during_validation(report.get("save_during_validation") or [])
+    lines += render_task_completions(report.get("task_completions"), report["budgets"]["B_SETTLE_US"])
     lines += ["", "## Cases", "", "| Case | Variant | Outcomes | Phase | Stall median / max (us) | Frame p95 gap | Input-to-frame max (us / frames) | IM calls / max bytes | AT events / max payload |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for case in report["cases"]:
         flags = (" noisy" if case.get("noisy") else "") + (f" storage:{case.get('storage')}" if case.get("storage") not in (None, "unchecked", "clean") else "")
@@ -5643,6 +5725,33 @@ def self_test() -> int:
     save_runs = save_during_validation_rows([save_row, {"group": "eviction", "phases": []}])
     expect(save_runs == [{"case": "save/during-validation", "variant": "plain", "rep": 0, "outcome": "ok", "status": "ok", "save_latency_us": 4_321, "loads_pending_at_save": True, "stall_max_us": 900, "input_to_frame_max_us": 7_000}], "save rows keep latency, backlog state, stall and editable input-to-frame")
     expect("## Save during validation" in "\n".join(render_save_during_validation(save_runs)) and render_save_during_validation([]) == [], "the save table renders only when the case ran")
+
+    # Task completions (spawn-completion-priority review): each completion and
+    # hand-off span against B_settle, and the iteration around them.
+    tc_parsed = {
+        "records": {
+            "span": [
+                {"kind": "span", "name": TASK_COMPLETION_SPAN, "start_us": 1_000, "end_us": 3_000},
+                {"kind": "span", "name": TASK_COMPLETION_SPAN, "start_us": 10_000, "end_us": 30_000},
+                {"kind": "span", "name": TASK_HANDOFF_SPAN, "start_us": 40_000, "end_us": 41_000},
+                {"kind": "span", "name": "template", "start_us": 50_000, "end_us": 90_000},
+            ],
+            "late": [
+                {"t_us": 32_000, "lateness_us": 22_000},
+                {"t_us": 95_000, "lateness_us": 40_000},
+            ],
+        }
+    }
+    tc = task_completion_summary(tc_parsed, 16_000)
+    expect(tc == {"completions": 2, "completion_max_us": 20_000, "completions_over_b_settle": 1, "handoffs": 1, "handoff_max_us": 1_000, "combined_dispatch_max_us": 22_000, "combined_over_b_settle": True}, f"task completion summary ({tc})")
+    tc_quiet = task_completion_summary({"records": {"span": [{"name": TASK_COMPLETION_SPAN, "start_us": 0, "end_us": 500}], "late": []}}, 16_000)
+    expect(tc_quiet["combined_dispatch_max_us"] == 0 and not tc_quiet["combined_over_b_settle"], "a quiet completion is within budget")
+    tc_rows = [{"case": "a", "variant": "plain", "rep": 0, "task_completions": tc}, {"case": "b", "variant": "plain", "rep": 0, "task_completions": tc_quiet}, {"case": "c", "variant": "plain", "rep": 0}]
+    tc_verdict = task_completion_verdict(tc_rows, 16_000)
+    expect(tc_verdict["rows"] == 2 and tc_verdict["over_b_settle"] == ["a@plain#0"] and tc_verdict["verdict"] == "over B_SETTLE_US in 1 run(s)", f"task completion verdict ({tc_verdict})")
+    expect(task_completion_verdict(tc_rows[1:], 16_000)["verdict"] == "every hand-off dispatch within B_SETTLE_US", "a quiet run meets the hand-off rule")
+    expect(task_completion_verdict([], 16_000)["rows"] == 0 and render_task_completions(task_completion_verdict([], 16_000), 16_000) == [], "no table without completion spans")
+    expect("## Task completions against B_settle" in "\n".join(render_task_completions(tc_verdict, 16_000)), "the task completion table renders")
 
     # The sliced protected install's cases (sliced-protected-install, C3):
     # both tiers run them, and the seeded drafts are enveloped JSON LushText
