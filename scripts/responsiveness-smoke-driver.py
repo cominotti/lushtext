@@ -5015,6 +5015,10 @@ def save_during_validation_rows(rows: list[dict]) -> list[dict[str, Any]]:
 
 TASK_COMPLETION_SPAN = "task_completion"
 TASK_HANDOFF_SPAN = "task_handoff"
+# The held-typing replay (keep-keystrokes-during-install): its settle dispatch
+# runs at `gtk_lush_tasks::completion_priority()`, so GLib can dispatch it in
+# the same iteration as a completion or a hand-off (A69).
+HELD_INPUT_REPLAY_SPAN = "held_input_replay"
 
 
 def task_completion_summary(parsed: dict, b_settle_us: int) -> dict[str, Any]:
@@ -5027,16 +5031,26 @@ def task_completion_summary(parsed: dict, b_settle_us: int) -> dict[str, Any]:
     iteration (ledger A69), so the combined dispatch is the watchdog's worst
     lateness over any late record overlapping a completion or hand-off span:
     the whole iteration that held the loop, not only the callback.
+
+    `held_input_replay` spans (the held-typing replay, at the same priority)
+    join the windows, and `replay_combined_max_us` is the worst lateness of an
+    iteration overlapping a replay: the replay plus whatever completion or
+    hand-off GLib dispatched beside it.
     """
     spans = parsed["records"]["span"]
     completions = [int(r["end_us"]) - int(r["start_us"]) for r in spans if r.get("name") == TASK_COMPLETION_SPAN]
     handoffs = [int(r["end_us"]) - int(r["start_us"]) for r in spans if r.get("name") == TASK_HANDOFF_SPAN]
-    windows = [(int(r["start_us"]), int(r["end_us"])) for r in spans if r.get("name") in (TASK_COMPLETION_SPAN, TASK_HANDOFF_SPAN)]
+    replays = [int(r["end_us"]) - int(r["start_us"]) for r in spans if r.get("name") == HELD_INPUT_REPLAY_SPAN]
+    windows = [(int(r["start_us"]), int(r["end_us"])) for r in spans if r.get("name") in (TASK_COMPLETION_SPAN, TASK_HANDOFF_SPAN, HELD_INPUT_REPLAY_SPAN)]
+    replay_windows = [(int(r["start_us"]), int(r["end_us"])) for r in spans if r.get("name") == HELD_INPUT_REPLAY_SPAN]
     combined = 0
+    replay_combined = 0
     for late in parsed["records"]["late"]:
         ready = int(late.get("ready_us", late["t_us"] - late["lateness_us"]))
         if any(start <= int(late["t_us"]) and ready <= end for start, end in windows):
             combined = max(combined, int(late["lateness_us"]))
+        if any(start <= int(late["t_us"]) and ready <= end for start, end in replay_windows):
+            replay_combined = max(replay_combined, int(late["lateness_us"]))
     return {
         "completions": len(completions),
         "completion_max_us": max(completions, default=None),
@@ -5045,16 +5059,19 @@ def task_completion_summary(parsed: dict, b_settle_us: int) -> dict[str, Any]:
         "handoff_max_us": max(handoffs, default=None),
         "combined_dispatch_max_us": combined if windows else None,
         "combined_over_b_settle": bool(windows) and combined > b_settle_us,
+        "replays": len(replays),
+        "replay_max_us": max(replays, default=None),
+        "replay_combined_max_us": replay_combined if replay_windows else None,
     }
 
 
 def task_completion_verdict(rows: list[dict], b_settle_us: int) -> dict[str, Any]:
     """The run's hand-off verdict: every completion and every iteration around
     one within B_SETTLE_US (spawn-completion-priority)."""
-    measured = [r for r in rows if r.get("task_completions") and r["task_completions"]["completions"] + r["task_completions"]["handoffs"] > 0]
+    measured = [r for r in rows if r.get("task_completions") and r["task_completions"]["completions"] + r["task_completions"]["handoffs"] + r["task_completions"].get("replays", 0) > 0]
     if not measured:
         return {"verdict": "not measured (no completion spans: a build without the completion observer?)", "rows": 0}
-    worst = lambda key: max((r["task_completions"][key] or 0 for r in measured), default=0)
+    worst = lambda key: max((r["task_completions"].get(key) or 0 for r in measured), default=0)
     over = [
         f"{r['case']}@{r['variant']}#{r['rep']}"
         for r in measured
@@ -5067,6 +5084,9 @@ def task_completion_verdict(rows: list[dict], b_settle_us: int) -> dict[str, Any
         "completion_max_us": worst("completion_max_us"),
         "handoff_max_us": worst("handoff_max_us"),
         "combined_dispatch_max_us": worst("combined_dispatch_max_us"),
+        "replays": sum(r["task_completions"].get("replays", 0) for r in measured),
+        "replay_max_us": worst("replay_max_us"),
+        "replay_combined_max_us": worst("replay_combined_max_us"),
         "over_b_settle": over,
         "verdict": f"over B_SETTLE_US in {len(over)} run(s)" if over else "every hand-off dispatch within B_SETTLE_US",
     }
@@ -5081,9 +5101,9 @@ def render_task_completions(verdict: dict[str, Any] | None, b_settle_us: int) ->
         "",
         f"Every `spawn_blocking_then` completion (`task_completion` span) and completion-priority hand-off (`task_handoff`: admission drains and permit releases), and the worst watchdog lateness of an iteration overlapping one (the combined dispatch, A69), against B_SETTLE_US {b_settle_us} us. Verdict: **{verdict['verdict']}**.",
         "",
-        "| Runs | Completions | Hand-offs | Completion max (us) | Hand-off max (us) | Combined dispatch max (us) |",
-        "| --- | --- | --- | --- | --- | --- |",
-        f"| {verdict['rows']} | {verdict['completions']} | {verdict['handoffs']} | {verdict['completion_max_us']} | {verdict['handoff_max_us']} | {verdict['combined_dispatch_max_us']} |",
+        "| Runs | Completions | Hand-offs | Completion max (us) | Hand-off max (us) | Combined dispatch max (us) | Held replays | Replay max (us) | Replay combined max (us) |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        f"| {verdict['rows']} | {verdict['completions']} | {verdict['handoffs']} | {verdict['completion_max_us']} | {verdict['handoff_max_us']} | {verdict['combined_dispatch_max_us']} | {verdict.get('replays', 0)} | {verdict.get('replay_max_us', 0)} | {verdict.get('replay_combined_max_us', 0)} |",
     ]
     if verdict["over_b_settle"]:
         lines += ["", "Over B_SETTLE_US: " + ", ".join(verdict["over_b_settle"])]
@@ -5755,20 +5775,24 @@ def self_test() -> int:
                 {"kind": "span", "name": TASK_COMPLETION_SPAN, "start_us": 10_000, "end_us": 30_000},
                 {"kind": "span", "name": TASK_HANDOFF_SPAN, "start_us": 40_000, "end_us": 41_000},
                 {"kind": "span", "name": "template", "start_us": 50_000, "end_us": 90_000},
+                {"kind": "span", "name": HELD_INPUT_REPLAY_SPAN, "start_us": 100_000, "end_us": 103_000},
             ],
             "late": [
                 {"t_us": 32_000, "lateness_us": 22_000},
                 {"t_us": 95_000, "lateness_us": 40_000},
+                {"t_us": 105_000, "lateness_us": 9_000},
             ],
         }
     }
     tc = task_completion_summary(tc_parsed, 16_000)
-    expect(tc == {"completions": 2, "completion_max_us": 20_000, "completions_over_b_settle": 1, "handoffs": 1, "handoff_max_us": 1_000, "combined_dispatch_max_us": 22_000, "combined_over_b_settle": True}, f"task completion summary ({tc})")
+    expect(tc == {"completions": 2, "completion_max_us": 20_000, "completions_over_b_settle": 1, "handoffs": 1, "handoff_max_us": 1_000, "combined_dispatch_max_us": 22_000, "combined_over_b_settle": True, "replays": 1, "replay_max_us": 3_000, "replay_combined_max_us": 9_000}, f"task completion summary ({tc})")
+    expect(task_completion_summary({"records": {"span": [{"name": HELD_INPUT_REPLAY_SPAN, "start_us": 0, "end_us": 500}], "late": [{"t_us": 20_000, "lateness_us": 1_000}]}}, 16_000)["replay_combined_max_us"] == 0, "lateness outside every replay is not the replay's")
     tc_quiet = task_completion_summary({"records": {"span": [{"name": TASK_COMPLETION_SPAN, "start_us": 0, "end_us": 500}], "late": []}}, 16_000)
-    expect(tc_quiet["combined_dispatch_max_us"] == 0 and not tc_quiet["combined_over_b_settle"], "a quiet completion is within budget")
+    expect(tc_quiet["combined_dispatch_max_us"] == 0 and not tc_quiet["combined_over_b_settle"] and tc_quiet["replay_combined_max_us"] is None, "a quiet completion is within budget")
     tc_rows = [{"case": "a", "variant": "plain", "rep": 0, "task_completions": tc}, {"case": "b", "variant": "plain", "rep": 0, "task_completions": tc_quiet}, {"case": "c", "variant": "plain", "rep": 0}]
     tc_verdict = task_completion_verdict(tc_rows, 16_000)
     expect(tc_verdict["rows"] == 2 and tc_verdict["over_b_settle"] == ["a@plain#0"] and tc_verdict["verdict"] == "over B_SETTLE_US in 1 run(s)", f"task completion verdict ({tc_verdict})")
+    expect(tc_verdict["replays"] == 1 and tc_verdict["replay_combined_max_us"] == 9_000, f"the verdict carries the held replays ({tc_verdict})")
     expect(task_completion_verdict(tc_rows[1:], 16_000)["verdict"] == "every hand-off dispatch within B_SETTLE_US", "a quiet run meets the hand-off rule")
     expect(task_completion_verdict([], 16_000)["rows"] == 0 and render_task_completions(task_completion_verdict([], 16_000), 16_000) == [], "no table without completion spans")
     expect("## Task completions against B_settle" in "\n".join(render_task_completions(tc_verdict, 16_000)), "the task completion table renders")

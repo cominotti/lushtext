@@ -21,8 +21,9 @@
 //!   refused, as the lock refuses it, and reported by a rate-limited warning.
 //!   The view's drop targets are off for the whole held window, so a MOVE
 //!   drag's source never deletes text the buffer did not take.
-//! - **Settle.** A dispatch at `SETTLE_PRIORITY` (just above GtkTextView's
-//!   line validation, ledger A70), queued at the first held character,
+//! - **Settle.** A dispatch one above `gtk_lush_tasks::completion_priority()`
+//!   (above GtkTextView's line validation, ledger A70, and never in the same
+//!   iteration as a task completion, A69), queued at the first held character,
 //!   whenever the last lock holder releases, and whenever the editor's state
 //!   changes while nothing owns the buffer (a load's terminal), decides with
 //!   `settle_verdict`: wait (a workflow still owns the buffer, a load is in
@@ -66,10 +67,24 @@ use crate::ui::window::LushtextWindow;
 /// terminal, a replacement's and a save's queue the dispatch directly.
 const SETTLE_RETRY_INTERVAL_MS: u64 = 16;
 
-/// The settle dispatch's priority: `GDK_PRIORITY_REDRAW + 4` (124), one above
-/// GtkTextView's line validation (`GDK_PRIORITY_REDRAW + 5`, ledger A70), so
-/// the replay is not held back behind a document's validation batches.
-const SETTLE_PRIORITY: i32 = 124;
+/// The settle dispatch's priority: one above
+/// `gtk_lush_tasks::completion_priority()` (123, against the completions'
+/// 124), so two above GtkTextView's line validation (`GDK_PRIORITY_REDRAW + 5`,
+/// ledger A70): the replay is not held back behind a document's validation
+/// batches.
+///
+/// Not the completion priority itself: GLib dispatches every ready source of
+/// the top priority in one iteration (A69), so at 124 a replay and a task
+/// completion or load/save hand-off ready together would run back to back, and
+/// their bounds add past `B_SETTLE`: a replay that enters Protected View took
+/// up to 13.6 ms (design D8), a completion up to 4.8 ms
+/// (`spawn-completion-priority`). At 123 the replay's iteration dispatches
+/// nothing else of the application's, and the completion runs in the next one.
+fn settle_priority() -> glib::Priority {
+    use glib::translate::IntoGlib;
+    let completion: i32 = gtk_lush_tasks::completion_priority().into_glib();
+    glib::Priority::from(completion - 1)
+}
 
 /// How long a composition may hold the replay back before the input method
 /// is reset: 1,024 ms (kind: deadline, a power of two in milliseconds). A
@@ -481,7 +496,7 @@ impl LushtextEditorPage {
             }
             glib::ControlFlow::Break
         };
-        let priority = glib::Priority::from(SETTLE_PRIORITY);
+        let priority = settle_priority();
         let source = if immediate {
             glib::idle_add_local_full(priority, run)
         } else {
