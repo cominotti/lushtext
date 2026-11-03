@@ -70,7 +70,7 @@ time.
   resize), the view's on-screen validation (108, `GTK_PRIORITY_RESIZE - 2`) and
   0 (input), so a completion never delays a frame or an event.
 - **One per dispatch.** GLib dispatches every ready source of the top priority in
-  one iteration (A69). Per-completion idles at 124 would run eight ready
+  one iteration (A81). Per-completion idles at 124 would run eight ready
   completions back to back, with no frame or event between them. One source
   returning `Continue` puts the main loop's priority check between every two
   completions.
@@ -84,7 +84,7 @@ time.
   to 200 — validation, C6's paced slices, composition stages, restore turns, the
   `ViewportSliceBin` idles. D6 adds the bound. Each dispatch is one callback
   that already ran in one dispatch before this change.
-- **Co-dispatch at 124 (A69).** D4's admission drains and permit releases are
+- **Co-dispatch at 124 (A81).** D4's admission drains and permit releases are
   sources at the same priority, so GLib dispatches them in the same iteration as
   the completion source: one iteration can run a completion, a drain and a
   release back to back. The lane measures that combined dispatch (D5): the
@@ -145,7 +145,7 @@ Every case also records each completion as a `task_completion` span (the
 `responsiveness-probes` build) and each drain and release as a `task_handoff`
 span. The report's "Task completions against B_settle" table gives the worst
 completion, the worst hand-off, and the worst combined dispatch (the watchdog's
-lateness over an iteration overlapping either, A69), with the verdict "every
+lateness over an iteration overlapping either, A81), with the verdict "every
 hand-off dispatch within B_SETTLE_US" or the runs over it.
 
 This is the measured save case the coordinator required (condition a). The
@@ -248,7 +248,7 @@ failures. Both are fixed in this change, under the pre-existing-blockers rule.
 - **A composition stage shared its dispatch with a session-restore turn**
   (found by the sanity interleave after merging C3, against `main` ebdd6aa1).
   GLib dispatches every ready source of the top priority in one iteration
-  (A69). The session load's completion now arrives before stage P, so the
+  (A81). The session load's completion now arrives before stage P, so the
   first restore turn (a `G_PRIORITY_DEFAULT_IDLE` idle) was ready in P's
   iteration. Present plus two page activations took 16.5–26 ms in 4 of 9
   `session/restore-3-small` runs, against at most 11.8 ms on `main`. The

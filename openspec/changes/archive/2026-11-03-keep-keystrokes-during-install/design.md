@@ -108,7 +108,7 @@ The dispatch runs one above the tasks crate's completion priority
 (`gtk_lush_tasks::completion_priority() - 1`, 123; `spawn-completion-priority`), so it is not held
 back behind a document's validation batches (`GDK_PRIORITY_REDRAW + 5`, ledger A70). It was 124,
 the completion priority itself, until the landing merge measured the alternative: GLib dispatches
-every ready source of the top priority in one iteration (A69), so at 124 a replay and a task
+every ready source of the top priority in one iteration (A81), so at 124 a replay and a task
 completion or a load/save hand-off ready together run back to back and their bounds add. The
 replay's worst measured dispatch is 13.6 ms (a replay that enters Protected View, cold, D8) and a
 completion's 4.8 ms (`spawn-completion-priority`'s verdict): together past `B_SETTLE` (16 ms). The

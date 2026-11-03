@@ -296,7 +296,13 @@ button press since it was mapped it moves nothing: a screen-reader user
 tabbing through the chrome while a session restores keeps their place
 (`investigate-first-keys-without-frames`). The handoff happens before the
 document's inline alerts are announced, so the focus change never cuts off a
-one-time announcement such as Protected View's "View-Only: Very Long Lines". `make accessibility-smoke` waits on
+one-time announcement such as Protected View's "View-Only: Very Long Lines":
+while the handoff is pending, or the restore or activation that will request
+it is still running, the selected document's alert is held and announced when
+it finishes (`defer-background-tab-layout`; the order used to hold only by
+timing). A background tab's editor shows no text to assistive technology until
+its tab is first shown (its view holds an empty placeholder); when it is
+shown, GTK reports the document's text as inserted, once. `make accessibility-smoke` waits on
 `accessibility-settled`, which includes the `window-composition` blocker.
 
 ### Protected View and the Line Inspector

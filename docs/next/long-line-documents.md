@@ -27,7 +27,7 @@ that freezes it is **paragraph length**, not file size.
 | C5 | `explore-editing-long-paragraphs` (rescoped 2026-10-30 under the hybrid policy; implemented 2026-10-31) | Lower the per-keystroke cost of typing in long **editable** paragraphs: release the retired `GtkSourceMap` that still laid out every edited paragraph (a pre-existing defect: 7.5 ms per key at 50k; A52), show paragraphs longer than `L_wrap_edit` (8,192) unwrapped by a no-wrap tag (its first character decides, A53) while the rest keep wrapping, answer the input method's surrounding-text request with a bounded window (GNOME's input path asked for the whole paragraph's word boundaries on every key; A54), make the keystroke sweep a maintained lane group, and record the floor (one whole-paragraph Pango layout in GTK's commit handler). Editing above `L_protect_edit` (50,000, C2's Protected View) is deferred. | Typing within B_interact up to `L_wrap_edit` wrapped and further unwrapped, on the plain and GNOME input paths, the rest a recorded toolkit-floor exception. **Met up to 20,000 characters** on both paths (`main`: about 12,000 plain, 5,000 on GNOME's path); 50,000 at the budget (7.7–11.1 ms) and 100,000 at 16–20 ms are the recorded exception ("C5" below), accepted by the maintainer ("editable up to ~50k", 2026-10-30); since C2 merged, 100,000 is in Protected View. |
 | C6 | `bound-post-open-settle` (proposed 2026-10-30) | Bound every dispatch from the activation turn until the opened document is settled, including the validation of dense documents of short lines that stay editable (handed over by C2's revision, open question 11). The proposal's attribution, exploratory on `main` b7f56d45: small `.txt` post-open dispatches are already ≤ 14.9 ms. The over-budget sources are the HTML language-definition parse in the activation dispatch (36–40 ms; the "first highlight"), the highlight attach after a sliced install (71 ms at 5 MB), GtkSourceView's background analysis slices (40–47 ms), and the validation of dense 710-character lines (21.6 ms). Every LushText projection costs < 0.3 ms. | Every post-open dispatch until `document-settled` ≤ B_settle and every input during settle dispatched within B_interact, interleaved with `main`, 4 profiles × 7 repetitions (design D8). Every wrap toggle, zoom step and font change on a dense document is paced the same way. Input-to-frame is reported, not gated, against the documented double-buffered lane floor. Coordinator decisions of 2026-10-30 (the maintainer may override): budgets are not relaxed, so large HTML above `S_BG_HIGHLIGHT` loses highlighting through `DocumentScale`; a language parse that cannot leave the GTK thread is deferred to an input-quiet idle and recorded as a toolkit-floor exception with an upstream report. Does not block C1–C4. |
 | SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80), aging after eight completions or 16 ms (review); `ViewportSliceBin`'s pending-request evidence covers the re-slice (review, pre-existing); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
-| EV | `defer-background-tab-layout` (queued 2026-11-02, coordinator decision; **next after C3**, it touches C3's install files) | The real cause of `eviction/reselect`'s 6–11 s batches, attributed in SC (perf on `main` cdfff201: 69.5 % of the application's CPU in `incremental_validate_callback`): (1) the transient load permit (`8 × 8 MiB + 1 MiB` = 65 MiB of the 256 MiB budget, so three loads at a time) is held through an installation that C6 paces below the validation idle, so the next document is not even read until every validating view has laid out its whole buffer; (2) **background tabs validate fully**: restoring many large files spends the CPU laying out tabs nobody is looking at (A80: a view on a hidden `GtkStack` page validates its whole buffer) | The selected document of a restore of ten 8 MiB documents is usable within the open budget, background documents do not delay it, and no background tab lays out its whole buffer before it is shown (or the cost is recorded against a toolkit floor) |
+| EV | `defer-background-tab-layout` (queued 2026-11-02, coordinator decision; **next after C3**, it touches C3's install files) | The real cause of `eviction/reselect`'s 6–11 s batches, attributed in SC (perf on `main` cdfff201: 69.5 % of the application's CPU in `incremental_validate_callback`): (1) the transient load permit (`8 × 8 MiB + 1 MiB` = 65 MiB of the 256 MiB budget, so three loads at a time) is held through an installation that C6 paces below the validation idle, so the next document is not even read until every validating view has laid out its whole buffer; (2) **background tabs validate fully**: restoring many large files spends the CPU laying out tabs nobody is looking at (A80: a view on a hidden `GtkStack` page validates its whole buffer) | The selected document of a restore of ten 8 MiB documents is usable within the open budget, background documents do not delay it, and no background tab lays out its whole buffer before it is shown (or the cost is recorded against a toolkit floor). **Implemented 2026-11-03** (PR, not merged): a hidden tab's view shows an empty placeholder buffer (A82, A83), background installs wait one priority step below the visible tab's, the load permit keeps only the decoded body after the read; `eviction/reselect` completes (main: 20 s cap) with every background document laid out never and installed within ~0.5 s of the visible one; see "EV" below |
 | PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
 
 C1–C4 are drafted; none may be **implemented** before this record holds the
@@ -1666,7 +1666,7 @@ overlapping one (`replay_combined_max_us`).
 
 **Settle priority: 123, one above the completions.** The hard-coded 124 became
 a derivation from the tasks crate. At the completion priority itself a replay
-and a completion ready together run in one GLib iteration (A69), and their
+and a completion ready together run in one GLib iteration (A81), and their
 bounds add past `B_SETTLE`: a replay that enters Protected View took up to
 13.6 ms (D8), a completion up to 4.8 ms (PR #79's verdict). So the replay runs
 at `completion_priority() - 1`, still above line validation (A70), and its
@@ -2641,7 +2641,7 @@ source waits for the whole backlog. SC fixes that class:
 - A restore-priority widget test relied on an idle gap.
 - After merging C3, a composition stage could share its dispatch with the
   first session-restore turn: the session load now completes before stage P,
-  and GLib runs every ready source of the top priority in one iteration (A69).
+  and GLib runs every ready source of the top priority in one iteration (A81).
   The result was 16.5–26 ms in 4 of 9 `session/restore-3-small` runs. The
   composition stages now run one step above `G_PRIORITY_DEFAULT_IDLE`. The
   language catalog's one-off build, which shared stage W's dispatch on `main`
@@ -2770,7 +2770,7 @@ in this change, failing first.
   records every completion as a `task_completion` span (the
   `completion-observer` feature) and every admission drain and permit release
   as a `task_handoff` span. Drains and releases at 124 co-dispatch with the
-  completion source (A69), so the report also takes the watchdog's worst
+  completion source (A81), so the report also takes the watchdog's worst
   lateness over any iteration overlapping either: the combined dispatch.
 
 **Re-verdict (interleaved, `main` ebdd6aa1 against the reviewed branch,
@@ -2797,6 +2797,86 @@ table is `RV-compare.md`.
   18.1 ms. No completion or combined dispatch in it exceeds 4.8 ms, so the
   stall is not a hand-off.
 
+## EV `defer-background-tab-layout` (implementation record, 2026-11-03)
+
+OpenSpec change `openspec/changes/defer-background-tab-layout/`. Artifacts in
+`.claude/handoffs/ev/`.
+
+**Probes first.** A82: a `GtkSourceView` on an `AdwTabView` page that was never
+selected is neither mapped nor realized, yet validates everything loaded into
+its buffer while hidden (149 iterations for 16,384 lines), because its scrolled
+window creates its layout; so selecting fewer tabs cannot help. A83:
+`gtk_text_view_set_buffer` to an empty buffer stops that at once and leaves the
+document buffer untouched; a reattach re-lays out from nothing and comes back
+at the buffer start, and a scroll queued right after it lands at the wrong line
+(100 instead of 1,024) unless re-asserted on each `upper` change. A81 (new,
+general): GLib runs every ready source of the top priority in one iteration,
+so N validating views make an iteration N batches long. The A69 citations for
+co-dispatch (SC, held typing, this record, four code comments) now cite A81.
+
+**What was built.** Each editor view holds a placeholder from construction
+until its tab is first shown (or selected in a window still composing), and
+again once seen laying out while hidden (`upper` changes while unmapped);
+`buffer()` is always the document buffer. A detached view keeps its top line
+and is held there after a reattach until laid out or the user gives input.
+Paced installs and replacements into background tabs wait at
+`G_PRIORITY_DEFAULT_IDLE + 1`, below the visible tab's; after its worker read a
+load's permit keeps only its decoded body and frees its reading slot.
+
+**Found while verifying (fixed, failing-first):** a widget test edited through
+the view's buffer; the "focus handoff before the alert announcement" order was
+incidental (a protected document's alert could be announced first; the
+selected editor's announcement now waits while the opened document's focus
+handoff is pending: 2 of 5 failures under ten spinners without, 0 of 5 with);
+Protected View's primary-selection bookkeeping across `set_buffer` (a
+`Gtk-CRITICAL`); and a first verdict's design (background slices at the
+completion priority) starved the visible view's layout
+(`recovery/protected-32mib` scroll input-to-frame 109–145 ms in 5 of 5 against
+`main`'s 18–40 ms) and was replaced.
+
+**Verdict (interleaved, `main` f79e7a5d against the branch, 2026-11-03).**
+Release measurement builds through `scripts/measure.sh`, 3 + 2 repetitions per
+side, with the load as it was: 1.1–7.2 over the runs, and 7.4–9.5 for the
+later focused reruns (a game was running on the host). Comparison tables:
+`V-compare.md` (first design) and `V2-compare.md` (final design).
+
+- **`eviction/reselect`**: `main` hits the 20 s cap in every repetition; the
+  branch completes every one. Open plus background 6.6–7.0 s, dominated by the
+  visible document's own paced install (C6; 5.8 s); the nine background
+  documents start installing within 0.11 s and finish 0.5 s after it, worst
+  background dispatch 6.7 ms. `reselect` (the evicted first tab reloads while
+  shown) 6.1 s, worst 4.2–7.8 ms. The new `switch-hidden` phase (a tab never
+  shown, then scrolled) 0.85 s, worst dispatch 5.3–8.8 ms, input-to-frame max
+  15.3–21.2 ms. The worst dispatch of the open phase is the activation turn of
+  four opens (14.5–15.7 ms), the same structure as on `main`.
+- **No regression beyond one reference frame** in any other phase's median
+  stall or input-to-frame maximum, except two items re-measured: `install/100000000`
+  `mid-install` (51–66 ms on the branch in 5 of 5 repetitions of the second
+  verdict, a 37 ms gap with no LushText span inside the activation dispatch
+  after its second open; not reproduced in 9 further interleaved branch runs,
+  14–21 ms against `main`'s 13–16 ms) and a one-off `recovery/protected-32mib`
+  wheel that waited 45 frames with the application idle (1 of 10 runs; 4 of 4
+  interleaved reruns 16–46 ms against `main`'s 16–30 ms). Both are recorded,
+  not explained.
+- **`at` variant of `eviction/reselect`**: `main` hits the cap; the branch
+  completes, worst `reselect` dispatch 20.7–22.1 ms and `background` 21–25 ms
+  with the AT-SPI listener attached (the reattach's whole-content text change,
+  A83; on `main` the same payload was sent in slices to hidden views).
+- **The C6 floors** (`protected/*` `inspect`, `font-change`, `zoom-step`;
+  `session/restore-3` `inspect`) are over budget on both sides alike.
+
+**The `steady-populated` shift SC left (attributed).** The worst dispatch at
+the start of `type-during-settle` is the populated window's first editor frame
+on both sides (11.4–12.8 ms unloaded). SC delivers the load's completion
+earlier, so readiness, where the phase starts, now comes before that frame (4
+of 5 repetitions, against 1 of 5 on `main`). perf on `main`
+(`perf-populated/`, the 16.8 ms frame): `gtk_widget_query_size_for_orientation`
+22 % (label measures through Pango, FreeType autofit glyph loading 20 %), CSS
+node validation 21 %, cairo fills 12 % (the headless cairo renderer): toolkit
+work of the first frame of a window showing 300 sidebar rows and the
+properties panel. Recorded as a toolkit floor of that profile; no new or longer
+dispatch.
+
 ## Axioms each change cites
 
 | Change | Axioms |
@@ -2808,7 +2888,8 @@ table is `RV-compare.md`.
 | C4c `shorten-window-content-fill-in` | A51 (a realize frame runs on the unmapped window, is never presented, and paces the first visible frame one `FRAME_INTERVAL` later), A46–A50 unchanged |
 | C4b `first-frame-window-shell` | A46 (one-time first realize; small in a minimal window), A47 (`present` measures nothing; invisible subtrees skipped), A48 (a reveal is measured in the next frame), A49 (concealed vertical revealers measure a visible child), A50 (breakpoint before map vs the snapshot swap), A21 (`window-removed` teardown) |
 | C5 `explore-editing-long-paragraphs` | A23–A28, A30, A32, A37, A42, A43, A45; added by C5: A52 (an unparented, alive text view keeps laying out its buffer), A53 (a paragraph wraps by its first character's tags), A54 (the view answers surrounding text from the paragraph start; its handler matched by signal and data; the Wayland module asks on every commit) |
-| SC `spawn-completion-priority` | A31, A69, A70; added by SC: A80 (a validating text view, on screen or on a hidden stack page, holds every lower-priority idle back until its whole buffer is laid out; a source at `GDK_PRIORITY_REDRAW + 4` runs before the first incremental batch) |
+| SC `spawn-completion-priority` | A31, A70, A81 (equal-priority co-dispatch; cited as A69, the context-engine row, until EV added A81); added by SC: A80 (a validating text view, on screen or on a hidden stack page, holds every lower-priority idle back until its whole buffer is laid out; a source at `GDK_PRIORITY_REDRAW + 4` runs before the first incremental batch) |
+| EV `defer-background-tab-layout` | A31, A70, A80; added by EV: A81 (every ready source of the top priority runs in one iteration, so N validating views make an iteration N batches long), A82 (a never-selected `AdwTabView` page's source view validates its buffer while hidden: the scroller creates its layout), A83 (an empty buffer stops it at once and leaves the document untouched; a reattach re-lays out from nothing, back at the start; a scroll queued right after it lands elsewhere, re-scrolling on each `upper` change keeps it) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 
 Two probes corrected the designs that cite them, and C1/C2 must read the
