@@ -108,35 +108,64 @@ mod typing_threshold {
 }
 
 /// The total size up to which a language is highlighted through the chunked
-/// install (`chunked-highlight-attach`, C6b, coordinator decisions of
-/// 2026-11-04 after the independent review), or `None` for a language that
-/// keeps its C6 gate. Each cap is the smaller of two powers of two, rounded
-/// down, both measured through `scripts/measure.sh` under load (ledger A84):
+/// install (`chunked-highlight-attach`, C6b), or `None` for a language that
+/// keeps its C6 gate. **No shipped language has one** (re-review F1,
+/// 2026-11-04).
 ///
-/// - **Flipping keys.** A key that changes the syntax context of the rest of
-///   the document, typed at its start after the chunked install (rust `"`,
-///   python3 `"""`, markdown a code fence, c `/*`, xml `<!--`), then its
-///   closer, must keep every dispatch within `B_SETTLE_US`, on both fixture
-///   families (C6's block-structured documents and the lane's blank-line-free
-///   ones), and ordinary keys within `B_INTERACT_US`. Markdown and c pass at
-///   1 MiB (worst 2.9 and 3.3 ms); rust passes at 128 KiB (fails at 256 KiB:
-///   16.6–23.3 ms), python3 fails at 64 KiB (18.5–18.7 ms, C6 fixture), xml
-///   at 256 KiB (37.2–38.4 ms, blank-line-free).
-/// - **Install time.** A chunked install runs at the engine's analysis speed
-///   and the document is incomplete meanwhile; the target is about 0.5 s:
-///   markdown 0.61–0.65 s per MiB, c 0.82 s, so 512 KiB for both.
+/// A cap must keep, at the document's start and at its middle, every
+/// dispatch of a key that changes the syntax context of the rest of the
+/// document (and of its closer) within `B_SETTLE_US`, and every ordinary key
+/// within `B_INTERACT_US`, on a worst-case fixture with no closer after the
+/// cursor (`generate-long-line-fixtures.py --flavor no-closers`), through
+/// `scripts/measure.sh` on a quiet host (ledger A84). It is the largest power
+/// of two that passes; a language whose cap does not exceed its C6 gate keeps
+/// the gate. Measured (load 3.3–4.4):
 ///
-/// A language whose cap would not exceed its C6 gate keeps the gate (rust
-/// 128 KiB against 184 KiB, xml 128 KiB against 132 KiB, python3 none).
+/// - **c** passes at 64 KiB and at its 84 KiB gate (closing `/*` at the start
+///   11.5 ms) and fails at 128 KiB (19.4–20.2 ms): no gain.
+/// - **markdown** passes at 128 KiB and fails at 256 KiB on an HTML comment:
+///   ordinary keys typed inside an open `<!--` at the start take
+///   11.7–11.9 ms (a code fence passes at 512 KiB, 7.9 ms). 128 KiB is below
+///   its 320 KiB gate: no gain.
+/// - rust (128 KiB against 184 KiB), xml (128 KiB against 132 KiB) and
+///   python3 (none) failed already on fixtures with closers.
+///
+/// The mechanism stays for C6c, whose runtime downgrade would bound the
+/// flipping keys that cap every language here. Unit tests, Kani and the
+/// widget tests (`test-utils`) prove it under [`MODEL_MARKDOWN_CAP`]; no
+/// release, Meson, Flatpak, Snap or measurement build enables either.
 ///
 /// Kind: cap. Rounding: down, to a power of two.
 #[must_use]
 pub const fn chunked_threshold(language: SyntaxLanguage) -> Option<u64> {
-    match language {
-        SyntaxLanguage::Markdown | SyntaxLanguage::C => Some(512 * 1024),
+    chunked_threshold_with(language, MARKDOWN_CHUNKED_CAP)
+}
+
+/// [`chunked_threshold`] with Markdown given `markdown_cap`, the one
+/// language the model chunks; every other language, and a `None` cap, keep
+/// their C6 gates.
+#[must_use]
+pub const fn chunked_threshold_with(
+    language: SyntaxLanguage,
+    markdown_cap: Option<u64>,
+) -> Option<u64> {
+    match (language, markdown_cap) {
+        (SyntaxLanguage::Markdown, Some(cap)) => Some(cap),
         _ => None,
     }
 }
+
+/// The Markdown cap of the model builds (unit tests, Kani, `test-utils`),
+/// which drive the chunked install a language with a cap takes.
+///
+/// Kind: model parameter. Rounding: a power of two above Markdown's
+/// attach-after-install threshold.
+pub const MODEL_MARKDOWN_CAP: u64 = 512 * 1024;
+
+#[cfg(any(test, kani, feature = "test-utils"))]
+const MARKDOWN_CHUNKED_CAP: Option<u64> = Some(MODEL_MARKDOWN_CAP);
+#[cfg(not(any(test, kani, feature = "test-utils")))]
+const MARKDOWN_CHUNKED_CAP: Option<u64> = None;
 
 const fn min_u64(a: u64, b: u64) -> u64 {
     if a < b { a } else { b }
@@ -1016,7 +1045,15 @@ mod tests {
             .into_iter()
             .filter(|language| language.chunk_highlighted())
             .collect();
-        assert_eq!(chunked, [SyntaxLanguage::Markdown, SyntaxLanguage::C]);
+        // The model builds chunk Markdown only; a shipped build chunks none.
+        assert_eq!(chunked, [SyntaxLanguage::Markdown]);
+        for language in SyntaxLanguage::ALL {
+            assert_eq!(chunked_threshold_with(language, None), None, "{language:?}");
+        }
+        assert_eq!(
+            chunked_threshold(SyntaxLanguage::Markdown),
+            Some(MODEL_MARKDOWN_CAP)
+        );
         for language in chunked {
             let cap = chunked_threshold(language).expect("chunked");
             assert!(cap.is_power_of_two() && cap <= S_SYNTAX);
@@ -1033,6 +1070,7 @@ mod tests {
             );
         }
         for language in [
+            SyntaxLanguage::C,
             SyntaxLanguage::Rust,
             SyntaxLanguage::Python,
             SyntaxLanguage::Xml,
