@@ -503,3 +503,119 @@ pub fn paced_chunked_install(
         attach_ms,
     }
 }
+
+/// The keys that flip the syntax context of everything after them, per
+/// language: the opener, then the closer typed right after it
+/// (`chunked-highlight-attach` review M1). Each is typed one character at a
+/// time at the start of the document.
+#[must_use]
+pub fn flipping_keys(language_id: &str) -> Option<(&'static str, &'static str)> {
+    match language_id {
+        "rust" | "sh" | "yaml" => Some(("\"", "\"")),
+        "python3" | "python" => Some(("\"\"\"", "\"\"\"")),
+        "markdown" => Some(("```\n", "```\n")),
+        "c" | "js" | "typescript" | "css" => Some(("/*", "*/")),
+        "xml" => Some(("<!--", "-->")),
+        _ => None,
+    }
+}
+
+/// What typing one key sequence cost.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TypedRun {
+    /// The longest main-loop iteration from the first key until quiet, µs.
+    pub worst_us: u128,
+    /// Iterations over `B_SETTLE_US`.
+    pub over_settle: usize,
+    /// Milliseconds from the first key until quiet.
+    pub quiet_ms: u128,
+    /// The longest time from a key's insert to the next painted frame, µs:
+    /// for the sequence's own keys and for ordinary keys typed while the
+    /// analysis it caused runs.
+    pub echo_max_us: u128,
+}
+
+/// Type `keys` one character at a time at `offset` of `fixture`'s buffer,
+/// and while the analysis runs type `ordinary` plain keys one reference
+/// frame apart right after them; time every iteration until quiet.
+#[must_use]
+pub fn type_and_watch(
+    fixture: &crate::probes::a69::HighlightFixture,
+    offset: i32,
+    keys: &str,
+    ordinary: u32,
+) -> TypedRun {
+    use std::time::Duration;
+    let buffer = fixture.buffer();
+    let context = glib::MainContext::default();
+    let quiet = Duration::from_millis(300);
+    let started = Instant::now();
+    let mut run = TypedRun::default();
+    let mut cursor = offset;
+    let mut last_activity = Instant::now();
+    let mut pending: Vec<char> = keys.chars().collect();
+    pending.reverse();
+    let mut plain_left = ordinary;
+    let mut echo_from: Option<(Instant, u32)> = None;
+    let mut last_key = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline {
+        let typing_due = last_key.elapsed() >= Duration::from_millis(16) && echo_from.is_none();
+        if typing_due
+            && let Some(key) = pending.pop().or_else(|| {
+                (plain_left > 0).then(|| {
+                    plain_left -= 1;
+                    'x'
+                })
+            })
+        {
+            let mut iter = buffer.iter_at_offset(cursor);
+            let mut text = [0u8; 4];
+            buffer.insert(&mut iter, key.encode_utf8(&mut text));
+            cursor += 1;
+            last_key = Instant::now();
+            echo_from = Some((Instant::now(), fixture.frames_painted()));
+            last_activity = Instant::now();
+            continue;
+        }
+        if pending.is_empty()
+            && plain_left == 0
+            && echo_from.is_none()
+            && last_activity.elapsed() >= quiet
+        {
+            break;
+        }
+        let iteration = Instant::now();
+        if !context.iteration(false) {
+            std::thread::sleep(Duration::from_micros(200));
+            continue;
+        }
+        let micros = iteration.elapsed().as_micros();
+        run.worst_us = run.worst_us.max(micros);
+        if micros > crate::probes::a69::B_SETTLE_US {
+            run.over_settle += 1;
+        }
+        if micros >= 1_000 {
+            last_activity = Instant::now();
+        }
+        if let Some((since, _)) = echo_from
+            && since.elapsed() >= Duration::from_secs(2)
+        {
+            run.echo_max_us = run.echo_max_us.max(since.elapsed().as_micros());
+            echo_from = None;
+        }
+        if let Some((since, frames)) = echo_from
+            && fixture.frames_painted() != frames
+        {
+            run.echo_max_us = run.echo_max_us.max(since.elapsed().as_micros());
+            echo_from = None;
+        }
+    }
+    run.quiet_ms = started
+        .elapsed()
+        .as_millis()
+        .saturating_sub(quiet.as_millis());
+    run
+}

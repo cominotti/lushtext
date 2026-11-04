@@ -107,7 +107,14 @@ pages); the A70 sample's `--derive-v-slice` mode bisects `V_SLICE`, and the A69
 sample's `--derive-s-bg-highlight` mode bisects `S_BG_HIGHLIGHT` per language.
 A84 (the `highlight-updated` coverage test) followed with LushText's chunked
 highlighted install (`chunked-highlight-attach`), its sample's
-`--chunked-install` mode measuring the paced install per language.
+`--chunked-install` mode measuring the paced install per language and its
+`--typing-limit` and `--flip-limit` modes the per-key cost of ordinary and
+context-flipping keys. Every sample prints its usage on `--help`/`-h` and
+refuses an unknown argument before GTK starts; a sample with its own modes
+declares them in a `SampleFlags` and calls `support::guard(&FLAGS)` first in
+`main` (`make check-gtk-axioms` checks it). Never run a sample without
+`--check` outside a private headless session: it opens its window on the
+current desktop.
 A59–A66 (a capture-phase press claim,
 a non-editable view's input method, a stopped `move-cursor` under caret
 browsing, drag and drop, key-binding pre-emption, a tail inserted hidden, and

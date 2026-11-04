@@ -490,6 +490,12 @@ impl HighlightFixture {
         &self.view.view
     }
 
+    /// Frames painted by the fixture's view so far.
+    #[must_use]
+    pub fn frames_painted(&self) -> u32 {
+        self.frames.count()
+    }
+
     /// Drive the main loop until 300 ms pass with no engine dispatch and no
     /// iteration of 1 ms or more, classifying every iteration. The first
     /// engine dispatch after `first_update_armed` is set (an attach, an edit)
