@@ -2,12 +2,18 @@
 
 ### Requirement: The lane measures highlighted documents at the syntax cutoff
 The lane SHALL run a `highlight` group: one synthetic short-line document per
-language at 1 MiB (`S_SYNTAX`), for the five chunk-highlighted languages
-(markdown, rust, c, python3, xml) and for the seven that keep their gates
-(html, json, js, typescript, css, sh, yaml), each with the post-open settle and typing phases of the other
-post-open cases. The fixture generator SHALL produce those documents
+language at 512 KiB, the chunked cap, for the two chunk-highlighted languages
+(markdown, c) and for the ten that keep their gates (rust, python3, xml, html,
+json, js, typescript, css, sh, yaml), each with the post-open settle and
+typing phases of the other post-open cases. The C6 verdict SHALL report, not
+gate, an activation-to-laid-out regression of a case marked `chunked`, and
+list it apart from the regressions. The fixture generator SHALL produce those documents
 deterministically from a seed (`short-language`), every line shorter than
 `L_SYNTAX`, with the file extension GtkSourceView guesses the language from.
+
+#### Scenario: A chunked case's later layout is reported
+- **WHEN** a combined, side-labelled run finds a chunked case laid out more than one reference frame later than the baseline
+- **THEN** the verdict lists it under the exempt regressions and still gates every other clause
 
 #### Scenario: The highlight group runs
 - **WHEN** the lane runs the `highlight/*` cases

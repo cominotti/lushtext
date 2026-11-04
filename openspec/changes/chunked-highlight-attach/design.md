@@ -41,7 +41,7 @@ replays it.
 
 ## Decisions
 
-### D1. The chunked languages are gated by `S_SYNTAX`, not by the open limit (coordinator, 2026-11-04)
+### D1. The chunked languages are capped by install time, not by the open limit (coordinator, 2026-11-04; cap revised by D10)
 
 The queued plan said "any size within the other `DocumentScale` limits". The
 chunked install is bounded per dispatch at any size, but **not in time**: it
@@ -54,7 +54,10 @@ is incomplete (the end, search, Save), the caret is hidden and typed keys are
 held. At 50 MB that would be half a minute to two minutes.
 
 User experience first: a document must become complete promptly; highlighting
-is the feature that yields. The bound is the scale's existing total-size
+is the feature that yields. **Revised after the review (D10):** each chunked
+language is capped at the power of two whose install takes about 0.5 s, and no
+higher than its flipping-key limit; the text below records the first bound,
+`S_SYNTAX`, which the first PR revision used. The bound was the scale's existing total-size
 syntax cutoff `S_SYNTAX` (1 MiB, C1's, GNOME Text Editor's figure), which the
 chunked languages now share with plain text: about a second at most (markdown
 0.6 s, python3 1.2 s at 1 MiB), every frame of it showing text. `SyntaxLanguage::syntax_size_threshold`
@@ -136,7 +139,13 @@ remainder. So the chunked install removes the language **before** the clear
 of the old text (removing one costs nothing, A27); a cancelled or superseded
 chunked install removes it before its cancelled clear; and a sliced clear-only
 replacement (memory eviction) removes it before clearing, its reload attaching
-it again.
+it again. A whole-buffer replacement takes the language off at its **first
+clear turn**, not when it begins (review S3): a replacement that goes stale
+before its first turn then leaves the old text's language and analysis exactly
+as they were, instead of re-attaching the language to the whole old body at
+its terminal. A chunked body also makes a mirror-back that used to be one
+direct `set_text` (a 100 KiB file, say) a visible clear-and-refill of about
+0.1 s (review N3).
 
 ### D7. A background tab's install does not wait to be shown
 
@@ -147,7 +156,14 @@ by a chunked install (`request_language_attach_for_install`) arms at once on
 an unmapped editor; it still waits for input-quiet or the deadline at
 `G_PRIORITY_LOW`. It also ignores the session scale, which the incoming body's
 replaces only at publish (a reload of a document whose previous session was
-gated).
+gated). Whether a stage is the install's is derived from ownership, not kept
+as a sticky flag (review S1, S2): any `request_language_attach` while a
+chunked install owns the buffer (an identity change: rename, Save As) arms the
+stage the install's way, and the flag is cleared when the stage runs or is
+withdrawn. Without it, a rename while a background install was parked on its
+attach sent the stage back to waiting for a map that might never come, with the
+load permit held (`test_a_rename_during_a_background_chunked_install_*`,
+failing-first).
 
 ### D8. Publish toggles nothing
 
@@ -166,46 +182,88 @@ the seven gated ones at 1 MiB), the five construction profiles of `baseline/smal
 fill-in), and C6's `total-size/*` cases. Per-dispatch stages are gated against
 `B_SETTLE_US`/`B_INTERACT_US`; activation to laid out on the highlight group
 is reported, not gated, because the branch does strictly more work there
-(it highlights what `main` does not). The load is recorded per run and the
-host is not required to be idle.
+(it highlights what `main` does not). The exemption is encoded in the lane
+(review S4): `c6_verdict` lists an activation-to-laid-out regression of a case
+whose `attrs.chunked` is set under `exempt_regressions`, so a combined,
+side-labelled run evaluates every other regression clause and does not
+contradict this record. The highlight group also runs under the `at` variant
+(an assistive technology listening, so hidden views stay attached). The load
+is recorded per run and the host is not required to be idle.
 
-### D10. Which languages: the five whose typing stays free on both fixture families
+### D10. Which languages, and their caps (review M1 and S6)
 
-The plan listed ten languages because C6 measured no per-key cost for them at
-their attach thresholds, on its block-structured fixtures (blank lines between
-blocks). The first verdict run of C6b, on the lane's new `short-language`
-fixtures (one statement per line, no blank lines), measured keys of 31–39 ms
-for js, typescript, css, sh and yaml at 1 MiB with the language attached,
-against 1.4–8.5 ms for the other five. The A84 sample's `--typing-limit`
-(seven keys at the start, the middle and inside six lines near the top, after
-the chunked install; every dispatch within `B_INTERACT_US`; 2–3 repetitions,
-load 1.7–8.3) reproduced it on the lane's fixtures and located the cause: the
-same shell document with a blank line every four lines types in 1.2–4.8 ms
-per key, without them in 40–55 ms; the context engine re-analyses past an edit
-until a blank line. Limits on blank-line-free documents: markdown, rust, c,
-python3 and xml pass at 1 MiB (worst key 2.2, 5.9, 4.6, 3.2 and 7.3 ms); css
-and sh fail at 8 KiB, yaml at 16 KiB, js and typescript already at 4 KiB.
+Three measurements decide, each per language, with `scripts/measure.sh` under
+load (ledger A84):
 
-So only markdown, rust, c, python3 and xml are chunk-highlighted
-(`SyntaxLanguage::chunk_highlighted`). The other five keep their C6 gates.
-Those gates are themselves above the blank-line-free typing limits (js 18 KiB,
-typescript 10.5 KiB, css 37 KiB, sh 39 KiB, yaml 144 KiB): a pre-existing
-budget miss on `main`, reachable only with blank-line-free content. Lowering
-them to the measured limits would remove highlighting from almost every
-JavaScript and TypeScript file, which user experience first does not justify
-without the maintainer; it is recorded and queued (record, "C6b").
+1. **Ordinary keys** (`--typing-limit`): seven keys at the start, the middle
+   and inside six lines near the top, after the chunked install, every
+   dispatch within `B_INTERACT_US`, on C6's block-structured fixtures and the
+   lane's blank-line-free `short-language` ones. On blank-line-free documents
+   the engines of js, typescript, css, sh and yaml re-analyse past every key
+   until a blank line (a shell document with a blank line every four lines:
+   1.2–4.8 ms per key; without: 40–55 ms), and fail at 4–16 KiB. Markdown,
+   rust, c, python3 and xml pass at 1 MiB.
+2. **Flipping keys** (`--flip-limit`, review M1): a key that changes the
+   syntax context of the rest of the document typed at its start, then its
+   closer (rust `"`, python3 `"""`, markdown a code fence, c `/*`, xml
+   `<!--`), every dispatch within `B_SETTLE_US`, on both fixture families.
+   Markdown and c pass at 1 MiB (worst 2.9 and 3.3 ms): their engines
+   resynchronise after the flip. Rust passes at 128 KiB (fails at 256 KiB,
+   16.6–23.3 ms), python3 fails at 64 KiB (18.5–18.7 ms), xml at 256 KiB
+   (37.2–38.4 ms).
+3. **Install time** (review S6): the target is a document installed and
+   highlighted within about 0.5 s. Markdown 0.61–0.65 s per MiB and c
+   0.82 s per MiB give 512 KiB each, rounded down to a power of two.
+
+The cap is the smaller power of two of 2 and 3; a language whose cap does not
+exceed its C6 gate keeps the gate (rust 128 KiB against 184 KiB, xml 128 KiB
+against 132 KiB, python3 none). **Markdown and c are chunk-highlighted up to
+512 KiB** (`document_scale::chunked_threshold`); every other language keeps
+its C6 gate. This supersedes D1's `S_SYNTAX` bound.
+
+The other languages' C6 gates are themselves above their blank-line-free
+typing limits (js 18 KiB, typescript 10.5 KiB, css 37 KiB, sh 39 KiB, yaml
+144 KiB), and rust's and python3's are above their flip limits only where
+C6's gate is (they keep it): a pre-existing budget miss on `main`, reachable
+with blank-line-free content or a flipping key. It is queued as **C6c**: gate
+on the longest blank-line-free run, with a carried bound in the edit-time
+watch, plus a runtime downgrade when an edit needs a low-priority worker
+dispatch. This change adds no runtime downgrade.
+
+### D11. Review fixes (2026-11-04)
+
+- **N1:** the chunk decision runs outside the session's `RefCell` borrow; the
+  `HighlightChunks` value is copied out and written back.
+- **N2:** `MAX_SYNTAX_PARAGRAPH_BYTES` names its kind (external bound).
+- **N4:** the redundant waiter wake after an install request is gone.
+- **Liveness** (Kani, `a_chunked_install_finishes_even_without_coverage_or_a_language`):
+  a step model of the chunk gate and the attach stage, where the coverage
+  report may never arrive, the stage may leave no language, and one identity
+  change may re-arm the stage at any step, finishes within
+  `2·chunks + (deadline + 2)·(1 + renames) + 1` steps, provided a pending
+  stage resolves by its deadline (`ATTACH_DEADLINE_US`).
+- **Failing-first against the mechanisms** (S5): forcing the coverage
+  predicate to `false` fails `test_most_chunks_go_in_on_the_engines_coverage_report`;
+  forcing it to `true` fails `test_a_chunk_without_a_coverage_report_waits_once_and_goes_in`;
+  removing the language removal from `begin_load_installation` fails the
+  reload test, and from `retirement::abort_installation` the cancel test.
+- **Samples:** every `gtk-lush-axioms` sample prints its usage and exits on
+  `--help`/`-h`, and refuses an unknown argument, before GTK starts
+  (`classify_sample_args`, unit-tested; `make check-gtk-axioms` checks every
+  flag-reading sample calls `support::guard` first). A review run of
+  `a84 --help` had opened its interactive window on the live desktop.
 
 ## Risks / Trade-offs
 
-- **Install time** (D1): up to about 2.3 s at 1 MiB for TypeScript, with the
-  text appearing chunk by chunk. Bounded by `S_SYNTAX`.
+- **Install time** (D10): up to about 0.4 s at 512 KiB, with the text
+  appearing chunk by chunk; typed keys are held until the install's terminal.
 - **The A67 parse** now also runs during an install, once per language per
   process, still deferred to input-quiet (toolkit-floor exception).
 - **An eviction reload** of a highlighted document may parse its language
   twice when no other buffer holds it (D6 removes it before the clear).
-- **A rename or scale change during a chunked install** re-requests a normal
-  attach, which for a background tab waits for its map again; the install then
-  waits too (bounded by the user showing the tab). Rare, and data-safe.
+- **A rename during a chunked install** reports the tab `Loaded` at once
+  (`set_file_path`, pre-existing, unchanged); saves stay refused by the
+  install's ownership until it ends.
 - **Large pastes** (Non-Goals).
 
 ## Migration Plan
@@ -214,6 +272,6 @@ No persisted state changes. Rollback is a revert.
 
 ## Open Questions
 
-- Whether to raise `S_SYNTAX` for the chunked languages (D1) is the maintainer's.
+- Whether to accept install times above 0.5 s for a higher cap (D10) is the maintainer's.
 - Whether to enforce `B_INTERACT_US` on blank-line-free js, typescript, css,
   sh and yaml (D10), at the cost of their highlighting, is the maintainer's.

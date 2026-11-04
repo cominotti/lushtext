@@ -23,7 +23,8 @@ that freezes it is **paragraph length**, not file size.
 | C4 | `bound-window-construction-dispatch` | Removes every GSettings write from window construction and interaction dispatches (coalescing settings writer, pure split-view restore plan, axioms A38–A41); construction 135–151 → 22–24 ms (fresh keyfile profile) | Window construction within B_settle per dispatch: **not met** (22–26 ms residual of `present` and template; keyfile flush 12.8–17.9 ms); maintainer decisions recorded under "C4" below. |
 | C4b | `first-frame-window-shell` (proposed 2026-10-20, revised after review the same day) | The window built whole in one dispatch with the content the first frame does not need invisible and its breakpoints installed before map, then realized, presented, and revealed in bounded, frame-gated dispatches (axioms A46–A50; content fill-in accepted up to 40 ms) | Every dispatch from `open` until composition complete within B_settle on runs meeting the reference precondition, or the A46 realize floor recorded as not met with an upstream report. **Met (idle verdict 2026-10-29):** every dispatch ≤ 10.7 ms in every profile and repetition (before C4b: 22.5–25.9 ms before the first frame). **Open:** content fill-in 51–61 ms against the accepted 40 ms, a maintainer decision ("C4b" below). **Corrected 2026-10-29 (C4c):** its first-frame figure was an unseen frame on the unmapped window (A51); the real first frame was ≈ 46 ms from the request, no earlier than before C4b, and the honest fill-in 29–39 ms. |
 | C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Met (interleaved verdict 2026-10-29):** largest dispatch 13.2 ms, fill-in 20.4–25.9 ms (median 21.4), first painted frame 30.0–33.2 ms against `main`'s 45.1–47.9 ms ("C4c" below). |
-| C6b | `chunked-highlight-attach` (queued follow-up, maintainer decision 2026-10-31; not implemented in C6) | Attach the language to the **empty** buffer, then install the text in paragraph-aligned chunks of at most 8 KiB, letting each chunk's first context-engine update run before the next: no background analysis slice runs and every dispatch stayed at 7.7–11.9 ms at every size probed (16 KiB chunks already exceed B_settle; ledger A69) | Lifts C6's per-language total-size syntax gate for the ten languages with no per-key cost (markdown, rust, c, python3, js, typescript, yaml, xml, css, sh) to any size within the other `DocumentScale` limits. It **inverts D2's order**: the text appears only after the deferred attach and its A67 parse, so first-frame and fill-in must be re-measured. HTML and JSON **stay gated** by their mid-document per-key re-analysis cost, which chunking does not change. Needs a second, 8 KiB highlight cut inside the `V_SLICE` slice plan. **Implemented 2026-11-04** (branch `chunked-highlight-attach`, not merged): the chunked install (language attached after the first chunk, A84 coverage before each next 8 KiB chunk), for **five** languages, not ten: on blank-line-free documents js, typescript, css, sh and yaml re-analyse past every keystroke (31–41 ms per key), so they keep their C6 gates; the five are gated by `S_SYNTAX` (1 MiB, install-time bound); every dispatch within `B_SETTLE_US` and every key within `B_INTERACT_US` on the interleaved verdict; see "C6b" below. |
+| C6b | `chunked-highlight-attach` (queued follow-up, maintainer decision 2026-10-31; not implemented in C6) | Attach the language to the **empty** buffer, then install the text in paragraph-aligned chunks of at most 8 KiB, letting each chunk's first context-engine update run before the next: no background analysis slice runs and every dispatch stayed at 7.7–11.9 ms at every size probed (16 KiB chunks already exceed B_settle; ledger A69) | Lifts C6's per-language total-size syntax gate for the ten languages with no per-key cost (markdown, rust, c, python3, js, typescript, yaml, xml, css, sh) to any size within the other `DocumentScale` limits. It **inverts D2's order**: the text appears only after the deferred attach and its A67 parse, so first-frame and fill-in must be re-measured. HTML and JSON **stay gated** by their mid-document per-key re-analysis cost, which chunking does not change. Needs a second, 8 KiB highlight cut inside the `V_SLICE` slice plan. **Implemented 2026-11-04** (branch `chunked-highlight-attach`, not merged): the chunked install (language attached after the first chunk, A84 coverage before each next 8 KiB chunk), after the independent review for **markdown and c only, up to 512 KiB** (flipping keys and a ~0.5 s install; rust, python3 and xml re-analyse in worker-sized dispatches after a context-flipping key, and js, typescript, css, sh and yaml past every key on blank-line-free content, so they keep their C6 gates; that pre-existing miss is queued as **C6c**); see "C6b" below. |
+| C6c | (queued 2026-11-04, coordinator; from C6b's review) | Gate highlighting on the **longest blank-line-free run** (one more fold field in the profile pass, a carried conservative bound in the edit-time watch, Kani-proved against recomputation), plus a **runtime downgrade** when an edit's re-analysis needs a `G_PRIORITY_LOW` worker dispatch (detectable through A84's coverage and a low-priority probe). Fixes the pre-existing miss C6b measured: C6's gates for js (18 KiB), typescript (10.5 KiB), css (37 KiB), sh (39 KiB) and yaml (144 KiB) let keys cost 9–41 ms on blank-line-free content, and a context-flipping key costs worker-sized dispatches in rust, python3 and xml above 64–128 KiB | Every key and flipping key within the budgets on both fixture families, without removing highlighting from ordinary files |
 | C5 | `explore-editing-long-paragraphs` (rescoped 2026-10-30 under the hybrid policy; implemented 2026-10-31) | Lower the per-keystroke cost of typing in long **editable** paragraphs: release the retired `GtkSourceMap` that still laid out every edited paragraph (a pre-existing defect: 7.5 ms per key at 50k; A52), show paragraphs longer than `L_wrap_edit` (8,192) unwrapped by a no-wrap tag (its first character decides, A53) while the rest keep wrapping, answer the input method's surrounding-text request with a bounded window (GNOME's input path asked for the whole paragraph's word boundaries on every key; A54), make the keystroke sweep a maintained lane group, and record the floor (one whole-paragraph Pango layout in GTK's commit handler). Editing above `L_protect_edit` (50,000, C2's Protected View) is deferred. | Typing within B_interact up to `L_wrap_edit` wrapped and further unwrapped, on the plain and GNOME input paths, the rest a recorded toolkit-floor exception. **Met up to 20,000 characters** on both paths (`main`: about 12,000 plain, 5,000 on GNOME's path); 50,000 at the budget (7.7–11.1 ms) and 100,000 at 16–20 ms are the recorded exception ("C5" below), accepted by the maintainer ("editable up to ~50k", 2026-10-30); since C2 merged, 100,000 is in Protected View. |
 | C6 | `bound-post-open-settle` (proposed 2026-10-30) | Bound every dispatch from the activation turn until the opened document is settled, including the validation of dense documents of short lines that stay editable (handed over by C2's revision, open question 11). The proposal's attribution, exploratory on `main` b7f56d45: small `.txt` post-open dispatches are already ≤ 14.9 ms. The over-budget sources are the HTML language-definition parse in the activation dispatch (36–40 ms; the "first highlight"), the highlight attach after a sliced install (71 ms at 5 MB), GtkSourceView's background analysis slices (40–47 ms), and the validation of dense 710-character lines (21.6 ms). Every LushText projection costs < 0.3 ms. | Every post-open dispatch until `document-settled` ≤ B_settle and every input during settle dispatched within B_interact, interleaved with `main`, 4 profiles × 7 repetitions (design D8). Every wrap toggle, zoom step and font change on a dense document is paced the same way. Input-to-frame is reported, not gated, against the documented double-buffered lane floor. Coordinator decisions of 2026-10-30 (the maintainer may override): budgets are not relaxed, so large HTML above `S_BG_HIGHLIGHT` loses highlighting through `DocumentScale`; a language parse that cannot leave the GTK thread is deferred to an input-quiet idle and recorded as a toolkit-floor exception with an upstream report. Does not block C1–C4. |
 | SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80), aging after eight completions or 16 ms (review); `ViewportSliceBin`'s pending-request evidence covers the re-slice (review, pre-existing); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
@@ -3039,7 +3040,7 @@ install does not wait for the tab to be shown.
 - **D2, the first chunk goes in before the attach**, so the first frame shows
   text as on `main` (the plan attached to the empty buffer; A84 pins an
   attach to one chunk the same way).
-- **D10, five languages, not ten.** The first verdict round measured keys of
+- **D10, five languages, not ten** (first revision; **superseded by the review round below**: two languages, 512 KiB). The first verdict round measured keys of
   31–39 ms for js, typescript, css, sh and yaml at 1 MiB on the lane's new
   blank-line-free fixtures (perf: `idle_worker` and `first_update_callback`,
   `perf-sh-typing`); reproduced with the A84 sample's `--typing-limit` on the
@@ -3049,13 +3050,14 @@ install does not wait for the tab to be shown.
   7.3 ms); css and sh fail at 8 KiB, yaml at 16 KiB, js and typescript at
   4 KiB (ledger A84). The chunked set is the five that pass.
 
-**Finding for the maintainer (queued, not changed).** C6's own gates for js
+**Finding for the maintainer (queued as C6c, not changed here).** C6's own gates for js
 (18 KiB), typescript (10.5 KiB), css (37 KiB), sh (39 KiB) and yaml (144 KiB)
 are above those blank-line-free typing limits: on `main` a keystroke in such a
 document can cost 9–41 ms. Enforcing `B_INTERACT_US` would remove highlighting
 from almost every JavaScript and TypeScript file, so it is recorded for a
-decision (options: per-language typing gates at the measured limits; or a
-runtime downgrade when an edit's re-analysis needs a worker slice).
+decision. **Queued as C6c** (coordinator, 2026-11-04): gate on the longest
+blank-line-free run, with a carried bound in the edit-time watch, plus a
+runtime downgrade when an edit needs a low-priority worker dispatch.
 
 ### Verdict (interleaved, 2026-11-04)
 
@@ -3107,6 +3109,74 @@ take no new path); every dispatch within `B_SETTLE_US`, every fill-in within
 the accepted 40 ms. **Met.** No new exception to `B_INTERACT_US` or
 `B_SETTLE_US` is recorded; the A67 parse remains C6's toolkit-floor
 exception.
+
+### Independent review round (2026-11-04): caps measured, fixes, rerun
+
+The independent review of PR #81 asked to fix first. Its findings and what
+was done:
+
+- **M1, flipping keys.** The typing limits used only keys that never change
+  the syntax context of the rest of the document. A84's new `--flip-limit`
+  types one at the document's start after the chunked install, then its
+  closer (rust `"`, python3 `"""`, markdown a code fence, c `/*`, xml
+  `<!--`), every dispatch within `B_SETTLE_US`, on both fixture families,
+  64 KiB to 1 MiB, through `scripts/measure.sh` (load 3.5–4.4): markdown and c
+  pass at 1 MiB (worst 2.9 and 3.3 ms, echo ≤ 6.1 ms); rust passes at 128 KiB
+  (fails at 256 KiB: 16.6–23.3 ms); python3 fails at 64 KiB (18.5–18.7 ms);
+  xml at 256 KiB (37.2–38.4 ms, blank-line-free).
+- **S6, install time.** Target ~0.5 s: markdown 0.61–0.65 s per MiB and c
+  0.82 s per MiB give 512 KiB each.
+- **Caps** (`document_scale::chunked_threshold`, the smaller power of two):
+  **markdown 512 KiB, c 512 KiB**; rust (128 KiB), xml (128 KiB) and python3
+  (none) do not clear their C6 gates and keep them. The first revision's
+  "five languages up to 1 MiB" is withdrawn.
+- **S1/S2:** an identity change during a chunked install keeps the stage
+  armed the install's way (derived from ownership; cleared when the stage
+  runs or is withdrawn); `test_a_rename_during_a_background_chunked_install_*`
+  fails without it. **S3:** a replacement takes the language off at its first
+  clear turn. **S6:** an install's attach no longer waits for input-quiet
+  (typed keys are held until the install's terminal; at 512 KiB about
+  0.3–0.4 s); this landed after the rerun's binary and changes no measured
+  phase (the lane types only after `file-open-complete`). **S7**, N1–N4.
+- **S4:** the D9 exemption is encoded in `c6_verdict` (`exempt_regressions`
+  for `attrs.chunked` cases); the first revision's branch report was **"not
+  met"** (`baseline/small/steady-populated@plain#1 background:
+  post_open_first_editor_frame 18021 us > B_SETTLE_US`), attributed to a host
+  slowdown during that run (the window template, which C6b does not touch,
+  took 10.2–12.3 ms against 8.7–9.3 ms on `main`) and met on the `B-*` rerun.
+- **S5:** evidence counters `chunks_on_coverage`/`chunks_after_wait`;
+  failing-first by mutating the mechanisms (coverage predicate forced to
+  `false` and to `true`, no language removal at install begin and at abort;
+  all four caught), plus tests for the stall fallback, eviction reload and
+  save-formatting mirror-back. **Kani liveness:** the install finishes within
+  a step bound even when coverage never arrives or the attach leaves no
+  language (0.44 s).
+- **Incident:** the reviewer's `a84 --help` opened the sample's window on the
+  live desktop. Every sample now prints its usage and exits on `--help`/`-h`
+  and refuses unknown arguments before GTK starts (`make check-gtk-axioms`
+  checks it; build.md).
+
+**Rerun** (interleaved, `main` 0592acf1 against `branch-r1`, 3 + 3 plain and
+1 + 1 `at`, load 0.9–3.2, `R-*` and `RAT-*` runs; highlight group at 512 KiB):
+
+| Case | Worst dispatch, median / max (main → branch, us) | Slowest key max (main / branch, us) | Activation to laid out, median (main / branch, ms) |
+|---|---|---|---|
+| highlight/md/524288 (chunked) | 7185 / 8229 → 13552 / 14360 | 2053 / 1630 | 363 / 402 |
+| highlight/c/524288 (chunked) | 7622 / 8198 → 8224 / 8546 | 2286 / 4362 | 514 / 693 |
+| highlight, the ten gated languages | ≤ 15406 → ≤ 14367 | ≤ 3184 / ≤ 3999 | ±1 |
+| `at` variant, the highlight group | ≤ 15125 → ≤ 13744 | ≤ 2588 / ≤ 3266 | md 354 / 411, c 509 / 695 |
+| baseline/small, five profiles | ≤ 11690 → ≤ 12754 | ≤ 1708 / ≤ 1591 | ±3 |
+
+First painted frame 34.6–36.7 ms (main) against 33.9–36.6 ms (branch); fill-in
+at most 23.3 against 27.8 ms (populated). The combined side-labelled report is
+**"not met"** on two lines, both attributed: `highlight/md/524288` gains a
+12.6–14.4 ms "unattributed" dispatch ~14 ms after the settings flush at
+~500 ms — GIO's keyfile-backend monitor dispatch after a settings write, C6's
+recorded floor, which `main` has too (12.0 ms at 512 ms in the same case) but
+outside its settle window because it settles ~40 ms earlier; and
+`total-size/5000000/txt` laid out 13 ms later than `main` (2,143 against
+2,130 ms; plain text, a path C6b does not change: run spread). Every dispatch
+is within `B_SETTLE_US` and every key within `B_INTERACT_US`; no new exception.
 
 ## Axioms each change cites
 

@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Highlighted documents above their attach threshold install chunk by chunk
-A document whose incoming scale allows syntax highlighting, in one of the five languages with no measured per-key cost (markdown, rust, c, python3, xml), and larger than that language's attach-after-install threshold SHALL be installed with its language attached, in this order: a language attached to old text is removed before that text is cleared; the first paragraph-aligned chunk is inserted before the attach stage runs (a language already attached to the empty buffer may stay); the deferred attach stage attaches the language to that one chunk; and every later chunk, of at most `HIGHLIGHT_CHUNK_BYTES` (8 KiB) and ending on a paragraph boundary, is inserted only once the context engine has reported the buffer analysed to its end (ledger A84) or after one wait at `G_PRIORITY_LOW + 1`. Every installer of a whole body SHALL take this order: file load and reload, eviction reload, draft recovery, local-history restore and undo, and save-formatting mirror-back. A cancelled, superseded or disposed chunked install SHALL remove the language before clearing its partial text, and a sliced clear-only replacement SHALL remove it before clearing. Publication SHALL NOT toggle highlighting on a chunked document. The installed text SHALL be the decoded body byte for byte.
+A document whose incoming scale allows syntax highlighting, in a language with a chunked cap (markdown and c, 512 KiB each: the smaller power of two of the size whose flipping keys keep every dispatch within `B_SETTLE_US` and the size the install fits about 0.5 s), larger than that language's attach-after-install threshold and at most its cap, SHALL be installed with its language attached, in this order: a language attached to old text is removed before that text is cleared; the first paragraph-aligned chunk is inserted before the attach stage runs (a language already attached to the empty buffer may stay); the deferred attach stage attaches the language to that one chunk; and every later chunk, of at most `HIGHLIGHT_CHUNK_BYTES` (8 KiB) and ending on a paragraph boundary, is inserted only once the context engine has reported the buffer analysed to its end (ledger A84) or after one wait at `G_PRIORITY_LOW + 1`. Every installer of a whole body SHALL take this order: file load and reload, eviction reload, draft recovery, local-history restore and undo, and save-formatting mirror-back. A cancelled, superseded or disposed chunked install SHALL remove the language before clearing its partial text, and a sliced clear-only replacement SHALL remove it before clearing; a whole-buffer replacement SHALL remove it at its first clear turn, so one that ends before any turn leaves the language as it was. An attach stage requested while a chunked install owns the buffer, including by an identity change, SHALL NOT wait for the editor to be mapped. Publication SHALL NOT toggle highlighting on a chunked document. The installed text SHALL be the decoded body byte for byte.
 
 #### Scenario: The first frame shows text
 - **WHEN** a 400 KiB Markdown document opens
@@ -27,6 +27,18 @@ A document whose incoming scale allows syntax highlighting, in one of the five l
 #### Scenario: A local-history restore installs chunk by chunk
 - **WHEN** a 400 KiB Markdown body is restored from local history into a Markdown editor
 - **THEN** the replacement inserts it in chunks of at most 8 KiB and the language is attached while the buffer holds at most one chunk
+
+#### Scenario: A rename while a background install waits for its attach
+- **WHEN** a hidden tab's chunked install waits for its attach stage and the file is renamed
+- **THEN** the install still finishes without the tab being shown
+
+#### Scenario: A chunk the engine does not report waits once
+- **WHEN** a chunk goes in and the engine reports no analysed range
+- **THEN** the next chunk waits once at `G_PRIORITY_LOW + 1` and goes in, and the install finishes
+
+#### Scenario: A replacement that ends before its first turn keeps the language
+- **WHEN** a chunked whole-buffer replacement becomes stale before its first turn
+- **THEN** the old text keeps its language and highlighting, and nothing re-analyses it
 
 ## MODIFIED Requirements
 
@@ -55,12 +67,12 @@ Where it cannot, the attach SHALL run from a `G_PRIORITY_LOW` idle, and only aft
 - **THEN** its language attach runs only after it is first mapped, and its language id is reported meanwhile
 
 #### Scenario: The language attaches after the first frame
-- **WHEN** a document with a recognised language opens
+- **WHEN** a document with a recognised language opens, other than into a tab that is not shown while a chunked highlighted install owns its buffer
 - **THEN** its first editor frame is painted before the language attach stage runs
 - **AND** a later load, reload or rename of the same editor replaces any pending attach, so a stale language is never attached
 
 ### Requirement: Highlighting attach and background analysis are bounded
-Publishing an installed document SHALL NOT turn on syntax highlighting in a dispatch whose cost grows with the document. The document scale's total-size syntax threshold `S_SYNTAX` SHALL be the measured `S_BG_HIGHLIGHT`: the largest short-line total size whose background analysis keeps every dispatch within `B_SETTLE_US`. Above it, syntax highlighting is reduced with the existing reduction reason `TotalSize`, shown as for the other reductions, except for the five languages whose context engine showed no per-key cost at 1 MiB on block-structured and on blank-line-free documents (markdown, rust, c, python3, xml): a document of one of them above its measured threshold and within C1's total-size cutoff (1 MiB, the constant `S_SYNTAX` in `model/document_scale.rs`) takes the chunked highlighted install instead, and is reduced with `TotalSize` only above `S_SYNTAX`. The budgets are not relaxed for background analysis.
+Publishing an installed document SHALL NOT turn on syntax highlighting in a dispatch whose cost grows with the document. The document scale's total-size syntax threshold `S_SYNTAX` SHALL be the measured `S_BG_HIGHLIGHT`: the largest short-line total size whose background analysis keeps every dispatch within `B_SETTLE_US`. Above it, syntax highlighting is reduced with the existing reduction reason `TotalSize`, shown as for the other reductions, except for the languages with a chunked cap (markdown and c, 512 KiB, `document_scale::chunked_threshold`): a document of one of them above its measured threshold and at most its cap takes the chunked highlighted install instead, and is reduced with `TotalSize` only above the cap. The budgets are not relaxed for background analysis.
 
 #### Scenario: A large HTML document publishes without a document-sized dispatch
 - **WHEN** a 5 MB short-line HTML document finishes its sliced installation
@@ -71,9 +83,17 @@ Publishing an installed document SHALL NOT turn on syntax highlighting in a disp
 - **THEN** syntax highlighting is reduced with the reason `TotalSize`
 - **AND** no background-analysis dispatch runs for it
 
-#### Scenario: A large Rust document keeps its highlighting
-- **WHEN** a short-line Rust document larger than its measured threshold and at most `S_SYNTAX` is opened
+#### Scenario: A large Markdown document keeps its highlighting
+- **WHEN** a short-line Markdown document larger than its measured threshold and at most its 512 KiB cap is opened
 - **THEN** syntax highlighting stays on, the document takes the chunked highlighted install, and no dispatch of the install, publish or settle exceeds `B_SETTLE_US`
+
+#### Scenario: A flipping key in a chunk-highlighted document stays within budget
+- **WHEN** a key that changes the syntax context of the rest of a 512 KiB Markdown or C document (a code fence, `/*`) is typed at its start, then its closer
+- **THEN** every dispatch until quiet stays within `B_SETTLE_US`, and every ordinary key within `B_INTERACT_US`
+
+#### Scenario: Rust, Python and XML keep their gates
+- **WHEN** a Rust, Python or XML document larger than its measured threshold is opened
+- **THEN** syntax highlighting is reduced with the reason `TotalSize` as before: a flipping key there needs worker-sized dispatches above 128 KiB (rust, xml) or 64 KiB (python3)
 
 #### Scenario: HTML, JSON, JavaScript, TypeScript, CSS, shell and YAML stay gated
 - **WHEN** a document of one of those languages larger than its measured threshold is opened
