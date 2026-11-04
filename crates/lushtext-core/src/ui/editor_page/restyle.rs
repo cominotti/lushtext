@@ -53,6 +53,11 @@ use super::LushtextEditorPage;
 use super::load::policy::{ParagraphSpan, RestyleCursor, next_restyle_range};
 use crate::model::buffer_replacement::V_SLICE;
 
+/// The most lines a document may have for its reattach to be paced
+/// (`prepare_paced_reattach`): about 6.5 ms of hidden-line validation in the
+/// first batch at the measured 0.4 µs per line, under half `B_SETTLE_US`.
+const PACED_REATTACH_MAX_LINES: u32 = 1 << 14;
+
 /// One editor's paced-restyle state.
 #[derive(Default)]
 pub struct RestyleState {
@@ -109,6 +114,13 @@ impl LushtextEditorPage {
     /// yet, so the paragraphs kept visible are the ones from `top_line` that
     /// fit one reveal's `V_SLICE` characters; the reveal then runs once the
     /// view is mapped.
+    ///
+    /// Only for a document of at most `PACED_REATTACH_MAX_LINES` lines: hidden
+    /// lines still cost GTK about 0.4 µs each to validate, and they add no
+    /// height, so one 2000 px batch walks all of them (an 8 MiB document of
+    /// 204,601 lines took 78–80 ms in one dispatch, `eviction/reselect`
+    /// `switch-hidden`). A longer document reattaches unpaced; its short lines
+    /// keep each batch small (6.0–6.3 ms there).
     pub(crate) fn prepare_paced_reattach(&self, top_line: u32) -> bool {
         if !self.is_dense_document() {
             return false;
@@ -118,6 +130,9 @@ impl LushtextEditorPage {
             buffer.upcast_ref(),
         ))
         .unwrap_or(u32::MAX);
+        if count > PACED_REATTACH_MAX_LINES {
+            return false;
+        }
         let first = top_line.min(count);
         let mut end = first;
         let mut chars = 0u64;
