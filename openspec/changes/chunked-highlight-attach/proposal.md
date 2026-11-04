@@ -24,12 +24,17 @@ engine of js, typescript, css, sh and yaml re-analyses past every keystroke,
 block-structured fixtures had one every few lines). The independent review then
 asked for keys that flip the syntax context of the rest of the document (a
 string quote, a docstring, a code fence, a comment opener): rust, python3 and
-xml re-analyse in worker-sized dispatches above 64–128 KiB. Only markdown and c
-stay within budget at 1 MiB, and both are capped at 512 KiB by install time.
+xml re-analyse in worker-sized dispatches above 64–128 KiB. Markdown and c
+passed at 1 MiB on fixtures that close every construct soon after it opens;
+the re-review's worst case (no closer after the cursor, at the start and the
+middle, ordinary keys apart, and markdown's `<!--`) brings c to 64 KiB and
+markdown to 128 KiB, each below its C6 gate. **No shipped language is
+chunk-highlighted**: the mechanism is kept, proved and tested under a model
+cap, for C6c.
 
 ## What Changes
 
-- **A chunked highlighted install.** For markdown and c, a
+- **A chunked highlighted install.** For a language with a chunked cap, a
   document above its language's attach-after-install threshold (C6's measured
   gate, unchanged) installs in a new order: the language comes off before any
   old text is cleared, the first chunk goes in unhighlighted (so the first
@@ -40,11 +45,12 @@ stay within budget at 1 MiB, and both are capped at 512 KiB by install time.
   reload, eviction reload, draft recovery, local-history restore and undo,
   and save-formatting mirror-back all take it (load and whole-buffer
   replacement share one decision).
-- **The gate is lifted to 512 KiB for markdown (from 320 KiB) and c (from
-  84 KiB)**: the smaller power of two of the size whose flipping keys keep
-  every dispatch within `B_SETTLE_US` (1 MiB for both) and the size whose
-  chunked install takes about 0.5 s (markdown 0.61–0.65 s per MiB, c 0.82 s).
-  Every other language keeps its C6 gate (design D10).
+- **No gate is lifted** (design D10, re-review F1): a cap is the largest
+  power of two whose flipping and ordinary keys stay within budget on a
+  worst-case document and whose install takes about 0.5 s; for every
+  language it is at or below the C6 gate, so every language keeps its gate.
+  Unit tests, Kani and the widget tests give Markdown a 512 KiB model cap
+  (`MODEL_MARKDOWN_CAP`); no release, packaging or measurement build does.
 - **Queued as C6c** (design D10): on blank-line-free content, C6's own gates
   for js, typescript, css and sh (10.5–39 KiB) and yaml (144 KiB) let
   keystrokes cost 9–41 ms. C6c will gate on the longest blank-line-free run,
