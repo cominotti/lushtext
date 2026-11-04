@@ -713,3 +713,11 @@ pub mod a82 {
 pub mod a83 {
     pub use crate::probes::a83::{BufferState, DetachFixture};
 }
+
+/// The fixture and values the A84 probe drives, for its sample.
+pub mod a84 {
+    pub use crate::probes::a84::{
+        CHUNK_BYTES, ChunkObservation, Coverage, DOCUMENT_BYTES, LARGE_CHUNK_BYTES,
+        PacedInstallRun, attach_to_one_chunk, chunked_install, paced_chunked_install,
+    };
+}

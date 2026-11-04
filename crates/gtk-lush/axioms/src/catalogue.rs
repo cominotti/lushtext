@@ -1276,6 +1276,24 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a83),
     },
+    Axiom {
+        id: AxiomId::new(84),
+        name: "a84_highlight_updated_ends_report_how_far_the_engine_analysed",
+        statement: "after an insert at the end of a buffer whose language is attached, or an \
+                    attach to a buffer holding one chunk, the largest highlight-updated end \
+                    reported since then reaches the end of the last line's text once the context \
+                    engine has analysed to the end, and a G_PRIORITY_LOW + 1 idle queued after \
+                    the change always finds it there; a chunk the worker still analyses is not \
+                    reported at the end by a G_PRIORITY_DEFAULT_IDLE idle",
+        dependent_designs: &[
+            "chunked-highlight-attach (C6b): a highlighted install attaches the language after \
+             its first chunk and inserts the rest in chunks of at most 8 KiB, each next chunk \
+             only once the reported coverage reached the buffer end or after one \
+             G_PRIORITY_LOW + 1 wait",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a84),
+    },
 ];
 
 #[cfg(test)]
