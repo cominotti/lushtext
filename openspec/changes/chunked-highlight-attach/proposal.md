@@ -21,14 +21,15 @@ Measuring C6b found that five of those ten are not free per key after all: on
 blank-line-free content (the lane's new `short-language` fixtures) the context
 engine of js, typescript, css, sh and yaml re-analyses past every keystroke,
 32–41 ms per key at 64 KiB (a blank line is where it resynchronises; C6's
-block-structured fixtures had one every few lines). Chunking does not change
-that, so C6b lifts the gate for the other five only.
+block-structured fixtures had one every few lines). The independent review then
+asked for keys that flip the syntax context of the rest of the document (a
+string quote, a docstring, a code fence, a comment opener): rust, python3 and
+xml re-analyse in worker-sized dispatches above 64–128 KiB. Only markdown and c
+stay within budget at 1 MiB, and both are capped at 512 KiB by install time.
 
 ## What Changes
 
-- **A chunked highlighted install.** For the five languages with no measured
-  per-key cost at 1 MiB on either fixture family (markdown, rust, c, python3,
-  xml), a
+- **A chunked highlighted install.** For markdown and c, a
   document above its language's attach-after-install threshold (C6's measured
   gate, unchanged) installs in a new order: the language comes off before any
   old text is cleared, the first chunk goes in unhighlighted (so the first
@@ -39,19 +40,22 @@ that, so C6b lifts the gate for the other five only.
   reload, eviction reload, draft recovery, local-history restore and undo,
   and save-formatting mirror-back all take it (load and whole-buffer
   replacement share one decision).
-- **The gate is lifted to `S_SYNTAX` for those five languages** (1 MiB, C1's
-  total-size cutoff), not to the open limit: the chunked install takes as
-  long as the engine's analysis, 0.6–1.2 s per MiB for them on the reference
-  machine (A84), during which the document is incomplete, the caret hidden and
-  typed keys held. Coordinator decision of 2026-11-04 (design D1); raising it
-  is a maintainer call with the measured install times in hand. HTML, JSON,
-  js, typescript, css, sh, yaml, the unmeasured languages and plain text keep
-  their gates (design D10).
-- **A finding for the maintainer** (design D10): on blank-line-free content,
-  C6's own gates for js, typescript, css and sh (10.5–39 KiB) and yaml
-  (144 KiB) let keystrokes cost 9–41 ms. Enforcing `B_INTERACT_US` there
-  would turn highlighting off for nearly every JavaScript and TypeScript file,
-  so it is recorded and queued, not changed here.
+- **The gate is lifted to 512 KiB for markdown (from 320 KiB) and c (from
+  84 KiB)**: the smaller power of two of the size whose flipping keys keep
+  every dispatch within `B_SETTLE_US` (1 MiB for both) and the size whose
+  chunked install takes about 0.5 s (markdown 0.61–0.65 s per MiB, c 0.82 s).
+  Every other language keeps its C6 gate (design D10).
+- **Queued as C6c** (design D10): on blank-line-free content, C6's own gates
+  for js, typescript, css and sh (10.5–39 KiB) and yaml (144 KiB) let
+  keystrokes cost 9–41 ms. C6c will gate on the longest blank-line-free run,
+  with a carried bound in the edit-time watch, plus a runtime downgrade when an
+  edit needs a low-priority worker dispatch.
+- **Review fixes:** identity changes keep a background install's attach armed
+  (S1, S2); a replacement takes the language off at its first clear turn (S3);
+  the chunk decision runs outside the session borrow (N1); the lane encodes
+  the D9 exemption; a Kani liveness model; every axiom sample refuses `--help`
+  and unknown arguments before GTK starts (a review run had opened a window on
+  the live desktop).
 - **Documents at or below their threshold keep C6's order** (text first,
   language after the first frame), measured within budget and showing the
   whole text in the first frame.
@@ -71,11 +75,12 @@ that, so C6b lifts the gate for the other five only.
   `SliceBudget::with_highlight_cut` 8 KiB cut inside the `V_SLICE` slice plan,
   and the fact that a document the scale highlights has no paragraph larger
   than one chunk (`4 · L_SYNTAX + 3 ≤ 8 KiB`).
-- **Lane cases** `highlight/<ext>/1048576` for the five languages and for the
-  seven that keep their gates, with the post-open and typing phases. The
+- **Lane cases** `highlight/<ext>/524288` for the two languages and for the
+  ten that keep their gates, with the post-open and typing phases. The
   A84 sample's `--typing-limit` mode measures a language's typing limit with
   its language attached, at the start, the middle and inside lines near the
-  top, on a generated or a given document.
+  top, on a generated or a given document, and `--flip-limit` the same with
+  flipping keys.
 
 ## Capabilities
 

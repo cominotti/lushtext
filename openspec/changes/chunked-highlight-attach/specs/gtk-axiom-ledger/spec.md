@@ -27,3 +27,20 @@ the sample SHALL also measure the paced chunked install per language.
 - **THEN** the A84 probe fails
 - **AND** the chunked highlighted install of `chunked-highlight-attach` is
   revisited before the probe is changed
+
+### Requirement: An axiom sample never opens its window for help or an unknown argument
+Every `gtk-lush-axioms` sample SHALL print its usage and exit `0` on `--help`
+or `-h`, and print its usage and exit `2` on any argument it does not know or
+on a measurement-mode option given without its mode, before GTK is
+initialized and without creating a window. A sample with measurement modes
+SHALL declare them and SHALL check its command line first. `make
+check-gtk-axioms` SHALL fail a sample that reads its own flags without that
+check.
+
+#### Scenario: Help on a live desktop
+- **WHEN** a sample is started with `--help` on a desktop session
+- **THEN** it prints its usage and exits 0, and no window appears
+
+#### Scenario: A mistyped mode
+- **WHEN** a sample is started with an argument it does not know
+- **THEN** it prints its usage and exits 2, and no window appears

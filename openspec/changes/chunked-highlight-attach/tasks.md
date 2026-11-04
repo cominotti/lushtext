@@ -37,3 +37,13 @@
 - [x] 6.2 `make test` (0 FLAKY), `make gtk-axioms`, Kani shards `core-post-open-settle` and `core-document-scale`.
 - [x] 6.3 Smokes: accessibility, visual, visual-geometry, crash-recovery.
 - [x] 6.4 Record (`docs/next/long-line-documents.md`), AGENTS.md, workflow matrix rows where facts change.
+
+## 7. Independent review round (2026-11-04)
+
+- [x] 7.0 Incident: every `gtk-lush-axioms` sample prints its usage and exits on `--help`/`-h`, and refuses unknown arguments and mode options without their mode, before GTK starts (`sample_args.rs`, unit-tested; `support::guard`; `make check-gtk-axioms` checks flag-reading samples call it first; build.md's axiom-sample section).
+- [x] 7.1 M1: `--flip-limit` (A84 sample): flipping keys at the document start, then their closers, every dispatch within `B_SETTLE_US`, on both fixture families, 64 KiB to 1 MiB, through `scripts/measure.sh`. Caps: markdown and c 512 KiB (flip 1 MiB, install ~0.5 s); rust, python3 and xml keep their C6 gates (`document_scale::chunked_threshold`). D10, the A84 row, the delta spec and the record corrected.
+- [x] 7.2 S6: install-time cap (0.5 s target); an install's attach no longer waits for input-quiet (typed keys are held until the install's terminal).
+- [x] 7.3 S1/S2: the install's attach is derived from buffer ownership, cleared when the stage runs or is withdrawn; S3: a replacement takes the language off at its first clear turn; S7 scenario exception; N1–N4.
+- [x] 7.4 S4: the D9 exemption encoded in `c6_verdict` (`exempt_regressions`, self-tested); combined side-labelled report; the highlight group under the `at` variant; the earlier 18.0 ms "not met" recorded.
+- [x] 7.5 S5: evidence counters (`chunks_on_coverage`, `chunks_after_wait`); tests for the coverage gate, the stall fallback, S1, eviction reload and save-formatting mirror-back; failing-first by mutating the coverage predicate (true and false) and removing the language removal at install begin and abort.
+- [x] 7.6 Kani liveness: `a_chunked_install_finishes_even_without_coverage_or_a_language` (0.44 s).
