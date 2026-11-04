@@ -47,3 +47,11 @@
 - [x] 7.4 S4: the D9 exemption encoded in `c6_verdict` (`exempt_regressions`, self-tested); combined side-labelled report; the highlight group under the `at` variant; the earlier 18.0 ms "not met" recorded.
 - [x] 7.5 S5: evidence counters (`chunks_on_coverage`, `chunks_after_wait`); tests for the coverage gate, the stall fallback, S1, eviction reload and save-formatting mirror-back; failing-first by mutating the coverage predicate (true and false) and removing the language removal at install begin and abort.
 - [x] 7.6 Kani liveness: `a_chunked_install_finishes_even_without_coverage_or_a_language` (0.44 s).
+
+## 8. Re-review round (2026-11-04)
+
+- [x] 8.1 F1: `--flavor no-closers` fixtures (c `//` only, markdown indented code, no fence; self-tested to hold no `*/`, fence or `-->`); `--flip-limit` probes the start and the middle, reports flipping keys (≤ `B_SETTLE_US`) and ordinary keys (≤ `B_INTERACT_US`) apart, and probes markdown's `<!--`; through `scripts/measure.sh` on a quiet host (load 3.3–4.4): c 64 KiB, markdown 128 KiB, each below its C6 gate, so no shipped language has a chunked cap; unit tests, Kani and widget tests use `MODEL_MARKDOWN_CAP` (512 KiB); D10, the A84 row, the delta specs, README, AGENTS and the record corrected; the lane's highlight group is all gated.
+- [x] 8.2 F2: only the mapped, focused installing editor skips input-quiet; widget tests for a background install while keys arrive (no attach until input-quiet) and for the focused editor (attaches while keys arrive, no deadline run); failing-first by widening and by removing the skip.
+- [x] 8.3 S-a: `c6_verdict` compares stage dispatches only up to the baseline's median settle plus one frame (self-tested `late`/`early`); the 5 MB plain-text case and the highlight group rerun interleaved on a quiet host.
+- [x] 8.4 S-b (`for_install` cleared on the early returns), S-c (explicit chunked-owner facts), S3 cancel (re-arm only after the mutation started) with `test_a_replacement_that_ends_before_its_first_turn_keeps_the_language` (failing-first), the Kani `LIVE_DEADLINE` doc.
+- [x] 8.5 Gates, smokes, record (test count: 15 new widget tests, 14 in `post_open_settle.rs` and 1 in `window.rs`).

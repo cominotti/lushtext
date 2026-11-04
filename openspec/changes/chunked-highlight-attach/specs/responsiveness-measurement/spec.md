@@ -2,9 +2,9 @@
 
 ### Requirement: The lane measures highlighted documents at the syntax cutoff
 The lane SHALL run a `highlight` group: one synthetic short-line document per
-language at 512 KiB, the chunked cap, for the two chunk-highlighted languages
-(markdown, c) and for the ten that keep their gates (rust, python3, xml, html,
-json, js, typescript, css, sh, yaml), each with the post-open settle and
+language at 512 KiB (markdown, c, rust, python3, xml, html, json, js,
+typescript, css, sh, yaml; a language given a chunked cap is marked
+`chunked`, none is today), each with the post-open settle and
 typing phases of the other post-open cases. The C6 verdict SHALL report, not
 gate, an activation-to-laid-out regression of a case marked `chunked`, and
 list it apart from the regressions. The fixture generator SHALL produce those documents

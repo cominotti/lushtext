@@ -153,8 +153,13 @@ C6's attach stage waits for an unmapped editor's first map (R8). A chunked
 install parked on it would keep its decoded body charged against the load
 budget until the user selects the tab, which EV removed. An attach requested
 by a chunked install (`request_language_attach_for_install`) arms at once on
-an unmapped editor; it still waits for input-quiet or the deadline at
-`G_PRIORITY_LOW`. It also ignores the session scale, which the incoming body's
+an unmapped editor. It skips input-quiet only in the editor the keys go to:
+when the installing editor's view is mapped and has focus, its own typed
+keys are held until the install's terminal (S6), so waiting for them to stop
+would only lengthen the install. Every other install (a background tab, an
+unfocused or hidden editor) waits for input-quiet or the deadline at
+`G_PRIORITY_LOW`, because keys arriving in another editor are not held and
+the A67 parse would land between them (re-review F2). It also ignores the session scale, which the incoming body's
 replaces only at publish (a reload of a document whose previous session was
 gated). Whether a stage is the install's is derived from ownership, not kept
 as a sticky flag (review S1, S2): any `request_language_attach` while a
@@ -217,9 +222,40 @@ load (ledger A84):
 
 The cap is the smaller power of two of 2 and 3; a language whose cap does not
 exceed its C6 gate keeps the gate (rust 128 KiB against 184 KiB, xml 128 KiB
-against 132 KiB, python3 none). **Markdown and c are chunk-highlighted up to
-512 KiB** (`document_scale::chunked_threshold`); every other language keeps
-its C6 gate. This supersedes D1's `S_SYNTAX` bound.
+against 132 KiB, python3 none). The review round gave markdown and c 512 KiB;
+the re-review (F1) withdrew both, below.
+
+**Worst case (re-review F1).** Fixtures C6 and the lane generate close every
+construct shortly after it opens (c `/* … */` on every line, markdown fenced
+blocks), so an opener typed at the start resynchronises at the next closer.
+A document with **no closer after the cursor** (`--flavor no-closers`: c `//`
+comments only, markdown indented code and no fence) is the worst case. The
+criteria are now applied there, at the start and at the middle, with flipping
+keys (the opener and its closer) within `B_SETTLE_US` and the ordinary keys
+typed after each within `B_INTERACT_US`, reported apart, and markdown also
+probes an HTML comment opener `<!--`. Through `scripts/measure.sh`, load
+3.3–4.4, two repetitions:
+
+| Language, size | Flip worst (us) | Ordinary worst (us) | Verdict |
+|---|---|---|---|
+| c 64 KiB | 11678 | 3017 | pass |
+| c 84 KiB (C6 gate) | 11507 | 3005 | pass |
+| c 128 KiB | 20152 (closer, start) | 3655 | fail |
+| markdown 128 KiB | 9244 (`<!--`) | 6253 | pass |
+| markdown 256 KiB | 11743 | 11858 (inside `<!--`, start) | fail |
+| markdown 320 KiB (C6 gate) | 16145 | 11503 | fail |
+| markdown 512 KiB, fence only | 7861 | 6104 | pass |
+
+C's largest passing power of two is 64 KiB and markdown's 128 KiB, each below
+its C6 gate (84 and 320 KiB): **no shipped language is chunk-highlighted**
+(`document_scale::chunked_threshold` returns `None` for every language) and
+each keeps its C6 gate. The mechanism stays, for C6c, whose runtime
+downgrade would bound the flips that cap every language here; unit tests,
+Kani and the widget tests (`test-utils`) prove it with a model cap of
+512 KiB for Markdown (`MODEL_MARKDOWN_CAP`), which no release, packaging or
+measurement build enables. Markdown's own C6 gate fails the ordinary-key
+criterion inside an open HTML comment (11.3–11.5 ms at 320 KiB): a
+pre-existing miss on `main`, added to C6c.
 
 The other languages' C6 gates are themselves above their blank-line-free
 typing limits (js 18 KiB, typescript 10.5 KiB, css 37 KiB, sh 39 KiB, yaml
@@ -247,6 +283,18 @@ dispatch. This change adds no runtime downgrade.
   forcing it to `true` fails `test_a_chunk_without_a_coverage_report_waits_once_and_goes_in`;
   removing the language removal from `begin_load_installation` fails the
   reload test, and from `retirement::abort_installation` the cancel test.
+- **Re-review (2026-11-04).** F1 above. **F2:** only the editor the keys go
+  to (mapped and focused) skips input-quiet; D7. **S-b:** `for_install` is
+  cleared on the request's no-path, Plain and settled early returns, so a
+  later ordinary request is never armed the install's way. **S-c:** whether
+  a chunked install owns the buffer is an explicit fact the load and the
+  replacement set and clear (`set_load_chunked_owner`,
+  `set_replacement_chunked_owner`), not a `try_borrow` of their sessions.
+  **S3 (cancel):** a cancelled replacement re-arms the chunked order only if
+  its mutation had started. **S-a:** `c6_verdict` compares a stage only over
+  dispatches starting by the baseline's median settle plus one frame
+  (self-tested), so a later settle no longer counts a floor the baseline
+  also has but outside its window.
 - **Samples:** every `gtk-lush-axioms` sample prints its usage and exits on
   `--help`/`-h`, and refuses an unknown argument, before GTK starts
   (`classify_sample_args`, unit-tested; `make check-gtk-axioms` checks every
@@ -255,10 +303,15 @@ dispatch. This change adds no runtime downgrade.
 
 ## Risks / Trade-offs
 
-- **Install time** (D10): up to about 0.4 s at 512 KiB, with the text
-  appearing chunk by chunk; typed keys are held until the install's terminal.
+- **Install time** (D10): a language given a cap would show its text chunk
+  by chunk for up to about 0.5 s, its typed keys held until the install's
+  terminal; no shipped language has a cap (F1).
+- **Dormant mechanism** (F1): shipped builds never take the chunked order;
+  the model builds keep it proved and tested until C6c can give a language a
+  cap.
 - **The A67 parse** now also runs during an install, once per language per
-  process, still deferred to input-quiet (toolkit-floor exception).
+  process; deferred to input-quiet unless the installing editor is the shown,
+  focused one whose keys the install holds (D7; toolkit-floor exception).
 - **An eviction reload** of a highlighted document may parse its language
   twice when no other buffer holds it (D6 removes it before the clear).
 - **A rename during a chunked install** reports the tab `Loaded` at once
