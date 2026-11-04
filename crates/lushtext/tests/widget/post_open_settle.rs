@@ -1349,3 +1349,186 @@ fn test_a_save_formatting_mirror_back_installs_a_large_markdown_in_chunks() {
         "every attach met at most one chunk: {attaches:?}"
     );
 }
+
+#[test]
+fn test_a_replacement_that_ends_before_its_first_turn_keeps_the_language() {
+    // Review S3: a chunked replacement takes the language off at its first
+    // clear turn, not when it begins, so one that goes stale before any turn
+    // leaves the old text's language and analysis as they were (attaching
+    // it again to the whole old body would analyse it in worker slices).
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let path = write(&dir, "kept.md", &text);
+    let editor = opened(&window, &path);
+    wait_until(SETTLE_BUDGET, || {
+        language_id(&editor).as_deref() == Some("markdown")
+    });
+    let stages = editor.load_evidence().language_attach.stages_run;
+    let removed = std::rc::Rc::new(std::cell::Cell::new(false));
+    {
+        let removed = removed.clone();
+        editor
+            .buffer()
+            .connect_notify_local(Some("language"), move |buffer, _| {
+                if buffer.language().is_none() {
+                    removed.set(true);
+                }
+            });
+    }
+    let current = std::rc::Rc::new(std::cell::Cell::new(true));
+    let outcomes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    editor.replace_buffer_returning_cancelled_body_for_test(
+        markdown(LARGE_MARKDOWN + 4096),
+        7,
+        current.clone(),
+        outcomes.clone(),
+        std::rc::Rc::default(),
+        true,
+    );
+    // Stale before the first turn (a 1 ms timeout away).
+    current.set(false);
+    wait_until(SETTLE_BUDGET, || !outcomes.borrow().is_empty());
+    flush_after_delay(Duration::from_millis(200));
+    assert!(
+        !removed.get(),
+        "the language came off the untouched old text"
+    );
+    assert_eq!(language_id(&editor).as_deref(), Some("markdown"));
+    assert!(editor.buffer().is_highlight_syntax());
+    assert_eq!(crate::common::editor_text(&editor), text);
+    assert_eq!(
+        editor.load_evidence().language_attach.stages_run,
+        stages,
+        "no attach stage re-analysed the old text"
+    );
+}
+
+#[test]
+fn test_a_background_chunked_install_attaches_only_after_input_quiet() {
+    // Re-review F2: only the editor the user types into, shown and focused,
+    // skips input-quiet; a background tab's install must not run the
+    // definition parse (A67) while the user types elsewhere.
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let background_path = write(&dir, "quiet.md", &text);
+    let foreground_path = write(&dir, "typing.txt", "plain\n");
+    window.open_document(&background_path);
+    window.open_document(&foreground_path);
+    let tab_view = &window.imp().tab_view;
+    let editor_at = |index: i32| {
+        tab_view
+            .nth_page(index)
+            .child()
+            .downcast::<LushtextEditorPage>()
+            .expect("editor page")
+    };
+    let (background, foreground) = (editor_at(0), editor_at(1));
+    let typing_window: gtk4::Window = window.clone().upcast();
+    // Keys "typed" into the window every 4 ms from the start, each echoed by
+    // a painted frame (so paced slices keep moving), until 600 ms after the
+    // install has asked for its attach; every observation while typing must find the
+    // attach still pending and no language.
+    let attached_while_typing = std::rc::Rc::new(std::cell::Cell::new(false));
+    let typed_for = std::rc::Rc::new(std::cell::Cell::new(None::<std::time::Instant>));
+    let done_typing = std::rc::Rc::new(std::cell::Cell::new(false));
+    {
+        let (attached, typed_for, done) = (
+            attached_while_typing.clone(),
+            typed_for,
+            done_typing.clone(),
+        );
+        let (weak, shown) = (background.downgrade(), foreground.downgrade());
+        lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+        glib::timeout_add_local_full(Duration::from_millis(4), glib::Priority::HIGH, move || {
+            let (Some(editor), Some(shown)) = (weak.upgrade(), shown.upgrade()) else {
+                return glib::ControlFlow::Break;
+            };
+            lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+            shown.source_view().queue_draw();
+            let evidence = editor.load_evidence().language_attach;
+            if evidence.install_requests > 0 {
+                let since = typed_for.get().unwrap_or_else(std::time::Instant::now);
+                typed_for.set(Some(since));
+                if editor.buffer().language().is_some() {
+                    attached.set(true);
+                }
+                if since.elapsed() >= Duration::from_millis(600) {
+                    done.set(true);
+                    return glib::ControlFlow::Break;
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+    wait_until(Duration::from_secs(30), || done_typing.get());
+    assert!(
+        !attached_while_typing.get(),
+        "a background install attached its language while keys arrived"
+    );
+    wait_until(Duration::from_secs(30), || {
+        !background.load_evidence().installation_active
+    });
+    assert_eq!(language_id(&background).as_deref(), Some("markdown"));
+    assert_eq!(crate::common::editor_text(&background), text);
+}
+
+#[test]
+fn test_the_focused_editors_chunked_install_attaches_while_keys_arrive() {
+    // The other half of F2's carve-out: the editor the user types into,
+    // shown and focused, holds those keys until its install's terminal, so
+    // its attach does not wait for input-quiet (up to `ATTACH_DEADLINE_US`).
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let path = write(&dir, "focused.md", &text);
+    window.open_document(&path);
+    let editor = active_editor(&window);
+    editor.source_view().grab_focus();
+    let typing_window: gtk4::Window = window.upcast();
+    lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+    let started = std::time::Instant::now();
+    let attached_after = std::rc::Rc::new(std::cell::Cell::new(None));
+    {
+        let (attached_after, weak) = (attached_after.clone(), editor.downgrade());
+        glib::timeout_add_local_full(Duration::from_millis(4), glib::Priority::HIGH, move || {
+            let Some(editor) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+            editor.source_view().queue_draw();
+            if editor.load_evidence().language_attach.install_requests > 0
+                && editor.buffer().language().is_some()
+            {
+                attached_after.set(Some(started.elapsed()));
+                return glib::ControlFlow::Break;
+            }
+            if started.elapsed() > Duration::from_secs(30) {
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+    wait_until(Duration::from_secs(30), || attached_after.get().is_some());
+    let waited = attached_after.get().expect("attached");
+    assert!(
+        editor.source_view().is_focus(),
+        "the installing editor held the focus"
+    );
+    assert_eq!(
+        editor.load_evidence().language_attach.deadline_runs,
+        0,
+        "the attach ran on input, not on its deadline ({waited:?})"
+    );
+    wait_until(Duration::from_secs(30), || {
+        !editor.load_evidence().installation_active
+    });
+    assert_eq!(crate::common::editor_text(&editor), text);
+}

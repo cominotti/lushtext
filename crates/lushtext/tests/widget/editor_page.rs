@@ -4804,6 +4804,7 @@ fn test_direct_reentrant_supersession_returns_cancelled_body() {
         Rc::new(Cell::new(true)),
         Rc::clone(&outcomes),
         Rc::clone(&cancelled_bodies),
+        false,
     );
     wait_until(Duration::from_secs(2), || outcomes.borrow().len() == 2);
 

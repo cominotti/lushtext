@@ -172,6 +172,7 @@ pub(super) fn abort_installation(
         return;
     };
     if session.borrow_mut().highlight.take().is_some() {
+        editor.set_load_chunked_owner(false);
         // The partial chunks are cleared from the start: an attached language
         // would re-analyse the remainder after every deleted slice.
         editor.begin_chunked_highlight();

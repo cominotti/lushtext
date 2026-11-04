@@ -256,3 +256,10 @@ pub fn last_input_us() -> Option<i64> {
 pub fn simulate_user_input() {
     record_input(None);
 }
+
+/// Record input now on `window`, so that window's next painted frame counts
+/// as showing it ([`input_awaits_frame`]), as a real key typed into it would.
+#[cfg(feature = "test-utils")]
+pub fn simulate_user_input_on(window: &gtk4::Window) {
+    record_input(Some(window));
+}
