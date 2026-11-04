@@ -107,6 +107,37 @@ mod typing_threshold {
     pub const JSON: u64 = 20 * 1024;
 }
 
+/// The total size up to which a language is highlighted through the chunked
+/// install (`chunked-highlight-attach`, C6b, coordinator decisions of
+/// 2026-11-04 after the independent review), or `None` for a language that
+/// keeps its C6 gate. Each cap is the smaller of two powers of two, rounded
+/// down, both measured through `scripts/measure.sh` under load (ledger A84):
+///
+/// - **Flipping keys.** A key that changes the syntax context of the rest of
+///   the document, typed at its start after the chunked install (rust `"`,
+///   python3 `"""`, markdown a code fence, c `/*`, xml `<!--`), then its
+///   closer, must keep every dispatch within `B_SETTLE_US`, on both fixture
+///   families (C6's block-structured documents and the lane's blank-line-free
+///   ones), and ordinary keys within `B_INTERACT_US`. Markdown and c pass at
+///   1 MiB (worst 2.9 and 3.3 ms); rust passes at 128 KiB (fails at 256 KiB:
+///   16.6–23.3 ms), python3 fails at 64 KiB (18.5–18.7 ms, C6 fixture), xml
+///   at 256 KiB (37.2–38.4 ms, blank-line-free).
+/// - **Install time.** A chunked install runs at the engine's analysis speed
+///   and the document is incomplete meanwhile; the target is about 0.5 s:
+///   markdown 0.61–0.65 s per MiB, c 0.82 s, so 512 KiB for both.
+///
+/// A language whose cap would not exceed its C6 gate keeps the gate (rust
+/// 128 KiB against 184 KiB, xml 128 KiB against 132 KiB, python3 none).
+///
+/// Kind: cap. Rounding: down, to a power of two.
+#[must_use]
+pub const fn chunked_threshold(language: SyntaxLanguage) -> Option<u64> {
+    match language {
+        SyntaxLanguage::Markdown | SyntaxLanguage::C => Some(512 * 1024),
+        _ => None,
+    }
+}
+
 const fn min_u64(a: u64, b: u64) -> u64 {
     if a < b { a } else { b }
 }
@@ -199,42 +230,20 @@ impl SyntaxLanguage {
     /// Whether a document of this language may be highlighted above its
     /// attach-after-install threshold, through the chunked install
     /// (`chunked-highlight-attach`, C6b; `model::highlight_chunking`).
-    ///
-    /// Measured (ledger A84, the sample's `--typing-limit`, 2026-11-04): seven
-    /// keys at the start, in the middle and inside six lines near the top of
-    /// a 1 MiB document, after its chunked install, keep every dispatch within
-    /// `B_INTERACT_US`, on both fixture families: C6's block-structured
-    /// documents and the lane's blank-line-free ones (`short-language`). Only
-    /// these five pass both. On blank-line-free content the context engine of
-    /// js, typescript, css, sh and yaml re-analyses past every keystroke (a
-    /// blank line is where it resynchronises): 32–41 ms per key at 64 KiB,
-    /// already 9–13 ms at 4–16 KiB, so they keep their C6 gates.
     #[must_use]
     pub const fn chunk_highlighted(self) -> bool {
-        matches!(
-            self,
-            Self::Markdown | Self::Rust | Self::C | Self::Python | Self::Xml
-        )
+        chunked_threshold(self).is_some()
     }
 
     /// Syntax highlighting and bracket matching turn off above this many
-    /// bytes.
-    ///
-    /// A chunk-highlighted language ([`Self::chunk_highlighted`]) is gated
-    /// only by [`S_SYNTAX`] (`chunked-highlight-attach`, C6b, coordinator
-    /// decision of 2026-11-04): above its measured attach threshold its
-    /// document is installed in chunks the context engine analyses one by
-    /// one, which keeps every dispatch within `B_SETTLE_US` at any size, but
-    /// the install then takes as long as the analysis (0.6–1.2 s per MiB for
-    /// these five on the reference machine, ledger A84), and the text is
-    /// complete only at its end; `S_SYNTAX` bounds that wait. Every other language keeps its
-    /// measured gate, [`Self::attach_after_install_threshold`].
+    /// bytes: a chunk-highlighted language's chunked cap
+    /// ([`chunked_threshold`]), every other language's measured gate,
+    /// [`Self::attach_after_install_threshold`].
     #[must_use]
     pub const fn syntax_size_threshold(self) -> u64 {
-        if self.chunk_highlighted() {
-            S_SYNTAX
-        } else {
-            self.attach_after_install_threshold()
+        match chunked_threshold(self) {
+            Some(cap) => cap,
+            None => self.attach_after_install_threshold(),
         }
     }
 
@@ -1002,34 +1011,31 @@ mod tests {
     }
 
     #[test]
-    fn the_five_chunk_highlighted_languages_keep_syntax_up_to_s_syntax() {
+    fn the_chunk_highlighted_languages_keep_syntax_up_to_their_cap() {
         let chunked: Vec<_> = SyntaxLanguage::ALL
             .into_iter()
             .filter(|language| language.chunk_highlighted())
             .collect();
-        assert_eq!(
-            chunked,
-            [
-                SyntaxLanguage::Markdown,
-                SyntaxLanguage::Rust,
-                SyntaxLanguage::C,
-                SyntaxLanguage::Python,
-                SyntaxLanguage::Xml
-            ]
-        );
+        assert_eq!(chunked, [SyntaxLanguage::Markdown, SyntaxLanguage::C]);
         for language in chunked {
-            assert_eq!(language.syntax_size_threshold(), S_SYNTAX, "{language:?}");
-            assert!(language.attach_after_install_threshold() < S_SYNTAX);
+            let cap = chunked_threshold(language).expect("chunked");
+            assert!(cap.is_power_of_two() && cap <= S_SYNTAX);
+            assert_eq!(language.syntax_size_threshold(), cap, "{language:?}");
+            assert!(language.attach_after_install_threshold() < cap);
+            assert!(DocumentScale::for_profile_in(profile(cap, 0, 0), language).syntax_enabled);
             assert!(
-                DocumentScale::for_profile_in(profile(S_SYNTAX, 0, 0), language).syntax_enabled
+                !DocumentScale::for_profile_in(profile(cap + 1, 0, 0), language).syntax_enabled
             );
             // The paragraph gate still applies.
             assert!(
-                !DocumentScale::for_profile_in(profile(S_SYNTAX, L_SYNTAX + 1, 0), language)
+                !DocumentScale::for_profile_in(profile(cap, L_SYNTAX + 1, 0), language)
                     .syntax_enabled
             );
         }
         for language in [
+            SyntaxLanguage::Rust,
+            SyntaxLanguage::Python,
+            SyntaxLanguage::Xml,
             SyntaxLanguage::Html,
             SyntaxLanguage::Json,
             SyntaxLanguage::JavaScript,

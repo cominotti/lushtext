@@ -372,6 +372,8 @@ pub(crate) struct BufferReplacementSession {
     highlight: Option<crate::ui::editor_page::language_attach::HighlightChunks>,
     /// Insertion turns that put text in (the chunk gate's count).
     inserted_turns: u64,
+    /// Whether the first clear turn must take the language off first.
+    language_off_pending: bool,
 }
 
 /// Content-free terminal evidence retained by one editor.
@@ -533,22 +535,15 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
     } else {
         budget
     };
-    let mut guard = begin_guard(editor);
-    if plan.clear_only && plan.mode == BufferReplacementMode::Sliced {
-        // A sliced clear (memory eviction) deletes from the start: an
-        // attached language would re-analyse the remainder after every slice.
-        // Removing it costs nothing (A27); the reload attaches it again.
-        editor.cancel_language_attach();
-        if editor.buffer().language().is_some() {
-            editor.buffer().set_language(None::<&sourceview5::Language>);
-        }
-    }
-    if highlight.is_some() {
-        // Before the clear: the language comes off, highlighting stays on for
-        // the attach, and the terminal leaves it on.
-        editor.begin_chunked_highlight();
-        guard.highlight_syntax = true;
-    }
+    // A chunked body keeps the old text's highlighting until the first clear
+    // turn (review S3): a session cancelled before it mutates anything then
+    // leaves the language and its analysis exactly as they were.
+    let guard = begin_guard(editor, highlight.is_some());
+    // A sliced clear deletes from the start, and an attached language would
+    // re-analyse the remainder after every slice: the first clear turn takes
+    // it off (removing one costs nothing, A27).
+    let language_off_pending =
+        highlight.is_some() || (plan.clear_only && plan.mode == BufferReplacementMode::Sliced);
     if let Some(profile) = &request.profile {
         editor.prepare_for_incoming_profile(profile);
         if let Some(kind) = protected_install_kind(request.ticket.workflow) {
@@ -581,6 +576,7 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         budget,
         highlight,
         inserted_turns: 0,
+        language_off_pending,
     }));
     editor
         .imp()
@@ -600,7 +596,7 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
     }
 }
 
-fn begin_guard(editor: &LushtextEditorPage) -> ReplacementGuard {
+fn begin_guard(editor: &LushtextEditorPage, keep_highlight: bool) -> ReplacementGuard {
     let imp = editor.imp();
     let view = editor.source_view();
     let buffer = editor.buffer();
@@ -628,7 +624,9 @@ fn begin_guard(editor: &LushtextEditorPage) -> ReplacementGuard {
     // its own marks from its workflow's terminal.
     editor.clear_modified_line_marks();
     view.set_cursor_visible(false);
-    buffer.set_highlight_syntax(false);
+    if !keep_highlight {
+        buffer.set_highlight_syntax(false);
+    }
     editor.refresh_accessibility_metadata();
     guard
 }
@@ -790,7 +788,36 @@ fn delete_one_slice(
     (buffer.char_count() == 0, deleted)
 }
 
+/// Take the language off before the first deleted slice (review S3): a
+/// chunked body also turns highlighting on for its attach and keeps it on at
+/// the terminal.
+fn take_language_off_before_clearing(session: &Rc<RefCell<BufferReplacementSession>>) {
+    let (editor, chunked) = {
+        let mut state = session.borrow_mut();
+        if !std::mem::take(&mut state.language_off_pending) {
+            return;
+        }
+        let chunked = state.highlight.is_some();
+        if chunked && let Some(guard) = state.guard.as_mut() {
+            guard.highlight_syntax = true;
+        }
+        (state.editor.upgrade(), chunked)
+    };
+    let Some(editor) = editor else {
+        return;
+    };
+    if chunked {
+        editor.begin_chunked_highlight();
+    } else {
+        editor.cancel_language_attach();
+        if editor.buffer().language().is_some() {
+            editor.buffer().set_language(None::<&sourceview5::Language>);
+        }
+    }
+}
+
 fn run_clear_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
+    take_language_off_before_clearing(session);
     let (editor, buffer, count) = {
         let mut state = session.borrow_mut();
         let count = next_clear_char_count(state.buffer.char_count());
@@ -929,6 +956,23 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
 }
 
+/// Whether this editor's live replacement is the chunked highlighted one
+/// (review S1); a session borrowed right now is the replacement deciding.
+impl LushtextEditorPage {
+    pub(crate) fn replacement_is_highlight_chunked(&self) -> bool {
+        self.imp()
+            .replacement
+            .active
+            .borrow()
+            .as_ref()
+            .is_some_and(|session| {
+                session
+                    .try_borrow()
+                    .map_or(true, |state| state.highlight.is_some())
+            })
+    }
+}
+
 /// The chunked highlighted install's gate before an insertion turn
 /// (`model::highlight_chunking::chunk_gate`, shared with the load through
 /// `LushtextEditorPage::decide_highlight_chunk`): `true` when the turn may
@@ -939,14 +983,17 @@ fn replacement_chunk_may_go_in(session: &Rc<RefCell<BufferReplacementSession>>) 
     let Some(editor) = session.borrow().editor.upgrade() else {
         return true;
     };
-    let decision = {
-        let mut state = session.borrow_mut();
-        let inserted = state.inserted_turns;
-        let Some(highlight) = state.highlight.as_mut() else {
-            return true;
-        };
-        editor.decide_highlight_chunk(highlight, inserted)
+    // Decide outside the borrow (review N1).
+    let (Some(mut highlight), inserted) = ({
+        let state = session.borrow();
+        (state.highlight, state.inserted_turns)
+    }) else {
+        return true;
     };
+    let decision = editor.decide_highlight_chunk(&mut highlight, inserted);
+    if let Some(slot) = session.borrow_mut().highlight.as_mut() {
+        *slot = highlight;
+    }
     match decision {
         ChunkDecision::Insert => true,
         ChunkDecision::Unhighlighted(base) => {

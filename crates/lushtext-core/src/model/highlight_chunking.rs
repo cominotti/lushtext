@@ -48,6 +48,9 @@ pub const HIGHLIGHT_CHUNK_BYTES: u64 = 8 * 1024;
 /// paragraph delimiter (U+2029, three bytes). Above `L_SYNTAX` characters the
 /// scale turns syntax off, so a highlighted install never meets a paragraph
 /// larger than one chunk.
+///
+/// Kind: external bound, derived from `L_SYNTAX` and UTF-8; not a threshold,
+/// so not rounded to a power of two.
 pub const MAX_SYNTAX_PARAGRAPH_BYTES: u64 = 4 * L_SYNTAX + 3;
 
 const _: () = assert!(MAX_SYNTAX_PARAGRAPH_BYTES <= HIGHLIGHT_CHUNK_BYTES);
@@ -78,8 +81,8 @@ impl HighlightInstallOrder {
 /// The order for a document of `total_bytes` in `language`, given whether
 /// the incoming scale allows syntax.
 ///
-/// Chunked exactly when syntax is allowed, the language is one of the five
-/// with no per-key cost ([`SyntaxLanguage::chunk_highlighted`]) and the
+/// Chunked exactly when syntax is allowed, the language has a chunked cap
+/// (`document_scale::chunked_threshold`) ([`SyntaxLanguage::chunk_highlighted`]) and the
 /// document is above that language's attach-after-install threshold: below
 /// it the C6 order is measured within budget and shows the whole text in the
 /// first frame.

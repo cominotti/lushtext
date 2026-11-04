@@ -442,6 +442,24 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     }
 }
 
+/// Whether this editor's live load installation is the chunked highlighted
+/// one (`chunked-highlight-attach`, review S1). A session borrowed right now
+/// is the installer deciding its next chunk, so it counts.
+impl LushtextEditorPage {
+    pub(crate) fn installation_is_highlight_chunked(&self) -> bool {
+        self.imp()
+            .load
+            .installation
+            .borrow()
+            .as_ref()
+            .is_some_and(|session| {
+                session
+                    .try_borrow()
+                    .map_or(true, |state| state.highlight.is_some())
+            })
+    }
+}
+
 /// The chunked highlighted install's gate before a chunk
 /// (`model::highlight_chunking::chunk_gate`): `true` when the chunk may go in
 /// now; otherwise the session is parked until the attach resolves or queued
@@ -458,13 +476,15 @@ fn highlight_chunk_may_go_in(session: &Rc<RefCell<ChunkedLoadInstall>>) -> bool 
     let Some(editor) = editor else {
         return true;
     };
-    let decision = {
-        let mut state = session.borrow_mut();
-        let Some(highlight) = state.highlight.as_mut() else {
-            return true;
-        };
-        editor.decide_highlight_chunk(highlight, chunks)
+    // Decide outside the borrow (review N1): the decision can attach or
+    // clear a language and wake waiters, whose handlers may read the session.
+    let Some(mut highlight) = session.borrow().highlight else {
+        return true;
     };
+    let decision = editor.decide_highlight_chunk(&mut highlight, chunks);
+    if let Some(slot) = session.borrow_mut().highlight.as_mut() {
+        *slot = highlight;
+    }
     match decision {
         ChunkDecision::Insert => true,
         ChunkDecision::Unhighlighted(base) => {

@@ -274,12 +274,13 @@ PHASE_KINDS = {
 # document, three 16 kB documents restored from the session, and two 64 kB
 # file-backed drafts recovered at startup.
 MARKDOWN_PREVIEW_BYTES = 200_000
-# `chunked-highlight-attach` (C6b): the five languages the chunked highlighted
-# install lifts to S_SYNTAX (1 MiB), at that size, and the seven that keep
-# their C6 gates because of their per-key re-analysis, at the same size.
-HIGHLIGHT_CHUNKED_EXTS = ("md", "rs", "c", "py", "xml")
-HIGHLIGHT_GATED_EXTS = ("html", "json", "js", "ts", "css", "sh", "yaml")
-HIGHLIGHT_BYTES = 1 << 20
+# `chunked-highlight-attach` (C6b): the two languages the chunked highlighted
+# install highlights above their C6 gates (markdown and c, capped at 512 KiB,
+# `document_scale::chunked_threshold`), at that cap, and the ten that keep
+# their C6 gates, at the same size.
+HIGHLIGHT_CHUNKED_EXTS = ("md", "c")
+HIGHLIGHT_GATED_EXTS = ("rs", "py", "xml", "html", "json", "js", "ts", "css", "sh", "yaml")
+HIGHLIGHT_BYTES = 1 << 19
 EDITORCONFIG_LINE_LENGTH = 710
 EDITORCONFIG_TAB_WIDTH = 8
 EDITORCONFIG_SETTING_TAB_WIDTH = 4
@@ -1506,6 +1507,11 @@ def c6_verdict(rows: list[dict], budgets: dict, floors: dict[str, dict], baselin
 
     regressions: list[dict] = []
     new_stages: list[dict] = []
+    # `chunked-highlight-attach` design D9: a chunked highlighted document is
+    # laid out later than on a baseline that does not highlight it, by the
+    # engine's analysis; that one comparison is reported, not gated.
+    chunked_cases = {row["case"] for row in branch if (row.get("attrs") or {}).get("chunked")}
+    exempt_regressions: list[dict] = []
     if baseline:
         base_series = stage_series(baseline)
         for key, stages in stage_series(branch).items():
@@ -1521,7 +1527,11 @@ def c6_verdict(rows: list[dict], budgets: dict, floors: dict[str, dict], baselin
                     continue
                 branch_median, base_median = _median(values), _median(base[stage])
                 if branch_median > base_median + frame:
-                    regressions.append({"case": key[0], "variant": key[1], "phase": key[2], "stage": stage, "branch_median_us": branch_median, "baseline_median_us": base_median, "limit_us": base_median + frame})
+                    entry = {"case": key[0], "variant": key[1], "phase": key[2], "stage": stage, "branch_median_us": branch_median, "baseline_median_us": base_median, "limit_us": base_median + frame}
+                    if stage == "activation-to-laid-out" and key[0] in chunked_cases:
+                        exempt_regressions.append({**entry, "reason": "chunked highlighted install (C6b design D9): the analysis the baseline does not do"})
+                    else:
+                        regressions.append(entry)
     for regression in regressions:
         failures.append(f"{regression['case']}@{regression['variant']} {regression['phase']}: {regression['stage']} median {regression['branch_median_us']} us > baseline {regression['baseline_median_us']} + one frame")
     itf = []
@@ -1538,6 +1548,7 @@ def c6_verdict(rows: list[dict], budgets: dict, floors: dict[str, dict], baselin
         "verdict": "not met" if failures else "met",
         "failures": failures,
         "regressions": regressions,
+        "exempt_regressions": exempt_regressions,
         "new_stages": new_stages,
         "exceptions": exceptions,
         "baseline_over_budget": baseline_over,
@@ -4985,6 +4996,10 @@ def render_post_open(report: dict) -> list[str]:
         lines += ["", "| Case | Phase | Stage | Branch median (us) | Baseline median (us) | Limit (us) |", "|---|---|---|---|---|---|"]
         for r in c6["regressions"]:
             lines.append(f"| {r['case']}@{r['variant']} | {r['phase']} | {r['stage']} | {r['branch_median_us']} | {r['baseline_median_us']} | {r['limit_us']} |")
+    if c6.get("exempt_regressions"):
+        lines += ["", "Reported, not gated (C6b design D9, a chunked highlighted install):", "", "| Case | Phase | Stage | Branch median (us) | Baseline median (us) |", "|---|---|---|---|---|"]
+        for r in c6["exempt_regressions"]:
+            lines.append(f"| {r['case']}@{r['variant']} | {r['phase']} | {r['stage']} | {r['branch_median_us']} | {r['baseline_median_us']} |")
     if c6.get("new_stages"):
         lines += ["", "New on the branch (no baseline median; under the absolute bounds only): " + ", ".join(f"{n['case']}@{n['variant']} {n['phase']} {n['stage']}" for n in c6["new_stages"])]
     lines += ["", "### Toolkit-floor exceptions", ""]
@@ -5790,6 +5805,9 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
     slow_layout = [row("branch", r, [open_entry([("post_open_language_attach", 3_000)], laid_out_us=420_000)]) for r in range(3)]
     slowed = c6_verdict(baseline_rows + slow_layout, budgets, {})
     expect(any(r.get("stage") == "activation-to-laid-out" for r in slowed.get("regressions", [])), f"activation-to-laid-out over the baseline's plus one frame regresses ({slowed.get('regressions')})")
+    chunked_layout = [dict(r, attrs={"chunked": True}) for r in slow_layout]
+    chunked = c6_verdict(baseline_rows + chunked_layout, budgets, {})
+    expect(not chunked.get("regressions") and any(r.get("stage") == "activation-to-laid-out" for r in chunked.get("exempt_regressions", [])), f"a chunked case's later layout is reported, not gated (C6b D9) ({chunked.get('regressions')}, {chunked.get('exempt_regressions')})")
     late_attach = [row("branch", r, [open_entry([("post_open_language_attach", 3_000)], settle_us=900_000)]) for r in range(3)]
     attach_only = c6_verdict(baseline_rows + late_attach, budgets, {})
     expect(not attach_only.get("regressions"), f"a later settle with the same layout time is not a regression ({attach_only.get('regressions')})")

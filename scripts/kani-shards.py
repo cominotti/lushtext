@@ -794,6 +794,7 @@ ORACLES: dict[str, Oracle] = {
             _h(_CHUNKED + "without_the_paragraph_bound_a_slice_exceeds_the_cut", 0.03, "ci"),
             _h(_CHUNKED + "a_highlighted_chunk_follows_the_attach_and_the_analysis", 0.06, "ci"),
             _h(_CHUNKED + "highlighted_slices_never_exceed_the_cut", 3.49, "ci"),
+            _h(_CHUNKED + "a_chunked_install_finishes_even_without_coverage_or_a_language", 0.44, "ci"),
         ),
     ),
     "crates/lushtext-core/src/ui/editor_page/load/policy.rs": Oracle(
