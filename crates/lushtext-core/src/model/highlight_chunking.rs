@@ -193,7 +193,7 @@ mod tests {
     use crate::model::document_scale::S_SYNTAX;
 
     #[test]
-    fn only_the_ten_languages_above_their_threshold_take_the_chunked_order() {
+    fn only_a_language_with_a_chunked_cap_takes_the_chunked_order_above_its_threshold() {
         for language in SyntaxLanguage::ALL {
             let threshold = language.attach_after_install_threshold();
             assert_eq!(
