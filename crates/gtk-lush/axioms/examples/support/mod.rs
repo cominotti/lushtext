@@ -16,13 +16,20 @@
 //! `make gtk-axiom-sample AXIOM=<id> CHECK=1` sets it inside a private
 //! headless session.
 //!
+//! **`--help`, `-h`, or any other argument:** print the usage and exit (`0`,
+//! or `2` for an unknown argument) before GTK starts, so a mistyped or
+//! exploratory command never opens a window on a live desktop.
+//!
 //! This module is example code, not public API: each sample includes it with
 //! `mod support;`.
 
 use std::process::ExitCode;
 use std::time::Duration;
 
-use gtk_lush_axioms::{AxiomId, find, include_slow_probes, init_toolkit, slow_skip_line};
+use gtk_lush_axioms::{
+    AxiomId, SampleFlags, SampleRequest, classify_sample_args, find, include_slow_probes,
+    init_toolkit, sample_usage, slow_skip_line,
+};
 use gtk4::prelude::*;
 
 /// The variable that authorizes `--check` to open probe windows.
@@ -73,9 +80,14 @@ impl SampleUi {
     }
 }
 
-/// Run the sample for `axiom`: `--check` runs its probe, anything else opens
-/// the interactive window that `build` fills in.
+/// Run the sample for `axiom`: `--check` runs its probe, no argument opens
+/// the interactive window that `build` fills in; `--help`, `-h` and any
+/// other argument print the usage instead and never create a window
+/// ([`guard`]).
 pub fn run(axiom: AxiomId, build: fn(&SampleUi)) -> ExitCode {
+    if let Some(code) = guard(&SampleFlags::NONE) {
+        return code;
+    }
     if std::env::args()
         .skip(1)
         .any(|argument| argument == "--check")
@@ -83,6 +95,34 @@ pub fn run(axiom: AxiomId, build: fn(&SampleUi)) -> ExitCode {
         check(axiom)
     } else {
         interactive(axiom, build)
+    }
+}
+
+/// Decide the command line before GTK starts: `Some` exit code for a help
+/// request (`0`) or an unknown argument (`2`), after printing the usage;
+/// `None` when the sample may go on. A sample with measurement modes calls
+/// this first with its own `flags`.
+pub fn guard(flags: &SampleFlags) -> Option<ExitCode> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let program = std::env::args()
+        .next()
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "sample".to_owned());
+    match classify_sample_args(&arguments, flags) {
+        SampleRequest::Help => {
+            print!("{}", sample_usage(&program, flags));
+            Some(ExitCode::SUCCESS)
+        }
+        SampleRequest::Unknown(argument) => {
+            eprintln!("{program}: unknown argument {argument:?}\n");
+            eprint!("{}", sample_usage(&program, flags));
+            Some(ExitCode::from(2))
+        }
+        SampleRequest::Check | SampleRequest::Mode(_) | SampleRequest::Interactive => None,
     }
 }
 

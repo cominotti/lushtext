@@ -169,6 +169,30 @@ def check(ledger_text: str, catalogue_text: str, example_stems: set[str]) -> lis
     return errors
 
 
+GUARD_FIRST = re.compile(r"fn main\(\) -> (?:std::process::)?ExitCode \{\s*if let Some\(code\) = support::guard\(&FLAGS\)")
+RUN_GUARDED = re.compile(r"pub fn run\(axiom: AxiomId, build: fn\(&SampleUi\)\) -> ExitCode \{\s*if let Some\(code\) = guard\(&SampleFlags::NONE\)")
+
+
+def check_sample_guards(support: str, sources: dict[str, str]) -> list[str]:
+    """A sample never opens its window for `--help` or an unknown argument.
+
+    The shared `support::run` must classify the command line first, and a
+    sample that reads its own flags must call `support::guard(&FLAGS)` as
+    the first statement of `main`, before any mode dispatch (2026-11-04: a
+    sample run with `--help` opened its window on a live desktop).
+    """
+    errors: list[str] = []
+    if not RUN_GUARDED.search(support):
+        errors.append("examples/support/mod.rs: `run` must call `guard(&SampleFlags::NONE)` before anything else")
+    for stem, text in sorted(sources.items()):
+        if "support::run(" not in text:
+            errors.append(f"examples/{stem}.rs does not end in `support::run`")
+        reads_flags = "std::env::args" in text or "fn argument(" in text
+        if reads_flags and not GUARD_FIRST.search(text):
+            errors.append(f"examples/{stem}.rs reads its own flags but `main` does not start with `support::guard(&FLAGS)`")
+    return errors
+
+
 def load_tree() -> tuple[str, str, set[str]]:
     return (
         LEDGER.read_text(encoding="utf-8"),
@@ -239,6 +263,19 @@ def self_test() -> int:
         )
         if not any(expected in error for error in errors):
             failures.append(f"{label}: expected an error containing {expected!r}, saw {errors}")
+    guarded_support = "pub fn run(axiom: AxiomId, build: fn(&SampleUi)) -> ExitCode {\n    if let Some(code) = guard(&SampleFlags::NONE) {"
+    guarded = "fn main() -> ExitCode {\n    if let Some(code) = support::guard(&FLAGS) {\n        return code;\n    }\n    if argument(\"x\").is_some() {}\n    support::run(AxiomId::new(1), build)\n}\nfn argument() {}"
+    if check_sample_guards(guarded_support, {"a01_one": guarded, "a02_two": "fn main() -> ExitCode { support::run(AxiomId::new(2), build) }"}):
+        failures.append("guarded samples must pass")
+    guard_cases = [
+        ("an unguarded runner", "pub fn run(axiom: AxiomId, build: fn(&SampleUi)) -> ExitCode {\n    check(axiom)", {}, "`run` must call `guard"),
+        ("a flag-reading sample without the guard", guarded_support, {"a01_one": "fn main() -> ExitCode {\n    if argument(\"x\").is_some() {}\n    support::run(AxiomId::new(1), build)\n}\nfn argument() {}"}, "does not start with `support::guard"),
+        ("a sample that never calls run", guarded_support, {"a01_one": "fn main() -> ExitCode { ExitCode::SUCCESS }"}, "does not end in `support::run`"),
+    ]
+    for label, support, sources, expected in guard_cases:
+        errors = check_sample_guards(support, sources)
+        if not any(expected in error for error in errors):
+            failures.append(f"{label}: expected an error containing {expected!r}, saw {errors}")
     if failures:
         print("check-gtk-axioms self-test failed:", file=sys.stderr)
         for failure in failures:
@@ -255,6 +292,10 @@ def main() -> int:
     if arguments.self_test:
         return self_test()
     errors = check(*load_tree())
+    errors += check_sample_guards(
+        (EXAMPLES / "support" / "mod.rs").read_text(encoding="utf-8"),
+        {path.stem: path.read_text(encoding="utf-8") for path in EXAMPLES.glob("*.rs")},
+    )
     if errors:
         print("GTK axiom ledger check failed:", file=sys.stderr)
         for error in errors:

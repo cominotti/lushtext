@@ -25,7 +25,7 @@ use gtk_lush_axioms::fixtures::a69::{
     engine_dispatches, over_budget, priority_trace, worst,
 };
 use gtk_lush_axioms::fixtures::post_open::short_document;
-use gtk_lush_axioms::{AxiomId, init_toolkit};
+use gtk_lush_axioms::{AxiomId, SampleFlags, init_toolkit};
 use gtk4::prelude::*;
 
 /// The languages the derivation runs for unless `--languages=a,b,…` names
@@ -364,7 +364,21 @@ fn derive() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The measurement modes and their options (`support::guard`).
+const FLAGS: SampleFlags = SampleFlags {
+    modes: &[
+        "--derive-s-bg-highlight",
+        "--attribute-s-bg-highlight",
+        "--options-s-bg-highlight",
+        "--typing-s-bg-highlight",
+        "--typing-check",
+    ],
+    options: &["--languages"],
+};
 fn main() -> ExitCode {
+    if let Some(code) = support::guard(&FLAGS) {
+        return code;
+    }
     if std::env::args().any(|argument| argument == "--derive-s-bg-highlight") {
         derive()
     } else if argument("attribute-s-bg-highlight").is_some() {

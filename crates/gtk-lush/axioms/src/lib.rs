@@ -54,6 +54,7 @@ mod catalogue;
 pub mod fixtures;
 mod observation;
 mod probes;
+mod sample_args;
 mod session;
 
 use std::fmt;
@@ -63,6 +64,7 @@ pub use catalogue::{
 };
 pub use observation::{Observation, Verdict};
 pub use probes::*;
+pub use sample_args::{SampleFlags, SampleRequest, classify_sample_args, sample_usage};
 
 /// The stable id of one ledger axiom, displayed `A1`, `A2`, ….
 ///
