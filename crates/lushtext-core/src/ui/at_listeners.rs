@@ -32,10 +32,12 @@
 //! (sender, event) pairs, as the registry does, so a repeated signal changes
 //! nothing.
 //!
-//! One known divergence: GTK inside a Flatpak sandbox whose portal is older
-//! than version 7 assumes listeners are present (`can_use_event_listeners`);
-//! the mirror then still reads the registry's answer. Every supported runtime
-//! has a newer portal.
+//! One known divergence: GTK inside a Flatpak sandbox whose **host's**
+//! Flatpak portal is older than version 7 (Flatpak before about 1.15) assumes
+//! listeners are present (`can_use_event_listeners`), and that host's
+//! accessibility proxy may not forward the registry's call and signals; the
+//! call then fails, the mirror stays unknown, and nothing is detached (safe).
+//! The connection closing also returns the mirror to unknown.
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -131,6 +133,10 @@ struct Subscriber {
 struct State {
     started: bool,
     knowledge: Knowledge,
+    /// Set by the test-utils simulation: the registry's own reply and
+    /// signals then change nothing, so a real answer arriving later cannot
+    /// replace what a widget test simulated.
+    simulated: bool,
     subscribers: Vec<Subscriber>,
     /// The accessibility-bus connection and its signal subscriptions, kept for
     /// the life of the process.
@@ -142,6 +148,7 @@ thread_local! {
     static STATE: RefCell<State> = RefCell::new(State {
         started: false,
         knowledge: if gtk_uses_atspi() { Knowledge::Unknown } else { Knowledge::Disabled },
+        simulated: false,
         subscribers: Vec::new(),
         connection: None,
         subscriptions: Vec::new(),
@@ -211,12 +218,20 @@ pub fn start() {
                     gio::DBusSignalFlags::NONE,
                     move |signal| {
                         if let Some(change) = listener_change(member, signal.parameters) {
-                            update(|knowledge| apply_change(knowledge, change));
+                            update_from_registry(|knowledge| apply_change(knowledge, change));
                         }
                     },
                 )
             })
             .collect();
+        // A closed connection receives no more signals: unknown again.
+        connection.connect_closed(|_, _, _| {
+            update_from_registry(|knowledge| {
+                if *knowledge != Knowledge::Disabled {
+                    *knowledge = Knowledge::Unknown;
+                }
+            });
+        });
         STATE.with_borrow_mut(|state| {
             state.connection = Some(connection.clone());
             state.subscriptions = subscriptions;
@@ -237,16 +252,31 @@ pub fn start() {
         if let Ok(reply) = reply
             && let Some((pairs,)) = reply.get::<(Vec<(String, String)>,)>()
         {
-            update(|knowledge| apply_reply(knowledge, pairs));
+            update_from_registry(|knowledge| apply_reply(knowledge, pairs));
         }
     });
 }
 
-/// GTK uses its AT-SPI backend unless `GTK_A11Y` names another one
-/// (`gtk_at_context_create`: unset means "0", the first available backend).
+/// [`update`] for what the registry itself sends; a no-op once a widget test
+/// simulated the registry.
+fn update_from_registry(change: impl FnOnce(&mut Knowledge)) {
+    if !STATE.with_borrow(|state| state.simulated) {
+        update(change);
+    }
+}
+
+/// Whether GTK's accessibility backend may send to the AT-SPI registry
+/// (`gtk_at_context_create`): unset or any value starting with `0` selects the
+/// first available backend; `atspi` and `accesskit` (which reaches AT-SPI on
+/// Linux) select one that does; `help` falls back to the default. Only `none`,
+/// `test` and an unrecognized value, which GTK ignores with a warning and
+/// sends nothing for, read as disabled.
 fn gtk_uses_atspi() -> bool {
     std::env::var("GTK_A11Y").map_or(true, |value| {
-        value == "0" || value.eq_ignore_ascii_case("atspi") || value.eq_ignore_ascii_case("help")
+        value.starts_with('0')
+            || ["atspi", "accesskit", "help"]
+                .iter()
+                .any(|backend| value.eq_ignore_ascii_case(backend))
     })
 }
 
@@ -304,12 +334,15 @@ fn notify(active: bool) {
     });
 }
 
-/// Pretend the registry answered `GetRegisteredEvents` with no listener, if it
-/// has not answered (widget tests: the headless harness's private session has
-/// no registry to answer, and an unanswered mirror reads as listening).
+/// Pretend the registry answered `GetRegisteredEvents` with no listener, if
+/// nothing was simulated yet, and ignore the real registry from now on
+/// (widget tests: an unanswered mirror reads as listening, and a real answer,
+/// which a host whose session can activate at-spi2-registryd gives, would
+/// otherwise replace a simulated listener).
 #[cfg(feature = "test-utils")]
 pub fn simulate_registry_answer() {
-    if !answered() {
+    let first = STATE.with_borrow_mut(|state| !std::mem::replace(&mut state.simulated, true));
+    if first {
         update(|knowledge| apply_reply(knowledge, Vec::new()));
     }
 }

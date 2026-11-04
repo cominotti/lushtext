@@ -127,10 +127,11 @@ pub(super) fn select_previous_match(bar: &LushtextSearchBar) {
     report_match_state(bar);
 }
 
-/// Show any text a paced reveal still hides before a replace: GtkSourceView
-/// replaces only visible matches (A33). The editor never starts a reveal while
-/// a context is attached, so this is a second guard.
-fn reveal_hidden_document_text(bar: &LushtextSearchBar) {
+/// Show any text a paced reveal still hides: GtkSourceView finds, counts and
+/// replaces only visible matches (A33). Called when the query becomes
+/// non-empty and before a replace; the editor starts no reveal while an
+/// attached context has a query.
+pub(super) fn reveal_hidden_document_text(bar: &LushtextSearchBar) {
     if let Some(ref weak_view) = *bar.imp().view_ref.borrow()
         && let Some(view) = weak_view.upgrade()
         && let Some(editor) = view

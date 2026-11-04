@@ -270,6 +270,18 @@ impl LushtextSearchBar {
         });
 
         // Search-as-you-type: pipe entry text → active SearchSettings.
+        // A non-empty query makes the search context find, count and replace,
+        // and it skips text a paced reveal still hides (A33): reveal it as soon
+        // as the text becomes non-empty, before `search-changed`'s delay hands
+        // it to the settings (review round 3, SF-C).
+        let reveal_weak = self.obj().downgrade();
+        self.search_entry.connect_changed(move |entry| {
+            if let Some(bar) = reveal_weak.upgrade()
+                && !entry.text().is_empty()
+            {
+                super::execution::reveal_hidden_document_text(&bar);
+            }
+        });
         let bar_weak = self.obj().downgrade();
         self.search_entry.connect_search_changed(move |entry| {
             let Some(bar) = bar_weak.upgrade() else {

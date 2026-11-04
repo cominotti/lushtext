@@ -99,6 +99,11 @@ top of the view.
 - **THEN** the print covers its document, and the bookmark places the caret
   and the kept line without a toolkit critical
 
+#### Scenario: A hidden view with a minimap is detached within budget
+- **WHEN** a hidden laid-out view of 204,601 lines with a minimap bound is
+  re-laid out (a zoom step)
+- **THEN** its detach dispatch stays within `B_SETTLE_US`
+
 #### Scenario: Switching to a large hidden tab stays within budget
 - **WHEN** the user switches to a large tab whose view laid nothing out while
   hidden
@@ -132,10 +137,11 @@ listens sends its whole text once (recorded exception, design D7).
 - **THEN** they attach in separate dispatches, one each
 
 ### Requirement: Hidden text never escapes the in-tab search
-No paced reveal SHALL start while the in-tab search context is attached, and
-attaching it or replacing through it SHALL first reveal any text a paced
+No paced reveal SHALL start while the in-tab search context is attached with
+a non-empty query, and the query becoming non-empty, attaching a context with
+a retained query, or replacing through it SHALL first reveal any text a paced
 reveal still hides, so find, the occurrence count, Replace and Replace All see
-the whole document. Replace All with nothing to replace SHALL change nothing
+the whole document. With an empty query restyles and reattaches still pace. Replace All with nothing to replace SHALL change nothing
 and SHALL not fail.
 
 #### Scenario: Replace All right after switching to a dense tab
@@ -143,14 +149,15 @@ and SHALL not fail.
   at once
 - **THEN** every match in the document is replaced
 
+#### Scenario: An open search bar with an empty query keeps pacing
+- **WHEN** a dense document is restyled while its search bar is open with an
+  empty query
+- **THEN** the restyle is paced, and typing a query reveals every paragraph
+  at once
+
 #### Scenario: Replace All matches nothing
 - **WHEN** Replace All runs with a query that matches nothing
 - **THEN** the document is unchanged and the application keeps running
-
-#### Scenario: A hidden view with a minimap is detached within budget
-- **WHEN** a hidden laid-out view of 204,601 lines with a minimap bound is
-  re-laid out (a zoom step)
-- **THEN** its detach dispatch stays within `B_SETTLE_US`
 
 ## MODIFIED Requirements
 

@@ -103,13 +103,16 @@ pub(crate) struct ViewAttachmentState {
 /// 6.8–7.0 ms for 261,491 lines of 400 characters), so this keeps a detach
 /// under half of `B_SETTLE_US` there.
 ///
-/// With a minimap the bound `GtkSourceMap` walks the lines again, about
-/// doubling the swap: the lane's `view_detach` span on 204,601 laid-out lines
-/// (`eviction/detach` and `-minimap`, load 2.9–9) is 5.3–5.9 ms without and
-/// 8.6–12.7 ms with the minimap, within `B_SETTLE_US`. The cap is kept for
-/// both: not detaching costs far more there, a zoom step re-laying out the
-/// hidden view and its map took 175–189 ms on `main` against 11.5–14.1 ms with
-/// the detach (review round 2, N5).
+/// **With a minimap this is a recorded power-of-two exception** (review rounds
+/// 2 and 3): the bound `GtkSourceMap` walks the lines again, so the swap at the
+/// cap exceeds half of `B_SETTLE_US`, and the rule would round down to 2^17.
+/// Measured: at exactly 2^18 lines (PyGObject probe, load 1.2–1.4) 10.4–10.6 ms
+/// with the minimap against 6.0–6.2 ms without; the lane's `view_detach` span
+/// at 204,601 lines (`eviction/detach` and `-minimap`, load 2.9–9) 8.6–12.7 ms
+/// against 5.3–5.9 ms, extrapolated to about 11–16 ms at the cap under that
+/// load. 2^17 would leave minimap documents of 131,073–262,144 lines attached,
+/// and a zoom step then re-lays a hidden one and its map out in one 175–189 ms
+/// dispatch (`main`, V5), against 11.5–14.1 ms with the detach.
 pub(crate) const VIEW_DETACH_MAX_LINES: i32 = 1 << 18;
 
 /// The most characters a detached view's document may have to be attached
@@ -237,8 +240,10 @@ impl LushtextEditorPage {
 
     /// An assistive technology started or stopped listening (or the mirror
     /// got its first answer). Started: a detached view whose document is small
-    /// is queued to attach, one editor per dispatch with the selected tab
-    /// first (`AtAttachQueue`), so it never sends a large text change later;
+    /// is queued to attach, one editor per dispatch (`AtAttachQueue`; per
+    /// source: GLib may run another ready source of the same priority in the
+    /// same iteration, ledger A81), the selected tab first (a selected tab is
+    /// mapped and attached, except in a window not yet mapped), so it never sends a large text change later;
     /// a larger one waits until it is shown. Stopped: the queue is dropped, and
     /// a hidden attached view (one built while the mirror had no answer
     /// included) is detached when next seen laying out.

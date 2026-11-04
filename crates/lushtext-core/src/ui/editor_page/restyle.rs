@@ -151,11 +151,13 @@ impl LushtextEditorPage {
 
     fn prepare_paced_restyle_around(&self, shown: Option<ParagraphSpan>) -> bool {
         // A selection already there would let a copy read around the hidden
-        // paragraphs (module docs), and an attached search context would find,
-        // count and replace around them (A33; review round 2, SF4), so either
-        // runs the restyle unpaced.
+        // paragraphs (module docs), and an attached search context with a
+        // query would find, count and replace around them (A33; review round
+        // 2, SF4), so either runs the restyle unpaced. An empty query finds
+        // nothing, so it paces (round 3, SF-C); the query becoming non-empty
+        // reveals everything (`search_bar::execution`).
         if !self.is_dense_document()
-            || self.imp().search_bar.search_context().is_some()
+            || self.search_has_query()
             || self.content_is_installing()
             || self.buffer().has_selection()
         {
@@ -255,6 +257,12 @@ impl LushtextEditorPage {
         });
         state.tag.replace(Some(tag.clone()));
         tag
+    }
+
+    /// Whether the in-tab search context is attached with a non-empty query.
+    fn search_has_query(&self) -> bool {
+        let bar = &self.imp().search_bar;
+        bar.search_context().is_some() && !bar.search_entry().text().is_empty()
     }
 
     /// End a running reveal by showing every hidden paragraph in this

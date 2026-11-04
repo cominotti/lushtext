@@ -254,8 +254,18 @@ with it.
     cap is kept for both: without the detach the zoom step re-laid out the
     hidden view and its map in one 175–189 ms dispatch (`main`, V5), against
     11.5–14.1 ms with it. A 2^17 cap for minimap views was tried in c4aba7a4
-    and removed; at exactly 2^18 lines the extrapolated swap is about 16 ms
-    under that load (recorded).
+    and removed. 2^18 with a minimap is a recorded power-of-two exception:
+    measured at exactly 2^18 lines (PyGObject probe, load 1.2–1.4), the swap is
+    10.4–10.6 ms with the minimap and 6.0–6.2 without; extrapolated from the
+    lane's 204,601 lines it is about 11–16 ms under load 2.9–9.
+  - Round 3 (2026-11-04): pacing is refused only while the search context has
+    a non-empty query (an empty query finds nothing), and the query becoming
+    non-empty reveals; the print request records the buffer of the compositor
+    it builds in the evidence its runner sees; a test's simulated registry is
+    sticky; a closed accessibility-bus connection returns the mirror to
+    unknown; `GTK_A11Y=accesskit` reads as AT-SPI. The attach queue's "one
+    editor per dispatch" holds per source: GLib may run another ready source
+    of its priority in the same iteration (A81).
 - **Pacing aging.** A background slice that waited 256 ms behind visible work
   runs once at `PACED_SLICE_PRIORITY` (`input_quiet::paced_idle_aging`).
 - **The activation's present.** The span-less 35–52 ms after the second open of

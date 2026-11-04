@@ -92,8 +92,21 @@ fn run_print_request(window: &LushtextWindow, editor: &LushtextEditorPage) -> Pr
         return PrintOutcome::RefusedProtectedView;
     }
     #[cfg(feature = "test-utils")]
-    if let Some(outcome) = test_policy::installed_runner_outcome(&print_evidence(window)) {
-        return outcome;
+    {
+        // The runner sees the compositor the request would print with, built
+        // here as the native path builds it.
+        let mut evidence = print_evidence(window);
+        if let Some(document) = evidence.document.as_mut() {
+            document.compositor_char_count = Some(
+                sourceview5::prelude::PrintCompositorExt::buffer(&execution::print_compositor(
+                    editor,
+                ))
+                .char_count(),
+            );
+        }
+        if let Some(outcome) = test_policy::installed_runner_outcome(&evidence) {
+            return outcome;
+        }
     }
 
     execution::run_native_print_operation(window, editor)

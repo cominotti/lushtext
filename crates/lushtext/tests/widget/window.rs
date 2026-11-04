@@ -21221,7 +21221,8 @@ fn test_printing_a_never_shown_tab_prints_its_document() {
     let document = observations[0].document.as_ref().expect("a document");
     assert!(document.char_count > 0);
     assert_eq!(
-        document.compositor_char_count, document.char_count,
+        document.compositor_char_count,
+        Some(document.char_count),
         "the compositor prints the document, not the view's placeholder"
     );
 }

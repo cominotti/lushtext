@@ -812,3 +812,46 @@ fn test_replace_all_with_no_match_is_a_no_op() {
         "nothing to find here\n"
     );
 }
+
+/// Review round 3, SF-C: an open search bar with an empty query finds nothing,
+/// so a dense restyle still paces; typing a query reveals everything at once.
+#[test]
+fn test_an_empty_query_keeps_pacing_and_typing_one_reveals() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("dense.txt");
+    let line = format!("needle {}\n", "d".repeat(700));
+    fixture::write_text(&path, &line.repeat(400));
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    flush_events();
+    editor.show_search();
+    assert!(editor.search_bar().search_context().is_some());
+    assert!(editor.search_bar().search_entry().text().is_empty());
+
+    let before = editor.load_evidence().restyle.restyles;
+    gtk4::prelude::WidgetExt::activate_action(&window, "win.zoom-in", None)
+        .expect("zoom-in action");
+    let paced = editor.load_evidence().restyle.restyles;
+    assert!(
+        paced > before,
+        "an empty query does not stop the restyle's pacing"
+    );
+    assert!(editor.load_evidence().restyle.pending);
+
+    editor.search_bar().search_entry().set_text("needle");
+    assert!(
+        !editor.load_evidence().restyle.pending,
+        "a non-empty query reveals every paragraph at once"
+    );
+    gtk4::prelude::WidgetExt::activate_action(&window, "win.zoom-out", None)
+        .expect("zoom-out action");
+    assert_eq!(
+        editor.load_evidence().restyle.restyles,
+        paced,
+        "with a query, the next restyle is not paced"
+    );
+}

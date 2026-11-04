@@ -2980,6 +2980,18 @@ in every repetition), so V5 measures its behavior.
   view); `eviction/reselect` hits the cap on both sides; the other cases match
   `main` within a reference frame.
 
+**Review round 3 (review of 6929f019, 2026-11-04).** The print request now
+records the buffer of the compositor it builds in the evidence its runner sees
+(the M4 test fails first against a wrong compositor buffer: `Some(0)` against
+`Some(23)`). Pacing is refused only while the search query is non-empty, and
+the query becoming non-empty reveals (an empty query finds nothing; widget
+test, failing first against the previous rule). 2^18 with a minimap is a
+recorded power-of-two exception beside the constant, now measured at exactly
+2^18 lines (PyGObject probe, load 1.2–1.4): 10.4–10.6 ms with the minimap,
+6.0–6.2 ms without. A test's simulated registry is sticky; a closed
+accessibility-bus connection returns the mirror to unknown; `GTK_A11Y=accesskit`
+reads as AT-SPI.
+
 **The `steady-populated` shift SC left (attributed).** The worst dispatch at
 the start of `type-during-settle` is the populated window's first editor frame
 on both sides, 11.4–12.8 ms unloaded, within `B_SETTLE_US`; the loaded

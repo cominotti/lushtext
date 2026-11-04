@@ -54,10 +54,11 @@ pub struct PrintDocumentFacts {
     pub modified: bool,
     /// Draft identity active for this tab before printing began.
     pub draft_id: Option<String>,
-    /// Character count of the buffer the print compositor is built over
-    /// (`execution::print_compositor`): the document's, whatever the view
-    /// shows.
-    pub compositor_char_count: i32,
+    /// Character count of the buffer the print compositor was built over,
+    /// recorded where the print request builds it (`run_print_request`), so a
+    /// compositor over the view's placeholder shows here; `None` on an
+    /// ordinary read, which builds nothing.
+    pub compositor_char_count: Option<i32>,
 }
 
 /// Everything a test or probe may observe about the print workflow.
@@ -124,8 +125,6 @@ fn document_facts(editor: &LushtextEditorPage) -> Option<PrintDocumentFacts> {
         char_count,
         modified: editor.is_modified(),
         draft_id: editor.draft_id(),
-        // `execution::print_compositor` is built over `editor.buffer()`; read
-        // that fact without building one (a read does no toolkit work).
-        compositor_char_count: editor.buffer().char_count(),
+        compositor_char_count: None,
     })
 }
