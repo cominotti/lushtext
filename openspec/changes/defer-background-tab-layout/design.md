@@ -221,6 +221,37 @@ with it.
   204,601-line document took 78–80 ms in V4). Remeasured: 10.1–16.9 ms against
   `main`'s 15.7–20.3 ms; the worst dispatch is the first frame of the newly
   shown tab.
+- **Round 2 (second review, 2026-11-04).**
+  - The mirror parsed `EventListenerDeregistered` as `(ssas)`, but it is `(ss)`
+    (at-spi2-registryd's introspection, GTK's parsing), so a listener never
+    left; a pure `listener_change` parses both shapes (failing-first unit
+    test). The mirror now reads as listening until the registry answers and
+    for good on failure, and the answer replaces its (sender, event) set, so a
+    listener registering between subscription and reply is not counted twice.
+  - When a listener appears, detached editors attach one per dispatch at
+    `G_PRIORITY_DEFAULT_IDLE + 1`, the selected tab first; leaving cancels.
+  - **Recorded exception (SF2, 2026-11-04).** A document over 2^20 characters
+    detached before a listener appeared sends its whole text once when shown.
+    Re-installing it in slices through the buffer-replacement workflow would
+    rewrite the buffer (undo, modified state, marks, caret) to change only what
+    the AT is told, so it was not done. Measured (PyGObject probe under the
+    lane's AT setup, a listener recording payload sizes): 32 MiB, 71–75 ms in
+    one dispatch and one `TextChanged` of 33,554,400 characters; 100 MiB,
+    182–186 ms and one of 104,857,582; 160 MiB, nothing sent (0.1 ms; over
+    D-Bus's 128 MiB message limit, so the AT's text model misses the
+    document). The a11y bus allows 1 GB (`accessibility.conf`). Because an
+    unanswered mirror reads as listening, only an assistive technology started
+    mid-session reaches this.
+  - A paced reveal hid paragraphs from the in-tab search (A33): Replace All
+    right after switching to a dense tab replaced 17 of 400 matches
+    (failing-first). The search context reveals first, and no paced reveal
+    starts while one is attached. Writing that test found a pre-existing crash:
+    sourceview5 0.11's `replace_all` asserts a zero count carries an error, so
+    Replace All that matched nothing panicked; the call is made directly.
+  - With a minimap bound the detach walks the lines twice: the lane's
+    `view_detach` span on 204,601 laid-out lines, 5.3–5.9 ms without and
+    8.6–12.7 ms with the minimap (load 4.5–9), so the cap is 2^17 lines with a
+    minimap bound.
 - **Pacing aging.** A background slice that waited 256 ms behind visible work
   runs once at `PACED_SLICE_PRIORITY` (`input_quiet::paced_idle_aging`).
 - **The activation's present.** The span-less 35–52 ms after the second open of

@@ -165,12 +165,22 @@ pub fn paced_idle_aging(
     step: impl FnOnce() + 'static,
     store: impl Fn(glib::SourceId) + 'static,
 ) {
-    let step: PacedStep = Rc::new(Cell::new(Some(Box::new(step))));
+    // The aging timeout is removed when the step runs or is dropped (the
+    // caller removed its source): the guard travels with the step.
+    let aging: Rc<Cell<Option<glib::SourceId>>> = Rc::default();
+    let guard = AgingTimeoutGuard(Rc::clone(&aging));
+    let step: PacedStep = Rc::new(Cell::new(Some(Box::new(move || {
+        drop(guard);
+        step();
+    }))));
     let store: Rc<dyn Fn(glib::SourceId)> = Rc::new(store);
     let weak_step = Rc::downgrade(&step);
     let aging_store = Rc::clone(&store);
     queue_paced_idle(priority, step, &store);
-    glib::timeout_add_local_full(age, aged_priority, move || {
+    let fired = Rc::clone(&aging);
+    let timeout = glib::timeout_add_local_full(age, aged_priority, move || {
+        // This source ends now: the guard must not remove it again.
+        fired.take();
         if let Some(waiting) = weak_step.upgrade()
             && let Some(step) = waiting.take()
         {
@@ -179,6 +189,18 @@ pub fn paced_idle_aging(
         }
         glib::ControlFlow::Break
     });
+    aging.set(Some(timeout));
+}
+
+/// Removes a `paced_idle_aging` timeout that has not fired yet.
+struct AgingTimeoutGuard(Rc<Cell<Option<glib::SourceId>>>);
+
+impl Drop for AgingTimeoutGuard {
+    fn drop(&mut self) {
+        if let Some(timeout) = self.0.take() {
+            timeout.remove();
+        }
+    }
 }
 
 /// The one step a [`paced_idle`] runs, taken when it runs.

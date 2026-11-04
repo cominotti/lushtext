@@ -306,9 +306,15 @@ placeholder, `defer-background-tab-layout`). While one listens
 (`ui/at_listeners.rs` mirrors GTK's AT-SPI event-listener table), no view is
 ever given the placeholder, because each swap would send the whole document as
 one text change in one main-loop dispatch: every tab's editor exposes its
-document as before, and a view that held the placeholder when the listener
-appeared gets its document back at once (up to 2^20 characters) or when its
-tab is first shown, when GTK reports its text as inserted, once. `make accessibility-smoke` waits on
+document as before. The mirror also reads as listening until the registry has
+answered, and for good when it cannot be reached, so an unknown state never
+hides text. A view that held the placeholder when the listener appeared gets
+its document back from a later dispatch, one editor per dispatch with the
+selected tab first (up to 2^20 characters), or when its tab is first shown,
+when GTK reports its text as inserted, once. That one report is a recorded
+exception for large documents: a 32 MiB document is one 32 MiB text change,
+and past D-Bus's 128 MiB message limit GTK sends nothing (measured, design D7
+of `defer-background-tab-layout`). `make accessibility-smoke` waits on
 `accessibility-settled`, which includes the `window-composition` blocker.
 
 ### Protected View and the Line Inspector

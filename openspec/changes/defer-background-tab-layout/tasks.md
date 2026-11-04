@@ -48,3 +48,13 @@
 - [x] 6.11 A dense document's reattach is paced like a restyle (`restyle::prepare_paced_reattach`), and the kept-line hold lasts until its reveal is done; `test_showing_a_never_shown_dense_tab_reveals_it_in_paced_ranges` (and the wrapped-paragraph test, which failed with the reveal and without the longer hold).
 - [x] 6.12 The paced reattach only for documents of at most 2^14 lines (V4: a 204,601-line document's first batch validated every hidden line, 78–80 ms); remeasured 8.2–8.3 ms.
 - [x] 6.10 Verdict V4 (134d1f08) against `main` f79e7a5d with the probe mark backported, load recorded, plus the final commit's affected cases (R5); record corrected (V2's provenance, the 35 ms stretch).
+
+## 7. Review fixes, round 2 (review of 8ac53b8e)
+
+- [x] 7.1 MF1: `listener_change` parses `(ssas)` and `(ss)`; failing-first unit test (`ev/mf1-failing-first.log`: the old parse returned `None` for `(ss)`).
+- [x] 7.2 SF3 and N2: unknown reads as listening, failures keep it unknown, the answer replaces a (sender, event) set; unit test.
+- [x] 7.3 SF4: reveal before the search context attaches and before Replace/Replace All, no paced reveal while a context is attached; failing-first widget test (383 of 400 matches left). Pre-existing crash found and fixed: Replace All with no match panicked in the binding; widget test.
+- [x] 7.4 SF1: one attach per dispatch, selected first, cancellable; widget test.
+- [x] 7.5 SF2: measured and recorded as an exception (design D7).
+- [x] 7.6 Nits: N1 test (over 2^14 lines reattaches unpaced), N3 weak-owner subscribers pruned, N4 constant kinds and `MAX_DISPLAY_LINE_STEPS` 2^13, N5 lane cases `eviction/detach` and `-minimap` and the 2^17 minimap cap, N6 print evidence from `editor.buffer()`, N7 aging timeout removed when the step runs or is dropped.
+- [x] 7.7 Lane rerun of the affected cases interleaved against `main`.

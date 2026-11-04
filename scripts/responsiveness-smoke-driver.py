@@ -198,6 +198,11 @@ EVICTION_NEVER_SHOWN_TAB = 4
 SWITCH_HIDDEN_GIANT_LENGTH = 1_900_000
 SWITCH_HIDDEN_DENSE_LINE = 2_000
 SWITCH_HIDDEN_DENSE_LINES = 11 * 1024 * 1024 // (SWITCH_HIDDEN_DENSE_LINE + 1)
+# `eviction/detach` and `eviction/detach-minimap` (review round 2, N5): one 8 MiB document of short
+# lines (204,601 lines, near the 2^18-line detach cap) shown with the minimap,
+# then hidden and re-laid out by a zoom step, so its view's detach (the
+# `view_detach` span) walks a laid-out document with a source map bound.
+DETACH_MINIMAP_BYTES = EVICTION_FILE_BYTES
 # `save/during-validation` (spawn-completion-priority D5): the short-line
 # documents (`short-code`, below C6's density bound, so installed unpaced and
 # validated afterwards) whose validation backlog the save runs during, how long after their
@@ -234,6 +239,9 @@ PHASE_KINDS = {
     # `defer-background-tab-layout`: switching to a large tab that was never
     # shown (its view laid nothing out while hidden), then scrolling it.
     "switch-hidden": "interaction",
+    # `eviction/detach-minimap`: the dispatches of a hidden laid-out view's
+    # detach (`view_detach`).
+    "detach": "settle",
     "idle": "calibration",
     # The sliced protected install (sliced-protected-install, C3): the tab
     # switches and scrolls issued while an install runs are interactions;
@@ -1561,7 +1569,7 @@ class Case:
     group: str
     fixture: FixtureSpec | None
     settings: dict[str, Any] = field(default_factory=dict)
-    flow: str = "standard"  # standard | session | eviction | switch-hidden | reload | install | calibration | keystroke | seeded-recovery | save
+    flow: str = "standard"  # standard | session | eviction | switch-hidden | detach | reload | install | calibration | keystroke | seeded-recovery | save
     length: int | None = None  # the swept paragraph length / line length / total size
     attrs: dict[str, Any] = field(default_factory=dict)
 
@@ -1716,6 +1724,20 @@ def build_cases(tier: str) -> list[Case]:
                 settings={"word-wrap": True, "show-minimap": False},
                 flow="switch-hidden",
                 length=SWITCH_HIDDEN_GIANT_LENGTH,
+            ),
+            Case(
+                "eviction/detach",
+                "eviction",
+                FixtureSpec("eviction", DETACH_MINIMAP_BYTES, seed_for("detach-minimap"), count=1),
+                settings={"word-wrap": True, "show-minimap": False},
+                flow="detach",
+            ),
+            Case(
+                "eviction/detach-minimap",
+                "eviction",
+                FixtureSpec("eviction", DETACH_MINIMAP_BYTES, seed_for("detach-minimap"), count=1),
+                settings={"word-wrap": True, "show-minimap": True},
+                flow="detach",
             ),
             Case(
                 "eviction/switch-hidden-dense",
@@ -3226,6 +3248,22 @@ class Runner:
 
                     if ok and self.wanted("switch-hidden"):
                         ok = self.run_phase(phases, "switch-hidden", cap, self.switch_hidden(EVICTION_NEVER_SHOWN_TAB))
+                elif ok and case.flow == "detach":
+                    # The large document (selected by the activation) lays
+                    # out; then the small one is selected and a zoom step
+                    # re-lays out the hidden large view, which is detached.
+                    ok = self.run_phase(phases, "background", cap, self.settle_after(3.0))
+
+                    def detach(_inj, deadline):
+                        self.action("win", "select-tab", [self._uint32(0)], deadline)
+                        time.sleep(0.5)
+                        if not self.action("win", "zoom-in", None, deadline):
+                            return False, "zoom-in failed"
+                        time.sleep(1.5)
+                        return True, "ok"
+
+                    if ok and self.wanted("detach"):
+                        ok = self.run_phase(phases, "detach", cap, detach)
                 elif ok and case.flow == "switch-hidden":
                     # The small document (selected by the activation) first,
                     # then the large one never shown behind it.
@@ -3630,7 +3668,7 @@ class Runner:
             return [self.record_skip(case, "*", "not enough available memory")]
         if case.fixture is not None:
             files = self.make_fixture(case.fixture, case.id)
-        if case.flow in ("install", "switch-hidden") and files:
+        if case.flow in ("install", "switch-hidden", "detach") and files:
             # A small document opened first, for the mid-install tab switch
             # and scroll (`sliced-protected-install`, task 6.1).
             small = files[0].parent / "small.txt"
@@ -3639,7 +3677,7 @@ class Runner:
             self.ledger.record(small, hashlib.sha256(data).hexdigest())
             # `switch-hidden` opens it last, so the activation selects it and
             # the large document is never shown until the phase selects it.
-            files = [small, *files] if case.flow == "install" else [*files, small]
+            files = [small, *files] if case.flow in ("install", "detach") else [*files, small]
         try:
             variants = ["plain"] if case.flow == "calibration" else self.variants
             for variant in variants:

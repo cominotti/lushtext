@@ -42,11 +42,14 @@
 //! no view is detached while [`crate::ui::at_listeners::listeners_active`];
 //! hidden tabs then lay out in GTK's own bounded validation batches, which
 //! costs CPU but no long dispatch. When a listener appears, a detached view
-//! whose document is small ([`AT_ATTACH_MAX_CHARS`]) attaches at once, and a
-//! larger one attaches when shown. Without a listener the swap walks the
+//! whose document is small ([`AT_ATTACH_MAX_CHARS`]) is attached, one editor
+//! per dispatch, and a larger one attaches when shown, sending its whole
+//! text once (an exception, measured in design D7). Until the mirror has its
+//! first answer it reads as listening, so no view is detached then either. Without a listener the swap walks the
 //! document's lines (2.6–4.2 ms for 204,601 lines, 27–28 ms for 2,557,503), so
-//! a view whose document has more than [`VIEW_DETACH_MAX_LINES`] lines is
-//! never detached either. Attaching without a listener costs under 0.2 ms at
+//! a view whose document has more than [`VIEW_DETACH_MAX_LINES`] lines
+//! ([`VIEW_DETACH_MAX_LINES_WITH_MINIMAP`] with a minimap bound, which walks
+//! them again) is never detached either. Attaching without a listener costs under 0.2 ms at
 //! any size.
 //!
 //! **The primary selection.** A realized view moves GTK's primary-selection
@@ -94,23 +97,108 @@ pub(crate) struct ViewAttachmentState {
     primary_hold: std::cell::Cell<bool>,
 }
 
-/// The most lines a document may have for its view to be detached: the swap
+/// The most lines a document may have for its view to be detached. Kind: line
+/// count, a cap; a power of two, rounded down from the measurement: the swap
 /// walks every line (27–28 ms for 2,557,503 lines on the reference machine,
 /// 6.8–7.0 ms for 261,491 lines of 400 characters), so this keeps a detach
 /// under half of `B_SETTLE_US` there.
 pub(crate) const VIEW_DETACH_MAX_LINES: i32 = 1 << 18;
 
-/// The most characters a detached view's document may have to be attached at
-/// once when an assistive technology starts listening (about 2 ms per MiB
-/// with a listener; a larger document attaches when its tab is shown).
+/// [`VIEW_DETACH_MAX_LINES`] for a view with a minimap bound to it. Kind: line
+/// count, a cap; a power of two, rounded down: the bound `GtkSourceMap` walks
+/// the lines too, about doubling the swap (the lane's `view_detach` span on
+/// 204,601 laid-out lines, `eviction/detach` and `-minimap`, load 4.5–9:
+/// 5.3–5.9 ms without, 8.6–12.7 ms with the minimap), so the cap halves.
+pub(crate) const VIEW_DETACH_MAX_LINES_WITH_MINIMAP: i32 = 1 << 17;
+
+/// The most characters a detached view's document may have to be attached
+/// when an assistive technology starts listening. Kind: character count, a
+/// cap; a power of two, rounded down: about 2 ms per MiB with a listener, so
+/// one such attach stays under half of `B_SETTLE_US`. A larger document
+/// attaches when its tab is shown (a recorded exception, design D7).
 pub(crate) const AT_ATTACH_MAX_CHARS: i32 = 1 << 20;
 
 /// Whether a view may be given the placeholder now: no assistive technology
 /// listens (a swap would send the whole document to it) and the document is
-/// short enough for the swap's line walk (module docs).
+/// short enough for the swap's line walk, which a bound minimap repeats
+/// (module docs).
 #[must_use]
-pub(crate) const fn view_detach_allowed(at_listening: bool, document_lines: i32) -> bool {
-    !at_listening && document_lines <= VIEW_DETACH_MAX_LINES
+pub(crate) const fn view_detach_allowed(
+    at_listening: bool,
+    document_lines: i32,
+    minimap_bound: bool,
+) -> bool {
+    let cap = if minimap_bound {
+        VIEW_DETACH_MAX_LINES_WITH_MINIMAP
+    } else {
+        VIEW_DETACH_MAX_LINES
+    };
+    !at_listening && document_lines <= cap
+}
+
+/// The detached editors to attach because an assistive technology started
+/// listening (review round 2, SF1): one per dispatch, from an idle at the
+/// background slice priority, so twenty hidden 1 MiB tabs are not twenty
+/// whole-document text changes in one dispatch.
+#[derive(Default)]
+struct AtAttachQueue {
+    editors: std::collections::VecDeque<glib::WeakRef<LushtextEditorPage>>,
+    source: Option<glib::SourceId>,
+}
+
+impl AtAttachQueue {
+    fn cancel(&mut self) {
+        self.editors.clear();
+        if let Some(source) = self.source.take() {
+            source.remove();
+        }
+    }
+}
+
+thread_local! {
+    static AT_ATTACH_QUEUE: std::cell::RefCell<AtAttachQueue> =
+        std::cell::RefCell::new(AtAttachQueue::default());
+}
+
+fn queue_at_attach(editor: &LushtextEditorPage, selected: bool) {
+    AT_ATTACH_QUEUE.with_borrow_mut(|queue| {
+        let weak = editor.downgrade();
+        if selected {
+            queue.editors.push_front(weak);
+        } else {
+            queue.editors.push_back(weak);
+        }
+        if queue.source.is_none() {
+            queue.source = Some(glib::idle_add_local_full(
+                crate::ui::editor_page::load::background_slice_priority(),
+                drain_one_at_attach,
+            ));
+        }
+    });
+}
+
+/// Attach one queued editor; keep going while any is left and a listener
+/// still listens.
+fn drain_one_at_attach() -> glib::ControlFlow {
+    let next = AT_ATTACH_QUEUE.with_borrow_mut(|queue| {
+        let next = queue.editors.pop_front();
+        if queue.editors.is_empty() {
+            queue.source = None;
+        }
+        next
+    });
+    if let Some(editor) = next.and_then(|weak| weak.upgrade())
+        && crate::ui::at_listeners::listeners_active()
+        && !editor.in_destruction()
+        && !editor.view_shows_document()
+    {
+        editor.attach_view();
+    }
+    if AT_ATTACH_QUEUE.with_borrow(|queue| queue.source.is_some()) {
+        glib::ControlFlow::Continue
+    } else {
+        glib::ControlFlow::Break
+    }
 }
 
 /// A reattached view held at its kept top line until it is laid out.
@@ -148,22 +236,21 @@ impl LushtextEditorPage {
             self,
             move |_| editor.release_primary_hold()
         ));
-        let editor_weak = self.downgrade();
-        crate::ui::at_listeners::subscribe(move |listening| {
-            let Some(editor) = editor_weak.upgrade() else {
-                return false;
-            };
-            editor.follow_at_listeners(listening);
-            true
-        });
+        // Idempotent; the application starts it at startup, and an editor
+        // built without one (a widget test) starts it here. Until it has an
+        // answer it reads as listening, so nothing is detached.
+        crate::ui::at_listeners::start();
+        crate::ui::at_listeners::subscribe(self, LushtextEditorPage::follow_at_listeners);
         self.detach_view_now();
     }
 
-    /// An assistive technology started or stopped listening. Started: a
-    /// detached view whose document is small attaches now, so it never sends
-    /// a large text change later; a larger one waits until it is shown.
-    /// Stopped: a hidden attached view is detached again when next seen
-    /// laying out.
+    /// An assistive technology started or stopped listening (or the mirror
+    /// got its first answer). Started: a detached view whose document is small
+    /// is queued to attach, one editor per dispatch with the selected tab
+    /// first (`AtAttachQueue`), so it never sends a large text change later;
+    /// a larger one waits until it is shown. Stopped: the queue is dropped, and
+    /// a hidden attached view (one built while the mirror had no answer
+    /// included) is detached when next seen laying out.
     fn follow_at_listeners(&self, listening: bool) {
         if self.in_destruction() || self.imp().source_view.try_get().is_none() {
             return;
@@ -171,10 +258,17 @@ impl LushtextEditorPage {
         if listening {
             self.stop_hidden_validation_watch();
             if !self.view_shows_document() && self.buffer().char_count() <= AT_ATTACH_MAX_CHARS {
-                self.attach_view();
+                let selected = self
+                    .root()
+                    .and_downcast::<crate::ui::window::LushtextWindow>()
+                    .is_some_and(|window| window.is_selected_editor(self));
+                queue_at_attach(self, selected);
             }
-        } else if !self.is_mapped() && self.view_shows_document() {
-            self.watch_hidden_validation();
+        } else {
+            AT_ATTACH_QUEUE.with_borrow_mut(AtAttachQueue::cancel);
+            if !self.is_mapped() && self.view_shows_document() {
+                self.watch_hidden_validation();
+            }
         }
     }
 
@@ -412,6 +506,7 @@ impl LushtextEditorPage {
         if !view_detach_allowed(
             crate::ui::at_listeners::listeners_active(),
             self.buffer().line_count(),
+            self.imp().minimap.source_map.borrow().is_some(),
         ) {
             // Never detached (module docs): nothing to watch for.
             return;
@@ -490,6 +585,7 @@ impl LushtextEditorPage {
             || !view_detach_allowed(
                 crate::ui::at_listeners::listeners_active(),
                 document.line_count(),
+                self.imp().minimap.source_map.borrow().is_some(),
             )
         {
             return;
@@ -583,10 +679,11 @@ impl LushtextEditorPage {
     }
 }
 
-/// The most display lines `visible_top_iter` walks inside one paragraph: a
-/// wrapped paragraph is at most `L_wrap_edit` (8,192) characters, so a few
-/// hundred display lines at the narrowest width.
-const MAX_DISPLAY_LINE_STEPS: u32 = 1 << 12;
+/// The most display lines `visible_top_iter` walks inside one paragraph.
+/// Kind: a coverage window, rounded up: a wrapped paragraph is at most
+/// `L_wrap_edit` (8,192 = 2^13) characters, so even at one character per
+/// display line the walk reaches its last display line.
+const MAX_DISPLAY_LINE_STEPS: u32 = 1 << 13;
 
 /// The position at the top of the view's visible area: inside a long wrapped
 /// paragraph, the start of the display line shown at the top, not the
@@ -619,10 +716,24 @@ mod tests {
 
     #[test]
     fn a_view_is_detached_only_without_a_listener_and_within_the_line_cap() {
-        assert!(view_detach_allowed(false, 0));
-        assert!(view_detach_allowed(false, VIEW_DETACH_MAX_LINES));
-        assert!(!view_detach_allowed(false, VIEW_DETACH_MAX_LINES + 1));
-        assert!(!view_detach_allowed(true, 0));
-        assert!(!view_detach_allowed(true, VIEW_DETACH_MAX_LINES));
+        assert!(view_detach_allowed(false, 0, false));
+        assert!(view_detach_allowed(false, VIEW_DETACH_MAX_LINES, false));
+        assert!(!view_detach_allowed(
+            false,
+            VIEW_DETACH_MAX_LINES + 1,
+            false
+        ));
+        assert!(view_detach_allowed(
+            false,
+            VIEW_DETACH_MAX_LINES_WITH_MINIMAP,
+            true
+        ));
+        assert!(!view_detach_allowed(
+            false,
+            VIEW_DETACH_MAX_LINES_WITH_MINIMAP + 1,
+            true
+        ));
+        assert!(!view_detach_allowed(true, 0, false));
+        assert!(!view_detach_allowed(true, VIEW_DETACH_MAX_LINES, false));
     }
 }

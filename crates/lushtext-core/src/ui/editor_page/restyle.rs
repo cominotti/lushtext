@@ -151,8 +151,11 @@ impl LushtextEditorPage {
 
     fn prepare_paced_restyle_around(&self, shown: Option<ParagraphSpan>) -> bool {
         // A selection already there would let a copy read around the hidden
-        // paragraphs (module docs), so that restyle runs unpaced.
+        // paragraphs (module docs), and an attached search context would find,
+        // count and replace around them (A33; review round 2, SF4), so either
+        // runs the restyle unpaced.
         if !self.is_dense_document()
+            || self.imp().search_bar.search_context().is_some()
             || self.content_is_installing()
             || self.buffer().has_selection()
         {
@@ -255,8 +258,11 @@ impl LushtextEditorPage {
     }
 
     /// End a running reveal by showing every hidden paragraph in this
-    /// dispatch.
-    fn reveal_everything_now(&self) {
+    /// dispatch. Every reader that must see the whole document through
+    /// GtkTextBuffer's visible-text APIs calls it first: the in-tab search
+    /// context (find, the occurrence count, Replace and Replace All skip
+    /// invisible text, A33) and a selection (copy, cut, drag).
+    pub(crate) fn reveal_everything_now(&self) {
         let state = &self.imp().restyle;
         if state.cursor.get().is_none() {
             return;

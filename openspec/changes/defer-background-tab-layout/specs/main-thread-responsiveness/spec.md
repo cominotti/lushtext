@@ -105,6 +105,53 @@ top of the view.
 - **THEN** every dispatch of the switch and of the re-layout that follows stays
   within `B_SETTLE_US`
 
+### Requirement: The assistive-technology mirror fails safe
+The application's mirror of GTK's AT-SPI event-listener table SHALL read as
+listening until the registry has answered `GetRegisteredEvents`, and for the
+rest of the session when the accessibility bus address, the connection or
+that call fails; it SHALL read the registry's answer as replacing its table,
+and SHALL parse `EventListenerRegistered` (`(ssas)`) and
+`EventListenerDeregistered` (`(ss)`) so a listener leaving is counted. When a
+listener appears, detached editors SHALL be attached at most one per main-loop
+dispatch, the selected tab's first, and the queue SHALL stop when no listener
+remains. A detached document over `AT_ATTACH_MAX_CHARS` shown while a listener
+listens sends its whole text once (recorded exception, design D7).
+
+#### Scenario: An assistive technology starts and stops
+- **WHEN** a listener registers and later deregisters
+- **THEN** views are not detached while it listens, and are detached again
+  once it has left
+
+#### Scenario: The registry has not answered
+- **WHEN** an editor is built before the registry's answer, or the registry
+  cannot be reached
+- **THEN** its view is not given the placeholder
+
+#### Scenario: Many small hidden documents when a listener appears
+- **WHEN** a listener appears while several small documents are detached
+- **THEN** they attach in separate dispatches, one each
+
+### Requirement: Hidden text never escapes the in-tab search
+No paced reveal SHALL start while the in-tab search context is attached, and
+attaching it or replacing through it SHALL first reveal any text a paced
+reveal still hides, so find, the occurrence count, Replace and Replace All see
+the whole document. Replace All with nothing to replace SHALL change nothing
+and SHALL not fail.
+
+#### Scenario: Replace All right after switching to a dense tab
+- **WHEN** the user switches to a never-shown dense tab and runs Replace All
+  at once
+- **THEN** every match in the document is replaced
+
+#### Scenario: Replace All matches nothing
+- **WHEN** Replace All runs with a query that matches nothing
+- **THEN** the document is unchanged and the application keeps running
+
+#### Scenario: A minimap doubles the detach cost
+- **WHEN** a hidden view with a minimap bound has more than
+  `VIEW_DETACH_MAX_LINES_WITH_MINIMAP` (2^17) lines
+- **THEN** it is not detached
+
 ## MODIFIED Requirements
 
 ### Requirement: Bounded-stage hand-offs are not held behind text validation

@@ -124,9 +124,8 @@ fn document_facts(editor: &LushtextEditorPage) -> Option<PrintDocumentFacts> {
         char_count,
         modified: editor.is_modified(),
         draft_id: editor.draft_id(),
-        compositor_char_count: sourceview5::prelude::PrintCompositorExt::buffer(
-            &super::execution::print_compositor(editor),
-        )
-        .char_count(),
+        // `execution::print_compositor` is built over `editor.buffer()`; read
+        // that fact without building one (a read does no toolkit work).
+        compositor_char_count: editor.buffer().char_count(),
     })
 }

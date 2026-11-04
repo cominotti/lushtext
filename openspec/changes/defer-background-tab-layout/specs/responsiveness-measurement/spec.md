@@ -31,3 +31,13 @@ keep the earlier attribution.
 #### Scenario: A wheel at the end of a document
 - **WHEN** a wheel moves no view and a frame follows later for another reason
 - **THEN** the wheel is reported as `no-visible-change`
+
+### Requirement: The lane measures a hidden laid-out view's detach
+The lane SHALL run `eviction/detach` and `eviction/detach-minimap`: one 8 MiB
+document of short lines shown (with the minimap off and on), then a small
+document selected and a zoom step, recording the `view_detach` span of the
+hidden large view in a `detach` phase.
+
+#### Scenario: The detach is measured with and without a minimap
+- **WHEN** either case runs
+- **THEN** its probe log carries the hidden view's `view_detach` span

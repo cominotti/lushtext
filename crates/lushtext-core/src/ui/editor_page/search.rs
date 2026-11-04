@@ -114,6 +114,11 @@ impl LushtextEditorPage {
         if self.is_protected_view() {
             return;
         }
+        // A paced reveal (a restyle, or a dense document's reattach) hides
+        // paragraphs, which the search context would skip (A33): reveal them
+        // first. No reveal starts while the context is attached
+        // (`restyle::prepare_paced_restyle_around`).
+        self.reveal_everything_now();
         self.imp()
             .search_bar
             .attach(&self.buffer(), self.source_view());

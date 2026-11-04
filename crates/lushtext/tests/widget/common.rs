@@ -110,6 +110,11 @@ pub fn test_application() -> libadwaita::Application {
 
 pub fn test_window() -> lushtext_core::ui::window::LushtextWindow {
     let app = test_application();
+    // Until the AT-listener mirror has the registry's answer it reads as
+    // listening and no editor view is detached (`defer-background-tab-layout`);
+    // the harness's private session has no registry to answer, so tests start
+    // from an answer with no listener.
+    lushtext_core::ui::at_listeners::simulate_registry_answer();
     lushtext_core::ui::window::LushtextWindow::new(&app)
 }
 

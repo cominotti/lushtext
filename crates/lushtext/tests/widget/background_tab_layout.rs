@@ -15,6 +15,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use lushtext_core::ui::window::LushtextWindow;
+use sourceview5::prelude::*;
 
 /// Lines in a probe document: about 150 validation batches of 2000 px
 /// (ledger A31) at the default font with wrapping off.
@@ -393,6 +394,11 @@ fn test_no_view_is_detached_while_an_assistive_technology_listens() {
     at_listeners::simulate_listener(true);
     assert!(at_listeners::listeners_active());
     assert!(
+        !editor.view_shows_document(),
+        "queued: attached from a later dispatch, one editor per dispatch"
+    );
+    wait_until(Duration::from_secs(5), || editor.view_shows_document());
+    assert!(
         editor.view_shows_document(),
         "a small detached document attaches when a listener appears"
     );
@@ -613,4 +619,196 @@ fn test_showing_a_never_shown_dense_tab_reveals_it_in_paced_ranges() {
         "the visible text is the whole document again"
     );
     assert!(!dense.is_modified());
+}
+
+/// Review round 2, SF1: when a listener appears, detached editors attach one
+/// per dispatch, the selected tab's first, and the queue stops when the
+/// listener leaves.
+#[test]
+fn test_detached_editors_attach_one_per_dispatch_when_a_listener_appears() {
+    use lushtext_core::ui::at_listeners;
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths: Vec<_> = (0..3)
+        .map(|index| {
+            let path = dir.path().join(format!("doc{index}.txt"));
+            fixture::write_text(&path, &format!("document {index}\n"));
+            path
+        })
+        .collect();
+    let small = dir.path().join("small.txt");
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+    // Each open shows its tab; the first three are detached by re-laying
+    // them out while hidden.
+    for path in &paths {
+        window.open_document(path);
+    }
+    window.open_document(&small);
+    let editors: Vec<_> = (0..3).map(|index| editor_at(&window, index)).collect();
+    for editor in &editors {
+        wait_loaded(editor);
+        editor.source_view().set_pixels_above_lines(4);
+    }
+    wait_until(Duration::from_secs(10), || {
+        editors.iter().all(|editor| !editor.view_shows_document())
+    });
+    assert!(editors.iter().all(|editor| !editor.view_shows_document()));
+
+    at_listeners::simulate_listener(true);
+    let attached = || {
+        editors
+            .iter()
+            .filter(|editor| editor.view_shows_document())
+            .count()
+    };
+    assert_eq!(attached(), 0, "nothing attaches inside the notification");
+    let context = glib::MainContext::default();
+    let mut seen = Vec::new();
+    let started = Instant::now();
+    while attached() < 3 && started.elapsed() < Duration::from_secs(5) {
+        if context.iteration(false) {
+            let now = attached();
+            assert!(
+                now <= seen.last().copied().unwrap_or(0) + 1,
+                "at most one editor attaches per dispatch: {seen:?} then {now}"
+            );
+            seen.push(now);
+        }
+    }
+    assert_eq!(attached(), 3, "every small detached editor attaches");
+
+    // Leaving cancels a queue still pending.
+    at_listeners::simulate_listener(false);
+    for editor in &editors {
+        editor.source_view().set_pixels_above_lines(8);
+    }
+    wait_until(Duration::from_secs(10), || attached() == 0);
+    at_listeners::simulate_listener(true);
+    at_listeners::simulate_listener(false);
+    flush_after_delay(Duration::from_millis(200));
+    assert_eq!(attached(), 0, "a cancelled queue attaches nothing");
+}
+
+/// Review round 2, SF4: a dense document's reattach hides what it has not
+/// revealed yet, and GtkSourceView's search skips invisible text (A33), so a
+/// Replace All right after the switch replaced only the revealed matches.
+#[test]
+fn test_replace_all_right_after_a_paced_reattach_replaces_every_match() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dense = dir.path().join("dense.txt");
+    let small = dir.path().join("small.txt");
+    let line = format!("needle {}\n", "d".repeat(700));
+    fixture::write_text(&dense, &line.repeat(400));
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&dense);
+    window.open_document(&small);
+    let (dense, small) = (editor_at(&window, 0), editor_at(&window, 1));
+    wait_loaded(&dense);
+    wait_loaded(&small);
+    flush_events();
+    assert!(!dense.view_shows_document());
+
+    // Shown, then Replace All in the same dispatch: the reveal has not run.
+    window
+        .imp()
+        .tab_view
+        .set_selected_page(&window.imp().tab_view.nth_page(0));
+    assert!(dense.view_shows_document());
+    assert!(
+        dense.load_evidence().restyle.pending,
+        "the reattach is paced"
+    );
+    dense.show_replace();
+    let bar = dense.search_bar();
+    // The entry hands its text to the search settings only after its
+    // search-changed delay; set both now, without running the main loop
+    // (which would let the reveal finish first).
+    bar.search_entry().set_text("needle");
+    bar.search_context()
+        .expect("a search context")
+        .settings()
+        .set_search_text(Some("needle"));
+    bar.replace_entry().set_text("pin");
+    bar.replace_all();
+    let buffer = dense.buffer();
+    let text = buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string();
+    assert_eq!(text.matches("needle").count(), 0, "every match replaced");
+    assert_eq!(text.matches("pin ").count(), 400);
+    assert!(
+        !dense.load_evidence().restyle.pending,
+        "nothing left hidden"
+    );
+}
+
+/// Review round 2, N1: a dense document of more than 2^14 lines reattaches
+/// unpaced (hidden lines still cost validation, and they add no height).
+#[test]
+fn test_a_dense_document_over_the_paced_reattach_line_limit_reattaches_unpaced() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dense = dir.path().join("dense-many.txt");
+    let small = dir.path().join("small.txt");
+    // 60 characters a line is dense (224 lines exceed `V_SLICE`).
+    fixture::write_text(
+        &dense,
+        &format!("{}\n", "m".repeat(60)).repeat((1 << 14) + 1),
+    );
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&dense);
+    window.open_document(&small);
+    let (dense, small) = (editor_at(&window, 0), editor_at(&window, 1));
+    wait_loaded(&dense);
+    wait_loaded(&small);
+    flush_events();
+    assert!(!dense.view_shows_document());
+    let before = dense.load_evidence().restyle.restyles;
+    show_first_tab(&window);
+    assert!(dense.view_shows_document());
+    assert_eq!(
+        dense.load_evidence().restyle.restyles,
+        before,
+        "over the line limit: no paced reveal"
+    );
+}
+
+/// Replace All with nothing to replace: sourceview5 0.11's `replace_all`
+/// binding panicked on GtkSourceView's zero count (a pre-existing crash the
+/// review round 2 tests found).
+#[test]
+fn test_replace_all_with_no_match_is_a_no_op() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("plain.txt");
+    fixture::write_text(&path, "nothing to find here\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    editor.show_replace();
+    let bar = editor.search_bar();
+    bar.search_context()
+        .expect("a search context")
+        .settings()
+        .set_search_text(Some("absent"));
+    bar.replace_entry().set_text("x");
+    bar.replace_all();
+    flush_events();
+    assert!(!editor.is_modified());
+    let buffer = editor.buffer();
+    assert_eq!(
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .as_str(),
+        "nothing to find here\n"
+    );
 }

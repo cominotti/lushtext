@@ -127,11 +127,26 @@ pub(super) fn select_previous_match(bar: &LushtextSearchBar) {
     report_match_state(bar);
 }
 
+/// Show any text a paced reveal still hides before a replace: GtkSourceView
+/// replaces only visible matches (A33). The editor never starts a reveal while
+/// a context is attached, so this is a second guard.
+fn reveal_hidden_document_text(bar: &LushtextSearchBar) {
+    if let Some(ref weak_view) = *bar.imp().view_ref.borrow()
+        && let Some(view) = weak_view.upgrade()
+        && let Some(editor) = view
+            .ancestor(crate::ui::editor_page::LushtextEditorPage::static_type())
+            .and_downcast::<crate::ui::editor_page::LushtextEditorPage>()
+    {
+        editor.reveal_everything_now();
+    }
+}
+
 /// Replace the selected match, then advance to the next one.
 pub(super) fn replace_selected_match(bar: &LushtextSearchBar) {
     let Some(context) = bar.search_context() else {
         return;
     };
+    reveal_hidden_document_text(bar);
     let buffer = context.buffer();
     let replace_text = bar.replace_entry().text();
 
@@ -149,11 +164,45 @@ pub(super) fn replace_all_matches(bar: &LushtextSearchBar) {
     let Some(context) = bar.search_context() else {
         return;
     };
+    reveal_hidden_document_text(bar);
     let replace_text = bar.replace_entry().text();
-    if let Err(error) = context.replace_all(replace_text.as_str()) {
+    if let Err(error) = replace_all_occurrences(&context, replace_text.as_str()) {
         tracing::error!("Replace all failed: {error}");
     }
     report_match_state(bar);
+}
+
+/// `gtk_source_search_context_replace_all`, which returns how many matches it
+/// replaced. sourceview5 0.11's `SearchContext::replace_all` asserts that a
+/// zero return carries an error, so a Replace All that matched nothing
+/// panicked (found by `defer-background-tab-layout`'s review round 2 tests;
+/// the button is enabled whatever the count). Returns the number replaced.
+fn replace_all_occurrences(
+    context: &sourceview5::SearchContext,
+    replace: &str,
+) -> Result<u32, glib::Error> {
+    use glib::translate::{FromGlibPtrFull, ToGlibPtr};
+    let length = i32::try_from(replace.len()).unwrap_or(i32::MAX);
+    let mut error = std::ptr::null_mut();
+    // SAFETY: `context` is a live GtkSourceSearchContext for the call; the
+    // replacement is a NUL-terminated copy owned by the stash for the call,
+    // and `length` is its byte length (clamped, never past its end); `error`
+    // is a null out-pointer GtkSourceView fills, or leaves null, and whose
+    // ownership is taken once below.
+    let replaced = unsafe {
+        sourceview5::ffi::gtk_source_search_context_replace_all(
+            context.to_glib_none().0,
+            replace.to_glib_none().0,
+            length,
+            &mut error,
+        )
+    };
+    if error.is_null() {
+        Ok(replaced)
+    } else {
+        // SAFETY: GtkSourceView set `error` to a newly allocated GError.
+        Err(unsafe { glib::Error::from_glib_full(error) })
+    }
 }
 
 /// Write the match counter label and its accessible value text.
