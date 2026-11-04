@@ -2581,8 +2581,10 @@ whole-paragraph layout (`set_virtual_cursor_pos` builds the line display in
 the key press); (2) `gtk_text_view_value_changed` updating the IM spot
 location on every frame of an animated scroll; (3) the text view's
 `retrieve-surrounding` answer walking the whole paragraph's word boundaries
-(LushText now bounds it itself, A54). Not yet filed; filing them is the
-maintainer's call.
+(LushText now bounds it itself, A54). Triaged 2026-11-04: (3) was filed as
+[GNOME/gtk#8529](https://gitlab.gnome.org/GNOME/gtk/-/work_items/8529);
+(1) is GtkTextView design (followed in GNOME/gtk#5764, not filed); (2) is not
+triaged yet. Status of every upstream report: [`docs/upstream-reports.md`](../upstream-reports.md).
 
 **Re-open triggers:** a GTK or Pango release that makes the commit handler's
 layout incremental or bounded, or that changes A52–A54 (the axiom lane
@@ -3161,7 +3163,8 @@ each fixed with a failing-first self-test case:
 
 - L_protect as a GSettings key (decision 6 keeps it a constant for now).
 - "Copy whole line" from the Line Inspector.
-- Upstream reports: the `GtkSourceMap` `update_id` that survives
+- Upstream reports (filed, commented on, or followed since 2026-11-04: see
+  [`docs/upstream-reports.md`](../upstream-reports.md)): the `GtkSourceMap` `update_id` that survives
   `set_view(NULL)` (A32; fixed upstream in 5.22.0, a 5.20 backport request is
   drafted), Pango's int32 width overflow (A28), log attrs over
   invisible text (A26), the IM spot updated on every scroll (A30), search
