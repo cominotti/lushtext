@@ -161,3 +161,74 @@ fn a_highlighted_chunk_follows_the_attach_and_the_analysis() {
     kani::cover!(gate == ChunkGate::AwaitAnalysis);
     kani::cover!(gate == ChunkGate::InsertUnhighlighted);
 }
+
+/// Chunks in the liveness model.
+const LIVE_CHUNKS: u64 = 4;
+/// Steps after which a pending attach stage has resolved at the latest: the
+/// stage's `ATTACH_DEADLINE_US` (input-quiet, `language_attach.rs`).
+const LIVE_DEADLINE: u32 = 3;
+/// Identity changes (rename, Save As) that re-arm the stage (review S1).
+const LIVE_RENAMES: u32 = 1;
+
+/// Liveness: a chunked install of `LIVE_CHUNKS` chunks finishes within
+/// `2·chunks + (deadline + 2)·(1 + renames) + 1` steps, whatever the
+/// environment does, as long as a pending attach stage resolves by its
+/// deadline: the engine's coverage report may never arrive, the stage may
+/// leave no language, and an identity change may re-arm the stage once at
+/// any step. Each step is one installer dispatch running `chunk_gate`.
+#[kani::proof]
+#[kani::unwind(40)]
+fn a_chunked_install_finishes_even_without_coverage_or_a_language() {
+    let total: u64 = kani::any();
+    kani::assume(total >= 1 && total <= LIVE_CHUNKS);
+    let bound = 2 * LIVE_CHUNKS as u32 + (LIVE_DEADLINE + 2) * (1 + LIVE_RENAMES) + 1;
+    let mut inserted = 0_u64;
+    let mut requested = false;
+    let mut pending = false;
+    let mut pending_age = 0_u32;
+    let mut language = false;
+    let mut waited = false;
+    let mut renames = LIVE_RENAMES;
+    let mut steps = 0_u32;
+    while inserted < total && steps < bound {
+        steps += 1;
+        // The environment, before the installer's dispatch.
+        if pending {
+            pending_age += 1;
+            let resolves: bool = kani::any();
+            if resolves || pending_age >= LIVE_DEADLINE {
+                pending = false;
+                language = kani::any();
+            }
+        }
+        if renames > 0 && requested && kani::any() {
+            renames -= 1;
+            pending = true;
+            pending_age = 0;
+        }
+        let analysed: bool = kani::any();
+        let facts = ChunkFacts {
+            chunks_inserted: inserted,
+            attach_requested: requested,
+            attach_pending: pending,
+            language_attached: language,
+            analysed_to_end: analysed,
+            waited,
+        };
+        match chunk_gate(facts) {
+            ChunkGate::Insert | ChunkGate::InsertUnhighlighted => {
+                inserted += 1;
+                waited = false;
+            }
+            ChunkGate::RequestAttach => {
+                requested = true;
+                pending = true;
+                pending_age = 0;
+            }
+            ChunkGate::AwaitAttach => {}
+            ChunkGate::AwaitAnalysis => waited = true,
+        }
+    }
+    assert_eq!(inserted, total, "the install finished within the bound");
+    kani::cover!(steps > 2 * LIVE_CHUNKS as u32);
+}

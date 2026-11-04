@@ -43,7 +43,8 @@
 //! `decide_highlight_chunk` before every later one. That requests the attach
 //! once through `request_language_attach_for_install` (the same stage; it
 //! ignores the session scale, which the incoming body replaces only at
-//! publish, and does not wait for an unmapped editor to be mapped), parks the
+//! publish, does not wait for an unmapped editor to be mapped, and does not
+//! wait for input-quiet, since the install holds typed keys), parks the
 //! installer on `when_language_attach_resolves`, and afterwards lets a chunk
 //! in only once the engine's largest `highlight-updated` end has reached the
 //! end of the buffer's text (ledger A84; `reset_highlight_coverage`,
@@ -122,6 +123,10 @@ pub struct LanguageAttachState {
     coverage_watched: Cell<bool>,
     /// Evidence: attach stages a chunked install requested.
     install_requests: Cell<u64>,
+    /// Evidence: chunks let in because the engine reported the buffer
+    /// analysed (A84), and because one `G_PRIORITY_LOW + 1` wait had passed.
+    chunks_on_coverage: Cell<u64>,
+    chunks_after_wait: Cell<u64>,
 }
 
 /// Observable attach-stage state, projected into the load evidence.
@@ -137,6 +142,12 @@ pub struct LanguageAttachEvidence {
     pub deadline_runs: u64,
     /// Attach stages a chunked highlighted install requested.
     pub install_requests: u64,
+    /// Highlighted chunks inserted once the engine reported the previous one
+    /// analysed (A84).
+    pub chunks_on_coverage: u64,
+    /// Highlighted chunks inserted after one `G_PRIORITY_LOW + 1` wait
+    /// without that report.
+    pub chunks_after_wait: u64,
 }
 
 /// One chunked highlighted install's progress through
@@ -217,6 +228,15 @@ impl LushtextEditorPage {
             };
             match chunk_gate(facts) {
                 ChunkGate::Insert => {
+                    if chunks_inserted > 0 {
+                        let state = &self.imp().language_attach;
+                        let counter = if facts.analysed_to_end {
+                            &state.chunks_on_coverage
+                        } else {
+                            &state.chunks_after_wait
+                        };
+                        counter.set(counter.get().saturating_add(1));
+                    }
                     chunks.waited = false;
                     return ChunkDecision::Insert;
                 }
@@ -258,12 +278,23 @@ impl LushtextEditorPage {
     /// or Save As changes the path, not the paragraphs the gate measured. An
     /// untitled tab has no path and keeps whatever language it has.
     pub(crate) fn request_language_attach(&self) {
-        if !self.document_scale().syntax_enabled {
+        // A chunked install that owns the buffer keeps its stage armed the
+        // install's way (review S1): an identity change (rename, Save As)
+        // must neither send a background install back to waiting for a map
+        // nor apply the outgoing session's scale to the incoming body.
+        let install = self.chunked_highlight_install_active();
+        if !install && !self.document_scale().syntax_enabled {
             self.cancel_language_attach();
             return;
         }
-        self.imp().language_attach.for_install.set(false);
+        self.imp().language_attach.for_install.set(install);
         self.request_language_attach_now();
+    }
+
+    /// Whether a chunked highlighted install (the load's or a whole-buffer
+    /// replacement's) owns the buffer now.
+    fn chunked_highlight_install_active(&self) -> bool {
+        self.installation_is_highlight_chunked() || self.replacement_is_highlight_chunked()
     }
 
     /// Ask for the attach on behalf of a chunked highlighted install
@@ -279,9 +310,6 @@ impl LushtextEditorPage {
             .install_requests
             .set(state.install_requests.get().saturating_add(1));
         self.request_language_attach_now();
-        if !self.language_attach_pending() {
-            self.wake_attach_waiters();
-        }
     }
 
     fn request_language_attach_now(&self) {
@@ -325,7 +353,9 @@ impl LushtextEditorPage {
     /// Drop any pending attach stage.
     pub(crate) fn cancel_language_attach(&self) {
         self.cancel_scheduled_attach();
-        self.imp().language_attach.pending.set(false);
+        let state = &self.imp().language_attach;
+        state.pending.set(false);
+        state.for_install.set(false);
         self.wake_attach_waiters();
     }
 
@@ -398,6 +428,8 @@ impl LushtextEditorPage {
             stages_run: state.stages_run.get(),
             deadline_runs: state.deadline_runs.get(),
             install_requests: state.install_requests.get(),
+            chunks_on_coverage: state.chunks_on_coverage.get(),
+            chunks_after_wait: state.chunks_after_wait.get(),
         }
     }
 
@@ -509,7 +541,11 @@ impl LushtextEditorPage {
         let now = glib::monotonic_time();
         let armed_since = state.armed_since_us.get();
         let last_input = crate::ui::input_quiet::last_input_us();
-        if !deferred_attach_may_run(now, armed_since, last_input) {
+        // A chunked install holds every typed key until its terminal, so its
+        // attach does not wait for input-quiet (review S6): a key waiting
+        // behind the definition parse (A67, the toolkit-floor exception)
+        // costs less than every key held up to `ATTACH_DEADLINE_US`.
+        if !state.for_install.get() && !deferred_attach_may_run(now, armed_since, last_input) {
             // Come back when the quiet interval or the deadline can have
             // passed, whichever is sooner.
             let since_input = last_input.map_or(INPUT_QUIET_US, |input| now - input);
@@ -558,6 +594,8 @@ impl LushtextEditorPage {
                 .set(state.deadline_runs.get().saturating_add(1));
         }
         self.attach_language_now();
+        // The install's exemptions end with its stage (review S2).
+        state.for_install.set(false);
         self.wake_attach_waiters();
     }
 

@@ -1114,3 +1114,238 @@ fn test_a_reload_of_a_highlighted_large_document_detaches_before_clearing() {
     assert!(editor.load_evidence().installation_highlight_chunked);
     assert_eq!(crate::common::editor_text(&editor), text);
 }
+
+#[test]
+fn test_most_chunks_go_in_on_the_engines_coverage_report() {
+    // Review S5: the A84 gate itself. If the coverage predicate always failed,
+    // every chunk would wait once behind the worker and this fails.
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write(&dir, "coverage.md", &markdown(LARGE_MARKDOWN));
+    let editor = opened(&window, &path);
+    let attach = editor.load_evidence().language_attach;
+    let total = attach.chunks_on_coverage + attach.chunks_after_wait;
+    assert!(total > 16, "{attach:?}");
+    assert!(
+        attach.chunks_on_coverage * 4 >= total * 3,
+        "most chunks went in on coverage: {attach:?}"
+    );
+}
+
+#[test]
+fn test_a_chunk_without_a_coverage_report_waits_once_and_goes_in() {
+    // Review S5, the stall fallback: highlighting switched off after the
+    // attach, so the engine reports no analysed range; every later chunk
+    // waits once at `G_PRIORITY_LOW + 1` and the install still finishes. If
+    // the predicate always held, no chunk would wait and this fails.
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let path = write(&dir, "stall.md", &text);
+    window.open_document(&path);
+    let editor = active_editor(&window);
+    // Stop every `highlight-updated` emission once the language is on during
+    // the install, so the coverage watch hears nothing: an engine that
+    // reports nothing (cleared by A29, say) must not park the install.
+    let silenced = std::rc::Rc::new(std::cell::Cell::new(false));
+    {
+        let (silenced, weak) = (silenced.clone(), editor.downgrade());
+        editor
+            .buffer()
+            .connect_local("highlight-updated", false, move |values| {
+                if let Some(editor) = weak.upgrade()
+                    && editor.load_state() == EditorLoadState::Loading
+                    && editor.buffer().char_count() > 0
+                {
+                    silenced.set(true);
+                    if let Ok(buffer) = values[0].get::<sourceview5::Buffer>() {
+                        buffer.stop_signal_emission_by_name("highlight-updated");
+                    }
+                }
+                None
+            });
+    }
+    wait_until(Duration::from_secs(60), || {
+        editor.load_state() == EditorLoadState::Loaded
+    });
+    assert!(silenced.get(), "the engine reported during the install");
+    let attach = editor.load_evidence().language_attach;
+    assert!(
+        attach.chunks_after_wait > 16 && attach.chunks_on_coverage <= 1,
+        "chunks waited once each: {attach:?}"
+    );
+    assert_eq!(crate::common::editor_text(&editor), text);
+}
+
+#[test]
+fn test_a_rename_during_a_background_chunked_install_does_not_wait_for_the_tab() {
+    // Review S1: the identity change re-requests the attach while the
+    // install is parked on it; the stage must stay armed the install's way,
+    // or the hidden tab would wait for a map that never comes.
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let background_path = write(&dir, "renamed-before.md", &text);
+    let foreground_path = write(&dir, "foreground.txt", "plain\n");
+    window.open_document(&background_path);
+    window.open_document(&foreground_path);
+    let background = window
+        .imp()
+        .tab_view
+        .nth_page(0)
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("editor page");
+    let renamed = dir.path().join("renamed-after.md");
+    // A busy idle one step above `G_PRIORITY_LOW` holds the attach stage
+    // (a `G_PRIORITY_LOW` idle) pending while the background install's own
+    // steps (`G_PRIORITY_DEFAULT_IDLE + 1`) still run; the rename lands while
+    // the install is parked on the stage, and the hold ends.
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    {
+        let (done, weak) = (done.clone(), background.downgrade());
+        glib::idle_add_local_full(
+            glib::Priority::from(glib::ffi::G_PRIORITY_LOW - 1),
+            move || {
+                std::thread::sleep(Duration::from_micros(200));
+                if done.get() || weak.upgrade().is_none() {
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            },
+        );
+    }
+    {
+        let (done, weak) = (done.clone(), background.downgrade());
+        glib::timeout_add_local_full(Duration::from_millis(1), glib::Priority::HIGH, move || {
+            let Some(editor) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if done.get() {
+                return glib::ControlFlow::Break;
+            }
+            if editor.load_state() == EditorLoadState::Loading
+                && editor.buffer().char_count() > 0
+                && editor.load_evidence().language_attach.pending
+            {
+                done.set(true);
+                editor.set_file_path(&renamed);
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+    // `set_file_path` reports the tab `Loaded` at once; the install itself
+    // ends when its session does.
+    wait_until(Duration::from_secs(30), || {
+        done.get() && !background.load_evidence().installation_active
+    });
+    assert!(!background.source_view().is_mapped());
+    assert_eq!(language_id(&background).as_deref(), Some("markdown"));
+    assert_eq!(crate::common::editor_text(&background), text);
+}
+
+#[test]
+fn test_an_evicted_large_markdown_reloads_highlighted_without_a_language_during_the_clear() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let large = write(&dir, "evicted.md", &text);
+    let small = write(&dir, "small.txt", "plain\n");
+    let editor = opened(&window, &large);
+    wait_until(SETTLE_BUDGET, || {
+        language_id(&editor).as_deref() == Some("markdown")
+    });
+    let _other = opened(&window, &small);
+    let cleared_with = std::rc::Rc::new(std::cell::Cell::new(None));
+    {
+        let record = cleared_with.clone();
+        editor
+            .buffer()
+            .connect_notify_local(Some("language"), move |buffer, _| {
+                if buffer.language().is_none() && record.get().is_none() {
+                    record.set(Some(buffer.char_count()));
+                }
+            });
+    }
+    editor.evict();
+    wait_until(Duration::from_secs(30), || editor.is_evicted());
+    assert_eq!(
+        cleared_with.get(),
+        Some(i32::try_from(text.chars().count()).expect("fits")),
+        "the eviction's clear took the language off before its first slice"
+    );
+    let tab_view = &window.imp().tab_view;
+    tab_view.set_selected_page(&tab_view.page(&editor));
+    wait_until(Duration::from_secs(30), || {
+        !editor.is_evicted()
+            && editor.load_state() == EditorLoadState::Loaded
+            && language_id(&editor).as_deref() == Some("markdown")
+    });
+    assert!(editor.load_evidence().installation_highlight_chunked);
+    assert_eq!(crate::common::editor_text(&editor), text);
+}
+
+#[test]
+fn test_a_save_formatting_mirror_back_installs_a_large_markdown_in_chunks() {
+    use lushtext_core::model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        &dir,
+        ".editorconfig",
+        "root = true\n[*]\ntrim_trailing_whitespace = true\n",
+    );
+    let clean = markdown(LARGE_MARKDOWN);
+    let path = write(&dir, "mirror.md", &clean.replace(".\n", ".   \n"));
+    let editor = opened(&window, &path);
+    wait_until(SETTLE_BUDGET, || {
+        language_id(&editor).as_deref() == Some("markdown")
+    });
+    let attaches = chars_at_attach(&editor);
+    editor
+        .buffer()
+        .insert(&mut editor.buffer().end_iter(), "end.   \n");
+    let saved = std::rc::Rc::new(std::cell::Cell::new(None));
+    {
+        let saved = saved.clone();
+        editor.save_file_async(move |result| saved.set(Some(result.is_ok())));
+    }
+    wait_until(Duration::from_secs(60), || {
+        saved.get().is_some() && !editor.buffer_replacement_evidence().in_progress
+    });
+    assert_eq!(saved.get(), Some(true));
+    let expected = format!("{clean}end.\n");
+    assert_eq!(
+        crate::common::editor_text(&editor),
+        expected,
+        "mirrored back"
+    );
+    assert_eq!(language_id(&editor).as_deref(), Some("markdown"));
+    let turns = editor.buffer_replacement_evidence().slice_count;
+    assert!(
+        turns
+            >= u64::try_from(expected.len())
+                .expect("fits")
+                .div_ceil(HIGHLIGHT_CHUNK_BYTES),
+        "{turns} turns"
+    );
+    let attaches = attaches.borrow().clone();
+    assert!(
+        !attaches.is_empty()
+            && attaches
+                .iter()
+                .all(|chars| u64::try_from(*chars).expect("positive") <= HIGHLIGHT_CHUNK_BYTES),
+        "every attach met at most one chunk: {attaches:?}"
+    );
+}
