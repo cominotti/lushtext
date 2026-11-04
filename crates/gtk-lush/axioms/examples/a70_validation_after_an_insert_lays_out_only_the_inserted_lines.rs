@@ -22,7 +22,7 @@ use gtk_lush_axioms::fixtures::a70::{
 use gtk_lush_axioms::fixtures::post_open::{
     DENSE_LINE_CHARS, DenseView, HALF_SETTLE_US, dense_text,
 };
-use gtk_lush_axioms::{AxiomId, init_toolkit};
+use gtk_lush_axioms::{AxiomId, SampleFlags, init_toolkit};
 use gtk4::prelude::*;
 
 /// The line counts the derivation prints the full curve at.
@@ -132,7 +132,15 @@ fn derive() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The measurement mode and its options (`support::guard`).
+const FLAGS: SampleFlags = SampleFlags {
+    modes: &["--derive-v-slice"],
+    options: &["--with-map", "--editor-like"],
+};
 fn main() -> ExitCode {
+    if let Some(code) = support::guard(&FLAGS) {
+        return code;
+    }
     if std::env::args().any(|argument| argument == "--derive-v-slice") {
         derive()
     } else {

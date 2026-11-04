@@ -973,7 +973,18 @@ still fails on any CRITICAL that escapes.
 
 A sample's `--check` refuses with exit 77 unless `GTK_LUSH_AXIOMS_HEADLESS=1`,
 which only the headless wrapper sets, so it never flashes windows on a live
-desktop. `scripts/run-gtk-axioms.sh` fails the lane on **any** `WARNING`,
+desktop. **Never run a sample without `--check` (or a measurement mode)
+outside a private headless session**: with no argument it opens its
+interactive window on whatever desktop it was started from, which is meant
+for a person watching, never for an agent. `--help`/`-h` print the usage and
+exit 0, and any argument a sample does not know (or a mode option without its
+mode) prints the usage and exits 2, both before GTK starts
+(`gtk_lush_axioms::classify_sample_args`, unit-tested; `support::guard`). A
+sample with its own measurement modes declares them in a `SampleFlags` and
+calls `support::guard(&FLAGS)` as the first statement of `main`;
+`make check-gtk-axioms` fails a sample that reads flags without it (on
+2026-11-04 a sample run with `--help`, which it then ignored, opened its
+window on the maintainer's live desktop). `scripts/run-gtk-axioms.sh` fails the lane on **any** `WARNING`,
 `CRITICAL`, `Broken pipe`, `cannot remove`, or `MESA: error:` line in the probe
 or sample output, whatever process printed it, except the private session's own
 `dbus-daemon` / `libmutter-Message` / EGL lines and the three mutter warnings
