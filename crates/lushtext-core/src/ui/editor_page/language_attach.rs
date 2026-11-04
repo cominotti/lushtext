@@ -43,8 +43,9 @@
 //! `decide_highlight_chunk` before every later one. That requests the attach
 //! once through `request_language_attach_for_install` (the same stage; it
 //! ignores the session scale, which the incoming body replaces only at
-//! publish, does not wait for an unmapped editor to be mapped, and does not
-//! wait for input-quiet, since the install holds typed keys), parks the
+//! publish and does not wait for an unmapped editor to be mapped; in the
+//! editor the user types into, shown and focused, it does not wait for
+//! input-quiet either, since the install holds those keys), parks the
 //! installer on `when_language_attach_resolves`, and afterwards lets a chunk
 //! in only once the engine's largest `highlight-updated` end has reached the
 //! end of the buffer's text (ledger A84; `reset_highlight_coverage`,
@@ -127,6 +128,12 @@ pub struct LanguageAttachState {
     /// analysed (A84), and because one `G_PRIORITY_LOW + 1` wait had passed.
     chunks_on_coverage: Cell<u64>,
     chunks_after_wait: Cell<u64>,
+    /// Whether a chunked highlighted install owns the buffer: set by the
+    /// load or the replacement when it starts one, cleared at its terminal or
+    /// when it drops the highlight (review S-c: an explicit fact, never
+    /// inferred from a borrowed session).
+    load_chunked_owner: Cell<bool>,
+    replacement_chunked_owner: Cell<bool>,
 }
 
 /// Observable attach-stage state, projected into the load evidence.
@@ -291,10 +298,32 @@ impl LushtextEditorPage {
         self.request_language_attach_now();
     }
 
+    /// Whether the pending stage is a chunked install's in the editor the
+    /// user types into: requested by the install, and its view mapped and
+    /// holding the keyboard focus.
+    fn install_attach_skips_input_quiet(&self) -> bool {
+        let view = self.imp().source_view.get();
+        self.imp().language_attach.for_install.get() && view.is_mapped() && view.is_focus()
+    }
+
     /// Whether a chunked highlighted install (the load's or a whole-buffer
     /// replacement's) owns the buffer now.
     fn chunked_highlight_install_active(&self) -> bool {
-        self.installation_is_highlight_chunked() || self.replacement_is_highlight_chunked()
+        let state = &self.imp().language_attach;
+        state.load_chunked_owner.get() || state.replacement_chunked_owner.get()
+    }
+
+    /// Record whether the load's installation is a chunked highlighted one.
+    pub(crate) fn set_load_chunked_owner(&self, owns: bool) {
+        self.imp().language_attach.load_chunked_owner.set(owns);
+    }
+
+    /// Record whether the replacement's session is a chunked highlighted one.
+    pub(crate) fn set_replacement_chunked_owner(&self, owns: bool) {
+        self.imp()
+            .language_attach
+            .replacement_chunked_owner
+            .set(owns);
     }
 
     /// Ask for the attach on behalf of a chunked highlighted install
@@ -314,6 +343,7 @@ impl LushtextEditorPage {
 
     fn request_language_attach_now(&self) {
         let Some(path) = self.imp().file_path.borrow().clone() else {
+            self.imp().language_attach.for_install.set(false);
             self.wake_attach_waiters();
             return;
         };
@@ -337,11 +367,13 @@ impl LushtextEditorPage {
         if !settled && *state.requested.borrow() == RequestedLanguage::Plain {
             self.buffer().set_language(None::<&sourceview5::Language>);
             state.pending.set(false);
+            state.for_install.set(false);
             self.wake_attach_waiters();
             return;
         }
         if settled {
             state.pending.set(false);
+            state.for_install.set(false);
             self.wake_attach_waiters();
             return;
         }
@@ -541,11 +573,17 @@ impl LushtextEditorPage {
         let now = glib::monotonic_time();
         let armed_since = state.armed_since_us.get();
         let last_input = crate::ui::input_quiet::last_input_us();
-        // A chunked install holds every typed key until its terminal, so its
-        // attach does not wait for input-quiet (review S6): a key waiting
-        // behind the definition parse (A67, the toolkit-floor exception)
-        // costs less than every key held up to `ATTACH_DEADLINE_US`.
-        if !state.for_install.get() && !deferred_attach_may_run(now, armed_since, last_input) {
+        // A chunked install holds the keys typed into its own editor until
+        // its terminal, so when that editor is the one receiving keys (shown
+        // and focused) its attach does not wait for input-quiet (review S6,
+        // narrowed by the re-review F2): a key waiting behind the definition
+        // parse (A67) costs less than every key held up to
+        // `ATTACH_DEADLINE_US`. Any other install, a background tab's above
+        // all, keeps waiting for input-quiet or the deadline, so the parse
+        // never lands while the user types elsewhere.
+        if !self.install_attach_skips_input_quiet()
+            && !deferred_attach_may_run(now, armed_since, last_input)
+        {
             // Come back when the quiet interval or the deadline can have
             // passed, whichever is sooner.
             let since_input = last_input.map_or(INPUT_QUIET_US, |input| now - input);

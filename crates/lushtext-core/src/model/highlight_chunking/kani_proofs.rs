@@ -165,7 +165,9 @@ fn a_highlighted_chunk_follows_the_attach_and_the_analysis() {
 /// Chunks in the liveness model.
 const LIVE_CHUNKS: u64 = 4;
 /// Steps after which a pending attach stage has resolved at the latest: the
-/// stage's `ATTACH_DEADLINE_US` (input-quiet, `language_attach.rs`).
+/// stage's `ATTACH_DEADLINE_US` (`language_attach.rs`). An install in the
+/// shown, focused editor skips input-quiet and resolves sooner; every other
+/// install waits for input-quiet, which the deadline bounds.
 const LIVE_DEADLINE: u32 = 3;
 /// Identity changes (rename, Save As) that re-arm the stage (review S1).
 const LIVE_RENAMES: u32 = 1;

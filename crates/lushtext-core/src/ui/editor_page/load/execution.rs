@@ -442,24 +442,6 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     }
 }
 
-/// Whether this editor's live load installation is the chunked highlighted
-/// one (`chunked-highlight-attach`, review S1). A session borrowed right now
-/// is the installer deciding its next chunk, so it counts.
-impl LushtextEditorPage {
-    pub(crate) fn installation_is_highlight_chunked(&self) -> bool {
-        self.imp()
-            .load
-            .installation
-            .borrow()
-            .as_ref()
-            .is_some_and(|session| {
-                session
-                    .try_borrow()
-                    .map_or(true, |state| state.highlight.is_some())
-            })
-    }
-}
-
 /// The chunked highlighted install's gate before a chunk
 /// (`model::highlight_chunking::chunk_gate`): `true` when the chunk may go in
 /// now; otherwise the session is parked until the attach resolves or queued
@@ -491,6 +473,8 @@ fn highlight_chunk_may_go_in(session: &Rc<RefCell<ChunkedLoadInstall>>) -> bool 
             let mut state = session.borrow_mut();
             state.budget = base;
             state.highlight = None;
+            drop(state);
+            editor.set_load_chunked_owner(false);
             true
         }
         ChunkDecision::AwaitAttach => {
@@ -641,6 +625,7 @@ pub(super) fn clear_installation_owner(
         .is_some_and(|current| Rc::ptr_eq(current, session));
     if is_current {
         editor.imp().load.installation.take();
+        editor.set_load_chunked_owner(false);
     }
 }
 
@@ -902,6 +887,7 @@ fn start_chunked_install(
     }));
     editor.imp().load.installation_slice_count.set(0);
     editor.imp().load.install_owns_changes.set(true);
+    editor.set_load_chunked_owner(session.borrow().highlight.is_some());
     editor
         .imp()
         .load

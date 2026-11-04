@@ -583,6 +583,7 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         .replacement
         .active
         .replace(Some(Rc::clone(&session)));
+    editor.set_replacement_chunked_owner(session.borrow().highlight.is_some());
     editor.imp().replacement.slice_count.set(0);
     editor
         .imp()
@@ -956,23 +957,6 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
 }
 
-/// Whether this editor's live replacement is the chunked highlighted one
-/// (review S1); a session borrowed right now is the replacement deciding.
-impl LushtextEditorPage {
-    pub(crate) fn replacement_is_highlight_chunked(&self) -> bool {
-        self.imp()
-            .replacement
-            .active
-            .borrow()
-            .as_ref()
-            .is_some_and(|session| {
-                session
-                    .try_borrow()
-                    .map_or(true, |state| state.highlight.is_some())
-            })
-    }
-}
-
 /// The chunked highlighted install's gate before an insertion turn
 /// (`model::highlight_chunking::chunk_gate`, shared with the load through
 /// `LushtextEditorPage::decide_highlight_chunk`): `true` when the turn may
@@ -1000,6 +984,8 @@ fn replacement_chunk_may_go_in(session: &Rc<RefCell<BufferReplacementSession>>) 
             let mut state = session.borrow_mut();
             state.budget = base;
             state.highlight = None;
+            drop(state);
+            editor.set_replacement_chunked_owner(false);
             true
         }
         ChunkDecision::AwaitAttach => {
@@ -1144,9 +1130,13 @@ fn cancel_session(
     }
     let highlighted = session.borrow_mut().highlight.take().is_some();
     if highlighted && let Some(editor) = session.borrow().editor.upgrade() {
-        // The partial chunks are cleared from the start: an attached language
-        // would re-analyse the remainder after every deleted slice.
-        editor.begin_chunked_highlight();
+        editor.set_replacement_chunked_owner(false);
+        // Only partial chunks need the language off before their clear: a
+        // session that mutated nothing leaves the old text's language as
+        // it was (review S3).
+        if mutation_started {
+            editor.begin_chunked_highlight();
+        }
     }
     match cancel_disposition(disposing, mutation_started) {
         CancelDisposition::FinishImmediately => finish_session(session, Some(reason)),
@@ -1253,6 +1243,7 @@ fn finish_session(
         }
         return;
     };
+    editor.set_replacement_chunked_owner(false);
     evidence::record_terminal(
         &editor,
         BufferReplacementTerminalDiagnostic {
@@ -1360,8 +1351,14 @@ impl LushtextEditorPage {
         current: Rc<std::cell::Cell<bool>>,
         outcomes: Rc<RefCell<Vec<BufferReplacementTestOutcome>>>,
         cancelled_bodies: Rc<RefCell<Vec<String>>>,
+        profile_body: bool,
     ) {
-        self.replace_buffer_bounded(BufferReplacementRequest::new_returning_body_on_cancel(
+        // `profile_body` carries the body's paragraph profile, as every
+        // production body-installing replacement does (draft recovery, local
+        // history, mirror-back), so the chunked highlighted install applies.
+        let profile =
+            profile_body.then(|| crate::model::paragraph_boundary::DocumentProfile::of_text(&body));
+        let request = BufferReplacementRequest::new_returning_body_on_cancel(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::Test,
                 generation,
@@ -1370,7 +1367,11 @@ impl LushtextEditorPage {
             move |_| current.get(),
             move |outcome| outcomes.borrow_mut().push(test_outcome(outcome)),
             move |body| cancelled_bodies.borrow_mut().push(body),
-        ));
+        );
+        self.replace_buffer_bounded(match profile {
+            Some(profile) => request.with_profile(profile),
+            None => request,
+        });
     }
 
     /// Exercise the same teardown path window disposal uses.
