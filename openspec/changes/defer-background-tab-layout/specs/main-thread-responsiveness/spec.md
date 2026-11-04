@@ -147,10 +147,10 @@ and SHALL not fail.
 - **WHEN** Replace All runs with a query that matches nothing
 - **THEN** the document is unchanged and the application keeps running
 
-#### Scenario: A minimap doubles the detach cost
-- **WHEN** a hidden view with a minimap bound has more than
-  `VIEW_DETACH_MAX_LINES_WITH_MINIMAP` (2^17) lines
-- **THEN** it is not detached
+#### Scenario: A hidden view with a minimap is detached within budget
+- **WHEN** a hidden laid-out view of 204,601 lines with a minimap bound is
+  re-laid out (a zoom step)
+- **THEN** its detach dispatch stays within `B_SETTLE_US`
 
 ## MODIFIED Requirements
 

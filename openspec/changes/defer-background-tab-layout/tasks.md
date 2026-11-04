@@ -56,5 +56,5 @@
 - [x] 7.3 SF4: reveal before the search context attaches and before Replace/Replace All, no paced reveal while a context is attached; failing-first widget test (383 of 400 matches left). Pre-existing crash found and fixed: Replace All with no match panicked in the binding; widget test.
 - [x] 7.4 SF1: one attach per dispatch, selected first, cancellable; widget test.
 - [x] 7.5 SF2: measured and recorded as an exception (design D7).
-- [x] 7.6 Nits: N1 test (over 2^14 lines reattaches unpaced), N3 weak-owner subscribers pruned, N4 constant kinds and `MAX_DISPLAY_LINE_STEPS` 2^13, N5 lane cases `eviction/detach` and `-minimap` and the 2^17 minimap cap, N6 print evidence from `editor.buffer()`, N7 aging timeout removed when the step runs or is dropped.
+- [x] 7.6 Nits: N1 test (over 2^14 lines reattaches unpaced), N3 weak-owner subscribers pruned, N4 constant kinds and `MAX_DISPLAY_LINE_STEPS` 2^13, N5 lane cases `eviction/detach` and `-minimap`, the 2^18 cap justified with a minimap (a 2^17 minimap cap, tried in c4aba7a4, was removed), N6 print evidence from `editor.buffer()`, N7 aging timeout removed when the step runs or is dropped.
 - [x] 7.7 Lane rerun of the affected cases interleaved against `main`.

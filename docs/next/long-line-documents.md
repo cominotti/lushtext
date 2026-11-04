@@ -2925,6 +2925,61 @@ build of it (`R5-evict-branch`, 3 repetitions, load 2.5–6.1) against V4's
   `switch-hidden-giant` 9.2/10.0 against 8.8/9.0. No swap dispatch is sent to
   the listener.
 
+**Review round 2 (review of 8ac53b8e, 2026-11-04).** The second review
+found the AT mirror reading `EventListenerDeregistered` as `(ssas)`; it is
+`(ss)`, so a listener never left and, after any assistive technology had run
+once, no view was detached for the rest of the session (fails safe, but
+silently switches the change off). Fixed with a pure, unit-tested parser
+(failing-first), and the mirror now reads as listening until the registry
+answers and for good on failure, rebuilding its (sender, event) set from the
+answer. Detached editors attach one per dispatch when a listener appears. A
+paced reattach hid paragraphs from the in-tab search: Replace All right after
+switching to a dense tab replaced 17 of 400 matches (failing-first); the
+search context now reveals first and no paced reveal starts while one is
+attached. That test found a pre-existing crash: sourceview5 0.11's
+`replace_all` binding asserts a zero count carries an error, so Replace All
+that matched nothing panicked; the call is made directly.
+
+**Recorded exception (2026-11-04): a large document detached before an
+assistive technology started.** It sends its whole text once, when its tab is
+shown, instead of in 256 KiB install slices as on `main`. Measured with the
+PyGObject probe under the lane's AT setup and a listener recording payload
+sizes: 32 MiB, 71–75 ms in one dispatch, one `TextChanged` of 33,554,400
+characters; 100 MiB, 182–186 ms, one of 104,857,582; 160 MiB, nothing sent
+(over D-Bus's 128 MiB message limit; the a11y bus itself allows 1 GB). Reason:
+re-installing the document in slices through the buffer-replacement workflow
+would rewrite the buffer (undo, modified state, marks, caret) to change only
+what the AT is told. Because an unanswered mirror reads as listening, only an
+assistive technology started mid-session reaches it.
+
+**The detach with a minimap (N5).** New lane cases `eviction/detach` and
+`eviction/detach-minimap` (one 8 MiB document of 204,601 short lines shown,
+then hidden and re-laid out by a zoom step): the `view_detach` span is
+5.3–5.9 ms without and 8.6–12.7 ms with the minimap bound, which walks the
+lines again (load 2.9–9). The 2^18 cap is kept: in the same phase `main`, which
+never detaches, re-lays out the hidden view and its map in 175–189 ms, against
+the branch's 11.5–14.1 ms. A 2^17 cap for minimap views (c4aba7a4) was
+removed.
+
+**Verdict V5 (2026-11-04 02:15–02:39, the affected cases).** Interleaved, 3 + 2
+repetitions per side, `main` f79e7a5d with the probe mark backported against
+`bin/branch-c4aba7a4`, without waiting for an idle host (load 1.8–4.8; a Java
+process and a search indexer were running), plus the `at` variant 2 + 2.
+`V5-compare.md`, `AT5-compare.md`. The final commit only removes the 2^17
+minimap cap, which never took effect in these runs (the minimap case detached
+in every repetition), so V5 measures its behavior.
+
+- `eviction/reselect`: `main` hits the 20 s cap; the branch completes,
+  `reselect` 5.7/6.5 ms (median/max), `switch-hidden` 6.2/6.8.
+- `switch-hidden-dense` 10.2/15.0 against `main`'s 19.1/22.2;
+  `switch-hidden-giant` 7.5/9.0 against 9.7/11.6.
+- `detach` phase: 84.7/87.0 against 82.2/90.4 without the minimap (the zoom
+  step's own re-layout of the shown tab, on both sides); 11.5/14.1 against
+  175.5/176.8 with it.
+- `at` variant: no view is detached (no `view_detach` span of a laid-out
+  view); `eviction/reselect` hits the cap on both sides; the other cases match
+  `main` within a reference frame.
+
 **The `steady-populated` shift SC left (attributed).** The worst dispatch at
 the start of `type-during-settle` is the populated window's first editor frame
 on both sides, 11.4–12.8 ms unloaded, within `B_SETTLE_US`; the loaded

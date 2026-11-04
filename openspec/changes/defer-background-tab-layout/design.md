@@ -250,8 +250,12 @@ with it.
     Replace All that matched nothing panicked; the call is made directly.
   - With a minimap bound the detach walks the lines twice: the lane's
     `view_detach` span on 204,601 laid-out lines, 5.3–5.9 ms without and
-    8.6–12.7 ms with the minimap (load 4.5–9), so the cap is 2^17 lines with a
-    minimap bound.
+    8.6–12.7 ms with the minimap (load 2.9–9), within `B_SETTLE_US`. The 2^18
+    cap is kept for both: without the detach the zoom step re-laid out the
+    hidden view and its map in one 175–189 ms dispatch (`main`, V5), against
+    11.5–14.1 ms with it. A 2^17 cap for minimap views was tried in c4aba7a4
+    and removed; at exactly 2^18 lines the extrapolated swap is about 16 ms
+    under that load (recorded).
 - **Pacing aging.** A background slice that waited 256 ms behind visible work
   runs once at `PACED_SLICE_PRIORITY` (`input_quiet::paced_idle_aging`).
 - **The activation's present.** The span-less 35–52 ms after the second open of

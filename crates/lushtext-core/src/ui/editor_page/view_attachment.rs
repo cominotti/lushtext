@@ -47,9 +47,9 @@
 //! text once (an exception, measured in design D7). Until the mirror has its
 //! first answer it reads as listening, so no view is detached then either. Without a listener the swap walks the
 //! document's lines (2.6–4.2 ms for 204,601 lines, 27–28 ms for 2,557,503), so
-//! a view whose document has more than [`VIEW_DETACH_MAX_LINES`] lines
-//! ([`VIEW_DETACH_MAX_LINES_WITH_MINIMAP`] with a minimap bound, which walks
-//! them again) is never detached either. Attaching without a listener costs under 0.2 ms at
+//! a view whose document has more than [`VIEW_DETACH_MAX_LINES`] lines is
+//! never detached either (a bound minimap walks them again; the cap holds for
+//! it, see the constant). Attaching without a listener costs under 0.2 ms at
 //! any size.
 //!
 //! **The primary selection.** A realized view moves GTK's primary-selection
@@ -102,14 +102,15 @@ pub(crate) struct ViewAttachmentState {
 /// walks every line (27–28 ms for 2,557,503 lines on the reference machine,
 /// 6.8–7.0 ms for 261,491 lines of 400 characters), so this keeps a detach
 /// under half of `B_SETTLE_US` there.
+///
+/// With a minimap the bound `GtkSourceMap` walks the lines again, about
+/// doubling the swap: the lane's `view_detach` span on 204,601 laid-out lines
+/// (`eviction/detach` and `-minimap`, load 2.9–9) is 5.3–5.9 ms without and
+/// 8.6–12.7 ms with the minimap, within `B_SETTLE_US`. The cap is kept for
+/// both: not detaching costs far more there, a zoom step re-laying out the
+/// hidden view and its map took 175–189 ms on `main` against 11.5–14.1 ms with
+/// the detach (review round 2, N5).
 pub(crate) const VIEW_DETACH_MAX_LINES: i32 = 1 << 18;
-
-/// [`VIEW_DETACH_MAX_LINES`] for a view with a minimap bound to it. Kind: line
-/// count, a cap; a power of two, rounded down: the bound `GtkSourceMap` walks
-/// the lines too, about doubling the swap (the lane's `view_detach` span on
-/// 204,601 laid-out lines, `eviction/detach` and `-minimap`, load 4.5–9:
-/// 5.3–5.9 ms without, 8.6–12.7 ms with the minimap), so the cap halves.
-pub(crate) const VIEW_DETACH_MAX_LINES_WITH_MINIMAP: i32 = 1 << 17;
 
 /// The most characters a detached view's document may have to be attached
 /// when an assistive technology starts listening. Kind: character count, a
@@ -120,20 +121,10 @@ pub(crate) const AT_ATTACH_MAX_CHARS: i32 = 1 << 20;
 
 /// Whether a view may be given the placeholder now: no assistive technology
 /// listens (a swap would send the whole document to it) and the document is
-/// short enough for the swap's line walk, which a bound minimap repeats
-/// (module docs).
+/// short enough for the swap's line walk (module docs).
 #[must_use]
-pub(crate) const fn view_detach_allowed(
-    at_listening: bool,
-    document_lines: i32,
-    minimap_bound: bool,
-) -> bool {
-    let cap = if minimap_bound {
-        VIEW_DETACH_MAX_LINES_WITH_MINIMAP
-    } else {
-        VIEW_DETACH_MAX_LINES
-    };
-    !at_listening && document_lines <= cap
+pub(crate) const fn view_detach_allowed(at_listening: bool, document_lines: i32) -> bool {
+    !at_listening && document_lines <= VIEW_DETACH_MAX_LINES
 }
 
 /// The detached editors to attach because an assistive technology started
@@ -506,7 +497,6 @@ impl LushtextEditorPage {
         if !view_detach_allowed(
             crate::ui::at_listeners::listeners_active(),
             self.buffer().line_count(),
-            self.imp().minimap.source_map.borrow().is_some(),
         ) {
             // Never detached (module docs): nothing to watch for.
             return;
@@ -585,7 +575,6 @@ impl LushtextEditorPage {
             || !view_detach_allowed(
                 crate::ui::at_listeners::listeners_active(),
                 document.line_count(),
-                self.imp().minimap.source_map.borrow().is_some(),
             )
         {
             return;
@@ -716,24 +705,10 @@ mod tests {
 
     #[test]
     fn a_view_is_detached_only_without_a_listener_and_within_the_line_cap() {
-        assert!(view_detach_allowed(false, 0, false));
-        assert!(view_detach_allowed(false, VIEW_DETACH_MAX_LINES, false));
-        assert!(!view_detach_allowed(
-            false,
-            VIEW_DETACH_MAX_LINES + 1,
-            false
-        ));
-        assert!(view_detach_allowed(
-            false,
-            VIEW_DETACH_MAX_LINES_WITH_MINIMAP,
-            true
-        ));
-        assert!(!view_detach_allowed(
-            false,
-            VIEW_DETACH_MAX_LINES_WITH_MINIMAP + 1,
-            true
-        ));
-        assert!(!view_detach_allowed(true, 0, false));
-        assert!(!view_detach_allowed(true, VIEW_DETACH_MAX_LINES, false));
+        assert!(view_detach_allowed(false, 0));
+        assert!(view_detach_allowed(false, VIEW_DETACH_MAX_LINES));
+        assert!(!view_detach_allowed(false, VIEW_DETACH_MAX_LINES + 1));
+        assert!(!view_detach_allowed(true, 0));
+        assert!(!view_detach_allowed(true, VIEW_DETACH_MAX_LINES));
     }
 }
