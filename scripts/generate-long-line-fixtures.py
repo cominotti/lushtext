@@ -166,6 +166,11 @@ FLAVORS = {
     "markup": ("<div>", MARKUP_CLASS_WEIGHTS),
     # Prose: no opener, no markup.
     "prose": ("", PROSE_CLASS_WEIGHTS),
+    # `short-language` only (`chunked-highlight-attach` re-review F1): the
+    # worst case for a context-flipping key, no closer anywhere after the
+    # cursor: C comments are `//` only, Markdown has no fenced code block (an
+    # indented one instead) and no `-->`.
+    "no-closers": ("", PROSE_CLASS_WEIGHTS),
 }
 MULTIBYTE_CLASS_WEIGHTS = (
     ("abcdefghijklmnoprstuvwxy", 0.40),
@@ -555,7 +560,7 @@ def markdown_sentence(rng: SplitMix64, words: int) -> str:
     return " ".join(out) + "."
 
 
-def write_markdown_block(writer: FixtureWriter, rng: SplitMix64, section: int) -> None:
+def write_markdown_block(writer: FixtureWriter, rng: SplitMix64, section: int, fences: bool = True) -> None:
     def line(text: str = "") -> None:
         writer.text(text)
         writer.end_paragraph()
@@ -574,10 +579,12 @@ def write_markdown_block(writer: FixtureWriter, rng: SplitMix64, section: int) -
         for item in range(3 + rng.below(4)):
             line(f"{item + 1}. {markdown_sentence(rng, 4 + rng.below(8))}")
     elif kind == 2:
-        line("```rust")
+        if fences:
+            line("```rust")
         for statement in range(4 + rng.below(6)):
             line(f"    let value_{statement} = compute_{rng.below(50)}(&buffer, {rng.below(1000)});")
-        line("```")
+        if fences:
+            line("```")
     elif kind == 3:
         line("| Name | Size | Note |")
         line("| --- | ---: | --- |")
@@ -592,7 +599,7 @@ def write_markdown_block(writer: FixtureWriter, rng: SplitMix64, section: int) -
     line()
 
 
-def write_markdown(path: Path, delimiter: str, seed: int, total_bytes: int) -> dict:
+def write_markdown(path: Path, delimiter: str, seed: int, total_bytes: int, fences: bool = True) -> dict:
     rng = SplitMix64(seed)
     writer = FixtureWriter(path, delimiter)
     writer.text("# Responsiveness lane Markdown fixture")
@@ -602,7 +609,7 @@ def write_markdown(path: Path, delimiter: str, seed: int, total_bytes: int) -> d
     # The largest block is well under 2 KiB, so a block never overshoots.
     while writer.stats.bytes + 2048 < total_bytes:
         section += 1
-        write_markdown_block(writer, rng, section)
+        write_markdown_block(writer, rng, section, fences)
     pad = total_bytes - writer.stats.bytes
     if pad > 0:
         words = (" ".join(MARKDOWN_WORDS) + " ") * (pad // 64 + 2)
@@ -637,7 +644,7 @@ def resolve_inside(scope: Path, out_dir: Path) -> Path:
 SHORT_LANGUAGE_EXTS = ("md", "rs", "c", "py", "js", "ts", "yaml", "xml", "css", "sh", "json", "html")
 
 
-def short_language_line(ext: str, rng: SplitMix64, n: int) -> str:
+def short_language_line(ext: str, rng: SplitMix64, n: int, closers: bool = True) -> str:
     k = rng.below(100_000)
     word = MARKDOWN_WORDS[rng.below(len(MARKDOWN_WORDS))]
     pick = rng.below(3)
@@ -646,7 +653,8 @@ def short_language_line(ext: str, rng: SplitMix64, n: int) -> str:
                 f"    let {word}_{n}: &str = \"{word} {k}\";",
                 f"#[derive(Debug)] struct {word.capitalize()}{n} {{ field: u64 }}")[pick]
     if ext == "c":
-        return (f"static int {word}_{n}(int value) {{ return value + {k}; }} /* {word} */",
+        comment = f"/* {word} */" if closers else f"// {word}"
+        return (f"static int {word}_{n}(int value) {{ return value + {k}; }} {comment}",
                 f"#define {word.upper()}_{n} {k}",
                 f"    const char *{word}_{n} = \"{word} {k}\";")[pick]
     if ext == "py":
@@ -680,9 +688,10 @@ def short_language_line(ext: str, rng: SplitMix64, n: int) -> str:
     raise ValueError(f"no short-language template for {ext!r}")
 
 
-def write_short_language(path: Path, delimiter: str, seed: int, total_bytes: int, ext: str) -> dict:
+def write_short_language(path: Path, delimiter: str, seed: int, total_bytes: int, ext: str, flavor: str = "css") -> dict:
+    closers = flavor != "no-closers"
     if ext == "md":
-        return write_markdown(path, delimiter, seed, total_bytes)
+        return write_markdown(path, delimiter, seed, total_bytes, fences=closers)
     if ext == "html":
         return write_short_html(path, delimiter, seed, total_bytes)
     rng = SplitMix64(seed)
@@ -698,7 +707,7 @@ def write_short_language(path: Path, delimiter: str, seed: int, total_bytes: int
     n = 0
     while writer.stats.bytes + reserve < total_bytes:
         n += 1
-        writer.text(short_language_line(ext, rng, n))
+        writer.text(short_language_line(ext, rng, n, closers))
         writer.end_paragraph()
     if tail:
         writer.text(tail)
@@ -764,7 +773,7 @@ def generate(
     elif kind == "short-language":
         if ext not in SHORT_LANGUAGE_EXTS:
             raise ValueError(f"short-language needs ext in {SHORT_LANGUAGE_EXTS}, not {ext!r}")
-        files.append(write_short_language(out_dir / f"{stem}.{ext}", separator, seed, size, ext))
+        files.append(write_short_language(out_dir / f"{stem}.{ext}", separator, seed, size, ext, flavor))
     manifest_editorconfig = write_editorconfig(out_dir, editorconfig) if editorconfig else None
     return {
         "generator_version": GENERATOR_VERSION,
@@ -900,6 +909,10 @@ def self_test() -> int:
             expect(60 * 1024 <= entry["bytes"] <= 64 * 1024, f"short-language {ext}: size ({entry['bytes']})")
             expect(entry["longest_paragraph"] < 2000, f"short-language {ext}: below L_syntax ({entry['longest_paragraph']})")
             again = generate("short-language", 64 * 1024, 7, scope, scope / f"sl2-{ext}", ext=ext)
+            if ext in ("c", "md"):
+                worst = generate("short-language", 64 * 1024, 7, scope, scope / f"slw-{ext}", ext=ext, flavor="no-closers")
+                body = Path(worst["files"][0]["path"]).read_text(encoding="utf-8")
+                expect("*/" not in body and "```" not in body and "-->" not in body, f"short-language {ext} no-closers: no closer anywhere")
             expect(again["files"][0]["sha256"] == entry["sha256"], f"short-language {ext}: deterministic")
 
         markdown = generate("markdown", 200_000, 4, scope, scope / "md")

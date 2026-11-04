@@ -505,18 +505,18 @@ pub fn paced_chunked_install(
 }
 
 /// The keys that flip the syntax context of everything after them, per
-/// language: the opener, then the closer typed right after it
-/// (`chunked-highlight-attach` review M1). Each is typed one character at a
-/// time at the start of the document.
+/// language, each an opener and the closer typed right after it
+/// (`chunked-highlight-attach` reviews M1 and F1). Each is typed one
+/// character at a time.
 #[must_use]
-pub fn flipping_keys(language_id: &str) -> Option<(&'static str, &'static str)> {
+pub fn flipping_keys(language_id: &str) -> &'static [(&'static str, &'static str)] {
     match language_id {
-        "rust" | "sh" | "yaml" => Some(("\"", "\"")),
-        "python3" | "python" => Some(("\"\"\"", "\"\"\"")),
-        "markdown" => Some(("```\n", "```\n")),
-        "c" | "js" | "typescript" | "css" => Some(("/*", "*/")),
-        "xml" => Some(("<!--", "-->")),
-        _ => None,
+        "rust" | "sh" | "yaml" => &[("\"", "\"")],
+        "python3" | "python" => &[("\"\"\"", "\"\"\"")],
+        "markdown" => &[("```\n", "```\n"), ("<!--", "-->")],
+        "c" | "js" | "typescript" | "css" => &[("/*", "*/")],
+        "xml" => &[("<!--", "-->")],
+        _ => &[],
     }
 }
 
