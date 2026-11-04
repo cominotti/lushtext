@@ -62,6 +62,12 @@
 //!    the buffer.** Every slice boundary, inserting and clearing alike, ends on
 //!    a paragraph boundary; [`policy`] records why that is a performance
 //!    contract with a user-visible failure mode rather than refactorable detail.
+//!    A highlighted document above its language's attach-after-install
+//!    threshold takes the chunked highlighted install
+//!    (`policy::HighlightAttachPlan::AttachAfterFirstChunk`,
+//!    `chunked-highlight-attach`): its language is attached after the first
+//!    chunk and every later chunk of at most 8 KiB waits for the context
+//!    engine to report the previous one analysed.
 //! 7. **Publish.** Size, size class, canonical identity, encoding, BOM, health
 //!    findings, and mtime are adopted; the cursor is restored; the file monitor
 //!    starts; local history is seeded; the tab reports `Loaded`; and the
@@ -92,6 +98,11 @@
 //! - **Stage 6, per slice.** A chunked installation yields on a 1 ms timeout
 //!   between slices; control resumes in `execution::run_install_slice`, which
 //!   re-checks freshness before every slice and can divert to stage 8.
+//! - **Stage 6, the chunked highlighted install's attach and analysis.** After
+//!   its first chunk, the installation parks until the language attach stage
+//!   resolves (`LushtextEditorPage::when_language_attach_resolves`), and a
+//!   chunk the engine has not reported analysed waits once at
+//!   `G_PRIORITY_LOW + 1`; control resumes in `execution::run_install_slice`.
 //! - **Stage 8, cancelled cleanup.** Cancellation does not clear the buffer in
 //!   one turn either; control resumes per slice in
 //!   `retirement::run_cancelled_clear_slice`, **which is where a cancelled

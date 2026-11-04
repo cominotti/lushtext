@@ -367,6 +367,11 @@ pub(crate) struct BufferReplacementSession {
     /// The sliced install of a protected body (C3), which the install turns
     /// step; `None` for an ordinary body.
     folded: Option<FoldedInstall>,
+    /// The chunked highlighted install's progress (`chunked-highlight-attach`,
+    /// C6b); `None` for every other body.
+    highlight: Option<crate::ui::editor_page::language_attach::HighlightChunks>,
+    /// Insertion turns that put text in (the chunk gate's count).
+    inserted_turns: u64,
 }
 
 /// Content-free terminal evidence retained by one editor.
@@ -503,13 +508,47 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         .profile
         .as_ref()
         .and_then(|profile| profile.fold_plan.clone());
+    // A highlighted body above its language's attach-after-install threshold
+    // goes in chunk by chunk with its language attached
+    // (`chunked-highlight-attach`): attaching it to the whole body at the
+    // terminal would analyse it in 30 ms worker slices (A69).
+    let highlight = request.profile.as_ref().and_then(|profile| {
+        crate::model::highlight_chunking::highlight_install_order(
+            editor.syntax_language(),
+            profile.summary().total_bytes,
+            editor.scale_for_incoming_profile(profile).syntax_enabled,
+        )
+        .is_chunked()
+        .then(|| crate::ui::editor_page::language_attach::HighlightChunks::new(budget))
+    });
     let plan = BufferReplacementPlan::for_text(
         editor.buffer().char_count(),
         request.body.len(),
         budget == SliceBudget::PACED
+            || highlight.is_some()
             || super::policy::protected_install_is_sliced(fold_plan.as_deref()),
     );
-    let guard = begin_guard(editor);
+    let budget = if highlight.is_some() {
+        budget.with_highlight_cut()
+    } else {
+        budget
+    };
+    let mut guard = begin_guard(editor);
+    if plan.clear_only && plan.mode == BufferReplacementMode::Sliced {
+        // A sliced clear (memory eviction) deletes from the start: an
+        // attached language would re-analyse the remainder after every slice.
+        // Removing it costs nothing (A27); the reload attaches it again.
+        editor.cancel_language_attach();
+        if editor.buffer().language().is_some() {
+            editor.buffer().set_language(None::<&sourceview5::Language>);
+        }
+    }
+    if highlight.is_some() {
+        // Before the clear: the language comes off, highlighting stays on for
+        // the attach, and the terminal leaves it on.
+        editor.begin_chunked_highlight();
+        guard.highlight_syntax = true;
+    }
     if let Some(profile) = &request.profile {
         editor.prepare_for_incoming_profile(profile);
         if let Some(kind) = protected_install_kind(request.ticket.workflow) {
@@ -540,6 +579,8 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
         folded,
         profile: request.profile,
         budget,
+        highlight,
+        inserted_turns: 0,
     }));
     editor
         .imp()
@@ -693,7 +734,11 @@ fn run_turn_now(session: &Rc<RefCell<BufferReplacementSession>>) {
             // Another document inserted a hidden tail in this iteration.
             schedule_turn(session);
         }
-        ReplacementPhase::Installing => run_install_turn(session),
+        ReplacementPhase::Installing => {
+            if replacement_chunk_may_go_in(session) {
+                run_install_turn(session);
+            }
+        }
         ReplacementPhase::ClearingCancelled => run_cancelled_clear_turn(session),
         ReplacementPhase::Finalizing => {}
     }
@@ -805,6 +850,10 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
         )
     };
     let budget = session.borrow().budget;
+    let highlighted = session.borrow().highlight.is_some();
+    if highlighted && let Some(editor) = editor.as_ref() {
+        editor.reset_highlight_coverage();
+    }
     let body_len = body.len();
     let end = crate::ui::editor_page::edit_lock::with_own_edit(|| {
         if let (Some(install), Some(editor)) = (folded.as_mut(), editor.as_ref()) {
@@ -854,6 +903,7 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
             return;
         }
         state.byte_offset = end;
+        state.inserted_turns = state.inserted_turns.saturating_add(1);
         state.body = Some(body);
     }
     if insertion_is_complete(end, body_len) {
@@ -863,7 +913,8 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
         let laid_out = editor
             .as_ref()
             .is_some_and(LushtextEditorPage::install_follows_layout);
-        match install_slice_pacing(budget == SliceBudget::PACED, laid_out, protected) {
+        let paced = budget == SliceBudget::PACED || highlighted;
+        match install_slice_pacing(paced, laid_out, protected) {
             InstallSlicePacing::BehindValidation => {
                 schedule_paced_turn(session, crate::ui::editor_page::load::PACED_SLICE_PRIORITY);
             }
@@ -875,6 +926,63 @@ fn run_install_turn(session: &Rc<RefCell<BufferReplacementSession>>) {
             }
             InstallSlicePacing::Timeout => schedule_turn(session),
         }
+    }
+}
+
+/// The chunked highlighted install's gate before an insertion turn
+/// (`model::highlight_chunking::chunk_gate`, shared with the load through
+/// `LushtextEditorPage::decide_highlight_chunk`): `true` when the turn may
+/// insert now; otherwise the session is parked until the attach resolves or
+/// queued once at `G_PRIORITY_LOW + 1` behind the engine's worker.
+fn replacement_chunk_may_go_in(session: &Rc<RefCell<BufferReplacementSession>>) -> bool {
+    use crate::ui::editor_page::language_attach::{ChunkDecision, analysis_wait_priority};
+    let Some(editor) = session.borrow().editor.upgrade() else {
+        return true;
+    };
+    let decision = {
+        let mut state = session.borrow_mut();
+        let inserted = state.inserted_turns;
+        let Some(highlight) = state.highlight.as_mut() else {
+            return true;
+        };
+        editor.decide_highlight_chunk(highlight, inserted)
+    };
+    match decision {
+        ChunkDecision::Insert => true,
+        ChunkDecision::Unhighlighted(base) => {
+            let mut state = session.borrow_mut();
+            state.budget = base;
+            state.highlight = None;
+            true
+        }
+        ChunkDecision::AwaitAttach => {
+            let weak = Rc::downgrade(session);
+            editor.when_language_attach_resolves(move || {
+                if let Some(session) = weak.upgrade() {
+                    resume_parked_turn(
+                        &session,
+                        crate::ui::editor_page::load::PACED_SLICE_PRIORITY,
+                    );
+                }
+            });
+            false
+        }
+        ChunkDecision::AwaitAnalysis => {
+            resume_parked_turn(session, analysis_wait_priority());
+            false
+        }
+    }
+}
+
+/// Queue a parked chunked session's next turn, unless it ended or was
+/// rescheduled meanwhile.
+fn resume_parked_turn(session: &Rc<RefCell<BufferReplacementSession>>, priority: glib::Priority) {
+    let resumable = {
+        let state = session.borrow();
+        !state.terminal && state.phase == ReplacementPhase::Installing && state.source_id.is_none()
+    };
+    if resumable {
+        schedule_paced_turn(session, priority);
     }
 }
 
@@ -986,6 +1094,12 @@ fn cancel_session(
     }
     if let Some(source) = source {
         source.remove();
+    }
+    let highlighted = session.borrow_mut().highlight.take().is_some();
+    if highlighted && let Some(editor) = session.borrow().editor.upgrade() {
+        // The partial chunks are cleared from the start: an attached language
+        // would re-analyse the remainder after every deleted slice.
+        editor.begin_chunked_highlight();
     }
     match cancel_disposition(disposing, mutation_started) {
         CancelDisposition::FinishImmediately => finish_session(session, Some(reason)),

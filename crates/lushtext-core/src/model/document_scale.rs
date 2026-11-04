@@ -196,10 +196,56 @@ impl SyntaxLanguage {
         }
     }
 
+    /// Whether a document of this language may be highlighted above its
+    /// attach-after-install threshold, through the chunked install
+    /// (`chunked-highlight-attach`, C6b; `model::highlight_chunking`).
+    ///
+    /// Measured (ledger A84, the sample's `--typing-limit`, 2026-11-04): seven
+    /// keys at the start, in the middle and inside six lines near the top of
+    /// a 1 MiB document, after its chunked install, keep every dispatch within
+    /// `B_INTERACT_US`, on both fixture families: C6's block-structured
+    /// documents and the lane's blank-line-free ones (`short-language`). Only
+    /// these five pass both. On blank-line-free content the context engine of
+    /// js, typescript, css, sh and yaml re-analyses past every keystroke (a
+    /// blank line is where it resynchronises): 32–41 ms per key at 64 KiB,
+    /// already 9–13 ms at 4–16 KiB, so they keep their C6 gates.
+    #[must_use]
+    pub const fn chunk_highlighted(self) -> bool {
+        matches!(
+            self,
+            Self::Markdown | Self::Rust | Self::C | Self::Python | Self::Xml
+        )
+    }
+
     /// Syntax highlighting and bracket matching turn off above this many
     /// bytes.
+    ///
+    /// A chunk-highlighted language ([`Self::chunk_highlighted`]) is gated
+    /// only by [`S_SYNTAX`] (`chunked-highlight-attach`, C6b, coordinator
+    /// decision of 2026-11-04): above its measured attach threshold its
+    /// document is installed in chunks the context engine analyses one by
+    /// one, which keeps every dispatch within `B_SETTLE_US` at any size, but
+    /// the install then takes as long as the analysis (0.6–1.2 s per MiB for
+    /// these five on the reference machine, ledger A84), and the text is
+    /// complete only at its end; `S_SYNTAX` bounds that wait. Every other language keeps its
+    /// measured gate, [`Self::attach_after_install_threshold`].
     #[must_use]
     pub const fn syntax_size_threshold(self) -> u64 {
+        if self.chunk_highlighted() {
+            S_SYNTAX
+        } else {
+            self.attach_after_install_threshold()
+        }
+    }
+
+    /// The largest document whose language may be attached after the text is
+    /// installed (`bound-post-open-settle`'s order): its background analysis
+    /// keeps every dispatch within `B_SETTLE_US`, and for HTML and JSON also
+    /// every mid-document keystroke within `B_INTERACT_US`. Above it a
+    /// chunk-highlighted language takes the chunked install
+    /// (`model::highlight_chunking::highlight_install_order`).
+    #[must_use]
+    pub const fn attach_after_install_threshold(self) -> u64 {
         match self {
             Self::PlainText => S_SYNTAX,
             Self::Html => min_u64(attach_threshold::HTML, typing_threshold::HTML),
@@ -953,6 +999,53 @@ mod tests {
             typing_threshold::HTML
         );
         assert!(SyntaxLanguage::Other.syntax_size_threshold() < S_SYNTAX);
+    }
+
+    #[test]
+    fn the_five_chunk_highlighted_languages_keep_syntax_up_to_s_syntax() {
+        let chunked: Vec<_> = SyntaxLanguage::ALL
+            .into_iter()
+            .filter(|language| language.chunk_highlighted())
+            .collect();
+        assert_eq!(
+            chunked,
+            [
+                SyntaxLanguage::Markdown,
+                SyntaxLanguage::Rust,
+                SyntaxLanguage::C,
+                SyntaxLanguage::Python,
+                SyntaxLanguage::Xml
+            ]
+        );
+        for language in chunked {
+            assert_eq!(language.syntax_size_threshold(), S_SYNTAX, "{language:?}");
+            assert!(language.attach_after_install_threshold() < S_SYNTAX);
+            assert!(
+                DocumentScale::for_profile_in(profile(S_SYNTAX, 0, 0), language).syntax_enabled
+            );
+            // The paragraph gate still applies.
+            assert!(
+                !DocumentScale::for_profile_in(profile(S_SYNTAX, L_SYNTAX + 1, 0), language)
+                    .syntax_enabled
+            );
+        }
+        for language in [
+            SyntaxLanguage::Html,
+            SyntaxLanguage::Json,
+            SyntaxLanguage::JavaScript,
+            SyntaxLanguage::TypeScript,
+            SyntaxLanguage::Css,
+            SyntaxLanguage::Shell,
+            SyntaxLanguage::Yaml,
+            SyntaxLanguage::Other,
+            SyntaxLanguage::PlainText,
+        ] {
+            assert!(!language.chunk_highlighted());
+            assert_eq!(
+                language.syntax_size_threshold(),
+                language.attach_after_install_threshold()
+            );
+        }
     }
 
     #[test]

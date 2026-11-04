@@ -877,3 +877,240 @@ fn test_a_paced_reveal_never_removes_its_tag_beyond_what_it_hid() {
         editor.buffer().char_count()
     );
 }
+
+// ─── Chunked highlighted install (`chunked-highlight-attach`, C6b) ──────────
+
+/// About `bytes` of short-line Markdown: headings, lists, emphasis, code.
+fn markdown(bytes: usize) -> String {
+    let mut text = String::with_capacity(bytes + 128);
+    let mut section = 0usize;
+    while text.len() < bytes {
+        section += 1;
+        text.push_str(&format!("## Section {section}\n\n"));
+        text.push_str(&format!(
+            "Paragraph {section} with *emphasis*, **strong** text and `inline code`.\n\n"
+        ));
+        for item in 0..4 {
+            text.push_str(&format!(
+                "- item {item} of [link {section}](https://example.com/{section})\n"
+            ));
+        }
+        text.push_str("\n```rust\nfn main() { println!(\"hi\"); }\n```\n\n");
+    }
+    text
+}
+
+/// The bytes above Markdown's attach-after-install threshold and within
+/// `S_SYNTAX` (1 MiB): on `main` its syntax is off (`TotalSize`).
+const LARGE_MARKDOWN: usize = 400 * 1024;
+
+/// Record the buffer's character count every time a language is set on it.
+fn chars_at_attach(editor: &LushtextEditorPage) -> std::rc::Rc<std::cell::RefCell<Vec<i32>>> {
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let record = seen.clone();
+    editor
+        .buffer()
+        .connect_notify_local(Some("language"), move |buffer, _| {
+            if buffer.language().is_some() {
+                record.borrow_mut().push(buffer.char_count());
+            }
+        });
+    seen
+}
+
+#[test]
+fn test_a_large_markdown_document_installs_highlighted_chunk_by_chunk() {
+    use lushtext_core::model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let path = write(&dir, "large.md", &text);
+    window.open_document(&path);
+    let editor = active_editor(&window);
+    let at_attach = chars_at_attach(&editor);
+    wait_until(SETTLE_BUDGET, || {
+        editor.load_state() == EditorLoadState::Loaded
+    });
+    assert!(
+        editor.document_scale().syntax_enabled,
+        "a 400 KiB Markdown document keeps syntax highlighting"
+    );
+    assert_eq!(language_id(&editor).as_deref(), Some("markdown"));
+    let evidence = editor.load_evidence();
+    assert!(evidence.installation_highlight_chunked);
+    let chunks = u64::try_from(text.len())
+        .expect("fits")
+        .div_ceil(HIGHLIGHT_CHUNK_BYTES);
+    assert!(
+        evidence.installation_slice_count >= chunks,
+        "{} slices for {} bytes",
+        evidence.installation_slice_count,
+        text.len()
+    );
+    assert_eq!(evidence.language_attach.install_requests, 1);
+    let attaches = at_attach.borrow().clone();
+    assert!(!attaches.is_empty(), "the language was attached");
+    assert!(
+        attaches
+            .iter()
+            .all(|chars| u64::try_from(*chars).expect("positive") <= HIGHLIGHT_CHUNK_BYTES),
+        "every attach met at most one chunk: {attaches:?}"
+    );
+    assert_eq!(crate::common::editor_text(&editor), text);
+    assert!(editor.buffer().is_highlight_syntax());
+    wait_until(SETTLE_BUDGET, || {
+        editor.load_evidence().settle_stage == SettleStage::Settled
+    });
+}
+
+#[test]
+fn test_a_large_html_document_stays_gated() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = HTML.repeat((64 * 1024) / HTML.len());
+    let path = write(&dir, "large.html", &text);
+    let editor = opened(&window, &path);
+    flush_after_delay(Duration::from_millis(300));
+    assert!(!editor.document_scale().syntax_enabled);
+    assert!(!editor.load_evidence().installation_highlight_chunked);
+    assert_eq!(language_id(&editor), None);
+}
+
+#[test]
+fn test_a_markdown_document_below_its_threshold_keeps_the_c6_order() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(64 * 1024);
+    let path = write(&dir, "small.md", &text);
+    window.open_document(&path);
+    let editor = active_editor(&window);
+    let at_attach = chars_at_attach(&editor);
+    wait_until(SETTLE_BUDGET, || {
+        language_id(&editor).as_deref() == Some("markdown")
+    });
+    assert!(!editor.load_evidence().installation_highlight_chunked);
+    let whole = i32::try_from(text.chars().count()).expect("fits");
+    let attaches = at_attach.borrow().clone();
+    assert!(
+        attaches.iter().all(|chars| *chars == 0 || *chars == whole),
+        "below its threshold the language meets an empty buffer or the whole text: {attaches:?}"
+    );
+}
+
+#[test]
+fn test_a_background_tab_installs_highlighted_without_being_shown() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let background_path = write(&dir, "background.md", &text);
+    let foreground_path = write(&dir, "foreground.txt", "plain\n");
+    // Every open selects its page; only the last one stays shown, before
+    // either document was read.
+    window.open_document(&background_path);
+    window.open_document(&foreground_path);
+    let tab_view = &window.imp().tab_view;
+    let editor_at = |index: i32| {
+        tab_view
+            .nth_page(index)
+            .child()
+            .downcast::<LushtextEditorPage>()
+            .expect("editor page")
+    };
+    let (background, foreground) = (editor_at(0), editor_at(1));
+    wait_until(SETTLE_BUDGET, || {
+        background.load_state() == EditorLoadState::Loaded
+    });
+    assert!(!background.source_view().is_mapped());
+    assert!(background.load_evidence().installation_highlight_chunked);
+    assert_eq!(language_id(&background).as_deref(), Some("markdown"));
+    assert_eq!(crate::common::editor_text(&background), text);
+    assert_eq!(foreground.load_state(), EditorLoadState::Loaded);
+}
+
+#[test]
+fn test_a_cancelled_chunked_install_leaves_no_language_and_no_partial_text() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write(&dir, "cancel.md", &markdown(LARGE_MARKDOWN));
+    window.open_document(&path);
+    let editor = active_editor(&window);
+    // Cancel from inside an insert once a few chunks are in with the
+    // language attached: the test loop drains every ready source, so the
+    // install would otherwise finish between two polls. A reentrant cancel
+    // is a supported path (the session is unborrowed while GTK inserts).
+    let cancelled_at = std::rc::Rc::new(std::cell::Cell::new(None));
+    {
+        let (record, weak) = (cancelled_at.clone(), editor.downgrade());
+        editor.buffer().connect_changed(move |buffer| {
+            if record.get().is_none()
+                && buffer.language().is_some()
+                && buffer.char_count() > 3 * 8 * 1024
+                && let Some(editor) = weak.upgrade()
+                && editor.load_state() == EditorLoadState::Loading
+            {
+                record.set(Some(buffer.char_count()));
+                editor.cancel_load();
+            }
+        });
+    }
+    wait_until(SETTLE_BUDGET, || {
+        editor.load_state() == EditorLoadState::Failed && editor.buffer().char_count() == 0
+    });
+    assert!(
+        cancelled_at.get().is_some(),
+        "the install was cancelled while chunking"
+    );
+    assert_eq!(
+        language_id(&editor),
+        None,
+        "the partial chunks were cleared without a language"
+    );
+    assert!(editor.load_evidence().installation_incomplete);
+}
+
+#[test]
+fn test_a_reload_of_a_highlighted_large_document_detaches_before_clearing() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let path = write(&dir, "reload.md", &text);
+    let editor = opened(&window, &path);
+    wait_until(SETTLE_BUDGET, || {
+        language_id(&editor).as_deref() == Some("markdown")
+    });
+    let detached_with = std::rc::Rc::new(std::cell::Cell::new(None));
+    {
+        let record = detached_with.clone();
+        editor
+            .buffer()
+            .connect_notify_local(Some("language"), move |buffer, _| {
+                if buffer.language().is_none() && record.get().is_none() {
+                    record.set(Some(buffer.char_count()));
+                }
+            });
+    }
+    editor.load_file_async(&path);
+    wait_until(SETTLE_BUDGET, || {
+        editor.load_state() == EditorLoadState::Loaded
+            && language_id(&editor).as_deref() == Some("markdown")
+    });
+    assert_eq!(
+        detached_with.get(),
+        Some(i32::try_from(text.chars().count()).expect("fits")),
+        "the language came off before the first deleted slice"
+    );
+    assert!(editor.load_evidence().installation_highlight_chunked);
+    assert_eq!(crate::common::editor_text(&editor), text);
+}

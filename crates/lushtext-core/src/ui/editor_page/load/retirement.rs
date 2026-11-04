@@ -171,6 +171,11 @@ pub(super) fn abort_installation(
         abort_installation(session, AbortDisposition::Dispose);
         return;
     };
+    if session.borrow_mut().highlight.take().is_some() {
+        // The partial chunks are cleared from the start: an attached language
+        // would re-analyse the remainder after every deleted slice.
+        editor.begin_chunked_highlight();
+    }
     editor.imp().load.installation_incomplete.set(true);
     editor.abandon_protected_install();
     execution::schedule_install_slice(session);

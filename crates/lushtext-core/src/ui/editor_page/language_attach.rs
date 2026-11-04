@@ -33,6 +33,21 @@
 //! requested id, so the Markdown preview and the status bar already know the
 //! document's kind. Clearing a language for the scale gate stays immediate,
 //! because removing a language costs nothing (A27).
+//!
+//! ## The chunked highlighted install (`chunked-highlight-attach`, C6b)
+//!
+//! A document above its language's attach-after-install threshold is
+//! installed with its language attached (`model::highlight_chunking`): the
+//! load or the whole-buffer replacement calls `begin_chunked_highlight`
+//! before clearing, inserts the first chunk, and then asks
+//! `decide_highlight_chunk` before every later one. That requests the attach
+//! once through `request_language_attach_for_install` (the same stage; it
+//! ignores the session scale, which the incoming body replaces only at
+//! publish, and does not wait for an unmapped editor to be mapped), parks the
+//! installer on `when_language_attach_resolves`, and afterwards lets a chunk
+//! in only once the engine's largest `highlight-updated` end has reached the
+//! end of the buffer's text (ledger A84; `reset_highlight_coverage`,
+//! `highlight_analysed_to_end`), or after one wait at `analysis_wait_priority`.
 
 use std::cell::{Cell, RefCell};
 
@@ -43,6 +58,8 @@ use sourceview5::prelude::*;
 
 use super::LushtextEditorPage;
 use super::load::policy::{ATTACH_DEADLINE_US, INPUT_QUIET_US, deferred_attach_may_run};
+use crate::model::buffer_replacement::SliceBudget;
+use crate::model::highlight_chunking::{ChunkFacts, ChunkGate, chunk_gate};
 use crate::ui::responsiveness_probe::PostOpenSpan;
 
 /// What the editor knows about the language its document wants.
@@ -92,6 +109,19 @@ pub struct LanguageAttachState {
     /// deadline rather than after input-quiet.
     stages_run: Cell<u64>,
     deadline_runs: Cell<u64>,
+    /// Whether the pending stage was requested by a chunked highlighted
+    /// install (`chunked-highlight-attach`): it runs whatever the session
+    /// scale says (the install decided from the incoming one) and does not
+    /// wait for an unmapped editor to be mapped.
+    for_install: Cell<bool>,
+    /// Woken, in order, when the pending stage resolves: it ran, or it was
+    /// withdrawn or settled without running.
+    waiters: RefCell<Vec<Box<dyn FnOnce()>>>,
+    /// The largest `highlight-updated` end since the last reset (ledger A84).
+    covered_to: Cell<i32>,
+    coverage_watched: Cell<bool>,
+    /// Evidence: attach stages a chunked install requested.
+    install_requests: Cell<u64>,
 }
 
 /// Observable attach-stage state, projected into the load evidence.
@@ -105,9 +135,107 @@ pub struct LanguageAttachEvidence {
     pub stages_run: u64,
     /// Attach stages that ran because the deadline passed under input.
     pub deadline_runs: u64,
+    /// Attach stages a chunked highlighted install requested.
+    pub install_requests: u64,
+}
+
+/// One chunked highlighted install's progress through
+/// `model::highlight_chunking::chunk_gate`, owned by the installing session
+/// (the load's or the whole-buffer replacement's).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HighlightChunks {
+    /// The budget to fall back to when the attach leaves no language.
+    base_budget: SliceBudget,
+    attach_requested: bool,
+    waited: bool,
+}
+
+impl HighlightChunks {
+    pub(crate) const fn new(base_budget: SliceBudget) -> Self {
+        Self {
+            base_budget,
+            attach_requested: false,
+            waited: false,
+        }
+    }
+}
+
+/// What the installer does with its next chunk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChunkDecision {
+    /// Insert it now.
+    Insert,
+    /// Insert it and the rest without the highlight cut, under this budget.
+    Unhighlighted(SliceBudget),
+    /// Park until the attach stage resolves (`when_language_attach_resolves`).
+    AwaitAttach,
+    /// Queue the step once at [`analysis_wait_priority`].
+    AwaitAnalysis,
+}
+
+/// `G_PRIORITY_LOW + 1`: an idle there runs only after the context engine's
+/// worker has finished (ledger A69).
+pub(crate) fn analysis_wait_priority() -> glib::Priority {
+    glib::Priority::from(glib::ffi::G_PRIORITY_LOW + 1)
 }
 
 impl LushtextEditorPage {
+    /// Prepare the buffer for a chunked highlighted install, before any old
+    /// text is cleared: no pending attach, no language (removing one costs
+    /// nothing, A27, and an attached one would re-analyse the shrinking old
+    /// text after every deleted slice), highlighting on for the attach.
+    ///
+    /// A language already attached to an **empty** buffer stays: there is
+    /// nothing to clear or re-analyse, and the first chunk then goes into an
+    /// attached buffer, which A84 pins the same way; keeping it saves a
+    /// second definition parse (A67) after a path-time attach.
+    pub(crate) fn begin_chunked_highlight(&self) {
+        self.cancel_language_attach();
+        let buffer = self.buffer();
+        if buffer.language().is_some() && buffer.char_count() > 0 {
+            buffer.set_language(None::<&sourceview5::Language>);
+        }
+        buffer.set_highlight_syntax(true);
+    }
+
+    /// Decide the next chunk of a chunked highlighted install that has
+    /// `chunks_inserted` chunks in (`chunk_gate`), requesting the attach
+    /// once after the first.
+    pub(crate) fn decide_highlight_chunk(
+        &self,
+        chunks: &mut HighlightChunks,
+        chunks_inserted: u64,
+    ) -> ChunkDecision {
+        loop {
+            let facts = ChunkFacts {
+                chunks_inserted,
+                attach_requested: chunks.attach_requested,
+                attach_pending: self.language_attach_pending(),
+                language_attached: self.buffer().language().is_some(),
+                analysed_to_end: self.highlight_analysed_to_end(),
+                waited: chunks.waited,
+            };
+            match chunk_gate(facts) {
+                ChunkGate::Insert => {
+                    chunks.waited = false;
+                    return ChunkDecision::Insert;
+                }
+                ChunkGate::RequestAttach => {
+                    chunks.attach_requested = true;
+                    self.request_language_attach_for_install();
+                }
+                ChunkGate::AwaitAttach => return ChunkDecision::AwaitAttach,
+                ChunkGate::AwaitAnalysis => {
+                    chunks.waited = true;
+                    return ChunkDecision::AwaitAnalysis;
+                }
+                ChunkGate::InsertUnhighlighted => {
+                    return ChunkDecision::Unhighlighted(chunks.base_budget);
+                }
+            }
+        }
+    }
+
     /// Record the language id a load-planning worker guessed from the path
     /// (the catalog's glob table): known from now on, before any attach.
     pub(crate) fn set_requested_language_guess(&self, id: Option<&str>) {
@@ -134,7 +262,31 @@ impl LushtextEditorPage {
             self.cancel_language_attach();
             return;
         }
+        self.imp().language_attach.for_install.set(false);
+        self.request_language_attach_now();
+    }
+
+    /// Ask for the attach on behalf of a chunked highlighted install
+    /// (`chunked-highlight-attach`, C6b): the install has decided from the
+    /// incoming body's scale, which the session adopts only at publish, so
+    /// the session scale is not consulted; and a background tab's install
+    /// must not wait for the tab to be shown, so an unmapped editor arms the
+    /// stage at once (it still waits for input-quiet or the deadline).
+    pub(crate) fn request_language_attach_for_install(&self) {
+        let state = &self.imp().language_attach;
+        state.for_install.set(true);
+        state
+            .install_requests
+            .set(state.install_requests.get().saturating_add(1));
+        self.request_language_attach_now();
+        if !self.language_attach_pending() {
+            self.wake_attach_waiters();
+        }
+    }
+
+    fn request_language_attach_now(&self) {
         let Some(path) = self.imp().file_path.borrow().clone() else {
+            self.wake_attach_waiters();
             return;
         };
         // The glob table answers in microseconds once the catalog is ready;
@@ -157,10 +309,12 @@ impl LushtextEditorPage {
         if !settled && *state.requested.borrow() == RequestedLanguage::Plain {
             self.buffer().set_language(None::<&sourceview5::Language>);
             state.pending.set(false);
+            self.wake_attach_waiters();
             return;
         }
         if settled {
             state.pending.set(false);
+            self.wake_attach_waiters();
             return;
         }
         state.pending.set(true);
@@ -172,6 +326,62 @@ impl LushtextEditorPage {
     pub(crate) fn cancel_language_attach(&self) {
         self.cancel_scheduled_attach();
         self.imp().language_attach.pending.set(false);
+        self.wake_attach_waiters();
+    }
+
+    /// Run `resume` once the pending attach stage resolves (it ran, or was
+    /// withdrawn or settled without running), or now when none is pending.
+    pub(crate) fn when_language_attach_resolves(&self, resume: impl FnOnce() + 'static) {
+        if self.language_attach_pending() {
+            self.imp()
+                .language_attach
+                .waiters
+                .borrow_mut()
+                .push(Box::new(resume));
+        } else {
+            resume();
+        }
+    }
+
+    fn wake_attach_waiters(&self) {
+        let waiters = std::mem::take(&mut *self.imp().language_attach.waiters.borrow_mut());
+        for waiter in waiters {
+            waiter();
+        }
+    }
+
+    /// Forget what the engine reported, before a chunk goes in (ledger A84).
+    pub(crate) fn reset_highlight_coverage(&self) {
+        let state = &self.imp().language_attach;
+        if !state.coverage_watched.replace(true) {
+            let editor = self.downgrade();
+            self.buffer().connect_highlight_updated(move |_, _, end| {
+                if let Some(editor) = editor.upgrade() {
+                    let covered = &editor.imp().language_attach.covered_to;
+                    covered.set(covered.get().max(end.offset()));
+                }
+            });
+        }
+        state.covered_to.set(0);
+    }
+
+    /// Whether the engine has reported the buffer analysed to the end of its
+    /// last line's text since the last reset (ledger A84: the empty line after
+    /// a final delimiter has no text, so the report ends where it starts).
+    pub(crate) fn highlight_analysed_to_end(&self) -> bool {
+        let buffer = self.buffer();
+        let end = buffer.end_iter();
+        let target = if end.is_start() || !end.starts_line() {
+            end.offset()
+        } else {
+            let mut iter = end;
+            iter.backward_line();
+            if !iter.ends_line() {
+                iter.forward_to_line_end();
+            }
+            iter.offset()
+        };
+        self.imp().language_attach.covered_to.get() >= target
     }
 
     /// Whether an attach stage is pending.
@@ -187,6 +397,7 @@ impl LushtextEditorPage {
             first_frame_seen: state.first_frame_us.get().is_some(),
             stages_run: state.stages_run.get(),
             deadline_runs: state.deadline_runs.get(),
+            install_requests: state.install_requests.get(),
         }
     }
 
@@ -218,6 +429,12 @@ impl LushtextEditorPage {
     fn schedule_attach_after_first_frame(&self) {
         let state = &self.imp().language_attach;
         let view = self.imp().source_view.get();
+        if !view.is_mapped() && state.for_install.get() {
+            // A background install waits for the attach; the tab may never
+            // be shown (`chunked-highlight-attach`).
+            self.arm_attach_idle();
+            return;
+        }
         if !view.is_mapped() {
             if state.map_handler.borrow().is_none() {
                 let editor = self.downgrade();
@@ -340,7 +557,13 @@ impl LushtextEditorPage {
                 .deadline_runs
                 .set(state.deadline_runs.get().saturating_add(1));
         }
-        if !self.document_scale().syntax_enabled {
+        self.attach_language_now();
+        self.wake_attach_waiters();
+    }
+
+    fn attach_language_now(&self) {
+        let state = &self.imp().language_attach;
+        if !state.for_install.get() && !self.document_scale().syntax_enabled {
             return;
         }
         let Some(path) = self.imp().file_path.borrow().clone() else {

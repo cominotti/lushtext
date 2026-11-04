@@ -119,6 +119,24 @@ impl SliceBudget {
         chars: V_SLICE,
     };
 
+    /// This budget with the highlight cut of a chunked highlighted install
+    /// (`chunked-highlight-attach`, C6b): at most
+    /// [`HIGHLIGHT_CHUNK_BYTES`](super::highlight_chunking::HIGHLIGHT_CHUNK_BYTES)
+    /// per slice, inside the byte budget and the visible-character budget,
+    /// which it keeps. A document the scale highlights has no paragraph
+    /// larger than the cut
+    /// ([`MAX_SYNTAX_PARAGRAPH_BYTES`](super::highlight_chunking::MAX_SYNTAX_PARAGRAPH_BYTES)),
+    /// so every slice then holds at most the cut (Kani,
+    /// `highlight_chunking/kani_proofs.rs`).
+    #[must_use]
+    pub const fn with_highlight_cut(self) -> Self {
+        let cut = super::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
+        Self {
+            bytes: if self.bytes < cut { self.bytes } else { cut },
+            chars: self.chars,
+        }
+    }
+
     /// The budget for a document with `summary`.
     #[must_use]
     pub const fn for_profile(summary: ProfileSummary) -> Self {

@@ -47,7 +47,12 @@
 //!    the same cross-cutting arithmetic — this is the contract that keeps
 //!    recovering a 33 MB single-line draft linear instead of quadratic. A
 //!    paragraph larger than the budget installs in one turn, because GTK cannot
-//!    lay it out incrementally anyway.
+//!    lay it out incrementally anyway. A highlighted body above its language's
+//!    attach-after-install threshold is installed chunk by chunk with its
+//!    language attached after the first chunk (`chunked-highlight-attach`,
+//!    shared with the load through `LushtextEditorPage::decide_highlight_chunk`);
+//!    its language comes off before the clear, as before any sliced clear-only
+//!    replacement.
 //! 6. **Cancel.** Stale, superseded, or disposed. The uninstalled body goes back
 //!    to its owner with its disposal reservation intact. A session that has not
 //!    yet mutated the buffer, or whose page is being disposed, finishes here.
@@ -70,7 +75,11 @@
 //!   dispatches by phase to the clear turn, the install turn, or the
 //!   cancelled-clear turn. A one-millisecond timeout rather than an idle source
 //!   is deliberate: an idle source can starve behind higher-priority work while
-//!   the buffer is still half-mutated.
+//!   the buffer is still half-mutated. A chunked highlighted body's turns are
+//!   paced idles instead, like a dense body's; after its first chunk it parks
+//!   until the language attach resolves, and a chunk the engine has not yet
+//!   reported analysed waits once at `G_PRIORITY_LOW + 1`; both resume in
+//!   `run_turn`.
 //!
 //! Three further points hand *ownership* out without control coming back: the
 //! caller's terminal callback, the guarded body's cancel return, and the guarded
