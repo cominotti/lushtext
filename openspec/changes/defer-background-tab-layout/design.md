@@ -216,8 +216,11 @@ with it.
   (`restyle::prepare_paced_reattach`): only the paragraphs from the kept line
   that fit one `V_SLICE` stay visible, the rest is revealed outward at
   `G_PRIORITY_LOW` once mapped, and the kept-line hold lasts until the reveal
-  is done. Remeasured: 14.6–17.6 ms against `main`'s 15.7–20.3 ms; the worst
-  dispatch is the first frame of the newly shown tab.
+  is done, for documents of at most 2^14 lines: hidden lines add no height,
+  so one 2000 px batch validates every hidden line (about 0.4 µs each; a
+  204,601-line document took 78–80 ms in V4). Remeasured: 10.1–16.9 ms against
+  `main`'s 15.7–20.3 ms; the worst dispatch is the first frame of the newly
+  shown tab.
 - **Pacing aging.** A background slice that waited 256 ms behind visible work
   runs once at `PACED_SLICE_PRIORITY` (`input_quiet::paced_idle_aging`).
 - **The activation's present.** The span-less 35–52 ms after the second open of

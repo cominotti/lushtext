@@ -46,4 +46,5 @@
 - [x] 6.8 Lane: `eviction/switch-hidden-giant` and `eviction/switch-hidden-dense`; the `adjustment_value` mark and the wheel rule (driver self-test).
 - [x] 6.9 Activation present only for a window that is not active (the span-less tail after the second open, design D7).
 - [x] 6.11 A dense document's reattach is paced like a restyle (`restyle::prepare_paced_reattach`), and the kept-line hold lasts until its reveal is done; `test_showing_a_never_shown_dense_tab_reveals_it_in_paced_ranges` (and the wrapped-paragraph test, which failed with the reveal and without the longer hold).
-- [ ] 6.10 Verdict from the final commit against `main` f79e7a5d, load recorded; record corrected.
+- [x] 6.12 The paced reattach only for documents of at most 2^14 lines (V4: a 204,601-line document's first batch validated every hidden line, 78–80 ms); remeasured 8.2–8.3 ms.
+- [x] 6.10 Verdict V4 (134d1f08) against `main` f79e7a5d with the probe mark backported, load recorded, plus the final commit's affected cases (R5); record corrected (V2's provenance, the 35 ms stretch).
