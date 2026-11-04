@@ -105,6 +105,9 @@ fixtures (short-line HTML and dense documents, a reference-sized source view,
 timed dispatches, a priority bracket, and a PDF export that counts printed
 pages); the A70 sample's `--derive-v-slice` mode bisects `V_SLICE`, and the A69
 sample's `--derive-s-bg-highlight` mode bisects `S_BG_HIGHLIGHT` per language.
+A84 (the `highlight-updated` coverage test) followed with LushText's chunked
+highlighted install (`chunked-highlight-attach`), its sample's
+`--chunked-install` mode measuring the paced install per language.
 A59–A66 (a capture-phase press claim,
 a non-editable view's input method, a stopped `move-cursor` under caret
 browsing, drag and drop, key-binding pre-emption, a tail inserted hidden, and

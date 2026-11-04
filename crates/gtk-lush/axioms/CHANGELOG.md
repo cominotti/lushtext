@@ -20,6 +20,11 @@
 - A70 and A72 stop at a fixed-pitch control step (`FIXED_PITCH_CONTROL`)
   when "Monospace" resolves to a proportional face, instead of reporting a
   violated axiom.
+- A84 probe and sample (`chunked-highlight-attach`): the largest
+  `highlight-updated` end reported since an insert or attach tells how far the
+  context engine has analysed (`analysis_end`, `Coverage`). The sample's
+  `--chunked-install` mode measures LushText's paced chunked install per
+  language. New fixtures under `fixtures::a84`.
 
 ## 0.0.0
 
