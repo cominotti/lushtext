@@ -37,7 +37,7 @@ use gtk_lush_axioms::fixtures::a84::{
     CHUNK_BYTES, DOCUMENT_BYTES, chunked_install, paced_chunked_install,
 };
 use gtk_lush_axioms::fixtures::post_open::{short_document, short_html};
-use gtk_lush_axioms::{AxiomId, init_toolkit};
+use gtk_lush_axioms::{AxiomId, SampleFlags, init_toolkit};
 
 fn argument(name: &str) -> Option<String> {
     let prefix = format!("--{name}=");
@@ -193,6 +193,94 @@ fn typing_limit(spec: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `--flip-limit`: the largest power of two whose flipping keys keep every
+/// dispatch within `B_SETTLE_US` (review M1).
+fn flip_limit(spec: &str) -> ExitCode {
+    use gtk_lush_axioms::fixtures::a69::B_SETTLE_US;
+    use gtk_lush_axioms::fixtures::a84::{flipping_keys, type_and_watch};
+    if std::env::var("GTK_LUSH_AXIOMS_HEADLESS").as_deref() != Ok("1") {
+        eprintln!("refusing a measurement mode outside a private headless session");
+        return ExitCode::from(77);
+    }
+    if let Err(error) = init_toolkit() {
+        eprintln!("GTK did not initialize: {error}");
+        return ExitCode::from(77);
+    }
+    let repetitions: usize = argument("repetitions")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(2);
+    let from: usize = argument("from-bytes")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let one_file = argument("text-file").is_some();
+    println!("load before: {}", load());
+    println!(
+        "rule: at the document start, the opener typed key by key, then 5 plain keys one frame \
+         apart, until quiet; then the closer the same way; a size passes if every iteration of \
+         both stays <= {B_SETTLE_US} us in every repetition; echo = key insert to next painted frame"
+    );
+    let Some(fixture) = HighlightFixture::standalone() else {
+        return ExitCode::from(2);
+    };
+    for language_id in spec.split(',').filter(|id| !id.is_empty()) {
+        let (Some(language), Some((opener, closer))) = (
+            sourceview5::LanguageManager::default().language(language_id),
+            flipping_keys(language_id),
+        ) else {
+            println!("{language_id}: no language or no flipping keys");
+            continue;
+        };
+        let mut limit = 0;
+        for bytes in TYPING_SIZES
+            .into_iter()
+            .filter(|bytes| *bytes >= from)
+            .take(if one_file { 1 } else { TYPING_SIZES.len() })
+        {
+            let text = match argument("text-file") {
+                Some(path) => std::fs::read_to_string(path).ok(),
+                None => short_document(language_id, bytes, 84),
+            };
+            let Some(text) = text else {
+                break;
+            };
+            let mut passes = true;
+            for repetition in 0..repetitions {
+                let _ = paced_chunked_install(fixture.buffer(), &language, &text, CHUNK_BYTES);
+                let open = type_and_watch(&fixture, 0, opener, 5);
+                let offset = i32::try_from(opener.chars().count()).unwrap_or(0);
+                let close = type_and_watch(&fixture, offset, closer, 5);
+                println!(
+                    "{language_id} {} B rep {repetition}: open worst {} us over {} quiet {} ms echo {} us; \
+                     close worst {} us over {} quiet {} ms echo {} us",
+                    text.len(),
+                    open.worst_us,
+                    open.over_settle,
+                    open.quiet_ms,
+                    open.echo_max_us,
+                    close.worst_us,
+                    close.over_settle,
+                    close.quiet_ms,
+                    close.echo_max_us
+                );
+                passes &= open.worst_us <= B_SETTLE_US && close.worst_us <= B_SETTLE_US;
+            }
+            if !passes {
+                break;
+            }
+            limit = bytes;
+        }
+        println!("FLIP_LIMIT({language_id}) = {limit} B");
+    }
+    println!("load after: {}", load());
+    ExitCode::SUCCESS
+}
+
+/// The measurement modes and their options (`support::guard`).
+const FLAGS: SampleFlags = SampleFlags {
+    modes: &["--chunked-install", "--typing-limit", "--flip-limit"],
+    options: &["--chunk", "--repetitions", "--from-bytes", "--text-file"],
+};
+
 fn build(ui: &support::SampleUi) {
     let note = gtk4::Label::new(Some(&format!(
         "Installs {DOCUMENT_BYTES} bytes of short-line HTML in chunks of at most {CHUNK_BYTES} \
@@ -225,6 +313,12 @@ fn build(ui: &support::SampleUi) {
 }
 
 fn main() -> ExitCode {
+    if let Some(code) = support::guard(&FLAGS) {
+        return code;
+    }
+    if let Some(spec) = argument("flip-limit") {
+        return flip_limit(&spec);
+    }
     if let Some(spec) = argument("chunked-install") {
         return measure(&spec);
     }

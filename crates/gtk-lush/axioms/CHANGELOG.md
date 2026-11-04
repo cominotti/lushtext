@@ -24,7 +24,12 @@
   `highlight-updated` end reported since an insert or attach tells how far the
   context engine has analysed (`analysis_end`, `Coverage`). The sample's
   `--chunked-install` mode measures LushText's paced chunked install per
-  language. New fixtures under `fixtures::a84`.
+  language, `--typing-limit` and `--flip-limit` the per-key cost of ordinary
+  and context-flipping keys with the language attached. New fixtures under
+  `fixtures::a84`.
+- Every sample prints its usage and exits on `--help`/`-h`, and refuses an
+  unknown argument, before GTK starts (`classify_sample_args`,
+  `SampleFlags`, `sample_usage`; `support::guard`).
 
 ## 0.0.0
 

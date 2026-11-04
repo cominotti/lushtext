@@ -718,6 +718,7 @@ pub mod a83 {
 pub mod a84 {
     pub use crate::probes::a84::{
         CHUNK_BYTES, ChunkObservation, Coverage, DOCUMENT_BYTES, LARGE_CHUNK_BYTES,
-        PacedInstallRun, attach_to_one_chunk, chunked_install, paced_chunked_install,
+        PacedInstallRun, TypedRun, attach_to_one_chunk, chunked_install, flipping_keys,
+        paced_chunked_install, type_and_watch,
     };
 }
