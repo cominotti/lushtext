@@ -274,12 +274,13 @@ PHASE_KINDS = {
 # document, three 16 kB documents restored from the session, and two 64 kB
 # file-backed drafts recovered at startup.
 MARKDOWN_PREVIEW_BYTES = 200_000
-# `chunked-highlight-attach` (C6b): the two languages the chunked highlighted
-# install highlights above their C6 gates (markdown and c, capped at 512 KiB,
-# `document_scale::chunked_threshold`), at that cap, and the ten that keep
-# their C6 gates, at the same size.
-HIGHLIGHT_CHUNKED_EXTS = ("md", "c")
-HIGHLIGHT_GATED_EXTS = ("rs", "py", "xml", "html", "json", "js", "ts", "css", "sh", "yaml")
+# `chunked-highlight-attach` (C6b): one document per language at 512 KiB.
+# No shipped language takes the chunked highlighted install (re-review F1,
+# `document_scale::chunked_threshold`), so every case is gated; a language
+# given a chunked cap later moves to HIGHLIGHT_CHUNKED_EXTS, whose cases the
+# verdict reports under design D9's exemption.
+HIGHLIGHT_CHUNKED_EXTS: tuple[str, ...] = ()
+HIGHLIGHT_GATED_EXTS = ("md", "c", "rs", "py", "xml", "html", "json", "js", "ts", "css", "sh", "yaml")
 HIGHLIGHT_BYTES = 1 << 19
 EDITORCONFIG_LINE_LENGTH = 710
 EDITORCONFIG_TAB_WIDTH = 8
@@ -1488,17 +1489,38 @@ def c6_verdict(rows: list[dict], budgets: dict, floors: dict[str, dict], baselin
                 if dispatch["duration_us"] > b_settle:
                     baseline_over.append({"case": row["case"], "variant": row["variant"], "rep": row["rep"], "phase": entry["phase"], "attribution": dispatch["attribution"], "duration_us": dispatch["duration_us"]})
 
-    def stage_series(side_rows: list[dict]) -> dict[tuple, dict[str, list[int]]]:
-        """Per (case, variant, phase): each stage's worst dispatch per repetition, and settle times."""
+    def stage_series(side_rows: list[dict], cutoffs: dict[tuple, int] | None = None) -> dict[tuple, dict[str, list[int]]]:
+        """Per (case, variant, phase): each stage's worst dispatch per repetition, and settle times.
+
+        With `cutoffs`, a stage's worst counts only the dispatches that start
+        by the cutoff for that key: the baseline's median settle point plus one
+        frame (`chunked-highlight-attach` re-review S-a). A branch that settles
+        later otherwise compares, against a baseline that has stopped looking,
+        the dispatches the baseline has too after its settle (the GIO keyfile
+        monitor after a settings flush, C6's floor). Dispatches past the cutoff
+        stay under the absolute bounds above.
+        """
         series: dict[tuple, dict[str, list[int]]] = {}
         reps: dict[tuple, list[dict]] = {}
         for row in side_rows:
             for entry in row["post_open"]:
                 if entry["kind"] in POST_OPEN_SETTLE_KINDS:
                     reps.setdefault((row["case"], row["variant"], entry["phase"]), []).append(entry)
+
+        def worst_by_stage(entry: dict, cutoff: int | None) -> dict[str, int]:
+            if cutoff is None:
+                return entry.get("stage_worst_us", {})
+            worst: dict[str, int] = {}
+            for dispatch in entry.get("dispatches", []):
+                if dispatch["at_us"] - dispatch["duration_us"] <= cutoff:
+                    worst[dispatch["attribution"]] = max(worst.get(dispatch["attribution"], 0), dispatch["duration_us"])
+            return worst
+
         for key, entries in reps.items():
-            stages = sorted({s for e in entries for s in e.get("stage_worst_us", {})})
-            out = {stage: [e.get("stage_worst_us", {}).get(stage, 0) for e in entries] for stage in stages}
+            cutoff = (cutoffs or {}).get(key)
+            worsts = [worst_by_stage(e, cutoff) for e in entries]
+            stages = sorted({s for w in worsts for s in w})
+            out = {stage: [w.get(stage, 0) for w in worsts] for stage in stages}
             laid_out = [e["laid_out_us"] for e in entries if e.get("laid_out_us") is not None]
             if laid_out:
                 out["activation-to-laid-out"] = laid_out
@@ -1514,7 +1536,13 @@ def c6_verdict(rows: list[dict], budgets: dict, floors: dict[str, dict], baselin
     exempt_regressions: list[dict] = []
     if baseline:
         base_series = stage_series(baseline)
-        for key, stages in stage_series(branch).items():
+        settle_points: dict[tuple, list[int]] = {}
+        for row in baseline:
+            for entry in row["post_open"]:
+                if entry["kind"] in POST_OPEN_SETTLE_KINDS and entry.get("settle_us") is not None:
+                    settle_points.setdefault((row["case"], row["variant"], entry["phase"]), []).append(entry["settle_us"])
+        cutoffs = {key: _median(values) + frame for key, values in settle_points.items()}
+        for key, stages in stage_series(branch, cutoffs).items():
             base = base_series.get(key)
             if base is None:
                 new_stages.append({"case": key[0], "variant": key[1], "phase": key[2], "stage": "*", "reason": "no baseline rows"})
@@ -5805,6 +5833,16 @@ def post_open_self_test(expect: Callable[[bool, str], None]) -> None:
     slow_layout = [row("branch", r, [open_entry([("post_open_language_attach", 3_000)], laid_out_us=420_000)]) for r in range(3)]
     slowed = c6_verdict(baseline_rows + slow_layout, budgets, {})
     expect(any(r.get("stage") == "activation-to-laid-out" for r in slowed.get("regressions", [])), f"activation-to-laid-out over the baseline's plus one frame regresses ({slowed.get('regressions')})")
+    # Re-review S-a: a dispatch the branch shows after the baseline's settle
+    # point (plus one frame) is not compared; one before it is.
+    late = [row("branch", r, [open_entry([("post_open_language_attach", 3_000), ("highlight", 9_000), ("unattributed", 14_000)], settle_us=500_000)]) for r in range(3)]
+    for r in late:
+        r["post_open"][0]["dispatches"][-1]["at_us"] = 560_000
+    late_verdict = c6_verdict(baseline_rows + late, budgets, {})
+    expect(not any(x.get("stage") == "unattributed" for x in late_verdict.get("regressions", [])) and not any(x.get("stage") == "unattributed" for x in late_verdict.get("new_stages", [])), f"a dispatch after the baseline's settle point is not compared ({late_verdict.get('regressions')}, {late_verdict.get('new_stages')})")
+    early = [row("branch", r, [open_entry([("post_open_language_attach", 3_000), ("highlight", 20_000)])]) for r in range(3)]
+    early_verdict = c6_verdict(baseline_rows + early, budgets, {})
+    expect(any(x.get("stage") == "highlight" for x in early_verdict.get("regressions", [])), f"a slower stage before the baseline's settle point still regresses ({early_verdict.get('regressions')})")
     chunked_layout = [dict(r, attrs={"chunked": True}) for r in slow_layout]
     chunked = c6_verdict(baseline_rows + chunked_layout, budgets, {})
     expect(not chunked.get("regressions") and any(r.get("stage") == "activation-to-laid-out" for r in chunked.get("exempt_regressions", [])), f"a chunked case's later layout is reported, not gated (C6b D9) ({chunked.get('regressions')}, {chunked.get('exempt_regressions')})")

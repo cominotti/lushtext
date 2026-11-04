@@ -193,10 +193,13 @@ fn typing_limit(spec: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `--flip-limit`: the largest power of two whose flipping keys keep every
-/// dispatch within `B_SETTLE_US` (review M1).
+/// `--flip-limit`: the largest power of two at which, at the document's
+/// start and at the start of its middle line, each flipping key keeps every
+/// dispatch within `B_SETTLE_US`, and ordinary keys typed in the flipped
+/// document and after the closer keep every dispatch within `B_INTERACT_US`
+/// (reviews M1 and F1).
 fn flip_limit(spec: &str) -> ExitCode {
-    use gtk_lush_axioms::fixtures::a69::B_SETTLE_US;
+    use gtk_lush_axioms::fixtures::a69::{B_INTERACT_US, B_SETTLE_US};
     use gtk_lush_axioms::fixtures::a84::{flipping_keys, type_and_watch};
     if std::env::var("GTK_LUSH_AXIOMS_HEADLESS").as_deref() != Ok("1") {
         eprintln!("refusing a measurement mode outside a private headless session");
@@ -215,21 +218,24 @@ fn flip_limit(spec: &str) -> ExitCode {
     let one_file = argument("text-file").is_some();
     println!("load before: {}", load());
     println!(
-        "rule: at the document start, the opener typed key by key, then 5 plain keys one frame \
-         apart, until quiet; then the closer the same way; a size passes if every iteration of \
-         both stays <= {B_SETTLE_US} us in every repetition; echo = key insert to next painted frame"
+        "rule: at the start and at the middle line, each opener typed key by key until quiet \
+         (every iteration <= {B_SETTLE_US} us), then 7 ordinary keys (<= {B_INTERACT_US} us), \
+         then the closer (<= {B_SETTLE_US} us), then 7 ordinary keys (<= {B_INTERACT_US} us), \
+         in every repetition; echo = insert to next painted frame"
     );
     let Some(fixture) = HighlightFixture::standalone() else {
         return ExitCode::from(2);
     };
     for language_id in spec.split(',').filter(|id| !id.is_empty()) {
-        let (Some(language), Some((opener, closer))) = (
-            sourceview5::LanguageManager::default().language(language_id),
-            flipping_keys(language_id),
-        ) else {
-            println!("{language_id}: no language or no flipping keys");
+        let keys = flipping_keys(language_id);
+        let Some(language) = sourceview5::LanguageManager::default().language(language_id) else {
+            println!("{language_id}: no language");
             continue;
         };
+        if keys.is_empty() {
+            println!("{language_id}: no flipping keys");
+            continue;
+        }
         let mut limit = 0;
         for bytes in TYPING_SIZES
             .into_iter()
@@ -244,25 +250,47 @@ fn flip_limit(spec: &str) -> ExitCode {
                 break;
             };
             let mut passes = true;
-            for repetition in 0..repetitions {
-                let _ = paced_chunked_install(fixture.buffer(), &language, &text, CHUNK_BYTES);
-                let open = type_and_watch(&fixture, 0, opener, 5);
-                let offset = i32::try_from(opener.chars().count()).unwrap_or(0);
-                let close = type_and_watch(&fixture, offset, closer, 5);
-                println!(
-                    "{language_id} {} B rep {repetition}: open worst {} us over {} quiet {} ms echo {} us; \
-                     close worst {} us over {} quiet {} ms echo {} us",
-                    text.len(),
-                    open.worst_us,
-                    open.over_settle,
-                    open.quiet_ms,
-                    open.echo_max_us,
-                    close.worst_us,
-                    close.over_settle,
-                    close.quiet_ms,
-                    close.echo_max_us
-                );
-                passes &= open.worst_us <= B_SETTLE_US && close.worst_us <= B_SETTLE_US;
+            for (opener, closer) in keys {
+                for position in ["start", "middle"] {
+                    for repetition in 0..repetitions {
+                        let _ =
+                            paced_chunked_install(fixture.buffer(), &language, &text, CHUNK_BYTES);
+                        let buffer = fixture.buffer();
+                        let offset = if position == "start" {
+                            0
+                        } else {
+                            buffer
+                                .iter_at_line(buffer.line_count() / 2)
+                                .map_or(0, |iter| iter.offset())
+                        };
+                        let open = type_and_watch(&fixture, offset, opener, 0);
+                        let after = offset + i32::try_from(opener.chars().count()).unwrap_or(0);
+                        let flipped = type_and_watch(&fixture, after, "", 7);
+                        let after = after + 7;
+                        let close = type_and_watch(&fixture, after, closer, 0);
+                        let after = after + i32::try_from(closer.chars().count()).unwrap_or(0);
+                        let back = type_and_watch(&fixture, after, "", 7);
+                        let flip_worst = open.worst_us.max(close.worst_us);
+                        let ordinary_worst = flipped.worst_us.max(back.worst_us);
+                        println!(
+                            "{language_id} {} B {opener:?} at {position} rep {repetition}: flip worst {flip_worst} us \
+                             (open {} quiet {} ms, close {} quiet {} ms), ordinary worst {ordinary_worst} us \
+                             (flipped {}, after {}), echo max {} us",
+                            text.len(),
+                            open.worst_us,
+                            open.quiet_ms,
+                            close.worst_us,
+                            close.quiet_ms,
+                            flipped.worst_us,
+                            back.worst_us,
+                            open.echo_max_us
+                                .max(close.echo_max_us)
+                                .max(flipped.echo_max_us)
+                                .max(back.echo_max_us),
+                        );
+                        passes &= flip_worst <= B_SETTLE_US && ordinary_worst <= B_INTERACT_US;
+                    }
+                }
             }
             if !passes {
                 break;
