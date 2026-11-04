@@ -47,6 +47,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod kani_proofs;
 
 use crate::model::file_load::SYNCHRONOUS_INSTALL_THRESHOLD_BYTES;
+use crate::model::highlight_chunking::HighlightInstallOrder;
 use crate::ui::editor_page::EditorLoadState;
 
 /// Bound deletion work by characters so even four-byte Unicode stays within the
@@ -472,8 +473,8 @@ pub const fn deferred_attach_may_run(
 pub enum HighlightAttachPlan {
     /// Highlighting stays on through the install: inserts into a buffer with
     /// an attached language only invalidate (ledger A68), and the document is
-    /// within its language's total-size threshold, so the engine's analysis of
-    /// it is bounded. Publishing then toggles nothing.
+    /// within its language's attach-after-install threshold, so the engine's
+    /// analysis of it is bounded. Publishing then toggles nothing.
     KeepAttached,
     /// Highlighting goes off for the install and comes back at publish: the
     /// scale keeps syntax off for this document, and turning highlighting on
@@ -481,16 +482,31 @@ pub enum HighlightAttachPlan {
     /// install must not leave a language attached to a body it may not
     /// highlight.
     OffUntilPublish,
+    /// The chunked highlighted install (`chunked-highlight-attach`, C6b):
+    /// the language comes off before any clear, the first chunk goes in
+    /// unhighlighted, the language is attached to that one chunk, and every
+    /// later chunk of at most `HIGHLIGHT_CHUNK_BYTES` goes in only once the
+    /// engine reported the previous one analysed (ledger A84,
+    /// `model::highlight_chunking::chunk_gate`).
+    AttachAfterFirstChunk,
 }
 
-/// The highlight order for an incoming body the scale does or does not let
-/// highlight (design D3).
+impl HighlightAttachPlan {
+    /// Whether the install is the chunked highlighted one.
+    #[must_use]
+    pub const fn is_chunked(self) -> bool {
+        matches!(self, Self::AttachAfterFirstChunk)
+    }
+}
+
+/// The highlight order for an incoming body (design D3 of
+/// `bound-post-open-settle`, extended by `chunked-highlight-attach`).
 #[must_use]
-pub const fn highlight_attach_plan(syntax_allowed: bool) -> HighlightAttachPlan {
-    if syntax_allowed {
-        HighlightAttachPlan::KeepAttached
-    } else {
-        HighlightAttachPlan::OffUntilPublish
+pub const fn highlight_attach_plan(order: HighlightInstallOrder) -> HighlightAttachPlan {
+    match order {
+        HighlightInstallOrder::NoHighlight => HighlightAttachPlan::OffUntilPublish,
+        HighlightInstallOrder::AttachAfterInstall => HighlightAttachPlan::KeepAttached,
+        HighlightInstallOrder::AttachBeforeChunks => HighlightAttachPlan::AttachAfterFirstChunk,
     }
 }
 
@@ -840,13 +856,16 @@ mod tests {
     #[test]
     fn highlighting_stays_attached_only_for_a_body_the_scale_lets_highlight() {
         assert_eq!(
-            highlight_attach_plan(true),
+            highlight_attach_plan(HighlightInstallOrder::AttachAfterInstall),
             HighlightAttachPlan::KeepAttached
         );
         assert_eq!(
-            highlight_attach_plan(false),
+            highlight_attach_plan(HighlightInstallOrder::NoHighlight),
             HighlightAttachPlan::OffUntilPublish
         );
+        let chunked = highlight_attach_plan(HighlightInstallOrder::AttachBeforeChunks);
+        assert_eq!(chunked, HighlightAttachPlan::AttachAfterFirstChunk);
+        assert!(chunked.is_chunked());
     }
 
     #[test]

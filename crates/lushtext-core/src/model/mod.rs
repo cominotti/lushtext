@@ -22,6 +22,7 @@ pub mod file_load;
 pub mod folder_note;
 pub mod formatting_overrides;
 pub mod held_input;
+pub mod highlight_chunking;
 pub mod language_guess;
 pub mod local_history;
 pub mod migration_ledger;

@@ -105,6 +105,11 @@ pub struct LoadEvidence {
     pub installation_slice_count: u64,
     /// Whether the newest installation took the bounded slicing path.
     pub installation_chunked: bool,
+    /// Whether it was the chunked highlighted install
+    /// (`chunked-highlight-attach`): the language attached after the first
+    /// chunk, each later chunk of at most `HIGHLIGHT_CHUNK_BYTES` analysed
+    /// before the next.
+    pub installation_highlight_chunked: bool,
     /// Whether cancellation discarded a partially installed payload.
     ///
     /// Saving stays blocked while this is set: the buffer was intentionally
@@ -190,6 +195,7 @@ impl LushtextEditorPage {
             installation_weight,
             installation_slice_count: imp.load.installation_slice_count.get(),
             installation_chunked: imp.load.installation_chunked.get(),
+            installation_highlight_chunked: imp.load.installation_highlight_chunked.get(),
             installation_incomplete: imp.load.installation_incomplete.get(),
             finalizing: imp.load.finalizing.get(),
             protected: crate::ui::protected_fold::ProtectedSliceEvidence::read(
@@ -243,9 +249,14 @@ pub(super) fn record_retired_request_cancellation(editor: &LushtextEditorPage, c
 }
 
 /// Record which installation path the accepted payload took.
-pub(super) fn record_install_started(editor: &LushtextEditorPage, chunked: bool) {
+pub(super) fn record_install_started(
+    editor: &LushtextEditorPage,
+    chunked: bool,
+    highlight_chunked: bool,
+) {
     let load = &editor.imp().load;
     load.installation_chunked.set(chunked);
+    load.installation_highlight_chunked.set(highlight_chunked);
     load.protected_install
         .set(crate::ui::protected_fold::FoldedInstallMetrics::default());
     load.protected_clear_turns.set(0);

@@ -358,6 +358,7 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         (
             "model::buffer_replacement::kani_proofs::",
+            "model::highlight_chunking::kani_proofs::",
             "ui::editor_page::load::policy::kani_proofs::",
         ),
         gate="scheduled",
@@ -593,6 +594,7 @@ WATCH_STEP_SECONDS = 672.86
 WATCH_UNSOUND_SECONDS = 778.55
 _SCALE = "model::document_scale::kani_proofs::"
 _PACED = "model::buffer_replacement::kani_proofs::"
+_CHUNKED = "model::highlight_chunking::kani_proofs::"
 _SETTLE = "ui::editor_page::load::policy::kani_proofs::"
 _BOUNDARY = "model::paragraph_boundary::kani_proofs::"
 _WATCH = "model::paragraph_profile_watch::kani_proofs::"
@@ -782,6 +784,17 @@ ORACLES: dict[str, Oracle] = {
             _h(_PACED + "paced_slices_hold_both_budgets_unless_one_paragraph", 41.31, "ci"),
         ),
         functions=("admit", "for_profile", "batch_exceeds_slice"),
+    ),
+    "crates/lushtext-core/src/model/highlight_chunking.rs": Oracle(
+        _CORE,
+        (
+            _h(_CHUNKED + "a_chunk_waits_at_most_once_and_never_when_analysed", 0.02, "ci"),
+            _h(_CHUNKED + "a_chunked_language_is_gated_above_its_attach_threshold_only_by_the_scale", 0.03, "ci"),
+            _h(_CHUNKED + "the_install_order_is_chunked_exactly_where_stated", 0.04, "ci"),
+            _h(_CHUNKED + "without_the_paragraph_bound_a_slice_exceeds_the_cut", 0.03, "ci"),
+            _h(_CHUNKED + "a_highlighted_chunk_follows_the_attach_and_the_analysis", 0.06, "ci"),
+            _h(_CHUNKED + "highlighted_slices_never_exceed_the_cut", 3.49, "ci"),
+        ),
     ),
     "crates/lushtext-core/src/ui/editor_page/load/policy.rs": Oracle(
         _CORE,

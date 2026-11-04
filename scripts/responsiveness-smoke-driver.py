@@ -213,7 +213,7 @@ SAVE_BACKLOG_DOCUMENTS = 2
 SAVE_BACKLOG_LEAD_S = 1.0
 SAVE_SCRATCH_TEXT = "scratch document the save case writes\n"
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -274,6 +274,12 @@ PHASE_KINDS = {
 # document, three 16 kB documents restored from the session, and two 64 kB
 # file-backed drafts recovered at startup.
 MARKDOWN_PREVIEW_BYTES = 200_000
+# `chunked-highlight-attach` (C6b): the five languages the chunked highlighted
+# install lifts to S_SYNTAX (1 MiB), at that size, and the seven that keep
+# their C6 gates because of their per-key re-analysis, at the same size.
+HIGHLIGHT_CHUNKED_EXTS = ("md", "rs", "c", "py", "xml")
+HIGHLIGHT_GATED_EXTS = ("html", "json", "js", "ts", "css", "sh", "yaml")
+HIGHLIGHT_BYTES = 1 << 20
 EDITORCONFIG_LINE_LENGTH = 710
 EDITORCONFIG_TAB_WIDTH = 8
 EDITORCONFIG_SETTING_TAB_WIDTH = 4
@@ -1855,9 +1861,26 @@ def seed_untitled_drafts(data_dir: Path, body: Path, count: int) -> list[str]:
     return ids
 
 
-def post_open_cases() -> list[Case]:
-    """The cases C6 added (design D8); both tiers run them."""
+def highlight_cases() -> list[Case]:
+    """`chunked-highlight-attach`: one short-line document per language at
+    S_SYNTAX, opened, settled and typed into like the other post-open cases."""
     return [
+        Case(
+            f"highlight/{ext}/{HIGHLIGHT_BYTES}",
+            "highlight",
+            FixtureSpec("short-language", HIGHLIGHT_BYTES, seed_for("highlight", ext), ext=ext),
+            settings={"word-wrap": True, "show-minimap": False},
+            length=HIGHLIGHT_BYTES,
+            attrs={"ext": ext, "post_open": True, "typing": True, "chunked": ext in HIGHLIGHT_CHUNKED_EXTS},
+        )
+        for ext in HIGHLIGHT_CHUNKED_EXTS + HIGHLIGHT_GATED_EXTS
+    ]
+
+
+def post_open_cases() -> list[Case]:
+    """The cases C6 added (design D8) and C6b's highlight group; both tiers
+    run them."""
+    return highlight_cases() + [
         Case(
             "markdown/preview",
             "markdown",

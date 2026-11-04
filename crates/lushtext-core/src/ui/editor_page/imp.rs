@@ -270,6 +270,9 @@ pub struct LoadState {
     pub installation_slice_count: Cell<u64>,
     /// Whether the newest installation took the bounded slicing path.
     pub installation_chunked: Cell<bool>,
+    /// Whether the newest installation was the chunked highlighted one
+    /// (`chunked-highlight-attach`).
+    pub installation_highlight_chunked: Cell<bool>,
     /// The newest load's sliced protected install counts (C3).
     pub protected_install: Cell<crate::ui::protected_fold::FoldedInstallMetrics>,
     /// Ledger clear turns the newest load's clears ran (C3).

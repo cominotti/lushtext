@@ -177,7 +177,7 @@ MULTIBYTE_CLASS_WEIGHTS = (
 SHORT_HTML_TAGS = ("div", "span", "p", "li", "a", "td", "section", "em")
 
 DELIMITERS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "u2029": " "}
-KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "short-code", "markdown", "keystroke")
+KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "short-code", "markdown", "keystroke", "short-language")
 CHUNK_CHARS = 16 * 1024
 CHUNK_COUNT = 48
 TABLE_SIZE = 4096
@@ -631,6 +631,81 @@ def resolve_inside(scope: Path, out_dir: Path) -> Path:
     return out_dir
 
 
+# `short-language` (`chunked-highlight-attach`, C6b): short-line source of the
+# language the file extension names, so GtkSourceView guesses that language.
+# Lines stay under 120 characters; the templates vary names and numbers only.
+SHORT_LANGUAGE_EXTS = ("md", "rs", "c", "py", "js", "ts", "yaml", "xml", "css", "sh", "json", "html")
+
+
+def short_language_line(ext: str, rng: SplitMix64, n: int) -> str:
+    k = rng.below(100_000)
+    word = MARKDOWN_WORDS[rng.below(len(MARKDOWN_WORDS))]
+    pick = rng.below(3)
+    if ext == "rs":
+        return (f"fn {word}_{n}(value: u32) -> u32 {{ value + {k} }} // {word}",
+                f"    let {word}_{n}: &str = \"{word} {k}\";",
+                f"#[derive(Debug)] struct {word.capitalize()}{n} {{ field: u64 }}")[pick]
+    if ext == "c":
+        return (f"static int {word}_{n}(int value) {{ return value + {k}; }} /* {word} */",
+                f"#define {word.upper()}_{n} {k}",
+                f"    const char *{word}_{n} = \"{word} {k}\";")[pick]
+    if ext == "py":
+        return (f"def {word}_{n}(value):",
+                f"    return value + {k}  # {word}",
+                f"{word}_{n} = \"{word} {k}\"")[pick]
+    if ext == "js":
+        return (f"function {word}_{n}(value) {{ return value + {k}; }} // {word}",
+                f"const {word}_{n} = \"{word} {k}\";",
+                f"let {word}List{n} = [{k}, {n}, '{word}'];")[pick]
+    if ext == "ts":
+        return (f"export function {word}_{n}(value: number): number {{ return value + {k}; }}",
+                f"const {word}_{n}: string = \"{word} {k}\";",
+                f"interface {word.capitalize()}{n} {{ id: number; name: string }} // {k}")[pick]
+    if ext == "yaml":
+        return (f"{word}_{n}: \"{word} {k}\"  # note",
+                f"  - {word}_{k}",
+                f"{word}_{n}_count: {k}")[pick]
+    if ext == "xml":
+        return f'  <item id="{n}" name="{word}_{k}">{word} {k}</item>'
+    if ext == "css":
+        return (f".{word}-{n} {{ color: #{k % 0xFFFFFF:06x}; margin: {k % 64}px; }} /* {word} */",
+                f"#{word}{n} > p {{ padding: {k % 32}em; }}",
+                f"@media (min-width: {k % 2000}px) {{ .{word}-{n} {{ display: none; }} }}")[pick]
+    if ext == "sh":
+        return (f"function {word}_{n}() {{ echo \"{word} {k}\" \"$1\"; }}  # {word}",
+                f"{word.upper()}_{n}=\"{k}\"",
+                f"if [ -n \"${{{word.upper()}_{n}}}\" ]; then echo {k}; fi")[pick]
+    if ext == "json":
+        return f'  {{"id": {n}, "name": "{word}_{k}", "value": {k}, "ok": true}},'
+    raise ValueError(f"no short-language template for {ext!r}")
+
+
+def write_short_language(path: Path, delimiter: str, seed: int, total_bytes: int, ext: str) -> dict:
+    if ext == "md":
+        return write_markdown(path, delimiter, seed, total_bytes)
+    if ext == "html":
+        return write_short_html(path, delimiter, seed, total_bytes)
+    rng = SplitMix64(seed)
+    writer = FixtureWriter(path, delimiter)
+    head, tail = {"xml": ('<?xml version="1.0"?>', "</root>"), "json": ("[", "{}]")}.get(ext, (None, None))
+    if head:
+        writer.text(head)
+        writer.end_paragraph()
+        if ext == "xml":
+            writer.text("<root>")
+            writer.end_paragraph()
+    reserve = 128 + (len(tail) if tail else 0)
+    n = 0
+    while writer.stats.bytes + reserve < total_bytes:
+        n += 1
+        writer.text(short_language_line(ext, rng, n))
+        writer.end_paragraph()
+    if tail:
+        writer.text(tail)
+        writer.end_paragraph()
+    return writer.close()
+
+
 def generate(
     kind: str,
     size: int,
@@ -686,6 +761,10 @@ def generate(
             files.append(write_short_code(out_dir / f"{stem}-doc{index:02}.txt", separator, seed + index, size))
     elif kind == "markdown":
         files.append(write_markdown(out_dir / f"{stem}.{ext}", separator, seed, size))
+    elif kind == "short-language":
+        if ext not in SHORT_LANGUAGE_EXTS:
+            raise ValueError(f"short-language needs ext in {SHORT_LANGUAGE_EXTS}, not {ext!r}")
+        files.append(write_short_language(out_dir / f"{stem}.{ext}", separator, seed, size, ext))
     manifest_editorconfig = write_editorconfig(out_dir, editorconfig) if editorconfig else None
     return {
         "generator_version": GENERATOR_VERSION,
@@ -814,6 +893,14 @@ def self_test() -> int:
         expect(code["files"][0]["longest_paragraph"] < SHORT_CODE_MIN_LINE + SHORT_CODE_LINE_SPREAD, f"short-code: short lines ({code['files'][0]['longest_paragraph']})")
         expect(densest_batch_chars(code_text) <= DENSITY_SLICE_CHARS, f"short-code: below C6's density bound ({densest_batch_chars(code_text)})")
         expect(generate("short-code", 256 * 1024, 6, scope, scope / "sc2")["files"][0]["sha256"] == code["files"][0]["sha256"], "short-code: deterministic")
+        for ext in SHORT_LANGUAGE_EXTS:
+            lang = generate("short-language", 64 * 1024, 7, scope, scope / f"sl-{ext}", ext=ext)
+            entry = lang["files"][0]
+            expect(entry["path"].endswith(f".{ext}"), f"short-language {ext}: extension")
+            expect(60 * 1024 <= entry["bytes"] <= 64 * 1024, f"short-language {ext}: size ({entry['bytes']})")
+            expect(entry["longest_paragraph"] < 2000, f"short-language {ext}: below L_syntax ({entry['longest_paragraph']})")
+            again = generate("short-language", 64 * 1024, 7, scope, scope / f"sl2-{ext}", ext=ext)
+            expect(again["files"][0]["sha256"] == entry["sha256"], f"short-language {ext}: deterministic")
 
         markdown = generate("markdown", 200_000, 4, scope, scope / "md")
         md = markdown["files"][0]
@@ -862,7 +949,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--scope", type=Path, help="the run's temporary scope (default $TMPDIR)")
     parser.add_argument("--out", type=Path, help="output directory inside the scope")
-    parser.add_argument("--ext", choices=("txt", "html", "md"), help="default: html for short-html, md for markdown, txt otherwise")
+    parser.add_argument("--ext", choices=("txt",) + SHORT_LANGUAGE_EXTS, help="default: html for short-html, md for markdown, txt otherwise")
     parser.add_argument("--delimiter", default="lf", choices=tuple(DELIMITERS))
     parser.add_argument("--charset", default="ascii", choices=("ascii", "multibyte"))
     parser.add_argument("--flavor", default="css", choices=tuple(FLAVORS))

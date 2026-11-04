@@ -103,6 +103,9 @@ pub(crate) struct ChunkedLoadInstall {
     /// The sliced install of a protected body (`ui::protected_fold`, C3):
     /// its tails go in hidden, slice by slice. `None` for an ordinary body.
     pub(super) folded: Option<FoldedInstall>,
+    /// The chunked highlighted install's progress (`chunked-highlight-attach`,
+    /// C6b); `None` for every other install.
+    pub(super) highlight: Option<crate::ui::editor_page::language_attach::HighlightChunks>,
 }
 
 impl ChunkedLoadInstall {
@@ -251,6 +254,9 @@ fn run_install_slice_now(session: &Rc<RefCell<ChunkedLoadInstall>>) {
                 schedule_install_slice(session);
                 return;
             }
+            if !highlight_chunk_may_go_in(session) {
+                return;
+            }
             run_text_insert_slice(session);
         }
         InstallSliceAction::RunPhase(LoadInstallPhase::ClearingCancelled) => {
@@ -360,6 +366,11 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         )
     };
     let budget = session.borrow().budget;
+    if session.borrow().highlight.is_some()
+        && let Some(editor) = &editor
+    {
+        editor.reset_highlight_coverage();
+    }
     let content_len = loaded.content.len();
     // GtkTextBuffer emits signals synchronously. Keep the session unborrowed so
     // a reentrant cancellation can move it to bounded cleanup without panicking.
@@ -411,13 +422,15 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     };
 
     let protected = session.borrow().folded.is_some();
+    let highlighted = session.borrow().highlight.is_some();
     let laid_out = editor
         .as_ref()
         .is_some_and(LushtextEditorPage::install_follows_layout);
     if reached_end {
         finish_chunked_install(session);
     } else {
-        match policy::install_slice_pacing(budget == SliceBudget::PACED, laid_out, protected) {
+        let paced = budget == SliceBudget::PACED || highlighted;
+        match policy::install_slice_pacing(paced, laid_out, protected) {
             InstallSlicePacing::BehindValidation => {
                 schedule_paced_insert_slice(session, PACED_SLICE_PRIORITY);
             }
@@ -426,6 +439,71 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
             }
             InstallSlicePacing::Timeout => schedule_install_slice(session),
         }
+    }
+}
+
+/// The chunked highlighted install's gate before a chunk
+/// (`model::highlight_chunking::chunk_gate`): `true` when the chunk may go in
+/// now; otherwise the session is parked until the attach resolves or queued
+/// once at `G_PRIORITY_LOW + 1` behind the engine's worker.
+fn highlight_chunk_may_go_in(session: &Rc<RefCell<ChunkedLoadInstall>>) -> bool {
+    use crate::ui::editor_page::language_attach::ChunkDecision;
+    let (editor, chunks) = {
+        let state = session.borrow();
+        if state.highlight.is_none() {
+            return true;
+        }
+        (state.editor.upgrade(), state.slice_count)
+    };
+    let Some(editor) = editor else {
+        return true;
+    };
+    let decision = {
+        let mut state = session.borrow_mut();
+        let Some(highlight) = state.highlight.as_mut() else {
+            return true;
+        };
+        editor.decide_highlight_chunk(highlight, chunks)
+    };
+    match decision {
+        ChunkDecision::Insert => true,
+        ChunkDecision::Unhighlighted(base) => {
+            let mut state = session.borrow_mut();
+            state.budget = base;
+            state.highlight = None;
+            true
+        }
+        ChunkDecision::AwaitAttach => {
+            let weak = Rc::downgrade(session);
+            editor.when_language_attach_resolves(move || {
+                if let Some(session) = weak.upgrade() {
+                    resume_parked_highlight_install(&session, PACED_SLICE_PRIORITY);
+                }
+            });
+            false
+        }
+        ChunkDecision::AwaitAnalysis => {
+            resume_parked_highlight_install(
+                session,
+                crate::ui::editor_page::language_attach::analysis_wait_priority(),
+            );
+            false
+        }
+    }
+}
+
+/// Queue the next step of a parked chunked install, unless it has been
+/// aborted, finished or already rescheduled meanwhile.
+fn resume_parked_highlight_install(
+    session: &Rc<RefCell<ChunkedLoadInstall>>,
+    priority: glib::Priority,
+) {
+    let resumable = {
+        let state = session.borrow();
+        !state.terminal && state.phase == LoadInstallPhase::Installing && state.source_id.is_none()
+    };
+    if resumable {
+        schedule_paced_insert_slice(session, priority);
     }
 }
 
@@ -635,11 +713,13 @@ fn install_guarded_load_now(
     permit: Option<TransientLoadPermit>,
 ) {
     let summary = loaded.metadata.summary();
+    let highlight_chunked = highlight_plan_for(editor, &loaded).is_chunked();
     let chunked = policy::requires_chunked_install(
         loaded.content.len(),
         editor.buffer().char_count(),
         policy::batch_exceeds_slice(summary)
-            || policy::protected_install_is_sliced(loaded.metadata.profile.fold_plan.as_deref()),
+            || policy::protected_install_is_sliced(loaded.metadata.profile.fold_plan.as_deref())
+            || highlight_chunked,
     );
     if !chunked
         && loaded.metadata.profile.fold_plan.is_some()
@@ -650,7 +730,7 @@ fn install_guarded_load_now(
         defer_direct_protected_install(editor, load_generation, loaded, permit);
         return;
     }
-    evidence::record_install_started(editor, chunked);
+    evidence::record_install_started(editor, chunked, highlight_chunked);
     if chunked {
         start_chunked_install(editor, load_generation, loaded, permit);
     } else {
@@ -763,6 +843,10 @@ fn start_chunked_install(
     let restore = begin_load_installation(editor, true, plan);
     editor.prepare_for_incoming_profile(&loaded.metadata.profile);
     let loaded_summary = loaded.metadata.summary();
+    let base_budget = SliceBudget::for_profile(loaded_summary);
+    let highlight = plan
+        .is_chunked()
+        .then(|| crate::ui::editor_page::language_attach::HighlightChunks::new(base_budget));
     editor.begin_protected_install(
         &loaded.metadata.profile,
         ProtectedInstallSource::Load {
@@ -785,13 +869,16 @@ fn start_chunked_install(
         byte_offset: 0,
         generation,
         source_id: None,
-        budget: SliceBudget::for_profile(loaded_summary),
+        budget: highlight
+            .as_ref()
+            .map_or(base_budget, |_| base_budget.with_highlight_cut()),
         permit,
         restore: Some(restore),
         phase: LoadInstallPhase::ClearingExisting,
         terminal: false,
         slice_count: 0,
         folded,
+        highlight,
     }));
     editor.imp().load.installation_slice_count.set(0);
     editor.imp().load.install_owns_changes.set(true);
@@ -822,11 +909,14 @@ fn highlight_plan_for(
     editor: &LushtextEditorPage,
     loaded: &GuardedLoadResult,
 ) -> policy::HighlightAttachPlan {
-    policy::highlight_attach_plan(
-        editor
-            .scale_for_incoming_profile(&loaded.metadata.profile)
-            .syntax_enabled,
-    )
+    let syntax_allowed = editor
+        .scale_for_incoming_profile(&loaded.metadata.profile)
+        .syntax_enabled;
+    policy::highlight_attach_plan(crate::model::highlight_chunking::highlight_install_order(
+        editor.syntax_language(),
+        loaded.metadata.summary().total_bytes,
+        syntax_allowed,
+    ))
 }
 
 /// Suspend the projections and view flags one installation must not trigger.
@@ -863,8 +953,12 @@ fn begin_load_installation(
     // its own marks from its workflow's terminal.
     editor.clear_modified_line_marks();
     view.set_cursor_visible(false);
-    if highlight == policy::HighlightAttachPlan::OffUntilPublish {
-        editor.buffer().set_highlight_syntax(false);
+    match highlight {
+        policy::HighlightAttachPlan::OffUntilPublish => editor.buffer().set_highlight_syntax(false),
+        // Before any clear: an attached language would re-analyse the
+        // shrinking old text after every deleted slice.
+        policy::HighlightAttachPlan::AttachAfterFirstChunk => editor.begin_chunked_highlight(),
+        policy::HighlightAttachPlan::KeepAttached => {}
     }
     editor.refresh_accessibility_metadata();
     restore
@@ -1132,7 +1226,7 @@ impl LushtextEditorPage {
         let weight = u64::try_from(content.capacity()).unwrap_or(u64::MAX);
         let reservation = crate::ui::plain_disposal::try_reserve_for_gtk(weight)
             .expect("test load body should acquire disposal capacity");
-        evidence::record_install_started(self, false);
+        evidence::record_install_started(self, false, false);
         install_loaded_direct(
             self,
             GuardedLoadResult {

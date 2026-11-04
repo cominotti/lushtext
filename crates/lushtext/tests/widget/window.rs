@@ -21294,3 +21294,94 @@ fn test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode() {
     });
     assert!(bookmarked.view_shows_document());
 }
+
+#[test]
+fn test_local_history_restore_of_a_large_markdown_body_installs_it_highlighted_in_chunks() {
+    // `chunked-highlight-attach` (C6b): a whole-buffer replacement of a body
+    // above Markdown's attach-after-install threshold detaches the language,
+    // then attaches it to the first chunk and inserts the rest chunk by
+    // chunk; attaching it to the whole body at the terminal would analyse it
+    // in 30 ms worker slices (ledger A69).
+    use lushtext_core::model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
+    ensure_gtk_init();
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history-restore-highlighted.md");
+    fixture::write_text(&path, "# current\n");
+    let mut restore_target = String::new();
+    let mut section = 0;
+    while restore_target.len() < 400 * 1024 {
+        section += 1;
+        restore_target.push_str(&format!(
+            "## Section {section}\n\nSome *emphasis* and `code`.\n\n- item one\n- item two\n\n"
+        ));
+    }
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        &restore_target,
+        LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed restore target");
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    wait_until(Duration::from_secs(10), || {
+        editor.buffer().language().is_some()
+    });
+    let attaches = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    {
+        let record = attaches.clone();
+        editor
+            .buffer()
+            .connect_notify_local(Some("language"), move |buffer, _| {
+                if buffer.language().is_some() {
+                    record.borrow_mut().push(buffer.char_count());
+                }
+            });
+    }
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+    wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
+    restore_button.emit_clicked();
+    wait_until(Duration::from_secs(30), || {
+        !editor.buffer_replacement_evidence().in_progress && editor_text(&editor) == restore_target
+    });
+    assert!(editor.document_scale().syntax_enabled);
+    assert_eq!(
+        editor
+            .buffer()
+            .language()
+            .map(|language| language.id().to_string())
+            .as_deref(),
+        Some("markdown")
+    );
+    let evidence = editor.buffer_replacement_evidence();
+    assert!(
+        evidence.slice_count
+            >= u64::try_from(restore_target.len())
+                .expect("fits")
+                .div_ceil(HIGHLIGHT_CHUNK_BYTES),
+        "{} turns for {} bytes",
+        evidence.slice_count,
+        restore_target.len()
+    );
+    let attaches = attaches.borrow().clone();
+    assert!(!attaches.is_empty(), "the language was attached again");
+    assert!(
+        attaches
+            .iter()
+            .all(|chars| u64::try_from(*chars).expect("positive") <= HIGHLIGHT_CHUNK_BYTES),
+        "every attach met at most one chunk: {attaches:?}"
+    );
+}
