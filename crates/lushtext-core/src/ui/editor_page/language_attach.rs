@@ -300,10 +300,12 @@ impl LushtextEditorPage {
 
     /// Whether the pending stage is a chunked install's in the editor the
     /// user types into: requested by the install, and its view mapped and
-    /// holding the keyboard focus.
+    /// holding the keyboard focus. `has_focus`, not `is_focus`: the input
+    /// clock is process-wide, and a focus child of an inactive window is
+    /// not where the keys go (re-review of the re-review, fix 2).
     fn install_attach_skips_input_quiet(&self) -> bool {
         let view = self.imp().source_view.get();
-        self.imp().language_attach.for_install.get() && view.is_mapped() && view.is_focus()
+        self.imp().language_attach.for_install.get() && view.is_mapped() && view.has_focus()
     }
 
     /// Whether a chunked highlighted install (the load's or a whole-buffer

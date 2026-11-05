@@ -770,7 +770,7 @@ Declared as:
 - externally reachable `\*_for_test` declaration ceiling: <integer>
 ```
 
-- externally reachable `\*_for_test` declaration ceiling: 168
+- externally reachable `\*_for_test` declaration ceiling: 169
 
 Predicate, identical to the one
 [`docs/next/workflow-readability.md`](next/workflow-readability.md) records this
@@ -791,6 +791,14 @@ setters in its one `test_policy.rs` (`set_composition_collapsed_for_test`,
 composing, and the actuation `release_composition_hold_for_test`. None reads a
 fact; every fact the tests read is on `CompositionEvidence`. A hold must be set
 before the window exists, which no evidence field can do.
+
+**Raised 168 → 169 by `chunked-highlight-attach` (2026-11-04).** The one is
+`model::document_scale::override_markdown_chunked_cap_for_test`, a
+`test-utils` configuration override, not an inspection getter: it returns an
+RAII guard that gives Markdown the model's chunked cap so the chunked widget
+tests can drive an install no shipped language takes. It reads no fact (the
+tests read the load and language-attach evidence), and it must change the
+scale policy's input before a document opens, which no evidence field can do.
 
 `cfg(feature = "test-utils")` attribute sites (**530**) are deliberately **not**
 ratcheted. That population rises as workflows gain gated evidence surfaces, so

@@ -904,6 +904,12 @@ fn markdown(bytes: usize) -> String {
 /// `S_SYNTAX` (1 MiB): on `main` its syntax is off (`TotalSize`).
 const LARGE_MARKDOWN: usize = 400 * 1024;
 
+/// Give Markdown the model's chunked cap for one test: no shipped language
+/// has one (`document_scale::chunked_threshold`, re-review F1).
+fn chunked_markdown_cap() -> lushtext_core::model::document_scale::MarkdownChunkedCapGuard {
+    lushtext_core::model::document_scale::override_markdown_chunked_cap_for_test()
+}
+
 /// Record the buffer's character count every time a language is set on it.
 fn chars_at_attach(editor: &LushtextEditorPage) -> std::rc::Rc<std::cell::RefCell<Vec<i32>>> {
     let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -922,6 +928,7 @@ fn chars_at_attach(editor: &LushtextEditorPage) -> std::rc::Rc<std::cell::RefCel
 fn test_a_large_markdown_document_installs_highlighted_chunk_by_chunk() {
     use lushtext_core::model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -981,6 +988,35 @@ fn test_a_large_html_document_stays_gated() {
 }
 
 #[test]
+fn test_a_shipped_markdown_document_above_its_gate_is_reduced_and_not_chunked() {
+    // No shipped language has a chunked cap (re-review F1): a 400 KiB
+    // Markdown document, above the 320 KiB gate and below the model cap,
+    // loses highlighting for its size and takes no chunked install.
+    use lushtext_core::model::document_scale::{ReductionReason, ScaleFeature};
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let path = write(&dir, "shipped.md", &text);
+    let editor = opened(&window, &path);
+    flush_after_delay(Duration::from_millis(300));
+    let scale = editor.document_scale();
+    assert!(!scale.syntax_enabled);
+    assert!(
+        scale
+            .reduced
+            .has_reason(ScaleFeature::Syntax, ReductionReason::TotalSize)
+    );
+    assert!(!editor.load_evidence().installation_highlight_chunked);
+    assert_eq!(editor.load_evidence().language_attach.install_requests, 0);
+    assert_eq!(language_id(&editor), None);
+    let buffer = editor.buffer();
+    let installed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+    assert_eq!(installed.as_str(), text);
+}
+
+#[test]
 fn test_a_markdown_document_below_its_threshold_keeps_the_c6_order() {
     ensure_gtk_init();
     let window = test_window();
@@ -1006,6 +1042,7 @@ fn test_a_markdown_document_below_its_threshold_keeps_the_c6_order() {
 #[test]
 fn test_a_background_tab_installs_highlighted_without_being_shown() {
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1038,6 +1075,7 @@ fn test_a_background_tab_installs_highlighted_without_being_shown() {
 #[test]
 fn test_a_cancelled_chunked_install_leaves_no_language_and_no_partial_text() {
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1081,6 +1119,7 @@ fn test_a_cancelled_chunked_install_leaves_no_language_and_no_partial_text() {
 #[test]
 fn test_a_reload_of_a_highlighted_large_document_detaches_before_clearing() {
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1120,6 +1159,7 @@ fn test_most_chunks_go_in_on_the_engines_coverage_report() {
     // Review S5: the A84 gate itself. If the coverage predicate always failed,
     // every chunk would wait once behind the worker and this fails.
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1141,6 +1181,7 @@ fn test_a_chunk_without_a_coverage_report_waits_once_and_goes_in() {
     // waits once at `G_PRIORITY_LOW + 1` and the install still finishes. If
     // the predicate always held, no chunk would wait and this fails.
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1187,6 +1228,7 @@ fn test_a_rename_during_a_background_chunked_install_does_not_wait_for_the_tab()
     // install is parked on it; the stage must stay armed the install's way,
     // or the hidden tab would wait for a map that never comes.
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1254,6 +1296,7 @@ fn test_a_rename_during_a_background_chunked_install_does_not_wait_for_the_tab()
 #[test]
 fn test_an_evicted_large_markdown_reloads_highlighted_without_a_language_during_the_clear() {
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1298,6 +1341,7 @@ fn test_an_evicted_large_markdown_reloads_highlighted_without_a_language_during_
 fn test_a_save_formatting_mirror_back_installs_a_large_markdown_in_chunks() {
     use lushtext_core::model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1357,6 +1401,7 @@ fn test_a_replacement_that_ends_before_its_first_turn_keeps_the_language() {
     // leaves the old text's language and analysis as they were (attaching
     // it again to the whole old body would analyse it in worker slices).
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1412,6 +1457,7 @@ fn test_a_background_chunked_install_attaches_only_after_input_quiet() {
     // skips input-quiet; a background tab's install must not run the
     // definition parse (A67) while the user types elsewhere.
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1479,11 +1525,77 @@ fn test_a_background_chunked_install_attaches_only_after_input_quiet() {
 }
 
 #[test]
+fn test_a_focus_child_in_an_inactive_window_waits_for_input_quiet() {
+    // Fix 2 of the re-review's re-review: the input clock is process-wide,
+    // so an editor that is its window's focus child but whose window is not
+    // active must not skip input-quiet while the user types in another
+    // window; the definition parse (A67) would land between those keys.
+    ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
+    let installing = test_window();
+    present_window(&installing);
+    let typing = test_window();
+    present_window(&typing);
+    crate::common::activate_with_real_press(&typing, &typing);
+    assert!(!installing.is_active(), "only one window is active");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = markdown(LARGE_MARKDOWN);
+    let path = write(&dir, "inactive.md", &text);
+    installing.open_document(&path);
+    let editor = active_editor(&installing);
+    gtk4::prelude::GtkWindowExt::set_focus(&installing, Some(editor.source_view()));
+    assert!(
+        editor.source_view().is_focus(),
+        "the focus child of its window"
+    );
+    assert!(!editor.source_view().has_focus(), "but not where keys go");
+    let typing_window: gtk4::Window = typing.clone().upcast();
+    let attached_while_typing = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_typing = std::rc::Rc::new(std::cell::Cell::new(false));
+    {
+        let (attached, done) = (attached_while_typing.clone(), done_typing.clone());
+        let mut typed_since = None::<std::time::Instant>;
+        let weak = editor.downgrade();
+        lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+        glib::timeout_add_local_full(Duration::from_millis(4), glib::Priority::HIGH, move || {
+            let Some(editor) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
+            typing_window.queue_draw();
+            if editor.load_evidence().language_attach.install_requests > 0 {
+                let since = *typed_since.get_or_insert_with(std::time::Instant::now);
+                if editor.buffer().language().is_some() {
+                    attached.set(true);
+                }
+                if since.elapsed() >= Duration::from_millis(600) {
+                    done.set(true);
+                    return glib::ControlFlow::Break;
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+    wait_until(Duration::from_secs(30), || done_typing.get());
+    assert!(
+        !attached_while_typing.get(),
+        "an install in an inactive window attached while keys arrived elsewhere"
+    );
+    wait_until(Duration::from_secs(30), || {
+        !editor.load_evidence().installation_active
+    });
+    assert_eq!(language_id(&editor).as_deref(), Some("markdown"));
+    assert_eq!(crate::common::editor_text(&editor), text);
+    typing.close();
+}
+
+#[test]
 fn test_the_focused_editors_chunked_install_attaches_while_keys_arrive() {
     // The other half of F2's carve-out: the editor the user types into,
     // shown and focused, holds those keys until its install's terminal, so
     // its attach does not wait for input-quiet (up to `ATTACH_DEADLINE_US`).
     ensure_gtk_init();
+    let _cap = chunked_markdown_cap();
     let window = test_window();
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1491,7 +1603,12 @@ fn test_the_focused_editors_chunked_install_attaches_while_keys_arrive() {
     let path = write(&dir, "focused.md", &text);
     window.open_document(&path);
     let editor = active_editor(&window);
+    crate::common::activate_with_real_press(&window, editor.source_view());
     editor.source_view().grab_focus();
+    assert!(
+        editor.source_view().has_focus(),
+        "a real press made the window active"
+    );
     let typing_window: gtk4::Window = window.upcast();
     lushtext_core::ui::input_quiet::simulate_user_input_on(&typing_window);
     let started = std::time::Instant::now();
@@ -1507,7 +1624,8 @@ fn test_the_focused_editors_chunked_install_attaches_while_keys_arrive() {
             if editor.load_evidence().language_attach.install_requests > 0
                 && editor.buffer().language().is_some()
             {
-                attached_after.set(Some(started.elapsed()));
+                // Where the keys go when the attach runs (fix 2).
+                attached_after.set(Some((started.elapsed(), editor.source_view().has_focus())));
                 return glib::ControlFlow::Break;
             }
             if started.elapsed() > Duration::from_secs(30) {
@@ -1517,10 +1635,10 @@ fn test_the_focused_editors_chunked_install_attaches_while_keys_arrive() {
         });
     }
     wait_until(Duration::from_secs(30), || attached_after.get().is_some());
-    let waited = attached_after.get().expect("attached");
+    let (waited, had_focus) = attached_after.get().expect("attached");
     assert!(
-        editor.source_view().is_focus(),
-        "the installing editor held the focus"
+        had_focus,
+        "the installing editor held the keyboard focus of an active window when it attached"
     );
     assert_eq!(
         editor.load_evidence().language_attach.deadline_runs,

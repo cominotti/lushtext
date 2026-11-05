@@ -14,9 +14,19 @@
 //! Compiled only under `cfg(kani)` (`make kani`).
 
 use super::{
-    DocumentScale, LocalHistoryAvailability, ProfileSummary, ReductionReason, ScaleFeature,
-    SyntaxLanguage, retired_byte_tiers,
+    DocumentScale, LocalHistoryAvailability, MODEL_MARKDOWN_CAP, ProfileSummary, ReductionReason,
+    ScaleFeature, SyntaxLanguage, retired_byte_tiers,
 };
+
+/// The shipped table (`None`) or the model cap the chunked tests use
+/// (`chunked-highlight-attach`): the language harnesses prove both.
+fn any_markdown_cap() -> Option<u64> {
+    if kani::any() {
+        Some(MODEL_MARKDOWN_CAP)
+    } else {
+        None
+    }
+}
 
 fn any_language() -> SyntaxLanguage {
     let index: usize = kani::any();
@@ -68,6 +78,7 @@ fn byte_tiers(scale: DocumentScale) -> (bool, bool, u64, LocalHistoryAvailabilit
 
 #[kani::proof]
 fn scale_is_monotone() {
+    let cap = any_markdown_cap();
     let small = any_profile();
     let large = any_profile();
     kani::assume(small.total_bytes <= large.total_bytes);
@@ -75,8 +86,8 @@ fn scale_is_monotone() {
     kani::assume(small.worst_batch_chars <= large.worst_batch_chars);
     let language = any_language();
     let (s, l) = (
-        DocumentScale::for_profile_in(small, language),
-        DocumentScale::for_profile_in(large, language),
+        DocumentScale::for_profile_in_with(small, language, cap),
+        DocumentScale::for_profile_in_with(large, language, cap),
     );
     assert!(never_reenables(s, l));
     assert!(!l.open_allowed || s.open_allowed);
@@ -106,12 +117,13 @@ fn scale_is_monotone() {
 /// the total-size syntax and bracket-matching decisions.
 #[kani::proof]
 fn scale_is_monotone_in_the_language_threshold() {
+    let cap = any_markdown_cap();
     let profile = any_profile();
     let (low, high) = (any_language(), any_language());
-    kani::assume(low.syntax_size_threshold() <= high.syntax_size_threshold());
+    kani::assume(low.syntax_size_threshold_with(cap) <= high.syntax_size_threshold_with(cap));
     let (strict, lax) = (
-        DocumentScale::for_profile_in(profile, low),
-        DocumentScale::for_profile_in(profile, high),
+        DocumentScale::for_profile_in_with(profile, low, cap),
+        DocumentScale::for_profile_in_with(profile, high, cap),
     );
     assert!(never_reenables(lax, strict));
     assert!(byte_tiers(strict) == byte_tiers(lax));
@@ -121,7 +133,7 @@ fn scale_is_monotone_in_the_language_threshold() {
     assert!(strict.protected_view == lax.protected_view);
     assert!(
         strict.syntax_enabled
-            == (lax.syntax_enabled && profile.total_bytes <= low.syntax_size_threshold())
+            == (lax.syntax_enabled && profile.total_bytes <= low.syntax_size_threshold_with(cap))
     );
     // Plain text keeps C1's threshold.
     assert!(
@@ -158,9 +170,10 @@ fn scale_protected_view_is_upward_closed() {
 
 #[kani::proof]
 fn scale_join_is_a_meet_on_presentation_features() {
-    let a = DocumentScale::for_profile_in(any_profile(), any_language());
-    let b = DocumentScale::for_profile_in(any_profile(), any_language());
-    let c = DocumentScale::for_profile_in(any_profile(), any_language());
+    let cap = any_markdown_cap();
+    let a = DocumentScale::for_profile_in_with(any_profile(), any_language(), cap);
+    let b = DocumentScale::for_profile_in_with(any_profile(), any_language(), cap);
+    let c = DocumentScale::for_profile_in_with(any_profile(), any_language(), cap);
     // Commutative, associative and idempotent on the presentation features.
     assert!(presentation(a.join(b)) == presentation(b.join(a)));
     assert!(a.join(b).reduced.any_presentation() == b.join(a).reduced.any_presentation());
@@ -180,12 +193,13 @@ fn scale_join_is_a_meet_on_presentation_features() {
 
 #[kani::proof]
 fn scale_of_a_profile_join_is_the_join_of_scales() {
+    let cap = any_markdown_cap();
     let p = any_profile();
     let q = any_profile();
     let language = any_language();
-    let joined =
-        DocumentScale::for_profile_in(p, language).join(DocumentScale::for_profile_in(q, language));
-    let of_max = DocumentScale::for_profile_in(p.max(q), language);
+    let joined = DocumentScale::for_profile_in_with(p, language, cap)
+        .join(DocumentScale::for_profile_in_with(q, language, cap));
+    let of_max = DocumentScale::for_profile_in_with(p.max(q), language, cap);
     assert!(presentation(of_max) == presentation(joined));
     for feature in ScaleFeature::ALL {
         if feature.is_presentation() {

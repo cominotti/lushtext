@@ -918,11 +918,14 @@ fn highlight_plan_for(
     let syntax_allowed = editor
         .scale_for_incoming_profile(&loaded.metadata.profile)
         .syntax_enabled;
-    policy::highlight_attach_plan(crate::model::highlight_chunking::highlight_install_order(
-        editor.syntax_language(),
-        loaded.metadata.summary().total_bytes,
-        syntax_allowed,
-    ))
+    policy::highlight_attach_plan(
+        crate::model::highlight_chunking::highlight_install_order_with(
+            editor.syntax_language(),
+            loaded.metadata.summary().total_bytes,
+            syntax_allowed,
+            crate::model::document_scale::markdown_chunked_cap(),
+        ),
+    )
 }
 
 /// Suspend the projections and view flags one installation must not trigger.

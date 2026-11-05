@@ -268,8 +268,12 @@ impl LushtextEditorPage {
     /// applying it: its presentation features joined into the session, the
     /// current byte tiers kept.
     pub(crate) fn scale_for_incoming_profile(&self, profile: &DocumentProfile) -> DocumentScale {
-        DocumentScale::for_profile_in(profile.summary(), self.syntax_language())
-            .join(self.document_scale())
+        DocumentScale::for_profile_in_with(
+            profile.summary(),
+            self.syntax_language(),
+            crate::model::document_scale::markdown_chunked_cap(),
+        )
+        .join(self.document_scale())
     }
 
     /// Start a new document session from a load's worker profile.
@@ -279,7 +283,11 @@ impl LushtextEditorPage {
     /// default): it reloads byte-identical clean content, and features a
     /// session lost do not come back because memory pressure evicted the tab.
     pub(crate) fn begin_document_scale_session(&self, summary: ProfileSummary, keep_floor: bool) {
-        let loaded = DocumentScale::for_profile_in(summary, self.syntax_language());
+        let loaded = DocumentScale::for_profile_in_with(
+            summary,
+            self.syntax_language(),
+            crate::model::document_scale::markdown_chunked_cap(),
+        );
         let state = &self.imp().document_scale;
         let previous = state.scale.get();
         let (scale, watch) = if keep_floor {
@@ -521,9 +529,10 @@ impl LushtextEditorPage {
         let next = complete(state, ProfileConfig::PRODUCTION, plan, reads);
         scale_state.watch.set(next);
         let previous = scale_state.scale.get();
-        let candidate = DocumentScale::for_profile_in(
+        let candidate = DocumentScale::for_profile_in_with(
             next.summary(scale_state.total_bytes.get()),
             self.syntax_language(),
+            crate::model::document_scale::markdown_chunked_cap(),
         );
         // Presentation features meet; the byte tiers stay those of the latest
         // load or save (an edit does not toggle undo, design Open Question 4).

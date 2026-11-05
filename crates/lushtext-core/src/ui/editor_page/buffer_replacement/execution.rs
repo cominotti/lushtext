@@ -515,10 +515,11 @@ fn begin(editor: &LushtextEditorPage, request: BufferReplacementRequest) {
     // (`chunked-highlight-attach`): attaching it to the whole body at the
     // terminal would analyse it in 30 ms worker slices (A69).
     let highlight = request.profile.as_ref().and_then(|profile| {
-        crate::model::highlight_chunking::highlight_install_order(
+        crate::model::highlight_chunking::highlight_install_order_with(
             editor.syntax_language(),
             profile.summary().total_bytes,
             editor.scale_for_incoming_profile(profile).syntax_enabled,
+            crate::model::document_scale::markdown_chunked_cap(),
         )
         .is_chunked()
         .then(|| crate::ui::editor_page::language_attach::HighlightChunks::new(budget))

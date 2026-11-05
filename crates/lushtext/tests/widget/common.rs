@@ -926,3 +926,84 @@ pub fn short_lines(fill: char, chars: usize) -> String {
     let line = format!("{}\n", fill.to_string().repeat(79));
     line.repeat(chars.div_ceil(80))
 }
+
+/// Make `window` the active window the way a person does: fullscreen it,
+/// then press the primary button at `target`'s centre through the private
+/// headless compositor's `org.gnome.Mutter.RemoteDesktop` interface (the
+/// path `gtk-lush-axioms`' A60 and A64 controls take; GTK 4 cannot
+/// synthesize a `GdkEvent`). A presented test window is never active
+/// otherwise, so `is_active` and `has_focus` stay false until this runs.
+///
+/// # Panics
+///
+/// When the compositor offers no RemoteDesktop session, or the press does
+/// not activate the window within five seconds.
+pub fn activate_with_real_press(window: &impl IsA<gtk4::Window>, target: &impl IsA<gtk4::Widget>) {
+    use glib::prelude::ToVariant;
+    const BUS: &str = "org.gnome.Mutter.RemoteDesktop";
+    const SESSION: &str = "org.gnome.Mutter.RemoteDesktop.Session";
+    const BTN_LEFT: i32 = 0x110;
+    const SHIFT_L: u32 = 0xffe1;
+    let window = window.as_ref();
+    window.fullscreen();
+    wait_until(Duration::from_secs(5), || {
+        window.is_fullscreen() && target.as_ref().is_mapped() && target.as_ref().width() > 0
+    });
+    flush_after_delay(Duration::from_millis(200));
+    let connection = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)
+        .expect("the headless session bus");
+    let call = |object: &str, interface: &str, method: &str, parameters: Option<glib::Variant>| {
+        connection
+            .call_sync(
+                Some(BUS),
+                object,
+                interface,
+                method,
+                parameters.as_ref(),
+                None,
+                gio::DBusCallFlags::NONE,
+                5_000,
+                None::<&gio::Cancellable>,
+            )
+            .unwrap_or_else(|error| panic!("RemoteDesktop {method}: {error}"))
+    };
+    let reply = call(
+        "/org/gnome/Mutter/RemoteDesktop",
+        BUS,
+        "CreateSession",
+        None,
+    );
+    let session = reply
+        .child_value(0)
+        .str()
+        .expect("a session path")
+        .to_owned();
+    let notify = |method: &str, parameters: glib::Variant| {
+        call(&session, SESSION, method, Some(parameters));
+        flush_after_delay(Duration::from_millis(60));
+    };
+    call(&session, SESSION, "Start", None);
+    // The compositor drops a new session's first device notification.
+    notify("NotifyKeyboardKeysym", (SHIFT_L, true).to_variant());
+    notify("NotifyKeyboardKeysym", (SHIFT_L, false).to_variant());
+    notify("NotifyPointerMotionRelative", (1.0f64, 1.0f64).to_variant());
+    flush_after_delay(Duration::from_millis(300));
+    let target = target.as_ref();
+    let centre =
+        gtk4::graphene::Point::new(target.width() as f32 / 2.0, target.height() as f32 / 2.0);
+    let on_screen = target
+        .compute_point(window, &centre)
+        .expect("the target is inside its fullscreen window");
+    notify(
+        "NotifyPointerMotionRelative",
+        (-10_000.0f64, -10_000.0f64).to_variant(),
+    );
+    notify(
+        "NotifyPointerMotionRelative",
+        (f64::from(on_screen.x()), f64::from(on_screen.y())).to_variant(),
+    );
+    notify("NotifyPointerButton", (BTN_LEFT, true).to_variant());
+    notify("NotifyPointerButton", (BTN_LEFT, false).to_variant());
+    call(&session, SESSION, "Stop", None);
+    wait_until(Duration::from_secs(5), || window.is_active());
+}

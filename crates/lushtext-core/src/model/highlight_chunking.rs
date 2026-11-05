@@ -92,9 +92,22 @@ pub const fn highlight_install_order(
     total_bytes: u64,
     syntax_allowed: bool,
 ) -> HighlightInstallOrder {
+    highlight_install_order_with(language, total_bytes, syntax_allowed, None)
+}
+
+/// [`highlight_install_order`] with Markdown given `markdown_cap`
+/// (`document_scale::chunked_threshold_with`); the editor passes
+/// `document_scale::markdown_chunked_cap`.
+#[must_use]
+pub const fn highlight_install_order_with(
+    language: SyntaxLanguage,
+    total_bytes: u64,
+    syntax_allowed: bool,
+    markdown_cap: Option<u64>,
+) -> HighlightInstallOrder {
     if !syntax_allowed {
         HighlightInstallOrder::NoHighlight
-    } else if language.chunk_highlighted()
+    } else if language.chunk_highlighted_with(markdown_cap)
         && total_bytes > language.attach_after_install_threshold()
     {
         HighlightInstallOrder::AttachBeforeChunks
@@ -194,23 +207,31 @@ mod tests {
 
     #[test]
     fn only_a_language_with_a_chunked_cap_takes_the_chunked_order_above_its_threshold() {
+        use crate::model::document_scale::MODEL_MARKDOWN_CAP;
+        for cap in [None, Some(MODEL_MARKDOWN_CAP)] {
+            for language in SyntaxLanguage::ALL {
+                let threshold = language.attach_after_install_threshold();
+                assert_eq!(
+                    highlight_install_order_with(language, threshold, true, cap),
+                    HighlightInstallOrder::AttachAfterInstall,
+                    "{language:?} at its threshold"
+                );
+                let above = highlight_install_order_with(language, threshold + 1, true, cap);
+                assert_eq!(
+                    above.is_chunked(),
+                    language.chunk_highlighted_with(cap),
+                    "{language:?}"
+                );
+                assert_eq!(
+                    highlight_install_order_with(language, S_SYNTAX, false, cap),
+                    HighlightInstallOrder::NoHighlight
+                );
+            }
+        }
+        // Shipped: no language takes the chunked order.
         for language in SyntaxLanguage::ALL {
-            let threshold = language.attach_after_install_threshold();
-            assert_eq!(
-                highlight_install_order(language, threshold, true),
-                HighlightInstallOrder::AttachAfterInstall,
-                "{language:?} at its threshold"
-            );
-            let above = highlight_install_order(language, threshold + 1, true);
-            assert_eq!(
-                above.is_chunked(),
-                language.chunk_highlighted(),
-                "{language:?}"
-            );
-            assert_eq!(
-                highlight_install_order(language, S_SYNTAX, false),
-                HighlightInstallOrder::NoHighlight
-            );
+            let above = language.attach_after_install_threshold() + 1;
+            assert!(!highlight_install_order(language, above, true).is_chunked());
         }
     }
 
