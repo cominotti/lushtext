@@ -36,3 +36,7 @@
 - [x] 6.1 Programme record (`docs/next/long-line-documents.md`): CF row and an implementation record, the file-tree correction of C6's note (and of the CF row's "`.monospace` file tree"), footnote ³ of C3 (the font change's owner and its new figures), the verdict tables
 - [x] 6.2 `.agents/rules/ui.md` (GSettings bindings, font customization), AGENTS.md (key design decision, module layout for `ui/font_zoom.rs`, the stale "file tree labels use `.monospace`" sentence), the stale `ui/window/zoom.rs` module comment ("and the sidebar file tree"), the `ui/theme.rs` provider comments, README if the zoom behaviour description changes, the gtk-axiom ledger
 - [x] 6.3 `docs/workflow-readability-matrix.md` if the new module needs a cross-cutting row; `make check-workflow-boundaries`
+
+## 7. Review
+
+- [x] 7.1 Independent review (2026-11-05): evidence re-read against the record; decisions recorded in design.md ("Review decisions"); `make check-font-zoom-registration` also forbids a builder's `.monospace(true)` and `set_property("monospace", true)`, self-test cases failing first
