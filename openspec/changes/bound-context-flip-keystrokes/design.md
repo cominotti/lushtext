@@ -87,7 +87,7 @@ watch step) arm one idle at `G_PRIORITY_HIGH_IDLE - 1`
 (`ui/editor_page/reanalysis_pacing.rs`). Every step dispatches before the
 first update (A85). A step calls `ensure_highlight(bound, bound)`: an empty
 range, so the engine analyses from its invalid point to the line after
-`bound` and tags nothing (the view tags what it draws, as before), and
+`bound` and applies no style tag (only the context-class tags every analysis maintains over what it analysed; the view still has the style tags applied for what it draws, as before), and
 reports the range in one `highlight-updated`. Then:
 
 - a report that ends before the line before `bound`, or no report, or a bound
@@ -206,10 +206,21 @@ enabled here. The mechanism stays proved and tested under its model cap.
 
 No persisted state. Rollback is a revert.
 
-## Open Questions
+## Decisions on the open questions (coordinator, 2026-11-05)
 
-- The allowance (D2): `B_SETTLE_US` (shipped), or the engine's 10 ms to keep
-  every echo at `main`'s at the cost of more downgrades. The maintainer's.
-- Chunked caps (D4): whether to enable markdown and c at 512 KiB now that
-  flips are bounded per dispatch, accepting highlighting that a flip near the
-  top removes and the first shipped use of the chunked install.
+Recorded by the review-and-conclusion stage on the coordinator's decisions,
+user experience first; the maintainer may override any of them.
+
+- **The allowance (D2): keep `B_SETTLE_US` (16 ms).** The engine's 10 ms
+  would remove highlighting after flips that `main` handles in 11–14 ms and
+  from a 4 KB real TypeScript file. The echo exception stays recorded: a key
+  that spends the allowance is echoed up to about 23 ms after its insert.
+- **Chunked caps (D4): markdown and c at 512 KiB stay dormant.** A document
+  that opens highlighted and loses highlighting at the first flip near its
+  top is a worse surprise than C6's gate, which leaves it plain from the
+  start. Revisit only with a design that avoids the downgrade at that size.
+- **Test-seam ceiling: 169 → 170 accepted**, for
+  `model::reanalysis_pacing::override_reanalysis_allowance_for_test`, with
+  the reason recorded in `docs/workflow-readability-matrix.md` (a
+  configuration override returning an RAII guard, set before the edit, which
+  no evidence field can do; it reads no fact).
