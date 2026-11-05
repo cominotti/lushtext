@@ -14,6 +14,8 @@ use super::LushtextEditorPage;
 /// Maximum selected characters a find surface copies into its query. Users
 /// sometimes press Ctrl+Shift+F with a whole document selected; the prefill
 /// runs on the GTK thread, so a larger selection is skipped instead of copied.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_SEARCH_SELECTION_PREFILL_CHARS: i32 = 1_024;
 
 /// The selection text a find surface (the in-tab bar or the workspace search

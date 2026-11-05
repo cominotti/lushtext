@@ -49,34 +49,52 @@ static NOTES_BROWSER_QUERY_DELAY_MS: std::sync::atomic::AtomicU64 =
 static NOTE_SOURCE_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Maximum UTF-8 bytes passed to nucleo for one note metadata field.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_NOTE_FUZZY_SCORE_BYTES: usize = 4 * 1024;
 /// Sound upper bound returned by one `nucleo_matcher::pattern::Atom` score.
 ///
 /// The pinned matcher returns `Option<u16>` for a single atom. Keeping the
 /// bound beside the field policy makes the body-pruning proof independent of
 /// observed scores or host timing.
+///
+/// Kind: external fact; kept exact.
 const MAX_NOTE_FIELD_FUZZY_SCORE: u32 = u16::MAX as u32;
 /// Character interval between cancellation checks while scanning note text.
+///
+/// Kind: cap; a power of two, rounded down.
 const NOTE_TEXT_CANCEL_CHECK_INTERVAL: usize = 1_024;
 /// Maximum note and bookmark rows retained for command-palette search.
 pub const MAX_PALETTE_NOTE_ENTRIES: usize = 10_000;
 /// Maximum aggregate searchable UTF-8 bytes retained for palette note rows.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_PALETTE_NOTE_TEXT_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum complete heap graph retained by one palette note source.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_PALETTE_NOTE_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum complete sidecar-path ownership retained by one source scan.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES: u64 = 8 * 1024 * 1024;
 /// Maximum concurrently retained final rows plus construction-only scratch.
 ///
 /// This preserves the 64 MiB final source while leaving room for one maximum
 /// 16 MiB recovery-metadata input and bounded path, diagnostic, and category
 /// construction ownership.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const MAX_PALETTE_NOTE_CONSTRUCTION_BYTES: u64 = 96 * 1024 * 1024;
 /// Conservative parsed-model heap expansion relative to compact JSON input.
 const NOTE_SIDECAR_MODEL_EXPANSION_MULTIPLIER: u64 = 4;
 /// Fixed allowance for one returned recovery diagnostic graph.
+///
+/// Kind: cap; a power of two, rounded down.
 const NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES: u64 = 64 * 1024;
 /// Maximum recovery diagnostics retained with one bounded palette source.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_PALETTE_NOTE_DIAGNOSTICS: usize = 1_024;
 
 /// Explicit aggregate limits for one immutable note-search source.

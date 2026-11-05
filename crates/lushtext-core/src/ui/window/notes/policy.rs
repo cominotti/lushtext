@@ -32,14 +32,20 @@ pub const NOTES_BROWSER_RENDER_LIMIT: usize = 500;
 /// Maximum rows admitted into one Browse Notes source.
 pub const NOTES_BROWSER_SOURCE_ENTRY_LIMIT: usize = 10_000;
 /// Maximum aggregate searchable UTF-8 bytes retained by Browse Notes.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const NOTES_BROWSER_SOURCE_TEXT_LIMIT: usize = 64 * 1024 * 1024;
 /// Maximum sidecar candidates retained by each Browse Notes directory scan.
 pub const NOTES_BROWSER_SIDECAR_SCAN_LIMIT: usize = 10_000;
 /// Maximum recovery diagnostics retained by one Browse Notes load.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const NOTES_BROWSER_DIAGNOSTIC_LIMIT: usize = 1_024;
 /// Maximum open-editor snapshots plus bookmark rows captured on GTK.
 pub const NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT: usize = 10_000;
 /// Maximum retained live-editor metadata cloned before note-source admission.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT: u64 = 4 * 1024 * 1024;
 /// Quiet window after a bookmark burst before one sidecar write is issued (ms).
 pub const NOTES_SAVE_DEBOUNCE_MS: u64 = 200;

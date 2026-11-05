@@ -41,9 +41,13 @@ use super::paragraph_boundary::{ProfileSummary, next_paragraph_break};
 pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 704 * 1024;
 
 /// Maximum existing buffer characters deleted in one GTK turn.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const REPLACEMENT_CLEAR_SLICE_CHARS: i32 = 64 * 1024;
 
 /// Maximum replacement UTF-8 bytes considered in one GTK insertion turn.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const REPLACEMENT_INSERT_SLICE_BYTES: usize = 256 * 1024;
 
 /// The most visible characters one paced slice may install, so that the

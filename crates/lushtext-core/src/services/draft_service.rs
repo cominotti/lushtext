@@ -49,31 +49,47 @@ const MANIFEST_FILE: &str = "manifest.json";
 /// Sixty-four MiB keeps one recovery body bounded on ordinary desktop systems.
 /// Capture and read paths must share this policy so the app never promises a
 /// draft that startup would later refuse to restore.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_AUTOMATIC_DRAFT_BYTES: u64 = 64 * 1024 * 1024;
 /// Total draft-body bytes admitted eagerly during one startup restore.
 ///
 /// This separate sixty-four MiB budget protects startup peak memory. Drafts
 /// skipped only by this aggregate cap remain eligible for serialized lazy reads.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_EAGER_DRAFT_PRELOAD_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum directory entries inspected while rebuilding a missing or corrupt manifest.
 ///
 /// This is an aggregate inventory cap, not a page size. Hitting it preserves
 /// every body and leaves the manifest untrusted instead of publishing a subset.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_MANIFEST_REPAIR_DRAFT_SCAN: usize = 2048;
 /// Maximum entries retained by one manifest-repair directory page.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_MANIFEST_REPAIR_PAGE_ENTRIES: usize = 256;
 /// Maximum estimated metadata retained by one complete repaired manifest.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_MANIFEST_REPAIR_METADATA_BYTES: usize = 512 * 1024;
 /// Maximum aggregate diagnostics emitted by one manifest-repair attempt.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_MANIFEST_REPAIR_DIAGNOSTICS: usize = 4;
 /// Conservative fixed ownership charged for each reconstructed manifest entry.
 const MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES: usize = 96;
 /// The manifest itself shares the drafts directory but is not a draft-body entry.
+///
+/// Kind: coverage window; a power of two, rounded up.
 const MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE: usize = 1;
 /// Maximum draft files inspected while cleaning orphan draft bodies after restore.
 ///
 /// Matches the 2,048-entry repair bound so deferred cleanup uses the same
 /// bounded metadata and allocation budget.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_ORPHAN_CLEANUP_DRAFT_SCAN: usize = 2048;
 
 mod cleanup_types;

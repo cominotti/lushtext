@@ -41,6 +41,8 @@ pub const PROBE_LOG_VERSION: u32 = 1;
 
 /// Records the channel holds before sends start dropping (the fixed-capacity
 /// ring between the GTK thread and the writer).
+///
+/// Kind: cap; a power of two, rounded down.
 pub const EVIDENCE_CHANNEL_CAPACITY: usize = 4_096;
 
 /// Default lateness at or above which one `late` record is written per tick.
@@ -53,6 +55,8 @@ pub const SECOND_RECORD_INTERVAL_US: i64 = 1_000_000;
 pub const TOP_K_RECORD_INTERVAL_US: i64 = 5_000_000;
 
 /// How many worst stalls a `topk` record carries.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const TOP_K: usize = 16;
 
 /// The post-open stage spans (`bound-post-open-settle`, design D1), in stage
@@ -111,6 +115,8 @@ pub const FRAME_PHASES_ENV: &str = "LUSHTEXT_RESPONSIVENESS_FRAME_PHASES";
 
 /// How many of each window's first frames record their phase spans when
 /// [`FRAME_PHASES_ENV`] is unset or unreadable.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const DEFAULT_FRAME_PHASE_FRAMES: u32 = 4;
 
 /// The largest frame-phase window [`FRAME_PHASES_ENV`] may ask for: two

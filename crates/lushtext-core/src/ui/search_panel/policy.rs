@@ -36,6 +36,8 @@ use crate::services::single_flight::SingleFlightCoordinator;
 /// A reserved preview row costs the replacement value itself plus its two
 /// generation-scoped identity-map slots. Naming the composition keeps the
 /// reservation estimate and the shrink-to measurement describing the same row.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 const PREVIEW_ROW_RETAINED_BYTES: usize = std::mem::size_of::<Replacement>()
     .saturating_add(std::mem::size_of::<Option<usize>>())
     .saturating_add(std::mem::size_of::<SearchMatchId>());

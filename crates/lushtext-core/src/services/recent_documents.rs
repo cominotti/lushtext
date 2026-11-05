@@ -28,6 +28,8 @@ const MAX_RECENTS: usize = 200;
 /// Refuse oversized app-owned recent metadata before parsing or path probing.
 pub const MAX_RECENT_DOCUMENTS_BYTES: u64 = 1024 * 1024;
 /// Bound externally modified files before filesystem status probes run.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 const MAX_RECENT_LOAD_CANDIDATES: usize = MAX_RECENTS * 2;
 /// Keep startup diagnostics useful without allocating one warning per bad row.
 const MAX_RECENT_LOAD_DIAGNOSTICS: usize = 20;

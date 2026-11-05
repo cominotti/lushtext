@@ -33,6 +33,8 @@ use super::LushtextWindow;
 /// this module exists to hold, which is the opposite of the safe direction.
 /// Dropped opens are counted and reported once when the gate releases, so the
 /// user is told rather than left wondering.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_PENDING_ACTIVATION_OPENS: usize = 64;
 
 /// Whether one more activation open may join the queue.

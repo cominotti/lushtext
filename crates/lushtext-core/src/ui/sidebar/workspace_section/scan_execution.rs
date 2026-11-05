@@ -93,8 +93,12 @@ struct ChildReconcileProgress {
 const MAX_DIR_ENTRIES: usize = 10_000;
 /// Rows appended per main-loop tick when populating a directory tree.
 /// 256 items splice in <2ms, staying under the 16ms frame budget.
+///
+/// Kind: cap; a power of two, rounded down.
 const CHILD_APPEND_BATCH_SIZE: usize = 256;
 /// Changed rows at or below one batch retain the calibrated direct splice path.
+///
+/// Kind: cap; a power of two, rounded down.
 const CHILD_RECONCILE_DIRECT_ROWS: usize = CHILD_APPEND_BATCH_SIZE;
 
 /// Build the child model for one expanded directory and kick off its background scan.

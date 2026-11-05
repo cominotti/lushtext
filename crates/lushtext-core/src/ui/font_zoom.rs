@@ -50,6 +50,8 @@ use self::policy::BaseFont;
 const SWAP_FRAME_WAIT: std::time::Duration = std::time::Duration::from_millis(128);
 
 /// The registry size below which registration never prunes.
+///
+/// Kind: cap; a power of two, rounded down.
 const PRUNE_FLOOR: usize = 64;
 
 /// One loaded generation of font rules.

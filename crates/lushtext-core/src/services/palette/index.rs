@@ -27,6 +27,8 @@ use super::fuzzy::{
 use super::runtime::{PaletteSearchCancellation, PaletteSearchOutcome};
 
 /// Maximum recursion depth to prevent runaway scanning in deeply nested trees.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_SCAN_DEPTH: u32 = 64;
 /// Maximum number of files to index. Beyond this, linear scan per query
 /// starts to exceed the palette's latency budget on one CPU core.
@@ -37,8 +39,12 @@ pub const MAX_INDEXED_FILES: usize = 100_000;
 /// otherwise consume unbounded traversal state while admitting almost no files.
 pub const MAX_INDEXED_DIRECTORIES: usize = 100_000;
 /// Maximum heap ownership retained by one installed file index.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_FILE_INDEX_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum installed output plus traversal/deduplication ownership during build.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_FILE_INDEX_BUILD_RETAINED_BYTES: u64 = 128 * 1024 * 1024;
 /// Directory names to skip during file-index scanning.
 pub(super) const IGNORED_INDEX_DIRS: &[&str] =

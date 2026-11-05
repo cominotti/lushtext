@@ -18,6 +18,8 @@ use std::collections::{BTreeMap, VecDeque};
 /// Events are diagnostic breadcrumbs, not an audit log. Keeping the most recent
 /// 128 transitions is enough for smoke scenarios while bounding memory and
 /// serialized JSON size for long-running editor sessions.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const AUTOMATION_WORKFLOW_EVENT_LIMIT: usize = 128;
 
 /// Stable workflow ID for editor file-load activity.

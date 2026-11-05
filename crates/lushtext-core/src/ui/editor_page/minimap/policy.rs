@@ -85,6 +85,8 @@ pub(super) const MINIMAP_SEARCH_MATCH_CAP: usize = 2_000;
 /// Ordinary prose and source files stay below this budget, while multi-megabyte
 /// minified files can make the narrow source map build a very large visual-line
 /// cache when it mirrors editor word wrap.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(super) const MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET: u64 = 2 * 1024 * 1024;
 /// Long logical lines above this size make wrapped source-map layout expensive.
 ///
@@ -93,6 +95,8 @@ pub(super) const MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET: u64 = 2 * 1024 * 1024;
 /// thousands of visual rows.
 pub(super) const MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET: usize = 8_000;
 /// Live GTK-buffer characters inspected by one minimap analysis turn.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(super) const MINIMAP_ANALYSIS_CHARS_PER_SLICE: usize = 32 * 1024;
 /// Maximum retained long-line identities shared with marker projection.
 pub(super) const MINIMAP_LONG_LINE_MARK_CAP: usize = 2_000;

@@ -33,6 +33,8 @@ pub const FORMAT_UPGRADE_BACKUP_ITEMS_DIR: &str = "items";
 ///
 /// Timestamp collisions are rare, but the bound keeps a hostile prefilled
 /// backup directory from turning user startup into an unbounded loop.
+///
+/// Kind: retry budget; a power of two, rounded up.
 const MAX_BACKUP_DIR_ATTEMPTS: u32 = 64;
 /// Maximum bytes read into memory for one preserved app-data item.
 ///
@@ -40,6 +42,8 @@ const MAX_BACKUP_DIR_ATTEMPTS: u32 = 64;
 /// the cap aligned with recovery metadata prevents a damaged app-data file from
 /// exhausting memory; too-low values make large items retryable, too-high values
 /// can OOM the worker.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_BACKUP_ITEM_BYTES: u64 = crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES;
 
 /// Manifest describing one conversion or Start Fresh preservation run.

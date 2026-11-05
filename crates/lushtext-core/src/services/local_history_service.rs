@@ -59,6 +59,8 @@ const GLOBAL_SNAPSHOT_CAP: usize = 240;
 ///
 /// This keeps recovery work bounded on very large history stores. Any deferred
 /// work remains on disk for the next startup or browse-triggered pass.
+///
+/// Kind: cap; a power of two, rounded down.
 const DEFAULT_RECONCILE_MAX_LINEAGES: usize = 512;
 /// Maximum wall-clock time spent on one startup lineage reconciliation pass.
 ///
@@ -72,6 +74,8 @@ const DEFAULT_RECONCILE_MAX_MILLIS: u64 = 50;
 /// repair must not sequentially load a whole retained history for a damaged
 /// lineage. When this budget is exceeded, all snapshot files stay preserved and
 /// the index remains unavailable until a manual or future streaming repair path.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_INDEX_REPAIR_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(feature = "test-utils")]
 static LOCAL_HISTORY_PREVIEW_READ_DELAY_MS: AtomicU64 = AtomicU64::new(0);

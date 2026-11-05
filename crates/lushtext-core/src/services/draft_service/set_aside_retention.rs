@@ -25,6 +25,8 @@ use crate::services::filesystem::FileIdentity;
 pub const SOFT_BOUND_BODIES: u64 = 100;
 /// Preserved bytes past which the user is asked to review the area (four
 /// maximum-size draft bodies).
+///
+/// Kind: policy tier; a power of two aligned with its neighbours.
 pub const SOFT_BOUND_BYTES: u64 = 256 * 1024 * 1024;
 /// Growth, in percent of the last notified count or size, that makes another
 /// notice due after a placement in the same process.

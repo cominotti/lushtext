@@ -74,8 +74,12 @@ const _: () = assert!(N_INSPECT <= min_u64(HEAD_CAP, L_PROTECT));
 
 /// The most find results one GTK turn publishes (design D5; initial value,
 /// confirmed by the verdict).
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const FIND_RESULTS_PER_TURN: usize = 256;
 /// The most record bytes one GTK turn publishes (design D5; initial value).
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const FIND_BYTES_PER_TURN: u64 = 64 * 1024;
 /// The total result cap of one find request (design D5); the counter reports
 /// "capped" when it is reached.
@@ -83,6 +87,8 @@ pub(crate) const FIND_RESULT_CAP: u64 = 10_000;
 /// The most retained bytes one admitted find record carries: its preview
 /// excerpt, cut by [`admit_find_record`]. The record's fixed fields are bounded
 /// by the per-turn count instead.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const MAX_FIND_RECORD_BYTES: u64 = 512;
 
 // A single admitted record always fits one turn, so the planner's
@@ -92,17 +98,23 @@ const _: () = assert!(MAX_FIND_RECORD_BYTES <= FIND_BYTES_PER_TURN);
 /// The most bytes one whole-line clipboard write copies per GTK dispatch
 /// (design D6). At least one UTF-8 scalar, so a chunk end can always be moved
 /// back to a character boundary without becoming empty.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const COPY_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Characters an edit entry's source capture copies per GTK dispatch (design
 /// D4): A66 measured 0.4–1.1 ms per 64 Ki characters at every depth of a
 /// two-million-character paragraph when the iterator advances in steps below
 /// GtkTextIter's linear-scan limit.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const SOURCE_CAPTURE_CHUNK_CHARS: i32 = 64 * 1024;
 
 /// The `forward_chars` step of that capture: below GtkTextIter's
 /// `MAX_LINEAR_SCAN` (150), so the iterator's byte and character offsets stay
 /// current instead of being re-derived from the segment start (A66).
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const SOURCE_CAPTURE_STEP_CHARS: i32 = 128;
 
 const _: () = assert!(COPY_CHUNK_BYTES >= 4);

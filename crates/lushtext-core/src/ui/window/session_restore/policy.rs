@@ -23,8 +23,12 @@ use crate::services::recovery_metadata::{
 };
 
 /// Maximum restored pages created by one GTK main-loop turn.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(in crate::ui::window) const SESSION_RESTORE_PAGES_PER_TURN: usize = 4;
 /// Maximum concurrent background file-planning operations started by restore.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(super) const SESSION_RESTORE_FILE_PLAN_PERMITS: usize = 2;
 
 /// Generation-bound ownership ticket for one admitted file-planning operation.

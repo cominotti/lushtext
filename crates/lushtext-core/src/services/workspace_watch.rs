@@ -20,9 +20,13 @@ use thiserror::Error;
 /// The same cap is enforced by the GTK refresh planner. It is intentionally
 /// large enough to preserve precise handling for ordinary save and rename
 /// bursts while bounding retained paths and per-poll work during bulk changes.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const WORKSPACE_WATCH_PATH_CAP: usize = 1_024;
 
 /// Diagnostics are secondary to conservative refresh delivery and remain bounded too.
+///
+/// Kind: cap; a power of two, rounded down.
 const WATCH_ERROR_MESSAGE_CAP_BYTES: usize = 1_024;
 
 /// One materialized path to watch for sidebar refresh.

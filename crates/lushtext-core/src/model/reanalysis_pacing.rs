@@ -61,9 +61,13 @@ pub const STEP_TARGET_US: u64 = B_INTERACT_US / 4;
 pub const FIRST_STEP_CHARS: u32 = 512;
 
 /// The smallest step, characters. Kind: cap, a power of two.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MIN_STEP_CHARS: u32 = 128;
 
 /// The largest step, characters. Kind: cap, a power of two.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_STEP_CHARS: u32 = 1 << 20;
 
 /// The most steps one session runs before it is treated as one that does

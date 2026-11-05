@@ -52,6 +52,8 @@ use super::paragraph_boundary::ProfileSummary;
 /// of `document-scale-policy` therefore takes the conservative candidate of
 /// the origin proposal's decision 4: about 1 MiB, GNOME Text Editor's figure,
 /// in place of the former 10 MB. Recorded as an open question in the design.
+///
+/// Kind: policy tier; a power of two aligned with its neighbours.
 pub const S_SYNTAX: u64 = 1024 * 1024;
 
 /// The largest short-line document of each measured language whose
@@ -103,6 +105,7 @@ mod attach_threshold {
 /// measured; JSON's 20 KiB is rounded down to a whole KiB, a recorded
 /// exception deferred to `power-of-two-thresholds`.
 mod typing_threshold {
+    /// Kind: cap; a power of two, rounded down.
     pub const HTML: u64 = 16 * 1024;
     pub const JSON: u64 = 20 * 1024;
 }
@@ -160,7 +163,7 @@ pub const fn chunked_threshold_with(
 /// so they drive the chunked install a language with a cap takes. No build
 /// uses it unless a test opts in.
 ///
-/// Kind: model parameter. Rounding: a power of two above Markdown's
+/// Kind: policy tier (a model parameter). Rounding: a power of two above Markdown's
 /// attach-after-install threshold.
 pub const MODEL_MARKDOWN_CAP: u64 = 512 * 1024;
 
@@ -392,6 +395,8 @@ pub const L_SEARCH_HIGHLIGHT: u64 = 10_000;
 /// (GTK's Wayland text-input module, the bounded surrounding text in place),
 /// a wrapped keystroke reaches B_interact near 10,000 characters on the
 /// reference lane (6.9–7.5 ms median, p90 8.5–8.8, design D3), so 8,192.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const L_WRAP_EDIT: u64 = 8_192;
 
 /// The shortest paragraph length the profile counts (threshold 0 of
@@ -412,6 +417,8 @@ pub const L_PROTECT: u64 = 500;
 /// keystrokes miss `B_INTERACT_US` (median 9.6 ms at 20,000 characters, about
 /// 20 ms at 50,000). The responsiveness lane's `keystroke` group re-measures
 /// it (`docs/next/long-line-documents.md`, C2 implementation record).
+///
+/// Kind: measurement record; kept exact.
 pub const L_EDIT_STALL: u64 = 3_500;
 
 /// `protected_view` holds above this paragraph length (maintainer decision,

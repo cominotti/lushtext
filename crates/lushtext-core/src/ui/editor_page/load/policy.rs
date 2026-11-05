@@ -52,9 +52,13 @@ use crate::ui::editor_page::EditorLoadState;
 
 /// Bound deletion work by characters so even four-byte Unicode stays within the
 /// byte-oriented installation slice policy.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const CLEAR_SLICE_CHARS: i32 = 64 * 1024;
 
 /// Worst-case bytes one buffer character can occupy in UTF-8.
+///
+/// Kind: external fact; kept exact.
 const MAX_UTF8_BYTES_PER_CHAR: u64 = 4;
 
 /// Which step of one bounded installation a scheduled slice is running.

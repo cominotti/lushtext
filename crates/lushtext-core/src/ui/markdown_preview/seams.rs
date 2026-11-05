@@ -312,6 +312,7 @@ impl Drop for PlainRetirementTerminal {
     }
 }
 
+/// Kind: derived; computed from the constants it names, not rounded.
 pub(super) const MARKDOWN_PLAN_RESERVATION_BYTES: u64 =
     (MAX_MARKDOWN_RETAINED_BYTES + MAX_MARKDOWN_SOURCE_BYTES) as u64;
 
