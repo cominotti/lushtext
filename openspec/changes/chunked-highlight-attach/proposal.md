@@ -49,8 +49,9 @@ cap, for C6c.
   power of two whose flipping and ordinary keys stay within budget on a
   worst-case document and whose install takes about 0.5 s; for every
   language it is at or below the C6 gate, so every language keeps its gate.
-  Unit tests, Kani and the widget tests give Markdown a 512 KiB model cap
-  (`MODEL_MARKDOWN_CAP`); no release, packaging or measurement build does.
+  Every build runs the shipped table; the chunked widget tests opt in to a
+  512 KiB Markdown model cap through a test-only guard, and Kani proves the
+  shipped table and the model cap.
 - **Queued as C6c** (design D10): on blank-line-free content, C6's own gates
   for js, typescript, css and sh (10.5–39 KiB) and yaml (144 KiB) let
   keystrokes cost 9–41 ms. C6c will gate on the longest blank-line-free run,
