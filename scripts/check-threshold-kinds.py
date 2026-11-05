@@ -89,9 +89,6 @@ OUT_CLASSES = (
     "identifier",
     "tool",
 )
-# Temporary class while `power-of-two-thresholds` converts a row (task 1.4);
-# removed when the conversion is done.
-PENDING = ("pending-PT",)
 
 
 # --------------------------------------------------------------------------
@@ -485,8 +482,6 @@ def check(root: Path) -> list[str]:
             cls = kind[4:].strip()
             if cls not in OUT_CLASSES:
                 errors.append(f"{INVENTORY}:{r.line}: unknown out-of-scope class `{cls}`")
-            continue
-        if kind in PENDING:
             continue
         base, exc = split_kind(kind)
         if base not in IN_SCOPE_KINDS:

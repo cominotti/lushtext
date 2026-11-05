@@ -195,7 +195,7 @@ Rules for every task:
 
 ## 6. Kani
 
-- [ ] 6.1 Find every shard whose harnesses (or the production code they call)
+- [x] 6.1 Find every shard whose harnesses (or the production code they call)
   read a changed constant: `grep` the `kani_proofs.rs` files and
   `scripts/kani-shards.py`. Expected:
   - `core-document-scale` (tier reference, thresholds);
@@ -211,34 +211,34 @@ Rules for every task:
     asserts `SOFT_BOUND_BODIES == 100`).
 
   Record the list with the reason for each shard.
-- [ ] 6.2 Rerun each listed shard: `make kani KANI_SHARD=<shard>
+- [x] 6.2 Rerun each listed shard: `make kani KANI_SHARD=<shard>
   KANI_MEASURE=…`, one at a time, under `scripts/with-memory-cap.sh`. Every
   harness must pass. Record wall time and peak memory against the shard's
   table entry. Update `scripts/kani-shards.py` budgets when a figure leaves
   its margin, and run `make check-kani-shards`.
-- [ ] 6.3 `make proof-strength PROOF_STRENGTH_MODULE=model/document_scale`
+- [x] 6.3 `make proof-strength PROOF_STRENGTH_MODULE=model/document_scale`
   (tests arm) to confirm that the new tier-reference harness kills the tier
   mutants that the parity harness killed.
 
 ## 7. Verification
 
-- [ ] 7.1 Toolkit regression: `make gtk-axioms`. No new axiom is relied on;
+- [x] 7.1 Toolkit regression: `make gtk-axioms`. No new axiom is relied on;
   A28 and A31 are cited unchanged. Confirm that A31's probe still reports
   112 rows per 2000 px batch at the default font, the figure `R_BATCH`'s
   doubled coverage (now 256) rests on.
-- [ ] 7.2 `make check`, `make test` (unit, integration, widget shards),
+- [x] 7.2 `make check`, `make test` (unit, integration, widget shards),
   `make check-thresholds`, `make check-workflow-boundaries`,
   `make check-automation-docs`, `make check-kani-shards`.
-- [ ] 7.3 Responsiveness lane, quick tier, interleaved with `main`: the
+- [x] 7.3 Responsiveness lane, quick tier, interleaved with `main`: the
   keystroke group (the 514-read bound), the dense group, `baseline/small`,
   total-size tiers at 8 MiB ± 1 and 64 MiB ± 1. Every case passes or is
   attributed to an existing recorded exception.
-- [ ] 7.4 Accessibility smoke, because the announcement and description caps
+- [x] 7.4 Accessibility smoke, because the announcement and description caps
   and texts changed.
 
 ## 8. Documentation
 
-- [ ] 8.1 Update the README:
+- [x] 8.1 Update the README:
   - the feature list (minimap 16,384 / 8 MiB, search highlighting 8,192,
     invisibles 32,768, the open, undo and local-history tiers, the Protected
     View head 8,192, the Line Inspector window);
@@ -246,28 +246,28 @@ Rules for every task:
   - the Markdown ceilings;
   - the set-aside bound (128 drafts or 256 MiB);
   - the Replace All per-file limit (8 MiB).
-- [ ] 8.2 Update AGENTS.md: every figure in Key Design Decisions that changed
+- [x] 8.2 Update AGENTS.md: every figure in Key Design Decisions that changed
   (`R_batch`, the tiers, the 10,000 caps, 250 per turn, the search-history
   cap, local-history caps, `N_HEAD`, `N_INSPECT`, `V_SLICE`, the direct
   threshold).
-- [ ] 8.3 Update the rules:
+- [x] 8.3 Update the rules:
   - `.agents/rules/rust.md`: the conversion is done; point to
     `docs/thresholds.md` and `make check-thresholds`; add the retention and
     retry rounding (D2).
   - `.agents/rules/build.md`: the new check in the policy list.
   - Remove the temporary `pending-PT` class from the checker.
-- [ ] 8.4 Update `docs/accessibility.md` and `docs/accessibility-matrix.md` if
+- [x] 8.4 Update `docs/accessibility.md` and `docs/accessibility-matrix.md` if
   a notice, description or announcement cap changed what is spoken.
   Update `docs/automation.md` and `docs/automation-reference.md` if a
   snapshot field reports a changed threshold.
-- [ ] 8.5 Update the programme record (`docs/next/long-line-documents.md`):
+- [x] 8.5 Update the programme record (`docs/next/long-line-documents.md`):
   - the PT row's status;
   - an implementation record with every measurement (corpus counts, memory
     peak, `dense/512`, `V_SLICE`, direct threshold, per-turn caps, Kani
     figures);
   - the follow-up candidate for displayed file sizes in IEC units.
-- [ ] 8.6 Update the workflow-readability matrix only if a policy module's
+- [x] 8.6 Update the workflow-readability matrix only if a policy module's
   measured cells moved (they should not).
-- [ ] 8.7 AppStream: no change to the historical release notes. Prepare the
+- [x] 8.7 AppStream: no change to the historical release notes. Prepare the
   user-facing sentence about the new tiers for the next release's notes, in
   the programme record.

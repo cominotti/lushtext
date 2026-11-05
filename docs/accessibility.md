@@ -343,11 +343,11 @@ loading, as they already do for any large document; the tab reports the
 document as loading until the install completes.
 
 The **Line Inspector** is the accessible path to folded content. It is a dialog
-holding one window of at most 500 characters of one line, with word wrap on,
+holding one window of at most 512 characters of one line, with word wrap on,
 read-only, with a visible caret and selection, so screen-reader reading and
 selection stay bounded. Its text area's accessible label is the window's
 position and, for a folded line, what the editor hides ("Line 2, columns
-150001–150500 of 300000; 299500 characters hidden in the editor"), which is
+149505–150016 of 300000; 291808 characters hidden in the editor"), which is
 also announced politely each time the window moves. Previous Window, Next
 Window, Previous Folded Line and Next Folded Line (`Alt+Up`/`Alt+Down`), Line,
 Column, Go to Line and Column, Copy Window and Copy Whole Line are labelled

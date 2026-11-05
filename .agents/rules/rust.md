@@ -319,8 +319,38 @@ text folded, highlighting off for common files, a slower total) is an
 beside the constant. Prefer a power of two because it states the margin
 honestly (a measured 22,000 under load is not that precise), and because
 division and modulo by it are shifts and masks that Kani and CBMC verify
-cheaply. Constants that predate this rule are being converted by the queued
-`power-of-two-thresholds` change (`docs/next/long-line-documents.md`).
+cheaply.
+
+Four more kinds complete the set (`power-of-two-thresholds`, design D2):
+
+- **Retention tier** (snapshots, recents, search history kept) and **retry
+  budget** (attempts before a failure is reported): round **up**. A smaller
+  retention tier prunes data the user already has; a smaller retry budget
+  reports a transient failure it was sized for. A raised retention tier must
+  still load in full through every bounded read of its store: raise the read
+  bound with it, as a coverage window, and test the worst-case store.
+- **Text cap** (accessible-text and announcement lengths): round down, but
+  never below the longest string the app ships (a unit test pins it).
+- **Derived** (a quotient, product or sum of other constants): never rounded;
+  its inputs follow the rules.
+- **Measurement record** (a measured value that decides nothing): exact.
+
+A rounding that turns a feature off is a measured user-visible loss, and so an
+exception, when at least 0.05 % of a corpus of at least 2,000 files that have
+the feature today lose it; a smaller share is rounded with its count recorded,
+and a smaller sample is recounted.
+
+Every integer constant of the production crates has a row in
+`docs/thresholds.md`, and `make check-thresholds` (in `make check-policy`)
+fails on an unlisted constant, a stale row, a value mismatch, an in-scope
+non-power-of-two that is neither derived, an external fact, a measurement
+record nor a recorded exception, and a missing or disagreeing rustdoc
+`Kind:` line. A new threshold therefore lands with its row and its
+`Kind: <kind>; …` line; `scripts/check-threshold-kinds.py --write` adds the
+row for review. Out-of-scope constants (geometry, percentages, priorities,
+codes, time, factors, rates, structural counts, presentation shapes,
+identifiers, tool data) name their class as `out: <class>`. The conversion of
+the constants that predated the rule is done (`power-of-two-thresholds`).
 
 ## Mutable State on GObject Structs
 
