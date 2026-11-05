@@ -1,0 +1,520 @@
+## Context
+
+Row PT of `docs/next/long-line-documents.md` (maintainer decision of
+2026-11-01) converts the thresholds that predate the rule in
+`.agents/rules/rust.md` ("Thresholds are powers of two, rounded the
+conservative way"). The row was queued before C6b, C6c and CF. This design
+covers their constants too:
+
+- `HIGHLIGHT_CHUNK_BYTES` 8 KiB and `MODEL_MARKDOWN_CAP` 512 KiB;
+- the reanalysis pacing steps: 512, 128, 2^20 and 256 steps;
+- the font-zoom `PRUNE_FLOOR` 64.
+
+All of them already comply.
+
+The rule defines four kinds:
+
+- **cap**: rounded down;
+- **coverage window**: rounded up;
+- **policy tier**: a power of two aligned with its neighbours, shown in IEC
+  units;
+- **external fact**: kept exact, cited from the ledger.
+
+A value that cannot be a power of two without a measured, user-visible loss
+is a recorded exception. The row adds:
+
+- a re-measurement of the slice sizes;
+- the user-visible tiers 8 MiB / 64 MiB / 512 MiB, the last only after the
+  exclusive-load memory peak is measured;
+- the coupled pair `N_INSPECT`/`L_PROTECT`.
+
+The C6b review asked separately (N2) that `MAX_SYNTAX_PARAGRAPH_BYTES` name
+its kind.
+
+## Goals / Non-Goals
+
+**Goals**
+
+- Classify every in-scope constant. Convert each to a power of two the
+  conservative way, or record it as an exception with its measurement.
+- Keep every Kani-tied relation true and rerun the shards that read a changed
+  constant.
+- Make the classification a gate, so the next threshold cannot skip it.
+- Put the user-visible size tiers in IEC units, both in the policy and in the
+  text that names them.
+- Never prune a user's stored data on upgrade.
+
+**Non-Goals**
+
+- Time constants (`*_MS`, `*_US`, `Duration`). The rule says time budgets
+  already follow it, and C6 converted the ones it touched. The rest are out of
+  this change.
+- UI geometry, percentages, zoom levels, GLib priorities, multipliers,
+  measured rates, protocol identifiers, structural counts, and
+  test/bench/fuzz/fixture/axiom-probe data (D1).
+- A measurement campaign. Measurements are limited to the ones the row names:
+  - the slice sizes;
+  - the memory peak for the open tier;
+  - the stall basis of the coupled pair;
+  - two corpus counts that decide whether a cap is an exception.
+- File sizes the app merely *displays* (the properties panel and file peek
+  print "MB" for a MiB division). They name no tier. Unifying them is recorded
+  as a follow-up candidate in the programme record, not done here.
+
+## Measured baseline
+
+Scanned on `main` `fbf0f875` (2026-11-05, host 1-minute load 0.33–1.16 before
+and after; the counts are I/O-light `find`/`awk` runs pinned with
+`taskset -c 8-23`).
+
+**Inventory.** 652 integer `const` declarations in the workspace crates,
+excluding `tests/`, `kani_proofs.rs` and the time suffixes. 200 of them are
+`gtk-lush-axioms` probe parameters. Of the rest, 198 are not a power of two.
+D1 keeps about 95 of those in scope (the count includes the twelve per-language gates and the `cfg(test, kani)` reference tiers). The full table is at the end of this document.
+
+**What rounding the syntax gates down would cost.** Corpus:
+
+- the local crates.io registry (13,371 `.rs` files);
+- `/usr/include` (3,702 headers);
+- Python 3.14's stdlib (760 files);
+- the maintainer's `~/Workspace` (77,857 `.js`, 16,414 `.ts`, 26,953 `.sh`,
+  171,837 `.json`, 42,621 `.yaml` and 473,555 `.java` files).
+
+For each language, the share of files highlighted today that would lose
+highlighting:
+
+| Gate | Today → power of two below | Files that lose highlighting (share of those highlighted today) |
+|---|---|---|
+| RUST | 184 → 128 KiB | 119 (0.90 %) |
+| C (headers) | 84 → 64 KiB | 29 (0.80 %) |
+| PYTHON | 48 → 32 KiB | 44 (6.22 %) |
+| JAVASCRIPT | 18 → 16 KiB | 814 (1.19 %) |
+| TYPESCRIPT | 10.5 → 8 KiB | 189 (1.23 %) |
+| SHELL | 39 → 32 KiB | 1,347 (5.94 %) |
+| JSON | 20 → 16 KiB | 9,721 (6.48 %) |
+| YAML | 144 → 128 KiB | 156 (0.37 %) |
+| XML | 132 → 128 KiB | 231 (0.25 %) |
+| MARKDOWN | 320 → 256 KiB | 592 of 613,131 (0.10 %) |
+| CSS | 37 → 32 KiB | 0 |
+| `S_SYNTAX_OTHER` (Java as a sample) | 47 → 32 KiB | 10,082 (2.17 %) |
+
+**What rounding `L_SYNTAX` down would cost.** For Markdown files, the share
+whose longest line is in (1,024, 2,000] bytes, among files whose longest line
+is ≤ 2,000:
+
+- this repository's `docs/` and `openspec/`: 3.1 %;
+- a 1,791-file sample of `~/Workspace`: 3.3 %;
+- sixteen other `~/Workspace` batches: 0.7–21.8 %;
+- the registry's Markdown: 0 %.
+
+**What rounding `L_SEARCH_HIGHLIGHT` down would cost.** Longest line in
+(8,192, 10,000]: 1 of 1,791 sampled Markdown files. Rounding down costs
+nothing measurable.
+
+**Palette index.** The 0.9.x AppStream release note cites "a real
+87,624-file workspace". 65,536 would truncate it.
+
+## Decisions
+
+### D1. Scope: what is a threshold
+
+A constant is **in scope** when it bounds work per dispatch, memory, retained
+entries or retries, or when it decides a feature or tier from a document's or
+data set's size, length or count. It is in scope whether it counts bytes,
+characters, paragraphs, rows or entries.
+
+**Out of scope**, each class listed in `docs/thresholds.md` so the gate can
+tell the two apart:
+
+- UI geometry in sp or px;
+- percentages, permille and the zoom grid;
+- GLib, GtkSourceView and mark priorities;
+- exit codes, errno values and hash constants;
+- time units;
+- factors and multipliers;
+- measured rates (`*_COST_NS_PER_KIB`);
+- structural counts: enum lengths, bucket counts, the number of profile
+  thresholds;
+- presentation shapes, such as how many context lines an excerpt shows;
+- benches, fuzzing, examples, fixtures, `gtk-lush-axioms` probe parameters
+  and Kani harness bounds.
+
+*Rationale:* the rule exists for budgets whose margin it states honestly and
+whose division CBMC verifies cheaply. A 24 px margin or a 95th percentile has
+neither property.
+
+### D2. Kinds and their rounding, extended to the cases the rule leaves implicit
+
+The rule's four kinds, plus two that the inventory needs:
+
+- **Derived**: a quotient, product or sum of other constants (`N_DENSE`,
+  `HEAD_CAP`, `MAX_SYNTAX_PARAGRAPH_BYTES`, the 72 MiB and 96 MiB composite
+  budgets, `MAX_RECENT_LOAD_CANDIDATES`). It is not rounded, because rounding
+  it would break the identity it encodes. Its inputs follow the rules. This is
+  the C6b review's reading in N2.
+- **Measurement record**: a measured value that decides nothing (`L_EDIT_STALL`).
+  It is kept exact.
+
+Two cases the rule leaves implicit:
+
+- **Retention tiers and retry budgets** round **up**. A smaller retention tier
+  prunes data the user already has. A smaller retry budget turns a transient
+  failure it was sized for into a reported one, which is the coverage failure
+  mode.
+- **Accessible-text length caps** round down. Each is checked against the
+  longest string the app ships (task 4.6). A cap that would truncate a
+  shipped string becomes an exception.
+
+### D3. User-visible size tiers
+
+| Tier | Today | New | Kind |
+|---|---|---|---|
+| `S_MINIMAP` | 10,000,000 | 8 MiB | policy tier |
+| `HISTORY_SAVE_ONLY_BYTES` | 10,000,000 | 8 MiB | policy tier |
+| `UNDO_TOTAL_BYTES` | 50,000,000 | 64 MiB | policy tier |
+| `HISTORY_UNAVAILABLE_BYTES` | 50,000,000 | 64 MiB | policy tier |
+| `REFUSE_TO_OPEN` | 500,000,000 | 512 MiB if task 3 passes, else 500,000,000 (exception) | policy tier |
+| `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD` | 10,000,000 | 8 MiB | cap (it mirrors the old syntax tier) |
+| `MAX_REPLACE_FILE_BYTES` | 10 MiB | 8 MiB | cap aligned with the 8 MiB tier |
+
+*Rationale:*
+
+- 8 and 64 MiB are the rule's tiers, and each sits next to an existing
+  power-of-two neighbour: `S_SYNTAX` 1 MiB, the 64 MiB draft and Replace All
+  ceilings, and the 256 MiB transient and editor budgets.
+- Raising undo to 64 MiB stays inside the live-editor budget: 3 × 64 MiB =
+  192 MiB < 256 MiB.
+- 512 MiB raises the overweight disposal capacity
+  (`REFUSE_TO_OPEN × DECODED_BODY_SOURCE_MULTIPLIER`) from 1.5 GB to 1.5 GiB
+  (+7.4 %), hence the measurement.
+- If it fails, 256 MiB would refuse files that open today. That is a visible
+  loss, so the fallback is the exception, not the lower power of two.
+
+**Messages.** These print the tier in IEC units:
+
+- the open refusal (`editor_io.rs`'s "too large to edit");
+- the local-history browse limit and its unavailable message;
+- the reduced-features notice;
+- the editor's accessible description.
+
+They use one formatting helper that prints whole IEC units for the tiers
+("64 MiB").
+
+**Kani.** `retired_byte_tiers` existed to prove C1 changed no tier. PT changes
+the tiers on purpose. The module becomes `byte_tier_reference`, holding the
+new table. The harness proves `DocumentScale::for_total_bytes` agrees with it
+for every `u64`. The edges at 8 MiB, 64 MiB and 512 MiB, and each plus one,
+are unit-tested.
+
+### D4. Caps rounded down
+
+These need no measurement: a smaller cap only reduces features sooner, so
+every guarantee holds. The value each becomes, and what changes visibly:
+
+- **`L_MINIMAP`** 22,000 → 16,384: no minimap for paragraphs of 16–22 k
+  characters.
+- **`L_INVISIBLES`** 50,000 → 32,768: no invisibles for 32–50 k.
+- **`L_SEARCH_HIGHLIGHT`** 10,000 → 8,192: corpus loss ≈ 0.
+- **`N_VISIBLE`** 500,000 → 262,144: no visible change. It is only counted,
+  and `HEAD_CAP` is bound by `N_HEAD`.
+- **`N_HEAD`** 10,000 → 8,192: Protected View heads are 1,808 characters
+  shorter.
+- **The 10,000-entry caps** → 8,192:
+  - the scan caps: `MAX_SET_ASIDE_SCAN_ENTRIES`,
+    `SIDECAR_SCAN_MAX_ENTRIES`, `LOCAL_HISTORY_SCAN_MAX_LINEAGES`,
+    `REPLACE_JOURNAL_SCAN_MAX_ENTRIES`, `JOURNAL_SCAN_MAX_ENTRIES`,
+    `NOTES_BROWSER_SIDECAR_SCAN_LIMIT`;
+  - the result caps: `RESULT_CAP`, `FIND_RESULT_CAP`,
+    `MAX_REPLACE_PREVIEW_ROWS`;
+  - the entry caps: `MAX_PALETTE_NOTE_ENTRIES`,
+    `NOTES_BROWSER_SOURCE_ENTRY_LIMIT`,
+    `NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT`;
+  - the sidebar's `MAX_DIR_ENTRIES`.
+
+  The bench constants that mirror them follow.
+- **`BOOKMARK_EXCERPT_SCAN_LINE_LIMIT`** 20,000 → 16,384.
+- **The minimap marker caps** (`SEARCH_MATCH`, `MODIFIED_LINE_MARK`,
+  `LONG_LINE_MARK`) 2,000 → 1,024. The strip is at most 160 px tall, so
+  1,024 markers already saturate it.
+- **`MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET`** 8,000 → 4,096.
+- **`MAX_RESULTS_PER_SOURCE`** 50 → 32 rows per palette category.
+- **`NOTES_BROWSER_RENDER_LIMIT`** 500 → 256.
+- **`MAX_RECENT_LOAD_DIAGNOSTICS`** 20 → 16.
+- **`MAX_INLINE_FOOTNOTE_REPLACEMENTS`** is derived (`MAX_MARKDOWN_EVENTS / 4`)
+  and follows its input.
+- **`MAX_MARKDOWN_EVENTS`** 50,000 → 32,768 **unless** task 4.5's corpus
+  count finds a Markdown file within `MAX_MARKDOWN_SOURCE_BYTES` (4 MiB) whose
+  event count is in (32,768, 50,000]. Such a file would lose its full
+  preview, a visible loss, and the cap then stays exact as an exception.
+- **The two table-cell caps** 1,000 → 512, with the same corpus rule (tables
+  of more than 512 cells).
+- **The text caps**:
+  - `DEFAULT_ANNOUNCEMENT_LIMIT` 240 → 128;
+  - `EDITOR_IDENTITY_LIMIT` 96 → 64;
+  - `REDUCED_FEATURES_NOTICE_LIMIT` 320 → 256;
+  - `cargo-gtk-proof`'s artifact and warning text limits 1,200 → 1,024.
+
+  Each is subject to D2's shipped-string check.
+
+### D5. Coverage windows rounded up
+
+- **`R_BATCH`** 224 → 256, and `R_FOLD = R_BATCH` follows. 224 covers the
+  223 rows a 2000 px batch can touch at 9 px (ledger A31, 50 % zoom) with one
+  row to spare. 256 states the margin honestly and equals `MAX_R_FOLD`, the
+  fold ring's capacity, so the ring needs no change.
+
+  Consequences:
+  - the edit-time watch may read up to `2·R_batch + 2` = 514 line lengths,
+    still O(1) per keystroke;
+  - more documents count as dense (a 256-paragraph window sums more than a
+    224 one);
+  - `N_DENSE = V_BATCH / R_BATCH` becomes 218 (from 250), so a dense
+    paragraph in Protected View shows 32 fewer characters.
+
+  That loss is the price of the larger window. It is accepted, because a
+  coverage window is never rounded down.
+- **`MAX_CONSTRUCTION_STAGES`** 48 → 64.
+- **`MAX_FRAME_PHASE_FRAMES`** 14,400 → 16,384 (probe-only).
+- **`MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES`** 96 → 128, a conservative charge
+  that must not under-count.
+- **`REVEAL_SETTLE_FRAME_BUDGET`** 60 → 64 frames.
+
+### D6. Retention tiers and retry budgets rounded up
+
+- `PER_DOCUMENT_SNAPSHOT_CAP` 48 → 64 and `GLOBAL_SNAPSHOT_CAP` 240 → 256.
+  At most 256 snapshots of at most 64 MiB each, the same order of disk use
+  as today's 240 of 50 MB.
+- `MAX_RECENTS` 200 → 256, so the derived candidate bound is 512.
+- Search history `MAX_HISTORY` 20 → 32.
+- The set-aside `SOFT_BOUND_BODIES` 100 → 128. It now pairs with the 256 MiB
+  byte bound (four 64 MiB bodies).
+- Retries: `MAX_MIGRATION_ATTEMPTS` and `MAX_BOOKMARK_SAVE_ATTEMPTS` 3 → 4,
+  `EDITOR_FOCUS_MAX_ATTEMPTS` 6 → 8, `MAX_UNIQUE_NAME_ATTEMPTS` 1,000 → 1,024.
+
+*Rationale:* rounding any of the first group down would delete stored
+history, recents or search history at the first trim after upgrade. Rounding
+up loses nothing.
+
+### D7. The coupled pair `L_PROTECT` / `N_INSPECT`
+
+`N_INSPECT ≤ min(HEAD_CAP, L_PROTECT)` is a compile-time assertion and a Kani
+bound (`core-protected-view`). `L_PROTECT` is C0's stall half: dense
+500-character lines pass, 710 fail. Both move to the same power of two:
+
+- **512**, if the lane's new `dense/512` case keeps every validation dispatch
+  until settle within half of `B_SETTLE_US` and every post-open dispatch
+  within `B_SETTLE_US` in both wrap modes and all three input variants.
+  That is the criterion `dense/500` met (task 5.1). The Line Inspector window
+  grows by 12 characters.
+- **256** otherwise. The inspector pages twice as often, a visible cost
+  recorded with the measurement.
+
+`V_BATCH` (56,000 = 500 × A31's 112 rows) is **not** re-derived from the new
+`L_PROTECT`, because it stays an exception (D9).
+
+### D8. Slice sizes, re-measured (interleaved with `main`)
+
+- **`V_SLICE`** 11,360: the last measured size below the A70 step, which lies
+  between 11,360 (≤ 4.0 ms) and 22,720 (8–9 ms).
+
+  Candidates are 16,384 and 8,192. Adopt **16,384** if the lane's
+  `dense/{120,500,710}` cases in both wrap modes and three input variants
+  keep every validation dispatch until settle within half of `B_SETTLE_US`
+  and every post-open dispatch within `B_SETTLE_US`. Otherwise adopt
+  **8,192**, if its activation-to-laid-out time is no worse than `main`'s by
+  more than one reference frame.
+
+  If neither holds, 11,360 stays as an exception, with the measured total
+  time recorded. 16,384 is not a rounding up of a cap: it is a new measured
+  point, the same way C5 measured `L_WRAP_EDIT`.
+
+  This also settles C6's accepted miss ("Revisit when `power-of-two-thresholds`
+  re-measures `V_SLICE`").
+- **`SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES`** 704 KiB (and
+  `PREVIEW_DIRECT_THRESHOLD_BYTES`, which mirrors it) → **512 KiB**. Documents
+  of 512–704 KiB then take a sliced install.
+
+  Measure their activation-to-laid-out time at 512 KiB, 600 KiB and 704 KiB
+  against `main`. Keep 512 KiB if the branch is within one reference frame of
+  `main` at every size. Otherwise keep 704 KiB as an exception with the
+  figures.
+- **`MAX_SEARCH_EVENTS_PER_TICK` and `SEARCH_RETIREMENT_ROWS_PER_SLICE`**
+  250 → **256** if a full turn of 256 events or rows stays within
+  `B_SETTLE_US`. Measure on the search-panel widget fixture with the probe
+  build's dispatch timing (task 5.4). Otherwise → **128**, recording the
+  total-time cost.
+
+### D9. Recorded exceptions
+
+Each exception keeps its exact value. Its rustdoc says "Kind: …; recorded
+exception (`power-of-two-thresholds`)", gives the measurement above, and
+replaces "deferred to `power-of-two-thresholds`".
+
+- **`L_SYNTAX` 2,000.**
+  - Rounding down to 1,024 unhighlights 3–22 % of real Markdown files (the
+    baseline).
+  - 2,048 is unmeasured, and it breaks
+    `MAX_SYNTAX_PARAGRAPH_BYTES (4·L_SYNTAX + 3) ≤ HIGHLIGHT_CHUNK_BYTES`
+    (8,195 > 8,192), whose 16 KiB alternative was measured over budget
+    (A69).
+- **The twelve per-language attach gates, JSON's typing gate, and
+  `S_SYNTAX_OTHER`.** Rounding down unhighlights 0.1–6.5 % of real files
+  (the baseline table).
+- **`L_PROTECT_EDIT` 50,000.**
+  - This is the maintainer's editability contract ("editable up to ~50k",
+    2026-10-30).
+  - 32,768 would make documents with 32–50 k paragraphs view-only.
+  - 65,536 is above the accepted keystroke cost: C5 measured 7.7–11.1 ms at
+    50,000 and 16–20 ms at 100,000.
+- **`V_BATCH` 56,000.** Rounding down to 32,768 folds dense paragraphs to 128
+  characters (with `R_BATCH` 256). Rounding up to 65,536 is unmeasured over
+  the batch budget.
+- **`MAX_INDEXED_FILES` and `MAX_INDEXED_DIRECTORIES` 100,000.** A real
+  87,624-file workspace exists, and 65,536 would truncate it. Memory is
+  bounded independently by the 128 MiB and 64 MiB byte ledgers.
+- **`MAX_PREVIEW_IMAGE_SOURCE_PIXELS` 64,000,000.** 2^25 (33.5 MP) would
+  refuse 48–50 MP phone photos. 2^26 is unmeasured against the decode memory
+  ceiling.
+- **Conditional exceptions:** `REFUSE_TO_OPEN` (D3), `V_SLICE` and the
+  direct-install threshold (D8), `MAX_MARKDOWN_EVENTS` and the table-cell
+  caps (D4). Each is decided by its task.
+
+### D10. The gate: `make check-thresholds`
+
+`docs/thresholds.md` is the committed inventory. It has one row per integer
+`const`/`static` in the production crates' `src/`, excluding `#[cfg(test)]`
+modules, `kani_proofs.rs` and `gtk-lush-axioms`. Each row gives:
+
+- path and name;
+- value;
+- kind;
+- rounding or reason.
+
+An out-of-scope row names its D1 class.
+
+`scripts/check-threshold-kinds.py`, run by `make check-thresholds`, which is
+part of `check-policy`:
+
+1. finds every such constant;
+2. evaluates simple literal expressions, including references to other
+   constants;
+3. fails on an unlisted constant, a stale row, or a value mismatch;
+4. fails on an in-scope constant that is not a power of two unless its kind
+   is derived, external fact, measurement record or exception;
+5. checks that an in-scope constant's rustdoc contains a `Kind:` line naming
+   the same kind.
+
+It ships with a self-test, failing first on a fixture tree.
+
+*Alternative rejected:* a lint on names (`*_LIMIT`, `*_CAP`). Names do not
+carry the kind: `L_PROTECT_EDIT` is a policy decision, and `R_BATCH` is a
+coverage window.
+
+### D11. Order of work
+
+1. The gate and the inventory, at today's values. This proves the check sees
+   every constant.
+2. The failing-first value tests.
+3. Pure conversions: D4, D5, D6, the D3 tiers except the open tier, and D9's
+   rustdoc.
+4. Kani reruns.
+5. The measured items: D3's open tier, D7, D8, and D4's corpus counts.
+6. Lane verification.
+7. Docs.
+
+Each measured item lands in its own commit with its figures, so a failed
+measurement reverts one value.
+
+## Risks / Trade-offs
+
+- **Visible feature losses at the rounded caps** (D4). Each is listed in the
+  proposal's Impact section and in the README. All of them affect only
+  documents with paragraphs over 8 k characters, directories over 8 k
+  entries, or searches over 8 k matches.
+- **Kani cost.** `R_BATCH` and `N_INSPECT` appear concretely in some
+  harnesses. The navigation harness runs at the production width
+  (≈ 13 min). Each affected shard reruns under `KANI_MEASURE` one at a time,
+  inside `scripts/with-memory-cap.sh`. A wall-time move beyond the shard's
+  margin updates `scripts/kani-shards.py` in the same change.
+- **Raising undo and local history to 64 MiB** keeps more memory and disk for
+  50–64 MiB files. The bounds are 192 MiB live, inside the 256 MiB budget,
+  and 256 snapshots.
+- **The open tier's memory.** If task 3 fails, the tier stays 500 MB. The
+  README then says "500 MB (a recorded exception)".
+
+## Migration
+
+No persisted format changes. Raising the retention caps prunes nothing. The
+search-history and recents files load unchanged. The set-aside notice appears
+later, at 128 bodies. A user whose files are 8–10 MB loses the minimap and
+per-edit local-history capture on the next open. Documents of 50 MB–64 MiB
+regain undo and local history.
+
+## Inventory (in scope, non-power-of-two on `main` `fbf0f875`)
+
+| Constant (module) | Value | Kind | Decision |
+|---|---|---|---|
+| `S_MINIMAP` (`model/document_scale`) | 10,000,000 | policy tier | 8 MiB (D3) |
+| `HISTORY_SAVE_ONLY_BYTES` | 10,000,000 | policy tier | 8 MiB |
+| `UNDO_TOTAL_BYTES`, `HISTORY_UNAVAILABLE_BYTES` | 50,000,000 | policy tier | 64 MiB |
+| `REFUSE_TO_OPEN` | 500,000,000 | policy tier | 512 MiB or exception (task 3) |
+| `retired_byte_tiers::*` (cfg test/kani) | 10/50/500 M | reference | becomes `byte_tier_reference` with the new table |
+| `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD` (`ui/buffer_snapshot`) | 10,000,000 | cap | 8 MiB |
+| `MAX_REPLACE_FILE_BYTES` (`content_search/replace`) | 10 MiB | cap | 8 MiB |
+| `L_SYNTAX` | 2,000 | cap | exception (D9) |
+| `attach_threshold::*` (12), `typing_threshold::JSON`, `S_SYNTAX_OTHER` | 10.5–320 KiB | cap | exception (D9) |
+| `L_MINIMAP` | 22,000 | cap | 16,384 |
+| `L_INVISIBLES` | 50,000 | cap | 32,768 |
+| `L_SEARCH_HIGHLIGHT` | 10,000 | cap | 8,192 |
+| `L_PROTECT` / `N_INSPECT` (`model/protected_fold`) | 500 / 500 | cap (coupled) | 512 or 256 (D7) |
+| `L_EDIT_STALL` | 3,500 | measurement record | exact |
+| `L_PROTECT_EDIT` | 50,000 | policy (maintainer) | exception (D9) |
+| `N_VISIBLE` | 500,000 | cap | 262,144 |
+| `V_BATCH` | 56,000 | cap | exception (D9) |
+| `R_BATCH`, `R_FOLD` | 224 | coverage window | 256 |
+| `N_DENSE` | 250 | derived | `V_BATCH / R_BATCH` = 218 |
+| `N_HEAD` | 10,000 | cap | 8,192 |
+| `A28_MEASURED_ADVANCE_UNITS`, `A28_SAFE_CHARS`, `A28_MAX_ZOOM_PERCENT`, `R_FOLD_MIN_ZOOM_PERCENT` | 9,011 / 59,579 / 400 / 50 | external fact / derived | exact |
+| `HEAD_CAP`, `MAX_SYNTAX_PARAGRAPH_BYTES` (N2) | derived | derived | exact; rustdoc kind checked |
+| `V_SLICE` (`model/buffer_replacement`) | 11,360 | slice cap | 16,384, 8,192 or exception (D8) |
+| `SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES`, `PREVIEW_DIRECT_THRESHOLD_BYTES` | 704 KiB | cap | 512 KiB or exception (D8) |
+| `MAX_SEARCH_EVENTS_PER_TICK`, `SEARCH_RETIREMENT_ROWS_PER_SLICE` | 250 | per-turn cap | 256 or 128 (D8) |
+| `PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY` | 72 MiB | derived sum | exact; rustdoc names its terms |
+| `MAX_PALETTE_NOTE_CONSTRUCTION_BYTES` | 96 MiB | derived sum (64 + 16 + 16) | exact |
+| `FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY` | `REFUSE_TO_OPEN × 3` | derived | follows D3 |
+| `MAX_INDEXED_FILES`, `MAX_INDEXED_DIRECTORIES` | 100,000 | cap | exception (D9) |
+| the twelve 10,000 caps listed in D4 | 10,000 | cap | 8,192 |
+| `BOOKMARK_EXCERPT_SCAN_LINE_LIMIT` | 20,000 | cap | 16,384 |
+| `MINIMAP_SEARCH_MATCH_CAP`, `MINIMAP_MODIFIED_LINE_MARK_CAP`, `MINIMAP_LONG_LINE_MARK_CAP` | 2,000 | cap | 1,024 |
+| `MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET` | 8,000 | cap | 4,096 |
+| `MINIMAP_LONG_LINE_WARNING_THRESHOLD` | 120 | policy tier | 128 |
+| `MAX_RESULTS_PER_SOURCE` | 50 | cap | 32 |
+| `NOTES_BROWSER_RENDER_LIMIT` | 500 | cap | 256 |
+| `MAX_MARKDOWN_EVENTS` | 50,000 | cap | 32,768 or exception (task 4.5) |
+| `MAX_INLINE_FOOTNOTE_REPLACEMENTS` | events / 4 | derived | follows |
+| `MAX_MARKDOWN_CARRIED_TABLE_CELLS`, `MAX_PREVIEW_TABLE_CELLS` | 1,000 | cap | 512 or exception (task 4.5) |
+| `MAX_PREVIEW_IMAGE_SOURCE_PIXELS` | 64,000,000 | cap | exception (D9) |
+| `DEFAULT_ANNOUNCEMENT_LIMIT`, `EDITOR_IDENTITY_LIMIT`, `REDUCED_FEATURES_NOTICE_LIMIT` | 240 / 96 / 320 | text cap | 128 / 64 / 256 (D2 check) |
+| `ARTIFACT_TEXT_LIMIT`, `WARNING_TEXT_LIMIT` (`cargo-gtk-proof`) | 1,200 | text cap | 1,024 |
+| `MAX_RECENT_LOAD_DIAGNOSTICS` | 20 | cap | 16 |
+| `PER_DOCUMENT_SNAPSHOT_CAP`, `GLOBAL_SNAPSHOT_CAP` | 48 / 240 | retention tier | 64 / 256 |
+| `MAX_RECENTS` (and the derived `MAX_RECENT_LOAD_CANDIDATES`) | 200 (400) | retention tier | 256 (512) |
+| `MAX_HISTORY` (search history) | 20 | retention tier | 32 |
+| `SOFT_BOUND_BODIES` | 100 | policy tier | 128 |
+| `MAX_MIGRATION_ATTEMPTS`, `MAX_BOOKMARK_SAVE_ATTEMPTS`, `EDITOR_FOCUS_MAX_ATTEMPTS`, `MAX_UNIQUE_NAME_ATTEMPTS` | 3 / 3 / 6 / 1,000 | retry budget | 4 / 4 / 8 / 1,024 |
+| `MAX_CONSTRUCTION_STAGES`, `MAX_FRAME_PHASE_FRAMES` | 48 / 14,400 | coverage window | 64 / 16,384 |
+| `MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES` | 96 | coverage (conservative charge) | 128 |
+| `REVEAL_SETTLE_FRAME_BUDGET` | 60 frames | coverage | 64 |
+
+Already compliant and pinned by the gate:
+
+- `S_SYNTAX`, `L_WRAP_EDIT`, `MAX_R_FOLD`;
+- the 256 KiB and 64 Ki slice constants;
+- `HIGHLIGHT_CHUNK_BYTES`, `MODEL_MARKDOWN_CAP`;
+- the reanalysis pacing steps, `PRUNE_FLOOR`;
+- the 64 MiB, 128 MiB and 256 MiB budgets;
+- `WORKSPACE_SEARCH_FALLBACK_ENTRY_LIMIT`.
+
+Out of scope (D1), still listed in `docs/thresholds.md` with their class: the
+remaining non-power-of-two constants (about 100) (geometry, percent, priority, factor,
+rate, structural, presentation, time and tool or fixture data).
