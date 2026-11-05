@@ -116,10 +116,12 @@ mod attach_threshold {
     /// to 128 KiB unhighlights 231 XML files (0.25 %), above design D2's 0.05 %
     /// floor.
     pub const XML: u64 = 132 * 1024;
-    /// Kind: cap; 37 KiB rounded down to a power of two
-    /// (`power-of-two-thresholds`): none of the 2,353 corpus CSS files
-    /// highlighted today loses highlighting at 32 KiB.
-    pub const CSS: u64 = 32 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`
+    /// D12): A69's sweep derived 37 KiB as the largest CSS size whose attach
+    /// keeps every dispatch within `B_SETTLE_US`, so 64 KiB fails by that
+    /// measurement (cited, not rerun); 32 KiB would unhighlight CSS files of
+    /// 32–37 KiB that `main` highlighted.
+    pub const CSS: u64 = 37 * 1024;
     /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 32 KiB unhighlights 1,347 shell scripts (5.94 %), above design D2's
     /// 0.05 % floor.
@@ -1161,7 +1163,7 @@ pub(crate) mod byte_tier_reference {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn profile(total_bytes: u64, longest: u64, worst: u64) -> ProfileSummary {

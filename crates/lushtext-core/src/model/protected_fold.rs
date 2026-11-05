@@ -79,9 +79,12 @@ use super::document_scale::{L_PROTECT, N_VISIBLE, R_BATCH, V_BATCH};
 /// confirmed it from the other side: the provisional 15,000 (design D1's
 /// extrapolation of ledger A23) cost a 15.8 ms frame layout on its own.
 ///
-/// Kind: cap; the measured 10,000 rounded down to a power of two
-/// (`power-of-two-thresholds` D4): heads are 1,808 characters shorter.
-pub const N_HEAD: u64 = 8 * 1024;
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds`
+/// D12): the measured 10,000 is kept, because the sweep above already shows
+/// the power of two above failing its bound (16.1 ms at 14,000 wrap off,
+/// 20.7 ms at 20,000 wrap on, so 16,384 exceeds `B_SETTLE_US`), and 8,192
+/// would make every head 1,808 characters shorter than on `main`.
+pub const N_HEAD: u64 = 10_000;
 
 /// Pango's advance of the view's monospace font at the default zoom, in Pango
 /// units (1/1024 px), as ledger A28 measured it (9011 units per character).

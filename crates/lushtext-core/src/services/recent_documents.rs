@@ -41,8 +41,9 @@ pub const MAX_RECENT_DOCUMENTS_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_RECENT_LOAD_CANDIDATES: usize = MAX_RECENTS * 2;
 /// Keep startup diagnostics useful without allocating one warning per bad row.
 ///
-/// Kind: cap; 20 rounded down to a power of two (`power-of-two-thresholds` D4).
-const MAX_RECENT_LOAD_DIAGNOSTICS: usize = 16;
+/// Kind: presentation cap; 20 rounded up to a power of two
+/// (`power-of-two-thresholds` D12): 32 bounded messages, no timed path.
+const MAX_RECENT_LOAD_DIAGNOSTICS: usize = 32;
 
 #[cfg(any(test, feature = "test-utils"))]
 type RecentMetadataHook = Box<dyn FnOnce(&Path) + Send + 'static>;
@@ -506,6 +507,23 @@ fn compare_match_ranks(left: RecentMatchRank, right: RecentMatchRank) -> Orderin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` kept 20
+    /// diagnostics of one load, so 20 bad rows give 20 diagnostics.
+    #[test]
+    fn no_loss_a_recents_load_keeps_every_diagnostic_main_kept() {
+        let mut diagnostics = Vec::new();
+        for index in 0..20 {
+            push_diagnostic(&mut diagnostics, format!("bad row {index}"));
+        }
+        assert_eq!(diagnostics.len(), 20);
+        assert!(!diagnostics.iter().any(|d| d.contains("truncated")));
+        for index in 20..40 {
+            push_diagnostic(&mut diagnostics, format!("bad row {index}"));
+        }
+        assert_eq!(diagnostics.len(), 33);
+        assert_eq!(diagnostics[32], "recent document diagnostics truncated");
+    }
     use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
@@ -530,7 +548,7 @@ mod tests {
         assert_eq!(MAX_RECENTS, 256);
         assert_eq!(MAX_RECENT_DOCUMENTS_BYTES, 4 * 1024 * 1024);
         assert_eq!(MAX_RECENT_LOAD_CANDIDATES, 512);
-        assert_eq!(MAX_RECENT_LOAD_DIAGNOSTICS, 16);
+        assert_eq!(MAX_RECENT_LOAD_DIAGNOSTICS, 32);
     }
 
     #[test]
