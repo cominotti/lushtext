@@ -3798,7 +3798,9 @@ unhighlighted.
   16,384, the set-aside, preflight and journal scans 16,384, bookmark
   excerpts 32,768 lines, minimap markers 2,048 and the wrapped-layout line
   budget 8,192, Replace All 16 MiB per file (peak growth ratio 1.57; the
-  64 MiB aggregate unchanged), save-only local history 16 MiB, `V_BATCH`
+  64 MiB aggregate unchanged; files within `main`'s 10 MiB are replaced in a
+  first pass, so a larger file never takes the undo budget of a file `main`
+  replaced, stage-4 review), save-only local history 16 MiB, `V_BATCH`
   65,536 (`N_DENSE` 256), the Markdown event cap 65,536 and table cells
   1,024, `L_SEARCH_HIGHLIGHT` 16,384, the palette
   index 131,072 files and directories, the image cap 2^26 pixels. Kept as
@@ -3830,7 +3832,7 @@ separate change, in this order:
    per-file limit reaches the open tier with constant memory; skipped files
    listed with their reason and an "Open and replace in editor" action.
 3. `scale-file-index`: an interned path arena and a byte budget instead of
-   the 100,000-file count, targeting at least 1,000,000 files, with a
+   the 131,072-file count, targeting at least 1,000,000 files, with a
    Criterion benchmark and a measurement on a real monorepo.
 4. Profile and slice the 59–60 ms largest-file open dispatch (the open-tier
    runs above).

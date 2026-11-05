@@ -465,3 +465,13 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
   `avx2-health-scan-kernel` and DL. (Written at the spec stage of the
   amendment; recheck at the end that nothing above changed it.)
   *Done:* unchanged by the measurements; the exceptions above point to item 1.
+- [x] 9.11 Stage-4 review of the amendment: close the Replace All
+  aggregate-undo ordering case (D12) instead of leaving it to
+  `stream-replace-all`. Replace All admits in two passes, first every file
+  whose source and output fit `main`'s 10 MiB (`MAIN_REPLACE_FILE_BYTES`, a
+  presentation-cap exception), then the deferred 10–16 MiB files, so the first
+  pass charges the undo payload exactly as `main` did. Failing-first test
+  `no_loss_a_larger_file_never_displaces_a_file_main_replaced`. Also: the
+  spec deltas now state the resolved values (sidebar directory cap 10,000,
+  `L_minimap` 22,000, `L_invisibles` 50,000, minimap byte tier 10,000,000,
+  palette index 131,072). *Done.*

@@ -1118,8 +1118,8 @@ impl Default for DocumentScale {
 }
 
 /// An independent transcription of the byte tiers `power-of-two-thresholds`
-/// set (design D3): 8 MiB save-only local history, 64 MiB no undo and no
-/// local history, and the open tier. Its shape is that of the retired
+/// set (design D3, amended by D12): 16 MiB save-only local history, 64 MiB no
+/// undo and no local history, and the open tier. Its shape is that of the retired
 /// byte-only classification (`services/file_limits.rs` `FileSizeCheck`, as of
 /// commit 1820f14a); its values are written out here rather than read from the
 /// production constants, so the unit tests and the Kani tier harness that
