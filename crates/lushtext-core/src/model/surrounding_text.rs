@@ -22,14 +22,14 @@
 /// completes words sees far more than the three words GTK's own answer
 /// guarantees.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const SURROUNDING_WINDOW_CHARS: i32 = 1_024;
 
 /// A selection longer than this is not included: the window then spans the
 /// cursor alone, with the anchor at the cursor. A **cap**, a power of two
 /// rounded down: it bounds the answer's cost.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const SURROUNDING_MAX_SELECTION_CHARS: i32 = 8_192;
 
 /// The window, as buffer character offsets.

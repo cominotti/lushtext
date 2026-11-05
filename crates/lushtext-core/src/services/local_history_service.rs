@@ -82,7 +82,7 @@ const DEFAULT_RECONCILE_MAX_MILLIS: u64 = 50;
 /// lineage. When this budget is exceeded, all snapshot files stay preserved and
 /// the index remains unavailable until a manual or future streaming repair path.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_INDEX_REPAIR_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(feature = "test-utils")]
 static LOCAL_HISTORY_PREVIEW_READ_DELAY_MS: AtomicU64 = AtomicU64::new(0);

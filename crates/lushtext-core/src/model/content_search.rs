@@ -19,7 +19,7 @@ use super::workspace_search::{WorkspaceSearchFallbackMetrics, WorkspaceSearchInc
 /// match keeps worst-case retained line text in the tens of MiB rather than
 /// allowing minified or generated files to retain multi-GiB result sets.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_SEARCH_MATCH_LINE_BYTES: usize = 4 * 1024;
 /// Maximum number of complete rows retained by Replace Preview.
 ///
@@ -28,15 +28,15 @@ pub const MAX_SEARCH_MATCH_LINE_BYTES: usize = 4 * 1024;
 pub const MAX_REPLACE_PREVIEW_ROWS: usize = 8_192;
 /// Maximum conservatively charged UTF-8 bytes retained by Replace Preview.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_REPLACE_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum diagnostic records retained by Replace All or Undo.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_REPLACE_DIAGNOSTIC_ENTRIES: usize = 32;
 /// Maximum conservative heap bytes retained by Replace All or Undo diagnostics.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_REPLACE_DIAGNOSTIC_BYTES: usize = 32 * 1024;
 /// ASCII marker added when a search-result line is shortened.
 const SEARCH_MATCH_TRUNCATION_MARKER: &str = " [truncated]";

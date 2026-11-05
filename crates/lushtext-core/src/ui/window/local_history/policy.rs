@@ -57,7 +57,7 @@ pub(super) const EMPTY_HEIGHT_SP: i32 = 480;
 pub(super) const PREVIEW_DIRECT_THRESHOLD_BYTES: usize = SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES;
 /// Conservative future worker-drop ownership for a browseable history body.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub(super) const PREVIEW_RESERVATION_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Clamp one dialog axis so the viewer uses most of the parent window without

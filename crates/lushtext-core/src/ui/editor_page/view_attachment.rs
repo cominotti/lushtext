@@ -121,8 +121,10 @@ pub(crate) const VIEW_DETACH_MAX_LINES: i32 = 1 << 18;
 /// when an assistive technology starts listening. A larger document attaches
 /// when its tab is shown (the design's D7 names that case an exception).
 ///
-/// Kind: cap (a character count); a power of two, rounded down: about 2 ms per
-/// MiB with a listener, so one such attach stays under half of `B_SETTLE_US`.
+/// Kind: presentation cap (a character count; `power-of-two-thresholds` D12:
+/// a larger detached document reaches an assistive technology only when its tab
+/// is shown, so it is never rounded down); a power of two: about 2 ms per MiB
+/// with a listener, so one such attach stays under half of `B_SETTLE_US`.
 pub(crate) const AT_ATTACH_MAX_CHARS: i32 = 1 << 20;
 
 /// Whether a view may be given the placeholder now: no assistive technology

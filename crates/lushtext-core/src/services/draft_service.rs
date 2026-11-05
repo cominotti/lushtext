@@ -50,7 +50,7 @@ const MANIFEST_FILE: &str = "manifest.json";
 /// Capture and read paths must share this policy so the app never promises a
 /// draft that startup would later refuse to restore.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_AUTOMATIC_DRAFT_BYTES: u64 = 64 * 1024 * 1024;
 /// Total draft-body bytes admitted eagerly during one startup restore.
 ///
@@ -76,7 +76,7 @@ pub const MAX_MANIFEST_REPAIR_PAGE_ENTRIES: usize = 256;
 pub const MAX_MANIFEST_REPAIR_METADATA_BYTES: usize = 512 * 1024;
 /// Maximum aggregate diagnostics emitted by one manifest-repair attempt.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MANIFEST_REPAIR_DIAGNOSTICS: usize = 4;
 /// Conservative fixed ownership charged for each reconstructed manifest entry.
 ///

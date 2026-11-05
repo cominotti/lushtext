@@ -25,7 +25,12 @@ This check:
    `derived`, `external fact`, `measurement record`, or it is a recorded
    exception;
 5. checks that an in-scope constant's rustdoc carries a `Kind:` line naming the
-   same kind (and "recorded exception" for an exception).
+   same kind (and "recorded exception" for an exception);
+6. checks a `presentation cap` (design D12: a cap on what the user sees or
+   gets, never rounded down) against the former value its row records as
+   `up from <value>`: the constant must be the power of two at or above it, or,
+   for `presentation cap, exception`, that value exactly. The retired kind
+   `text cap` is refused (its rows are presentation caps).
 
 Out-of-scope rows name their D1 class as `out: <class>`; they need no `Kind:`
 line and may hold any value.
@@ -65,15 +70,21 @@ TYPE_MAX = {
 
 IN_SCOPE_KINDS = (
     "cap",
+    "presentation cap",
     "coverage window",
     "policy tier",
     "retention tier",
     "retry budget",
-    "text cap",
     "external fact",
     "derived",
     "measurement record",
 )
+# Retired kinds (design D12): accessible-text and announcement lengths are
+# characters announced, so they are presentation caps.
+RETIRED_KINDS = {"text cap": "presentation cap"}
+# Temporary class while the presentation-cap amendment converts a row (task
+# 9.2); removed when every row is converted (task 9.9).
+PENDING = ("pending-presentation",)
 # Kinds allowed off a power of two without being an exception (design D2).
 EXACT_KINDS = ("external fact", "derived", "measurement record")
 OUT_CLASSES = (
@@ -435,6 +446,13 @@ def is_pow2(v: int) -> bool:
     return v > 0 and v & (v - 1) == 0
 
 
+def pow2_at_or_above(v: int) -> int:
+    return 1 if v <= 1 else 1 << (v - 1).bit_length()
+
+
+UP_FROM = re.compile(r"\bup from\s+(-?[\d,]+)")
+
+
 def split_kind(kind: str) -> tuple[str, bool]:
     """`cap, exception` -> (`cap`, True)."""
     k = kind.strip()
@@ -483,10 +501,39 @@ def check(root: Path) -> list[str]:
             if cls not in OUT_CLASSES:
                 errors.append(f"{INVENTORY}:{r.line}: unknown out-of-scope class `{cls}`")
             continue
+        if kind in PENDING:
+            continue
         base, exc = split_kind(kind)
+        if base in RETIRED_KINDS:
+            errors.append(
+                f"{INVENTORY}:{r.line}: `{base}` is retired; `{r.name}` is a {RETIRED_KINDS[base]} (design D12)"
+            )
+            continue
         if base not in IN_SCOPE_KINDS:
             errors.append(f"{INVENTORY}:{r.line}: unknown kind `{kind}`")
             continue
+        if base == "presentation cap":
+            up = UP_FROM.search(r.reason)
+            if not up:
+                errors.append(
+                    f"{INVENTORY}:{r.line}: `{r.name}` is a presentation cap but its row records no "
+                    f"`up from <value>` (its former value)"
+                )
+            elif c.value is not None:
+                former = int(up.group(1).replace(",", ""))
+                want_value = former if exc else pow2_at_or_above(former)
+                if c.value != want_value:
+                    if exc:
+                        errors.append(
+                            f"{c.path}:{c.line}: `{c.name}` = {c.value:,} is a presentation cap exception "
+                            f"kept at {former:,}, its recorded value"
+                        )
+                    else:
+                        errors.append(
+                            f"{c.path}:{c.line}: `{c.name}` = {c.value:,} is a presentation cap up from "
+                            f"{former:,}, so it must be {want_value:,} (the power of two at or above it; "
+                            f"never rounded down)"
+                        )
         if c.value is not None and not is_pow2(c.value) and base not in EXACT_KINDS and not exc:
             errors.append(
                 f"{c.path}:{c.line}: `{c.name}` = {c.value:,} is a {base} but not a power of two "
@@ -556,6 +603,12 @@ pub const DERIVED: usize = GOOD_CAP / 3 + attach_threshold::JSON;
 
 pub const PADDING_PX: i32 = 24;
 
+/// Kind: presentation cap; up from 10,000.
+pub const SHOWN_CAP: usize = 16_384;
+
+/// Kind: presentation cap; recorded exception (measured).
+pub const SHOWN_EXC: usize = 10_000;
+
 #[cfg(test)]
 mod tests {
     const IGNORED: usize = 7;
@@ -575,6 +628,8 @@ FIXTURE_INVENTORY = """\
 | `crates/demo/src/lib.rs` | `typing_threshold::JSON` | 20,480 | cap, exception | measured loss |
 | `crates/demo/src/lib.rs` | `DERIVED` | 27,306 | derived | GOOD_CAP / 3 + JSON |
 | `crates/demo/src/lib.rs` | `PADDING_PX` | 24 | out: geometry | |
+| `crates/demo/src/lib.rs` | `SHOWN_CAP` | 16,384 | presentation cap | up from 10,000 |
+| `crates/demo/src/lib.rs` | `SHOWN_EXC` | 10,000 | presentation cap, exception | up from 10,000; 16,384 measured over budget |
 """
 
 
@@ -662,6 +717,39 @@ def self_test() -> int:
         FIXTURE_LIB.replace("const IGNORED: usize = 7;", "const IGNORED: usize = 9;"),
         FIXTURE_INVENTORY,
         None,
+    )
+    # The presentation-cap amendment (design D12): never rounded down, rounded
+    # up to exactly the power of two at or above the former value, and an
+    # exception keeps that value exactly.
+    run(
+        "presentation cap rounded down",
+        FIXTURE_LIB.replace("SHOWN_CAP: usize = 16_384;", "SHOWN_CAP: usize = 8_192;"),
+        FIXTURE_INVENTORY.replace("| `SHOWN_CAP` | 16,384 |", "| `SHOWN_CAP` | 8,192 |"),
+        "`SHOWN_CAP` = 8,192 is a presentation cap up from 10,000, so it must be 16,384",
+    )
+    run(
+        "presentation cap rounded up past the next power of two",
+        FIXTURE_LIB.replace("SHOWN_CAP: usize = 16_384;", "SHOWN_CAP: usize = 32_768;"),
+        FIXTURE_INVENTORY.replace("| `SHOWN_CAP` | 16,384 |", "| `SHOWN_CAP` | 32,768 |"),
+        "`SHOWN_CAP` = 32,768 is a presentation cap up from 10,000, so it must be 16,384",
+    )
+    run(
+        "presentation cap exception that differs from its recorded value",
+        FIXTURE_LIB.replace("SHOWN_EXC: usize = 10_000;", "SHOWN_EXC: usize = 9_000;"),
+        FIXTURE_INVENTORY.replace("| `SHOWN_EXC` | 10,000 |", "| `SHOWN_EXC` | 9,000 |"),
+        "`SHOWN_EXC` = 9,000 is a presentation cap exception kept at 10,000",
+    )
+    run(
+        "presentation cap without its former value",
+        FIXTURE_LIB,
+        FIXTURE_INVENTORY.replace("| up from 10,000 |", "| rounded up |"),
+        "`SHOWN_CAP` is a presentation cap but its row records no `up from <value>`",
+    )
+    run(
+        "a retired text cap row",
+        FIXTURE_LIB.replace("/// Kind: cap.\npub const GOOD_CAP", "/// Kind: text cap.\npub const GOOD_CAP"),
+        FIXTURE_INVENTORY.replace("| 8,192 | cap |", "| 8,192 | text cap |"),
+        "`text cap` is retired",
     )
     if failures:
         return 1

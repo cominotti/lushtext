@@ -64,7 +64,7 @@ pub const OBJECT_SEGMENT: &str = "Automation";
 /// while preserving enough context to debug ordinary queries, paths, and
 /// status-bar messages.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const SNAPSHOT_TEXT_MAX_BYTES: usize = 4 * 1024;
 /// Suffix appended when a snapshot text field is shortened.
 ///

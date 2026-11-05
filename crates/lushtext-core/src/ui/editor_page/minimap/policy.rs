@@ -95,7 +95,7 @@ pub(super) const MINIMAP_SEARCH_MATCH_CAP: usize = 1_024;
 /// minified files can make the narrow source map build a very large visual-line
 /// cache when it mirrors editor word wrap.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub(super) const MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET: u64 = 2 * 1024 * 1024;
 /// Long logical lines above this size make wrapped source-map layout expensive.
 ///
