@@ -85,7 +85,7 @@ fn small(head_cap: u64, n_dense: u64, v_batch: u64, r_fold: usize) -> FoldThresh
 
 #[test]
 fn production_constants_take_the_measured_values() {
-    assert_eq!(N_DENSE, 218);
+    assert_eq!(N_DENSE, 256);
     assert_eq!(R_FOLD, 256);
     assert_eq!(A28_SAFE_CHARS, 59_579);
     assert_eq!(HEAD_CAP, N_HEAD);
@@ -97,7 +97,7 @@ fn production_constants_take_the_measured_values() {
             production.v_batch(),
             production.r_fold()
         ),
-        (10_000, 218, 56_000, 256)
+        (10_000, 256, 64 * 1024, 256)
     );
     assert_eq!(FoldRange::RETAINED_BYTES, 24);
 }
@@ -273,7 +273,8 @@ fn the_excess_budget_defect_is_fixed() {
     // With R · N_dense = V (E = 0), a paragraph of N_dense + 1 in an
     // under-budget window must stay whole; the superseded rule folded it.
     // The thresholds before `power-of-two-thresholds` (224 · 250 = 56,000)
-    // had E = 0; production now has E = 56,000 - 256 · 218 = 192.
+    // had E = 0, and so does production since the amendment (D12):
+    // 65,536 - 256 · 256 = 0.
     let (n_dense, v_batch, r_fold) = (250, 56_000, 224usize);
     let mut lengths = vec![10; 400];
     lengths[200] = n_dense + 1;
@@ -282,7 +283,7 @@ fn the_excess_budget_defect_is_fixed() {
     let superseded = superseded_excess_budget_rule(&lengths, n_dense, v_batch, r_batch);
     assert_eq!(superseded[200], n_dense, "the superseded rule folds it");
     assert!(plan_folds(&lengths, small(HEAD_CAP, n_dense, v_batch, r_fold)).is_empty());
-    assert_eq!(V_BATCH - (R_BATCH as u64) * N_DENSE, 192);
+    assert_eq!(V_BATCH - (R_BATCH as u64) * N_DENSE, 0);
     let mut production = vec![10; 400];
     production[200] = N_DENSE + 1;
     assert!(plan_folds(&production, FoldThresholds::PRODUCTION).is_empty());

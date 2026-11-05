@@ -31,12 +31,14 @@ use crate::services::{
 
 /// Largest single file Replace All will read and rewrite.
 ///
-/// Ten megabytes keeps the whole-file validation and undo snapshot path bounded
+/// Sixteen MiB keeps the whole-file validation and undo snapshot path bounded
 /// on ordinary laptops while still covering typical source and notes files.
 ///
-/// Kind: cap; 8 MiB, aligned with the 8 MiB tier (was 10 MiB,
-/// `power-of-two-thresholds` D3).
-pub const MAX_REPLACE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// Kind: presentation cap; 10 MiB rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M9).
+/// The aggregate undo payload `MAX_REPLACE_UNDO_BYTES` (64 MiB, unchanged)
+/// still bounds a run.
+pub const MAX_REPLACE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// Largest total undo payload retained for one Replace All run.
 ///
 /// The payload stores before and after bytes for each touched file. Sixty-four
@@ -1555,6 +1557,7 @@ fn rollback_file_disposition(path: &Path, entry: &ReplaceUndoEntry) -> RollbackD
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::services::filesystem::fixture;
     use std::collections::HashSet;
@@ -1586,7 +1589,7 @@ mod tests {
 
     #[test]
     fn replace_all_byte_budgets_match_documented_limits() {
-        assert_eq!(MAX_REPLACE_FILE_BYTES, 8 * 1024 * 1024);
+        assert_eq!(MAX_REPLACE_FILE_BYTES, 16 * 1024 * 1024);
         assert_eq!(MAX_REPLACE_UNDO_BYTES, 64 * 1024 * 1024);
     }
 
@@ -1920,11 +1923,46 @@ mod tests {
         assert_eq!(result.skipped_count, 1);
         assert_eq!(result.skipped_sample[0], file.display().to_string());
         assert!(
-            result.error_sample[0].contains("larger than the 8 MiB Replace All limit"),
+            result.error_sample[0].contains("larger than the 16 MiB Replace All limit"),
             "{}",
             result.error_sample[0]
         );
         assert!(backup.is_empty());
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` replaced
+    /// in files up to 10 MiB, and a run of files `main` processed in full (each
+    /// at most 10 MiB, the undo payload within 64 MiB) is processed in full.
+    #[test]
+    fn no_loss_replace_all_processes_every_file_main_processed() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let ten_mib = 10 * 1024 * 1024;
+        let files: Vec<_> = (0..3)
+            .map(|index| {
+                let file = dir.path().join(format!("ten-mib-{index}.txt"));
+                let mut content = "needle\n".to_string();
+                content.push_str(&"a".repeat(ten_mib - content.len()));
+                fixture::write_text(&file, &content);
+                file
+            })
+            .collect();
+        let replacements: Vec<_> = files
+            .iter()
+            .map(|file| make_replacement(file, 1, "needle", "thread", 0..6))
+            .collect();
+        let cancel = AtomicBool::new(false);
+        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
+            .expect("a run main processed in full")
+            .into_parts();
+
+        assert_eq!(result.files_affected, 3);
+        assert_eq!(result.skipped_count, 0, "{:?}", result.error_sample);
+        assert_eq!(result.error_count, 0);
+        for file in &files {
+            assert!(backup.contains_key(file));
+            assert!(fixture::read_text(file).starts_with("thread\n"));
+        }
+        assert_eq!(MAX_REPLACE_FILE_BYTES, 16 * 1024 * 1024);
     }
 
     #[test]

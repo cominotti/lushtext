@@ -266,8 +266,8 @@ fn test_save_below_ten_megabytes_restores_full_local_history() {
     fixture::write_text(&path, "small\n");
     let page = LushtextEditorPage::new();
     load_and_wait(&page, &path);
-    // Promote it to the save-only history tier, as a load above 8 MiB would.
-    page.apply_loaded_content_for_test("small\n", 10_000_001);
+    // Promote it to the save-only history tier, as a load above 16 MiB would.
+    page.apply_loaded_content_for_test("small\n", 16 * 1024 * 1024 + 1);
     assert_eq!(
         page.document_scale().local_history,
         LocalHistoryAvailability::SaveOnly
@@ -421,8 +421,8 @@ fn test_a_merge_raising_only_density_is_recomputed() {
     // R_BATCH - 1 paragraphs, one separator line and one more paragraph that
     // together sum to V_BATCH + 1 once the separator is gone: deleting the
     // separator line makes the last paragraph join the window without any
-    // paragraph growing. (`V_BATCH` is not a multiple of `R_BATCH` since
-    // `power-of-two-thresholds`, so the last paragraph takes the remainder.)
+    // paragraph growing. (The last paragraph takes any remainder of
+    // `V_BATCH` over `R_BATCH`.)
     let per_line = V_BATCH / R_BATCH as u64;
     let line = "d".repeat(n(per_line));
     let mut text = vec![line; R_BATCH - 1].join("\n");
@@ -497,8 +497,8 @@ fn test_fast_keystrokes_cannot_cross_v_batch_unseen() {
     let page = LushtextEditorPage::new();
     let per_line = n(V_BATCH / R_BATCH as u64);
     let mut lines = vec!["e".repeat(per_line); R_BATCH];
-    // Leave ten characters of room in the only full window (`V_BATCH` is not
-    // a multiple of `R_BATCH` since `power-of-two-thresholds`).
+    // Leave ten characters of room in the only full window (the first line
+    // takes any remainder of `V_BATCH` over `R_BATCH`).
     let first = n(V_BATCH) - per_line * (R_BATCH - 1) - 10;
     lines[0] = "e".repeat(first);
     page.buffer().set_text(&lines.join("\n"));

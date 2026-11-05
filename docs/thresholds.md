@@ -226,25 +226,25 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/document_scale.rs` | `MODEL_MARKDOWN_CAP` | 524,288 | policy tier | power of two |
 | `crates/lushtext-core/src/model/document_scale.rs` | `S_SYNTAX_OTHER` | 48,128 | presentation cap, exception | up from 48,128, kept: A69's sweep (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_SYNTAX` | 2,000 | presentation cap, exception | up from 2,000, kept: 2,048 breaks MAX_SYNTAX_PARAGRAPH_BYTES <= HIGHLIGHT_CHUNK_BYTES (D12) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `S_MINIMAP` | 8,388,608 | pending-presentation | up from 10,000,000 (task 9.4/9.5) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `L_MINIMAP` | 22,000 | pending-presentation | up from 22,000 (task 9.4/9.5) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `L_INVISIBLES` | 50,000 | pending-presentation | up from 50,000 (task 9.4/9.5) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `L_SEARCH_HIGHLIGHT` | 10,000 | pending-presentation | up from 10,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `S_MINIMAP` | 10,000,000 | presentation cap, exception | up from 10,000,000, kept: M10, a 16 MiB open with the minimap 37-38 ms vs main 23-27 ms and one settle past the 10 s cap (D12) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `L_MINIMAP` | 22,000 | presentation cap, exception | up from 22,000, kept: M14 measured the minimap-on background dispatch at 32,768 13.4 ms worse than main's at 22,000 (D12) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `L_INVISIBLES` | 50,000 | presentation cap, exception | up from 50,000, kept: it must not exceed L_PROTECT_EDIT (Protected View has invisibles off, C2 D10; asserted) (D12) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `L_SEARCH_HIGHLIGHT` | 16,384 | presentation cap | up from 10,000: M14, find worst 9.6-10.0 ms vs main 6.5-8.6 ms (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_WRAP_EDIT` | 8,192 | presentation cap | up from 8,192: word wrap turns off above it (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_PROTECT` | 512 | presentation cap | up from 500: Protected View length gate (D7) (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_EDIT_STALL` | 3,500 | measurement record | measured, decides nothing (D2) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_PROTECT_EDIT` | 50,000 | presentation cap, exception | up from 50,000, kept: the maintainer's editability contract; C5 measured the keystroke cost rising past it (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `N_VISIBLE` | 262,144 | cap | rounded down (D4) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `V_BATCH` | 56,000 | pending-presentation | up from 56,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `V_BATCH` | 65,536 | presentation cap | up from 56,000: N_DENSE 256 (main 250); M11, folded page worst 10.9-15.0 ms vs main 11.3-19.2 ms at 100 % and 50 % zoom (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `R_BATCH` | 256 | coverage window | 224 rounded up to 256 (D5) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `UNDO_TOTAL_BYTES` | 67,108,864 | presentation cap | up from 50,000,000: undo turns off above it (D12) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `HISTORY_SAVE_ONLY_BYTES` | 8,388,608 | pending-presentation | up from 10,000,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `HISTORY_SAVE_ONLY_BYTES` | 16,777,216 | presentation cap | up from 10,000,000: M10, periodic capture at the tier worst dispatch under 1 ms (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `HISTORY_UNAVAILABLE_BYTES` | 67,108,864 | presentation cap | up from 50,000,000: local history turns off above it (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `REFUSE_TO_OPEN` | 536,870,912 | presentation cap | up from 500,000,000: opening is refused above it (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `MULTIPLIER_WITH_UNDO` | 3 | out: factor | factor, divisor or unit (D1) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `MULTIPLIER_WITHOUT_UNDO` | 2 | out: factor | factor, divisor or unit (D1) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `PRESENTATION_MASK` | `expr: ScaleFeature::Undo.bit() - 1` | out: identifier | format version, discriminant or sentinel (D1) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `byte_tier_reference::DISABLE_SYNTAX_HIGHLIGHTING` | 8,388,608 | pending-presentation | up from 10,000,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `byte_tier_reference::DISABLE_SYNTAX_HIGHLIGHTING` | 16,777,216 | presentation cap | up from 10,000,000: independent mirror of HISTORY_SAVE_ONLY_BYTES (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `byte_tier_reference::DISABLE_UNDO_HISTORY` | 67,108,864 | presentation cap | up from 50,000,000: reference mirror of UNDO_TOTAL_BYTES (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `byte_tier_reference::REFUSE_TO_OPEN` | 536,870,912 | presentation cap | up from 500,000,000: reference mirror of REFUSE_TO_OPEN (D12) |
 
@@ -318,7 +318,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/protected_fold.rs` | `A28_SAFE_CHARS` | 59,579 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `R_FOLD` | 256 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `R_FOLD_MIN_ZOOM_PERCENT` | 50 | out: percent | percentage, permille or zoom percent (D1) |
-| `crates/lushtext-core/src/model/protected_fold.rs` | `N_DENSE` | 218 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-core/src/model/protected_fold.rs` | `N_DENSE` | 256 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `HEAD_CAP` | `expr: min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS)` | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `N_INSPECT` | 512 | presentation cap | up from 500: characters the Line Inspector shows (D7) (D12) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `MAX_R_FOLD` | 256 | cap | power of two |
@@ -426,7 +426,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_FILE_BYTES` | 8,388,608 | pending-presentation | up from 10,485,760 (task 9.4/9.5) |
+| `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_FILE_BYTES` | 16,777,216 | presentation cap | up from 10,485,760: M9, one-file peak growth 33.9 vs 21.6 MiB (ratio 1.57); the 64 MiB aggregate unchanged (D12) |
 | `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_UNDO_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace All skips files (D12) |
 | `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_UNDO_RETAINED_BYTES` | 67,108,864 | cap | power of two |
 
@@ -531,14 +531,14 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_SOURCE_BYTES` | 4,194,304 | presentation cap | up from 4,194,304: past it the preview is limited (D12) |
-| `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_EVENTS` | 50,000 | pending-presentation | up from 50,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_EVENTS` | 65,536 | presentation cap | up from 50,000: M13, planning 35.1-35.4 MiB vs 33.1-33.5, projection worst 0.6-2.3 ms (D12) |
 | `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_STRUCTURE_DEPTH` | 128 | presentation cap | up from 128: deeper structure is omitted from the preview (D12) |
 | `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_EMBED_DESCRIPTORS` | 256 | presentation cap | up from 256: embeds past it are omitted (D12) |
 | `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_RETAINED_BYTES` | 8,388,608 | presentation cap | up from 8,388,608: past it the preview is limited (D12) |
 | `crates/lushtext-core/src/services/markdown_render.rs` | `MARKDOWN_EVENTS_PER_PROJECTION_SLICE` | 256 | cap | power of two |
 | `crates/lushtext-core/src/services/markdown_render.rs` | `MARKDOWN_BYTES_PER_PROJECTION_SLICE` | 262,144 | cap | power of two |
 | `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_CARRIED_EMBED_BYTES` | 65,536 | presentation cap | up from 65,536: a larger embed falls back (D12) |
-| `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_CARRIED_TABLE_CELLS` | 1,000 | pending-presentation | up from 1,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_CARRIED_TABLE_CELLS` | 1,024 | presentation cap | up from 1,000: M13, table build worst 10.3-12.3 ms vs main 10.8-11.4 ms (D12) |
 | `crates/lushtext-core/src/services/markdown_render.rs` | `MAX_MARKDOWN_PLACEHOLDER_WIDGETS` | 64 | presentation cap | up from 64: placeholders past it are omitted (D12) |
 
 ### `crates/lushtext-core/src/services/migration_ledger.rs`
@@ -558,8 +558,8 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/services/palette/index.rs` | `MAX_SCAN_DEPTH` | 64 | presentation cap | up from 64: deeper files are not indexed (D12) |
-| `crates/lushtext-core/src/services/palette/index.rs` | `MAX_INDEXED_FILES` | 100,000 | pending-presentation | up from 100,000 (task 9.4/9.5) |
-| `crates/lushtext-core/src/services/palette/index.rs` | `MAX_INDEXED_DIRECTORIES` | 100,000 | pending-presentation | up from 100,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/services/palette/index.rs` | `MAX_INDEXED_FILES` | 131,072 | presentation cap | up from 100,000: M15, 83.4-84.1 MiB vs main 68.3-68.5 (growth ratio 1.375), 546-555 ms vs 404-419 ms (D12) |
+| `crates/lushtext-core/src/services/palette/index.rs` | `MAX_INDEXED_DIRECTORIES` | 131,072 | presentation cap | up from 100,000: with MAX_INDEXED_FILES (M15, D12) |
 | `crates/lushtext-core/src/services/palette/index.rs` | `MAX_FILE_INDEX_RETAINED_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it the index is truncated (D12) |
 | `crates/lushtext-core/src/services/palette/index.rs` | `MAX_FILE_INDEX_BUILD_RETAINED_BYTES` | 134,217,728 | presentation cap | up from 134,217,728: past it the index is truncated (D12) |
 
@@ -853,7 +853,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `CODE_BLOCK_VERTICAL_PADDING` | 8 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `CODE_BLOCK_BACKGROUND_CSS_PRIORITY` | `expr: gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION + 2` | out: priority | GLib, CSS, mark or gutter priority (D1) |
 | `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_SOURCE_BYTES` | 33,554,432 | presentation cap | up from 33,554,432: a larger image is not shown (D12) |
-| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_SOURCE_PIXELS` | 64,000,000 | pending-presentation | up from 64,000,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_SOURCE_PIXELS` | 67,108,864 | presentation cap | up from 64,000,000: M16, decode peak 297.4-298.0 MiB vs main 285.2-286.1 (D12) |
 | `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_WORK_ITEMS` | 4 | cap | power of two |
 | `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `PREVIEW_IMAGE_WORK_CHARGE_BYTES` | `expr: MAX_PREVIEW_IMAGE_SOURCE_BYTES.saturating_add( (MAX_PREVIEW_IMAGE_WIDTH as u64) .saturating_pow(2) .saturating_mul(4), )` | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/ui/markdown_preview/mod.rs` | `MAX_PREVIEW_IMAGE_WORK_BYTES` | `expr: PREVIEW_IMAGE_WORK_CHARGE_BYTES.saturating_mul(MAX_PREVIEW_IMAGE_WORK_ITEMS as u64)` | derived | computed from named inputs; not rounded (D2) |
@@ -867,7 +867,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `MAX_INLINE_FOOTNOTE_REPLACEMENTS` | 12,500 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `MAX_INLINE_FOOTNOTE_REPLACEMENTS` | 16,384 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `LOWERING_CANCEL_CHECK_BYTES` | 4,096 | cap | power of two |
 | `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `PREVIEW_MIN_WIDTH_SP` | 1 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/markdown_preview/policy.rs` | `PREVIEW_DEFAULT_WIDTH_SP` | 300 | out: geometry | UI geometry in sp or px (D1) |
@@ -883,7 +883,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/markdown_preview/tables.rs` | `MAX_PREVIEW_TABLE_CELLS` | 1,000 | pending-presentation | up from 1,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/ui/markdown_preview/tables.rs` | `MAX_PREVIEW_TABLE_CELLS` | 1,024 | presentation cap | up from 1,000: M13 (D12) |
 
 ### `crates/lushtext-core/src/ui/open_popover/imp.rs`
 

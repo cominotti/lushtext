@@ -416,38 +416,58 @@ impl SyntaxLanguage {
 /// 16 KiB alternative was measured over budget (ledger A69).
 pub const L_SYNTAX: u64 = 2_000;
 
-/// The minimap turns off above this many bytes: the 8 MiB tier, well above
-/// [`S_SYNTAX`], so the lower syntax tier does not remove the minimap from
-/// short-line files between the two.
+/// The minimap turns off above this many bytes: well above [`S_SYNTAX`], so
+/// the lower syntax tier does not remove the minimap from short-line files
+/// between the two.
 ///
-/// Kind: policy tier; 8 MiB, the tier it shares with
-/// [`HISTORY_SAVE_ONLY_BYTES`] (was 10,000,000 bytes,
-/// `power-of-two-thresholds` D3).
-pub const S_MINIMAP: u64 = 8 * 1024 * 1024;
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds` D12,
+/// task 9.5 M10): 16 MiB breaks its bound with the minimap shown. On the lane
+/// (`total-size/*/txt/mm`, plain, three repetitions, interleaved with `main`,
+/// load 0.6–1.8), opening a 16 MiB short-line document with the minimap took a
+/// 37–38 ms dispatch against 23–27 ms on `main` at 10,000,000 bytes (10.5 ms
+/// worse, past the one-reference-frame allowance), and one of three post-open
+/// settles did not finish within the lane's 10 s cap (none did on `main`).
+/// `main`'s 10,000,000 bytes is kept, so this tier no longer coincides with
+/// [`HISTORY_SAVE_ONLY_BYTES`] (16 MiB).
+pub const S_MINIMAP: u64 = 10_000_000;
 
 /// The minimap turns off above this paragraph length (C0 idle
 /// re-confirmation: 22,000 / 50,000, a lower bound of the boundary).
 ///
-/// Kind: cap; recorded exception (`power-of-two-thresholds` task 4.5): rounding
-/// down to 16,384 turns the minimap off for 5,556 of 765,618 corpus text files
-/// whose longest paragraph is at most 22,000 characters (0.73 %).
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds` D12,
+/// task 9.5 M14): at 32,768 the minimap's cost breaks its bound. On the lane
+/// (plain, `.txt`, three repetitions, interleaved with `main`), the worst
+/// background dispatch with the minimap on was 29.6–33.8 ms at 32,768 against
+/// 20.3–20.4 ms on `main` at 22,000 (13.4 ms worse, past the one-reference-frame
+/// allowance), and one open dispatch reached 114 ms. `main`'s 22,000 is kept
+/// (rounding down to 16,384 would turn the minimap off for 0.73 % of corpus text
+/// files, task 4.5).
 pub const L_MINIMAP: u64 = 22_000;
 
 /// Invisible-character drawing turns off above this paragraph length (C0:
 /// 50,000 / 74,000).
 ///
-/// Kind: cap; recorded exception (`power-of-two-thresholds` task 4.5): rounding
-/// down to 32,768 turns invisible characters off for 650 of 767,315 corpus text
-/// files whose longest paragraph is at most 50,000 characters (0.085 %).
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds` D12,
+/// task 9.5 M14): it must not exceed [`L_PROTECT_EDIT`], because every
+/// Protected View document has invisible-character drawing off
+/// (`long-line-protected-view` design D10, asserted below). 65,536 would turn
+/// it on for protected documents of 50,001–65,536 characters, a separate design
+/// decision; `main`'s 50,000 is kept (rounding down to 32,768 would turn it off
+/// for 0.085 % of corpus text files, task 4.5).
 pub const L_INVISIBLES: u64 = 50_000;
+
+// Every protected document is past the gates of the features Protected View
+// turns off (`long-line-protected-view` design D10).
+const _: () = assert!(L_MINIMAP <= L_PROTECT_EDIT);
+const _: () = assert!(L_INVISIBLES <= L_PROTECT_EDIT);
+const _: () = assert!(L_SEARCH_HIGHLIGHT <= L_PROTECT_EDIT);
 
 /// Automatic search highlighting turns off above this paragraph length (C0
 /// idle re-confirmation: 10,000 / 15,000).
 ///
-/// Kind: cap; recorded exception (`power-of-two-thresholds` task 4.5): rounding
-/// down to 8,192 turns search highlighting off for 2,366 of 757,002 corpus text
-/// files whose longest paragraph is at most 10,000 characters (0.31 %).
-pub const L_SEARCH_HIGHLIGHT: u64 = 10_000;
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M14).
+pub const L_SEARCH_HIGHLIGHT: u64 = 16 * 1024;
 
 /// Paragraphs longer than this are shown unwrapped (the per-paragraph wrap
 /// gate, `explore-editing-long-paragraphs`; `model::paragraph_wrap` holds the
@@ -533,10 +553,10 @@ pub const N_VISIBLE: u64 = 256 * 1024;
 /// paragraphs are at most [`L_PROTECT_EDIT`] stays editable). Inside Protected
 /// View it bounds the fold.
 ///
-/// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down to
-/// 32,768 folds dense paragraphs to 128 characters (with `R_BATCH` 256), and
-/// 65,536 is unmeasured against the batch budget.
-pub const V_BATCH: u64 = 56_000;
+/// Kind: presentation cap; 56,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12): `N_DENSE` = `V_BATCH / R_BATCH` is 256
+/// characters, not below `main`'s 250; measured in task 9.5 M11.
+pub const V_BATCH: u64 = 64 * 1024;
 
 /// Paragraphs in one density window: A31's 112 rows per 2000 px validation
 /// batch at the default font, doubled for the 50 % minimum zoom (C0), cover
@@ -556,9 +576,10 @@ pub const UNDO_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Local history keeps only save-boundary capture above this many bytes.
 ///
-/// Kind: policy tier; 8 MiB (was 10,000,000 bytes, `power-of-two-thresholds`
-/// D3).
-pub const HISTORY_SAVE_ONLY_BYTES: u64 = 8 * 1024 * 1024;
+/// Kind: presentation cap; 16 MiB (was 10,000,000 bytes on `main`, rounded up,
+/// `power-of-two-thresholds` D12): task 9.5 M10 measured the periodic capture
+/// of a modified buffer at the tier (chunked, worst dispatch under 1 ms).
+pub const HISTORY_SAVE_ONLY_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Local history is unavailable above this many bytes.
 ///
@@ -1112,8 +1133,8 @@ pub(crate) mod byte_tier_reference {
     // query below answered it exactly as `Normal` (its one consumer was an
     // accessibility sentence, not a compared tier), so keeping it only left
     // three comparison mutants no parity test could tell apart.
-    /// Kind: policy tier; the 8 MiB save-only local-history tier.
-    const DISABLE_SYNTAX_HIGHLIGHTING: u64 = 8 * 1024 * 1024;
+    /// Kind: presentation cap; the 16 MiB save-only local-history tier.
+    const DISABLE_SYNTAX_HIGHLIGHTING: u64 = 16 * 1024 * 1024;
     /// Kind: presentation cap; the 64 MiB no-undo, no-local-history tier.
     const DISABLE_UNDO_HISTORY: u64 = 64 * 1024 * 1024;
     /// Kind: presentation cap; the 512 MiB open tier.
@@ -1668,17 +1689,17 @@ pub(crate) mod tests {
         let recorded: [(u64, u64); 15] = std::hint::black_box([
             (S_SYNTAX, 1024 * 1024),
             (L_SYNTAX, 2_000),
-            (S_MINIMAP, 8 * 1024 * 1024),
+            (S_MINIMAP, 10_000_000),
             (L_MINIMAP, 22_000),
             (L_INVISIBLES, 50_000),
-            (L_SEARCH_HIGHLIGHT, 10_000),
+            (L_SEARCH_HIGHLIGHT, 16 * 1024),
             (L_PROTECT, 512),
             (L_EDIT_STALL, 3_500),
             (L_PROTECT_EDIT, 50_000),
             (N_VISIBLE, 256 * 1024),
-            (V_BATCH, 56_000),
+            (V_BATCH, 64 * 1024),
             (UNDO_TOTAL_BYTES, 64 * 1024 * 1024),
-            (HISTORY_SAVE_ONLY_BYTES, 8 * 1024 * 1024),
+            (HISTORY_SAVE_ONLY_BYTES, 16 * 1024 * 1024),
             (HISTORY_UNAVAILABLE_BYTES, 64 * 1024 * 1024),
             (REFUSE_TO_OPEN, 512 * 1024 * 1024),
         ]);
@@ -1709,15 +1730,51 @@ pub(crate) mod tests {
         assert!(undo < std::hint::black_box(REFUSE_TO_OPEN));
     }
 
+    /// No loss against `main` (`power-of-two-thresholds` D12): every feature
+    /// `main` gave a document, the branch gives it too. `main`'s tiers were
+    /// 10,000,000 bytes (minimap, per-edit local history), CSS highlighting to
+    /// 37 KiB, Protected View heads of 10,000 characters and dense heads of
+    /// 250.
     #[test]
-    fn byte_tiers_switch_exactly_at_8_mib_and_64_mib() {
+    fn no_loss_every_tier_keeps_the_features_main_kept() {
+        let ten_mb = DocumentScale::for_total_bytes(10_000_000);
+        assert!(ten_mb.minimap_allowed, "main kept the minimap at 10 MB");
+        assert_eq!(ten_mb.local_history, LocalHistoryAvailability::Full);
+        assert!(
+            std::hint::black_box(SyntaxLanguage::Css).attach_after_install_threshold() >= 37 * 1024
+        );
+        assert_eq!(
+            std::hint::black_box(crate::model::protected_fold::N_HEAD),
+            10_000
+        );
+        assert!(std::hint::black_box(crate::model::protected_fold::N_DENSE) >= 250);
+    }
+
+    /// The paragraph gates of the amendment (`power-of-two-thresholds` D12,
+    /// task 9.3): each keeps its feature at its accepted value (search
+    /// highlighting rounded up; the minimap and invisibles kept as exceptions)
+    /// and drops it one character later.
+    #[test]
+    fn paragraph_gates_switch_at_their_accepted_values() {
+        assert!(by_length(22_000).minimap_allowed && !by_length(22_001).minimap_allowed);
+        assert!(by_length(50_000).invisibles_allowed && !by_length(50_001).invisibles_allowed);
+        assert!(
+            by_length(16 * 1024).search_highlight_allowed
+                && !by_length(16 * 1024 + 1).search_highlight_allowed
+        );
+    }
+
+    #[test]
+    fn byte_tiers_switch_exactly_at_16_mib_and_64_mib() {
         const MIB: u64 = 1024 * 1024;
-        let at_8 = DocumentScale::for_total_bytes(8 * MIB);
-        let above_8 = DocumentScale::for_total_bytes(8 * MIB + 1);
-        assert!(at_8.minimap_allowed && !above_8.minimap_allowed);
-        assert_eq!(at_8.local_history, LocalHistoryAvailability::Full);
-        assert_eq!(above_8.local_history, LocalHistoryAvailability::SaveOnly);
-        assert!(at_8.undo_enabled && above_8.undo_enabled);
+        let at_16 = DocumentScale::for_total_bytes(16 * MIB);
+        let above_16 = DocumentScale::for_total_bytes(16 * MIB + 1);
+        // The minimap keeps `main`'s 10,000,000 bytes (a recorded exception).
+        assert!(DocumentScale::for_total_bytes(10_000_000).minimap_allowed);
+        assert!(!DocumentScale::for_total_bytes(10_000_001).minimap_allowed);
+        assert_eq!(at_16.local_history, LocalHistoryAvailability::Full);
+        assert_eq!(above_16.local_history, LocalHistoryAvailability::SaveOnly);
+        assert!(at_16.undo_enabled && above_16.undo_enabled);
         let at_64 = DocumentScale::for_total_bytes(64 * MIB);
         let above_64 = DocumentScale::for_total_bytes(64 * MIB + 1);
         assert!(at_64.undo_enabled && !above_64.undo_enabled);

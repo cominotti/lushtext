@@ -1876,9 +1876,9 @@ fn test_code_block_past_the_widget_budget_keeps_its_single_fallback_and_complete
     assert!(preview.buffer_text().contains("TAIL-AFTER-BIG-CODE"));
 }
 
-/// Columns and rows of the table that crosses the 1,000-cell widget budget.
+/// Columns and rows of the table that crosses the 1,024-cell widget budget.
 const PAST_BUDGET_COLUMNS: usize = 4;
-const PAST_BUDGET_ROWS: usize = 250;
+const PAST_BUDGET_ROWS: usize = 260;
 
 fn cell_table(columns: usize, rows: usize) -> String {
     let mut markdown = String::new();
