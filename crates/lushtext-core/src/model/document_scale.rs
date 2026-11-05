@@ -131,14 +131,15 @@ mod typing_threshold {
 ///   python3 (none) failed already on fixtures with closers.
 ///
 /// The mechanism stays for C6c, whose runtime downgrade would bound the
-/// flipping keys that cap every language here. Unit tests, Kani and the
-/// widget tests (`test-utils`) prove it under [`MODEL_MARKDOWN_CAP`]; no
-/// release, Meson, Flatpak, Snap or measurement build enables either.
+/// flipping keys that cap every language here. Every build ships this
+/// table; the chunked tests opt in through
+/// `override_markdown_chunked_cap_for_test` (`test-utils`) and the Kani
+/// harnesses pass [`MODEL_MARKDOWN_CAP`] to the `_with` variants explicitly.
 ///
 /// Kind: cap. Rounding: down, to a power of two.
 #[must_use]
 pub const fn chunked_threshold(language: SyntaxLanguage) -> Option<u64> {
-    chunked_threshold_with(language, MARKDOWN_CHUNKED_CAP)
+    chunked_threshold_with(language, None)
 }
 
 /// [`chunked_threshold`] with Markdown given `markdown_cap`, the one
@@ -155,17 +156,59 @@ pub const fn chunked_threshold_with(
     }
 }
 
-/// The Markdown cap of the model builds (unit tests, Kani, `test-utils`),
-/// which drive the chunked install a language with a cap takes.
+/// The Markdown cap the chunked tests and the Kani harnesses give the model,
+/// so they drive the chunked install a language with a cap takes. No build
+/// uses it unless a test opts in.
 ///
 /// Kind: model parameter. Rounding: a power of two above Markdown's
 /// attach-after-install threshold.
 pub const MODEL_MARKDOWN_CAP: u64 = 512 * 1024;
 
-#[cfg(any(test, kani, feature = "test-utils"))]
-const MARKDOWN_CHUNKED_CAP: Option<u64> = Some(MODEL_MARKDOWN_CAP);
-#[cfg(not(any(test, kani, feature = "test-utils")))]
-const MARKDOWN_CHUNKED_CAP: Option<u64> = None;
+/// The Markdown chunked cap the editor applies at run time: `None` (the
+/// shipped [`chunked_threshold`]) unless a test holds
+/// `override_markdown_chunked_cap_for_test`. Every runtime caller of the
+/// `_with` scale functions passes it; the `const` functions without the
+/// suffix are the shipped behaviour.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn markdown_chunked_cap() -> Option<u64> {
+    let cap = MARKDOWN_CHUNKED_CAP_FOR_TESTS.load(std::sync::atomic::Ordering::Relaxed);
+    if cap == 0 { None } else { Some(cap) }
+}
+
+/// The Markdown chunked cap the editor applies at run time: always `None`
+/// in a build without `test-utils`.
+#[cfg(not(feature = "test-utils"))]
+#[must_use]
+pub const fn markdown_chunked_cap() -> Option<u64> {
+    None
+}
+
+#[cfg(feature = "test-utils")]
+static MARKDOWN_CHUNKED_CAP_FOR_TESTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Give Markdown [`MODEL_MARKDOWN_CAP`] until the returned guard drops, so a
+/// widget test can drive the chunked install no shipped language takes.
+/// Process-wide: the widget harness runs one test at a time.
+#[cfg(feature = "test-utils")]
+#[must_use = "the cap is removed when the guard drops"]
+pub fn override_markdown_chunked_cap_for_test() -> MarkdownChunkedCapGuard {
+    MARKDOWN_CHUNKED_CAP_FOR_TESTS.store(MODEL_MARKDOWN_CAP, std::sync::atomic::Ordering::Relaxed);
+    MarkdownChunkedCapGuard(())
+}
+
+/// Removes the test-only Markdown chunked cap when dropped.
+#[cfg(feature = "test-utils")]
+#[derive(Debug)]
+pub struct MarkdownChunkedCapGuard(());
+
+#[cfg(feature = "test-utils")]
+impl Drop for MarkdownChunkedCapGuard {
+    fn drop(&mut self) {
+        MARKDOWN_CHUNKED_CAP_FOR_TESTS.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 const fn min_u64(a: u64, b: u64) -> u64 {
     if a < b { a } else { b }
@@ -261,7 +304,14 @@ impl SyntaxLanguage {
     /// (`chunked-highlight-attach`, C6b; `model::highlight_chunking`).
     #[must_use]
     pub const fn chunk_highlighted(self) -> bool {
-        chunked_threshold(self).is_some()
+        self.chunk_highlighted_with(None)
+    }
+
+    /// [`Self::chunk_highlighted`] with Markdown given `markdown_cap`
+    /// ([`chunked_threshold_with`]).
+    #[must_use]
+    pub const fn chunk_highlighted_with(self, markdown_cap: Option<u64>) -> bool {
+        chunked_threshold_with(self, markdown_cap).is_some()
     }
 
     /// Syntax highlighting and bracket matching turn off above this many
@@ -270,7 +320,14 @@ impl SyntaxLanguage {
     /// [`Self::attach_after_install_threshold`].
     #[must_use]
     pub const fn syntax_size_threshold(self) -> u64 {
-        match chunked_threshold(self) {
+        self.syntax_size_threshold_with(None)
+    }
+
+    /// [`Self::syntax_size_threshold`] with Markdown given `markdown_cap`
+    /// ([`chunked_threshold_with`]).
+    #[must_use]
+    pub const fn syntax_size_threshold_with(self, markdown_cap: Option<u64>) -> u64 {
+        match chunked_threshold_with(self, markdown_cap) {
             Some(cap) => cap,
             None => self.attach_after_install_threshold(),
         }
@@ -752,6 +809,18 @@ impl DocumentScale {
     /// nothing else.
     #[must_use]
     pub const fn for_profile_in(profile: ProfileSummary, language: SyntaxLanguage) -> Self {
+        Self::for_profile_in_with(profile, language, None)
+    }
+
+    /// [`Self::for_profile_in`] with Markdown given `markdown_cap`
+    /// ([`chunked_threshold_with`]); the editor passes
+    /// [`markdown_chunked_cap`].
+    #[must_use]
+    pub const fn for_profile_in_with(
+        profile: ProfileSummary,
+        language: SyntaxLanguage,
+        markdown_cap: Option<u64>,
+    ) -> Self {
         use ReductionReason::{LongParagraph, TotalSize};
         use ScaleFeature::{
             BracketMatching, Invisibles, LocalHistory, Minimap, ProtectedView, SearchHighlight,
@@ -759,7 +828,7 @@ impl DocumentScale {
         };
         let bytes = profile.total_bytes;
         let longest = profile.longest_paragraph_chars;
-        let syntax_by_size = bytes > language.syntax_size_threshold();
+        let syntax_by_size = bytes > language.syntax_size_threshold_with(markdown_cap);
         let syntax_by_length = longest > L_SYNTAX;
         let minimap_by_size = bytes > S_MINIMAP;
         let minimap_by_length = longest > L_MINIMAP;
@@ -1041,33 +1110,46 @@ mod tests {
 
     #[test]
     fn the_chunk_highlighted_languages_keep_syntax_up_to_their_cap() {
-        let chunked: Vec<_> = SyntaxLanguage::ALL
-            .into_iter()
-            .filter(|language| language.chunk_highlighted())
-            .collect();
-        // The model builds chunk Markdown only; a shipped build chunks none.
-        assert_eq!(chunked, [SyntaxLanguage::Markdown]);
+        // Shipped: no language has a chunked cap, and Markdown is reduced
+        // above its 320 KiB gate.
         for language in SyntaxLanguage::ALL {
-            assert_eq!(chunked_threshold_with(language, None), None, "{language:?}");
+            assert_eq!(chunked_threshold(language), None, "{language:?}");
+            assert!(!language.chunk_highlighted(), "{language:?}");
         }
         assert_eq!(
-            chunked_threshold(SyntaxLanguage::Markdown),
-            Some(MODEL_MARKDOWN_CAP)
+            SyntaxLanguage::Markdown.syntax_size_threshold(),
+            attach_threshold::MARKDOWN
         );
+        assert!(
+            !DocumentScale::for_profile_in(
+                profile(attach_threshold::MARKDOWN + 1, 0, 0),
+                SyntaxLanguage::Markdown
+            )
+            .syntax_enabled
+        );
+        // The model cap, which only the chunked tests and Kani pass.
+        let model = Some(MODEL_MARKDOWN_CAP);
+        let chunked: Vec<_> = SyntaxLanguage::ALL
+            .into_iter()
+            .filter(|language| language.chunk_highlighted_with(model))
+            .collect();
+        assert_eq!(chunked, [SyntaxLanguage::Markdown]);
         for language in chunked {
-            let cap = chunked_threshold(language).expect("chunked");
+            let cap = chunked_threshold_with(language, model).expect("chunked");
             assert!(cap.is_power_of_two() && cap <= S_SYNTAX);
-            assert_eq!(language.syntax_size_threshold(), cap, "{language:?}");
+            assert_eq!(
+                language.syntax_size_threshold_with(model),
+                cap,
+                "{language:?}"
+            );
             assert!(language.attach_after_install_threshold() < cap);
-            assert!(DocumentScale::for_profile_in(profile(cap, 0, 0), language).syntax_enabled);
-            assert!(
-                !DocumentScale::for_profile_in(profile(cap + 1, 0, 0), language).syntax_enabled
-            );
+            let scale = |bytes, longest| {
+                DocumentScale::for_profile_in_with(profile(bytes, longest, 0), language, model)
+            };
+            assert!(scale(cap, 0).syntax_enabled);
+            assert!(!scale(cap + 1, 0).syntax_enabled);
             // The paragraph gate still applies.
-            assert!(
-                !DocumentScale::for_profile_in(profile(cap, L_SYNTAX + 1, 0), language)
-                    .syntax_enabled
-            );
+            assert!(!scale(cap, L_SYNTAX + 1).syntax_enabled);
         }
         for language in [
             SyntaxLanguage::C,

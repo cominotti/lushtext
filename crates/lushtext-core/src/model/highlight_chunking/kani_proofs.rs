@@ -15,10 +15,10 @@
 
 use super::{
     ChunkFacts, ChunkGate, ChunkStep, HIGHLIGHT_CHUNK_BYTES, HighlightInstallOrder,
-    MAX_SYNTAX_PARAGRAPH_BYTES, chunk_gate, highlight_install_order, next_chunk_step,
+    MAX_SYNTAX_PARAGRAPH_BYTES, chunk_gate, highlight_install_order_with, next_chunk_step,
 };
 use crate::model::buffer_replacement::{PacedSlice, ParagraphLength, SliceBudget};
-use crate::model::document_scale::SyntaxLanguage;
+use crate::model::document_scale::{MODEL_MARKDOWN_CAP, SyntaxLanguage};
 
 /// The longest paragraph sequence the slice harness ranges over.
 const MAX_PARAGRAPHS: usize = 6;
@@ -29,6 +29,16 @@ fn any_language() -> SyntaxLanguage {
     SyntaxLanguage::ALL[index]
 }
 
+/// The shipped table (`None`) or the model cap the chunked tests use: the
+/// harnesses prove both.
+fn any_markdown_cap() -> Option<u64> {
+    if kani::any() {
+        Some(MODEL_MARKDOWN_CAP)
+    } else {
+        None
+    }
+}
+
 /// The chunked order is taken exactly for an allowed syntax, a
 /// chunk-highlighted language, and a size above its attach threshold; a
 /// gated document never meets the engine.
@@ -37,14 +47,18 @@ fn the_install_order_is_chunked_exactly_where_stated() {
     let language = any_language();
     let total: u64 = kani::any();
     let allowed: bool = kani::any();
-    let order = highlight_install_order(language, total, allowed);
+    let cap = any_markdown_cap();
+    let order = highlight_install_order_with(language, total, allowed, cap);
     assert_eq!(order == HighlightInstallOrder::NoHighlight, !allowed);
     assert_eq!(
         order.is_chunked(),
         allowed
-            && language.chunk_highlighted()
+            && language.chunk_highlighted_with(cap)
             && total > language.attach_after_install_threshold()
     );
+    if cap.is_none() {
+        assert!(!order.is_chunked());
+    }
     kani::cover!(order.is_chunked());
     kani::cover!(order == HighlightInstallOrder::AttachAfterInstall);
 }
@@ -54,11 +68,12 @@ fn the_install_order_is_chunked_exactly_where_stated() {
 #[kani::proof]
 fn a_chunked_language_is_gated_above_its_attach_threshold_only_by_the_scale() {
     let language = any_language();
-    assert!(language.attach_after_install_threshold() <= language.syntax_size_threshold());
-    if !language.chunk_highlighted() {
+    let cap = any_markdown_cap();
+    assert!(language.attach_after_install_threshold() <= language.syntax_size_threshold_with(cap));
+    if !language.chunk_highlighted_with(cap) {
         assert_eq!(
             language.attach_after_install_threshold(),
-            language.syntax_size_threshold()
+            language.syntax_size_threshold_with(cap)
         );
     }
 }

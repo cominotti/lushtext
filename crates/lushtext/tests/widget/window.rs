@@ -21304,6 +21304,7 @@ fn test_local_history_restore_of_a_large_markdown_body_installs_it_highlighted_i
     // in 30 ms worker slices (ledger A69).
     use lushtext_core::model::highlight_chunking::HIGHLIGHT_CHUNK_BYTES;
     ensure_gtk_init();
+    let _cap = lushtext_core::model::document_scale::override_markdown_chunked_cap_for_test();
     let window = test_window_with_restored_size(1400, 900);
     present_window(&window);
     let dir = tempfile::tempdir().expect("tempdir");
