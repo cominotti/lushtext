@@ -159,7 +159,11 @@ fn scale_protected_view_is_upward_closed() {
     // Exactly the entry rule C2 consumes (design D0: the longest paragraph
     // alone; density never decides it).
     assert!(s.protected_view == (small.longest_paragraph_chars > super::L_PROTECT_EDIT));
-    for reason in [ReductionReason::TotalSize, ReductionReason::LongParagraph] {
+    for reason in [
+        ReductionReason::TotalSize,
+        ReductionReason::LongParagraph,
+        ReductionReason::EditReanalysis,
+    ] {
         kani::cover!(
             l.reduced.has_reason(ScaleFeature::Syntax, reason)
                 || l.reduced.has_reason(ScaleFeature::ProtectedView, reason),
@@ -203,7 +207,11 @@ fn scale_of_a_profile_join_is_the_join_of_scales() {
     assert!(presentation(of_max) == presentation(joined));
     for feature in ScaleFeature::ALL {
         if feature.is_presentation() {
-            for reason in [ReductionReason::TotalSize, ReductionReason::LongParagraph] {
+            for reason in [
+                ReductionReason::TotalSize,
+                ReductionReason::LongParagraph,
+                ReductionReason::EditReanalysis,
+            ] {
                 assert!(
                     of_max.reduced.has_reason(feature, reason)
                         == joined.reduced.has_reason(feature, reason)
@@ -249,4 +257,35 @@ fn scale_save_without_join_reenables_a_feature() {
     let saved: u64 = kani::any();
     let after_save = DocumentScale::for_total_bytes(saved);
     assert!(never_reenables(session, after_save));
+}
+
+/// The run-time re-analysis reduction (`bound-context-flip-keystrokes`)
+/// turns syntax highlighting off, re-enables nothing, keeps every other
+/// output, and survives the session join in both directions: no later
+/// load-free scale (an edit's profile, a save's bytes) brings it back.
+#[kani::proof]
+fn scale_edit_reanalysis_reduction_is_monotone_and_survives_the_join() {
+    let session =
+        DocumentScale::for_profile_in_with(any_profile(), any_language(), any_markdown_cap());
+    let reduced = session.with_edit_reanalysis_reduction();
+    assert!(!reduced.syntax_enabled);
+    assert!(never_reenables(session, reduced));
+    assert!(reduced.bracket_matching_enabled == session.bracket_matching_enabled);
+    assert!(byte_tiers(reduced) == byte_tiers(session));
+    assert!(
+        reduced
+            .reduced
+            .has_reason(ScaleFeature::Syntax, ReductionReason::EditReanalysis)
+    );
+    let later =
+        DocumentScale::for_profile_in_with(any_profile(), any_language(), any_markdown_cap());
+    assert!(!reduced.join(later).syntax_enabled);
+    assert!(
+        reduced
+            .join(later)
+            .reduced
+            .has_reason(ScaleFeature::Syntax, ReductionReason::EditReanalysis)
+    );
+    assert!(!later.join(reduced).syntax_enabled);
+    kani::cover!(session.syntax_enabled, "a highlighted session is reduced");
 }

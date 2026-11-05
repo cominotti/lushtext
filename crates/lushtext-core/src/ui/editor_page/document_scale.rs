@@ -288,6 +288,7 @@ impl LushtextEditorPage {
             self.syntax_language(),
             crate::model::document_scale::markdown_chunked_cap(),
         );
+        self.cancel_reanalysis_pacing();
         let state = &self.imp().document_scale;
         let previous = state.scale.get();
         let (scale, watch) = if keep_floor {
@@ -327,7 +328,7 @@ impl LushtextEditorPage {
     }
 
     /// Store `next` and apply whatever it turned off since `previous`.
-    fn adopt_document_scale(&self, previous: DocumentScale, next: DocumentScale) {
+    pub(super) fn adopt_document_scale(&self, previous: DocumentScale, next: DocumentScale) {
         self.imp().document_scale.scale.set(next);
         if next == previous {
             return;
@@ -366,6 +367,7 @@ impl LushtextEditorPage {
     /// its tags and changes no text (ledger A27).
     fn clear_language_for_scale(&self) {
         self.cancel_language_attach();
+        self.cancel_reanalysis_pacing();
         let buffer = self.buffer();
         buffer.set_highlight_syntax(false);
         if buffer.language().is_some() {
@@ -471,6 +473,7 @@ impl LushtextEditorPage {
         let state = self.imp().document_scale.watch.get();
         let plan = plan_insert(state, ProfileConfig::PRODUCTION, &facts);
         self.complete_watch_step(&buffer, state, &plan);
+        self.pace_reanalysis_after_edit(start.offset());
     }
 
     /// The `delete-range` after-handler: `start` is the deletion point.
@@ -487,6 +490,7 @@ impl LushtextEditorPage {
         let plan = plan_delete(ProfileConfig::PRODUCTION, facts);
         let state = self.imp().document_scale.watch.get();
         self.complete_watch_step(&buffer, state, &plan);
+        self.pace_reanalysis_after_edit(start.offset());
     }
 
     /// Read exactly the lines `plan` names, complete the step, and apply any

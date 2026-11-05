@@ -587,6 +587,11 @@ pub enum ReductionReason {
     TotalSize,
     /// A very long paragraph.
     LongParagraph,
+    /// An edit whose re-analysis needed more than the context engine's
+    /// first-update allowance (`bound-context-flip-keystrokes`,
+    /// `model::reanalysis_pacing`): reached only at run time, never from a
+    /// profile.
+    EditReanalysis,
 }
 
 impl ReductionReason {
@@ -596,6 +601,7 @@ impl ReductionReason {
         match self {
             Self::TotalSize => "because of the document's total size",
             Self::LongParagraph => "because of very long lines",
+            Self::EditReanalysis => "because re-highlighting after an edit was too slow",
         }
     }
 }
@@ -615,6 +621,7 @@ const PRESENTATION_MASK: u16 = ScaleFeature::Undo.bit() - 1;
 pub struct ReducedFeatures {
     total_size: u16,
     long_paragraph: u16,
+    edit_reanalysis: u16,
 }
 
 impl ReducedFeatures {
@@ -622,6 +629,7 @@ impl ReducedFeatures {
     pub const NONE: Self = Self {
         total_size: 0,
         long_paragraph: 0,
+        edit_reanalysis: 0,
     };
 
     #[must_use]
@@ -630,6 +638,7 @@ impl ReducedFeatures {
         match reason {
             ReductionReason::TotalSize => self.total_size |= bit,
             ReductionReason::LongParagraph => self.long_paragraph |= bit,
+            ReductionReason::EditReanalysis => self.edit_reanalysis |= bit,
         }
         self
     }
@@ -649,7 +658,7 @@ impl ReducedFeatures {
     }
 
     const fn mask(self) -> u16 {
-        self.total_size | self.long_paragraph
+        self.total_size | self.long_paragraph | self.edit_reanalysis
     }
 
     /// Whether `feature` is reduced for any reason.
@@ -664,6 +673,7 @@ impl ReducedFeatures {
         let bits = match reason {
             ReductionReason::TotalSize => self.total_size,
             ReductionReason::LongParagraph => self.long_paragraph,
+            ReductionReason::EditReanalysis => self.edit_reanalysis,
         };
         bits & feature.bit() != 0
     }
@@ -688,6 +698,7 @@ impl ReducedFeatures {
         Self {
             total_size: self.total_size & fresh,
             long_paragraph: self.long_paragraph & fresh,
+            edit_reanalysis: self.edit_reanalysis & fresh,
         }
     }
 
@@ -697,6 +708,7 @@ impl ReducedFeatures {
         Self {
             total_size: self.total_size & PRESENTATION_MASK,
             long_paragraph: self.long_paragraph & PRESENTATION_MASK,
+            edit_reanalysis: self.edit_reanalysis & PRESENTATION_MASK,
         }
     }
 
@@ -707,6 +719,8 @@ impl ReducedFeatures {
             Some(ReductionReason::LongParagraph)
         } else if self.has_reason(feature, ReductionReason::TotalSize) {
             Some(ReductionReason::TotalSize)
+        } else if self.has_reason(feature, ReductionReason::EditReanalysis) {
+            Some(ReductionReason::EditReanalysis)
         } else {
             None
         }
@@ -720,7 +734,11 @@ impl ReducedFeatures {
     #[must_use]
     pub fn describe(self) -> Option<String> {
         let mut sentences = Vec::new();
-        for reason in [ReductionReason::LongParagraph, ReductionReason::TotalSize] {
+        for reason in [
+            ReductionReason::LongParagraph,
+            ReductionReason::TotalSize,
+            ReductionReason::EditReanalysis,
+        ] {
             let features: Vec<&str> = ScaleFeature::ALL
                 .into_iter()
                 .filter(|&feature| {
@@ -750,6 +768,7 @@ impl ReducedFeatures {
         Self {
             total_size: self.total_size | other.total_size,
             long_paragraph: self.long_paragraph | other.long_paragraph,
+            edit_reanalysis: self.edit_reanalysis | other.edit_reanalysis,
         }
     }
 }
@@ -923,6 +942,22 @@ impl DocumentScale {
             protected_view: self.protected_view || other.protected_view,
             // Presentation reasons from both, byte-tier reasons from `other`.
             reduced: self.reduced.presentation_only().union(other.reduced),
+        }
+    }
+
+    /// This scale with syntax highlighting removed because an edit's
+    /// re-analysis needed more than the context engine's first-update
+    /// allowance (`bound-context-flip-keystrokes`). Bracket matching, which
+    /// costs nothing per edit, stays as it was. Joining keeps it off for the
+    /// session, like every presentation reduction.
+    #[must_use]
+    pub const fn with_edit_reanalysis_reduction(self) -> Self {
+        Self {
+            syntax_enabled: false,
+            reduced: self
+                .reduced
+                .with(ScaleFeature::Syntax, ReductionReason::EditReanalysis),
+            ..self
         }
     }
 
@@ -1361,6 +1396,43 @@ mod tests {
             "Syntax highlighting, bracket matching, the minimap, invisible characters, search \
              highlighting and word wrap of the longest lines are off because of very long lines. \
              This document is marked for Protected View because of very long lines."
+        );
+    }
+
+    #[test]
+    fn the_edit_reanalysis_reduction_turns_off_syntax_alone_and_survives_joins() {
+        let reduced = DocumentScale::UNRESTRICTED.with_edit_reanalysis_reduction();
+        assert!(!reduced.syntax_enabled);
+        assert!(reduced.bracket_matching_enabled);
+        assert!(reduced.minimap_allowed);
+        assert_eq!(
+            reduced.reduced.describe().as_deref(),
+            Some("Syntax highlighting is off because re-highlighting after an edit was too slow.")
+        );
+        let saved = reduced.join(DocumentScale::for_total_bytes(10));
+        assert!(!saved.syntax_enabled);
+        assert!(
+            saved
+                .reduced
+                .has_reason(ScaleFeature::Syntax, ReductionReason::EditReanalysis)
+        );
+        // A long-paragraph reason, when both hold, is the one reported.
+        let both = by_length(L_SYNTAX + 1)
+            .join(DocumentScale::UNRESTRICTED)
+            .with_edit_reanalysis_reduction();
+        assert!(
+            both.reduced
+                .describe()
+                .is_some_and(|text| !text.contains("re-highlighting")),
+            "{:?}",
+            both.reduced.describe()
+        );
+        assert!(
+            DocumentScale::UNRESTRICTED
+                .with_edit_reanalysis_reduction()
+                .reduced
+                .newly_reduced_presentation(ReducedFeatures::NONE)
+                .any_presentation()
         );
     }
 

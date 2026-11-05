@@ -623,6 +623,8 @@ pub struct LushtextEditorPage {
     pub document_scale: DocumentScaleState,
     /// The deferred language attach stage (`bound-post-open-settle`, D2).
     pub language_attach: LanguageAttachState,
+    /// The paced re-analysis of edits (`bound-context-flip-keystrokes`).
+    pub reanalysis_pacing: super::reanalysis_pacing::ReanalysisPacingState,
     /// The paced restyle of a dense document (`bound-post-open-settle`, D9).
     pub restyle: super::restyle::RestyleState,
     /// The buffer-level edit lock (`edit_lock.rs`).
@@ -727,6 +729,7 @@ impl Default for LushtextEditorPage {
             latest_load_failed: Cell::new(false),
             document_scale: DocumentScaleState::default(),
             language_attach: LanguageAttachState::default(),
+            reanalysis_pacing: super::reanalysis_pacing::ReanalysisPacingState::default(),
             restyle: super::restyle::RestyleState::default(),
             edit_lock: super::edit_lock::EditLockState::default(),
             held_input: super::held_input::HeldInputState::default(),
@@ -1122,6 +1125,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().setup_focus_mode_presentation();
         self.obj().setup_frame_validation();
         self.obj().setup_document_scale_watch();
+        self.obj().setup_reanalysis_pacing();
         self.obj().setup_paragraph_wrap();
         self.obj().setup_bounded_surrounding_text();
         self.obj().setup_protected_view_interaction();
