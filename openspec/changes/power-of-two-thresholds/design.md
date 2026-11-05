@@ -608,3 +608,34 @@ sections above.
 - **Kani**: `core-journal-and-write` reruns (it pins `SOFT_BOUND_BODIES`);
   `R_BATCH ≤ MAX_DENSITY_WINDOW` (256) is checked with `R_FOLD ≤ MAX_R_FOLD`.
 
+
+## Implementation decisions (stage 3, 2026-11-05)
+
+Each decision follows the rule it names; the figures are in the programme
+record's PT implementation record and in
+`.claude/handoffs/power-of-two-thresholds/`.
+
+- **The three paragraph caps stay (task 4.5).** On 772,392 corpus text files
+  (`~/Workspace` without `.git`, `.claude` worktree copies and `target` build
+  output, the crates.io registry, `/usr/include`), rounding down loses the
+  feature for 5,556 of 765,618 files (`L_MINIMAP`, 0.73 %), 650 of 767,315
+  (`L_INVISIBLES`, 0.085 %) and 2,366 of 757,002 (`L_SEARCH_HIGHLIGHT`,
+  0.31 %): each above D2's floor, so each is a recorded exception and nothing
+  turns off sooner.
+- **The Markdown event and table-cell caps stay (task 4.5).** Of 404,113
+  Markdown files of at most 4 MiB with at most 50,000 events, 700 have more
+  than 32,768 (0.17 %); of 404,439 with a largest table of at most 1,000
+  cells, 1,256 have more than 512 (0.31 %).
+- **The announcement cap is 256, not 128 (task 4.6).** The longest
+  reduced-features notice the policy can produce outside Protected View is
+  229 characters (a unit test enumerates every tier edge and pins it), and
+  every status message is announced through `DEFAULT_ANNOUNCEMENT_LIMIT`, so
+  128 would cut a shipped notice. 256 is the power of two at or above it; the
+  notice cap is 256 (from 320) and the editor identity 64 (from 96: it cuts
+  file names only).
+- **The inventory key carries `cfg` variants.** `MAX_PROFILED_OFFSETS` and
+  `MAX_DENSITY_WINDOW` have a production value and a Kani bound; the gate
+  keys them `NAME #[cfg(...)]`, so both are rows.
+- **`model::size_units::iec_size`** is the one tier formatter: a tier prints
+  whole ("64 MiB"), any other size with one decimal, rounded down, so a size
+  just above a tier never prints as the tier.

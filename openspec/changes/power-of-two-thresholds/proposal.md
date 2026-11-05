@@ -136,8 +136,8 @@ The mix costs three things today:
     lines, the minimap draws markers only for the first 1,024 (was 2,000);
   - workspace search stops at 8,192 matches;
   - Protected View heads show 8,192 characters, and dense heads 218;
-  - the minimap, invisibles and search highlighting turn off at the rounded
-    paragraph lengths.
+  - the minimap, invisibles and search highlighting keep their paragraph
+    lengths: task 4.5's corpus count made all three recorded exceptions.
 - **Data**: no persisted format changes. Retention caps only grow, so nothing
   stored is pruned on upgrade.
 - **Docs**:
