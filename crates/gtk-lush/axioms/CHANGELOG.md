@@ -27,6 +27,15 @@
   language, `--typing-limit` and `--flip-limit` the per-key cost of ordinary
   and context-flipping keys with the language attached. New fixtures under
   `fixtures::a84`.
+- A85 probe and sample (`bound-context-flip-keystrokes`): after an edit, an
+  idle at `G_PRIORITY_HIGH_IDLE` queued before it runs just before the first
+  update, one at `G_PRIORITY_LOW - 1` after it and before the worker, and
+  `ensure_highlight` on an empty range at a bound, from a
+  `G_PRIORITY_HIGH_IDLE - 1` idle, re-analyses the edit in steps whose report
+  tells whether the analysis merged; removing the language between steps
+  removes the pending first update and worker. The sample's `--edit-cost` and
+  `--flip-cost` modes measure ordinary and context-flipping keys, `--paced`
+  with LushText's pacing. New fixtures under `fixtures::a85`.
 - Every sample prints its usage and exits on `--help`/`-h`, and refuses an
   unknown argument, before GTK starts (`classify_sample_args`,
   `SampleFlags`, `sample_usage`; `support::guard`).
