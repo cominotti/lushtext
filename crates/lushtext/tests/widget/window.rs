@@ -3792,6 +3792,7 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
     let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
     let preview_stack = find_notes_preview_stack(&child).expect("notes browser preview stack");
     assert_back_button_follows_split_collapsed(&child, "Back to Notes");
+    assert!(crate::common::assert_monospace_widgets_registered("notes browser") > 0);
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::SearchBox)
         .properties(&[
@@ -12203,6 +12204,7 @@ fn test_local_history_browser_explains_empty_snapshot_and_disables_copy() {
         find_label_by_text(&child, "This snapshot was empty").is_some(),
         "empty snapshots should explain that they contained no text"
     );
+    assert!(crate::common::assert_monospace_widgets_registered("local-history browser") > 0);
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::Status)
         .properties(&[

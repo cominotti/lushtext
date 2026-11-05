@@ -25,7 +25,7 @@ that freezes it is **paragraph length**, not file size.
 | C4c | `shorten-window-content-fill-in` (2026-10-29) | Realize and present in one dispatch (no frame on the unmapped window, axiom A51), one reveal dispatch after the first frame, the first frame measured on the mapped window everywhere (evidence, settings writer gate, lane), the fill-in counted to the first frame after the activation's opens ran, and a populated lane profile | Every dispatch until composition complete (and activation shown) within B_settle in all five profiles; fill-in ≤ 40 ms per run and median ≤ 3 reference frames; first painted frame earlier than C4b's. **Met (interleaved verdict 2026-10-29):** largest dispatch 13.2 ms, fill-in 20.4–25.9 ms (median 21.4), first painted frame 30.0–33.2 ms against `main`'s 45.1–47.9 ms ("C4c" below). |
 | C6b | `chunked-highlight-attach` (queued follow-up, maintainer decision 2026-10-31; not implemented in C6) | Attach the language to the **empty** buffer, then install the text in paragraph-aligned chunks of at most 8 KiB, letting each chunk's first context-engine update run before the next: no background analysis slice runs and every dispatch stayed at 7.7–11.9 ms at every size probed (16 KiB chunks already exceed B_settle; ledger A69) | Lifts C6's per-language total-size syntax gate for the ten languages with no per-key cost (markdown, rust, c, python3, js, typescript, yaml, xml, css, sh) to any size within the other `DocumentScale` limits. It **inverts D2's order**: the text appears only after the deferred attach and its A67 parse, so first-frame and fill-in must be re-measured. HTML and JSON **stay gated** by their mid-document per-key re-analysis cost, which chunking does not change. Needs a second, 8 KiB highlight cut inside the `V_SLICE` slice plan. **Implemented 2026-11-04, merged (PR #81, `main` `afdcc6a8`) and archived 2026-11-04** (`openspec/changes/archive/2026-11-04-chunked-highlight-attach/`): the chunked install (language attached after the first chunk, A84 coverage before each next 8 KiB chunk), after the re-review **for no shipped language**: on a worst-case document (no closer after the cursor) a flipping key, or an ordinary key typed after it, exceeds its budget at 128 KiB in c and at 256 KiB in markdown (inside an open `<!--`), below their C6 gates (84 KiB passes for c, 320 KiB fails for markdown), and rust, python3 and xml failed earlier; every language keeps its C6 gate, and the mechanism is kept, proved and tested under a model cap for C6c; js, typescript, css, sh and yaml re-analyse past every key on blank-line-free content (the pre-existing miss queued as **C6c**); see "C6b" below. |
 | C6c | `bound-context-flip-keystrokes` (queued 2026-11-04, coordinator; from C6b's review) | Gate highlighting on the **longest blank-line-free run** (one more fold field in the profile pass, a carried conservative bound in the edit-time watch, Kani-proved against recomputation), plus a **runtime downgrade** when an edit's re-analysis needs a `G_PRIORITY_LOW` worker dispatch (detectable through A84's coverage and a low-priority probe). Fixes the pre-existing miss C6b measured: C6's gates for js (18 KiB), typescript (10.5 KiB), css (37 KiB), sh (39 KiB) and yaml (144 KiB) let keys cost 9–41 ms on blank-line-free content, and a context-flipping key costs worker-sized dispatches in rust, python3 and xml above 64–128 KiB; C6b's re-review adds markdown's own gate: at 320 KiB an ordinary key typed inside an open `<!--` with no closer after it costs 11.3–11.5 ms (passes at 128 KiB); and C at 64–84 KiB, which passes the dispatch criteria on the worst case, shows key-to-frame echo of 16.4–17.2 ms at the document start (8.4–11.0 ms in the middle), at or above the 16.7 ms input-to-frame budget  **Implemented 2026-11-04, merged (PR #82, `main` `e31c7cb1`) and archived 2026-11-05** (`openspec/changes/archive/2026-11-05-bound-context-flip-keystrokes/`): the planned run gate was measured on real files and **replaced** (real js re-analyses across blank lines; a run gate would unhighlight 5–46 % of real js/ts/sh/yaml files): every edit of a highlighted document is re-analysed in paced `ensure_highlight` steps before the first update (ledger A85), and a session that spends `B_SETTLE_US` without merging downgrades syntax (`EditReanalysis`) before any worker slice; every key and flip within `B_INTERACT_US` per dispatch on both families (plain 11–35 ms); recorded exceptions: echo up to about 23 ms on the keys that spend the allowance, TypeScript above about 6 KB and some js above 16 KB lose highlighting when edited near the start; allowance kept at `B_SETTLE_US` and chunked caps dormant (coordinator decisions, 2026-11-05); see "C6c" below | Every key and flipping key within the budgets on both fixture families, without removing highlighting from ordinary files |
-| CF | `scope-font-zoom-restyle` (proposed 2026-11-05: zoom classes on one display provider, swapped on the font-following widgets; the file tree does not carry `.monospace` since `50cd2e91`, so C6's note that it follows the font was wrong) | Scope the custom monospace font `CssProvider`, today display-wide, to the editor and preview surfaces without losing the `.monospace` file tree, search results and peek, so a font change or zoom step stops revalidating the whole widget tree's CSS (32 % of the zoom dispatch; the font change's 17.1 ms dispatch, footnote ³ of C3) | The font change and zoom step within `B_SETTLE_US` on the dense fixtures, interleaved with `main`, with every `.monospace` surface still following the font; a GTK 4 per-widget provider is only available through the deprecated `GtkStyleContext` (C6, "Zoom step"), so the design must find a non-deprecated path or record the residual |
+| CF | `scope-font-zoom-restyle` (implemented 2026-11-05 on branch `scope-font-zoom-restyle`, PR pending review: zoom classes on two display providers, swapped on the registered font-following widgets; the file tree does not carry `.monospace` since `50cd2e91`, so C6's note that it follows the font was wrong; record: "CF `scope-font-zoom-restyle`" below) | Scope the custom monospace font `CssProvider`, today display-wide, to the editor and preview surfaces without losing the `.monospace` search results, peek, minimap and previews (the file tree, named here before, never followed it after `50cd2e91`), so a font change or zoom step stops revalidating the whole widget tree's CSS (32 % of the zoom dispatch; the font change's 17.1 ms dispatch, footnote ³ of C3) | The font change and zoom step within `B_SETTLE_US` on the dense fixtures, interleaved with `main`, with every `.monospace` surface still following the font; a GTK 4 per-widget provider is only available through the deprecated `GtkStyleContext` (C6, "Zoom step"), so the design must find a non-deprecated path or record the residual |
 | C5 | `explore-editing-long-paragraphs` (rescoped 2026-10-30 under the hybrid policy; implemented 2026-10-31) | Lower the per-keystroke cost of typing in long **editable** paragraphs: release the retired `GtkSourceMap` that still laid out every edited paragraph (a pre-existing defect: 7.5 ms per key at 50k; A52), show paragraphs longer than `L_wrap_edit` (8,192) unwrapped by a no-wrap tag (its first character decides, A53) while the rest keep wrapping, answer the input method's surrounding-text request with a bounded window (GNOME's input path asked for the whole paragraph's word boundaries on every key; A54), make the keystroke sweep a maintained lane group, and record the floor (one whole-paragraph Pango layout in GTK's commit handler). Editing above `L_protect_edit` (50,000, C2's Protected View) is deferred. | Typing within B_interact up to `L_wrap_edit` wrapped and further unwrapped, on the plain and GNOME input paths, the rest a recorded toolkit-floor exception. **Met up to 20,000 characters** on both paths (`main`: about 12,000 plain, 5,000 on GNOME's path); 50,000 at the budget (7.7–11.1 ms) and 100,000 at 16–20 ms are the recorded exception ("C5" below), accepted by the maintainer ("editable up to ~50k", 2026-10-30); since C2 merged, 100,000 is in Protected View. |
 | C6 | `bound-post-open-settle` (proposed 2026-10-30) | Bound every dispatch from the activation turn until the opened document is settled, including the validation of dense documents of short lines that stay editable (handed over by C2's revision, open question 11). The proposal's attribution, exploratory on `main` b7f56d45: small `.txt` post-open dispatches are already ≤ 14.9 ms. The over-budget sources are the HTML language-definition parse in the activation dispatch (36–40 ms; the "first highlight"), the highlight attach after a sliced install (71 ms at 5 MB), GtkSourceView's background analysis slices (40–47 ms), and the validation of dense 710-character lines (21.6 ms). Every LushText projection costs < 0.3 ms. | Every post-open dispatch until `document-settled` ≤ B_settle and every input during settle dispatched within B_interact, interleaved with `main`, 4 profiles × 7 repetitions (design D8). Every wrap toggle, zoom step and font change on a dense document is paced the same way. Input-to-frame is reported, not gated, against the documented double-buffered lane floor. Coordinator decisions of 2026-10-30 (the maintainer may override): budgets are not relaxed, so large HTML above `S_BG_HIGHLIGHT` loses highlighting through `DocumentScale`; a language parse that cannot leave the GTK thread is deferred to an input-quiet idle and recorded as a toolkit-floor exception with an upstream report. Does not block C1–C4. |
 | SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80), aging after eight completions or 16 ms (review); `ViewportSliceBin`'s pending-request evidence covers the re-slice (review, pre-existing); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
@@ -1254,8 +1254,10 @@ can fail.
   most of the rest in Pango layout and paint of the visible lines at the new
   size. A provider scoped to the editor and preview was not adopted: GTK 4
   offers per-widget providers only through the deprecated `GtkStyleContext`,
-  the zoom and custom font also restyle the `.monospace` file tree, search
-  results and peek, which would stop following them, and removing every CSS
+  the zoom and custom font also restyle the `.monospace` search results and
+  peek (and, this note said, the file tree: wrong, the tree has used the
+  default font since `50cd2e91`; corrected by CF), which would stop following
+  them, and removing every CSS
   revalidation would still leave about 9–11 ms. Recorded as a toolkit floor
   (the visible region's re-layout at a new font size); the in-process font
   change (below) is the same restyle and lands at the same figures.
@@ -1395,8 +1397,9 @@ review's must-fixes landed, the remaining misses are decided as follows:
   display-wide `CssProvider` restyle is LushText's own choice (32 % of the zoom
   dispatch is CSS revalidation). Recorded, with a queued follow-up to scope the
   font provider to the editor and preview surfaces without losing the
-  `.monospace` file tree, search results and peek (CF in the table at the top;
-  **next**, after C6c's archive, 2026-11-05).
+  `.monospace` search results and peek (CF in the table at the top; the file
+  tree named here does not follow the font since `50cd2e91`). **Done by CF**,
+  2026-11-05: see "CF `scope-font-zoom-restyle`" below.
 - **Typed keys draw no frame for 1.0–1.8 s about 2 s after activation, on main
   and the branch:** not caused by C6, but if it is real outside the lane it is a
   severe pre-existing defect (no key echo). Queued as the **next change, top
@@ -2331,7 +2334,7 @@ dispatch per repetition, median / max (ms), and `load_request` to
 language-definition parse); `main`'s second-largest dispatch, the one-turn
 tail insert (18.7 ms), is gone on the branch.
 ² `main` has no `app.probe-save-as`.
-³ **A LushText-owned exception, not a toolkit floor** (corrected after review, 2026-11-02). The font change is the display-wide `CssProvider` restyle LushText chose for the custom monospace font (C6 recorded it as LushText's own choice, with the queued follow-up to scope the provider to the editor and preview surfaces); Perf (`perf-fc`, the 17.1 ms dispatch) shows the frame's layout as CSS revalidation (`gtk_css_node_validate` in 10 of 21 samples) and Pango measuring the head in the new font, FreeType autofitting included, with no buffer, segment or mark code in the stack; the hidden tail is never laid out (A65). Repetitions: 20 per side over two verdicts. At load 0.6–1.0 (eight per side): `main` 11.0–15.4 ms, branch 9.4–16.6 ms; at load 3.7–4.6 (twelve per side, `verdict2/*-plain{1,2}` and `*-fc{1,2}`, a game running on the desktop): `main` median 20.7, 11.1–43.7 ms, branch 19.6, 10.1–44.2 ms. The spread is continuous rather than two clusters, it widens with host load equally on both sides, and C3 adds nothing to the dispatch, so the earlier "bimodality" (branch 16.6 against `main` 15.4) is the tail of one distribution. It stays over `B_SETTLE_US` until the provider is scoped (C6's follow-up), which owns it.
+³ **A LushText-owned exception, not a toolkit floor** (corrected after review, 2026-11-02). The font change is the display-wide `CssProvider` restyle LushText chose for the custom monospace font (C6 recorded it as LushText's own choice, with the queued follow-up to scope the provider to the editor and preview surfaces); Perf (`perf-fc`, the 17.1 ms dispatch) shows the frame's layout as CSS revalidation (`gtk_css_node_validate` in 10 of 21 samples) and Pango measuring the head in the new font, FreeType autofitting included, with no buffer, segment or mark code in the stack; the hidden tail is never laid out (A65). Repetitions: 20 per side over two verdicts. At load 0.6–1.0 (eight per side): `main` 11.0–15.4 ms, branch 9.4–16.6 ms; at load 3.7–4.6 (twelve per side, `verdict2/*-plain{1,2}` and `*-fc{1,2}`, a game running on the desktop): `main` median 20.7, 11.1–43.7 ms, branch 19.6, 10.1–44.2 ms. The spread is continuous rather than two clusters, it widens with host load equally on both sides, and C3 adds nothing to the dispatch, so the earlier "bimodality" (branch 16.6 against `main` 15.4) is the tail of one distribution. It stays over `B_SETTLE_US` until the provider is scoped (C6's follow-up), which owns it. **CF (2026-11-05) owns it now and splits it**: the font change loads the new rules in a dispatch that changes no widget's class (whole-tree revalidation, no re-layout; the load dispatch 1.3–2.3 ms median, at most 5.7 ms) and swaps the classes after the next paint; on the dense restyle cases the font change's worst dispatch fell by 2.4 ms in median (C6's set, 6 repetitions per side) and stayed within `B_SETTLE_US` there. The protected 1.9M row was not rerun by CF.
 ⁴ The 500,000,000-character fixture is one byte over `REFUSE_TO_OPEN` with its
 delimiter, so it was refused on both sides and the old mid-install loop ran to
 the 180 s cap; the case now uses 499,999,999 characters (the largest document
@@ -3431,6 +3434,113 @@ two frames). No case failed on either side; every case's
 sides, C6's recorded toolkit-floor exception, unchanged.
 
 
+## CF `scope-font-zoom-restyle` (implementation record, 2026-11-05)
+
+**Status:** implemented on branch `scope-font-zoom-restyle` from `main`
+`1d483b24`; PR open, not merged. Design and decisions:
+`openspec/changes/scope-font-zoom-restyle/design.md`. Measurement artifacts:
+`.claude/handoffs/scope-font-zoom-restyle/` (`runs.log`, `compare-*.md`).
+
+**What was built.** `ui/font_zoom.rs` (cross-cutting, `WFR-FONT-ZOOM`) owns two
+display `GtkCssProvider`s at user priority and a font generation. Each
+generation's rules (`ui/font_zoom/policy.rs`, GTK-free, unit-tested to equal
+`apply_font_css`'s declarations at every level) carry every zoom on the menu's
+grid and the mod-10 lattice of the current level, keyed by
+`lushtext-font-<g>-zoom-<z>`. A zoom step swaps that class on every registered
+widget inside `restyle_everywhere` and loads nothing; a base-font change (or a
+level on a new lattice, such as 55 % set from outside the UI) loads `g + 1`
+into the provider the widgets do not use and swaps after the next painted
+frame, a second change before the swap superseding it. Registrations: every
+editor surface view, and every `.monospace` widget through
+`follow_editor_font_monospace` (search-result labels, the file peek, the
+minimap, Markdown code blocks and image fallbacks, the notes and
+local-history previews, the Line Inspector through its Blueprint
+`monospace: true` and a mapped Rust registration). `make
+check-font-zoom-registration` forbids `.monospace` elsewhere; a widget-test
+walk fails on any unregistered monospace widget in the populated surfaces. A
+pending swap blocks `document-settled`, and the measurement build's settle
+sentinel waits for it, with the load and the swap recorded as the post-open
+spans `post_open_font_load` and `post_open_font_swap`.
+
+**Axiom.** A86 (probe and sample): a display provider reload revalidates every
+widget even with unchanged text (8.5 → 25.0 ms frame from 0 to 1,500
+unrelated rows); an unmatched load changes no font or layout extent; a
+per-widget class swap applies the new size and does not grow (12.5 →
+13.0 ms). A 72-level rule set does not slow an unrelated redraw or hover
+change (task 3.4, within noise).
+
+**Verdict (interleaved, 2026-11-05).** `main` `1d483b24` against the branch,
+alternating `main`, branch, `main`, branch, plain variant, 3 repetitions per
+run, host 1-minute load 0.5–3.7 before and after every run (`runs.log`),
+`btrfs-stall-report`: storage not a bottleneck in every window. Figure: the
+median over repetitions of each restyle phase's worst main-loop stall (the
+lateness watchdog, µs); the lane's "interaction" dispatch is not used, because
+with a provider reload or a class swap the cost lands in the next frame, not
+in the action's dispatch, and the driver-computed settle could end before
+that frame on `main` (0-dispatch entries).
+
+C6's dense restyle set (dense 120, 500, 710, wrap on and off; 6 repetitions
+per side):
+
+| Case | zoom step main / branch | font change main / branch | wrap toggle main / branch |
+|---|---|---|---|
+| dense/120/wrap-off | 12,482 / 11,971 | 8,401 / 7,251 | 2,895 / 3,833 |
+| dense/120/wrap-on | 13,324 / 8,768 | 9,097 / 7,013 | 2,949 / 2,175 |
+| dense/500/wrap-off | 19,587 / 16,013 | 11,834 / 6,352 | 6,509 / 7,392 |
+| dense/500/wrap-on | 8,922 / 9,275 | 11,004 / 9,745 | 2,606 / 2,128 |
+| dense/710/wrap-off | 17,908 / 16,055 | 12,279 / 6,521 | 8,052 / 8,638 |
+| dense/710/wrap-on | 7,933 / 7,237 | 14,213 / 11,518 | 4,989 / 7,668 |
+| **median of per-case differences** | **−1,274** | **−2,389** | +734 (unchanged mechanism: noise) |
+
+The whole dense grid (120, 500, 2,000, 10,000, 50,000; 12 repetitions per
+side): zoom step −1,482 µs, font change −2,647 µs, wrap toggle −11 µs in
+median. The populated restyle cases (dense/2000 wrap-on, sidebar shown, 12
+repetitions per side):
+
+| Case | zoom step main / branch | font change main / branch |
+|---|---|---|
+| sidebar over 300 entries | 19,798 / 17,885 | 18,940 / 15,496 |
+| sidebar over an empty folder (control) | 20,912 / 18,478 | 17,995 / 15,441 |
+| search panel listing results | 25,163 / 17,911 | 24,400 / 15,700 |
+
+No open, background, click or typing phase regressed beyond one reference
+frame. The font change's load dispatch (`post_open_font_load`) was 1.3–2.3 ms
+in median, at most 5.7 ms, and the swap's re-layout followed in later frames.
+
+**Adoption (D5) and the deviation.** Met: the populated zoom step is within
+1 ms of its control (−593 µs on the branch; −1,114 µs on `main`, so the lane's
+sidebar, a virtualized list, does not show the growth A86 pins); the font
+change's dispatches are each at most `main`'s single dispatch and within
+`B_SETTLE_US` on C6's set; nothing regresses beyond a reference frame. **Not
+met:** the dense zoom step dropped by 1.3–1.5 ms in median, short of D5's
+2 ms. The 32 % revalidation share C6 measured is about 10 % on these windows,
+where the visible text's re-layout at the new size dominates. Decision
+(coordinator, autonomous, user experience first; the maintainer may
+override in review): **adopt**, because every restyle phase improves or holds,
+the font change improves by 2.4–2.6 ms in median and by 8.7 ms with search
+results listed, the zoom step with search results by 7.3 ms, and the zoom
+cost no longer grows with unrelated widgets (A86); abandoning would give all
+of that up for a threshold set before the share was measured.
+
+**Residuals over budget, recorded.** The zoom step stays over `B_INTERACT_US`
+on every dense row but dense/710 wrap-on (7.2 ms; the others 8.8–16.1 ms) and over `B_SETTLE_US` on dense/500 and
+dense/710 wrap-off (16.0–16.1 ms) and on the populated cases (17.9–18.5 ms):
+the visible paragraphs' re-layout at the new size, C6's text-re-layout floor.
+With search results listed, the result labels' own re-layout adds to it
+(D7). The font change's whole-tree revalidation (step 1 of D4) stayed within
+`B_SETTLE_US` on every dense restyle case, so no A86 exception was needed;
+the populated font change's worst stall is 15.4–15.7 ms.
+
+**Found, pre-existing, identical on both sides (not this change's).** On
+dense/10000 and dense/50000 (160 lines of 10,000 and 50,000 characters,
+editable), a restyle re-lays out whole paragraphs in one dispatch (zoom step
+about 100 ms and 470–485 ms, font change 70 ms and 320–330 ms on both sides),
+and typing stalls about 1.2 s per burst, with the lane reporting misdirected
+typing and withheld typing frames for those cases (`main` 12 / 18 and the
+branch 12 / 18 in `V-*3`, `V-*4`). Left to the coordinator: it belongs to the
+long-paragraph programme (C5, Protected View's `L_PROTECT_EDIT`), not to the
+font provider.
+
 ## Axioms each change cites
 
 | Change | Axioms |
@@ -3446,6 +3556,7 @@ sides, C6's recorded toolkit-floor exception, unchanged.
 | EV `defer-background-tab-layout` | A31, A70, A80; added by EV: A81 (every ready source of the top priority runs in one iteration, so N validating views make an iteration N batches long), A82 (a never-selected `AdwTabView` page's source view validates its buffer while hidden: the scroller creates its layout), A83 (an empty buffer stops it at once and leaves the document untouched; a reattach re-lays out from nothing, back at the start; a scroll queued right after it lands elsewhere, re-scrolling on each `upper` change keeps it) |
 | C6b `chunked-highlight-attach` | A27, A67, A68, A69, A70, A80, A83; added by C6b: A84 (the largest `highlight-updated` end since an insert or attach reaches the end of the last line's text once the context engine has analysed the buffer; a `G_PRIORITY_LOW + 1` idle always finds it there) |
 | C6c `bound-context-flip-keystrokes` | A27, A69, A84; added by C6c: A85 (an edit's first update runs right after an idle queued at its priority before the edit and before a `G_PRIORITY_LOW - 1` idle; `ensure_highlight` on an empty range from a `G_PRIORITY_HIGH_IDLE - 1` idle re-analyses in steps whose report says whether it merged; removing the language between steps removes the first update and worker) |
+| CF `scope-font-zoom-restyle` | A47 (hidden widgets take a class without a restyle until shown), A72 (why the font stays CSS, not a tag); added by CF: A86 (a display provider reload revalidates every widget even with unchanged text and grows with the window; an unmatched load changes no font; a per-widget class swap applies the new size and does not grow with unrelated widgets) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 
 Two probes corrected the designs that cite them, and C1/C2 must read the

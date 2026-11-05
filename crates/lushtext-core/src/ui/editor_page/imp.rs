@@ -874,6 +874,9 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().setup_edit_lock();
         crate::ui::responsiveness_probe::observe_editor(&self.source_view);
         self.obj().setup_settle_watch();
+        // The editor surface follows the editor font and zoom through its
+        // zoom class (`ui/font_zoom.rs`).
+        crate::ui::font_zoom::follow_editor_font(&*self.source_view);
 
         let settings = &self.settings;
         let invisible_mode = crate::model::encoding::InvisibleCharactersMode::from_id(

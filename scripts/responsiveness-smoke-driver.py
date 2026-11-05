@@ -217,7 +217,7 @@ SAVE_BACKLOG_DOCUMENTS = 2
 SAVE_BACKLOG_LEAD_S = 1.0
 SAVE_SCRATCH_TEXT = "scratch document the save case writes\n"
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight", "reanalysis")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight", "reanalysis", "restyle-populated")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -259,6 +259,8 @@ PHASE_KINDS = {
     "wrap-toggle": "post-open-restyle",
     "zoom-step": "post-open-restyle",
     "font-change": "post-open-restyle",
+    # The populated restyle's search-results variant lists results first.
+    "search-results": "settle",
     "tab-settle": "post-open-tab",
     # The keystroke group: placing the caret (find the marker, close the
     # search bar, collapse the selection) and proving where the bursts
@@ -346,6 +348,20 @@ CONSTRUCTION_BACKENDS = ("keyfile", "dconf")
 # entries and both side panes shown, so the reveal frame carries the sidebar
 # and the properties panel. The other profiles show neither pane.
 POPULATED_CASE_ID = "baseline/small/steady-populated"
+# The populated restyle cases (scope-font-zoom-restyle, design D7): the dense
+# restyles with the workspace sidebar shown over the populated folder, the
+# same geometry over an empty folder (the control), and the populated folder
+# with the workspace search panel listing results (its labels follow the
+# font, so they are reported separately and are not part of the 1 ms
+# criterion).
+RESTYLE_POPULATED_LENGTH = 2_000
+RESTYLE_POPULATED_CASES = (
+    ("restyle-populated/sidebar-300", True, False),
+    ("restyle-populated/sidebar-empty", "empty", False),
+    ("restyle-populated/search-results", True, True),
+)
+RESTYLE_POPULATED_CONTROL = "restyle-populated/sidebar-empty"
+RESTYLE_SEARCH_QUERY = "synthetic"
 POPULATED_DIRECTORIES = 20
 POPULATED_FILES = 280
 CONSTRUCTION_SPANS = ("startup_toolkit", "startup_lushtext", "window_construction", "first_frame")
@@ -1761,6 +1777,24 @@ def build_cases(tier: str) -> list[Case]:
                     attrs={"wrap": wrap, "lines": DENSE_LINE_COUNT, "post_open": True, "typing": True, "restyle": True},
                 )
             )
+    for case_id, populated, search_results in RESTYLE_POPULATED_CASES if tier == "full" else ():
+        cases.append(
+            Case(
+                case_id,
+                "restyle-populated",
+                FixtureSpec("dense", RESTYLE_POPULATED_LENGTH, seed_for("dense", RESTYLE_POPULATED_LENGTH), count=DENSE_LINE_COUNT),
+                settings={"word-wrap": True, "show-minimap": False, "workspace-sidebar-visible": True},
+                length=RESTYLE_POPULATED_LENGTH,
+                attrs={
+                    "wrap": True,
+                    "lines": DENSE_LINE_COUNT,
+                    "post_open": True,
+                    "restyle": True,
+                    "populated": populated,
+                    "search_results": search_results,
+                },
+            )
+        )
     for total in grid["total-size"]:
         # The same bytes as .html and as .txt: S_syntax is the difference.
         for ext in ("html", "txt"):
@@ -2310,7 +2344,7 @@ class Runner:
 
     # -- app lifecycle ------------------------------------------------------
 
-    def fresh_state(self, case_dir: Path, settings: dict[str, Any], backend: str = "keyfile", on_disk: bool = False, populated: bool = False, legacy_layout: bool = False) -> dict[str, str]:
+    def fresh_state(self, case_dir: Path, settings: dict[str, Any], backend: str = "keyfile", on_disk: bool = False, populated: bool | str = False, legacy_layout: bool = False) -> dict[str, str]:
         # The construction cases keep their XDG state on the artifact
         # filesystem, which is the home filesystem on the reference machine:
         # a GSettings keyfile write fsyncs, and the temp scope (tmpfs) would
@@ -2364,7 +2398,7 @@ class Runner:
         gtk_settings.write_text("[Settings]\ngtk-cursor-blink=false\n", encoding="utf-8")
         (case_dir / "settings.json").write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
         if populated:
-            seed_populated_workspace(state / "data/lushtext", state / "workspace")
+            seed_populated_workspace(state / "data/lushtext", state / "workspace", empty=populated == "empty")
         return {
             "XDG_CACHE_HOME": str(state / "cache"),
             "XDG_CONFIG_HOME": str(state / "config"),
@@ -2972,6 +3006,23 @@ class Runner:
                 raise RuntimeError("app.probe-set-font failed")
             return 0
 
+        if ctx.get("search_results"):
+
+            def search_results(_inj, deadline):
+                from gi.repository import GLib
+
+                if not self.action("win", "set-search-panel-visible", [GLib.Variant("b", True)], deadline):
+                    return False, "action-failed"
+                if not self.action("win", "set-search-panel-query", [self._string(RESTYLE_SEARCH_QUERY)], deadline):
+                    return False, "action-failed"
+                ok, status = self.wait_ready("search-complete", deadline)
+                if not ok:
+                    return ok, status
+                return self.wait_ready("visual-geometry-settled", deadline)
+
+            if not self.step(phases, "search-results", self.cap_s, search_results, recover):
+                return False
+
         for name, trigger in (("wrap-toggle", wrap), ("zoom-step", zoom), ("font-change", font)):
             if not self.wanted(name):
                 continue
@@ -3198,7 +3249,7 @@ class Runner:
         self.type_burst = case.attrs.get("burst", TYPE_BURST)
         backend = case.attrs.get("backend", "keyfile")
         on_disk = "profile" in case.attrs
-        populated = bool(case.attrs.get("populated"))
+        populated = case.attrs.get("populated") or False
         legacy_layout = fresh_profile_runs_migration(case)
         state_env = self.fresh_state(rep_dir, case.settings, backend, on_disk, populated, legacy_layout)
         log_path = rep_dir / "probe.jsonl"
@@ -3227,6 +3278,7 @@ class Runner:
                 "wrap": bool(case.settings.get("word-wrap", True)),
                 "tab_settle": bool(case.attrs.get("tab_settle")),
                 "restyle": bool(case.attrs.get("restyle")),
+                "search_results": bool(case.attrs.get("search_results")),
             }
 
         def attach(launch: Launch, log: Path, live_state: dict[str, str]) -> None:
@@ -4086,16 +4138,17 @@ def fill_in_median(construction: list[dict], reference_frame_us: int) -> dict[st
     return {"median_us": median, "target_us": target, "within_target": median <= target, "runs": len(values)}
 
 
-def seed_populated_workspace(data_dir: Path, folder: Path) -> int:
+def seed_populated_workspace(data_dir: Path, folder: Path, empty: bool = False) -> int:
     """Write one workspace folder of synthetic entries and the `workspaces.json`
     that restores it; return the number of top-level entries. Names only, with
-    one line of synthetic text per file: never a user file."""
+    one line of synthetic text per file: never a user file. `empty` restores
+    the same workspace over an empty folder (the populated restyle's control)."""
     folder.mkdir(parents=True, exist_ok=True)
-    for index in range(POPULATED_DIRECTORIES):
+    for index in range(0 if empty else POPULATED_DIRECTORIES):
         directory = folder / f"dir-{index:03}"
         directory.mkdir(exist_ok=True)
         (directory / "nested.txt").write_text("nested\n", encoding="utf-8")
-    for index in range(POPULATED_FILES):
+    for index in range(0 if empty else POPULATED_FILES):
         (folder / f"file-{index:03}.txt").write_text(f"synthetic {index}\n", encoding="utf-8")
     data_dir.mkdir(parents=True, exist_ok=True)
     workspaces = {
@@ -4113,7 +4166,7 @@ def seed_populated_workspace(data_dir: Path, folder: Path) -> int:
         },
     }
     (data_dir / "workspaces.json").write_text(json.dumps(workspaces, indent=2) + "\n", encoding="utf-8")
-    return POPULATED_DIRECTORIES + POPULATED_FILES
+    return 0 if empty else POPULATED_DIRECTORIES + POPULATED_FILES
 
 
 def isolate_dconf_activation(bus: Bus, config_dir: Path) -> None:
@@ -5048,6 +5101,54 @@ def post_open_report(rows: list[dict]) -> list[dict]:
     return out
 
 
+def populated_restyle_rows(cases: list[dict]) -> list[dict]:
+    """Per case and restyle phase of the populated restyle cases
+    (scope-font-zoom-restyle, D7): the median and largest stall (the longest
+    main-loop dispatch of the phase, from the lateness watchdog, which does not
+    depend on where the driver-computed settle ends) and the difference of the
+    median to the control's."""
+    cells = {
+        (c["case"], c["variant"], name): phase
+        for c in cases
+        if c["case"].startswith("restyle-populated/")
+        for name, phase in c["phases"].items()
+        if name in ("wrap-toggle", "zoom-step", "font-change") and "stall_median_us" in phase
+    }
+    rows = []
+    for (case, variant, phase), cell in sorted(cells.items()):
+        control = cells.get((RESTYLE_POPULATED_CONTROL, variant, phase))
+        rows.append(
+            {
+                "case": case,
+                "variant": variant,
+                "phase": phase,
+                "stall_median_us": cell["stall_median_us"],
+                "stall_max_us": cell["stall_max_us"],
+                "median_minus_control_us": None if control is None else cell["stall_median_us"] - control["stall_median_us"],
+            }
+        )
+    return rows
+
+
+def render_populated_restyle(report: dict) -> list[str]:
+    """The populated restyle table: each case against its empty-folder control."""
+    rows = populated_restyle_rows(report.get("cases") or [])
+    if not rows:
+        return []
+    lines = [
+        "## Populated restyle against its control (scope-font-zoom-restyle)",
+        "",
+        f"Per case and phase, the median and largest stall over the repetitions. The control `{RESTYLE_POPULATED_CONTROL}` has the same window geometry with the sidebar over an empty folder; "
+        "`search-results` adds the workspace search panel's font-following labels, reported apart from the 1 ms criterion (design D7). Durations in us.",
+        "",
+        "| Case | Variant | Phase | Stall median | Stall max | Median - control |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        lines.append(f"| {r['case']} | {r['variant']} | {r['phase']} | {r['stall_median_us']} | {r['stall_max_us']} | {r['median_minus_control_us']} |")
+    return lines + [""]
+
+
 def render_post_open(report: dict) -> list[str]:
     """The post-open settle table and the C6 verdict (bound-post-open-settle)."""
     entries = report.get("post_open") or []
@@ -5449,6 +5550,7 @@ def render_markdown(report: dict) -> str:
             f"{entry.get('largest_composition_dispatch_us')} | {dispatches} | {stages} | {frames} |"
         )
     lines += [""] + render_post_open(report)
+    lines += render_populated_restyle(report)
     keystroke_rows = [
         (case, name, phase["keystroke"])
         for case in report["cases"]
@@ -6679,6 +6781,29 @@ def self_test() -> int:
     expect(verdicts_c4[0]["verdict"] == "over" and verdicts_c4[0]["over_budget"] == ["window_construction", "largest_dispatch_before_first_frame", "largest_composition_dispatch"], f"construction verdict ({verdicts_c4})")
     expect(construction_case_id("fresh", "keyfile") == "baseline/small" and construction_case_id("steady", "dconf") == "baseline/small/steady-dconf", "construction case ids")
     populated_case = next((c for c in full if c.id == POPULATED_CASE_ID), None)
+    restyle_cases = {c.id: c for c in full if c.group == "restyle-populated"}
+    expect(
+        set(restyle_cases) == {case_id for case_id, _, _ in RESTYLE_POPULATED_CASES}
+        and all(c.attrs.get("restyle") and c.attrs.get("post_open") and c.settings.get("workspace-sidebar-visible") is True for c in restyle_cases.values())
+        and restyle_cases[RESTYLE_POPULATED_CONTROL].attrs.get("populated") == "empty"
+        and restyle_cases["restyle-populated/search-results"].attrs.get("search_results") is True
+        and not restyle_cases["restyle-populated/sidebar-300"].attrs.get("search_results"),
+        "the populated restyle cases share one geometry: sidebar over 300 entries, over an empty folder, and with search results",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        expect(seed_populated_workspace(root / "data", root / "workspace", empty=True) == 0 and not list((root / "workspace").iterdir()), "the populated restyle's control restores an empty folder")
+    sample = [
+        {"case": case_id, "variant": "plain", "phases": {"zoom-step": {"stall_median_us": median, "stall_max_us": median + 100}}}
+        for case_id, median in (("restyle-populated/sidebar-300", 9_000), ("restyle-populated/sidebar-empty", 8_500))
+    ]
+    diff = {r["case"]: r for r in populated_restyle_rows(sample)}
+    expect(
+        diff["restyle-populated/sidebar-300"]["median_minus_control_us"] == 500
+        and diff[RESTYLE_POPULATED_CONTROL]["median_minus_control_us"] == 0
+        and diff["restyle-populated/sidebar-300"]["stall_max_us"] == 9_100,
+        "the populated restyle table reports each case's difference to its control per phase",
+    )
     expect(populated_case is not None and {k: populated_case.attrs.get(k) for k in ("profile", "backend", "populated")} == {"profile": "steady", "backend": "keyfile", "populated": True} and populated_case.settings.get("workspace-sidebar-visible") is True and populated_case.settings.get("properties-sidebar-visible") is True, "the populated profile shows both panes over a steady keyfile profile")
     by_id = {c.id: c for c in full}
     expect(

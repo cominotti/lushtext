@@ -342,7 +342,7 @@ impl LushtextWindow {
         let raw_preview_view = gtk4::TextView::with_buffer(&raw_preview_buffer);
         raw_preview_view.set_editable(false);
         raw_preview_view.set_cursor_visible(false);
-        raw_preview_view.set_monospace(true);
+        crate::ui::font_zoom::follow_editor_font_monospace(&raw_preview_view);
         raw_preview_view.set_wrap_mode(gtk4::WrapMode::None);
         raw_preview_view.set_left_margin(NOTES_RAW_PREVIEW_TEXT_MARGIN_HORIZONTAL_SP);
         raw_preview_view.set_right_margin(NOTES_RAW_PREVIEW_TEXT_MARGIN_HORIZONTAL_SP);

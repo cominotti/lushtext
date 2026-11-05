@@ -256,7 +256,7 @@ impl LushtextWindow {
         preview_view.set_editable(false);
         preview_view.set_cursor_visible(false);
         preview_view.set_wrap_mode(gtk4::WrapMode::None);
-        preview_view.add_css_class("monospace");
+        crate::ui::font_zoom::follow_editor_font_monospace(&preview_view);
         accessibility::set_labelled_description(
             &preview_view,
             "Snapshot text preview",

@@ -273,7 +273,6 @@ fn build_code_block_widget(code_block: &BufferedCodeBlock, theme: &CodeBlockThem
     source_view.set_cursor_visible(false);
     source_view.set_show_line_numbers(false);
     source_view.set_highlight_current_line(false);
-    source_view.set_monospace(true);
     source_view.set_wrap_mode(gtk4::WrapMode::None);
     source_view.set_left_margin(0);
     source_view.set_right_margin(0);
@@ -281,7 +280,7 @@ fn build_code_block_widget(code_block: &BufferedCodeBlock, theme: &CodeBlockThem
     source_view.set_bottom_margin(0);
     source_view.set_hexpand(true);
     source_view.set_halign(gtk4::Align::Fill);
-    source_view.add_css_class("monospace");
+    crate::ui::font_zoom::follow_editor_font_monospace(&source_view);
     source_view.add_css_class("markdown-code-block-view");
     // GtkSourceView already exposes a text-box role; assigning it again is a
     // GTK critical, so this projection only supplies the code-block name/state.

@@ -59,7 +59,7 @@ pub const TOP_K: usize = 16;
 /// order. Each wraps the LushText call that runs the stage, from the
 /// activation turn that creates an editor page until the document settles;
 /// the driver attributes a dispatch to the span that contains it.
-pub const POST_OPEN_SPANS: [&str; 9] = [
+pub const POST_OPEN_SPANS: [&str; 11] = [
     "post_open_activation",
     "post_open_editor_construct",
     "post_open_language_catalog",
@@ -69,6 +69,10 @@ pub const POST_OPEN_SPANS: [&str; 9] = [
     "post_open_publish",
     "post_open_highlight_attach",
     "post_open_first_editor_frame",
+    // `scope-font-zoom-restyle`: a base-font change's provider load, and the
+    // zoom-class swap of a zoom step or of a loaded font generation.
+    "post_open_font_load",
+    "post_open_font_swap",
 ];
 
 /// The mark recorded on every `GtkSourceBuffer::highlight-updated` of an

@@ -138,12 +138,14 @@ SHARDS: dict[str, Shard] = {
         # beside it, on the same terms, and `protected_view_surfaces`
         # (protected-view-inspector-and-surfaces) on 2026-11-01, and
         # `held_typing` (keep-keystrokes-during-install) on 2026-11-02, and
-        # `reanalysis_pacing` (bound-context-flip-keystrokes) on 2026-11-04.
+        # `reanalysis_pacing` (bound-context-flip-keystrokes) on 2026-11-04,
+        # and `font_zoom` (scope-font-zoom-restyle, five tests) on 2026-11-05.
         modules=(
             "attention_refresh",
             "background_tab_layout",
             "document_scale",
             "editor_page",
+            "font_zoom",
             "held_typing",
             "multi_window_drafts",
             "post_open_settle",

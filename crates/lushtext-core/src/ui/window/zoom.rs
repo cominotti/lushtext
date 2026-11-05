@@ -3,8 +3,10 @@
 //! Zoom controls: hamburger menu widget ([−] [100%] [+]) and window actions.
 //!
 //! The zoom level is stored as a percentage in GSettings (`zoom-level`, 50–400,
-//! default 100). Changing the setting triggers a CSS re-apply in `lib.rs` that
-//! scales the `.monospace` font-size across all editors and the sidebar file tree.
+//! default 100). Changing the setting reaches `ui/theme.rs`, which swaps the
+//! zoom class on every widget that follows the editor font (`ui/font_zoom.rs`:
+//! the editors and every `.monospace` widget; the file tree keeps the default
+//! font) instead of reloading a style provider.
 
 use crate::config::keys;
 use glib::subclass::prelude::ObjectSubclassIsExt;

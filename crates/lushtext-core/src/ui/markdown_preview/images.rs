@@ -532,7 +532,7 @@ fn build_image_fallback_widget(title: &str, body: &str) -> gtk4::Widget {
     body_label.set_wrap(true);
     body_label.set_selectable(false);
     body_label.add_css_class("dim-label");
-    body_label.add_css_class("monospace");
+    crate::ui::font_zoom::follow_editor_font_monospace(&body_label);
     body_label.add_css_class("markdown-preview-image-fallback-body");
 
     content.append(&title_label);

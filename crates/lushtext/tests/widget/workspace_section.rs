@@ -6221,6 +6221,7 @@ fn test_file_peek_space_opens_for_selected_file_and_keeps_sidebar_focus() {
     });
 
     assert_tree_focus(&window, &fixture.section);
+    assert!(crate::common::assert_monospace_widgets_registered("file peek") >= 2);
 }
 
 #[test]

@@ -1007,3 +1007,44 @@ pub fn activate_with_real_press(window: &impl IsA<gtk4::Window>, target: &impl I
     call(&session, SESSION, "Stop", None);
     wait_until(Duration::from_secs(5), || window.is_active());
 }
+
+/// Every widget of every toplevel (popovers and dialogs included), depth first.
+pub fn every_widget() -> Vec<gtk4::Widget> {
+    fn walk(widget: &gtk4::Widget, out: &mut Vec<gtk4::Widget>) {
+        out.push(widget.clone());
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            walk(&current, out);
+            child = current.next_sibling();
+        }
+    }
+    let mut out = Vec::new();
+    for toplevel in gtk4::Window::list_toplevels() {
+        walk(&toplevel, &mut out);
+    }
+    out
+}
+
+/// Fail on any widget carrying `.monospace` or `GtkTextView:monospace` that
+/// does not follow the editor font (`ui/font_zoom.rs`, task 4.4 of
+/// `scope-font-zoom-restyle`); returns how many monospace widgets it saw.
+pub fn assert_monospace_widgets_registered(context: &str) -> usize {
+    use glib::object::Cast;
+    let mut seen = 0;
+    for widget in every_widget() {
+        let monospace = widget.has_css_class("monospace")
+            || widget
+                .downcast_ref::<gtk4::TextView>()
+                .is_some_and(gtk4::prelude::TextViewExt::is_monospace);
+        if monospace {
+            seen += 1;
+            assert!(
+                lushtext_core::ui::font_zoom::is_registered(&widget),
+                "{context}: an unregistered monospace {} ({:?}) does not follow the editor zoom",
+                widget.type_().name(),
+                widget.css_classes(),
+            );
+        }
+    }
+    seen
+}

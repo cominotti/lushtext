@@ -2953,6 +2953,7 @@ fn test_search_panel_narrow_window_ellipsizes_rows_without_horizontal_scrolling(
             "no row label may be wider than the narrow window",
         );
     }
+    assert!(crate::common::assert_monospace_widgets_registered("search results") >= 2);
 
     panel.close();
     flush_events();
