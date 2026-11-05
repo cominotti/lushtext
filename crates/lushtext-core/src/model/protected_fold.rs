@@ -132,7 +132,7 @@ pub const A28_SAFE_CHARS: u64 =
 /// arbitrary pixel (the widget test of task 3.4) touches at most
 /// `ceil((2000 + h − 1) / h)` rows, 113 at 18 px and 224 at 9 px. So
 /// `R_BATCH` already counts the partially covered edge row (256 leaves 32 rows
-/// to spare), and `R_FOLD · N_DENSE` = 256 · 218 = 55,808 stays within
+/// to spare), and `R_FOLD · N_DENSE` = 256 · 256 = 65,536 stays within
 /// `V_BATCH`. The argument rests on
 /// a 9 px minimum row height at the 50 % zoom, the assumption C0's doubling
 /// already made.
@@ -144,7 +144,7 @@ pub const R_FOLD: usize = R_BATCH;
 /// `ZOOM_MIN`, 50; see [`A28_MAX_ZOOM_PERCENT`] for the pending assertion).
 pub const R_FOLD_MIN_ZOOM_PERCENT: u64 = 50;
 
-/// Characters a dense paragraph keeps visible: `V_BATCH / R_BATCH` (218), so
+/// Characters a dense paragraph keeps visible: `V_BATCH / R_BATCH` (256), so
 /// `R_FOLD` dense paragraphs fill at most one batch.
 ///
 /// Kind: derived; computed from the constants it names, not rounded.

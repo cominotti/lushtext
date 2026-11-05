@@ -33,19 +33,21 @@ const MAX_SCAN_DEPTH: u32 = 64;
 /// Maximum number of files to index. Beyond this, linear scan per query
 /// starts to exceed the palette's latency budget on one CPU core.
 ///
-/// Kind: cap; recorded exception (`power-of-two-thresholds`): a real
-/// 87,624-file workspace exists (0.9.x release notes), and 65,536 would
-/// truncate it; memory stays bounded by the 128 MiB and 64 MiB byte ledgers.
-pub const MAX_INDEXED_FILES: usize = 100_000;
+/// Kind: presentation cap; 100,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M15).
+/// The 64 MiB installed and 128 MiB construction ledgers (unchanged) bound
+/// its memory.
+pub const MAX_INDEXED_FILES: usize = 128 * 1024;
 /// Maximum number of distinct canonical directories retained by one index build.
 ///
 /// This is independent from the file limit because sparse directory forests can
 /// otherwise consume unbounded traversal state while admitting almost no files.
 ///
-/// Kind: cap; recorded exception (`power-of-two-thresholds`): a real
-/// 87,624-file workspace exists (0.9.x release notes), and 65,536 would
-/// truncate it; memory stays bounded by the 128 MiB and 64 MiB byte ledgers.
-pub const MAX_INDEXED_DIRECTORIES: usize = 100_000;
+/// Kind: presentation cap; 100,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M15).
+/// The 64 MiB installed and 128 MiB construction ledgers (unchanged) bound
+/// its memory.
+pub const MAX_INDEXED_DIRECTORIES: usize = 128 * 1024;
 /// Maximum heap ownership retained by one installed file index.
 ///
 /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
@@ -1339,6 +1341,7 @@ fn deduplicate_files(files: &mut Vec<IndexedFile>) {
 
 #[cfg(test)]
 mod build_ledger_tests {
+
     use super::*;
 
     #[test]

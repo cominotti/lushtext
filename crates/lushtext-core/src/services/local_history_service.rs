@@ -1673,14 +1673,14 @@ mod tests {
         let cases = [
             (0, LocalHistoryAvailability::Full, true, true),
             (1_000_001, LocalHistoryAvailability::Full, true, true),
-            (8 * 1024 * 1024, LocalHistoryAvailability::Full, true, true),
+            (10_000_001, LocalHistoryAvailability::Full, true, true),
+            (16 * 1024 * 1024, LocalHistoryAvailability::Full, true, true),
             (
-                8 * 1024 * 1024 + 1,
+                16 * 1024 * 1024 + 1,
                 LocalHistoryAvailability::SaveOnly,
                 false,
                 true,
             ),
-            (10_000_001, LocalHistoryAvailability::SaveOnly, false, true),
             (50_000_001, LocalHistoryAvailability::SaveOnly, false, true),
             (
                 64 * 1024 * 1024,
@@ -1726,11 +1726,11 @@ mod tests {
             LocalHistoryAvailability::Full
         );
         assert_eq!(
-            availability_for_live_buffer_chars(2 * 1024 * 1024),
+            availability_for_live_buffer_chars(4 * 1024 * 1024),
             LocalHistoryAvailability::Full
         );
         assert_eq!(
-            availability_for_live_buffer_chars(2 * 1024 * 1024 + 1),
+            availability_for_live_buffer_chars(4 * 1024 * 1024 + 1),
             LocalHistoryAvailability::SaveOnly
         );
         assert_eq!(
@@ -1759,11 +1759,11 @@ mod tests {
     #[test]
     fn incoming_utf8_availability_uses_exact_body_bytes() {
         assert_eq!(
-            availability_for_utf8_bytes(8 * 1024 * 1024),
+            availability_for_utf8_bytes(16 * 1024 * 1024),
             LocalHistoryAvailability::Full
         );
         assert_eq!(
-            availability_for_utf8_bytes(8 * 1024 * 1024 + 1),
+            availability_for_utf8_bytes(16 * 1024 * 1024 + 1),
             LocalHistoryAvailability::SaveOnly
         );
         assert_eq!(
@@ -1771,7 +1771,7 @@ mod tests {
             LocalHistoryAvailability::Unavailable
         );
 
-        let multibyte = "🙂".repeat(2_500_001);
+        let multibyte = "🙂".repeat(4 * 1024 * 1024 + 1);
         assert_eq!(
             availability_for_utf8_bytes(multibyte.len()),
             LocalHistoryAvailability::SaveOnly
