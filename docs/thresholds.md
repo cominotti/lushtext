@@ -1013,7 +1013,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `MAX_DIR_ENTRIES` | 8,192 | pending-presentation | up from 10,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `MAX_DIR_ENTRIES` | 10,000 | presentation cap, exception | up from 10,000, kept: M5 measured the terminal dispatch of a capped expansion at 25-30 ms (main, 10,000) and 41-43 ms (16,384), past main + one reference frame (D12) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_APPEND_BATCH_SIZE` | 256 | cap | power of two |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_RECONCILE_DIRECT_ROWS` | 256 | cap | power of two |
 
