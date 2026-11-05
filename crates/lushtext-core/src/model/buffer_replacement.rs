@@ -35,10 +35,16 @@ use super::paragraph_boundary::{ProfileSummary, next_paragraph_break};
 /// 2.3–2.6 ms (9–10 µs per KiB). At the worst rate, 8,000 µs covers 734 KiB;
 /// 704 KiB keeps about 4 % of margin. The former value, 1 MiB, took 11.1 ms.
 ///
-/// Kind: byte threshold. Rounding: down to a whole KiB, not to a power of two
-/// (512 KiB would cost a sliced install of documents that fit); a recorded
-/// exception, deferred to `power-of-two-thresholds`.
-pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 704 * 1024;
+/// `power-of-two-thresholds` (design D8, task 5.3) measured the sliced install
+/// that documents of 512-704 KiB now take, interleaved with `main` (2026-11-05,
+/// load 0.9-1.2, short-line `total-size` at 512, 600 and 704 KiB as `.txt` and
+/// `.html`, three input variants, three repetitions): activation to laid out
+/// within 6.2 ms of `main` at every size (one reference frame is 8.3 ms), and
+/// no post-open dispatch over `B_SETTLE_US` that `main` does not have.
+///
+/// Kind: cap; 704 KiB rounded down to a power of two (`power-of-two-thresholds`
+/// D8).
+pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 512 * 1024;
 
 /// Maximum existing buffer characters deleted in one GTK turn.
 ///

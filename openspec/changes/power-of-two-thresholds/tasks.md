@@ -177,7 +177,7 @@ Rules for every task:
     exception with the figures.
   - Update C6's accepted-miss entry ("Revisit when `power-of-two-thresholds`
     re-measures `V_SLICE`").
-- [ ] 5.3 Measure the direct-install threshold at 512 KiB (D8).
+- [x] 5.3 Measure the direct-install threshold at 512 KiB (D8).
   - Run short-line `.txt` and Markdown at 512 KiB, 600 KiB and 704 KiB.
     Record activation to laid out and the largest dispatch.
   - Keep 512 KiB (and `PREVIEW_DIRECT_THRESHOLD_BYTES`, which follows) if

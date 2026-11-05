@@ -183,7 +183,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/model/buffer_replacement.rs` | `SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES` | 720,896 | pending-PT | re-measured (D8) |
+| `crates/lushtext-core/src/model/buffer_replacement.rs` | `SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES` | 524,288 | cap | 512 KiB: laid out within 6.2 ms of main at 512-704 KiB (D8, task 5.3) |
 | `crates/lushtext-core/src/model/buffer_replacement.rs` | `REPLACEMENT_CLEAR_SLICE_CHARS` | 65,536 | cap | power of two |
 | `crates/lushtext-core/src/model/buffer_replacement.rs` | `REPLACEMENT_INSERT_SLICE_BYTES` | 262,144 | cap | power of two |
 | `crates/lushtext-core/src/model/buffer_replacement.rs` | `V_SLICE` | 16,384 | cap | 16,384: lane dispatches within main's, laid out no slower (D8, task 5.2) |
@@ -272,7 +272,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/file_load.rs` | `TRANSIENT_LOAD_SOURCE_MULTIPLIER` | 8 | out: factor | factor, divisor or unit (D1) |
 | `crates/lushtext-core/src/model/file_load.rs` | `LIVE_RESIDENCY_BYTES_PER_CHAR` | 4 | external fact | exact, cited from its source |
 | `crates/lushtext-core/src/model/file_load.rs` | `DECODED_BODY_SOURCE_MULTIPLIER` | 3 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-core/src/model/file_load.rs` | `SYNCHRONOUS_INSTALL_THRESHOLD_BYTES` | 720,896 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-core/src/model/file_load.rs` | `SYNCHRONOUS_INSTALL_THRESHOLD_BYTES` | 524,288 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/model/file_load.rs` | `INSTALL_SLICE_BYTES` | 262,144 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/model/file_load.rs` | `MAX_ADMITTED_FILE_LOADS` | 8 | cap | power of two |
 | `crates/lushtext-core/src/model/file_load.rs` | `MAX_CONSECUTIVE_ACTIVE_BYPASSES` | 2 | cap | power of two |
@@ -1089,7 +1089,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `VIEWER_MAX_HEIGHT_SP` | 1,080 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `EMPTY_WIDTH_SP` | 640 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `EMPTY_HEIGHT_SP` | 480 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `PREVIEW_DIRECT_THRESHOLD_BYTES` | 720,896 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `PREVIEW_DIRECT_THRESHOLD_BYTES` | 524,288 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `PREVIEW_RESERVATION_BYTES` | 67,108,864 | cap | power of two |
 | `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `format_bytes::KIB` | 1,024 | out: factor | factor, divisor or unit (D1) |
 | `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `format_bytes::MIB` | 1,048,576 | out: factor | factor, divisor or unit (D1) |
