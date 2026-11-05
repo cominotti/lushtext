@@ -39,6 +39,12 @@
   steps removes the pending first update and worker. The sample's `--edit-cost` and
   `--flip-cost` modes measure ordinary and context-flipping keys, `--paced`
   with LushText's pacing. New fixtures under `fixtures::a85`.
+- A86 probe and sample (`scope-font-zoom-restyle`): a display provider reload
+  revalidates every widget, even with unchanged text, and grows with the
+  window's widgets; a load whose rules match no widget changes no font; a
+  zoom class swapped on the font-following widgets themselves applies the new
+  size and does not grow with unrelated widgets (ancestor and window classes
+  as controls). New fixture `fixtures::a86::FontScopeFixture`.
 - Every sample prints its usage and exits on `--help`/`-h`, and refuses an
   unknown argument, before GTK starts (`classify_sample_args`,
   `SampleFlags`, `sample_usage`; `support::guard`).

@@ -1316,6 +1316,26 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a85),
     },
+    Axiom {
+        id: AxiomId::new(86),
+        name: "a86_a_zoom_class_swap_restyles_only_the_widgets_that_carry_it",
+        statement: "after gtk_css_provider_load_from_string on a provider added for the display, \
+                    even with unchanged text, the next frame revalidates every widget's CSS and \
+                    its cost grows with the widgets the window holds, while a load whose rules \
+                    are keyed by classes no widget carries changes no computed font and no \
+                    layout extent; after a CSS class is swapped on a source view and on \
+                    .monospace labels whose font rules are keyed by that class, they compute the \
+                    new font size, and the next frame's cost does not grow with widgets outside \
+                    the set",
+        dependent_designs: &[
+            "scope-font-zoom-restyle: the font provider carries a rule set per zoom level keyed \
+             by a class, a zoom step swaps the class on the registered font-following widgets \
+             (ui/font_zoom.rs), and a base-font change loads the next generation's rules while \
+             no widget carries them, then swaps the classes on a later frame",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a86),
+    },
 ];
 
 #[cfg(test)]

@@ -113,7 +113,10 @@ context-flipping keys. A85 (an edit's first update and its paced
 re-analysis) followed with LushText's paced re-analysis of edits
 (`bound-context-flip-keystrokes`), its sample's `--edit-cost` and
 `--flip-cost` modes measuring ordinary and context-flipping keys on any
-document, with `--paced` LushText's pacing. Every sample prints its usage on `--help`/`-h` and
+document, with `--paced` LushText's pacing. A86 (a display provider
+reload against a zoom class swapped on the font-following widgets) followed
+with LushText's zoom classes (`scope-font-zoom-restyle`); its sample has one
+button per mechanism. Every sample prints its usage on `--help`/`-h` and
 refuses an unknown argument before GTK starts; a sample with its own modes
 declares them in a `SampleFlags` and calls `support::guard(&FLAGS)` first in
 `main` (`make check-gtk-axioms` checks it). Never run a sample without

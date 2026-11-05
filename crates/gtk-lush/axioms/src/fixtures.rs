@@ -731,3 +731,10 @@ pub mod a85 {
         paced_edit, step_priority,
     };
 }
+
+/// The fixture and values the A86 probe drives, for its sample.
+pub mod a86 {
+    pub use crate::probes::a86::{
+        FontScopeFixture, MONO_ROWS, Mechanism, REPS, UNRELATED_ROWS, describe, measure_all,
+    };
+}
