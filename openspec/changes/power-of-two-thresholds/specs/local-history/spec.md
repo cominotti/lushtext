@@ -62,12 +62,12 @@ The system SHALL present local-history snapshot entries through an `AdwSidebar` 
 ### Requirement: Periodic local-history capture uses live buffer policy
 The system SHALL classify periodic local-history capture from the current editor buffer rather than only the backing file's last known size. Current buffers conservatively above 8 MiB MUST use save-boundary-only history, buffers above 64 MiB MUST remain unavailable for history, and eligible smaller buffers MUST use the shared direct-or-chunked snapshot policy.
 
-#### Scenario: Originally small document grows above 8 MiB
+#### Scenario: Originally small document grows above 10 MiB
 - **WHEN** a file loaded below the full-history threshold grows conservatively above 8 MiB while modified
 - **THEN** the periodic timer skips full-buffer capture
 - **AND** successful save-boundary capture remains the next eligible automatic history point
 
-#### Scenario: Live buffer grows above 64 MiB
+#### Scenario: Live buffer grows above 50 MiB
 - **WHEN** a modified file-backed editor's current buffer grows conservatively above 64 MiB
 - **THEN** local-history capture becomes unavailable for that live state
 - **AND** the periodic callback does not copy or persist the buffer
