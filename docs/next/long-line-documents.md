@@ -1390,7 +1390,10 @@ review's must-fixes landed, the remaining misses are decided as follows:
   exception.** The branch's worst dispatch on those cases is 9.3–10.4 ms
   against main's 10.3–14.1 ms. A user notices a stall; a settle that ends
   less than one frame later is invisible. Revisit when `power-of-two-thresholds`
-  re-measures `V_SLICE`.
+  re-measures `V_SLICE`. **Revisited 2026-11-05 (PT):** at `V_SLICE` 16,384
+  the branch is laid out no later than `main` on every dense case (dense/500
+  wrap-on 85 against 88 ms, dense/710 wrap-on 102 against 202 ms), so the
+  miss is closed.
 - **Keys behind the pointer-entry restyle (~210 ms after activation, both
   sides)** and **the dense/710 wrap-off 8.5 ms two-slice validation**:
   recorded toolkit costs, as attributed above.

@@ -168,7 +168,7 @@ Rules for every task:
   - If it passes, set `L_PROTECT` and `N_INSPECT` to 512. Otherwise set both
     to 256.
   - Update the Protected View inspector widget tests for the window width.
-- [ ] 5.2 Measure `V_SLICE` (D8): 16,384, then 8,192 if needed.
+- [x] 5.2 Measure `V_SLICE` (D8): 16,384, then 8,192 if needed.
   - Run `dense/{120,500,710}` in both wrap modes and three input variants,
     plus `baseline/small`.
   - Record the largest validation dispatch, the largest post-open dispatch,
