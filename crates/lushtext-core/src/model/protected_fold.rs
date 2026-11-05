@@ -155,10 +155,14 @@ pub const N_DENSE: u64 = V_BATCH / (R_BATCH as u64);
 pub const HEAD_CAP: u64 = min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS);
 
 /// The Line Inspector's window, in characters: C0's bound
-/// `min(N_visible, L_protect_stall)` = 500 (`docs/next/long-line-documents.md`,
-/// "Measured values"). It must not exceed `min(HEAD_CAP, L_PROTECT)`, checked
-/// at compile time below and by Kani.
-pub const N_INSPECT: u64 = 500;
+/// `min(N_visible, L_protect_stall)`, 512 since `power-of-two-thresholds`
+/// (`docs/next/long-line-documents.md`, "Measured values"). It must not
+/// exceed `min(HEAD_CAP, L_PROTECT)`, checked at compile time below and by
+/// Kani.
+///
+/// Kind: cap; equal to `L_PROTECT`, 512 (`power-of-two-thresholds` D7), the
+/// bound it must not exceed.
+pub const N_INSPECT: u64 = 512;
 
 /// The ring capacity of [`ProductionFoldState`]: the largest `r_fold`
 /// [`FoldThresholds::new`] accepts.

@@ -811,6 +811,33 @@ impl ParagraphProfileAccumulator {
 mod tests {
     use super::*;
 
+    /// `power-of-two-thresholds` task 2.2: the converted profile thresholds,
+    /// `L_PROTECT` (512) and `N_VISIBLE` (262,144), count a paragraph one
+    /// character over them and not one at them, with every delimiter kind.
+    #[test]
+    fn converted_profile_thresholds_count_one_over_and_not_at() {
+        use super::super::document_scale::{L_PROTECT, N_VISIBLE};
+        let n = |chars: u64| usize::try_from(chars).expect("fits");
+        assert_eq!((L_PROTECT, N_VISIBLE), (512, 256 * 1024));
+        for delimiter in ["\n", "\r", "\r\n", "\u{2029}"] {
+            let text = [
+                "a".repeat(n(L_PROTECT)),
+                "b".repeat(n(L_PROTECT) + 1),
+                "c".repeat(n(N_VISIBLE)),
+                "d".repeat(n(N_VISIBLE) + 1),
+            ]
+            .join(delimiter);
+            let profile = DocumentProfile::of_text(&text);
+            assert_eq!(profile.long_paragraph_counts[0], 3, "{delimiter:?}");
+            assert_eq!(
+                profile.long_paragraph_counts[PROFILE_THRESHOLD_COUNT - 1],
+                1,
+                "{delimiter:?}"
+            );
+            assert_eq!(profile.longest_paragraph_chars, N_VISIBLE + 1);
+        }
+    }
+
     // --- the Protected View fold plan (task 2.2) ---------------------------
 
     fn protected_body() -> String {

@@ -467,7 +467,13 @@ pub const L_WRAP_EDIT: u64 = 8_192;
 /// C0's stall half of `L_protect` (`L_protect_stall`, 500 / 710). It no longer
 /// decides `protected_view`, which holds above [`L_PROTECT_EDIT`]: at 500 it
 /// would have made ordinary prose written one paragraph per line view-only.
-pub const L_PROTECT: u64 = 500;
+///
+/// Kind: cap; C0's 500 taken to the power of two 512 (`power-of-two-thresholds`
+/// D7, task 5.1): the lane's new dense/512 case met what dense/500 meets on the
+/// same build (2026-11-05, both wrap modes, plain, AT and probe-IM, three
+/// repetitions): every post-open dispatch at most 9.7 ms (dense/500: 10.8 ms),
+/// every validation dispatch until settle at most 9.7 ms (10.5 ms).
+pub const L_PROTECT: u64 = 512;
 
 /// The shortest paragraph length at which one keystroke inside it was measured
 /// over `B_INTERACT_US` with word wrap on (C2 task 1.1, 2026-10-30: no plain
@@ -1664,7 +1670,7 @@ mod tests {
             (L_MINIMAP, 22_000),
             (L_INVISIBLES, 50_000),
             (L_SEARCH_HIGHLIGHT, 10_000),
-            (L_PROTECT, 500),
+            (L_PROTECT, 512),
             (L_EDIT_STALL, 3_500),
             (L_PROTECT_EDIT, 50_000),
             (N_VISIBLE, 256 * 1024),

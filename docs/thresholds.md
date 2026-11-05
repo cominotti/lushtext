@@ -231,7 +231,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_INVISIBLES` | 50,000 | cap, exception | 650 of 767,315 lose invisibles at 32,768 (0.085 %, task 4.5) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_SEARCH_HIGHLIGHT` | 10,000 | cap, exception | 2,366 of 757,002 lose search highlighting at 8,192 (0.31 %, task 4.5) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_WRAP_EDIT` | 8,192 | cap | power of two |
-| `crates/lushtext-core/src/model/document_scale.rs` | `L_PROTECT` | 500 | pending-PT | coupled pair (D7) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `L_PROTECT` | 512 | cap | 512: dense/512 met what dense/500 meets on the lane (D7, task 5.1) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_EDIT_STALL` | 3,500 | measurement record | measured, decides nothing (D2) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `L_PROTECT_EDIT` | 50,000 | policy tier, exception | maintainer's editability contract (D9) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `N_VISIBLE` | 262,144 | cap | rounded down (D4) |
@@ -320,7 +320,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/protected_fold.rs` | `R_FOLD_MIN_ZOOM_PERCENT` | 50 | out: percent | percentage, permille or zoom percent (D1) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `N_DENSE` | 218 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `HEAD_CAP` | `expr: min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS)` | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-core/src/model/protected_fold.rs` | `N_INSPECT` | 500 | pending-PT | coupled pair (D7) |
+| `crates/lushtext-core/src/model/protected_fold.rs` | `N_INSPECT` | 512 | cap | 512: dense/512 met what dense/500 meets on the lane (D7, task 5.1) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `MAX_R_FOLD` | 256 | cap | power of two |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `FoldRange::RETAINED_BYTES` | `expr: std::mem::size_of::<Self>() as u64` | derived | computed from named inputs; not rounded (D2) |
 

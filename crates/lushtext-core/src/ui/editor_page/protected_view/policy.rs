@@ -2048,7 +2048,7 @@ mod tests {
     fn inspector_window_counts_round_up() {
         assert_eq!(inspector_window_count(500, width(500)), 1);
         assert_eq!(inspector_window_count(501, width(500)), 2);
-        assert_eq!(inspector_window_count(1_900_000, N_INSPECT_WIDTH), 3_800);
+        assert_eq!(inspector_window_count(1_900_000, N_INSPECT_WIDTH), 3_711);
         assert_eq!(inspector_window_count(u64::MAX, width(1)), u64::MAX);
         let last = inspector_window(u64::MAX, width(500), u64::MAX / 500).expect("last window");
         assert_eq!(last.end, u64::MAX);
@@ -2058,22 +2058,22 @@ mod tests {
     fn inspector_window_containing_finds_the_column() {
         let n = N_INSPECT_WIDTH;
         let (index, window) = inspector_window_containing(1_900_000, n, 950_000).expect("in range");
-        assert_eq!(index, 1_900);
+        assert_eq!(index, 1_855);
         assert_eq!(
             window,
             InspectorWindow {
-                start: 950_000,
-                end: 950_500
+                start: 949_760,
+                end: 950_272
             }
         );
         assert!(window.contains(950_000));
-        assert!(!window.contains(950_500));
+        assert!(!window.contains(950_272));
         assert_eq!(
             inspector_window_containing(1_000, n, 999),
             Some((
                 1,
                 InspectorWindow {
-                    start: 500,
+                    start: 512,
                     end: 1_000
                 }
             ))
@@ -2215,10 +2215,10 @@ mod tests {
             navigation_target(4, 15_000, folded, n),
             NavigationTarget::Inspect {
                 paragraph: 4,
-                window_index: 30,
+                window_index: 29,
                 window: InspectorWindow {
-                    start: 15_000,
-                    end: 15_500
+                    start: 14_848,
+                    end: 15_360
                 },
             }
         );
@@ -2226,19 +2226,19 @@ mod tests {
             navigation_target(4, 950_000, folded, n),
             NavigationTarget::Inspect {
                 paragraph: 4,
-                window_index: 1_900,
+                window_index: 1_855,
                 window: InspectorWindow {
-                    start: 950_000,
-                    end: 950_500
+                    start: 949_760,
+                    end: 950_272
                 },
             }
         );
         // The paragraph end and anything past it open the last window.
         let last = NavigationTarget::Inspect {
             paragraph: 4,
-            window_index: 3_799,
+            window_index: 3_710,
             window: InspectorWindow {
-                start: 1_899_500,
+                start: 1_899_520,
                 end: 1_900_000,
             },
         };
