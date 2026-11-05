@@ -558,9 +558,13 @@ pub const HISTORY_SAVE_ONLY_BYTES: u64 = 8 * 1024 * 1024;
 /// `power-of-two-thresholds` D3).
 pub const HISTORY_UNAVAILABLE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// A file above this many bytes is refused (unchanged): `set_text` for 500 MB
-/// allocates about 1 GB and blocks the main thread for seconds.
-pub const REFUSE_TO_OPEN: u64 = 500_000_000;
+/// A file above this many bytes is refused: `set_text` for 512 MiB allocates
+/// about 1 GiB and blocks the main thread for seconds.
+///
+/// Kind: policy tier; 512 MiB (was 500,000,000 bytes, `power-of-two-thresholds`
+/// D3, task 3: the exclusive-load memory peak at 512 MiB stayed within main's
+/// at 500 MB times 1.074 plus the run spread, with no swap or OOM kill).
+pub const REFUSE_TO_OPEN: u64 = 512 * 1024 * 1024;
 
 /// Live-memory multiplier while undo history is on.
 const MULTIPLIER_WITH_UNDO: u64 = 3;
@@ -1104,7 +1108,8 @@ pub(crate) mod byte_tier_reference {
     const DISABLE_SYNTAX_HIGHLIGHTING: u64 = 8 * 1024 * 1024;
     /// Kind: policy tier; the 64 MiB no-undo, no-local-history tier.
     const DISABLE_UNDO_HISTORY: u64 = 64 * 1024 * 1024;
-    const REFUSE_TO_OPEN: u64 = 500_000_000;
+    /// Kind: policy tier; the 512 MiB open tier.
+    const REFUSE_TO_OPEN: u64 = 512 * 1024 * 1024;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum FileSizeCheck {
@@ -1667,7 +1672,7 @@ mod tests {
             (UNDO_TOTAL_BYTES, 64 * 1024 * 1024),
             (HISTORY_SAVE_ONLY_BYTES, 8 * 1024 * 1024),
             (HISTORY_UNAVAILABLE_BYTES, 64 * 1024 * 1024),
-            (REFUSE_TO_OPEN, 500_000_000),
+            (REFUSE_TO_OPEN, 512 * 1024 * 1024),
         ]);
         for (constant, value) in recorded {
             assert_eq!(constant, value);

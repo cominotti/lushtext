@@ -240,13 +240,13 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/document_scale.rs` | `UNDO_TOTAL_BYTES` | 67,108,864 | policy tier | 64 MiB (D3) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `HISTORY_SAVE_ONLY_BYTES` | 8,388,608 | policy tier | 8 MiB (D3) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `HISTORY_UNAVAILABLE_BYTES` | 67,108,864 | policy tier | 64 MiB (D3) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `REFUSE_TO_OPEN` | 500,000,000 | pending-PT | 512 MiB (D3, task 3) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `REFUSE_TO_OPEN` | 536,870,912 | policy tier | 512 MiB; the memory peak at 512 MiB stayed within 1.074 x main's at 500 MB (D3, task 3) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `MULTIPLIER_WITH_UNDO` | 3 | out: factor | factor, divisor or unit (D1) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `MULTIPLIER_WITHOUT_UNDO` | 2 | out: factor | factor, divisor or unit (D1) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `PRESENTATION_MASK` | `expr: ScaleFeature::Undo.bit() - 1` | out: identifier | format version, discriminant or sentinel (D1) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `byte_tier_reference::DISABLE_SYNTAX_HIGHLIGHTING` | 8,388,608 | policy tier | independent reference table of the tiers (D3) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `byte_tier_reference::DISABLE_UNDO_HISTORY` | 67,108,864 | policy tier | independent reference table of the tiers (D3) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `byte_tier_reference::REFUSE_TO_OPEN` | 500,000,000 | pending-PT | independent reference table of the tiers (D3) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `byte_tier_reference::REFUSE_TO_OPEN` | 536,870,912 | policy tier | independent reference table of the tiers (D3) |
 
 ### `crates/lushtext-core/src/model/draft.rs`
 

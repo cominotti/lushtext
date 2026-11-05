@@ -1492,7 +1492,7 @@ if case_selected "editor-too-large-policy"; then
 DEFAULT_FIXTURE="$FIXTURE"
 FIXTURE="$ARTIFACT_DIR/fixtures/too-large-accessibility-smoke.txt"
 rm -f "$FIXTURE"
-truncate -s 501M "$FIXTURE"
+truncate -s 513M "$FIXTURE"
 run_accessibility_capture "editor-too-large-policy" \
     --allow-file-open-failure \
     --step wait-atspi-text:"Could Not Open File" \
