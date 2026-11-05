@@ -18,8 +18,8 @@
 //! `G_PRIORITY_HIGH_IDLE - 1`, which dispatches before the first update (A85).
 //! Each step calls `gtk_source_buffer_ensure_highlight` on an empty range at a
 //! bound it chooses: the engine analyses from its invalid point up to the line
-//! after the bound, reports the range in one `highlight-updated` and tags
-//! nothing (A85). A report that ends before the bound means the analysis
+//! after the bound, reports the range in one `highlight-updated` and applies
+//! no style tag (A85). A report that ends before the bound means the analysis
 //! merged with the previous one, and the first update finds nothing left. A
 //! report that reaches the bound continues the session with a step sized by
 //! the pure rule. Once the session has spent the engine's own first-update

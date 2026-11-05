@@ -14,7 +14,7 @@
 //! The editor takes that work over: from an idle one priority above the
 //! first update it calls `gtk_source_buffer_ensure_highlight` on an empty
 //! range, which analyses from the invalid point to a bound it chooses and
-//! tags nothing, in **steps** sized towards [`STEP_TARGET_US`]. When a step's
+//! applies no style tag, in **steps** sized towards [`STEP_TARGET_US`]. When a step's
 //! report ends before its bound, the analysis merged and the first update
 //! finds nothing left. When the steps of one pacing session have spent
 //! [`REANALYSIS_ALLOWANCE_US`] without merging, the edit is one that on its
