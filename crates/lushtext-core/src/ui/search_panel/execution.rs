@@ -40,7 +40,10 @@ use super::policy::{WorkspaceSearchRequest, WorkspaceSearchStart, WorkspaceSearc
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 
 /// Maximum channel events received and dispatched by one scheduled GTK turn.
-const MAX_SEARCH_EVENTS_PER_TICK: usize = 250;
+///
+/// Kind: cap; 250 rounded to the power of two 256 (`power-of-two-thresholds`
+/// D8): a full turn of 256 `Match` events stays within `B_SETTLE_US`.
+const MAX_SEARCH_EVENTS_PER_TICK: usize = 256;
 
 enum SearchEventPoll {
     Event(SearchEvent),
@@ -242,6 +245,8 @@ impl LushtextSearchPanel {
             }
             let mut done = false;
             let mut items_this_tick = 0;
+            #[cfg(feature = "test-utils")]
+            let turn_started_us = glib::monotonic_time();
             // Keep each GTK tick bounded so a large streaming search cannot
             // monopolize the main loop while thousands of matches arrive. The
             // 250-event cap drains bursts quickly without starving input and
@@ -295,6 +300,13 @@ impl LushtextSearchPanel {
                     }
                     SearchEventPoll::Empty | SearchEventPoll::BudgetExhausted => break,
                 }
+            }
+            #[cfg(feature = "test-utils")]
+            if items_this_tick > 0 {
+                imp.runtime
+                    .event_turn_observations
+                    .borrow_mut()
+                    .push((items_this_tick, glib::monotonic_time() - turn_started_us));
             }
 
             let files_visited = progress_counter.load(Ordering::Relaxed);
@@ -595,7 +607,8 @@ mod tests {
     #[test]
     fn mixed_non_match_events_share_one_budget() {
         let (sender, receiver) = crossbeam_channel::unbounded();
-        for index in 0..260 {
+        let fixture_events = MAX_SEARCH_EVENTS_PER_TICK + 10;
+        for index in 0..fixture_events {
             let event = match index % 3 {
                 0 => SearchEvent::Progress(index),
                 1 => SearchEvent::ResultCap,
@@ -610,7 +623,7 @@ mod tests {
         );
         assert_eq!(receive_one_turn(&receiver), (10, false));
         eprintln!(
-            "search-event-budget-evidence fixture_events=260 first_turn_events={MAX_SEARCH_EVENTS_PER_TICK} second_turn_events=10"
+            "search-event-budget-evidence fixture_events={fixture_events} first_turn_events={MAX_SEARCH_EVENTS_PER_TICK} second_turn_events=10"
         );
     }
 

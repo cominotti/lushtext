@@ -98,6 +98,11 @@ pub struct SearchPanelEvidence {
     /// Before/after ownership observed for every bounded retirement turn.
     #[cfg(feature = "test-utils")]
     pub retirement_observations: Vec<super::retirement::SearchRetirementSliceObservation>,
+    /// Every receive turn that dispatched at least one event: how many it
+    /// dispatched and how long it took, in µs (`power-of-two-thresholds`
+    /// task 5.4 times `MAX_SEARCH_EVENTS_PER_TICK` with it).
+    #[cfg(feature = "test-utils")]
+    pub event_turn_observations: Vec<(usize, i64)>,
 
     // --- Replace All preview ---
     /// Whether the result list renders preview rows with checkboxes.
@@ -253,6 +258,8 @@ impl LushtextSearchPanel {
             whole_result_clones: imp.runtime.whole_result_clones.get(),
             #[cfg(feature = "test-utils")]
             retirement_observations: imp.runtime.retirement_observations.borrow().clone(),
+            #[cfg(feature = "test-utils")]
+            event_turn_observations: imp.runtime.event_turn_observations.borrow().clone(),
 
             replace_preview_mode: self.replace_preview_mode(),
             replace_preview_pending: self.replace_preview_pending(),

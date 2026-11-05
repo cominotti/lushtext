@@ -183,7 +183,7 @@ Rules for every task:
   - Keep 512 KiB (and `PREVIEW_DIRECT_THRESHOLD_BYTES`, which follows) if
     the branch is within one reference frame of `main` at every size.
     Otherwise record 704 KiB as an exception.
-- [ ] 5.4 Measure the search per-turn caps (D8).
+- [x] 5.4 Measure the search per-turn caps (D8).
   - Add a widget fixture, failing first on the old cap value, that fills one
     turn with 256 `Match` events and one retirement turn with 256 rows. Time
     them with the probe build's dispatch timing on the reference lane.
