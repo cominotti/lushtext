@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn placeholder_rows_keep_symbolic_status_icon() {
-        let item = FileTreeItem::new_placeholder("8192+ items");
+        let item = FileTreeItem::new_placeholder("10,000+ items");
 
         let FileTreeRowIcon::Named(icon_name) = icon_for_file_item(&item) else {
             panic!("placeholder should use a named symbolic icon");

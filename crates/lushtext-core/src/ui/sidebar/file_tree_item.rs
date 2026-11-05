@@ -28,7 +28,7 @@ mod imp {
         pub display_name: RefCell<String>,
         /// Whether this entry is a directory (affects icon and expand behavior).
         pub is_dir: Cell<bool>,
-        /// True for synthetic rows like "8192+ items - showing first 8192".
+        /// True for synthetic rows like "10,000+ items — showing first 10,000".
         pub is_placeholder: Cell<bool>,
         /// Flag set on freshly created items (New File/Folder) to trigger
         /// inline rename in `connect_bind`. Cleared after rename begins.
