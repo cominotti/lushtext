@@ -32,8 +32,11 @@
   update, one at `G_PRIORITY_LOW - 1` after it and before the worker, and
   `ensure_highlight` on an empty range at a bound, from a
   `G_PRIORITY_HIGH_IDLE - 1` idle, re-analyses the edit in steps whose report
-  tells whether the analysis merged; removing the language between steps
-  removes the pending first update and worker. The sample's `--edit-cost` and
+  tells whether the analysis merged, each step making exactly one
+  `highlight-updated` and no style-tag change (the context-class tags every
+  analysis maintains are not counted; a control shows the counter sees a
+  whole-document `ensure_highlight` tag it); removing the language between
+  steps removes the pending first update and worker. The sample's `--edit-cost` and
   `--flip-cost` modes measure ordinary and context-flipping keys, `--paced`
   with LushText's pacing. New fixtures under `fixtures::a85`.
 - Every sample prints its usage and exits on `--help`/`-h`, and refuses an

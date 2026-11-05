@@ -327,11 +327,66 @@ pub struct PacedEdit {
     /// Microseconds from the insert to the next painted frame (0 without a
     /// frame counter).
     pub echo_us: u128,
+    /// The most `highlight-updated` emissions one step's `ensure_highlight`
+    /// call made (the axiom: at most one).
+    pub step_reports_max: u32,
+    /// `apply-tag` and `remove-tag` emissions during the steps'
+    /// `ensure_highlight` calls (the axiom: none; an empty range tags
+    /// nothing).
+    pub step_tag_changes: u32,
+}
+
+/// Whether `tag` is one of the context engine's style tags (what a
+/// highlighted view draws), not one of the context-class tags
+/// (`gtksourceview:context-classes:*`, read by spell checkers and the like)
+/// that every analysis applies over the range it analyses.
+fn is_style_tag(tag: &gtk4::TextTag) -> bool {
+    !tag.name()
+        .is_some_and(|name| name.starts_with("gtksourceview:context-classes:"))
+}
+
+/// Connect counters of `apply-tag` and `remove-tag` emissions on `buffer`
+/// that count only while `capturing` is set.
+fn watch_tag_changes(
+    buffer: &sourceview5::Buffer,
+    capturing: &Rc<Cell<bool>>,
+    count: &Rc<Cell<u32>>,
+) -> [glib::SignalHandlerId; 2] {
+    let (applied_capturing, applied) = (Rc::clone(capturing), Rc::clone(count));
+    let apply = buffer.connect_apply_tag(move |_, tag, _, _| {
+        if applied_capturing.get() && is_style_tag(tag) {
+            applied.set(applied.get().saturating_add(1));
+        }
+    });
+    let (removed_capturing, removed) = (Rc::clone(capturing), Rc::clone(count));
+    let remove = buffer.connect_remove_tag(move |_, tag, _, _| {
+        if removed_capturing.get() && is_style_tag(tag) {
+            removed.set(removed.get().saturating_add(1));
+        }
+    });
+    [apply, remove]
+}
+
+/// `apply-tag` and `remove-tag` emissions during
+/// `ensure_highlight(start, end)` over the whole of `buffer`: the control that
+/// shows the tag counter of [`paced_edit`] sees the engine's tagging.
+#[must_use]
+pub fn tag_changes_of_whole_ensure_highlight(buffer: &sourceview5::Buffer) -> u32 {
+    let capturing: Rc<Cell<bool>> = Rc::default();
+    let count: Rc<Cell<u32>> = Rc::default();
+    let ids = watch_tag_changes(buffer, &capturing, &count);
+    capturing.set(true);
+    buffer.ensure_highlight(&buffer.start_iter(), &buffer.end_iter());
+    capturing.set(false);
+    for id in ids {
+        buffer.disconnect(id);
+    }
+    count.get()
 }
 
 /// The pacing rule the sample and probe drive: `ensure_highlight` on an
 /// empty range at the end bound analyses from the invalid point to the line
-/// after the bound and tags nothing; the step size adapts towards
+/// after the bound and applies no style tag; the step size adapts towards
 /// `target_us`; once `budget_us` is spent without the analysis merging, the
 /// language is removed.
 #[derive(Clone, Copy, Debug)]
@@ -375,6 +430,9 @@ pub fn paced_edit(
 ) -> PacedEdit {
     use std::time::Duration;
     let (log, id) = EmissionLog::watch(buffer);
+    let tagging: Rc<Cell<bool>> = Rc::default();
+    let tag_changes: Rc<Cell<u32>> = Rc::default();
+    let tag_ids = watch_tag_changes(buffer, &tagging, &tag_changes);
     let result: Rc<RefCell<PacedEdit>> = Rc::default();
     let finished: Rc<Cell<bool>> = Rc::default();
     let mut iter = buffer.iter_at_offset(offset);
@@ -387,11 +445,12 @@ pub fn paced_edit(
     let frames_before = frames.map(|count| count());
     buffer.insert(&mut iter, text);
     {
-        let (buffer, log, result, finished) = (
+        let (buffer, log, result, finished, tagging) = (
             buffer.clone(),
             log.clone(),
             Rc::clone(&result),
             Rc::clone(&finished),
+            Rc::clone(&tagging),
         );
         let from = Cell::new(line_start);
         let chars = Cell::new(pacing.first_step_chars);
@@ -399,11 +458,17 @@ pub fn paced_edit(
             let bound = step_bound(&buffer, from.get(), chars.get());
             let before = log.emissions.borrow().len();
             let started = Instant::now();
+            tagging.set(true);
             buffer.ensure_highlight(&bound, &bound);
+            tagging.set(false);
             let took = started.elapsed().as_micros();
+            let reports = log.emissions.borrow().len().saturating_sub(before);
             let report = log.emissions.borrow().get(before).copied();
             let mut paced = result.borrow_mut();
             paced.steps += 1;
+            paced.step_reports_max = paced
+                .step_reports_max
+                .max(u32::try_from(reports).unwrap_or(u32::MAX));
             if std::env::var_os("A85_STEPS").is_some() {
                 println!(
                     "    step {} chars {} took {took} us report {:?}",
@@ -472,8 +537,12 @@ pub fn paced_edit(
         }
     }
     buffer.disconnect(id);
+    for tag_id in tag_ids {
+        buffer.disconnect(tag_id);
+    }
     let emissions = log.emissions.borrow();
     let mut paced = *result.borrow();
+    paced.step_tag_changes = tag_changes.get();
     paced.first_update_emissions = u32::try_from(
         emissions
             .iter()
@@ -577,6 +646,8 @@ pub fn probe_a85() -> Observation {
         let paced = paced_edit(&small, middle, "x", Pacing::DEFAULT, None);
         recorder.measure("paced_small_steps", paced.steps);
         recorder.measure("paced_small_step_max_us", paced.step_max_us);
+        recorder.measure("paced_small_step_reports_max", paced.step_reports_max);
+        recorder.measure("paced_small_step_tag_changes", paced.step_tag_changes);
         recorder.axiom(
             paced.merged
                 && paced.first_update_emissions == 0
@@ -585,6 +656,17 @@ pub fn probe_a85() -> Observation {
             "ensure_highlight on an empty range at a bound, from a G_PRIORITY_HIGH_IDLE - 1 \
              idle, re-analyses the edit and reports it; once the report ends before the \
              bound, the first update reports nothing and no worker runs",
+        )?;
+        recorder.axiom(
+            paced.step_reports_max == 1 && paced.step_tag_changes == 0,
+            "each step reports in exactly one highlight-updated and applies no style tag",
+        )?;
+        let whole_tags = tag_changes_of_whole_ensure_highlight(&small);
+        recorder.measure("whole_ensure_highlight_tag_changes", whole_tags);
+        recorder.control(
+            whole_tags > 0,
+            "control: ensure_highlight over the whole document tags it, so the step tag \
+             counter sees the engine's tagging",
         )?;
         drop(small);
 
@@ -600,9 +682,16 @@ pub fn probe_a85() -> Observation {
         recorder.measure("paced_flip_steps", walked.steps);
         recorder.measure("paced_flip_step_max_us", walked.step_max_us);
         recorder.measure("paced_flip_spent_us", walked.spent_us);
+        recorder.measure("paced_flip_step_reports_max", walked.step_reports_max);
+        recorder.measure("paced_flip_step_tag_changes", walked.step_tag_changes);
         recorder.control(
             walked.steps > 1,
             "control: the flip's re-analysis took more than one step",
+        )?;
+        recorder.axiom(
+            walked.step_reports_max == 1 && walked.step_tag_changes == 0,
+            "every step of the flip's walk reports in exactly one highlight-updated and \
+             applies no style tag",
         )?;
         recorder.axiom(
             walked.merged && walked.first_update_emissions == 0 && walked.worker_emissions == 0,
