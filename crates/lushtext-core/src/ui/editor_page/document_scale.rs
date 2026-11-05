@@ -62,10 +62,11 @@ use super::language_attach::RequestedLanguage;
 
 /// Most characters of the notice (and so of its announcement).
 ///
-/// Kind: text cap; 320 rounded down to a power of two
-/// (`power-of-two-thresholds` task 4.6): the longest notice outside Protected
-/// View is 229 characters (a unit test pins it).
-pub const REDUCED_FEATURES_NOTICE_LIMIT: usize = 256;
+/// Kind: presentation cap; 320 rounded up to a power of two
+/// (`power-of-two-thresholds` D12): the longest notice outside Protected View
+/// is 229 characters (a unit test pins it), and the separate 256-character
+/// announcement cap is unchanged.
+pub const REDUCED_FEATURES_NOTICE_LIMIT: usize = 512;
 
 /// Where the reduced-features notice is.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -638,5 +639,26 @@ impl LushtextEditorPage {
         let message = a11y::bounded_announcement_text(&description, REDUCED_FEATURES_NOTICE_LIMIT);
         window.publish_status_message(&message, MessageKind::Warning);
         state.announced.set(reduced.presentation_only());
+    }
+}
+
+#[cfg(test)]
+mod notice_limit_tests {
+    use super::REDUCED_FEATURES_NOTICE_LIMIT;
+    use crate::ui::accessibility as a11y;
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` passed a
+    /// 320-character notice through whole; the limit rounds up to 512, and the
+    /// longest notice the app ships stays whole.
+    #[test]
+    fn no_loss_the_reduced_features_notice_keeps_every_character_main_kept() {
+        let notice = "n".repeat(320);
+        assert_eq!(
+            a11y::bounded_announcement_text(&notice, REDUCED_FEATURES_NOTICE_LIMIT),
+            notice.as_str()
+        );
+        let longest = crate::model::document_scale::tests::longest_unprotected_notice();
+        assert!(longest <= REDUCED_FEATURES_NOTICE_LIMIT, "{longest}");
+        assert_eq!(REDUCED_FEATURES_NOTICE_LIMIT, 512);
     }
 }

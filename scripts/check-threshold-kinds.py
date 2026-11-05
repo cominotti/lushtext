@@ -573,7 +573,8 @@ def write(root: Path) -> None:
         r = old.get((c.path, c.name))
         kind = r.kind if r else "UNCLASSIFIED"
         reason = r.reason if r else ""
-        lines.append(f"| `{c.path}` | `{c.name}` | {fmt_value(c)} | {kind} | {reason} |")
+        shown = fmt_value(c) if c.value is not None else f"`{fmt_value(c)}`"
+        lines.append(f"| `{c.path}` | `{c.name}` | {shown} | {kind} | {reason} |")
     inv_path.write_text("\n".join(lines).replace("\n\n\n", "\n\n") + "\n", encoding="utf-8")
 
 

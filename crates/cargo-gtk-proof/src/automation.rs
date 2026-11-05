@@ -26,9 +26,9 @@ const AUTOMATION_INTERFACE: &str = "dev.cominotti.lushtext.Automation1";
 const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 const WINDOW_OBJECT_PATH: &str = "/dev/cominotti/lushtext/window/1";
 const ACTIONS_INTERFACE: &str = "org.gtk.Actions";
-/// Kind: text cap; 1,200 rounded down to a power of two
-/// (`power-of-two-thresholds` D4).
-const ARTIFACT_TEXT_LIMIT: usize = 1_024;
+/// Kind: presentation cap; 1,200 rounded up to a power of two
+/// (`power-of-two-thresholds` D12), inside the unchanged 8 MiB JSON caps.
+const ARTIFACT_TEXT_LIMIT: usize = 2_048;
 
 /// Status returned by an Automation1 readiness wait.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -371,6 +371,17 @@ fn bounded(text: impl AsRef<str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` kept
+    /// 1,200 characters of artifact text whole; the limit rounds up to 2,048.
+    #[test]
+    fn no_loss_artifact_text_keeps_every_character_main_kept() {
+        let text = "x".repeat(1_200);
+        assert_eq!(bounded(&text), text);
+        let edge = "x".repeat(2_048);
+        assert_eq!(bounded(&edge), edge);
+        assert!(bounded("x".repeat(2_049)).ends_with(" [truncated]"));
+    }
 
     #[test]
     fn wait_for_ready_tuple_is_parsed_and_bounded() {

@@ -66,7 +66,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/cargo-gtk-proof/src/automation.rs` | `ARTIFACT_TEXT_LIMIT` | 1,024 | pending-presentation | up from 1,200 (task 9.4/9.5) |
+| `crates/cargo-gtk-proof/src/automation.rs` | `ARTIFACT_TEXT_LIMIT` | 2,048 | presentation cap | up from 1,200: inside the unchanged 8 MiB JSON caps (D12, task 9.4) |
 
 ### `crates/cargo-gtk-proof/src/lib.rs`
 
@@ -125,7 +125,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/cargo-gtk-proof/src/warnings.rs` | `WARNING_TEXT_LIMIT` | 1,024 | pending-presentation | up from 1,200 (task 9.4/9.5) |
+| `crates/cargo-gtk-proof/src/warnings.rs` | `WARNING_TEXT_LIMIT` | 2,048 | presentation cap | up from 1,200: inside the unchanged 8 MiB JSON caps (D12, task 9.4) |
 
 ### `crates/gtk-lush-adoption-lab/src/widgets_page.rs`
 
@@ -219,7 +219,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/document_scale.rs` | `attach_threshold::TYPESCRIPT` | 10,752 | presentation cap, exception | up from 10,752, kept: A69's sweep: the power of two above fails its attach bound (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `attach_threshold::YAML` | 147,456 | presentation cap, exception | up from 147,456, kept: A69's sweep: the power of two above fails its attach bound (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `attach_threshold::XML` | 135,168 | presentation cap, exception | up from 135,168, kept: A69's sweep: the power of two above fails its attach bound (D12) |
-| `crates/lushtext-core/src/model/document_scale.rs` | `attach_threshold::CSS` | 32,768 | pending-presentation | up from 37,888 (task 9.4/9.5) |
+| `crates/lushtext-core/src/model/document_scale.rs` | `attach_threshold::CSS` | 37,888 | presentation cap, exception | up from 37,888, kept: A69's sweep derived it as the largest passing CSS size, so 64 KiB fails (cited; D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `attach_threshold::SHELL` | 39,936 | presentation cap, exception | up from 39,936, kept: A69's sweep: the power of two above fails its attach bound (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `typing_threshold::HTML` | 16,384 | presentation cap | up from 16,384: highlighting turns off above it (D12) |
 | `crates/lushtext-core/src/model/document_scale.rs` | `typing_threshold::JSON` | 20,480 | presentation cap, exception | up from 20,480, kept: A69's sweep: the power of two above fails the typing bound (D12) |
@@ -312,7 +312,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/model/protected_fold.rs` | `N_HEAD` | 8,192 | pending-presentation | up from 10,000 (task 9.4/9.5) |
+| `crates/lushtext-core/src/model/protected_fold.rs` | `N_HEAD` | 10,000 | presentation cap, exception | up from 10,000, kept: C2's sweep, 16.1 ms at 14,000 wrap off and 20.7 ms at 20,000 wrap on, so 16,384 fails (cited; D12) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `A28_MEASURED_ADVANCE_UNITS` | 9,011 | external fact | exact, cited from its source |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `A28_MAX_ZOOM_PERCENT` | 400 | out: percent | percentage, permille or zoom percent (D1) |
 | `crates/lushtext-core/src/model/protected_fold.rs` | `A28_SAFE_CHARS` | 59,579 | derived | computed from named inputs; not rounded (D2) |
@@ -592,7 +592,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/recent_documents.rs` | `MAX_RECENTS` | 256 | retention tier | rounded up (D6) |
 | `crates/lushtext-core/src/services/recent_documents.rs` | `MAX_RECENT_DOCUMENTS_BYTES` | 4,194,304 | coverage window | loads a full store of worst-case entries (D6) |
 | `crates/lushtext-core/src/services/recent_documents.rs` | `MAX_RECENT_LOAD_CANDIDATES` | 512 | derived | computed from named inputs; not rounded (D2) |
-| `crates/lushtext-core/src/services/recent_documents.rs` | `MAX_RECENT_LOAD_DIAGNOSTICS` | 16 | pending-presentation | up from 20 (task 9.4/9.5) |
+| `crates/lushtext-core/src/services/recent_documents.rs` | `MAX_RECENT_LOAD_DIAGNOSTICS` | 32 | presentation cap | up from 20: 32 bounded messages, no timed path (D12, task 9.4) |
 
 ### `crates/lushtext-core/src/services/recovery_metadata.rs`
 
@@ -690,7 +690,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/document_scale.rs` | `REDUCED_FEATURES_NOTICE_LIMIT` | 256 | pending-presentation | up from 320 (task 9.4/9.5) |
+| `crates/lushtext-core/src/ui/editor_page/document_scale.rs` | `REDUCED_FEATURES_NOTICE_LIMIT` | 512 | presentation cap | up from 320: AT text; the longest shipped notice is 229 characters (D12, task 9.4) |
 
 ### `crates/lushtext-core/src/ui/editor_page/held_input.rs`
 
