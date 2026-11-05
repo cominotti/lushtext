@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Palette source inventories are bounded and superseding
-The system SHALL keep palette source construction bounded before query scoring begins. File-index construction MUST retain at most 100,000 canonical files, MUST avoid materializing an unbounded flat directory, and MUST cooperatively cancel superseded traversal. Note-source construction MUST retain at most 8,192 entries and at most 64 MiB of aggregate searchable UTF-8 note text, MUST report deterministic truncation diagnostics, and MUST NOT retain bodies beyond those limits. File-index and note-source coordinators SHALL each own at most one active request plus one compact latest request.
+The system SHALL keep palette source construction bounded before query scoring begins. File-index construction MUST retain at most 100,000 canonical files, MUST avoid materializing an unbounded flat directory, and MUST cooperatively cancel superseded traversal. Note-source construction MUST retain at most 16,384 entries (a presentation cap rounded up from 10,000 by `power-of-two-thresholds`, so every note `main` retained is retained) and at most 64 MiB of aggregate searchable UTF-8 note text, MUST report deterministic truncation diagnostics, and MUST NOT retain bodies beyond those limits. File-index and note-source coordinators SHALL each own at most one active request plus one compact latest request.
 
 #### Scenario: Huge flat directory exceeds remaining index capacity
 - **WHEN** one workspace directory contains more visible entries than the remaining 100,000-file index capacity
@@ -14,7 +14,7 @@ The system SHALL keep palette source construction bounded before query scoring b
 - **AND** the coordinator retains only the latest compact scope request rather than queueing full indexes
 
 #### Scenario: Note corpus exceeds aggregate bounds
-- **WHEN** eligible note sidecars exceed either 8,192 entries or 64 MiB of aggregate searchable UTF-8 text
+- **WHEN** eligible note sidecars exceed either 16,384 entries or 64 MiB of aggregate searchable UTF-8 text
 - **THEN** source construction stops retaining additional note bodies according to deterministic source order
 - **AND** the palette remains usable with a visible bounded-truncation diagnostic
 

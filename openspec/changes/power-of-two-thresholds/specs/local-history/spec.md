@@ -1,10 +1,10 @@
 ## MODIFIED Requirements
 
 ### Requirement: Local history respects large-file safety policy
-The system SHALL apply LushText’s existing large-file safety thresholds to local history. For files above 8 MiB and at or below 64 MiB, the system MUST limit history capture to save-boundary snapshots. For files above 64 MiB, the system MUST make local history unavailable and MUST not capture or preview historical snapshots for that document.
+The system SHALL apply LushText’s existing large-file safety thresholds to local history. The save-only tier is a presentation cap rounded up from 10,000,000 bytes by `power-of-two-thresholds` (design D12); if its measurement fails, it stays 10,000,000 bytes and this requirement names that value. For files above 16 MiB and at or below 64 MiB, the system MUST limit history capture to save-boundary snapshots. For files above 64 MiB, the system MUST make local history unavailable and MUST not capture or preview historical snapshots for that document.
 
 #### Scenario: Reduced history capture for very large but still openable files
-- **WHEN** the active saved document is larger than 8 MiB and not larger than 64 MiB
+- **WHEN** the active saved document is larger than 16 MiB and not larger than 64 MiB
 - **THEN** the system limits local-history capture to save-boundary snapshots
 
 #### Scenario: Local history unavailable for huge files
@@ -60,10 +60,10 @@ The system SHALL present local-history snapshot entries through an `AdwSidebar` 
 - **AND** the Adwaita sidebar rail is not shown as a bypass around the large-file policy
 
 ### Requirement: Periodic local-history capture uses live buffer policy
-The system SHALL classify periodic local-history capture from the current editor buffer rather than only the backing file's last known size. Current buffers conservatively above 8 MiB MUST use save-boundary-only history, buffers above 64 MiB MUST remain unavailable for history, and eligible smaller buffers MUST use the shared direct-or-chunked snapshot policy.
+The system SHALL classify periodic local-history capture from the current editor buffer rather than only the backing file's last known size. Current buffers conservatively above 16 MiB MUST use save-boundary-only history, buffers above 64 MiB MUST remain unavailable for history, and eligible smaller buffers MUST use the shared direct-or-chunked snapshot policy.
 
 #### Scenario: Originally small document grows above 10 MiB
-- **WHEN** a file loaded below the full-history threshold grows conservatively above 8 MiB while modified
+- **WHEN** a file loaded below the full-history threshold grows conservatively above 16 MiB while modified
 - **THEN** the periodic timer skips full-buffer capture
 - **AND** successful save-boundary capture remains the next eligible automatic history point
 

@@ -27,6 +27,43 @@ The mix costs three things today:
 
 ## What Changes
 
+**Amendment (maintainer, 2026-11-05; design D12–D14).** The first version of
+this change rounded every cap down and shipped visible losses against `main`.
+LushText must be extremely performant **and** handle high loads and large
+workspaces with no visible loss, so:
+
+- **A new kind, the presentation cap**: a cap on what the user sees or gets
+  (results, rows, notes, markers, entries listed, files a bulk action
+  processes, characters announced, the size or length at which a feature
+  turns off) rounds **up** from its pre-PT value when the bound it protects
+  still holds by measurement, and otherwise keeps its pre-PT value as a
+  recorded exception. When in doubt, a cap is a presentation cap. Internal
+  resource caps keep rounding down. The `text cap` kind is folded into it.
+- **The reclassified values**: palette categories 64 (`main` 50), the notes
+  browser 512 (500), Replace All per file 16 MiB (10 MiB), every
+  user-visible 10,000 cap 16,384, the minimap marker caps 2,048 (2,000) and
+  wrapped-layout line budget 8,192 (8,000), the bookmark excerpt scan 32,768
+  lines (20,000), the minimap and per-edit local-history tier 16 MiB (10 MB),
+  the reduced-features notice 512 characters, the proof-artifact text 2,048;
+  the Markdown event cap 65,536, table cells 1,024, `L_MINIMAP` 32,768,
+  `L_INVISIBLES` 65,536, `L_SEARCH_HIGHLIGHT` 16,384, the palette index
+  131,072 files and the preview image cap 2^26 pixels, each if its
+  measurement holds; `N_HEAD` 10,000 and the CSS attach gate 37 KiB return to
+  their pre-PT values as exceptions (their own measurements show the power of
+  two above breaks the bound); `V_BATCH` 65,536 (or 64,000) so a dense
+  Protected View paragraph keeps at least `main`'s 250 characters.
+- **Measurements** of every moved bound, interleaved with `main` (D12's
+  table), and failing-first tests asserting no loss against `main` for each.
+- **Displayed sizes in IEC units** (D14): the properties panel, file peek
+  and local-history list.
+- **Structural follow-ups queued after PT merges** (D13):
+  `bound-lists-by-budget-not-count`, `stream-replace-all`,
+  `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then
+  `avx2-health-scan-kernel` and DL.
+
+The original list follows; where it says a user-visible cap rounds down, D12
+supersedes it.
+
 - **User-visible size tiers in IEC units** (design D3):
   - minimap and save-only local history: 10 MB → **8 MiB**;
   - undo off and local history unavailable: 50 MB → **64 MiB**;
@@ -94,20 +131,23 @@ The mix costs three things today:
 
 ### New Capabilities
 
-- `threshold-constants`: the inventory, the classification and rounding rules,
-  recorded exceptions, and the `check-thresholds` gate.
+- `threshold-constants`: the inventory, the classification and rounding rules
+  (presentation caps round up, D12), recorded exceptions, the
+  `check-thresholds` gate, and displayed sizes in IEC units (D14).
 
 ### Modified Capabilities
 
-- `long-line-document-presentation`: tier values and IEC units; the byte-tier
-  Kani agreement is now with the new table; the `N_inspect` bound value.
-- `local-history`: the 8 MiB and 64 MiB tiers (capture, browsing and the
-  periodic live-buffer policy), and the 64 / 256 retention.
-- `workspace-tree-refresh`: the sidebar's directory cap is 8,192 rows.
+- `long-line-document-presentation`: tier values and IEC units (the minimap
+  and save-only tier 16 MiB, D12); the byte-tier Kani agreement is now with
+  the new table; the `N_inspect` bound value; the paragraph gates and CSS
+  under the presentation-cap rule.
+- `local-history`: the 16 MiB (D12) and 64 MiB tiers (capture, browsing and
+  the periodic live-buffer policy), and the 64 / 256 retention.
+- `workspace-tree-refresh`: the sidebar's directory cap is 16,384 rows (D12).
 - `recent-open-popover`: the recent-history cap is 256 entries.
-- `command-palette-source-groups`: the note-source entry cap is 8,192.
+- `command-palette-source-groups`: the note-source entry cap is 16,384 (D12).
 - `search-replace-safety`: the Replace Preview row cap and its coverage
-  fixture are 8,192; the Replace All per-file cap is 8 MiB.
+  fixture are 16,384; the Replace All per-file cap is 16 MiB (D12).
 - `search-history-and-saved-searches`: recent history keeps 32 entries.
 - `main-thread-responsiveness`: the per-turn search event and retirement caps.
 - `performance-regression-coverage`: the evidence that pins those caps.
@@ -124,7 +164,19 @@ The mix costs three things today:
   - accessibility text caps, the `cargo-gtk-proof` text caps, and the
     messages that name tiers;
   - a new `scripts/check-thresholds.py`.
-- **Behaviour users notice**:
+- **Behaviour users notice** (after the D12 amendment; nothing `main` shows
+  is lost):
+  - files of 10 MB–16 MiB keep the minimap and per-edit local history (if
+    M10 holds; otherwise the tier stays 10,000,000 bytes);
+  - palette categories show up to 64 matches, the notes browser 512 notes,
+    workspace search, Replace Preview, Protected View find and sidebar
+    directories up to 16,384 entries, minimap markers up to 2,048 per kind;
+  - Replace All processes files up to 16 MiB;
+  - sizes are displayed in IEC units everywhere;
+  - Protected View heads keep 10,000 characters and dense heads at least
+    250.
+- **Behaviour of the first version, superseded by D12** (kept for the
+  record):
   - files of 8–10 MB lose the minimap and per-edit local history;
   - files between 50 MB and 64 MiB keep undo and local history;
   - files of 500 MB–512 MiB open, if task 3 passes;
