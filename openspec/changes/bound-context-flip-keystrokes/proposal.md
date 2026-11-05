@@ -37,7 +37,7 @@ reveals.
   update (A85). Each step calls `gtk_source_buffer_ensure_highlight` on an
   empty range at a bound it chooses: the engine analyses from its invalid
   point to the line after the bound, reports the range in one
-  `highlight-updated`, and tags nothing. Steps are sized towards a quarter of
+  `highlight-updated`, and applies no style tag. Steps are sized towards a quarter of
   `B_INTERACT_US` by the measured rate (`model::reanalysis_pacing`, pure,
   Kani-proved). A report short of its bound means the analysis merged; the
   first update and the worker then find nothing.
@@ -53,7 +53,8 @@ reveals.
 - **Chunked caps stay dormant** (D4): with pacing every flip at 512 KiB stays
   within `B_INTERACT_US` per dispatch, but such a document would lose its
   highlighting at the first flip near the top, and the chunked install would
-  ship for the first time; left to the maintainer with the numbers.
+  ship for the first time; kept dormant by coordinator decision (2026-11-05,
+  design "Decisions on the open questions").
 - **A lane group, `reanalysis`**: each language at its gate, ordinary and
   flipping bursts, both fixture families; the interleaved verdict.
 - **Ledger A85** with a `gtk-lush-axioms` probe and sample (`--edit-cost`,
