@@ -42,8 +42,12 @@ use super::{MAX_AUTOMATIC_DRAFT_BYTES, draft_body_path, drafts_dir, read_draft_p
 /// Subdirectory of `drafts/` holding preserved bodies that left the journal.
 const SET_ASIDE_DIR: &str = "set-aside";
 /// Largest number of set-aside names probed for one body before giving up.
+///
+/// Kind: retry budget; a power of two, rounded up.
 const MAX_SET_ASIDE_NAME_ATTEMPTS: u32 = 64;
 /// Most set-aside bodies one listing reports; the rest stay on disk untouched.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_LISTED_SET_ASIDE_BODIES: usize = 256;
 /// Most set-aside entries one scan visits; past it the totals are a lower
 /// bound (and far past the soft retention bound).

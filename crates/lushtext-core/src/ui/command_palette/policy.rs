@@ -47,9 +47,13 @@ pub const SEARCH_DEBOUNCE_MS: u64 = 150;
 pub const MAX_RESULTS_PER_SOURCE: usize = 50;
 
 /// Maximum incremental mutations retained before overflow escalates to a rebuild.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_PENDING_INDEX_UPDATES: usize = 1_024;
 
 /// Maximum exact retained bytes the pending mutation queue may own.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_PENDING_INDEX_UPDATE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Smallest capacity the pending queue's growth estimate assumes.
@@ -59,6 +63,8 @@ pub const MAX_PENDING_INDEX_UPDATE_BYTES: u64 = 4 * 1024 * 1024;
 /// reallocation *before* it happens, or a push that passes the ceiling check can
 /// still leave the queue owning more than
 /// [`MAX_PENDING_INDEX_UPDATE_BYTES`].
+///
+/// Kind: cap; a power of two, rounded down.
 const PENDING_QUEUE_MIN_CAPACITY: usize = 4;
 
 /// A pending incremental mutation to the palette's file index.

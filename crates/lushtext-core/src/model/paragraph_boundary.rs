@@ -203,6 +203,8 @@ fn next_delimiter_without_lead_stops(bytes: &[u8], from: usize) -> Option<usize>
 
 /// Bytes per chunk of [`next_delimiter_without_lead_stops`]: small enough
 /// that the chunk stays in L2 between its two searches.
+///
+/// Kind: cap; a power of two, rounded down.
 #[cfg(not(kani))]
 const DELIMITER_SEARCH_CHUNK: usize = 64 * 1024;
 
@@ -330,10 +332,14 @@ pub const fn paragraph_chars_from_line(
 pub const PROFILE_THRESHOLD_COUNT: usize = 6;
 
 /// Most long-paragraph start offsets a production profile keeps.
+///
+/// Kind: cap; a power of two, rounded down.
 #[cfg(not(kani))]
 pub const MAX_PROFILED_OFFSETS: usize = 256;
 
 /// Largest density window the fold keeps (`R_BATCH` fits, checked below).
+///
+/// Kind: cap; a power of two, rounded down.
 #[cfg(not(kani))]
 pub const MAX_DENSITY_WINDOW: usize = 256;
 

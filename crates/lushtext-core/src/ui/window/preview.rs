@@ -27,6 +27,8 @@ const PREPARING_MARKDOWN_PREVIEW: &str = "Preparing Markdown preview…";
 
 /// Frames the deferred side-by-side show waits for a sidebar allocation
 /// before showing the sidebar regardless.
+///
+/// Kind: coverage window; a power of two, rounded up.
 const PREVIEW_SIDEBAR_ALLOCATION_MAX_FRAMES: u32 = 8;
 
 /// Register the preview-related actions on the window.

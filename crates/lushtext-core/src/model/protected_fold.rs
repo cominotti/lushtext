@@ -82,6 +82,8 @@ pub const N_HEAD: u64 = 10_000;
 
 /// Pango's advance of the view's monospace font at the default zoom, in Pango
 /// units (1/1024 px), as ledger A28 measured it (9011 units per character).
+///
+/// Kind: external fact; kept exact.
 pub const A28_MEASURED_ADVANCE_UNITS: u64 = 9_011;
 
 /// The largest zoom percentage the window offers (`ui/window/zoom.rs`'s
@@ -105,6 +107,8 @@ pub const A28_MAX_ZOOM_PERCENT: u64 = 400;
 /// size; hinting can round a scaled advance up by a fraction of a pixel, which
 /// task 1.3's measurement at 400 % settles. It is not the binding term of
 /// [`HEAD_CAP`] today ([`N_HEAD`] is).
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const A28_SAFE_CHARS: u64 =
     (i32::MAX as u64) / (A28_MEASURED_ADVANCE_UNITS * A28_MAX_ZOOM_PERCENT / 100);
 
@@ -124,6 +128,8 @@ pub const A28_SAFE_CHARS: u64 =
 /// would only make `R_FOLD · N_DENSE` exceed `V_BATCH`. The argument rests on
 /// a 9 px minimum row height at the 50 % zoom, the assumption C0's doubling
 /// already made.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const R_FOLD: usize = R_BATCH;
 
 /// The smallest zoom percentage [`R_FOLD`] covers (`ui/window/zoom.rs`'s
@@ -132,11 +138,15 @@ pub const R_FOLD_MIN_ZOOM_PERCENT: u64 = 50;
 
 /// Characters a dense paragraph keeps visible: `V_BATCH / R_BATCH` (250), so
 /// `R_FOLD` dense paragraphs fill at most one batch.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 // `R_BATCH` (224) is a usize that fits a u64, so the cast is lossless.
 pub const N_DENSE: u64 = V_BATCH / (R_BATCH as u64);
 
 /// The most characters any paragraph shows: `min(N_VISIBLE, N_HEAD,
 /// A28_SAFE_CHARS)`.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const HEAD_CAP: u64 = min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS);
 
 /// The Line Inspector's window, in characters: C0's bound
@@ -147,6 +157,8 @@ pub const N_INSPECT: u64 = 500;
 
 /// The ring capacity of [`ProductionFoldState`]: the largest `r_fold`
 /// [`FoldThresholds::new`] accepts.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_R_FOLD: usize = 256;
 
 // The production thresholds must satisfy the preconditions: evaluating the
@@ -297,6 +309,8 @@ pub enum FoldLocation {
 impl FoldRange {
     /// Bytes one planned range retains, the per-range charge an install's
     /// transient admission takes for the plan.
+    ///
+    /// Kind: derived; computed from the constants it names, not rounded.
     pub const RETAINED_BYTES: u64 = std::mem::size_of::<Self>() as u64;
 
     /// Where `column` (a character offset from the paragraph start) lies.

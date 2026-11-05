@@ -17,12 +17,16 @@ mod kani_proofs;
 ///
 /// 256 MiB preserves the established ceiling for keeping aggregate editor-text
 /// residency comfortable on 8 GiB-class systems without ordinary-tab churn.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const EDITOR_MEMORY_UPPER_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Target residency after an over-budget eviction pass.
 ///
 /// Ninety percent leaves enough hysteresis to prevent estimate noise near the
 /// upper threshold from repeatedly evicting one tab at a time.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const EDITOR_MEMORY_LOWER_WATER_BYTES: u64 =
     EDITOR_MEMORY_UPPER_BUDGET_BYTES.saturating_mul(90) / 100;
 
@@ -30,6 +34,8 @@ pub const EDITOR_MEMORY_LOWER_WATER_BYTES: u64 =
 ///
 /// Four KiB acknowledges the page and tab metadata that remain after buffer
 /// text is dropped without pretending to measure GTK allocator residency.
+///
+/// Kind: coverage window; a power of two, rounded up.
 pub const EVICTED_EDITOR_BOOKKEEPING_BYTES: u64 = 4 * 1024;
 
 /// Estimate one editor from bounded scalar state without reading its text.
@@ -58,8 +64,8 @@ pub fn estimate_live_editor_bytes(
 /// `GtkTextMark` object, its btree mark segment and the ledger's entry, about
 /// 100 bytes together.
 ///
-/// Kind: cap (a conservative per-object charge), rounded up to a power of
-/// two.
+/// Kind: coverage window (a conservative per-object charge), rounded up to a
+/// power of two.
 pub const PROTECTED_BOUNDARY_BYTES: u64 = 128;
 
 /// The live-editor charge of `boundaries` boundary marks.

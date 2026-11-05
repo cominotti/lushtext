@@ -31,6 +31,8 @@ use super::{SearchFileGroup, SearchMatchLocation};
 /// Maximum GTK objects/cached rows released by one idle retirement turn.
 const SEARCH_RETIREMENT_ROWS_PER_SLICE: usize = 250;
 /// Maximum detached generations retained before latest-query backpressure applies.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(super) const MAX_SEARCH_RETIREMENT_GENERATIONS: usize = 2;
 
 /// Actual detached ownership held before or after one bounded retirement turn.

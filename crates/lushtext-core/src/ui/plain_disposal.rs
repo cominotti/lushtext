@@ -34,10 +34,16 @@ use std::time::Duration;
 /// Two destructors may make progress without competing with file-I/O workers.
 const DISPOSAL_WORKERS: usize = 2;
 /// Eight queued owners bound supersession bursts independently of byte charge.
+///
+/// Kind: cap; a power of two, rounded down.
 const DISPOSAL_QUEUE_CAPACITY: usize = 8;
 /// Two maximum-size Replace All undo windows may drain concurrently.
+///
+/// Kind: cap; a power of two, rounded down.
 const DISPOSAL_RETAINED_BYTE_CAPACITY: u64 = 128 * 1024 * 1024;
 /// Largest supported source can expand threefold during legacy decoding.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 const FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY: u64 = crate::model::document_scale::REFUSE_TO_OPEN
     .saturating_mul(crate::model::file_load::DECODED_BODY_SOURCE_MULTIPLIER);
 /// Recovery and Notes source construction retain independent progress capacity.
@@ -45,10 +51,14 @@ const FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY: u64 = crate::model::document_scale
 /// The shared ordinary lane may legitimately stay full while long-lived palette
 /// or Replace All owners remain useful. This lane keeps one startup preload or
 /// maximum Notes source able to cross GTK without exceeding a fixed bound.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub(crate) const PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY: u64 = 72 * 1024 * 1024;
 /// Producers poll capacity once per display frame while retaining one latest job.
 const DISPOSAL_RETRY_INTERVAL: Duration = Duration::from_millis(16);
 /// Rejected-payload retry is retained only for statically small compatibility evidence.
+///
+/// Kind: cap; a power of two, rounded down.
 #[cfg(feature = "test-utils")]
 const MAX_SMALL_PENDING_DISPOSAL_BYTES: u64 = 64 * 1024;
 

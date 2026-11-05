@@ -113,13 +113,16 @@ pub(crate) struct ViewAttachmentState {
 /// load. 2^17 would leave minimap documents of 131,073–262,144 lines attached,
 /// and a zoom step then re-lays a hidden one and its map out in one 175–189 ms
 /// dispatch (`main`, V5), against 11.5–14.1 ms with the detach.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const VIEW_DETACH_MAX_LINES: i32 = 1 << 18;
 
 /// The most characters a detached view's document may have to be attached
-/// when an assistive technology starts listening. Kind: character count, a
-/// cap; a power of two, rounded down: about 2 ms per MiB with a listener, so
-/// one such attach stays under half of `B_SETTLE_US`. A larger document
-/// attaches when its tab is shown (a recorded exception, design D7).
+/// when an assistive technology starts listening. A larger document attaches
+/// when its tab is shown (the design's D7 names that case an exception).
+///
+/// Kind: cap (a character count); a power of two, rounded down: about 2 ms per
+/// MiB with a listener, so one such attach stays under half of `B_SETTLE_US`.
 pub(crate) const AT_ATTACH_MAX_CHARS: i32 = 1 << 20;
 
 /// Whether a view may be given the placeholder now: no assistive technology

@@ -31,6 +31,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Process-wide child/emptiness tasks allowed to retain admitted scan payloads.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(super) const WORKSPACE_SCAN_TASK_LIMIT: usize = 4;
 /// Compact admission retries share one frame-paced source per section.
 const WORKSPACE_SCAN_ADMISSION_RETRY: Duration = Duration::from_millis(16);

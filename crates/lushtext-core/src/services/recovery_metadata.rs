@@ -27,6 +27,8 @@ use crate::services::json_format::{self, JsonEnvelopeRef, JsonFormatError};
 /// Recovery metadata should be small JSON indexes or manifests. Sixteen MiB is
 /// generous for real state while preventing a damaged file from turning startup
 /// into an unbounded read.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const DEFAULT_MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 /// App-data directory where damaged metadata is preserved for support triage.
 pub const QUARANTINE_DIR: &str = "recovery-quarantine";
@@ -35,6 +37,8 @@ pub const QUARANTINE_DIR: &str = "recovery-quarantine";
 /// Hitting this would require repeated nanosecond timestamp/hash collisions or
 /// a hostile prefilled quarantine directory, so a small bound keeps startup from
 /// looping indefinitely.
+///
+/// Kind: retry budget; a power of two, rounded up.
 const MAX_QUARANTINE_NAME_ATTEMPTS: u32 = 64;
 
 /// App-owned metadata category used in diagnostics and quarantine filenames.

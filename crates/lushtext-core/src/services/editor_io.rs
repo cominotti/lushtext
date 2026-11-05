@@ -38,6 +38,8 @@ pub mod text_scans;
 ///
 /// The preview exists to explain the risk, not to render a full diff for a
 /// large document, so the sample stays intentionally small and fast to inspect.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_LOSSY_PREVIEW_ISSUES: usize = 8;
 
 /// Bytes processed per bounded classification, decoding, or analysis slice.
@@ -45,6 +47,8 @@ const MAX_LOSSY_PREVIEW_ISSUES: usize = 8;
 /// Each slice ends at a cooperative cancellation checkpoint, so 256 KiB keeps
 /// obsolete work on a cancelled multi-hundred-megabyte load bounded to a few
 /// milliseconds without measurable throughput loss on the success path.
+///
+/// Kind: cap; a power of two, rounded down.
 const LOAD_PROCESSING_CHUNK_BYTES: usize = 256 * 1024;
 
 /// Inputs at or below this size may use the direct whole-buffer path.
@@ -52,6 +56,8 @@ const LOAD_PROCESSING_CHUNK_BYTES: usize = 256 * 1024;
 /// One mebibyte matches the synchronous buffer-replacement threshold family:
 /// direct classification, decoding, and analysis finish fast enough that the
 /// pre/post stage cancellation checks alone bound obsolete work.
+///
+/// Kind: cap; a power of two, rounded down.
 const DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES: usize = 1024 * 1024;
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -602,6 +608,8 @@ fn load_planned_text_file_with_limit(
 
 /// Bytes one round-trip comparison encodes at a time: the comparison never
 /// holds a whole re-encoded copy of the document (review S2). A power of two.
+///
+/// Kind: cap; a power of two, rounded down.
 const ROUND_TRIP_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Whether `content`, decoded from `bytes` as `encoding` (with or without a

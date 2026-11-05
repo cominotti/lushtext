@@ -38,8 +38,12 @@ pub const MAX_REPLACE_FILE_BYTES: u64 = 10 * 1024 * 1024;
 /// The payload stores before and after bytes for each touched file. Sixty-four
 /// megabytes keeps rollback useful without letting one operation consume the
 /// editor's broader buffer-memory budget.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_REPLACE_UNDO_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum complete in-memory undo owner, including paths and table capacity.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_REPLACE_UNDO_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(any(test, feature = "test-utils"))]
 thread_local! {

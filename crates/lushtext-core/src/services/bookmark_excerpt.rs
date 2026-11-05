@@ -31,6 +31,8 @@ pub const BOOKMARK_EXCERPT_CONTEXT_AFTER_LINES: usize = 7;
 ///
 /// One mebibyte keeps preview selection responsive on slow filesystems while
 /// still covering ordinary Markdown notes and source files with plenty of room.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT: usize = 1024 * 1024;
 /// Maximum logical lines scanned from disk for one closed-file preview.
 ///
@@ -41,12 +43,16 @@ pub const BOOKMARK_EXCERPT_SCAN_LINE_LIMIT: usize = 20_000;
 ///
 /// A single giant line can otherwise consume the whole preview allocation even
 /// when the surrounding line window is tiny.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const BOOKMARK_EXCERPT_LINE_CHAR_LIMIT: usize = 4096;
 /// Logical lines scanned between cooperative cancellation checks.
 ///
 /// Splitting the one-mebibyte excerpt budget into lines is short but not free;
 /// checking every 1024 lines keeps supersession responsive without measurable
 /// per-line overhead.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES: usize = 1024;
 
 /// How a bookmark excerpt should be presented by the Notes browser.

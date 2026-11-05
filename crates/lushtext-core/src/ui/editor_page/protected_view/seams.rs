@@ -184,12 +184,16 @@ mod tests {
 /// worker resolves a paragraph by jumping to the checkpoint at or before it and
 /// walking at most this many paragraph breaks. A cap on that walk, a power of
 /// two (`.agents/rules/rust.md`).
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const PARAGRAPH_CHECKPOINT_STRIDE: u64 = 1024;
 
 /// Characters between two character checkpoints of one long paragraph: a
 /// window read decodes at most this many characters before its window starts.
 /// A cap on that walk, a power of two. A paragraph of at most this many bytes
 /// has at most this many characters, so it needs no checkpoint.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const CHAR_CHECKPOINT_STRIDE: u64 = 64 * 1024;
 
 /// One paragraph of the source, located: its byte range (delimiter excluded)

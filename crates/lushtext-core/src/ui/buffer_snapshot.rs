@@ -74,8 +74,12 @@ pub(crate) const BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD: u64 = 10_000_000;
 /// `GtkTextBuffer::char_count()` is character-based, and 64k characters has
 /// stayed comfortably below a frame on local measurements while avoiding a very
 /// long chain of tiny timers for multi-megabyte buffers.
+///
+/// Kind: cap; a power of two, rounded down.
 const BUFFER_SNAPSHOT_CHUNK_CHARS: i32 = 64 * 1024;
 /// Maximum UTF-8 bytes copied from GTK in one character-aligned slice.
+///
+/// Kind: cap; a power of two, rounded down.
 const BUFFER_SNAPSHOT_CHUNK_MAX_BYTES: u64 = 4 * BUFFER_SNAPSHOT_CHUNK_CHARS as u64;
 #[cfg(feature = "test-utils")]
 const BUFFER_SNAPSHOT_TEST_PAUSE_TIMEOUT: Duration = Duration::from_secs(60);

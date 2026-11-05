@@ -35,6 +35,8 @@ pub const REPLACE_JOURNAL_SCAN_MAX_ENTRIES: usize = 10_000;
 ///
 /// Draft bodies are plain UTF-8 content, not versioned JSON. The limit matches
 /// the manifest repair/orphan-cleanup budget to keep startup work bounded.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const DRAFT_BODY_SCAN_MAX_ENTRIES: usize = 2_048;
 
 /// Bounded scan limits used by format-upgrade inventory.

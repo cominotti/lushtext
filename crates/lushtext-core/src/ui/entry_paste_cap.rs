@@ -31,6 +31,8 @@ use crate::ui::status_bar::MessageKind;
 /// 16 Ki characters lays out in a few milliseconds (C5 measured about 7.6 ms
 /// for 50,000), so every later keystroke in the field stays within
 /// `B_interact`.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const ENTRY_INSERT_CAP_BYTES: usize = 16 * 1024;
 
 /// The notice a capped insertion publishes.

@@ -9,7 +9,7 @@ Rules for every task:
 
 ## 1. Gate first, at today's values
 
-- [ ] 1.1 Write `scripts/check-threshold-kinds.py` (design D10):
+- [x] 1.1 Write `scripts/check-threshold-kinds.py` (design D10):
   - find every integer `const`/`static` in the production `src/` trees,
     skipping `#[cfg(test)]` modules, `kani_proofs.rs` and `gtk-lush-axioms`,
     keyed by path and module-qualified name and including declarations that
@@ -17,7 +17,7 @@ Rules for every task:
   - evaluate simple literal and constant-reference expressions;
   - compare against `docs/thresholds.md`;
   - check that each in-scope constant's rustdoc `Kind:` line names its kind.
-- [ ] 1.2 Write a self-test on a fixture tree. It must fail first on each of:
+- [x] 1.2 Write a self-test on a fixture tree. It must fail first on each of:
   - an unlisted constant;
   - a stale row;
   - a value mismatch;
@@ -27,10 +27,10 @@ Rules for every task:
     different values (the `attach_threshold::JSON` / `typing_threshold::JSON`
     collision the spec-stage scan made), one of them changed;
   - a constant whose declaration spans two lines.
-- [ ] 1.3 Generate `docs/thresholds.md` at `main`'s values. Classify every row
+- [x] 1.3 Generate `docs/thresholds.md` at `main`'s values. Classify every row
   per D1/D2 and copy the decisions from the design's inventory. Add
   `make check-thresholds` and put it in `check-policy`.
-- [ ] 1.4 At this point the in-scope rows that this change will convert are
+- [x] 1.4 At this point the in-scope rows that this change will convert are
   marked `pending-PT`, the only temporary class. The check must pass on
   `main`'s values with them. The class is removed in 8.3.
 

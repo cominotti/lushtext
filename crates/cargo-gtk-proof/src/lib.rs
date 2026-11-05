@@ -34,6 +34,7 @@ mod warnings;
 /// Tool version recorded in proof envelopes.
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Kind: cap; a power of two, rounded down.
 const MAX_ARTIFACT_JSON_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Run the cargo-gtk-proof CLI with caller-provided arguments and writers.

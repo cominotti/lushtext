@@ -33,7 +33,9 @@ use crate::services::markdown_render::{
 /// labels, while collision checks still handle documents that intentionally use
 /// the same internal-looking name.
 const INLINE_FOOTNOTE_LABEL_PREFIX: &str = "__lush_inline_footnote_";
+/// Kind: derived; computed from the constants it names, not rounded.
 const MAX_INLINE_FOOTNOTE_REPLACEMENTS: usize = MAX_MARKDOWN_EVENTS / 4;
+/// Kind: cap; a power of two, rounded down.
 const LOWERING_CANCEL_CHECK_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
