@@ -40,7 +40,7 @@ pub mod text_scans;
 /// The preview exists to explain the risk, not to render a full diff for a
 /// large document, so the sample stays intentionally small and fast to inspect.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_LOSSY_PREVIEW_ISSUES: usize = 8;
 
 /// Bytes processed per bounded classification, decoding, or analysis slice.

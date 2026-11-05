@@ -22,7 +22,7 @@
 
 /// The held buffer's cap: 4 KiB of UTF-8.
 ///
-/// Kind: **cap** (per held episode), a power of two (`.agents/rules/rust.md`).
+/// Kind: **presentation cap** (per held episode), a power of two (`.agents/rules/rust.md`).
 /// The longest hold is one settle (the responsiveness lane's settle cap is
 /// 10 s); a fast typist at 20 characters per second types 200 bytes of ASCII,
 /// 800 of four-byte UTF-8, in that time, so the cap is five times the worst

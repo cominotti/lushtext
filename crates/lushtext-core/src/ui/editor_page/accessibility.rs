@@ -15,7 +15,7 @@ use super::{EditorLoadState, LushtextEditorPage};
 
 /// Maximum file-name characters exposed as the editor identity.
 ///
-/// Kind: text cap; 96 rounded up to a power of two (`power-of-two-thresholds`
+/// Kind: presentation cap; 96 rounded up to a power of two (`power-of-two-thresholds`
 /// stage 4). It bounds a user file name, so D2's materiality rule decides it:
 /// 64 would cut the name for 7.96 % of corpus files, 128 for 0.0020 %.
 const EDITOR_IDENTITY_LIMIT: usize = 128;

@@ -34,7 +34,7 @@ use super::LushtextWindow;
 /// Dropped opens are counted and reported once when the gate releases, so the
 /// user is told rather than left wondering.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_PENDING_ACTIVATION_OPENS: usize = 64;
 
 /// Whether one more activation open may join the queue.

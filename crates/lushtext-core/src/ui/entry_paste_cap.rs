@@ -32,7 +32,7 @@ use crate::ui::status_bar::MessageKind;
 /// for 50,000), so every later keystroke in the field stays within
 /// `B_interact`.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const ENTRY_INSERT_CAP_BYTES: usize = 16 * 1024;
 
 /// The notice a capped insertion publishes.

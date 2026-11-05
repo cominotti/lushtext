@@ -191,7 +191,7 @@ const CODE_BLOCK_BACKGROUND_CSS_PRIORITY: u32 = gtk4::STYLE_PROVIDER_PRIORITY_AP
 /// it prevents accidental camera originals or generated art from dominating a
 /// background worker and its post-decode pixel copy.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_PREVIEW_IMAGE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 /// Maximum source pixels accepted before the preview falls back to a compact notice.
 ///
@@ -224,7 +224,7 @@ const MAX_PREVIEW_IMAGE_WORK_BYTES: u64 =
 /// GtkSourceView highlighting is excellent for excerpts, but 64 KiB keeps a
 /// single fenced block from monopolizing a render turn when preview refreshes.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_PREVIEW_CODE_BLOCK_BYTES: usize = 64 * 1024;
 /// Inputs above this size are parsed away from GTK before bounded projection.
 ///

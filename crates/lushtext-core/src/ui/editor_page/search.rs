@@ -15,7 +15,7 @@ use super::LushtextEditorPage;
 /// sometimes press Ctrl+Shift+F with a whole document selected; the prefill
 /// runs on the GTK thread, so a larger selection is skipped instead of copied.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_SEARCH_SELECTION_PREFILL_CHARS: i32 = 1_024;
 
 /// The selection text a find surface (the in-tab bar or the workspace search

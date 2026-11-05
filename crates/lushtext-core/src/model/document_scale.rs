@@ -55,7 +55,7 @@ use super::paragraph_boundary::ProfileSummary;
 /// the origin proposal's decision 4: about 1 MiB, GNOME Text Editor's figure,
 /// in place of the former 10 MB. Recorded as an open question in the design.
 ///
-/// Kind: policy tier; a power of two aligned with its neighbours.
+/// Kind: presentation cap; a power of two aligned with its neighbours.
 pub const S_SYNTAX: u64 = 1024 * 1024;
 
 /// The largest short-line document of each measured language whose
@@ -76,43 +76,43 @@ pub const S_SYNTAX: u64 = 1024 * 1024;
 /// exceptions with their corpus counts, CSS converts to a power of two
 /// (`power-of-two-thresholds` design D9, "Measured baseline").
 mod attach_threshold {
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 32 KiB unhighlights 57,527 of 792,448 HTML files highlighted today
     /// (7.26 %), above design D2's 0.05 % floor.
     pub const HTML: u64 = 46 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 256 KiB unhighlights 592 of 613,131 Markdown files (0.10 %), above
     /// design D2's 0.05 % floor.
     pub const MARKDOWN: u64 = 320 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 128 KiB unhighlights 119 of the registry's Rust files (0.90 %), above
     /// design D2's 0.05 % floor.
     pub const RUST: u64 = 184 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 16 KiB unhighlights 10,883 of 148,432 JSON files (7.33 %), above
     /// design D2's 0.05 % floor.
     pub const JSON: u64 = 24 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 64 KiB unhighlights 29 of `/usr/include`'s headers (0.80 %), above
     /// design D2's 0.05 % floor.
     pub const C: u64 = 84 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 32 KiB unhighlights 44 of Python's standard library files (6.22 %),
     /// above design D2's 0.05 % floor.
     pub const PYTHON: u64 = 48 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 16 KiB unhighlights 814 JavaScript files (1.19 %), above design D2's
     /// 0.05 % floor.
     pub const JAVASCRIPT: u64 = 18 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 8 KiB unhighlights 189 TypeScript files (1.23 %), above design D2's
     /// 0.05 % floor.
     pub const TYPESCRIPT: u64 = 21 * 512;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 128 KiB unhighlights 156 YAML files (0.37 %), above design D2's 0.05
     /// % floor.
     pub const YAML: u64 = 144 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 128 KiB unhighlights 231 XML files (0.25 %), above design D2's 0.05 %
     /// floor.
     pub const XML: u64 = 132 * 1024;
@@ -120,7 +120,7 @@ mod attach_threshold {
     /// (`power-of-two-thresholds`): none of the 2,353 corpus CSS files
     /// highlighted today loses highlighting at 32 KiB.
     pub const CSS: u64 = 32 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 32 KiB unhighlights 1,347 shell scripts (5.94 %), above design D2's
     /// 0.05 % floor.
     pub const SHELL: u64 = 39 * 1024;
@@ -142,9 +142,9 @@ mod attach_threshold {
 /// HTML's 16 KiB is a power of two as measured; JSON's 20 KiB is a recorded
 /// exception (its own `Kind:` line).
 mod typing_threshold {
-    /// Kind: cap; a power of two, rounded down.
+    /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
     pub const HTML: u64 = 16 * 1024;
-    /// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
     /// to 16 KiB unhighlights 8,963 of 146,512 JSON files highlighted today
     /// (6.12 %).
     pub const JSON: u64 = 20 * 1024;
@@ -261,7 +261,7 @@ const fn min_u64(a: u64, b: u64) -> u64 {
 /// median of the twelve measured attach thresholds (maintainer decision of
 /// 2026-10-31; a unit test recomputes it).
 ///
-/// Kind: cap; recorded exception (`power-of-two-thresholds`): the median
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): the median
 /// rounded down to a whole KiB; rounding down to 32 KiB unhighlights 10,082 of
 /// the sampled Java files (2.17 %).
 pub const S_SYNTAX_OTHER: u64 = 47 * 1024;
@@ -407,7 +407,7 @@ impl SyntaxLanguage {
 /// length (C0: 2,000 / 3,000; ledger A29 is the context-engine behaviour it
 /// avoids).
 ///
-/// Kind: cap; recorded exception (`power-of-two-thresholds`): rounding down to
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down to
 /// 1,024 unhighlights 3-22 % of real Markdown files (3.1 % of this repository's
 /// `docs/` and `openspec/`, 3.3 % of a 1,791-file sample), and 2,048 breaks
 /// `MAX_SYNTAX_PARAGRAPH_BYTES <= HIGHLIGHT_CHUNK_BYTES` (8,195 > 8,192), whose
@@ -458,7 +458,7 @@ pub const L_SEARCH_HIGHLIGHT: u64 = 10_000;
 /// a wrapped keystroke reaches B_interact near 10,000 characters on the
 /// reference lane (6.9–7.5 ms median, p90 8.5–8.8, design D3), so 8,192.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const L_WRAP_EDIT: u64 = 8_192;
 
 /// The shortest paragraph length the profile counts (threshold 0 of
@@ -468,7 +468,7 @@ pub const L_WRAP_EDIT: u64 = 8_192;
 /// decides `protected_view`, which holds above [`L_PROTECT_EDIT`]: at 500 it
 /// would have made ordinary prose written one paragraph per line view-only.
 ///
-/// Kind: cap; C0's 500 taken to the power of two 512 (`power-of-two-thresholds`
+/// Kind: presentation cap; C0's 500 taken to the power of two 512 (`power-of-two-thresholds`
 /// D7, task 5.1): the lane's new dense/512 case met what dense/500 meets on the
 /// same build (2026-11-05, both wrap modes, plain, AT and probe-IM, three
 /// repetitions): every post-open dispatch at most 9.7 ms (dense/500: 10.8 ms),
@@ -499,7 +499,7 @@ pub const L_EDIT_STALL: u64 = 3_500;
 /// [`L_EDIT_STALL`] as a recorded toolkit-floor exception. Density never
 /// decides the flag.
 ///
-/// Kind: policy tier; recorded exception (`power-of-two-thresholds`): the
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): the
 /// maintainer's editability contract ("editable up to ~50k", 2026-10-30).
 /// 32,768 would make documents with 32-50 k character paragraphs view-only;
 /// 65,536 is above the accepted keystroke cost (C5: 7.7-11.1 ms at 50,000,
@@ -547,7 +547,7 @@ pub const R_BATCH: usize = 256;
 
 /// Undo history is off above this many bytes.
 ///
-/// Kind: policy tier; 64 MiB (was 50,000,000 bytes, `power-of-two-thresholds`
+/// Kind: presentation cap; 64 MiB (was 50,000,000 bytes, `power-of-two-thresholds`
 /// D3). Three 64 MiB buffers with undo stay inside the 256 MiB live-editor
 /// budget.
 pub const UNDO_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
@@ -560,14 +560,14 @@ pub const HISTORY_SAVE_ONLY_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Local history is unavailable above this many bytes.
 ///
-/// Kind: policy tier; 64 MiB, with [`UNDO_TOTAL_BYTES`] (was 50,000,000 bytes,
+/// Kind: presentation cap; 64 MiB, with [`UNDO_TOTAL_BYTES`] (was 50,000,000 bytes,
 /// `power-of-two-thresholds` D3).
 pub const HISTORY_UNAVAILABLE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A file above this many bytes is refused: `set_text` for 512 MiB allocates
 /// about 1 GiB and blocks the main thread for seconds.
 ///
-/// Kind: policy tier; 512 MiB (was 500,000,000 bytes, `power-of-two-thresholds`
+/// Kind: presentation cap; 512 MiB (was 500,000,000 bytes, `power-of-two-thresholds`
 /// D3, task 3: the exclusive-load memory peak at 512 MiB stayed within main's
 /// at 500 MB times 1.074 plus the run spread, with no swap or OOM kill).
 pub const REFUSE_TO_OPEN: u64 = 512 * 1024 * 1024;
@@ -1112,9 +1112,9 @@ pub(crate) mod byte_tier_reference {
     // three comparison mutants no parity test could tell apart.
     /// Kind: policy tier; the 8 MiB save-only local-history tier.
     const DISABLE_SYNTAX_HIGHLIGHTING: u64 = 8 * 1024 * 1024;
-    /// Kind: policy tier; the 64 MiB no-undo, no-local-history tier.
+    /// Kind: presentation cap; the 64 MiB no-undo, no-local-history tier.
     const DISABLE_UNDO_HISTORY: u64 = 64 * 1024 * 1024;
-    /// Kind: policy tier; the 512 MiB open tier.
+    /// Kind: presentation cap; the 512 MiB open tier.
     const REFUSE_TO_OPEN: u64 = 512 * 1024 * 1024;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -91,7 +91,7 @@ pub(crate) const FIND_RESULT_CAP: u64 = 8_192;
 /// excerpt, cut by [`admit_find_record`]. The record's fixed fields are bounded
 /// by the per-turn count instead.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub(crate) const MAX_FIND_RECORD_BYTES: u64 = 512;
 
 // A single admitted record always fits one turn, so the planner's

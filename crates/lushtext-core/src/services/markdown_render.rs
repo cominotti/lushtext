@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Largest source accepted for automatic Markdown preview planning.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum parser events retained by one render generation.
 ///
@@ -36,15 +36,15 @@ pub const MAX_MARKDOWN_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MARKDOWN_EVENTS: usize = 50_000;
 /// Maximum structural nesting accepted from the event stream.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_STRUCTURE_DEPTH: usize = 128;
 /// Maximum table, code-block, and image descriptors retained in one plan.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_EMBED_DESCRIPTORS: usize = 256;
 /// Maximum bytes retained by event text and link/embed descriptors.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_RETAINED_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum event/node work one GTK projection turn may apply.
 ///
@@ -70,7 +70,7 @@ pub const MARKDOWN_BYTES_PER_PROJECTION_SLICE: usize = 256 * 1024;
 /// is bounded by [`MAX_MARKDOWN_CARRIED_TABLE_CELLS`] instead, because a
 /// byte ceiling would truncate large-byte tables that render completely today.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_CARRIED_EMBED_BYTES: usize = 64 * 1024;
 /// Maximum cells one in-flight table may retain while carried across turns.
 ///
@@ -94,7 +94,7 @@ pub const MAX_MARKDOWN_CARRIED_TABLE_CELLS: usize = 1_000;
 /// container-segment omissions never build a widget at all, so a pathological
 /// document cannot turn omission markers into unbounded widget work.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_PLACEHOLDER_WIDGETS: usize = 64;
 
 /// Current generation-owned terminal state of the preview renderer.

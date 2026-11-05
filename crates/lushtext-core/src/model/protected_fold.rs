@@ -160,7 +160,7 @@ pub const HEAD_CAP: u64 = min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS);
 /// exceed `min(HEAD_CAP, L_PROTECT)`, checked at compile time below and by
 /// Kani.
 ///
-/// Kind: cap; equal to `L_PROTECT`, 512 (`power-of-two-thresholds` D7), the
+/// Kind: presentation cap; equal to `L_PROTECT`, 512 (`power-of-two-thresholds` D7), the
 /// bound it must not exceed.
 pub const N_INSPECT: u64 = 512;
 

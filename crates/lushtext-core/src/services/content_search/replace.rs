@@ -43,7 +43,7 @@ pub const MAX_REPLACE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// megabytes keeps rollback useful without letting one operation consume the
 /// editor's broader buffer-memory budget.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_REPLACE_UNDO_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum complete in-memory undo owner, including paths and table capacity.
 ///

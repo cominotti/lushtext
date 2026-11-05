@@ -20,6 +20,9 @@ use crate::ui::accessibility;
 use super::LushtextPreferences;
 
 /// Maximum rows rendered per metadata group before showing an omitted-count row.
+///
+/// Kind: presentation cap; a power of two, never rounded down
+/// (`power-of-two-thresholds` D12): it cuts a list before an omitted-count row.
 const DATA_DETAILS_MAX_ROWS_PER_GROUP: usize = 32;
 /// Minimum time a successful fast scan remains visibly "checking" in Preferences.
 ///

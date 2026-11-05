@@ -28,7 +28,7 @@ use crate::services::json_format::{self, JsonEnvelopeRef, JsonFormatError};
 /// generous for real state while preventing a damaged file from turning startup
 /// into an unbounded read.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const DEFAULT_MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 /// App-data directory where damaged metadata is preserved for support triage.
 pub const QUARANTINE_DIR: &str = "recovery-quarantine";

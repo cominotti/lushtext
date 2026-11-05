@@ -20,7 +20,7 @@ use gtk4::prelude::*;
 /// avoids flooding screen readers and protects private document/note text from
 /// accidentally becoming an unbounded accessibility event.
 ///
-/// Kind: text cap; 240 rounded up to a power of two (`power-of-two-thresholds`
+/// Kind: presentation cap; 240 rounded up to a power of two (`power-of-two-thresholds`
 /// task 4.6): 128 would cut shipped announcements (the reduced-features notice
 /// reaches 229 characters, pinned by a unit test), so the cap takes 256, the
 /// power of two at or above the longest shipped template.

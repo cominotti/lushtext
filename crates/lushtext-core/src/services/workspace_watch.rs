@@ -26,7 +26,7 @@ pub const WORKSPACE_WATCH_PATH_CAP: usize = 1_024;
 
 /// Diagnostics are secondary to conservative refresh delivery and remain bounded too.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const WATCH_ERROR_MESSAGE_CAP_BYTES: usize = 1_024;
 
 /// One materialized path to watch for sidebar refresh.

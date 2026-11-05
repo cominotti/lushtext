@@ -43,7 +43,7 @@ const MAX_BACKUP_DIR_ATTEMPTS: u32 = 64;
 /// exhausting memory; too-low values make large items retryable, too-high values
 /// can OOM the worker.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_BACKUP_ITEM_BYTES: u64 = crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES;
 
 /// Manifest describing one conversion or Start Fresh preservation run.

@@ -47,7 +47,7 @@ const SET_ASIDE_DIR: &str = "set-aside";
 const MAX_SET_ASIDE_NAME_ATTEMPTS: u32 = 64;
 /// Most set-aside bodies one listing reports; the rest stay on disk untouched.
 ///
-/// Kind: cap; a power of two, rounded down.
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_LISTED_SET_ASIDE_BODIES: usize = 256;
 /// Most set-aside entries one scan visits; past it the totals are a lower
 /// bound (and far past the soft retention bound).
