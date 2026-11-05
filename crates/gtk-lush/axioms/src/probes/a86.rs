@@ -68,6 +68,8 @@ const BUDGET: Duration = Duration::from_secs(3);
 pub enum Mechanism {
     /// `queue_draw` on the window: the frame floor.
     Redraw,
+    /// Toggle the hover state of one unrelated row (an unrelated restyle).
+    Hover,
     /// Reload the plain provider with unchanged text.
     ReloadSame,
     /// Reload the plain provider with the other zoom (LushText before A86).
@@ -84,8 +86,9 @@ pub enum Mechanism {
 
 impl Mechanism {
     /// Every mechanism, in the order a run measures them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Redraw,
+        Self::Hover,
         Self::ReloadSame,
         Self::ReloadZoom,
         Self::Unmatched,
@@ -99,6 +102,7 @@ impl Mechanism {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Redraw => "redraw",
+            Self::Hover => "hover",
             Self::ReloadSame => "reload same",
             Self::ReloadZoom => "reload zoom",
             Self::PerWidget => "per-widget class",
@@ -196,6 +200,7 @@ pub struct FontScopeFixture {
     zoom: Cell<u32>,
     unmatched_flip: Cell<bool>,
     mode: Cell<Option<Mechanism>>,
+    hover_row: Option<gtk4::Widget>,
     shown: Presented,
 }
 
@@ -218,8 +223,10 @@ impl FontScopeFixture {
             .width_request(300)
             .vexpand(true)
             .build();
+        let unrelated_rows = rows(unrelated, false, &mut Vec::new());
+        let hover_row = unrelated_rows.first_child();
         let rest = gtk4::ScrolledWindow::builder()
-            .child(&rows(unrelated, false, &mut Vec::new()))
+            .child(&unrelated_rows)
             .width_request(200)
             .vexpand(true)
             .build();
@@ -252,6 +259,7 @@ impl FontScopeFixture {
             zoom: Cell::new(100),
             unmatched_flip: Cell::new(false),
             mode: Cell::new(None),
+            hover_row,
             shown,
         };
         fixture.quiet();
@@ -316,6 +324,15 @@ impl FontScopeFixture {
         let next = if self.zoom.get() == 100 { 110 } else { 100 };
         match mechanism {
             Mechanism::Redraw => self.shown.window().queue_draw(),
+            Mechanism::Hover => {
+                if let Some(row) = &self.hover_row {
+                    if row.state_flags().contains(gtk4::StateFlags::PRELIGHT) {
+                        row.unset_state_flags(gtk4::StateFlags::PRELIGHT);
+                    } else {
+                        row.set_state_flags(gtk4::StateFlags::PRELIGHT, false);
+                    }
+                }
+            }
             Mechanism::ReloadSame => self.plain.load_from_string(&plain_rules(self.zoom.get())),
             Mechanism::ReloadZoom => {
                 self.plain.load_from_string(&plain_rules(next));
@@ -343,6 +360,14 @@ impl FontScopeFixture {
             .map(|watched| watched.dispatch.micros)
             .max()
             .unwrap_or_default()
+    }
+
+    /// Replace the class-keyed provider's rules (task 3.4 of
+    /// `scope-font-zoom-restyle`: an unrelated restyle with and without a
+    /// large zoom rule set).
+    pub fn set_class_rules(&self, text: &str) {
+        self.classes.load_from_string(text);
+        self.quiet();
     }
 
     /// The current zoom, percent.
@@ -458,6 +483,24 @@ pub fn probe_a86() -> Observation {
             "a load whose rules match no widget changes no font size and no layout extent",
         )?;
         drop(small);
+
+        // An unrelated restyle (a redraw, a hover change) with no class rules
+        // and with a rule set the size of LushText's largest (72 levels).
+        {
+            let populated = FontScopeFixture::new(recorder, UNRELATED_ROWS, true)?;
+            let mut cells = Vec::new();
+            for (label, rules) in [
+                ("none", String::new()),
+                ("72 levels", class_rules(&["lzl", "unused"])),
+                ("none again", String::new()),
+            ] {
+                populated.set_class_rules(&rules);
+                let redraw = populated.median_of(Mechanism::Redraw, REPS);
+                let hover = populated.median_of(Mechanism::Hover, REPS);
+                cells.push(format!("{label}: redraw {redraw}, hover {hover}"));
+            }
+            recorder.measure("unrelated_restyle_us_by_rule_set", cells.join("; "));
+        }
 
         let mut table = Vec::new();
         for (unrelated, text) in [
