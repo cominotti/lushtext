@@ -109,7 +109,11 @@ A84 (the `highlight-updated` coverage test) followed with LushText's chunked
 highlighted install (`chunked-highlight-attach`), its sample's
 `--chunked-install` mode measuring the paced install per language and its
 `--typing-limit` and `--flip-limit` modes the per-key cost of ordinary and
-context-flipping keys. Every sample prints its usage on `--help`/`-h` and
+context-flipping keys. A85 (an edit's first update and its paced
+re-analysis) followed with LushText's paced re-analysis of edits
+(`bound-context-flip-keystrokes`), its sample's `--edit-cost` and
+`--flip-cost` modes measuring ordinary and context-flipping keys on any
+document, with `--paced` LushText's pacing. Every sample prints its usage on `--help`/`-h` and
 refuses an unknown argument before GTK starts; a sample with its own modes
 declares them in a `SampleFlags` and calls `support::guard(&FLAGS)` first in
 `main` (`make check-gtk-axioms` checks it). Never run a sample without

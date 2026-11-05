@@ -722,3 +722,12 @@ pub mod a84 {
         paced_chunked_install, type_and_watch,
     };
 }
+
+/// The fixture and values the A85 probe drives, for its sample.
+pub mod a85 {
+    pub use crate::probes::a85::{
+        EditCost, Emission, EmissionLog, LARGE_BYTES, PacedEdit, Pacing, SMALL_BYTES,
+        analysed_buffer, c_without_closers, decision_priority, observe_edit, observe_edit_framed,
+        paced_edit, step_priority,
+    };
+}

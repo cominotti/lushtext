@@ -1294,6 +1294,28 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a84),
     },
+    Axiom {
+        id: AxiomId::new(85),
+        name: "a85_an_edit_s_first_update_is_timed_before_its_worker_runs",
+        statement: "after an edit in a buffer whose language is attached, an idle queued at \
+                    G_PRIORITY_HIGH_IDLE before the edit runs immediately before the context \
+                    engine's first update, whose highlight-updated comes from that priority, and \
+                    an idle queued at G_PRIORITY_LOW - 1 after the edit runs after it and before \
+                    the first worker slice; ensure_highlight on an empty range at a bound, from \
+                    an idle at G_PRIORITY_HIGH_IDLE - 1, re-analyses the edit to the line after \
+                    the bound in one reported range, and once a report ends before its bound the \
+                    first update and the worker find nothing; removing the language between \
+                    such steps, or from the G_PRIORITY_LOW - 1 idle, removes the pending first \
+                    update and worker and changes no text",
+        dependent_designs: &[
+            "bound-context-flip-keystrokes (C6c): an edit's re-analysis runs in paced \
+             ensure_highlight steps before the first update, and a session that spends the \
+             first-update allowance without merging removes the language before any worker \
+             slice",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a85),
+    },
 ];
 
 #[cfg(test)]
