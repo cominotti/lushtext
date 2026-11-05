@@ -17,7 +17,10 @@
 
 /// How many construction stages one window records; later stages are counted
 /// in [`WindowConstructionSpans::dropped_stages`] instead of growing the record.
-pub const MAX_CONSTRUCTION_STAGES: usize = 48;
+///
+/// Kind: coverage window; 48 rounded up to a power of two
+/// (`power-of-two-thresholds` D5).
+pub const MAX_CONSTRUCTION_STAGES: usize = 64;
 
 /// The process-wide startup spans: GTK's own startup and LushText's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -83,7 +83,10 @@ pub(crate) const FIND_RESULTS_PER_TURN: usize = 256;
 pub(crate) const FIND_BYTES_PER_TURN: u64 = 64 * 1024;
 /// The total result cap of one find request (design D5); the counter reports
 /// "capped" when it is reached.
-pub(crate) const FIND_RESULT_CAP: u64 = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub(crate) const FIND_RESULT_CAP: u64 = 8_192;
 /// The most retained bytes one admitted find record carries: its preview
 /// excerpt, cut by [`admit_find_record`]. The record's fixed fields are bounded
 /// by the per-turn count instead.

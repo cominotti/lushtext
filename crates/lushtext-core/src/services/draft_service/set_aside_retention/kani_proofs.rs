@@ -138,7 +138,7 @@ fn set_aside_retention_bound_and_notice_never_plan_a_deletion() {
 }
 
 /// R5: the soft bound and the notice rate limit, as the programme record
-/// states them (step 8a). The area is over the bound past 100 bodies or
+/// states them (step 8a). The area is over the bound past 128 bodies or
 /// 256 MiB, or when the scan was incomplete; a notice is due only while it is
 /// over the bound and the user has not reviewed it in this process, and then
 /// on the first evaluation or once the count or the size has grown by at least
@@ -156,7 +156,7 @@ fn set_aside_retention_bound_and_notice_never_plan_a_deletion() {
 /// constant mutant of `grown_materially`.
 #[kani::proof]
 fn set_aside_retention_notice_follows_the_bound_and_its_rate_limit() {
-    assert_eq!(SOFT_BOUND_BODIES, 100);
+    assert_eq!(SOFT_BOUND_BODIES, 128);
     assert_eq!(SOFT_BOUND_BYTES, 256 * 1024 * 1024);
     assert_eq!(MATERIAL_GROWTH_PERCENT, 25);
     let current = SetAsideTotals {
@@ -164,7 +164,7 @@ fn set_aside_retention_notice_follows_the_bound_and_its_rate_limit() {
         bytes: kani::any(),
         complete: kani::any(),
     };
-    let by_count = current.count > 100 || !current.complete;
+    let by_count = current.count > 128 || !current.complete;
     let by_bytes = current.bytes > 256 * 1024 * 1024;
     let status = bound_status(Some(current));
     if by_count || by_bytes {

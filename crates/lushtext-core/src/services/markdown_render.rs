@@ -29,6 +29,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Kind: cap; a power of two, rounded down.
 pub const MAX_MARKDOWN_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum parser events retained by one render generation.
+///
+/// Kind: cap; recorded exception (`power-of-two-thresholds` task 4.5): 700 of
+/// 404,113 corpus Markdown files of at most 4 MiB with at most 50,000 events
+/// have more than 32,768 (0.17 %), and would lose their full preview.
 pub const MAX_MARKDOWN_EVENTS: usize = 50_000;
 /// Maximum structural nesting accepted from the event stream.
 ///
@@ -79,6 +83,10 @@ pub const MAX_MARKDOWN_CARRIED_EMBED_BYTES: usize = 64 * 1024;
 /// of its byte size. Retention stays bounded without a byte ceiling because
 /// cell count times the minimum per-cell markup is bounded by
 /// [`MAX_MARKDOWN_SOURCE_BYTES`].
+///
+/// Kind: cap; recorded exception (`power-of-two-thresholds` task 4.5): the
+/// largest table of 1,256 of 404,439 corpus Markdown files with tables of at
+/// most 1,000 cells has more than 512 (0.31 %).
 pub const MAX_MARKDOWN_CARRIED_TABLE_CELLS: usize = 1_000;
 /// Maximum top-level omission placeholder widgets one render generation builds.
 ///

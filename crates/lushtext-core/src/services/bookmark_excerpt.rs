@@ -38,7 +38,10 @@ pub const BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT: usize = 1024 * 1024;
 ///
 /// Deep bookmarks beyond this point are better opened in the editor than
 /// resolved through a modal preview, especially for generated or minified files.
-pub const BOOKMARK_EXCERPT_SCAN_LINE_LIMIT: usize = 20_000;
+///
+/// Kind: cap; 20,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const BOOKMARK_EXCERPT_SCAN_LINE_LIMIT: usize = 16 * 1024;
 /// Maximum characters retained from any one rendered line.
 ///
 /// A single giant line can otherwise consume the whole preview allocation even
@@ -552,7 +555,7 @@ mod tests {
         assert_eq!(BOOKMARK_EXCERPT_CONTEXT_BEFORE_LINES, 3);
         assert_eq!(BOOKMARK_EXCERPT_CONTEXT_AFTER_LINES, 7);
         assert_eq!(BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT, 1024 * 1024);
-        assert_eq!(BOOKMARK_EXCERPT_SCAN_LINE_LIMIT, 20_000);
+        assert_eq!(BOOKMARK_EXCERPT_SCAN_LINE_LIMIT, 16 * 1024);
         assert_eq!(BOOKMARK_EXCERPT_LINE_CHAR_LIMIT, 4096);
         assert_eq!(BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES, 1024);
     }

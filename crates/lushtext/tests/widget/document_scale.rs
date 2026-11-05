@@ -266,7 +266,7 @@ fn test_save_below_ten_megabytes_restores_full_local_history() {
     fixture::write_text(&path, "small\n");
     let page = LushtextEditorPage::new();
     load_and_wait(&page, &path);
-    // Promote it to the save-only history tier, as a 10 MB+ load would.
+    // Promote it to the save-only history tier, as a load above 8 MiB would.
     page.apply_loaded_content_for_test("small\n", 10_000_001);
     assert_eq!(
         page.document_scale().local_history,
@@ -418,14 +418,17 @@ fn test_joining_lines_downgrades_in_the_delete_range_emission() {
 fn test_a_merge_raising_only_density_is_recomputed() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
-    // R_BATCH paragraphs that sum exactly to V_BATCH, then one separator line
-    // and one more paragraph: deleting the separator line makes the last
-    // paragraph join the window without any paragraph growing.
+    // R_BATCH - 1 paragraphs, one separator line and one more paragraph that
+    // together sum to V_BATCH + 1 once the separator is gone: deleting the
+    // separator line makes the last paragraph join the window without any
+    // paragraph growing. (`V_BATCH` is not a multiple of `R_BATCH` since
+    // `power-of-two-thresholds`, so the last paragraph takes the remainder.)
     let per_line = V_BATCH / R_BATCH as u64;
     let line = "d".repeat(n(per_line));
     let mut text = vec![line; R_BATCH - 1].join("\n");
     text.push_str("\n\n");
-    text.push_str(&"d".repeat(n(per_line + 1)));
+    let last = V_BATCH - per_line * (R_BATCH as u64 - 1) + 1;
+    text.push_str(&"d".repeat(n(last)));
     page.buffer().set_text(&text);
     let before = page.document_scale_evidence();
     assert!(!before.scale.protected_view);
@@ -494,8 +497,10 @@ fn test_fast_keystrokes_cannot_cross_v_batch_unseen() {
     let page = LushtextEditorPage::new();
     let per_line = n(V_BATCH / R_BATCH as u64);
     let mut lines = vec!["e".repeat(per_line); R_BATCH];
-    // Leave ten characters of room in the only full window.
-    lines[0] = "e".repeat(per_line - 10);
+    // Leave ten characters of room in the only full window (`V_BATCH` is not
+    // a multiple of `R_BATCH` since `power-of-two-thresholds`).
+    let first = n(V_BATCH) - per_line * (R_BATCH - 1) - 10;
+    lines[0] = "e".repeat(first);
     page.buffer().set_text(&lines.join("\n"));
     let start = page.document_scale_evidence();
     assert!(start.worst_batch_chars <= V_BATCH);

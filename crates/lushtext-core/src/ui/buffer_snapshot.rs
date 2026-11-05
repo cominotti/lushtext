@@ -62,12 +62,15 @@ use crate::ui::plain_disposal::{
     try_reserve_progress_for_gtk,
 };
 
-/// Files at or above roughly 10 MB use chunked snapshotting.
+/// Files at or above 8 MiB use chunked snapshotting.
 ///
 /// The threshold mirrors LushText's syntax-disable boundary: below it, a direct
 /// copy is usually cheaper than scheduling; above it, one synchronous buffer
 /// copy can create a visible frame stall on slower machines.
-pub(crate) const BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD: u64 = 10_000_000;
+///
+/// Kind: cap; 8 MiB, aligned with the 8 MiB tier it mirrors (was 10,000,000
+/// bytes, `power-of-two-thresholds` D3).
+pub(crate) const BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD: u64 = 8 * 1024 * 1024;
 
 /// Characters copied per GTK main-loop slice during a chunked snapshot.
 ///

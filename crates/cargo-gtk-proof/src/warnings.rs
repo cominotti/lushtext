@@ -14,7 +14,9 @@ use serde::Serialize;
 
 use crate::{artifacts, model};
 
-const WARNING_TEXT_LIMIT: usize = 1200;
+/// Kind: text cap; 1,200 rounded down to a power of two
+/// (`power-of-two-thresholds` D4).
+const WARNING_TEXT_LIMIT: usize = 1_024;
 
 /// Write `warning-scan.json` for a case directory and return the report path.
 pub(crate) fn scan_case_logs(case_dir: &Path) -> Result<PathBuf, String> {

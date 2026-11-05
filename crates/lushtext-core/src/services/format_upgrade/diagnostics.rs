@@ -17,20 +17,29 @@ use crate::services::json_format::{
 
 /// Default maximum number of sidecar files scanned per app-owned sidecar directory.
 ///
-/// Ten thousand mirrors existing large-directory UI safety budgets: it is far
+/// 8,192 mirrors existing large-directory UI safety budgets: it is far
 /// beyond normal use but prevents a damaged data directory from monopolizing
 /// startup preflight.
-pub const SIDECAR_SCAN_MAX_ENTRIES: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const SIDECAR_SCAN_MAX_ENTRIES: usize = 8_192;
 /// Maximum local-history lineage directories inspected during one preflight.
 ///
 /// Preflight reads only each lineage `index.json`; snapshot text bodies are not
 /// format metadata and stay outside this scan.
-pub const LOCAL_HISTORY_SCAN_MAX_LINEAGES: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const LOCAL_HISTORY_SCAN_MAX_LINEAGES: usize = 8_192;
 /// Maximum Replace All undo entry files inspected during one preflight.
 ///
 /// This matches the existing undo-journal recovery budget so upgrade status and
 /// runtime cleanup see the same damaged-directory scale.
-pub const REPLACE_JOURNAL_SCAN_MAX_ENTRIES: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const REPLACE_JOURNAL_SCAN_MAX_ENTRIES: usize = 8_192;
 /// Maximum draft bodies included in preservation-only inventory.
 ///
 /// Draft bodies are plain UTF-8 content, not versioned JSON. The limit matches

@@ -21,6 +21,10 @@ use super::widgets::build_preview_limit_fallback_widget;
 ///
 /// One thousand labels leaves room for realistic reference tables while keeping
 /// pathological CSV-like Markdown from allocating a giant widget tree at once.
+///
+/// Kind: cap; recorded exception (`power-of-two-thresholds` task 4.5): the
+/// largest table of 1,256 of 404,439 corpus Markdown files with tables of at
+/// most 1,000 cells has more than 512 (0.31 %).
 const MAX_PREVIEW_TABLE_CELLS: usize = 1_000;
 
 /// Buffered table representation used between pulldown-cmark's streaming events

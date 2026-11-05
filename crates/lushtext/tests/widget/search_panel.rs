@@ -3507,7 +3507,7 @@ fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
     panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
 
-    // Streaming 10,000 matches costs at least 40 paced ticks, so the budget is
+    // Streaming 8,192 matches costs at least 32 paced ticks, so the budget is
     // generous; the predicate returns as soon as the flight settles.
     wait_until(Duration::from_secs(60), || {
         let imp = panel.imp();
@@ -3521,7 +3521,7 @@ fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
     );
     assert_eq!(
         imp.count_label.text().as_str(),
-        "10,000+ results (truncated) \u{2014} narrow your search",
+        "8,192+ results (truncated) \u{2014} narrow your search",
     );
     assert!(
         imp.count_label.has_css_class("warning"),
@@ -3532,7 +3532,7 @@ fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
     // be rendered: the defect this covers discarded the whole bounded channel.
     let total = imp.runtime.total_matches.get();
     assert!(
-        total >= 10_000,
+        total >= 8_192,
         "a capped search must keep the matches it found, got {total}",
     );
     assert!(

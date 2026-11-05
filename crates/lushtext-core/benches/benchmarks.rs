@@ -304,7 +304,7 @@ fn make_near_policy_long_path_tree(file_count: usize) -> TempDir {
 /// Mirror bounded breadth-first sidebar model population and batching costs.
 fn populate_tree_store(entries: Vec<DirectoryEntry>, truncated: bool) -> gio::ListStore {
     // Match the production directory safety cap used by the sidebar fixture.
-    const MAX_DIR_ENTRIES: usize = 10_000;
+    const MAX_DIR_ENTRIES: usize = 8_192;
     // Match the production append batch so relayout costs stay representative.
     const CHILD_APPEND_BATCH_SIZE: usize = 256;
 
@@ -3289,7 +3289,7 @@ fn synthetic_notes_browser_entries(count: usize) -> Vec<PaletteNoteEntry> {
 
 fn bench_quality_gap_scale(c: &mut Criterion) {
     const NOTE_ROWS: usize = 10_000;
-    const NOTE_RENDER_CAP: usize = 500;
+    const NOTE_RENDER_CAP: usize = 256;
     const PREVIEW_BYTES: usize = 4 * 1024 * 1024;
     const CACHE_ROWS: usize = 10_000;
     const MINIMAP_ANALYSIS_SLICE_CHARS: usize = 32 * 1024;

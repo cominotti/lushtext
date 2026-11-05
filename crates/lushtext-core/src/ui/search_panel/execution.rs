@@ -265,9 +265,8 @@ impl LushtextSearchPanel {
                     SearchEventPoll::Event(SearchEvent::ResultCap) => {
                         if !cancelled {
                             imp.runtime.result_capped.set(true);
-                            imp.count_label.set_text(
-                                "10,000+ results (truncated) \u{2014} narrow your search",
-                            );
+                            imp.count_label
+                                .set_text("8,192+ results (truncated) \u{2014} narrow your search");
                             imp.count_label.add_css_class("warning");
                             panel.refresh_accessibility_state();
                         }

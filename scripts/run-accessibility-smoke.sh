@@ -1518,14 +1518,14 @@ run_accessibility_capture "protected-view-inspector" \
     --step wait-atspi-text:"Line 2, columns 1–500 of 72000" \
     --step atspi-click-button:"^Next Window$" \
     --step wait-predicate:accessibility-settled \
-    --step wait-atspi-text:"Line 2, columns 501–1000 of 72000; 62000 characters hidden in the editor"
+    --step wait-atspi-text:"Line 2, columns 501–1000 of 72000; 63808 characters hidden in the editor"
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Next Window"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Previous Window"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Next Folded Line"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Previous Folded Line"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Copy Whole Line"
-assert_anchor_prefix "protected-view-inspector" "line inspector window" "text" "Line 2, columns 501–1000 of 72000; 62000 characters hidden"
+assert_anchor_prefix "protected-view-inspector" "line inspector window" "text" "Line 2, columns 501–1000 of 72000; 63808 characters hidden"
 fi
 
 if case_selected "protected-view-menu"; then
@@ -1605,11 +1605,11 @@ run_accessibility_capture "workspace-search-capped" \
     --step wait-window-action:set-search-panel-query \
     --step window-string-action:set-search-panel-query=cappedmatchterm \
     --step wait-predicate:search-complete \
-    --step wait-atspi-text:"10,000+ results (truncated)"
+    --step wait-atspi-text:"8,192+ results (truncated)"
 assert_anchor "workspace-search-capped" "workspace search" "entry" "Workspace search query"
 assert_anchor "workspace-search-capped" "workspace search" "list" "Workspace search results"
 # The truncation is announced as text, not only as a warning colour.
-assert_anchor_prefix "workspace-search-capped" "workspace search" "status bar" "10,000+ results (truncated)"
+assert_anchor_prefix "workspace-search-capped" "workspace search" "status bar" "8,192+ results (truncated)"
 fi
 
 if case_selected "workspace-search-replace-undo"; then

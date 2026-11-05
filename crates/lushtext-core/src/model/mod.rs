@@ -40,6 +40,7 @@ pub mod responsiveness_budget;
 pub mod session;
 pub mod settings_write_batch;
 pub mod sidecar_identity;
+pub mod size_units;
 pub mod surrounding_text;
 pub mod workspace;
 pub mod workspace_search;

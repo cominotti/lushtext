@@ -35,7 +35,10 @@ use crate::services::filesystem::metadata as fs_metadata;
 /// parallel walkers — concurrent threads may overshoot by up to the thread
 /// count before observing the stop signal. The UI should clamp display to
 /// this value.
-pub(super) const RESULT_CAP: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub(super) const RESULT_CAP: usize = 8_192;
 
 /// Why the parallel walk should stop scanning, and who owns each reason.
 ///

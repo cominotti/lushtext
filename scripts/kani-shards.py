@@ -769,7 +769,7 @@ ORACLES: dict[str, Oracle] = {
         _CORE,
         (
             _h(_SCALE + "scale_save_without_join_reenables_a_feature", 0.09, "ci"),
-            _h(_SCALE + "scale_byte_tiers_match_the_retired_tiers", 0.13, "ci"),
+            _h(_SCALE + "scale_byte_tiers_match_the_tier_reference", 0.13, "ci"),
             _h(_SCALE + "scale_protected_view_is_upward_closed", 0.18, "ci"),
             _h(_SCALE + "scale_is_monotone", 0.49, "ci"),
             _h(_SCALE + "scale_is_monotone_in_the_language_threshold", 0.27, "ci"),
