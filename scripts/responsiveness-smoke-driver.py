@@ -133,9 +133,13 @@ KEY_ESCAPE = 0xFF1B
 KEY_CONTROL_L = 0xFFE3
 KEY_SHIFT_L = 0xFFE1
 BTN_LEFT = 0x110
+# The reanalysis group's flipping bursts (C6c) also type the punctuation of
+# comment and string openers and closers: printable, never a shortcut
+# unmodified (Control is refused with them, `tap`).
+FLIP_PUNCTUATION = '/*<!->"'
 ALLOWED_KEYSYMS = {KEY_RIGHT, KEY_PAGE_DOWN, KEY_HOME, KEY_END, KEY_ESCAPE, KEY_CONTROL_L, KEY_SHIFT_L} | set(
     range(0x61, 0x7B)
-)
+) | {ord(char) for char in FLIP_PUNCTUATION}
 TYPE_BURST = "abcdefghij"
 
 # Sweep definition (design D7).
@@ -213,7 +217,7 @@ SAVE_BACKLOG_DOCUMENTS = 2
 SAVE_BACKLOG_LEAD_S = 1.0
 SAVE_SCRATCH_TEXT = "scratch document the save case writes\n"
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight")
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight", "reanalysis")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -282,6 +286,42 @@ MARKDOWN_PREVIEW_BYTES = 200_000
 HIGHLIGHT_CHUNKED_EXTS: tuple[str, ...] = ()
 HIGHLIGHT_GATED_EXTS = ("md", "c", "rs", "py", "xml", "html", "json", "js", "ts", "css", "sh", "yaml")
 HIGHLIGHT_BYTES = 1 << 19
+# `bound-context-flip-keystrokes` (C6c): one highlighted document per language
+# at its C6 total-size gate (`document_scale::attach_threshold`, minimum with
+# the HTML and JSON typing thresholds), typed into after settle. Each also has
+# a `flip` case whose type-start and type-middle bursts open a context that
+# changes the rest of the document, type inside it, close it and type after
+# it; c and markdown add the worst-case family (`--flavor no-closers`: no
+# closer after the cursor).
+REANALYSIS_GATES = {
+    "md": 320 * 1024,
+    "rs": 184 * 1024,
+    "c": 84 * 1024,
+    "py": 48 * 1024,
+    "xml": 132 * 1024,
+    "html": 16 * 1024,
+    "json": 20 * 1024,
+    "js": 18 * 1024,
+    "ts": 21 * 512,
+    "css": 37 * 1024,
+    "sh": 39 * 1024,
+    "yaml": 144 * 1024,
+}
+REANALYSIS_FLIPS = {
+    "md": ("<!--", "-->"),
+    "rs": ('"', '"'),
+    "c": ("/*", "*/"),
+    "py": ('"""', '"""'),
+    "xml": ("<!--", "-->"),
+    "html": ("<!--", "-->"),
+    "json": ('"', '"'),
+    "js": ("/*", "*/"),
+    "ts": ("/*", "*/"),
+    "css": ("/*", "*/"),
+    "sh": ('"', '"'),
+    "yaml": ('"', '"'),
+}
+REANALYSIS_WORST_EXTS = ("c", "md")
 EDITORCONFIG_LINE_LENGTH = 710
 EDITORCONFIG_TAB_WIDTH = 8
 EDITORCONFIG_SETTING_TAB_WIDTH = 4
@@ -1916,10 +1956,33 @@ def highlight_cases() -> list[Case]:
     ]
 
 
+def reanalysis_cases() -> list[Case]:
+    """`bound-context-flip-keystrokes` (C6c): each language at its gate, typed
+    into after settle with ordinary keys and with a flipping burst."""
+    cases = []
+    for ext, size in REANALYSIS_GATES.items():
+        flavors = ("css", "no-closers") if ext in REANALYSIS_WORST_EXTS else ("css",)
+        for flavor in flavors:
+            suffix = "/no-closers" if flavor == "no-closers" else ""
+            opener, closer = REANALYSIS_FLIPS[ext]
+            for flip in (False, True):
+                cases.append(
+                    Case(
+                        f"reanalysis/{ext}/{size}{suffix}" + ("/flip" if flip else ""),
+                        "reanalysis",
+                        FixtureSpec("short-language", size, seed_for("reanalysis", ext, flavor), ext=ext, flavor=flavor),
+                        settings={"word-wrap": True, "show-minimap": False},
+                        length=size,
+                        attrs={"ext": ext, "flavor": flavor, "post_open": True, **({"burst": opener + "abcdefg" + closer + "hij"} if flip else {})},
+                    )
+                )
+    return cases
+
+
 def post_open_cases() -> list[Case]:
     """The cases C6 added (design D8) and C6b's highlight group; both tiers
     run them."""
-    return highlight_cases() + [
+    return highlight_cases() + reanalysis_cases() + [
         Case(
             "markdown/preview",
             "markdown",
@@ -2068,7 +2131,7 @@ class RemoteDesktop:
         self._call("NotifyKeyboardKeysym", GLib.Variant("(ub)", (keysym, pressed)))
 
     def tap(self, keysym: int, injections: list[dict], control: bool = False) -> None:
-        if control and 0x61 <= keysym <= 0x7A:
+        if control and (0x61 <= keysym <= 0x7A or chr(keysym) in FLIP_PUNCTUATION):
             raise RuntimeError("refusing Control+letter: no shortcut chord may be injected")
         if control:
             # The modifier press reaches the window as its own key-press
@@ -2186,6 +2249,7 @@ class Runner:
         self.binary: Path = args.binary
         self.tier: str = args.tier
         self.cap_s = float(os.environ.get("RESPONSIVENESS_CASE_CAP_S", "20"))
+        self.type_burst = TYPE_BURST
         # A reduced sweep may measure only the interactions its thresholds
         # read (open and background always run); unset means all of them.
         only = os.environ.get("RESPONSIVENESS_PHASES", "").strip()
@@ -2726,7 +2790,8 @@ class Runner:
                     for _ in range(5):
                         self.rd.tap(KEY_RIGHT, inj)
                         time.sleep(0.05)
-                    for char in TYPE_BURST:
+                    burst = self.type_burst if where in ("start", "middle") else TYPE_BURST
+                    for char in burst:
                         self.rd.tap(ord(char), inj)
                         time.sleep(0.05)
                     return True, "ok"
@@ -3129,6 +3194,8 @@ class Runner:
     def run_rep(self, case: Case, variant: str, rep: int, files: list[Path]) -> dict[str, Any]:
         rep_dir = self.artifact_dir / "cases" / case.id / variant / f"rep{rep}"
         rep_dir.mkdir(parents=True, exist_ok=True)
+        # A flip case's type-start and type-middle burst (C6c).
+        self.type_burst = case.attrs.get("burst", TYPE_BURST)
         backend = case.attrs.get("backend", "keyfile")
         on_disk = "profile" in case.attrs
         populated = bool(case.attrs.get("populated"))
@@ -6578,6 +6645,8 @@ def self_test() -> int:
     expect(sweep_lengths("quick", "keystroke=4000,6000")["keystroke"] == (4_000, 6_000), "RESPONSIVENESS_LENGTHS replaces the keystroke grid")
     expect(all(PHASE_KINDS[f"key-{w}"] == "interaction" and PHASE_KINDS[f"place-{w}"] == "navigation" for w in KEYSTROKE_POSITIONS) and PHASE_KINDS["verify"] == "navigation", "keystroke phases: bursts are interactions, placement and verification navigation")
     expect(KEY_ESCAPE in ALLOWED_KEYSYMS, "Escape closes the search bar")
+    expect(all(ord(char) in ALLOWED_KEYSYMS for case in reanalysis_cases() for char in case.attrs.get("burst", "")), "every reanalysis burst character may be injected")
+    expect(len([c for c in reanalysis_cases() if c.attrs.get("burst")]) == len(REANALYSIS_GATES) + len(REANALYSIS_WORST_EXTS), "one flip case per language and worst-case family")
     expect(set(load_generator().KEYSTROKE_MARKERS) == set(KEYSTROKE_POSITIONS), "a marker per keystroke position")
     landed = {"start": 1, "middle": 1, "end": 1, "short": 1, "burst_anywhere": 4}
     expect(keystroke_misses(landed, KEYSTROKE_POSITIONS) == [], "bursts at their markers pass")
