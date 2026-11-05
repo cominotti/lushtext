@@ -1,10 +1,10 @@
 ## MODIFIED Requirements
 
 ### Requirement: Palette source inventories are bounded and superseding
-The system SHALL keep palette source construction bounded before query scoring begins. File-index construction MUST retain at most 100,000 canonical files, MUST avoid materializing an unbounded flat directory, and MUST cooperatively cancel superseded traversal. Note-source construction MUST retain at most 16,384 entries (a presentation cap rounded up from 10,000 by `power-of-two-thresholds`, so every note `main` retained is retained) and at most 64 MiB of aggregate searchable UTF-8 note text, MUST report deterministic truncation diagnostics, and MUST NOT retain bodies beyond those limits. File-index and note-source coordinators SHALL each own at most one active request plus one compact latest request.
+The system SHALL keep palette source construction bounded before query scoring begins. File-index construction MUST retain at most 131,072 canonical files (a presentation cap rounded up from 100,000 by `power-of-two-thresholds`), MUST avoid materializing an unbounded flat directory, and MUST cooperatively cancel superseded traversal. Note-source construction MUST retain at most 16,384 entries (a presentation cap rounded up from 10,000 by `power-of-two-thresholds`, so every note `main` retained is retained) and at most 64 MiB of aggregate searchable UTF-8 note text, MUST report deterministic truncation diagnostics, and MUST NOT retain bodies beyond those limits. File-index and note-source coordinators SHALL each own at most one active request plus one compact latest request.
 
 #### Scenario: Huge flat directory exceeds remaining index capacity
-- **WHEN** one workspace directory contains more visible entries than the remaining 100,000-file index capacity
+- **WHEN** one workspace directory contains more visible entries than the remaining 131,072-file index capacity
 - **THEN** traversal retains only bounded directory and index state while selecting the admitted entries
 - **AND** it does not materialize and sort the complete flat directory before enforcing the index limit
 

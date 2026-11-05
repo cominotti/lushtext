@@ -88,7 +88,7 @@ of it.
 
 #### Scenario: No presentation cap shows less than main
 - **WHEN** a workspace search, a Replace Preview, a Protected View find or a sidebar directory reaches 10,000 matches, rows or entries
-- **THEN** every one of them is delivered, as on `main`, because each cap is 16,384
+- **THEN** every one of them is delivered, as on `main`, because the first three caps are 16,384 and the sidebar directory cap keeps `main`'s 10,000 as a recorded exception
 
 #### Scenario: A coverage window is rounded up
 - **WHEN** `R_BATCH` must cover the 223 rows a 2000 px validation batch can touch at the 50 % zoom
@@ -105,6 +105,7 @@ of it.
 #### Scenario: Replace All processes every file main processed
 - **WHEN** a Replace All run touches files of up to 16 MiB each whose total undo payload is within 64 MiB
 - **THEN** every file is replaced, including those between 10 MiB and 16 MiB that `main` skipped, and the aggregate undo payload still bounds the run's memory
+- **AND** when the undo payload runs out, every file `main` would have replaced is replaced before any file above 10 MiB is charged, so no larger file displaces one
 
 #### Scenario: A raised retention tier still loads in full
 - **WHEN** the recent-documents file holds 256 entries whose path and canonical path are each 4,096 bytes long

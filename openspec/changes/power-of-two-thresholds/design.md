@@ -679,12 +679,16 @@ untrusted (`MAX_MANIFEST_REPAIR_DRAFT_SCAN`, `MAX_ORPHAN_CLEANUP_DRAFT_SCAN`,
 (before and after bytes of every touched file) and the 64 MiB retained-owner
 cap. Every run `main` processes in full (each file ≤ 10 MiB, total undo
 payload ≤ 64 MiB) is processed in full on the branch; files of 10–16 MiB,
-skipped on `main`, are now processed. One residual remains: in a run whose
-total undo payload exceeds 64 MiB, a 10–16 MiB file early in the order now
-consumes budget that `main` left to later files, so a later file can be
-skipped (with its reason) where `main` skipped the large one. Every skipped
-file is listed with its reason on both sides. `stream-replace-all` (D13)
-removes the in-memory aggregate and with it the residual.
+skipped on `main`, are now processed. A run whose total undo payload exceeds
+64 MiB gives no file away either (stage-4 review): the run replaces in two
+passes, first every file whose source and output fit `main`'s 10 MiB
+(`MAIN_REPLACE_FILE_BYTES`, a recorded presentation-cap exception), which
+charges the undo payload exactly as `main` did, then the 10–16 MiB files it
+deferred, with what budget is left. So a 10–16 MiB file early in path order
+can no longer take the budget of a later file `main` replaced (failing-first
+test `no_loss_a_larger_file_never_displaces_a_file_main_replaced`). Every
+skipped file is listed with its reason. `stream-replace-all` (D13) removes the
+in-memory aggregate.
 
 **Measurement rules (task 9.5).** Every measurement in the table runs at host
 1-minute load below 4 (`/proc/loadavg`, waiting when higher), pinned with
@@ -728,7 +732,7 @@ is past the cut. Queued as separate changes, in this order, after PT merges
    files are listed with their reason and an "Open and replace in editor"
    action.
 3. **`scale-file-index`**: an interned path arena and a byte budget instead
-   of the 100,000-file count, targeting at least 1,000,000 files, with a
+   of the 131,072-file count, targeting at least 1,000,000 files, with a
    Criterion benchmark and a measurement on a real monorepo.
 4. **Profile and slice the 59–60 ms largest-file open dispatch** (task 3's
    open-tier runs: the largest dispatch of a 512 MiB open).
@@ -755,8 +759,8 @@ changes form.
 
 - **Presentation caps raised (D12).** Each raised cap is measured against the
   bound it protects before it lands; a failed measurement reverts that one
-  row to its pre-PT value. The residual is the Replace All aggregate-undo
-  ordering case (D12), removed by `stream-replace-all`.
+  row to its pre-PT value. The Replace All aggregate-undo ordering case is
+  closed by the two-pass admission (D12).
 
 - **Visible feature losses at the rounded caps** (D4). Each is listed in the
   proposal's Impact section and in the README. All of them affect only

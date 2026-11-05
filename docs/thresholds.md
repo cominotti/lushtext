@@ -445,6 +445,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_FILE_BYTES` | 16,777,216 | presentation cap | up from 10,485,760: M9, one-file peak growth 33.9 vs 21.6 MiB (ratio 1.57); the 64 MiB aggregate unchanged (D12) |
+| `crates/lushtext-core/src/services/content_search/replace.rs` | `MAIN_REPLACE_FILE_BYTES` | 10,485,760 | presentation cap, exception | up from 10,485,760, kept: `main`'s per-file limit, the first-pass bound that charges the undo payload exactly as `main` did, so no larger file displaces a file `main` replaced (D12) |
 | `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_UNDO_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace All skips files (D12) |
 | `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_UNDO_RETAINED_BYTES` | 67,108,864 | cap | power of two |
 
