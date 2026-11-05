@@ -370,6 +370,7 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         (
             "model::document_scale::kani_proofs::",
+            "model::reanalysis_pacing::kani_proofs::",
             "model::paragraph_boundary::kani_proofs::boundary_newline_",
             "model::paragraph_boundary::kani_proofs::boundary_line_length_",
             "model::paragraph_boundary::kani_proofs::boundary_break_",
@@ -594,6 +595,7 @@ WATCH_STEP_SECONDS = 672.86
 WATCH_UNSOUND_SECONDS = 778.55
 _SCALE = "model::document_scale::kani_proofs::"
 _PACED = "model::buffer_replacement::kani_proofs::"
+_REANALYSIS = "model::reanalysis_pacing::kani_proofs::"
 _CHUNKED = "model::highlight_chunking::kani_proofs::"
 _SETTLE = "ui::editor_page::load::policy::kani_proofs::"
 _BOUNDARY = "model::paragraph_boundary::kani_proofs::"
@@ -773,6 +775,15 @@ ORACLES: dict[str, Oracle] = {
             _h(_SCALE + "scale_is_monotone_in_the_language_threshold", 0.27, "ci"),
             _h(_SCALE + "scale_join_is_a_meet_on_presentation_features", 0.54, "ci"),
             _h(_SCALE + "scale_of_a_profile_join_is_the_join_of_scales", 0.77, "ci"),
+            _h(_SCALE + "scale_edit_reanalysis_reduction_is_monotone_and_survives_the_join", 0.6, "ci"),
+        ),
+    ),
+    "crates/lushtext-core/src/model/reanalysis_pacing.rs": Oracle(
+        _CORE,
+        (
+            _h(_REANALYSIS + "the_start_session_is_in_bounds", 0.02, "ci"),
+            _h(_REANALYSIS + "a_session_continues_only_within_its_allowance", 0.5, "ci"),
+            _h(_REANALYSIS + "a_session_that_never_merges_downgrades_within_the_step_bound", 0.2, "ci"),
         ),
     ),
     "crates/lushtext-core/src/model/buffer_replacement.rs": Oracle(

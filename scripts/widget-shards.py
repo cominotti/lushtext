@@ -137,7 +137,8 @@ SHARDS: dict[str, Shard] = {
         # `protected_view` (long-line-protected-view) joined on 2026-10-31
         # beside it, on the same terms, and `protected_view_surfaces`
         # (protected-view-inspector-and-surfaces) on 2026-11-01, and
-        # `held_typing` (keep-keystrokes-during-install) on 2026-11-02.
+        # `held_typing` (keep-keystrokes-during-install) on 2026-11-02, and
+        # `reanalysis_pacing` (bound-context-flip-keystrokes) on 2026-11-04.
         modules=(
             "attention_refresh",
             "background_tab_layout",
@@ -148,6 +149,7 @@ SHARDS: dict[str, Shard] = {
             "post_open_settle",
             "protected_view",
             "protected_view_surfaces",
+            "reanalysis_pacing",
             "sidebar",
             "workspace_entry_visibility",
         ),

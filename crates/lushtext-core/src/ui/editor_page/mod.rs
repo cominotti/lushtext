@@ -35,6 +35,7 @@ mod paragraph_wrap;
     )
 )]
 mod protected_view;
+pub mod reanalysis_pacing;
 mod restore_position;
 pub mod restyle;
 pub mod save;
