@@ -154,7 +154,9 @@ install parked on it would keep its decoded body charged against the load
 budget until the user selects the tab, which EV removed. An attach requested
 by a chunked install (`request_language_attach_for_install`) arms at once on
 an unmapped editor. It skips input-quiet only in the editor the keys go to:
-when the installing editor's view is mapped and has focus, its own typed
+when the installing editor's view is mapped and has the keyboard focus of
+the active window (`has_focus`; `is_focus` is also true for the focus child
+of an inactive window, and the input clock is process-wide), its own typed
 keys are held until the install's terminal (S6), so waiting for them to stop
 would only lengthen the install. Every other install (a background tab, an
 unfocused or hidden editor) waits for input-quiet or the deadline at
@@ -250,10 +252,16 @@ C's largest passing power of two is 64 KiB and markdown's 128 KiB, each below
 its C6 gate (84 and 320 KiB): **no shipped language is chunk-highlighted**
 (`document_scale::chunked_threshold` returns `None` for every language) and
 each keeps its C6 gate. The mechanism stays, for C6c, whose runtime
-downgrade would bound the flips that cap every language here; unit tests,
-Kani and the widget tests (`test-utils`) prove it with a model cap of
-512 KiB for Markdown (`MODEL_MARKDOWN_CAP`), which no release, packaging or
-measurement build enables. Markdown's own C6 gate fails the ordinary-key
+downgrade would bound the flips that cap every language here. Every build
+runs the shipped table: each `const` scale function keeps its signature and
+gains a `const` `_with` variant taking Markdown's cap
+(`chunked_threshold_with`, `syntax_size_threshold_with`,
+`chunk_highlighted_with`, `DocumentScale::for_profile_in_with`,
+`highlight_install_order_with`); the editor passes the run-time
+`markdown_chunked_cap()`, `None` unless a widget test holds
+`override_markdown_chunked_cap_for_test` (`test-utils`, an RAII guard); Kani
+chooses `None` or `MODEL_MARKDOWN_CAP` (512 KiB) symbolically. A widget test
+pins the shipped behaviour of a Markdown file between 320 and 512 KiB. Markdown's own C6 gate fails the ordinary-key
 criterion inside an open HTML comment (11.3–11.5 ms at 320 KiB): a
 pre-existing miss on `main`, added to C6c.
 
