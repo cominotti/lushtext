@@ -271,3 +271,183 @@ Rules for every task:
 - [x] 8.7 AppStream: no change to the historical release notes. Prepare the
   user-facing sentence about the new tiers for the next release's notes, in
   the programme record.
+
+## 9. Amendment: presentation caps round up (design D12–D14, maintainer 2026-11-05)
+
+Sections 1–8 are the first version, done on PR #84. Where they rounded a
+presentation cap down (4.1's `MAX_REPLACE_FILE_BYTES` and the two 8 MiB
+feature tiers, 4.2's D4 caps, 4.6's text caps), this section supersedes them.
+The rules at the top of this file apply, plus: never `make run`, never the
+live desktop, never the real `~/.local/share/lushtext` or `~/.config`; one
+CBMC at a time; every measurement interleaved with `main` `fbf0f875`, at load
+below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
+
+- [ ] 9.1 Reclassify the whole inventory under D12's test (not only D12's
+  table): for every row of kind `cap` or `text cap` in `docs/thresholds.md`,
+  decide whether rounding it down could hide, skip, truncate or drop anything
+  a user could observe; when in doubt, it is a presentation cap. Record the
+  decision and its one-line reason for every row in the handoff
+  (`reclassify.md`). Add to D12's table any presentation cap it does not yet
+  list, before 9.2.
+- [ ] 9.2 Extend the gate (D12, "The gate"):
+  - add the kind `presentation cap` (and `presentation cap, exception`) to
+    `scripts/check-threshold-kinds.py`; a presentation cap row records its
+    pre-PT value as `up from <value>`; the check fails when the value is not
+    the power of two at or above it, or, for an exception, not that value;
+  - retire `text cap` (its rows become presentation caps);
+  - self-test, failing first on the fixture tree: a presentation cap rounded
+    down, one rounded up past the next power of two, an exception that
+    differs from its recorded value, a `text cap` row;
+  - flip the inventory rows to their D12 kind; rows whose value has not yet
+    moved take the temporary class `pending-presentation`, removed in 9.9.
+- [ ] 9.3 Failing-first tests asserting no loss against `main`, one per
+  presentation cap, each failing at PR #84's value before its conversion and
+  pinning the new edge (at the cap and one past it):
+  - palette: a category with 50 matches shows 50 (fails at 32), one with 64
+    shows 64, one with 65 shows 64 (`ui/command_palette/policy` tests);
+  - notes browser: 500 matching notes render 500 (fails at 256), 512 edge;
+    the open-editor snapshot, source-entry and sidecar-scan limits keep
+    10,000 entries (fail at 8,192), 16,384 edge;
+  - palette notes: 10,000 note entries retained (fails at 8,192);
+  - content search: 10,000 matches all delivered (fails at 8,192), the
+    "16,384+" truncation text at 16,385;
+  - Replace Preview: 10,000 eligible matches give 10,000 rows; 16,384 edge;
+  - Protected View find: 10,000 results delivered; 16,384 edge;
+  - sidebar: a 10,000-entry directory shows every entry and no truncation
+    row (fails at 8,192); 16,385 entries show the row;
+  - set-aside listing, format-upgrade diagnostics and the Replace All journal
+    scan: 10,000 entries scan in full (totals exact, not a lower bound; no
+    "above the entry cap" diagnostic); a compile-time assertion
+    `JOURNAL_SCAN_MAX_ENTRIES >= RESULT_CAP` and
+    `REPLACE_JOURNAL_SCAN_MAX_ENTRIES == JOURNAL_SCAN_MAX_ENTRIES`;
+  - bookmark excerpt: a bookmark at line 20,000 gets its excerpt (fails at
+    16,384), within the unchanged 1 MiB byte limit;
+  - minimap: 2,000 search matches, modified lines and long lines each
+    produce 2,000 markers (fail at 1,024); 2,048 edge; a line of 8,000
+    characters takes the wrapped-layout analysis (fails at 4,096);
+  - Replace All: a 10 MiB file is replaced (fails at 8 MiB); 16 MiB is
+    replaced and 16 MiB + 1 is skipped with a message naming "16 MiB"; a run
+    `main` processes in full (files ≤ 10 MiB, undo payload ≤ 64 MiB) is
+    processed in full;
+  - recent-documents load: 20 bad rows give 20 diagnostics (fails at 16);
+  - the reduced-features notice's limit passes a 320-character notice
+    through untruncated (fails at 256) and the longest shipped notice stays
+    whole; the proof-artifact and warning texts keep 1,200 characters (fail
+    at 1,024);
+  - `N_HEAD`: a Protected View head shows 10,000 characters (fails at
+    8,192); `N_DENSE` ≥ 250 (fails at 218);
+  - CSS: a 37 KiB CSS document keeps highlighting (fails at 32 KiB);
+  - the tiers: a 10,000,000-byte document keeps the minimap and per-edit
+    local history (fails at 8 MiB), and edge tests at 16 MiB and
+    16 MiB + 1 through `DocumentScale::for_total_bytes`; update
+    `the_policy_constants_have_their_recorded_values` and
+    `byte_tier_reference`;
+  - the conditional rows (Markdown events and table cells, `L_MINIMAP`,
+    `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, the index caps, the image pixel
+    cap): edge tests at the candidate value, written failing first and
+    landed with the value only if 9.5 accepts it.
+- [ ] 9.4 Convert the unconditional rows of D12's table (the ones whose bound
+  is a byte ceiling or a count, not a timed path): `MAX_RECENT_LOAD_DIAGNOSTICS`
+  32, `REDUCED_FEATURES_NOTICE_LIMIT` 512, `ARTIFACT_TEXT_LIMIT` and
+  `WARNING_TEXT_LIMIT` 2,048, `attach_threshold::CSS` back to 37 KiB and
+  `N_HEAD` back to 10,000 (both exceptions, citing A69 and C2's sweep), the
+  bench mirror of `MAX_DIR_ENTRIES`. Each constant's rustdoc gets
+  `Kind: presentation cap; …` with its former value and, for an exception,
+  the measurement. Check `thresholds_are_ordered_as_the_profile_counts_them`
+  and `N_INSPECT ≤ min(HEAD_CAP, L_PROTECT)`.
+- [ ] 9.5 Measure every moved bound of D12's table, then convert each row in
+  its own commit with its figures (or revert it to its pre-PT value as an
+  exception with the figures). Build `main` and the branch once each
+  (`responsiveness-probes` and the optimized widget build), then interleave:
+  - **M1 palette**: a widget fixture with every category full (files, open
+    tabs, notes, commands), 64 rows each against `main`'s 50; the probe
+    build's dispatch timing of the result splice; accept within
+    `B_INTERACT_US`, three repetitions per side.
+  - **M2 content search** at 16,384 matches against `main` at 10,000: worst
+    consumer turn (256 events), retirement turns to drain, and the process
+    RSS delta at the full result set.
+  - **M3 Replace Preview** at 16,384 rows: worst row-binding turn and the
+    preview's charged bytes against the 64 MiB budget.
+  - **M4 Protected View find** at 16,384 results: worst delivery turn and the
+    retained record bytes (≤ 8 MiB).
+  - **M5 sidebar** with a 16,384-entry directory: scan worker `memory.peak`,
+    worst append turn, realized rows bounded by `ViewportSliceBin`.
+  - **M6 notes browser**: the render of 512 rows and the open-editor
+    snapshot capture of 16,384 rows on GTK, each within `B_SETTLE_US` (if the
+    capture is not, slice it per turn or keep 10,000 as an exception).
+  - **M7 minimap**: one marker refresh with 2,048 search matches, 2,048
+    modified lines and 2,048 long lines against `main` at 2,000; one
+    wrapped-layout analysis slice with 8,192-character lines; each within
+    `B_SETTLE_US`.
+  - **M8** (reserved for any row 9.1 adds).
+  - **M9 Replace All**: a run over 16 MiB files (and a run reaching the
+    64 MiB aggregate) under `scripts/with-memory-cap.sh`, scope
+    `memory.peak`, against `main` at 10 MiB files; accept within `main`'s
+    peak × 1.6 (the file-size ratio) plus 5 %, and the aggregate unchanged.
+  - **M10 tiers**: the lane's `total-size` at 16 MiB and 16 MiB + 1 with the
+    minimap on, against `main` at 10 MB and 10 MB + 1; a periodic local-
+    history capture of a 16 MiB modified buffer; every dispatch within
+    `B_SETTLE_US` (or no worse than `main`'s by one reference frame), memory
+    within the ratio. If either fails, that tier stays 10,000,000 bytes.
+  - **M11 dense fold**: the lane's dense Protected View cases at the default
+    font and at 50 % zoom with `V_BATCH` 65,536 (`N_DENSE` 256), then 64,000
+    (`N_DENSE` 250) if needed, against `main`; rerun
+    `core-protected-fold`, `-shape`, `-mapping` and `core-paragraph-profile`.
+  - **M12 scans**: 16,384-entry fixtures for the set-aside area, the format-
+    upgrade preflight (sidecars, lineages, journals), the Replace All journal
+    inspection, the notes sidecar scan and palette note source, and a
+    32,768-line bookmark excerpt; worker wall time and `memory.peak` against
+    `main` at 10,000 (20,000 lines).
+  - **M13 Markdown**: a 65,536-event document and a 1,024-cell table against
+    `main` at 50,000 and 1,000: planning `memory.peak`, worst projection turn,
+    the table's widget build turn.
+  - **M14 paragraph gates**: the C0 criterion that set `L_MINIMAP`,
+    `L_INVISIBLES` and `L_SEARCH_HIGHLIGHT`, rerun on the lane at 32,768,
+    65,536 and 16,384 with the feature on, both wrap modes.
+  - **M15 index**: the Criterion index-build bench and a 131,072-file
+    synthetic tree against `main` at 100,000: build wall time and
+    `memory.peak`, within the unchanged byte ledgers.
+  - **M16 image**: decode of a 2^26-pixel image against 64 MP on `main`,
+    `memory.peak` within the ratio plus 5 %.
+
+  Record every figure in the design's D12 table (a "measured" column), the
+  programme record and `runs.log`.
+- [ ] 9.6 Kani: grep the `kani_proofs.rs` files and `scripts/kani-shards.py`
+  for every constant 9.4–9.5 moved, and rerun each affected shard with
+  `KANI_MEASURE`, one at a time, under `scripts/with-memory-cap.sh`. Expected:
+  `core-document-scale` (the tier reference at 16 MiB, the paragraph gates,
+  `V_BATCH`), `core-paragraph-profile` (`ProfileConfig::PRODUCTION`),
+  `core-protected-fold`, `-shape`, `-mapping` (`N_HEAD`, `N_DENSE`),
+  `core-protected-view` (`HEAD_CAP`), and the shard holding the find-batch
+  harness if it reads `FIND_RESULT_CAP` concretely. Update
+  `scripts/kani-shards.py` budgets when a figure leaves its margin;
+  `make check-kani-shards`.
+- [ ] 9.7 Displayed sizes (D14): route the properties panel
+  (`ui/properties_panel/mod.rs` `format_file_size`), the file peek
+  (`ui/sidebar/workspace_section/peek_execution.rs`) and the local-history
+  list (`ui/window/local_history/policy.rs` `format_bytes`) through one IEC
+  display formatter in `model::size_units`. Failing-first tests: each shows
+  "10 MiB" for 10,485,760 bytes and "1.5 KiB" for 1,536, and none prints
+  "MB" or "KB". Update `docs/accessibility.md` and the matrix if a spoken
+  size changes form.
+- [ ] 9.8 Verification: `make check`, `make test` (unit, integration, every
+  widget shard), `make check-thresholds`, `make check-workflow-boundaries`,
+  `make check-automation-docs`, `make check-kani-shards`, `make gtk-axioms`;
+  the responsiveness lane's quick tier interleaved with `main` for the moved
+  timed paths (keystroke, dense, `baseline/small`, `total-size` 16 MiB ± 1);
+  accessibility smoke (the notice cap and displayed sizes).
+- [ ] 9.9 Documentation: remove `pending-presentation` from the checker; the
+  README (feature list and limits: 16 MiB tiers, 64 per category, 512 notes,
+  16,384 results and entries, 2,048 markers, Replace All 16 MiB, IEC sizes);
+  AGENTS.md (every figure in Key Design Decisions that moved:
+  the 10,000 caps, the minimap tier, Replace All, the Markdown caps if they
+  moved, the 100,000 index if it moved); `.agents/rules/build.md` if the
+  check's description changes; `docs/thresholds.md`'s Kinds table and
+  materiality paragraph; the programme record's PT row and section (the
+  amendment's figures, and replace the "Follow-up candidate" for displayed
+  sizes with "done, D14"); the prepared AppStream sentence (no tier falls).
+- [ ] 9.10 Record the queued follow-ups (D13) in the programme record, in
+  order: `bound-lists-by-budget-not-count`, `stream-replace-all`,
+  `scale-file-index`, the 59–60 ms largest-file open dispatch, then
+  `avx2-health-scan-kernel` and DL. (Written at the spec stage of the
+  amendment; recheck at the end that nothing above changed it.)

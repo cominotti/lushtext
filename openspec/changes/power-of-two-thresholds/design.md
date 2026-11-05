@@ -14,7 +14,10 @@ All of them already comply.
 
 The rule defines four kinds:
 
-- **cap**: rounded down;
+- **cap**: rounded down (since D12, an *internal resource* cap only);
+- **presentation cap** (D12, the maintainer's amendment of 2026-11-05): a
+  cap on what the user sees or gets, rounded **up** from its pre-PT value
+  when its bound still holds by measurement, else kept as an exception;
 - **coverage window**: rounded up;
 - **policy tier**: a power of two aligned with its neighbours, shown in IEC
   units;
@@ -57,9 +60,8 @@ its kind.
   - the memory peak for the open tier;
   - the stall basis of the coupled pair;
   - two corpus counts that decide whether a cap is an exception.
-- File sizes the app merely *displays* (the properties panel and file peek
-  print "MB" for a MiB division). They name no tier. Unifying them is recorded
-  as a follow-up candidate in the programme record, not done here.
+- ~~File sizes the app merely *displays*~~: brought into scope by the
+  amendment (D14).
 
 ## Measured baseline
 
@@ -187,19 +189,24 @@ Two cases the rule leaves implicit:
   mode.
 - **Accessible-text length caps** round down. Each is checked against the
   longest string the app ships (task 4.6). A cap that would truncate a
-  shipped string becomes an exception.
+  shipped string becomes an exception. *Superseded by D12:* they are
+  presentation caps and round up; the shipped-string check stays as a floor.
+
+*Amended by D12:* the materiality rule above decided only whether a feature
+cap could be rounded **down**. Presentation caps never are, so it no longer
+decides anything; its corpus counts stay as evidence.
 
 ### D3. User-visible size tiers
 
 | Tier | Today | New | Kind |
 |---|---|---|---|
-| `S_MINIMAP` | 10,000,000 | 8 MiB | policy tier |
-| `HISTORY_SAVE_ONLY_BYTES` | 10,000,000 | 8 MiB | policy tier |
+| `S_MINIMAP` | 10,000,000 | 8 MiB, **16 MiB** since D12 (else 10,000,000) | policy tier, presentation cap |
+| `HISTORY_SAVE_ONLY_BYTES` | 10,000,000 | 8 MiB, **16 MiB** since D12 (else 10,000,000) | policy tier, presentation cap |
 | `UNDO_TOTAL_BYTES` | 50,000,000 | 64 MiB | policy tier |
 | `HISTORY_UNAVAILABLE_BYTES` | 50,000,000 | 64 MiB | policy tier |
 | `REFUSE_TO_OPEN` | 500,000,000 | 512 MiB if task 3 passes, else 500,000,000 (exception) | policy tier |
 | `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD` | 10,000,000 | 8 MiB | cap (it mirrors the old syntax tier) |
-| `MAX_REPLACE_FILE_BYTES` | 10 MiB | 8 MiB | cap aligned with the 8 MiB tier |
+| `MAX_REPLACE_FILE_BYTES` | 10 MiB | 8 MiB, **16 MiB** since D12 | presentation cap (files a bulk action processes) |
 
 *Rationale:*
 
@@ -237,6 +244,12 @@ for every `u64`. The edges at 8 MiB, 64 MiB and 512 MiB, and each plus one,
 are unit-tested.
 
 ### D4. Caps rounded down
+
+> **Amended by D12 (2026-11-05).** Every cap below that hides, skips,
+> truncates or drops something a user can observe is a presentation cap and
+> rounds **up** from its pre-PT value instead; D12's table gives the new
+> value of each. What remains of D4 is the internal caps (`N_VISIBLE`, the
+> slice and per-turn caps).
 
 These need no budget measurement: a smaller cap only reduces features
 sooner, so every guarantee holds. The caps that turn a feature off still need
@@ -432,6 +445,11 @@ replaces "deferred to `power-of-two-thresholds`".
 - **`MAX_PREVIEW_IMAGE_SOURCE_PIXELS` 64,000,000.** 2^25 (33.5 MP) would
   refuse 48–50 MP phone photos. 2^26 is unmeasured against the decode memory
   ceiling.
+- *Amended by D12:* each exception that is a presentation cap
+  (`L_SYNTAX`, the attach and typing gates, `S_SYNTAX_OTHER`,
+  `L_PROTECT_EDIT`, the paragraph gates, the Markdown caps, the index and
+  image caps) becomes `presentation cap, exception` or rounds up, as D12's
+  table says.
 - **Conditional exceptions:** `REFUSE_TO_OPEN` (D3), `V_SLICE` and the
   direct-install threshold (D8), `MAX_MARKDOWN_EVENTS`, the table-cell caps,
   `L_MINIMAP`, `L_INVISIBLES` and `L_SEARCH_HIGHLIGHT` (D4). Each is decided
@@ -485,7 +503,237 @@ coverage window.
 Each measured item lands in its own commit with its figures, so a failed
 measurement reverts one value.
 
+### D12. Presentation caps round up (maintainer amendment, 2026-11-05)
+
+PR #84 rounded every cap down, and so shipped visible losses against `main`:
+palette categories 50 → 32, the notes browser 500 → 256, Replace All skipping
+files of 8–10 MiB, every user-visible 10,000 cap → 8,192, minimap markers
+capped at 1,024, minimap and per-edit local history lost for 8–10 MB files,
+Protected View heads 1,808 characters shorter, dense heads 32 characters
+shorter, CSS files of 32–37 KiB unhighlighted. The maintainer's decision
+(2026-11-05): LushText must be extremely performant **and** handle high loads
+and large workspaces with no visible loss. D4's "caps rounded down" is
+therefore split in two kinds.
+
+**The kind.** A **presentation cap** is a cap on what the user sees or gets:
+results, rows, notes, markers, entries listed, files a bulk action processes,
+characters shown or announced, and the size or length at which a feature turns
+off. It rounds **up** to the power of two at or above its pre-PT value
+(`main` `fbf0f875`), provided the resource bound it protects still holds **by
+measurement**: memory, per-turn GTK time against `B_INTERACT_US` (8 ms) or
+`B_SETTLE_US` (16 ms), worker memory. If the measurement says the bound does
+not hold, the cap keeps its pre-PT value as a recorded exception
+(`presentation cap, exception`) with the measurement. It is never rounded
+down.
+
+**The test.** A cap is a presentation cap if rounding it down can hide, skip,
+truncate or drop anything a user could observe. User experience first: when
+in doubt, it is a presentation cap. Internal-only resource caps (slice sizes,
+per-turn event counts, admission budgets, chunk sizes, scan pages that resume)
+keep D4's rounding down, because a smaller one only does the same work in more
+steps.
+
+**Consequences for the other kinds.**
+
+- The `text cap` kind is retired: accessible-text and announcement lengths are
+  characters announced, so they are presentation caps. Each stays at or above
+  the longest string the app ships (task 4.6's unit test stays).
+- A policy tier at which a feature turns off is a presentation cap too
+  (`S_MINIMAP`, `HISTORY_SAVE_ONLY_BYTES`): it rounds up, never down.
+- D2's materiality rule no longer decides anything: it only decided whether a
+  feature cap could be rounded **down**, and a presentation cap never is. Task
+  4.5's corpus counts stay recorded as the evidence that these caps must not
+  fall.
+- A derived value the user sees (`N_DENSE`, the characters a dense paragraph
+  keeps in Protected View) must not fall below its pre-PT value because an
+  input moved, without a measurement and a recorded reason.
+- An exception kept *because* the power of two above fails its bound needs a
+  measurement of that failure. Where the measurement that derived the value
+  already shows it (the A69 sweep that derived each per-language attach gate,
+  C2's head sweep), it is cited, not repeated.
+
+**The gate.** `docs/thresholds.md` gains the kind `presentation cap`, whose
+rounding column records the pre-PT value as `up from <value>`.
+`scripts/check-threshold-kinds.py` fails when a presentation cap's value is
+not the power of two at or above that value, or, for `presentation cap,
+exception`, not that value exactly. Its self-test fails first on a
+presentation cap rounded down, on one rounded up past the next power of two,
+and on an exception that differs from its recorded value. `text cap` rows
+become presentation caps. A temporary `pending-presentation` class covers the
+rows between the gate commit and their conversion, and is removed at the end
+(the same pattern as `pending-PT`).
+
+**Reclassification.** Every constant whose PR #84 value hides, skips,
+truncates or drops something `main` showed, plus every pre-PT presentation cap
+that was kept as an exception and could now round up:
+
+| Constant (module) | Pre-PT (`main`) | PR #84 | New | Bound it protects | How the bound is measured (task) |
+|---|---|---|---|---|---|
+| `MAX_RESULTS_PER_SOURCE` (`ui/command_palette/policy`) | 50 | 32 | **64** | the result splice of one query on GTK, every category full, within `B_INTERACT_US` | widget fixture, probe dispatch timing (M1) |
+| `NOTES_BROWSER_RENDER_LIMIT` (`ui/window/notes/policy`) | 500 | 256 | **512** | the sidebar rebuild dispatch within `B_SETTLE_US` | widget fixture (M6) |
+| `NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT` | 10,000 | 8,192 | **16,384** | the open-editor snapshot capture on GTK within `B_SETTLE_US`; 4 MiB retained limit unchanged | widget fixture (M6) |
+| `NOTES_BROWSER_SOURCE_ENTRY_LIMIT`, `NOTES_BROWSER_SIDECAR_SCAN_LIMIT` | 10,000 | 8,192 | **16,384** | worker memory and time; the 64 MiB text limit unchanged | scan fixture, scope `memory.peak` (M12) |
+| `MAX_PALETTE_NOTE_ENTRIES` (`services/palette/notes`) | 10,000 | 8,192 | **16,384** | worker memory; the 64 MiB text and 96 MiB construction limits unchanged | scan fixture (M12) |
+| `RESULT_CAP` (`services/content_search/search`) | 10,000 | 8,192 | **16,384** | per-turn dispatch (256 events, unchanged) within `B_SETTLE_US`; retained model memory; retirement within its two-generation backpressure | widget fixture at 16,384 matches, probe timing, RSS delta (M2) |
+| `MAX_REPLACE_PREVIEW_ROWS` (`model/content_search`) | 10,000 | 8,192 | **16,384** | the 64 MiB preview byte budget (unchanged); O(1) row binding; per-turn row binding within `B_SETTLE_US` | scale fixture at 16,384 rows (M3) |
+| `FIND_RESULT_CAP` (`ui/editor_page/protected_view/policy`) | 10,000 | 8,192 | **16,384** | retained find records ≤ 16,384 × `MAX_FIND_RECORD_BYTES` (512) = 8 MiB; per-turn 256 results / 64 KiB unchanged | widget fixture, RSS delta and per-turn timing (M4) |
+| `MAX_DIR_ENTRIES` (`ui/sidebar/workspace_section/scan_execution`, bench mirror) | 10,000 | 8,192 | **16,384** | the scan worker's memory; 256-row append batches per turn (unchanged) within `B_SETTLE_US`; `ViewportSliceBin` keeps realized rows bounded | widget fixture with a 16,384-entry directory (M5) |
+| `MAX_SET_ASIDE_SCAN_ENTRIES` (`services/draft_service/set_aside`) | 10,000 | 8,192 | **16,384** | the worker scan's time and memory | scan fixture (M12) |
+| `SIDECAR_SCAN_MAX_ENTRIES`, `LOCAL_HISTORY_SCAN_MAX_LINEAGES`, `REPLACE_JOURNAL_SCAN_MAX_ENTRIES` (`services/format_upgrade/diagnostics`) | 10,000 | 8,192 | **16,384** | the startup preflight worker's time and memory | scan fixture (M12) |
+| `JOURNAL_SCAN_MAX_ENTRIES` (`services/search_backup`) | 10,000 | 8,192 | **16,384** | startup inspection worker; must stay ≥ the files one Replace All can touch (≤ `RESULT_CAP`), a compile-time assertion | scan fixture (M12) |
+| `BOOKMARK_EXCERPT_SCAN_LINE_LIMIT` (`services/bookmark_excerpt`) | 20,000 | 16,384 | **32,768** | the 1 MiB scan byte limit (unchanged) bounds memory; worker time | unit test of the byte bound; scan timing (M12) |
+| `MINIMAP_SEARCH_MATCH_CAP`, `MINIMAP_MODIFIED_LINE_MARK_CAP`, `MINIMAP_LONG_LINE_MARK_CAP` (`ui/editor_page/minimap/policy`) | 2,000 | 1,024 | **2,048** | one marker refresh on GTK (`SearchContext::forward` calls, mark walks) within `B_SETTLE_US` | widget fixture with 2,048 of each marker, probe timing, interleaved with `main` at 2,000 (M7) |
+| `MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET` | 8,000 | 4,096 | **8,192** | one wrapped-layout analysis slice within `B_SETTLE_US` (lines longer than it fall back to the unwrapped projection, so marker placement is visible) | analysis fixture with 8,192-character lines (M7) |
+| `MAX_REPLACE_FILE_BYTES` (`services/content_search/replace`) | 10 MiB | 8 MiB | **16 MiB** | worker peak memory for one file (read, output, undo entry); the aggregate undo payload `MAX_REPLACE_UNDO_BYTES` 64 MiB, unchanged, still bounds the run | Replace All over 16 MiB files under `with-memory-cap`, `memory.peak`, interleaved with `main` at 10 MiB (M9) |
+| `MAX_RECENT_LOAD_DIAGNOSTICS` (`services/recent_documents`) | 20 | 16 | **32** | 32 bounded messages; no timed path | unit test |
+| `REDUCED_FEATURES_NOTICE_LIMIT` (was `text cap`) | 320 | 256 | **512** | AT text length; the 256-character announcement cap is separate and unchanged | unit test (longest notice, task 4.6) |
+| `ARTIFACT_TEXT_LIMIT`, `WARNING_TEXT_LIMIT` (`cargo-gtk-proof`, were `text cap`) | 1,200 | 1,024 | **2,048** | artifact size, inside the unchanged 8 MiB JSON caps | unit test |
+| `DEFAULT_ANNOUNCEMENT_LIMIT`, `EDITOR_IDENTITY_LIMIT` (were `text cap`) | 240 / 96 | 256 / 128 | 256 / 128 (kind only) | already rounded up | — |
+| `S_MINIMAP` (`model/document_scale`, policy tier) | 10,000,000 | 8 MiB | **16 MiB**, else 10,000,000 (exception) | open and post-open dispatches with the map attached within `B_SETTLE_US`; minimap analysis slices; process memory | lane `total-size` at 16 MiB and 16 MiB + 1, minimap on, interleaved with `main` at 10 MB (M10) |
+| `HISTORY_SAVE_ONLY_BYTES` (policy tier) | 10,000,000 | 8 MiB | **16 MiB**, else 10,000,000 (exception) | the periodic capture's chunked snapshot per turn within `B_SETTLE_US`; worker memory; disk (64 snapshots per lineage) | periodic-capture fixture of a 16 MiB buffer, probe timing (M10) |
+| `attach_threshold::CSS` (`model/document_scale`) | 37 KiB | 32 KiB | **37 KiB** (exception) | the attach's background analysis within `B_SETTLE_US` | A69's sweep derived 37 KiB as the largest passing CSS size, so 64 KiB fails by that measurement (cited, not rerun) |
+| `N_HEAD` (`model/protected_fold`) | 10,000 | 8,192 | **10,000** (exception) | the head's open and settle dispatches within `B_SETTLE_US` | C2's sweep: 16.1 ms at 14,000 (wrap off) and 20.7 ms at 20,000 (wrap on), so 16,384 fails (cited) |
+| `V_BATCH` → `N_DENSE` (derived) | 56,000 → 250 | 56,000 → 218 | **65,536 → 256**, else **64,000 → 250** (exception), else 56,000 → 218 (recorded) | a 2000 px validation batch of folded dense paragraphs within `B_SETTLE_US` at the default font and at 50 % zoom | lane dense Protected View cases at each candidate, interleaved with `main`; `core-protected-fold*` (M11) |
+| `MAX_MARKDOWN_EVENTS` (`services/markdown_render`) | 50,000 | 50,000 (exception) | **65,536**, else 50,000 | planning worker time and memory; the 8 MiB retained ceiling and 256 events per projection turn unchanged | corpus-sized fixture at 65,536 events, scope `memory.peak`, per-turn timing (M13) |
+| `MAX_MARKDOWN_CARRIED_TABLE_CELLS`, `MAX_PREVIEW_TABLE_CELLS` | 1,000 | 1,000 (exception) | **1,024**, else 1,000 | one table's widget build on GTK within `B_SETTLE_US` | preview fixture with a 1,024-cell table, probe timing (M13) |
+| `MAX_INLINE_FOOTNOTE_REPLACEMENTS` (derived, events / 4) | 12,500 | 12,500 | follows (16,384) | — | — |
+| `L_MINIMAP` | 22,000 | 22,000 (exception) | **32,768**, else 22,000 | C0's criterion for the minimap at that paragraph length (scroll and keystroke dispatches within budget) | lane cases at 32,768 with the feature on (M14) |
+| `L_INVISIBLES` | 50,000 | 50,000 (exception) | **65,536**, else 50,000 | C0's criterion for invisibles drawing | lane cases at 65,536 (M14) |
+| `L_SEARCH_HIGHLIGHT` | 10,000 | 10,000 (exception) | **16,384**, else 10,000 | C0's criterion for automatic search highlighting | lane cases at 16,384 (M14) |
+| `MAX_INDEXED_FILES`, `MAX_INDEXED_DIRECTORIES` (`services/palette/index`) | 100,000 | 100,000 (exception) | **131,072**, else 100,000 | the 64 MiB installed and 128 MiB construction ledgers (unchanged) bound memory; build wall time | Criterion index-build bench and a 131,072-file synthetic tree, `memory.peak` (M15) |
+| `MAX_PREVIEW_IMAGE_SOURCE_PIXELS` (`ui/markdown_preview`) | 64,000,000 | 64,000,000 (exception) | **2^26 = 67,108,864**, else 64,000,000 | the decode memory ceiling (four bytes per pixel) | decode of a 2^26-pixel image, `memory.peak`, against 64 MP on `main` (M16) |
+
+`ui/window/local_history/policy` `PREVIEW_DIRECT_THRESHOLD_BYTES` follows
+`SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES` and stays internal.
+
+**Kept as exceptions without a new measurement**, because the measurement
+that set them already shows the power of two above breaks the bound:
+`L_SYNTAX` (2,048 breaks `MAX_SYNTAX_PARAGRAPH_BYTES ≤ HIGHLIGHT_CHUNK_BYTES`),
+the eleven other attach gates, JSON's typing gate and `S_SYNTAX_OTHER` (A69's
+sweep), `L_PROTECT_EDIT` (the maintainer's contract; C5 measured the keystroke
+cost rising past it). Their kind becomes `presentation cap, exception`.
+
+**Reclassified, value unchanged** (already a power of two on `main`, so
+rounding up is the identity; the kind changes so the gate keeps them from
+falling): `MAX_LISTED_SET_ASIDE_BODIES`, `MAX_SEARCH_MATCH_LINE_BYTES`,
+`MAX_REPLACE_PREVIEW_BYTES`, `MAX_REPLACE_DIAGNOSTIC_ENTRIES`,
+`MAX_REPLACE_DIAGNOSTIC_BYTES`, `MAX_REPLACE_UNDO_BYTES`, `L_WRAP_EDIT`,
+`typing_threshold::HTML`, `L_PROTECT` and `N_INSPECT` (rounded up by D7),
+`AUTOMATION_WORKFLOW_EVENT_LIMIT`, `SNAPSHOT_EXCLUDED_NAMES_LIMIT`,
+`SNAPSHOT_TEXT_MAX_BYTES`, `MAX_LOSSY_PREVIEW_ISSUES`,
+`PEEK_SAMPLE_BYTE_LIMIT`, `BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT`,
+`BOOKMARK_EXCERPT_LINE_CHAR_LIMIT`, `MAX_AUTOMATIC_DRAFT_BYTES`,
+`MAX_MARKDOWN_SOURCE_BYTES`, `MAX_MARKDOWN_STRUCTURE_DEPTH`,
+`MAX_MARKDOWN_EMBED_DESCRIPTORS`, `MAX_MARKDOWN_RETAINED_BYTES`,
+`MAX_MARKDOWN_CARRIED_EMBED_BYTES`, `MAX_MARKDOWN_PLACEHOLDER_WIDGETS`,
+`MAX_PREVIEW_IMAGE_SOURCE_BYTES`, `MAX_PREVIEW_CODE_BLOCK_BYTES`,
+`MAX_SCAN_DEPTH`, `MAX_FILE_INDEX_RETAINED_BYTES`,
+`MAX_FILE_INDEX_BUILD_RETAINED_BYTES`, `MAX_PALETTE_NOTE_TEXT_BYTES`,
+`MAX_PALETTE_NOTE_RETAINED_BYTES`, `MAX_PALETTE_NOTE_DIAGNOSTICS`,
+`NOTES_BROWSER_SOURCE_TEXT_LIMIT`, `NOTES_BROWSER_DIAGNOSTIC_LIMIT`,
+`NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT`,
+`PREVIEW_RESERVATION_BYTES`, `WORKSPACE_SEARCH_FALLBACK_ENTRY_LIMIT`,
+`WORKSPACE_SEARCH_FALLBACK_PATH_BYTE_LIMIT`, `WATCH_ERROR_MESSAGE_CAP_BYTES`,
+`MAX_SEARCH_SELECTION_PREFILL_CHARS`, `ENTRY_INSERT_CAP_BYTES`,
+`HELD_TEXT_CAP_BYTES`, `MAX_PENDING_ACTIVATION_OPENS`,
+`MAX_BACKUP_ITEM_BYTES`, `DEFAULT_MAX_METADATA_BYTES`. Task 9.1 rechecks the
+whole inventory under the test and adds any it catches.
+
+**Internal, still rounded down** (they hide nothing): the slice and chunk
+sizes (`V_SLICE`, `SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES`, the 64 Ki and
+256 KiB slices), `N_VISIBLE` (counted by the profile; `HEAD_CAP =
+min(N_VISIBLE, N_HEAD, A28_SAFE_CHARS)` is set by `N_HEAD`, so it changes no
+head), `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD` (above it a snapshot is chunked,
+not refused), the per-turn caps (`MAX_SEARCH_EVENTS_PER_TICK`,
+`SEARCH_RETIREMENT_ROWS_PER_SLICE`, `FIND_RESULTS_PER_TURN`), admission
+budgets and concurrency limits, `WORKSPACE_WATCH_PATH_CAP` (overflow becomes a
+full refresh), the draft-repair and reconcile scans that resume or stay
+untrusted (`MAX_MANIFEST_REPAIR_DRAFT_SCAN`, `MAX_ORPHAN_CLEANUP_DRAFT_SCAN`,
+`DRAFT_BODY_SCAN_MAX_ENTRIES`, `DEFAULT_RECONCILE_MAX_LINEAGES`) and
+`MAX_REPLACE_UNDO_RETAINED_BYTES`.
+
+**Replace All and the aggregate undo budget.** The per-file cap rises to
+16 MiB; memory stays bounded by the unchanged 64 MiB aggregate undo payload
+(before and after bytes of every touched file) and the 64 MiB retained-owner
+cap. Every run `main` processes in full (each file ≤ 10 MiB, total undo
+payload ≤ 64 MiB) is processed in full on the branch; files of 10–16 MiB,
+skipped on `main`, are now processed. One residual remains: in a run whose
+total undo payload exceeds 64 MiB, a 10–16 MiB file early in the order now
+consumes budget that `main` left to later files, so a later file can be
+skipped (with its reason) where `main` skipped the large one. Every skipped
+file is listed with its reason on both sides. `stream-replace-all` (D13)
+removes the in-memory aggregate and with it the residual.
+
+**Measurement rules (task 9.5).** Every measurement in the table runs at host
+1-minute load below 4 (`/proc/loadavg`, waiting when higher), pinned with
+`taskset -c 8-23`, heavy runs inside `scripts/with-memory-cap.sh`, headless,
+`main` and the branch interleaved, load recorded before and after in
+`.claude/handoffs/power-of-two-thresholds/runs.log`. A per-turn bound passes
+when the branch's worst dispatch at the new value is within the budget named
+in the table (or, where `main` already exceeds that budget at its own value,
+no worse than `main`'s worst by more than one reference frame, 8.3 ms, which
+is how D7 and D8 applied it). A memory bound passes when the branch's
+`memory.peak` is within the stated ceiling, or within `main`'s peak scaled by
+the value ratio plus 5 % run spread. A failing measurement reverts that row to
+its pre-PT value as a recorded exception, in its own commit with the figures.
+
+**Rationale.** Rounding a presentation cap down trades a visible loss for a
+margin the budget did not need: every row above was already inside its bound
+at the pre-PT value, and the rounding up adds at most 64 % (10,000 → 16,384)
+to work that is either sliced per turn (search, find, sidebar), bounded by an
+unchanged byte ceiling (preview, notes, palette notes, Replace Preview), or
+measured here. *Alternative rejected:* keep the pre-PT values everywhere as
+exceptions. That loses nothing either, but leaves non-powers of two the rule
+exists to remove, and skips the measurements that show the margin.
+
+### D13. Structural follow-ups, queued after PT merges
+
+The presentation caps above still cut lists at a count. The structural fix is
+to bound by retained bytes and per-turn time, not by count, and to show what
+is past the cut. Queued as separate changes, in this order, after PT merges
+(maintainer, 2026-11-05):
+
+1. **`bound-lists-by-budget-not-count`**: the palette shows an "N more…" row
+   per category that opens a category drill-down mode; the notes browser
+   becomes incremental and virtualized, bounded by retained bytes, and states
+   "showing X of Y"; minimap markers are binned per pixel row, with no count
+   cap; workspace search streams without a match count cap, bounded by
+   retained bytes; sidebar directories past 10,000 entries load
+   incrementally, without the truncation placeholder.
+2. **`stream-replace-all`**: chunked replace with an on-disk undo journal, so
+   the per-file limit reaches the open tier with constant memory; skipped
+   files are listed with their reason and an "Open and replace in editor"
+   action.
+3. **`scale-file-index`**: an interned path arena and a byte budget instead
+   of the 100,000-file count, targeting at least 1,000,000 files, with a
+   Criterion benchmark and a measurement on a real monorepo.
+4. **Profile and slice the 59–60 ms largest-file open dispatch** (task 3's
+   open-tier runs: the largest dispatch of a 512 MiB open).
+5. Then the paused **`avx2-health-scan-kernel`** (spec and spec review done,
+   branch `avx2-health-scan-kernel`) and **DL `bound-dense-long-line-editing`**.
+
+The programme record (`docs/next/long-line-documents.md`, PT row and PT
+section) carries the same queue.
+
+### D14. Displayed sizes in IEC units (amendment, 2026-11-05)
+
+The PT review found three surfaces that display a size and label it
+inconsistently with the tiers: the properties panel's file size and the file
+peek divide by 1,000 and print "KB"/"MB" (SI, while every tier and limit the
+app names is IEC), and the local-history list divides by 1,024 and prints
+"KB"/"MB" (a wrong label). All three print through one IEC display formatter
+(`model::size_units`, "KiB", "MiB", "GiB", one decimal), so a 10,485,760-byte
+file reads "10 MiB" in the panel, the peek and the history row alike, and
+matches the "16 MiB" a tier message names. The accessible text of those rows
+follows; `docs/accessibility.md` and the matrix are updated if a spoken size
+changes form.
+
 ## Risks / Trade-offs
+
+- **Presentation caps raised (D12).** Each raised cap is measured against the
+  bound it protects before it lands; a failed measurement reverts that one
+  row to its pre-PT value. The residual is the Replace All aggregate-undo
+  ordering case (D12), removed by `stream-replace-all`.
 
 - **Visible feature losses at the rounded caps** (D4). Each is listed in the
   proposal's Impact section and in the README. All of them affect only
@@ -507,11 +755,16 @@ measurement reverts one value.
 
 No persisted format changes. Raising the retention caps prunes nothing. The
 search-history and recents files load unchanged. The set-aside notice appears
-later, at 128 bodies. A user whose files are 8–10 MB loses the minimap and
-per-edit local-history capture on the next open. Documents of 50 MB–64 MiB
-regain undo and local history.
+later, at 128 bodies. Since D12, no user loses anything `main` showed:
+files of 10 MB–16 MiB gain the minimap and per-edit local history (if
+task 9.5's M10 passes; otherwise both stay at 10,000,000 bytes), documents of
+50 MB–64 MiB regain undo and local history, and every list, result set and
+scan shows at least as much as on `main`.
 
 ## Inventory (in scope, non-power-of-two on `main` `fbf0f875`)
+
+The Decision column is the stage-1 decision; D12's table supersedes it for
+every presentation cap.
 
 | Constant (module) | Value | Kind | Decision |
 |---|---|---|---|
@@ -666,7 +919,8 @@ experience first.
   and is inventoried as an external fact. Failing first:
   `long_line_markers_follow_the_120_column_convention`; the two widget
   fixtures return to 121 characters, the edge they tested on `main`.
-- **Kept as designed, recorded for the maintainer:** the Replace All per-file
+- **Overruled by the maintainer (2026-11-05, D12):** the following. Kept as
+  designed at stage 4, recorded for the maintainer: the Replace All per-file
   cap at 8 MiB (files of 8–10 MiB are skipped with a message naming the
   limit; the cap bounds worker memory and the undo payload, and D3 aligned it
   with the 8 MiB tier), palette categories 32, the notes browser 256 and the
