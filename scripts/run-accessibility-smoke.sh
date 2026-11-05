@@ -1515,17 +1515,17 @@ run_accessibility_capture "protected-view-inspector" \
     --step wait-atspi-text:"View-Only: Very Long Lines" \
     --step rd-key:Ctrl+Alt+I \
     --step wait-predicate:accessibility-settled \
-    --step wait-atspi-text:"Line 2, columns 1–500 of 72000" \
+    --step wait-atspi-text:"Line 2, columns 1–512 of 72000" \
     --step atspi-click-button:"^Next Window$" \
     --step wait-predicate:accessibility-settled \
-    --step wait-atspi-text:"Line 2, columns 501–1000 of 72000; 63808 characters hidden in the editor"
+    --step wait-atspi-text:"Line 2, columns 513–1024 of 72000; 63808 characters hidden in the editor"
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Next Window"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Previous Window"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Next Folded Line"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Previous Folded Line"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Copy Whole Line"
-assert_anchor_prefix "protected-view-inspector" "line inspector window" "text" "Line 2, columns 501–1000 of 72000; 63808 characters hidden"
+assert_anchor_prefix "protected-view-inspector" "line inspector window" "text" "Line 2, columns 513–1024 of 72000; 63808 characters hidden"
 fi
 
 if case_selected "protected-view-menu"; then

@@ -144,7 +144,7 @@ TYPE_BURST = "abcdefghij"
 
 # Sweep definition (design D7).
 PARAGRAPH_LENGTHS = {"quick": (10_000, 250_000), "full": (2_000, 10_000, 50_000, 250_000, 1_900_000)}
-DENSE_LINE_LENGTHS = {"quick": (2_000,), "full": (120, 500, 2_000, 10_000, 50_000)}
+DENSE_LINE_LENGTHS = {"quick": (2_000,), "full": (120, 500, 512, 2_000, 10_000, 50_000)}
 DENSE_LINE_COUNT = 160
 # The dense reference case: a full screen of short dense lines. V_batch reads
 # the other dense lengths' scroll and Page Down as their excess over it, so the

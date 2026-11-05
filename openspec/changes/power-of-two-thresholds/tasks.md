@@ -158,7 +158,7 @@ Rules for every task:
 
 ## 5. Measured items (lane, interleaved with `main`)
 
-- [ ] 5.1 Check the coupled pair (D7).
+- [x] 5.1 Check the coupled pair (D7).
   - Add a `dense/512` case to the lane's dense group (fixture generator plus
     lane case list).
   - Run it in both wrap modes and three input variants, three repetitions per
@@ -190,7 +190,7 @@ Rules for every task:
   - Adopt 256 if both stay within `B_SETTLE_US`. Otherwise adopt 128 and
     update the two delta specs (`main-thread-responsiveness`,
     `performance-regression-coverage`) to 128.
-- [ ] 5.5 Each measured item lands in its own commit with its figures and the
+- [x] 5.5 Each measured item lands in its own commit with its figures and the
   load before and after.
 
 ## 6. Kani
