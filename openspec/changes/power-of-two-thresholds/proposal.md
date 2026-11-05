@@ -37,9 +37,10 @@ The mix costs three things today:
   The messages and the accessible text that name a tier print it in IEC
   units.
 - **Caps rounded down, coverage windows rounded up** (D4, D5):
-  - `L_MINIMAP` 22,000 → 16,384;
-  - `L_INVISIBLES` 50,000 → 32,768;
-  - `L_SEARCH_HIGHLIGHT` 10,000 → 8,192;
+  - `L_MINIMAP` 22,000 → 16,384, `L_INVISIBLES` 50,000 → 32,768 and
+    `L_SEARCH_HIGHLIGHT` 10,000 → 8,192, each unless a corpus count finds a
+    loss under the one materiality rule (design D2: at least 0.05 % of at
+    least 2,000 files that have the feature);
   - `N_VISIBLE` 500,000 → 262,144;
   - `N_HEAD` 10,000 → 8,192;
   - every 10,000-entry scan, result and directory cap → 8,192;
@@ -52,6 +53,8 @@ The mix costs three things today:
   - local-history snapshots 48 / 240 → 64 / 256;
   - recents 200 → 256;
   - search history 20 → 32;
+  - and the recents read bound 1 → 4 MiB, so 256 entries of the longest
+    paths still load;
   - set-aside soft bound 100 → 128 bodies.
 - **The coupled pair** `L_PROTECT` and `N_INSPECT` (500, tied by the
   `core-protected-view` Kani bound) both become **512** if the lane's new
@@ -66,8 +69,9 @@ The mix costs three things today:
   value, with the reason and the evidence beside the constant:
   - `L_SYNTAX` 2,000: rounding down unhighlights 3–22 % of real Markdown
     files, and rounding up breaks the 8 KiB highlight-chunk bound;
-  - the per-language syntax gates and `S_SYNTAX_OTHER`: rounding down
-    unhighlights 0.1–6.5 % of real files;
+  - eleven per-language syntax gates, JSON's typing gate and
+    `S_SYNTAX_OTHER`: rounding down unhighlights 0.10–7.3 % of real files
+    (CSS loses nothing and converts to 32 KiB);
   - `L_PROTECT_EDIT` 50,000: the maintainer's "editable up to ~50k";
   - `V_BATCH` 56,000: rounding down folds more text;
   - the 100,000-file palette index: a real 87,624-file workspace;
@@ -97,10 +101,13 @@ The mix costs three things today:
 
 - `long-line-document-presentation`: tier values and IEC units; the byte-tier
   Kani agreement is now with the new table; the `N_inspect` bound value.
-- `local-history`: the 8 MiB and 64 MiB tiers, and the 64 / 256 retention.
+- `local-history`: the 8 MiB and 64 MiB tiers (capture, browsing and the
+  periodic live-buffer policy), and the 64 / 256 retention.
+- `workspace-tree-refresh`: the sidebar's directory cap is 8,192 rows.
+- `recent-open-popover`: the recent-history cap is 256 entries.
 - `command-palette-source-groups`: the note-source entry cap is 8,192.
 - `search-replace-safety`: the Replace Preview row cap and its coverage
-  fixture are 8,192.
+  fixture are 8,192; the Replace All per-file cap is 8 MiB.
 - `search-history-and-saved-searches`: recent history keeps 32 entries.
 - `main-thread-responsiveness`: the per-turn search event and retirement caps.
 - `performance-regression-coverage`: the evidence that pins those caps.
@@ -122,6 +129,11 @@ The mix costs three things today:
   - files between 50 MB and 64 MiB keep undo and local history;
   - files of 500 MB–512 MiB open, if task 3 passes;
   - a directory of 8,192–10,000 entries shows its truncation row;
+  - Replace All skips files of 8–10 MiB, and its skip messages say "8 MiB";
+  - a palette category shows at most 32 matches (was 50), and the notes
+    browser asks to refine the search past 256 notes (was 500);
+  - in documents with more than 1,024 search matches, modified lines or long
+    lines, the minimap draws markers only for the first 1,024 (was 2,000);
   - workspace search stops at 8,192 matches;
   - Protected View heads show 8,192 characters, and dense heads 218;
   - the minimap, invisibles and search highlighting turn off at the rounded

@@ -36,3 +36,16 @@ The project SHALL add pure service, property, widget, accessibility, visual-geom
 - **WHEN** generated literal and regex cases fit within the preview budget
 - **THEN** applying accepted rows produces the same file text as the existing safe replacement semantics
 - **AND** storage sharing does not change ranges, captures, or stale validation
+
+### Requirement: Replace All enforces file and undo memory caps
+The system SHALL bound Replace All memory exposure with explicit service-level caps. A single target file larger than `8 * 1024 * 1024` bytes (8 MiB, a cap aligned with the 8 MiB save-only history tier by `power-of-two-thresholds`) MUST be skipped and reported, and the report MUST name the cap in IEC units. The total persisted undo payload for one Replace All run MUST NOT exceed `64 * 1024 * 1024` bytes; files that would exceed that cap MUST be skipped and reported before they are modified.
+
+#### Scenario: Oversized replace target is skipped
+- **WHEN** Replace All includes a matching file larger than the per-file replace cap
+- **THEN** the file is skipped without modification
+- **AND** the result reports that path as skipped
+
+#### Scenario: Undo payload cap skips later files before write
+- **WHEN** adding another file's original and replacement bytes would exceed the total undo payload cap
+- **THEN** that file is skipped before any replacement write occurs
+- **AND** already-written files remain undoable
