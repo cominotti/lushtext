@@ -11,7 +11,9 @@ Rules for every task:
 
 - [ ] 1.1 Write `scripts/check-threshold-kinds.py` (design D10):
   - find every integer `const`/`static` in the production `src/` trees,
-    skipping `#[cfg(test)]` modules, `kani_proofs.rs` and `gtk-lush-axioms`;
+    skipping `#[cfg(test)]` modules, `kani_proofs.rs` and `gtk-lush-axioms`,
+    keyed by path and module-qualified name and including declarations that
+    span lines;
   - evaluate simple literal and constant-reference expressions;
   - compare against `docs/thresholds.md`;
   - check that each in-scope constant's rustdoc `Kind:` line names its kind.
@@ -20,7 +22,11 @@ Rules for every task:
   - a stale row;
   - a value mismatch;
   - a non-power-of-two cap;
-  - a missing or disagreeing `Kind:` line.
+  - a missing or disagreeing `Kind:` line;
+  - two same-named constants in different inline modules of one file with
+    different values (the `attach_threshold::JSON` / `typing_threshold::JSON`
+    collision the spec-stage scan made), one of them changed;
+  - a constant whose declaration spans two lines.
 - [ ] 1.3 Generate `docs/thresholds.md` at `main`'s values. Classify every row
   per D1/D2 and copy the decisions from the design's inventory. Add
   `make check-thresholds` and put it in `check-policy`.
@@ -41,11 +47,18 @@ Rules for every task:
   - a lineage holding 48 snapshots and a store holding 240 keep every
     snapshot after one more capture;
   - a 20-entry `search-history.json` keeps all 20 entries plus the new one;
-  - a 200-entry recents file keeps every entry.
+  - a 200-entry recents file keeps every entry;
+  - worst-case load tests: 256 recents whose `path` and `canonical_path` are
+    each 4,096 bytes load in full (fails first at the 1 MiB read bound), and
+    32 search-history entries and a 256-snapshot local-history index at their
+    largest admissible entry size load in full through their bounded reads.
 - [ ] 2.4 Add message tests that fail first:
   - the local-history unavailable message says "64 MiB";
   - the open refusal names the tier in MiB;
-  - the reduced-features notice and the accessible description use IEC units.
+  - the reduced-features notice and the accessible description use IEC units;
+  - the Replace All per-file skip names "8 MiB" and the undo-payload skips
+    "64 MiB";
+  - the grew-while-opening refusal names its sizes in MiB.
 
 ## 3. The open tier (measured before it changes)
 
@@ -71,7 +84,8 @@ Rules for every task:
 
 - [ ] 4.1 Change the D3 tiers except the open tier: `S_MINIMAP`,
   `HISTORY_SAVE_ONLY_BYTES`, `UNDO_TOTAL_BYTES`, `HISTORY_UNAVAILABLE_BYTES`,
-  `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD`, `MAX_REPLACE_FILE_BYTES`.
+  `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD`, `MAX_REPLACE_FILE_BYTES` (and its
+  skip messages in `content_search/replace.rs`).
   - Rename `retired_byte_tiers` to `byte_tier_reference`, holding the new
     table.
   - Route the tier-naming messages through one IEC formatting helper.
@@ -83,18 +97,25 @@ Rules for every task:
   - the minimap caps and the wrapped-layout budget;
   - `MAX_RESULTS_PER_SOURCE`, `NOTES_BROWSER_RENDER_LIMIT`,
     `MAX_RECENT_LOAD_DIAGNOSTICS`;
-  - the `cargo-gtk-proof` text caps.
+  - the `cargo-gtk-proof` text caps;
+  - the CSS attach gate, 37 → 32 KiB (0 of 2,353 corpus files lose
+    highlighting), with the count in its rustdoc.
 
-  Check that `thresholds_are_ordered_as_the_profile_counts_them` still holds.
+  `L_MINIMAP`, `L_INVISIBLES` and `L_SEARCH_HIGHLIGHT` land only after task
+  4.5 decides them. Check that `thresholds_are_ordered_as_the_profile_counts_them` still holds.
 - [ ] 4.3 Apply the D5 coverage windows: `R_BATCH` → 256 (and so `R_FOLD`;
   `N_DENSE` becomes 218 through its formula), `MAX_CONSTRUCTION_STAGES`,
   `MAX_FRAME_PHASE_FRAMES`, `MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES`,
   `REVEAL_SETTLE_FRAME_BUDGET`.
   - Check the compile-time assertions: `R_FOLD ≤ MAX_R_FOLD`,
+    `R_BATCH ≤ MAX_DENSITY_WINDOW` (`model/paragraph_boundary.rs`, 256),
     `R_FOLD · N_DENSE ≤ V_BATCH`, and the watch's
     `2·R_batch + 2` read bound.
   - Update the widget test that asserts the per-keystroke read count.
-- [ ] 4.4 Apply the D6 retention tiers and retry budgets.
+- [ ] 4.4 Apply the D6 retention tiers and retry budgets, and raise
+  `MAX_RECENT_DOCUMENTS_BYTES` to 4 MiB (D6) in the same commit as
+  `MAX_RECENTS`. Raise any other read bound that task 2.3's worst-case load
+  test fails, the same way.
 - [ ] 4.5 Run the corpus counts for the conditional caps (D4).
   - Write a throwaway `cargo run --example` (scratchpad, not committed) that
     counts, with `pulldown-cmark` and the app's parser options, the events
@@ -104,6 +125,16 @@ Rules for every task:
   - If any file has events in (32,768, 50,000], keep `MAX_MARKDOWN_EVENTS`
     as a recorded exception with the count. Otherwise set it to 32,768.
   - Decide the two table-cell caps the same way, with (512, 1,000].
+  - Count longest paragraphs (in characters) of the text files of the
+    baseline corpus (the languages of the syntax table, Markdown and `.txt`,
+    `node_modules` included, because minified files are where long
+    paragraphs live): the share of files with a longest paragraph in
+    (16,384, 22,000], (32,768, 50,000] and (8,192, 10,000], among those at or
+    below the former value, decides `L_MINIMAP`, `L_INVISIBLES` and
+    `L_SEARCH_HIGHLIGHT`.
+  - Every decision here uses D2's materiality rule: a loss is at least
+    0.05 % of at least 2,000 feature-bearing files; below it the cap is
+    rounded and the count recorded.
   - Record the counts in the design's baseline and the programme record.
 - [ ] 4.6 Run the D2 shipped-string check. Find the longest announcement,
   editor identity and reduced-features notice the app can produce: from the
@@ -114,7 +145,9 @@ Rules for every task:
   exception (`power-of-two-thresholds`)" with its measurement from the
   design, replacing "deferred to `power-of-two-thresholds`":
   - `L_SYNTAX`;
-  - the per-language gates and `S_SYNTAX_OTHER`;
+  - the eleven per-language attach gates that stay (HTML 46 KiB and JSON
+    24 KiB included, with the review-stage counts), JSON's typing gate and
+    `S_SYNTAX_OTHER`;
   - `L_PROTECT_EDIT`, `V_BATCH`;
   - `MAX_INDEXED_FILES` and `MAX_INDEXED_DIRECTORIES`;
   - `MAX_PREVIEW_IMAGE_SOURCE_PIXELS`.
@@ -173,7 +206,9 @@ Rules for every task:
   - `core-protected-view`, `core-protected-view-navigation` (production
     `N_INSPECT` width);
   - `core-post-open-settle` (`V_SLICE`, the direct threshold);
-  - `core-paragraph-boundary`.
+  - `core-paragraph-boundary`;
+  - `core-journal-and-write` (`set_aside_retention_notice_follows_the_bound_and_its_rate_limit`
+    asserts `SOFT_BOUND_BODIES == 100`).
 
   Record the list with the reason for each shard.
 - [ ] 6.2 Rerun each listed shard: `make kani KANI_SHARD=<shard>
@@ -209,7 +244,8 @@ Rules for every task:
     View head 8,192, the Line Inspector window);
   - the local-history section (8 MiB / 64 MiB);
   - the Markdown ceilings;
-  - the set-aside bound (128 drafts or 256 MiB).
+  - the set-aside bound (128 drafts or 256 MiB);
+  - the Replace All per-file limit (8 MiB).
 - [ ] 8.2 Update AGENTS.md: every figure in Key Design Decisions that changed
   (`R_batch`, the tiers, the 10,000 caps, 250 per turn, the search-history
   cap, local-history caps, `N_HEAD`, `N_INSPECT`, `V_SLICE`, the direct

@@ -91,12 +91,22 @@ highlighting:
 | JAVASCRIPT | 18 → 16 KiB | 814 (1.19 %) |
 | TYPESCRIPT | 10.5 → 8 KiB | 189 (1.23 %) |
 | SHELL | 39 → 32 KiB | 1,347 (5.94 %) |
-| JSON | 20 → 16 KiB | 9,721 (6.48 %) |
+| JSON (attach) | 24 → 16 KiB | 10,883 of 148,432 (7.33 %, recount at review) |
+| JSON (typing) | 20 → 16 KiB | 9,721 (6.48 %); 8,963 of 146,512 (6.12 %) at review |
+| HTML (attach) | 46 → 32 KiB | 57,527 of 792,448 (7.26 %, counted at review) |
+| HTML (typing) | 16 KiB | already a power of two |
 | YAML | 144 → 128 KiB | 156 (0.37 %) |
 | XML | 132 → 128 KiB | 231 (0.25 %) |
 | MARKDOWN | 320 → 256 KiB | 592 of 613,131 (0.10 %) |
-| CSS | 37 → 32 KiB | 0 |
+| CSS | 37 → 32 KiB | 0 of 2,353: **converts to 32 KiB** (no loss) |
 | `S_SYNTAX_OTHER` (Java as a sample) | 47 → 32 KiB | 10,082 (2.17 %) |
+
+The spec-stage scan keyed constants by bare name, so the two inline modules'
+`HTML` and `JSON` collapsed: the HTML attach gate (46 KiB) was missing and the
+JSON attach gate was recorded at the typing gate's 20 KiB. The review stage
+recounted both (2026-11-05, load 0.86–1.35 before and after, `taskset -c
+8-23`, `find` over `~/Workspace` pruning `.git`), and D10 now keys rows by
+module-qualified name.
 
 **What rounding `L_SYNTAX` down would cost.** For Markdown files, the share
 whose longest line is in (1,024, 2,000] bytes, among files whose longest line
@@ -108,8 +118,9 @@ is ≤ 2,000:
 - the registry's Markdown: 0 %.
 
 **What rounding `L_SEARCH_HIGHLIGHT` down would cost.** Longest line in
-(8,192, 10,000]: 1 of 1,791 sampled Markdown files. Rounding down costs
-nothing measurable.
+(8,192, 10,000]: 1 of 1,791 sampled Markdown files (0.056 %). The sample is
+below D2's 2,000-file floor, so it decides nothing yet: task 4.5 recounts it,
+with `L_MINIMAP` and `L_INVISIBLES`, on the full corpus.
 
 **Palette index.** The 0.9.x AppStream release note cites "a real
 87,624-file workspace". 65,536 would truncate it.
@@ -155,6 +166,19 @@ The rule's four kinds, plus two that the inventory needs:
 - **Measurement record**: a measured value that decides nothing (`L_EDIT_STALL`).
   It is kept exact.
 
+**Materiality.** The rule keeps an exception only for a *measured,
+user-visible* loss, and the spec stage applied that unevenly (Markdown's
+0.10 % kept an exception, `L_SEARCH_HIGHLIGHT`'s 0.056 % did not, CSS's 0 %
+was kept anyway, and `L_MINIMAP` and `L_INVISIBLES` were not counted at all).
+One criterion now decides every feature cap: rounding is a loss when at least
+0.05 % (one in 2,000) of the corpus files that have the feature at today's
+value lose it, in a corpus of at least 2,000 such files. Below that, or at
+zero, the cap is rounded and the count recorded; a smaller sample is
+recounted. *Rationale:* user experience first keeps every measured loss above
+noise (Markdown's 592 files, XML's 231) while a one-file hit in a 1,791-file
+sample is noise; 0.05 % is the lowest floor that a 2,000-file corpus can
+resolve at all (one file).
+
 Two cases the rule leaves implicit:
 
 - **Retention tiers and retry budgets** round **up**. A smaller retention tier
@@ -192,7 +216,13 @@ Two cases the rule leaves implicit:
 
 **Messages.** These print the tier in IEC units:
 
-- the open refusal (`editor_io.rs`'s "too large to edit");
+- the open refusal (`editor_io.rs`'s "too large to edit") and its
+  grew-while-opening variant ("grew beyond the supported limit"), both of
+  which divide by 1,000,000 today;
+- the Replace All skip messages (`content_search/replace.rs`: "larger than
+  the 10 MB Replace All limit", "10 MB per-file limit", "64 MB Replace All
+  limit"), which print "MB" for a MiB cap today and must follow
+  `MAX_REPLACE_FILE_BYTES` to 8 MiB;
 - the local-history browse limit and its unavailable message;
 - the reduced-features notice;
 - the editor's accessible description.
@@ -208,8 +238,9 @@ are unit-tested.
 
 ### D4. Caps rounded down
 
-These need no measurement: a smaller cap only reduces features sooner, so
-every guarantee holds. The value each becomes, and what changes visibly:
+These need no budget measurement: a smaller cap only reduces features
+sooner, so every guarantee holds. The caps that turn a feature off still need
+D2's corpus count of what users lose (task 4.5). The value each becomes, and what changes visibly:
 
 - **`L_MINIMAP`** 22,000 → 16,384: no minimap for paragraphs of 16–22 k
   characters.
@@ -234,20 +265,31 @@ every guarantee holds. The value each becomes, and what changes visibly:
   The bench constants that mirror them follow.
 - **`BOOKMARK_EXCERPT_SCAN_LINE_LIMIT`** 20,000 → 16,384.
 - **The minimap marker caps** (`SEARCH_MATCH`, `MODIFIED_LINE_MARK`,
-  `LONG_LINE_MARK`) 2,000 → 1,024. The strip is at most 160 px tall, so
-  1,024 markers already saturate it.
+  `LONG_LINE_MARK`) 2,000 → 1,024. These bound GTK-thread work: the search
+  cap is the number of `SearchContext::forward` calls one refresh makes, in
+  document order. The strip is as tall as the editor (the 64–160 px figure in
+  the policy's rustdoc is the map's *width*), so the cap does not saturate
+  it: in a document with 1,025–2,000 matches, modified lines or long lines,
+  the markers past the 1,024th, which lie lower in the document, are no
+  longer drawn. This is listed in the proposal's Impact; the refresh does
+  half the GTK work.
 - **`MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET`** 8,000 → 4,096.
-- **`MAX_RESULTS_PER_SOURCE`** 50 → 32 rows per palette category.
+- **`MAX_RESULTS_PER_SOURCE`** 50 → 32 rows per palette category (visible:
+  a category shows at most 32 matches; listed in the Impact).
 - **`NOTES_BROWSER_RENDER_LIMIT`** 500 → 256.
 - **`MAX_RECENT_LOAD_DIAGNOSTICS`** 20 → 16.
 - **`MAX_INLINE_FOOTNOTE_REPLACEMENTS`** is derived (`MAX_MARKDOWN_EVENTS / 4`)
   and follows its input.
 - **`MAX_MARKDOWN_EVENTS`** 50,000 → 32,768 **unless** task 4.5's corpus
-  count finds a Markdown file within `MAX_MARKDOWN_SOURCE_BYTES` (4 MiB) whose
-  event count is in (32,768, 50,000]. Such a file would lose its full
-  preview, a visible loss, and the cap then stays exact as an exception.
-- **The two table-cell caps** 1,000 → 512, with the same corpus rule (tables
-  of more than 512 cells).
+  count, under D2's materiality rule, finds a loss: Markdown files within
+  `MAX_MARKDOWN_SOURCE_BYTES` (4 MiB) whose event count is in
+  (32,768, 50,000], as a share of those at or below 50,000. Such files would
+  lose their full preview, and the cap then stays exact as an exception.
+- **The two table-cell caps** 1,000 → 512, with the same corpus rule (largest
+  table in (512, 1,000] cells).
+- **`L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`** take the values above
+  unless task 4.5's corpus count of longest paragraphs finds a loss under the
+  same rule; each then keeps its former value as a recorded exception.
 - **The text caps**:
   - `DEFAULT_ANNOUNCEMENT_LIMIT` 240 → 128;
   - `EDITOR_IDENTITY_LIMIT` 96 → 64;
@@ -293,7 +335,20 @@ every guarantee holds. The value each becomes, and what changes visibly:
 
 *Rationale:* rounding any of the first group down would delete stored
 history, recents or search history at the first trim after upgrade. Rounding
-up loses nothing.
+up loses nothing, **provided the larger store still loads**. A raised
+retention tier must stay within every bounded read of its store
+(`threshold-constants`):
+
+- `recent-documents.json` is read through `MAX_RECENT_DOCUMENTS_BYTES`
+  (1 MiB). An entry holds `path` and `canonical_path`, each up to 4,096 bytes,
+  so 256 worst-case entries serialize to about 2.03 MiB. (200 already reached
+  about 1.6 MiB, a latent reset that the cap-plus-one path turns into a lost
+  recents list.) `MAX_RECENT_DOCUMENTS_BYTES` becomes **4 MiB**, a coverage
+  bound rounded up; the load runs on a worker (`spawn_blocking_then` in
+  `ui/window/recent_documents_journal.rs`), so GTK never reads it.
+- Search history (32 entries) and the local-history index (256 snapshots)
+  get the same worst-case load test; a read bound that fails it is raised
+  the same way, in the same commit.
 
 ### D7. The coupled pair `L_PROTECT` / `N_INSPECT`
 
@@ -357,9 +412,10 @@ replaces "deferred to `power-of-two-thresholds`".
     `MAX_SYNTAX_PARAGRAPH_BYTES (4·L_SYNTAX + 3) ≤ HIGHLIGHT_CHUNK_BYTES`
     (8,195 > 8,192), whose 16 KiB alternative was measured over budget
     (A69).
-- **The twelve per-language attach gates, JSON's typing gate, and
-  `S_SYNTAX_OTHER`.** Rounding down unhighlights 0.1–6.5 % of real files
-  (the baseline table).
+- **Eleven per-language attach gates, JSON's typing gate, and
+  `S_SYNTAX_OTHER`.** Rounding down unhighlights 0.10–7.3 % of real files
+  (the baseline table). The twelfth attach gate, CSS, loses nothing at
+  32 KiB (0 of 2,353 files) and converts.
 - **`L_PROTECT_EDIT` 50,000.**
   - This is the maintainer's editability contract ("editable up to ~50k",
     2026-10-30).
@@ -376,8 +432,9 @@ replaces "deferred to `power-of-two-thresholds`".
   refuse 48–50 MP phone photos. 2^26 is unmeasured against the decode memory
   ceiling.
 - **Conditional exceptions:** `REFUSE_TO_OPEN` (D3), `V_SLICE` and the
-  direct-install threshold (D8), `MAX_MARKDOWN_EVENTS` and the table-cell
-  caps (D4). Each is decided by its task.
+  direct-install threshold (D8), `MAX_MARKDOWN_EVENTS`, the table-cell caps,
+  `L_MINIMAP`, `L_INVISIBLES` and `L_SEARCH_HIGHLIGHT` (D4). Each is decided
+  by its task.
 
 ### D10. The gate: `make check-thresholds`
 
@@ -395,7 +452,9 @@ An out-of-scope row names its D1 class.
 `scripts/check-threshold-kinds.py`, run by `make check-thresholds`, which is
 part of `check-policy`:
 
-1. finds every such constant;
+1. finds every such constant, keyed by path and module-qualified name (the
+   spec-stage scan's bare-name keys merged `attach_threshold::JSON` with
+   `typing_threshold::JSON`), including declarations that span lines;
 2. evaluates simple literal expressions, including references to other
    constants;
 3. fails on an unlisted constant, a stale row, or a value mismatch;
@@ -432,7 +491,8 @@ measurement reverts one value.
   documents with paragraphs over 8 k characters, directories over 8 k
   entries, or searches over 8 k matches.
 - **Kani cost.** `R_BATCH` and `N_INSPECT` appear concretely in some
-  harnesses. The navigation harness runs at the production width
+  harnesses, and `set_aside_retention_notice_follows_the_bound_and_its_rate_limit`
+  (shard `core-journal-and-write`) asserts `SOFT_BOUND_BODIES == 100`. The navigation harness runs at the production width
   (≈ 13 min). Each affected shard reruns under `KANI_MEASURE` one at a time,
   inside `scripts/with-memory-cap.sh`. A wall-time move beyond the shard's
   margin updates `scripts/kani-shards.py` in the same change.
@@ -462,7 +522,8 @@ regain undo and local history.
 | `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD` (`ui/buffer_snapshot`) | 10,000,000 | cap | 8 MiB |
 | `MAX_REPLACE_FILE_BYTES` (`content_search/replace`) | 10 MiB | cap | 8 MiB |
 | `L_SYNTAX` | 2,000 | cap | exception (D9) |
-| `attach_threshold::*` (12), `typing_threshold::JSON`, `S_SYNTAX_OTHER` | 10.5–320 KiB | cap | exception (D9) |
+| `attach_threshold::*` except CSS (11, HTML 46 KiB and JSON 24 KiB included), `typing_threshold::JSON` (20 KiB), `S_SYNTAX_OTHER` | 10.5–320 KiB | cap | exception (D9) |
+| `attach_threshold::CSS` | 37 KiB | cap | 32 KiB (0 of 2,353 files lose highlighting) |
 | `L_MINIMAP` | 22,000 | cap | 16,384 |
 | `L_INVISIBLES` | 50,000 | cap | 32,768 |
 | `L_SEARCH_HIGHLIGHT` | 10,000 | cap | 8,192 |
@@ -499,6 +560,7 @@ regain undo and local history.
 | `MAX_RECENT_LOAD_DIAGNOSTICS` | 20 | cap | 16 |
 | `PER_DOCUMENT_SNAPSHOT_CAP`, `GLOBAL_SNAPSHOT_CAP` | 48 / 240 | retention tier | 64 / 256 |
 | `MAX_RECENTS` (and the derived `MAX_RECENT_LOAD_CANDIDATES`) | 200 (400) | retention tier | 256 (512) |
+| `MAX_RECENT_DOCUMENTS_BYTES` | 1 MiB | coverage (must load a full store) | 4 MiB (D6) |
 | `MAX_HISTORY` (search history) | 20 | retention tier | 32 |
 | `SOFT_BOUND_BODIES` | 100 | policy tier | 128 |
 | `MAX_MIGRATION_ATTEMPTS`, `MAX_BOOKMARK_SAVE_ATTEMPTS`, `EDITOR_FOCUS_MAX_ATTEMPTS`, `MAX_UNIQUE_NAME_ATTEMPTS` | 3 / 3 / 6 / 1,000 | retry budget | 4 / 4 / 8 / 1,024 |
@@ -518,3 +580,31 @@ Already compliant and pinned by the gate:
 Out of scope (D1), still listed in `docs/thresholds.md` with their class: the
 remaining non-power-of-two constants (about 100) (geometry, percent, priority, factor,
 rate, structural, presentation, time and tool or fixture data).
+
+## Spec review (stage 2, 2026-11-05)
+
+Decisions taken at review, each with its reason; they are folded into the
+sections above.
+
+- **Scanner collision fixed in the inventory.** HTML's 46 KiB attach gate was
+  missing and JSON's was recorded at 20 KiB; both recounted (7.26 %, 7.33 %),
+  both stay exceptions. D10 keys rows by module-qualified name, and the
+  self-test fails first on the collision.
+- **CSS converts** to 32 KiB: 0 of 2,353 files lose highlighting, so there is
+  no measured loss to justify an exception.
+- **One materiality rule** (D2) replaces the per-cap judgement; the three
+  uncounted paragraph caps become conditional on task 4.5, because the rule
+  requires the same evidence for them as for the syntax gates.
+- **The minimap marker rationale was wrong** (160 px is the width); the
+  conversion stays, because the caps bound GTK-thread work and nothing
+  measured them as a user need, but the lost lower markers are now in the
+  Impact.
+- **Recents must still load**: `MAX_RECENT_DOCUMENTS_BYTES` 1 → 4 MiB, and a
+  worst-case load test for every raised retention store.
+- **Replace All messages** follow the 8 MiB per-file cap in IEC units.
+- **Missing deltas added**: the two local-history requirements that still
+  said 10/50 MB, the sidebar 10,000-row scenario, the 200-entry recents cap,
+  and the Replace All per-file cap.
+- **Kani**: `core-journal-and-write` reruns (it pins `SOFT_BOUND_BODIES`);
+  `R_BATCH ≤ MAX_DENSITY_WINDOW` (256) is checked with `R_FOLD ≤ MAX_R_FOLD`.
+
