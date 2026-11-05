@@ -283,7 +283,8 @@ CBMC at a time; every measurement interleaved with `main` `fbf0f875`, at load
 below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
 
 - [ ] 9.1 Reclassify the whole inventory under D12's test (not only D12's
-  table): for every row of kind `cap` or `text cap` in `docs/thresholds.md`,
+  table): for every row of kind `cap`, `text cap`, `policy tier` or
+  `out: presentation` in `docs/thresholds.md`,
   decide whether rounding it down could hide, skip, truncate or drop anything
   a user could observe; when in doubt, it is a presentation cap. Record the
   decision and its one-line reason for every row in the handoff
@@ -351,7 +352,10 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
   32, `REDUCED_FEATURES_NOTICE_LIMIT` 512, `ARTIFACT_TEXT_LIMIT` and
   `WARNING_TEXT_LIMIT` 2,048, `attach_threshold::CSS` back to 37 KiB and
   `N_HEAD` back to 10,000 (both exceptions, citing A69 and C2's sweep), the
-  bench mirror of `MAX_DIR_ENTRIES`. Each constant's rustdoc gets
+  bench mirrors of `MAX_DIR_ENTRIES` (16,384) and `NOTES_BROWSER_RENDER_LIMIT`
+  (`NOTE_RENDER_CAP`, 512, moved with its production constant in 9.5), and
+  the kind-only rows D12 lists (`DATA_DETAILS_MAX_ROWS_PER_GROUP` moves from
+  `out: presentation` to `presentation cap`). Each constant's rustdoc gets
   `Kind: presentation cap; …` with its former value and, for an exception,
   the measurement. Check `thresholds_are_ordered_as_the_profile_counts_them`
   and `N_INSPECT ≤ min(HEAD_CAP, L_PROTECT)`.

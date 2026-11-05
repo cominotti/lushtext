@@ -314,7 +314,11 @@ paragraphs, rows, counts) is a power of two (2, 4, 8, …, 1024, 64 KiB,
   measurement. A presentation cap is never rounded down. The test: a cap is a
   presentation cap if rounding it down can hide, skip, truncate or drop
   anything a user could observe. **User experience first: when in doubt, it is
-  a presentation cap.**
+  a presentation cap.** Its inventory row records the former value as
+  `up from <value>`, which is what `make check-thresholds` compares against.
+  A fixed layout shape (the context lines of an excerpt, the sample lines of
+  a peek) is `out: presentation`, not a cap; a count that cuts a list is a
+  presentation cap.
 - **Coverage window** (must span a whole toolkit unit for a proof to hold, e.g.
   the paragraphs GTK validates in one 2000 px batch): round **up**, never
   down. A window that is too small silently breaks the proof.
@@ -367,7 +371,8 @@ fails on an unlisted constant, a stale row, a value mismatch, an in-scope
 non-power-of-two that is neither derived, an external fact, a measurement
 record nor a recorded exception, a presentation cap whose value is not the
 power of two at or above its recorded former value (or that former value, as
-an exception), and a missing or disagreeing rustdoc `Kind:` line. A new threshold therefore lands with its row and its
+an exception), and a missing or disagreeing rustdoc `Kind:` line. A new
+threshold therefore lands with its row and its
 `Kind: <kind>; …` line; `scripts/check-threshold-kinds.py --write` adds the
 row for review. Out-of-scope constants (geometry, percentages, priorities,
 codes, time, factors, rates, structural counts, presentation shapes,

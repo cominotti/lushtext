@@ -604,7 +604,14 @@ that was kept as an exception and could now round up:
 | `MAX_PREVIEW_IMAGE_SOURCE_PIXELS` (`ui/markdown_preview`) | 64,000,000 | 64,000,000 (exception) | **2^26 = 67,108,864**, else 64,000,000 | the decode memory ceiling (four bytes per pixel) | decode of a 2^26-pixel image, `memory.peak`, against 64 MP on `main` (M16) |
 
 `ui/window/local_history/policy` `PREVIEW_DIRECT_THRESHOLD_BYTES` follows
-`SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES` and stays internal.
+`SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES` and stays internal. Two mirrors
+outside the inventory follow their production constants: the benchmark's
+`NOTE_RENDER_CAP` (`benches/benchmarks.rs`, 500 on `main`, 256 on PR #84)
+becomes 512 with `NOTES_BROWSER_RENDER_LIMIT`, beside the bench mirror of
+`MAX_DIR_ENTRIES`; and the test-only `byte_tier_reference`'s
+`DISABLE_SYNTAX_HIGHLIGHTING` (the save-only history tier, despite its
+retired name) takes `HISTORY_SAVE_ONLY_BYTES`'s value, so the parity tests and
+the `core-document-scale` tier harness keep comparing two independent tables.
 
 **Kept as exceptions without a new measurement**, because the measurement
 that set them already shows the power of two above breaks the bound:
@@ -636,8 +643,23 @@ falling): `MAX_LISTED_SET_ASIDE_BODIES`, `MAX_SEARCH_MATCH_LINE_BYTES`,
 `WORKSPACE_SEARCH_FALLBACK_PATH_BYTE_LIMIT`, `WATCH_ERROR_MESSAGE_CAP_BYTES`,
 `MAX_SEARCH_SELECTION_PREFILL_CHARS`, `ENTRY_INSERT_CAP_BYTES`,
 `HELD_TEXT_CAP_BYTES`, `MAX_PENDING_ACTIVATION_OPENS`,
-`MAX_BACKUP_ITEM_BYTES`, `DEFAULT_MAX_METADATA_BYTES`. Task 9.1 rechecks the
-whole inventory under the test and adds any it catches.
+`MAX_BACKUP_ITEM_BYTES`, `DEFAULT_MAX_METADATA_BYTES`; and, added at spec
+review because the test catches them: `AT_ATTACH_MAX_CHARS` (a larger detached
+document reaches an assistive technology only when its tab is shown),
+`MAX_INDEX_REPAIR_SNAPSHOT_BYTES` (past it a damaged lineage's history stays
+unavailable), `MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET` (past it markers follow the
+unwrapped projection, like its line-budget sibling above),
+`MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES` (past it palette notes are truncated,
+like its retained-bytes sibling), `MAX_NOTE_FUZZY_SCORE_BYTES` (the field
+prefix nucleo scores, so it orders the results a user sees),
+`SURROUNDING_WINDOW_CHARS` and `SURROUNDING_MAX_SELECTION_CHARS` (the context
+an input method receives), and `DATA_DETAILS_MAX_ROWS_PER_GROUP`
+(`ui/preferences/data_page`: rows listed before the omitted-count row; it was
+classed `out: presentation`, which is reserved for a fixed layout shape such
+as the bookmark excerpt's context lines or the peek's sample lines, not a
+count that cuts a list). Task 9.1 rechecks the whole inventory under the test,
+`out: presentation` and `policy tier` rows included, and adds any it
+catches.
 
 **Internal, still rounded down** (they hide nothing): the slice and chunk
 sizes (`V_SLICE`, `SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES`, the 64 Ki and
@@ -679,8 +701,9 @@ its pre-PT value as a recorded exception, in its own commit with the figures.
 
 **Rationale.** Rounding a presentation cap down trades a visible loss for a
 margin the budget did not need: every row above was already inside its bound
-at the pre-PT value, and the rounding up adds at most 64 % (10,000 → 16,384)
-to work that is either sliced per turn (search, find, sidebar), bounded by an
+at the pre-PT value, and the rounding up adds at most 71 % (1,200 → 2,048;
+10,000 → 16,384 is 64 %, 10,000,000 → 16 MiB 68 %) to work that is either
+sliced per turn (search, find, sidebar), bounded by an
 unchanged byte ceiling (preview, notes, palette notes, Replace Preview), or
 measured here. *Alternative rejected:* keep the pre-PT values everywhere as
 exceptions. That loses nothing either, but leaves non-powers of two the rule
@@ -862,6 +885,31 @@ sections above.
 - **Kani**: `core-journal-and-write` reruns (it pins `SOFT_BOUND_BODIES`);
   `R_BATCH ≤ MAX_DENSITY_WINDOW` (256) is checked with `R_FOLD ≤ MAX_R_FOLD`.
 
+
+## Spec review of the amendment (stage 2, 2026-11-05)
+
+Checked against `main` `fbf0f875` and the branch: every constant PR #84
+lowered (each lowered value in `git diff fbf0f875 -- crates`) is in D12's
+table, its internal list, or a mirror; every scenario under a MODIFIED
+requirement keeps its name; `openspec validate --strict` passes. Folded in:
+
+- **Two mirrors** were missing: the benchmark's `NOTE_RENDER_CAP` (500 → 256
+  on PR #84) and the test-only `byte_tier_reference` tier; both follow their
+  production constants (D12, task 9.4).
+- **Eight kind-only presentation caps** the test catches were missing from
+  D12's list (`AT_ATTACH_MAX_CHARS`, `MAX_INDEX_REPAIR_SNAPSHOT_BYTES`,
+  `MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET`, `MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES`,
+  `MAX_NOTE_FUZZY_SCORE_BYTES`, the two IME surrounding-text caps,
+  `DATA_DETAILS_MAX_ROWS_PER_GROUP`); `out: presentation` is narrowed to fixed
+  layout shapes, and task 9.1 rechecks those rows and the policy tiers too.
+- **The rationale's growth bound** said "at most 64 %"; the largest step is
+  1,200 → 2,048 (71 %), and the 16 MiB tiers are 68 % above 10 MB.
+- **The rule** in `.agents/rules/rust.md` now names where the former value is
+  recorded (`up from <value>`), so `make check-thresholds` can enforce it.
+- Not changed, recorded: `SOFT_BOUND_BODIES` (100 → 128) delays the set-aside
+  review notice by up to 28 bodies; it is a policy tier the maintainer set in
+  D6 and hides no body, so it stays. `report_startup_diagnostics::DETAIL_LIMIT`
+  only bounds log lines and stays `out: presentation`.
 
 ## Implementation decisions (stage 3, 2026-11-05)
 
