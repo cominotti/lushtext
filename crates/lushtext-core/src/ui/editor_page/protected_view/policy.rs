@@ -84,9 +84,10 @@ pub(crate) const FIND_BYTES_PER_TURN: u64 = 64 * 1024;
 /// The total result cap of one find request (design D5); the counter reports
 /// "capped" when it is reached.
 ///
-/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
-/// D4).
-pub(crate) const FIND_RESULT_CAP: u64 = 8_192;
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M4).
+/// The retained records stay within 16,384 x `MAX_FIND_RECORD_BYTES` = 8 MiB.
+pub(crate) const FIND_RESULT_CAP: u64 = 16 * 1024;
 /// The most retained bytes one admitted find record carries: its preview
 /// excerpt, cut by [`admit_find_record`]. The record's fixed fields are bounded
 /// by the per-turn count instead.
@@ -2398,6 +2399,34 @@ mod tests {
             FIND_RESULTS_PER_TURN
         );
         assert_eq!(next_find_batch(&tiny, FIND_RESULT_CAP - 3, limits).count, 3);
+    }
+
+    /// Results one find request delivers when it found `found` matches, turn
+    /// by turn through the production limits.
+    fn delivered_find_results(found: usize) -> u64 {
+        let limits = FindBatchLimits::PRODUCTION;
+        let pending = admitted(&vec![40; found], limits);
+        let mut delivered = 0u64;
+        let mut start = 0usize;
+        loop {
+            let batch = next_find_batch(&pending[start..], delivered, limits);
+            if batch.count == 0 {
+                return delivered;
+            }
+            delivered += batch.count as u64;
+            start += batch.count;
+        }
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main`'s
+    /// Protected View find delivered 10,000 results; the cap rounds up to
+    /// 16,384, and the retained records stay within 8 MiB.
+    #[test]
+    fn no_loss_protected_find_delivers_every_result_main_delivered() {
+        assert_eq!(delivered_find_results(10_000), 10_000);
+        assert_eq!(delivered_find_results(16 * 1024), 16 * 1024);
+        assert_eq!(delivered_find_results(16 * 1024 + 1), 16 * 1024);
+        assert!(std::hint::black_box(FIND_RESULT_CAP * MAX_FIND_RECORD_BYTES) <= 8 * 1024 * 1024);
     }
 
     #[test]

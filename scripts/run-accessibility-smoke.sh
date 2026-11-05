@@ -948,10 +948,10 @@ seed_capped_results_workspace_for_capture() {
     # The content-search result cap is a service constant, so the truncation
     # warning can only be reached with a fixture that really exceeds it. This
     # workspace stays outside the shared "$ARTIFACT_DIR/fixtures" root so no
-    # other case has to walk 12,000 matching lines.
+    # other case has to walk 18,000 matching lines.
     local block index padded
     block=$(printf 'cappedmatchterm line for accessibility truncation coverage\n%.0s' $(seq 1 600))
-    for index in $(seq 1 20); do
+    for index in $(seq 1 30); do
         printf -v padded '%02d' "$index"
         printf '%s\n' "$block" >"$root/capped-results-${padded}.txt"
     done
@@ -1605,11 +1605,11 @@ run_accessibility_capture "workspace-search-capped" \
     --step wait-window-action:set-search-panel-query \
     --step window-string-action:set-search-panel-query=cappedmatchterm \
     --step wait-predicate:search-complete \
-    --step wait-atspi-text:"8,192+ results (truncated)"
+    --step wait-atspi-text:"16,384+ results (truncated)"
 assert_anchor "workspace-search-capped" "workspace search" "entry" "Workspace search query"
 assert_anchor "workspace-search-capped" "workspace search" "list" "Workspace search results"
 # The truncation is announced as text, not only as a warning colour.
-assert_anchor_prefix "workspace-search-capped" "workspace search" "status bar" "8,192+ results (truncated)"
+assert_anchor_prefix "workspace-search-capped" "workspace search" "status bar" "16,384+ results (truncated)"
 fi
 
 if case_selected "workspace-search-replace-undo"; then

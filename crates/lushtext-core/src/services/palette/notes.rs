@@ -66,9 +66,9 @@ const MAX_NOTE_FIELD_FUZZY_SCORE: u32 = u16::MAX as u32;
 const NOTE_TEXT_CANCEL_CHECK_INTERVAL: usize = 1_024;
 /// Maximum note and bookmark rows retained for command-palette search.
 ///
-/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
-/// D4).
-pub const MAX_PALETTE_NOTE_ENTRIES: usize = 8_192;
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+pub const MAX_PALETTE_NOTE_ENTRIES: usize = 16 * 1024;
 /// Maximum aggregate searchable UTF-8 bytes retained for palette note rows.
 ///
 /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
@@ -2076,6 +2076,7 @@ pub fn bookmark_display_label(label: Option<&str>, line: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::model::bookmark::BookmarkRecord;
     use crate::model::workspace::{WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile};
@@ -2284,6 +2285,28 @@ mod tests {
         );
 
         assert!(entries.is_empty());
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main`'s
+    /// palette note source retained 10,000 entries; the cap rounds up to 16,384.
+    #[test]
+    fn no_loss_the_palette_note_source_retains_every_entry_main_retained() {
+        let retained = |count: usize| {
+            let bodies = vec![String::from("note"); count];
+            let PaletteNoteSourceOutcome::Complete { load, .. } =
+                admit_synthetic_note_bodies_for_benchmark(&bodies, None)
+            else {
+                panic!("an uncancelled admission completes");
+            };
+            (load.entries.len(), load.truncation_reasons)
+        };
+        assert_eq!(retained(10_000), (10_000, vec![]));
+        assert_eq!(retained(16 * 1024), (16 * 1024, vec![]));
+        assert_eq!(
+            retained(16 * 1024 + 1),
+            (16 * 1024, vec![NoteSourceTruncationReason::EntryLimit])
+        );
+        assert_eq!(PALETTE_NOTE_SOURCE_LIMITS.sidecar_entries, 16 * 1024);
     }
 
     #[test]

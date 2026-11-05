@@ -29,32 +29,32 @@ use crate::ui::editor_page::BookmarkEditError;
 /// imperceptible on a mid-range laptop. Beyond it the browser shows a
 /// refine-your-search notice rather than growing the list.
 ///
-/// Kind: cap; 500 rounded down to a power of two (`power-of-two-thresholds`
-/// D4).
-pub const NOTES_BROWSER_RENDER_LIMIT: usize = 256;
+/// Kind: presentation cap; 500 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M6).
+pub const NOTES_BROWSER_RENDER_LIMIT: usize = 512;
 /// Maximum rows admitted into one Browse Notes source.
 ///
-/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
-/// D4).
-pub const NOTES_BROWSER_SOURCE_ENTRY_LIMIT: usize = 8_192;
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+pub const NOTES_BROWSER_SOURCE_ENTRY_LIMIT: usize = 16 * 1024;
 /// Maximum aggregate searchable UTF-8 bytes retained by Browse Notes.
 ///
 /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const NOTES_BROWSER_SOURCE_TEXT_LIMIT: usize = 64 * 1024 * 1024;
 /// Maximum sidecar candidates retained by each Browse Notes directory scan.
 ///
-/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
-/// D4).
-pub const NOTES_BROWSER_SIDECAR_SCAN_LIMIT: usize = 8_192;
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+pub const NOTES_BROWSER_SIDECAR_SCAN_LIMIT: usize = 16 * 1024;
 /// Maximum recovery diagnostics retained by one Browse Notes load.
 ///
 /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const NOTES_BROWSER_DIAGNOSTIC_LIMIT: usize = 1_024;
 /// Maximum open-editor snapshots plus bookmark rows captured on GTK.
 ///
-/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
-/// D4).
-pub const NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT: usize = 8_192;
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M6).
+pub const NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT: usize = 16 * 1024;
 /// Maximum retained live-editor metadata cloned before note-source admission.
 ///
 /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
@@ -545,6 +545,66 @@ mod tests {
     use super::*;
     use crate::model::workspace::{WorkspaceFolder, WorkspaceId};
 
+    /// Rows the browser renders when `count` notes match, at the production
+    /// render limit.
+    fn rendered_rows(count: usize) -> (usize, bool) {
+        use crate::model::palette::{PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget};
+        let entries = (0..count)
+            .map(|index| PaletteNoteEntry {
+                category: PaletteNoteCategory::DocumentNotes,
+                title: format!("matching-{index:05}"),
+                subtitle: "Core · /workspace".to_string(),
+                detail: None,
+                note_text: Some("matching body".to_string()),
+                target: PaletteNoteTarget::FolderNote {
+                    workspace_name: "Core".to_string(),
+                    folder: PathBuf::from("/workspace"),
+                },
+            })
+            .collect::<Vec<_>>();
+        let palette_service::PaletteSearchOutcome::Complete { value, .. } =
+            palette_service::query_notes_browser_source(
+                &entries,
+                &palette_service::NotesBrowserQueryRequest {
+                    query: "matching".to_string(),
+                    mode: NotesBrowserMode::AllNotes,
+                },
+                NOTES_BROWSER_RENDER_LIMIT,
+                &palette_service::PaletteSearchCancellation::default(),
+            )
+        else {
+            panic!("a fresh query completes");
+        };
+        (value.matching_indices.len(), value.truncated)
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` rendered
+    /// 500 matching notes; the presentation cap rounds up to 512.
+    #[test]
+    fn no_loss_the_notes_browser_renders_every_note_main_rendered() {
+        assert_eq!(rendered_rows(500), (500, false));
+        assert_eq!(rendered_rows(512), (512, false));
+        assert_eq!(rendered_rows(513), (512, true));
+    }
+
+    /// No loss against `main` (D12): the open-editor snapshot, the source
+    /// entries and the sidecar scan each kept 10,000 entries on `main`.
+    #[test]
+    fn no_loss_the_notes_browser_sources_keep_every_entry_main_kept() {
+        for limit in [
+            NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT,
+            NOTES_BROWSER_SOURCE_ENTRY_LIMIT,
+            NOTES_BROWSER_SIDECAR_SCAN_LIMIT,
+            NOTES_BROWSER_SOURCE_LIMITS.entries,
+            NOTES_BROWSER_SOURCE_LIMITS.sidecar_entries,
+            notes_browser_source_limits_for_entries(NOTES_BROWSER_SOURCE_ENTRY_LIMIT)
+                .sidecar_entries,
+        ] {
+            assert!(limit >= 10_000, "{limit} drops entries main kept");
+            assert_eq!(limit, 16 * 1024);
+        }
+    }
+
     /// Fixed struct size used by the arithmetic tests, pinned rather than
     /// computed from the production type so a layout change cannot silently
     /// move the expected numbers.
@@ -563,12 +623,12 @@ mod tests {
 
     #[test]
     fn workflow_budgets_are_pinned_to_their_reviewed_literals() {
-        assert_eq!(NOTES_BROWSER_RENDER_LIMIT, 256);
-        assert_eq!(NOTES_BROWSER_SOURCE_ENTRY_LIMIT, 8_192);
+        assert_eq!(NOTES_BROWSER_RENDER_LIMIT, 512);
+        assert_eq!(NOTES_BROWSER_SOURCE_ENTRY_LIMIT, 16 * 1024);
         assert_eq!(NOTES_BROWSER_SOURCE_TEXT_LIMIT, 0x0400_0000, "64 MiB");
-        assert_eq!(NOTES_BROWSER_SIDECAR_SCAN_LIMIT, 8_192);
+        assert_eq!(NOTES_BROWSER_SIDECAR_SCAN_LIMIT, 16 * 1024);
         assert_eq!(NOTES_BROWSER_DIAGNOSTIC_LIMIT, 1_024);
-        assert_eq!(NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT, 8_192);
+        assert_eq!(NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT, 16 * 1024);
         assert_eq!(
             NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT, 0x0040_0000,
             "4 MiB"
@@ -582,12 +642,12 @@ mod tests {
 
     #[test]
     fn source_limits_carry_the_workflow_budgets_into_the_shared_engine() {
-        assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.entries, 8_192);
+        assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.entries, 16 * 1024);
         assert_eq!(
             NOTES_BROWSER_SOURCE_LIMITS.searchable_text_bytes,
             0x0400_0000
         );
-        assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.sidecar_entries, 8_192);
+        assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.sidecar_entries, 16 * 1024);
         assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.diagnostics, 1_024);
     }
 
@@ -611,7 +671,7 @@ mod tests {
     fn narrowing_above_the_sidecar_ceiling_leaves_it_alone() {
         let widened = notes_browser_source_limits_for_entries(50_000);
         assert_eq!(widened.entries, 50_000);
-        assert_eq!(widened.sidecar_entries, 8_192);
+        assert_eq!(widened.sidecar_entries, 16 * 1024);
     }
 
     #[test]

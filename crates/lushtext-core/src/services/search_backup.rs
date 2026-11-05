@@ -43,12 +43,16 @@ const JOURNAL_MANIFEST_FILE: &str = "manifest.json";
 const CLEANUP_MARKER_FILE: &str = "cleanup-in-progress.json";
 /// Maximum journal entries scanned for orphan diagnostics in one recovery pass.
 ///
-/// 8,192 bounds damaged app-data startup work while staying far above a
-/// realistic Replace All batch in an editor session.
+/// It bounds damaged app-data startup work while staying at or above the files
+/// one Replace All can touch (at most one capped result set, `RESULT_CAP`).
 ///
-/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
-/// D4).
-const JOURNAL_SCAN_MAX_ENTRIES: usize = 8_192;
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+pub(crate) const JOURNAL_SCAN_MAX_ENTRIES: usize = 16 * 1024;
+
+// One Replace All touches at most the files of one capped result set, so the
+// startup inspection always reaches every entry it can have written.
+const _: () = assert!(JOURNAL_SCAN_MAX_ENTRIES >= crate::services::content_search::RESULT_CAP);
 #[cfg(test)]
 thread_local! {
     static TEST_MAX_REPLACE_UNDO_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
@@ -1082,6 +1086,7 @@ fn entry_file_name(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::services::filesystem::fixture;
     use tempfile::TempDir;
@@ -1117,6 +1122,15 @@ mod tests {
     fn payload_budget_saturates_instead_of_wrapping_into_acceptance() {
         assert!(payload_budget_exceeded(u64::MAX, 1, u64::MAX - 1));
         assert!(!payload_budget_exceeded(u64::MAX, 1, u64::MAX));
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main`'s
+    /// startup inspection admitted a journal of 10,000 entries.
+    #[test]
+    fn no_loss_a_journal_main_inspected_in_full_stays_in_full() {
+        assert!(!entry_count_exceeds_cap(10_000));
+        assert!(!entry_count_exceeds_cap(16 * 1024));
+        assert!(entry_count_exceeds_cap(16 * 1024 + 1));
     }
 
     #[test]

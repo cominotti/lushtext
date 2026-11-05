@@ -36,7 +36,9 @@ use crate::services::{content_search, json_store, search_history};
 use super::LushtextSearchPanel;
 use super::imp::make_display_path;
 use super::item::SearchResultItem;
-use super::policy::{WorkspaceSearchRequest, WorkspaceSearchStart, WorkspaceSearchSubmission};
+use super::policy::{
+    self, WorkspaceSearchRequest, WorkspaceSearchStart, WorkspaceSearchSubmission,
+};
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 
 /// Maximum channel events received and dispatched by one scheduled GTK turn.
@@ -270,8 +272,7 @@ impl LushtextSearchPanel {
                     SearchEventPoll::Event(SearchEvent::ResultCap) => {
                         if !cancelled {
                             imp.runtime.result_capped.set(true);
-                            imp.count_label
-                                .set_text("8,192+ results (truncated) \u{2014} narrow your search");
+                            imp.count_label.set_text(&policy::result_cap_notice());
                             imp.count_label.add_css_class("warning");
                             panel.refresh_accessibility_state();
                         }

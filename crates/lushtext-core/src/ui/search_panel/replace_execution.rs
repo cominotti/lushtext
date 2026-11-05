@@ -53,7 +53,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::LushtextSearchPanel;
 use super::policy::{
-    ReplacePreviewFacts, ReplacePreviewTicket, completed_preview_reservation_weight,
+    self, ReplacePreviewFacts, ReplacePreviewTicket, completed_preview_reservation_weight,
     preview_reservation_weight,
 };
 
@@ -505,8 +505,7 @@ impl LushtextSearchPanel {
         if total == 0 {
             imp.count_label.set_text("No results found");
         } else if imp.runtime.result_capped.get() {
-            imp.count_label
-                .set_text("8,192+ results (truncated) — narrow your search");
+            imp.count_label.set_text(&policy::result_cap_notice());
             imp.count_label.add_css_class("warning");
         } else {
             imp.count_label.remove_css_class("warning");

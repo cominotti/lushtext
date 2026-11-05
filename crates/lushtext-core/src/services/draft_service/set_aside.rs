@@ -52,9 +52,9 @@ pub const MAX_LISTED_SET_ASIDE_BODIES: usize = 256;
 /// Most set-aside entries one scan visits; past it the totals are a lower
 /// bound (and far past the soft retention bound).
 ///
-/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
-/// D4).
-pub const MAX_SET_ASIDE_SCAN_ENTRIES: usize = 8_192;
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+pub const MAX_SET_ASIDE_SCAN_ENTRIES: usize = 16 * 1024;
 
 /// Bodies newly placed in any set-aside area by this process. The retention
 /// notice re-evaluates the soft bound when it moves; nothing else reads it.
@@ -530,6 +530,26 @@ fn ensure_inside(data_dir: &Path, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::services::filesystem::fixture;
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` scanned
+    /// 10,000 set-aside entries, so an area of 10,000 bodies has exact totals,
+    /// not a lower bound; the scan cap rounds up to 16,384.
+    #[test]
+    fn no_loss_a_set_aside_area_main_counted_exactly_stays_exact() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let area = dir(data.path());
+        fixture::create_dir_all(&area);
+        for index in 0..10_000u64 {
+            fixture::write_text(&area.join(format!("body{index:05}.{index}.draft")), "x");
+        }
+        let totals = totals(data.path()).expect("totals");
+        assert!(
+            totals.complete,
+            "10,000 bodies were counted exactly on main"
+        );
+        assert_eq!((totals.count, totals.bytes), (10_000, 10_000));
+        assert_eq!(MAX_SET_ASIDE_SCAN_ENTRIES, 16 * 1024);
+    }
 
     #[test]
     fn set_aside_names_parse_with_and_without_a_collision_suffix() {

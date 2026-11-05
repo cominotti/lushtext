@@ -349,6 +349,47 @@ impl ReplacePreviewTicket {
     }
 }
 
+/// The count label shown when the search service stopped at its result cap
+/// (`RESULT_CAP`), named from the cap itself so the label never states a figure
+/// the service does not apply.
+#[must_use]
+pub fn result_cap_notice() -> String {
+    format!(
+        "{}+ results (truncated) \u{2014} narrow your search",
+        grouped_thousands(crate::services::content_search::RESULT_CAP)
+    )
+}
+
+/// `count` with comma thousands separators ("16,384"), as the result labels print it.
+fn grouped_thousands(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+#[cfg(test)]
+mod result_cap_notice_tests {
+    use super::*;
+
+    #[test]
+    fn no_loss_the_result_cap_notice_names_the_cap_main_raised_to() {
+        assert_eq!(
+            result_cap_notice(),
+            "16,384+ results (truncated) \u{2014} narrow your search"
+        );
+        assert_eq!(grouped_thousands(0), "0");
+        assert_eq!(grouped_thousands(999), "999");
+        assert_eq!(grouped_thousands(1_000), "1,000");
+        assert_eq!(grouped_thousands(1_234_567), "1,234,567");
+    }
+}
+
 #[cfg(test)]
 mod preview_ticket_tests {
     use super::*;

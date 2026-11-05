@@ -1590,7 +1590,7 @@ run_capture() {
             assert_command_palette_capture_artifacts "$name" "$capture_dir" "true" "files" "missing-palette-file" 0 0 0
             ;;
         command-palette-dense-files)
-            assert_command_palette_capture_artifacts "$name" "$capture_dir" "true" "files" "palette-dense" 33 "any" 64
+            assert_command_palette_capture_artifacts "$name" "$capture_dir" "true" "files" "palette-dense" 64 "any" 64
             ;;
         command-palette-dismissed)
             assert_command_palette_capture_artifacts "$name" "$capture_dir" "false" "all" "" 0 0 0
