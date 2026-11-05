@@ -312,3 +312,39 @@ the revalidation share was about 10 % of these windows' zoom frame, not the
 32 % C6 measured, and every restyle improves or holds. The lane figure is the
 phase's worst stall, not the action's dispatch, because a reload or a class
 swap is paid in the next frame.
+
+## Review decisions (2026-11-05, independent review of PR #83)
+
+The review read `origin/main..HEAD` and the interleaved evidence
+(`runs.log`: host 1-minute load 0.5–3.7 before and after every run, `main`
+and the branch alternating; `compare-c6set.md`, `compare-v12.md`) and found
+the figures in the record supported by them. Decisions, user experience first:
+
+1. **Adoption despite the 2 ms miss: kept.** The criterion was set before the
+   revalidation share was measured on these windows (about 10 %, not C6's
+   32 %). Against it stand an improvement of every restyle a user starts
+   (zoom step −1.3 to −1.5 ms on the dense sets, font change −2.4 to
+   −2.6 ms, both −7 to −9 ms with search results listed), no regression of any
+   open, click or typing phase beyond a reference frame, and a zoom cost that
+   no longer grows with unrelated widgets (A86). Reverting would leave users
+   with the slower restyle for a threshold, so the deviation stays recorded,
+   not waived: the zoom-step residuals over `B_INTERACT_US`/`B_SETTLE_US`
+   listed in the record remain C6's text re-layout floor.
+2. **The dense/10000 and dense/50000 stalls are not this change's, and are
+   queued, not dropped.** They are identical on both sides (open 110–530 ms,
+   click 53–262 ms, typing about 1.2 s per burst, misdirected typing and
+   withheld typing frames in 12 / 18 phases on both), and come from
+   GtkTextView validating 2000 px batches of 10,000–50,000-character editable
+   lines, a mechanism this change does not touch. Folding a fix into a font
+   provider change would delay a shipped improvement without making the
+   stall smaller sooner. Under the pre-existing-blockers rule the programme
+   cannot close while the full-tier lane fails on them, so they are registered
+   as the next programme change, `DL bound-dense-long-line-editing`, in the
+   sequence table of `docs/next/long-line-documents.md`.
+3. **The registration check was widened (review fix).** A builder's
+   `.monospace(true)` and `set_property("monospace", true)` set
+   `GtkTextView:monospace` (which adds `.monospace`) without matching any
+   forbidden form, so a future surface built either way would have escaped
+   `make check-font-zoom-registration` and been caught only if a widget test
+   happened to open it. Both forms are now forbidden, with self-test cases that
+   failed before the patterns were added.

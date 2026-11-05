@@ -9,7 +9,8 @@ following the zoom and the custom font (design D2, D3). This check fails on
 any way of adding `.monospace` outside the registering helper:
 
 - Rust, under `crates/lushtext-core/src` (comments stripped):
-  `add_css_class("monospace")`, `set_monospace(true)`, and a
+  `add_css_class("monospace")`, `set_monospace(true)`, a builder's
+  `.monospace(true)`, `set_property("monospace", true)`, and a
   `css_classes([...])` list naming `"monospace"`, except inside
   `crates/lushtext-core/src/ui/font_zoom.rs`;
 - Blueprint, under `resources/ui` (comments stripped): `monospace: true` and a
@@ -43,6 +44,8 @@ BLUEPRINT_SITES = {
 RUST_PATTERNS = (
     (re.compile(r"\.add_css_class\(\s*\"monospace\"\s*\)"), 'add_css_class("monospace")'),
     (re.compile(r"\.set_monospace\(\s*true\s*\)"), "set_monospace(true)"),
+    (re.compile(r"(?<![\w])\.monospace\(\s*true\s*\)"), "builder .monospace(true)"),
+    (re.compile(r"\.set_property\(\s*\"monospace\"\s*,\s*true\s*\)"), 'set_property("monospace", true)'),
     (re.compile(r"css_classes\(\s*\[[^\]]*\"monospace\"", re.S), 'css_classes([.."monospace"..])'),
 )
 BLUEPRINT_PATTERNS = (
@@ -200,6 +203,9 @@ def self_test() -> int:
     expect("helper", {site: "font_zoom::follow_editor_font_monospace(&label);\n"}, False)
     expect("registry", {REGISTRY: 'widget.add_css_class("monospace");\n'}, False)
     expect("set false", {site: "view.set_monospace(false);\n"}, False)
+    expect("builder", {site: "gtk4::TextView::builder().monospace(true).build();\n"}, True)
+    expect("property", {site: 'view.set_property("monospace", true);\n'}, True)
+    expect("builder false", {site: "gtk4::TextView::builder().monospace(false).build();\n"}, False)
     blueprint = "resources/ui/line-inspector.blp"
     template = "template $T : Adw.Dialog {\n  child: TextView window_view {\n    monospace: true;\n  };\n}\n"
     registered = "fn constructed(&self) { crate::ui::font_zoom::follow_editor_font(&*self.window_view); }\n"
