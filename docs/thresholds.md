@@ -6,12 +6,15 @@ the `gtk-lush-axioms` probe parameters excluded). `make check-thresholds`
 (`scripts/check-threshold-kinds.py`, part of `make check-policy`) fails when a
 constant has no row, a row has no constant, a value differs from its row, an
 in-scope constant is not a power of two without being `derived`, an
-`external fact`, a `measurement record` or a recorded exception, or an
-in-scope constant's rustdoc `Kind:` line is missing or disagrees with its row.
+`external fact`, a `measurement record` or a recorded exception, an
+in-scope constant's rustdoc `Kind:` line is missing or disagrees with its row,
+or a presentation cap is not the power of two at or above the former value its
+row records as `up from <value>` (for a presentation-cap exception, not that
+value exactly).
 
 The rule is in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded
 the conservative way"); the classification and the measurements behind every
-recorded exception come from `power-of-two-thresholds` (design D1–D10,
+recorded exception come from `power-of-two-thresholds` (design D1–D14,
 `openspec/changes/archive/*-power-of-two-thresholds/`).
 
 ## Kinds
@@ -21,20 +24,35 @@ retries, or decides a feature or tier from a size, length or count):
 
 | Kind | Value |
 |---|---|
-| `cap` | rounded **down** to a power of two |
+| `cap` | an internal resource cap: rounded **down** to a power of two |
+| `presentation cap` | a cap on what the user sees or gets: rounded **up** to the power of two at or above its former value, recorded as `up from <value>`; never rounded down |
 | `coverage window` | rounded **up** to a power of two |
 | `retention tier` | rounded **up** (a smaller tier prunes data the user has) |
 | `retry budget` | rounded **up** (a smaller budget reports a transient failure) |
-| `text cap` | rounded down, and never below the longest shipped string |
-| `policy tier` | a power of two aligned with its neighbours, shown in IEC units |
+| `policy tier` | a power of two aligned with its neighbours, shown in IEC units; a notice threshold or a model parameter that hides nothing |
 | `external fact` | exact, cited from its source (a toolkit or format fact) |
 | `derived` | computed from named inputs, never rounded |
 | `measurement record` | a measured value that decides nothing, exact |
 
+A **presentation cap** (design D12) is any cap whose rounding down could hide,
+skip, truncate or drop something a user could observe: results, rows, notes,
+markers, entries listed, files a bulk action processes, characters shown or
+announced, and the size or length at which a feature turns off. When in doubt,
+it is a presentation cap. It rounds up, provided the resource bound it protects
+(memory, per-turn GTK time against `B_interact` 8 ms or `B_settle` 16 ms,
+worker memory) still holds by measurement; if it does not, the cap keeps its
+former value as a recorded exception with that measurement. A fixed layout
+shape (the context lines of an excerpt, the sample lines of a peek) is
+`out: presentation`, not a cap; a count that cuts a list is a presentation cap.
+The retired `text cap` kind's rows (characters announced) are presentation caps.
+
 A kind followed by `, exception` is a **recorded exception**: it keeps an exact
-value because the power of two below it, and any measured one above it, cost a
-measured user-visible loss — at least 0.05 % of a corpus of at least 2,000 files
-that have the feature (design D2). Its rustdoc says
+value because a measurement shows the power of two above it breaking the bound
+it protects (for a presentation cap), or, for another kind, because the power
+of two below it and any measured one above it cost a measured user-visible
+loss — at least 0.05 % of a corpus of at least 2,000 files that have the
+feature (design D2; this materiality rule decided only whether a cap could
+round **down**, which a presentation cap never does). Its rustdoc says
 "Kind: <kind>; recorded exception" and gives the measurement.
 
 The rustdoc of every in-scope constant carries a line starting `Kind: <kind>`.

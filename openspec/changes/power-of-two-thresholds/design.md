@@ -982,3 +982,74 @@ experience first.
   verification pair (load 0.8–2.3) is what shows those cases matching `main`.
   Neither stage-4 change touches a timed path, so no measurement was rerun.
 
+
+## Implementation of the amendment (stage 3, 2026-11-05)
+
+Measured on `main` `fbf0f875` (worktree `pt-main`, the same measurement
+tests applied uncommitted) against the branch candidate, interleaved, every
+run in `scripts/measure.sh` after the 1-minute load stayed below 4 for 30 s,
+pinned to CPUs 8–23; the load before and after each run, and every figure,
+are in `.claude/handoffs/power-of-two-thresholds/runs.log` ("AMEND VERDICT"
+lines), the raw evidence in `amend/widget/evidence.txt` and
+`amend/mem/evidence.txt`, and the measurement code in `amend/measure/`
+(uncommitted: it measures, it does not test). Widget figures are the worst
+single main-loop dispatch while the capped work settles, on the optimized
+widget build with the surface presented (an unrealized `GtkListView` walks
+its whole item list on every `items-changed`, which a presented one does not,
+so the first, unpresented search fixture measured a quadratic artifact).
+Memory figures are the process's `VmHWM` reset just before the measured call,
+in a release test process of its own.
+
+| Row | Pre-PT → new | Measured (main → branch) | Verdict |
+|---|---|---|---|
+| `MAX_RESULTS_PER_SOURCE` | 50 → **64** | M1 settle 5.0–5.7 → 6.4–7.9 ms (≤ `B_interact`) | rounded up |
+| `RESULT_CAP` | 10,000 → **16,384** | M2 22–26 vs 20–23 ms (the first-results reveal; main already > `B_settle`), RSS growth ratio 1.23 | rounded up |
+| `MAX_REPLACE_PREVIEW_ROWS` | 10,000 → **16,384** | M3 27.8–29.2 vs 26.0–28.6 ms | rounded up |
+| `FIND_RESULT_CAP` | 10,000 → **16,384** | M4 7.0–7.6 vs 7.2–8.1 ms | rounded up |
+| `MAX_DIR_ENTRIES` | 10,000 → **10,000** | M5 41–43 vs 25–30 ms (+13–16 ms) | **exception** |
+| `NOTES_BROWSER_RENDER_LIMIT`, `…_OPEN_EDITOR_SNAPSHOT_LIMIT` | 500 / 10,000 → **512 / 16,384** | M6 open action 9.4–13.4 ms; worst 34–40 vs 32–38 ms | rounded up |
+| minimap marker caps, wrapped line budget | 2,000 / 8,000 → **2,048 / 8,192** | M7 every phase within main + 8.3 ms | rounded up |
+| `MAX_REPLACE_FILE_BYTES` | 10 MiB → **16 MiB** | M9 one file: peak growth 21.6 → 33.9 MiB (ratio 1.57 ≤ 1.68); six files: aggregate peak 100 → 94 MiB | rounded up |
+| `S_MINIMAP` | 10,000,000 → **10,000,000** | M10 lane, minimap on: open 23–27 → 37–38 ms, one settle past the 10 s cap | **exception** |
+| `HISTORY_SAVE_ONLY_BYTES` (and its reference mirror) | 10,000,000 → **16 MiB** | M10 periodic capture at the tier, worst dispatch < 1 ms (chunked) | rounded up |
+| `V_BATCH` → `N_DENSE` | 56,000 → **65,536** (`N_DENSE` 250 → 256) | M11 folded pages 10.9–15.0 vs 11.3–19.2 ms at 100 % and 50 % zoom | rounded up |
+| scans (set-aside, preflight ×3, journal, palette and browser notes, bookmark lines) | 10,000 (20,000) → **16,384 (32,768)** | M12 peaks within the value ratio + 5 % (palette notes 1.67 ≤ 1.72); worker times 14 → 23 ms … 172 → 387 ms | rounded up |
+| `MAX_MARKDOWN_EVENTS`, table cells | 50,000 / 1,000 → **65,536 / 1,024** | M13 planning 33 → 35 MiB; projection 0.6–2.3 ms; table build 10.3–12.3 vs 10.8–11.4 ms | rounded up |
+| `L_MINIMAP` | 22,000 → **22,000** | M14 minimap-on background 29.6–33.8 vs 20.3–20.4 ms (+13.4) | **exception** |
+| `L_INVISIBLES` | 50,000 → **50,000** | M14 measured 37–55 ms at 65,536, but every document past 50,000 is protected and Protected View draws no invisibles (C2 D10) | **exception** (invariant) |
+| `L_SEARCH_HIGHLIGHT` | 10,000 → **16,384** | M14 find 9.6–10.0 vs 6.5–8.6 ms | rounded up |
+| `MAX_INDEXED_FILES`, `…_DIRECTORIES` | 100,000 → **131,072** | M15 68.4 → 83.7 MiB (growth ratio 1.375 ≤ 1.376), 410 → 550 ms | rounded up |
+| `MAX_PREVIEW_IMAGE_SOURCE_PIXELS` | 64,000,000 → **2^26** | M16 285.7 → 297.6 MiB (ratio 1.04) | rounded up |
+
+Decisions recorded:
+
+- **`L_INVISIBLES` stays 50,000** although M14 passed at 65,536: every
+  document above `L_PROTECT_EDIT` (50,000) is in Protected View, which has
+  invisible-character drawing off (`long-line-protected-view` D10, pinned by
+  its widget test). Rounding up would only turn invisibles on inside Protected
+  View, a design change of its own; `L_MINIMAP`, `L_INVISIBLES` and
+  `L_SEARCH_HIGHLIGHT` ≤ `L_PROTECT_EDIT` are now compile-time assertions.
+- **Three exceptions by measurement.** `MAX_DIR_ENTRIES` (the terminal
+  dispatch of a capped expansion recaches the row mirror and syncs row state
+  in one dispatch, linear in the entries: 25–30 ms on `main` already; the
+  incremental sidebar load of D13 item 1 removes it), `S_MINIMAP` (the tier
+  therefore no longer coincides with the 16 MiB save-only history tier), and
+  `L_MINIMAP` keep their pre-PT values. Each rustdoc gives the figures.
+- **`main` already misses several bounds at its own values** (the
+  first-results reveal of a search, 20–23 ms; the notes browser's rebuild,
+  32–38 ms; a capped directory expansion, 25–30 ms; C0's own criteria for the
+  three paragraph gates at 10,000, 22,000 and 50,000). D12's rule "no worse
+  than `main` by more than one reference frame" decided those rows. These are
+  pre-existing; the ones a cap scales are queued in D13 item 1
+  (`bound-lists-by-budget-not-count`) rather than fixed here, because each
+  needs the structural change that item describes.
+- **M11** is a widget measurement, not a lane case: the lane's `dense` cases
+  open editable documents (no fold); the fold's validation batch is exercised
+  by a Protected View document of 3,000 folded 400-character lines.
+- **M8** stayed unused: task 9.1 added only kind-only rows
+  (`MAX_MANIFEST_REPAIR_DIAGNOSTICS`, `MAX_FIND_RECORD_BYTES`), whose values
+  do not move.
+- **Search's capped notice** now names the cap from `RESULT_CAP`
+  (`search_panel::policy::result_cap_notice`), so the label can no longer
+  state a figure the service does not apply (it had drifted twice).
+- **Displayed sizes (D14)** all print through `model::size_units::iec_size`.

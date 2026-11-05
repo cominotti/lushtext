@@ -82,9 +82,6 @@ IN_SCOPE_KINDS = (
 # Retired kinds (design D12): accessible-text and announcement lengths are
 # characters announced, so they are presentation caps.
 RETIRED_KINDS = {"text cap": "presentation cap"}
-# Temporary class while the presentation-cap amendment converts a row (task
-# 9.2); removed when every row is converted (task 9.9).
-PENDING = ("pending-presentation",)
 # Kinds allowed off a power of two without being an exception (design D2).
 EXACT_KINDS = ("external fact", "derived", "measurement record")
 OUT_CLASSES = (
@@ -500,8 +497,6 @@ def check(root: Path) -> list[str]:
             cls = kind[4:].strip()
             if cls not in OUT_CLASSES:
                 errors.append(f"{INVENTORY}:{r.line}: unknown out-of-scope class `{cls}`")
-            continue
-        if kind in PENDING:
             continue
         base, exc = split_kind(kind)
         if base in RETIRED_KINDS:

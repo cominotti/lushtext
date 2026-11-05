@@ -32,7 +32,7 @@ local history, and careful recovery behavior.
   and typing stay smooth: from about 10 KB for TypeScript and 16 KB for HTML to
   320 KB for Markdown, 48 KB for languages not measured, and 1 MiB for plain
   text), the minimap (paragraphs over 22,000
-  characters or files over 8 MiB), automatic search highlighting (over 10,000),
+  characters or files over 10 MB), automatic search highlighting (over 16,384),
   and invisible-character drawing (over 50,000). Edits that create such a
   paragraph, a paste or a joined line, turn the feature off in the same
   keystroke, and nothing comes back on until the file is reopened. After every
@@ -53,7 +53,7 @@ local history, and careful recovery behavior.
   than the whole paragraph.
 - **Protected View for giant paragraphs.** A document with a paragraph longer
   than 50,000 characters opens view-only: no caret, nothing can change it, and
-  each giant paragraph shows its first 8,192 characters with the rest folded
+  each giant paragraph shows its first 10,000 characters with the rest folded
   away, so scrolling and selecting stay fast. Find still searches every
   character, hidden ones included; copying a selection copies the folded text
   too; and saving writes the original bytes unchanged. A paste or join that
@@ -103,8 +103,8 @@ local history, and careful recovery behavior.
 - **Workspace search** with streaming results, literal or regex modes,
   whole-word matching, `.gitignore` support, glob filters, saved searches,
   search history (the last 32 searches), match navigation, and previewable
-  multi-file Replace All (files up to 8 MiB) with undo during the active
-  safety window. A search stops at 8,192 matches and says so.
+  multi-file Replace All (files up to 16 MiB) with undo during the active
+  safety window. A search stops at 16,384 matches and says so.
 
 ### Writing, Notes, and History
 
@@ -424,7 +424,7 @@ renames inside LushText migrate file-backed and folder-note sidecars.
 Local history is available for saved files. It captures a baseline when a clean
 saved document first becomes modified, captures additional modified-session
 snapshots at a bounded cadence, and records successful save-boundary snapshots.
-Files above 8 MiB use save-boundary capture only, and files above 64 MiB
+Files above 16 MiB use save-boundary capture only, and files above 64 MiB
 disable local history. Each file keeps its newest 64 snapshots and the store
 its newest 256.
 

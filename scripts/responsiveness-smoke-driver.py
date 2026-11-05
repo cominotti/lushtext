@@ -1809,6 +1809,23 @@ def build_cases(tier: str) -> list[Case]:
                     attrs={"ext": ext, "post_open": True, "typing": True},
                 )
             )
+        # The minimap's byte tier (`S_MINIMAP`, `power-of-two-thresholds`
+        # task 9.5 M10), opt-in with RESPONSIVENESS_TOTAL_SIZE_MINIMAP=1: the
+        # same .txt bytes with the minimap shown, so the open and post-open
+        # dispatches with the map attached at the tier and one byte over can be
+        # compared. S_syntax's derivations read only the cases without it.
+        if os.environ.get("RESPONSIVENESS_TOTAL_SIZE_MINIMAP") != "1":
+            continue
+        cases.append(
+            Case(
+                f"total-size/{total}/txt/mm",
+                "total-size",
+                FixtureSpec("short-html", total, seed_for("short-html", total), ext="txt"),
+                settings={"word-wrap": True, "show-minimap": True},
+                length=total,
+                attrs={"ext": "txt", "minimap": True, "post_open": True, "typing": True},
+            )
+        )
     for delimiter in ("lf", "cr", "crlf", "u2029"):
         cases.append(
             Case(
@@ -4393,10 +4410,10 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
     # background stall of the smallest short-line total-size document. It is
     # not a length cost, so L_syntax's background half reads the difference in
     # excess of it; without that document nothing is discounted.
-    size_list = sorted({r["length"] for r in rows if r.get("group") == "total-size" and usable(r)})
+    size_list = sorted({r["length"] for r in rows if r.get("group") == "total-size" and not r.get("attrs", {}).get("minimap") and usable(r)})
     first_highlight_us = 0
     if size_list:
-        smallest = [r for r in rows if r.get("group") == "total-size" and r.get("length") == size_list[0] and usable(r)]
+        smallest = [r for r in rows if r.get("group") == "total-size" and not r.get("attrs", {}).get("minimap") and r.get("length") == size_list[0] and usable(r)]
         html_bg = phase_lateness([r for r in smallest if r.get("attrs", {}).get("ext") == "html"], ("background",))
         txt_bg = phase_lateness([r for r in smallest if r.get("attrs", {}).get("ext") == "txt"], ("background",))
         if html_bg is not None and txt_bg is not None:
@@ -4566,7 +4583,7 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
     # Syntax-attributable, like L_syntax: the same short-line bytes as .html
     # and as .txt. Without the subtraction the post-open stall that a
     # 400-byte .txt shows too would fail every size.
-    size_rows = lambda size, _: (rows_for(rows, "total-size", size, ext="html"), rows_for(rows, "total-size", size, ext="txt"))
+    size_rows = lambda size, _: (rows_for(rows, "total-size", size, ext="html", minimap=None), rows_for(rows, "total-size", size, ext="txt", minimap=None))
     size_phases = ("background", "scroll", "pagedown") + CARET_PHASES
     outcome = largest_passing(sizes, attributable(size_rows, ((size_phases, b_i),)))
     describe("S_syntax", "largest short-line total size whose .html minus .txt stall (background highlighting, scroll, Page Down, caret and typing) keeps every dispatch <= B_interact", outcome, [r["case"] for r in rows if r.get("group") == "total-size"])

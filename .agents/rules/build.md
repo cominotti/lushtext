@@ -77,7 +77,7 @@ make proof-strength-list # the proof-strength population and harness order, with
 make check-widget-shards # every widget test in exactly one CI shard, each shard measured within 20 minutes (no build needed)
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
 make check-settings-writes # (in check-policy) every GSettings write and the one application settings instance live in ui/settings_writes.rs
-make check-thresholds # (in check-policy) every integer constant of the production crates is classified in docs/thresholds.md; thresholds are powers of two or recorded exceptions with a rustdoc `Kind:` line (.agents/rules/rust.md)
+make check-thresholds # (in check-policy) every integer constant of the production crates is classified in docs/thresholds.md; thresholds are powers of two or recorded exceptions with a rustdoc `Kind:` line, and a presentation cap is the power of two at or above the `up from <value>` its row records (.agents/rules/rust.md)
 make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
 make check-accessibility-policy # accessibility helper/proof guardrail for new UI-sensitive lines

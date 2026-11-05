@@ -282,7 +282,7 @@ live desktop, never the real `~/.local/share/lushtext` or `~/.config`; one
 CBMC at a time; every measurement interleaved with `main` `fbf0f875`, at load
 below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
 
-- [ ] 9.1 Reclassify the whole inventory under D12's test (not only D12's
+- [x] 9.1 Reclassify the whole inventory under D12's test (not only D12's
   table): for every row of kind `cap`, `text cap`, `policy tier` or
   `out: presentation` in `docs/thresholds.md`,
   decide whether rounding it down could hide, skip, truncate or drop anything
@@ -290,7 +290,8 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
   decision and its one-line reason for every row in the handoff
   (`reclassify.md`). Add to D12's table any presentation cap it does not yet
   list, before 9.2.
-- [ ] 9.2 Extend the gate (D12, "The gate"):
+  *Done:* `reclassify.md` in the handoff (223 rows); added `MAX_MANIFEST_REPAIR_DIAGNOSTICS` and `MAX_FIND_RECORD_BYTES` (kind only); `MODEL_MARKDOWN_CAP` and the `SOFT_BOUND_*` rows stay policy tiers.
+- [x] 9.2 Extend the gate (D12, "The gate"):
   - add the kind `presentation cap` (and `presentation cap, exception`) to
     `scripts/check-threshold-kinds.py`; a presentation cap row records its
     pre-PT value as `up from <value>`; the check fails when the value is not
@@ -301,7 +302,8 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
     differs from its recorded value, a `text cap` row;
   - flip the inventory rows to their D12 kind; rows whose value has not yet
     moved take the temporary class `pending-presentation`, removed in 9.9.
-- [ ] 9.3 Failing-first tests asserting no loss against `main`, one per
+  *Done:* 4139cc65; the self-test failed first on each case.
+- [x] 9.3 Failing-first tests asserting no loss against `main`, one per
   presentation cap, each failing at PR #84's value before its conversion and
   pinning the new edge (at the cap and one past it):
   - palette: a category with 50 matches shows 50 (fails at 32), one with 64
@@ -347,7 +349,8 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
     `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, the index caps, the image pixel
     cap): edge tests at the candidate value, written failing first and
     landed with the value only if 9.5 accepts it.
-- [ ] 9.4 Convert the unconditional rows of D12's table (the ones whose bound
+  *Done:* every test failed at PR #84's value first (`amend/a-noloss-red*.log`); the conditional rows' edge tests landed with their accepted values.
+- [x] 9.4 Convert the unconditional rows of D12's table (the ones whose bound
   is a byte ceiling or a count, not a timed path): `MAX_RECENT_LOAD_DIAGNOSTICS`
   32, `REDUCED_FEATURES_NOTICE_LIMIT` 512, `ARTIFACT_TEXT_LIMIT` and
   `WARNING_TEXT_LIMIT` 2,048, `attach_threshold::CSS` back to 37 KiB and
@@ -359,7 +362,8 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
   `Kind: presentation cap; …` with its former value and, for an exception,
   the measurement. Check `thresholds_are_ordered_as_the_profile_counts_them`
   and `N_INSPECT ≤ min(HEAD_CAP, L_PROTECT)`.
-- [ ] 9.5 Measure every moved bound of D12's table, then convert each row in
+  *Done:* 0fad7e11 (the bench mirrors moved with their production constants in 9.5).
+- [x] 9.5 Measure every moved bound of D12's table, then convert each row in
   its own commit with its figures (or revert it to its pre-PT value as an
   exception with the figures). Build `main` and the branch once each
   (`responsiveness-probes` and the optimized widget build), then interleave:
@@ -416,7 +420,8 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
 
   Record every figure in the design's D12 table (a "measured" column), the
   programme record and `runs.log`.
-- [ ] 9.6 Kani: grep the `kani_proofs.rs` files and `scripts/kani-shards.py`
+  *Done:* figures in design "Implementation of the amendment" and `runs.log`; three exceptions by measurement (`MAX_DIR_ENTRIES`, `S_MINIMAP`, `L_MINIMAP`); M11 measured by a widget fixture; M8 unused.
+- [x] 9.6 Kani: grep the `kani_proofs.rs` files and `scripts/kani-shards.py`
   for every constant 9.4–9.5 moved, and rerun each affected shard with
   `KANI_MEASURE`, one at a time, under `scripts/with-memory-cap.sh`. Expected:
   `core-document-scale` (the tier reference at 16 MiB, the paragraph gates,
@@ -426,7 +431,8 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
   harness if it reads `FIND_RESULT_CAP` concretely. Update
   `scripts/kani-shards.py` budgets when a figure leaves its margin;
   `make check-kani-shards`.
-- [ ] 9.7 Displayed sizes (D14): route the properties panel
+  *Done:* see the PR body for the shard results.
+- [x] 9.7 Displayed sizes (D14): route the properties panel
   (`ui/properties_panel/mod.rs` `format_file_size`), the file peek
   (`ui/sidebar/workspace_section/peek_execution.rs`) and the local-history
   list (`ui/window/local_history/policy.rs` `format_bytes`) through one IEC
@@ -434,13 +440,15 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
   "10 MiB" for 10,485,760 bytes and "1.5 KiB" for 1,536, and none prints
   "MB" or "KB". Update `docs/accessibility.md` and the matrix if a spoken
   size changes form.
-- [ ] 9.8 Verification: `make check`, `make test` (unit, integration, every
+  *Done:* the three surfaces print through `model::size_units::iec_size`; the tests failed first.
+- [x] 9.8 Verification: `make check`, `make test` (unit, integration, every
   widget shard), `make check-thresholds`, `make check-workflow-boundaries`,
   `make check-automation-docs`, `make check-kani-shards`, `make gtk-axioms`;
   the responsiveness lane's quick tier interleaved with `main` for the moved
   timed paths (keystroke, dense, `baseline/small`, `total-size` 16 MiB ± 1);
   accessibility smoke (the notice cap and displayed sizes).
-- [ ] 9.9 Documentation: remove `pending-presentation` from the checker; the
+  *Done:* see the PR body.
+- [x] 9.9 Documentation: remove `pending-presentation` from the checker; the
   README (feature list and limits: 16 MiB tiers, 64 per category, 512 notes,
   16,384 results and entries, 2,048 markers, Replace All 16 MiB, IEC sizes);
   AGENTS.md (every figure in Key Design Decisions that moved:
@@ -450,8 +458,10 @@ below 4, logged in `.claude/handoffs/power-of-two-thresholds/runs.log`.
   materiality paragraph; the programme record's PT row and section (the
   amendment's figures, and replace the "Follow-up candidate" for displayed
   sizes with "done, D14"); the prepared AppStream sentence (no tier falls).
-- [ ] 9.10 Record the queued follow-ups (D13) in the programme record, in
+  *Done.*
+- [x] 9.10 Record the queued follow-ups (D13) in the programme record, in
   order: `bound-lists-by-budget-not-count`, `stream-replace-all`,
   `scale-file-index`, the 59–60 ms largest-file open dispatch, then
   `avx2-health-scan-kernel` and DL. (Written at the spec stage of the
   amendment; recheck at the end that nothing above changed it.)
+  *Done:* unchanged by the measurements; the exceptions above point to item 1.
