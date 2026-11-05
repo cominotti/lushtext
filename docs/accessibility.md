@@ -72,6 +72,10 @@ Common GTK navigation also applies:
 - Sidebar file peek opens from the selected file row with `Space` and promotes
   to a real editor tab through the same open-document path as pointer
   activation.
+- Displayed file sizes (the document-properties size row, the file peek and
+  the local-history rows) are in IEC units, read as "10 MiB" or "1.5 KiB", the
+  same units every size limit the app names uses (`power-of-two-thresholds`
+  D14).
 
 Pointer-only and hover-only affordances are not considered sufficient. Row
 actions that appear on hover must have an equivalent keyboard, context-menu,

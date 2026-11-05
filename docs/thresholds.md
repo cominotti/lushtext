@@ -1091,8 +1091,6 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `EMPTY_HEIGHT_SP` | 480 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `PREVIEW_DIRECT_THRESHOLD_BYTES` | 524,288 | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `PREVIEW_RESERVATION_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it a history preview is refused (D12) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `format_bytes::KIB` | 1,024 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-core/src/ui/window/local_history/policy.rs` | `format_bytes::MIB` | 1,048,576 | out: factor | factor, divisor or unit (D1) |
 
 ### `crates/lushtext-core/src/ui/window/local_history/preview_execution.rs`
 
