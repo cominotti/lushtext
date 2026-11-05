@@ -1729,6 +1729,32 @@ fn bench_editor_file_io(c: &mut Criterion) {
             },
         );
 
+        // The same load over typographic prose (`’`, `—`, `…`: many `0xE2`
+        // leads, none a file-health hit), the file-health scan's worst case.
+        let typographic = text_scan_typographic(&mut TextScanRng(7), size);
+        group.bench_function(
+            BenchmarkId::new("load_text_file_typographic", format!("{size_mb}MB")),
+            |b| {
+                b.iter_batched(
+                    || {
+                        let dir = TempDir::new().expect("expected operation to succeed");
+                        let path = dir.path().join("bench.txt");
+                        fixture::write_text(&path, &typographic);
+                        (dir, path, AtomicBool::new(false))
+                    },
+                    |(dir, path, cancel)| {
+                        let _loaded = editor_io::load_text_file(
+                            black_box(path.as_path()),
+                            black_box(&cancel),
+                        )
+                        .expect("expected operation to succeed");
+                        dir
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
         group.bench_function(
             BenchmarkId::new("write_snapshot_to_path", format!("{size_mb}MB")),
             |b| {
@@ -4158,6 +4184,12 @@ fn bench_text_scans(c: &mut Criterion) {
         group.bench_function(format!("health/{label}"), |b| {
             let text = text_scan_analysis(index);
             b.iter(|| editor_io::bench_health_scan(black_box(text)));
+        });
+        // The `memchr3` fallback alone, with any hand-written kernel bypassed
+        // (the explicit-SIMD policy measures both paths).
+        group.bench_function(format!("health_fallback/{label}"), |b| {
+            let text = text_scan_analysis(index);
+            b.iter(|| editor_io::bench_health_scan_fallback(black_box(text)));
         });
     }
 

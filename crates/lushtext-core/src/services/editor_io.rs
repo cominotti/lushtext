@@ -1577,6 +1577,14 @@ pub fn bench_health_scan(content: &str) -> (usize, usize) {
     text_scans::count_health_characters(content)
 }
 
+/// Benchmark hook: the `memchr3` file-health scan alone, the fallback of any
+/// run-time-selected kernel.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn bench_health_scan_fallback(content: &str) -> (usize, usize) {
+    text_scans::count_health_characters(content)
+}
+
 /// Benchmark hook: the EditorConfig `trim_trailing_whitespace` save rewrite,
 /// returning the formatted length.
 #[cfg(feature = "test-utils")]
