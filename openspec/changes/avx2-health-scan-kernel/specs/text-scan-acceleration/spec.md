@@ -30,8 +30,8 @@ detection.
 - **THEN** the `memchr3` scan runs and the counts are identical to those on an AVX2 CPU
 
 #### Scenario: Every byte triple at every lane
-- **WHEN** the exhaustive lane test places each of the 2^24 byte triples at the first and last lead positions of both halves of a block and at the tail of a buffer
-- **THEN** the kernel's counts equal the `memchr3` scan's counts for every placement
+- **WHEN** the exhaustive lane test places each of the 2^24 byte triples at the first lead position and the last two lead positions of both halves of a block (0, 30, 31, 32, 62, 63), at the first position of the next block (64), and at the tail of a buffer
+- **THEN** the kernel's counts equal the `memchr3` scan's counts for every placement, and no batched comparison lets a false positive cancel a false negative
 
 ### Requirement: The AVX2 file-health kernel is admitted under the explicit-SIMD policy
 The kernel and its feature detection SHALL live in one module file that is
@@ -58,13 +58,17 @@ still fail it.
 The kernel SHALL be adopted only when an interleaved Criterion comparison of the
 final code, with the bench-first commit as baseline and following the
 interleaving, toolchain and statistic rules of this capability, meets every bar
-the design states: the typographic health scan at least 2x faster; typographic
-`load_text_file` at least 5 % faster at 10 and 50 MB (and no worse than 3 %
-slower at 1 MB), with the health scan under 10 % of that load; and no
-regression beyond both 3 % and the baseline's round spread on ASCII
-`load_text_file` at 1, 10 and 50 MB or on the ASCII, multibyte, mixed-EOL and
-long-line health fixtures. The fallback, measured with the kernel bypassed,
-SHALL be within 3 % of the baseline. The verdict SHALL be recorded in
+the design states: the typographic health scan at least 2x faster; the
+typographic `text_scans/load_text_file` case and typographic
+`editor_file_io/load_text_file` at 10 and 50 MB each at most 0.95x of the
+baseline (and at 1 MB no worse than 0.97x), with the health scan under 10 % of
+the typographic load; and no regression on ASCII `load_text_file` at 1, 10 and
+50 MB or on the ASCII, multibyte, mixed-EOL and long-line health fixtures,
+where a fixture regresses when the branch's figure exceeds the baseline's by
+more than 3 % or by more than the baseline's round spread (both limits apply,
+which is stricter than this capability's spread-only no-regression rule). The
+fallback, measured with the kernel bypassed, SHALL be within 3 % of the
+baseline. The verdict SHALL be recorded in
 `docs/benchmarks/transient-file-load.md` and the programme record, and a missed
 bar SHALL leave the `memchr3` scan as the only path.
 
@@ -73,5 +77,5 @@ bar SHALL leave the `memchr3` scan as the only path.
 - **THEN** the allowlist row is added and the verdict table is recorded with load before and after each run
 
 #### Scenario: A non-typographic fixture regresses
-- **WHEN** any no-regression fixture is slower than both 3 % and the baseline's round spread allow
+- **WHEN** any no-regression fixture is slower than the baseline by more than 3 % or by more than the baseline's round spread
 - **THEN** the kernel is not dispatched to, and the result is recorded

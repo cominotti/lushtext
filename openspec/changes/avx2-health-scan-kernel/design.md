@@ -102,6 +102,14 @@ feature cache, which satisfies D6's "cached once" without a second cache. The
 cost of the check is measured inside `text_scans/health/*`, which calls it once
 per slice.
 
+Tests, fuzzing and benches reach the kernel without a detection macro of
+their own (which the gate would reject outside the allowlisted file):
+`text_scans.rs` exposes `count_health_characters_kernel(slice: &str) ->
+Option<(usize, usize)>` under `cfg(any(test, feature = "test-utils", feature =
+"fuzzing"))`, which forwards to `health_avx2::count` on x86-64 outside Kani and
+returns `None` everywhere else. The lane test skips through the same `None`, so
+the file has exactly one detection site.
+
 Alternatives considered: the `multiversion` crate (a new dependency and an
 allowlist dispatch-crate row for one function: rejected), and the kernel inline
 in `text_scans.rs` (which would exempt the save rewrites' file from the gate:
@@ -127,12 +135,18 @@ aarch64 uses memchr's NEON `memchr3`".
 
 - **Exhaustive lane test** (unit, `health_avx2.rs`, x86-64 only, skipped with a
   printed reason when the host lacks AVX2). For every byte triple
-  `(b0, b1, b2)` (2^24), place it in an ASCII buffer at lead positions 0, 31,
-  32, 63 and 64 of a 130-byte buffer, and at the last three bytes, and compare
-  the kernel with `count_health_characters_memchr` on the same bytes. This
-  checks the whole lane predicate, both halves, the block seam and the tail
-  seam. To keep runtime bounded, triples are batched several to a buffer at
-  non-interacting offsets. Its budget is measured and recorded, with a target
+  `(b0, b1, b2)` (2^24), place it in an ASCII buffer at lead positions 0, 30,
+  31, 32, 62, 63 and 64 of a 130-byte buffer, and at the last three bytes, and
+  compare the kernel with `count_health_characters_memchr` on the same bytes.
+  Positions 30/62 put only the `+2` byte across a half or block seam and
+  31/63 both continuation bytes, so every seam shape is covered. This checks
+  the whole lane predicate, both halves, the block seam and the tail seam. To
+  keep runtime bounded, triples are batched several to a buffer at
+  non-interacting offsets, but only placements whose own `memchr3` count is
+  `(0, 0)`: a batch then expects zero, so any false positive shows and none can
+  be cancelled by a false negative. Placements with a non-zero count (the
+  hit triples, and triples whose second and third bytes start a hit) are
+  checked one per buffer. Its budget is measured and recorded, with a target
   under 10 s in debug.
 - **Property tests** (`tests/properties/text_scans.rs`): the existing
   every-slicing test now runs through the dispatching entry. A new test
@@ -160,9 +174,22 @@ aarch64 uses memchr's NEON `memchr3`".
   availability check (returning `None`) gives results identical to the
   original by construction, because both paths return the same counts. It is
   excluded by an `exclude_re` on that one function, with this reason recorded.
-  Any other survivor is fixed or justified in `.cargo/mutants.toml`.
+  Two further mutant classes are equivalent by construction and are expected
+  to survive: a detection conjunction turned into a disjunction (identical on
+  any host that has both features, as every AVX2 host has POPCNT), and a skip
+  predicate weakened so that more blocks are confirmed (`&&` to `||` between
+  the two skips, or a skip removed): the skips only save work, and confirming
+  a block that would have been skipped adds zero. Each gets a narrow
+  `exclude_re` with that reason. A mutant that skips a block it should
+  confirm changes counts and must be killed. Any other survivor is fixed or
+  justified in `.cargo/mutants.toml`.
 - **Unsafe hygiene**: Miri is attempted on the lane test (Miri implements most
-  AVX2 intrinsics). If it is unsupported, that is recorded, and the bounds
+  AVX2 intrinsics). Miri's `is_x86_feature_detected!` reports only the target
+  features the crate was compiled with, so that local run passes
+  `-Ctarget-feature=+avx2,+popcnt` through `MIRIFLAGS`/`RUSTFLAGS` on the
+  command line only (no configuration file changes, so the build-flag gate is
+  untouched); without it the kernel would be skipped and Miri would check
+  nothing. If it is unsupported, that is recorded, and the bounds
   argument rests on the `SAFETY` comments, the tail tests and the property
   tests with lengths 0–200.
 
