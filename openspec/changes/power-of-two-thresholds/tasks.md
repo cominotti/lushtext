@@ -36,14 +36,14 @@ Rules for every task:
 
 ## 2. Failing-first value tests
 
-- [ ] 2.1 Change `the_policy_constants_have_their_recorded_values`
+- [x] 2.1 Change `the_policy_constants_have_their_recorded_values`
   (`model/document_scale.rs`) to the new values (D3–D5 and D9; the open tier
   stays as is until task 3). Confirm that it fails before the conversion.
-- [ ] 2.2 Add edge tests at the byte tiers: 8 MiB and 8 MiB + 1, 64 MiB and
+- [x] 2.2 Add edge tests at the byte tiers: 8 MiB and 8 MiB + 1, 64 MiB and
   64 MiB + 1, for minimap, save-only history, undo and history unavailable.
   Add edge tests at each converted paragraph threshold (at it and one above)
   through `DocumentScale::for_profile`, with every delimiter kind.
-- [ ] 2.3 Add retention tests that fail first:
+- [x] 2.3 Add retention tests that fail first:
   - a lineage holding 48 snapshots and a store holding 240 keep every
     snapshot after one more capture;
   - a 20-entry `search-history.json` keeps all 20 entries plus the new one;
@@ -52,7 +52,7 @@ Rules for every task:
     each 4,096 bytes load in full (fails first at the 1 MiB read bound), and
     32 search-history entries and a 256-snapshot local-history index at their
     largest admissible entry size load in full through their bounded reads.
-- [ ] 2.4 Add message tests that fail first:
+- [x] 2.4 Add message tests that fail first:
   - the local-history unavailable message says "64 MiB";
   - the open refusal names the tier in MiB;
   - the reduced-features notice and the accessible description use IEC units;
@@ -82,14 +82,14 @@ Rules for every task:
 
 ## 4. Pure conversions (no measurement)
 
-- [ ] 4.1 Change the D3 tiers except the open tier: `S_MINIMAP`,
+- [x] 4.1 Change the D3 tiers except the open tier: `S_MINIMAP`,
   `HISTORY_SAVE_ONLY_BYTES`, `UNDO_TOTAL_BYTES`, `HISTORY_UNAVAILABLE_BYTES`,
   `BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD`, `MAX_REPLACE_FILE_BYTES` (and its
   skip messages in `content_search/replace.rs`).
   - Rename `retired_byte_tiers` to `byte_tier_reference`, holding the new
     table.
   - Route the tier-naming messages through one IEC formatting helper.
-- [ ] 4.2 Apply the D4 caps:
+- [x] 4.2 Apply the D4 caps:
   - `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `N_VISIBLE`,
     `N_HEAD`;
   - the twelve 10,000-entry caps and their bench mirrors;
@@ -103,7 +103,7 @@ Rules for every task:
 
   `L_MINIMAP`, `L_INVISIBLES` and `L_SEARCH_HIGHLIGHT` land only after task
   4.5 decides them. Check that `thresholds_are_ordered_as_the_profile_counts_them` still holds.
-- [ ] 4.3 Apply the D5 coverage windows: `R_BATCH` → 256 (and so `R_FOLD`;
+- [x] 4.3 Apply the D5 coverage windows: `R_BATCH` → 256 (and so `R_FOLD`;
   `N_DENSE` becomes 218 through its formula), `MAX_CONSTRUCTION_STAGES`,
   `MAX_FRAME_PHASE_FRAMES`, `MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES`,
   `REVEAL_SETTLE_FRAME_BUDGET`.
@@ -112,11 +112,11 @@ Rules for every task:
     `R_FOLD · N_DENSE ≤ V_BATCH`, and the watch's
     `2·R_batch + 2` read bound.
   - Update the widget test that asserts the per-keystroke read count.
-- [ ] 4.4 Apply the D6 retention tiers and retry budgets, and raise
+- [x] 4.4 Apply the D6 retention tiers and retry budgets, and raise
   `MAX_RECENT_DOCUMENTS_BYTES` to 4 MiB (D6) in the same commit as
   `MAX_RECENTS`. Raise any other read bound that task 2.3's worst-case load
   test fails, the same way.
-- [ ] 4.5 Run the corpus counts for the conditional caps (D4).
+- [x] 4.5 Run the corpus counts for the conditional caps (D4).
   - Write a throwaway `cargo run --example` (scratchpad, not committed) that
     counts, with `pulldown-cmark` and the app's parser options, the events
     and the largest table's cells of every Markdown file of at most 4 MiB in
@@ -136,12 +136,12 @@ Rules for every task:
     0.05 % of at least 2,000 feature-bearing files; below it the cap is
     rounded and the count recorded.
   - Record the counts in the design's baseline and the programme record.
-- [ ] 4.6 Run the D2 shipped-string check. Find the longest announcement,
+- [x] 4.6 Run the D2 shipped-string check. Find the longest announcement,
   editor identity and reduced-features notice the app can produce: from the
   accessibility and widget tests, plus a 255-byte file name. A cap that
   would truncate a shipped template (beyond the file name it is meant to
   cut) becomes a recorded exception at its current value.
-- [ ] 4.7 Write the D9 rustdoc. Each exception gets "Kind: …; recorded
+- [x] 4.7 Write the D9 rustdoc. Each exception gets "Kind: …; recorded
   exception (`power-of-two-thresholds`)" with its measurement from the
   design, replacing "deferred to `power-of-two-thresholds`":
   - `L_SYNTAX`;

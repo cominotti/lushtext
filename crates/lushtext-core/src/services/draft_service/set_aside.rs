@@ -51,7 +51,10 @@ const MAX_SET_ASIDE_NAME_ATTEMPTS: u32 = 64;
 pub const MAX_LISTED_SET_ASIDE_BODIES: usize = 256;
 /// Most set-aside entries one scan visits; past it the totals are a lower
 /// bound (and far past the soft retention bound).
-pub const MAX_SET_ASIDE_SCAN_ENTRIES: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const MAX_SET_ASIDE_SCAN_ENTRIES: usize = 8_192;
 
 /// Bodies newly placed in any set-aside area by this process. The retention
 /// notice re-evaluates the soft bound when it moves; nothing else reads it.

@@ -897,15 +897,15 @@ fn set_aside_names(data_dir: &std::path::Path) -> Vec<String> {
 #[test]
 fn test_data_page_summarizes_preserved_drafts_over_the_soft_bound() {
     let data_dir = isolated_data_dir();
-    seed_set_aside_bodies(data_dir.path(), 101);
+    seed_set_aside_bodies(data_dir.path(), 129);
     let prefs = LushtextPreferences::new();
     let imp = prefs.imp();
     wait_until(Duration::from_secs(10), || {
-        set_aside_rows(&prefs).len() == 101
+        set_aside_rows(&prefs).len() == 129
     });
 
     let (title, subtitle) = set_aside_summary(&prefs).expect("a summary row");
-    assert_eq!(title, "101 preserved drafts");
+    assert_eq!(title, "129 preserved drafts");
     assert!(
         subtitle.contains("over the suggested limit"),
         "over the bound: {subtitle}"
@@ -931,7 +931,7 @@ fn test_data_page_summarizes_preserved_drafts_over_the_soft_bound() {
         .assert_on(&summary);
     assert_eq!(
         set_aside_names(data_dir.path()).len(),
-        101,
+        129,
         "nothing deleted"
     );
 }
@@ -1099,7 +1099,7 @@ fn app_data_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
 fn test_preserved_drafts_over_the_bound_notify_once_and_the_review_action_opens_them() {
     use lushtext_core::services::draft_service;
     let data_dir = isolated_data_dir();
-    seed_set_aside_bodies(data_dir.path(), 101);
+    seed_set_aside_bodies(data_dir.path(), 129);
     let window = crate::common::test_window();
     crate::common::present_window(&window);
     let app = window
@@ -1119,13 +1119,13 @@ fn test_preserved_drafts_over_the_bound_notify_once_and_the_review_action_opens_
         .label()
         .to_string();
     assert!(
-        message.starts_with("LushText is keeping 101 preserved drafts (")
+        message.starts_with("LushText is keeping 129 preserved drafts (")
             && message.ends_with("Review them with Review Preserved Drafts."),
         "the notice names the count, the size, and the action: {message}"
     );
     assert_eq!(
         set_aside_names(data_dir.path()).len(),
-        101,
+        129,
         "nothing deleted"
     );
 
@@ -1151,7 +1151,7 @@ fn test_preserved_drafts_over_the_bound_notify_once_and_the_review_action_opens_
     assert_eq!(prefs.visible_page_name().as_deref(), Some("data"));
     let imp = prefs.imp();
     wait_until(Duration::from_secs(10), || {
-        set_aside_rows(&prefs).len() == 102
+        set_aside_rows(&prefs).len() == 130
     });
     assert!(imp.data_set_aside_group.property::<bool>("visible"));
     assert!(

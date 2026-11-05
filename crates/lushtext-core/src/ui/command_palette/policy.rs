@@ -44,7 +44,9 @@ pub const SEARCH_DEBOUNCE_MS: u64 = 150;
 /// The palette already caps visible results at a small, scannable list; keeping
 /// the same cap per source prevents one group from monopolizing mixed results
 /// while staying cheap for list-model replacement and keyboard navigation.
-pub const MAX_RESULTS_PER_SOURCE: usize = 50;
+///
+/// Kind: cap; 50 rounded down to a power of two (`power-of-two-thresholds` D4).
+pub const MAX_RESULTS_PER_SOURCE: usize = 32;
 
 /// Maximum incremental mutations retained before overflow escalates to a rebuild.
 ///
@@ -452,7 +454,7 @@ mod tests {
         assert_eq!(MAX_PENDING_INDEX_UPDATES, 1_024);
         assert_eq!(INDEX_UPDATE_DEBOUNCE_MS, 75);
         assert_eq!(SEARCH_DEBOUNCE_MS, 150);
-        assert_eq!(MAX_RESULTS_PER_SOURCE, 50);
+        assert_eq!(MAX_RESULTS_PER_SOURCE, 32);
     }
 
     #[test]

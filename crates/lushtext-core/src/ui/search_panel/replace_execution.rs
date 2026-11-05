@@ -506,7 +506,7 @@ impl LushtextSearchPanel {
             imp.count_label.set_text("No results found");
         } else if imp.runtime.result_capped.get() {
             imp.count_label
-                .set_text("10,000+ results (truncated) — narrow your search");
+                .set_text("8,192+ results (truncated) — narrow your search");
             imp.count_label.add_css_class("warning");
         } else {
             imp.count_label.remove_css_class("warning");

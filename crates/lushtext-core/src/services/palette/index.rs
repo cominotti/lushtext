@@ -32,11 +32,19 @@ use super::runtime::{PaletteSearchCancellation, PaletteSearchOutcome};
 const MAX_SCAN_DEPTH: u32 = 64;
 /// Maximum number of files to index. Beyond this, linear scan per query
 /// starts to exceed the palette's latency budget on one CPU core.
+///
+/// Kind: cap; recorded exception (`power-of-two-thresholds`): a real
+/// 87,624-file workspace exists (0.9.x release notes), and 65,536 would
+/// truncate it; memory stays bounded by the 128 MiB and 64 MiB byte ledgers.
 pub const MAX_INDEXED_FILES: usize = 100_000;
 /// Maximum number of distinct canonical directories retained by one index build.
 ///
 /// This is independent from the file limit because sparse directory forests can
 /// otherwise consume unbounded traversal state while admitting almost no files.
+///
+/// Kind: cap; recorded exception (`power-of-two-thresholds`): a real
+/// 87,624-file workspace exists (0.9.x release notes), and 65,536 would
+/// truncate it; memory stays bounded by the 128 MiB and 64 MiB byte ledgers.
 pub const MAX_INDEXED_DIRECTORIES: usize = 100_000;
 /// Maximum heap ownership retained by one installed file index.
 ///

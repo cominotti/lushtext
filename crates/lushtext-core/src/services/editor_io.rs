@@ -17,6 +17,7 @@ use crate::model::formatting_overrides::FormattingOverrides;
 use crate::model::paragraph_boundary::{
     DocumentProfile, ParagraphProfileAccumulator, ProfileConfig, ProfileSummary,
 };
+use crate::model::size_units::iec_size;
 use crate::services::filesystem::{
     FileFacts, WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write,
 };
@@ -359,16 +360,25 @@ pub enum EditorLoadError {
         observed_min_bytes: u64,
     },
     #[error(
-        "{path} grew beyond the supported limit while it was being opened (at least {observed_min_mb} MB)."
+        "{path} grew beyond the supported limit while it was being opened (at least {observed}, above the {limit} open limit).",
+        observed = iec_size(*.observed_min_bytes),
+        limit = iec_size(REFUSE_TO_OPEN)
     )]
-    GrownTooLarge { path: PathBuf, observed_min_mb: u64 },
+    GrownTooLarge {
+        path: PathBuf,
+        observed_min_bytes: u64,
+    },
     #[error("Failed to decode {path} as {encoding}")]
     Decode {
         path: PathBuf,
         encoding: DocumentEncoding,
     },
-    #[error("{path} is too large to edit ({size_mb} MB). Consider a pager like `less`.")]
-    TooLarge { path: PathBuf, size_mb: u64 },
+    #[error(
+        "{path} is too large to edit ({size}, above the {limit} open limit). Consider a pager like `less`.",
+        size = iec_size(*.size_bytes),
+        limit = iec_size(REFUSE_TO_OPEN)
+    )]
+    TooLarge { path: PathBuf, size_bytes: u64 },
 }
 
 /// Editor-facing save failures that drive distinct recovery paths.
@@ -474,7 +484,7 @@ pub fn plan_text_file(path: &Path, cancel: &AtomicBool) -> Result<FileLoadPlan, 
     if !scale.open_allowed {
         return Err(EditorLoadError::TooLarge {
             path: path.to_path_buf(),
-            size_mb: facts.byte_size / 1_000_000,
+            size_bytes: facts.byte_size,
         });
     }
 
@@ -704,7 +714,7 @@ fn revalidate_load_plan(plan: &FileLoadPlan, supported_limit: u64) -> Result<(),
     if current.byte_size > supported_limit {
         return Err(EditorLoadError::GrownTooLarge {
             path: path.clone(),
-            observed_min_mb: current.byte_size / 1_000_000,
+            observed_min_bytes: current.byte_size,
         });
     }
     if current.byte_size > plan.facts.byte_size {
@@ -2900,16 +2910,42 @@ mod tests {
     }
 
     #[test]
-    fn load_text_file_too_large_reports_decimal_megabytes_without_reading() {
+    fn load_text_file_too_large_names_the_tier_in_iec_units_without_reading() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
         file.as_file()
-            .set_len(501_000_000)
+            .set_len(REFUSE_TO_OPEN + 1)
             .expect("expected operation to succeed");
 
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel);
 
-        assert_matches!(result, Err(EditorLoadError::TooLarge { size_mb: 501, .. }));
+        let size_bytes = REFUSE_TO_OPEN + 1;
+        assert_matches!(result, Err(EditorLoadError::TooLarge { size_bytes: bytes, .. }) if bytes == size_bytes);
+        let message = load_text_file(file.path(), &cancel)
+            .expect_err("above the open tier")
+            .to_string();
+        // `power-of-two-thresholds` design D3: the refusal names the open tier,
+        // and the file's size, in IEC units.
+        let limit = format!("above the {} open limit", iec_size(REFUSE_TO_OPEN));
+        assert!(message.contains(&limit), "{message}");
+        assert!(message.contains("MiB"), "{message}");
+        assert!(message.contains(&iec_size(size_bytes)), "{message}");
+        assert!(!message.contains(" MB"), "{message}");
+    }
+
+    #[test]
+    fn grown_too_large_names_its_sizes_in_iec_units() {
+        let message = EditorLoadError::GrownTooLarge {
+            path: PathBuf::from("/tmp/grown.txt"),
+            observed_min_bytes: 600 * 1024 * 1024,
+        }
+        .to_string();
+        let expected = format!(
+            "at least 600 MiB, above the {} open limit",
+            iec_size(REFUSE_TO_OPEN)
+        );
+        assert!(message.contains(&expected), "{message}");
+        assert!(!message.contains(" MB"), "{message}");
     }
 
     #[test]

@@ -43,9 +43,12 @@ const JOURNAL_MANIFEST_FILE: &str = "manifest.json";
 const CLEANUP_MARKER_FILE: &str = "cleanup-in-progress.json";
 /// Maximum journal entries scanned for orphan diagnostics in one recovery pass.
 ///
-/// Ten thousand bounds damaged app-data startup work while staying far above a
+/// 8,192 bounds damaged app-data startup work while staying far above a
 /// realistic Replace All batch in an editor session.
-const JOURNAL_SCAN_MAX_ENTRIES: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+const JOURNAL_SCAN_MAX_ENTRIES: usize = 8_192;
 #[cfg(test)]
 thread_local! {
     static TEST_MAX_REPLACE_UNDO_BYTES: Cell<Option<u64>> = const { Cell::new(None) };

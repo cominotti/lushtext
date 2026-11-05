@@ -14,7 +14,10 @@ use crate::ui::accessibility as a11y;
 use super::{EditorLoadState, LushtextEditorPage};
 
 /// Maximum file-name characters exposed as the editor identity.
-const EDITOR_IDENTITY_LIMIT: usize = 96;
+///
+/// Kind: text cap; 96 rounded down to a power of two (`power-of-two-thresholds`
+/// task 4.6). It bounds the file name only, which is what it is meant to cut.
+const EDITOR_IDENTITY_LIMIT: usize = 64;
 
 impl LushtextEditorPage {
     /// Refresh accessible metadata for the source editor from the current tab state.

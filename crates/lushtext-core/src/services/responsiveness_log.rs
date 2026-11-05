@@ -121,7 +121,10 @@ pub const DEFAULT_FRAME_PHASE_FRAMES: u32 = 4;
 
 /// The largest frame-phase window [`FRAME_PHASES_ENV`] may ask for: two
 /// minutes of 120 Hz frames, so a typo cannot leave the handlers on forever.
-pub const MAX_FRAME_PHASE_FRAMES: u32 = 14_400;
+///
+/// Kind: coverage window; 14,400 rounded up to a power of two
+/// (`power-of-two-thresholds` D5).
+pub const MAX_FRAME_PHASE_FRAMES: u32 = 16 * 1024;
 
 /// The frame-phase window an [`FRAME_PHASES_ENV`] value asks for: a positive
 /// integer, clamped to [`MAX_FRAME_PHASE_FRAMES`]; anything else is the

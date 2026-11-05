@@ -61,7 +61,11 @@ use super::LushtextEditorPage;
 use super::language_attach::RequestedLanguage;
 
 /// Most characters of the notice (and so of its announcement).
-pub const REDUCED_FEATURES_NOTICE_LIMIT: usize = 320;
+///
+/// Kind: text cap; 320 rounded down to a power of two
+/// (`power-of-two-thresholds` task 4.6): the longest notice outside Protected
+/// View is 229 characters (a unit test pins it).
+pub const REDUCED_FEATURES_NOTICE_LIMIT: usize = 256;
 
 /// Where the reduced-features notice is.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

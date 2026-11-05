@@ -25,6 +25,7 @@ use crate::model::local_history::{
     LocalHistorySnapshotOrigin,
 };
 use crate::model::sidecar_identity::{DocumentSidecarIdentity, stable_bytes_hash};
+use crate::model::size_units::iec_size;
 use crate::services::recovery_metadata::{
     RecoveryDiagnostic, RecoveryLoad, RecoveryLoadOutcome, RecoveryMetadataClass,
 };
@@ -46,15 +47,21 @@ const SNAPSHOT_EXTENSION: &str = "txt";
 
 /// Keep at most this many snapshots per document before older entries are trimmed.
 ///
-/// Forty-eight entries comfortably covers a full work day of baseline, periodic,
+/// Sixty-four entries comfortably cover a full work day of baseline, periodic,
 /// save, and restore-safety points without letting one document dominate disk use.
-const PER_DOCUMENT_SNAPSHOT_CAP: usize = 48;
+///
+/// Kind: retention tier; 48 rounded up to a power of two
+/// (`power-of-two-thresholds` D6; a lower tier would prune stored history).
+const PER_DOCUMENT_SNAPSHOT_CAP: usize = 64;
 /// Keep at most this many snapshots across the whole app data directory.
 ///
-/// Two hundred forty entries keeps the MVP bounded even when the user touches
-/// many files in one session, while still leaving enough room for several active
-/// documents to retain rich history.
-const GLOBAL_SNAPSHOT_CAP: usize = 240;
+/// Two hundred fifty-six entries keep the store bounded even when the user
+/// touches many files in one session, while still leaving enough room for
+/// several active documents to retain rich history.
+///
+/// Kind: retention tier; 240 rounded up to a power of two
+/// (`power-of-two-thresholds` D6; a lower tier would prune stored history).
+const GLOBAL_SNAPSHOT_CAP: usize = 256;
 /// Maximum lineage directories scanned during one startup reconciliation pass.
 ///
 /// This keeps recovery work bounded on very large history stores. Any deferred
@@ -384,6 +391,18 @@ struct LoadedHistoryDocument {
 enum LocalHistoryIndexRepair {
     Repaired(LocalHistoryDocument),
     Skipped(String),
+}
+
+/// What the user is told when a document is too large for local history to
+/// browse at all: the unavailable tier, in IEC units (`power-of-two-thresholds`
+/// design D3). Both eligibility checks (the open editor's and the explicit-path
+/// worker's) show this one text.
+#[must_use]
+pub fn unavailable_message() -> String {
+    format!(
+        "Local history is unavailable for files above {}",
+        iec_size(HISTORY_UNAVAILABLE_BYTES)
+    )
 }
 
 /// Resolve the local-history base directory under the app data home.
@@ -1078,9 +1097,9 @@ fn validate_snapshot_body_size(path: &Path) -> Result<u64> {
     }
     if !availability_for_scale(DocumentScale::for_total_bytes(facts.byte_size)).allows_browsing() {
         anyhow::bail!(
-            "local-history snapshot {} is larger than the {} MB browse limit",
+            "local-history snapshot {} is larger than the {} browse limit",
             path.display(),
-            HISTORY_UNAVAILABLE_BYTES / 1_000_000
+            iec_size(HISTORY_UNAVAILABLE_BYTES)
         );
     }
     Ok(facts.byte_size)
@@ -1589,8 +1608,8 @@ mod tests {
         assert_eq!(LOCAL_HISTORY_DIR, "local-history");
         assert_eq!(INDEX_FILENAME, "index.json");
         assert_eq!(SNAPSHOT_EXTENSION, "txt");
-        assert_eq!(PER_DOCUMENT_SNAPSHOT_CAP, 48);
-        assert_eq!(GLOBAL_SNAPSHOT_CAP, 240);
+        assert_eq!(PER_DOCUMENT_SNAPSHOT_CAP, 64);
+        assert_eq!(GLOBAL_SNAPSHOT_CAP, 256);
         assert_eq!(DEFAULT_RECONCILE_MAX_LINEAGES, 512);
         assert_eq!(DEFAULT_RECONCILE_MAX_MILLIS, 50);
         assert_eq!(MAX_INDEX_REPAIR_SNAPSHOT_BYTES, 64 * 1024 * 1024);
@@ -1654,9 +1673,23 @@ mod tests {
         let cases = [
             (0, LocalHistoryAvailability::Full, true, true),
             (1_000_001, LocalHistoryAvailability::Full, true, true),
-            (10_000_001, LocalHistoryAvailability::SaveOnly, false, true),
+            (8 * 1024 * 1024, LocalHistoryAvailability::Full, true, true),
             (
-                50_000_001,
+                8 * 1024 * 1024 + 1,
+                LocalHistoryAvailability::SaveOnly,
+                false,
+                true,
+            ),
+            (10_000_001, LocalHistoryAvailability::SaveOnly, false, true),
+            (50_000_001, LocalHistoryAvailability::SaveOnly, false, true),
+            (
+                64 * 1024 * 1024,
+                LocalHistoryAvailability::SaveOnly,
+                false,
+                true,
+            ),
+            (
+                64 * 1024 * 1024 + 1,
                 LocalHistoryAvailability::Unavailable,
                 false,
                 false,
@@ -1693,19 +1726,19 @@ mod tests {
             LocalHistoryAvailability::Full
         );
         assert_eq!(
-            availability_for_live_buffer_chars(2_500_000),
+            availability_for_live_buffer_chars(2 * 1024 * 1024),
             LocalHistoryAvailability::Full
         );
         assert_eq!(
-            availability_for_live_buffer_chars(2_500_001),
+            availability_for_live_buffer_chars(2 * 1024 * 1024 + 1),
             LocalHistoryAvailability::SaveOnly
         );
         assert_eq!(
-            availability_for_live_buffer_chars(12_500_000),
+            availability_for_live_buffer_chars(16 * 1024 * 1024),
             LocalHistoryAvailability::SaveOnly
         );
         assert_eq!(
-            availability_for_live_buffer_chars(12_500_001),
+            availability_for_live_buffer_chars(16 * 1024 * 1024 + 1),
             LocalHistoryAvailability::Unavailable
         );
         assert_eq!(
@@ -1726,15 +1759,15 @@ mod tests {
     #[test]
     fn incoming_utf8_availability_uses_exact_body_bytes() {
         assert_eq!(
-            availability_for_utf8_bytes(10_000_000),
+            availability_for_utf8_bytes(8 * 1024 * 1024),
             LocalHistoryAvailability::Full
         );
         assert_eq!(
-            availability_for_utf8_bytes(10_000_001),
+            availability_for_utf8_bytes(8 * 1024 * 1024 + 1),
             LocalHistoryAvailability::SaveOnly
         );
         assert_eq!(
-            availability_for_utf8_bytes(50_000_001),
+            availability_for_utf8_bytes(64 * 1024 * 1024 + 1),
             LocalHistoryAvailability::Unavailable
         );
 
@@ -2909,5 +2942,90 @@ mod tests {
     #[test]
     fn local_history_lock_is_singleton() {
         assert!(std::ptr::eq(local_history_lock(), local_history_lock()));
+    }
+
+    /// `power-of-two-thresholds` D6: a lineage holding 48 snapshots keeps all of
+    /// them after one more capture.
+    #[test]
+    fn upgrading_keeps_a_48_snapshot_lineage_after_one_more_capture() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/lineage.txt", "seed\n");
+        for index in 0..49 {
+            capture_snapshot_for_path(
+                dir.path(),
+                &path,
+                &format!("version {index}\n"),
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture");
+        }
+        let snapshots = list_snapshots_for_path(dir.path(), &path).expect("list snapshots");
+        assert_eq!(snapshots.len(), 49);
+    }
+
+    /// A store holding 240 snapshots keeps every one after one more capture.
+    #[test]
+    fn upgrading_keeps_a_240_snapshot_store_after_one_more_capture() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut paths = Vec::new();
+        for file in 0..6 {
+            let path = seed_file(&dir, &format!("workspace/store-{file}.txt"), "seed\n");
+            let captures = if file < 5 { 48 } else { 1 };
+            for index in 0..captures {
+                capture_snapshot_for_path(
+                    dir.path(),
+                    &path,
+                    &format!("file {file} version {index}\n"),
+                    LocalHistorySnapshotOrigin::Save,
+                    LocalHistoryCapturePolicy::DeduplicateLatest,
+                )
+                .expect("capture");
+            }
+            paths.push(path);
+        }
+        let total: usize = paths
+            .iter()
+            .map(|path| {
+                list_snapshots_for_path(dir.path(), path)
+                    .expect("list")
+                    .len()
+            })
+            .sum();
+        assert_eq!(total, 241);
+    }
+
+    /// A lineage at the per-document tier, with the longest snapshot ids the
+    /// service writes, loads in full through the bounded index read.
+    #[test]
+    fn a_full_lineage_index_loads_in_full() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = seed_file(&dir, "workspace/full.txt", "seed\n");
+        for index in 0..PER_DOCUMENT_SNAPSHOT_CAP {
+            capture_snapshot_for_path(
+                dir.path(),
+                &path,
+                &format!("full {index}\n"),
+                LocalHistorySnapshotOrigin::Periodic,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture");
+        }
+        assert_eq!(
+            list_snapshots_for_path(dir.path(), &path)
+                .expect("list")
+                .len(),
+            PER_DOCUMENT_SNAPSHOT_CAP
+        );
+        assert_eq!(PER_DOCUMENT_SNAPSHOT_CAP, 64);
+        assert_eq!(GLOBAL_SNAPSHOT_CAP, 256);
+    }
+
+    #[test]
+    fn the_unavailable_message_names_the_tier_in_iec_units() {
+        assert_eq!(
+            unavailable_message(),
+            "Local history is unavailable for files above 64 MiB"
+        );
     }
 }

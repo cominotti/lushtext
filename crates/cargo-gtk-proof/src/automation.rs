@@ -26,7 +26,9 @@ const AUTOMATION_INTERFACE: &str = "dev.cominotti.lushtext.Automation1";
 const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 const WINDOW_OBJECT_PATH: &str = "/dev/cominotti/lushtext/window/1";
 const ACTIONS_INTERFACE: &str = "org.gtk.Actions";
-const ARTIFACT_TEXT_LIMIT: usize = 1200;
+/// Kind: text cap; 1,200 rounded down to a power of two
+/// (`power-of-two-thresholds` D4).
+const ARTIFACT_TEXT_LIMIT: usize = 1_024;
 
 /// Status returned by an Automation1 readiness wait.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

@@ -79,7 +79,11 @@ pub const MAX_MANIFEST_REPAIR_METADATA_BYTES: usize = 512 * 1024;
 /// Kind: cap; a power of two, rounded down.
 pub const MAX_MANIFEST_REPAIR_DIAGNOSTICS: usize = 4;
 /// Conservative fixed ownership charged for each reconstructed manifest entry.
-const MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES: usize = 96;
+///
+/// Kind: coverage window (a conservative per-entry charge that must not
+/// under-count); 96 rounded up to a power of two (`power-of-two-thresholds`
+/// D5).
+const MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES: usize = 128;
 /// The manifest itself shares the drafts directory but is not a draft-body entry.
 ///
 /// Kind: coverage window; a power of two, rounded up.

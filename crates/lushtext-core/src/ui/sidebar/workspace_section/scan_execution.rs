@@ -90,7 +90,10 @@ struct ChildReconcileProgress {
 /// Maximum directory entries before truncation. A single `gio::ListStore`
 /// with >10k items causes slow model diff updates in `GtkListView`.
 /// Truncated directories show a placeholder row with the count.
-const MAX_DIR_ENTRIES: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+const MAX_DIR_ENTRIES: usize = 8_192;
 /// Rows appended per main-loop tick when populating a directory tree.
 /// 256 items splice in <2ms, staying under the 16ms frame budget.
 ///

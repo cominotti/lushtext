@@ -197,6 +197,10 @@ const MAX_PREVIEW_IMAGE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 ///
 /// 64 megapixels is intentionally above ordinary desktop images while below
 /// the point where RGB/RGBA decode buffers can spike into hundreds of MiB.
+///
+/// Kind: cap; recorded exception (`power-of-two-thresholds`): 2^25 (33.5 MP)
+/// would refuse 48-50 MP phone photos, and 2^26 is unmeasured against the
+/// decode memory ceiling.
 const MAX_PREVIEW_IMAGE_SOURCE_PIXELS: i64 = 64_000_000;
 /// Maximum local-image descriptors that may own queued or active work.
 ///

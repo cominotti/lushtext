@@ -1500,7 +1500,7 @@ fn test_command_palette_notes_mode_handles_dense_awkward_rows() {
     palette.set_note_entries(entries);
     palette.imp().set_mode(SearchMode::Notes);
 
-    rebuild_and_wait_until(&palette, "dense awkward", |labels| labels.len() == 51);
+    rebuild_and_wait_until(&palette, "dense awkward", |labels| labels.len() == 33);
     let labels = palette_labels(&palette);
     assert_eq!(labels.first().map(String::as_str), Some("Bookmarks"));
     assert_eq!(
@@ -1508,7 +1508,7 @@ fn test_command_palette_notes_mode_handles_dense_awkward_rows() {
             .iter()
             .filter(|label| label.starts_with("Bookmark · Dense Awkward Label"))
             .count(),
-        50,
+        32,
         "Notes mode should cap dense category rows without adding unrelated groups: {labels:?}"
     );
     assert!(!labels.iter().any(|label| label == "Commands"));

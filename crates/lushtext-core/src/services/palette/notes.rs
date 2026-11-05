@@ -65,7 +65,10 @@ const MAX_NOTE_FIELD_FUZZY_SCORE: u32 = u16::MAX as u32;
 /// Kind: cap; a power of two, rounded down.
 const NOTE_TEXT_CANCEL_CHECK_INTERVAL: usize = 1_024;
 /// Maximum note and bookmark rows retained for command-palette search.
-pub const MAX_PALETTE_NOTE_ENTRIES: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const MAX_PALETTE_NOTE_ENTRIES: usize = 8_192;
 /// Maximum aggregate searchable UTF-8 bytes retained for palette note rows.
 ///
 /// Kind: cap; a power of two, rounded down.

@@ -795,7 +795,7 @@ fn test_source_view_accessibility_keeps_large_file_editable_state() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    page.apply_loaded_content_for_test("large file marker", 50_000_001);
+    page.apply_loaded_content_for_test("large file marker", 64 * 1024 * 1024 + 1);
 
     let scale = page.document_scale();
     assert!(!scale.undo_enabled && !scale.syntax_enabled);
@@ -975,7 +975,7 @@ fn test_minimap_long_line_warning_scan_preserves_small_document_markers() {
     enable_minimap_for_tests(true);
     let page = LushtextEditorPage::new();
     page.buffer()
-        .set_text(&format!("short\n{}", "x".repeat(121)));
+        .set_text(&format!("short\n{}", "x".repeat(129)));
 
     wait_until(Duration::from_secs(2), || {
         page.minimap_evidence().cache_owned
@@ -1293,7 +1293,7 @@ fn test_minimap_marker_toggle_releases_marker_cache_and_reuses_layout_evidence()
     let settings = enable_minimap_for_tests(true);
     let page = LushtextEditorPage::new();
     page.buffer()
-        .set_text(&format!("{}\nshort\n", "m".repeat(121)));
+        .set_text(&format!("{}\nshort\n", "m".repeat(129)));
 
     wait_until(Duration::from_secs(2), || {
         page.minimap_evidence().long_line_warning_count == 1
@@ -2474,10 +2474,12 @@ fn test_periodic_local_history_edit_cancels_chunked_snapshot_without_persistence
     let page = LushtextEditorPage::new();
     page.set_file_path(&document);
     let buffer = page.buffer();
-    // Many short lines: a single 2.5M-character paragraph would enter
+    // Many short lines: a single 2M-character paragraph would enter
     // Protected View, whose capture reads the text source instead of a
-    // chunked buffer snapshot.
-    buffer.set_text(&format!("{}\n", "x".repeat(999)).repeat(2_500));
+    // chunked buffer snapshot. 2,097,152 characters is exactly the 8 MiB
+    // estimate at which the snapshot is chunked and periodic capture is
+    // still allowed.
+    buffer.set_text(&format!("{}\n", "x".repeat(1_023)).repeat(2_048));
     buffer.set_modified(true);
     assert!(!page.is_protected_view());
 

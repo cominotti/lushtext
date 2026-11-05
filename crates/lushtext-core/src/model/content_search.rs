@@ -15,14 +15,17 @@ use super::workspace_search::{WorkspaceSearchFallbackMetrics, WorkspaceSearchInc
 
 /// Maximum UTF-8 bytes retained for one matching search line.
 ///
-/// Workspace search can keep up to 10,000 matches in memory. Four KiB per
+/// Workspace search can keep up to 8,192 matches in memory. Four KiB per
 /// match keeps worst-case retained line text in the tens of MiB rather than
 /// allowing minified or generated files to retain multi-GiB result sets.
 ///
 /// Kind: cap; a power of two, rounded down.
 pub const MAX_SEARCH_MATCH_LINE_BYTES: usize = 4 * 1024;
 /// Maximum number of complete rows retained by Replace Preview.
-pub const MAX_REPLACE_PREVIEW_ROWS: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const MAX_REPLACE_PREVIEW_ROWS: usize = 8_192;
 /// Maximum conservatively charged UTF-8 bytes retained by Replace Preview.
 ///
 /// Kind: cap; a power of two, rounded down.
@@ -305,7 +308,7 @@ impl SearchQuerySpec {
 pub enum SearchEvent {
     /// A matching line was found.
     Match(SearchMatch),
-    /// The 10,000-match result cap was reached; search stopped early.
+    /// The 8,192-match result cap was reached; search stopped early.
     ResultCap,
     /// Progress update: number of files visited so far. Sent approximately
     /// every 100 files to avoid flooding the channel. Best-effort — may be

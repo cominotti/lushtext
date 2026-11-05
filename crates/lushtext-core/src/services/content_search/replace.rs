@@ -23,6 +23,7 @@ use crate::model::content_search::{
     BoundedDiagnosticSample, MAX_REPLACE_PREVIEW_ROWS, ReplaceResult, Replacement,
     UndoPayloadLedger,
 };
+use crate::model::size_units::iec_size;
 use crate::services::{
     filesystem::{WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write},
     search_backup,
@@ -32,7 +33,10 @@ use crate::services::{
 ///
 /// Ten megabytes keeps the whole-file validation and undo snapshot path bounded
 /// on ordinary laptops while still covering typical source and notes files.
-pub const MAX_REPLACE_FILE_BYTES: u64 = 10 * 1024 * 1024;
+///
+/// Kind: cap; 8 MiB, aligned with the 8 MiB tier (was 10 MiB,
+/// `power-of-two-thresholds` D3).
+pub const MAX_REPLACE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// Largest total undo payload retained for one Replace All run.
 ///
 /// The payload stores before and after bytes for each touched file. Sixty-four
@@ -539,8 +543,9 @@ fn apply_replacements_inner(
         if facts.byte_size > MAX_REPLACE_FILE_BYTES {
             skipped_sample.record_path(&path);
             errors.push(format!(
-                "Skipped {}: file is larger than the 10 MB Replace All limit",
-                path.display()
+                "Skipped {}: file is larger than the {} Replace All limit",
+                path.display(),
+                iec_size(MAX_REPLACE_FILE_BYTES),
             ));
             continue;
         }
@@ -557,8 +562,9 @@ fn apply_replacements_inner(
                 Err(fs_read::BoundedFileReadError::LimitExceeded { .. }) => {
                     skipped_sample.record_path(&path);
                     errors.push(format!(
-                        "Skipped {}: file is larger than the 10 MB Replace All limit",
-                        path.display()
+                        "Skipped {}: file is larger than the {} Replace All limit",
+                        path.display(),
+                        iec_size(MAX_REPLACE_FILE_BYTES),
                     ));
                     continue;
                 }
@@ -612,13 +618,15 @@ fn apply_replacements_inner(
                 skipped_sample.record_path(&path);
                 if output_limited_by_file_size {
                     errors.push(format!(
-                        "Skipped {}: replacement output would exceed the 10 MB per-file limit",
-                        path.display()
+                        "Skipped {}: replacement output would exceed the {} per-file limit",
+                        path.display(),
+                        iec_size(MAX_REPLACE_FILE_BYTES),
                     ));
                 } else {
                     errors.push(format!(
-                        "Skipped {}: undo data would exceed the 64 MB Replace All limit",
-                        path.display()
+                        "Skipped {}: undo data would exceed the {} Replace All limit",
+                        path.display(),
+                        iec_size(MAX_REPLACE_UNDO_BYTES),
                     ));
                 }
                 continue;
@@ -636,8 +644,9 @@ fn apply_replacements_inner(
         if !undo_ledger.try_charge(entry_payload_bytes) {
             skipped_sample.record_path(&path);
             errors.push(format!(
-                "Skipped {}: undo data would exceed the 64 MB Replace All limit",
-                path.display()
+                "Skipped {}: undo data would exceed the {} Replace All limit",
+                path.display(),
+                iec_size(MAX_REPLACE_UNDO_BYTES),
             ));
             continue;
         }
@@ -650,8 +659,9 @@ fn apply_replacements_inner(
             debug_assert_eq!(reclaimed, entry_payload_bytes);
             skipped_sample.record_path(&path);
             errors.push(format!(
-                "Skipped {}: complete undo state would exceed the 64 MB Replace All limit",
-                path.display()
+                "Skipped {}: complete undo state would exceed the {} Replace All limit",
+                path.display(),
+                iec_size(MAX_REPLACE_UNDO_BYTES),
             ));
             continue;
         }
@@ -1576,7 +1586,7 @@ mod tests {
 
     #[test]
     fn replace_all_byte_budgets_match_documented_limits() {
-        assert_eq!(MAX_REPLACE_FILE_BYTES, 10 * 1024 * 1024);
+        assert_eq!(MAX_REPLACE_FILE_BYTES, 8 * 1024 * 1024);
         assert_eq!(MAX_REPLACE_UNDO_BYTES, 64 * 1024 * 1024);
     }
 
@@ -1909,7 +1919,11 @@ mod tests {
         assert_eq!(result.files_affected, 0);
         assert_eq!(result.skipped_count, 1);
         assert_eq!(result.skipped_sample[0], file.display().to_string());
-        assert!(result.error_sample[0].contains("larger than the 10 MB"));
+        assert!(
+            result.error_sample[0].contains("larger than the 8 MiB Replace All limit"),
+            "{}",
+            result.error_sample[0]
+        );
         assert!(backup.is_empty());
     }
 
@@ -1964,7 +1978,11 @@ mod tests {
         assert_eq!(result.files_affected, 1);
         assert_eq!(result.skipped_count, 1);
         assert_eq!(result.skipped_sample[0], file_b.display().to_string());
-        assert!(result.error_sample[0].contains("undo data would exceed"));
+        assert!(
+            result.error_sample[0].contains("undo data would exceed the 64 MiB Replace All limit"),
+            "{}",
+            result.error_sample[0]
+        );
         assert_eq!(fixture::read_text(&file_a), "done-a\n");
         assert_eq!(fixture::read_text(&file_b), "needle-b\n");
         assert!(backup.contains_key(&file_a));
@@ -2994,10 +3012,12 @@ mod tests {
         .expect_err("all missing targets should produce one bounded terminal error")
         .to_string();
 
-        assert!(error.contains("Replace All failed: 10000 issue(s)"));
+        assert!(error.contains(&format!(
+            "Replace All failed: {MAX_REPLACE_PREVIEW_ROWS} issue(s)"
+        )));
         assert!(error.contains("missing-00000.txt"));
-        assert!(error.contains("9999 more omitted"));
-        assert!(!error.contains("missing-09999.txt"));
+        assert!(error.contains(&format!("{} more omitted", MAX_REPLACE_PREVIEW_ROWS - 1)));
+        assert!(!error.contains(&format!("missing-{:05}.txt", MAX_REPLACE_PREVIEW_ROWS - 1)));
         assert!(!error.contains(private_line.as_ref()));
         assert!(error.len() < 1_024);
     }

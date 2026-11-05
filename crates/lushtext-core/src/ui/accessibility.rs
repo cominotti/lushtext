@@ -19,7 +19,12 @@ use gtk4::prelude::*;
 /// Announcements are for workflow context, not content export. Capping them
 /// avoids flooding screen readers and protects private document/note text from
 /// accidentally becoming an unbounded accessibility event.
-pub const DEFAULT_ANNOUNCEMENT_LIMIT: usize = 240;
+///
+/// Kind: text cap; a power of two (`power-of-two-thresholds` task 4.6): 128
+/// would cut shipped announcements (the reduced-features notice reaches 229
+/// characters, pinned by a unit test), so 240 takes the power of two at or
+/// above the longest shipped template, which no longer cuts that notice.
+pub const DEFAULT_ANNOUNCEMENT_LIMIT: usize = 256;
 
 /// Debounce window for result-count announcements after a user is typing.
 const DEBOUNCED_RESULTS_COOLDOWN: Duration = Duration::from_millis(500);

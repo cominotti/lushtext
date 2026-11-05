@@ -78,7 +78,10 @@ use super::document_scale::{L_PROTECT, N_VISIBLE, R_BATCH, V_BATCH};
 /// post-open settle of a 500-character document. The C2 verdict's first round
 /// confirmed it from the other side: the provisional 15,000 (design D1's
 /// extrapolation of ledger A23) cost a 15.8 ms frame layout on its own.
-pub const N_HEAD: u64 = 10_000;
+///
+/// Kind: cap; the measured 10,000 rounded down to a power of two
+/// (`power-of-two-thresholds` D4): heads are 1,808 characters shorter.
+pub const N_HEAD: u64 = 8 * 1024;
 
 /// Pango's advance of the view's monospace font at the default zoom, in Pango
 /// units (1/1024 px), as ledger A28 measured it (9011 units per character).
@@ -113,7 +116,8 @@ pub const A28_SAFE_CHARS: u64 =
     (i32::MAX as u64) / (A28_MEASURED_ADVANCE_UNITS * A28_MAX_ZOOM_PERCENT / 100);
 
 /// Rows of one 2000 px validation batch the density window covers: C1's
-/// [`R_BATCH`] (224), with no edge row added.
+/// [`R_BATCH`] (256, the 224 below rounded up to a power of two by
+/// `power-of-two-thresholds`), with no edge row added.
 ///
 /// `long-line-protected-view` task 1.2: GtkTextView validates whole lines from
 /// a line start until the batch reaches 2000 px (ledger A31: each step grows
@@ -124,8 +128,9 @@ pub const A28_SAFE_CHARS: u64 =
 /// 223 at the 50 % minimum zoom. Even a 2000 px window starting at an
 /// arbitrary pixel (the widget test of task 3.4) touches at most
 /// `ceil((2000 + h − 1) / h)` rows, 113 at 18 px and 224 at 9 px. So
-/// `R_BATCH` already counts the partially covered edge row, and `R_FOLD + 1`
-/// would only make `R_FOLD · N_DENSE` exceed `V_BATCH`. The argument rests on
+/// `R_BATCH` already counts the partially covered edge row (256 leaves 32 rows
+/// to spare), and `R_FOLD · N_DENSE` = 256 · 218 = 55,808 stays within
+/// `V_BATCH`. The argument rests on
 /// a 9 px minimum row height at the 50 % zoom, the assumption C0's doubling
 /// already made.
 ///
@@ -136,11 +141,11 @@ pub const R_FOLD: usize = R_BATCH;
 /// `ZOOM_MIN`, 50; see [`A28_MAX_ZOOM_PERCENT`] for the pending assertion).
 pub const R_FOLD_MIN_ZOOM_PERCENT: u64 = 50;
 
-/// Characters a dense paragraph keeps visible: `V_BATCH / R_BATCH` (250), so
+/// Characters a dense paragraph keeps visible: `V_BATCH / R_BATCH` (218), so
 /// `R_FOLD` dense paragraphs fill at most one batch.
 ///
 /// Kind: derived; computed from the constants it names, not rounded.
-// `R_BATCH` (224) is a usize that fits a u64, so the cast is lossless.
+// `R_BATCH` (256) is a usize that fits a u64, so the cast is lossless.
 pub const N_DENSE: u64 = V_BATCH / (R_BATCH as u64);
 
 /// The most characters any paragraph shows: `min(N_VISIBLE, N_HEAD,

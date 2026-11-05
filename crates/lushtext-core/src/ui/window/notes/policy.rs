@@ -28,21 +28,33 @@ use crate::ui::editor_page::BookmarkEditError;
 /// 500 rows: the point past which an Adwaita sidebar rebuild stops being
 /// imperceptible on a mid-range laptop. Beyond it the browser shows a
 /// refine-your-search notice rather than growing the list.
-pub const NOTES_BROWSER_RENDER_LIMIT: usize = 500;
+///
+/// Kind: cap; 500 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const NOTES_BROWSER_RENDER_LIMIT: usize = 256;
 /// Maximum rows admitted into one Browse Notes source.
-pub const NOTES_BROWSER_SOURCE_ENTRY_LIMIT: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const NOTES_BROWSER_SOURCE_ENTRY_LIMIT: usize = 8_192;
 /// Maximum aggregate searchable UTF-8 bytes retained by Browse Notes.
 ///
 /// Kind: cap; a power of two, rounded down.
 pub const NOTES_BROWSER_SOURCE_TEXT_LIMIT: usize = 64 * 1024 * 1024;
 /// Maximum sidecar candidates retained by each Browse Notes directory scan.
-pub const NOTES_BROWSER_SIDECAR_SCAN_LIMIT: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const NOTES_BROWSER_SIDECAR_SCAN_LIMIT: usize = 8_192;
 /// Maximum recovery diagnostics retained by one Browse Notes load.
 ///
 /// Kind: cap; a power of two, rounded down.
 pub const NOTES_BROWSER_DIAGNOSTIC_LIMIT: usize = 1_024;
 /// Maximum open-editor snapshots plus bookmark rows captured on GTK.
-pub const NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT: usize = 10_000;
+///
+/// Kind: cap; 10,000 rounded down to a power of two (`power-of-two-thresholds`
+/// D4).
+pub const NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT: usize = 8_192;
 /// Maximum retained live-editor metadata cloned before note-source admission.
 ///
 /// Kind: cap; a power of two, rounded down.
@@ -56,7 +68,10 @@ pub const NOTES_SAVE_DEBOUNCE_MS: u64 = 200;
 /// unwritable sidecar cannot pulse the status bar or churn the worker pool. Past
 /// the cap the write stays outstanding — the dirty flag is left set — so the
 /// user's next bookmark edit retries.
-pub const MAX_BOOKMARK_SAVE_ATTEMPTS: u32 = 3;
+///
+/// Kind: retry budget; 3 rounded up to a power of two
+/// (`power-of-two-thresholds` D6).
+pub const MAX_BOOKMARK_SAVE_ATTEMPTS: u32 = 4;
 /// Quiet window before a note dialog re-evaluates its Save sensitivity (ms).
 pub const NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS: u64 = 80;
 /// Quiet window coalescing command-palette note-source reloads (ms).
@@ -548,18 +563,18 @@ mod tests {
 
     #[test]
     fn workflow_budgets_are_pinned_to_their_reviewed_literals() {
-        assert_eq!(NOTES_BROWSER_RENDER_LIMIT, 500);
-        assert_eq!(NOTES_BROWSER_SOURCE_ENTRY_LIMIT, 10_000);
+        assert_eq!(NOTES_BROWSER_RENDER_LIMIT, 256);
+        assert_eq!(NOTES_BROWSER_SOURCE_ENTRY_LIMIT, 8_192);
         assert_eq!(NOTES_BROWSER_SOURCE_TEXT_LIMIT, 0x0400_0000, "64 MiB");
-        assert_eq!(NOTES_BROWSER_SIDECAR_SCAN_LIMIT, 10_000);
+        assert_eq!(NOTES_BROWSER_SIDECAR_SCAN_LIMIT, 8_192);
         assert_eq!(NOTES_BROWSER_DIAGNOSTIC_LIMIT, 1_024);
-        assert_eq!(NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT, 10_000);
+        assert_eq!(NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT, 8_192);
         assert_eq!(
             NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT, 0x0040_0000,
             "4 MiB"
         );
         assert_eq!(NOTES_SAVE_DEBOUNCE_MS, 200);
-        assert_eq!(MAX_BOOKMARK_SAVE_ATTEMPTS, 3);
+        assert_eq!(MAX_BOOKMARK_SAVE_ATTEMPTS, 4);
         assert_eq!(NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS, 80);
         assert_eq!(COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS, 150);
         assert_eq!(NOTES_BROWSER_SEARCH_DEBOUNCE_MS, 150);
@@ -567,12 +582,12 @@ mod tests {
 
     #[test]
     fn source_limits_carry_the_workflow_budgets_into_the_shared_engine() {
-        assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.entries, 10_000);
+        assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.entries, 8_192);
         assert_eq!(
             NOTES_BROWSER_SOURCE_LIMITS.searchable_text_bytes,
             0x0400_0000
         );
-        assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.sidecar_entries, 10_000);
+        assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.sidecar_entries, 8_192);
         assert_eq!(NOTES_BROWSER_SOURCE_LIMITS.diagnostics, 1_024);
     }
 
@@ -596,7 +611,7 @@ mod tests {
     fn narrowing_above_the_sidecar_ceiling_leaves_it_alone() {
         let widened = notes_browser_source_limits_for_entries(50_000);
         assert_eq!(widened.entries, 50_000);
-        assert_eq!(widened.sidecar_entries, 10_000);
+        assert_eq!(widened.sidecar_entries, 8_192);
     }
 
     #[test]
