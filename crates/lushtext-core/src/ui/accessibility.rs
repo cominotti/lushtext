@@ -20,10 +20,10 @@ use gtk4::prelude::*;
 /// avoids flooding screen readers and protects private document/note text from
 /// accidentally becoming an unbounded accessibility event.
 ///
-/// Kind: text cap; a power of two (`power-of-two-thresholds` task 4.6): 128
-/// would cut shipped announcements (the reduced-features notice reaches 229
-/// characters, pinned by a unit test), so 240 takes the power of two at or
-/// above the longest shipped template, which no longer cuts that notice.
+/// Kind: text cap; 240 rounded up to a power of two (`power-of-two-thresholds`
+/// task 4.6): 128 would cut shipped announcements (the reduced-features notice
+/// reaches 229 characters, pinned by a unit test), so the cap takes 256, the
+/// power of two at or above the longest shipped template.
 pub const DEFAULT_ANNOUNCEMENT_LIMIT: usize = 256;
 
 /// Debounce window for result-count announcements after a user is typing.

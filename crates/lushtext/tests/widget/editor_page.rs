@@ -975,7 +975,7 @@ fn test_minimap_long_line_warning_scan_preserves_small_document_markers() {
     enable_minimap_for_tests(true);
     let page = LushtextEditorPage::new();
     page.buffer()
-        .set_text(&format!("short\n{}", "x".repeat(129)));
+        .set_text(&format!("short\n{}", "x".repeat(121)));
 
     wait_until(Duration::from_secs(2), || {
         page.minimap_evidence().cache_owned
@@ -1293,7 +1293,7 @@ fn test_minimap_marker_toggle_releases_marker_cache_and_reuses_layout_evidence()
     let settings = enable_minimap_for_tests(true);
     let page = LushtextEditorPage::new();
     page.buffer()
-        .set_text(&format!("{}\nshort\n", "m".repeat(129)));
+        .set_text(&format!("{}\nshort\n", "m".repeat(121)));
 
     wait_until(Duration::from_secs(2), || {
         page.minimap_evidence().long_line_warning_count == 1

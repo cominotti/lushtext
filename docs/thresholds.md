@@ -678,7 +678,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/editor_page/accessibility.rs` | `EDITOR_IDENTITY_LIMIT` | 64 | text cap | rounded down; no shipped template cut (task 4.6) |
+| `crates/lushtext-core/src/ui/editor_page/accessibility.rs` | `EDITOR_IDENTITY_LIMIT` | 128 | text cap | 96 to 128: a user file name, so D2 decides; 64 cuts 7.96 % of corpus names (stage 4) |
 
 ### `crates/lushtext-core/src/ui/editor_page/bookmarks.rs`
 
@@ -722,7 +722,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MARKER_STRIP_WIDTH` | 8 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_TOP_CONTENT_MARGIN` | 5 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR` | 5 | out: factor | factor, divisor or unit (D1) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_LONG_LINE_WARNING_THRESHOLD` | 128 | policy tier | 120 to 128 (inventory) |
+| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_LONG_LINE_WARNING_THRESHOLD` | 120 | external fact | the 120-column style convention; bounds no work, kept exact (stage 4) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_SEARCH_MATCH_CAP` | 1,024 | cap | 2,000 rounded down to 1,024 (D4) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET` | 2,097,152 | cap | power of two |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET` | 4,096 | cap | 8,000 rounded down to 4,096 (D4) |

@@ -3598,7 +3598,9 @@ and after every run, `measure.log`, `open/`, `search/`, `m1-main/`,
   bound 128 bodies, retries 4 / 4 / 8 / 1,024.
 - **Text caps** (task 4.6): announcements 256 (128 would cut the
   229-character longest reduced-features notice, pinned by a unit test),
-  the notice 256, the editor identity 64.
+  the notice 256, the editor identity 128 (stage 4: 64 cut 7.96 % of corpus
+  file names, so D2 decides it; 128 cuts 0.0020 %). The minimap's long-line
+  marker threshold stays 120, an external fact (the 120-column convention).
 - **Measured items**: the open tier (task 3), `L_PROTECT`/`N_INSPECT`
   (task 5.1), `V_SLICE` (task 5.2), the direct-install threshold (task 5.3)
   and the search per-turn caps (task 5.4), each in its own commit; figures

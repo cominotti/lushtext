@@ -75,9 +75,11 @@ pub(super) const MINIMAP_REFRESH_DEBOUNCE: Duration = Duration::from_millis(80);
 /// The proposal called out 120 characters explicitly, so the marker layer uses
 /// the same threshold instead of trying to infer it from unrelated formatting settings.
 ///
-/// Kind: policy tier; 120 aligned to a power of two
-/// (`power-of-two-thresholds`).
-pub(super) const MINIMAP_LONG_LINE_WARNING_THRESHOLD: usize = 128;
+/// Kind: external fact; the 120-column line-length convention the minimap
+/// proposal named. It bounds no work: it states a style limit users write to,
+/// so it stays exact (`power-of-two-thresholds` stage 4; 128 would leave
+/// 121–128-character lines unmarked).
+pub(super) const MINIMAP_LONG_LINE_WARNING_THRESHOLD: usize = 120;
 /// Cap on search matches converted into minimap markers during one refresh.
 ///
 /// The minimap only needs a spatial hint, not every exact hit, so we stop once
@@ -1071,7 +1073,7 @@ mod tests {
     fn test_minimap_policy_constants_are_stable() {
         assert_eq!(MINIMAP_MARKER_STRIP_WIDTH, 8);
         assert_eq!(MINIMAP_REFRESH_DEBOUNCE, Duration::from_millis(80));
-        assert_eq!(MINIMAP_LONG_LINE_WARNING_THRESHOLD, 128);
+        assert_eq!(MINIMAP_LONG_LINE_WARNING_THRESHOLD, 120);
         assert_eq!(MINIMAP_SEARCH_MATCH_CAP, 1_024);
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET, 2 * 1024 * 1024);
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, 4_096);
@@ -1714,6 +1716,19 @@ mod tests {
 
         assert_eq!(long_line_warning_lines(&text), vec![1, 3]);
         assert!(long_line_warning_lines("short\nalso short").is_empty());
+    }
+
+    /// The marker follows the 120-column convention the minimap proposal
+    /// named: a 121- or 128-character line breaks it and is marked.
+    #[test]
+    fn long_line_markers_follow_the_120_column_convention() {
+        let text = format!(
+            "{}\n{}\n{}",
+            "a".repeat(120),
+            "b".repeat(121),
+            "c".repeat(128)
+        );
+        assert_eq!(long_line_warning_lines(&text), vec![1, 2]);
     }
 
     #[test]
