@@ -292,7 +292,8 @@ D2's corpus count of what users lose (task 4.5). The value each becomes, and wha
   same rule; each then keeps its former value as a recorded exception.
 - **The text caps**:
   - `DEFAULT_ANNOUNCEMENT_LIMIT` 240 → 128;
-  - `EDITOR_IDENTITY_LIMIT` 96 → 64;
+  - `EDITOR_IDENTITY_LIMIT` 96 → 128 (stage 4: it cuts user file names, so
+    D2's corpus rule decides it, not the shipped-string check);
   - `REDUCED_FEATURES_NOTICE_LIMIT` 320 → 256;
   - `cargo-gtk-proof`'s artifact and warning text limits 1,200 → 1,024.
 
@@ -548,14 +549,14 @@ regain undo and local history.
 | `BOOKMARK_EXCERPT_SCAN_LINE_LIMIT` | 20,000 | cap | 16,384 |
 | `MINIMAP_SEARCH_MATCH_CAP`, `MINIMAP_MODIFIED_LINE_MARK_CAP`, `MINIMAP_LONG_LINE_MARK_CAP` | 2,000 | cap | 1,024 |
 | `MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET` | 8,000 | cap | 4,096 |
-| `MINIMAP_LONG_LINE_WARNING_THRESHOLD` | 120 | policy tier | 128 |
+| `MINIMAP_LONG_LINE_WARNING_THRESHOLD` | 120 | external fact | 120 (stage 4: the 120-column convention) |
 | `MAX_RESULTS_PER_SOURCE` | 50 | cap | 32 |
 | `NOTES_BROWSER_RENDER_LIMIT` | 500 | cap | 256 |
 | `MAX_MARKDOWN_EVENTS` | 50,000 | cap | 32,768 or exception (task 4.5) |
 | `MAX_INLINE_FOOTNOTE_REPLACEMENTS` | events / 4 | derived | follows |
 | `MAX_MARKDOWN_CARRIED_TABLE_CELLS`, `MAX_PREVIEW_TABLE_CELLS` | 1,000 | cap | 512 or exception (task 4.5) |
 | `MAX_PREVIEW_IMAGE_SOURCE_PIXELS` | 64,000,000 | cap | exception (D9) |
-| `DEFAULT_ANNOUNCEMENT_LIMIT`, `EDITOR_IDENTITY_LIMIT`, `REDUCED_FEATURES_NOTICE_LIMIT` | 240 / 96 / 320 | text cap | 128 / 64 / 256 (D2 check) |
+| `DEFAULT_ANNOUNCEMENT_LIMIT`, `EDITOR_IDENTITY_LIMIT`, `REDUCED_FEATURES_NOTICE_LIMIT` | 240 / 96 / 320 | text cap | 256 / 128 / 256 (task 4.6, stage 4) |
 | `ARTIFACT_TEXT_LIMIT`, `WARNING_TEXT_LIMIT` (`cargo-gtk-proof`) | 1,200 | text cap | 1,024 |
 | `MAX_RECENT_LOAD_DIAGNOSTICS` | 20 | cap | 16 |
 | `PER_DOCUMENT_SNAPSHOT_CAP`, `GLOBAL_SNAPSHOT_CAP` | 48 / 240 | retention tier | 64 / 256 |
@@ -631,11 +632,51 @@ record's PT implementation record and in
   229 characters (a unit test enumerates every tier edge and pins it), and
   every status message is announced through `DEFAULT_ANNOUNCEMENT_LIMIT`, so
   128 would cut a shipped notice. 256 is the power of two at or above it; the
-  notice cap is 256 (from 320) and the editor identity 64 (from 96: it cuts
-  file names only).
+  notice cap is 256 (from 320) and the editor identity, first set to 64,
+  is 128 after the stage-4 review (below).
 - **The inventory key carries `cfg` variants.** `MAX_PROFILED_OFFSETS` and
   `MAX_DENSITY_WINDOW` have a production value and a Kani bound; the gate
   keys them `NAME #[cfg(...)]`, so both are rows.
 - **`model::size_units::iec_size`** is the one tier formatter: a tier prints
   whole ("64 MiB"), any other size with one decimal, rounded down, so a size
   just above a tier never prints as the tier.
+
+## Review decisions (stage 4, 2026-11-05)
+
+An independent review of `origin/main..HEAD` (code, tests and the handoff
+evidence, not only the stage-3 report). Each decision follows user
+experience first.
+
+- **`EDITOR_IDENTITY_LIMIT` is 128, not 64.** It bounds a user's file name
+  in the editor's accessible name ("Editor for …"), so the shipped-string
+  check of task 4.6 cannot decide it: no shipped string is involved. D2's
+  corpus rule does. Of 1,511,259 file names under `~/Workspace` (without
+  `.git`, `.claude`, `target`, `node_modules`, `.cache`), 7.96 % exceed 64
+  characters, 0.387 % exceed 96 and 0.0020 % exceed 128. 64 would have cut
+  the name a screen reader hears for one file in thirteen (for example
+  `BUG-0120-fluxo-exclusao-evento-…md`); 128 is the power of two above the
+  old 96 and cuts almost none. The label stays far inside
+  `DEFAULT_ANNOUNCEMENT_LIMIT` (256). Failing first:
+  `ui::editor_page::accessibility::tests::the_editor_identity_keeps_a_long_file_name_whole`.
+- **`MINIMAP_LONG_LINE_WARNING_THRESHOLD` stays 120, as an external fact.**
+  It bounds no work: it is the 120-column style limit the minimap proposal
+  named, which users write code to. At 128 the opt-in long-line markers
+  stopped marking 121–128-character lines, which break that limit. It is
+  outside D1's scope in substance (a convention, like a presentation shape)
+  and is inventoried as an external fact. Failing first:
+  `long_line_markers_follow_the_120_column_convention`; the two widget
+  fixtures return to 121 characters, the edge they tested on `main`.
+- **Kept as designed, recorded for the maintainer:** the Replace All per-file
+  cap at 8 MiB (files of 8–10 MiB are skipped with a message naming the
+  limit; the cap bounds worker memory and the undo payload, and D3 aligned it
+  with the 8 MiB tier), palette categories 32, the notes browser 256 and the
+  minimap marker caps 1,024 (each bounds GTK-thread work, each shows its
+  truncation).
+- **Evidence read, not re-measured.** The verification lane's 64 MiB
+  `total-size` "worst" of 10.1 s on the branch is `lower_bound_only` (the
+  background phase hit its cap; the largest late tick in that run is 8.1 ms),
+  as the programme record says. The three-repetition `.html` keystroke rerun
+  on the branch ran at load 5.1–5.3 and is not a verdict; the one-repetition
+  verification pair (load 0.8–2.3) is what shows those cases matching `main`.
+  Neither stage-4 change touches a timed path, so no measurement was rerun.
+
