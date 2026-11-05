@@ -133,6 +133,9 @@ mod imp {
     impl ObjectImpl for LushtextLineInspector {
         fn constructed(&self) {
             self.parent_constructed();
+            // `monospace: true` in line-inspector.blp: the view follows the
+            // editor font and zoom (`ui/font_zoom.rs`).
+            crate::ui::font_zoom::follow_editor_font(&*self.window_view);
             crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.line_spin);
             crate::ui::entry_paste_cap::cap_single_line_inserts(&*self.column_spin);
             self.obj().wire();

@@ -249,9 +249,8 @@ impl LushtextEditorPage {
         source_map.set_show_line_numbers(false);
         source_map.set_show_line_marks(false);
         source_map.set_highlight_current_line(false);
-        source_map.set_monospace(true);
         source_map.set_overflow(gtk4::Overflow::Visible);
-        source_map.add_css_class("monospace");
+        crate::ui::font_zoom::follow_editor_font_monospace(&source_map);
         source_map.add_css_class("minimap-view");
         source_map.set_hexpand(true);
         source_map.set_vexpand(true);

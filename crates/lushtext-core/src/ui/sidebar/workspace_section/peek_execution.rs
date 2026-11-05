@@ -195,7 +195,7 @@ impl LushtextWorkspaceSection {
         path_label.set_xalign(0.0);
         path_label.set_wrap(true);
         path_label.add_css_class("dim-label");
-        path_label.add_css_class("monospace");
+        crate::ui::font_zoom::follow_editor_font_monospace(&path_label);
         accessibility::set_labelled_description(
             &path_label,
             "Peek file path",
@@ -239,9 +239,8 @@ impl LushtextWorkspaceSection {
         let text_view = gtk4::TextView::with_buffer(&text_buffer);
         text_view.set_editable(false);
         text_view.set_cursor_visible(false);
-        text_view.set_monospace(true);
         text_view.set_wrap_mode(gtk4::WrapMode::WordChar);
-        text_view.add_css_class("monospace");
+        crate::ui::font_zoom::follow_editor_font_monospace(&text_view);
         accessibility::set_labelled_description(
             &text_view,
             "Peek text preview",

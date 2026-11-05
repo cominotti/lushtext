@@ -121,7 +121,7 @@ impl imp::LushtextSearchPanel {
             let line_num_label = gtk4::Label::new(None);
             line_num_label.add_css_class("caption");
             line_num_label.add_css_class("dim-label");
-            line_num_label.add_css_class("monospace");
+            crate::ui::font_zoom::follow_editor_font_monospace(&line_num_label);
             line_num_label.set_width_chars(5);
             line_num_label.set_xalign(1.0);
 
@@ -129,7 +129,7 @@ impl imp::LushtextSearchPanel {
             line_content_label.set_hexpand(true);
             line_content_label.set_xalign(0.0);
             line_content_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-            line_content_label.add_css_class("monospace");
+            crate::ui::font_zoom::follow_editor_font_monospace(&line_content_label);
 
             content_box.append(&preview_checkbox);
             content_box.append(&file_label);

@@ -107,6 +107,7 @@ fn test_the_line_inspector_reads_windows_in_the_middle_of_a_giant_paragraph() {
 
     page.open_line_inspector(1, 150_123);
     wait_for_window(&page);
+    assert!(crate::common::assert_monospace_widgets_registered("line inspector") > 0);
     let start = 150_123 / width * width;
     let expected: String = columns[start..start + width].iter().collect();
     assert_eq!(

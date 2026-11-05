@@ -883,7 +883,9 @@ fn window_readiness_blocker(
         predicate,
         window
             .active_editor()
-            .is_some_and(|editor| editor.document_settle_stage() != SettleStage::Settled),
+            .is_some_and(|editor| editor.document_settle_stage() != SettleStage::Settled)
+            // A base-font change waits for its zoom-class swap (D4).
+            || crate::ui::font_zoom::swap_pending(),
         READINESS_BLOCKER_DOCUMENT_SETTLE,
     ) {
         return Some(blocker);

@@ -534,6 +534,12 @@ mod measurement {
             if let Some(probe) = weak.upgrade() {
                 probe.sentinel.borrow_mut().take();
             }
+            // A base-font change is not settled until its zoom classes are
+            // swapped in (`scope-font-zoom-restyle`, D4): the swap's
+            // `post_open_font_swap` span arms the next sentinel.
+            if crate::ui::font_zoom::swap_pending() {
+                return glib::ControlFlow::Break;
+            }
             record_mark(SETTLE_SENTINEL_MARK);
             glib::ControlFlow::Break
         });

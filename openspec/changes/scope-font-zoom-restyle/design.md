@@ -298,3 +298,17 @@ returns to rewriting its rules.
 ## Open Questions
 
 None. The adoption criterion (D5) decides whether the change ships.
+
+## Adoption outcome (2026-11-05)
+
+Measured interleaved with `main` (`docs/next/long-line-documents.md`, "CF
+`scope-font-zoom-restyle`"): the dense zoom step's worst stall fell by
+1.3–1.5 ms in median, short of D5's 2 ms; every other D5 condition held (the
+populated zoom step within 1 ms of its control, each font-change dispatch at
+most `main`'s and within `B_SETTLE_US` on C6's set, no regression beyond a
+reference frame), and the font change fell by 2.4–2.6 ms, by 8.7 ms with
+search results listed. The change is adopted with that deviation recorded:
+the revalidation share was about 10 % of these windows' zoom frame, not the
+32 % C6 measured, and every restyle improves or holds. The lane figure is the
+phase's worst stall, not the action's dispatch, because a reload or a class
+swap is paid in the next frame.

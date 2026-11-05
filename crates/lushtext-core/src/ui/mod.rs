@@ -16,6 +16,7 @@ pub(crate) mod construction_spans;
 pub mod editor_page;
 pub mod entry_paste_cap;
 pub mod folded_text;
+pub mod font_zoom;
 pub mod info_bar;
 pub mod input_quiet;
 pub mod language_catalog;

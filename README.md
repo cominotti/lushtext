@@ -220,8 +220,9 @@ panels never waits for the settings file to be synced.
 
 - **Color Scheme** selects the base GtkSourceView style scheme. Dark variants
   are chosen automatically when GNOME is in dark mode.
-- **Use System Monospace Font** and **Custom Font** control editor and sidebar
-  monospace text.
+- **Use System Monospace Font** and **Custom Font** control the editor's font
+  and the monospace text of search results, the file peek, the minimap,
+  Markdown code blocks and the note and history previews.
 - **Background Opacity** adjusts editor and Markdown preview document
   backgrounds without making window chrome or side panels transparent.
 - **Focus Mode** preferences set the target column width and optional
