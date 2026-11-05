@@ -28,10 +28,13 @@ toolkit floor C6 already recorded.
 
 - **Zoom classes on one display provider** (design D1). The font provider is
   loaded once per base font (family and size: custom or desktop) with rules
-  for every zoom the menu reaches (50–400 % in steps of 10) and the current
-  level, each keyed by a class `lushtext-zoom-<percent>`; the editor-surface
-  rule keeps its line-height guard. Only a base-font change, or a zoom level
-  off the grid set from outside the UI, reloads it.
+  for every zoom the menu reaches (50–400 % in steps of 10) and the lattice
+  the current level steps along (a level set from outside the UI, such as
+  55 %, adds 55, 65, …, 395 %), each keyed by a class
+  `lushtext-font-<generation>-zoom-<percent>`; the editor-surface rule keeps
+  its line-height guard. Only a base-font change, or a zoom level on a new
+  lattice, reloads it. This is the path GTK itself recommends: a global
+  stylesheet, with style classes deciding where it applies.
 - **A zoom step swaps classes, not rules** (D2). A small cross-cutting
   registry (`ui/font_zoom.rs`) holds every widget that follows the font: each
   editor surface view and every `.monospace` widget the application creates
@@ -46,17 +49,23 @@ toolkit floor C6 already recorded.
   the system font, auxiliary `.monospace` widgets keep GTK's defaults as
   today. The file tree does not follow the font today (`50cd2e91` gave it the
   default font on purpose); C6's record said it did, and is corrected.
-- **The font change keeps one whole-tree revalidation** (D4): a new family or
-  base size needs new rules, and any provider load revalidates every widget.
-  It is a deliberate preference action, recorded as an explicit exception
-  against A86 with its measured figure.
+- **The font change keeps one whole-tree revalidation, in its own dispatch**
+  (D4): a new family or base size needs new rules, and any provider load
+  revalidates every widget. The new generation's rules are loaded into a
+  second provider while no widget carries their classes (pure revalidation,
+  no re-layout), and the classes are swapped on the next frame (the
+  font-following widgets' re-layout only), so the two costs `main` pays in one
+  dispatch are split. Whatever of the first still exceeds `B_SETTLE_US` is
+  recorded as an explicit exception against A86 with its measured figure.
 - **Ledger A86** with a `gtk-lush-axioms` probe and sample: a display
   provider reload revalidates every widget and grows with unrelated widgets; a
   class swap on the font-following widgets applies the new font size and does
   not grow with unrelated widgets.
 - **Lane**: the dense restyle cases interleaved with `main`, and a populated
-  restyle case (sidebar with 300 entries shown, search results listed) that
-  shows the zoom cost no longer grows with the window's unrelated widgets.
+  restyle case (sidebar shown over 300 entries, against the same geometry over
+  an empty folder) that shows the zoom cost no longer grows with the window's
+  unrelated widgets, plus a variant listing search results that records the
+  labels' own re-layout (D7).
 
 ## Capabilities
 
@@ -77,7 +86,8 @@ None.
 
 ## Impact
 
-- `ui/theme.rs` (provider rules, base-font reload), `ui/font_zoom.rs` (new,
+- `ui/theme.rs` (provider rules, base-font reload), `ui/window/zoom.rs` (its
+  module comment still says zoom restyles the file tree), `ui/font_zoom.rs` (new,
   cross-cutting, no role), the `.monospace` construction sites listed above,
   `ui/editor_page` (editor surface registration), the A86 probe and sample,
   widget tests, the lane driver, the programme record, the ledger, `ui.md`,

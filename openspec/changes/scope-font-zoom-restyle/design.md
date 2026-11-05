@@ -107,27 +107,36 @@ over-budget dense rows, 9.6 ms on dense/120 wrap-on; font change 11.5 ms
 
 ## Decisions
 
-### D1. One display provider, loaded per base font, with zoom-keyed rules
+### D1. Display providers loaded per base font, with zoom-keyed rules
 
-The provider stays display-wide at `STYLE_PROVIDER_PRIORITY_USER`. It is
-loaded when the base font changes (custom font, `use-system-font`, the desktop
-`monospace-font-name`) and at startup, with, for every zoom `z` in
-`{50, 60, …, 400} ∪ {current}`:
+The font rules stay display-wide at `STYLE_PROVIDER_PRIORITY_USER` (in one of
+the two providers of D4; the one holding the current font generation `g`).
+They are loaded when the base font changes (custom font, `use-system-font`, the desktop
+`monospace-font-name`) and at startup, with, for every zoom `z` in the
+*zoom set* `{50, 60, …, 400} ∪ {z' ∈ [50, 400] : z' ≡ current (mod 10)}`
+(the menu's grid, plus the lattice the current level steps along):
 
 ```css
-textview.tab-content-editor-surface.lushtext-zoom-z,
-textview.tab-content-editor-surface.lushtext-zoom-z text { font-family; font-size; line-height }
-.monospace.lushtext-zoom-z { font-family; font-size }   /* omitted for z = 100 with the system font */
+textview.tab-content-editor-surface.lushtext-font-g-zoom-z,
+textview.tab-content-editor-surface.lushtext-font-g-zoom-z text { font-family; font-size; line-height }
+.monospace.lushtext-font-g-zoom-z { font-family; font-size }   /* omitted for z = 100 with the system font */
 ```
 
-The rule text is a pure function of (family, base points, zoom set,
+The rule text is a pure function of (generation, family, base points, zoom set,
 system-font flag), unit-tested against the rules `apply_font_css` writes
 today, so a class reproduces exactly today's computed font for that zoom. A
-zoom level off the grid (written from outside the UI) adds its class and
-reloads once.
+zoom level off the grid (written from outside the UI, for example 55) adds the
+whole lattice it steps along (55, 65, …, 395) in one load (D4's two-step
+form), because the zoom actions step by 10 from the current level: without
+the lattice every later step from 55 would be off the grid and reload too. The
+zoom set therefore holds at most 72 levels, and only a level whose residue
+modulo 10 is new reloads.
 
 *Rationale*: a class selects among rules already in the cascade, so a zoom step
-needs no provider change. 37 rule pairs keyed by one class each are matched
+needs no provider change. This is also GTK's own recommendation: the GTK 4 → 5
+migration guide says local stylesheets are going away and that applications
+should "use a global stylesheet (`gtk_style_context_add_provider_for_display`)
+and rely on style classes to make your CSS apply only where desired". 36–72 rule pairs keyed by one class each are matched
 through the selector tree's class buckets; task 3.4 checks that an unrelated
 restyle (a hover change, a plain redraw) does not get slower.
 
@@ -175,16 +184,58 @@ that is not registered but carries `.monospace` (a toolkit-internal one) keeps
 GTK's default, as with the system font at 100 % on `main`; outside that state
 it would no longer follow the zoom, which the policy check of D2 prevents for
 application widgets. Widget tests compare computed Pango font descriptions per
-surface against `main`'s rules (task 4.3).
+surface against `main`'s rules (task 4.3), and one test walks every widget of
+every open window and dialog and fails on any widget that carries `.monospace`
+or `GtkTextView:monospace` without being registered (task 4.4), so a
+toolkit-internal one would be found rather than assumed absent (LushText's
+`AdwAboutDialog` sets no debug information, the usual source of one).
 
-### D4. The font change keeps one whole-tree revalidation, recorded
+The following consumers read the font through the widget, so they see the same
+value at the same time as on `main` and need no change; each is still covered
+by a test (task 4.3):
 
-A new family or base size needs new rules; any provider load revalidates every
-widget (A86, part 1). The change is a deliberate preferences action, once per
-choice, and it keeps C6's paced reveal. It is recorded as an explicit exception
-against A86 with the lane figures of task 5.1; its owner is GTK's
-provider-change contract, not LushText's choice of scope. Zoom steps, the
-frequent interaction, no longer pay it.
+- **Text scale** (`gtk-xft-dpi`, the desktop's large-text setting): the rules
+  are the same point sizes, so DPI scaling applies to them exactly as on
+  `main`. **High contrast**: Adwaita's high-contrast sheet changes colours and
+  borders, not fonts; it sits at theme priority, below the font provider.
+- **Focus Mode readable-column margins** read
+  `approximate_char_width` from the source view's Pango context
+  (`ui/editor_page/focus_mode.rs`), which follows the view's computed font
+  after its restyle, whichever mechanism caused it; they are recomputed on the
+  same triggers as on `main`.
+- **Minimap**: the `GtkSourceMap` carries `.monospace` and is registered like
+  the other auxiliary widgets; its `.minimap-view` metrics (1.75 pt,
+  `line-height: 5px`, application priority) meet the same USER-priority rule
+  as on `main`.
+- **Markdown preview code blocks and image fallbacks** register when built, so
+  a preview rendered after a zoom step takes the current class.
+- **Several windows**: the registry and the provider are per process and per
+  display, the zoom key is global, so one step swaps the classes in every
+  window, as today's display-wide reload restyles every window.
+
+### D4. A font change: one whole-tree revalidation, in its own dispatch
+
+A new family or base size needs new rules, and any provider load revalidates
+every widget (A86, part 1). That cannot be avoided, but it can be separated
+from the re-layout. The font module owns **two** display providers at
+`STYLE_PROVIDER_PRIORITY_USER` and a font generation `g`; the classes are
+`lushtext-font-<g>-zoom-<z>`. A base-font change (or a new zoom lattice, D1):
+
+1. loads the rules of generation `g + 1` into the provider that does not hold
+   generation `g`. No widget carries a `g + 1` class yet, so no computed value
+   changes: this dispatch is the probe's *reload same* (pure revalidation, no
+   text re-layout), 2.9 ms with only the view and growing with the window;
+2. on the next frame (after its paint), inside `restyle_everywhere`, swaps
+   every registered widget from its `g` class to its `g + 1` class: the
+   re-layout of the font-following widgets only, as a zoom step.
+
+The provider that held `g` keeps its now unused rules until the next font
+change reloads it, because clearing it would be a second whole-tree
+revalidation. On `main` both costs land in one dispatch (11.0–15.4 ms at low
+load, 17.1 ms in C3's footnote ³). The whole-tree part is recorded as an
+explicit exception against A86 with the lane figures of task 5.2 if step 1
+exceeds `B_SETTLE_US` on any lane case; its owner is GTK's provider-change
+contract. Zoom steps, the frequent interaction, pay only step 2.
 
 ### D5. Adoption criterion
 
@@ -192,7 +243,11 @@ The change is adopted only if, interleaved with `main` at host load below 4,
 the zoom-step interaction dispatch on the dense restyle cases drops by at least
 2 ms in median and no restyle, open or keystroke case regresses beyond one
 reference frame; and the populated restyle case shows the zoom step within
-1 ms of the unpopulated one. Otherwise the change is abandoned and the
+1 ms of its control (the same window geometry, the sidebar shown over an
+empty folder; D7). The font change is adopted in its two-step form if each of
+its dispatches is at most `B_SETTLE_US` on the dense restyle cases, or, where
+step 1 is not, if it is at most the single dispatch `main` takes; otherwise
+the font change keeps one dispatch and that is recorded. Otherwise the change is abandoned and the
 measurement recorded in the programme record. Residuals over `B_INTERACT_US`
 are recorded per row against C6's text-re-layout floor.
 
@@ -200,12 +255,25 @@ are recorded per row against C6's text-re-layout floor.
 
 A86: after `gtk_css_provider_load_from_string` on a display provider, even with
 unchanged text, the next frame revalidates every widget's CSS and its cost
-grows with the number of widgets; after a class swap on a set of widgets whose
+grows with the number of widgets, while rules keyed by classes no widget
+carries change no computed font (what D4's first step relies on); after a class swap on a set of widgets whose
 rules are keyed by that class, the widgets compute the new font, and the next
 frame's cost does not grow with unrelated widgets. Designs that change the
 editor font or zoom cite A86. If a GTK update makes a class swap re-match the
 whole window, D2's benefit is gone and this design is revisited before the
 probe is changed.
+
+### D7. The populated case isolates unrelated widgets from font-following ones
+
+Showing or hiding the sidebar changes the editor's width, and so its wrapped
+re-layout; listing search results adds widgets that **do** follow the font
+(about 9 ms for 200 labels in the probe). Neither isolates what this change
+removes. The populated restyle case therefore runs with the sidebar shown in
+both arms, over a folder of 300 entries against an empty folder, the search
+panel closed: same geometry, only unrelated widgets differ. A second variant
+lists search results and records the labels' own re-layout as the cost of
+following the font, against `B_SETTLE_US` and with a recorded residual over
+`B_INTERACT_US`; it is not part of the 1 ms criterion.
 
 ## Risks / Trade-offs
 
