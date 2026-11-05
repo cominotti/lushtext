@@ -35,7 +35,13 @@ local history, and careful recovery behavior.
   characters or files over 10 MB), automatic search highlighting (over 10,000),
   and invisible-character drawing (over 50,000). Edits that create such a
   paragraph, a paste or a joined line, turn the feature off in the same
-  keystroke, and nothing comes back on until the file is reopened. One inline
+  keystroke, and nothing comes back on until the file is reopened. After every
+  edit in a highlighted document, LushText re-highlights the changed text itself
+  in short steps before GtkSourceView would, so no keystroke stalls the editor;
+  if an edit needs more re-highlighting than a 16 ms allowance (opening a
+  comment at the top of a large file, or typing near the start of a large
+  TypeScript file), syntax highlighting is turned off for that document until
+  it is reopened, instead of stuttering on every key. One inline
   notice says which features are off and why. Undo is off and Local History is
   unavailable above 50 MB, files above 500 MB are refused, and the file's bytes
   are never changed. Documents separated only by `\r` or by U+2029 now load in
