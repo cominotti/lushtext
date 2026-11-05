@@ -2928,6 +2928,10 @@ mod tests {
         // and the file's size, in IEC units.
         let limit = format!("above the {} open limit", iec_size(REFUSE_TO_OPEN));
         assert!(message.contains(&limit), "{message}");
+        assert!(
+            message.contains("above the 512 MiB open limit"),
+            "{message}"
+        );
         assert!(message.contains("MiB"), "{message}");
         assert!(message.contains(&iec_size(size_bytes)), "{message}");
         assert!(!message.contains(" MB"), "{message}");

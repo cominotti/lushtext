@@ -175,10 +175,11 @@ KEYSTROKE_POSITIONS = ("start", "middle", "end", "short")
 KEYSTROKE_GAP_S = float(os.environ.get("RESPONSIVENESS_KEYSTROKE_GAP_S", "0.15"))
 INVISIBLES_LENGTHS = {"quick": (250_000,), "full": (2_000, 10_000, 50_000, 250_000, 1_900_000)}
 # The largest is the largest document LushText opens: its paragraph plus the
-# fixture's LF delimiter is exactly `REFUSE_TO_OPEN` (500,000,000) bytes. A
-# 500,000,000-character paragraph is one byte over and is refused, which made
-# that case measure nothing on either side (`sliced-protected-install`).
-INSTALL_SIZES = (100_000_000, 250_000_000, 499_999_999)
+# fixture's LF delimiter is exactly `REFUSE_TO_OPEN` (512 MiB since
+# `power-of-two-thresholds`) bytes. A paragraph of `REFUSE_TO_OPEN` characters
+# is one byte over and is refused, which made that case measure nothing on
+# either side (`sliced-protected-install`).
+INSTALL_SIZES = (100_000_000, 250_000_000, 536_870_911)
 # C2's draft-recovery shape (design D13), as the crash-recovery smoke's
 # lazy-aggregate fixture builds it: two recovered single-paragraph drafts of
 # 32 MiB each (`sliced-protected-install`, task 6.1).

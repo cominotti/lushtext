@@ -62,7 +62,7 @@ Rules for every task:
 
 ## 3. The open tier (measured before it changes)
 
-- [ ] 3.1 Measure the exclusive-load memory peak.
+- [x] 3.1 Measure the exclusive-load memory peak.
   - Build the `responsiveness-probes` binary on `main` and on the branch.
   - Generate short-line plain-text fixtures of 500,000,000 bytes and
     512 MiB, and a legacy-encoding variant that exercises
@@ -70,7 +70,7 @@ Rules for every task:
   - Open each headless, three repetitions per side, interleaved, each under
     `scripts/with-memory-cap.sh`. Record the scope's `memory.peak`, swap use
     and the largest dispatch.
-- [ ] 3.2 Accept 512 MiB if both of these hold:
+- [x] 3.2 Accept 512 MiB if both of these hold:
   - the branch's peak at 512 MiB is at most main's peak at 500 MB × 1.074,
     plus 5 % run spread;
   - no run swaps or is OOM-killed.
