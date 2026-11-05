@@ -68,16 +68,23 @@ pub const REPLACEMENT_INSERT_SLICE_BYTES: usize = 256 * 1024;
 /// (A70: the editor's font CSS, line numbers, current-line highlight, with and
 /// without a `GtkSourceMap`; host load 40–56, so magnitudes only) found a step
 /// between 11,360 characters (every repetition at most 4.0 ms) and 22,720
-/// (saturated at 8–9 ms). `V_SLICE` is therefore the last size below that
-/// step, 16 lines of 710 characters. The responsiveness lane confirmed it on
-/// the probe build (2026-10-31, `dense/{120,500,710}` in both wrap modes and
-/// all three input variants, load 1.3): every validation dispatch until settle
-/// at most 11.6 ms, every post-open dispatch at most 15.0 ms.
+/// (saturated at 8–9 ms). C6 took the last size below that step, 16 lines of
+/// 710 characters (11,360), and the responsiveness lane confirmed it on the
+/// probe build (2026-10-31, `dense/{120,500,710}` in both wrap modes and all
+/// three input variants, load 1.3): every validation dispatch until settle at
+/// most 11.6 ms, every post-open dispatch at most 15.0 ms.
 ///
-/// Kind: visible-character count. Rounding: a whole number of 710-character
-/// lines (16), the last measured size below the step, not a power of two; a
-/// recorded exception, deferred to `power-of-two-thresholds`.
-pub const V_SLICE: u64 = 11_360;
+/// `power-of-two-thresholds` (design D8, task 5.2) re-measured the power of
+/// two above it on the lane, interleaved with `main` (2026-11-05, load
+/// 0.9–1.2, `dense/{120,500,512,710}` in both wrap modes, plain, AT and
+/// probe-IM, three repetitions): at 16,384 every post-open dispatch stayed at
+/// most 12.6 ms and every validation dispatch until settle at most 11.5 ms
+/// (`main`, at 11,360: 13.1 and 12.3 ms), and activation to laid out was no
+/// slower anywhere (dense/710 wrap-on 102 ms against 202 ms).
+///
+/// Kind: cap; 16,384, the power of two above the A70 step's 11,360, measured
+/// to meet the budgets `main` meets (`power-of-two-thresholds` D8).
+pub const V_SLICE: u64 = 16 * 1024;
 
 /// Whether a document's densest validation batch holds more than [`V_SLICE`]
 /// visible characters (`bound-post-open-settle`, design D6 and D9).

@@ -186,7 +186,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/buffer_replacement.rs` | `SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES` | 720,896 | pending-PT | re-measured (D8) |
 | `crates/lushtext-core/src/model/buffer_replacement.rs` | `REPLACEMENT_CLEAR_SLICE_CHARS` | 65,536 | cap | power of two |
 | `crates/lushtext-core/src/model/buffer_replacement.rs` | `REPLACEMENT_INSERT_SLICE_BYTES` | 262,144 | cap | power of two |
-| `crates/lushtext-core/src/model/buffer_replacement.rs` | `V_SLICE` | 11,360 | pending-PT | re-measured (D8) |
+| `crates/lushtext-core/src/model/buffer_replacement.rs` | `V_SLICE` | 16,384 | cap | 16,384: lane dispatches within main's, laid out no slower (D8, task 5.2) |
 
 ### `crates/lushtext-core/src/model/construction_spans.rs`
 
