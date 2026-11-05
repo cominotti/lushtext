@@ -931,7 +931,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/search_panel/execution.rs` | `MAX_SEARCH_EVENTS_PER_TICK` | 250 | pending-PT | per-turn cap, measured (D8) |
+| `crates/lushtext-core/src/ui/search_panel/execution.rs` | `MAX_SEARCH_EVENTS_PER_TICK` | 256 | cap | 256: a full turn stays within B_settle (D8, task 5.4) |
 
 ### `crates/lushtext-core/src/ui/search_panel/imp.rs`
 
@@ -964,7 +964,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/search_panel/retirement.rs` | `SEARCH_RETIREMENT_ROWS_PER_SLICE` | 250 | pending-PT | per-turn cap, measured (D8) |
+| `crates/lushtext-core/src/ui/search_panel/retirement.rs` | `SEARCH_RETIREMENT_ROWS_PER_SLICE` | 256 | cap | 256: a full turn stays within B_settle (D8, task 5.4) |
 | `crates/lushtext-core/src/ui/search_panel/retirement.rs` | `MAX_SEARCH_RETIREMENT_GENERATIONS` | 2 | cap | power of two |
 
 ### `crates/lushtext-core/src/ui/settings_writes.rs`

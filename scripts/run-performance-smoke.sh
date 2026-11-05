@@ -91,7 +91,7 @@ palette_pipeline_hardening_100000: generated 100,000-file indexes with varied hi
 file_index_rebuild: generated common 10k-file workspace, 1k missing roots, 1k/10k directory-only forests, and a 10k long-path tree that approaches both file-index byte policies with direct build/installed high water
 end_to_end_boundedness: generated one flat 10,000-entry directory, file/note source budget and cancellation fixtures, active/latest coordinator pressure, canonical top-one exclusion, a 2,048-row cleanup page, a 10,000-row middle reconciliation, and large replacement policy input
 content_search_smoke: generated 200-file trees plus one 10k-line file
-search_interactive_policies: generated 1,000-query latest-wins ownership, 10,000-result retirement counters, and a 260-event mixed non-match turn-budget proof
+search_interactive_policies: generated 1,000-query latest-wins ownership, 10,000-result retirement counters, and a 266-event mixed non-match turn-budget proof
 markdown_render_planning: generated 10,000-paragraph complete, dense single-block omitted, oversized-table sub-sliced, and oversized-indented-code sub-sliced plans plus rapid detached-generation ownership pressure
 save_admission_policy: generated eight compact ordinary save requests under the shared byte budget
 editor_memory_policy: generated 1k/10k/100k scalar tab sets plus one-record incremental edit evidence
@@ -117,7 +117,7 @@ Coarse smoke thresholds:
 - end-to-end source construction: directory retention must stay within 100,000 rows, note admission within 10,000 entries and 64 MiB searchable text, deterministic note cancellation must stop at 256 admitted rows, and file/note coordinators must retain only one active plus one latest request
 - cleanup/tree completion: directory pages must retain at most 2,048 rows, broad reconciliation plans must stay plain until GTK applies at most 256 changed rows per turn, and widget evidence must prove main-loop progress, supersession, disposal, and readiness completion
 - workspace/content search: must complete every generated fixture without stalling
-- interactive search policy: active worker groups must stay at one, pending queries at one, whole-result clones at zero, retirement turns at or below 250 rows/cache entries, and every received event variant must share the 250-event GTK-turn budget
+- interactive search policy: active worker groups must stay at one, pending queries at one, whole-result clones at zero, retirement turns at or below 256 rows/cache entries, and every received event variant must share the 256-event GTK-turn budget
 - Markdown planning and disposal: retained events must stay at or below 256 per projection batch, dense oversized blocks must publish an explicit limited terminal, ordinary detached ownership must stay at two generations, and only one latest deferred render may survive pressure
 - save admission: active payload weight must stay within the shared byte budget except for one explicit exclusive overweight request; queued requests retain scalar metadata only
 - editor memory: ordinary below-threshold edits must touch one record and perform zero full scans
