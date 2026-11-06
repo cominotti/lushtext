@@ -67,7 +67,7 @@ pub(super) fn count(bytes: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-/// `v` broadcast to every lane.
+/// `byte` broadcast to every lane.
 #[inline]
 #[target_feature(enable = "avx2")]
 fn splat(byte: u8) -> __m256i {
@@ -313,6 +313,23 @@ mod tests {
         // triple under all three layouts.
         assert_eq!(batched + 3 * single, 3 * (1 << 24));
         assert!(single > 0 && single < 1024, "{single} non-zero triples");
+    }
+
+    /// The kernel is selected on every CPU that reports AVX2 and POPCNT. The
+    /// other kernel tests skip where `count` returns `None`, so without this a
+    /// dispatch that stopped selecting the kernel would pass them all and only
+    /// lose the speed-up.
+    #[test]
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "the explicit-SIMD allowlist row for text_scans/health_avx2.rs \
+                  (.agents/rules/rust.md, Explicit-SIMD kernel allowlist) admits \
+                  this check of the dispatch"
+    )]
+    fn kernel_is_selected_on_every_cpu_with_avx2_and_popcnt() {
+        let supported =
+            std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("popcnt");
+        assert_eq!(count("\u{00A0}".as_bytes()), supported.then_some((1, 0)));
     }
 
     /// The kernel on a few whole texts, beside the shared reference check.
