@@ -898,7 +898,17 @@ invariant; tighten the generator or use the deep lane.
   `main` run only the `pull-request` shards (`github-outputs` emits them as
   `pr-shards`); the weekly schedule and `workflow_dispatch` run every shard.
   `make check-kani-shards` fails when a shard is unmeasured, over 25 minutes,
-  over 12 GiB, or gated `pull-request` while over 15 minutes. Measurement mode,
+  over 12 GiB, or gated `pull-request` while over 15 minutes. The one
+  exception to "developer timing does not count" is a record **pending
+  dispatch**: the table must hold some figure before a branch can push and
+  dispatch `kani.yml`, so a local figure is allowed, but only as
+  `PENDING DISPATCH (owed by <change>)` naming the open OpenSpec change that
+  will replace it. `make check-kani-shards` fails on a pending record (one
+  marked `PENDING DISPATCH` or `provisional`) that names no owner, or whose
+  owner is not an active directory under `openspec/changes/` (archived or
+  never created), so the commit that archives a change still owing a figure
+  fails its hook (close-protected-install-proof-strength, design D7: a
+  written "must not merge on it" was not enough). Measurement mode,
   `make kani KANI_MEASURE=<json>` (`kani-shards.py run --measure`), records each
   shard's wall time, the peak resident memory of its largest descendant (CBMC),
   and every harness's `Verification Time:`; the workflow always runs in it and

@@ -319,3 +319,139 @@ fn clear_turns_take_ranges_from_the_start_within_the_budget() {
     assert_eq!(clear_ranges_for_turn(&[3, 7, 30], limits), 2);
     assert_eq!(clear_ranges_for_turn(&[11, 9], limits), 1);
 }
+
+#[test]
+fn the_content_end_scan_finds_the_first_delimiter_within_its_window() {
+    // Every delimiter ends the content where it starts.
+    assert_eq!(paragraph_content_end("ab\ncd", 0, 64), Ok(2));
+    assert_eq!(paragraph_content_end("ab\r\ncd", 0, 64), Ok(2));
+    assert_eq!(paragraph_content_end("ab\rcd", 0, 64), Ok(2));
+    assert_eq!(paragraph_content_end("ab\u{2029}cd", 0, 64), Ok(2));
+    // From inside the content, and at a delimiter.
+    assert_eq!(paragraph_content_end("abc\nd\ne", 1, 64), Ok(3));
+    assert_eq!(paragraph_content_end("abc\nd\ne", 3, 64), Ok(3));
+    assert_eq!(paragraph_content_end("abc\nd\ne", 4, 64), Ok(5));
+    // An undelimited last paragraph ends at the text's end, also when the
+    // window reaches it exactly.
+    assert_eq!(paragraph_content_end("abcdef", 0, 64), Ok(6));
+    assert_eq!(paragraph_content_end("abcdef", 2, 4), Ok(6));
+    // A delimiter that starts on the window's last byte is found.
+    assert_eq!(paragraph_content_end("abc\ndef", 0, 4), Ok(3));
+}
+
+#[test]
+fn the_content_end_scan_resumes_without_losing_a_straddling_separator() {
+    // No end within the window: resume two bytes before its end, so a U+2029
+    // whose lead byte is past the window is found by the next scan.
+    assert_eq!(paragraph_content_end("abcdefgh\n", 0, 4), Err(2));
+    assert_eq!(paragraph_content_end("abcdefgh\n", 2, 4), Err(4));
+    // Never before `from + 1`, so a scan always advances.
+    assert_eq!(paragraph_content_end("abcdefgh\n", 2, 1), Err(3));
+    assert_eq!(paragraph_content_end("abcdefgh\n", 5, 0), Err(6));
+    // A separator straddling the window's end is found by the resumed scan.
+    let text = "abcd\u{2029}ef";
+    let mut from = 0;
+    let end = loop {
+        match paragraph_content_end(text, from, 5) {
+            Ok(end) => break end,
+            Err(resume) => {
+                assert!(resume > from);
+                from = resume;
+            }
+        }
+    };
+    assert_eq!(end, 4);
+    // Resuming walks a long undelimited tail to its delimiter.
+    let long = format!("{}\n", "a".repeat(100));
+    let mut from = 0;
+    let mut scans = 0;
+    let end = loop {
+        scans += 1;
+        match paragraph_content_end(&long, from, 16) {
+            Ok(end) => break end,
+            Err(resume) => from = resume,
+        }
+    };
+    assert_eq!((end, scans), (100, 8));
+}
+
+#[test]
+fn a_body_needs_slicing_exactly_when_its_hidden_bytes_could_exceed_one_tail_slice() {
+    let per_slice = (PROTECTED_TAIL_SLICE_BYTES / MAX_UTF8_SCALAR_BYTES) as u64;
+    assert_eq!(per_slice, 1 << 16);
+    assert!(!hidden_tail_requires_slicing(0));
+    assert!(!hidden_tail_requires_slicing(per_slice));
+    assert!(hidden_tail_requires_slicing(per_slice + 1));
+    // Saturating: a count whose bytes overflow `u64` still needs slicing.
+    assert!(hidden_tail_requires_slicing(u64::MAX / 2));
+    assert!(hidden_tail_requires_slicing(u64::MAX));
+}
+
+#[test]
+fn the_tail_scan_window_is_32_mib() {
+    assert_eq!(PROTECTED_TAIL_SCAN_BYTES, 1 << 25);
+    assert!(PROTECTED_TAIL_SCAN_BYTES.is_power_of_two());
+}
+
+#[test]
+fn the_cursor_reports_its_offset_and_whether_it_is_inside_a_tail() {
+    // "ab" visible, then a paragraph folded after one character with a
+    // six-byte tail cut at four bytes.
+    let text = "ab\ncdefghi";
+    let ranges = [FoldRange {
+        paragraph: 1,
+        head_chars: 1,
+        tail_chars: 6,
+    }];
+    let limits = ProtectedInstallLimits::new(4, 4).expect("4 bytes is one scalar");
+    let mut cursor = ProtectedInstallCursor::default();
+    assert_eq!((cursor.offset(), cursor.in_tail()), (0, false));
+    let mut seen = Vec::new();
+    while let Some(slice) =
+        plan_protected_install(text, &ranges, &mut cursor, SliceBudget::BYTES_ONLY, limits)
+    {
+        assert_eq!(cursor.offset(), slice.end);
+        seen.push((slice.kind, slice.end, cursor.in_tail()));
+    }
+    assert_eq!(
+        seen,
+        [
+            (SliceKind::Visible, 3, false),
+            (SliceKind::Head, 4, true),
+            (SliceKind::HiddenTail, 8, true),
+            (SliceKind::HiddenTail, 10, false),
+        ]
+    );
+}
+
+#[test]
+fn the_tail_rounding_stops_at_its_floor_and_never_splits_a_scalar_or_a_crlf() {
+    // Down to a scalar boundary.
+    let euro = "a\u{20ac}b".as_bytes();
+    assert_eq!(round_down_to_safe_boundary(euro, 0, 2), 1);
+    assert_eq!(round_down_to_safe_boundary(euro, 0, 3), 1);
+    assert_eq!(round_down_to_safe_boundary(euro, 0, 4), 4);
+    // Never below the floor, even inside a scalar.
+    assert_eq!(round_down_to_safe_boundary(euro, 2, 2), 2);
+    assert_eq!(round_down_to_safe_boundary(euro, 2, 3), 2);
+    // Never between `\r` and `\n`.
+    assert_eq!(round_down_to_safe_boundary(b"\r\n", 0, 1), 0);
+    assert_eq!(round_down_to_safe_boundary(b"a\r\n", 0, 2), 1);
+    // A lone `\r` before another byte is not a CRLF.
+    assert_eq!(round_down_to_safe_boundary(b"a\rb", 0, 2), 2);
+    // At and past the text's end: the end, read nowhere beyond it.
+    assert_eq!(round_down_to_safe_boundary(b"ab", 0, 2), 2);
+    assert_eq!(round_down_to_safe_boundary(b"ab", 0, 9), 2);
+}
+
+#[test]
+fn only_u2029_among_the_e2_80_scalars_is_a_paragraph_delimiter() {
+    // U+2028 (E2 80 A8) shares U+2029's first two bytes and is not a GTK
+    // paragraph delimiter (ledger A42); the proofs' alphabet has no such scalar.
+    let text = "a\u{2028}b\u{2029}c\n".as_bytes();
+    assert_eq!(first_delimiter_in(text, 0, text.len()), Some(5));
+    // A third byte A9 after a different second byte is not U+2029 either.
+    let text = "\u{2069}\n".as_bytes();
+    assert_eq!(first_delimiter_in(text, 0, text.len()), Some(3));
+    assert_eq!(first_delimiter_in(b"\xe2\x80", 0, 2), None);
+}

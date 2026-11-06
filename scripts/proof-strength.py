@@ -459,6 +459,7 @@ def run_kani(
         child = subprocess.Popen(
             command,
             cwd=worktree,
+            env=kani_env(worktree),
             stdout=handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -486,6 +487,17 @@ def run_kani(
 # --- reachability -------------------------------------------------------------
 
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def kani_env(worktree: Path) -> dict[str, str]:
+    """The environment of every `cargo kani` this driver starts: Cargo's build
+    directory pinned inside the worktree's Kani target, where `reach_tokens`
+    reads the `--only-codegen` output. A `build.build-dir` in the user's Cargo
+    config (for example one under `~/.cache`) would otherwise move that output
+    out of the worktree, every harness would read as reaching every mutant, and
+    a mutant no harness reaches would run the whole oracle list instead of
+    being skipped (close-protected-install-proof-strength, 2026-11-06)."""
+    return {**os.environ, "CARGO_BUILD_BUILD_DIR": str(worktree / "target/kani/kani")}
 
 
 def reach_tokens(worktree: Path, package: str, harness: str) -> set[str] | None:
@@ -564,6 +576,7 @@ def baseline(worktree: Path, rev: str, modules: list[str], tier: str) -> dict:
         subprocess.run(
             ["cargo", "kani", "-p", package, "--target-dir", str(worktree / "target/kani"), "--only-codegen"],
             cwd=worktree,
+            env=kani_env(worktree),
             check=True,
             stdout=subprocess.DEVNULL,
             preexec_fn=limit_memory,
@@ -976,6 +989,9 @@ def markdown(rows: list[dict], rev: str, versions: dict) -> str:
 
 
 def self_test() -> None:
+    # Kani's build output stays in the worktree whatever the user's Cargo config.
+    pinned = kani_env(Path("/wt"))["CARGO_BUILD_BUILD_DIR"]
+    assert pinned == "/wt/target/kani/kani", pinned
     # Diff application and restore on a fixture repository.
     with tempfile.TemporaryDirectory() as scratch:
         repo = Path(scratch)

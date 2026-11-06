@@ -28,17 +28,24 @@
 //!
 //! # Domain of the proofs
 //!
-//! Kani (`protected_install/kani_proofs.rs`, shard `core-protected-install`)
-//! proves only the clear plan (K7), C2's fold of one paragraph of any `u64`
-//! length (K8b), the slice-budget derivation's freedom from panics and its
-//! admissibility (K10), and, `should_panic`, that removing the rounding guard
-//! splits a scalar (K11). **The planner's whole-plan properties are not
-//! Kani-proved**: written over documents of a few bytes, they ran out of
-//! memory or time in CBMC at every domain tried
-//! (`docs/next/formal-verification.md`). They are property-tested
-//! (`tests/properties/protected_install.rs`) on generated documents of every
-//! delimiter and scalar length, at small and production budgets and with
-//! multi-megabyte tails; that file lists which properties it asserts.
+//! Kani (`protected_install/kani_proofs.rs`) proves the clear plan (K7),
+//! C2's fold of one paragraph of any `u64` length (K8b), the slice-budget
+//! derivation's freedom from panics and its admissibility (K10), and,
+//! `should_panic`, that removing the rounding guard splits a scalar (K11),
+//! in shard `core-protected-install`. The planner's whole-plan properties
+//! (K1–K6, K8, K9: progress, exact bytes, safe slice ends, homogeneity, the
+//! slice bounds, the visible/hidden switch, the head's end, the slice count)
+//! are proved by a one-step induction (shards `core-protected-install-step`
+//! and `core-protected-install-step-visible`)
+//! over every document of **at most 8 bytes** of `a`, `é`, `€`, `𝄞`, `\r`,
+//! `\n` and U+2029, every fold plan of up to two ranges in paragraph order
+//! with `head_chars` 0..=3, every tail budget of 4..=7 bytes and every
+//! visible budget of 1..=8 bytes with 1..=3 characters or none: the initial
+//! cursor is well-formed, and one call from any well-formed cursor returns a
+//! slice with those properties and a well-formed cursor. Outside that domain
+//! (production budgets, multi-megabyte tails) they are property-tested
+//! (`tests/properties/protected_install.rs`); that file lists which
+//! properties it asserts.
 
 #![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
@@ -364,7 +371,9 @@ fn first_delimiter_in(bytes: &[u8], from: usize, to: usize) -> Option<usize> {
 /// `budget` exactly as [`next_slice_boundary`](super::buffer_replacement::next_slice_boundary) does for a body without folds;
 /// hidden-tail slices are at most `limits.tail_slice_bytes()` long.
 ///
-/// Every property is proved in the domain stated in the module docs.
+/// K1–K6, K8 and K9 are proved by the one-step induction over the domain
+/// stated in the module docs (documents of at most 8 bytes), and
+/// property-tested beyond it.
 #[must_use]
 pub fn plan_protected_install(
     text: &str,
