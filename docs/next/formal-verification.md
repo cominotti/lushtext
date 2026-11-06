@@ -2089,6 +2089,52 @@ slice-count bound). Shards `core-protected-install-step` and
   8 bytes.
 - **No counterexample** on the shipped planner; no defect found.
 
+**Proof strength (C3 task 3.11, 2026-11-05/06; revision `0ed33ccd`, Kani
+0.68.0, CBMC 6.11.0, cargo-mutants 27.0.0, `--tier all`).** Both oracles of
+`scripts/proof-strength.py` over `model/protected_install.rs`: the Kani arm
+with every harness of the module (the four of `core-protected-install` and
+the five `step_*`), the tests arm with cargo-mutants over the workspace
+(`--features lushtext-core/property-tests`). The Kani arm ran one CBMC at a
+time to 74 of 143 mutants, then as three shards of `--shard k/3`, each under
+`with-memory-cap.sh 16G` (the per-mutant results are kept, so the split does
+not change them); each `step_*` mutant run peaks at about 4.6 GiB.
+
+| Revision | Mutants | Floor | Unviable (Kani / tests) | Kani kills (`should_panic`) | Tests kills | Both | Either | Vacuity | Kani timeouts | Kani survivors |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `0ed33ccd` | 143 | 41 | 5 / 5 | 96 (0) | 108 | 94 | 110 | 2 | 0 | 40 |
+
+No timeout, so nothing was re-run. The tests arm above is the run at
+`0ed33ccd`; the unit tests the triage added (`b2054697` and the change's last
+commit) were re-checked with cargo-mutants on the 30 mutants it had missed
+(`retest-tests-arm*.log` in the handoff directory): it now kills 25 of them. The other five are the three equivalent mutants
+below and `first_delimiter_in`'s `index < to` → `<=` (353:17) and
+`visible_slice`'s `next_start > content_end` → `>=` (516:23), which the Kani
+arm kills. Of the 143, the three equivalent mutants are the only ones neither
+oracle kills.
+
+Triage of the 40 Kani survivors (each exactly one class; no survivor showed
+the planner breaking its contract, so no defect was fixed):
+
+| Mutants | Class | Reason |
+| --- | --- | --- |
+| `PROTECTED_TAIL_SLICE_BYTES`, `PROTECTED_CLEAR_SLICE_BYTES` (`*`→`+`, 2) | accepted gap | production constants; the harnesses take symbolic limits. A unit test pins each (tests kill both). |
+| `PROTECTED_TAIL_SCAN_BYTES` (`*`→`+`, `*`→`/` at both operators, 4) | accepted gap | the executor's scan window; no harness reads it. Unit test added (`b2054697`). |
+| `paragraph_content_end` (→ `Ok(0)`, → `Ok(1)`, the `window_end == len` guard → `true`/`false` and `==`→`!=`, the resume `+`→`-`/`*`; 7) | accepted gap | an executor-facing helper outside the planner's Kani domain; no oracle harness calls it. Unit test added (`b2054697`). |
+| `hidden_tail_requires_slicing` (→ `true`/`false`, `>`→`==`/`<`/`>=`; 5) | accepted gap | the executor's direct-or-sliced choice, outside the planner. Unit test added (`b2054697`). |
+| `ProtectedInstallLimits::for_settle_budget` (`/`→`%`, `*`→`+`/`/` twice, the final `<`→`<=`; 6) | accepted gap | K10 proves the derivation panic-free and admissible, not its exact value; the unit test pinning 256 KiB kills all six. |
+| `for_settle_budget`'s `candidate < cap` → `<=` (1) | equivalent | at `candidate == cap` both forms return `cap`. |
+| `ProtectedInstallCursor::offset` (→ 0, → 1), `in_tail` (→ `true`/`false`; 4) | accepted gap | accessors the executor reads; the harnesses read the fields. Unit test added (`b2054697`). |
+| `round_down_to_safe_boundary` `end > floor` → `>=`, `end < len` → `<=`, `bytes[end] == b'\n'` → `!=`, `end - 1` → `end / 1` (4) | equivalent (in the planner) | its only call is a hidden-tail slice with `candidate < len` (so `end < len` throughout), starting at a scalar boundary `floor` (so the loop stops there either way), over a window `first_delimiter_in` found free of `\r` (so the `\r\n` clause is always false). The helper's own contract is pinned by the unit test `the_tail_rounding_stops_at_its_floor_and_never_splits_a_scalar_or_a_crlf`, which kills all four. |
+| `first_delimiter_in`'s `memchr3` skip (`+=`→`-=`/`*=`, 2) | accepted gap | `#[cfg(not(kani))]`; Kani checks the byte loop. Tests kill both. |
+| `first_delimiter_in` U+2029 test `&&`→`||` (1) | accepted gap | the proofs' alphabet has no scalar sharing U+2029's `E2 80` prefix (U+2028 is `E2 80 A8`). Unit test added (`only_u2029_among_the_e2_80_scalars_is_a_paragraph_delimiter`). |
+| `visible_slice`'s `at_delimiter` initialiser `==`→`!=` and `slice.paragraphs() > 0` → `>= 0` (2) | equivalent | `at_delimiter` is read only before the first paragraph is admitted, when `paragraphs() == 0` already blocks the break; and `plan_with` sends a `ParagraphStart` cursor at the next folded paragraph to the head arm, so the first iteration never breaks either way. |
+| `visible_slice`'s second `&&`→`||` and the paragraph length's `next_start - end` → `+` (2) | add harness/assertion | both produced valid but shorter visible slices (one paragraph per slice; a unit's bytes overcounted), and the step harnesses proved only K5's upper bounds. `check_visible` now also asserts that a visible slice stopping before the text's end and before the next fold could not take its next unit, as the ordinary slicer cuts; both mutants were re-run under it (each applied by hand in a scratch worktree exactly as cargo-mutants applies it) and are killed on that assertion (501:58 in 91 s, 509:32 in 364 s, `step_visible_slices_hold_whole_unfolded_paragraphs`; `triage-kill.log` in the handoff directory). |
+
+The two vacuity results (`for_settle_budget`'s `candidate < cap` guard →
+`false` and `<`→`==`) make the derivation return the cap for every cost that
+does not hit it exactly, so K10's `bytes < MAX_SLICE_BYTES` cover becomes
+unsatisfiable while every assertion still holds; the tests kill both.
+
 **History: the whole-plan attempt** (`sliced-protected-install`, 2026-11-02).
 Written as C3's design D5 asked, over every document of a few bytes run
 through the whole planner, these properties did not fit CBMC on the reference
