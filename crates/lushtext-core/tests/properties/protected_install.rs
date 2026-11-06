@@ -5,9 +5,11 @@
 //! paragraphs of every delimiter and scalar length, C2's fold plans at small
 //! thresholds, small and production slice budgets, and multi-megabyte tails.
 //!
-//! The whole-plan properties of design D5 (K1–K6, K8, K9; Kani could not
-//! check them at any domain tried, `docs/next/formal-verification.md`) are
-//! checked on each input: progress and exact coverage, scalar and CRLF safety,
+//! The whole-plan properties of design D5 (K1–K6, K8, K9; Kani proves them by
+//! one-step induction only for documents of at most 8 bytes of a seven-scalar
+//! alphabet, `close-protected-install-proof-strength`,
+//! `docs/next/formal-verification.md`) are checked on each input, at sizes,
+//! budgets and scalars (U+2028 among them) that domain does not reach: progress and exact coverage, scalar and CRLF safety,
 //! homogeneity, the per-slice bounds (hidden slices within `tail_slice_bytes`
 //! and, but for a tail's last, at least `tail_slice_bytes − 3`; a visible slice
 //! within the budget or one whole unfolded paragraph of at most `N_visible`
@@ -173,7 +175,17 @@ fn check(
 }
 
 fn paragraph() -> impl Strategy<Value = String> {
-    let scalar = prop_oneof![Just("a"), Just("é"), Just("€"), Just("𝄞"), Just(" ")];
+    // U+2028 shares U+2029's first two bytes (E2 80) and is content, not a
+    // GTK paragraph delimiter (ledger A42); the Kani alphabet has no such
+    // scalar, so this is where a scanner confusing the two is caught.
+    let scalar = prop_oneof![
+        Just("a"),
+        Just("é"),
+        Just("€"),
+        Just("𝄞"),
+        Just(" "),
+        Just("\u{2028}")
+    ];
     let length = prop_oneof![6 => 0usize..40, 2 => 40usize..400, 1 => 2_000usize..20_000];
     let delimiter = prop_oneof![Just("\n"), Just("\r"), Just("\r\n"), Just("\u{2029}")];
     length
