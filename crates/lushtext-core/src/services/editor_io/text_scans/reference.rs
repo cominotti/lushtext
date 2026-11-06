@@ -112,25 +112,41 @@ pub const ENDINGS: [LineEnding; 4] = [
 
 /// Panic unless every accelerated scan of [`super`] equals its reference on
 /// `text`: the health count summed over `pieces` (consecutive scalar-boundary
-/// parts of `text`), the trim, and the already-normalized check and the
-/// normalization in every line-ending mode. Shared by the unit tests and the
-/// `editor_bytes` fuzz target.
+/// parts of `text`) through the dispatching entry, the `memchr3` fallback and,
+/// where it can run, the AVX2 kernel, each compared on its own; the trim; and
+/// the already-normalized check and the normalization in every line-ending
+/// mode. Shared by the unit tests and the `editor_bytes` fuzz target.
 ///
 /// # Panics
 ///
 /// On the first scan that differs from its reference: that is its purpose.
 pub fn assert_scans_match(text: &str, pieces: &[&str]) {
-    let (mut nbsp, mut zero_width) = (0, 0);
-    for piece in pieces {
-        let (piece_nbsp, piece_zero_width) = super::count_health_characters(piece);
-        nbsp += piece_nbsp;
-        zero_width += piece_zero_width;
-    }
+    let expected = count_health_characters(text);
+    let sum = |scan: &dyn Fn(&str) -> Option<(usize, usize)>| {
+        let mut total = Some((0, 0));
+        for piece in pieces {
+            total = match (total, scan(piece)) {
+                (Some((nbsp, zero_width)), Some((piece_nbsp, piece_zero_width))) => {
+                    Some((nbsp + piece_nbsp, zero_width + piece_zero_width))
+                }
+                _ => None,
+            };
+        }
+        total
+    };
     assert_eq!(
-        (nbsp, zero_width),
-        count_health_characters(text),
+        sum(&|piece| Some(super::count_health_characters(piece))),
+        Some(expected),
         "health {text:?}"
     );
+    assert_eq!(
+        sum(&|piece| Some(super::count_health_characters_memchr(piece.as_bytes(), 0))),
+        Some(expected),
+        "health fallback {text:?}"
+    );
+    if let Some(kernel) = sum(&super::count_health_characters_kernel) {
+        assert_eq!(kernel, expected, "health kernel {text:?}");
+    }
     assert_eq!(
         super::trim_trailing_space_and_tabs(text).as_ref(),
         trim_trailing_space_and_tabs(text),

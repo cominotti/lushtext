@@ -14,11 +14,20 @@ Current fuzz targets:
   line-ending detection, and file-health classification. On every decoded
   text it also compares each accelerated text scan with its scalar reference
   (`services::editor_io::text_scans::reference`): the file-health count over a
-  three-way split, the trailing-whitespace trim, line-ending normalization and
-  the already-normalized check in every mode, and the minimap accumulator's
+  three-way split, compared separately through the dispatching entry, the
+  `memchr3` fallback (`count_health_characters_memchr`) and, on a host with
+  AVX2 and POPCNT, the AVX2 kernel (`count_health_characters_kernel`); the
+  trailing-whitespace trim, line-ending normalization and the
+  already-normalized check in every mode; and the minimap accumulator's
   `inspect_str` against per-character `inspect_char`; a divergence panics.
   The `text_scans_*` seeds hold the edge cases (look-alike lead bytes, hits at
-  slice ends, carriage-return runs, long multibyte lines).
+  slice ends, carriage-return runs, long multibyte lines), and two seed the
+  AVX2 kernel: `text_scans_health_block_seams.txt` (hits whose lead drifts
+  through every offset of the 32-byte halves and 64-byte blocks, so their
+  continuation bytes straddle bytes 31–33 and 63–65, then a 65-byte tail
+  ending in U+FEFF) and `text_scans_health_typographic_run.txt` (long
+  `E2 80 xx` punctuation runs with sparse real hits and `C2`/`E2`/`EF`
+  look-alikes).
 - `markdown_preprocess`: lossy UTF-8 text through Markdown inline-footnote
   preprocessing and `pulldown-cmark` parser setup.
 - `operation_script`: raw bytes decoded into a bounded script of deterministic
@@ -84,6 +93,13 @@ make fuzz-smoke FUZZ_SMOKE_RUNS=256 FUZZ_SMOKE_SECONDS=15 FUZZ_SMOKE_MAX_LEN=819
 `make fuzz-smoke` copies committed seed corpora to a temporary directory before
 running each target. That lets libFuzzer discover and save new inputs during the
 run without dirtying the checkout.
+
+`fuzz/Cargo.toml` declares its own empty `[workspace]`. The repository
+workspace excludes `fuzz`, but Cargo keeps searching parent directories from an
+excluded package, so in a checkout nested inside another one (an agent worktree
+under `.claude/worktrees/`) the fuzz build resolved the outer checkout's
+workspace and failed with "current package believes it's in a workspace when
+it's not".
 
 `make fuzz-operation-smoke` runs only the structured operation target. The
 operation script decoder caps raw input length at 4096 bytes, operation count at

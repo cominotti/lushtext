@@ -1595,6 +1595,14 @@ pub fn bench_health_scan(content: &str) -> (usize, usize) {
     text_scans::count_health_characters(content)
 }
 
+/// Benchmark hook: the `memchr3` file-health scan alone, with the AVX2 kernel
+/// bypassed (the explicit-SIMD policy measures the fallback too).
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn bench_health_scan_fallback(content: &str) -> (usize, usize) {
+    text_scans::count_health_characters_memchr(content.as_bytes(), 0)
+}
+
 /// Benchmark hook: the EditorConfig `trim_trailing_whitespace` save rewrite,
 /// returning the formatted length.
 #[cfg(feature = "test-utils")]

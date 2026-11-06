@@ -388,4 +388,21 @@ exclude_re = [
     "crates/lushtext-core/src/model/paragraph_profile_watch\\.rs:.*replace > with >= in max",
     "crates/lushtext-core/src/model/paragraph_profile_watch\\.rs:.*replace > with >= in WindowPlan<'_>::inner_lengths",
     "crates/lushtext-core/src/model/paragraph_profile_watch\\.rs:.*replace > with >= in window_range",
+    # Equivalent by construction in the AVX2 file-health kernel
+    # (`avx2-health-scan-kernel`, design D5): the kernel and the `memchr3`
+    # scan return the same counts for every byte string, so a mutant that
+    # only moves work from one to the other cannot change a result.
+    # (`count -> None` is not excluded: it changes no count, but
+    # `kernel_is_selected_on_every_cpu_with_avx2_and_popcnt` kills it, so a
+    # dispatch that stops selecting the kernel cannot pass silently.) `&&` to
+    # `||` in the feature check is identical on any host with both AVX2 and
+    # POPCNT (every AVX2 CPU has POPCNT); `&&` to `||` between the ASCII and
+    # lead skips confirms more blocks, and a confirmed block without a hit
+    # adds zero; and `BLOCK + 2` to `BLOCK * 2` (128) stops the block loop
+    # earlier and leaves more bytes to the `memchr3` tail. A mutant that skips
+    # a block it should confirm changes counts and is killed by the lane and
+    # property tests.
+    "crates/lushtext-core/src/services/editor_io/text_scans/health_avx2\\.rs:.*replace && with \\|\\| in count$",
+    "crates/lushtext-core/src/services/editor_io/text_scans/health_avx2\\.rs:.*replace && with \\|\\| in count_blocks$",
+    "crates/lushtext-core/src/services/editor_io/text_scans/health_avx2\\.rs:[0-9]+:[0-9]+: replace \\+ with \\*$",
 ]
