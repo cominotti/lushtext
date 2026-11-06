@@ -1008,13 +1008,15 @@ The full `text_scans/*` table is in `docs/benchmarks/transient-file-load.md`.
   worker over a buffer snapshot, changes that coordination role (WFR minimap row)
   and gets its own change; the cost of `get_slice` per turn is unmeasured. Source:
   `.claude/handoffs/simd-exploration/REPORT.md`, P3.
-- *AVX2 file-health kernel (explicit-SIMD gate met).* On typographic text the
-  `memchr3` health scan is still 19.3 % of `load_text_file` (27.8 of 143.8 ms),
-  above D6's 10 %. A follow-up proposal may add the 64-byte AVX2 block kernel
-  (H1: 2.8× against `memchr3`'s 1.7× on that text) under every condition of the
-  "Explicit SIMD" policy in `.agents/rules/rust.md`: runtime dispatch with the
-  `memchr3` path as the measured fallback, NEON decided (or recorded unmeasured),
-  property and fuzz pinning, an allowlist row. Not started.
+- *AVX2 file-health kernel: closed (`avx2-health-scan-kernel`, 2026-11-05).*
+  The 64-byte AVX2 block kernel (`text_scans/health_avx2.rs`, the first row of
+  the explicit-SIMD allowlist, run-time dispatch with the `memchr3` scan as the
+  measured fallback, NEON recorded unmeasured) brought the typographic health
+  scan from 27.76 to 6.50 ms (4.27×) and its share of `load_text_file` from
+  19.3 % to 5.2 % (148.3 → 124.0 ms); the typographic `editor_file_io` loads are
+  1.17–1.23× faster, and no ASCII, multibyte, mixed-EOL or long-line figure
+  regressed. Verdict table in `docs/benchmarks/transient-file-load.md`, "AVX2
+  file-health kernel".
 
 **Lane result (task 10.4, 2026-10-30): budget missed on both sides, owned by C2
 (Protected View).** Interleaved `make responsiveness-smoke` runs (full tier,

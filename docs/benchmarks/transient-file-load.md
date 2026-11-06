@@ -156,5 +156,65 @@ below the pre-C1 medians at every size.
 Explicit-SIMD gate (D6, task 4.3): on the typographic fixture the health scan
 is 27.79 ms of a 143.78 ms `load_text_file` (`text_scans/load_text_file/typographic_50MiB`,
 three rounds, branch only), **19.3 %**, above the 10 % threshold. The
-allowlist stays empty in this change; the AVX2 kernel is queued as a follow-up
-proposal (see `docs/next/long-line-documents.md`).
+allowlist stayed empty in that change; the AVX2 kernel followed as its own
+change and met the gate (see "AVX2 file-health kernel" below: the health share
+of that load is now 5.2 %).
+
+## AVX2 file-health kernel (`avx2-health-scan-kernel`, 2026-11-05)
+
+On x86-64 with AVX2 and POPCNT, `count_health_characters` runs a 64-byte block
+kernel (`services/editor_io/text_scans/health_avx2.rs`, the one row of the
+explicit-SIMD allowlist in `.agents/rules/rust.md`): it skips all-ASCII blocks
+and blocks without a `C2`/`E2`/`EF` lead, and confirms the rest in vector
+registers with `popcnt` over the hit masks. The `memchr3` scan stays the
+fallback (no AVX2 or POPCNT, aarch64, Kani) and the tail.
+
+Interleaved Criterion verdict, bars pre-registered before any measurement
+(`.claude/handoffs/avx2-health-scan-kernel/bar.md`). A = the bench-first commit
+`b3232a99` (main `fbf0f875` plus the typographic load and fallback benches),
+B = the kernel commit `7d4eb3ab`. Both built with toolchain 1.98.1
+(`RUSTUP_TOOLCHAIN=1.98.1`, `bench` profile), Intel Core Ultra 9 285K, CPUs
+8–23, each run under `scripts/measure.sh` (exclusive locks), rounds
+alternating A, B three times. 1-min load at the start of each run 1.53, 1.15,
+1.35, 1.23, 1.28, 1.21, and 1.27 after the last (`btrfs-stall-report`:
+storage was not a bottleneck, no stall episode). Figures are the median of the
+three round medians, then the min–max of those medians.
+
+| Benchmark | A `b3232a99` | B `7d4eb3ab` | A/B | Bar | Result |
+|---|---|---|---|---|---|
+| `text_scans/health/typographic_50MiB` | 27.76 ms (27.74–27.83) | 6.497 ms (6.454–6.501) | 4.27× | B1: B ≤ 0.50 A | met (0.234) |
+| `text_scans/load_text_file/typographic_50MiB` | 148.3 ms (139.5–148.5) | 124.0 ms (116.2–125.5) | 1.20× | B2: B ≤ 0.95 A, health share < 10 % | met (0.836; share 5.2 %) |
+| `editor_file_io/load_text_file_typographic/1MB` | 2.165 ms (2.161–2.171) | 1.756 ms (1.754–1.778) | 1.23× | B3: no worse than 0.97× | met |
+| `editor_file_io/load_text_file_typographic/10MB` | 23.59 ms (23.45–23.64) | 19.59 ms (19.47–19.65) | 1.20× | B3: B ≤ 0.95 A | met (0.830) |
+| `editor_file_io/load_text_file_typographic/50MB` | 136.5 ms (134.3–140.5) | 116.3 ms (115.3–116.5) | 1.17× | B3: B ≤ 0.95 A | met (0.852) |
+| `editor_file_io/load_text_file/1MB` (ASCII) | 268.9 µs (241.2–301.8) | 281.8 µs (228.0–294.6) | 0.95× | B4: B ≤ 1.03 A and ≤ A + spread | missed on 1.03 (1.048), met on the 5-round rerun below |
+| `editor_file_io/load_text_file/10MB` (ASCII) | 4.396 ms (3.669–4.428) | 4.236 ms (4.025–4.380) | 1.04× | B4 | met |
+| `editor_file_io/load_text_file/50MB` (ASCII) | 47.73 ms (46.01–47.90) | 46.10 ms (45.17–47.54) | 1.04× | B4 | met |
+| `text_scans/health/ascii_50MiB` | 4.014 ms (3.940–4.017) | 2.822 ms (2.773–2.874) | 1.42× | B4 | met |
+| `text_scans/health/multibyte_50MiB` | 4.159 ms (4.023–4.215) | 4.031 ms (3.962–4.148) | 1.03× | B4 | met |
+| `text_scans/health/mixed_eol_50MiB` | 3.918 ms (3.877–3.976) | 2.694 ms (2.649–2.794) | 1.45× | B4 | met |
+| `text_scans/health/long_line` (1.9M chars) | 93.23 µs (92.71–94.27) | 73.51 µs (73.40–73.67) | 1.27× | B4 | met |
+| `text_scans/health_fallback/*` (B) against `health/*` (A) | | | 0.97–1.03 of A | B5: within 3 % | met |
+
+The fallback figures, B against A's scan (the same `memchr3` code on both
+sides): ascii 4.124 against 4.014 ms (1.027), multibyte 4.021 against 4.159
+(0.967), mixed EOL 3.939 against 3.918 (1.005), long line 94.04 against
+93.23 µs (1.009), typographic 26.94 against 27.76 ms (0.970).
+
+**The 1 MB ASCII load, rerun.** Its round medians were bimodal on both sides
+(A 301.8, 241.2, 268.9 µs; B 281.8, 294.6, 228.0 µs), a 25 % spread, while
+the health scan is about 80 µs of that load and 1.42× faster on the same ASCII
+bytes. The 3-round median missed 1.03 by noise, not by the kernel. Decision (recorded, not a bar change):
+rerun that fixture alone, interleaved, five rounds a side, before deciding the
+bar, under the same protocol (load 0.99–1.43 throughout). A: 246.0, 281.8,
+297.1, 269.7, 293.2 µs, median 281.8; B: 256.0, 289.7, 286.6, 261.8,
+283.5 µs, median 283.5: **1.006 of A**, within 1.03 and within A's spread.
+Over all eight rounds the medians are 275.8 against 283.0 µs (1.026). B4 is
+met.
+
+Every bar holds, so the allowlist row landed. The tightest margins are the 1 MB
+ASCII load (noise-bound, above) and the multibyte health scan (0.969 of A
+here, 1.022 at the spec stage: on text whose blocks all hold a non-ASCII byte
+but no candidate lead, the lead skip only pays for itself). Raw Criterion output, `measure.log` with the load before and
+after every run, and the verdict script are in
+`.claude/handoffs/avx2-health-scan-kernel/impl/` (`runs/`, `runs-1mb/`).

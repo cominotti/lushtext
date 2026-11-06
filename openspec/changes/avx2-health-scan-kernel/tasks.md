@@ -16,20 +16,56 @@
 - [x] 3.1 Add `services/editor_io/text_scans/health_avx2.rs`, declared `#[cfg(all(target_arch = "x86_64", not(kani)))]`, with the D1 kernel (starting from `.claude/handoffs/avx2-health-scan-kernel/prototype-v2.patch`), the safe `count(bytes) -> Option<(usize, usize)>` with `is_x86_feature_detected!("avx2")` and `("popcnt")` under `#[expect(clippy::disallowed_macros, reason = "...allowlist row...")]`, and a `SAFETY` comment on every `unsafe` block. Write integer conversions without `as` where the lint policy asks for that.
 - [x] 3.2 Dispatch in `count_health_characters`: `health_avx2::count(bytes)`, or the fallback when it returns `None`. The module docs of `text_scans.rs` drop "no `unsafe`" for the dispatching entry and point to the kernel file.
 - [x] 3.3 Add the allowlist row to `.agents/rules/rust.md` (D7) and run `make check-explicit-simd`, including its `--self-test`, and `make check-policy`.
-- [ ] 3.4 Run the lane test and record its debug and release wall time (target under 10 s in debug; batch triples per D5 if it is slower). Attempt `cargo miri test` on the lane test with a reduced triple range, passing `-Ctarget-feature=+avx2,+popcnt` on the command line only (D5; without it Miri's detection returns false and the kernel is skipped). Record whether Miri supports the intrinsics used, and the result.
-- [ ] 3.5 `cargo mutants` on `text_scans.rs` and `health_avx2.rs` (`make mutants-list` first). Add narrow `exclude_re` entries for the equivalent mutants D5 names (availability returning `None`, the detection conjunction, skip predicates weakened toward confirming more blocks), each with the D5 reason; a mutant that skips a block it should confirm must be killed. Fix, or justify in `.cargo/mutants.toml`, every other survivor.
-- [ ] 3.6 Kani: confirm that no harness compiles `text_scans` (`make check-kani-shards` passes and the shard table is unchanged). Build the cheapest shard that compiles `lushtext-core` under `cfg(kani)` (`make kani KANI_SHARD=core-second-writer`, 6.6 CI minutes, under `scripts/with-memory-cap.sh`, one CBMC at a time; every shard compiles the whole crate, so the cheapest proves the gate as well as any) to prove the `cfg(not(kani))` gate keeps the intrinsics out of the Kani build.
-- [ ] 3.7 Run `make test-unit`, `make test-prop`, `make test-prop-deep PROPTEST_DEEP_CASES=1024`, `make fuzz-corpus-replay`, a bounded `make fuzz-smoke` for `editor_bytes`, `cargo check -p lushtext --bins --locked` (default features) and `make check`. All must be green, every heavy command through `scripts/heavy.sh`.
+- [x] 3.4 Run the lane test and record its debug and release wall time (target under 10 s in debug; batch triples per D5 if it is slower). Attempt `cargo miri test` on the lane test with a reduced triple range, passing `-Ctarget-feature=+avx2,+popcnt` on the command line only (D5; without it Miri's detection returns false and the kernel is skipped). Record whether Miri supports the intrinsics used, and the result.
+- [x] 3.5 `cargo mutants` on `text_scans.rs` and `health_avx2.rs` (`make mutants-list` first). Add narrow `exclude_re` entries for the equivalent mutants D5 names (availability returning `None`, the detection conjunction, skip predicates weakened toward confirming more blocks), each with the D5 reason; a mutant that skips a block it should confirm must be killed. Fix, or justify in `.cargo/mutants.toml`, every other survivor.
+- [x] 3.6 Kani: confirm that no harness compiles `text_scans` (`make check-kani-shards` passes and the shard table is unchanged). Build the cheapest shard that compiles `lushtext-core` under `cfg(kani)` (`make kani KANI_SHARD=core-second-writer`, 6.6 CI minutes, under `scripts/with-memory-cap.sh`, one CBMC at a time; every shard compiles the whole crate, so the cheapest proves the gate as well as any) to prove the `cfg(not(kani))` gate keeps the intrinsics out of the Kani build.
+- [x] 3.7 Run `make test-unit`, `make test-prop`, `make test-prop-deep PROPTEST_DEEP_CASES=1024`, `make fuzz-corpus-replay`, a bounded `make fuzz-smoke` for `editor_bytes`, `cargo check -p lushtext --bins --locked` (default features) and `make check`. All must be green, every heavy command through `scripts/heavy.sh`.
 
 ## 4. Interleaved verdict
 
-- [ ] 4.1 Build both bench binaries with toolchain 1.98.1 (`RUSTUP_TOOLCHAIN` explicit): A = the 1.2 commit, B = the branch tip. Run the D6 filter, alternating A and B, three rounds a side. Use `taskset -c 8-23 scripts/measure.sh` for each run, start each only at 1-min load < 4, and record the load before and after (`.claude/handoffs/avx2-health-scan-kernel/interleave.sh` is the template). Query `btrfs-stall-report` for any outlier round.
-- [ ] 4.2 Apply bars B1–B5 (design D6) with the median of round medians and the spread of round medians. If any bar is missed, try D6's fallbacks in order and remeasure. If it is still missed, remove the dispatch and the allowlist row, record the numbers and stop.
+- [x] 4.1 Build both bench binaries with toolchain 1.98.1 (`RUSTUP_TOOLCHAIN` explicit): A = the 1.2 commit, B = the branch tip. Run the D6 filter, alternating A and B, three rounds a side. Use `taskset -c 8-23 scripts/measure.sh` for each run, start each only at 1-min load < 4, and record the load before and after (`.claude/handoffs/avx2-health-scan-kernel/interleave.sh` is the template). Query `btrfs-stall-report` for any outlier round.
+- [x] 4.2 Apply bars B1–B5 (design D6) with the median of round medians and the spread of round medians. If any bar is missed, try D6's fallbacks in order and remeasure. If it is still missed, remove the dispatch and the allowlist row, record the numbers and stop.
 
 ## 5. Lanes, axioms and documentation
 
-- [ ] 5.1 GTK axioms and samples: none. The change relies on no toolkit behaviour (worker-side byte scan). Record that in the PR. Responsiveness lane: no new case, because the load analysis runs off the GTK thread and its install path is unchanged. `make end-user-smoke` is not required.
-- [ ] 5.2 `docs/benchmarks/transient-file-load.md`: a new "AVX2 file-health kernel" section with the final table and the load record, and the 4.3 gate paragraph pointing at it.
-- [ ] 5.3 `docs/next/long-line-documents.md`: rewrite only the "AVX2 file-health kernel" bullet under "Queued follow-ups from `simd-line-scans`" as closed, with the headline figures. Touch no other line (PR #84 edits that file).
-- [ ] 5.4 `AGENTS.md` (the `editor_io/text_scans.rs` layout line and "allowlist empty" in "Large file handling"), `docs/fuzzing.md` (the new comparisons and seeds) and `docs/end-user-coverage.md` (the text-scan row: lane test). README unchanged (D7). `.agents/rules/rust.md` is changed only by the allowlist row from 3.3.
-- [ ] 5.5 Run `make check-agent-docs`, the rustdoc gate from `build.md`, and `openspec validate avx2-health-scan-kernel --strict`.
+- [x] 5.1 GTK axioms and samples: none. The change relies on no toolkit behaviour (worker-side byte scan). Record that in the PR. Responsiveness lane: no new case, because the load analysis runs off the GTK thread and its install path is unchanged. `make end-user-smoke` is not required.
+- [x] 5.2 `docs/benchmarks/transient-file-load.md`: a new "AVX2 file-health kernel" section with the final table and the load record, and the 4.3 gate paragraph pointing at it.
+- [x] 5.3 `docs/next/long-line-documents.md`: rewrite only the "AVX2 file-health kernel" bullet under "Queued follow-ups from `simd-line-scans`" as closed, with the headline figures. Touch no other line (PR #84 edits that file).
+- [x] 5.4 `AGENTS.md` (the `editor_io/text_scans.rs` layout line and "allowlist empty" in "Large file handling"), `docs/fuzzing.md` (the new comparisons and seeds) and `docs/end-user-coverage.md` (the text-scan row: lane test). README unchanged (D7). `.agents/rules/rust.md` is changed only by the allowlist row from 3.3.
+- [x] 5.5 Run `make check-agent-docs`, the rustdoc gate from `build.md`, and `openspec validate avx2-health-scan-kernel --strict`.
+
+## Implementation record (2026-11-05)
+
+- 3.4: lane test 1.95 s debug, 0.14 s release (under the 10 s target, no
+  batching change). Miri (nightly, `RUSTFLAGS=-Ctarget-feature=+avx2,+popcnt`
+  on the command line only, a standalone crate that `#[path]`-includes the
+  kernel file) supports every intrinsic used; the reduced lane test passed in
+  410 s with no UB reported.
+- 3.5: 105 in-scope mutants. Killed: all but five; the bridge
+  `count_health_characters_kernel -> None` survived and is now killed by
+  `kernel_bridge_forwards_to_the_kernel`. Four equivalent survivors excluded
+  with the D5 reasons: `count -> None`, `&&`/`||` in the feature check, `&&`/`||`
+  between the two skips, and `BLOCK + 2` to `BLOCK * 2` (the block loop stops
+  earlier, the `memchr3` tail takes the rest). cargo-mutants 27's `--re` does
+  not filter struct-field-deletion mutants, so each focused run also tested 41
+  of those from untouched files; 14 of them survive on `main` as well
+  (`draft_service.rs`, `file_tree.rs`, `editor_io.rs:231`), recorded as an
+  open item, not part of this change.
+- 3.6: `make check-kani-shards` passes, shard table unchanged;
+  `make kani KANI_SHARD=core-second-writer` 7/7 verified.
+- 3.7: `make fuzz-smoke` for `editor_bytes` exposed a pre-existing blocker in
+  nested worktrees (the fuzz crate resolved the outer checkout's workspace);
+  fixed with an empty `[workspace]` in `fuzz/Cargo.toml`.
+- 4.1/4.2: every bar met; B4's 1 MB ASCII load missed 1.03 on the three-round
+  run by noise (bimodal rounds on both sides) and met it on a focused
+  five-round rerun (1.006). Figures in `docs/benchmarks/transient-file-load.md`.
+- 3.7/5.5: `make test-unit` (in `make test`: 2,311 non-widget tests passed,
+  widget shards 391 + 396 + 813, 0 FLAKY), `make test-prop`,
+  `make test-prop-deep PROPTEST_DEEP_CASES=1024` (94 each),
+  `make fuzz-corpus-replay`, `make fuzz-smoke` for `editor_bytes`, default
+  `cargo check -p lushtext --bins --locked`, `make check`,
+  `make check-agent-docs`, the rustdoc gate (it caught two private intra-doc
+  links in the new `count_health_characters` docs, now backticks) and
+  `openspec validate --strict` are green. `make accessibility-smoke` and
+  `make visual-smoke` ran because `docs/end-user-coverage.md` is in the
+  accessibility fingerprint.

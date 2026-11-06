@@ -14,7 +14,7 @@
 //! `.agents/rules/rust.md` names, and keeps the `memchr3` scan as its fallback
 //! and tail.
 //!
-//! The scalar forms the scans replaced live in [`reference`] (tests, benches,
+//! The scalar forms the scans replaced live in `reference` (tests, benches,
 //! and fuzzing only); the property tests (`tests/properties/text_scans.rs`)
 //! and the `editor_bytes` fuzz target pin each scan, and the kernel and its
 //! fallback separately, to its reference. No Kani harness compiles this
@@ -55,10 +55,10 @@ pub fn is_zero_width(character: char) -> bool {
 /// inside it and no state carries between slices.
 ///
 /// On x86-64 with AVX2 and POPCNT this runs the block kernel of
-/// [`health_avx2`] (the one file the explicit-SIMD allowlist names), which
+/// `health_avx2` (the one file the explicit-SIMD allowlist names), which
 /// returns the `memchr3` scan's result for every byte string; otherwise, and
 /// on every other target and under Kani, it runs the `memchr3` scan
-/// ([`count_health_characters_memchr`]).
+/// (`count_health_characters_memchr`).
 #[must_use]
 pub fn count_health_characters(slice: &str) -> (usize, usize) {
     #[cfg(all(target_arch = "x86_64", not(kani)))]
@@ -116,7 +116,7 @@ use memchr_scan::count_health_characters_memchr;
 /// AVX2 or POPCNT, not x86-64, or a Kani build).
 ///
 /// The tests, fuzzing and benches reach the kernel only through this, so the
-/// feature detection stays in [`health_avx2`], the one file the allowlist
+/// feature detection stays in `health_avx2`, the one file the allowlist
 /// names.
 #[cfg(any(test, feature = "test-utils", feature = "fuzzing"))]
 #[must_use]
@@ -302,6 +302,21 @@ mod tests {
             let (head_nbsp, head_zero) = count_health_characters(head);
             let (tail_nbsp, tail_zero) = count_health_characters(tail);
             assert_eq!((head_nbsp + tail_nbsp, head_zero + tail_zero), whole);
+        }
+    }
+
+    /// The test bridge forwards to the kernel wherever the kernel runs, so a
+    /// test that skips on `None` skips only where the kernel cannot run.
+    #[test]
+    fn kernel_bridge_forwards_to_the_kernel() {
+        let text = "\u{2019}\u{00A0}\u{200B}".repeat(30);
+        #[cfg(all(target_arch = "x86_64", not(kani)))]
+        let expected = health_avx2::count(text.as_bytes());
+        #[cfg(not(all(target_arch = "x86_64", not(kani))))]
+        let expected = None;
+        assert_eq!(count_health_characters_kernel(&text), expected);
+        if let Some(counts) = expected {
+            assert_eq!(counts, (30, 30));
         }
     }
 
