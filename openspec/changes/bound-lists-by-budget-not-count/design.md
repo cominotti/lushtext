@@ -196,14 +196,20 @@ Kani proves, for every `u64` limit and every sequence of up to N charges:
 
 **Turn continuation.** `turn_continues(elapsed_us, units_done) -> bool` is
 true when `units_done == 0` (every turn makes progress) or
-`elapsed_us < LIST_TURN_SLICE_US`. `LIST_TURN_SLICE_US` is `derived`:
-`B_INTERACT_US / 2` (4,000 µs), so a turn leaves the rest of an interaction
+`elapsed_us < LIST_TURN_SLICE_US`. `LIST_TURN_SLICE_US` is computed from
+`B_INTERACT_US / 2` (4,000 µs; inventory kind `out: time`, the class every
+time budget has), so a turn leaves the rest of an interaction
 budget for the frame and the input that waits on it. Kani proves (T1) progress
 and (T2) that a turn stops at the first unit started at or after the slice, so
-a dispatch costs at most the slice plus one unit. The unit's cost is what each
-workflow measures (D4, D6). The existing count caps (`MAX_SEARCH_EVENTS_PER_TICK`
-256, `CHILD_APPEND_BATCH_SIZE` 256) stay as internal caps: they bound a unit's
-size, and the slice bounds how many units run per turn.
+the work the check guards costs at most the slice plus one unit. What a
+workflow does after its loop (search applies the turn's collected matches as
+splices once the drain stops, D4) is **not** covered by T2: it is bounded by
+the count caps and by measurement (task 8.2). The unit's cost is what each
+workflow measures (D4, D6). The existing count caps stay as internal caps:
+`CHILD_APPEND_BATCH_SIZE` (256) bounds a sidebar unit's size, and
+`MAX_SEARCH_EVENTS_PER_TICK` (256) bounds how many search events, and so how
+many matches the post-drain splices apply, one turn can take. The slice bounds
+how many units run per turn below those caps.
 
 The clock is read by the GTK caller (`glib::monotonic_time`) and passed in, so
 the policy stays pure. A new Kani shard `core-list-budget` holds B1–B4 and
@@ -218,11 +224,14 @@ honest and simple to state.
 ### D3. The budgets and their kind
 
 Both budgets are **presentation caps** (`.agents/rules/rust.md`): rounding
-one down hides results. Neither predates PT, so its "up from" value is
-**`main`'s worst-case retention under the count cap it replaces**. That value
-is computed by a `derived` constant from named inputs, and the budget is the
-power of two at or above it. B3 and a compile-time assertion
-(`BUDGET >= MAIN_WORST_RETENTION`) tie the two together. The per-item charge
+one down hides results. Neither predates PT, so its "up from" value is its
+**intended value**: at least **`main`'s worst-case retention under the count
+cap it replaces**, and for the sidebar the larger of that and a typical-size
+floor (below). Each floor is computed by a `derived` constant from named
+inputs, and the budget is the power of two at or above the larger floor. B3
+and one compile-time assertion per floor (`BUDGET >= MAIN_WORST_RETENTION`,
+and for the sidebar `BUDGET >= SIDEBAR_TYPICAL_FLOOR_RETENTION`) tie them
+together. The per-item charge
 must never under-count what an item retains, so its fixed part is a **coverage
 window** (rounded up), measured as described below.
 
@@ -233,24 +242,37 @@ window** (rounded up), measured as described below.
   and the navigation index); today every `SearchMatch` clones its own
   `PathBuf`. `main`'s worst case: 16,384 matches, each a 4,096-byte line
   (`MAX_SEARCH_MATCH_LINE_BYTES`), each in its own file with a 4,096-byte path
-  (Linux `PATH_MAX`, an external fact). That is
-  `16,384 × (4,096 + 4,096 + fixed)`. With a fixed charge of at most 2 KiB it
-  is about 160 MiB, so the budget is **256 MiB**, final after task 2.4
-  measures the fixed charge. For typical matches (a 120-byte line, files of
+  (Linux `PATH_MAX`, an external fact). The per-file charge counts **both**
+  path copies (the canonical path and the display path, which is never longer),
+  so that is `16,384 × (4,096 + 2 × 4,096 + fixed)`: 192 MiB plus
+  `16,384 × fixed`. With a fixed charge of at most 4 KiB it is at most
+  256 MiB, so the budget is **256 MiB**; a measured fixed charge above 4 KiB
+  makes it 512 MiB by the same rule. Final after task 2.4 measures the fixed
+  charge. For typical matches (a 120-byte line, files of
   about 20 matches, a fixed charge near 1 KiB), 256 MiB retains more than
   200,000 matches. The budget is a ceiling that only pathological input
   reaches. At `main`'s own worst case it retains exactly what `main` did,
   rounded up.
-- **`SIDEBAR_DIRECTORY_RETAINED_BYTES`** (`ui/sidebar/workspace_section/policy.rs`,
-  the workspace-tree workflow's pure policy). Charge per row: the scanner's
+- **`SIDEBAR_DIRECTORY_RETAINED_BYTES`** (`ui/sidebar/policy.rs`, the
+  `WFR-WORKSPACE-TREE` workflow's one pure policy; `workspace_section/` has no
+  `policy.rs`). Charge per row: the scanner's
   existing graph weight (`directory_entry_graph_bytes`) plus
   `SIDEBAR_ROW_FIXED_CHARGE`, which covers the `FileTreeItem`, the mirror row,
-  and the three path caches. `main`'s worst case: 10,000 rows with 255-byte
-  names (`NAME_MAX`) under a parent near `PATH_MAX`. The value is computed and
-  rounded up in task 2.4. A directory with 131,072 entries of typical names
-  must fit, so that "past 10,000" means far past it. If the computed budget
-  does not fit that, the fixed charge is reduced first (the duplicate path
-  copies in the caches become `Arc<Path>`), not the target.
+  and the three path caches. Two derived floors decide it, and the budget is
+  the power of two at or above the **larger** of them (both asserted at
+  compile time):
+  - `MAIN_SIDEBAR_WORST_RETENTION`: `main`'s worst case, 10,000 rows with
+    255-byte names (`NAME_MAX`) under a parent near `PATH_MAX`;
+  - `SIDEBAR_TYPICAL_FLOOR_RETENTION`: 131,072 rows with 32-byte names under a
+    parent path of 256 bytes, so that "past 10,000" means far past it.
+
+  The second floor is the user-experience target, and it is not given up when
+  the measured fixed charge makes it large. The first remedy is to shrink what
+  a row really retains (the duplicate path copies in the caches become
+  `Arc<Path>`, then re-measure); the budget then follows the floor. As an
+  estimate only: at about 1 KiB per typical row the typical floor is
+  128 MiB, and `main`'s worst case (about 10,000 × 5 KiB) is about 50 MiB, so
+  the typical floor is expected to decide.
 
 **Measuring the fixed charges (coverage windows).** A widget fixture retains
 16,384 matches and 16,384 rows, presented, then reads `VmHWM` growth against
@@ -264,11 +286,12 @@ and so are their rows in `docs/thresholds.md`. The bench mirror of
 `MAX_DIR_ENTRIES` goes too. `JOURNAL_SCAN_MAX_ENTRIES`'s assertion moves from
 `RESULT_CAP` to `MAX_REPLACE_PREVIEW_ROWS`. Replace All touches only previewed
 rows, so the files one run can journal are at most the preview's rows; that
-was always the real bound. The new rows: the two budgets (presentation cap,
-`up from <MAIN_WORST_RETENTION value>`), the two fixed charges (coverage
-window), the two `MAIN_*_WORST_RETENTION` values (derived), and
-`LIST_TURN_SLICE_US` (`derived` from `B_INTERACT_US`, `out: time` by the rule;
-it lands as derived so it records its input). `make check-thresholds` must pass
+was always the real bound. The new rows: the two budgets (presentation cap, `up from <the larger derived
+floor>`), the two fixed charges (coverage window), the two
+`MAIN_*_WORST_RETENTION` values and `SIDEBAR_TYPICAL_FLOOR_RETENTION`
+(derived), and `LIST_TURN_SLICE_US` (`out: time`, written
+`expr: B_INTERACT_US / 2`, as `REANALYSIS_ALLOWANCE_US` records
+`expr: B_SETTLE_US`). `make check-thresholds` must pass
 with the new rows and fail first on each of: a budget below its `up from`
 value, a missing fixed-charge row, and a `RESULT_CAP` row left behind
 (task 5.1's self-test cases).
@@ -281,9 +304,31 @@ today. At the first `Limited` it sends one `SearchEvent::BudgetReached {
 retained }`, behind the matches it describes (the ordering `ResultCap` has
 today), then **keeps walking and counting matches without retaining them**. It
 sends a coalesced `SearchEvent::BeyondBudget(total_found)` at most every
-250 ms, on the progress cadence, and the terminal `Done` carries the final
-total. Cancellation, the identity-limit `Incomplete` terminal and errors are
-unchanged.
+250 ms, by a worker-side clock (the existing `Progress` cadence is every 100
+files, not a time, so it cannot carry this), best-effort through `try_send`
+like `Progress`, and the terminal `Done` carries the final total, so a dropped
+`BeyondBudget` loses nothing. Cancellation, the identity-limit `Incomplete`
+terminal and errors are unchanged. Reaching the budget must not set the walk's
+stop state (`WalkStop`); only the caller's cancellation and `Incomplete` stop
+production.
+
+**Admission is serialized with delivery.** The walk is `ignore::WalkParallel`,
+so several threads find matches at once, and today's cap is an
+`AtomicUsize` that is "approximate under parallel walkers". The prefix
+property of D2 is about *delivery order*, so admission and the send of an
+admitted match must happen as one step: one `Mutex<RetainedBudget>` per
+search, held across `admit` and the `tx.send` of that match (and of
+`BudgetReached` on the first refusal). Channel order is then admission order,
+`BudgetReached` is always behind every retained match, and the sequential
+Kani proofs of D2 apply to what the consumer receives. Holding the lock across
+a blocking send costs nothing new: when the bounded channel is full the
+walkers wait either way. Once the budget is `Limited`, a walker reads the
+latch through one `AtomicBool` and counts with one `fetch_add`, without taking
+the lock, so the beyond-budget walk is not serialized. *Alternative rejected:*
+a lock-free `fetch_add` reservation. A refused large charge and an admitted
+small one can then reach the channel in either order, so a retained match
+could arrive after `BudgetReached`, and the proof would not describe the
+running code.
 
 *Why keep counting?* "Showing 245,301 matches; 108,229 more not shown" tells
 the user how far to narrow the query. "Some results were not shown" does not.
@@ -315,7 +360,14 @@ behaviour (a capped search was never saved). The exact wording is settled in
 task 3.6 against `docs/accessibility.md`'s bounded-announcement rules.
 
 **Replace All.** It is built from the sealed snapshot of retained matches, as
-today. Its own safety budget is unchanged. When the search was limited, the
+today. Its own safety budget is unchanged. This is a visible change of
+balance: on `main` the search cap equalled the preview row budget (both
+16,384), so a preview covered every shown match unless its byte budget cut.
+Now a search can show more matches than one preview admits (40,000 shown,
+16,384 previewed). The preview already states its omitted count
+(`ReplacePreviewOutcome::omitted_eligible`) and applies only previewed rows,
+so this is honest, and the user sees more than before. Raising the preview's
+own budget is `stream-replace-all`'s (PT D13 item 2). When the search was limited, the
 preview summary adds "N matches past the search limit are not included", and
 Replace All acts only on previewed rows (the data-safety invariant it already
 has). No unseen match is ever replaced.
@@ -360,8 +412,14 @@ SIDEBAR_DIRECTORY_RETAINED_BYTES, …)`. That is the existing deterministic,
 sort-order, byte-bounded path. The service gains one change: a **single pass**
 when the directory fits the budget, and the existing two-pass top-k only when
 it does not. The comment beside that function explains that the second pass
-doubles directory I/O, which must not become the common case. The scan reports
-the total count of visible entries it examined. The placeholder is no longer
+doubles directory I/O, which must not become the common case. The single pass
+retains every entry while its running charge fits. At the first entry that does
+not fit, it drops what it retained and continues **as the first, scalar-only
+pass** of the existing two-pass selection (counting and tracking the largest
+graph weight), then runs the second pass. An over-budget directory therefore
+still costs two passes, never three. The scan keeps its `lookahead_cap` and
+visibility arguments unchanged. The scan reports the total count of visible
+entries it examined. The placeholder is no longer
 `10000+ items - showing first 10000`. It appears only when the budget cuts, and
 reads "Showing X of Y entries" with a description that says why and offers the
 path to the rest (Open, `Ctrl+O`). Below the budget, which by D3 covers every
@@ -374,6 +432,14 @@ entries… X of Y") ends the directory. It has a stable accessible name, and its
 label is updated at most once per turn. It is removed by the terminal. Readiness
 `workspace-refresh-complete` stays pending until the terminal, as it is during
 reconciliation today.
+
+A budget-sized plan is plain data that crosses to GTK (up to the budget, where
+`main`'s crossed at most 10,000 rows). When a refresh or collapse supersedes a
+loading directory, its remaining rows must not be dropped in one GTK dispatch
+over `B_SETTLE_US`: they go to the bounded plain-data disposal lane
+(`ui/plain_disposal.rs`, the "Plain-data disposal ownership" rule), or a
+measurement at the full budget shows the drop fits. The same holds for a stale
+scan result rejected on GTK.
 
 **The terminal dispatch (blocker).** The path caches (`child_paths`,
 `item_locations`, `visible_path_counts`) are updated **per applied batch** for
@@ -433,12 +499,16 @@ cap) and A10 (mapped is not drawn), are cited without change.
 - `ui/search_panel/evidence.rs`: `retained_matches`, `matches_found`,
   `result_limited`, `reveal_turn_events`, and the worst turn's duration under
   `test-utils`.
-- `ui/sidebar/workspace_section/policy.rs`: the sidebar budget, the row
-  charge, the placeholder and tail-row wording, the per-batch cache plan.
+- `ui/sidebar/policy.rs` (the `WFR-WORKSPACE-TREE` workflow's one pure
+  policy, at its canonical role home): the sidebar budget, the row charge, the
+  placeholder and tail-row wording, the per-batch cache plan. The budget
+  override for tests lives in `ui/sidebar/test_policy.rs`.
 - `ui/sidebar/workspace_section/scan_execution.rs`: batch application with
   per-batch cache maintenance, and the tail row.
-- The workspace-tree evidence surface: `directory_total_entries`,
-  `directory_retained_entries`, `directory_limited`, `loading_tail_rows`.
+- The workspace-tree evidence surface (`ui/sidebar/evidence.rs`,
+  `WorkspaceTreeEvidence` and its per-section `WorkspaceSectionEvidence`):
+  `directory_total_entries`, `directory_retained_entries`,
+  `directory_limited`, `loading_tail_rows`.
 
 Both rows in `docs/workflow-readability-matrix.md` re-derive their measured
 cells (`workflow-convention.md`, "Re-deriving a row's measured cells"), and
@@ -452,9 +522,11 @@ lines, and so does the sidebar facade.
   on them). They now mean "the retained-byte budget cut the results". New:
   `content_search.matches_found` (`u32`, saturating, including matches past
   the budget) and `content_search.retained_match_count`.
-  `content_search.match_count` stays the retained count, so existing
-  assertions keep meaning what they meant. For the sidebar's workspace tree
-  evidence: `limited_directory_count` and `loading_directory_count`. Everything
+  `content_search.match_count` and `search.workspace_match_count` stay the
+  retained count, so existing assertions keep meaning what they meant. For the
+  workspace tree, projected from `WorkspaceTreeEvidence` into the existing
+  `AutomationWorkspaceSnapshot`: `workspace.limited_directory_count` and
+  `workspace.loading_directory_count`. Everything
   is documented in `docs/automation.md` and `docs/automation-reference.md`,
   with `make check-automation-docs`.
 - The AT-SPI anchor `atspi-anchor-workspace-search-status-bar-16-384-results-truncated`
@@ -508,3 +580,46 @@ longer exists, because the label no longer says "16,384+".
   outcome is fixed now: fit `B_SETTLE_US` or record a measured toolkit floor.
 - Whether the end-of-store splice is O(batch) (task 1.3). The fallback is
   decided in D6.
+
+## Spec review (stage 2, 2026-11-06)
+
+An independent review against `origin/main` `469e3f84` changed these, each
+recorded here so the implementation does not re-derive them:
+
+- **Role homes.** The workspace-tree workflow (`WFR-WORKSPACE-TREE`) keeps its
+  one pure policy at `ui/sidebar/policy.rs`, its evidence at
+  `ui/sidebar/evidence.rs` and its test overrides at `ui/sidebar/test_policy.rs`.
+  `ui/sidebar/workspace_section/` has no `policy.rs` or `evidence.rs`; the
+  first draft named them there, which `make check-workflow-boundaries` would
+  have rejected.
+- **Parallel admission (D4).** `WalkParallel` delivers from several threads, so
+  the prefix property needed a serialization point. Admission and the send of
+  an admitted match are one step under a per-search lock; the beyond-budget
+  count is lock-free. Without it the Kani proofs would describe a sequential
+  model the running code does not follow.
+- **`BeyondBudget` cadence (D4).** The `Progress` cadence is every 100 files,
+  not 250 ms, so the 250 ms coalescing is a worker clock, best-effort.
+- **Search worst case (D3).** The per-file charge counts two path copies, so
+  `main`'s worst case is 192 MiB plus 16,384 fixed charges. 256 MiB holds for
+  a fixed charge up to 4 KiB.
+- **Sidebar floors (D3).** The 131,072-entry target is a second derived floor
+  the budget must cover, not a check that can fail after the budget is fixed.
+  At about 1 KiB per typical row it needs 128 MiB, above `main`'s worst case,
+  so the typical floor is expected to decide. User experience first: the
+  target stays, and what a row retains shrinks before anything else.
+- **Replace Preview's own budget (D4).** A search can now show more matches
+  than one preview admits. The 40,000-match scenario no longer claims every
+  match is "offered to Replace Preview"; the preview states its omitted count,
+  as it already does, and a scenario pins that it never replaces an omitted
+  match.
+- **T2's reach (D2).** T2 bounds the guarded loop only; search's post-drain
+  splices are bounded by the 256-event cap and by task 8.2's measurement.
+- **`LIST_TURN_SLICE_US` kind.** `out: time`, as every time budget in
+  `docs/thresholds.md` (`REANALYSIS_ALLOWANCE_US` is the precedent).
+- **Sidebar scan and disposal (D6).** An over-budget directory costs two
+  passes, not three, and a superseded budget-sized plan retires off GTK or by
+  a measured drop.
+
+The baseline was not re-measured in this review. PT's raw lines
+(`amend/widget/evidence.txt`) were checked against the table above and agree,
+and task 1.1 re-measures before any fix.

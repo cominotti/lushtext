@@ -55,8 +55,8 @@ record (design D1).
     past the search limit, and it never replaces them.
 - **Workspace sidebar without a directory entry cap.**
   - A directory scan retains up to `SIDEBAR_DIRECTORY_RETAINED_BYTES` (the
-    power of two above `main`'s worst case at 10,000 entries, admitting
-    at least 131,072 typical entries) in one pass. It uses the existing
+    power of two at or above the larger of `main`'s worst case at 10,000
+    entries and 131,072 typical entries) in one pass. It uses the existing
     two-pass top-k only when the directory exceeds the budget.
   - Rows load in time-sliced batches from the top, behind a "Loading
     entries… X of Y" tail row. Path caches are maintained per batch, so the
@@ -73,12 +73,12 @@ record (design D1).
   - the first-realize cost inside a revealer.
 - **Thresholds.** `RESULT_CAP`, `MAX_DIR_ENTRIES` and the bench mirror leave
   `docs/thresholds.md`. The two budgets (presentation caps, `up from` their
-  derived `main` worst case), their fixed charges (coverage windows) and the
-  slice (derived) are added. `JOURNAL_SCAN_MAX_ENTRIES` is asserted against
+  derived floors), their fixed charges (coverage windows), the floors
+  (derived) and the slice (`out: time`) are added. `JOURNAL_SCAN_MAX_ENTRIES` is asserted against
   `MAX_REPLACE_PREVIEW_ROWS`.
 - **Automation.** New fields `content_search.matches_found`,
   `content_search.retained_match_count`, and the sidebar's
-  `limited_directory_count`/`loading_directory_count`. `result_capped` keeps
+  `workspace.limited_directory_count`/`workspace.loading_directory_count`. `result_capped` keeps
   its name and now means "the budget cut". One AT-SPI anchor is renamed. The
   accessibility smoke reaches the limit through a smoke-only feature,
   `smoke-list-budgets`.
@@ -116,8 +116,9 @@ None. Every behaviour belongs to an existing capability.
     interned paths);
   - `ui/search_panel/{policy,execution,evidence,results,replace_execution,list_factory}.rs`;
   - `services/file_tree.rs` (single pass);
-  - `ui/sidebar/workspace_section/{policy,scan_execution,evidence}.rs` and the
-    file-tree item's placeholder kinds;
+  - `ui/sidebar/{policy,evidence,test_policy}.rs` (the `WFR-WORKSPACE-TREE`
+    role homes), `ui/sidebar/workspace_section/scan_execution.rs`, and the
+    file-tree item's placeholder kinds (`ui/sidebar/file_tree_item.rs`);
   - `services/search_backup.rs` (assertion);
   - `ui/automation.rs`, `model/automation.rs`;
   - the `smoke-list-budgets` feature in `crates/lushtext-core/Cargo.toml` and

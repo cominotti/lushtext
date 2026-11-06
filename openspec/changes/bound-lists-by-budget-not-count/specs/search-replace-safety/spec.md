@@ -12,3 +12,8 @@ When a workspace search was limited by its retained-byte budget, Replace Preview
 #### Scenario: A search without a limit is unchanged
 - **WHEN** the search retained every match it found
 - **THEN** the preview summary carries no search-limit clause
+
+#### Scenario: More retained matches than the preview admits
+- **WHEN** an unlimited search retained more matches than Replace Preview's row or byte budget admits
+- **THEN** the preview lists the admitted prefix and states the omitted count through its existing summary
+- **AND** confirming replaces only checked preview rows, never an omitted match
