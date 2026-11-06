@@ -308,6 +308,12 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/highlight_chunking.rs` | `HIGHLIGHT_CHUNK_BYTES` | 8,192 | cap | power of two |
 | `crates/lushtext-core/src/model/highlight_chunking.rs` | `MAX_SYNTAX_PARAGRAPH_BYTES` | 8,003 | derived | computed from named inputs; not rounded (D2) |
 
+### `crates/lushtext-core/src/model/list_budget.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/model/list_budget.rs` | `LIST_TURN_SLICE_US` | 4,000 | out: time | time unit; `B_INTERACT_US / 2`, half the interaction budget per list turn (`bound-lists-by-budget-not-count` D2) |
+
 ### `crates/lushtext-core/src/model/paragraph_boundary.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
