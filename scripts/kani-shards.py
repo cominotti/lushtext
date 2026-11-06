@@ -198,6 +198,15 @@ PROTECTED_INSTALL_MEASURED_IN = (
     PENDING_OWNER + ": local make kani KANI_MEASURE run on the reference workstation, 2026-11-02 "
     "(Kani 0.68.0; core-protected-install 4.54 min / 7.94 GiB), not runner measurements"
 )
+# close-protected-install-proof-strength, the one-step harnesses.
+PROTECTED_INSTALL_STEP_MINUTES = 11.0
+PROTECTED_INSTALL_STEP_PEAK_GIB = 4.1
+PROTECTED_INSTALL_STEP_VISIBLE_MINUTES = 7.0
+PROTECTED_INSTALL_STEP_VISIBLE_PEAK_GIB = 4.6
+PROTECTED_INSTALL_STEP_MEASURED_IN = (
+    PENDING_OWNER + ": local make kani KANI_MEASURE run on the reference workstation, 2026-11-06 "
+    "(Kani 0.68.0; not yet measured), not runner measurements"
+)
 # spawn-completion-priority's review fix added the two settle-evidence
 # harnesses to widgets-slice-loop-requests: 9.8 min / 1.64 GiB locally against
 # the shard's 7.6 min on the runner before; the runner figure is scaled by that
@@ -468,11 +477,43 @@ SHARDS: dict[str, Shard] = {
     # 12 of the 17.3 local minutes the combined group did.
     "core-protected-install": Shard(
         "lushtext-core",
-        ("model::protected_install::kani_proofs::",),
+        # Its four harnesses by name: the module path alone would also own the
+        # step harnesses of core-protected-install-step.
+        (
+            "model::protected_install::kani_proofs::protected_clear_plan_",
+            "model::protected_install::kani_proofs::settle_budget_derivation_",
+            "model::protected_install::kani_proofs::unrounded_tail_end_",
+            "model::protected_install::kani_proofs::one_paragraph_fold_",
+        ),
         gate="scheduled",
         ci_minutes=PROTECTED_INSTALL_MINUTES,
         ci_peak_gib=PROTECTED_INSTALL_PEAK_GIB,
         measured_in=PROTECTED_INSTALL_MEASURED_IN,
+    ),
+    # The one-step induction over the planner (K1-K6, K8, K9), apart from
+    # core-protected-install so neither shard's figure hides the other's, and
+    # split by the fit order: the five harnesses took about 16 local minutes
+    # together, over the 15-minute local budget; the visible step alone takes
+    # about 6.
+    "core-protected-install-step": Shard(
+        "lushtext-core",
+        (
+            "model::protected_install::kani_proofs::step_initial_",
+            "model::protected_install::kani_proofs::step_head_",
+            "model::protected_install::kani_proofs::step_hidden_tail_",
+        ),
+        gate="scheduled",
+        ci_minutes=PROTECTED_INSTALL_STEP_MINUTES,
+        ci_peak_gib=PROTECTED_INSTALL_STEP_PEAK_GIB,
+        measured_in=PROTECTED_INSTALL_STEP_MEASURED_IN,
+    ),
+    "core-protected-install-step-visible": Shard(
+        "lushtext-core",
+        ("model::protected_install::kani_proofs::step_visible_",),
+        gate="scheduled",
+        ci_minutes=PROTECTED_INSTALL_STEP_VISIBLE_MINUTES,
+        ci_peak_gib=PROTECTED_INSTALL_STEP_VISIBLE_PEAK_GIB,
+        measured_in=PROTECTED_INSTALL_STEP_MEASURED_IN,
     ),
     "core-protected-fold-shape": Shard(
         "lushtext-core",
@@ -866,7 +907,12 @@ ORACLES: dict[str, Oracle] = {
             _h(_PI + "settle_budget_derivation_fits_and_never_overflows", 0.28, "ci"),
             _h(_PI + "one_paragraph_fold_shows_its_head_cap", 1.46, "ci"),
             _h(_PI + "protected_clear_plan_covers_the_buffer_once", 7.12, "ci"),
+            _h(_PI + "step_initial_cursor_is_well_formed", 65.83, "local"),
+            _h(_PI + "step_head_ends_at_the_fold_point", 109.58, "local"),
+            _h(_PI + "step_hidden_tail_slices_are_safe_and_bounded", 131.77, "local"),
             _h(_PI + "unrounded_tail_end_splits_a_scalar", 249.29, "local"),
+            _h(_PI + "step_hidden_tail_end_continues_into_a_visible_slice", 262.25, "local"),
+            _h(_PI + "step_visible_slices_hold_whole_unfolded_paragraphs", 334.72, "local"),
         ),
     ),
     "crates/lushtext-core/src/ui/editor_page/protected_view/policy.rs": Oracle(
