@@ -35,7 +35,10 @@ use crate::services::filesystem::metadata as fs_metadata;
 /// parallel walkers — concurrent threads may overshoot by up to the thread
 /// count before observing the stop signal. The UI should clamp display to
 /// this value.
-pub(super) const RESULT_CAP: usize = 10_000;
+///
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M2).
+pub const RESULT_CAP: usize = 16 * 1024;
 
 /// Why the parallel walk should stop scanning, and who owns each reason.
 ///
@@ -724,12 +727,35 @@ mod tests {
         );
     }
 
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` stopped
+    /// at 10,000 matches, so a search finding 10,000 delivers every one.
     #[test]
-    fn result_cap_at_10000() {
+    fn no_loss_a_search_delivers_every_match_main_delivered() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let workspace_folder = dir.path();
+        for i in 0..20 {
+            fixture::write_text(
+                &workspace_folder.join(format!("big_{i}.txt")),
+                &"needle\n".repeat(500),
+            );
+        }
+        let events = search_collect(
+            "needle",
+            &[workspace_folder],
+            &ContentSearchOptions::default(),
+        );
+        assert_ends_with_done(&events);
+        assert_eq!(count_matches(&events), 10_000);
+        assert!(!events.iter().any(|e| matches!(e, SearchEvent::ResultCap)));
+        assert_eq!(RESULT_CAP, 16 * 1024);
+    }
+
+    #[test]
+    fn result_cap_stops_the_search_past_the_cap() {
         let dir = tempdir().expect("expected operation to succeed");
         let workspace_folder = dir.path();
 
-        for i in 0..20 {
+        for i in 0..30 {
             let content = "needle\n".repeat(600);
             fixture::write_text(&workspace_folder.join(format!("big_{i}.txt")), &content);
         }
@@ -757,7 +783,7 @@ mod tests {
         let dir = tempdir().expect("expected operation to succeed");
         let workspace_folder = dir.path();
 
-        for i in 0..20 {
+        for i in 0..30 {
             fixture::write_text(
                 &workspace_folder.join(format!("big_{i}.txt")),
                 &"needle\n".repeat(600),

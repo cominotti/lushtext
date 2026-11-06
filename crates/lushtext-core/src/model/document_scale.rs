@@ -11,7 +11,8 @@
 //!
 //! - **Byte tiers** — open admission, undo, the live-memory multiplier and
 //!   local-history availability — depend on total bytes alone and describe the
-//!   latest loaded or saved bytes, exactly as the retired `FileSizeCheck` did.
+//!   latest loaded or saved bytes, as the retired `FileSizeCheck` did (with
+//!   the tiers `power-of-two-thresholds` set: 8 MiB and 64 MiB).
 //! - **Presentation features** — syntax highlighting, bracket matching, the
 //!   minimap, invisible characters, automatic search highlighting, the word
 //!   wrap of the longest paragraphs, and the `protected_view` flag — are the ones an editor session holds monotone:
@@ -30,7 +31,8 @@
 //!
 //! Kani proves monotonicity, the meet laws of the join, that the scale of a
 //! profile maximum is the join of the scales, and that the byte tiers equal
-//! the retired ones, over every `u64` component (`document_scale/kani_proofs.rs`).
+//! the independent `byte_tier_reference` table, over every `u64` component
+//! (`document_scale/kani_proofs.rs`).
 
 #![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
@@ -52,6 +54,8 @@ use super::paragraph_boundary::ProfileSummary;
 /// of `document-scale-policy` therefore takes the conservative candidate of
 /// the origin proposal's decision 4: about 1 MiB, GNOME Text Editor's figure,
 /// in place of the former 10 MB. Recorded as an open question in the design.
+///
+/// Kind: presentation cap; a power of two aligned with its neighbours.
 pub const S_SYNTAX: u64 = 1024 * 1024;
 
 /// The largest short-line document of each measured language whose
@@ -68,21 +72,59 @@ pub const S_SYNTAX: u64 = 1024 * 1024;
 /// after; the second ran at 11.4 falling to 0.8). Both runs and their loads
 /// are in ledger A69 and `docs/next/long-line-documents.md` (C6).
 ///
-/// Kind: byte thresholds per language. Rounding: down to a whole KiB (512 B
-/// for TypeScript, whose measured value is below 11 KiB), not to a power of
-/// two; a recorded exception, deferred to `power-of-two-thresholds`.
+/// Each gate's own `Kind:` line gives its rounding: eleven are recorded
+/// exceptions with their corpus counts, CSS converts to a power of two
+/// (`power-of-two-thresholds` design D9, "Measured baseline").
 mod attach_threshold {
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 32 KiB unhighlights 57,527 of 792,448 HTML files highlighted today
+    /// (7.26 %), above design D2's 0.05 % floor.
     pub const HTML: u64 = 46 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 256 KiB unhighlights 592 of 613,131 Markdown files (0.10 %), above
+    /// design D2's 0.05 % floor.
     pub const MARKDOWN: u64 = 320 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 128 KiB unhighlights 119 of the registry's Rust files (0.90 %), above
+    /// design D2's 0.05 % floor.
     pub const RUST: u64 = 184 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 16 KiB unhighlights 10,883 of 148,432 JSON files (7.33 %), above
+    /// design D2's 0.05 % floor.
     pub const JSON: u64 = 24 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 64 KiB unhighlights 29 of `/usr/include`'s headers (0.80 %), above
+    /// design D2's 0.05 % floor.
     pub const C: u64 = 84 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 32 KiB unhighlights 44 of Python's standard library files (6.22 %),
+    /// above design D2's 0.05 % floor.
     pub const PYTHON: u64 = 48 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 16 KiB unhighlights 814 JavaScript files (1.19 %), above design D2's
+    /// 0.05 % floor.
     pub const JAVASCRIPT: u64 = 18 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 8 KiB unhighlights 189 TypeScript files (1.23 %), above design D2's
+    /// 0.05 % floor.
     pub const TYPESCRIPT: u64 = 21 * 512;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 128 KiB unhighlights 156 YAML files (0.37 %), above design D2's 0.05
+    /// % floor.
     pub const YAML: u64 = 144 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 128 KiB unhighlights 231 XML files (0.25 %), above design D2's 0.05 %
+    /// floor.
     pub const XML: u64 = 132 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`
+    /// D12): A69's sweep derived 37 KiB as the largest CSS size whose attach
+    /// keeps every dispatch within `B_SETTLE_US`, so 64 KiB fails by that
+    /// measurement (cited, not rerun); 32 KiB would unhighlight CSS files of
+    /// 32–37 KiB that `main` highlighted.
     pub const CSS: u64 = 37 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 32 KiB unhighlights 1,347 shell scripts (5.94 %), above design D2's
+    /// 0.05 % floor.
     pub const SHELL: u64 = 39 * 1024;
 }
 
@@ -99,11 +141,14 @@ mod attach_threshold {
 /// other ten measured languages showed no per-key dispatch above 2.8 ms at
 /// their higher attach threshold.
 ///
-/// Kind: byte thresholds. Rounding: HTML 16 KiB is a power of two as
-/// measured; JSON's 20 KiB is rounded down to a whole KiB, a recorded
-/// exception deferred to `power-of-two-thresholds`.
+/// HTML's 16 KiB is a power of two as measured; JSON's 20 KiB is a recorded
+/// exception (its own `Kind:` line).
 mod typing_threshold {
+    /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
     pub const HTML: u64 = 16 * 1024;
+    /// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down
+    /// to 16 KiB unhighlights 8,963 of 146,512 JSON files highlighted today
+    /// (6.12 %).
     pub const JSON: u64 = 20 * 1024;
 }
 
@@ -160,7 +205,7 @@ pub const fn chunked_threshold_with(
 /// so they drive the chunked install a language with a cap takes. No build
 /// uses it unless a test opts in.
 ///
-/// Kind: model parameter. Rounding: a power of two above Markdown's
+/// Kind: policy tier (a model parameter). Rounding: a power of two above Markdown's
 /// attach-after-install threshold.
 pub const MODEL_MARKDOWN_CAP: u64 = 512 * 1024;
 
@@ -218,9 +263,9 @@ const fn min_u64(a: u64, b: u64) -> u64 {
 /// median of the twelve measured attach thresholds (maintainer decision of
 /// 2026-10-31; a unit test recomputes it).
 ///
-/// Kind: byte threshold. Rounding: the median rounded down to a whole KiB,
-/// not to a power of two; a recorded exception, deferred to
-/// `power-of-two-thresholds`.
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): the median
+/// rounded down to a whole KiB; rounding down to 32 KiB unhighlights 10,082 of
+/// the sampled Java files (2.17 %).
 pub const S_SYNTAX_OTHER: u64 = 47 * 1024;
 
 /// The language class a document's total-size syntax threshold depends on
@@ -363,24 +408,66 @@ impl SyntaxLanguage {
 /// Syntax highlighting and bracket matching turn off above this paragraph
 /// length (C0: 2,000 / 3,000; ledger A29 is the context-engine behaviour it
 /// avoids).
+///
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): rounding down to
+/// 1,024 unhighlights 3-22 % of real Markdown files (3.1 % of this repository's
+/// `docs/` and `openspec/`, 3.3 % of a 1,791-file sample), and 2,048 breaks
+/// `MAX_SYNTAX_PARAGRAPH_BYTES <= HIGHLIGHT_CHUNK_BYTES` (8,195 > 8,192), whose
+/// 16 KiB alternative was measured over budget (ledger A69).
 pub const L_SYNTAX: u64 = 2_000;
 
-/// The minimap turns off above this many bytes. Today's 10 MB value, kept
-/// unchanged so a lower [`S_SYNTAX`] does not silently remove the minimap from
-/// short-line files between the two.
+/// The minimap turns off above this many bytes: well above [`S_SYNTAX`], so
+/// the lower syntax tier does not remove the minimap from short-line files
+/// between the two.
+///
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds` D12,
+/// task 9.5 M10): 16 MiB breaks its bound with the minimap shown. On the lane
+/// (`total-size/*/txt/mm`, plain, three repetitions, interleaved with `main`,
+/// load 0.6–1.8), opening a 16 MiB short-line document with the minimap took a
+/// 37–38 ms dispatch against 23–27 ms on `main` at 10,000,000 bytes (10.5 ms
+/// worse, past the one-reference-frame allowance), and one of three post-open
+/// settles did not finish within the lane's 10 s cap (none did on `main`).
+/// `main`'s 10,000,000 bytes is kept, so this tier no longer coincides with
+/// [`HISTORY_SAVE_ONLY_BYTES`] (16 MiB).
 pub const S_MINIMAP: u64 = 10_000_000;
 
 /// The minimap turns off above this paragraph length (C0 idle
 /// re-confirmation: 22,000 / 50,000, a lower bound of the boundary).
+///
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds` D12,
+/// task 9.5 M14): at 32,768 the minimap's cost breaks its bound. On the lane
+/// (plain, `.txt`, three repetitions, interleaved with `main`), the worst
+/// background dispatch with the minimap on was 29.6–33.8 ms at 32,768 against
+/// 20.3–20.4 ms on `main` at 22,000 (13.4 ms worse, past the one-reference-frame
+/// allowance), and one open dispatch reached 114 ms. `main`'s 22,000 is kept
+/// (rounding down to 16,384 would turn the minimap off for 0.73 % of corpus text
+/// files, task 4.5).
 pub const L_MINIMAP: u64 = 22_000;
 
 /// Invisible-character drawing turns off above this paragraph length (C0:
 /// 50,000 / 74,000).
+///
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds` D12,
+/// task 9.5 M14): it must not exceed [`L_PROTECT_EDIT`], because every
+/// Protected View document has invisible-character drawing off
+/// (`long-line-protected-view` design D10, asserted below). 65,536 would turn
+/// it on for protected documents of 50,001–65,536 characters, a separate design
+/// decision; `main`'s 50,000 is kept (rounding down to 32,768 would turn it off
+/// for 0.085 % of corpus text files, task 4.5).
 pub const L_INVISIBLES: u64 = 50_000;
+
+// Every protected document is past the gates of the features Protected View
+// turns off (`long-line-protected-view` design D10).
+const _: () = assert!(L_MINIMAP <= L_PROTECT_EDIT);
+const _: () = assert!(L_INVISIBLES <= L_PROTECT_EDIT);
+const _: () = assert!(L_SEARCH_HIGHLIGHT <= L_PROTECT_EDIT);
 
 /// Automatic search highlighting turns off above this paragraph length (C0
 /// idle re-confirmation: 10,000 / 15,000).
-pub const L_SEARCH_HIGHLIGHT: u64 = 10_000;
+///
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M14).
+pub const L_SEARCH_HIGHLIGHT: u64 = 16 * 1024;
 
 /// Paragraphs longer than this are shown unwrapped (the per-paragraph wrap
 /// gate, `explore-editing-long-paragraphs`; `model::paragraph_wrap` holds the
@@ -392,6 +479,8 @@ pub const L_SEARCH_HIGHLIGHT: u64 = 10_000;
 /// (GTK's Wayland text-input module, the bounded surrounding text in place),
 /// a wrapped keystroke reaches B_interact near 10,000 characters on the
 /// reference lane (6.9–7.5 ms median, p90 8.5–8.8, design D3), so 8,192.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const L_WRAP_EDIT: u64 = 8_192;
 
 /// The shortest paragraph length the profile counts (threshold 0 of
@@ -400,7 +489,13 @@ pub const L_WRAP_EDIT: u64 = 8_192;
 /// C0's stall half of `L_protect` (`L_protect_stall`, 500 / 710). It no longer
 /// decides `protected_view`, which holds above [`L_PROTECT_EDIT`]: at 500 it
 /// would have made ordinary prose written one paragraph per line view-only.
-pub const L_PROTECT: u64 = 500;
+///
+/// Kind: presentation cap; C0's 500 taken to the power of two 512 (`power-of-two-thresholds`
+/// D7, task 5.1): the lane's new dense/512 case met what dense/500 meets on the
+/// same build (2026-11-05, both wrap modes, plain, AT and probe-IM, three
+/// repetitions): every post-open dispatch at most 9.7 ms (dense/500: 10.8 ms),
+/// every validation dispatch until settle at most 9.7 ms (10.5 ms).
+pub const L_PROTECT: u64 = 512;
 
 /// The shortest paragraph length at which one keystroke inside it was measured
 /// over `B_INTERACT_US` with word wrap on (C2 task 1.1, 2026-10-30: no plain
@@ -412,6 +507,8 @@ pub const L_PROTECT: u64 = 500;
 /// keystrokes miss `B_INTERACT_US` (median 9.6 ms at 20,000 characters, about
 /// 20 ms at 50,000). The responsiveness lane's `keystroke` group re-measures
 /// it (`docs/next/long-line-documents.md`, C2 implementation record).
+///
+/// Kind: measurement record; kept exact.
 pub const L_EDIT_STALL: u64 = 3_500;
 
 /// `protected_view` holds above this paragraph length (maintainer decision,
@@ -423,6 +520,12 @@ pub const L_EDIT_STALL: u64 = 3_500;
 /// most this long stay editable under the reduced features, above
 /// [`L_EDIT_STALL`] as a recorded toolkit-floor exception. Density never
 /// decides the flag.
+///
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds`): the
+/// maintainer's editability contract ("editable up to ~50k", 2026-10-30).
+/// 32,768 would make documents with 32-50 k character paragraphs view-only;
+/// 65,536 is above the accepted keystroke cost (C5: 7.7-11.1 ms at 50,000,
+/// 16-20 ms at 100,000).
 pub const L_PROTECT_EDIT: u64 = 50_000;
 
 /// Whether a longest paragraph of `longest_paragraph_chars` characters puts
@@ -434,8 +537,12 @@ pub const fn protects_by_length(longest_paragraph_chars: u64) -> bool {
 }
 
 /// Plain-text scroll stays within budget up to this paragraph length (C0:
-/// 500,000 / 710,000). The largest per-paragraph threshold the profile counts.
-pub const N_VISIBLE: u64 = 500_000;
+/// 500,000 / 710,000), rounded down. The largest per-paragraph threshold the
+/// profile counts; `HEAD_CAP` is bound by `N_HEAD`, so it changes no head.
+///
+/// Kind: cap; C0's 500,000 rounded down to a power of two
+/// (`power-of-two-thresholds` D4).
+pub const N_VISIBLE: u64 = 256 * 1024;
 
 /// The visible characters any [`R_BATCH`] consecutive paragraphs may hold
 /// before one 2000 px validation batch exceeds `B_SETTLE_US` (C0: a dense
@@ -445,25 +552,48 @@ pub const N_VISIBLE: u64 = 500_000;
 /// decides no feature of this policy (since C2's D0, a dense document whose
 /// paragraphs are at most [`L_PROTECT_EDIT`] stays editable). Inside Protected
 /// View it bounds the fold.
-pub const V_BATCH: u64 = 56_000;
+///
+/// Kind: presentation cap; 56,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12): `N_DENSE` = `V_BATCH / R_BATCH` is 256
+/// characters, not below `main`'s 250; measured in task 9.5 M11.
+pub const V_BATCH: u64 = 64 * 1024;
 
 /// Paragraphs in one density window: A31's 112 rows per 2000 px validation
-/// batch at the default font, doubled for the 50 % minimum zoom (C0).
-pub const R_BATCH: usize = 224;
+/// batch at the default font, doubled for the 50 % minimum zoom (C0), cover
+/// the 223 rows a batch can touch at 9 px; 256 states that margin honestly
+/// and equals `MAX_R_FOLD`, the fold ring's capacity.
+///
+/// Kind: coverage window; 224 rounded up to a power of two
+/// (`power-of-two-thresholds` D5).
+pub const R_BATCH: usize = 256;
 
-/// Undo history is off above this many bytes (unchanged).
-pub const UNDO_TOTAL_BYTES: u64 = 50_000_000;
+/// Undo history is off above this many bytes.
+///
+/// Kind: presentation cap; 64 MiB (was 50,000,000 bytes, `power-of-two-thresholds`
+/// D3). Three 64 MiB buffers with undo stay inside the 256 MiB live-editor
+/// budget.
+pub const UNDO_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Local history keeps only save-boundary capture above this many bytes
-/// (unchanged).
-pub const HISTORY_SAVE_ONLY_BYTES: u64 = 10_000_000;
+/// Local history keeps only save-boundary capture above this many bytes.
+///
+/// Kind: presentation cap; 16 MiB (was 10,000,000 bytes on `main`, rounded up,
+/// `power-of-two-thresholds` D12): task 9.5 M10 measured the periodic capture
+/// of a modified buffer at the tier (chunked, worst dispatch under 1 ms).
+pub const HISTORY_SAVE_ONLY_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Local history is unavailable above this many bytes (unchanged).
-pub const HISTORY_UNAVAILABLE_BYTES: u64 = 50_000_000;
+/// Local history is unavailable above this many bytes.
+///
+/// Kind: presentation cap; 64 MiB, with [`UNDO_TOTAL_BYTES`] (was 50,000,000 bytes,
+/// `power-of-two-thresholds` D3).
+pub const HISTORY_UNAVAILABLE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// A file above this many bytes is refused (unchanged): `set_text` for 500 MB
-/// allocates about 1 GB and blocks the main thread for seconds.
-pub const REFUSE_TO_OPEN: u64 = 500_000_000;
+/// A file above this many bytes is refused: `set_text` for 512 MiB allocates
+/// about 1 GiB and blocks the main thread for seconds.
+///
+/// Kind: presentation cap; 512 MiB (was 500,000,000 bytes, `power-of-two-thresholds`
+/// D3, task 3: the exclusive-load memory peak at 512 MiB stayed within main's
+/// at 500 MB times 1.074 plus the run spread, with no swap or OOM kill).
+pub const REFUSE_TO_OPEN: u64 = 512 * 1024 * 1024;
 
 /// Live-memory multiplier while undo history is on.
 const MULTIPLIER_WITH_UNDO: u64 = 3;
@@ -987,23 +1117,28 @@ impl Default for DocumentScale {
     }
 }
 
-/// A frozen transcription of the retired byte-only classification
-/// (`services/file_limits.rs` `FileSizeCheck::classify`, its `open_allowed`,
-/// `undo_enabled` and `estimated_buffer_multiplier` queries, and
-/// `local_history_service::availability_for_size_check`, as of commit
-/// 1820f14a). The parity unit tests and the Kani tier harness compare
-/// [`DocumentScale::for_total_bytes`] with it; it is not production behaviour.
+/// An independent transcription of the byte tiers `power-of-two-thresholds`
+/// set (design D3, amended by D12): 16 MiB save-only local history, 64 MiB no
+/// undo and no local history, and the open tier. Its shape is that of the retired
+/// byte-only classification (`services/file_limits.rs` `FileSizeCheck`, as of
+/// commit 1820f14a); its values are written out here rather than read from the
+/// production constants, so the unit tests and the Kani tier harness that
+/// compare [`DocumentScale::for_total_bytes`] with it catch a tier changed on
+/// one side only. It is not production behaviour.
 #[cfg(any(test, kani))]
-pub(crate) mod retired_byte_tiers {
+pub(crate) mod byte_tier_reference {
     use super::LocalHistoryAvailability;
 
     // The retired 1 MB `LargeFileToast` tier is folded into `Normal`: every
     // query below answered it exactly as `Normal` (its one consumer was an
     // accessibility sentence, not a compared tier), so keeping it only left
     // three comparison mutants no parity test could tell apart.
-    const DISABLE_SYNTAX_HIGHLIGHTING: u64 = 10_000_000;
-    const DISABLE_UNDO_HISTORY: u64 = 50_000_000;
-    const REFUSE_TO_OPEN: u64 = 500_000_000;
+    /// Kind: presentation cap; the 16 MiB save-only local-history tier.
+    const DISABLE_SYNTAX_HIGHLIGHTING: u64 = 16 * 1024 * 1024;
+    /// Kind: presentation cap; the 64 MiB no-undo, no-local-history tier.
+    const DISABLE_UNDO_HISTORY: u64 = 64 * 1024 * 1024;
+    /// Kind: presentation cap; the 512 MiB open tier.
+    const REFUSE_TO_OPEN: u64 = 512 * 1024 * 1024;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum FileSizeCheck {
@@ -1049,7 +1184,7 @@ pub(crate) mod retired_byte_tiers {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn profile(total_bytes: u64, longest: u64, worst: u64) -> ProfileSummary {
@@ -1299,39 +1434,45 @@ mod tests {
     }
 
     #[test]
-    fn byte_tiers_match_the_retired_classification() {
+    fn byte_tiers_match_the_reference_table() {
         let edges = [
             0,
             1_000_000,
             1_000_001,
             S_SYNTAX,
             S_SYNTAX + 1,
+            8 * 1024 * 1024,
+            8 * 1024 * 1024 + 1,
             10_000_000,
             10_000_001,
             50_000_000,
             50_000_001,
+            64 * 1024 * 1024,
+            64 * 1024 * 1024 + 1,
             500_000_000,
             500_000_001,
+            512 * 1024 * 1024,
+            512 * 1024 * 1024 + 1,
             u64::MAX,
         ];
         for bytes in edges {
             let scale = DocumentScale::for_total_bytes(bytes);
-            let retired = retired_byte_tiers::classify(bytes);
+            let reference = byte_tier_reference::classify(bytes);
             assert_eq!(
                 scale.open_allowed,
-                retired_byte_tiers::open_allowed(retired)
+                byte_tier_reference::open_allowed(reference)
             );
             assert_eq!(
                 scale.undo_enabled,
-                retired_byte_tiers::undo_enabled(retired)
+                byte_tier_reference::undo_enabled(reference)
             );
             assert_eq!(
                 scale.estimated_buffer_multiplier,
-                retired_byte_tiers::estimated_buffer_multiplier(retired)
+                byte_tier_reference::estimated_buffer_multiplier(reference)
             );
             assert_eq!(
                 scale.local_history,
-                retired_byte_tiers::local_history(retired)
+                byte_tier_reference::local_history(reference)
             );
         }
     }
@@ -1358,7 +1499,7 @@ mod tests {
         assert!(fresh.contains(ScaleFeature::SearchHighlight));
         assert!(!fresh.contains(ScaleFeature::Syntax));
         assert!(
-            DocumentScale::for_total_bytes(60_000_000)
+            DocumentScale::for_total_bytes(70 * 1024 * 1024)
                 .reduced
                 .newly_reduced_presentation(ReducedFeatures::NONE)
                 .contains(ScaleFeature::Syntax)
@@ -1378,7 +1519,7 @@ mod tests {
             "Syntax highlighting, bracket matching, the minimap, search highlighting and word \
              wrap of the longest lines are off because of very long lines."
         );
-        let huge = DocumentScale::for_total_bytes(60_000_000)
+        let huge = DocumentScale::for_total_bytes(70 * 1024 * 1024)
             .reduced
             .describe()
             .expect("reduced features describe themselves");
@@ -1485,7 +1626,7 @@ mod tests {
 
     #[test]
     fn presentation_only_keeps_each_reason_and_drops_byte_tiers() {
-        let huge = DocumentScale::for_total_bytes(60_000_000)
+        let huge = DocumentScale::for_total_bytes(70 * 1024 * 1024)
             .reduced
             .presentation_only();
         assert!(huge.has_reason(ScaleFeature::Syntax, ReductionReason::TotalSize));
@@ -1501,7 +1642,7 @@ mod tests {
 
     #[test]
     fn join_keeps_presentation_reasons_and_takes_byte_reasons_from_the_newer_bytes() {
-        let huge = DocumentScale::for_total_bytes(60_000_000);
+        let huge = DocumentScale::for_total_bytes(70 * 1024 * 1024);
         let session = by_length(L_SYNTAX + 1).join(huge);
         let reduced = session.reduced;
         assert!(reduced.has_reason(ScaleFeature::Syntax, ReductionReason::LongParagraph));
@@ -1543,27 +1684,29 @@ mod tests {
     fn the_policy_constants_have_their_recorded_values() {
         // Design D7 and `docs/next/long-line-documents.md` record these; a
         // change to one is a policy decision, not a refactor.
+        // `power-of-two-thresholds` (design D3-D5, D9) set the tiers and caps
+        // below; the exceptions keep their measured values.
         let recorded: [(u64, u64); 15] = std::hint::black_box([
             (S_SYNTAX, 1024 * 1024),
             (L_SYNTAX, 2_000),
             (S_MINIMAP, 10_000_000),
             (L_MINIMAP, 22_000),
             (L_INVISIBLES, 50_000),
-            (L_SEARCH_HIGHLIGHT, 10_000),
-            (L_PROTECT, 500),
+            (L_SEARCH_HIGHLIGHT, 16 * 1024),
+            (L_PROTECT, 512),
             (L_EDIT_STALL, 3_500),
             (L_PROTECT_EDIT, 50_000),
-            (N_VISIBLE, 500_000),
-            (V_BATCH, 56_000),
-            (UNDO_TOTAL_BYTES, 50_000_000),
-            (HISTORY_SAVE_ONLY_BYTES, 10_000_000),
-            (HISTORY_UNAVAILABLE_BYTES, 50_000_000),
-            (REFUSE_TO_OPEN, 500_000_000),
+            (N_VISIBLE, 256 * 1024),
+            (V_BATCH, 64 * 1024),
+            (UNDO_TOTAL_BYTES, 64 * 1024 * 1024),
+            (HISTORY_SAVE_ONLY_BYTES, 16 * 1024 * 1024),
+            (HISTORY_UNAVAILABLE_BYTES, 64 * 1024 * 1024),
+            (REFUSE_TO_OPEN, 512 * 1024 * 1024),
         ]);
         for (constant, value) in recorded {
             assert_eq!(constant, value);
         }
-        assert_eq!(std::hint::black_box(R_BATCH), 224);
+        assert_eq!(std::hint::black_box(R_BATCH), 256);
     }
 
     #[test]
@@ -1585,5 +1728,127 @@ mod tests {
         let undo = std::hint::black_box(UNDO_TOTAL_BYTES);
         assert!(std::hint::black_box(HISTORY_SAVE_ONLY_BYTES) < undo);
         assert!(undo < std::hint::black_box(REFUSE_TO_OPEN));
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): every feature
+    /// `main` gave a document, the branch gives it too. `main`'s tiers were
+    /// 10,000,000 bytes (minimap, per-edit local history), CSS highlighting to
+    /// 37 KiB, Protected View heads of 10,000 characters and dense heads of
+    /// 250.
+    #[test]
+    fn no_loss_every_tier_keeps_the_features_main_kept() {
+        let ten_mb = DocumentScale::for_total_bytes(10_000_000);
+        assert!(ten_mb.minimap_allowed, "main kept the minimap at 10 MB");
+        assert_eq!(ten_mb.local_history, LocalHistoryAvailability::Full);
+        assert!(
+            std::hint::black_box(SyntaxLanguage::Css).attach_after_install_threshold() >= 37 * 1024
+        );
+        assert_eq!(
+            std::hint::black_box(crate::model::protected_fold::N_HEAD),
+            10_000
+        );
+        assert!(std::hint::black_box(crate::model::protected_fold::N_DENSE) >= 250);
+    }
+
+    /// The paragraph gates of the amendment (`power-of-two-thresholds` D12,
+    /// task 9.3): each keeps its feature at its accepted value (search
+    /// highlighting rounded up; the minimap and invisibles kept as exceptions)
+    /// and drops it one character later.
+    #[test]
+    fn paragraph_gates_switch_at_their_accepted_values() {
+        assert!(by_length(22_000).minimap_allowed && !by_length(22_001).minimap_allowed);
+        assert!(by_length(50_000).invisibles_allowed && !by_length(50_001).invisibles_allowed);
+        assert!(
+            by_length(16 * 1024).search_highlight_allowed
+                && !by_length(16 * 1024 + 1).search_highlight_allowed
+        );
+    }
+
+    #[test]
+    fn byte_tiers_switch_exactly_at_16_mib_and_64_mib() {
+        const MIB: u64 = 1024 * 1024;
+        let at_16 = DocumentScale::for_total_bytes(16 * MIB);
+        let above_16 = DocumentScale::for_total_bytes(16 * MIB + 1);
+        // The minimap keeps `main`'s 10,000,000 bytes (a recorded exception).
+        assert!(DocumentScale::for_total_bytes(10_000_000).minimap_allowed);
+        assert!(!DocumentScale::for_total_bytes(10_000_001).minimap_allowed);
+        assert_eq!(at_16.local_history, LocalHistoryAvailability::Full);
+        assert_eq!(above_16.local_history, LocalHistoryAvailability::SaveOnly);
+        assert!(at_16.undo_enabled && above_16.undo_enabled);
+        let at_64 = DocumentScale::for_total_bytes(64 * MIB);
+        let above_64 = DocumentScale::for_total_bytes(64 * MIB + 1);
+        assert!(at_64.undo_enabled && !above_64.undo_enabled);
+        assert_eq!(at_64.local_history, LocalHistoryAvailability::SaveOnly);
+        assert_eq!(
+            above_64.local_history,
+            LocalHistoryAvailability::Unavailable
+        );
+        assert!(above_64.open_allowed);
+    }
+
+    /// The longest reduced-features text a document outside Protected View can
+    /// produce (the notice is never shown for a protected one), over every
+    /// total-size and paragraph tier edge with and without the edit-time
+    /// re-analysis reduction. `power-of-two-thresholds` task 4.6 checks the
+    /// 256-character notice and announcement caps against it.
+    pub(crate) fn longest_unprotected_notice() -> usize {
+        const MIB: u64 = 1024 * 1024;
+        let sizes = [0, S_SYNTAX + 1, 8 * MIB + 1, 64 * MIB + 1, REFUSE_TO_OPEN];
+        let lengths = [
+            0,
+            L_SYNTAX + 1,
+            L_WRAP_EDIT + 1,
+            L_SEARCH_HIGHLIGHT + 1,
+            L_MINIMAP + 1,
+            L_INVISIBLES,
+            L_PROTECT_EDIT,
+        ];
+        let mut longest = 0;
+        for total_bytes in sizes {
+            for longest_paragraph in lengths {
+                for worst in [0, V_BATCH + 1] {
+                    let scale =
+                        DocumentScale::for_profile(profile(total_bytes, longest_paragraph, worst));
+                    for reduced in [
+                        scale.reduced,
+                        scale.reduced.union(
+                            ReducedFeatures::default()
+                                .with(ScaleFeature::Syntax, ReductionReason::EditReanalysis)
+                                .with(
+                                    ScaleFeature::BracketMatching,
+                                    ReductionReason::EditReanalysis,
+                                ),
+                        ),
+                    ] {
+                        if scale.protected_view {
+                            continue;
+                        }
+                        if let Some(text) = reduced.describe() {
+                            longest = longest.max(text.chars().count());
+                        }
+                    }
+                }
+            }
+        }
+        longest
+    }
+
+    #[test]
+    fn the_longest_unprotected_notice_fits_256_characters() {
+        let longest = longest_unprotected_notice();
+        assert!(longest <= 256, "{longest}");
+        // `power-of-two-thresholds` task 4.6 recorded this length; a change to
+        // the notice text is checked against the 256 caps here.
+        assert_eq!(longest, 229);
+        assert!(longest > 128, "128 would cut a shipped notice ({longest})");
+    }
+
+    #[test]
+    fn the_reduced_features_text_names_no_decimal_size() {
+        let huge = DocumentScale::for_total_bytes(64 * 1024 * 1024 + 1)
+            .reduced
+            .describe()
+            .expect("a huge document reduces features");
+        assert!(!huge.contains("MB") && !huge.contains("MiB"), "{huge}");
     }
 }

@@ -74,28 +74,50 @@ pub(super) const MINIMAP_REFRESH_DEBOUNCE: Duration = Duration::from_millis(80);
 ///
 /// The proposal called out 120 characters explicitly, so the marker layer uses
 /// the same threshold instead of trying to infer it from unrelated formatting settings.
+///
+/// Kind: external fact; the 120-column line-length convention the minimap
+/// proposal named. It bounds no work: it states a style limit users write to,
+/// so it stays exact (`power-of-two-thresholds` stage 4; 128 would leave
+/// 121–128-character lines unmarked).
 pub(super) const MINIMAP_LONG_LINE_WARNING_THRESHOLD: usize = 120;
 /// Cap on search matches converted into minimap markers during one refresh.
 ///
 /// The minimap only needs a spatial hint, not every exact hit, so we stop once
 /// the marker strip is already dense enough to communicate "many matches here".
-pub(super) const MINIMAP_SEARCH_MATCH_CAP: usize = 2_000;
+///
+/// Kind: presentation cap; 2,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M7).
+/// It bounds GTK-thread work per refresh, in document order: past the
+/// 2,048th, lower markers are not drawn.
+pub(super) const MINIMAP_SEARCH_MATCH_CAP: usize = 2_048;
 /// Maximum document size before wrapped minimap layout needs a long-line check.
 ///
 /// Ordinary prose and source files stay below this budget, while multi-megabyte
 /// minified files can make the narrow source map build a very large visual-line
 /// cache when it mirrors editor word wrap.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub(super) const MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET: u64 = 2 * 1024 * 1024;
 /// Long logical lines above this size make wrapped source-map layout expensive.
 ///
 /// The threshold is high enough for normal code/log lines but catches minified
 /// JSON or generated files before a 64-160px minimap explodes one line into
 /// thousands of visual rows.
-pub(super) const MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET: usize = 8_000;
+///
+/// Kind: presentation cap; 8,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M7).
+pub(super) const MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET: usize = 8_192;
 /// Live GTK-buffer characters inspected by one minimap analysis turn.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(super) const MINIMAP_ANALYSIS_CHARS_PER_SLICE: usize = 32 * 1024;
 /// Maximum retained long-line identities shared with marker projection.
-pub(super) const MINIMAP_LONG_LINE_MARK_CAP: usize = 2_000;
+///
+/// Kind: presentation cap; 2,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M7).
+/// It bounds GTK-thread work per refresh, in document order: past the
+/// 2,048th, lower markers are not drawn.
+pub(super) const MINIMAP_LONG_LINE_MARK_CAP: usize = 2_048;
 /// Minimum visual height for a semantic marker after projection.
 ///
 /// Collapsed or sub-pixel source-map lines still need to be discoverable, but
@@ -136,7 +158,12 @@ pub(super) const MINIMAP_REFLOW_SETTLE_DEBOUNCE: Duration = Duration::from_milli
 /// scrolls until the early-reveal path runs.
 pub(super) const MINIMAP_REFLOW_REVEAL_DELAY: Duration = Duration::from_millis(800);
 /// Maximum live source marks used for the modified-line minimap layer.
-pub(super) const MINIMAP_MODIFIED_LINE_MARK_CAP: usize = 2_000;
+///
+/// Kind: presentation cap; 2,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M7).
+/// It bounds GTK-thread work per refresh, in document order: past the
+/// 2,048th, lower markers are not drawn.
+pub(super) const MINIMAP_MODIFIED_LINE_MARK_CAP: usize = 2_048;
 
 /// Whether the minimap is currently usable for the active editor state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1050,11 +1077,11 @@ mod tests {
         assert_eq!(MINIMAP_MARKER_STRIP_WIDTH, 8);
         assert_eq!(MINIMAP_REFRESH_DEBOUNCE, Duration::from_millis(80));
         assert_eq!(MINIMAP_LONG_LINE_WARNING_THRESHOLD, 120);
-        assert_eq!(MINIMAP_SEARCH_MATCH_CAP, 2_000);
+        assert_eq!(MINIMAP_SEARCH_MATCH_CAP, 2_048);
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET, 2 * 1024 * 1024);
-        assert_eq!(MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, 8_000);
+        assert_eq!(MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, 8_192);
         assert_eq!(MINIMAP_ANALYSIS_CHARS_PER_SLICE, 32 * 1024);
-        assert_eq!(MINIMAP_LONG_LINE_MARK_CAP, 2_000);
+        assert_eq!(MINIMAP_LONG_LINE_MARK_CAP, 2_048);
         assert_eq!(MINIMAP_MARKER_MIN_HEIGHT, 2.0);
         assert_eq!(MINIMAP_TOP_CONTENT_MARGIN, 5);
         assert_eq!(MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR, 5);
@@ -1067,7 +1094,7 @@ mod tests {
             super::super::projection_execution::MINIMAP_MODIFIED_MARK_CATEGORY,
             "lushtext-minimap-modified"
         );
-        assert_eq!(MINIMAP_MODIFIED_LINE_MARK_CAP, 2_000);
+        assert_eq!(MINIMAP_MODIFIED_LINE_MARK_CAP, 2_048);
     }
 
     #[test]
@@ -1692,6 +1719,19 @@ mod tests {
 
         assert_eq!(long_line_warning_lines(&text), vec![1, 3]);
         assert!(long_line_warning_lines("short\nalso short").is_empty());
+    }
+
+    /// The marker follows the 120-column convention the minimap proposal
+    /// named: a 121- or 128-character line breaks it and is marked.
+    #[test]
+    fn long_line_markers_follow_the_120_column_convention() {
+        let text = format!(
+            "{}\n{}\n{}",
+            "a".repeat(120),
+            "b".repeat(121),
+            "c".repeat(128)
+        );
+        assert_eq!(long_line_warning_lines(&text), vec![1, 2]);
     }
 
     #[test]
@@ -2486,6 +2526,15 @@ pub struct MinimapAnalysisPolicy {
     pub marker_limit: usize,
 }
 
+impl MinimapAnalysisPolicy {
+    /// The policy every production analysis generation uses.
+    pub const PRODUCTION: Self = Self {
+        warning_line_chars: MINIMAP_LONG_LINE_WARNING_THRESHOLD,
+        wrapped_line_chars: MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET,
+        marker_limit: MINIMAP_LONG_LINE_MARK_CAP,
+    };
+}
+
 /// Accepted GTK-free result from one complete content generation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MinimapAnalysisResult {
@@ -2742,6 +2791,38 @@ impl MinimapAnalysisAccumulator {
 #[cfg(test)]
 mod analysis_tests {
     use super::*;
+
+    /// Long-line markers and the wrapped-layout verdict of `lines` lines of
+    /// `chars` characters each, under the production policy.
+    fn production_analysis(lines: usize, chars: usize) -> MinimapAnalysisResult {
+        let line = "x".repeat(chars) + "\n";
+        let mut analysis = MinimapAnalysisAccumulator::new(MinimapAnalysisPolicy::PRODUCTION, true);
+        for _ in 0..lines {
+            analysis.inspect_slice(line.chars(), usize::MAX);
+        }
+        analysis.finish()
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` drew
+    /// 2,000 markers of each kind and took the wrapped-layout analysis for
+    /// lines up to 8,000 characters; the caps round up to 2,048 and 8,192.
+    #[test]
+    fn no_loss_the_minimap_draws_every_marker_main_drew() {
+        assert_eq!(production_analysis(2_000, 200).long_line_lines.len(), 2_000);
+        assert_eq!(production_analysis(2_049, 200).long_line_lines.len(), 2_048);
+        assert_eq!(
+            modified_line_mark_samples(1, 2_000, MINIMAP_MODIFIED_LINE_MARK_CAP).len(),
+            2_000
+        );
+        assert_eq!(
+            modified_line_mark_samples(1, 2_049, MINIMAP_MODIFIED_LINE_MARK_CAP).len(),
+            2_048
+        );
+        assert_eq!(MINIMAP_SEARCH_MATCH_CAP, 2_048);
+        assert!(!production_analysis(1, 8_000).wrapped_layout_too_large);
+        assert!(!production_analysis(1, 8_192).wrapped_layout_too_large);
+        assert!(production_analysis(1, 8_193).wrapped_layout_too_large);
+    }
 
     const POLICY: MinimapAnalysisPolicy = MinimapAnalysisPolicy {
         warning_line_chars: 4,

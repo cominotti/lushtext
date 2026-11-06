@@ -203,6 +203,8 @@ fn next_delimiter_without_lead_stops(bytes: &[u8], from: usize) -> Option<usize>
 
 /// Bytes per chunk of [`next_delimiter_without_lead_stops`]: small enough
 /// that the chunk stays in L2 between its two searches.
+///
+/// Kind: cap; a power of two, rounded down.
 #[cfg(not(kani))]
 const DELIMITER_SEARCH_CHUNK: usize = 64 * 1024;
 
@@ -330,10 +332,14 @@ pub const fn paragraph_chars_from_line(
 pub const PROFILE_THRESHOLD_COUNT: usize = 6;
 
 /// Most long-paragraph start offsets a production profile keeps.
+///
+/// Kind: cap; a power of two, rounded down.
 #[cfg(not(kani))]
 pub const MAX_PROFILED_OFFSETS: usize = 256;
 
 /// Largest density window the fold keeps (`R_BATCH` fits, checked below).
+///
+/// Kind: cap; a power of two, rounded down.
 #[cfg(not(kani))]
 pub const MAX_DENSITY_WINDOW: usize = 256;
 
@@ -804,6 +810,33 @@ impl ParagraphProfileAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `power-of-two-thresholds` task 2.2: the converted profile thresholds,
+    /// `L_PROTECT` (512) and `N_VISIBLE` (262,144), count a paragraph one
+    /// character over them and not one at them, with every delimiter kind.
+    #[test]
+    fn converted_profile_thresholds_count_one_over_and_not_at() {
+        use super::super::document_scale::{L_PROTECT, N_VISIBLE};
+        let n = |chars: u64| usize::try_from(chars).expect("fits");
+        assert_eq!((L_PROTECT, N_VISIBLE), (512, 256 * 1024));
+        for delimiter in ["\n", "\r", "\r\n", "\u{2029}"] {
+            let text = [
+                "a".repeat(n(L_PROTECT)),
+                "b".repeat(n(L_PROTECT) + 1),
+                "c".repeat(n(N_VISIBLE)),
+                "d".repeat(n(N_VISIBLE) + 1),
+            ]
+            .join(delimiter);
+            let profile = DocumentProfile::of_text(&text);
+            assert_eq!(profile.long_paragraph_counts[0], 3, "{delimiter:?}");
+            assert_eq!(
+                profile.long_paragraph_counts[PROFILE_THRESHOLD_COUNT - 1],
+                1,
+                "{delimiter:?}"
+            );
+            assert_eq!(profile.longest_paragraph_chars, N_VISIBLE + 1);
+        }
+    }
 
     // --- the Protected View fold plan (task 2.2) ---------------------------
 

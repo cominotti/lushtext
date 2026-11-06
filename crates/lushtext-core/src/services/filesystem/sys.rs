@@ -218,6 +218,8 @@ pub(in crate::services) fn rename_no_replace(_from: &Path, _to: &Path) -> io::Re
 ///
 /// Sixty-four kibibytes keeps each read syscall large enough for throughput
 /// while making the between-chunk cancellation checks frequent on slow media.
+///
+/// Kind: cap; a power of two, rounded down.
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 
 pub(in crate::services) fn read_prefix(path: &Path, byte_limit: usize) -> io::Result<Vec<u8>> {

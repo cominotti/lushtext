@@ -15,17 +15,28 @@ use super::workspace_search::{WorkspaceSearchFallbackMetrics, WorkspaceSearchInc
 
 /// Maximum UTF-8 bytes retained for one matching search line.
 ///
-/// Workspace search can keep up to 10,000 matches in memory. Four KiB per
+/// Workspace search can keep up to 16,384 matches in memory. Four KiB per
 /// match keeps worst-case retained line text in the tens of MiB rather than
 /// allowing minified or generated files to retain multi-GiB result sets.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_SEARCH_MATCH_LINE_BYTES: usize = 4 * 1024;
 /// Maximum number of complete rows retained by Replace Preview.
-pub const MAX_REPLACE_PREVIEW_ROWS: usize = 10_000;
+///
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M3).
+pub const MAX_REPLACE_PREVIEW_ROWS: usize = 16 * 1024;
 /// Maximum conservatively charged UTF-8 bytes retained by Replace Preview.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_REPLACE_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum diagnostic records retained by Replace All or Undo.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_REPLACE_DIAGNOSTIC_ENTRIES: usize = 32;
 /// Maximum conservative heap bytes retained by Replace All or Undo diagnostics.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_REPLACE_DIAGNOSTIC_BYTES: usize = 32 * 1024;
 /// ASCII marker added when a search-result line is shortened.
 const SEARCH_MATCH_TRUNCATION_MARKER: &str = " [truncated]";
@@ -297,7 +308,7 @@ impl SearchQuerySpec {
 pub enum SearchEvent {
     /// A matching line was found.
     Match(SearchMatch),
-    /// The 10,000-match result cap was reached; search stopped early.
+    /// The 8,192-match result cap was reached; search stopped early.
     ResultCap,
     /// Progress update: number of files visited so far. Sent approximately
     /// every 100 files to avoid flooding the channel. Best-effort — may be
@@ -1447,6 +1458,31 @@ mod tests {
         assert_eq!(outcome.omitted_eligible, 1);
         assert_eq!(outcome.charged_bytes, 0);
         assert_eq!(outcome.limiting_reason, Some(ReplacePreviewLimit::Bytes));
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main`'s Replace
+    /// Preview kept 10,000 rows, so 10,000 eligible matches give 10,000 rows;
+    /// the presentation cap rounds up to 16,384.
+    #[test]
+    fn no_loss_replace_preview_keeps_every_row_main_kept() {
+        let rows = |count: usize| {
+            let matches: Vec<_> = (0..count)
+                .map(|index| {
+                    match_in_line("prefix needle suffix", 7..13)
+                        .with_id(SearchMatchId::from_index(index))
+                })
+                .collect();
+            let outcome = generate_replacement_preview(
+                &matches,
+                "needle",
+                "thread",
+                &ContentSearchOptions::default(),
+            );
+            (outcome.len(), outcome.omitted_eligible)
+        };
+        assert_eq!(rows(10_000), (10_000, 0));
+        assert_eq!(rows(16 * 1024), (16 * 1024, 0));
+        assert_eq!(rows(16 * 1024 + 1), (16 * 1024, 1));
     }
 
     #[test]

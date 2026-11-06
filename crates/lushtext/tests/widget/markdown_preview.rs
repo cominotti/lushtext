@@ -1876,9 +1876,9 @@ fn test_code_block_past_the_widget_budget_keeps_its_single_fallback_and_complete
     assert!(preview.buffer_text().contains("TAIL-AFTER-BIG-CODE"));
 }
 
-/// Columns and rows of the table that crosses the 1,000-cell widget budget.
+/// Columns and rows of the table that crosses the 1,024-cell widget budget.
 const PAST_BUDGET_COLUMNS: usize = 4;
-const PAST_BUDGET_ROWS: usize = 250;
+const PAST_BUDGET_ROWS: usize = 260;
 
 fn cell_table(columns: usize, rows: usize) -> String {
     let mut markdown = String::new();
@@ -3169,13 +3169,16 @@ fn test_root_and_nested_code_blocks_repair_after_resize_at_constrained_width() {
         "```rust\nlet root = true;\n```\n\n",
         "Term\n\n:   Definition\n\n        let nested = true;\n",
     ));
-    wait_until(Duration::from_secs(2), || {
+    // Rendering and the resize relayout are asynchronous realization work, so
+    // they get a realization budget (a 2 s wait flaked under a parallel widget
+    // run beside a release build, `power-of-two-thresholds`).
+    wait_until(Duration::from_secs(10), || {
         code_block_containers(&preview).len() == 2
     });
     wait_for_code_block_layout(&preview);
 
     window.set_default_size(320, 420);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         preview.text_view().width() < 500
             && code_block_containers(&preview)
                 .iter()
@@ -3314,8 +3317,10 @@ fn assert_nested_code_block_geometry(preview: &LushtextMarkdownPreview) {
     );
 }
 
+/// Code-block layout settles after an allocation, so this waits with a
+/// realization budget rather than a synchronous-flip one.
 fn wait_for_code_block_layout(preview: &LushtextMarkdownPreview) {
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         let Some(block) = code_block_containers(preview).first().cloned() else {
             return false;
         };

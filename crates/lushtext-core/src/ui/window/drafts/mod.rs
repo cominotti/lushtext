@@ -196,6 +196,8 @@ pub use test_policy::{
 };
 
 /// Conservative pre-read reservation for one maximum automatic draft body.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub(super) const DRAFT_RESTORE_DISPOSAL_RESERVATION_BYTES: u64 =
     draft_service::MAX_AUTOMATIC_DRAFT_BYTES.saturating_add(1024 * 1024);
 

@@ -21,10 +21,16 @@ use serde_json::Value;
 /// PNG magic bytes required before any chunk parsing begins.
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 /// Maximum compressed artifact size accepted before decoding in CI.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_COMPRESSED_PNG_BYTES: u64 = 32 * 1024 * 1024;
 /// Maximum decoded RGBA buffer size so hostile PNGs cannot exhaust memory.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_DECODED_PNG_BYTES: usize = 64 * 1024 * 1024;
 /// Pixel cap matching the largest visual-proof screenshots the runner should accept.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_PNG_PIXELS: usize = 4096 * 4096;
 
 type PngResult<T> = Result<T, String>;

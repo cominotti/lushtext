@@ -795,7 +795,7 @@ fn test_source_view_accessibility_keeps_large_file_editable_state() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
 
-    page.apply_loaded_content_for_test("large file marker", 50_000_001);
+    page.apply_loaded_content_for_test("large file marker", 64 * 1024 * 1024 + 1);
 
     let scale = page.document_scale();
     assert!(!scale.undo_enabled && !scale.syntax_enabled);
@@ -2474,10 +2474,12 @@ fn test_periodic_local_history_edit_cancels_chunked_snapshot_without_persistence
     let page = LushtextEditorPage::new();
     page.set_file_path(&document);
     let buffer = page.buffer();
-    // Many short lines: a single 2.5M-character paragraph would enter
+    // Many short lines: a single 2M-character paragraph would enter
     // Protected View, whose capture reads the text source instead of a
-    // chunked buffer snapshot.
-    buffer.set_text(&format!("{}\n", "x".repeat(999)).repeat(2_500));
+    // chunked buffer snapshot. 2,097,152 characters is exactly the 8 MiB
+    // estimate at which the snapshot is chunked and periodic capture is
+    // still allowed.
+    buffer.set_text(&format!("{}\n", "x".repeat(1_023)).repeat(2_048));
     buffer.set_modified(true);
     assert!(!page.is_protected_view());
 

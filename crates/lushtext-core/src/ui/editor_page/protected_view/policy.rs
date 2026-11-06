@@ -74,15 +74,25 @@ const _: () = assert!(N_INSPECT <= min_u64(HEAD_CAP, L_PROTECT));
 
 /// The most find results one GTK turn publishes (design D5; initial value,
 /// confirmed by the verdict).
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const FIND_RESULTS_PER_TURN: usize = 256;
 /// The most record bytes one GTK turn publishes (design D5; initial value).
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const FIND_BYTES_PER_TURN: u64 = 64 * 1024;
 /// The total result cap of one find request (design D5); the counter reports
 /// "capped" when it is reached.
-pub(crate) const FIND_RESULT_CAP: u64 = 10_000;
+///
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M4).
+/// The retained records stay within 16,384 x `MAX_FIND_RECORD_BYTES` = 8 MiB.
+pub(crate) const FIND_RESULT_CAP: u64 = 16 * 1024;
 /// The most retained bytes one admitted find record carries: its preview
 /// excerpt, cut by [`admit_find_record`]. The record's fixed fields are bounded
 /// by the per-turn count instead.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub(crate) const MAX_FIND_RECORD_BYTES: u64 = 512;
 
 // A single admitted record always fits one turn, so the planner's
@@ -92,17 +102,23 @@ const _: () = assert!(MAX_FIND_RECORD_BYTES <= FIND_BYTES_PER_TURN);
 /// The most bytes one whole-line clipboard write copies per GTK dispatch
 /// (design D6). At least one UTF-8 scalar, so a chunk end can always be moved
 /// back to a character boundary without becoming empty.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const COPY_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Characters an edit entry's source capture copies per GTK dispatch (design
 /// D4): A66 measured 0.4–1.1 ms per 64 Ki characters at every depth of a
 /// two-million-character paragraph when the iterator advances in steps below
 /// GtkTextIter's linear-scan limit.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const SOURCE_CAPTURE_CHUNK_CHARS: i32 = 64 * 1024;
 
 /// The `forward_chars` step of that capture: below GtkTextIter's
 /// `MAX_LINEAR_SCAN` (150), so the iterator's byte and character offsets stay
 /// current instead of being re-derived from the segment start (A66).
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const SOURCE_CAPTURE_STEP_CHARS: i32 = 128;
 
 const _: () = assert!(COPY_CHUNK_BYTES >= 4);
@@ -2033,7 +2049,7 @@ mod tests {
     fn inspector_window_counts_round_up() {
         assert_eq!(inspector_window_count(500, width(500)), 1);
         assert_eq!(inspector_window_count(501, width(500)), 2);
-        assert_eq!(inspector_window_count(1_900_000, N_INSPECT_WIDTH), 3_800);
+        assert_eq!(inspector_window_count(1_900_000, N_INSPECT_WIDTH), 3_711);
         assert_eq!(inspector_window_count(u64::MAX, width(1)), u64::MAX);
         let last = inspector_window(u64::MAX, width(500), u64::MAX / 500).expect("last window");
         assert_eq!(last.end, u64::MAX);
@@ -2043,22 +2059,22 @@ mod tests {
     fn inspector_window_containing_finds_the_column() {
         let n = N_INSPECT_WIDTH;
         let (index, window) = inspector_window_containing(1_900_000, n, 950_000).expect("in range");
-        assert_eq!(index, 1_900);
+        assert_eq!(index, 1_855);
         assert_eq!(
             window,
             InspectorWindow {
-                start: 950_000,
-                end: 950_500
+                start: 949_760,
+                end: 950_272
             }
         );
         assert!(window.contains(950_000));
-        assert!(!window.contains(950_500));
+        assert!(!window.contains(950_272));
         assert_eq!(
             inspector_window_containing(1_000, n, 999),
             Some((
                 1,
                 InspectorWindow {
-                    start: 500,
+                    start: 512,
                     end: 1_000
                 }
             ))
@@ -2200,10 +2216,10 @@ mod tests {
             navigation_target(4, 15_000, folded, n),
             NavigationTarget::Inspect {
                 paragraph: 4,
-                window_index: 30,
+                window_index: 29,
                 window: InspectorWindow {
-                    start: 15_000,
-                    end: 15_500
+                    start: 14_848,
+                    end: 15_360
                 },
             }
         );
@@ -2211,19 +2227,19 @@ mod tests {
             navigation_target(4, 950_000, folded, n),
             NavigationTarget::Inspect {
                 paragraph: 4,
-                window_index: 1_900,
+                window_index: 1_855,
                 window: InspectorWindow {
-                    start: 950_000,
-                    end: 950_500
+                    start: 949_760,
+                    end: 950_272
                 },
             }
         );
         // The paragraph end and anything past it open the last window.
         let last = NavigationTarget::Inspect {
             paragraph: 4,
-            window_index: 3_799,
+            window_index: 3_710,
             window: InspectorWindow {
-                start: 1_899_500,
+                start: 1_899_520,
                 end: 1_900_000,
             },
         };
@@ -2383,6 +2399,34 @@ mod tests {
             FIND_RESULTS_PER_TURN
         );
         assert_eq!(next_find_batch(&tiny, FIND_RESULT_CAP - 3, limits).count, 3);
+    }
+
+    /// Results one find request delivers when it found `found` matches, turn
+    /// by turn through the production limits.
+    fn delivered_find_results(found: usize) -> u64 {
+        let limits = FindBatchLimits::PRODUCTION;
+        let pending = admitted(&vec![40; found], limits);
+        let mut delivered = 0u64;
+        let mut start = 0usize;
+        loop {
+            let batch = next_find_batch(&pending[start..], delivered, limits);
+            if batch.count == 0 {
+                return delivered;
+            }
+            delivered += batch.count as u64;
+            start += batch.count;
+        }
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main`'s
+    /// Protected View find delivered 10,000 results; the cap rounds up to
+    /// 16,384, and the retained records stay within 8 MiB.
+    #[test]
+    fn no_loss_protected_find_delivers_every_result_main_delivered() {
+        assert_eq!(delivered_find_results(10_000), 10_000);
+        assert_eq!(delivered_find_results(16 * 1024), 16 * 1024);
+        assert_eq!(delivered_find_results(16 * 1024 + 1), 16 * 1024);
+        assert!(std::hint::black_box(FIND_RESULT_CAP * MAX_FIND_RECORD_BYTES) <= 8 * 1024 * 1024);
     }
 
     #[test]

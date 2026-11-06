@@ -23,9 +23,13 @@ use crate::services::{
 ///
 /// Lineages are listed in directory order, so a data home with more lineages
 /// than this sweeps a subset each launch; leftovers elsewhere simply wait.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_LINEAGES_PER_PASS: usize = 1_024;
 
 /// Format-upgrade backup runs swept per startup pass, on the same terms.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_BACKUP_RUNS_PER_PASS: usize = 256;
 
 /// Sweep stale durable-write leftovers from every app-data directory under `data_dir`.

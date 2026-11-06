@@ -25,18 +25,33 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Largest source accepted for automatic Markdown preview planning.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum parser events retained by one render generation.
-pub const MAX_MARKDOWN_EVENTS: usize = 50_000;
+///
+/// Kind: presentation cap; 50,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M13).
+pub const MAX_MARKDOWN_EVENTS: usize = 64 * 1024;
 /// Maximum structural nesting accepted from the event stream.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_STRUCTURE_DEPTH: usize = 128;
 /// Maximum table, code-block, and image descriptors retained in one plan.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_EMBED_DESCRIPTORS: usize = 256;
 /// Maximum bytes retained by event text and link/embed descriptors.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_RETAINED_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum event/node work one GTK projection turn may apply.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MARKDOWN_EVENTS_PER_PROJECTION_SLICE: usize = 256;
 /// Maximum retained text/link bytes one GTK projection turn may consume.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MARKDOWN_BYTES_PER_PROJECTION_SLICE: usize = 256 * 1024;
 /// Maximum retained bytes one in-flight **code block** may carry across turns.
 ///
@@ -53,6 +68,8 @@ pub const MARKDOWN_BYTES_PER_PROJECTION_SLICE: usize = 256 * 1024;
 /// picks today. It deliberately does **not** apply to tables, whose retention
 /// is bounded by [`MAX_MARKDOWN_CARRIED_TABLE_CELLS`] instead, because a
 /// byte ceiling would truncate large-byte tables that render completely today.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_CARRIED_EMBED_BYTES: usize = 64 * 1024;
 /// Maximum cells one in-flight table may retain while carried across turns.
 ///
@@ -65,12 +82,17 @@ pub const MAX_MARKDOWN_CARRIED_EMBED_BYTES: usize = 64 * 1024;
 /// of its byte size. Retention stays bounded without a byte ceiling because
 /// cell count times the minimum per-cell markup is bounded by
 /// [`MAX_MARKDOWN_SOURCE_BYTES`].
-pub const MAX_MARKDOWN_CARRIED_TABLE_CELLS: usize = 1_000;
+///
+/// Kind: presentation cap; 1,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M13).
+pub const MAX_MARKDOWN_CARRIED_TABLE_CELLS: usize = 1_024;
 /// Maximum top-level omission placeholder widgets one render generation builds.
 ///
 /// Further top-level omissions project as accessible inline text markers, and
 /// container-segment omissions never build a widget at all, so a pathological
 /// document cannot turn omission markers into unbounded widget work.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_MARKDOWN_PLACEHOLDER_WIDGETS: usize = 64;
 
 /// Current generation-owned terminal state of the preview renderer.
@@ -1231,6 +1253,7 @@ fn event_retained_bytes(event: &Event<'_>) -> usize {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::fmt::Write as _;
 
@@ -1402,7 +1425,7 @@ mod tests {
 
     /// Columns and body rows of the table that crosses the cell ceiling.
     const PAST_CEILING_COLUMNS: usize = 4;
-    const PAST_CEILING_ROWS: usize = 250;
+    const PAST_CEILING_ROWS: usize = 260;
 
     /// A table past [`MAX_MARKDOWN_CARRIED_TABLE_CELLS`], where the projector
     /// already replaces the whole table with one fallback widget, so the
@@ -2646,14 +2669,14 @@ mod tests {
         // `services` cannot import. Pin them here so a silent edit on either
         // side fails.
         assert_eq!(MAX_MARKDOWN_SOURCE_BYTES, 4 * 1024 * 1024);
-        assert_eq!(MAX_MARKDOWN_EVENTS, 50_000);
+        assert_eq!(MAX_MARKDOWN_EVENTS, 64 * 1024);
         assert_eq!(MAX_MARKDOWN_STRUCTURE_DEPTH, 128);
         assert_eq!(MAX_MARKDOWN_EMBED_DESCRIPTORS, 256);
         assert_eq!(MAX_MARKDOWN_RETAINED_BYTES, 8 * 1024 * 1024);
         assert_eq!(MARKDOWN_EVENTS_PER_PROJECTION_SLICE, 256);
         assert_eq!(MARKDOWN_BYTES_PER_PROJECTION_SLICE, 256 * 1024);
         assert_eq!(MAX_MARKDOWN_CARRIED_EMBED_BYTES, 64 * 1024);
-        assert_eq!(MAX_MARKDOWN_CARRIED_TABLE_CELLS, 1_000);
+        assert_eq!(MAX_MARKDOWN_CARRIED_TABLE_CELLS, 1_024);
         assert_eq!(MAX_MARKDOWN_PLACEHOLDER_WIDGETS, 64);
         // The pinned pair above already implies the ordering the code ceiling
         // depends on: a code block crosses 64 KiB before the 256 KiB slice
@@ -2829,7 +2852,7 @@ mod tests {
                 MarkdownOmissionReason::CarriedEmbedCells,
                 MarkdownOmissionScope::ContainerSegment
             ),
-            "Markdown preview omitted part of one block after 1000 carried table cells"
+            "Markdown preview omitted part of one block after 1024 carried table cells"
         );
     }
 

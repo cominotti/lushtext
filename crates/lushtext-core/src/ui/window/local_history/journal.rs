@@ -31,14 +31,6 @@ use crate::ui::status_bar::MessageKind;
 
 use crate::ui::window::LushtextWindow;
 
-/// Shown when a document is too large for local history to browse at all.
-///
-/// The size restates `local_history_service`'s browsing threshold in user-facing
-/// prose, and both eligibility checks reach it: the already-open editor's and the
-/// explicit-path worker's. One constant is what keeps them from disagreeing about
-/// the limit the user is being told about.
-const BROWSE_UNAVAILABLE_MESSAGE: &str = "Local history is unavailable for files above 50 MB";
-
 /// Shown when an eligible file's snapshot metadata cannot be read.
 ///
 /// Reported from both listing paths, each of which logs the underlying error
@@ -75,7 +67,10 @@ impl LushtextWindow {
             return;
         };
         if !editor.local_history_availability().allows_browsing() {
-            self.publish_status_message(BROWSE_UNAVAILABLE_MESSAGE, MessageKind::Warning);
+            self.publish_status_message(
+                &local_history_service::unavailable_message(),
+                MessageKind::Warning,
+            );
             return;
         }
         self.load_local_history_for_editor(editor, path);
@@ -112,7 +107,10 @@ impl LushtextWindow {
             },
             |window, result| match result {
                 LocalHistoryPathLoadOutcome::Unavailable => {
-                    window.publish_status_message(BROWSE_UNAVAILABLE_MESSAGE, MessageKind::Warning);
+                    window.publish_status_message(
+                        &local_history_service::unavailable_message(),
+                        MessageKind::Warning,
+                    );
                 }
                 LocalHistoryPathLoadOutcome::Loaded {
                     path,

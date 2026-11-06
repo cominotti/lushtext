@@ -20,6 +20,8 @@ use std::sync::Arc;
 pub const DEFAULT_EXCLUDED_NAMES: &[&str] = &[".git"];
 
 /// Maximum excluded names reported through the read-only automation snapshot.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const SNAPSHOT_EXCLUDED_NAMES_LIMIT: usize = 64;
 
 /// Why a candidate excluded name was rejected at edit time.

@@ -91,6 +91,9 @@ pub struct SearchRuntimeState {
     /// Test-only before/after ownership evidence from each retirement turn.
     #[cfg(feature = "test-utils")]
     pub retirement_observations: RefCell<Vec<super::retirement::SearchRetirementSliceObservation>>,
+    /// Every receive turn that dispatched an event: (events, wall time in µs).
+    #[cfg(feature = "test-utils")]
+    pub event_turn_observations: RefCell<Vec<(usize, i64)>>,
     /// High-water detached generations retained by the bounded disposer.
     pub retirement_generations_high_water: Cell<usize>,
     /// Debounce for search-entry input.
@@ -131,6 +134,8 @@ impl Default for SearchRuntimeState {
             retirement_rows_per_slice_high_water: Cell::new(0),
             #[cfg(feature = "test-utils")]
             retirement_observations: RefCell::new(Vec::new()),
+            #[cfg(feature = "test-utils")]
+            event_turn_observations: RefCell::new(Vec::new()),
             retirement_generations_high_water: Cell::new(0),
             search_debounce: Debounce::default(),
             glob_debounce: Debounce::default(),

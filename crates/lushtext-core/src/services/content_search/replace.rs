@@ -23,6 +23,7 @@ use crate::model::content_search::{
     BoundedDiagnosticSample, MAX_REPLACE_PREVIEW_ROWS, ReplaceResult, Replacement,
     UndoPayloadLedger,
 };
+use crate::model::size_units::iec_size;
 use crate::services::{
     filesystem::{WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write},
     search_backup,
@@ -30,16 +31,35 @@ use crate::services::{
 
 /// Largest single file Replace All will read and rewrite.
 ///
-/// Ten megabytes keeps the whole-file validation and undo snapshot path bounded
+/// Sixteen MiB keeps the whole-file validation and undo snapshot path bounded
 /// on ordinary laptops while still covering typical source and notes files.
-pub const MAX_REPLACE_FILE_BYTES: u64 = 10 * 1024 * 1024;
+///
+/// Kind: presentation cap; 10 MiB rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M9).
+/// The aggregate undo payload `MAX_REPLACE_UNDO_BYTES` (64 MiB, unchanged)
+/// still bounds a run.
+pub const MAX_REPLACE_FILE_BYTES: u64 = 16 * 1024 * 1024;
+/// The per-file limit before `power-of-two-thresholds` raised it: a run
+/// replaces, in a first pass, every file whose source and output both fit it,
+/// and only then the larger files.
+///
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds` D12):
+/// it must stay `main`'s 10 MiB exactly. The first pass then charges the undo
+/// payload exactly as `main` did, so a 10–16 MiB file early in path order can
+/// never take the budget of a later file `main` replaced; the second pass only
+/// adds files `main` skipped.
+const MAIN_REPLACE_FILE_BYTES: u64 = 10 * 1024 * 1024;
 /// Largest total undo payload retained for one Replace All run.
 ///
 /// The payload stores before and after bytes for each touched file. Sixty-four
 /// megabytes keeps rollback useful without letting one operation consume the
 /// editor's broader buffer-memory budget.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_REPLACE_UNDO_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum complete in-memory undo owner, including paths and table capacity.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_REPLACE_UNDO_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(any(test, feature = "test-utils"))]
 thread_local! {
@@ -502,258 +522,290 @@ fn apply_replacements_inner(
     let mut journal_prepared = false;
     let mut journal_armed = false;
 
-    for (path, mut file_replacements) in by_file {
-        if cancel.load(Ordering::Relaxed) {
-            cancelled = true;
-            break;
-        }
+    // Two passes in path order: files `main` could replace (source and output
+    // within its 10 MiB), then the files of up to 16 MiB the first pass defers.
+    let mut pending: Vec<_> = by_file.into_iter().collect();
+    let mut deferred = Vec::new();
+    'passes: for pass_file_bytes in [MAIN_REPLACE_FILE_BYTES, MAX_REPLACE_FILE_BYTES] {
+        let first_pass = pass_file_bytes < MAX_REPLACE_FILE_BYTES;
+        for (path, mut file_replacements) in std::mem::take(&mut pending) {
+            if cancel.load(Ordering::Relaxed) {
+                cancelled = true;
+                break 'passes;
+            }
 
-        if skip_paths.contains(&path) {
-            skipped_sample.record_path(&path);
-            continue;
-        }
-
-        let _guard = match fs_write::TargetWriteGuard::acquire(&path) {
-            Ok(guard) => guard,
-            Err(e) => {
-                errors.push(format!("Failed to lock {}: {e}", path.display()));
+            if skip_paths.contains(&path) {
+                skipped_sample.record_path(&path);
                 continue;
             }
-        };
-        if cancel.load(Ordering::Relaxed) {
-            cancelled = true;
-            break;
-        }
 
-        let facts = match fs_metadata::file_facts(&path) {
-            Ok(facts) => facts,
-            Err(e) => {
-                errors.push(format!("Failed to stat {}: {e}", path.display()));
-                continue;
-            }
-        };
-        if facts.byte_size > MAX_REPLACE_FILE_BYTES {
-            skipped_sample.record_path(&path);
-            errors.push(format!(
-                "Skipped {}: file is larger than the 10 MB Replace All limit",
-                path.display()
-            ));
-            continue;
-        }
-
-        let original_bytes =
-            match fs_read::bounded_bytes(&path, MAX_REPLACE_FILE_BYTES, facts.byte_size, || {
-                cancel.load(Ordering::Relaxed)
-            }) {
-                Ok(bytes) => bytes,
-                Err(fs_read::BoundedFileReadError::Cancelled) => {
-                    cancelled = true;
-                    break;
-                }
-                Err(fs_read::BoundedFileReadError::LimitExceeded { .. }) => {
-                    skipped_sample.record_path(&path);
-                    errors.push(format!(
-                        "Skipped {}: file is larger than the 10 MB Replace All limit",
-                        path.display()
-                    ));
+            let _guard = match fs_write::TargetWriteGuard::acquire(&path) {
+                Ok(guard) => guard,
+                Err(e) => {
+                    errors.push(format!("Failed to lock {}: {e}", path.display()));
                     continue;
                 }
-                Err(fs_read::BoundedFileReadError::Io(e)) => {
-                    errors.push(format!("Failed to read {}: {e}", path.display()));
+            };
+            if cancel.load(Ordering::Relaxed) {
+                cancelled = true;
+                break 'passes;
+            }
+
+            let facts = match fs_metadata::file_facts(&path) {
+                Ok(facts) => facts,
+                Err(e) => {
+                    errors.push(format!("Failed to stat {}: {e}", path.display()));
+                    continue;
+                }
+            };
+            if facts.byte_size > MAX_REPLACE_FILE_BYTES {
+                skipped_sample.record_path(&path);
+                errors.push(format!(
+                    "Skipped {}: file is larger than the {} Replace All limit",
+                    path.display(),
+                    iec_size(MAX_REPLACE_FILE_BYTES),
+                ));
+                continue;
+            }
+            if first_pass && facts.byte_size > pass_file_bytes {
+                deferred.push((path, file_replacements));
+                continue;
+            }
+
+            let original_bytes =
+                match fs_read::bounded_bytes(&path, MAX_REPLACE_FILE_BYTES, facts.byte_size, || {
+                    cancel.load(Ordering::Relaxed)
+                }) {
+                    Ok(bytes) => bytes,
+                    Err(fs_read::BoundedFileReadError::Cancelled) => {
+                        cancelled = true;
+                        break 'passes;
+                    }
+                    Err(fs_read::BoundedFileReadError::LimitExceeded { .. }) => {
+                        skipped_sample.record_path(&path);
+                        errors.push(format!(
+                            "Skipped {}: file is larger than the {} Replace All limit",
+                            path.display(),
+                            iec_size(MAX_REPLACE_FILE_BYTES),
+                        ));
+                        continue;
+                    }
+                    Err(fs_read::BoundedFileReadError::Io(e)) => {
+                        errors.push(format!("Failed to read {}: {e}", path.display()));
+                        continue;
+                    }
+                };
+
+            if first_pass
+                && u64::try_from(original_bytes.len()).unwrap_or(u64::MAX) > pass_file_bytes
+            {
+                deferred.push((path, file_replacements));
+                continue;
+            }
+
+            let original_text = match simdutf8::basic::from_utf8(&original_bytes) {
+                Ok(text) => text,
+                Err(e) => {
+                    errors.push(format!("Non-UTF8 file {}: {e}", path.display()));
                     continue;
                 }
             };
 
-        let original_text = match simdutf8::basic::from_utf8(&original_bytes) {
-            Ok(text) => text,
-            Err(e) => {
-                errors.push(format!("Non-UTF8 file {}: {e}", path.display()));
-                continue;
-            }
-        };
-
-        let remaining_undo_bytes = undo_ledger
-            .remaining_bytes()
-            .saturating_sub(u64::try_from(original_bytes.len()).unwrap_or(u64::MAX));
-        let undo_output_limit = usize::try_from(remaining_undo_bytes).unwrap_or(usize::MAX);
-        let file_output_limit = usize::try_from(MAX_REPLACE_FILE_BYTES).unwrap_or(usize::MAX);
-        let output_limit = undo_output_limit.min(file_output_limit);
-        let output_limited_by_file_size = file_output_limit <= undo_output_limit;
-        let text_build =
-            build_replaced_text(original_text, &mut file_replacements, output_limit, || {
-                cancel.load(Ordering::Relaxed)
-            });
-        metrics.absorb_construction(text_build.metrics);
-        let (new_content, file_replaced) = match text_build.outcome {
-            ReplacementTextOutcome::Replaced {
-                new_content,
-                replacement_count,
-            } => (new_content, replacement_count),
-            ReplacementTextOutcome::StaleLine { line_number } => {
-                errors.push(format!(
-                    "Skipped {}: line {} changed since search",
-                    path.display(),
-                    line_number,
-                ));
-                continue;
-            }
-            ReplacementTextOutcome::InvalidPreview { reason } => {
-                errors.push(format!(
-                    "Skipped {}: invalid replacement preview ({reason})",
-                    path.display(),
-                ));
-                continue;
-            }
-            ReplacementTextOutcome::OutputLimitExceeded => {
-                skipped_sample.record_path(&path);
-                if output_limited_by_file_size {
+            let remaining_undo_bytes = undo_ledger
+                .remaining_bytes()
+                .saturating_sub(u64::try_from(original_bytes.len()).unwrap_or(u64::MAX));
+            let undo_output_limit = usize::try_from(remaining_undo_bytes).unwrap_or(usize::MAX);
+            let file_output_limit = usize::try_from(pass_file_bytes).unwrap_or(usize::MAX);
+            let output_limit = undo_output_limit.min(file_output_limit);
+            let output_limited_by_file_size = file_output_limit <= undo_output_limit;
+            let text_build =
+                build_replaced_text(original_text, &mut file_replacements, output_limit, || {
+                    cancel.load(Ordering::Relaxed)
+                });
+            metrics.absorb_construction(text_build.metrics);
+            let (new_content, file_replaced) = match text_build.outcome {
+                ReplacementTextOutcome::Replaced {
+                    new_content,
+                    replacement_count,
+                } => (new_content, replacement_count),
+                ReplacementTextOutcome::StaleLine { line_number } => {
                     errors.push(format!(
-                        "Skipped {}: replacement output would exceed the 10 MB per-file limit",
-                        path.display()
+                        "Skipped {}: line {} changed since search",
+                        path.display(),
+                        line_number,
                     ));
-                } else {
-                    errors.push(format!(
-                        "Skipped {}: undo data would exceed the 64 MB Replace All limit",
-                        path.display()
-                    ));
+                    continue;
                 }
+                ReplacementTextOutcome::InvalidPreview { reason } => {
+                    errors.push(format!(
+                        "Skipped {}: invalid replacement preview ({reason})",
+                        path.display(),
+                    ));
+                    continue;
+                }
+                ReplacementTextOutcome::OutputLimitExceeded
+                    if first_pass && output_limited_by_file_size =>
+                {
+                    deferred.push((path, file_replacements));
+                    continue;
+                }
+                ReplacementTextOutcome::OutputLimitExceeded => {
+                    skipped_sample.record_path(&path);
+                    if output_limited_by_file_size {
+                        errors.push(format!(
+                            "Skipped {}: replacement output would exceed the {} per-file limit",
+                            path.display(),
+                            iec_size(MAX_REPLACE_FILE_BYTES),
+                        ));
+                    } else {
+                        errors.push(format!(
+                            "Skipped {}: undo data would exceed the {} Replace All limit",
+                            path.display(),
+                            iec_size(MAX_REPLACE_UNDO_BYTES),
+                        ));
+                    }
+                    continue;
+                }
+                ReplacementTextOutcome::Cancelled => {
+                    cancelled = true;
+                    break 'passes;
+                }
+                ReplacementTextOutcome::Unchanged => continue,
+            };
+            let replaced_bytes = new_content.into_bytes();
+            let entry_payload_bytes = u64::try_from(original_bytes.len())
+                .unwrap_or(u64::MAX)
+                .saturating_add(u64::try_from(replaced_bytes.len()).unwrap_or(u64::MAX));
+            if !undo_ledger.try_charge(entry_payload_bytes) {
+                skipped_sample.record_path(&path);
+                errors.push(format!(
+                    "Skipped {}: undo data would exceed the {} Replace All limit",
+                    path.display(),
+                    iec_size(MAX_REPLACE_UNDO_BYTES),
+                ));
                 continue;
             }
-            ReplacementTextOutcome::Cancelled => {
-                cancelled = true;
-                break;
-            }
-            ReplacementTextOutcome::Unchanged => continue,
-        };
-        let replaced_bytes = new_content.into_bytes();
-        let entry_payload_bytes = u64::try_from(original_bytes.len())
-            .unwrap_or(u64::MAX)
-            .saturating_add(u64::try_from(replaced_bytes.len()).unwrap_or(u64::MAX));
-        if !undo_ledger.try_charge(entry_payload_bytes) {
-            skipped_sample.record_path(&path);
-            errors.push(format!(
-                "Skipped {}: undo data would exceed the 64 MB Replace All limit",
-                path.display()
-            ));
-            continue;
-        }
 
-        let entry = ReplaceUndoEntry::new(original_bytes, replaced_bytes);
-        let backup_path = path.clone();
-        let retained_entry_bytes = replace_undo_entry_retained_byte_weight(&backup_path, &entry);
-        if !retained_undo_ledger.try_charge(retained_entry_bytes) {
-            let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
-            debug_assert_eq!(reclaimed, entry_payload_bytes);
-            skipped_sample.record_path(&path);
-            errors.push(format!(
-                "Skipped {}: complete undo state would exceed the 64 MB Replace All limit",
-                path.display()
-            ));
-            continue;
-        }
-        if let Some(data_dir) = journal_data_dir {
-            if !journal_prepared {
-                if let Err(e) = search_backup::begin_incremental_journal(data_dir) {
+            let entry = ReplaceUndoEntry::new(original_bytes, replaced_bytes);
+            let backup_path = path.clone();
+            let retained_entry_bytes =
+                replace_undo_entry_retained_byte_weight(&backup_path, &entry);
+            if !retained_undo_ledger.try_charge(retained_entry_bytes) {
+                let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
+                debug_assert_eq!(reclaimed, entry_payload_bytes);
+                skipped_sample.record_path(&path);
+                errors.push(format!(
+                    "Skipped {}: complete undo state would exceed the {} Replace All limit",
+                    path.display(),
+                    iec_size(MAX_REPLACE_UNDO_BYTES),
+                ));
+                continue;
+            }
+            if let Some(data_dir) = journal_data_dir {
+                if !journal_prepared {
+                    if let Err(e) = search_backup::begin_incremental_journal(data_dir) {
+                        errors.push(format!(
+                            "Failed to prepare undo journal before replacing {}: {e}",
+                            path.display()
+                        ));
+                        let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
+                        debug_assert_eq!(reclaimed, entry_payload_bytes);
+                        let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
+                        debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
+                        continue;
+                    }
+                    journal_prepared = true;
+                }
+                if let Err(e) = search_backup::save_entry(data_dir, &path, &entry) {
                     errors.push(format!(
-                        "Failed to prepare undo journal before replacing {}: {e}",
+                        "Failed to persist undo journal before replacing {}: {e}",
                         path.display()
                     ));
                     let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
                     debug_assert_eq!(reclaimed, entry_payload_bytes);
                     let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
                     debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
-                    continue;
-                }
-                journal_prepared = true;
-            }
-            if let Err(e) = search_backup::save_entry(data_dir, &path, &entry) {
-                errors.push(format!(
-                    "Failed to persist undo journal before replacing {}: {e}",
-                    path.display()
-                ));
-                let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
-                debug_assert_eq!(reclaimed, entry_payload_bytes);
-                let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
-                debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
-                if let Err(cleanup_error) = search_backup::delete_entry(data_dir, &path) {
-                    errors.push(format!(
-                        "Failed to remove incomplete undo entry for {}: {cleanup_error}",
-                        path.display()
-                    ));
-                }
-                continue;
-            }
-            if !journal_armed {
-                if let Err(e) = search_backup::mark_incremental_journal_active(data_dir) {
-                    errors.push(format!(
-                        "Failed to activate undo journal before replacing {}: {e}",
-                        path.display()
-                    ));
                     if let Err(cleanup_error) = search_backup::delete_entry(data_dir, &path) {
                         errors.push(format!(
-                            "Failed to remove inactive undo entry for {}: {cleanup_error}",
+                            "Failed to remove incomplete undo entry for {}: {cleanup_error}",
                             path.display()
                         ));
                     }
+                    continue;
+                }
+                if !journal_armed {
+                    if let Err(e) = search_backup::mark_incremental_journal_active(data_dir) {
+                        errors.push(format!(
+                            "Failed to activate undo journal before replacing {}: {e}",
+                            path.display()
+                        ));
+                        if let Err(cleanup_error) = search_backup::delete_entry(data_dir, &path) {
+                            errors.push(format!(
+                                "Failed to remove inactive undo entry for {}: {cleanup_error}",
+                                path.display()
+                            ));
+                        }
+                        let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
+                        debug_assert_eq!(reclaimed, entry_payload_bytes);
+                        let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
+                        debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
+                        continue;
+                    }
+                    journal_armed = true;
+                }
+            }
+            backup.insert(backup_path, entry);
+            metrics.undo_bytes = undo_ledger.high_water_bytes();
+
+            assert_active_journal_before_write_for_test(journal_data_dir, &path);
+
+            match atomic_write(&path, &backup[&path].replaced_bytes) {
+                Ok(()) => {
+                    let identity = facts.canonical_path.as_deref().unwrap_or(&path);
+                    if open_canonical_identities.contains(identity) {
+                        affected_open_paths.push(path.clone());
+                    }
+                    record_replacement_success_counts(
+                        &mut replaced_count,
+                        &mut files_affected,
+                        file_replaced,
+                    );
+                }
+                Err(ReplaceWriteError::BeforeRename(e)) => {
+                    errors.push(format!("Failed to write {}: {e}", path.display()));
+                    backup.remove(&path);
                     let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
                     debug_assert_eq!(reclaimed, entry_payload_bytes);
                     let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
                     debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
-                    continue;
-                }
-                journal_armed = true;
-            }
-        }
-        backup.insert(backup_path, entry);
-        metrics.undo_bytes = undo_ledger.high_water_bytes();
-
-        assert_active_journal_before_write_for_test(journal_data_dir, &path);
-
-        match atomic_write(&path, &backup[&path].replaced_bytes) {
-            Ok(()) => {
-                let identity = facts.canonical_path.as_deref().unwrap_or(&path);
-                if open_canonical_identities.contains(identity) {
-                    affected_open_paths.push(path.clone());
-                }
-                record_replacement_success_counts(
-                    &mut replaced_count,
-                    &mut files_affected,
-                    file_replaced,
-                );
-            }
-            Err(ReplaceWriteError::BeforeRename(e)) => {
-                errors.push(format!("Failed to write {}: {e}", path.display()));
-                backup.remove(&path);
-                let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
-                debug_assert_eq!(reclaimed, entry_payload_bytes);
-                let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
-                debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
-                if let Some(data_dir) = journal_data_dir
-                    && let Err(journal_error) = search_backup::delete_entry(data_dir, &path)
-                {
-                    errors.push(format!(
+                    if let Some(data_dir) = journal_data_dir
+                        && let Err(journal_error) = search_backup::delete_entry(data_dir, &path)
+                    {
+                        errors.push(format!(
                         "Failed to remove undo journal entry after write failure for {}: {journal_error}",
                         path.display()
                     ));
+                    }
+                    continue;
                 }
-                continue;
-            }
-            Err(ReplaceWriteError::AfterRename(e)) => {
-                errors.push(format!(
-                    "Replaced {}, but durability sync failed: {e}",
-                    path.display()
-                ));
-                let identity = facts.canonical_path.as_deref().unwrap_or(&path);
-                if open_canonical_identities.contains(identity) {
-                    affected_open_paths.push(path.clone());
+                Err(ReplaceWriteError::AfterRename(e)) => {
+                    errors.push(format!(
+                        "Replaced {}, but durability sync failed: {e}",
+                        path.display()
+                    ));
+                    let identity = facts.canonical_path.as_deref().unwrap_or(&path);
+                    if open_canonical_identities.contains(identity) {
+                        affected_open_paths.push(path.clone());
+                    }
+                    record_replacement_success_counts(
+                        &mut replaced_count,
+                        &mut files_affected,
+                        file_replaced,
+                    );
                 }
-                record_replacement_success_counts(
-                    &mut replaced_count,
-                    &mut files_affected,
-                    file_replaced,
-                );
             }
         }
+        pending = std::mem::take(&mut deferred);
     }
 
     if cancelled {
@@ -1541,6 +1593,7 @@ fn rollback_file_disposition(path: &Path, entry: &ReplaceUndoEntry) -> RollbackD
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::services::filesystem::fixture;
     use std::collections::HashSet;
@@ -1572,7 +1625,7 @@ mod tests {
 
     #[test]
     fn replace_all_byte_budgets_match_documented_limits() {
-        assert_eq!(MAX_REPLACE_FILE_BYTES, 10 * 1024 * 1024);
+        assert_eq!(MAX_REPLACE_FILE_BYTES, 16 * 1024 * 1024);
         assert_eq!(MAX_REPLACE_UNDO_BYTES, 64 * 1024 * 1024);
     }
 
@@ -1905,8 +1958,92 @@ mod tests {
         assert_eq!(result.files_affected, 0);
         assert_eq!(result.skipped_count, 1);
         assert_eq!(result.skipped_sample[0], file.display().to_string());
-        assert!(result.error_sample[0].contains("larger than the 10 MB"));
+        assert!(
+            result.error_sample[0].contains("larger than the 16 MiB Replace All limit"),
+            "{}",
+            result.error_sample[0]
+        );
         assert!(backup.is_empty());
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` replaced
+    /// in files up to 10 MiB, and a run of files `main` processed in full (each
+    /// at most 10 MiB, the undo payload within 64 MiB) is processed in full.
+    #[test]
+    fn no_loss_replace_all_processes_every_file_main_processed() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let ten_mib = 10 * 1024 * 1024;
+        let files: Vec<_> = (0..3)
+            .map(|index| {
+                let file = dir.path().join(format!("ten-mib-{index}.txt"));
+                let mut content = "needle\n".to_string();
+                content.push_str(&"a".repeat(ten_mib - content.len()));
+                fixture::write_text(&file, &content);
+                file
+            })
+            .collect();
+        let replacements: Vec<_> = files
+            .iter()
+            .map(|file| make_replacement(file, 1, "needle", "thread", 0..6))
+            .collect();
+        let cancel = AtomicBool::new(false);
+        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
+            .expect("a run main processed in full")
+            .into_parts();
+
+        assert_eq!(result.files_affected, 3);
+        assert_eq!(result.skipped_count, 0, "{:?}", result.error_sample);
+        assert_eq!(result.error_count, 0);
+        for file in &files {
+            assert!(backup.contains_key(file));
+            assert!(fixture::read_text(file).starts_with("thread\n"));
+        }
+        assert_eq!(MAX_REPLACE_FILE_BYTES, 16 * 1024 * 1024);
+    }
+
+    /// No loss against `main` when the undo payload runs out: `main` skipped a
+    /// file above 10 MiB without charging it, so a later file of `main`'s size
+    /// still fit. Files `main` could replace are replaced first, so one of
+    /// 10–16 MiB earlier in path order never takes their budget.
+    #[test]
+    fn no_loss_a_larger_file_never_displaces_a_file_main_replaced() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let mib = 1024 * 1024;
+        let sized = |name: &str, len: usize| {
+            let file = dir.path().join(name);
+            let mut content = "needle\n".to_string();
+            content.push_str(&"a".repeat(len - content.len()));
+            fixture::write_text(&file, &content);
+            file
+        };
+        // Path order puts the 11 MiB file first.
+        let large = sized("a-large.txt", 11 * mib);
+        let small = [sized("b-small-0.txt", mib), sized("b-small-1.txt", mib)];
+        let replacements: Vec<_> = std::iter::once(&large)
+            .chain(small.iter())
+            .map(|file| make_replacement(file, 1, "needle", "thread", 0..6))
+            .collect();
+        // 24 MiB of undo: the large file's 22 MiB plus one small file's 2 MiB,
+        // or both small files and nothing else.
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(24 * 1024 * 1024)));
+        let cancel = AtomicBool::new(false);
+        let outcome = apply_replacements(&replacements, &HashSet::new(), &cancel, None);
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
+        let (result, backup) = outcome.expect("a bounded run").into_parts();
+
+        for file in &small {
+            assert!(backup.contains_key(file), "{:?}", result.error_sample);
+            assert!(fixture::read_text(file).starts_with("thread\n"));
+        }
+        assert_eq!(result.files_affected, 2);
+        assert_eq!(result.skipped_count, 1);
+        assert_eq!(result.skipped_sample[0], large.display().to_string());
+        assert!(
+            result.error_sample[0].contains("undo data would exceed"),
+            "{:?}",
+            result.error_sample
+        );
+        assert!(fixture::read_text(&large).starts_with("needle\n"));
     }
 
     #[test]
@@ -1960,7 +2097,11 @@ mod tests {
         assert_eq!(result.files_affected, 1);
         assert_eq!(result.skipped_count, 1);
         assert_eq!(result.skipped_sample[0], file_b.display().to_string());
-        assert!(result.error_sample[0].contains("undo data would exceed"));
+        assert!(
+            result.error_sample[0].contains("undo data would exceed the 64 MiB Replace All limit"),
+            "{}",
+            result.error_sample[0]
+        );
         assert_eq!(fixture::read_text(&file_a), "done-a\n");
         assert_eq!(fixture::read_text(&file_b), "needle-b\n");
         assert!(backup.contains_key(&file_a));
@@ -2990,10 +3131,12 @@ mod tests {
         .expect_err("all missing targets should produce one bounded terminal error")
         .to_string();
 
-        assert!(error.contains("Replace All failed: 10000 issue(s)"));
+        assert!(error.contains(&format!(
+            "Replace All failed: {MAX_REPLACE_PREVIEW_ROWS} issue(s)"
+        )));
         assert!(error.contains("missing-00000.txt"));
-        assert!(error.contains("9999 more omitted"));
-        assert!(!error.contains("missing-09999.txt"));
+        assert!(error.contains(&format!("{} more omitted", MAX_REPLACE_PREVIEW_ROWS - 1)));
+        assert!(!error.contains(&format!("missing-{:05}.txt", MAX_REPLACE_PREVIEW_ROWS - 1)));
         assert!(!error.contains(private_line.as_ref()));
         assert!(error.len() < 1_024);
     }

@@ -2,7 +2,7 @@
 
 //! Search history persistence: load, save, and manage recent search entries.
 //!
-//! History is capped at 20 entries (FIFO), deduplicated on identical query +
+//! History is capped at 32 entries (FIFO), deduplicated on identical query +
 //! toggle state, and persisted to a v1 envelope. This remains low-stakes state:
 //! damaged history degrades to an empty list with diagnostics.
 
@@ -15,7 +15,10 @@ use crate::services::recovery_metadata::{
 use std::path::Path;
 
 /// Maximum number of history entries to retain.
-const MAX_HISTORY: usize = 20;
+///
+/// Kind: retention tier; 20 rounded up to a power of two
+/// (`power-of-two-thresholds` D6).
+const MAX_HISTORY: usize = 32;
 
 /// Filename for the search history JSON file.
 const HISTORY_FILE: &str = "search-history.json";
@@ -55,7 +58,7 @@ pub fn save(data_dir: &Path, entries: &[SearchHistoryEntry]) -> anyhow::Result<(
     Ok(())
 }
 
-/// Add a new entry to the history, deduplicating and capping at 20.
+/// Add a new entry to the history, deduplicating and capping at `MAX_HISTORY` (32).
 ///
 /// If an identical entry (same query + all toggle states + glob) already exists,
 /// it is moved to the front instead of being duplicated.
@@ -90,15 +93,17 @@ mod tests {
     }
 
     #[test]
-    fn test_add_entry_caps_at_20() {
-        let mut entries: Vec<_> = (0..20).map(|i| make_entry(&format!("query-{i}"))).collect();
-        assert_eq!(entries.len(), 20);
+    fn test_add_entry_caps_at_max_history() {
+        let mut entries: Vec<_> = (0..MAX_HISTORY)
+            .map(|i| make_entry(&format!("query-{i}")))
+            .collect();
+        assert_eq!(entries.len(), 32);
 
         add_entry(&mut entries, make_entry("query-new"));
-        assert_eq!(entries.len(), 20);
+        assert_eq!(entries.len(), MAX_HISTORY);
         assert_eq!(entries[0].spec.query, "query-new");
-        // The oldest entry (query-19) should be removed.
-        assert!(entries.iter().all(|e| e.spec.query != "query-19"));
+        // The oldest entry (query-31) should be removed.
+        assert!(entries.iter().all(|e| e.spec.query != "query-31"));
     }
 
     #[test]
@@ -198,5 +203,44 @@ mod tests {
         );
         assert_eq!(load.value.len(), 1);
         assert!(!load.value[0].spec.options.hidden);
+    }
+
+    /// `power-of-two-thresholds` D6: a 20-entry history keeps all 20 entries
+    /// plus the new search (the tier only grows).
+    #[test]
+    fn upgrading_keeps_a_20_entry_history_after_one_more_search() {
+        let mut entries: Vec<_> = (0..20)
+            .map(|i| make_entry(&format!("stored-{i}")))
+            .collect();
+        add_entry(&mut entries, make_entry("new"));
+        assert_eq!(entries.len(), 21);
+        assert!((0..20).all(|i| {
+            entries
+                .iter()
+                .any(|e| e.spec.query == format!("stored-{i}"))
+        }));
+    }
+
+    /// A full history of the largest entries the search entry admits (its
+    /// 16 KiB paste cap, query and glob) loads in full through the bounded
+    /// metadata read.
+    #[test]
+    fn a_full_history_of_the_largest_entries_loads_in_full() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let entries: Vec<_> = (0..MAX_HISTORY)
+            .map(|i| {
+                let options = ContentSearchOptions {
+                    glob: Some(format!("{i:02}{}", "g".repeat(16 * 1024 - 2))),
+                    ..ContentSearchOptions::default()
+                };
+                SearchHistoryEntry::from_spec(SearchQuerySpec::new(
+                    format!("{i:02}{}", "q".repeat(16 * 1024 - 2)),
+                    options,
+                ))
+            })
+            .collect();
+        save(dir.path(), &entries).expect("save a full history");
+        assert_eq!(load(dir.path()), entries);
+        assert_eq!(MAX_HISTORY, 32);
     }
 }

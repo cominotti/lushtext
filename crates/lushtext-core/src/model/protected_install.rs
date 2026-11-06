@@ -59,6 +59,8 @@ use super::paragraph_boundary::next_paragraph_break;
 use super::protected_fold::{FoldRange, fold_byte_offset};
 
 /// The most UTF-8 bytes one scalar takes.
+///
+/// Kind: external fact; kept exact.
 pub const MAX_UTF8_SCALAR_BYTES: usize = 4;
 
 /// The smallest tail or clear slice [`ProtectedInstallLimits::new`] accepts:

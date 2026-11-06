@@ -190,35 +190,57 @@ const CODE_BLOCK_BACKGROUND_CSS_PRIORITY: u32 = gtk4::STYLE_PROVIDER_PRIORITY_AP
 /// A 32 MiB source still covers normal screenshots and exported diagrams, but
 /// it prevents accidental camera originals or generated art from dominating a
 /// background worker and its post-decode pixel copy.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_PREVIEW_IMAGE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 /// Maximum source pixels accepted before the preview falls back to a compact notice.
 ///
 /// 64 megapixels is intentionally above ordinary desktop images while below
 /// the point where RGB/RGBA decode buffers can spike into hundreds of MiB.
-const MAX_PREVIEW_IMAGE_SOURCE_PIXELS: i64 = 64_000_000;
+///
+/// Kind: presentation cap; 64,000,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M16).
+/// Four bytes per pixel bound the decode memory.
+const MAX_PREVIEW_IMAGE_SOURCE_PIXELS: i64 = 1 << 26;
 /// Maximum local-image descriptors that may own queued or active work.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_PREVIEW_IMAGE_WORK_ITEMS: usize = 4;
 /// Conservative ownership charge for source bytes plus one bounded RGBA decode.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 const PREVIEW_IMAGE_WORK_CHARGE_BYTES: u64 = MAX_PREVIEW_IMAGE_SOURCE_BYTES.saturating_add(
     (MAX_PREVIEW_IMAGE_WIDTH as u64)
         .saturating_pow(2)
         .saturating_mul(4),
 );
 /// Total conservative bytes admitted across active and compact queued image work.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 const MAX_PREVIEW_IMAGE_WORK_BYTES: u64 =
     PREVIEW_IMAGE_WORK_CHARGE_BYTES.saturating_mul(MAX_PREVIEW_IMAGE_WORK_ITEMS as u64);
 /// Maximum literal text bytes highlighted inside one native code-block widget.
 ///
 /// GtkSourceView highlighting is excellent for excerpts, but 64 KiB keeps a
 /// single fenced block from monopolizing a render turn when preview refreshes.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_PREVIEW_CODE_BLOCK_BYTES: usize = 64 * 1024;
 /// Inputs above this size are parsed away from GTK before bounded projection.
+///
+/// Kind: cap; a power of two, rounded down.
 const MARKDOWN_BACKGROUND_PLAN_THRESHOLD_BYTES: usize = 64 * 1024;
 /// Maximum detached text characters removed in one main-loop retirement turn.
+///
+/// Kind: cap; a power of two, rounded down.
 const MARKDOWN_RETIREMENT_CHARS_PER_TURN: usize = 64 * 1024;
 /// Maximum detached widget/link references released in one retirement turn.
+///
+/// Kind: cap; a power of two, rounded down.
 const MARKDOWN_RETIREMENT_ITEMS_PER_TURN: usize = 64;
 /// Maximum ordinary detached generations retained before latest-render backpressure.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_MARKDOWN_RETIREMENT_GENERATIONS: usize = 2;
 
 impl LushtextMarkdownPreview {

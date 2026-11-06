@@ -87,14 +87,28 @@ struct ChildReconcileProgress {
     mirror_generation: u64,
 }
 
-/// Maximum directory entries before truncation. A single `gio::ListStore`
-/// with >10k items causes slow model diff updates in `GtkListView`.
+/// Maximum directory entries before truncation. Larger stores make the model
+/// diff updates in `GtkListView` slower; appends stay batched per turn
+/// (`CHILD_APPEND_BATCH_SIZE`) and `ViewportSliceBin` bounds the realized rows.
 /// Truncated directories show a placeholder row with the count.
+///
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds` D12,
+/// task 9.5 M5): 16,384 breaks its per-turn bound. Expanding a directory at the
+/// cap ends in one terminal dispatch whose work grows with the entries (the
+/// mirror recache and row-state sync of `finish_child_reconciliation`): 25–30 ms
+/// at 10,000 entries on `main` and 41–43 ms at 16,384, 13–16 ms worse than
+/// `main`, past the one-reference-frame allowance. `main`'s 10,000 is kept; the
+/// incremental sidebar load queued as `bound-lists-by-budget-not-count` removes
+/// the count.
 const MAX_DIR_ENTRIES: usize = 10_000;
 /// Rows appended per main-loop tick when populating a directory tree.
 /// 256 items splice in <2ms, staying under the 16ms frame budget.
+///
+/// Kind: cap; a power of two, rounded down.
 const CHILD_APPEND_BATCH_SIZE: usize = 256;
 /// Changed rows at or below one batch retain the calibrated direct splice path.
+///
+/// Kind: cap; a power of two, rounded down.
 const CHILD_RECONCILE_DIRECT_ROWS: usize = CHILD_APPEND_BATCH_SIZE;
 
 /// Build the child model for one expanded directory and kick off its background scan.
@@ -2008,6 +2022,44 @@ fn remove_matching_items(
 mod index_tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// Rows the sidebar plans for a directory of `count` files, and whether
+    /// the truncation placeholder is among them.
+    fn directory_rows(count: usize) -> (usize, bool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for index in 0..count {
+            crate::services::filesystem::fixture::write_text(
+                &dir.path().join(format!("f{index:05}")),
+                "",
+            );
+        }
+        let scan = services::file_tree::scan_directory_bounded(
+            dir.path(),
+            MAX_DIR_ENTRIES,
+            8,
+            None,
+            &crate::model::workspace_visibility::WorkspaceEntryVisibility::default(),
+        );
+        let rows = desired_child_rows(scan.entries, scan.truncated);
+        let placeholder = rows.iter().any(|row| row.path.is_none());
+        (
+            rows.iter().filter(|row| row.path.is_some()).count(),
+            placeholder,
+        )
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` listed
+    /// 10,000 entries of a directory, and the cap keeps that value (task 9.5
+    /// M5 measured 16,384 past its per-turn bound).
+    #[test]
+    fn no_loss_a_directory_lists_every_entry_main_listed() {
+        assert_eq!(directory_rows(10_000), (10_000, false));
+        assert_eq!(directory_rows(10_001), (10_000, true));
+        assert_eq!(
+            truncated_directory_label(),
+            "10000+ items - showing first 10000"
+        );
+    }
 
     fn test_path(id: u8) -> PathBuf {
         PathBuf::from(format!("/workspace/path-{id}"))

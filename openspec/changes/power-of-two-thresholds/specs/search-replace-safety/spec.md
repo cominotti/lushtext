@@ -1,0 +1,51 @@
+## MODIFIED Requirements
+
+### Requirement: Replace Preview enforces row and byte budgets
+The system SHALL generate Replace Preview through explicit service-level limits of at most 16,384 generated rows (a presentation cap rounded up from 10,000 by `power-of-two-thresholds`) and `64 * 1024 * 1024` conservatively charged preview bytes. The generator MUST use saturating accounting, MUST admit only complete preview rows, and MUST return a typed outcome that distinguishes generated, omitted-eligible, source-truncated, and otherwise invalid matches.
+
+#### Scenario: Preview remains within both limits
+- **WHEN** all eligible search matches fit within the row and byte budgets
+- **THEN** the outcome contains every eligible complete preview row
+- **AND** the omitted-eligible count is zero
+
+#### Scenario: Next row would exceed the byte budget
+- **WHEN** admitting another complete preview row would exceed the byte budget
+- **THEN** the generator stops admitting rows before exceeding the limit
+- **AND** that match and later eligible matches are counted as omitted
+- **AND** no partially constructed row is exposed
+
+#### Scenario: Search reaches the row budget
+- **WHEN** more eligible matches exist than the preview row budget permits
+- **THEN** the outcome contains at most the configured row count
+- **AND** the remaining eligible matches are reported as omitted
+
+#### Scenario: Truncated source line remains ineligible
+- **WHEN** a search match contains only a bounded source-line excerpt
+- **THEN** Replace Preview does not generate an apply-capable row from that excerpt
+- **AND** the outcome distinguishes it from rows omitted solely by the preview budget
+
+### Requirement: Replace Preview resource policy has layered coverage
+The project SHALL add pure service, property, widget, accessibility, visual-geometry, and scale tests for zero matches, representative literal and regex matches, exactly-at-limit inputs, 16,384 matches (the result cap, a presentation cap rounded up from 10,000), large replacement text, stale generations, awkward paths, Unicode, and constrained layouts.
+
+#### Scenario: Scale fixture avoids quadratic row binding
+- **WHEN** a performance fixture binds and toggles rows in a 16,384-match preview
+- **THEN** identity resolution remains constant-time per row
+- **AND** the fixture detects a regression to full-preview scans
+
+#### Scenario: Property tests preserve apply equivalence
+- **WHEN** generated literal and regex cases fit within the preview budget
+- **THEN** applying accepted rows produces the same file text as the existing safe replacement semantics
+- **AND** storage sharing does not change ranges, captures, or stale validation
+
+### Requirement: Replace All enforces file and undo memory caps
+The system SHALL bound Replace All memory exposure with explicit service-level caps. A single target file larger than `16 * 1024 * 1024` bytes (16 MiB, a presentation cap rounded up from 10 MiB by `power-of-two-thresholds`: it decides which files a bulk action processes) MUST be skipped and reported, and the report MUST name the cap in IEC units. The total persisted undo payload for one Replace All run MUST NOT exceed `64 * 1024 * 1024` bytes; files that would exceed that cap MUST be skipped and reported before they are modified.
+
+#### Scenario: Oversized replace target is skipped
+- **WHEN** Replace All includes a matching file larger than the per-file replace cap
+- **THEN** the file is skipped without modification
+- **AND** the result reports that path as skipped
+
+#### Scenario: Undo payload cap skips later files before write
+- **WHEN** adding another file's original and replacement bytes would exceed the total undo payload cap
+- **THEN** that file is skipped before any replacement write occurs
+- **AND** already-written files remain undoable

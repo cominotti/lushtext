@@ -781,7 +781,7 @@ fn test_search_retirement_categories_release_actual_ownership_over_bounded_turns
         for observation in &observations {
             let actual_release = observation.released.total();
             assert_eq!(observation.charged, actual_release, "{category:?}");
-            assert!((1..=250).contains(&actual_release), "{category:?}");
+            assert!((1..=256).contains(&actual_release), "{category:?}");
             assert!(observation.before.total() > observation.after.total());
             assert_eq!(observation.pending, !observation.terminal_drain);
         }
@@ -829,12 +829,12 @@ fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
 
     let evidence = panel.evidence();
     let retirement_high_water = evidence.retirement_rows_per_slice_high_water;
-    assert!(retirement_high_water <= 250);
+    assert!(retirement_high_water <= 256);
     let observations = evidence.retirement_observations;
     assert!(observations.len() > 1);
     assert!(observations.iter().all(|observation| {
         let actual_release = observation.released.total();
-        observation.charged == actual_release && (1..=250).contains(&actual_release)
+        observation.charged == actual_release && (1..=256).contains(&actual_release)
     }));
     assert!(
         observations
@@ -3488,7 +3488,7 @@ fn test_evidence_reads_stay_side_effect_free_across_journal_mutation() {
 /// The cap is a service constant, so the only honest way to reach the capped
 /// state through the real streaming path is a fixture large enough to trip it.
 fn write_over_cap_fixture(root: &std::path::Path) {
-    for index in 0..20 {
+    for index in 0..30 {
         fixture::write_text(
             &root.join(format!("big_{index}.txt")),
             &"needle\n".repeat(600),
@@ -3507,7 +3507,7 @@ fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
     panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
 
-    // Streaming 10,000 matches costs at least 40 paced ticks, so the budget is
+    // Streaming 16,384 matches costs at least 64 paced ticks, so the budget is
     // generous; the predicate returns as soon as the flight settles.
     wait_until(Duration::from_secs(60), || {
         let imp = panel.imp();
@@ -3521,7 +3521,7 @@ fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
     );
     assert_eq!(
         imp.count_label.text().as_str(),
-        "10,000+ results (truncated) \u{2014} narrow your search",
+        "16,384+ results (truncated) \u{2014} narrow your search",
     );
     assert!(
         imp.count_label.has_css_class("warning"),
@@ -3532,7 +3532,7 @@ fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
     // be rendered: the defect this covers discarded the whole bounded channel.
     let total = imp.runtime.total_matches.get();
     assert!(
-        total >= 10_000,
+        total >= 16 * 1024,
         "a capped search must keep the matches it found, got {total}",
     );
     assert!(
@@ -3625,4 +3625,64 @@ fn test_evidence_reads_survive_widget_disposal() {
     let second = panel.evidence();
     assert_eq!(after.query, second.query);
     assert_eq!(after.glob_filter, second.glob_filter);
+}
+
+/// `power-of-two-thresholds` task 5.4: one receive turn dispatches at most
+/// `MAX_SEARCH_EVENTS_PER_TICK` (256) `Match` events, and one retirement turn
+/// releases at most `SEARCH_RETIREMENT_ROWS_PER_SLICE` (256) references. The
+/// evidence times both full turns; the measurement reads the printed line.
+#[test]
+fn test_search_turns_dispatch_and_retire_at_most_256() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("many.txt"), &"needle\n".repeat(3_000));
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(60), || {
+        !panel.imp().runtime.searching.get()
+    });
+
+    let turns = panel.evidence().event_turn_observations;
+    let largest = turns.iter().map(|&(events, _)| events).max().unwrap_or(0);
+    assert_eq!(
+        largest, 256,
+        "a full receive turn dispatches 256 events: {turns:?}"
+    );
+    let full_turns: Vec<i64> = turns
+        .iter()
+        .filter(|&&(events, _)| events == 256)
+        .map(|&(_, us)| us)
+        .collect();
+
+    populate_large_result_generation(&panel, "/retired-generation.txt", 3_000);
+    panel.start_search(&search_spec(""));
+    wait_until(Duration::from_secs(10), || {
+        let evidence = panel.evidence();
+        !panel.is_searching() && !evidence.retirement_pending
+    });
+    let evidence = panel.evidence();
+    assert_eq!(evidence.retirement_rows_per_slice_high_water, 256);
+    let full_slices: Vec<i64> = evidence
+        .retirement_observations
+        .iter()
+        .filter(|observation| observation.charged == 256)
+        .map(|observation| observation.duration_us)
+        .collect();
+    assert!(!full_slices.is_empty());
+    eprintln!(
+        "search-turn-timing-evidence full_event_turns={} event_turn_max_us={} event_turn_median_us={} full_retirement_slices={} retirement_slice_max_us={} retirement_slice_median_us={}",
+        full_turns.len(),
+        full_turns.iter().max().copied().unwrap_or(0),
+        median(&full_turns),
+        full_slices.len(),
+        full_slices.iter().max().copied().unwrap_or(0),
+        median(&full_slices),
+    );
+}
+
+fn median(values: &[i64]) -> i64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted.get(sorted.len() / 2).copied().unwrap_or(0)
 }

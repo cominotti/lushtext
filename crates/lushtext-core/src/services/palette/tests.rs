@@ -688,9 +688,9 @@ fn file_index_symlink_cycle_does_not_duplicate_results() {
 }
 
 #[test]
-fn max_indexed_files_constant_remains_100k() {
-    assert_eq!(super::index::MAX_INDEXED_FILES, 100_000);
-    assert_eq!(super::index::MAX_INDEXED_DIRECTORIES, 100_000);
+fn max_indexed_files_constant_is_the_power_of_two_above_100k() {
+    assert_eq!(super::index::MAX_INDEXED_FILES, 128 * 1024);
+    assert_eq!(super::index::MAX_INDEXED_DIRECTORIES, 128 * 1024);
 }
 
 #[test]

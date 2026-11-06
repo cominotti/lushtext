@@ -49,7 +49,7 @@ pub const HIGHLIGHT_CHUNK_BYTES: u64 = 8 * 1024;
 /// scale turns syntax off, so a highlighted install never meets a paragraph
 /// larger than one chunk.
 ///
-/// Kind: external bound, derived from `L_SYNTAX` and UTF-8; not a threshold,
+/// Kind: derived (an external bound from `L_SYNTAX` and UTF-8); not a threshold,
 /// so not rounded to a power of two.
 pub const MAX_SYNTAX_PARAGRAPH_BYTES: u64 = 4 * L_SYNTAX + 3;
 

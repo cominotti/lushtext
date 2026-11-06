@@ -56,6 +56,8 @@ use glib::prelude::*;
 /// work from UI bursts such as session restore or tree expansion, and bounded
 /// dispatch avoids turning slow filesystems into unbounded thread and memory
 /// pressure.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const DEFAULT_MAX_CONCURRENT_SPAWNS: usize = 8;
 
 /// Process-wide worker count shared by all dispatch calls in this crate.
@@ -130,6 +132,8 @@ pub fn completion_priority() -> glib::Priority {
 /// whole chain. After this many consecutive completions (or
 /// [`COMPLETION_RUN_BUDGET`] of them, whichever comes first) the source
 /// detaches and lets the main loop reach lower priorities once.
+///
+/// Kind: cap; a power of two, rounded down.
 const COMPLETIONS_BEFORE_YIELD: usize = 8;
 
 /// Longest continuous occupancy of one run of completions before the source

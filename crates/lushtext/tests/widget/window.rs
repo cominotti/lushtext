@@ -17216,14 +17216,14 @@ fn test_failed_bookmark_write_stops_retrying_past_its_bounded_streak() {
     // Exactly the bounded number of attempts is consumed, then retrying stops.
     wait_until(Duration::from_secs(20), || {
         bookmark_service::pending_save_failures_for_path_for_test(&json_store::data_dir(), &path)
-            <= 47
+            <= 46
     });
     flush_after_delay(Duration::from_millis(1_500));
     let remaining =
         bookmark_service::pending_save_failures_for_path_for_test(&json_store::data_dir(), &path);
     assert_eq!(
-        remaining, 47,
-        "exactly three bounded attempts should have been consumed, then retrying stops"
+        remaining, 46,
+        "exactly four bounded attempts (`MAX_BOOKMARK_SAVE_ATTEMPTS`) should have been consumed, then retrying stops"
     );
 }
 
@@ -19436,12 +19436,12 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     let _reset = NotesBrowserPolicyReset;
     let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_folder.join("many-bookmarks.rs");
-    let content = (0..510)
+    let content = (0..520)
         .map(|line| format!("line {line}\n"))
         .collect::<String>();
     fixture::write_text(&path, &content);
 
-    let bookmarks = (0..510)
+    let bookmarks = (0..520)
         .map(|line| {
             lushtext_core::model::bookmark::BookmarkRecord::new(
                 line,
@@ -19465,11 +19465,11 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
     let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
-    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 500);
+    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 512);
     assert!(
         find_label_by_text(
             &child,
-            "Showing first 500 matches. Refine search to narrow results."
+            "Showing first 512 matches. Refine search to narrow results."
         )
         .is_some(),
         "large note sets should explain that the sidebar result set is capped"
@@ -19480,7 +19480,7 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
         .assert_on(
             &find_label_by_text(
                 &child,
-                "Showing first 500 matches. Refine search to narrow results.",
+                "Showing first 512 matches. Refine search to narrow results.",
             )
             .expect("notes result-limit status"),
         );

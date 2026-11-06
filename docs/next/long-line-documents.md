@@ -31,7 +31,7 @@ that freezes it is **paragraph length**, not file size.
 | SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80), aging after eight completions or 16 ms (review); `ViewportSliceBin`'s pending-request evidence covers the re-slice (review, pre-existing); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
 | EV | `defer-background-tab-layout` (queued 2026-11-02, coordinator decision; **next after C3**, it touches C3's install files) | The real cause of `eviction/reselect`'s 6–11 s batches, attributed in SC (perf on `main` cdfff201: 69.5 % of the application's CPU in `incremental_validate_callback`): (1) the transient load permit (`8 × 8 MiB + 1 MiB` = 65 MiB of the 256 MiB budget, so three loads at a time) is held through an installation that C6 paces below the validation idle, so the next document is not even read until every validating view has laid out its whole buffer; (2) **background tabs validate fully**: restoring many large files spends the CPU laying out tabs nobody is looking at (A80: a view on a hidden `GtkStack` page validates its whole buffer) | The selected document of a restore of ten 8 MiB documents is usable within the open budget, background documents do not delay it, and no background tab lays out its whole buffer before it is shown (or the cost is recorded against a toolkit floor). **Implemented 2026-11-03, review fixes 2026-11-04** (PR #80, not merged): a hidden tab's view shows an empty placeholder buffer (A82, A83) except while an assistive technology listens or past 2^18 lines, background installs wait one priority step below the visible tab's (aging after 256 ms), the load permit keeps the decoded body plus the residency not yet installed after the read, a dense document's reattach is revealed in paced ranges; `eviction/reselect` completes (main: 20 s cap) with every background document laid out never and installed within ~0.5 s of the visible one; see "EV" below |
 | DL | `bound-dense-long-line-editing` (queued 2026-11-05, coordinator, from CF's review; proposal not written) | Bound open, click, restyle and typing on **editable dense documents of long lines** (the full tier's dense/10000 and dense/50000: 160 lines of 10,000 or 50,000 characters). Identical on `main` `1d483b24` and CF: open 110–530 ms, click 53–262 ms, zoom step about 100 / 470–485 ms, font change 70 / 320–330 ms, typing about 1.2 s per burst, the lane failing `misdirected_typing` and `withheld_typing_frames` in 12 / 18 phases; the cost is GtkTextView validating 2000 px batches of such lines (A31), each dispatch laying out up to about a million characters | The full-tier lane passes its typing gates on these cases, and every dispatch is within the budgets or recorded against a toolkit floor (C5's per-keystroke exception covers one paragraph's re-layout, not a batch of them) |
-| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; **next**, after CF's archive, 2026-11-05) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
+| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; **next**, after CF's archive, 2026-11-05) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard. **Proposal written 2026-11-05** (branch `power-of-two-thresholds`, `openspec/changes/power-of-two-thresholds/`): about 95 in-scope constants classified; tiers 8 MiB / 64 MiB (512 MiB after task 3's memory peak); caps down, coverage windows (`R_BATCH` 256), retention tiers and retry budgets up (nothing stored is pruned); exceptions with corpus evidence (`L_SYNTAX`, the per-language gates and `S_SYNTAX_OTHER`: rounding down unhighlights 0.1–22 % of real files; `L_PROTECT_EDIT`, `V_BATCH`, the 100,000-file index, the 64 MP image cap); `L_PROTECT`/`N_INSPECT` 512 if a `dense/512` lane case holds, else 256; `V_SLICE`, the direct-install threshold and the 250-per-turn search caps re-measured; a `make check-thresholds` inventory gate. **Implemented 2026-11-05** (branch `power-of-two-thresholds`, PR pending, not merged): see "PT" below. Measured: the open tier is 512 MiB (memory peak within 1.074 × main's at 500 MB), `L_PROTECT`/`N_INSPECT` 512, `V_SLICE` 16,384, the direct-install threshold 512 KiB, the search per-turn caps 256; task 4.5's corpus count kept `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `MAX_MARKDOWN_EVENTS` and the table-cell caps as recorded exceptions. **Amended 2026-11-05 (maintainer, PR #84 not merged):** the first version rounded every cap down and lost what `main` showed (palette 50 → 32, notes 500 → 256, Replace All 10 → 8 MiB, the 10,000 caps → 8,192, minimap markers 2,000 → 1,024, the minimap and per-edit history tier 10 MB → 8 MiB). New kind **presentation cap** (design D12): a cap on what the user sees or gets rounds **up** from its pre-PT value when its bound holds by measurement, else keeps that value as an exception; internal caps keep rounding down. **Implemented 2026-11-05 (stage 3, PR #84):** palette 64, notes 512, Replace All 16 MiB, the 10,000 caps 16,384 (the sidebar directory cap kept at 10,000 by measurement), markers 2,048, save-only history 16 MiB (the minimap tier kept at 10,000,000 bytes by measurement), `N_HEAD` and CSS back to 10,000 and 37 KiB, `N_DENSE` 256, Markdown 65,536 events and 1,024 cells, `L_SEARCH_HIGHLIGHT` 16,384 (`L_MINIMAP` kept at 22,000 by measurement, `L_INVISIBLES` at 50,000 by Protected View's invariant), the index 131,072, images 2^26 pixels; displayed sizes in IEC units (D14). Queued after PT merges, in order (D13): `bound-lists-by-budget-not-count`, `stream-replace-all`, `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then `avx2-health-scan-kernel` and DL. See "PT" below, "Amendment". | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
 
 C1–C4 are drafted; none may be **implemented** before this record holds the
 values they use (`responsiveness-measurement` spec).
@@ -1390,7 +1390,10 @@ review's must-fixes landed, the remaining misses are decided as follows:
   exception.** The branch's worst dispatch on those cases is 9.3–10.4 ms
   against main's 10.3–14.1 ms. A user notices a stall; a settle that ends
   less than one frame later is invisible. Revisit when `power-of-two-thresholds`
-  re-measures `V_SLICE`.
+  re-measures `V_SLICE`. **Revisited 2026-11-05 (PT):** at `V_SLICE` 16,384
+  the branch is laid out no later than `main` on every dense case (dense/500
+  wrap-on 85 against 88 ms, dense/710 wrap-on 102 against 202 ms), so the
+  miss is closed.
 - **Keys behind the pointer-entry restyle (~210 ms after activation, both
   sides)** and **the dense/710 wrap-off 8.5 ms two-slice validation**:
   recorded toolkit costs, as attributed above.
@@ -3439,7 +3442,7 @@ sides, C6's recorded toolkit-floor exception, unchanged.
 
 **Status:** implemented on branch `scope-font-zoom-restyle` from `main`
 `1d483b24`; merged as PR #83 (`main` `256cd35a`) and archived 2026-11-05.
-`power-of-two-thresholds` (PT in the table above) is next. Design and decisions:
+`power-of-two-thresholds` (PT in the table above) followed; see "PT" below. Design and decisions:
 `openspec/changes/archive/2026-11-05-scope-font-zoom-restyle/design.md`. Measurement artifacts:
 `.claude/handoffs/scope-font-zoom-restyle/` (`runs.log`, `compare-*.md`).
 
@@ -3553,6 +3556,297 @@ full-tier lane on `main` and the programme cannot close with them; (3) review
 fix: `make check-font-zoom-registration` also forbids a builder's
 `.monospace(true)` and `set_property("monospace", true)`, both of which set
 `GtkTextView:monospace` and escaped the check (self-test cases failing first).
+
+## PT `power-of-two-thresholds` (implementation record, 2026-11-05)
+
+**Status:** implemented on branch `power-of-two-thresholds` from `main`
+`fbf0f875`; opened as a pull request from that branch (PR #84), not merged;
+amended 2026-11-05 by the maintainer's presentation-cap decision (see
+"Amendment" at the end of this section; tasks 9.x pending). Design and decisions:
+`openspec/changes/power-of-two-thresholds/design.md` (D1-D11, "Spec review
+(stage 2)", "Implementation decisions (stage 3)"). Measurement artifacts:
+`.claude/handoffs/power-of-two-thresholds/` (`runs.log` with the load before
+and after every run, `measure.log`, `open/`, `search/`, `m1-main/`,
+`m1-branch/`, `spec-stage-notes.md`).
+
+**What was built.**
+
+- **The gate** (D10). `make check-thresholds`, in `check-policy`, runs
+  `scripts/check-threshold-kinds.py` (self-tested on a fixture tree) over all
+  460 integer constants of the production crates against
+  `docs/thresholds.md`. Rows are keyed by file and module-qualified name, with
+  `cfg` variants, and multi-line declarations are evaluated. Every in-scope
+  constant is a power of two, derived, an external fact, a measurement record
+  or a recorded exception, and carries a matching rustdoc `Kind:` line.
+- **Tiers** (D3). The minimap and save-only local history above 8 MiB, undo
+  off and local history unavailable above 64 MiB, the open refusal above
+  512 MiB (task 3); the buffer-snapshot and Replace All per-file caps 8 MiB.
+  Every message that names a tier prints it through
+  `model::size_units::iec_size` ("64 MiB"; any other size with one decimal).
+  `byte_tier_reference` is the independent table the tier unit tests and the
+  Kani harness `scale_byte_tiers_match_the_tier_reference` compare with.
+- **Caps down** (D4): `N_VISIBLE` 262,144, `N_HEAD` 8,192, the thirteen
+  10,000-entry caps 8,192 (the search and sidebar truncation texts read
+  "8,192+"), the bookmark excerpt scan 16,384 lines, the minimap marker caps
+  1,024 and its wrapped-layout line budget 4,096, palette categories 32, the
+  notes browser 256, the CSS attach gate 32 KiB.
+- **Coverage windows up** (D5): `R_BATCH` and `R_FOLD` 256, so `N_DENSE` is
+  218; construction stages 64; frame-phase frames 16,384; the manifest-repair
+  entry charge 128; the reveal settle budget 64 frames.
+- **Retention and retries up** (D6), so nothing stored is pruned: local
+  history 64 per file and 256 in all, recents 256 (read bound 4 MiB: a full
+  store of 4,096-byte paths is about 2.03 MiB, and the former 1 MiB bound
+  already reset a full 200-entry store), search history 32, the set-aside
+  bound 128 bodies, retries 4 / 4 / 8 / 1,024.
+- **Text caps** (task 4.6): announcements 256 (128 would cut the
+  229-character longest reduced-features notice, pinned by a unit test),
+  the notice 256, the editor identity 128 (stage 4: 64 cut 7.96 % of corpus
+  file names, so D2 decides it; 128 cuts 0.0020 %). The minimap's long-line
+  marker threshold stays 120, an external fact (the 120-column convention).
+- **Measured items**: the open tier (task 3), `L_PROTECT`/`N_INSPECT`
+  (task 5.1), `V_SLICE` (task 5.2), the direct-install threshold (task 5.3)
+  and the search per-turn caps (task 5.4), each in its own commit; figures
+  below.
+
+**Corpus counts** (task 4.5; a throwaway counter with `pulldown-cmark`
+0.13.5 and the app's parser options over `~/Workspace` without `.git`,
+`.claude` worktree copies and `target` build output, the crates.io registry
+and, for paragraphs, `/usr/include`; `taskset -c 8-23`, I/O only). Every
+share is above the 0.05 % materiality floor, so all stay recorded exceptions:
+
+| Cap | Today → power of two below | Files that lose the feature (share of those that have it) |
+|---|---|---|
+| `L_MINIMAP` | 22,000 → 16,384 | 5,556 of 765,618 (0.73 %) |
+| `L_INVISIBLES` | 50,000 → 32,768 | 650 of 767,315 (0.085 %) |
+| `L_SEARCH_HIGHLIGHT` | 10,000 → 8,192 | 2,366 of 757,002 (0.31 %) |
+| `MAX_MARKDOWN_EVENTS` | 50,000 → 32,768 | 700 of 404,113 Markdown files ≤ 4 MiB (0.17 %) |
+| the two table-cell caps | 1,000 → 512 | 1,256 of 404,439 (0.31 %) |
+
+**Open tier** (task 3; `open-peak.py`: each file opened headless through
+`scripts/measure.sh` inside its own 12G `with-memory-cap` scope, scope
+`memory.peak` read until the tab is loaded and the app idle; three
+repetitions per side, interleaved; load 0.94–2.20):
+
+| Fixture | `main` at 500,000,000 B (MiB) | branch at 512 MiB (MiB) | median ratio |
+|---|---|---|---|
+| short-line text | 2,349 / 2,153 / 2,152 | 2,393 / 2,290 / 2,290 | 1.064 |
+| UTF-16LE | 2,130 / 2,067 / 2,067 | 2,266 / 2,217 / 2,218 | 1.073 |
+
+Both are within the tier ratio, 1.074, plus the 5 % run spread; no swap, no
+OOM kill. Load to laid out: text 166–168 s against 177 s; the largest
+dispatch 80–82 ms on `main` against 59–60 ms (text, the C2 conversions).
+
+**Lane** (tasks 5.1–5.3; `main` `fbf0f875` against the candidate build, one
+run each, interleaved, `dense/{120,500,512,710}` in both wrap modes,
+`baseline/small` and short-line `total-size` at 512, 600 and 704 KiB as
+`.txt` and `.html`; plain, AT and probe-IM; three repetitions; load 0.9–1.2;
+`compare-m1.md` in the handoff directory has every case):
+
+| Case | worst validation until settle, max (main / branch, ms) | worst post-open dispatch, max (main / branch, ms) | activation to laid out, median (main / branch, ms) |
+|---|---|---|---|
+| dense/500/wrap-on | 9.4 / 10.5 | 9.4 / 10.8 | 87.5 / 85.1 |
+| dense/512/wrap-off | 12.3 / 6.2 | 13.1 / 8.6 | 71.9 / 52.1 |
+| dense/512/wrap-on | 11.2 / 9.7 | 11.2 / 9.7 | 86.9 / 85.7 |
+| dense/710/wrap-off | 9.6 / 8.6 | 9.6 / 8.6 | 78.8 / 76.3 |
+| dense/710/wrap-on | 12.3 / 11.5 | 12.3 / 12.6 | 201.5 / 101.6 |
+| total-size/614400/txt | 5.7 / 4.6 | 14.4 / 13.3 | 444.6 / 450.8 |
+| total-size/720896/txt | 5.8 / 5.4 | 11.4 / 12.9 | 481.0 / 481.7 |
+
+- **`L_PROTECT` / `N_INSPECT` 512** (D7): dense/512 meets what dense/500 meets
+  on the same build (every post-open dispatch at most 9.7 ms against 10.8,
+  validation at most 9.7 against 10.5), so both are 512; the Line Inspector
+  window grows by 12 characters. Neither `main` nor the branch meets the
+  literal "validation within half of `B_SETTLE_US`" on dense/500 wrap-on
+  (9.4 and 10.5 ms), which is how C6 accepted it; the criterion applied is
+  dense/500's own figures.
+- **`V_SLICE` 16,384** (D8): every post-open dispatch at most 12.6 ms and
+  every validation dispatch at most 11.5 ms (`main`, at 11,360: 13.1 and
+  12.3 ms), activation to laid out no later on any dense case. 8,192 was not
+  needed. C6's accepted miss (dense wrap-on 13–15 ms later than `main`) is
+  closed.
+- **Direct-install threshold 512 KiB** (D8): activation to laid out within
+  6.2 ms of `main` at every size (one reference frame is 8.3 ms). The
+  31 ms `.html` post-open dispatch at every size is `post_open_language_attach`
+  on both sides, C6's recorded A67 parse.
+
+**Search per-turn caps 256** (task 5.4; the widget fixture
+`search_panel::test_search_turns_dispatch_and_retire_at_most_256`, failing
+first at 250, on the optimized widget build — opt-level 2, no debug
+assertions — three repetitions through `scripts/measure.sh` at load
+0.59–0.78): a full turn of 256 `Match` events 11.6–13.5 ms median and
+14.9 ms at most; a full retirement turn of 256 references 16–23 µs median,
+86 µs at most. The debug build at 250 already took up to 15.8 ms per turn.
+
+**Kani** (task 6): every shard whose harnesses, or the production code they call, read a
+changed constant was rerun with `make kani KANI_SHARD=<shard>
+KANI_MEASURE=…`, one at a time inside the memory cap, on the final values
+(2026-11-05, local, load 0.7–5.7 because other agents ran meanwhile; local
+timing does not change the CI budgets in `scripts/kani-shards.py`). All 73
+harnesses verified:
+
+| Shard | Why it reran | Harnesses | Local wall time / peak RSS | CI budget |
+|---|---|---|---|---|
+| `core-document-scale` | the tier reference, the tiers, `L_PROTECT`, `R_BATCH` | 14 | 6.2 min / 2.6 GiB | 8.2 min / 2.7 GiB |
+| `core-paragraph-profile` | `ProfileConfig::PRODUCTION` (`L_PROTECT`, `N_VISIBLE`, `R_BATCH`) | 4 | 10.0 min / 8.8 GiB | 14.7 min / 8.3 GiB |
+| `core-profile-watch-step` | the watch's `R_BATCH` window | 1 | 13.7 min / 10.1 GiB | 19.4 min / 10.4 GiB |
+| `core-profile-watch-reads` | the `2·R_batch + 2` read bound | 1 | 13.9 min / 10.1 GiB | 18.4 min / 10.4 GiB |
+| `core-profile-watch-unsound` | the same window | 1 | 14.1 min / 10.1 GiB | 19.5 min / 10.4 GiB |
+| `core-protected-fold` | `N_HEAD`, `R_FOLD`, `N_DENSE` | 6 | 6.8 min / 1.6 GiB | 6.9 min / 1.5 GiB |
+| `core-protected-fold-shape` | the same | 3 | 12.2 min / 1.5 GiB | 13.0 min / 1.6 GiB |
+| `core-protected-fold-mapping` | the same | 5 | 5.2 min / 1.6 GiB | 6.0 min / 1.6 GiB |
+| `core-protected-view` | `N_INSPECT ≤ min(HEAD_CAP, L_PROTECT)` | 6 | 2.3 min / 3.3 GiB | 1.1 min / 3.4 GiB |
+| `core-protected-view-navigation` | the production `N_INSPECT` width | 1 | 0.2 min / 1.5 GiB | 13.3 min / 1.5 GiB |
+| `core-post-open-settle` | `V_SLICE`, the direct-install threshold | 15 | 9.8 min / 1.8 GiB | 11.0 min / 2.0 GiB |
+| `core-paragraph-boundary` | `MAX_DENSITY_WINDOW` and `R_BATCH` | 3 | 10.3 min / 3.7 GiB | 21.9 min / 3.8 GiB |
+| `core-journal-and-write` | `SOFT_BOUND_BODIES` (the harness now pins 128) | 13 | 5.9 min / 2.5 GiB | 12.0 min / 2.6 GiB |
+
+The navigation harness fell from 13.3 CI minutes to 13 local seconds: with
+`N_INSPECT` 512 the window arithmetic is a shift and a mask, which is the
+rule's own argument for powers of two. `core-protected-install` was not rerun:
+its harnesses read no changed constant. `core-paragraph-profile` peaked at
+8.8 GiB locally against its 8.3 GiB runner budget, below the 12 GiB margin;
+the next dispatched Kani run re-measures every budget. `make
+check-kani-shards` passes.
+
+**Proof strength** (task 6.3): `scripts/proof-strength.py` ran the module's
+Kani harnesses (the Kani arm) against the seven byte-tier mutants of
+`DocumentScale::for_profile_in_with` (the undo comparison and both
+local-history comparisons, `>`/`<=` replaced by `==`, `<`, `>=` or `>`);
+`scale_byte_tiers_match_the_tier_reference` kills all seven, in 5–6 s each,
+as the parity harness did against the retired table. The tests arm over all
+235 mutants of the module was not rerun: the tier tests are unit tests whose
+values the change fixed, and the arm's cost (one build per mutant) bought
+nothing the Kani arm did not show.
+
+**Verification lane** (task 7.3; quick tier, `main` `fbf0f875` against the
+final branch, interleaved, plain, one repetition, load 0.8–2.3): the
+keystroke group, the dense group, `baseline/small` and `total-size` at
+8 MiB and 8 MiB + 1 pass on both sides with matching figures (every
+keystroke within a millisecond or two of `main`; `total-size` laid out in
+5.59–5.66 s on both). Two observations, both attributed:
+
+- The `.html` keystroke cases show one ~31 ms dispatch in the open or
+  background phase in some repetitions, on both sides: in a three-repetition
+  rerun 3 of 9 runs on `main` (load 1.0–1.2) and 3 of 9 on the branch (load
+  5.1–5.3, so not a verdict) carry it. It is the HTML language attach's parse
+  (C6's recorded A67 exception), which also gives the 31 ms `.html`
+  `total-size` dispatch above.
+- The 64 MiB `total-size` edges exceed the quick tier's phase cap on both
+  sides (a 64 MiB open takes longer than the quick tier allows);
+  the full tier's 20 s open-phase cap is shorter too (rerun `t64-*`, both
+  sides), so the lane times neither. The 10–20 s "worst" it prints for them
+  is the cap's length, not a dispatch: the open-tier runs of task 3 measured
+  every dispatch of a 500 MB–512 MiB open with the same probe, at most
+  82 ms. The 64 MiB edges themselves are pinned by the unit tests at 64 MiB
+  and 64 MiB + 1 and by the Kani tier-reference harness. Extending the lane's
+  `total-size` cap to such sizes is a lane follow-up, not part of PT.
+
+**Recorded exceptions** (D9, each with its measurement in its rustdoc and in
+`docs/thresholds.md`): `L_SYNTAX`; eleven per-language attach gates (HTML
+46 KiB and JSON 24 KiB included), JSON's typing gate and `S_SYNTAX_OTHER`;
+`L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`; `L_PROTECT_EDIT`;
+`V_BATCH`; `MAX_INDEXED_FILES` and `MAX_INDEXED_DIRECTORIES`;
+`MAX_PREVIEW_IMAGE_SOURCE_PIXELS`; `MAX_MARKDOWN_EVENTS` and the two
+table-cell caps.
+
+**Displayed sizes: done (D14).** The properties panel, the file peek and the
+local-history list printed "MB"/"KB" for a size they *display* (not a tier);
+all three now print through `model::size_units::iec_size` ("10 MiB",
+"1.5 KiB"), task 9.7.
+
+**Amendment (maintainer decision, 2026-11-05; spec stage).** The maintainer
+reviewed PR #84 and decided that LushText must be extremely performant **and**
+handle high loads and large workspaces with no visible loss. The first
+version's "caps rounded down" (design D4) shipped losses against `main`:
+palette categories 50 → 32, the notes browser 500 → 256, Replace All skipping
+files of 8–10 MiB, every user-visible 10,000 cap → 8,192 (workspace search,
+Replace Preview, Protected View find, the sidebar directory cap, palette and
+notes-browser note entries, the set-aside, format-upgrade and journal scans),
+minimap markers capped at 1,024 (2,000), the minimap and per-edit local
+history lost for files of 8–10 MB, Protected View heads 1,808 characters
+shorter, dense heads 218 characters instead of 250, CSS files of 32–37 KiB
+unhighlighted.
+
+- **New kind** (`.agents/rules/rust.md`, design D12): a **presentation cap**
+  is a cap on what the user sees or gets (results, rows, notes, markers,
+  entries listed, files a bulk action processes, characters announced, the
+  size or length at which a feature turns off). It rounds **up** to the power
+  of two at or above its pre-PT value when the bound it protects (memory,
+  per-turn GTK time against `B_interact`/`B_settle`, worker memory) still
+  holds by measurement; otherwise it keeps its pre-PT value as a recorded
+  exception with the measurement. When in doubt, a cap is a presentation cap.
+  Internal resource caps keep rounding down. `text cap` is folded in.
+- **Targets** (design D12's table has every constant, its pre-PT, PR #84 and
+  new value, the bound and its measurement): palette 64; notes browser 512;
+  Replace All per file 16 MiB (memory still bounded by the unchanged 64 MiB
+  aggregate undo payload); every user-visible 10,000 cap 16,384; minimap
+  markers 2,048 and the wrapped-layout line budget 8,192; bookmark excerpt
+  scan 32,768 lines; recent-load diagnostics 32; the reduced-features notice
+  512 characters; the minimap and save-only local-history tier 16 MiB (else
+  10,000,000 bytes); `N_HEAD` 10,000 and the CSS gate 37 KiB as exceptions
+  (C2's head sweep and A69 show the power of two above breaking the bound);
+  `V_BATCH` 65,536 (else 64,000) so `N_DENSE` ≥ 250; conditionally, the
+  Markdown event cap 65,536, table cells 1,024, `L_MINIMAP` 32,768,
+  `L_INVISIBLES` 65,536, `L_SEARCH_HIGHLIGHT` 16,384, the palette index
+  131,072 and the image cap 2^26 pixels.
+- **Measured** (task 9.5, 2026-11-05, interleaved with `main` `fbf0f875`,
+  each run started at 1-minute load below 4; design "Implementation of the
+  amendment" has the table, `runs.log` every figure): rounded up and within
+  their bounds — palette 64 (settle 6.4–7.9 ms ≤ `B_interact`), workspace
+  search, Replace Preview and Protected View find 16,384, the notes browser
+  512 rows and 16,384 open-editor, source and sidecar entries, palette notes
+  16,384, the set-aside, preflight and journal scans 16,384, bookmark
+  excerpts 32,768 lines, minimap markers 2,048 and the wrapped-layout line
+  budget 8,192, Replace All 16 MiB per file (peak growth ratio 1.57; the
+  64 MiB aggregate unchanged; files within `main`'s 10 MiB are replaced in a
+  first pass, so a larger file never takes the undo budget of a file `main`
+  replaced, stage-4 review), save-only local history 16 MiB, `V_BATCH`
+  65,536 (`N_DENSE` 256), the Markdown event cap 65,536 and table cells
+  1,024, `L_SEARCH_HIGHLIGHT` 16,384, the palette
+  index 131,072 files and directories, the image cap 2^26 pixels. Kept as
+  recorded exceptions by measurement: `MAX_DIR_ENTRIES` 10,000 (a capped
+  expansion's terminal dispatch 41–43 ms at 16,384 against 25–30 ms on
+  `main`), `S_MINIMAP` 10,000,000 bytes (a 16 MiB open with the minimap
+  37–38 ms against 23–27 ms, and a settle past the lane's cap), `L_MINIMAP`
+  22,000 (background 13.4 ms worse at 32,768). `L_INVISIBLES` keeps 50,000
+  because every document past it is in Protected View, which draws no
+  invisibles (C2 D10), now a compile-time assertion. `N_HEAD` 10,000 and CSS
+  37 KiB are exceptions cited from C2's sweep and A69. Failing-first tests
+  assert no loss against `main` for every cap (task 9.3). `main` already
+  misses `B_settle` at its own values on the first-results reveal of a
+  search (20–23 ms), the notes browser rebuild (32–38 ms) and a capped
+  directory expansion (25–30 ms); D13 item 1 covers the ones a cap scales.
+- **Displayed sizes** in IEC units (D14), done: the properties panel, the file
+  peek and the local-history rows print through `model::size_units::iec_size`.
+
+**Queued after PT merges** (design D13; maintainer, 2026-11-05), each a
+separate change, in this order:
+
+1. `bound-lists-by-budget-not-count`: the palette's "N more…" row with a
+   category drill-down mode; an incremental, virtualized notes browser
+   bounded by retained bytes, with "showing X of Y"; minimap markers binned
+   per pixel row with no count cap; workspace search streamed without a
+   count cap, bounded by retained bytes; sidebar directories past 10,000
+   entries loaded incrementally, without the truncation placeholder.
+2. `stream-replace-all`: chunked replace with an on-disk undo journal, so the
+   per-file limit reaches the open tier with constant memory; skipped files
+   listed with their reason and an "Open and replace in editor" action.
+3. `scale-file-index`: an interned path arena and a byte budget instead of
+   the 131,072-file count, targeting at least 1,000,000 files, with a
+   Criterion benchmark and a measurement on a real monorepo.
+4. Profile and slice the 59–60 ms largest-file open dispatch (the open-tier
+   runs above).
+5. Then the paused `avx2-health-scan-kernel` (spec and spec review done,
+   branch `avx2-health-scan-kernel`) and DL `bound-dense-long-line-editing`.
+
+**Next release notes (AppStream, prepared, not inserted).** "Size limits are
+now round numbers, and none of them went down: per-edit local history applies
+up to 16 MiB, undo and local history up to 64 MiB, files up to 512 MiB open,
+and Replace All rewrites files up to 16 MiB. Workspace search keeps 16,384
+results, the command palette 64 per category, the notes browser 512 rows and
+minimap markers 2,048. Sizes are shown in MiB and KiB everywhere. Local
+history keeps more snapshots (64 per file, 256 in all), recent documents keep
+256 entries and search history 32, so nothing you have is trimmed."
 
 ## Axioms each change cites
 

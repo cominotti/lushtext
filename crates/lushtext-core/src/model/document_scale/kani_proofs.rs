@@ -8,14 +8,15 @@
 //! [`SyntaxLanguage`] (`bound-post-open-settle` added the language input; the
 //! monotonicity and join harnesses are stated over it). The policy has
 //! no loops, so no unwind bound is needed. The tier harness compares with the
-//! frozen transcription of the retired byte-only classification
-//! (`retired_byte_tiers`), not with production code.
+//! independent transcription of the byte tiers (`byte_tier_reference`, the
+//! retired byte-only classification's shape with the tiers
+//! `power-of-two-thresholds` set), not with production code.
 //!
 //! Compiled only under `cfg(kani)` (`make kani`).
 
 use super::{
     DocumentScale, LocalHistoryAvailability, MODEL_MARKDOWN_CAP, ProfileSummary, ReductionReason,
-    ScaleFeature, SyntaxLanguage, retired_byte_tiers,
+    ScaleFeature, SyntaxLanguage, byte_tier_reference,
 };
 
 /// The shipped table (`None`) or the model cap the chunked tests use
@@ -222,17 +223,17 @@ fn scale_of_a_profile_join_is_the_join_of_scales() {
 }
 
 #[kani::proof]
-fn scale_byte_tiers_match_the_retired_tiers() {
+fn scale_byte_tiers_match_the_tier_reference() {
     let bytes: u64 = kani::any();
     let scale = DocumentScale::for_total_bytes(bytes);
-    let retired = retired_byte_tiers::classify(bytes);
-    assert!(scale.open_allowed == retired_byte_tiers::open_allowed(retired));
-    assert!(scale.undo_enabled == retired_byte_tiers::undo_enabled(retired));
+    let reference = byte_tier_reference::classify(bytes);
+    assert!(scale.open_allowed == byte_tier_reference::open_allowed(reference));
+    assert!(scale.undo_enabled == byte_tier_reference::undo_enabled(reference));
     assert!(
         scale.estimated_buffer_multiplier
-            == retired_byte_tiers::estimated_buffer_multiplier(retired)
+            == byte_tier_reference::estimated_buffer_multiplier(reference)
     );
-    assert!(scale.local_history == retired_byte_tiers::local_history(retired));
+    assert!(scale.local_history == byte_tier_reference::local_history(reference));
     // A full profile's byte tiers depend on total bytes alone.
     let profile = ProfileSummary {
         total_bytes: bytes,

@@ -25,7 +25,10 @@ use crate::services::file_tree::compare_directory_entries;
 /// 1,000: far past any plausible number of `New File N` siblings a user would
 /// accumulate, and small enough that the loop cannot become a visible stall on a
 /// slow filesystem.
-pub const MAX_UNIQUE_NAME_ATTEMPTS: u32 = 1_000;
+///
+/// Kind: retry budget; 1,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D6).
+pub const MAX_UNIQUE_NAME_ATTEMPTS: u32 = 1_024;
 
 /// Debounce interval for persisting workspace changes to disk, in milliseconds.
 ///
@@ -705,7 +708,10 @@ impl WorkspaceScanFlight {
 /// so a healthy reveal settles within a handful of ticks; the rest is headroom
 /// for a loaded compositor. Reaching the budget is a real finding, never
 /// retried.
-pub const REVEAL_SETTLE_FRAME_BUDGET: u32 = 60;
+///
+/// Kind: coverage window; 60 frames rounded up to a power of two
+/// (`power-of-two-thresholds` D5).
+pub const REVEAL_SETTLE_FRAME_BUDGET: u32 = 64;
 
 /// The latest workspace path reveal's observable status.
 ///
@@ -1037,7 +1043,7 @@ mod tests {
 
     #[test]
     fn unique_name_attempt_ceiling_is_pinned() {
-        assert_eq!(MAX_UNIQUE_NAME_ATTEMPTS, 1_000);
+        assert_eq!(MAX_UNIQUE_NAME_ATTEMPTS, 1_024);
     }
 
     #[test]
@@ -1772,7 +1778,7 @@ mod tests {
         assert!(!WorkspaceRevealStatus::Revealed.is_failure());
         assert!(WorkspaceRevealStatus::Unsettled.is_failure());
         assert!(WorkspaceRevealStatus::Superseded.is_failure());
-        assert_eq!(REVEAL_SETTLE_FRAME_BUDGET, 60);
+        assert_eq!(REVEAL_SETTLE_FRAME_BUDGET, 64);
     }
 
     #[test]

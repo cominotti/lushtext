@@ -21,7 +21,10 @@ use super::widgets::build_preview_limit_fallback_widget;
 ///
 /// One thousand labels leaves room for realistic reference tables while keeping
 /// pathological CSV-like Markdown from allocating a giant widget tree at once.
-const MAX_PREVIEW_TABLE_CELLS: usize = 1_000;
+///
+/// Kind: presentation cap; 1,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M13).
+const MAX_PREVIEW_TABLE_CELLS: usize = 1_024;
 
 /// Buffered table representation used between pulldown-cmark's streaming events
 /// and the final anchored GTK widget subtree.

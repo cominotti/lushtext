@@ -14,7 +14,9 @@ use serde::Serialize;
 
 use crate::{artifacts, model};
 
-const WARNING_TEXT_LIMIT: usize = 1200;
+/// Kind: presentation cap; 1,200 rounded up to a power of two
+/// (`power-of-two-thresholds` D12), inside the unchanged 8 MiB JSON caps.
+const WARNING_TEXT_LIMIT: usize = 2_048;
 
 /// Write `warning-scan.json` for a case directory and return the report path.
 pub(crate) fn scan_case_logs(case_dir: &Path) -> Result<PathBuf, String> {
@@ -141,6 +143,17 @@ struct WarningMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` kept
+    /// 1,200 characters of warning text whole; the limit rounds up to 2,048.
+    #[test]
+    fn no_loss_warning_text_keeps_every_character_main_kept() {
+        let text = "x".repeat(1_200);
+        assert_eq!(bounded(&text), text);
+        let edge = "x".repeat(2_048);
+        assert_eq!(bounded(&edge), edge);
+        assert!(bounded(&"x".repeat(2_049)).ends_with(" [truncated]"));
+    }
 
     #[test]
     fn warning_scan_reports_unexpected_toolkit_warning() {

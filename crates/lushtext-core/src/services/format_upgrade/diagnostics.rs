@@ -17,24 +17,41 @@ use crate::services::json_format::{
 
 /// Default maximum number of sidecar files scanned per app-owned sidecar directory.
 ///
-/// Ten thousand mirrors existing large-directory UI safety budgets: it is far
+/// 16,384 mirrors existing large-directory UI safety budgets: it is far
 /// beyond normal use but prevents a damaged data directory from monopolizing
 /// startup preflight.
-pub const SIDECAR_SCAN_MAX_ENTRIES: usize = 10_000;
+///
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+pub const SIDECAR_SCAN_MAX_ENTRIES: usize = 16 * 1024;
 /// Maximum local-history lineage directories inspected during one preflight.
 ///
 /// Preflight reads only each lineage `index.json`; snapshot text bodies are not
 /// format metadata and stay outside this scan.
-pub const LOCAL_HISTORY_SCAN_MAX_LINEAGES: usize = 10_000;
+///
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+pub const LOCAL_HISTORY_SCAN_MAX_LINEAGES: usize = 16 * 1024;
 /// Maximum Replace All undo entry files inspected during one preflight.
 ///
 /// This matches the existing undo-journal recovery budget so upgrade status and
 /// runtime cleanup see the same damaged-directory scale.
-pub const REPLACE_JOURNAL_SCAN_MAX_ENTRIES: usize = 10_000;
+///
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+pub const REPLACE_JOURNAL_SCAN_MAX_ENTRIES: usize = 16 * 1024;
+
+// The preflight and the startup journal inspection see the same
+// damaged-directory scale.
+const _: () = assert!(
+    REPLACE_JOURNAL_SCAN_MAX_ENTRIES == crate::services::search_backup::JOURNAL_SCAN_MAX_ENTRIES
+);
 /// Maximum draft bodies included in preservation-only inventory.
 ///
 /// Draft bodies are plain UTF-8 content, not versioned JSON. The limit matches
 /// the manifest repair/orphan-cleanup budget to keep startup work bounded.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const DRAFT_BODY_SCAN_MAX_ENTRIES: usize = 2_048;
 
 /// Bounded scan limits used by format-upgrade inventory.
