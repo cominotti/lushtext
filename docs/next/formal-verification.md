@@ -1745,7 +1745,9 @@ stays pinned by C1's harnesses (review R15). Local `make kani`: 10.6 min /
 `V_SLICE` bound (254 s) and slice coverage (247 s). Runner figures: 14.21 and 13.88 min / 1.75 GiB in the two dispatched
 `kani.yml` runs (runs `42169248534` and `42172535348`, `close-protected-install-proof-strength`,
 2026-11-06), recorded as 14.3 min / 1.8 GiB; the provisional local figure is
-gone. `DocumentScale` gained a
+gone. Two later dispatches on the same change's final form (runs
+`42281883363` and `42291228680`) measured 17.20 and 16.13 min, so the record
+was raised to 17.2 min / 1.8 GiB. `DocumentScale` gained a
 language input (`SyntaxLanguage`); `scale_is_monotone` and the two join
 harnesses are now stated over every language, and
 `scale_is_monotone_in_the_language_threshold` is new (shard
@@ -1888,7 +1890,8 @@ shards because H2 alone is about 12 minutes. CBMC's time for the `r_fold = 3`
 instances varied by up to 2.2× between runs on the same tree. **Runner
 figures** (runs `42169248534` and `42172535348`, 2026-11-06, max of the two):
 `core-protected-fold` 9.24 / 8.68 min → 9.3 min / 1.7 GiB (`pull-request`,
-inside the 15-minute margin), `core-protected-fold-shape` 22.78 / 20.67 min →
+inside the 15-minute margin; raised to 12.4 min by the later runs
+`42281883363` and `42291228680`, 10.40 / 12.32 min, still inside it), `core-protected-fold-shape` 22.78 / 20.67 min →
 22.8 min / 1.7 GiB (the closest shard to the 25-minute margin),
 `core-protected-fold-mapping` 8.19 / 11.64 min → 11.7 min / 1.7 GiB. They
 replace the local figures above.
@@ -2222,6 +2225,57 @@ the narrowed filter).
 | `widgets-slice-loop-rest` | 0 / 9.59 / 1.63 | 0 / 10.61 / 1.63 |
 | `widgets-slice-loop-rest-three` | 0 / 11.62 / 1.63 | 0 / 13.03 / 1.63 |
 | `widgets-slice-loop-unbounded` | 0 / 12.6 / 1.63 | 0 / 12.6 / 1.63 |
+
+**Final form** (stage 4 review, 2026-11-06). The maximality assertion in
+`check_visible` (added after proof strength, `d38bf2db`) changed both step
+shards' harnesses after the two runs above, so two more sequential
+`workflow_dispatch` runs measured the final branch at `83507a3b`:
+`42281883363` and `42291228680`, every shard exit 0. The step shards take the
+largest of all four runs: `core-protected-install-step` stays 17.9 min /
+4.5 GiB (14.78 / 17.46 min), `core-protected-install-step-visible` rises to
+11.9 min / 4.6 GiB (9.73 / 11.88 min). Every other shard was checked again and
+raised where these runs exceeded its record, none lowered:
+`widgets-slice-loop-rest-three` 13.2 → 15.3, `widgets-slice-loop-requests`
+13.6 → 14.0, `widgets-slice-loop-requests-two` 15.2 → 15.3,
+`core-second-writer` 7.2 → 7.4, `core-multi-window` 8.4 → 8.9,
+`core-geometry-policies` 14.3 → 14.6 (`pull-request`, inside 15 minutes),
+`core-post-open-settle` 14.3 → 17.2 and `core-protected-fold` 9.3 → 12.4
+(`pull-request`, inside 15 minutes) min. No margin broke, so nothing was
+split; `core-paragraph-profile` peaked at 8.27 GiB again, inside 8.3. Locally,
+at `83507a3b`, `make kani KANI_SHARD=core-protected-install-step` verified its
+four harnesses (load 0.74 before, 3.34 after; a pass/fail run, not a figure).
+
+| shard | run 42281883363 (exit / min / GiB) | run 42291228680 (exit / min / GiB) |
+|---|---|---|
+| `core-document-scale` | 0 / 8.43 / 2.67 | 0 / 8.52 / 2.67 |
+| `core-geometry-policies` | 0 / 14.53 / 2.33 | 0 / 10.08 / 2.35 |
+| `core-journal-and-write` | 0 / 9.28 / 2.54 | 0 / 10.75 / 2.54 |
+| `core-journal-liveness` | 0 / 15.08 / 4.7 | 0 / 14.63 / 4.7 |
+| `core-memory-policy` | 0 / 10.49 / 3.91 | 0 / 9.75 / 3.9 |
+| `core-multi-window` | 0 / 8.82 / 2.53 | 0 / 7.72 / 2.53 |
+| `core-paragraph-boundary` | 0 / 15.85 / 3.68 | 0 / 12.0 / 3.68 |
+| `core-paragraph-profile` | 0 / 13.68 / 8.27 | 0 / 13.13 / 8.27 |
+| `core-post-open-settle` | 0 / 17.2 / 1.73 | 0 / 16.13 / 1.74 |
+| `core-profile-watch-reads` | 0 / 18.13 / 10.34 | 0 / 12.94 / 10.34 |
+| `core-profile-watch-step` | 0 / 12.26 / 10.35 | 0 / 15.41 / 10.35 |
+| `core-profile-watch-unsound` | 0 / 16.19 / 10.35 | 0 / 15.82 / 10.35 |
+| `core-protected-fold` | 0 / 10.4 / 1.62 | 0 / 12.32 / 1.63 |
+| `core-protected-fold-mapping` | 0 / 10.24 / 1.63 | 0 / 10.18 / 1.63 |
+| `core-protected-fold-shape` | 0 / 20.58 / 1.63 | 0 / 22.41 / 1.62 |
+| `core-protected-install` | 0 / 7.43 / 7.94 | 0 / 8.41 / 7.94 |
+| `core-protected-install-step` | 0 / 14.78 / 4.22 | 0 / 17.46 / 4.02 |
+| `core-protected-install-step-visible` | 0 / 9.73 / 4.51 | 0 / 11.88 / 4.54 |
+| `core-protected-view` | 0 / 2.36 / 3.37 | 0 / 2.27 / 3.37 |
+| `core-protected-view-navigation` | 0 / 2.46 / 1.63 | 0 / 2.56 / 1.63 |
+| `core-second-writer` | 0 / 6.96 / 2.65 | 0 / 7.39 / 2.63 |
+| `core-shell-geometry` | 0 / 10.22 / 2.56 | 0 / 10.63 / 2.56 |
+| `widgets-geometry` | 0 / 7.37 / 1.63 | 0 / 7.02 / 1.63 |
+| `widgets-slice-loop-pairs` | 0 / 13.27 / 1.93 | 0 / 12.08 / 1.93 |
+| `widgets-slice-loop-requests` | 0 / 11.11 / 1.63 | 0 / 13.95 / 1.63 |
+| `widgets-slice-loop-requests-two` | 0 / 15.11 / 1.63 | 0 / 15.21 / 1.63 |
+| `widgets-slice-loop-rest` | 0 / 7.02 / 1.63 | 0 / 9.79 / 1.63 |
+| `widgets-slice-loop-rest-three` | 0 / 15.21 / 1.62 | 0 / 14.13 / 1.63 |
+| `widgets-slice-loop-unbounded` | 0 / 13.32 / 1.63 | 0 / 10.4 / 1.63 |
 
 ## 4. Deferral inventory
 

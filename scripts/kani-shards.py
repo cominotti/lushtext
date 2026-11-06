@@ -161,6 +161,15 @@ DOCUMENT_SCALE_MEASURED_IN = "runs 39440638502, 39446126819 (max of the two)"
 # install".
 CLOSE_PROTECTED_MEASURED_IN = "runs 42169248534, 42172535348 (max of the two)"
 CLOSE_PROTECTED_RAISED_IN = "; raised by runs 42169248534, 42172535348 (max of the two)"
+# The maximality assertion added after proof strength changed both step shards'
+# harnesses, so two more sequential dispatches measured the final form at
+# 83507a3b: the step shards take the largest of all four runs, and every other
+# shard those two runs exceeded is raised again (none lowered).
+CLOSE_PROTECTED_STEP_MEASURED_IN = (
+    "runs 42169248534, 42172535348, 42281883363, 42291228680 (max of the four; "
+    "the last two on the final harnesses)"
+)
+CLOSE_PROTECTED_FINAL_RAISED_IN = "; raised by runs 42281883363, 42291228680 (max of the two)"
 SETTLE_EVIDENCE_MEASURED_IN = (
     "; with the settle-evidence harnesses by runs 42169248534, 42172535348 (max of the two)"
 )
@@ -200,9 +209,9 @@ SHARDS: dict[str, Shard] = {
         "gtk-lush-widgets",
         ("kani_proofs::slice_loop_rests_with_three_bins",),
         gate="scheduled",
-        ci_minutes=13.2,
+        ci_minutes=15.3,
         ci_peak_gib=1.7,
-        measured_in=CLOSED_LOOP_MEASURED_IN,
+        measured_in=CLOSED_LOOP_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
     ),
     "widgets-slice-loop-requests": Shard(
         "gtk-lush-widgets",
@@ -214,17 +223,17 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_settle_evidence_",
         ),
         gate="scheduled",
-        ci_minutes=13.6,
+        ci_minutes=14.0,
         ci_peak_gib=1.7,
-        measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + SETTLE_EVIDENCE_MEASURED_IN,
+        measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + SETTLE_EVIDENCE_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
     ),
     "widgets-slice-loop-requests-two": Shard(
         "gtk-lush-widgets",
         ("kani_proofs::slice_loop_honours_a_request_with_two_bins",),
         gate="scheduled",
-        ci_minutes=15.2,
+        ci_minutes=15.3,
         ci_peak_gib=1.7,
-        measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
+        measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
     ),
     "widgets-slice-loop-pairs": Shard(
         "gtk-lush-widgets",
@@ -286,9 +295,9 @@ SHARDS: dict[str, Shard] = {
             "model::settings_write_batch::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=7.2,
+        ci_minutes=7.4,
         ci_peak_gib=2.7,
-        measured_in=MULTI_WINDOW_MEASURED_IN + RESPONSIVENESS_BUDGET_REMEASURED_IN + CLOSE_PROTECTED_RAISED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + RESPONSIVENESS_BUDGET_REMEASURED_IN + CLOSE_PROTECTED_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
     ),
     # verify-multi-window-draft-journal: two windows of one process over the
     # journal machine, too large to share a job with the single-window harness.
@@ -296,9 +305,9 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         ("services::draft_service::kani_proofs::journal_invariants_hold_across_two_windows",),
         gate="scheduled",
-        ci_minutes=8.4,
+        ci_minutes=8.9,
         ci_peak_gib=2.7,
-        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
     ),
     "core-memory-policy": Shard(
         "lushtext-core",
@@ -317,9 +326,9 @@ SHARDS: dict[str, Shard] = {
             "ui::markdown_preview::policy::kani_proofs::",
         ),
         gate="pull-request",
-        ci_minutes=14.3,
+        ci_minutes=14.6,
         ci_peak_gib=2.4,
-        measured_in=GEOMETRY_POLICY_MEASURED_IN + CLOSE_PROTECTED_RAISED_IN,
+        measured_in=GEOMETRY_POLICY_MEASURED_IN + CLOSE_PROTECTED_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
     ),
     "core-post-open-settle": Shard(
         "lushtext-core",
@@ -329,9 +338,9 @@ SHARDS: dict[str, Shard] = {
             "ui::editor_page::load::policy::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=14.3,
+        ci_minutes=17.2,
         ci_peak_gib=1.8,
-        measured_in=CLOSE_PROTECTED_MEASURED_IN,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
     ),
     "core-document-scale": Shard(
         "lushtext-core",
@@ -417,9 +426,9 @@ SHARDS: dict[str, Shard] = {
             "model::protected_fold::kani_proofs::production_thresholds_",
         ),
         gate="pull-request",
-        ci_minutes=9.3,
+        ci_minutes=12.4,
         ci_peak_gib=1.7,
-        measured_in=CLOSE_PROTECTED_MEASURED_IN,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
     ),
     # The scheduled rest is split again: the fold-shape harnesses alone took
     # 12 of the 17.3 local minutes the combined group did.
@@ -453,15 +462,15 @@ SHARDS: dict[str, Shard] = {
         gate="scheduled",
         ci_minutes=17.9,
         ci_peak_gib=4.5,
-        measured_in=CLOSE_PROTECTED_MEASURED_IN,
+        measured_in=CLOSE_PROTECTED_STEP_MEASURED_IN,
     ),
     "core-protected-install-step-visible": Shard(
         "lushtext-core",
         ("model::protected_install::kani_proofs::step_visible_",),
         gate="scheduled",
-        ci_minutes=10.6,
+        ci_minutes=11.9,
         ci_peak_gib=4.6,
-        measured_in=CLOSE_PROTECTED_MEASURED_IN,
+        measured_in=CLOSE_PROTECTED_STEP_MEASURED_IN,
     ),
     "core-protected-fold-shape": Shard(
         "lushtext-core",

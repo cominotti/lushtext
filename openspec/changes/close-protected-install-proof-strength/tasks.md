@@ -41,7 +41,7 @@ Rules for every task: CPUs 8-23 (`taskset -c 8-23`). Every Kani or mutation run 
 
 ## 6. Verification
 
-- [ ] 6.1 `make kani KANI_SHARD=core-protected-install` and `make kani KANI_SHARD=core-protected-install-step` pass locally (one at a time, under the cap).
+- [x] 6.1 `make kani KANI_SHARD=core-protected-install` and `make kani KANI_SHARD=core-protected-install-step` pass locally (one at a time, under the cap).
 - [x] 6.2 `make check`, the rustdoc lint gate (`RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" cargo doc --workspace --no-deps`), `make test-unit` and `make test-prop` pass. If production code changed in 3.4, also run `make test` (the widget shards headless) and the C3 widget byte-identity tests.
 - [x] 6.3 `openspec validate close-protected-install-proof-strength --strict` passes.
 - [x] 6.4 Not applicable, recorded: no GTK axiom, probe or sample (no toolkit behaviour newly relied on), and no responsiveness-lane case or B_interact/B_settle measurement (no runtime behaviour changes unless 3.4 changes the planner, in which case the C3 lane sweep of its task 6.2 is re-run, interleaved with `main`).
