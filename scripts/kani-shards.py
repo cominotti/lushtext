@@ -170,6 +170,9 @@ CLOSE_PROTECTED_STEP_MEASURED_IN = (
     "the last two on the final harnesses)"
 )
 CLOSE_PROTECTED_FINAL_RAISED_IN = "; raised by runs 42281883363, 42291228680 (max of the two)"
+# Local make kani (2026-11-06): 1.03 min wall, 1.63 GiB peak; rounded up.
+LIST_BUDGET_MINUTES = 1.1
+LIST_BUDGET_PEAK_GIB = 1.7
 SETTLE_EVIDENCE_MEASURED_IN = (
     "; with the settle-evidence harnesses by runs 42169248534, 42172535348 (max of the two)"
 )
@@ -341,6 +344,17 @@ SHARDS: dict[str, Shard] = {
         ci_minutes=17.2,
         ci_peak_gib=1.8,
         measured_in=CLOSE_PROTECTED_MEASURED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
+    ),
+    # bound-lists-by-budget-not-count: the list budget both workspace
+    # workflows rely on (admission B1-B4, turn continuation T1-T2), so it
+    # gates pull requests. Its figure is a local run until two dispatches.
+    "core-list-budget": Shard(
+        "lushtext-core",
+        ("model::list_budget::kani_proofs::",),
+        gate="pull-request",
+        ci_minutes=LIST_BUDGET_MINUTES,
+        ci_peak_gib=LIST_BUDGET_PEAK_GIB,
+        measured_in="PENDING DISPATCH (owed by bound-lists-by-budget-not-count): local make kani run 1.03 min, 1.63 GiB",
     ),
     "core-document-scale": Shard(
         "lushtext-core",
@@ -601,6 +615,7 @@ WATCH_DELETE_SECONDS = 1.0
 WATCH_READS_SECONDS = 651.83
 WATCH_STEP_SECONDS = 672.86
 WATCH_UNSOUND_SECONDS = 778.55
+_LIST_BUDGET = "model::list_budget::kani_proofs::"
 _SCALE = "model::document_scale::kani_proofs::"
 _PACED = "model::buffer_replacement::kani_proofs::"
 _REANALYSIS = "model::reanalysis_pacing::kani_proofs::"
@@ -772,6 +787,18 @@ ORACLES: dict[str, Oracle] = {
         _CORE,
         (_h(_WRITE_BATCH + "a_flush_never_drops_the_latest_value_or_re_emits_a_persisted_one", 1.38, "ci"),),
         functions=("record", "observe_persisted", "acknowledge"),
+    ),
+    "crates/lushtext-core/src/model/list_budget.rs": Oracle(
+        _CORE,
+        (
+            _h(_LIST_BUDGET + "every_turn_makes_progress", 0.02, "ci"),
+            _h(_LIST_BUDGET + "the_retained_items_are_a_prefix", 0.06, "ci"),
+            _h(_LIST_BUDGET + "a_turn_stops_at_the_first_unit_after_the_slice", 0.08, "ci"),
+            _h(_LIST_BUDGET + "a_budget_one_byte_below_n_times_w_refuses_the_last_item", 0.1, "ci"),
+            _h(_LIST_BUDGET + "the_charge_never_exceeds_the_limit", 0.17, "ci"),
+            _h(_LIST_BUDGET + "a_budget_of_n_times_w_loses_nothing", 1.07, "ci"),
+        ),
+        functions=("admit", "turn_continues"),
     ),
     "crates/lushtext-core/src/model/document_scale.rs": Oracle(
         _CORE,

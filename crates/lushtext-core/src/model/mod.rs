@@ -24,6 +24,7 @@ pub mod formatting_overrides;
 pub mod held_input;
 pub mod highlight_chunking;
 pub mod language_guess;
+pub mod list_budget;
 pub mod local_history;
 pub mod migration_ledger;
 pub mod note;
