@@ -423,3 +423,35 @@ fn the_cursor_reports_its_offset_and_whether_it_is_inside_a_tail() {
         ]
     );
 }
+
+#[test]
+fn the_tail_rounding_stops_at_its_floor_and_never_splits_a_scalar_or_a_crlf() {
+    // Down to a scalar boundary.
+    let euro = "a\u{20ac}b".as_bytes();
+    assert_eq!(round_down_to_safe_boundary(euro, 0, 2), 1);
+    assert_eq!(round_down_to_safe_boundary(euro, 0, 3), 1);
+    assert_eq!(round_down_to_safe_boundary(euro, 0, 4), 4);
+    // Never below the floor, even inside a scalar.
+    assert_eq!(round_down_to_safe_boundary(euro, 2, 2), 2);
+    assert_eq!(round_down_to_safe_boundary(euro, 2, 3), 2);
+    // Never between `\r` and `\n`.
+    assert_eq!(round_down_to_safe_boundary(b"\r\n", 0, 1), 0);
+    assert_eq!(round_down_to_safe_boundary(b"a\r\n", 0, 2), 1);
+    // A lone `\r` before another byte is not a CRLF.
+    assert_eq!(round_down_to_safe_boundary(b"a\rb", 0, 2), 2);
+    // At and past the text's end: the end, read nowhere beyond it.
+    assert_eq!(round_down_to_safe_boundary(b"ab", 0, 2), 2);
+    assert_eq!(round_down_to_safe_boundary(b"ab", 0, 9), 2);
+}
+
+#[test]
+fn only_u2029_among_the_e2_80_scalars_is_a_paragraph_delimiter() {
+    // U+2028 (E2 80 A8) shares U+2029's first two bytes and is not a GTK
+    // paragraph delimiter (ledger A42); the proofs' alphabet has no such scalar.
+    let text = "a\u{2028}b\u{2029}c\n".as_bytes();
+    assert_eq!(first_delimiter_in(text, 0, text.len()), Some(5));
+    // A third byte A9 after a different second byte is not U+2029 either.
+    let text = "\u{2069}\n".as_bytes();
+    assert_eq!(first_delimiter_in(text, 0, text.len()), Some(3));
+    assert_eq!(first_delimiter_in(b"\xe2\x80", 0, 2), None);
+}

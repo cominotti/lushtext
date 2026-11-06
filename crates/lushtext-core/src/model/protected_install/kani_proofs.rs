@@ -40,8 +40,10 @@
 //! cursor at the text's end plans nothing. The three step harnesses prove that
 //! one call of the production `plan_protected_install` from any well-formed
 //! cursor with text left returns a slice that ends at a safe point (K3), is
-//! homogeneous (K4), meets its bound (K5, hence K9) and its phase rules (K6,
-//! K8), and leaves a well-formed cursor at `slice.end` (K2). The hidden-tail
+//! homogeneous (K4), meets its bound (K5, hence K9; a visible slice is also
+//! maximal: it stops only at the text's end, before the next fold, or when
+//! its next unit would exceed the budget) and its phase rules (K6, K8), and
+//! leaves a well-formed cursor at `slice.end` (K2). The hidden-tail
 //! step has two harnesses: a tail slice, and the `continue` into a visible
 //! slice when the cursor sits on the tail's delimiter. A step either
 //! advances the offset (K1) or, for an empty head, moves the phase from
@@ -690,7 +692,7 @@ impl Step {
         );
     }
 
-    /// K1, K4 and K5 of a visible slice.
+    /// K1, K4 and K5 of a visible slice, and its maximality.
     fn check_visible(&self, slice: ProtectedSlice, after: &ProtectedInstallCursor) {
         let document = &self.document;
         let start = self.cursor.offset;
@@ -717,6 +719,18 @@ impl Step {
         let chars = document.chars_between(start, slice.end);
         let one_unit = slice.end == document.unit_end(start);
         assert!(one_unit || (length <= self.budget.bytes && chars <= self.budget.chars));
+        // Maximal, as the ordinary slicer cuts: a slice that stops before the
+        // text's end and before the next fold could not take its next unit
+        // (`PacedSlice::admit` refuses exactly when either total would exceed
+        // its budget). Added after proof strength (task 3.3): without it, a
+        // planner that cut one paragraph per slice, or overcounted a unit's
+        // bytes, satisfied every other assertion.
+        if slice.end < document.len && next_fold != Some(last) {
+            let next = document.unit_end(slice.end);
+            let next_bytes = (next - start) as u64;
+            let next_chars = document.chars_between(start, next);
+            assert!(next_bytes > self.budget.bytes || next_chars > self.budget.chars);
+        }
         if slice.end < document.len {
             let before_fold = next_fold == Some(last);
             let fits_bytes = (document.unit_end(slice.end) - start) as u64 <= self.budget.bytes;
