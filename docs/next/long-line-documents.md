@@ -3837,6 +3837,34 @@ separate change, in this order:
    per pixel row with no count cap; workspace search streamed without a
    count cap, bounded by retained bytes; sidebar directories past 10,000
    entries loaded incrementally, without the truncation placeholder.
+   **Split at its spec stage (2026-11-06; design D1, branch
+   `bound-lists-by-budget-not-count`).** This change is the workspace slice:
+   - workspace search without a match count, bounded by a 256 MiB
+     retained-byte budget, which is the power of two above `main`'s
+     worst-case retention at 16,384 matches; past it the panel states the
+     shown and found counts;
+   - sidebar directories without an entry count, loaded in time-sliced
+     batches behind a loading row, with a budget row only past
+     `SIDEBAR_DIRECTORY_RETAINED_BYTES`;
+   - one Kani-proved `model/list_budget.rs`.
+   It also discharges `main`'s first-results reveal (22–26 ms), the Replace
+   Preview entry (27.8–29.2 ms, PT M3, found while reading PT's evidence) and
+   the 10,000-entry expansion terminal (25–30 ms). Queued as their own
+   changes, in this order, right after it:
+   - `bound-notes-browser-by-budget`: an incremental, virtualized notes
+     browser bounded by retained bytes, with "showing X of Y". It discharges
+     the notes rebuild blocker (34–40 ms at 512 rows) and first probes
+     whether `AdwSidebar` builds off-screen rows (if it does, a
+     `GtkListView` with section headers replaces it);
+   - `drill-down-palette-categories`: the "N more…" row per category and
+     the category drill-down mode;
+   - `bin-minimap-markers-per-row`: markers binned per pixel row. It must
+     first attribute PT's M7 worst dispatches (118–140 ms and 741–823 ms,
+     which include a whole-buffer `set_text` and relayout) before claiming
+     any minimap blocker.
+   Also recorded: a process-wide retained-byte ledger for many expanded
+   huge sidebar directories (the budget, like the count before it, is per
+   directory).
 2. `stream-replace-all`: chunked replace with an on-disk undo journal, so the
    per-file limit reaches the open tier with constant memory; skipped files
    listed with their reason and an "Open and replace in editor" action.
