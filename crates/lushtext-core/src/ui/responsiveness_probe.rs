@@ -460,11 +460,15 @@ mod measurement {
     pub(super) const PROBE_IM_ID: &str = "lushtext-probe";
     /// Frames a window may have queued before the oldest is written without
     /// its presentation time.
+    ///
+    /// Kind: cap; a power of two, rounded down.
     const MAX_PENDING_FRAMES: usize = 64;
     /// The smallest lateness kept with its time for windowed maxima: below it a
     /// dispatch is far inside every budget the lane judges.
     const RECENT_LATE_FLOOR_US: u64 = 1_000;
     /// How many recent late dispatches are kept, oldest dropped first.
+    ///
+    /// Kind: cap; a power of two, rounded down.
     const RECENT_LATE_CAPACITY: usize = 1_024;
 
     /// The process-wide probe, owned by the GTK thread.

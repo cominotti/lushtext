@@ -19,10 +19,8 @@ use sourceview5::prelude::*;
 use super::LushtextEditorPage;
 use super::analysis_execution::{MinimapAnalysisAccumulator, MinimapAnalysisSession};
 use super::policy::{
-    MINIMAP_LONG_LINE_MARK_CAP, MINIMAP_LONG_LINE_WARNING_THRESHOLD,
-    MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, MinimapAnalysisPolicy, MinimapAnalysisRequest,
-    MinimapAvailability, MinimapAvailabilityPolicy, minimap_availability_for_policy,
-    wrapped_layout_analysis_required_for_bytes,
+    MinimapAnalysisPolicy, MinimapAnalysisRequest, MinimapAvailability, MinimapAvailabilityPolicy,
+    minimap_availability_for_policy, wrapped_layout_analysis_required_for_bytes,
 };
 use crate::config::keys;
 
@@ -109,11 +107,7 @@ impl LushtextEditorPage {
         let lifetime = minimap.analysis_lifetime.get();
         let buffer = self.buffer();
         let cursor_mark = buffer.create_mark(None, &buffer.start_iter(), true);
-        let policy = MinimapAnalysisPolicy {
-            warning_line_chars: MINIMAP_LONG_LINE_WARNING_THRESHOLD,
-            wrapped_line_chars: MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET,
-            marker_limit: MINIMAP_LONG_LINE_MARK_CAP,
-        };
+        let policy = MinimapAnalysisPolicy::PRODUCTION;
         minimap
             .analysis_session
             .replace(Some(MinimapAnalysisSession {

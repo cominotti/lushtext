@@ -18,6 +18,8 @@ use crate::model::document_scale::DocumentScale;
 ///
 /// 16 KB is enough to identify most text files while keeping rapid Up/Down
 /// navigation well below the cost of loading a full editor tab.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const PEEK_SAMPLE_BYTE_LIMIT: usize = 16 * 1024;
 
 /// Maximum number of rendered lines in one preview sample.

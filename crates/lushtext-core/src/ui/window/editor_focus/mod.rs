@@ -81,7 +81,10 @@ enum HandoffAttempt {
 pub(super) const EDITOR_FOCUS_RETRY_INTERVAL: Duration = Duration::from_millis(30);
 /// Maximum retry count for editor focus handoffs before giving control back to
 /// GTK's normal focus model. Six attempts covers roughly 180ms of settling.
-pub(super) const EDITOR_FOCUS_MAX_ATTEMPTS: u8 = 6;
+///
+/// Kind: retry budget; 6 rounded up to a power of two
+/// (`power-of-two-thresholds` D6).
+pub(super) const EDITOR_FOCUS_MAX_ATTEMPTS: u8 = 8;
 
 impl LushtextWindow {
     /// Install the user-input latch `opened_document_takes_focus` reads: a key

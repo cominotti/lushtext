@@ -696,23 +696,10 @@ fn format_metadata(snapshot: &PeekSnapshot) -> String {
     }
 }
 
-/// Format bytes using the same SI-style units as the status bar.
+/// The file's size in IEC units, as the properties panel and every tier the
+/// app names (`power-of-two-thresholds` D14).
 fn format_file_size(bytes: u64) -> String {
-    const KB: f64 = 1_000.0;
-    const MB: f64 = 1_000_000.0;
-    let bytes_f = bytes as f64;
-    if bytes_f >= MB {
-        format!("{:.1} MB", bytes_f / MB)
-    } else if bytes_f >= KB {
-        let kb = bytes_f / KB;
-        if kb >= 999.95 {
-            format!("{:.1} MB", bytes_f / MB)
-        } else {
-            format!("{kb:.1} KB")
-        }
-    } else {
-        format!("{bytes} B")
-    }
+    crate::model::size_units::iec_size(bytes)
 }
 
 /// Render a stable local timestamp for the preview metadata line.
@@ -737,4 +724,21 @@ fn widget_is_within(widget: &gtk4::Widget, ancestor: &gtk4::Widget) -> bool {
         current = candidate.parent();
     }
     false
+}
+
+#[cfg(test)]
+mod displayed_size_tests {
+    use super::*;
+
+    /// Displayed sizes are IEC, like every tier the app names
+    /// (`power-of-two-thresholds` D14).
+    #[test]
+    fn displayed_sizes_are_iec() {
+        assert_eq!(format_file_size(10_485_760), "10 MiB");
+        assert_eq!(format_file_size(1_536), "1.5 KiB");
+        for bytes in [999, 1_000, 1_536, 1_000_000, 10_485_760, 50_000_000] {
+            let shown = format_file_size(bytes);
+            assert!(!shown.contains("MB") && !shown.contains("KB"), "{shown}");
+        }
+    }
 }

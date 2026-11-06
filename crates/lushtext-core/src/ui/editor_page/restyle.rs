@@ -56,6 +56,8 @@ use crate::model::buffer_replacement::V_SLICE;
 /// The most lines a document may have for its reattach to be paced
 /// (`prepare_paced_reattach`): about 6.5 ms of hidden-line validation in the
 /// first batch at the measured 0.4 µs per line, under half `B_SETTLE_US`.
+///
+/// Kind: cap; a power of two, rounded down.
 const PACED_REATTACH_MAX_LINES: u32 = 1 << 14;
 
 /// One editor's paced-restyle state.

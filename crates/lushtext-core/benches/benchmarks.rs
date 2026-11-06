@@ -3315,7 +3315,7 @@ fn synthetic_notes_browser_entries(count: usize) -> Vec<PaletteNoteEntry> {
 
 fn bench_quality_gap_scale(c: &mut Criterion) {
     const NOTE_ROWS: usize = 10_000;
-    const NOTE_RENDER_CAP: usize = 500;
+    const NOTE_RENDER_CAP: usize = 512;
     const PREVIEW_BYTES: usize = 4 * 1024 * 1024;
     const CACHE_ROWS: usize = 10_000;
     const MINIMAP_ANALYSIS_SLICE_CHARS: usize = 32 * 1024;

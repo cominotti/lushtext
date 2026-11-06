@@ -24,13 +24,26 @@ use crate::services::json_store;
 /// Recent-document storage filename under the app data directory.
 pub const RECENT_DOCUMENTS_FILE: &str = "recent-documents.json";
 /// Keep the full history bounded while still far exceeding the Open popover view.
-const MAX_RECENTS: usize = 200;
+///
+/// Kind: retention tier; 200 rounded up to a power of two
+/// (`power-of-two-thresholds` D6).
+const MAX_RECENTS: usize = 256;
 /// Refuse oversized app-owned recent metadata before parsing or path probing.
-pub const MAX_RECENT_DOCUMENTS_BYTES: u64 = 1024 * 1024;
+///
+/// Kind: coverage window; 4 MiB, so a full store of `MAX_RECENTS` worst-case
+/// entries (a 4,096-byte path and canonical path each, about 2.03 MiB) loads in
+/// full (`power-of-two-thresholds` D6; 1 MiB already reset a full 200-entry
+/// store).
+pub const MAX_RECENT_DOCUMENTS_BYTES: u64 = 4 * 1024 * 1024;
 /// Bound externally modified files before filesystem status probes run.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 const MAX_RECENT_LOAD_CANDIDATES: usize = MAX_RECENTS * 2;
 /// Keep startup diagnostics useful without allocating one warning per bad row.
-const MAX_RECENT_LOAD_DIAGNOSTICS: usize = 20;
+///
+/// Kind: presentation cap; 20 rounded up to a power of two
+/// (`power-of-two-thresholds` D12): 32 bounded messages, no timed path.
+const MAX_RECENT_LOAD_DIAGNOSTICS: usize = 32;
 
 #[cfg(any(test, feature = "test-utils"))]
 type RecentMetadataHook = Box<dyn FnOnce(&Path) + Send + 'static>;
@@ -494,6 +507,23 @@ fn compare_match_ranks(left: RecentMatchRank, right: RecentMatchRank) -> Orderin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` kept 20
+    /// diagnostics of one load, so 20 bad rows give 20 diagnostics.
+    #[test]
+    fn no_loss_a_recents_load_keeps_every_diagnostic_main_kept() {
+        let mut diagnostics = Vec::new();
+        for index in 0..20 {
+            push_diagnostic(&mut diagnostics, format!("bad row {index}"));
+        }
+        assert_eq!(diagnostics.len(), 20);
+        assert!(!diagnostics.iter().any(|d| d.contains("truncated")));
+        for index in 20..40 {
+            push_diagnostic(&mut diagnostics, format!("bad row {index}"));
+        }
+        assert_eq!(diagnostics.len(), 33);
+        assert_eq!(diagnostics[32], "recent document diagnostics truncated");
+    }
     use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
@@ -515,10 +545,10 @@ mod tests {
     #[test]
     fn recent_document_policy_constants_are_stable() {
         assert_eq!(RECENT_DOCUMENTS_FILE, "recent-documents.json");
-        assert_eq!(MAX_RECENTS, 200);
-        assert_eq!(MAX_RECENT_DOCUMENTS_BYTES, 1024 * 1024);
-        assert_eq!(MAX_RECENT_LOAD_CANDIDATES, 400);
-        assert_eq!(MAX_RECENT_LOAD_DIAGNOSTICS, 20);
+        assert_eq!(MAX_RECENTS, 256);
+        assert_eq!(MAX_RECENT_DOCUMENTS_BYTES, 4 * 1024 * 1024);
+        assert_eq!(MAX_RECENT_LOAD_CANDIDATES, 512);
+        assert_eq!(MAX_RECENT_LOAD_DIAGNOSTICS, 32);
     }
 
     #[test]
@@ -1166,5 +1196,58 @@ mod tests {
         let target = RecentOpenTarget::unsupported_uri("sftp://example.com/file.txt");
 
         assert!(local_path_from_target(target).is_none());
+    }
+
+    /// `power-of-two-thresholds` D6: raising the recents tier must keep a full
+    /// store loadable. 256 entries whose path and canonical path are each
+    /// 4,096 bytes serialize to about 2 MiB, over the former 1 MiB read bound.
+    #[test]
+    fn a_full_store_of_worst_case_paths_loads_in_full() {
+        const ENTRIES: usize = 256;
+        let dir = TempDir::new().expect("recent tempdir");
+        // A deep directory so each file's path is about 4,000 bytes (the
+        // platform's PATH_MAX is 4,096 including the terminator).
+        let mut deep = dir.path().to_path_buf();
+        while deep.as_os_str().len() < 3_700 {
+            deep.push("d".repeat(200));
+        }
+        fixture::create_dir_all(&deep);
+        let entries = (0..ENTRIES)
+            .map(|index| {
+                let name = format!("{index:03}-{}", "f".repeat(200));
+                let path = deep.join(name);
+                fixture::write_text(&path, "recent");
+                let canonical = PathBuf::from(format!("/{index:03}{}", "c".repeat(4_092)));
+                RecentDocumentEntry::new(path, Some(canonical), index as u64)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.path.as_os_str().len() > 3_900)
+        );
+        save(dir.path(), &entries).expect("save a full store");
+
+        let loaded = load(dir.path());
+
+        assert_eq!(loaded.entries.len(), ENTRIES, "{:?}", loaded.diagnostics);
+    }
+
+    /// Upgrading keeps every stored recent: a 200-entry store keeps all 200
+    /// after one more open.
+    #[test]
+    fn upgrading_keeps_a_200_entry_store_after_one_more_open() {
+        let dir = TempDir::new().expect("recent tempdir");
+        let mut entries = (0..200)
+            .map(|index| {
+                let path = dir.path().join(format!("stored-{index}.txt"));
+                fixture::write_text(&path, "recent");
+                RecentDocumentEntry::new(path, None, u64::try_from(index).expect("index"))
+            })
+            .collect::<Vec<_>>();
+        let opened = dir.path().join("opened.txt");
+        fixture::write_text(&opened, "recent");
+        add_or_update(&mut entries, opened, None, 1_000);
+        assert_eq!(entries.len(), 201);
     }
 }

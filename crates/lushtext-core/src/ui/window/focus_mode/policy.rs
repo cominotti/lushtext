@@ -112,6 +112,8 @@ pub const MIN_FOCUS_MARGIN: i32 = 24;
 /// Restated here because this module imports no toolkit crate; the adapter in
 /// `ui/editor_page/focus_mode.rs` asserts it equals `gtk4::pango::SCALE`, so the
 /// two cannot drift.
+///
+/// Kind: external fact; kept exact.
 pub const PANGO_UNITS_PER_PIXEL: i32 = 1024;
 
 /// Symmetric readable-column margin for one text surface, in whole pixels.

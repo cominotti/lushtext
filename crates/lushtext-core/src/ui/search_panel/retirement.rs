@@ -29,8 +29,13 @@ use super::policy::SearchRetirementSliceBudget;
 use super::{SearchFileGroup, SearchMatchLocation};
 
 /// Maximum GTK objects/cached rows released by one idle retirement turn.
-const SEARCH_RETIREMENT_ROWS_PER_SLICE: usize = 250;
+///
+/// Kind: cap; 250 rounded to the power of two 256 (`power-of-two-thresholds`
+/// D8): a full retirement turn of 256 rows stays within `B_SETTLE_US`.
+const SEARCH_RETIREMENT_ROWS_PER_SLICE: usize = 256;
 /// Maximum detached generations retained before latest-query backpressure applies.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(super) const MAX_SEARCH_RETIREMENT_GENERATIONS: usize = 2;
 
 /// Actual detached ownership held before or after one bounded retirement turn.
@@ -93,6 +98,9 @@ pub struct SearchRetirementSliceObservation {
     pub charged: usize,
     pub pending: bool,
     pub terminal_drain: bool,
+    /// Wall time of the slice's release, in µs (`power-of-two-thresholds`
+    /// task 5.4 times `SEARCH_RETIREMENT_ROWS_PER_SLICE` with it).
+    pub duration_us: i64,
 }
 
 /// One detached result generation whose GTK-owned references are no longer visible.
@@ -310,7 +318,11 @@ impl LushtextSearchPanel {
             debug_assert!(state.generation <= imp.runtime.retirement_generation.get());
             #[cfg(feature = "test-utils")]
             let before = state.ownership();
+            #[cfg(feature = "test-utils")]
+            let slice_started_us = glib::monotonic_time();
             let retired_rows = state.retire_slice(SEARCH_RETIREMENT_ROWS_PER_SLICE);
+            #[cfg(feature = "test-utils")]
+            let duration_us = glib::monotonic_time() - slice_started_us;
             #[cfg(feature = "test-utils")]
             {
                 let after = state.ownership();
@@ -325,6 +337,7 @@ impl LushtextSearchPanel {
                         charged: retired_rows,
                         pending: !state.is_empty(),
                         terminal_drain: state.is_empty(),
+                        duration_us,
                     },
                 );
             }

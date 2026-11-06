@@ -28,9 +28,13 @@ use std::path::PathBuf;
 use crate::model::file_load::TRANSIENT_LOAD_SHARED_BUDGET_BYTES;
 
 /// Process-wide ordinary budget shared with transient editor file loads.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const SAVE_PAYLOAD_SHARED_BUDGET_BYTES: u64 = TRANSIENT_LOAD_SHARED_BUDGET_BYTES;
 
 /// Fixed allowance for writer metadata, encoder state, and allocator slack.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const SAVE_PAYLOAD_FIXED_OVERHEAD_BYTES: u64 = 1024 * 1024;
 
 /// Worst-case overlap relative to the live editor's conservative residency.
@@ -41,6 +45,8 @@ pub(crate) const SAVE_PAYLOAD_FIXED_OVERHEAD_BYTES: u64 = 1024 * 1024;
 pub(crate) const SAVE_PAYLOAD_RESIDENCY_MULTIPLIER: u64 = 8;
 
 /// Match the bounded background executor without making workers wait on bytes.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const MAX_ADMITTED_SAVE_PAYLOADS: usize = 8;
 
 /// Calculate one conservative save charge with saturating arithmetic.

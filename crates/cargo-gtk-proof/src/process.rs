@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 /// Sixty-four KiB is enough for actionable headless setup diagnostics while
 /// keeping CI artifacts and automation-client summaries away from unbounded
 /// toolkit or renderer logs.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const MAX_LOG_BYTES: usize = 64 * 1024;
 
 /// Result of a command that was supervised through the bounded log path.

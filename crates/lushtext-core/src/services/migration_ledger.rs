@@ -26,7 +26,10 @@ use crate::services::{
 /// Persistent ledger filename under the app data directory.
 const MIGRATION_LEDGER_FILENAME: &str = "migration-ledger.json";
 /// Stop automatic startup retry after this many failures for one kind.
-pub const MAX_MIGRATION_ATTEMPTS: u32 = 3;
+///
+/// Kind: retry budget; 3 rounded up to a power of two
+/// (`power-of-two-thresholds` D6).
+pub const MAX_MIGRATION_ATTEMPTS: u32 = 4;
 
 fn ledger_lock() -> &'static Mutex<()> {
     // Process-local mutex serializes the JSON load/mutate/save cycle so

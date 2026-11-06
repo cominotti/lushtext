@@ -595,6 +595,7 @@ fn validate_latest_payload(bytes: &[u8], kind: FormatMetadataKind) -> Result<(),
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::services::filesystem::fixture;
     use crate::services::json_format::{JsonEnvelopeRef, KIND_SESSION, KIND_WORKSPACE_STATE};
@@ -905,6 +906,45 @@ mod tests {
             entry_items[0].classification,
             FormatClassification::Damaged { .. }
         ));
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main`'s
+    /// preflight scanned 10,000 sidecars of a directory, so 10,000 scan in full
+    /// with no "above the entry cap" diagnostic; the cap rounds up to 16,384.
+    #[test]
+    fn no_loss_the_preflight_scans_every_sidecar_main_scanned() {
+        let dir = TempDir::new().expect("temp dir");
+        let bookmarks = dir.path().join("bookmarks");
+        fixture::create_dir_all(&bookmarks);
+        for index in 0..10_000 {
+            fixture::write_text(&bookmarks.join(format!("{index:05}.json")), "{ not json");
+        }
+        let inventory = scan_with_registry(
+            dir.path(),
+            FormatScanBounds::default(),
+            &ConverterRegistry::production(),
+        );
+        assert!(!inventory.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            FormatInventoryDiagnostic::ScanLimitReached { .. }
+        )));
+        assert_eq!(
+            inventory
+                .items
+                .iter()
+                .filter(|item| item.kind == FormatMetadataKind::BookmarkSidecar)
+                .count(),
+            10_000
+        );
+        let bounds = FormatScanBounds::default();
+        assert_eq!(
+            (
+                bounds.max_sidecar_entries,
+                bounds.max_local_history_lineages,
+                bounds.max_replace_journal_entries,
+            ),
+            (16 * 1024, 16 * 1024, 16 * 1024)
+        );
     }
 
     #[test]

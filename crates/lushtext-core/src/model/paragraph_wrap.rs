@@ -27,6 +27,8 @@ use super::paragraph_boundary::next_paragraph_break;
 /// Characters a paragraph unwrapped by the gate must lose, below
 /// [`L_WRAP_EDIT`], before it wraps again. A hysteresis width, a power of two
 /// like the cap it is subtracted from (wraps again at 7,168).
+///
+/// Kind: coverage window; a power of two, rounded up.
 pub const REWRAP_MARGIN: u64 = 1_024;
 
 /// How one paragraph is shown.

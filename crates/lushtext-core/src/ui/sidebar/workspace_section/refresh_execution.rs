@@ -46,6 +46,8 @@ const AUTO_REFRESH_DEBOUNCE_MS: u64 = 120;
 /// button still participates in the same generation-guarded pipeline.
 const MANUAL_REFRESH_DEBOUNCE_MS: u64 = 1;
 /// Expanded stores submitted per GTK turn before yielding to rendering/input.
+///
+/// Kind: cap; a power of two, rounded down.
 const REFRESH_SCAN_DISPATCH_BATCH: usize = 32;
 
 enum RefreshPlan {

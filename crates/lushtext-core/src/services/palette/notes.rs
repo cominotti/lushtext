@@ -49,34 +49,55 @@ static NOTES_BROWSER_QUERY_DELAY_MS: std::sync::atomic::AtomicU64 =
 static NOTE_SOURCE_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Maximum UTF-8 bytes passed to nucleo for one note metadata field.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_NOTE_FUZZY_SCORE_BYTES: usize = 4 * 1024;
 /// Sound upper bound returned by one `nucleo_matcher::pattern::Atom` score.
 ///
 /// The pinned matcher returns `Option<u16>` for a single atom. Keeping the
 /// bound beside the field policy makes the body-pruning proof independent of
 /// observed scores or host timing.
+///
+/// Kind: external fact; kept exact.
 const MAX_NOTE_FIELD_FUZZY_SCORE: u32 = u16::MAX as u32;
 /// Character interval between cancellation checks while scanning note text.
+///
+/// Kind: cap; a power of two, rounded down.
 const NOTE_TEXT_CANCEL_CHECK_INTERVAL: usize = 1_024;
 /// Maximum note and bookmark rows retained for command-palette search.
-pub const MAX_PALETTE_NOTE_ENTRIES: usize = 10_000;
+///
+/// Kind: presentation cap; 10,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+pub const MAX_PALETTE_NOTE_ENTRIES: usize = 16 * 1024;
 /// Maximum aggregate searchable UTF-8 bytes retained for palette note rows.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_PALETTE_NOTE_TEXT_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum complete heap graph retained by one palette note source.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_PALETTE_NOTE_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum complete sidecar-path ownership retained by one source scan.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES: u64 = 8 * 1024 * 1024;
 /// Maximum concurrently retained final rows plus construction-only scratch.
 ///
 /// This preserves the 64 MiB final source while leaving room for one maximum
 /// 16 MiB recovery-metadata input and bounded path, diagnostic, and category
 /// construction ownership.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const MAX_PALETTE_NOTE_CONSTRUCTION_BYTES: u64 = 96 * 1024 * 1024;
 /// Conservative parsed-model heap expansion relative to compact JSON input.
 const NOTE_SIDECAR_MODEL_EXPANSION_MULTIPLIER: u64 = 4;
 /// Fixed allowance for one returned recovery diagnostic graph.
+///
+/// Kind: cap; a power of two, rounded down.
 const NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES: u64 = 64 * 1024;
 /// Maximum recovery diagnostics retained with one bounded palette source.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_PALETTE_NOTE_DIAGNOSTICS: usize = 1_024;
 
 /// Explicit aggregate limits for one immutable note-search source.
@@ -2055,6 +2076,7 @@ pub fn bookmark_display_label(label: Option<&str>, line: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::model::bookmark::BookmarkRecord;
     use crate::model::workspace::{WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile};
@@ -2263,6 +2285,28 @@ mod tests {
         );
 
         assert!(entries.is_empty());
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main`'s
+    /// palette note source retained 10,000 entries; the cap rounds up to 16,384.
+    #[test]
+    fn no_loss_the_palette_note_source_retains_every_entry_main_retained() {
+        let retained = |count: usize| {
+            let bodies = vec![String::from("note"); count];
+            let PaletteNoteSourceOutcome::Complete { load, .. } =
+                admit_synthetic_note_bodies_for_benchmark(&bodies, None)
+            else {
+                panic!("an uncancelled admission completes");
+            };
+            (load.entries.len(), load.truncation_reasons)
+        };
+        assert_eq!(retained(10_000), (10_000, vec![]));
+        assert_eq!(retained(16 * 1024), (16 * 1024, vec![]));
+        assert_eq!(
+            retained(16 * 1024 + 1),
+            (16 * 1024, vec![NoteSourceTruncationReason::EntryLimit])
+        );
+        assert_eq!(PALETTE_NOTE_SOURCE_LIMITS.sidecar_entries, 16 * 1024);
     }
 
     #[test]

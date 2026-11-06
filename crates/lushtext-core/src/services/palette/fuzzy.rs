@@ -14,6 +14,8 @@ use super::runtime::{PaletteSearchCancellation, PaletteSearchMetrics, PaletteSea
 ///
 /// This keeps atomic reads out of the inner matcher call while bounding obsolete
 /// work to at most this many additional candidates after cancellation.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const PALETTE_CANCEL_CHECK_INTERVAL: usize = 256;
 
 /// Score a fuzzy subsequence match of `query` against `candidate` using nucleo.

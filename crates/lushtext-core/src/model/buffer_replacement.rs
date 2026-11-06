@@ -35,15 +35,25 @@ use super::paragraph_boundary::{ProfileSummary, next_paragraph_break};
 /// 2.3–2.6 ms (9–10 µs per KiB). At the worst rate, 8,000 µs covers 734 KiB;
 /// 704 KiB keeps about 4 % of margin. The former value, 1 MiB, took 11.1 ms.
 ///
-/// Kind: byte threshold. Rounding: down to a whole KiB, not to a power of two
-/// (512 KiB would cost a sliced install of documents that fit); a recorded
-/// exception, deferred to `power-of-two-thresholds`.
-pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 704 * 1024;
+/// `power-of-two-thresholds` (design D8, task 5.3) measured the sliced install
+/// that documents of 512-704 KiB now take, interleaved with `main` (2026-11-05,
+/// load 0.9-1.2, short-line `total-size` at 512, 600 and 704 KiB as `.txt` and
+/// `.html`, three input variants, three repetitions): activation to laid out
+/// within 6.2 ms of `main` at every size (one reference frame is 8.3 ms), and
+/// no post-open dispatch over `B_SETTLE_US` that `main` does not have.
+///
+/// Kind: cap; 704 KiB rounded down to a power of two (`power-of-two-thresholds`
+/// D8).
+pub const SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES: usize = 512 * 1024;
 
 /// Maximum existing buffer characters deleted in one GTK turn.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const REPLACEMENT_CLEAR_SLICE_CHARS: i32 = 64 * 1024;
 
 /// Maximum replacement UTF-8 bytes considered in one GTK insertion turn.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const REPLACEMENT_INSERT_SLICE_BYTES: usize = 256 * 1024;
 
 /// The most visible characters one paced slice may install, so that the
@@ -64,16 +74,23 @@ pub const REPLACEMENT_INSERT_SLICE_BYTES: usize = 256 * 1024;
 /// (A70: the editor's font CSS, line numbers, current-line highlight, with and
 /// without a `GtkSourceMap`; host load 40–56, so magnitudes only) found a step
 /// between 11,360 characters (every repetition at most 4.0 ms) and 22,720
-/// (saturated at 8–9 ms). `V_SLICE` is therefore the last size below that
-/// step, 16 lines of 710 characters. The responsiveness lane confirmed it on
-/// the probe build (2026-10-31, `dense/{120,500,710}` in both wrap modes and
-/// all three input variants, load 1.3): every validation dispatch until settle
-/// at most 11.6 ms, every post-open dispatch at most 15.0 ms.
+/// (saturated at 8–9 ms). C6 took the last size below that step, 16 lines of
+/// 710 characters (11,360), and the responsiveness lane confirmed it on the
+/// probe build (2026-10-31, `dense/{120,500,710}` in both wrap modes and all
+/// three input variants, load 1.3): every validation dispatch until settle at
+/// most 11.6 ms, every post-open dispatch at most 15.0 ms.
 ///
-/// Kind: visible-character count. Rounding: a whole number of 710-character
-/// lines (16), the last measured size below the step, not a power of two; a
-/// recorded exception, deferred to `power-of-two-thresholds`.
-pub const V_SLICE: u64 = 11_360;
+/// `power-of-two-thresholds` (design D8, task 5.2) re-measured the power of
+/// two above it on the lane, interleaved with `main` (2026-11-05, load
+/// 0.9–1.2, `dense/{120,500,512,710}` in both wrap modes, plain, AT and
+/// probe-IM, three repetitions): at 16,384 every post-open dispatch stayed at
+/// most 12.6 ms and every validation dispatch until settle at most 11.5 ms
+/// (`main`, at 11,360: 13.1 and 12.3 ms), and activation to laid out was no
+/// slower anywhere (dense/710 wrap-on 102 ms against 202 ms).
+///
+/// Kind: cap; 16,384, the power of two above the A70 step's 11,360, measured
+/// to meet the budgets `main` meets (`power-of-two-thresholds` D8).
+pub const V_SLICE: u64 = 16 * 1024;
 
 /// Whether a document's densest validation batch holds more than [`V_SLICE`]
 /// visible characters (`bound-post-open-settle`, design D6 and D9).

@@ -35,9 +35,9 @@ Kinds (``--size`` unit in brackets):
 ``short-code`` [bytes per document]
     ``--count`` (default 2) documents of ``size`` bytes of short lines of 8 to
     71 characters (about 40 on average, like source code), below C6's density
-    bound (``V_SLICE`` visible characters per ``R_batch`` = 224 lines, about 50
-    per line), so LushText installs them in unpaced byte slices and every view
-    validates them afterwards: the validation backlog the lane's
+    bound (``V_SLICE`` visible characters per ``R_batch`` = 256 lines, 64
+    per line), so LushText installs them in unpaced byte slices and every
+    view validates them afterwards: the validation backlog the lane's
     ``save/during-validation`` case saves during (``spawn-completion-priority``).
 ``markdown`` [bytes]
     An ordinary Markdown document of exactly ``size`` bytes (``.md``):
@@ -504,12 +504,12 @@ def write_short_text(path: Path, delimiter: str, seed: int, total_bytes: int) ->
 
 
 # `short-code`: line lengths 8 + below(64), so at most 71 and about 40 on
-# average; C6's density bound is V_SLICE (11,360) visible characters over
-# R_batch (224) lines (`model/buffer_replacement.rs`).
+# average; C6's density bound is V_SLICE (16,384) visible characters over
+# R_batch (256) lines (`model/buffer_replacement.rs`).
 SHORT_CODE_MIN_LINE = 8
 SHORT_CODE_LINE_SPREAD = 64
-DENSITY_BATCH_LINES = 224
-DENSITY_SLICE_CHARS = 11_360
+DENSITY_BATCH_LINES = 256
+DENSITY_SLICE_CHARS = 16_384
 
 
 def write_short_code(path: Path, delimiter: str, seed: int, total_bytes: int) -> dict:

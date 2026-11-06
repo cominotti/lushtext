@@ -993,6 +993,8 @@ impl LocalHistoryBrowserState {
 
 /// Characters a preview buffer may hold and still be emptied in one
 /// `set_text("")`: one ordinary clear slice of the editor's replacement.
+///
+/// Kind: cap; a power of two, rounded down.
 const PREVIEW_DIRECT_CLEAR_CHARS: i32 =
     crate::model::buffer_replacement::REPLACEMENT_CLEAR_SLICE_CHARS;
 

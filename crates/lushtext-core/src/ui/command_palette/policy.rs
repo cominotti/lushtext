@@ -44,12 +44,19 @@ pub const SEARCH_DEBOUNCE_MS: u64 = 150;
 /// The palette already caps visible results at a small, scannable list; keeping
 /// the same cap per source prevents one group from monopolizing mixed results
 /// while staying cheap for list-model replacement and keyboard navigation.
-pub const MAX_RESULTS_PER_SOURCE: usize = 50;
+///
+/// Kind: presentation cap; 50 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M1).
+pub const MAX_RESULTS_PER_SOURCE: usize = 64;
 
 /// Maximum incremental mutations retained before overflow escalates to a rebuild.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_PENDING_INDEX_UPDATES: usize = 1_024;
 
 /// Maximum exact retained bytes the pending mutation queue may own.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_PENDING_INDEX_UPDATE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Smallest capacity the pending queue's growth estimate assumes.
@@ -59,6 +66,8 @@ pub const MAX_PENDING_INDEX_UPDATE_BYTES: u64 = 4 * 1024 * 1024;
 /// reallocation *before* it happens, or a push that passes the ceiling check can
 /// still leave the queue owning more than
 /// [`MAX_PENDING_INDEX_UPDATE_BYTES`].
+///
+/// Kind: cap; a power of two, rounded down.
 const PENDING_QUEUE_MIN_CAPACITY: usize = 4;
 
 /// A pending incremental mutation to the palette's file index.
@@ -421,6 +430,57 @@ pub fn accessible_value_text(
 mod tests {
     use super::*;
 
+    /// Files shown for one query when the workspace index holds `count`
+    /// matching files and the palette caps each category at
+    /// [`MAX_RESULTS_PER_SOURCE`].
+    fn file_rows_shown(count: usize) -> usize {
+        use crate::model::palette::{
+            IndexedFile, PaletteFileIdentity, PaletteSearchRow, SearchMode,
+        };
+        use crate::services::palette::{
+            GroupedSearchInput, PaletteSearchCancellation, PaletteSearchOutcome, grouped_search,
+        };
+        let folder = Arc::new(PathBuf::from("/workspace"));
+        let index = FileIndex::from(
+            (0..count)
+                .map(|n| {
+                    let path = folder.join(format!("match_{n:05}.rs"));
+                    IndexedFile::new(
+                        path.clone(),
+                        PaletteFileIdentity::canonical(path),
+                        Arc::clone(&folder),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        let PaletteSearchOutcome::Complete { value: rows, .. } = grouped_search(
+            GroupedSearchInput {
+                index: &index,
+                open_tabs: &[],
+                note_entries: &[],
+                workspace_group_label: "Workspace",
+                query: "match",
+                mode: SearchMode::Files,
+                max_per_source: MAX_RESULTS_PER_SOURCE,
+            },
+            &PaletteSearchCancellation::default(),
+        ) else {
+            panic!("a fresh grouped search completes");
+        };
+        rows.iter()
+            .filter(|row| matches!(row, PaletteSearchRow::File { .. }))
+            .count()
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` showed 50
+    /// matches per category; the presentation cap rounds up to 64.
+    #[test]
+    fn no_loss_a_palette_category_shows_every_match_main_showed() {
+        assert_eq!(file_rows_shown(50), 50);
+        assert_eq!(file_rows_shown(64), 64);
+        assert_eq!(file_rows_shown(65), 64);
+    }
+
     fn queue_state(len: usize, capacity: usize, retained_bytes: u64) -> IndexUpdateQueueState {
         IndexUpdateQueueState {
             rebuild_pending: false,
@@ -446,7 +506,7 @@ mod tests {
         assert_eq!(MAX_PENDING_INDEX_UPDATES, 1_024);
         assert_eq!(INDEX_UPDATE_DEBOUNCE_MS, 75);
         assert_eq!(SEARCH_DEBOUNCE_MS, 150);
-        assert_eq!(MAX_RESULTS_PER_SOURCE, 50);
+        assert_eq!(MAX_RESULTS_PER_SOURCE, 64);
     }
 
     #[test]

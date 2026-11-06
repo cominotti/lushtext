@@ -6,8 +6,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Maximum fallback identities retained when root alias coverage is ambiguous.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const WORKSPACE_SEARCH_FALLBACK_ENTRY_LIMIT: usize = 0x0001_0000;
 /// Maximum conservative path bytes retained by the ambiguous-alias fallback ledger.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const WORKSPACE_SEARCH_FALLBACK_PATH_BYTE_LIMIT: u64 = 8 * 1024 * 1024;
 
 /// One ordered configured root used to preserve display ownership after normalization.

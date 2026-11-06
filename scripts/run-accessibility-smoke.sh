@@ -948,10 +948,10 @@ seed_capped_results_workspace_for_capture() {
     # The content-search result cap is a service constant, so the truncation
     # warning can only be reached with a fixture that really exceeds it. This
     # workspace stays outside the shared "$ARTIFACT_DIR/fixtures" root so no
-    # other case has to walk 12,000 matching lines.
+    # other case has to walk 18,000 matching lines.
     local block index padded
     block=$(printf 'cappedmatchterm line for accessibility truncation coverage\n%.0s' $(seq 1 600))
-    for index in $(seq 1 20); do
+    for index in $(seq 1 30); do
         printf -v padded '%02d' "$index"
         printf '%s\n' "$block" >"$root/capped-results-${padded}.txt"
     done
@@ -1492,7 +1492,7 @@ if case_selected "editor-too-large-policy"; then
 DEFAULT_FIXTURE="$FIXTURE"
 FIXTURE="$ARTIFACT_DIR/fixtures/too-large-accessibility-smoke.txt"
 rm -f "$FIXTURE"
-truncate -s 501M "$FIXTURE"
+truncate -s 513M "$FIXTURE"
 run_accessibility_capture "editor-too-large-policy" \
     --allow-file-open-failure \
     --step wait-atspi-text:"Could Not Open File" \
@@ -1515,17 +1515,17 @@ run_accessibility_capture "protected-view-inspector" \
     --step wait-atspi-text:"View-Only: Very Long Lines" \
     --step rd-key:Ctrl+Alt+I \
     --step wait-predicate:accessibility-settled \
-    --step wait-atspi-text:"Line 2, columns 1–500 of 72000" \
+    --step wait-atspi-text:"Line 2, columns 1–512 of 72000" \
     --step atspi-click-button:"^Next Window$" \
     --step wait-predicate:accessibility-settled \
-    --step wait-atspi-text:"Line 2, columns 501–1000 of 72000; 62000 characters hidden in the editor"
+    --step wait-atspi-text:"Line 2, columns 513–1024 of 72000; 62000 characters hidden in the editor"
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Next Window"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Previous Window"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Next Folded Line"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Previous Folded Line"
 assert_anchor "protected-view-inspector" "line inspector" "button" "Copy Whole Line"
-assert_anchor_prefix "protected-view-inspector" "line inspector window" "text" "Line 2, columns 501–1000 of 72000; 62000 characters hidden"
+assert_anchor_prefix "protected-view-inspector" "line inspector window" "text" "Line 2, columns 513–1024 of 72000; 62000 characters hidden"
 fi
 
 if case_selected "protected-view-menu"; then
@@ -1605,11 +1605,11 @@ run_accessibility_capture "workspace-search-capped" \
     --step wait-window-action:set-search-panel-query \
     --step window-string-action:set-search-panel-query=cappedmatchterm \
     --step wait-predicate:search-complete \
-    --step wait-atspi-text:"10,000+ results (truncated)"
+    --step wait-atspi-text:"16,384+ results (truncated)"
 assert_anchor "workspace-search-capped" "workspace search" "entry" "Workspace search query"
 assert_anchor "workspace-search-capped" "workspace search" "list" "Workspace search results"
 # The truncation is announced as text, not only as a warning colour.
-assert_anchor_prefix "workspace-search-capped" "workspace search" "status bar" "10,000+ results (truncated)"
+assert_anchor_prefix "workspace-search-capped" "workspace search" "status bar" "16,384+ results (truncated)"
 fi
 
 if case_selected "workspace-search-replace-undo"; then

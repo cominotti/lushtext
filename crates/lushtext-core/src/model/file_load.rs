@@ -14,9 +14,13 @@ use std::collections::BTreeMap;
 /// retain more document-sized source/decode/install ownership than one full
 /// steady-state editor budget. A supported request above this charge remains
 /// possible, but only as the sole admitted payload.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const TRANSIENT_LOAD_SHARED_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Fixed per-load allowance for result metadata and allocator slack.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES: u64 = 1024 * 1024;
 
 /// Conservative source-byte multiplier across read, decode, and GTK install.
@@ -36,6 +40,8 @@ pub const TRANSIENT_LOAD_SOURCE_MULTIPLIER: u64 = 8;
 
 /// The live editor's residency estimate per character (four UTF-8 bytes at
 /// most), which a load still charges for characters not yet installed.
+///
+/// Kind: external fact; kept exact.
 pub const LIVE_RESIDENCY_BYTES_PER_CHAR: u64 = 4;
 
 /// Maximum UTF-8 body bytes produced from one admitted source byte.
@@ -46,16 +52,24 @@ pub const LIVE_RESIDENCY_BYTES_PER_CHAR: u64 = 4;
 pub const DECODED_BODY_SOURCE_MULTIPLIER: u64 = 3;
 
 /// Decoded content up to this size may be installed in one GTK turn.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const SYNCHRONOUS_INSTALL_THRESHOLD_BYTES: usize =
     super::buffer_replacement::SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES;
 
 /// Maximum decoded UTF-8 bytes considered by one chunked GTK install turn.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const INSTALL_SLICE_BYTES: usize = super::buffer_replacement::REPLACEMENT_INSERT_SLICE_BYTES;
 
 /// Match the generic worker cap without making workers wait for admission.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_ADMITTED_FILE_LOADS: usize = 8;
 
 /// Bound consecutive times active-tab priority may bypass the oldest request.
+///
+/// Kind: cap; a power of two, rounded down.
 const MAX_CONSECUTIVE_ACTIVE_BYPASSES: u8 = 2;
 
 /// Calculate one conservative transient charge with saturating arithmetic.

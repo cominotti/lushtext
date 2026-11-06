@@ -22,9 +22,14 @@
 use crate::services::filesystem::FileIdentity;
 
 /// Preserved bodies past which the user is asked to review the area.
-pub const SOFT_BOUND_BODIES: u64 = 100;
+///
+/// Kind: policy tier; 100 aligned to a power of two (`power-of-two-thresholds`
+/// D6), pairing with the 256 MiB byte bound (four 64 MiB bodies).
+pub const SOFT_BOUND_BODIES: u64 = 128;
 /// Preserved bytes past which the user is asked to review the area (four
 /// maximum-size draft bodies).
+///
+/// Kind: policy tier; a power of two aligned with its neighbours.
 pub const SOFT_BOUND_BYTES: u64 = 256 * 1024 * 1024;
 /// Growth, in percent of the last notified count or size, that makes another
 /// notice due after a placement in the same process.
@@ -216,21 +221,21 @@ mod tests {
 
     #[test]
     fn a_notice_is_due_once_then_only_on_material_growth_and_never_after_review() {
-        let over = totals(120, 1);
+        let over = totals(160, 1);
         assert!(!notice_due(totals(5, 5), None, false), "within the bound");
         assert!(!notice_due(None, None, false), "a failed scan says nothing");
         assert!(notice_due(over, None, false), "the first notice");
         assert!(!notice_due(over, None, true), "the user already reviewed");
         assert!(
-            !notice_due(totals(149, 1), over, false),
+            !notice_due(totals(199, 1), over, false),
             "under 25 % growth"
         );
-        assert!(notice_due(totals(150, 1), over, false), "25 % more bodies");
+        assert!(notice_due(totals(200, 1), over, false), "25 % more bodies");
         assert!(
-            notice_due(totals(120, 2), over, false),
+            notice_due(totals(160, 2), over, false),
             "the size doubled even though the count did not grow"
         );
-        assert!(!notice_due(totals(150, 1), over, true));
+        assert!(!notice_due(totals(200, 1), over, true));
         assert!(!notice_due(
             totals(u64::MAX, u64::MAX),
             totals(u64::MAX, u64::MAX),

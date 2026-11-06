@@ -78,10 +78,18 @@ use super::document_scale::{L_PROTECT, N_VISIBLE, R_BATCH, V_BATCH};
 /// post-open settle of a 500-character document. The C2 verdict's first round
 /// confirmed it from the other side: the provisional 15,000 (design D1's
 /// extrapolation of ledger A23) cost a 15.8 ms frame layout on its own.
+///
+/// Kind: presentation cap; recorded exception (`power-of-two-thresholds`
+/// D12): the measured 10,000 is kept, because the sweep above already shows
+/// the power of two above failing its bound (16.1 ms at 14,000 wrap off,
+/// 20.7 ms at 20,000 wrap on, so 16,384 exceeds `B_SETTLE_US`), and 8,192
+/// would make every head 1,808 characters shorter than on `main`.
 pub const N_HEAD: u64 = 10_000;
 
 /// Pango's advance of the view's monospace font at the default zoom, in Pango
 /// units (1/1024 px), as ledger A28 measured it (9011 units per character).
+///
+/// Kind: external fact; kept exact.
 pub const A28_MEASURED_ADVANCE_UNITS: u64 = 9_011;
 
 /// The largest zoom percentage the window offers (`ui/window/zoom.rs`'s
@@ -105,11 +113,14 @@ pub const A28_MAX_ZOOM_PERCENT: u64 = 400;
 /// size; hinting can round a scaled advance up by a fraction of a pixel, which
 /// task 1.3's measurement at 400 % settles. It is not the binding term of
 /// [`HEAD_CAP`] today ([`N_HEAD`] is).
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const A28_SAFE_CHARS: u64 =
     (i32::MAX as u64) / (A28_MEASURED_ADVANCE_UNITS * A28_MAX_ZOOM_PERCENT / 100);
 
 /// Rows of one 2000 px validation batch the density window covers: C1's
-/// [`R_BATCH`] (224), with no edge row added.
+/// [`R_BATCH`] (256, the 224 below rounded up to a power of two by
+/// `power-of-two-thresholds`), with no edge row added.
 ///
 /// `long-line-protected-view` task 1.2: GtkTextView validates whole lines from
 /// a line start until the batch reaches 2000 px (ledger A31: each step grows
@@ -120,33 +131,46 @@ pub const A28_SAFE_CHARS: u64 =
 /// 223 at the 50 % minimum zoom. Even a 2000 px window starting at an
 /// arbitrary pixel (the widget test of task 3.4) touches at most
 /// `ceil((2000 + h − 1) / h)` rows, 113 at 18 px and 224 at 9 px. So
-/// `R_BATCH` already counts the partially covered edge row, and `R_FOLD + 1`
-/// would only make `R_FOLD · N_DENSE` exceed `V_BATCH`. The argument rests on
+/// `R_BATCH` already counts the partially covered edge row (256 leaves 32 rows
+/// to spare), and `R_FOLD · N_DENSE` = 256 · 256 = 65,536 stays within
+/// `V_BATCH`. The argument rests on
 /// a 9 px minimum row height at the 50 % zoom, the assumption C0's doubling
 /// already made.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const R_FOLD: usize = R_BATCH;
 
 /// The smallest zoom percentage [`R_FOLD`] covers (`ui/window/zoom.rs`'s
 /// `ZOOM_MIN`, 50; see [`A28_MAX_ZOOM_PERCENT`] for the pending assertion).
 pub const R_FOLD_MIN_ZOOM_PERCENT: u64 = 50;
 
-/// Characters a dense paragraph keeps visible: `V_BATCH / R_BATCH` (250), so
+/// Characters a dense paragraph keeps visible: `V_BATCH / R_BATCH` (256), so
 /// `R_FOLD` dense paragraphs fill at most one batch.
-// `R_BATCH` (224) is a usize that fits a u64, so the cast is lossless.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
+// `R_BATCH` (256) is a usize that fits a u64, so the cast is lossless.
 pub const N_DENSE: u64 = V_BATCH / (R_BATCH as u64);
 
 /// The most characters any paragraph shows: `min(N_VISIBLE, N_HEAD,
 /// A28_SAFE_CHARS)`.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
 pub const HEAD_CAP: u64 = min_u64(min_u64(N_VISIBLE, N_HEAD), A28_SAFE_CHARS);
 
 /// The Line Inspector's window, in characters: C0's bound
-/// `min(N_visible, L_protect_stall)` = 500 (`docs/next/long-line-documents.md`,
-/// "Measured values"). It must not exceed `min(HEAD_CAP, L_PROTECT)`, checked
-/// at compile time below and by Kani.
-pub const N_INSPECT: u64 = 500;
+/// `min(N_visible, L_protect_stall)`, 512 since `power-of-two-thresholds`
+/// (`docs/next/long-line-documents.md`, "Measured values"). It must not
+/// exceed `min(HEAD_CAP, L_PROTECT)`, checked at compile time below and by
+/// Kani.
+///
+/// Kind: presentation cap; equal to `L_PROTECT`, 512 (`power-of-two-thresholds` D7), the
+/// bound it must not exceed.
+pub const N_INSPECT: u64 = 512;
 
 /// The ring capacity of [`ProductionFoldState`]: the largest `r_fold`
 /// [`FoldThresholds::new`] accepts.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_R_FOLD: usize = 256;
 
 // The production thresholds must satisfy the preconditions: evaluating the
@@ -297,6 +321,8 @@ pub enum FoldLocation {
 impl FoldRange {
     /// Bytes one planned range retains, the per-range charge an install's
     /// transient admission takes for the plan.
+    ///
+    /// Kind: derived; computed from the constants it names, not rounded.
     pub const RETAINED_BYTES: u64 = std::mem::size_of::<Self>() as u64;
 
     /// Where `column` (a character offset from the paragraph start) lies.

@@ -1613,8 +1613,8 @@ fn test_an_undelimited_folded_last_paragraph_is_never_the_last_line_sliced() {
 /// cannot catch a leak). A recovered undelimited folded draft is written back
 /// by the draft autosave, which snapshots the buffer (drafts have no protected
 /// source path), and the body on disk must be the original bytes, with no
-/// trailing `\n`. `giant` picks the snapshot: below 2.5M characters a direct
-/// read, above it the chunked capture.
+/// trailing `\n`. `giant` picks the snapshot: below 2,097,152 characters (an
+/// 8 MiB estimate) a direct read, above it the chunked capture.
 fn assert_autosaved_draft_is_byte_identical(name: &str, giant: usize) {
     use lushtext_core::services::{draft_service, json_store};
     let draft = format!("{}{}", body_with_giants(&[]), "g".repeat(giant));

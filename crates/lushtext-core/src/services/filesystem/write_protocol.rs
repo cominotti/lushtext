@@ -31,6 +31,8 @@
 //! after it reports `AfterRename`.
 
 /// Bounded fresh names tried when a temp name already exists.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const MAX_TEMP_NAME_ATTEMPTS: u8 = 8;
 
 /// The outcome of the last executed action.

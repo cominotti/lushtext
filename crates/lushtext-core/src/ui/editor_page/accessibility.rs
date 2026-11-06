@@ -14,7 +14,11 @@ use crate::ui::accessibility as a11y;
 use super::{EditorLoadState, LushtextEditorPage};
 
 /// Maximum file-name characters exposed as the editor identity.
-const EDITOR_IDENTITY_LIMIT: usize = 96;
+///
+/// Kind: presentation cap; 96 rounded up to a power of two (`power-of-two-thresholds`
+/// stage 4). It bounds a user file name, so D2's materiality rule decides it:
+/// 64 would cut the name for 7.96 % of corpus files, 128 for 0.0020 %.
+const EDITOR_IDENTITY_LIMIT: usize = 128;
 
 impl LushtextEditorPage {
     /// Refresh accessible metadata for the source editor from the current tab state.
@@ -136,5 +140,29 @@ impl LushtextEditorPage {
         }
 
         details
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EDITOR_IDENTITY_LIMIT, a11y};
+
+    /// `power-of-two-thresholds` stage 4: the identity cap is a text cap over
+    /// user data, so D2's materiality rule decides it. Of 1,511,259 file names
+    /// in the stage-4 corpus (`~/Workspace` without `.git`, `.claude`,
+    /// `target`, `node_modules`, `.cache`), 7.96 % exceed 64 characters,
+    /// 0.387 % exceed 96 and 0.0020 % exceed 128; 64 would cut the file name a
+    /// screen reader hears for one file in thirteen.
+    #[test]
+    fn the_editor_identity_keeps_a_long_file_name_whole() {
+        let name = format!("BUG-0120-{}.md", "a".repeat(100));
+        assert_eq!(name.chars().count(), 112);
+        assert_eq!(
+            a11y::bounded_announcement_text(&name, EDITOR_IDENTITY_LIMIT),
+            name
+        );
+        let too_long = "b".repeat(EDITOR_IDENTITY_LIMIT + 1);
+        assert!(a11y::bounded_announcement_text(&too_long, EDITOR_IDENTITY_LIMIT).ends_with("..."));
+        assert_eq!(EDITOR_IDENTITY_LIMIT, 128);
     }
 }

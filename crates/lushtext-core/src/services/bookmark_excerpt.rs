@@ -31,22 +31,32 @@ pub const BOOKMARK_EXCERPT_CONTEXT_AFTER_LINES: usize = 7;
 ///
 /// One mebibyte keeps preview selection responsive on slow filesystems while
 /// still covering ordinary Markdown notes and source files with plenty of room.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT: usize = 1024 * 1024;
 /// Maximum logical lines scanned from disk for one closed-file preview.
 ///
 /// Deep bookmarks beyond this point are better opened in the editor than
 /// resolved through a modal preview, especially for generated or minified files.
-pub const BOOKMARK_EXCERPT_SCAN_LINE_LIMIT: usize = 20_000;
+///
+/// Kind: presentation cap; 20,000 rounded up to a power of two
+/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
+/// The unchanged 1 MiB scan byte limit bounds its memory.
+pub const BOOKMARK_EXCERPT_SCAN_LINE_LIMIT: usize = 32 * 1024;
 /// Maximum characters retained from any one rendered line.
 ///
 /// A single giant line can otherwise consume the whole preview allocation even
 /// when the surrounding line window is tiny.
+///
+/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const BOOKMARK_EXCERPT_LINE_CHAR_LIMIT: usize = 4096;
 /// Logical lines scanned between cooperative cancellation checks.
 ///
 /// Splitting the one-mebibyte excerpt budget into lines is short but not free;
 /// checking every 1024 lines keeps supersession responsive without measurable
 /// per-line overhead.
+///
+/// Kind: cap; a power of two, rounded down.
 pub const BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES: usize = 1024;
 
 /// How a bookmark excerpt should be presented by the Notes browser.
@@ -517,6 +527,7 @@ struct BoundedBytes {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::services::filesystem::fixture;
 
@@ -546,7 +557,7 @@ mod tests {
         assert_eq!(BOOKMARK_EXCERPT_CONTEXT_BEFORE_LINES, 3);
         assert_eq!(BOOKMARK_EXCERPT_CONTEXT_AFTER_LINES, 7);
         assert_eq!(BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT, 1024 * 1024);
-        assert_eq!(BOOKMARK_EXCERPT_SCAN_LINE_LIMIT, 20_000);
+        assert_eq!(BOOKMARK_EXCERPT_SCAN_LINE_LIMIT, 32 * 1024);
         assert_eq!(BOOKMARK_EXCERPT_LINE_CHAR_LIMIT, 4096);
         assert_eq!(BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES, 1024);
     }
@@ -828,6 +839,26 @@ mod tests {
             unavailable_reason(load_from_path(file.path(), 2)),
             BookmarkExcerptUnavailableReason::LineBeyondPreviewBudget
         );
+    }
+
+    /// No loss against `main` (`power-of-two-thresholds` D12): `main` resolved
+    /// a bookmark at line 20,000 within the 1 MiB byte budget; the line limit
+    /// rounds up to 32,768.
+    #[test]
+    fn no_loss_a_deep_bookmark_main_resolved_keeps_its_excerpt() {
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        let mut content = String::new();
+        for line in 1..=20_005 {
+            content.push_str(&format!("line {line}\n"));
+        }
+        assert!(content.len() <= BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT);
+        fixture::write_text(file.path(), &content);
+        let excerpt = load_from_path(file.path(), 20_000);
+        assert!(
+            !matches!(excerpt, BookmarkExcerptState::Unavailable(_)),
+            "line 20,000 had an excerpt on main"
+        );
+        assert_eq!(BOOKMARK_EXCERPT_SCAN_LINE_LIMIT, 32 * 1024);
     }
 
     #[test]

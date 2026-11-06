@@ -157,26 +157,13 @@ impl Default for LushtextPropertiesPanel {
     }
 }
 
+/// The file's size in IEC units, as every tier the app names
+/// (`power-of-two-thresholds` D14).
 fn format_file_size(bytes: Option<u64>) -> String {
-    let Some(bytes) = bytes else {
-        return "Not available".to_string();
-    };
-
-    const KB: f64 = 1_000.0;
-    const MB: f64 = 1_000_000.0;
-    let b = bytes as f64;
-    if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        let kb = b / KB;
-        if kb >= 999.95 {
-            format!("{:.1} MB", b / MB)
-        } else {
-            format!("{kb:.1} KB")
-        }
-    } else {
-        format!("{bytes} B")
-    }
+    bytes.map_or_else(
+        || "Not available".to_string(),
+        crate::model::size_units::iec_size,
+    )
 }
 
 fn format_document_statistics(editor: &LushtextEditorPage) -> String {
@@ -196,4 +183,21 @@ fn format_document_statistics(editor: &LushtextEditorPage) -> String {
             "characters"
         }
     )
+}
+
+#[cfg(test)]
+mod displayed_size_tests {
+    use super::*;
+
+    /// Displayed sizes are IEC, like every tier the app names
+    /// (`power-of-two-thresholds` D14).
+    #[test]
+    fn displayed_sizes_are_iec() {
+        assert_eq!(format_file_size(Some(10_485_760)), "10 MiB");
+        assert_eq!(format_file_size(Some(1_536)), "1.5 KiB");
+        for bytes in [999, 1_000, 1_536, 1_000_000, 10_485_760, 50_000_000] {
+            let shown = format_file_size(Some(bytes));
+            assert!(!shown.contains("MB") && !shown.contains("KB"), "{shown}");
+        }
+    }
 }

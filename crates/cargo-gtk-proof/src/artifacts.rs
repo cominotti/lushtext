@@ -22,6 +22,8 @@ use crate::{TOOL_VERSION, model};
 /// Eight MiB is intentionally aligned with the existing read cap in `lib.rs`:
 /// large enough for current root summaries, but small enough to catch runaway
 /// log or snapshot embedding before CI uploads unbounded evidence.
+///
+/// Kind: cap; a power of two, rounded down.
 pub(crate) const MAX_WRITTEN_JSON_BYTES: usize = 8 * 1024 * 1024;
 
 /// Artifact classes the proof runner writes through the bounded JSON path.

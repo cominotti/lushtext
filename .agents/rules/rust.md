@@ -297,16 +297,35 @@ A new threshold, budget, cap, slice size, or window (bytes, characters,
 paragraphs, rows, counts) is a power of two (2, 4, 8, …, 1024, 64 KiB,
 1 MiB, …). Its rustdoc names its **kind** and the rounding that kind requires:
 
-- **Cap** (at most N per dispatch, per document, or per resource; a measured
-  point where a budget breaks): round **down** to the power of two at or below
-  the measured or derived value. The policies are monotone, so a smaller cap
-  only reduces features sooner and keeps the budget guarantee.
+- **Cap** (an *internal resource* cap: at most N per dispatch, per document,
+  or per resource; a measured point where a budget breaks, and nothing a user
+  can observe depends on it): round **down** to the power of two at or below
+  the measured or derived value. A smaller internal cap only does the same work
+  in more, smaller steps, so the budget guarantee holds.
+- **Presentation cap** (a cap on what the user sees or gets: results, rows,
+  notes, markers, entries listed, files a bulk action processes, characters
+  shown or announced, and the size or length at which a feature turns off):
+  round **up** to the power of two at or above its intended value (for a
+  constant that predates `power-of-two-thresholds`, the value it had before
+  that change), provided the resource bound it protects (memory, per-turn GTK
+  time against `B_interact` 8 ms or `B_settle` 16 ms, worker memory) still
+  holds **by measurement**. If the measurement says it does not hold, the cap
+  keeps its intended exact value as a recorded exception with that
+  measurement. A presentation cap is never rounded down. The test: a cap is a
+  presentation cap if rounding it down can hide, skip, truncate or drop
+  anything a user could observe. **User experience first: when in doubt, it is
+  a presentation cap.** Its inventory row records the former value as
+  `up from <value>`, which is what `make check-thresholds` compares against.
+  A fixed layout shape (the context lines of an excerpt, the sample lines of
+  a peek) is `out: presentation`, not a cap; a count that cuts a list is a
+  presentation cap.
 - **Coverage window** (must span a whole toolkit unit for a proof to hold, e.g.
   the paragraphs GTK validates in one 2000 px batch): round **up**, never
   down. A window that is too small silently breaks the proof.
 - **Policy tier** (user-visible size tiers, retention): a power of two chosen
   to align with neighbouring limits for the same concern, shown in IEC units
-  (`MiB`, `G_FORMAT_SIZE_IEC_UNITS`).
+  (`MiB`, `G_FORMAT_SIZE_IEC_UNITS`). A tier at which a feature turns off is
+  also a presentation cap: it rounds up, never down.
 - **External fact** (GTK's 2000 px validation batch, the `GtkListView`
   realized-row cap, Pango's overflow length, the 120 Hz frame): kept exact and
   cited from the GTK axiom ledger. These describe the toolkit or physics, not
@@ -314,13 +333,51 @@ paragraphs, rows, counts) is a power of two (2, 4, 8, …, 1024, 64 KiB,
 
 Time budgets already follow this (`B_interact` 8 ms, `B_settle` 16 ms). A
 value that cannot be a power of two without a measured, user-visible loss (more
-text folded, highlighting off for common files, a slower total) is an
-**exception**: keep the exact value and record the measurement and the reason
-beside the constant. Prefer a power of two because it states the margin
-honestly (a measured 22,000 under load is not that precise), and because
-division and modulo by it are shifts and masks that Kani and CBMC verify
-cheaply. Constants that predate this rule are being converted by the queued
-`power-of-two-thresholds` change (`docs/next/long-line-documents.md`).
+text folded, highlighting off for common files, a slower total) or without
+breaking its measured bound is an **exception**: keep the exact value and
+record the measurement and the reason beside the constant. Prefer a power of
+two because it states the margin honestly (a measured 22,000 under load is not
+that precise), and because division and modulo by it are shifts and masks that
+Kani and CBMC verify cheaply.
+
+Four more kinds complete the set (`power-of-two-thresholds`, design D2):
+
+- **Retention tier** (snapshots, recents, search history kept) and **retry
+  budget** (attempts before a failure is reported): round **up**. A smaller
+  retention tier prunes data the user already has; a smaller retry budget
+  reports a transient failure it was sized for. A raised retention tier must
+  still load in full through every bounded read of its store: raise the read
+  bound with it, as a coverage window, and test the worst-case store.
+- **Derived** (a quotient, product or sum of other constants): never rounded;
+  its inputs follow the rules. When a derived value is something the user sees
+  (the characters a dense paragraph shows in Protected View), a change of its
+  inputs must not lower it below its former value without a measurement and a
+  recorded reason.
+- **Measurement record** (a measured value that decides nothing): exact.
+
+Accessible-text and announcement lengths are presentation caps (characters
+announced): they round up, and are never below the longest string the app
+ships (a unit test pins it). The former `text cap` kind, which rounded them
+down, is retired (`power-of-two-thresholds` design D12).
+
+Corpus counts (the share of real files that would lose a feature at the power
+of two below) remain the evidence that a presentation cap must not fall; they
+no longer decide whether a cap may be rounded down, because a presentation cap
+never is.
+
+Every integer constant of the production crates has a row in
+`docs/thresholds.md`, and `make check-thresholds` (in `make check-policy`)
+fails on an unlisted constant, a stale row, a value mismatch, an in-scope
+non-power-of-two that is neither derived, an external fact, a measurement
+record nor a recorded exception, a presentation cap whose value is not the
+power of two at or above its recorded former value (or that former value, as
+an exception), and a missing or disagreeing rustdoc `Kind:` line. A new
+threshold therefore lands with its row and its
+`Kind: <kind>; …` line; `scripts/check-threshold-kinds.py --write` adds the
+row for review. Out-of-scope constants (geometry, percentages, priorities,
+codes, time, factors, rates, structural counts, presentation shapes,
+identifiers, tool data) name their class as `out: <class>`. The conversion of
+the constants that predated the rule is done (`power-of-two-thresholds`).
 
 ## Mutable State on GObject Structs
 
