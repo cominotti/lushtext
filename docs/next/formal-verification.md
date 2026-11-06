@@ -2002,13 +2002,90 @@ Shard `core-protected-install` (`protected_install/kani_proofs.rs`):
   fails if production stops rounding, and this fails if the stepper stops
   honouring its rounding argument.
 
-**Not proved by Kani: the whole-plan properties K1–K6, K8 and K9** (progress,
-exact bytes, no slice end inside a scalar or a CRLF, homogeneity, the per-slice
-bounds, `last_of_tail`, the visible/hidden switch at the head's end, and the
-slice-count bound). Written as design D5 asked, over every document of a few
-bytes run through the whole planner, they did not fit CBMC on the reference
+**Proved by one-step induction: the whole-plan properties K1–K6, K8 and K9**
+(`close-protected-install-proof-strength`, 2026-11-06; progress, exact bytes,
+no slice end inside a scalar or a CRLF, homogeneity, the per-slice bounds,
+`last_of_tail`, the visible/hidden switch at the head's end, and the
+slice-count bound). Shards `core-protected-install-step` and
+`core-protected-install-step-visible`, harnesses `step_*` in
+`protected_install/kani_proofs.rs`.
+
+- **Domain** (planner rustdoc, harness docs and the `main-thread-responsiveness`
+  spec say the same): every document of **at most 8 bytes** of whole scalars
+  of `a`, `é`, `€`, `𝄞`, `\r`, `\n` and U+2029 (so `\r\n` too); every fold
+  plan of up to two ranges in strictly increasing paragraph order with
+  `head_chars` 0..=3 (a superset of C2's plans; K8b proves C2's fold of a lone
+  paragraph); tail budgets 4..=7; visible budgets of 1..=8 bytes with 1..=3
+  characters or none; every well-formed cursor over them.
+- **`well_formed(document, ranges, cursor)`** (design D2): the offset is a safe
+  point (a char boundary not between `\r` and `\n`); `paragraph` counts the
+  delimiters wholly before it; the ranges before `next_range` are behind the
+  cursor, or are the folded paragraph being finished in `InTail`/`AtDelimiter`,
+  and the rest ahead of it; `ParagraphStart` is at a paragraph start or the
+  text's end, `InTail` lies in the content of the folded paragraph
+  `ranges[next_range − 1]` at or after its head's end, and `AtDelimiter` is at
+  that paragraph's content end. The `next_range − 1` clauses make a hidden-tail
+  slice provably part of a *folded* paragraph's tail. The predicate reads the
+  text through per-point `u8` tables the harness builds in one pass with its
+  own delimiter scanner, independent of `next_paragraph_break` and
+  `first_delimiter_in`.
+- **The induction.** `step_initial_cursor_is_well_formed`: the initial cursor
+  is well-formed for every document and plan, and a well-formed cursor at the
+  text's end plans nothing (K2's `None`). `step_head_ends_at_the_fold_point`,
+  `step_hidden_tail_slices_are_safe_and_bounded`,
+  `step_hidden_tail_end_continues_into_a_visible_slice` (the planner's
+  `continue` when an `InTail` cursor sits on the delimiter) and
+  `step_visible_slices_hold_whole_unfolded_paragraphs` (from `ParagraphStart`
+  and from `AtDelimiter`): one call of the production `plan_protected_install`
+  from any well-formed cursor with text left returns a slice whose end is safe
+  (K3), which is homogeneous (a head or tail slice holds no delimiter byte and
+  lies in the folded paragraph `ranges[next_range − 1]`; a visible slice ends at
+  a paragraph start or the end and holds no paragraph at or after the next
+  fold: K4), meets its bound (a tail slice `≤ B`, and `≥ B − 3` unless
+  `last_of_tail`; a visible slice within both budgets unless it is exactly one
+  unit, which `PacedSlice::admit` always admits: K5, from which K9 follows),
+  sets `last_of_tail` exactly at the tail's end and leaves the next tail slice
+  at a non-delimiter (K4, K6), ends a head at the `head_chars`-th scalar or the
+  content end (K8), and leaves a well-formed cursor at `slice.end` (K2). Each
+  step advances the offset (K1) except an empty head, which moves the phase
+  from `ParagraphStart` to `InTail`; `(offset, phase rank)` decreases
+  lexicographically, so every plan terminates. Every plan of the domain is a
+  chain of proved steps from offset 0 to the text's end, so the properties
+  hold for every slice of every plan, not for a sample. The covers report every
+  tail rounding (by 1, 2 and 3 bytes), a tail of exactly one budget,
+  `last_of_tail` at a delimiter and at the end, the `continue` path, an empty
+  head, a visible slice cut by the byte budget, by the character budget and
+  before a fold, and a `\r\n` straddling a budget.
+- **Failing first** (a scratch worktree, not committed; `.claude/handoffs/
+  close-protected-install-proof-strength/failing-first-final.log`): with
+  `plan_protected_install` routed through `plan_with(…, unrounded)`, the
+  hidden-tail harness fails on K3 (`self.document.safe[slice.end]`, 111 s);
+  with `visible_slice`'s next-fold stop removed, the visible harness fails on
+  the next-fold clause (`last < fold || (last == fold && ends_at_start)`) and
+  on `well_formed` after the step (277 s). The first, rescanning form of the
+  predicate failed the same way (606 s and 580 s).
+- **Cost and form** (Kani 0.68.0, CBMC 6.11.0, one CBMC at a time under
+  `scripts/with-memory-cap.sh --address-space 16G`, `taskset -c 8-23`, load
+  0.9–1.3): the first form rescanned the text for every symbolic offset
+  (`paragraph_of`, `content_end` loops) and took 80 / 221 / 720 / 607 s and up
+  to 6.2 GiB (initial / head / hidden tail with its `continue` / visible),
+  27 minutes together. The table form, with the hidden-tail step split in two,
+  takes 66 / 110 / 132 / 262 / 335 s (initial / head / tail slice /
+  `continue` / visible) and at most 4.5 GiB, 15.2 minutes together, still over
+  the 15-minute local budget for one shard, so the visible step has a shard of
+  its own. With `u64` tables the same form took 125–399 s and 7.1 GiB.
+- **Domain choice (design D4).** 10 bytes (unwind 12) was tried once per
+  harness and **not adopted**: the initial harness took 167 s / 4.6 GiB, the
+  head 178 s / 5.9 GiB, and the tail slice 241 s / 6.3 GiB, over the 6 GiB
+  per-harness limit; the run was stopped there (`domain-10.log`). The bound is
+  8 bytes.
+- **No counterexample** on the shipped planner; no defect found.
+
+**History: the whole-plan attempt** (`sliced-protected-install`, 2026-11-02).
+Written as C3's design D5 asked, over every document of a few bytes run
+through the whole planner, these properties did not fit CBMC on the reference
 workstation in any domain tried (runs `kani-3` … `kani-7` in
-`.claude/handoffs/c3/`):
+`.claude/handoffs/c3/`); the step harnesses replace them:
 
 | Domain | Fold in front of the planner | Result |
 |---|---|---|
@@ -2018,28 +2095,17 @@ workstation in any domain tried (runs `kani-3` … `kani-7` in
 | documents ≤ 4 bytes, unwind 6 | any well-formed plan | K1 fails its unwinding assertion (more slices than the bound), 389 s |
 | giant paragraph ≤ 6 bytes, unwind 10 | its fold built directly | K8 out of memory (16 GiB), 635 s |
 
-These properties are **tested, not proved**: the property tests
-(`tests/properties/protected_install.rs`: many paragraphs of every delimiter
-and scalar length, C2's fold plans at small thresholds, small and production
-budgets, and multi-megabyte tails) assert them on generated inputs, which
-samples the domain and covers none of it exhaustively. What they assert, per
-property: K1 progress and termination; K2 exact bytes; K3 no slice end inside
-a scalar or a CRLF; K4 homogeneity and `last_of_tail`; K5 both halves (a hidden
-slice within `tail_slice_bytes` and, but for a tail's last, at least
-`tail_slice_bytes − 3`; a visible slice within the byte and character budget,
-or one whole unfolded paragraph of at most `N_visible` characters — this
-visible half was added after review, 2026-11-02); K6 consecutive tail slices;
-K8 the head ending exactly at the fold point and every tail byte hidden, plus
-`head_chars + tail_chars` equal to the paragraph's characters (also added after
-review); K9 the slice count with `step = B − 3`. Not asserted by them: K8's
-"the head holds exactly `N_visible` characters", because C2's density rule may
-shorten a head on a dense document; K8b proves C2's fold of a lone paragraph,
-where that rule does not bind. The widget tests' byte-identity checks cover the
-executor over every fixture shape. An earlier version of this paragraph said
-every property was asserted on every input; it overstated the coverage, which
-the review of PR #77 caught. Deferred (inventory below): one-step harnesses over
-a symbolic cursor, which the per-slice properties' locality (design D5) would
-make sufficient.
+The property tests (`tests/properties/protected_install.rs`: many paragraphs
+of every delimiter and scalar length, C2's fold plans at small thresholds,
+small and production budgets, and multi-megabyte tails) still assert every
+property beyond the Kani domain: K1 progress and termination; K2 exact bytes;
+K3; K4 and `last_of_tail`; both halves of K5; K6; K8 with every tail byte
+hidden and `head_chars + tail_chars` equal to the paragraph's characters; K9
+with `step = B − 3`. K8's "the head holds exactly `N_visible` characters" is
+not asserted there, because C2's density rule may shorten a head on a dense
+document; K8b proves C2's fold of a lone paragraph, where that rule does not
+bind. The widget tests' byte-identity checks cover the executor over every
+fixture shape.
 
 **K9's bound, failing first (task 3.6).** The naive `⌈len / B⌉ + 1` cannot hold
 for any planner that keeps slices within `B` and on scalar boundaries: a tail
@@ -2058,12 +2124,14 @@ property tests, not Kani; deferred with the one-step harnesses.
 
 ## 4. Deferral inventory
 
-- `sliced-protected-install` (C3): the planner's whole-plan properties
-  K1–K6, K8 and K9 are property-tested, not Kani-proved (CBMC out of memory or
-  over 20 minutes in every domain tried, section "Sliced protected install"
-  above). Follow-up: one-step harnesses from a symbolic, well-formed
-  `ProtectedInstallCursor` over a few bytes around it. The harness file as
-  written is kept at `.claude/handoffs/c3/kani_proofs-whole-plan-harnesses.rs`.
+- ~~`sliced-protected-install` (C3): the planner's whole-plan properties
+  K1–K6, K8 and K9 are property-tested, not Kani-proved.~~ **Closed
+  2026-11-06** by `close-protected-install-proof-strength`: one-step harnesses
+  over a symbolic, well-formed `ProtectedInstallCursor` prove them for every
+  plan of the 8-byte document domain (section "Sliced protected install"
+  above); proof strength (C3 task 3.11) measured with them. The whole-plan
+  harness file is kept at
+  `.claude/handoffs/c3/kani_proofs-whole-plan-harnesses.rs` as history.
 - Multi-process safety of the draft journal and the target guard (axiom A6).
   K8 showed two concrete losses when two processes open the same draft over
   one data directory (phase 4, K8); accepted with documentation because a
