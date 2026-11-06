@@ -494,6 +494,14 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/editor_io.rs` | `DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES` | 1,048,576 | cap | power of two |
 | `crates/lushtext-core/src/services/editor_io.rs` | `ROUND_TRIP_CHUNK_BYTES` | 65,536 | cap | power of two |
 
+### `crates/lushtext-core/src/services/editor_io/text_scans/health_avx2.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/services/editor_io/text_scans/health_avx2.rs` | `BLOCK` | 64 | out: structural | AVX2 block layout: two 256-bit vectors of lead positions (D1) |
+| `crates/lushtext-core/src/services/editor_io/text_scans/health_avx2.rs` | `BLOCK_READ` | 66 | out: structural | AVX2 block layout: two 256-bit vectors of lead positions (D1), plus the last lead's two continuation bytes |
+| `crates/lushtext-core/src/services/editor_io/text_scans/health_avx2.rs` | `HALF` | 32 | out: structural | AVX2 block layout: two 256-bit vectors of lead positions (D1) |
+
 ### `crates/lushtext-core/src/services/file_peek.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |

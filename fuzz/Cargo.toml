@@ -9,6 +9,13 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+# Its own workspace root. The repository workspace excludes `fuzz`, but Cargo
+# keeps walking up from an excluded package, so a checkout nested inside
+# another checkout (an agent worktree under `.claude/worktrees/`) resolved the
+# outer repository's workspace and `make fuzz-smoke` failed with "current
+# package believes it's in a workspace when it's not".
+[workspace]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 lushtext-core = { path = "../crates/lushtext-core", features = ["fuzzing"] }
