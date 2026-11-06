@@ -69,3 +69,14 @@
   `openspec validate --strict` are green. `make accessibility-smoke` and
   `make visual-smoke` ran because `docs/end-user-coverage.md` is in the
   accessibility fingerprint.
+
+## Review record (2026-11-05)
+
+- R1: the review's own five-round interleaved rerun of the 1 MB ASCII load
+  gave 0.955 of A (load 0.28–1.35); B4 accepted on the reruns (design R1).
+- R2: `count -> None` is no longer excluded; the new
+  `kernel_is_selected_on_every_cpu_with_avx2_and_popcnt` test kills it (it
+  failed first with the dispatch disabled while the other kernel tests passed
+  by skipping). Three equivalent exclusions remain.
+- R3: the 14 out-of-scope struct-field survivors are left to the maintainer
+  (design R3).

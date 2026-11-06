@@ -1015,7 +1015,9 @@ The full `text_scans/*` table is in `docs/benchmarks/transient-file-load.md`.
   scan from 27.76 to 6.50 ms (4.27×) and its share of `load_text_file` from
   19.3 % to 5.2 % (148.3 → 124.0 ms); the typographic `editor_file_io` loads are
   1.17–1.23× faster, and no ASCII, multibyte, mixed-EOL or long-line figure
-  regressed. Verdict table in `docs/benchmarks/transient-file-load.md`, "AVX2
+  regressed (the 1 MB ASCII load missed 1.03 on its first three-round run by
+  noise, then met it on two independent five-round reruns, 1.006 and 0.955;
+  design R1). Verdict table in `docs/benchmarks/transient-file-load.md`, "AVX2
   file-health kernel".
 
 **Lane result (task 10.4, 2026-10-30): budget missed on both sides, owned by C2

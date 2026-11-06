@@ -172,9 +172,11 @@ aarch64 uses memchr's NEON `memchr3`".
 - **Mutation** (`cargo mutants`): kernel mutants are killed by the lane and
   property tests on AVX2 hosts (CI's x86-64 runners have AVX2). A mutant of the
   availability check (returning `None`) gives results identical to the
-  original by construction, because both paths return the same counts. It is
-  excluded by an `exclude_re` on that one function, with this reason recorded.
-  Two further mutant classes are equivalent by construction and are expected
+  original by construction, because both paths return the same counts, but it
+  silently drops the speed-up, and every kernel test would skip. So it is not
+  excluded: `kernel_is_selected_on_every_cpu_with_avx2_and_popcnt` asserts that
+  `count` returns `Some` exactly when the CPU reports AVX2 and POPCNT, and
+  kills it (review decision R2 below). Two further mutant classes are equivalent by construction and are expected
   to survive: a detection conjunction turned into a disjunction (identical on
   any host that has both features, as every AVX2 host has POPCNT), and a skip
   predicate weakened so that more blocks are confirmed (`&&` to `||` between
@@ -290,7 +292,42 @@ No data or format changes. Rolling back is reverting the commits. If the kernel
 misbehaved in the field, removing the dispatch call (one line) restores the
 fallback.
 
+## Review decisions (stage 4, 2026-11-05)
+
+- **R1. B4's 1 MB ASCII load: accepted on reruns, not on a changed bar.** The
+  implementation's three-round run put B at 1.048 of A, over B4's 3 % limit
+  (inside A's round spread), so read literally the pre-registered bar missed
+  there. The kernel cannot plausibly cause it: the health scan is about 80 µs
+  of that load and 1.42x faster on the same ASCII bytes, and both sides' round
+  medians spread about 25 % (bimodal). Rerunning that one fixture is a
+  deviation from the pre-registered protocol, so it gets independent
+  confirmation instead of one rerun by the same agent: the implementation's
+  five-round rerun gave 1.006, and the review's own five-round interleaved
+  rerun of the same binaries (load 0.28–1.35, before and after every run in
+  `.claude/handoffs/avx2-health-scan-kernel/review/runs-1mb/`) gave
+  **0.955** (A 292.9 µs, B 279.6 µs; health/ascii in the same run 0.690).
+  User experience first: holding back a 1.17–1.23x faster typographic load
+  over measurement noise on a fixture the kernel makes faster would cost users
+  speed for no safety gain. B4 is met. A later kernel verdict should
+  pre-register a rerun rule (for example five rounds for a fixture whose
+  round spread exceeds its limit) so this decision isn't needed again.
+- **R2. The dispatch itself is tested.** Every kernel test skips when `count`
+  returns `None`, so with the `count -> None` mutant excluded nothing failed
+  if the dispatch stopped selecting the kernel: users would just lose the
+  speed-up. `kernel_is_selected_on_every_cpu_with_avx2_and_popcnt` asserts
+  `count` returns `Some` exactly when the CPU reports both features. It failed
+  first with the dispatch disabled (the two other kernel tests still passed,
+  by skipping). The exclusion is removed from `.cargo/mutants.toml`.
+- **R3. Out-of-scope mutation survivors stay out of this change.** cargo-mutants
+  27 ignores `--re` and `--exclude-re` for struct-field-deletion mutants, so
+  every focused run also tests about 40 of them from untouched files; 14
+  survive on `main` as well (`draft_service.rs`, `file_tree.rs`,
+  `editor_io.rs:231`). They aren't a failing gate (mutation CI is disabled,
+  mutation lanes are local), they don't block verifying this change, and none
+  of them touches the health scan. They're left to the maintainer as a
+  separate coverage change.
+
 ## Open Questions
 
-None. NEON is decided as unmeasured (D4), Kani as not meaningful (D5), and the
-bar was fixed before measuring (D6).
+None. NEON is decided as unmeasured (D4), Kani as not meaningful (D5), the
+bar was fixed before measuring (D6), and the review decisions are R1–R3.

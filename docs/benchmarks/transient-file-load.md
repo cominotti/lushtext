@@ -209,8 +209,12 @@ rerun that fixture alone, interleaved, five rounds a side, before deciding the
 bar, under the same protocol (load 0.99–1.43 throughout). A: 246.0, 281.8,
 297.1, 269.7, 293.2 µs, median 281.8; B: 256.0, 289.7, 286.6, 261.8,
 283.5 µs, median 283.5: **1.006 of A**, within 1.03 and within A's spread.
-Over all eight rounds the medians are 275.8 against 283.0 µs (1.026). B4 is
-met.
+Over all eight rounds the medians are 275.8 against 283.0 µs (1.026). The
+review reran it independently with the same binaries, five interleaved rounds a
+side, load 0.28–1.35: A 290.7, 296.8, 265.9, 293.5, 292.9 µs, median 292.9; B
+285.1, 277.6, 246.8, 281.3, 279.6 µs, median 279.6: **0.955 of A**
+(`text_scans/health/ascii_50MiB` in the same run 0.690). B4 is met (design
+R1).
 
 Every bar holds, so the allowlist row landed. The tightest margins are the 1 MB
 ASCII load (noise-bound, above) and the multibyte health scan (0.969 of A
