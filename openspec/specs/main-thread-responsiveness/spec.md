@@ -710,20 +710,20 @@ Ordinary Markdown rerendering SHALL retain at most two detached GTK render gener
 - **AND** no later completion reopens or mutates the closed preview
 
 ### Requirement: Workspace-search event turns count every received event
-The workspace-search GTK consumer SHALL receive and dispatch at most 250 channel events per scheduled turn. Every successfully received `Match`, `Progress`, `ResultCap`, `Error`, and `Done` event MUST consume one unit before variant-specific handling; channel disconnection MAY terminate the turn without consuming an event unit.
+The workspace-search GTK consumer SHALL receive and dispatch at most 256 channel events per scheduled turn (`MAX_SEARCH_EVENTS_PER_TICK`, a per-turn cap that `power-of-two-thresholds` measured at a power of two: a full turn MUST stay within `B_SETTLE_US`). Every successfully received `Match`, `Progress`, `ResultCap`, `Error`, and `Done` event MUST consume one unit before variant-specific handling; channel disconnection MAY terminate the turn without consuming an event unit.
 
 #### Scenario: Progress burst contains no matches
-- **WHEN** more than 250 progress events are ready before one consumer turn
-- **THEN** that turn receives at most 250 events
+- **WHEN** more than 256 progress events are ready before one consumer turn
+- **THEN** that turn receives at most 256 events
 - **AND** remaining events wait for a later scheduled turn
 
 #### Scenario: Mixed event burst reaches the cap
 - **WHEN** match, progress, result-cap, and error events are interleaved in a ready channel
-- **THEN** their combined received count is at most 250 for the turn
+- **THEN** their combined received count is at most 256 for the turn
 - **AND** visible result and diagnostic semantics remain unchanged
 
 #### Scenario: Terminal event is received within budget
-- **WHEN** `Done` is the next event before the turn reaches 250 received events
+- **WHEN** `Done` is the next event before the turn reaches 256 received events
 - **THEN** it consumes one event unit and terminates the active search normally
 - **AND** the latest pending search may proceed through the existing flight contract
 
@@ -742,11 +742,11 @@ For every non-empty sliced delete or insert, the editor-owned replacement sessio
 - **AND** projection suppression, editability, saveability, retained text, and terminal ownership are released exactly once
 
 ### Requirement: Search retirement budgets are release-invariant
-Every destructive step performed by a retired workspace-search generation SHALL consume its per-turn retirement budget in debug and release builds. Correctness-affecting mutations MUST occur outside debug-only assertions, one retirement turn MUST release no more than 250 owned items, and unfinished state MUST remain scheduled until it reaches a terminal empty state without touching the current generation.
+Every destructive step performed by a retired workspace-search generation SHALL consume its per-turn retirement budget in debug and release builds. Correctness-affecting mutations MUST occur outside debug-only assertions, one retirement turn MUST release no more than 256 owned items (`SEARCH_RETIREMENT_ROWS_PER_SLICE`, measured like the event cap), and unfinished state MUST remain scheduled until it reaches a terminal empty state without touching the current generation.
 
 #### Scenario: One release-profile turn retires a large generation
-- **WHEN** a retired generation owns more than 250 unique file rows, file groups, match rows, cached rows, and shared accepted-result references
-- **THEN** one retirement turn removes at most 250 actual owned items in a release build
+- **WHEN** a retired generation owns more than 256 unique file rows, file groups, match rows, cached rows, and shared accepted-result references
+- **THEN** one retirement turn removes at most 256 actual owned items in a release build
 - **AND** the remaining retired state stays pending for a later turn
 
 #### Scenario: Repeated retirement turns finish
@@ -1275,13 +1275,14 @@ While a load installation or a whole-buffer replacement owns an editor's buffer,
 The sliced protected install SHALL take its slices from one GTK-free, I/O-free planner, and Kani harnesses SHALL check that production planner, C1's paragraph-boundary function and C2's fold placement step directly, never a copy. Each hidden-tail slice SHALL end at the previous slice's end plus `tail_slice_bytes`, or at the tail end if that is nearer, rounded down to the nearest boundary that is a char boundary and not between `\r` and `\n`; `tail_slice_bytes` SHALL be at least 4, so every slice advances. The tail and clear slice budgets SHALL be derived from B_settle and the measured per-KiB costs by one pure, integer-only function. The harnesses SHALL apply only when the adoption gate adopted this change, and only for the adopted half.
 
 The proofs hold on these domains, which the harnesses and the planner's rustdoc SHALL state:
-- the **document domain**: every valid UTF-8 string of at most 10 bytes over `a`, `é`, `€`, `𝄞`, `\r`, `\n` and U+2029, a tail slice budget and a clear slice budget of 4 to 7 bytes, `N_visible` of 1 to 3 characters, and small symbolic density parameters within the fold placement step's preconditions;
-- the **giant-paragraph domain**: one paragraph whose content is at most 12 bytes of `a`, `é`, `€` and `𝄞`, ending with no delimiter, `\n`, `\r`, `\r\n` or U+2029, with the same budgets and `N_visible`, and density parameters under which the density rule does not shorten a first paragraph's head;
+- the **document domain**: every string of at most 8 bytes made of whole scalars from `a`, `é`, `€`, `𝄞`, `\r`, `\n` and U+2029; every fold plan of at most two ranges in strictly increasing paragraph order with a head of 0 to 3 characters (a superset of the plans C2's fold placement step makes); a tail slice budget of 4 to 7 bytes; a visible byte budget of 1 to 8 bytes with no character budget or one of 1 to 3; and, for the planner's step harnesses, every well-formed cursor over such a document and plan. The bound is 8 bytes because it is what was measured to fit. If the implementation measures 10 bytes within the shard budget, the bound becomes 10 and this text, the harnesses and the rustdoc change together;
+- the **giant-paragraph domain**: one paragraph of the document domain whose content holds no delimiter, folded with a head of 1 to 3 characters; for C2's fold of one paragraph, every `u64` length with density parameters under which the density rule does not shorten a first paragraph's head; for the `should_panic` rounding-guard harness, one undelimited 12-byte paragraph of one 2-, 3- or 4-byte scalar;
+- the **clear-plan domain**: at most four recorded ranges of 0 to 15 bytes each and a clear slice budget of 4 to 7 bytes;
 - every `u64` input of the budget derivation.
 
 Larger sizes SHALL be covered by property tests of the same assertions, and no rustdoc or spec text SHALL claim the Kani result beyond these domains.
 
-**As implemented (2026-11-02):** Kani proves the clear plan, C2's fold of one paragraph of any `u64` length, the budget derivation's freedom from panics and its admissibility, and the `should_panic` rounding-guard harness. The whole-plan scenarios below ("The slices reproduce the exact bytes", "No boundary splits a scalar or a CRLF pair", the planner half of "Every slice fits the budget derived from B_settle", the boundary half of "Boundaries and the clear plan are placed exactly", "The tag boundary falls exactly at N_visible" and "The slice count of one giant paragraph is bounded") did not fit CBMC at any domain tried and are checked by property tests on generated inputs instead, which sample those domains rather than cover them; the derivation's fit and optimality are property-tested too. This is a recorded deferral (`docs/next/formal-verification.md`), not a proof.
+**As implemented:** Kani proves the clear plan; C2's fold of one paragraph of any `u64` length; the budget derivation's freedom from panics and its admissibility; the `should_panic` rounding-guard harness; and, by one-step induction, every whole-plan scenario below over the document domain. The induction has two parts. A harness proves the initial cursor well-formed. The step harnesses prove that one call of the production planner from any well-formed cursor, in each of its hidden-tail, head and visible steps, returns a slice that satisfies every per-slice property (a safe end, homogeneity, the hidden and visible bounds, the head ending at the fold point, `last_of_tail` exactly at a tail end) and leaves a well-formed cursor at that slice's end, with progress measured by the offset and then the phase. Hence every plan of the domain terminates, its slices concatenate to the input, and every slice of it has those properties; the slice-count bound follows from the `B − 3` lower bound on every tail slice but the last. The derivation's fit and optimality stay property-tested (128-bit arithmetic over a symbolic divisor did not finish in CBMC), and the whole-plan properties at production sizes are property-tested beyond the domain. The whole-plan harnesses that run a plan to completion did not fit CBMC at any domain tried (2026-11-02, `docs/next/formal-verification.md`); the step harnesses replace them.
 
 #### Scenario: The slices reproduce the exact bytes
 - **WHEN** Kani plans any input of the document domain

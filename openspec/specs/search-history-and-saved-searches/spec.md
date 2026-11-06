@@ -4,7 +4,7 @@
 TBD - created by archiving change data-home-persistence-contracts. Update Purpose after archive.
 ## Requirements
 ### Requirement: Successful searches persist bounded recent-history entries
-The system SHALL persist recent search history to `$XDG_DATA_HOME/lushtext/search-history.json`. Recent history MUST store only non-empty successful searches, MUST deduplicate identical query-state entries by moving them to the front, and MUST retain at most 20 entries.
+The system SHALL persist recent search history to `$XDG_DATA_HOME/lushtext/search-history.json`. Recent history MUST store only non-empty successful searches, MUST deduplicate identical query-state entries by moving them to the front, and MUST retain at most 32 entries (a retention tier rounded up to a power of two, so that no stored entry is dropped on upgrade).
 
 #### Scenario: Successful search adds a recent-history entry
 - **WHEN** a non-empty search completes successfully with one or more results
@@ -72,3 +72,4 @@ The system SHALL treat missing `search-history.json` and missing `saved-searches
 - **THEN** the affected saved-search metadata is preserved or left untouched when preservation fails
 - **AND** the saved-search list may start empty only after replacement is safe
 - **AND** the user receives grouped recovery feedback rather than silent loss
+

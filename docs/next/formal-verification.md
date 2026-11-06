@@ -2014,7 +2014,10 @@ Shard `core-protected-install` (`protected_install/kani_proofs.rs`):
   honouring its rounding argument.
 
 **Proved by one-step induction: the whole-plan properties K1–K6, K8 and K9**
-(`close-protected-install-proof-strength`, 2026-11-06; progress, exact bytes,
+(`close-protected-install-proof-strength`, 2026-11-06, merged as PR #86,
+`main` `55966a83`, and archived 2026-11-06,
+`openspec/changes/archive/2026-11-06-close-protected-install-proof-strength/`;
+progress, exact bytes,
 no slice end inside a scalar or a CRLF, homogeneity, the per-slice bounds,
 `last_of_tail`, the visible/hidden switch at the head's end, and the
 slice-count bound). Shards `core-protected-install-step` and
@@ -2281,7 +2284,8 @@ four harnesses (load 0.74 before, 3.34 after; a pass/fail run, not a figure).
 
 - ~~`sliced-protected-install` (C3): the planner's whole-plan properties
   K1–K6, K8 and K9 are property-tested, not Kani-proved.~~ **Closed
-  2026-11-06** by `close-protected-install-proof-strength`: one-step harnesses
+  2026-11-06** by `close-protected-install-proof-strength` (PR #86, `main`
+  `55966a83`, archived 2026-11-06): one-step harnesses
   over a symbolic, well-formed `ProtectedInstallCursor` prove them for every
   plan of the 8-byte document domain (section "Sliced protected install"
   above); proof strength (C3 task 3.11) measured with them. The whole-plan

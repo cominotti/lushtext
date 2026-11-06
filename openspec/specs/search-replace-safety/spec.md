@@ -87,7 +87,7 @@ The system SHALL coordinate Replace All writes and undo restores through the sam
 - **AND** it does not restore stale bytes over an in-flight write
 
 ### Requirement: Replace All enforces file and undo memory caps
-The system SHALL bound Replace All memory exposure with explicit service-level caps. A single target file larger than `10 * 1024 * 1024` bytes MUST be skipped and reported. The total persisted undo payload for one Replace All run MUST NOT exceed `64 * 1024 * 1024` bytes; files that would exceed that cap MUST be skipped and reported before they are modified.
+The system SHALL bound Replace All memory exposure with explicit service-level caps. A single target file larger than `16 * 1024 * 1024` bytes (16 MiB, a presentation cap rounded up from 10 MiB by `power-of-two-thresholds`: it decides which files a bulk action processes) MUST be skipped and reported, and the report MUST name the cap in IEC units. The total persisted undo payload for one Replace All run MUST NOT exceed `64 * 1024 * 1024` bytes; files that would exceed that cap MUST be skipped and reported before they are modified.
 
 #### Scenario: Oversized replace target is skipped
 - **WHEN** Replace All includes a matching file larger than the per-file replace cap
@@ -194,7 +194,7 @@ The project SHALL add deterministic service, integration, smoke, and property or
 - **THEN** the smoke artifacts record whether the journal was active, cleaned, quarantined, or skipped
 
 ### Requirement: Replace Preview enforces row and byte budgets
-The system SHALL generate Replace Preview through explicit service-level limits of at most 10,000 generated rows and `64 * 1024 * 1024` conservatively charged preview bytes. The generator MUST use saturating accounting, MUST admit only complete preview rows, and MUST return a typed outcome that distinguishes generated, omitted-eligible, source-truncated, and otherwise invalid matches.
+The system SHALL generate Replace Preview through explicit service-level limits of at most 16,384 generated rows (a presentation cap rounded up from 10,000 by `power-of-two-thresholds`) and `64 * 1024 * 1024` conservatively charged preview bytes. The generator MUST use saturating accounting, MUST admit only complete preview rows, and MUST return a typed outcome that distinguishes generated, omitted-eligible, source-truncated, and otherwise invalid matches.
 
 #### Scenario: Preview remains within both limits
 - **WHEN** all eligible search matches fit within the row and byte budgets
@@ -294,10 +294,10 @@ The Replace Preview UI SHALL expose generated, checked, omitted, and skipped sta
 - **AND** controls and omission feedback do not scroll away with result items
 
 ### Requirement: Replace Preview resource policy has layered coverage
-The project SHALL add pure service, property, widget, accessibility, visual-geometry, and scale tests for zero matches, representative literal and regex matches, exactly-at-limit inputs, 10,000 matches, large replacement text, stale generations, awkward paths, Unicode, and constrained layouts.
+The project SHALL add pure service, property, widget, accessibility, visual-geometry, and scale tests for zero matches, representative literal and regex matches, exactly-at-limit inputs, 16,384 matches (the result cap, a presentation cap rounded up from 10,000), large replacement text, stale generations, awkward paths, Unicode, and constrained layouts.
 
 #### Scenario: Scale fixture avoids quadratic row binding
-- **WHEN** a performance fixture binds and toggles rows in a 10,000-match preview
+- **WHEN** a performance fixture binds and toggles rows in a 16,384-match preview
 - **THEN** identity resolution remains constant-time per row
 - **AND** the fixture detects a regression to full-preview scans
 

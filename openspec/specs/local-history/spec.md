@@ -154,14 +154,14 @@ The system SHALL key local history by a stable saved-document identity derived f
 - **AND** the previous path’s local-history snapshots are not merged into the new path automatically
 
 ### Requirement: Local history respects large-file safety policy
-The system SHALL apply LushText’s existing large-file safety thresholds to local history. For files above 10 MB and at or below 50 MB, the system MUST limit history capture to save-boundary snapshots. For files above 50 MB, the system MUST make local history unavailable and MUST not capture or preview historical snapshots for that document.
+The system SHALL apply LushText’s existing large-file safety thresholds to local history. The save-only tier is a presentation cap rounded up from 10,000,000 bytes by `power-of-two-thresholds` (design D12); if its measurement fails, it stays 10,000,000 bytes and this requirement names that value. For files above 16 MiB and at or below 64 MiB, the system MUST limit history capture to save-boundary snapshots. For files above 64 MiB, the system MUST make local history unavailable and MUST not capture or preview historical snapshots for that document.
 
 #### Scenario: Reduced history capture for very large but still openable files
-- **WHEN** the active saved document is larger than 10 MB and not larger than 50 MB
+- **WHEN** the active saved document is larger than 16 MiB and not larger than 64 MiB
 - **THEN** the system limits local-history capture to save-boundary snapshots
 
 #### Scenario: Local history unavailable for huge files
-- **WHEN** the active saved document is larger than 50 MB
+- **WHEN** the active saved document is larger than 64 MiB
 - **THEN** the system does not offer local-history browsing for that document
 - **AND** the system does not create new local-history snapshots for that document
 
@@ -187,15 +187,15 @@ The system SHALL persist each local-history lineage `index.json` as a supported 
 - **AND** it loads the selected snapshot body from the separate text file
 
 ### Requirement: Local-history retention stays bounded across documents
-The system SHALL keep local-history retention bounded by trimming the oldest stored snapshots after newer ones are recorded. The shipped retention policy MUST keep at most 48 snapshots for one document lineage and at most 240 snapshots across the whole app-data history store.
+The system SHALL keep local-history retention bounded by trimming the oldest stored snapshots after newer ones are recorded. The shipped retention policy MUST keep at most 64 snapshots for one document lineage and at most 256 snapshots across the whole app-data history store. Both are retention tiers rounded up to a power of two, so an upgrade from the former 48 and 240 trims no stored snapshot.
 
 #### Scenario: One document lineage trims its oldest snapshots after the per-document cap
-- **WHEN** a document's local-history lineage grows beyond 48 stored snapshots
+- **WHEN** a document's local-history lineage grows beyond 64 stored snapshots
 - **THEN** the oldest snapshots in that lineage are removed
 - **AND** the newest snapshots remain available for browsing and restore
 
 #### Scenario: Global retention trims the oldest snapshots across all lineages
-- **WHEN** the total number of stored local-history snapshots across the app exceeds 240
+- **WHEN** the total number of stored local-history snapshots across the app exceeds 256
 - **THEN** the oldest stored snapshots across all lineages are trimmed
 - **AND** newer snapshots remain available across the retained lineages
 
@@ -229,7 +229,7 @@ The system SHALL present local-history snapshot entries through an `AdwSidebar` 
 - **AND** the restore action remains available
 
 #### Scenario: Huge files still cannot open local-history browsing
-- **WHEN** the active saved document is larger than 50 MB
+- **WHEN** the active saved document is larger than 64 MiB
 - **THEN** the system does not offer the Local History browser
 - **AND** the Adwaita sidebar rail is not shown as a bypass around the large-file policy
 
@@ -324,15 +324,15 @@ The project SHALL add deterministic service, integration, widget, property or fu
 - **THEN** it records reconciliation timing and confirms startup remains within the documented budget
 
 ### Requirement: Periodic local-history capture uses live buffer policy
-The system SHALL classify periodic local-history capture from the current editor buffer rather than only the backing file's last known size. Current buffers conservatively above 10 MiB MUST use save-boundary-only history, buffers above 50 MiB MUST remain unavailable for history, and eligible smaller buffers MUST use the shared direct-or-chunked snapshot policy.
+The system SHALL classify periodic local-history capture from the current editor buffer rather than only the backing file's last known size. Current buffers conservatively above 16 MiB MUST use save-boundary-only history, buffers above 64 MiB MUST remain unavailable for history, and eligible smaller buffers MUST use the shared direct-or-chunked snapshot policy.
 
 #### Scenario: Originally small document grows above 10 MiB
-- **WHEN** a file loaded below the full-history threshold grows conservatively above 10 MiB while modified
+- **WHEN** a file loaded below the full-history threshold grows conservatively above 16 MiB while modified
 - **THEN** the periodic timer skips full-buffer capture
 - **AND** successful save-boundary capture remains the next eligible automatic history point
 
 #### Scenario: Live buffer grows above 50 MiB
-- **WHEN** a modified file-backed editor's current buffer grows conservatively above 50 MiB
+- **WHEN** a modified file-backed editor's current buffer grows conservatively above 64 MiB
 - **THEN** local-history capture becomes unavailable for that live state
 - **AND** the periodic callback does not copy or persist the buffer
 

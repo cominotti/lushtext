@@ -481,8 +481,8 @@ The project SHALL maintain deterministic pure, policy, GTK/widget, responsivenes
 - **AND** only the newest current generation reaches its exact rendered or limited terminal state
 
 #### Scenario: Mixed search events exceed one turn
-- **WHEN** a deterministic channel fixture makes more than 250 mixed event variants ready
-- **THEN** each GTK consumer turn records no more than 250 received events
+- **WHEN** a deterministic channel fixture makes more than 256 mixed event variants ready
+- **THEN** each GTK consumer turn records no more than 256 received events
 - **AND** all events eventually reach the same visible terminal semantics
 
 #### Scenario: First sliced mutation reenters replacement
@@ -499,8 +499,8 @@ The project SHALL maintain deterministic pure, policy, GTK/widget, responsivenes
 The project SHALL retain deterministic direct evidence for every release, failure-path, ownership, ingestion, and working-set boundary closed by this change. Tests MUST assert actual container deltas, retained ownership, retry state, high-water values, GTK progress, and user-visible terminal behavior rather than relying only on self-reported counters or elapsed-time thresholds.
 
 #### Scenario: Search retirement runs without debug assertions
-- **WHEN** a focused release-semantic widget or proof scenario retires more than 250 items in each relevant ownership category
-- **THEN** actual before-and-after ownership proves each turn releases between one and 250 items and eventually drains
+- **WHEN** a focused release-semantic widget or proof scenario retires more than 256 items in each relevant ownership category
+- **THEN** actual before-and-after ownership proves each turn releases between one and 256 items and eventually drains
 - **AND** current-generation isolation and detached-generation bounds remain green
 
 #### Scenario: Large snapshots and Local History restore run

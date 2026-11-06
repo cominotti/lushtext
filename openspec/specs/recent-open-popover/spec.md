@@ -2,7 +2,6 @@
 
 ## Purpose
 Define the GNOME Text Editor-style Open header control, recent-document popover, recent-history behavior, keyboard and accessibility contract, ten-row viewport sizing, and verification expectations.
-
 ## Requirements
 ### Requirement: Header Open Control Matches GNOME Text Editor
 The system SHALL replace the direct header Open button with a GNOME Text Editor-style Open menu button. In wide layouts, the button MUST render a flat `Open` label with a down chevron. In constrained layouts where the text form cannot fit comfortably, the button MUST render a flat folder icon while preserving the same popover behavior and accessibility meaning.
@@ -234,7 +233,7 @@ The system SHALL rank non-empty Recent Open queries through case-insensitive Pre
 - **AND** it is not ranked only from its weaker title match
 
 ### Requirement: Recent ranking remains deterministic and bounded
-The system SHALL preserve newest-first results for an empty trimmed query, the 200-entry recent-history cap, open-tab exclusion, and no-result behavior. Equal non-empty ranks MUST sort by descending last-opened timestamp and then ascending path so repeated searches return stable ordering.
+The system SHALL preserve newest-first results for an empty trimmed query, the 256-entry recent-history cap (a retention tier rounded up from 200 by `power-of-two-thresholds`, so no stored entry is dropped on upgrade), open-tab exclusion, and no-result behavior. Equal non-empty ranks MUST sort by descending last-opened timestamp and then ascending path so repeated searches return stable ordering.
 
 #### Scenario: Empty query stays newest-first
 - **WHEN** the Open popover query is empty or whitespace-only
@@ -431,3 +430,4 @@ Recent-document loading SHALL use the filesystem boundary's bounded byte reader 
 - **WHEN** the file is missing or bounded input is invalid JSON
 - **THEN** the established missing-file and corruption-recovery behavior remains unchanged
 - **AND** no raw filesystem read bypass is introduced
+
