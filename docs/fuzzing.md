@@ -94,6 +94,13 @@ make fuzz-smoke FUZZ_SMOKE_RUNS=256 FUZZ_SMOKE_SECONDS=15 FUZZ_SMOKE_MAX_LEN=819
 running each target. That lets libFuzzer discover and save new inputs during the
 run without dirtying the checkout.
 
+`fuzz/Cargo.toml` declares its own empty `[workspace]`. The repository
+workspace excludes `fuzz`, but Cargo keeps searching parent directories from an
+excluded package, so in a checkout nested inside another one (an agent worktree
+under `.claude/worktrees/`) the fuzz build resolved the outer checkout's
+workspace and failed with "current package believes it's in a workspace when
+it's not".
+
 `make fuzz-operation-smoke` runs only the structured operation target. The
 operation script decoder caps raw input length at 4096 bytes, operation count at
 32 operations, generated text at 256 bytes, path suffixes at 64 bytes, and
