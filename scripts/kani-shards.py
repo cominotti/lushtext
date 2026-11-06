@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -60,6 +61,11 @@ PACKAGES = {
 # openspec/changes/harden-kani-lane-and-draft-token): split, then tune the
 # solver, and only as a last resort reduce a proof bound.
 MAX_SHARD_MINUTES = 25.0
+# A `measured_in` that marks a developer-machine figure, and the owner such a
+# record must name (`pending_problem`).
+OPENSPEC_CHANGES = REPO_ROOT / "openspec/changes"
+PENDING_MARK_RE = re.compile(r"PENDING DISPATCH|provisional", re.I)
+PENDING_OWNER_RE = re.compile(r"PENDING DISPATCH \(owed by ([a-z0-9][a-z0-9-]*)\)")
 MAX_SHARD_PEAK_GIB = 12.0
 MAX_PULL_REQUEST_SHARD_MINUTES = 15.0
 GATES = ("pull-request", "scheduled")
@@ -143,11 +149,15 @@ PROOF_STRENGTH_RAISED_IN = "; raised by runs 38087161968, 38088387193 (max of th
 # measure them. core-document-scale's runs predate the join rewrite of
 # c2e33d74 (same harnesses, 5.6 local minutes before and after).
 DOCUMENT_SCALE_MEASURED_IN = "runs 39440638502, 39446126819 (max of the two)"
+# Every record below that still holds a developer-machine figure is owed, by
+# name, by the open change that will replace it with two dispatched runs
+# (`pending_problem`); the changes that added them are archived.
+PENDING_OWNER = "PENDING DISPATCH (owed by close-protected-install-proof-strength)"
 # bound-post-open-settle (C6) added the paced slice and restyle shard.
 # PROVISIONAL: a local estimate until two dispatched kani.yml runs measure it
 # (replace these figures and this note with their run ids).
 POST_OPEN_SETTLE_MEASURED_IN = (
-    "provisional: local make kani 10.6 min / 1.69 GiB (2026-10-30), pending two dispatched runs"
+    PENDING_OWNER + ": local make kani 10.6 min / 1.69 GiB (2026-10-30), pending two dispatched runs"
 )
 # long-line-protected-view (C2) added core-protected-fold, core-protected-fold-shape
 # and core-protected-fold-mapping. PENDING DISPATCH:
@@ -162,7 +172,7 @@ PROTECTED_FOLD_SHAPE_PEAK_GIB = 1.6
 PROTECTED_FOLD_MAPPING_MINUTES = 6.0
 PROTECTED_FOLD_MAPPING_PEAK_GIB = 1.6
 PROTECTED_FOLD_MEASURED_IN = (
-    "PENDING DISPATCH: local make kani KANI_MEASURE runs on the reference workstation, 2026-10-30 "
+    PENDING_OWNER + ": local make kani KANI_MEASURE runs on the reference workstation, 2026-10-30 "
     "(Kani 0.68.0; core-protected-fold 6.88 min / 1.45 GiB; the two scheduled shards from one "
     "17.28-min / 1.51 GiB run of their union, split by per-harness time plus about one minute of "
     "compilation), not runner measurements"
@@ -175,7 +185,7 @@ PROTECTED_VIEW_PEAK_GIB = 3.4
 PROTECTED_VIEW_NAVIGATION_MINUTES = 13.3
 PROTECTED_VIEW_NAVIGATION_PEAK_GIB = 1.5
 PROTECTED_VIEW_MEASURED_IN = (
-    "PENDING DISPATCH: local make kani KANI_MEASURE runs on the reference workstation, 2026-10-31 "
+    PENDING_OWNER + ": local make kani KANI_MEASURE runs on the reference workstation, 2026-10-31 "
     "(Kani 0.68.0; core-protected-view 1.09 min / 3.34 GiB; core-protected-view-navigation "
     "13.26 min / 1.41 GiB), not runner measurements"
 )
@@ -185,7 +195,7 @@ PROTECTED_VIEW_MEASURED_IN = (
 PROTECTED_INSTALL_MINUTES = 4.6
 PROTECTED_INSTALL_PEAK_GIB = 8.0
 PROTECTED_INSTALL_MEASURED_IN = (
-    "PENDING DISPATCH: local make kani KANI_MEASURE run on the reference workstation, 2026-11-02 "
+    PENDING_OWNER + ": local make kani KANI_MEASURE run on the reference workstation, 2026-11-02 "
     "(Kani 0.68.0; core-protected-install 4.54 min / 7.94 GiB), not runner measurements"
 )
 # spawn-completion-priority's review fix added the two settle-evidence
@@ -194,7 +204,7 @@ PROTECTED_INSTALL_MEASURED_IN = (
 # ratio (+4.1 min, the two harnesses' 279 s) until a dispatched run replaces it.
 SETTLE_EVIDENCE_MINUTES = 11.7
 SETTLE_EVIDENCE_MEASURED_IN = (
-    "; PENDING DISPATCH: local make kani KANI_MEASURE run on the reference workstation, 2026-11-03 "
+    "; " + PENDING_OWNER + ": local make kani KANI_MEASURE run on the reference workstation, 2026-11-03 "
     "(Kani 0.68.0; widgets-slice-loop-requests 9.8 min / 1.64 GiB with the settle-evidence harnesses)"
 )
 SHARDS: dict[str, Shard] = {
@@ -1106,8 +1116,37 @@ def harness_tree_problems(root: Path = REPO_ROOT) -> list[str]:
     return problems
 
 
-def budget_problems(shards: dict[str, Shard]) -> list[str]:
-    """Every shard has a runner measurement inside the margins for its gate."""
+def pending_problem(shard_name: str, measured_in: str, changes_dir: Path) -> str | None:
+    """A record that still holds a local figure names the active change that
+    owes its dispatch (close-protected-install-proof-strength, design D7).
+
+    The table must hold some figure before a branch can push and dispatch
+    kani.yml, so a local figure is allowed while it is pending. A written
+    obligation alone did not hold (long-line-protected-view's record said it
+    "must not merge on it" and merged), so the owner is checked: once the
+    owning change is archived, or if it never existed, the record fails, and
+    the commit that archives a change still owing a figure fails its hook.
+    """
+    if not PENDING_MARK_RE.search(measured_in):
+        return None
+    owner = PENDING_OWNER_RE.search(measured_in)
+    if owner is None:
+        return (
+            f"shard {shard_name} holds a local figure without an owner; write "
+            "'PENDING DISPATCH (owed by <active openspec change>)' or record two dispatched runs"
+        )
+    change = owner.group(1)
+    if change == "archive" or not (changes_dir / change).is_dir():
+        return (
+            f"shard {shard_name} is still pending dispatch, owed by {change}, which is not an "
+            f"active change under {changes_dir.name}/; record two dispatched kani.yml runs"
+        )
+    return None
+
+
+def budget_problems(shards: dict[str, Shard], changes_dir: Path = OPENSPEC_CHANGES) -> list[str]:
+    """Every shard has a runner measurement inside the margins for its gate,
+    and a local figure is owed by an active change."""
     problems = []
     for shard_name, shard in shards.items():
         if shard.gate not in GATES:
@@ -1118,6 +1157,8 @@ def budget_problems(shards: dict[str, Shard]) -> list[str]:
                 "(ci_minutes, ci_peak_gib, measured_in); dispatch kani.yml and record it"
             )
             continue
+        if problem := pending_problem(shard_name, shard.measured_in, changes_dir):
+            problems.append(problem)
         if shard.ci_minutes > MAX_SHARD_MINUTES:
             problems.append(
                 f"shard {shard_name} takes {shard.ci_minutes} min on the runner, over the "
@@ -1359,6 +1400,26 @@ def self_test() -> None:
     }
     for label, shard in cases.items():
         assert budget_problems({label: shard}), f"budget self-test {label} should fail"
+
+    # A local figure: pending with no owner fails, owed by an archived or an
+    # absent change fails, owed by an active change passes.
+    with tempfile.TemporaryDirectory() as temporary:
+        changes = Path(temporary)
+        (changes / "open-change").mkdir()
+        (changes / "archive/2026-01-01-done-change").mkdir(parents=True)
+        pending = {
+            "no-owner": "PENDING DISPATCH: local make kani run",
+            "provisional": "provisional: local make kani 10.6 min",
+            "archived": "PENDING DISPATCH (owed by done-change): local run",
+            "absent": "PENDING DISPATCH (owed by never-created): local run",
+            "archive-dir": "PENDING DISPATCH (owed by archive): local run",
+        }
+        for label, measured_in in pending.items():
+            assert budget_problems({label: replace(good, measured_in=measured_in)}, changes), (
+                f"pending self-test {label} should fail"
+            )
+        owed = replace(good, measured_in="run 1; PENDING DISPATCH (owed by open-change): local run")
+        assert budget_problems({"owed": owed}, changes) == [], budget_problems({"owed": owed}, changes)
 
     oracle_self_test()
 
