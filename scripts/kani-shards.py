@@ -149,72 +149,20 @@ PROOF_STRENGTH_RAISED_IN = "; raised by runs 38087161968, 38088387193 (max of th
 # measure them. core-document-scale's runs predate the join rewrite of
 # c2e33d74 (same harnesses, 5.6 local minutes before and after).
 DOCUMENT_SCALE_MEASURED_IN = "runs 39440638502, 39446126819 (max of the two)"
-# Every record below that still holds a developer-machine figure is owed, by
-# name, by the open change that will replace it with two dispatched runs
-# (`pending_problem`); the changes that added them are archived.
-PENDING_OWNER = "PENDING DISPATCH (owed by close-protected-install-proof-strength)"
-# bound-post-open-settle (C6) added the paced slice and restyle shard.
-# PROVISIONAL: a local estimate until two dispatched kani.yml runs measure it
-# (replace these figures and this note with their run ids).
-POST_OPEN_SETTLE_MEASURED_IN = (
-    PENDING_OWNER + ": local make kani 10.6 min / 1.69 GiB (2026-10-30), pending two dispatched runs"
-)
-# long-line-protected-view (C2) added core-protected-fold, core-protected-fold-shape
-# and core-protected-fold-mapping. PENDING DISPATCH:
-# these figures are a LOCAL `make kani KANI_MEASURE` run on the reference
-# workstation, recorded so the table stays complete until two dispatched
-# kani.yml runs replace them (task 2.8); developer timing is not a runner
-# measurement, and the change must not merge on it.
-PROTECTED_FOLD_MINUTES = 6.9
-PROTECTED_FOLD_PEAK_GIB = 1.5
-PROTECTED_FOLD_SHAPE_MINUTES = 13.0
-PROTECTED_FOLD_SHAPE_PEAK_GIB = 1.6
-PROTECTED_FOLD_MAPPING_MINUTES = 6.0
-PROTECTED_FOLD_MAPPING_PEAK_GIB = 1.6
-PROTECTED_FOLD_MEASURED_IN = (
-    PENDING_OWNER + ": local make kani KANI_MEASURE runs on the reference workstation, 2026-10-30 "
-    "(Kani 0.68.0; core-protected-fold 6.88 min / 1.45 GiB; the two scheduled shards from one "
-    "17.28-min / 1.51 GiB run of their union, split by per-harness time plus about one minute of "
-    "compilation), not runner measurements"
-)
-# long-line-protected-view (C2), the Protected View policy's harnesses H3-H4x.
-# H4n (navigation) has its own shard: it alone takes about 13 minutes. H4 (the
-# inspector tiling) is a property test, not a harness (design D12).
-PROTECTED_VIEW_MINUTES = 1.1
-PROTECTED_VIEW_PEAK_GIB = 3.4
-PROTECTED_VIEW_NAVIGATION_MINUTES = 13.3
-PROTECTED_VIEW_NAVIGATION_PEAK_GIB = 1.5
-PROTECTED_VIEW_MEASURED_IN = (
-    PENDING_OWNER + ": local make kani KANI_MEASURE runs on the reference workstation, 2026-10-31 "
-    "(Kani 0.68.0; core-protected-view 1.09 min / 3.34 GiB; core-protected-view-navigation "
-    "13.26 min / 1.41 GiB), not runner measurements"
-)
-# sliced-protected-install (C3), the protected install planner's harnesses
-# K7, K8b, K10, K11 (the whole-plan K1-K6, K8, K9 are property-tested). PENDING DISPATCH until two dispatched kani.yml runs replace these
-# local figures (task 3.10).
-PROTECTED_INSTALL_MINUTES = 4.6
-PROTECTED_INSTALL_PEAK_GIB = 8.0
-PROTECTED_INSTALL_MEASURED_IN = (
-    PENDING_OWNER + ": local make kani KANI_MEASURE run on the reference workstation, 2026-11-02 "
-    "(Kani 0.68.0; core-protected-install 4.54 min / 7.94 GiB), not runner measurements"
-)
-# close-protected-install-proof-strength, the one-step harnesses.
-PROTECTED_INSTALL_STEP_MINUTES = 11.0
-PROTECTED_INSTALL_STEP_PEAK_GIB = 4.1
-PROTECTED_INSTALL_STEP_VISIBLE_MINUTES = 7.0
-PROTECTED_INSTALL_STEP_VISIBLE_PEAK_GIB = 4.6
-PROTECTED_INSTALL_STEP_MEASURED_IN = (
-    PENDING_OWNER + ": local make kani KANI_MEASURE run on the reference workstation, 2026-11-06 "
-    "(Kani 0.68.0; not yet measured), not runner measurements"
-)
-# spawn-completion-priority's review fix added the two settle-evidence
-# harnesses to widgets-slice-loop-requests: 9.8 min / 1.64 GiB locally against
-# the shard's 7.6 min on the runner before; the runner figure is scaled by that
-# ratio (+4.1 min, the two harnesses' 279 s) until a dispatched run replaces it.
-SETTLE_EVIDENCE_MINUTES = 11.7
+# close-protected-install-proof-strength replaced every developer-machine
+# figure with two dispatched kani.yml runs on its final form (max of the two,
+# rounded up to 0.1): the shards C6 (core-post-open-settle), C2
+# (core-protected-fold, -fold-shape, -fold-mapping, core-protected-view,
+# -view-navigation) and C3 (core-protected-install) added, the settle-evidence
+# harnesses spawn-completion-priority added to widgets-slice-loop-requests, and
+# its own two step shards. Both runs re-measured every other shard as well; a
+# figure they exceeded is raised (`CLOSE_PROTECTED_RAISED_IN`), and none is
+# lowered. Per-run tables: docs/next/formal-verification.md, "Sliced protected
+# install".
+CLOSE_PROTECTED_MEASURED_IN = "runs 42169248534, 42172535348 (max of the two)"
+CLOSE_PROTECTED_RAISED_IN = "; raised by runs 42169248534, 42172535348 (max of the two)"
 SETTLE_EVIDENCE_MEASURED_IN = (
-    "; " + PENDING_OWNER + ": local make kani KANI_MEASURE run on the reference workstation, 2026-11-03 "
-    "(Kani 0.68.0; widgets-slice-loop-requests 9.8 min / 1.64 GiB with the settle-evidence harnesses)"
+    "; with the settle-evidence harnesses by runs 42169248534, 42172535348 (max of the two)"
 )
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
@@ -231,9 +179,9 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::request_landing_",
         ),
         gate="pull-request",
-        ci_minutes=8.4,
+        ci_minutes=9.2,
         ci_peak_gib=1.8,
-        measured_in=MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
+        measured_in=MEASURED_IN + PROOF_STRENGTH_RAISED_IN + CLOSE_PROTECTED_RAISED_IN,
     ),
     "widgets-slice-loop-rest": Shard(
         "gtk-lush-widgets",
@@ -266,7 +214,7 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_settle_evidence_",
         ),
         gate="scheduled",
-        ci_minutes=SETTLE_EVIDENCE_MINUTES,
+        ci_minutes=13.6,
         ci_peak_gib=1.7,
         measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN + SETTLE_EVIDENCE_MEASURED_IN,
     ),
@@ -338,9 +286,9 @@ SHARDS: dict[str, Shard] = {
             "model::settings_write_batch::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=6.6,
+        ci_minutes=7.2,
         ci_peak_gib=2.7,
-        measured_in=MULTI_WINDOW_MEASURED_IN + RESPONSIVENESS_BUDGET_REMEASURED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + RESPONSIVENESS_BUDGET_REMEASURED_IN + CLOSE_PROTECTED_RAISED_IN,
     ),
     # verify-multi-window-draft-journal: two windows of one process over the
     # journal machine, too large to share a job with the single-window harness.
@@ -369,9 +317,9 @@ SHARDS: dict[str, Shard] = {
             "ui::markdown_preview::policy::kani_proofs::",
         ),
         gate="pull-request",
-        ci_minutes=13.6,
-        ci_peak_gib=2.2,
-        measured_in=GEOMETRY_POLICY_MEASURED_IN,
+        ci_minutes=14.3,
+        ci_peak_gib=2.4,
+        measured_in=GEOMETRY_POLICY_MEASURED_IN + CLOSE_PROTECTED_RAISED_IN,
     ),
     "core-post-open-settle": Shard(
         "lushtext-core",
@@ -381,9 +329,9 @@ SHARDS: dict[str, Shard] = {
             "ui::editor_page::load::policy::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=11.0,
-        ci_peak_gib=2.0,
-        measured_in=POST_OPEN_SETTLE_MEASURED_IN,
+        ci_minutes=14.3,
+        ci_peak_gib=1.8,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
     "core-document-scale": Shard(
         "lushtext-core",
@@ -395,9 +343,9 @@ SHARDS: dict[str, Shard] = {
             "model::paragraph_boundary::kani_proofs::boundary_break_",
         ),
         gate="scheduled",
-        ci_minutes=8.2,
+        ci_minutes=10.2,
         ci_peak_gib=2.7,
-        measured_in=DOCUMENT_SCALE_MEASURED_IN,
+        measured_in=DOCUMENT_SCALE_MEASURED_IN + CLOSE_PROTECTED_RAISED_IN,
     ),
     # Split by the fit order: the two slice-choice harnesses and the
     # delimiter-rule agreement take about 13 of the boundary group's 18 local
@@ -469,9 +417,9 @@ SHARDS: dict[str, Shard] = {
             "model::protected_fold::kani_proofs::production_thresholds_",
         ),
         gate="pull-request",
-        ci_minutes=PROTECTED_FOLD_MINUTES,
-        ci_peak_gib=PROTECTED_FOLD_PEAK_GIB,
-        measured_in=PROTECTED_FOLD_MEASURED_IN,
+        ci_minutes=9.3,
+        ci_peak_gib=1.7,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
     # The scheduled rest is split again: the fold-shape harnesses alone took
     # 12 of the 17.3 local minutes the combined group did.
@@ -486,9 +434,9 @@ SHARDS: dict[str, Shard] = {
             "model::protected_install::kani_proofs::one_paragraph_fold_",
         ),
         gate="scheduled",
-        ci_minutes=PROTECTED_INSTALL_MINUTES,
-        ci_peak_gib=PROTECTED_INSTALL_PEAK_GIB,
-        measured_in=PROTECTED_INSTALL_MEASURED_IN,
+        ci_minutes=8.7,
+        ci_peak_gib=8.0,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
     # The one-step induction over the planner (K1-K6, K8, K9), apart from
     # core-protected-install so neither shard's figure hides the other's, and
@@ -503,25 +451,25 @@ SHARDS: dict[str, Shard] = {
             "model::protected_install::kani_proofs::step_hidden_tail_",
         ),
         gate="scheduled",
-        ci_minutes=PROTECTED_INSTALL_STEP_MINUTES,
-        ci_peak_gib=PROTECTED_INSTALL_STEP_PEAK_GIB,
-        measured_in=PROTECTED_INSTALL_STEP_MEASURED_IN,
+        ci_minutes=17.9,
+        ci_peak_gib=4.5,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
     "core-protected-install-step-visible": Shard(
         "lushtext-core",
         ("model::protected_install::kani_proofs::step_visible_",),
         gate="scheduled",
-        ci_minutes=PROTECTED_INSTALL_STEP_VISIBLE_MINUTES,
-        ci_peak_gib=PROTECTED_INSTALL_STEP_VISIBLE_PEAK_GIB,
-        measured_in=PROTECTED_INSTALL_STEP_MEASURED_IN,
+        ci_minutes=10.6,
+        ci_peak_gib=4.6,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
     "core-protected-fold-shape": Shard(
         "lushtext-core",
         ("model::protected_fold::kani_proofs::folds_hide_",),
         gate="scheduled",
-        ci_minutes=PROTECTED_FOLD_SHAPE_MINUTES,
-        ci_peak_gib=PROTECTED_FOLD_SHAPE_PEAK_GIB,
-        measured_in=PROTECTED_FOLD_MEASURED_IN,
+        ci_minutes=22.8,
+        ci_peak_gib=1.7,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
     "core-protected-fold-mapping": Shard(
         "lushtext-core",
@@ -531,9 +479,9 @@ SHARDS: dict[str, Shard] = {
             "model::protected_fold::kani_proofs::fold_plan_",
         ),
         gate="scheduled",
-        ci_minutes=PROTECTED_FOLD_MAPPING_MINUTES,
-        ci_peak_gib=PROTECTED_FOLD_MAPPING_PEAK_GIB,
-        measured_in=PROTECTED_FOLD_MEASURED_IN,
+        ci_minutes=11.7,
+        ci_peak_gib=1.7,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
     "core-protected-view": Shard(
         "lushtext-core",
@@ -544,17 +492,17 @@ SHARDS: dict[str, Shard] = {
             "ui::editor_page::protected_view::policy::kani_proofs::find_batch",
         ),
         gate="scheduled",
-        ci_minutes=PROTECTED_VIEW_MINUTES,
-        ci_peak_gib=PROTECTED_VIEW_PEAK_GIB,
-        measured_in=PROTECTED_VIEW_MEASURED_IN,
+        ci_minutes=3.6,
+        ci_peak_gib=3.4,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
     "core-protected-view-navigation": Shard(
         "lushtext-core",
         ("ui::editor_page::protected_view::policy::kani_proofs::navigation_target_",),
         gate="scheduled",
-        ci_minutes=PROTECTED_VIEW_NAVIGATION_MINUTES,
-        ci_peak_gib=PROTECTED_VIEW_NAVIGATION_PEAK_GIB,
-        measured_in=PROTECTED_VIEW_MEASURED_IN,
+        ci_minutes=2.6,
+        ci_peak_gib=1.7,
+        measured_in=CLOSE_PROTECTED_MEASURED_IN,
     ),
 }
 
