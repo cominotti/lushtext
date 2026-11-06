@@ -388,14 +388,13 @@ Two mechanical gates hold the policy:
 
 ### Explicit-SIMD kernel allowlist
 
-Empty: no kernel is admitted. The only candidate, the typographic file-health
-scan, still measured 19.3 % of `load_text_file` after its `memchr3` rewrite
-(`docs/benchmarks/transient-file-load.md`), so condition 1 holds for it; the
-kernel is queued as a follow-up proposal in `docs/next/long-line-documents.md`
-and gets a row here only when that change lands with the other conditions met.
+One kernel is admitted: the typographic file-health scan, which still
+measured 19.3 % of `load_text_file` after its `memchr3` rewrite and landed on
+its interleaved verdict (`avx2-health-scan-kernel`).
 
 | File | Function | Measurement | NEON | Dispatch crate |
 | --- | --- | --- | --- | --- |
+| `crates/lushtext-core/src/services/editor_io/text_scans/health_avx2.rs` | `count` (the 64-byte AVX2 block kernel `count_blocks` behind `is_x86_feature_detected!("avx2")` and `("popcnt")`; fallback `text_scans::count_health_characters_memchr`) | `docs/benchmarks/transient-file-load.md#avx2-file-health-kernel` | unmeasured (no aarch64 host); aarch64 uses `memchr`'s NEON `memchr3` | none |
 
 ## Modern Rust Idioms
 

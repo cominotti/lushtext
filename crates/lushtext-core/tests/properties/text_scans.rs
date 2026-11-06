@@ -44,6 +44,52 @@ fn scan_text() -> impl Strategy<Value = String> {
     prop::collection::vec(piece, 0..96).prop_map(|pieces| pieces.concat())
 }
 
+/// Byte offsets within a few bytes of a 32-byte half or 64-byte block seam of
+/// the AVX2 kernel (and of the next block's), where a lead's continuation
+/// bytes cross into the next half or block.
+const SEAM_OFFSETS: [usize; 24] = [
+    0, 1, 2, 29, 30, 31, 32, 33, 34, 61, 62, 63, 64, 65, 66, 93, 94, 95, 96, 97, 125, 126, 127, 128,
+];
+
+/// A hit or look-alike scalar for the seam placements: every lead byte the
+/// kernel tests, with matching and non-matching continuations.
+fn seam_char() -> impl Strategy<Value = char> {
+    prop::sample::select(vec![
+        '\u{00A0}', '\u{00A9}', '\u{00C2}', '\u{200B}', '\u{200C}', '\u{200D}', '\u{200A}',
+        '\u{200E}', '\u{2060}', '\u{2061}', '\u{2020}', '\u{FEFF}', '\u{FEFE}', '\u{FFBF}',
+        '\u{2019}', '\u{2014}', '\u{2026}', 'é', '日', '😀',
+    ])
+}
+
+/// Text of at least 66 bytes (one whole kernel step) with hits and look-alikes
+/// starting at or just after the seam offsets, on an ASCII ground.
+fn seam_text() -> impl Strategy<Value = String> {
+    (
+        prop::collection::vec(
+            (prop::sample::select(SEAM_OFFSETS.to_vec()), seam_char()),
+            1..8,
+        ),
+        66usize..200,
+    )
+        .prop_map(|(mut placements, minimum_len)| {
+            placements.sort_by_key(|&(offset, _)| offset);
+            let mut text = String::new();
+            for (offset, character) in placements {
+                while text.len() < offset {
+                    text.push('x');
+                }
+                text.push(character);
+            }
+            while text.len() < minimum_len {
+                text.push('y');
+            }
+            text
+        })
+}
+
+/// One health scan under comparison; `None` when it cannot run on this host.
+type HealthScan = dyn Fn(&str) -> Option<(usize, usize)>;
+
 fn cuts() -> impl Strategy<Value = Vec<usize>> {
     prop::collection::vec(any::<usize>(), 0..6)
 }
@@ -63,6 +109,44 @@ proptest! {
             zero_width += piece_zero_width;
         }
         prop_assert_eq!((nbsp, zero_width), reference::count_health_characters(&text));
+    }
+
+    /// The dispatching entry, the `memchr3` fallback and (where it can run)
+    /// the AVX2 kernel each equal the reference on seam-placed hits, also when
+    /// the text is cut in two at every scalar boundary of its first 66 bytes:
+    /// the head is then shorter than one kernel step (every tail length 0..=65,
+    /// counted by the tail scan alone), and the rest's tail past its last
+    /// whole 64-byte step runs through every residue while its block seams
+    /// shift across the placed hits.
+    #[test]
+    fn health_kernel_and_fallback_equal_the_reference_at_block_seams(text in seam_text()) {
+        let expected = reference::count_health_characters(&text);
+        prop_assert_eq!(text_scans::count_health_characters(&text), expected);
+        prop_assert_eq!(
+            text_scans::count_health_characters_memchr(text.as_bytes(), 0),
+            expected
+        );
+        if let Some(kernel) = text_scans::count_health_characters_kernel(&text) {
+            prop_assert_eq!(kernel, expected);
+        }
+        for tail in 0..=65usize.min(text.len()) {
+            let cut = text.floor_char_boundary(tail);
+            let (head, rest) = text.split_at(cut);
+            let scans: [&HealthScan; 3] = [
+                &|piece| Some(text_scans::count_health_characters(piece)),
+                &|piece| Some(text_scans::count_health_characters_memchr(piece.as_bytes(), 0)),
+                &text_scans::count_health_characters_kernel,
+            ];
+            for scan in scans {
+                if let (Some(head_counts), Some(rest_counts)) = (scan(head), scan(rest)) {
+                    prop_assert_eq!(
+                        (head_counts.0 + rest_counts.0, head_counts.1 + rest_counts.1),
+                        expected,
+                        "cut at {}", cut
+                    );
+                }
+            }
+        }
     }
 
     #[test]

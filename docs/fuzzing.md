@@ -14,11 +14,20 @@ Current fuzz targets:
   line-ending detection, and file-health classification. On every decoded
   text it also compares each accelerated text scan with its scalar reference
   (`services::editor_io::text_scans::reference`): the file-health count over a
-  three-way split, the trailing-whitespace trim, line-ending normalization and
-  the already-normalized check in every mode, and the minimap accumulator's
+  three-way split, compared separately through the dispatching entry, the
+  `memchr3` fallback (`count_health_characters_memchr`) and, on a host with
+  AVX2 and POPCNT, the AVX2 kernel (`count_health_characters_kernel`); the
+  trailing-whitespace trim, line-ending normalization and the
+  already-normalized check in every mode; and the minimap accumulator's
   `inspect_str` against per-character `inspect_char`; a divergence panics.
   The `text_scans_*` seeds hold the edge cases (look-alike lead bytes, hits at
-  slice ends, carriage-return runs, long multibyte lines).
+  slice ends, carriage-return runs, long multibyte lines), and two seed the
+  AVX2 kernel: `text_scans_health_block_seams.txt` (hits whose lead drifts
+  through every offset of the 32-byte halves and 64-byte blocks, so their
+  continuation bytes straddle bytes 31–33 and 63–65, then a 65-byte tail
+  ending in U+FEFF) and `text_scans_health_typographic_run.txt` (long
+  `E2 80 xx` punctuation runs with sparse real hits and `C2`/`E2`/`EF`
+  look-alikes).
 - `markdown_preprocess`: lossy UTF-8 text through Markdown inline-footnote
   preprocessing and `pulldown-cmark` parser setup.
 - `operation_script`: raw bytes decoded into a bounded script of deterministic

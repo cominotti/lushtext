@@ -2,7 +2,8 @@
 
 //! The save-time trim allocates nothing on text it leaves unchanged
 //! (`simd-line-scans`, design D7: allocation-free behaviour is shown by a test,
-//! not a benchmark).
+//! not a benchmark), and the file-health count, AVX2 kernel or `memchr3`
+//! fallback, allocates nothing at all (`avx2-health-scan-kernel`).
 //!
 //! A separate test binary, because it installs a counting global allocator;
 //! the count is per thread, so the test harness's own threads cannot disturb
@@ -73,4 +74,19 @@ fn trim_allocates_once_for_a_dirty_mebibyte() {
 
     assert_eq!(allocations, 1, "one String sized to the input");
     assert_eq!(trimmed.len(), text.len() - 2 * (text.len() / line.len()));
+}
+
+#[test]
+fn health_count_allocates_nothing_on_a_typographic_mebibyte() {
+    // Curly quotes, dashes and ellipses (`E2 80 xx`, never a hit) every few
+    // bytes, beside one hit of each kind per line: the kernel's confirmation
+    // path on every block, and the `memchr3` tail.
+    let line = "\u{201C}It\u{2019}s\u{2026}\u{201D} \u{2014} a \u{2013} b\u{00A0}c\u{200B}d\u{2060}e\u{FEFF}\n";
+    let text = line.repeat((1024 * 1024) / line.len() + 1);
+
+    let (counts, allocations) = allocations_during(|| text_scans::count_health_characters(&text));
+
+    assert_eq!(allocations, 0);
+    let lines = text.len() / line.len();
+    assert_eq!(counts, (lines, 3 * lines));
 }

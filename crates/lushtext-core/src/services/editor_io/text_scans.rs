@@ -7,13 +7,21 @@
 //! Each scan jumps between the few bytes that matter with the `memchr` crate
 //! (SSE2 baseline, AVX2 picked at run time on x86-64, NEON on aarch64) instead
 //! of stepping one `char` at a time. Every cut point is an ASCII byte or a
-//! UTF-8 lead byte, so every sub-slice is a `&str` on a scalar boundary and no
-//! `unsafe` is needed. The scalar forms they replaced live in [`reference`]
-//! (tests, benches, and fuzzing only); the property tests
-//! (`tests/properties/text_scans.rs`) and the `editor_bytes` fuzz target pin
-//! each scan to its reference. No Kani harness compiles this module.
+//! UTF-8 lead byte, so every sub-slice is a `&str` on a scalar boundary and
+//! this file needs no `unsafe`. The one hand-written kernel is the file-health
+//! count's: on x86-64 with AVX2 it dispatches to the block kernel in
+//! `text_scans/health_avx2.rs`, the only file the explicit-SIMD allowlist of
+//! `.agents/rules/rust.md` names, and keeps the `memchr3` scan as its fallback
+//! and tail.
 //!
-//! Measured on the interleaved bench of `simd-line-scans`; the figures are in
+//! The scalar forms the scans replaced live in [`reference`] (tests, benches,
+//! and fuzzing only); the property tests (`tests/properties/text_scans.rs`)
+//! and the `editor_bytes` fuzz target pin each scan, and the kernel and its
+//! fallback separately, to its reference. No Kani harness compiles this
+//! module, and the kernel is behind `cfg(not(kani))` all the same.
+//!
+//! Measured on the interleaved benches of `simd-line-scans` and
+//! `avx2-health-scan-kernel`; the figures are in
 //! `docs/benchmarks/transient-file-load.md`.
 
 use std::borrow::Cow;
@@ -41,27 +49,87 @@ pub fn is_zero_width(character: char) -> bool {
 ///
 /// Every counted character starts with `0xC2` (U+00A0 is `C2 A0`), `0xE2`
 /// (U+200B/C/D are `E2 80 8B/8C/8D`, U+2060 is `E2 81 A0`), or `0xEF` (U+FEFF
-/// is `EF BB BF`). Those bytes are never continuation bytes, so `memchr3`
-/// finds exactly the candidate scalars and the next one or two bytes confirm
-/// them. `slice` is a `&str`, so a candidate's continuation bytes are inside
-/// it and no state carries between slices.
+/// is `EF BB BF`). Those bytes are never continuation bytes, so a scan for
+/// them finds exactly the candidate scalars and the next one or two bytes
+/// confirm them. `slice` is a `&str`, so a candidate's continuation bytes are
+/// inside it and no state carries between slices.
+///
+/// On x86-64 with AVX2 and POPCNT this runs the block kernel of
+/// [`health_avx2`] (the one file the explicit-SIMD allowlist names), which
+/// returns the `memchr3` scan's result for every byte string; otherwise, and
+/// on every other target and under Kani, it runs the `memchr3` scan
+/// ([`count_health_characters_memchr`]).
 #[must_use]
 pub fn count_health_characters(slice: &str) -> (usize, usize) {
-    let bytes = slice.as_bytes();
-    let mut nbsp_count = 0usize;
-    let mut zero_width_count = 0usize;
-    for at in memchr::memchr3_iter(0xC2, 0xE2, 0xEF, bytes) {
-        let second = bytes.get(at + 1).copied();
-        let third = bytes.get(at + 2).copied();
-        match (bytes[at], second, third) {
-            (0xC2, Some(0xA0), _) => nbsp_count += 1,
-            (0xE2, Some(0x80), Some(0x8B..=0x8D))
-            | (0xE2, Some(0x81), Some(0xA0))
-            | (0xEF, Some(0xBB), Some(0xBF)) => zero_width_count += 1,
-            _ => {}
-        }
+    #[cfg(all(target_arch = "x86_64", not(kani)))]
+    if let Some(counts) = health_avx2::count(slice.as_bytes()) {
+        return counts;
     }
-    (nbsp_count, zero_width_count)
+    count_health_characters_memchr(slice.as_bytes(), 0)
+}
+
+#[cfg(all(target_arch = "x86_64", not(kani)))]
+mod health_avx2;
+
+/// The `memchr3` scan behind [`count_health_characters`], public only to the
+/// tests, benches, and fuzzing that compare it with the kernel and the
+/// reference.
+mod memchr_scan {
+    /// The `memchr3` form of [`super::count_health_characters`] over
+    /// `bytes[from..]`: the baseline-x86-64, aarch64 and Kani path, and the
+    /// AVX2 kernel's tail.
+    ///
+    /// Defined on bytes, so the kernel can be compared with it on every byte
+    /// string. A candidate's continuation bytes are read from `bytes`, not
+    /// from `bytes[from..]`'s end, and a missing one is no match, so a lead
+    /// in the last two bytes is confirmed exactly as in the whole-slice scan.
+    ///
+    /// # Panics
+    ///
+    /// When `from > bytes.len()`.
+    #[must_use]
+    pub fn count_health_characters_memchr(bytes: &[u8], from: usize) -> (usize, usize) {
+        let mut nbsp_count = 0usize;
+        let mut zero_width_count = 0usize;
+        for offset in memchr::memchr3_iter(0xC2, 0xE2, 0xEF, &bytes[from..]) {
+            let at = from + offset;
+            let second = bytes.get(at + 1).copied();
+            let third = bytes.get(at + 2).copied();
+            match (bytes[at], second, third) {
+                (0xC2, Some(0xA0), _) => nbsp_count += 1,
+                (0xE2, Some(0x80), Some(0x8B..=0x8D))
+                | (0xE2, Some(0x81), Some(0xA0))
+                | (0xEF, Some(0xBB), Some(0xBF)) => zero_width_count += 1,
+                _ => {}
+            }
+        }
+        (nbsp_count, zero_width_count)
+    }
+}
+
+#[cfg(any(test, feature = "test-utils", feature = "fuzzing"))]
+pub use memchr_scan::count_health_characters_memchr;
+#[cfg(not(any(test, feature = "test-utils", feature = "fuzzing")))]
+use memchr_scan::count_health_characters_memchr;
+
+/// The AVX2 kernel alone over `slice`, or `None` when it cannot run here (no
+/// AVX2 or POPCNT, not x86-64, or a Kani build).
+///
+/// The tests, fuzzing and benches reach the kernel only through this, so the
+/// feature detection stays in [`health_avx2`], the one file the allowlist
+/// names.
+#[cfg(any(test, feature = "test-utils", feature = "fuzzing"))]
+#[must_use]
+pub fn count_health_characters_kernel(slice: &str) -> Option<(usize, usize)> {
+    #[cfg(all(target_arch = "x86_64", not(kani)))]
+    {
+        health_avx2::count(slice.as_bytes())
+    }
+    #[cfg(not(all(target_arch = "x86_64", not(kani))))]
+    {
+        let _ = slice;
+        None
+    }
 }
 
 /// Strip spaces and tabs immediately before each `\n` or `\r` and at the end
