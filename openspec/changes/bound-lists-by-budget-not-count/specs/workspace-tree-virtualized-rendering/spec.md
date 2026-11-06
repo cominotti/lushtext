@@ -30,7 +30,7 @@ The workspace sidebar SHALL render every row present in a workspace section's `G
 ## ADDED Requirements
 
 ### Requirement: Large directories load completely and incrementally
-A directory whose entries fit `SIDEBAR_DIRECTORY_RETAINED_BYTES` SHALL list every visible entry, with no placeholder row once loading ends. The budget SHALL be a power of two at or above `main`'s worst-case retention for 10,000 entries, SHALL admit at least 131,072 entries with names of 32 bytes or fewer, and a compile-time assertion SHALL hold the first property. A directory that fits SHALL be scanned in one pass. The deterministic two-pass top-k selection SHALL run only for a directory that exceeds the budget. Rows SHALL be applied from the top in time-sliced batches. Until the last batch, a loading row stating "Loading entries… X of Y", with a stable accessible name, SHALL end the directory, and that row SHALL be removed at the directory's terminal. The `workspace-refresh-complete` readiness predicate SHALL stay pending until the terminal.
+A directory whose entries fit `SIDEBAR_DIRECTORY_RETAINED_BYTES` SHALL list every visible entry, with no placeholder row once loading ends. The budget SHALL be the power of two at or above the larger of two derived floors: `main`'s worst-case retention for 10,000 entries, and the retention of 131,072 entries with names of 32 bytes or fewer under a parent path of 256 bytes. Compile-time assertions SHALL hold both inequalities. A directory that fits SHALL be scanned in one pass. The deterministic two-pass top-k selection SHALL run only for a directory that exceeds the budget. Rows SHALL be applied from the top in time-sliced batches. Until the last batch, a loading row stating "Loading entries… X of Y", with a stable accessible name, SHALL end the directory, and that row SHALL be removed at the directory's terminal. The `workspace-refresh-complete` readiness predicate SHALL stay pending until the terminal.
 
 #### Scenario: A directory past 10,000 entries is listed in full
 - **WHEN** a directory of 16,385 entries is expanded
@@ -38,7 +38,7 @@ A directory whose entries fit `SIDEBAR_DIRECTORY_RETAINED_BYTES` SHALL list ever
 - **AND** no "items - showing first" placeholder and no budget row exist
 
 #### Scenario: A directory of 131,072 entries
-- **WHEN** a directory of 131,072 entries with names of at most 32 bytes is expanded
+- **WHEN** a directory of 131,072 entries with names of at most 32 bytes, under a parent path of at most 256 bytes, is expanded
 - **THEN** every entry is listed and reachable by keyboard traversal and by `win.reveal-workspace-path`, with realized rows bounded as for any directory
 - **AND** the first screen of rows is interactive before the last batch is applied
 

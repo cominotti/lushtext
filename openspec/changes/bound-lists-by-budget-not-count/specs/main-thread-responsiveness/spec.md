@@ -41,12 +41,13 @@ The workspace-search GTK consumer SHALL receive and dispatch at most 256 channel
 ## ADDED Requirements
 
 ### Requirement: Workspace search results are bounded by retained bytes, not a match count
-Workspace search SHALL have no match-count cap. The worker SHALL charge every match against `SEARCH_RESULTS_RETAINED_BYTES` through the shared list budget: the match's line bytes plus `SEARCH_MATCH_FIXED_CHARGE`, plus the file's path bytes once per file. It SHALL retain matches while the budget admits them. At the first refusal it SHALL send one `BudgetReached` event, queued behind the matches it describes, and retain nothing further. It SHALL keep walking and counting matches until the traversal ends, is cancelled, or terminates as incomplete, and SHALL report the running total at most every 250 ms and the final total with `Done`. The budget SHALL be a power of two at or above `main`'s worst-case retention under the former 16,384-match cap, and a compile-time assertion SHALL hold that inequality. Each file's path SHALL be retained once, shared by its file row, its match rows, and the navigation index.
+Workspace search SHALL have no match-count cap. The worker SHALL charge every match against `SEARCH_RESULTS_RETAINED_BYTES` through the shared list budget: the match's line bytes plus `SEARCH_MATCH_FIXED_CHARGE`, plus the file's path bytes once per file. It SHALL retain matches while the budget admits them. Admission and the send of an admitted match SHALL be one serialized step across the parallel walkers, so that the channel delivers matches in admission order. At the first refusal it SHALL send one `BudgetReached` event, queued behind every retained match, and retain nothing further. It SHALL keep walking and counting matches until the traversal ends, is cancelled, or terminates as incomplete, and SHALL report the running total at most every 250 ms and the final total with `Done`. The budget SHALL be a power of two at or above `main`'s worst-case retention under the former 16,384-match cap, and a compile-time assertion SHALL hold that inequality. Each file's path SHALL be retained once, shared by its file row, its match rows, and the navigation index.
 
 #### Scenario: A search past 16,384 matches is not cut
 - **WHEN** a search finds 40,000 matches of ordinary lines (under 256 bytes) in 2,000 files
-- **THEN** all 40,000 matches are shown, navigable with F4 and Shift+F4, and offered to Replace Preview
+- **THEN** all 40,000 matches are shown and navigable with F4 and Shift+F4
 - **AND** no limited state is shown
+- **AND** Replace Preview lists the first 16,384 of them (its own unchanged row budget, `MAX_REPLACE_PREVIEW_ROWS`) and states the omitted count, as it does today when its budget cuts
 
 #### Scenario: Nothing main showed is lost at main's worst case
 - **WHEN** a search finds 16,384 matches, each a 4,096-byte line in its own file with a path of 4,096 bytes

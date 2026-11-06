@@ -64,7 +64,8 @@ Rules for every task:
   watch them fail.
 - [ ] 2.2 Implement the module: integer only, with
   `#![forbid(clippy::float_arithmetic)]` and rustdoc `Kind:` lines.
-  `LIST_TURN_SLICE_US` is derived from `B_INTERACT_US / 2`.
+  `LIST_TURN_SLICE_US` is `B_INTERACT_US / 2` (`Kind: out: time`, the class
+  of every time budget in `docs/thresholds.md`).
 - [ ] 2.3 Write the Kani harnesses B1–B4 and T1–T2 (design D2) in
   `model/list_budget/kani_proofs.rs`. B4 is the counter-example harness,
   kept failing by design like the minimap shard's general-`f64` cases.
@@ -82,17 +83,21 @@ Rules for every task:
   - round the per-item figure up to a power of two (a coverage window);
   - compute `MAIN_SEARCH_WORST_RETENTION` and
     `MAIN_SIDEBAR_WORST_RETENTION` (derived);
-  - set each budget to the power of two at or above its derived value, with
-    a compile-time assertion.
-  Check that the sidebar budget admits 131,072 entries with 32-byte names.
-  If it does not, first share the cache paths as `Arc<Path>` and re-measure.
+  - compute `SIDEBAR_TYPICAL_FLOOR_RETENTION` (derived: 131,072 rows of
+    32-byte names under a 256-byte parent);
+  - set each budget to the power of two at or above its larger derived
+    floor, with a compile-time assertion per floor.
+  Before fixing the sidebar budget, shrink what a typical row retains (share
+  the cache paths as `Arc<Path>`) and re-measure; the typical floor is a
+  target, not a casualty of the fixed charge.
   Record the figures in the rustdocs and the design.
 
 ## 3. Workspace search without a match count
 
 - [ ] 3.1 Failing first, in `crates/lushtext/tests/widget/search_panel.rs`:
-  - 40,000 ordinary matches are all shown, navigable and offered to Replace
-    Preview, with no limited state (it fails on `main`: 16,384 shown);
+  - 40,000 ordinary matches are all shown and navigable, with no limited
+    state (it fails on `main`: 16,384 shown); Replace Preview lists its
+    16,384-row budget and states the 23,616 omitted;
   - `main`'s worst case (16,384 matches of 4,096-byte lines, one file each,
     4,096-byte paths) is retained in full;
   - a limited search (the budget lowered through `test_policy.rs`) retains a
@@ -102,10 +107,18 @@ Rules for every task:
   - cancelling while counting past the budget stops the counting.
 - [ ] 3.2 Worker (`services/content_search/search.rs`):
   - remove `RESULT_CAP`;
-  - charge matches through `RetainedBudget`;
+  - charge matches through `RetainedBudget` behind one per-search lock held
+    across `admit` and the send (design D4), so channel order is admission
+    order; past the budget, count lock-free behind an `AtomicBool` latch;
   - add `SearchEvent::BudgetReached` and a coalesced
     `SearchEvent::BeyondBudget`, and let `Done` carry the total;
-  - keep counting without retaining past the budget;
+  - keep counting without retaining past the budget, with `BeyondBudget`
+    coalesced by a worker clock (at most every 250 ms, `try_send`), and the
+    budget never setting `WalkStop`;
+  - a service test with several walker threads and a budget that cuts
+    mid-stream: every retained match precedes `BudgetReached` in the channel,
+    and the retained count plus the counted remainder equals an unlimited
+    run's total;
   - keep `Incomplete`, `Error` and cancellation unchanged.
   Update the service tests that pinned the cap.
 - [ ] 3.3 Intern paths per file (`Arc<Path>`), shared by the file group, the
@@ -155,17 +168,22 @@ Rules for every task:
   - a budget-limited directory (budget lowered through the test policy) ends
     with "Showing X of Y entries", with exact X and Y;
   - a refresh or collapse during loading leaves no stale batch, cache entry
-    or loading row;
+    or loading row, and the dispatch that supersedes a budget-sized plan
+    stays within `B_SETTLE_US` (its rows retire through the plain-data
+    disposal lane, or the measured drop fits);
   - the terminal dispatch's duration at 10,000 and at 131,072 entries
     differs by less than one reference frame (8.3 ms).
   Update the existing scenario "Truncation placeholder is reachable" test to
   the budget row.
 - [ ] 4.2 `services/file_tree.rs`: scan in a single pass when the directory
   fits the byte budget, and use the existing deterministic two-pass top-k
-  only when it does not. Report the visible entry total. Add service tests
+  only when it does not, turning the overflowing single pass into the
+  top-k's first (scalar) pass so an over-budget directory costs two passes,
+  not three (design D6). Report the visible entry total. Add service tests
   for both paths and for determinism of order.
 - [ ] 4.3 Replace `MAX_DIR_ENTRIES` with `SIDEBAR_DIRECTORY_RETAINED_BYTES`
-  and the row charge in the workspace-tree workflow's `policy.rs`. Change the
+  and the row charge in the workspace-tree workflow's `ui/sidebar/policy.rs`
+  (its test override in `ui/sidebar/test_policy.rs`). Change the
   placeholder kind from "truncation" to "budget" and "loading" (in
   `ui/sidebar/file_tree_item.rs`), with accessible names and descriptions
   (the row metadata apply/clear pattern of `widget-wiring.md`).
@@ -177,7 +195,7 @@ Rules for every task:
 - [ ] 4.5 Time-slice the batch application with `turn_continues` (batches
   stay 256 rows). Add the loading row and update its label at most once per
   turn.
-- [ ] 4.6 Workspace-tree evidence: `directory_total_entries`,
+- [ ] 4.6 Workspace-tree evidence (`ui/sidebar/evidence.rs`): `directory_total_entries`,
   `directory_retained_entries`, `directory_limited`, `loading_tail_rows`,
   and the snapshot counts (task 6.1).
 - [ ] 4.7 Remove the bench mirror of `MAX_DIR_ENTRIES` from
@@ -195,9 +213,10 @@ Rules for every task:
 - [ ] 5.2 Update `docs/thresholds.md`:
   - remove `RESULT_CAP`, `MAX_DIR_ENTRIES` and the bench mirror;
   - add the two budgets (presentation cap,
-    `up from <derived main worst case>`), the two fixed charges (coverage
-    window), the two `MAIN_*_WORST_RETENTION` values (derived) and
-    `LIST_TURN_SLICE_US` (derived);
+    `up from <the larger derived floor>`), the two fixed charges (coverage
+    window), the two `MAIN_*_WORST_RETENTION` values and
+    `SIDEBAR_TYPICAL_FLOOR_RETENTION` (derived), and `LIST_TURN_SLICE_US`
+    (`out: time`, `expr: B_INTERACT_US / 2`);
   - re-describe `JOURNAL_SCAN_MAX_ENTRIES`'s row (asserted against
     `MAX_REPLACE_PREVIEW_ROWS`).
   `make check-thresholds` passes.
@@ -206,8 +225,9 @@ Rules for every task:
 
 - [ ] 6.1 Snapshot fields (design D9): `content_search.retained_match_count`
   and `content_search.matches_found`; the meaning of `result_capped` and
-  `search.workspace_result_capped`; the workspace tree's
-  `limited_directory_count` and `loading_directory_count`. Update
+  `search.workspace_result_capped`; the workspace snapshot's
+  `workspace.limited_directory_count` and `workspace.loading_directory_count`
+  (projected from `WorkspaceTreeEvidence`). Update
   `model/automation.rs`, `ui/automation.rs`, `docs/automation.md` and
   `docs/automation-reference.md` (anchors). Run `make check-automation-docs`,
   and `make automation-client-self-test` if the client reads the fields.
@@ -233,7 +253,7 @@ Rules for every task:
 
 ## 7. Workflow structure and documentation
 
-- [ ] 7.1 Re-derive the `WFR-SEARCH-REPLACE` and workspace-tree rows in
+- [ ] 7.1 Re-derive the `WFR-SEARCH-REPLACE` and `WFR-WORKSPACE-TREE` rows in
   `docs/workflow-readability-matrix.md`: current sizes, per-kind seam counts
   and pure-policy consumers, excluding `#[cfg(test)]`. Name
   `model/list_budget.rs` as shared cross-cutting pure policy with two
