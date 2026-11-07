@@ -83,9 +83,9 @@
 //!    turn. The document is never copied.
 //!
 //! 4. **Project markers and geometry.** `projection_execution` bins every
-//!    marker kind per strip pixel row — bookmarks, search matches from a
-//!    completed scan, the modified tag, accepted long-line identities, none
-//!    capped — through live source-map layout, at a cost that follows the
+//!    marker kind per strip pixel row — bookmarks, search matches (from the
+//!    band's own text until the scan completes), the modified tag, long lines,
+//!    none capped — through live source-map layout, at a cost that follows the
 //!    strip height; projects GTK's native slider; keeps the map's wrap mode and
 //!    margins aligned with the editor; and redraws the strip.
 //!

@@ -559,6 +559,79 @@ fn test_minimap_search_lane_returns_after_an_edit_and_a_scroll() {
     window.destroy();
 }
 
+/// D5's progressive fallback: while the search context's own scan of a
+/// large document still runs behind the views' layout validation, the
+/// markers of the lines the map shows come from `forward_async` walks
+/// (ledger A102), long before the scan ends and without a long dispatch. A
+/// 262,144-line document whose only match is on its last line, the map at
+/// the end: `main` showed it after one 70-80 ms synchronous scan.
+#[test]
+fn test_minimap_search_markers_appear_before_the_scan_completes() {
+    ensure_gtk_init();
+    enable_minimap(false);
+    let page = LushtextEditorPage::new();
+    let mut text: String = (0..(1 << 18) - 1)
+        .map(|line| format!("r{}\n", line % 1000))
+        .collect();
+    text.push_str("needle\n");
+    page.buffer().set_text(&text);
+    let window = present(&page, 800);
+    let last = (1 << 18) - 1;
+    show_line_in_map(&page, last);
+    let _ = worst_dispatch_until(Duration::from_millis(500), || false);
+    page.show_search();
+    let start = Instant::now();
+    page.search_bar().search_entry().set_text("needle");
+    let (shown, worst) = worst_dispatch_until(Duration::from_secs(20), || {
+        page.minimap_marker_count(MinimapMarkerKind::Search) > 0
+    });
+    let shown_us = start.elapsed().as_micros();
+    let scanned = page
+        .search_bar()
+        .search_context()
+        .is_some_and(|context| context.occurrences_count() >= 0);
+    println!(
+        "bmm-evidence {{\"m\":\"progressive\",\"shown_us\":{shown_us},\"scan_done_when_shown\":{scanned},\"worst_us\":{}}}",
+        worst.as_micros()
+    );
+    assert!(shown, "the last line's match is drawn");
+    assert!(overlaps(
+        &page.minimap_marker_bounds(MinimapMarkerKind::Search),
+        line_rows_in_strip(&page, last)
+    ));
+    if timing_verdicts_enforced() {
+        assert!(worst.as_micros() < u128::from(B_INTERACT_US), "{worst:?}");
+    }
+    window.destroy();
+}
+
+/// An in-tab Replace All of 70,000 matches emits 70,000 deletions and
+/// insertions in one dispatch, each re-arming the minimap refresh. The refresh
+/// debounce kept one GLib source and one weak reference to the editor per
+/// arm until its deadline, past GLib's per-object limit, which logged
+/// `GLib-GObject-CRITICAL: Too many GWeakRef registered` (pre-existing on
+/// `main`, found by this change's 131,072-match measurement). The widget lane
+/// fails on that CRITICAL; the markers still settle.
+#[test]
+fn test_minimap_replace_all_of_many_matches_keeps_one_pending_refresh() {
+    ensure_gtk_init();
+    enable_minimap(false);
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&"needle\n".repeat(70_000));
+    page.buffer().set_modified(false);
+    let window = present(&page, 800);
+    wait_for_scan(&page, "needle");
+    page.search_bar().set_replace_mode(true);
+    page.search_bar().replace_entry().set_text("pin");
+    page.search_bar().replace_all();
+    wait_until(Duration::from_secs(10), || {
+        page.minimap_marker_count(MinimapMarkerKind::Modified) > 0
+            && page.minimap_marker_count(MinimapMarkerKind::Search) == 0
+            && !page.minimap_evidence().work_pending
+    });
+    window.destroy();
+}
+
 /// 3.9: retiring tags queue: two saves while the first still retires retire
 /// both and remove them from the table, the current tag is untouched, edits
 /// between slices do not disturb the cursor, and dispose cancels the slices.
@@ -652,7 +725,8 @@ fn test_minimap_marker_work_fits_the_budgets_at_131072_markers() {
         page.buffer().set_text(&alternating_document(pairs, false));
         page.buffer().set_modified(false);
         let window = present(&page, height);
-        wait_for_scan(&page, "needle");
+        // Edits before the search: with every match highlighted,
+        // GtkSourceView's search context updates on each edit.
         let buffer = page.buffer();
         for line in (0..2 * pairs).step_by(2) {
             let mut iter = buffer.iter_at_line(line).expect("line");
@@ -661,6 +735,7 @@ fn test_minimap_marker_work_fits_the_budgets_at_131072_markers() {
         let (_, refresh_worst) = worst_dispatch_until(Duration::from_secs(3), || {
             !page.minimap_evidence().work_pending
         });
+        wait_for_scan(&page, "needle");
         let mut bins_worst = Duration::ZERO;
         let mut frame_worst = Duration::ZERO;
         for step in 0..=20 {
@@ -691,8 +766,9 @@ fn test_minimap_marker_work_fits_the_budgets_at_131072_markers() {
         let (_, retire_worst) = worst_dispatch_until(Duration::from_secs(10), || {
             page.minimap_evidence().retiring_modified_tags == 0
         });
+        let slice_worst_us = page.minimap_evidence().retirement_slice_worst_us;
         println!(
-            "bmm-evidence {{\"m\":\"budget\",\"pairs\":{pairs},\"rows\":{},\"groups\":{},\"refresh_worst_us\":{},\"bins_worst_us\":{},\"scroll_frame_worst_us\":{},\"save_us\":{},\"retire_worst_us\":{},\"retire_slices\":{}}}",
+            "bmm-evidence {{\"m\":\"budget\",\"pairs\":{pairs},\"rows\":{},\"groups\":{},\"refresh_worst_us\":{},\"bins_worst_us\":{},\"scroll_frame_worst_us\":{},\"save_us\":{},\"retire_worst_us\":{},\"slice_worst_us\":{slice_worst_us},\"retire_slices\":{}}}",
             evidence.binned_rows,
             evidence.row_groups,
             refresh_worst.as_micros(),
@@ -706,8 +782,14 @@ fn test_minimap_marker_work_fits_the_budgets_at_131072_markers() {
             let interact = u128::from(B_INTERACT_US);
             assert!(bins_worst.as_micros() < interact, "bins {bins_worst:?}");
             assert!(save_us.as_micros() < interact, "save {save_us:?}");
+            // A slice's own work is the minimap's; the window it runs in also
+            // holds the frames that show the cleared strip (`B_SETTLE_US`).
             assert!(
-                retire_worst.as_micros() < interact,
+                u128::from(slice_worst_us) < interact,
+                "slice {slice_worst_us} µs"
+            );
+            assert!(
+                retire_worst.as_micros() < u128::from(B_SETTLE_US),
                 "retirement {retire_worst:?}"
             );
             assert!(

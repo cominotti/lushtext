@@ -69,6 +69,9 @@ pub(crate) struct MinimapModifiedTracking {
     /// Retirement slices run during this editor's lifetime.
     #[cfg(feature = "test-utils")]
     pub(super) retirement_slices: Cell<usize>,
+    /// Longest retirement slice, in microseconds (the slice's own work).
+    #[cfg(feature = "test-utils")]
+    pub(super) retirement_slice_worst_us: Cell<u64>,
 }
 
 impl LushtextEditorPage {
@@ -241,6 +244,8 @@ impl LushtextEditorPage {
         tracking
             .retirement_slices
             .set(tracking.retirement_slices.get().saturating_add(1));
+        #[cfg(feature = "test-utils")]
+        let started = std::time::Instant::now();
         let finished = {
             let retiring = tracking.retiring.borrow();
             let Some(front) = retiring.front() else {
@@ -250,6 +255,12 @@ impl LushtextEditorPage {
             };
             retire_tag_slice(front)
         };
+        #[cfg(feature = "test-utils")]
+        {
+            let elapsed = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let worst = &tracking.retirement_slice_worst_us;
+            worst.set(worst.get().max(elapsed));
+        }
         if finished {
             let done = tracking.retiring.borrow_mut().pop_front();
             if let Some(done) = done {
