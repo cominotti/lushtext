@@ -218,7 +218,10 @@ SAVE_BACKLOG_DOCUMENTS = 2
 SAVE_BACKLOG_LEAD_S = 1.0
 SAVE_SCRATCH_TEXT = "scratch document the save case writes\n"
 REPETITIONS = {"quick": 1, "full": 3}
-GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight", "reanalysis", "restyle-populated")
+# The minimap marker cases (`bin-minimap-markers-per-row`): pairs of a marked
+# long line and a short line.
+MINIMAP_MARKER_PAIRS = (2_048, 131_072)
+GROUPS = ("baseline", "paragraph", "dense", "total-size", "delimiters", "session", "eviction", "save", "reload", "install", "invisibles", "markdown", "editorconfig", "recovery", "keystroke", "protected", "highlight", "reanalysis", "restyle-populated", "minimap-markers")
 VARIANTS = ("plain", "at", "probe-im", "ibus")
 BISECT_STEPS = 4
 
@@ -1796,6 +1799,24 @@ def build_cases(tier: str) -> list[Case]:
                 },
             )
         )
+    # bin-minimap-markers-per-row: the minimap's marker work at `main`'s
+    # former cap and at 131,072 markers of each kind (search matches on the
+    # find marker, long lines, and the lines typing modifies), with long-line
+    # markers on. The standard flow opens, scrolls, pages, types and finds; the
+    # lane never saves (a typed app is killed), so the save's tag retirement is
+    # measured by the widget lane instead.
+    if tier == "full":
+        for pairs in MINIMAP_MARKER_PAIRS:
+            cases.append(
+                Case(
+                    f"minimap-markers/{pairs}",
+                    "minimap-markers",
+                    FixtureSpec("markers", pairs, seed_for("minimap-markers", pairs)),
+                    settings={"word-wrap": True, "show-minimap": True, "minimap-long-line-markers-visible": True},
+                    length=pairs,
+                    attrs={"wrap": True, "minimap": True},
+                )
+            )
     for total in grid["total-size"]:
         # The same bytes as .html and as .txt: S_syntax is the difference.
         for ext in ("html", "txt"):

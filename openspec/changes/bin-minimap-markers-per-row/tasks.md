@@ -21,14 +21,14 @@ Rules for every task:
 
 ## 1. Baseline, attribution and toolkit facts (before any fix)
 
-- [ ] 1.1 Record the spec-stage A1–A4 figures (design "Measured baseline")
+- [x] 1.1 Record the spec-stage A1–A4 figures (design "Measured baseline")
       in `runs.log` with the `main` revision. Re-run A2 and A3 on the
       branch's base `main` if `main` moved, and add a minimap-off scroll
       baseline: A2's 11.3–15.9 ms scroll frames, with markers and without.
       This settles which share of a scroll frame the minimap owns.
-- [ ] 1.2 Extend A2 to a 1,425-row strip (a window about 1,600 px tall) and
+- [x] 1.2 Extend A2 to a 1,425-row strip (a window about 1,600 px tall) and
       to a 10,000,000-byte document with markers, on `main`.
-- [ ] 1.3 GTK axioms (design D9), each with a probe in `gtk-lush-axioms` (a
+- [x] 1.3 GTK axioms (design D9), each with a probe in `gtk-lush-axioms` (a
       `slow` marker where it times 131,072 items), an interactive/`--check`
       sample and a ledger row in
       `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`
@@ -44,7 +44,7 @@ Rules for every task:
       Run `make gtk-axioms` and `make check-gtk-axioms`. If AX1 fails
       (layout invalidation, undo entries or O(lines) cost), stop and revise
       D4 before task 4.
-- [ ] 1.4 Measure, on `main` and with a measurement-only completed-scan
+- [x] 1.4 Measure, on `main` and with a measurement-only completed-scan
       probe, the time to the first search marker inside the band and the
       worst dispatch over the whole search, from the query to 2 s after the
       scan ends (A4 timed only after the scan, so it missed `main`'s
@@ -62,23 +62,23 @@ Rules for every task:
 
 ## 2. Pure policy (failing first)
 
-- [ ] 2.1 `minimap/policy.rs` unit and property tests first, for the
+- [x] 2.1 `minimap/policy.rs` unit and property tests first, for the
       integer row table and the row-group walker:
       - groups from a monotone row-to-line table;
       - probe calls at most `groups + 1`;
       - hidden-line ranges inside one group;
       - a band rounded outward and clamped;
       - markers past the band ignored.
-- [ ] 2.2 Unit and property tests first for row runs:
+- [x] 2.2 Unit and property tests first for row runs:
       - coalescing adjacent rows per kind;
       - integer minimum-height expansion centred and pushed inside the band;
       - never below `content_bottom` (the EOF tail);
       - agreement with `expanded_to_min_height` on whole pixels, sampled to
         2^20.
-- [ ] 2.3 Implement the walker and the run builder under the module's
+- [x] 2.3 Implement the walker and the run builder under the module's
       `deny(float_arithmetic, disallowed_methods)` with no new `expect`. The
       lanes and colours are unchanged.
-- [ ] 2.4 Delete `MINIMAP_SEARCH_MATCH_CAP`,
+- [x] 2.4 Delete `MINIMAP_SEARCH_MATCH_CAP`,
       `MINIMAP_MODIFIED_LINE_MARK_CAP`, `MINIMAP_LONG_LINE_MARK_CAP`,
       `modified_line_mark_samples`, `markers_from_lines` and
       `normalize_line_runs` if unused, `fit_marker_bounds` and
@@ -87,7 +87,7 @@ Rules for every task:
       in its rustdoc. Replace
       `no_loss_the_minimap_draws_every_marker_main_drew` with a test that
       shows no cap, red against the caps first.
-- [ ] 2.5 Kani (design D8), harnesses `marker_rows_*` in
+- [x] 2.5 Kani (design D8), harnesses `marker_rows_*` in
       `policy/kani_proofs.rs`:
       - the table is monotone and every row is in exactly one group;
       - sound and complete against a model marker-line set;
@@ -110,32 +110,32 @@ Rules for every task:
       - record the per-harness times in
         `docs/next/formal-verification.md`, and mark its
         `fit_marker_bounds` entry as retired by this change.
-- [ ] 2.6 Recount the minimap policy's admitted float functions. Lower the
+- [x] 2.6 Recount the minimap policy's admitted float functions. Lower the
       ceiling in `.agents/rules/workflow-convention.md` and the script if
       a retired function was admitted, and never raise it. Run
       `make check-workflow-boundaries`.
 
 ## 3. Failing-first widget tests (red on `main` behaviour)
 
-- [ ] 3.1 Search past the cap. 131,072 matches on alternating lines, map
+- [x] 3.1 Search past the cap. 131,072 matches on alternating lines, map
       scrolled to the end: the strip has search-lane runs on the rows
       showing matching lines. Red on `main` (no markers past the 2,048th).
-- [ ] 3.2 Modified past the cap. Edit 2,049 separate lines, then one more
+- [x] 3.2 Modified past the cap. Edit 2,049 separate lines, then one more
       near the end: a modified run appears there. Red on `main`. Also a
       restored 131,072-line draft: every content row is in a modified run,
       red on `main`'s 2,048 samples. Also the stale line-number cache: an
       edit whose line number equals an earlier, shifted edit's is still
       marked, red on `main`.
-- [ ] 3.3 Long lines past the cap. 65,536 alternating long lines with
+- [x] 3.3 Long lines past the cap. 65,536 alternating long lines with
       long-line markers on, map at the end: long-lane runs. Red on `main`.
-- [ ] 3.4 Rendered strip after map scroll. Render the strip to a texture
+- [x] 3.4 Rendered strip after map scroll. Render the strip to a texture
       (proof harness) after scrolling a document taller than the map, and
       compare its marker rows with a fresh projection. Record whether
       `main` is stale (design D7, AX5). If it is, the test is red on `main`.
-- [ ] 3.5 Hidden lines. A Protected View fold, or an invisible-tag range in
+- [x] 3.5 Hidden lines. A Protected View fold, or an invisible-tag range in
       the test, holding a modified line between two rows: the group draws
       the lane.
-- [ ] 3.6 Tracking hygiene:
+- [x] 3.6 Tracking hygiene:
       - undo history after tagged edits holds only text;
       - saved bytes equal the buffer text;
       - paste of tagged text into another tab leaves no tag there;
@@ -143,7 +143,7 @@ Rules for every task:
         restore, save-formatting mirror-back) still suspends tracking
         exactly;
       - the clean transition clears the markers in its own dispatch.
-- [ ] 3.7 Budgets (`timing_verdicts_enforced`). Every marker dispatch fits
+- [x] 3.7 Budgets (`timing_verdicts_enforced`). Every marker dispatch fits
       `B_INTERACT_US`, and the frame after fits `B_SETTLE_US`, at 2,048 and
       131,072 markers of each kind, 713 and 1,425 rows: refresh, scan
       completion, scroll frames, save with 131,072 modified runs plus every
@@ -151,11 +151,11 @@ Rules for every task:
       minimap's own work is timed on its own against `B_INTERACT_US`; the
       whole frame against `B_SETTLE_US` and `main` + one reference frame
       (design D10).
-- [ ] 3.8 Search lane after an edit. With a search active, type, then
+- [x] 3.8 Search lane after an edit. With a search active, type, then
       scroll the map before the rescan ends: the search lane returns within
       the rescan's idle cycle (design D5), and no dispatch exceeds
       `B_INTERACT_US`.
-- [ ] 3.9 Retirement queue. Save twice while the first retirement is still
+- [x] 3.9 Retirement queue. Save twice while the first retirement is still
       slicing: both old tags are retired and removed from the table, the
       current tag is untouched, and disposing the editor mid-retirement
       cancels the slices and leaves no tag behind. Edits between slices do
@@ -163,12 +163,12 @@ Rules for every task:
 
 ## 4. Coordination and adapter
 
-- [ ] 4.1 Review the 37 uses of `minimap_marker_count` and
+- [x] 4.1 Review the 37 uses of `minimap_marker_count` and
       `minimap_marker_bounds` in `crates/lushtext/tests/widget/editor_page.rs`
       (16) and `window.rs` (21) for the band-only semantics (design D11).
       An assertion about a marker outside the band scrolls the map to it
       first; none is weakened or dropped.
-- [ ] 4.2 `projection_execution.rs`:
+- [x] 4.2 `projection_execution.rs`:
       - gather the band (rounded outward) and the row table once per draw
         input;
       - the per-kind probes (search on a completed scan, tag, long-line
@@ -178,14 +178,14 @@ Rules for every task:
       - draw the integer runs with one `f64::from` per edge;
       - `minimap_marker_count` and `minimap_marker_bounds` report the drawn
         runs.
-- [ ] 4.3 `watch.rs`:
+- [x] 4.3 `watch.rs`:
       - tag the inserted lines in the insert after-handler, and make the
         delete handler an after-handler that tags the joined line (design
         D4);
       - redraw the strip on the map vadjustment's `value-changed` (tracked
         in `map_signals`);
       - re-arm on scan completion (`occurrences-count`).
-- [ ] 4.4 `retirement.rs`: swap the tag at every site design D4 lists
+- [x] 4.4 `retirement.rs`: swap the tag at every site design D4 lists
       (save, both load sites, buffer replacement, local-history restore,
       memory eviction, undo to the saved state) and in
       `mark_entire_buffer_modified` (draft restore), updating the facade
@@ -195,14 +195,14 @@ Rules for every task:
       cursor; the constant has a `Kind: cap` rustdoc line (a power of two,
       rounded down) and is measured to fit `B_INTERACT_US`. Remove each tag
       from the table when empty; cancel the queue on dispose.
-- [ ] 4.5 `imp.rs` `MinimapState`: drop `modified_marks`,
+- [x] 4.5 `imp.rs` `MinimapState`: drop `modified_marks`,
       `modified_lines_cache` and `markers`. Add the current and retiring
       tags, the bin cache and the generations.
-- [ ] 4.6 Readiness: `minimap_work_pending` also covers a scan wait and
+- [x] 4.6 Readiness: `minimap_work_pending` also covers a scan wait and
       queued retirement (design D11). Update the `minimap-refresh` blocker
       in `docs/automation.md` and `docs/automation-reference.md` and run
       `make check-automation-docs`.
-- [ ] 4.7 `evidence.rs`: add
+- [x] 4.7 `evidence.rs`: add
       - the binned row count;
       - the group count;
       - the probe calls per kind in the last draw;
@@ -213,13 +213,13 @@ Rules for every task:
       No document text. If any field reaches the automation snapshot,
       update `docs/automation.md` and `docs/automation-reference.md` and run
       `make check-automation-docs`.
-- [ ] 4.8 Keep the facade `minimap/mod.rs` within 370 lines, narrating the
+- [x] 4.8 Keep the facade `minimap/mod.rs` within 370 lines, narrating the
       new stage and resumption points (scan completion, map scroll,
       retirement slices).
 
 ## 5. Measurement and proofs
 
-- [ ] 5.1 Widget measurements interleaved with `main` (design D10):
+- [x] 5.1 Widget measurements interleaved with `main` (design D10):
       - A1 again (the minimap's share per phase);
       - A2 at the caps;
       - the 131,072 fixtures at 713 and 1,425 rows;
@@ -237,12 +237,12 @@ Rules for every task:
       `scripts/responsiveness-smoke-driver.py` (open, find, Page Down,
       scroll, type, save). Run interleaved with `main`, then
       `make check-responsiveness-lane`.
-- [ ] 5.3 `make visual-geometry-smoke` (rendered-pixel proof: the
+- [x] 5.3 `make visual-geometry-smoke` (rendered-pixel proof: the
       `native-minimap-*-anchors` invariants and `minimap-search-marker-row`
       in `minimap-sidebar-mid`). If the detected marker row moves by the
       removed anti-alias row, re-record the baseline with the reason.
       Then `make check-visual-proof-policy`.
-- [ ] 5.4 `make visual-smoke` (`main-search-minimap`) and
+- [x] 5.4 `make visual-smoke` (`main-search-minimap`) and
       `make accessibility-smoke` (`minimap-transition`). The strip stays
       decorative.
 - [ ] 5.5 `make check`, `make test` (shards parallel), `make
@@ -257,26 +257,26 @@ Rules for every task:
 
 ## 6. Documentation (per `.agents/rules/documentation.md`)
 
-- [ ] 6.1 `docs/thresholds.md`: remove the three cap rows; note D6's bound
+- [x] 6.1 `docs/thresholds.md`: remove the three cap rows; note D6's bound
       by construction (relative to the live buffer) under the minimap
       policy; add a row for `MINIMAP_MARKER_MIN_HEIGHT`, now an `i32`
       (`out: geometry`), and for `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES`
       (`cap`, with its measurement). Run `make check-thresholds`.
-- [ ] 6.2 `docs/workflow-readability-matrix.md`, minimap row:
+- [x] 6.2 `docs/workflow-readability-matrix.md`, minimap row:
       - re-derive the measured cells (size, seam counts, pure-policy
         consumers, excluding `#[cfg(test)]`);
       - name the new coordination step;
       - remove `MarkerProjectionSpace` from the row's seam value objects
         (the seam list near line 2651);
       - run `make check-workflow-boundaries`.
-- [ ] 6.3 `AGENTS.md` (`.claude/CLAUDE.md`): the minimap module line and the
+- [x] 6.3 `AGENTS.md` (`.claude/CLAUDE.md`): the minimap module line and the
       "Minimap byte classifier" decision gain the binning, the tag
       tracking and the completed-scan rule. Update `README.md` if a feature
       line names marker limits.
-- [ ] 6.4 `openspec/specs/editor-minimap` (synced at archive) and
+- [x] 6.4 `openspec/specs/editor-minimap` (synced at archive) and
       `docs/accessibility-matrix.md` (A11Y-EDITOR-MINIMAP, if evidence
       changes).
-- [ ] 6.5 `docs/next/long-line-documents.md`:
+- [x] 6.5 `docs/next/long-line-documents.md`:
       - the PT row and queue item;
       - a "BM" implementation record with the M7 attribution and its owners
         (DL for the wrapped layout, the GtkTextView/GtkSourceMap relayout
@@ -285,6 +285,35 @@ Rules for every task:
       - the release-notes draft: "minimap markers 2,048" becomes "every
         minimap marker";
       - the `lighten-notes-browser-rows` queue position.
-- [ ] 6.6 `.agents/skills/gtk-testing` references. Note that measurement
+- [x] 6.6 `.agents/skills/gtk-testing` references. Note that measurement
       tests must destroy their windows, or later repetitions include
       earlier ones' relayouts (design D1).
+
+## Implementation notes (stage 3, 2026-11-07)
+
+- 1.2: the 1,425-row strip and the 9.5 MB (66,000-pair) document are in the
+  scroll comparison (design "Measured verdicts").
+- 1.3: A98–A101, plus A102 for D5's fallback (`forward_async` never blocks
+  but loses a superseded request with a GIO CRITICAL), each with a probe,
+  a `--check` sample and a ledger row.
+- 1.4: D5 required the fallback (the ordinary document was later without an
+  over-budget dispatch on `main`); `forward_async` was dropped for A102, and
+  an interim search of a bounded private copy of the band's text was adopted
+  (design "D5 decided"). First marker 150–153 ms against `main`'s 261–348.
+- 2.5: Kani domain reduced to bands of one to three rows (four exhausted the
+  14 GiB cap), widened by an expansion harness on every whole-pixel band up
+  to 2^20 and a merge harness; the harnesses form a new `scheduled` shard,
+  `core-minimap-binning`, with derived figures.
+- 3.4: not red on `main` in its scenario (design D7 note); kept as a guard.
+- 3.7: also enforces the retirement slice's own time; it found the 16,384
+  cap at 6.9–9.1 ms per slice and set `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES`
+  to 4,096. Its debug run uses 2,048 markers.
+- 4.6: the `minimap-refresh` blocker also covers a scan wait and a retiring
+  tag; no evidence field reaches the automation snapshot.
+- 5.2: the `markers` fixture kind and the `minimap-markers/2048` and
+  `/131072` lane cases (full tier) are added and self-tested; the lane never
+  saves, so the save's retirement is measured by the widget lane only.
+- Pre-existing defects fixed: `gtk_lush_settle::Debounce` removes its
+  superseded source (Too many GWeakRef registered), and the tag replaces the
+  source marks that collapsed onto line 0.
+

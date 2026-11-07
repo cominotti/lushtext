@@ -182,7 +182,7 @@ MULTIBYTE_CLASS_WEIGHTS = (
 SHORT_HTML_TAGS = ("div", "span", "p", "li", "a", "td", "section", "em")
 
 DELIMITERS = {"lf": "\n", "cr": "\r", "crlf": "\r\n", "u2029": " "}
-KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "short-code", "markdown", "keystroke", "short-language")
+KINDS = ("paragraph", "minified-html", "dense", "short-html", "session", "eviction", "short-code", "markdown", "keystroke", "short-language", "markers")
 CHUNK_CHARS = 16 * 1024
 CHUNK_COUNT = 48
 TABLE_SIZE = 4096
@@ -474,6 +474,26 @@ def write_dense(path: Path, delimiter: str, seed: int, line_length: int, count: 
     return writer.close()
 
 
+MARKERS_TAIL_CHARS = 130
+
+
+def write_markers(path: Path, delimiter: str, seed: int, pairs: int) -> dict:
+    """`pairs` pairs of lines: one holding the find marker and a 130-character
+    tail (a long line past the minimap's 120-column warning), then a short
+    one, so every marker kind lands on separate, unmerged lines
+    (`bin-minimap-markers-per-row` lane cases)."""
+    rng = SplitMix64(seed)
+    chunks = make_chunks(rng, "ascii")
+    writer = FixtureWriter(path, delimiter)
+    for _ in range(pairs):
+        writer.text(f"{FIND_MARKER} ")
+        giant_paragraph(writer, rng, chunks, MARKERS_TAIL_CHARS, marker=False)
+        writer.end_paragraph()
+        writer.text("z")
+        writer.end_paragraph()
+    return writer.close()
+
+
 def write_short_html(path: Path, delimiter: str, seed: int, total_bytes: int) -> dict:
     rng = SplitMix64(seed)
     chunks = make_chunks(rng, "ascii")
@@ -753,6 +773,8 @@ def generate(
         files.append(write_minified_html(out_dir / f"{stem}.html", separator, seed, size))
     elif kind == "dense":
         files.append(write_dense(out_dir / f"{stem}.{ext}", separator, seed, size, count or 160))
+    elif kind == "markers":
+        files.append(write_markers(out_dir / f"{stem}.{ext}", separator, seed, size))
     elif kind == "short-html":
         files.append(write_short_html(out_dir / f"{stem}.{ext}", separator, seed, size))
     elif kind == "session":
@@ -783,7 +805,7 @@ def generate(
         "delimiter": delimiter,
         "charset": charset,
         "flavor": flavor,
-        "find_marker": FIND_MARKER if kind in ("paragraph", "minified-html", "session") else None,
+        "find_marker": FIND_MARKER if kind in ("paragraph", "minified-html", "session", "markers") else None,
         "editorconfig": manifest_editorconfig,
         "keystroke_markers": dict(KEYSTROKE_MARKERS) if kind == "keystroke" else None,
         "files": files,
@@ -831,6 +853,13 @@ def self_test() -> int:
         multibyte = generate("paragraph", 20_000, 3, scope, scope / "m", charset="multibyte")
         mb = multibyte["files"][0]
         expect(mb["longest_paragraph"] == 20_000 and mb["bytes"] > mb["chars"], "multibyte: chars < bytes")
+        markers = generate("markers", 64, 5, scope, scope / "markers")
+        marker_text = Path(markers["files"][0]["path"]).read_text(encoding="utf-8")
+        marker_lines = marker_text.split("\n")
+        expect(marker_text.count(FIND_MARKER) == 64, "markers: one find marker per pair")
+        expect(markers["files"][0]["paragraphs"] == 128, "markers: two lines per pair")
+        expect(len(marker_lines[0]) == len(FIND_MARKER) + 1 + MARKERS_TAIL_CHARS > 120, "markers: the marked line is a long line")
+        expect(marker_lines[1] == "z", "markers: a short line separates marked lines")
 
         for delimiter, separator in DELIMITERS.items():
             result = generate("dense", 1_000, 5, scope, scope / f"d-{delimiter}", delimiter=delimiter, count=12)

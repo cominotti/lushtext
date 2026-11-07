@@ -545,3 +545,235 @@ Rollback is a revert.
 
 None blocking. D5's fallback and D7's staleness are settled by tasks 1.4 and
 3.4.
+
+## Implementation record (stage 3, 2026-11-07)
+
+### Toolkit facts (task 1.3)
+
+The four axioms hold on GTK 4.22.5, Libadwaita 1.9.3, GtkSourceView 5.20.0
+and Pango 1.57.1 (sample `--check` under private headless Mutter), numbered
+from the next free id:
+
+- **A98 (AX1).** Tagging 1,024 separate lines costs 1.4 ms in a
+  262,144-line buffer and 0.46 ms in a 1,024-line one; a property-less tag
+  over a presented 20,000-line view leaves 0 µs of main-loop work where a
+  `scale`-only tag costs 100 ms; no undo entry; it moves with its text; a
+  cross-table paste carries no tag; no `highlight-updated`; after-handler
+  iterators stay valid. **One correction to D4:** text inserted *strictly
+  inside* a tagged range does carry the tag (inserted at either end it does
+  not). It changes nothing: an insertion is tagged as modified anyway, and a
+  swapped-out tag inherited by new text is removed by its retirement. The AX1
+  gate passed, so D4 stood.
+- **A99 (AX2).** `line_at_y` on a `GtkSourceMap` is monotone, never returns
+  a hidden line, and costs 0.73 µs near the end of 262,144 lines (0.76 µs at
+  1,024).
+- **A100 (AX3).** `forward` costs 3 µs inside a completed scan and 74.5 ms
+  outside one (262,144 lines, one match on the last line); hidden text is
+  skipped; `occurrences-count` reads -1 after an edit and notifies when the
+  rescan ends.
+- **A101 (AX5).** An overlay sibling of the map is not redrawn when the map
+  scrolls (0 draws over five scrolls; one `queue_draw` draws once).
+
+- **A102 (AX4).** `forward_async` never blocks a dispatch (83 ms to a match
+  262,143 lines away with no dispatch over 0.1 ms), **but** a pending
+  request superseded by a query change never calls back and GIO logs a
+  CRITICAL (`GTask ... finalized without ever returning`). The context's own
+  scan of that buffer ends in 70 ms when nothing else runs; in a presented
+  editor it waits behind the views' layout validation.
+
+### D5 decided (task 1.4)
+
+Measured interleaved (optimized widget build, load 0.7–1.0, `main` pass then
+the completed-scan-only branch pass; first in-band search marker / scan end /
+worst dispatch over the whole search, three repetitions):
+
+| Document | `main` | Completed scan only |
+| --- | --- | --- |
+| ordinary (10,000 lines, 100 matches, map at top) | 259–296 ms / same / 6.4–7.9 ms | 381–439 ms / same / 3.9–5.7 ms |
+| sparse (262,144 lines, one match at the end, map at end) | 330–345 ms / same / 75.6–85.6 ms | 5,295–5,402 ms / same / 10.0–40.6 ms |
+| dense (131,072 matches, map at top) | 268–269 ms / 6,116–6,182 ms / 11.0–18.7 ms | 6,134–6,197 ms / same / 10.9–18.4 ms |
+
+(That branch pass is the superseded completed-scan-only build; the shipped
+figures are in "Measured verdicts".)
+
+`main` was earlier on every document, and on the **ordinary** one without a
+dispatch over `B_INTERACT_US`, so D5's rule required the fallback. The
+scans are far slower in a presented editor than in isolation (A102: 70 ms
+alone, 5.3 s here), because GtkSourceView's scan runs behind the editor's and
+the map's layout validation; `main` hid that by scanning synchronously in its
+refresh. The fallback D5 named, `forward_async` walks, was implemented and
+dropped: a query change supersedes a pending request, which then never
+returns and GIO logs a CRITICAL (A102), and every keystroke in the search
+entry is such a change. **Adopted instead:** while the scan runs, the band's
+own text (at most `MINIMAP_INTERIM_SEARCH_CHARS`, 32,768 characters) is
+copied into a private buffer and searched synchronously with the same query
+and options; once the live scan completes, the bins come from it. The copy
+carries no tags, so text hidden by a fold can show an interim mark until the
+scan ends. The re-measured figures are in "Measured verdicts" below.
+
+### Decisions taken while implementing
+
+- **The scan's end redraws the strip directly.** The `notify::occurrences-count`
+  handler invalidates the bins and queues the strip draw instead of re-arming
+  the 80 ms refresh debounce, which would delay the switch from the interim
+  marks to the scan's by another 80 ms.
+- **The bins are computed in the draw function, cached per draw input.** The
+  refresh only advances the marker generation and queues the draw. The test
+  seams `minimap_marker_count` and `minimap_marker_bounds` read the same
+  cache through the same compute-or-reuse path, so they report exactly what
+  the strip draws (D11).
+- **The row table reads one `line_at_y` per line, not per row:** the rows a
+  line covers (its `line_yrange`) reuse its answer.
+- **An empty last line has no character to carry the tag;** its terminator
+  above is tagged instead, so the edit shows on the line above (one row
+  away). `main` marked it with a source mark.
+- **Dispose cancels retirement without untagging.** It removes the slice
+  source and deletes the cursor marks; the swapped-out tags stay in the table
+  of a buffer that is finalized with the editor, rather than being removed in
+  one O(toggles) call (30.6–32.4 ms at 131,072 runs) during teardown. Task 3.9
+  asserts no slice source and no queued tag remain.
+- **`MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES` is 4,096.** The design's 16,384
+  (about 2 ms at A3's 0.12 µs per toggle) measured 6.9–9.1 ms per slice in a
+  presented editor: a slice walks the toggles one by one and then removes the
+  tag over the range, about 0.5 µs per toggle. 4,096 is a quarter of that.
+- **Kani shard.** The `marker_rows_*` harnesses got their own shard,
+  `core-minimap-binning` (6.31 local minutes, peak 11.64 GiB): added to
+  `core-geometry-policies` they would break its pull-request margin (fit
+  order: split first). It is gated `scheduled` with derived figures until a
+  dispatched CI run measures it; promoting it to `pull-request` is an open
+  decision for the maintainer.
+- **Kani domain (a reduced bound, recorded).** The end-to-end harnesses
+  (row groups, walker, run builder) prove bands of one to three rows; at four
+  rows the walker and the run builder exhausted the 14 GiB address-space cap
+  in CBMC's propositional reduction. Two narrower harnesses widen the run
+  builder's guarantees: `marker_rows_expansion_*` proves the integer growth
+  on every whole-pixel band up to 2^20 (minimum heights up to 2^16), and
+  `marker_rows_merge_*` proves two runs that meet after growing merge into
+  disjoint, ordered runs on bands up to 16 rows. Three solver-cost findings,
+  each fixed in the harness or in a Kani-neutral way in the code: a symbolic
+  band start (one row already exhausted the cap; the grouping is
+  translation-invariant, so the start is fixed), a symbolic `Vec` capacity
+  (the group vector is sized from the table's length), and `i64` arithmetic in
+  the run builder (now `i32` with saturating operations). The unit property
+  tests cover the same properties on bands of up to 53 rows.
+- **D7: `main` is not stale in task 3.4's scenario.** The rendered-pixel test
+  passes on `main`: scrolling a 3,000-line document validates new lines, which
+  changes the editor adjustment's `upper`, whose `changed` handler re-arms
+  `main`'s refresh, and the test reads the pixels 300 ms later. A101 still
+  shows the strip is not redrawn by the scroll itself; on `main` it is
+  redrawn only by that later refresh (80 ms debounce, and only when `upper`
+  moved). The test stays as a guard: on the branch the redraw happens on the
+  scroll's own `value-changed`.
+
+### Two pre-existing defects found and fixed in this work stream
+
+- **`gtk_lush_settle::Debounce` kept every superseded timeout source.** Each
+  `schedule` added a GLib source holding a weak reference to its target and
+  never removed the previous one, so 131,072 edits in one dispatch (an in-tab
+  Replace All, or the measurement's edit loop) left 393,216 pending sources on
+  the minimap refresh debounce (three arms per edit) and passed GLib's
+  per-object weak-reference limit: `GLib-GObject-CRITICAL: Too many GWeakRef
+  registered`, and `main` stalled for over 27 minutes in the 131,072-run
+  fixture. `Debounce::schedule` and `invalidate` now remove the superseded
+  source (as `SupersedingTimer` already did); `gtk-lush-settle` unit tests and
+  the widget test `test_minimap_replace_all_of_many_matches_keeps_one_pending_refresh`
+  are red on `main` and green here.
+- **The modified-line source marks collapsed onto line 0 on `set_text`**
+  (2,048 of them), which made `main`'s A1 wrapped phase 612–799 ms even with
+  the minimap off. The tag has no marks: 80.7–81.0 ms here with the minimap
+  off, 135.8–146.4 ms with it on (the map's own wrapped layout).
+
+### Measured verdicts (task 5.1)
+
+Optimized widget build, presented, `taskset -c 8-23`, each run after the
+quiet gate (1-minute load 0.38–1.36 at every start), `main` (`9b8ba5ae`,
+worktree `bmm-main`) and the branch (worktree `bmm-branch`) interleaved,
+every window destroyed between repetitions; `runs.log` and
+`measure/evidence3.txt` in the handoff hold every figure.
+
+**Search latency (task 1.4), first in-band marker / scan end / worst dispatch
+over the whole search, two passes of three repetitions each:**
+
+| Document | `main` | Branch |
+| --- | --- | --- |
+| ordinary | 261–313 ms / same / 7.2–9.3 ms | **150.7–151.4 ms** / 369–437 ms / 3.8–7.0 ms |
+| sparse | 331–348 ms / same / **75.7–85.8 ms** | **150.4–152.2 ms** / 5,263–5,426 ms / 8.7–43.7 ms |
+| dense | 266–273 ms / 6,112–6,166 ms / 10.7–18.7 ms | **150.6–152.5 ms** / 6,159–6,203 ms / 10.9–18.6 ms |
+
+The first marker is 110–195 ms **earlier** than `main` on every document, so
+no latency exception is needed. The worst dispatches are not the minimap's:
+the minimap's own marker work stays below 0.11 ms (below), the sparse
+document's 43.7 ms and the dense one's 18.6 ms come with the search itself
+(`main`'s are 85.8 and 18.7 ms).
+
+**The minimap's own work at 131,072 markers of each kind**
+(`test_minimap_marker_work_fits_the_budgets_at_131072_markers`, enforced on
+the optimized build, two passes, 713- and 1,425-row strips):
+
+| Work | 713 rows | 1,425 rows | Budget |
+| --- | --- | --- | --- |
+| bins of all four kinds after a map scroll | 0.07–0.10 ms | 0.10–0.11 ms | `B_INTERACT_US` |
+| refresh dispatch | 3.5–3.6 ms | 6.2–6.4 ms | `B_INTERACT_US` |
+| the clean transition (save) | 0.10–0.13 ms | 0.10–0.13 ms | `B_INTERACT_US` |
+| one retirement slice (4,096 toggles), 65 slices | 3.0–3.2 ms | 4.0–4.3 ms | `B_INTERACT_US` |
+| scroll frames | 3.4–3.5 ms | 5.4–5.9 ms | `B_SETTLE_US` |
+
+`main` projected every run on every draw: 16.8–22.5 ms for the four kinds at
+its caps (A2), against 0.016–0.05 ms on the branch.
+
+**A1 (PT's M7 attribution), worst dispatch per phase, minimap on / off:**
+
+| Phase | `main` on / off | Branch on / off |
+| --- | --- | --- |
+| `set_text` of 2,100 long lines | 9.6–9.7 / 3.3–3.4 ms | 9.6–9.7 / 3.1–3.2 ms |
+| search "needle" | 10.4–11.1 / 5.7–7.1 ms | 9.9–10.7 / 3.6–6.1 ms |
+| 2,100 inserts outside the loop | 114.0–124.5 / 101.7–116.8 ms | 87.0–90.2 / 87.1–90.3 ms |
+| `set_text` of 64 × 8,192 wrapped characters | 627–723 / 612–799 ms | 136–146 / 80.7–81.0 ms |
+
+The minimap's share of the modified phase is now nil (8–11 ms on `main`).
+
+**A2 (2,048 alternating runs of each kind):** projection 0.016–0.05 ms
+(`main` 16.8–22.5 ms); search 6.4–8.9 ms (`main` 9.2–11.1); refresh
+6.7–8.9 ms (`main` 7.2–11.0); 2,100 inserts 96.7–108.8 ms (`main`
+111.9–125.3); scroll frames 11.4–16.7 ms (`main` 11.4–16.8).
+
+**Scroll frames, worst (mean), minimap on / off (tasks 1.1, 1.2):**
+
+| Fixture, strip | `main` on | `main` off | Branch on | Branch off |
+| --- | --- | --- | --- | --- |
+| caps (2,100 pairs, 302 KB), 713 rows | 15.3–17.0 (11.1–11.9) | 8.2–8.5 | 11.7–17.7 (8.9–9.9) | 8.5–9.1 |
+| caps, 1,425 rows | 14.0–16.2 (11.2–12.2) | 11.5–12.3 | 14.8–16.4 (11.5–12.4) | 10.4–13.7 |
+| 10 MB (66,000 pairs, 9.5 MB), 713 rows | 13.4–17.5 (10.9–11.0) | 8.2–8.6 | 12.7–17.9 (9.7–10.4) | 7.8–8.9 |
+| 10 MB, 1,425 rows | 17.2–17.8 (11.9–12.1) | 10.2–13.0 | 18.7–20.8 (15.1–15.8) | 10.1–13.3 |
+
+**131,072-run fixture (branch only; `main` could not complete it, see the
+`Debounce` defect above):** 131,072 single-character edits 20.6 s (157 µs
+each, the toolkit's per-edit cost); worst dispatch after them 3.1–6.0 ms;
+clean transition 0.10–0.14 ms with the markers cleared in that dispatch; an
+in-tab Replace All of 131,072 matches 43.4–43.7 s inside GtkSourceView's own
+`replace_all`, peak RSS growth 14.2–14.6 MiB, worst dispatch after it
+9.4–58.1 ms; a load over the buffer 142–438 ms, worst dispatch 16.3–146.9 ms
+and 11.8–80.3 ms after it (these used the first, 16,384-toggle slices).
+
+### Exceptions (recorded)
+
+- **Scroll frames over `B_SETTLE_US` (toolkit floor).** With the minimap on,
+  `main`'s frames reach 17.0–17.8 ms and the branch's 17.7–20.8 ms; with the
+  minimap off both stay at 7.8–13.7 ms, and the branch's own marker work is
+  at most 0.11 ms. The excess is the `GtkSourceMap`'s own repaint of a
+  scrolled map, present on `main`. Every branch frame is within `main` + one
+  reference frame (the 10 MB, 1,425-row case: 20.8 against 17.8 + 8.3 ms);
+  the 1,425-row 10 MB mean is 3–4 ms above `main`'s because the branch
+  redraws the strip on every map scroll (A101) where `main` left it stale
+  until its next refresh. No axiom pins the map's repaint cost yet (open
+  item).
+- **The A1 search phase** (9.9–10.7 ms, minimap off 3.6–6.1 ms) is the map
+  repainting the search highlights it draws itself; the minimap's own marker
+  work is in microseconds. Within `B_SETTLE_US`.
+- **2,100 edits outside the main loop** (87–109 ms) and **Replace All of
+  131,072 matches** (43.4 s in one GtkSourceView call): the toolkit's
+  validation and replace (D1); the same with the minimap off.
+- **Load over a buffer of 131,072 modified runs** (worst dispatch up to
+  146.9 ms): measured, not attributed; `main` has no figure to compare
+  (it cannot reach that state). Open item for the maintainer.
+

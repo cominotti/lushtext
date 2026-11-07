@@ -32,7 +32,7 @@ that freezes it is **paragraph length**, not file size.
 | SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80), aging after eight completions or 16 ms (review); `ViewportSliceBin`'s pending-request evidence covers the re-slice (review, pre-existing); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
 | EV | `defer-background-tab-layout` (queued 2026-11-02, coordinator decision; **next after C3**, it touches C3's install files) | The real cause of `eviction/reselect`'s 6–11 s batches, attributed in SC (perf on `main` cdfff201: 69.5 % of the application's CPU in `incremental_validate_callback`): (1) the transient load permit (`8 × 8 MiB + 1 MiB` = 65 MiB of the 256 MiB budget, so three loads at a time) is held through an installation that C6 paces below the validation idle, so the next document is not even read until every validating view has laid out its whole buffer; (2) **background tabs validate fully**: restoring many large files spends the CPU laying out tabs nobody is looking at (A80: a view on a hidden `GtkStack` page validates its whole buffer) | The selected document of a restore of ten 8 MiB documents is usable within the open budget, background documents do not delay it, and no background tab lays out its whole buffer before it is shown (or the cost is recorded against a toolkit floor). **Implemented 2026-11-03, review fixes 2026-11-04** (PR #80, not merged): a hidden tab's view shows an empty placeholder buffer (A82, A83) except while an assistive technology listens or past 2^18 lines, background installs wait one priority step below the visible tab's (aging after 256 ms), the load permit keeps the decoded body plus the residency not yet installed after the read, a dense document's reattach is revealed in paced ranges; `eviction/reselect` completes (main: 20 s cap) with every background document laid out never and installed within ~0.5 s of the visible one; see "EV" below |
 | DL | `bound-dense-long-line-editing` (queued 2026-11-05, coordinator, from CF's review; proposal not written) | Bound open, click, restyle and typing on **editable dense documents of long lines** (the full tier's dense/10000 and dense/50000: 160 lines of 10,000 or 50,000 characters). Identical on `main` `1d483b24` and CF: open 110–530 ms, click 53–262 ms, zoom step about 100 / 470–485 ms, font change 70 / 320–330 ms, typing about 1.2 s per burst, the lane failing `misdirected_typing` and `withheld_typing_frames` in 12 / 18 phases; the cost is GtkTextView validating 2000 px batches of such lines (A31), each dispatch laying out up to about a million characters | The full-tier lane passes its typing gates on these cases, and every dispatch is within the budgets or recorded against a toolkit floor (C5's per-keystroke exception covers one paragraph's re-layout, not a batch of them) |
-| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; implemented 2026-11-05, merged (PR #84, `main` `d59a1256`) and archived 2026-11-06 (`openspec/changes/archive/2026-11-06-power-of-two-thresholds/`); `bound-lists-by-budget-not-count` merged (PR #87, `main` `1af354a1`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-lists-by-budget-not-count/`); `bound-notes-browser-by-budget` merged (PR #88, `main` `4860fa2d`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-notes-browser-by-budget/`); `drill-down-palette-categories` merged (PR #89, `main` `4b567cdf`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-drill-down-palette-categories/`); `bin-minimap-markers-per-row` is **next**, see "DP") | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard. **Proposal written 2026-11-05** (branch `power-of-two-thresholds`, `openspec/changes/power-of-two-thresholds/`): about 95 in-scope constants classified; tiers 8 MiB / 64 MiB (512 MiB after task 3's memory peak); caps down, coverage windows (`R_BATCH` 256), retention tiers and retry budgets up (nothing stored is pruned); exceptions with corpus evidence (`L_SYNTAX`, the per-language gates and `S_SYNTAX_OTHER`: rounding down unhighlights 0.1–22 % of real files; `L_PROTECT_EDIT`, `V_BATCH`, the 100,000-file index, the 64 MP image cap); `L_PROTECT`/`N_INSPECT` 512 if a `dense/512` lane case holds, else 256; `V_SLICE`, the direct-install threshold and the 250-per-turn search caps re-measured; a `make check-thresholds` inventory gate. **Implemented 2026-11-05** (branch `power-of-two-thresholds`, PR pending, not merged): see "PT" below. Measured: the open tier is 512 MiB (memory peak within 1.074 × main's at 500 MB), `L_PROTECT`/`N_INSPECT` 512, `V_SLICE` 16,384, the direct-install threshold 512 KiB, the search per-turn caps 256; task 4.5's corpus count kept `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `MAX_MARKDOWN_EVENTS` and the table-cell caps as recorded exceptions. **Amended 2026-11-05 (maintainer, PR #84 not merged):** the first version rounded every cap down and lost what `main` showed (palette 50 → 32, notes 500 → 256, Replace All 10 → 8 MiB, the 10,000 caps → 8,192, minimap markers 2,000 → 1,024, the minimap and per-edit history tier 10 MB → 8 MiB). New kind **presentation cap** (design D12): a cap on what the user sees or gets rounds **up** from its pre-PT value when its bound holds by measurement, else keeps that value as an exception; internal caps keep rounding down. **Implemented 2026-11-05 (stage 3, PR #84):** palette 64, notes 512, Replace All 16 MiB, the 10,000 caps 16,384 (the sidebar directory cap kept at 10,000 by measurement), markers 2,048, save-only history 16 MiB (the minimap tier kept at 10,000,000 bytes by measurement), `N_HEAD` and CSS back to 10,000 and 37 KiB, `N_DENSE` 256, Markdown 65,536 events and 1,024 cells, `L_SEARCH_HIGHLIGHT` 16,384 (`L_MINIMAP` kept at 22,000 by measurement, `L_INVISIBLES` at 50,000 by Protected View's invariant), the index 131,072, images 2^26 pixels; displayed sizes in IEC units (D14). Queued after PT merges, in order (D13): `bound-lists-by-budget-not-count`, `stream-replace-all`, `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then `avx2-health-scan-kernel` and DL. See "PT" below, "Amendment". | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
+| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; implemented 2026-11-05, merged (PR #84, `main` `d59a1256`) and archived 2026-11-06 (`openspec/changes/archive/2026-11-06-power-of-two-thresholds/`); `bound-lists-by-budget-not-count` merged (PR #87, `main` `1af354a1`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-lists-by-budget-not-count/`); `bound-notes-browser-by-budget` merged (PR #88, `main` `4860fa2d`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-notes-browser-by-budget/`); `drill-down-palette-categories` merged (PR #89, `main` `4b567cdf`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-drill-down-palette-categories/`); `bin-minimap-markers-per-row` implemented 2026-11-07 (branch `bin-minimap-markers-per-row`, PR pending, not merged; see "BM"); `lighten-notes-browser-rows` is **next**) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard. **Proposal written 2026-11-05** (branch `power-of-two-thresholds`, `openspec/changes/power-of-two-thresholds/`): about 95 in-scope constants classified; tiers 8 MiB / 64 MiB (512 MiB after task 3's memory peak); caps down, coverage windows (`R_BATCH` 256), retention tiers and retry budgets up (nothing stored is pruned); exceptions with corpus evidence (`L_SYNTAX`, the per-language gates and `S_SYNTAX_OTHER`: rounding down unhighlights 0.1–22 % of real files; `L_PROTECT_EDIT`, `V_BATCH`, the 100,000-file index, the 64 MP image cap); `L_PROTECT`/`N_INSPECT` 512 if a `dense/512` lane case holds, else 256; `V_SLICE`, the direct-install threshold and the 250-per-turn search caps re-measured; a `make check-thresholds` inventory gate. **Implemented 2026-11-05** (branch `power-of-two-thresholds`, PR pending, not merged): see "PT" below. Measured: the open tier is 512 MiB (memory peak within 1.074 × main's at 500 MB), `L_PROTECT`/`N_INSPECT` 512, `V_SLICE` 16,384, the direct-install threshold 512 KiB, the search per-turn caps 256; task 4.5's corpus count kept `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `MAX_MARKDOWN_EVENTS` and the table-cell caps as recorded exceptions. **Amended 2026-11-05 (maintainer, PR #84 not merged):** the first version rounded every cap down and lost what `main` showed (palette 50 → 32, notes 500 → 256, Replace All 10 → 8 MiB, the 10,000 caps → 8,192, minimap markers 2,000 → 1,024, the minimap and per-edit history tier 10 MB → 8 MiB). New kind **presentation cap** (design D12): a cap on what the user sees or gets rounds **up** from its pre-PT value when its bound holds by measurement, else keeps that value as an exception; internal caps keep rounding down. **Implemented 2026-11-05 (stage 3, PR #84):** palette 64, notes 512, Replace All 16 MiB, the 10,000 caps 16,384 (the sidebar directory cap kept at 10,000 by measurement), markers 2,048, save-only history 16 MiB (the minimap tier kept at 10,000,000 bytes by measurement), `N_HEAD` and CSS back to 10,000 and 37 KiB, `N_DENSE` 256, Markdown 65,536 events and 1,024 cells, `L_SEARCH_HIGHLIGHT` 16,384 (`L_MINIMAP` kept at 22,000 by measurement, `L_INVISIBLES` at 50,000 by Protected View's invariant), the index 131,072, images 2^26 pixels; displayed sizes in IEC units (D14). Queued after PT merges, in order (D13): `bound-lists-by-budget-not-count`, `stream-replace-all`, `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then `avx2-health-scan-kernel` and DL. See "PT" below, "Amendment". | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
 
 C1–C4 are drafted; none may be **implemented** before this record holds the
 values they use (`responsiveness-measurement` spec).
@@ -3571,7 +3571,7 @@ fix: `make check-font-zoom-registration` also forbids a builder's
 (see "Amendment" at the end of this section); merged as PR #84 (`main`
 `d59a1256`) and archived 2026-11-06. `bound-lists-by-budget-not-count` (item 1
 of the queue below) followed: merged as PR #87 (`main` `1af354a1`) and archived
-2026-11-07; `bound-notes-browser-by-budget` followed: merged as PR #88 (`main` `4860fa2d`) and archived 2026-11-07 (see "BN"); `drill-down-palette-categories` followed: merged as PR #89 (`main` `4b567cdf`) and archived 2026-11-07 (see "DP"); `bin-minimap-markers-per-row` is next. Design and decisions:
+2026-11-07; `bound-notes-browser-by-budget` followed: merged as PR #88 (`main` `4860fa2d`) and archived 2026-11-07 (see "BN"); `drill-down-palette-categories` followed: merged as PR #89 (`main` `4b567cdf`) and archived 2026-11-07 (see "DP"); `bin-minimap-markers-per-row` followed (implemented 2026-11-07, PR pending; see "BM"). Design and decisions:
 `openspec/changes/archive/2026-11-06-power-of-two-thresholds/design.md` (D1-D11, "Spec review
 (stage 2)", "Implementation decisions (stage 3)"). Measurement artifacts:
 `.claude/handoffs/power-of-two-thresholds/` (`runs.log` with the load before
@@ -3881,8 +3881,9 @@ separate change, in this order:
      Backspace on an empty entry). **Implemented 2026-11-07** (stage 3,
      branch `drill-down-palette-categories`; merged as PR #89 and
      archived 2026-11-07): see "DP" below;
-   - `bin-minimap-markers-per-row` (**next**, after DP's archive,
-     2026-11-07): markers binned per pixel row. It must
+   - `bin-minimap-markers-per-row` (after DP's archive, 2026-11-07;
+     **implemented 2026-11-07**, PR pending, not merged; see "BM"): markers
+     binned per pixel row. It must
      first attribute PT's M7 worst dispatches (118–140 ms and 741–823 ms,
      which include a whole-buffer `set_text` and relayout) before claiming
      any minimap blocker. **Proposal written 2026-11-07** (branch
@@ -3919,7 +3920,7 @@ separate change, in this order:
 
      The binning prototype at 131,072 markers of each kind and 713 rows
      costs at most about 6 ms with a probe per row;
-   - `lighten-notes-browser-rows` (queued 2026-11-07 from BN's stage 4
+   - `lighten-notes-browser-rows` (**next**; queued 2026-11-07 from BN's stage 4
      review, coordinator decision, user experience first): first measure
      whether the about 205 realized rows (A1) or each row's widgets cause
      BN's recorded fixed costs E1–E3 (dialog first frames 47–76 ms, the
@@ -3954,8 +3955,9 @@ now round numbers, and none of them went down: per-edit local history applies
 up to 16 MiB, undo and local history up to 64 MiB, files up to 512 MiB open,
 and Replace All rewrites files up to 16 MiB. Workspace search keeps 16,384
 results, the command palette 64 per category, the notes browser every note
-and bookmark (it says "Showing X of Y" if memory runs short), and minimap
-markers 2,048. Sizes are shown in MiB and KiB everywhere. Local
+and bookmark (it says "Showing X of Y" if memory runs short), and every
+minimap marker (`bin-minimap-markers-per-row` removed the 2,048 cap). Sizes
+are shown in MiB and KiB everywhere. Local
 history keeps more snapshots (64 per file, 256 in all), recent documents keep
 256 entries and search history 32, so nothing you have is trimmed."
 
@@ -4015,7 +4017,7 @@ review", "Implementation decisions"); evidence in
 **Status:** implemented on branch `bound-notes-browser-by-budget` from
 `main` `e4ec2624` (stage 3, commits `a778212c` and `cc687cc8`), reviewed in
 stage 4 on 2026-11-07, merged as PR #88 (`main` `4860fa2d`) and archived
-2026-11-07. `drill-down-palette-categories` followed: merged as PR #89 (`main` `4b567cdf`) and archived 2026-11-07 (see "DP"); `bin-minimap-markers-per-row` is next. Design and decisions:
+2026-11-07. `drill-down-palette-categories` followed: merged as PR #89 (`main` `4b567cdf`) and archived 2026-11-07 (see "DP"); `bin-minimap-markers-per-row` followed (implemented 2026-11-07, PR pending; see "BM"). Design and decisions:
 `openspec/changes/archive/2026-11-07-bound-notes-browser-by-budget/design.md` (D1–D10, "Spec
 review (stage 2)", "Implementation decisions (stage 3)", "Stage 4
 review"). Evidence: `.claude/handoffs/bound-notes-browser-by-budget/`.
@@ -4069,7 +4071,7 @@ review"). Evidence: `.claude/handoffs/bound-notes-browser-by-budget/`.
 
 **Status:** implemented on branch `drill-down-palette-categories` from
 `main` `ed37423a` (stage 3, 2026-11-07), merged as PR #89 (`main`
-`4b567cdf`) and archived 2026-11-07; `bin-minimap-markers-per-row` is next.
+`4b567cdf`) and archived 2026-11-07; `bin-minimap-markers-per-row` followed (implemented 2026-11-07, PR pending; see "BM").
 Design and decisions:
 `openspec/changes/archive/2026-11-07-drill-down-palette-categories/design.md` (D1–D12,
 "Spec review (stage 2)", "Implementation decisions (stage 3)", "Measured
@@ -4131,6 +4133,46 @@ verdicts"). Evidence: `.claude/handoffs/drill-down-palette-categories/`.
   BN's E1–E3 cause, so `lighten-notes-browser-rows` should cover the palette's
   rows too.
 
+## BM `bin-minimap-markers-per-row` (implementation record, 2026-11-07)
+
+Branch `bin-minimap-markers-per-row` (PR pending, not merged); design
+"Implementation record" and "Measured verdicts" hold every figure, the
+handoff's `runs.log` every run.
+
+- **What shipped.** The marker strip bins per pixel row (row groups from
+  `line_at_y`, A99; each kind's index asked at most once per group plus once,
+  Kani `marker_rows_*` in the new `core-minimap-binning` shard), so the three
+  2,048 caps are gone and every marker the map shows is drawn. Search markers
+  come from a completed scan (A100), and until then from a bounded private
+  copy of the band's text (`forward_async` was dropped: a query change leaves
+  a pending request unanswered and GIO logs a CRITICAL, A102). Modified lines
+  are one property-less tag per generation (A98), swapped on every clean
+  transition and retired in 4,096-toggle low-priority slices. The strip
+  redraws on map scroll (A101).
+- **M7 attribution (D1).** No minimap blocker: PT's 118–140 ms came from
+  leaked test windows, the 741–823 ms is the editor's wrapped layout (owner:
+  DL), and the modified phase is the toolkit's validation of edits made
+  outside the main loop (GtkTextView/GtkSourceMap); the minimap's share of it
+  is now nil (8–11 ms on `main`).
+- **Verdicts.** First in-band search marker 150–153 ms on every document
+  (`main` 261–348 ms); the minimap's own work at 131,072 markers of each kind
+  at most 0.11 ms per draw, 6.4 ms per refresh, 4.3 ms per retirement slice;
+  `main`'s per-draw projection at its caps was 16.8–22.5 ms.
+- **Pre-existing defects fixed.** `gtk_lush_settle::Debounce` kept every
+  superseded timeout source (131,072 edits in one dispatch: `Too many GWeakRef
+  registered`, and `main` stalled for over 27 minutes); `main`'s modified
+  source marks collapsed onto line 0 on `set_text` (wrapped phase 612–799 ms
+  with the minimap off, 81 ms now).
+- **Exceptions.** Scroll frames over `B_SETTLE_US` with the minimap on are the
+  `GtkSourceMap`'s own repaint (on `main` too; the branch stays within `main`
+  + one reference frame); the A1 search phase is the map repainting its search
+  highlights; edits outside the main loop and Replace All are toolkit costs.
+- **Open items for the maintainer.** Promote `core-minimap-binning` to the
+  pull-request gate after a dispatched CI measurement; attribute the load over
+  a buffer of 131,072 modified runs (worst dispatch up to 146.9 ms, no `main`
+  baseline); an axiom for the map's repaint cost on scroll; and the
+  GtkSourceView `forward_async` CRITICAL (A102) as a candidate upstream report.
+
 ## Axioms each change cites
 
 | Change | Axioms |
@@ -4149,6 +4191,7 @@ verdicts"). Evidence: `.claude/handoffs/drill-down-palette-categories/`.
 | BL `bound-lists-by-budget-not-count` | A1 (realized-row cap), A10 (mapped is not drawn), A22 (synchronous expansion; the `is_expandable()` probe store); added by BL: A87 (a presented list view pays per `items-changed`, not per item; an unrealized one does not walk its items), A88 (an end-of-store batch splice under a tree list grows sub-linearly), A89 (a tail `set_expanded` grows sub-linearly in its position), A90 (revealing a list costs its realized rows), A91 (a row's collapse removes its children in one call whose cost grows with them; stage 4 review) |
 | BN `bound-notes-browser-by-budget` | A1 (realized-row cap), A10 (mapped is not drawn), A87 (per `items-changed`, not per item); added by BN: A92 (`AdwSidebar` builds one row widget per item, off-screen ones included), A93 (one replacing `items-changed` makes the list's item manager, and a selection holding an item, ask for every added item; remove-then-add asks only around the realized rows; fresh row objects are accepted), A94 (section headers are not focus stops; the header's role is `row-header`), A95 (select-and-scroll to a far row realizes only around it; its time grows with the rows) |
 | DP `drill-down-palette-categories` | A1 (realized-row cap), A87, A90 (revealing a list costs its realized rows), A93 (remove-then-add, and BN's retarget publish), A95 (far select-and-scroll); added by DP: A96 (a natural-height lazy list measures, allocates and publishes around its realized rows: 206 / 205 `get_item` calls at 512 and 131,072 items), A97 (`stop-search` on Escape with or without text, text kept; a capture controller sees Backspace before the entry, on an empty entry, and its release; a held key arrives as presses without releases) |
+| BM `bin-minimap-markers-per-row` | A33 (`visible-only`), A42 (paragraph lines), A45 (map retirement), A1-style band-only projection unchanged; added by BM: A98 (a property-less tag is bookkeeping only; text inserted strictly inside a tagged range carries it), A99 (`line_at_y` on a map is monotone, skips hidden lines, flat cost), A100 (`forward` is 3 µs inside a completed scan, 74.5 ms before it; `occurrences-count` reads -1 after an edit and notifies on rescan), A101 (an overlay sibling of the map is not redrawn when the map scrolls), A102 (`forward_async` never blocks a dispatch, but a pending request superseded by a query change never returns and GIO logs a CRITICAL) |
 | CF `scope-font-zoom-restyle` | A47 (hidden widgets take a class without a restyle until shown), A72 (why the font stays CSS, not a tag); added by CF: A86 (a display provider reload revalidates every widget even with unchanged text and grows with the window; an unmatched load changes no font; a per-widget class swap applies the new size and does not grow with unrelated widgets) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 
