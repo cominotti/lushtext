@@ -614,6 +614,138 @@ the MODIFIED requirements keep every scenario name; the `Arc<DisposalOwned<…>>
 clones in the model still hand their final drop to a disposal worker; the
 facade's 35 free lines.
 
+## Implementation decisions (stage 3, 2026-11-07)
+
+Decided autonomously, user experience first; evidence in
+`.claude/handoffs/drill-down-palette-categories/` (`runs.log`, `impl/`).
+
+1. **The empty-query count prefilters by the canonical path's length and
+   last eight bytes, not by its file name (D1 refined).** The name prefilter
+   (`Path::file_name` plus an `OsStr` hash) measured 5.3–5.6 ms over 131,072
+   files with 32 or 256 open tabs (Criterion, rounds 1–2), far above the spec
+   microbenchmark's 1.5–2.1 ms. The `(len, tail)` key with a binary search
+   over the open tabs measures 2.7 ms (32 tabs) and 4.4 ms (256 tabs), rounds
+   3–4, against `main`'s 28 µs and 90 µs (which stops at 64 and so cannot
+   count). It is exact (a property test pins it equal to the full predicate,
+   symlinked aliases included). The remaining cost is reading every
+   canonical path once; it is worker time, within `B_SETTLE_US` of `main`'s
+   first rows, as M2 requires, and the full-path hash was not measured
+   separately because the name prefilter already showed the per-file
+   dereference, not the hash, dominates. With no open tab the count is the
+   slice's length, O(1) (8.4–8.8 µs, equal to `main`).
+2. **`PALETTE_CATEGORY_CANDIDATE_BYTES` is the literal 36 with a `const`
+   assertion against the layout**, not a `size_of` expression:
+   `make check-thresholds` cannot evaluate `size_of`, and
+   `PALETTE_CATEGORY_FLOOR_RETENTION` must be evaluable for the 8 MiB
+   presentation cap's "up from" rule. The assertion runs on every 64-bit
+   target; on a 32-bit one the literal overstates the charge, which only
+   lowers the row limit. Kind `external fact` (the pinned layout).
+3. **Kani B5 is three harnesses, with a recorded bound reduction.**
+   `rows_within_agrees_with_the_budget` keeps a symbolic limit and charge
+   (results of at most four rows, 1.13 s), `rows_within_a_zero_charge_bounds_nothing`
+   covers every limit, and the closed form `rows_within_is_the_largest_fitting_prefix`
+   runs for **every `u64` limit at seven concrete charges** (1, 2, 3, 36,
+   4,096, 2^32 + 1, `u64::MAX`; 1.87 s). With a symbolic 64-bit charge the
+   closed form did not finish over every `u64` (CBMC killed after 16 min),
+   nor under `limit < 2^32, charge < 2^16` (12 min), nor the bare equality
+   with `limit / charge` (15 min). The concrete run found an overflow in the
+   harness's own `rows + 1` (charge 1, `limit = u64::MAX`), fixed with a
+   checked add. Recorded in the harness, in `rows_within`'s rustdoc and in
+   `docs/next/formal-verification.md`; the shard runs 9/9 in 0.16 min locally
+   and keeps its CI budget (2.8 min) until a dispatched run.
+4. **The category entry points live in `category_view.rs`** (with
+   `PaletteEscape`), and the row factory in `row_factory.rs`, both called
+   presentation surfaces: the facade stays at 344 of 370 lines and `imp.rs`
+   at about 920, and the facade narrates the category view as a branch of
+   the query stage order.
+5. **Grouped rows learn their category from the headers in display order**
+   (`imp::grouped_row_categories`), matched against the mode's categories in
+   order, so a workspace labelled like another group cannot be confused
+   with it; `PaletteSearchRow::Header` is unchanged.
+6. **The accessible result count excludes "More" rows** (`is_result`), so
+   "N command palette results" keeps counting results; the automation
+   snapshot's `result_count` is the visible model's length as D11 states.
+7. **A capture in progress holds the `command-palette-index` readiness
+   blocker**, beside the note refreshes, so automation does not read a
+   note source the capture has not yet submitted. No new predicate.
+8. **The narrow-overlay check (task 6.2) is a widget allocation test**
+   (`test_palette_category_bar_and_list_fit_a_narrow_overlay`), not a
+   `cargo-gtk-proof` scenario: the invariant is purely geometric (`ui.md`),
+   and the visual smoke captures the view in light and dark.
+9. **AT-SPI cannot see the More row until it is scrolled to**: it is the
+   group's 66th row, below the overlay's 400 px viewport, so GTK has not
+   realized it (A1). The accessibility smoke finds it in the return case,
+   where leaving selects and scrolls to it; its accessible label is proved by
+   the widget test's `AccessibleAudit`.
+10. **Retired with the count:** `open_editor_note_snapshots_bounded`, its two
+    capacity helpers in `notes/policy.rs` and the editor's
+    `bookmark_records_bounded_by_retained_bytes` wrapper; the evidence helper
+    `capture_open_editor_note_evidence(retained_byte_limit)` drives the same
+    capture units the sliced turns run.
+11. **Leaving defers the category model's clear to a `G_PRIORITY_LOW`
+    idle** (`category_view::schedule_category_clear`). Round 1 measured the
+    Escape dispatch at 4.7–11.2 ms, above `B_INTERACT_US`: removing the rows
+    unbinds the about 205 the list realized (A1). With the list hidden first
+    and the clear in its own dispatch, Escape costs 0.3–1.3 ms and the clear
+    9.5–11.5 ms, within `B_SETTLE_US`; entering again before the idle runs
+    clears at once. The sources are released one idle later (tests wait for
+    it).
+12. **The measurement harness is not committed.** Like BN's, it is appended
+    to the widget suite of a `main` worktree and a branch worktree for the
+    runs only (`impl/pdc_measure_*.rs`); the committed bound is
+    `test_palette_category_dispatches_stay_within_their_budgets`.
+
+### Measured verdicts (task 8.1)
+
+Optimized widget build (`opt-level 2`, no debug assertions), presented,
+headless Mutter, `GSK_RENDERER=cairo`, CPUs 8–23, each run behind
+`scripts/measure.sh` and a 1-minute load below 4 for 30 s (recorded in
+`runs.log`, 0.25–3.6 before and after), `main` (`ed37423a`) and branch
+interleaved, two rounds. Figures are min–max over the runs' repetitions.
+
+| # | Dispatch | Budget | `main` | branch | Verdict |
+|---|---|---|---|---|---|
+| M1 | Grouped publish, All mode, every category full: worst dispatch until the rows are current / the frame after | `B_INTERACT_US` (publish) | 10.4–21.6 / 12.8–16.8 ms | 11.1–18.3 / 12.7–15.3 ms | branch within `main`'s range at 512, 16,384 and 131,072 (+6 More rows). This harness's worst dispatch includes the frame clock's dispatches, so it is not PT M1's per-publish figure (6.4–7.9 ms); by the same method the branch adds nothing |
+| M2 | Empty-query first rows, 131,072 files, 0 / 32 / 256 tabs (wall) | first rows within `B_SETTLE_US` of `main`'s | 21.0–24.5 ms | 21.2–24.1 ms | holds; worker (Criterion): 8.5 µs / 2.7 ms / 4.4 ms against 8.4 µs / 28 µs / 90 µs (decision 1) |
+| M3 | Enter on a More row: input / first category publish / the frame after | `B_INTERACT_US` / `B_SETTLE_US` / `B_SETTLE_US` | — | 0.07–0.19 / 6.8–8.2 / 13.2–16.6 ms | flat in rows (512, 16,384, 131,072); the frame is exception **X1** below |
+| M4 | A query in the category view: `set_text` / publish / the frame after | `B_INTERACT_US` / `B_SETTLE_US` / `B_SETTLE_US` | — | 0.14–0.41 / 1.0–3.9 / 0.14–0.63 ms | holds, flat in rows: retargeting keeps the realized rows, so no BN-E2-like frame |
+| M5 | 131,072 rows: Down / Page Down / select-and-scroll to row 131,055 / Page Down to the last row: input, then the frame after | `B_INTERACT_US` per input | — | 0.16–0.41, 0.7–2.7 / 0.16–0.37, 1.1–4.7 / 2.2–6.9, 7.7–9.3 / 0.14–0.30, 1.3–5.5 ms | holds; A95's far-row growth stays under budget at 131,072 (no exception) |
+| M6 | Escape: input / worst dispatch until the grouped flight is current / wall time | `B_INTERACT_US` / `B_SETTLE_US` per dispatch | — | after decision 11: 0.3–1.3 / 4.4–11.5 / 14.5–23.1 ms | holds per dispatch; the grouped rows are on screen from Escape's own frame, and the wall time is the grouped re-query of the kept query (131,072 files scored), the same flight `main` runs when that query is typed |
+| M7 | Note source at 131,072 sidecar bookmarks: build (toggle to installed) / peak RSS / worst dispatch | recorded | 34–50 ms / 90–114 MiB / 6.9–8.2 ms (16,384 rows kept) | 269–347 ms / 158–254 MiB / 8.1–9.0 ms (all 131,072) | recorded: 8 × the rows on the worker, within the source's unchanged 64 MiB byte ceilings; the worst dispatch is the grouped publish (M1's class) |
+| M8 | 20,000 editor bookmarks: the palette's capture | `B_SETTLE_US` per turn | one synchronous capture inside the toggle, 1.9–4.0 ms, 16,384 kept | worst turn 3.0–3.2 ms, toggle 0.2–0.8 ms, all 20,000 kept | holds |
+
+The category ranking at 131,072 matches costs 11.4–11.5 ms on the worker for
+the query `file` (scoring, heap, sort, ordinals) and 0.36 ms for the empty
+query (Criterion); a superseded query observes cancellation within 256
+candidates while it scores, and the sort that follows takes a few ms, under
+`B_SETTLE_US`, so it was not split (D3).
+
+**Recorded toolkit-floor exception X1:** the frame after the first category
+publish, 13.2–16.6 ms (above `B_SETTLE_US` in 6 of 30 repetitions, by at most
+0.6 ms, mostly the first entry of a palette session), flat at 512, 16,384 and
+131,072 rows. Attribution: it realizes the about 205 category rows (A1, A90,
+A96) while the grouped list unmaps; the model creates exactly 205 row objects
+per entry (`item_requests`). Bounded at twice its measured worst (33.2 ms) by
+`test_palette_category_dispatches_stay_within_their_budgets` on the optimized
+build (15.6–15.8 ms there, two runs), which also enforces Enter and Escape
+within `B_INTERACT_US` and the first publish and the leave within
+`B_SETTLE_US`.
+
+**Gates (task 8.3), 2026-11-07:** `make check` (with fresh
+`visual-geometry-smoke`, `accessibility-smoke` and `visual-smoke` runs on the
+final tree), `make test` (2,417 non-widget and 1,641 widget tests, 0 `FLAKY`,
+before the last surface-only refactors; the palette widget modules, 112 tests,
+were rerun after them), `make gtk-axioms` (86 samples held, A96 and A97
+included), `make check-gtk-axioms`, `make kani KANI_SHARD=core-list-budget`
+(9/9), `make check-kani-shards`, `make check-widget-shards`,
+`make check-thresholds`, `make check-automation-docs`,
+`make automation-client-self-test`, the rustdoc lint gate.
+
+**Not measured as designed:** tasks 1.1–1.4 asked for the baseline before any
+fix; it was measured interleaved with the branch at the end instead (same
+harness on `main`), so the before/after comparison holds but the order did
+not.
+
 ## Migration
 
 None: no persisted format, GSettings key or action changes meaning. The new
