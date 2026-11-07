@@ -3865,7 +3865,20 @@ separate change, in this order:
      "BN" below;
    - `drill-down-palette-categories` (**next**, after BN's archive,
      2026-11-07): the "N more…" row per category and the category
-     drill-down mode;
+     drill-down mode. **Proposal written 2026-11-07** (branch
+     `drill-down-palette-categories`,
+     `openspec/changes/drill-down-palette-categories/`), judged worth doing
+     with refinements: the category view is a second `GtkListView` over a
+     lazy model of ranked source ordinals (BN's pattern), ranked by the
+     grouped view's own selector so its first 64 rows are the grouped rows;
+     an 8 MiB retained-byte budget (`list_budget::rows_within`, Kani B5)
+     holds the whole 131,072-file index; exact counts, with a
+     name-prefiltered empty-query count pass (1.5–2.1 ms against 7.4 ms
+     for the full-path test at 131,072 files, spec microbenchmark); Escape
+     leaves one level through the dismissal ladder; Page Up/Down; the
+     palette's note source loses its counts (`SkipAndCount`); GTK axioms
+     A96 (natural-height measure flat in items) and A97 (`stop-search` and
+     Backspace on an empty entry);
    - `bin-minimap-markers-per-row`: markers binned per pixel row. It must
      first attribute PT's M7 worst dispatches (118–140 ms and 741–823 ms,
      which include a whole-buffer `set_text` and relayout) before claiming

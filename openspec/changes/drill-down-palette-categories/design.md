@@ -1,0 +1,482 @@
+## Context
+
+The command palette (`WFR-COMMAND-PALETTE`, `ui/command_palette/`) runs one
+query flight per input: the facade snapshots the query, the mode and four
+`Arc` source snapshots into a `PaletteQueryRequest`
+(`query_execution.rs`), the one-active/one-latest coordinator admits it, a
+worker runs `services::palette::grouped_search`, and the completion publishes
+the grouped rows with one `splice` into a `gio::ListStore` of `PaletteItem`s
+(`imp::publish_search_rows`).
+
+`grouped_search` asks each source for at most `MAX_RESULTS_PER_SOURCE` (64)
+results. The selector (`services/palette/fuzzy.rs`,
+`search_items_cancellable_controlled`) has two paths:
+
+- a non-empty query scores **every** candidate and keeps the best 64 in a
+  worst-first heap, ordered by score then source ordinal
+  (`compare_palette_rank`); `PaletteSearchMetrics::matching_candidates`
+  already counts every match;
+- the empty query takes the first 64 included items in source order and
+  **stops**, so how many more exist is unknown.
+
+Sources, per mode: Files has "Open Tabs" and the workspace group (labelled by
+scope, e.g. "All Workspaces"; the workspace group excludes files open in tabs
+by canonical path); Notes has the four `PaletteNoteCategory` groups; Commands
+has one group; All has all of them in that priority. Group headers are
+non-activatable `PaletteItem`s; navigation skips them through
+`policy::next_activatable` over an activatable-flag vector that `imp` builds by
+walking the whole store (`activatable_flags`), on every selection change.
+
+The palette's note source is built with `PALETTE_NOTE_SOURCE_LIMITS`:
+`entries: Some(16,384)`, `sidecar_entries: Some(16,384)`, byte ceilings, and
+`ByteRefusal::Stop`. BN made those fields optional and gave the browser
+`None` and `SkipAndCount`, leaving the palette's values to this change.
+
+The programme record (`docs/next/long-line-documents.md`, PT queue item 1)
+queues this change after BN's archive: "the 'N more…' row per category and the
+category drill-down mode", plus "the palette's note counts
+(`MAX_PALETTE_NOTE_ENTRIES`, its sidecar count and its stop-at-first-refusal
+rule)".
+
+## Is it worth doing as described? (spec-stage decision)
+
+**Yes, refined.** Evidence and reasoning:
+
+- **The loss is real and large.** The file index admits up to 131,072 files
+  (`MAX_INDEXED_FILES`). The empty query shows 64 of them, and any broad query
+  (an extension, a directory name) matches thousands and shows 64. The user
+  cannot see that more exist, and only a narrower query reaches them. Notes and
+  commands have the same cut. This is the "user-visible loss" the maintainer's
+  standard rules out.
+- **Raising the grouped cap is the wrong fix.** The grouped list is a
+  `gio::ListStore` spliced on every query; its cost grows with its rows (PT
+  M1: 5.0–5.7 ms at 50 per category, 6.4–7.9 ms at 64, against 8 ms), and 64
+  rows per category is already more than a user scans in a mixed list. A
+  per-category view keeps the grouped view as it is and reaches everything.
+- **The cost can be made flat in rows**, by the pattern BN measured: a lazy
+  `GListModel` publishes in 1.8–2.9 ms at 512 and at 90,687 rows because GTK
+  realizes about 205 rows whatever the model holds (A1, A93, A95). The ranking
+  itself is cheap off GTK: ranking all 131,072 candidates (heap, sort, ordinal
+  array) costs 4.4 ms on the worker (spec-stage microbenchmark below), on top
+  of the scoring the grouped query already does.
+- **The grouped query must not get slower.** The non-empty count is free
+  (`matching_candidates`). The empty-query count is the one new cost: a pass
+  over the rest of the index. Hashing every canonical path against the
+  open-tab set costs 7.4 ms at 131,072 files; testing the file name first and
+  hashing only on a name match costs 1.5–2.1 ms (below). Both are worker time,
+  not GTK time, but the palette's first rows wait for it, so the cheaper test
+  is the design (D1).
+
+**Refinements to the request, each decided here:**
+
+1. The category view's rows are **source ordinals**, not row strings: 4 bytes a
+   row on GTK, row objects only on demand (D2). The request's "retained-byte
+   budget" then bounds the worker's ranking peak, which is the larger cost (D3).
+2. The category view uses the **grouped view's own selector and comparator**,
+   so its first 64 rows equal the grouped rows. A different ranking would
+   reorder what the user just saw.
+3. The category view is a **second list view**, not a model swap under the
+   grouped one. Replacing a selection's model is one replacing
+   `items-changed`, which asks GTK for every added item (A93); a separate list
+   in its own scroller is revealed at the cost of its realized rows (A90), and
+   the grouped list keeps its rows for the way back.
+4. **Escape leaves one level.** The window's dismissal ladder asks the palette
+   to leave its category view before closing it, so Escape from any focus
+   behaves the same.
+5. The **note source's counts** go in this change, as BN recorded.
+6. **Page Up / Page Down** in both views, so 131,072 rows are reachable from
+   the keyboard without 131,072 arrow presses.
+7. No row-text walk in the category view: navigation, set size and the
+   accessible count come from the model's length, never from materializing
+   every item (today's `activatable_flags` would create 131,072 objects).
+
+## Goals / Non-Goals
+
+**Goals:**
+
+- Every result of every category is reachable, by keyboard and pointer.
+- The grouped view keeps its rows, order, cap and cost.
+- Every dispatch fits `B_INTERACT_US` (input) or `B_SETTLE_US` (publish, frame,
+  leave), measured interleaved with `main`; any toolkit floor is a recorded,
+  measured exception enforced by a widget assertion.
+- Accessibility and automation parity: names, counts, announcements,
+  snapshot fields, an action.
+- The readability convention: policy pure, one evidence surface, the facade
+  within 370 lines, the matrix row re-derived.
+
+**Non-Goals:**
+
+- The file index's 131,072-file ceiling (`scale-file-index`, queued).
+- Changing nucleo scoring, note-body pruning, source priority or
+  deduplication.
+- A lazy model for the grouped view (its 64-row cap is not a loss once the
+  category view exists).
+- Extracting a shared lazy list model into GTK Lush. The notes browser's model
+  is sectioned and this one is flat; the second consumer is recorded as a
+  candidate in `docs/next/gtk-lush.md` (D10).
+
+## Measured baseline
+
+| Measure | Value | Source |
+|---|---|---|
+| Grouped publish, every category full, 64 per category, worst settle | `main` 6.4–7.9 ms (5.0–5.7 ms at 50) | PT M1, interleaved, load < 4 |
+| Lazy-model query publish (notes browser), 512 → 90,687 rows | 1.8–2.9 ms, flat | BN verdicts |
+| Frame after a query that changes the shown rows (notes browser) | 22–23 ms, toolkit floor E2 | BN verdicts |
+| Far-row select and scroll on a lazy list | bounded `get_item` calls, time grows with rows | A95 |
+| Empty-query count pass, 131,072 files, 32 / 256 open tabs, full-path hash | 7.44–7.46 / 7.41–7.46 ms (0 tabs: 0 ms) | spec microbenchmark |
+| Same, name-prefiltered | 1.51–2.06 / 1.64–2.12 ms (0 tabs: 0.12 ms) | spec microbenchmark |
+| Rank all 131,072 candidates (heap, sort, `Box<[u32]>`) | 4.41–4.43 ms | spec microbenchmark |
+
+The spec microbenchmark is a standalone `rustc -O` program over synthetic
+paths of the index's shape (best of 15, CPUs 8–23, load 0.36 before and after):
+`.claude/handoffs/drill-down-palette-categories/spec-microbench.{rs,log}`. It
+bounds the shape of the worker cost, not the application's; task 1 measures
+the application, interleaved with `main`, before any fix.
+
+## Decisions
+
+### D1. Categories, the "N more…" row, and exact counts
+
+`model/palette.rs` gains `PaletteCategory`: `OpenTabs`, `WorkspaceFiles`,
+`Note(PaletteNoteCategory)`, `Commands`, with a stable automation id each
+(`open-tabs`, `workspace-files`, `bookmarks`, `folder-notes`,
+`document-notes`, `open-tab-notes`, `commands`) and the label the grouped
+header uses in the current mode.
+
+`PaletteSearchRow` gains `More { category, hidden: usize }`. `grouped_search`
+appends it after a group's last row when the group's match count exceeds the
+rows shown. `PaletteItem` gains a `more` kind (`KIND_MORE`) carrying the
+category id and the hidden count; it is activatable, and its activation is
+handled inside the palette (it never reaches the window's activate callback).
+
+Counts:
+
+- **Non-empty query:** the selector's per-source `matching_candidates`, which
+  every source already computes. `grouped_search` keeps it per group instead
+  of merging it away.
+- **Empty query:** the selector gains a count continuation. After the 64th
+  row it keeps walking the source and counts included items without
+  retaining or scoring them, checking cancellation at the same interval
+  (`PALETTE_CANCEL_CHECK_INTERVAL`). A source whose predicate is trivially
+  true (no open-tab exclusion, commands) counts by length in O(1).
+- **The workspace group's exclusion test** (`search_cancellable_excluding`)
+  hashes the file's canonical path against the open-tab set. The count
+  continuation tests the canonical path's file name against the open tabs'
+  names first, and hashes the full path only on a name match. A property test
+  pins that the prefiltered predicate equals the full one on random indexes,
+  including symlinked aliases whose display name differs from the canonical
+  name. The selector's retained-row path keeps the full predicate.
+
+The "N more…" row's visible text is "{N} more…" with N grouped in thousands
+(`list_budget::grouped_thousands`); its accessible name is "Show {N} more
+results in {category}". The wording lives in `ui/command_palette/policy.rs`.
+
+*Alternative rejected:* a "64+ more" row without a count on the empty query.
+It saves 1.5–2.1 ms of worker time and costs the user the number that tells
+them whether browsing is worth it, and it makes the accessible name vague.
+
+### D2. The category view: a second list over a lazy model
+
+`resources/ui/command-palette.blp` gains, below the query row, a category
+bar (an invisible `Box`: a flat back button "Back to all results"
+(`go-previous-symbolic`), a title label "{category} · {X} results", and a
+notice label for the budget and the note source) and a second
+`GtkScrolledWindow` with `category_view: ListView`, invisible until a category
+is opened. The grouped scroller is hidden while the category view is shown,
+and shown again on leave. Both scrollers keep `max-content-height: 400` and
+`propagate-natural-height`; A96 pins that the lazy list's natural-height
+measure does not walk its items.
+
+`ui/command_palette/category_model.rs` (called presentation surface, no role)
+is `PaletteCategoryModel`, a GObject implementing `GListModel` over one
+`CategoryProjection`:
+
+- `ordinals: Arc<[u32]>`, the ranked source ordinals;
+- the category, the generation, and the request's source snapshots (`Arc`s of
+  the index, the open tabs and the note entries, as the request already holds
+  them), so an ordinal can never outlive the source it indexes. Commands are
+  static.
+
+`item(position)` builds the row's `PaletteItem` from the source entry (the
+same constructors the grouped rows use). It applies BN's lessons as decided in
+BN's stage 3:
+
+- a weak map of handed-out row objects by position: a publish **retargets**
+  the live ones below the shorter length in place and emits their
+  content-changed notification, which the item factory rebinds on, so a query
+  does not tear down and rebuild the realized rows;
+- only the tail is removed or added, and every emission matches the length the
+  model reports at that moment (the crash BN fixed in
+  `gtk_list_item_manager_ensure_items`);
+- the map is pruned to live objects past 1,024 entries.
+
+The item factory is the grouped factory's (the same row widget and
+accessibility projection), set on both list views, except that the category
+view's set size comes from the model's length.
+
+Dropping a projection drops one `Arc<[u32]>` (one free, O(1)) and `Arc`
+clones of sources the palette already owns; the sources' final drop is
+`DisposalOwned`'s nonblocking handoff, as today. No row-sized payload is
+destroyed on GTK.
+
+*Alternative rejected:* swapping the grouped `GtkSingleSelection`'s model.
+One replacing `items-changed` asks for every added item (A93: 262,350 calls,
+71 ms at 131,072), and the way back would rebuild the grouped rows.
+*Alternative rejected:* filling a `gio::ListStore` with every ranked row. One
+GObject per row on GTK grows linearly (BN D1).
+
+### D3. Ranking and the retained-byte budget
+
+The category search (`services/palette/category.rs`, GTK-free) runs the same
+source call the grouped search runs for that category, with
+`max = category_row_limit()` instead of 64, and returns
+`CategoryRanking { ordinals: Box<[u32]>, matching: usize, limited: bool }`.
+Same selector, same comparator, same filters and exclusion, so the first 64
+ordinals are the grouped rows (a property test pins this for every category
+and random sources and queries).
+
+The budget is the worker's peak: the selector retains one candidate
+(`RetainedCandidate`: the borrowed item, the score, the ordinal) per kept row
+until it sorts and converts them to `u32`s. So:
+
+- `PALETTE_CATEGORY_RETAINED_BYTES` = 8 MiB (presentation cap), in
+  `ui/command_palette/policy.rs`;
+- `PALETTE_CATEGORY_CANDIDATE_BYTES` = `size_of` the candidate (derived;
+  exported from the service as a `const`);
+- `category_row_limit()` = `list_budget::rows_within(limit, charge)`, a new
+  pure helper: the largest `n` with `n * charge <= limit` (`charge > 0`). It
+  states `RetainedBudget`'s admission for equal charges, so the view's cut is
+  the budget's prefix rule. Kani harness B5 in `core-list-budget`:
+  `rows_within` agrees with offering `n` items of that charge to a
+  `RetainedBudget` (retained count), and never overflows.
+- **No loss at today's ceiling:** `PALETTE_CATEGORY_FLOOR_RETENTION` (derived)
+  = `MAX_INDEXED_FILES * PALETTE_CATEGORY_CANDIDATE_BYTES`, and a
+  `const` assertion pins `FLOOR <= RETAINED_BYTES`. With a 40-byte candidate
+  the floor is 5 MiB. The thresholds row records the cap as "up from
+  PALETTE_CATEGORY_FLOOR_RETENTION", BL's form.
+
+When `matching > ordinals.len()`, the view's notice says "Showing {X} of {Y}
+results" (grouped thousands), announced politely once per category view and
+cut change. Today that can happen only for a note category whose source holds
+more rows than the budget's row limit, or after `scale-file-index` raises the
+index past it.
+
+Ranking all matches costs the sort (4.4 ms at 131,072 in the microbenchmark)
+on the worker. The selector already checks cancellation per 256 candidates;
+the sort is not interruptible, so a superseded category query can finish its
+sort before it observes cancellation. That bound is recorded (task 1.3), and
+if a measured sort at 131,072 exceeds `B_SETTLE_US`, the selection is split
+into the bounded heap and an interruptible merge.
+
+### D4. One query flight for both views
+
+`PaletteQueryRequest` gains `category: Option<PaletteCategory>`.
+`start_query_flight` reads it from the palette's state;
+`search_palette_sources` calls `grouped_search` or the category search; the
+completion publishes into the matching view only if the generation is current
+**and** the request's category equals the palette's current category (a
+category entered or left while a worker ran publishes nothing, exactly as a
+superseded query does). Debounce, the empty-query bypass, cancellation,
+`refresh_searching_state` and the `command-palette-search` readiness blocker
+are unchanged; the category view adds no second coordinator and no timer.
+
+A source replacement (`restart_query_if_open`) restarts the flight with the
+current category, so the category view follows index rebuilds and note
+refreshes. A category with no matches shows the palette's "No results" status
+inside the category view.
+
+### D5. Entering and leaving
+
+- **Enter:** activating a "More" row (Enter in the query entry with it
+  selected, a double-click, the automation action) sets the category,
+  hides the grouped scroller, reveals the category bar and the empty category
+  view, announces "{category}: showing all results. Escape returns to all
+  results." (polite), and starts a flight with the current query. The first
+  publish selects row 0.
+- **Leave:** Escape, Backspace on an empty query, the back button, a mode
+  change (Tab, Shift+Tab, the dropdown, `win.set-command-palette-mode`) and the
+  automation action with `""`. Leaving clears the category, hides the bar and
+  the category view, shows the grouped scroller, and starts a grouped flight
+  with the current query (and the new mode for a mode change). When the
+  grouped rows arrive, the selection goes to that category's "More" row if the
+  category is still truncated, else to its last row, else to the first
+  activatable row. The palette remembers that one category id, nothing else.
+- **Escape routing:** in the entry, `stop-search` (A97) calls the palette's
+  `dismiss_one_level()`, which leaves the category view or, in the grouped
+  view, asks the window to close as today. Outside the entry, the window's
+  dismissal ladder (`transient_dismissal/policy.rs`) gains the palette's
+  category state in `TransientSurfaceState`; the palette rung's outcome becomes
+  "leave category" or "close palette". Click-away still closes the palette.
+- **Close** clears the category; reopening shows the grouped All view, as
+  today.
+
+### D6. Keyboard and accessibility
+
+- **Navigation without a walk.** The grouped view keeps
+  `next_activatable` over its flags (at most a few hundred rows). The category
+  view has no headers, so `policy::next_category_row(current, len, delta)` is
+  O(1). `refresh_accessibility_state` and the item factory read the visible
+  view's length and selection; neither walks the category model. A
+  test-utils counter of `item()` calls in the evidence proves it (task 3).
+- **Page Up / Page Down** move the selection by `RESULT_PAGE_ROWS` (16) in both
+  views: the grouped view skips headers in that direction; the category view
+  clamps to `[0, len)`. The list scrolls to the selection (`scroll_to`, A95).
+- **Names:** the "More" row's name as in D1, description "Opens a list of
+  every result in {category}"; the category list's label "Command palette
+  results in {category}", description "Every matching result in this
+  category"; the back button "Back to all results"; the title and notice
+  labels carry their visible text. Rows keep their grouped names
+  ("Open file …", "Open note …", "Run command …"); their set size is the
+  model's length.
+- **Announcements** (polite, through the existing throttled lanes): entering
+  a category view once; the budget notice once per cut change; the result
+  count stays in the list's value text, as in the grouped view.
+- **Focus** stays in the query entry in both views, as today.
+
+### D7. The palette's note source without counts
+
+`PALETTE_NOTE_SOURCE_LIMITS` becomes `entries: None`, `sidecar_entries:
+None`, `on_byte_refusal: SkipAndCount`; the byte ceilings and the diagnostic
+count are unchanged. BN D3's argument carries over unchanged: up to `main`'s
+first refusal both rules admit the same rows with the same charges, and
+skip-and-count only adds rows after it, so the palette admits a superset (the
+existing property test is extended to the palette's limits).
+`MAX_PALETTE_NOTE_ENTRIES` leaves the inventory with its thresholds row.
+
+The cost is memory: the source can now fill its 64 MiB retained ceiling
+instead of stopping at 16,384 rows (PT M12 measured 85.9 MiB RSS at 16,384
+against 62.5 MiB at 10,000). Task 1.4 measures peak RSS and the source
+build time at 131,072 sidecar bookmarks on `main` and the branch; the bound is
+the existing byte ceilings, which PT accepted as the palette's memory bound.
+
+A note category view whose source was cut by a byte ceiling says "Some notes
+are not searchable: the note source holds {X} of {Y} notes" (the source's
+`rows_found`, "at least" when `found_is_lower_bound`), once, beside the
+existing truncation diagnostic.
+
+### D8. Budgets and verdicts
+
+Measured on an optimized widget build, presented, headless Mutter,
+`GSK_RENDERER=cairo`, CPUs 8–23, interleaved `main` and branch, 1-minute load
+below 4 before and after each run (recorded), with fixtures at 512, 16,384 and
+131,072 indexed files and 131,072 sidecar bookmarks:
+
+| # | Dispatch | Budget | Comparison |
+|---|---|---|---|
+| M1 | Grouped publish, All mode, every category full (+7 "More" rows) | `B_INTERACT_US` | branch within `main`'s range plus noise (PT M1: 6.4–7.9 ms) |
+| M2 | Empty-query worker (palette open to first rows) at 131,072 files, 0 / 32 / 256 open tabs | recorded; first rows within `B_SETTLE_US` of `main`'s | name-prefiltered count |
+| M3 | Activating "More": the input dispatch; the first category publish; the frame after it | `B_INTERACT_US`; `B_SETTLE_US`; `B_SETTLE_US` | flat across 512 / 16,384 / 131,072 |
+| M4 | A keystroke in the category view; its publish; the frame after it | `B_INTERACT_US`; `B_SETTLE_US`; `B_SETTLE_US` | flat in rows |
+| M5 | Down, Page Down, and a scroll to the last row at 131,072 | `B_INTERACT_US` per input dispatch | A95 records growth |
+| M6 | Leaving (Escape) until the grouped rows show | `B_SETTLE_US` | — |
+| M7 | Peak RSS and note-source build time at 131,072 sidecar bookmarks | recorded | `main` vs branch (D7) |
+
+A dispatch that misses its budget because of the toolkit (BN's E2 frame after a
+row-changing publish is the expected candidate for M4's frame) is recorded as a
+toolkit-floor exception with its attribution and bounded by a widget assertion
+at twice its measured worst, as BN did. Anything else that misses is fixed.
+
+### D9. GTK axioms and Kani
+
+New axioms in `gtk-lush-axioms`, each with a probe, an interactive/`--check`
+sample and a ledger row ("Verified against" the pinned GTK 4.22 / libadwaita
+1.9):
+
+- **A96.** A `GtkListView` over a lazy model, in a `GtkScrolledWindow` with
+  `propagate-natural-height` and `max-content-height`, measures and allocates
+  in time flat in the item count (512 against 131,072), asking only for items
+  around the realized rows.
+- **A97.** `GtkSearchEntry` emits `stop-search` on Escape whether or not it
+  holds text, and keeps its text; a capture-phase `GtkEventControllerKey` on
+  the entry sees Backspace while the entry is empty, before the entry handles
+  it.
+
+Cited: A1 (realized-row cap), A87 (per `items-changed`), A90 (revealing a list
+costs its realized rows), A93 (remove-then-add publish), A94 (if the category
+bar's title is exposed as a heading), A95 (far-row select and scroll).
+
+Kani: `core-list-budget` gains B5 (`rows_within`) and is rerun whole. No other
+shard covers code this change touches; `make check-kani-shards` must pass.
+
+### D10. Workflow placement
+
+`WFR-COMMAND-PALETTE` keeps its role homes:
+
+- **Pure policy** (`ui/command_palette/policy.rs`): the "More" decision, its
+  wording and accessible name, the category ids and parsing for the action,
+  `next_category_row`, page moves in both views, the leave-selection rule, the
+  notice and announcement wording, the budget constants. No GTK import.
+- **Coordination** (`query_execution.rs`): the category in the request and in
+  the publish arbitration. No new coordination module.
+- **Evidence** (`evidence.rs`): `category: Option<PaletteCategory>`,
+  `category_rows`, `category_total`, `category_limited`,
+  `more_rows: Vec<(PaletteCategory, usize)>` (grouped view), and the
+  test-utils `category_item_requests`.
+- **Called presentation surfaces:** `imp.rs`, `item.rs`, and the new
+  `category_model.rs`.
+- **The facade** (`mod.rs`, 335 of 370 lines) narrates the category view as a
+  branch of the query stage order (enter, query, publish, leave) with no new
+  inversion; the narration must fit the 35 remaining lines, so the index
+  half's narration is tightened if needed, not the budget.
+- The transient-dismissal workflow's ladder (`transient_dismissal/policy.rs`)
+  gains one input and one outcome; its facade narrates it.
+- The matrix row is re-derived (size, seam counts, policy consumers:
+  `model/list_budget.rs` gains a fourth owning workflow) per
+  `.agents/rules/workflow-convention.md`.
+- GTK Lush: the notes browser's model and this one are the second and third
+  lazy `GListModel`s with a retarget cache. Record the extraction candidate in
+  `docs/next/gtk-lush.md`; do not extract here.
+
+### D11. Automation
+
+- `window.command_palette` gains `category` (string id, `""` in the grouped
+  view), `category_result_count` (rows the category view lists, `u32`
+  saturating), `category_total_count` (matches, saturating) and
+  `category_limited` (bool), projected from the evidence surface, with no row
+  text. `result_count` keeps its meaning: rows the **visible** list renders
+  (headers and "More" rows included in the grouped view).
+- `win.set-command-palette-category` (string): a category id opens that
+  category's view (requires a visible palette; an id that is not a group of
+  the current mode is refused with the existing invalid-parameter behaviour);
+  `""` leaves. Catalog entry beside `set-command-palette-mode`, exported,
+  `ContextualUserCommand`.
+- No new readiness predicate: `command-palette-search` covers category
+  flights.
+
+### D12. Thresholds
+
+New rows in `docs/thresholds.md` and rustdoc `Kind:` lines:
+`PALETTE_CATEGORY_RETAINED_BYTES` (8,388,608, presentation cap, up from
+`PALETTE_CATEGORY_FLOOR_RETENTION`), `PALETTE_CATEGORY_FLOOR_RETENTION`
+(derived), `PALETTE_CATEGORY_CANDIDATE_BYTES` (derived), `RESULT_PAGE_ROWS`
+(16, `out: presentation`), `KIND_MORE` (`out: identifier`). Removed:
+`MAX_PALETTE_NOTE_ENTRIES`. `make check-thresholds` fails first on the
+leftover and the missing rows.
+
+## Risks / Trade-offs
+
+- **Empty-query latency** grows by the count pass (≈ 2 ms at 131,072 files
+  with open tabs) → the prefilter, measured in M2; O(1) when nothing is
+  excluded.
+- **Memory of the note source** without counts → bounded by its unchanged
+  byte ceilings, measured in M7.
+- **A non-interruptible sort** in a superseded category query → 4.4 ms at
+  131,072; recorded, with a split if it exceeds `B_SETTLE_US` (D3).
+- **The frame after a row-changing category publish** may be a toolkit floor
+  like BN's E2 → recorded and bounded, or fixed.
+- **Facade budget** (335 of 370) → narrate the category view as a branch, not
+  a new stage order.
+- **Two Escape paths** (entry `stop-search`, window ladder) → both call one
+  palette method; a widget test drives each.
+
+## Migration
+
+None: no persisted format, GSettings key or action changes meaning. The new
+action and snapshot fields are additive.
+
+## Open questions (answered by tasks)
+
+- M2's measured empty-query worker cost in the application, and whether the
+  prefilter is needed at all when the measured full-path pass fits (task 1.2).
+- The candidate size on the pinned toolchain, which fixes the floor (task 2).
+- Whether M4's frame needs a recorded exception (task 8).
