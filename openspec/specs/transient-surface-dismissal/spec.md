@@ -2,13 +2,12 @@
 
 ## Purpose
 Define app-wide dismissal ownership for shell transient surfaces, command-palette overlays, and true modal dialogs so close behavior stays predictable without bypassing child surface semantics.
-
 ## Requirements
 ### Requirement: Shell transient surfaces dismiss through a topmost owner
-The system SHALL route Escape and equivalent dismiss requests through a window-level transient-surface owner that closes only the topmost visible dismissible surface. The topmost owner MUST close the command palette before lower-priority non-modal surfaces such as the workspace search panel or Focus Mode affordance. Real modal dialogs, file choosers, destructive confirmations, menu popovers, dropdown popups, and child popups MUST retain their own cancel/default behavior and MUST NOT be bypassed by the shell dismissal path.
+The system SHALL route Escape and equivalent dismiss requests through a window-level transient-surface owner that closes only the topmost visible dismissible surface. The topmost owner MUST close the command palette before lower-priority non-modal surfaces such as the workspace search panel or Focus Mode affordance. When the command palette shows a category view, Escape MUST first return the palette to its grouped results, keeping it open with its query, and a later Escape closes it. Real modal dialogs, file choosers, destructive confirmations, menu popovers, dropdown popups, and child popups MUST retain their own cancel/default behavior and MUST NOT be bypassed by the shell dismissal path.
 
 #### Scenario: Escape closes command palette regardless of focus
-- **WHEN** the command palette is visible
+- **WHEN** the command palette is visible showing grouped results
 - **AND** keyboard focus is in the editor, sidebar, status bar, or another non-modal child outside the palette
 - **THEN** pressing Escape closes the command palette
 - **AND** the command palette's search text and results are cleared
@@ -26,6 +25,13 @@ The system SHALL route Escape and equivalent dismiss requests through a window-l
 - **AND** the user presses Escape
 - **THEN** that child surface receives its own cancel or close behavior first
 - **AND** the shell-level transient closer does not bypass the child surface's semantics
+
+#### Scenario: Escape leaves a palette category view first
+- **WHEN** the command palette shows a category view
+- **AND** the user presses Escape with focus in the query entry, in the palette's list, or outside the palette
+- **THEN** the palette shows its grouped results with the query kept and stays open
+- **AND** that one Escape changes nothing else: no lower surface is dismissed and the palette is not closed by the window's own Escape handling of the same key press
+- **AND** a second Escape closes the palette through the shared close path
 
 ### Requirement: Modal dialogs keep explicit dismissal semantics
 The system SHALL NOT treat real modal dialogs as click-away transient overlays by default. `AdwDialog`, `AdwAlertDialog`, file chooser dialogs, preferences dialogs, and browser-style dialogs such as Notes or Local History MUST close through their explicit close control, Escape or equivalent dialog close shortcut, a dialog response, or a surface-specific close gesture such as a bottom-sheet swipe where the toolkit provides it. Pointer activation outside a modal dialog MUST NOT close that dialog unless a future surface-specific requirement explicitly opts into click-away behavior and preserves any confirmation, response, or unsaved-state semantics.
@@ -82,3 +88,15 @@ The system SHALL keep command-palette dismissal behavior stable across empty, po
 - **WHEN** the command palette is visible in a narrow or short supported window
 - **THEN** the search entry, mode selector, result region, and empty state remain reachable or readable
 - **AND** Escape and outside click remain available without requiring focus to be inside the palette
+
+### Requirement: Opening a palette category view keeps the palette open
+Activating a command palette "More" row by keyboard, pointer or automation SHALL open that category's view without closing the palette and without running the window's result activation path. Pointer activation outside the palette SHALL still close the palette from a category view, through the shared close path, and reopening the palette SHALL show grouped results.
+
+#### Scenario: Activating a More row
+- **WHEN** the user double-clicks a More row or presses Enter with it selected
+- **THEN** the palette stays visible and shows that category's view
+
+#### Scenario: Outside click from a category view
+- **WHEN** a category view is shown and the user clicks the editor
+- **THEN** the palette closes once through the shared close path and focus is restored as for any palette close
+

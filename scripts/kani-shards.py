@@ -176,11 +176,15 @@ CLOSE_PROTECTED_FINAL_RAISED_IN = "; raised by runs 42281883363, 42291228680 (ma
 # the larger of the two, rounded up (the local make kani run took 1.03 min).
 # drill-down-palette-categories added B5 (three harnesses, 3.0 s of local
 # verification against the shard's 1.5 s before; the local run took 0.16 min
-# with the build cached, 2026-11-07): the CI figure, dominated by the build,
-# is kept until a dispatched run re-measures it.
+# with the build cached, 2026-11-07). PR #89's pull-request run 42372071326
+# measured the nine harnesses at 1.83 min and 1.63 GiB, inside the record,
+# which stands (raise, never lower).
 LIST_BUDGET_MINUTES = 2.8
 LIST_BUDGET_PEAK_GIB = 1.7
-LIST_BUDGET_MEASURED_IN = "runs 42322273437, 42331071390 (pull_request, max of the two)"
+LIST_BUDGET_MEASURED_IN = (
+    "runs 42322273437, 42331071390 (pull_request, max of the two); with the B5 "
+    "rows_within harnesses by run 42372071326 (1.83 min / 1.63 GiB, inside the figures)"
+)
 # core-geometry-policies broke the pull-request margin on PR #87's run
 # 42331071390 (16.57 min, unchanged harnesses; it had also taken 15.87 in
 # 41995267728). Eleven runs of the same 37 harnesses spread 9.21-16.57 min,
@@ -855,8 +859,8 @@ ORACLES: dict[str, Oracle] = {
             _h(_LIST_BUDGET + "a_budget_one_byte_below_n_times_w_refuses_the_last_item", 0.1, "ci"),
             _h(_LIST_BUDGET + "the_charge_never_exceeds_the_limit", 0.17, "ci"),
             _h(_LIST_BUDGET + "a_budget_of_n_times_w_loses_nothing", 1.07, "ci"),
-            _h(_LIST_BUDGET + "rows_within_agrees_with_the_budget", 1.13, "ci"),
-            _h(_LIST_BUDGET + "rows_within_is_the_largest_fitting_prefix", 1.87, "ci"),
+            _h(_LIST_BUDGET + "rows_within_agrees_with_the_budget", 1.17, "ci"),
+            _h(_LIST_BUDGET + "rows_within_is_the_largest_fitting_prefix", 1.93, "ci"),
         ),
         functions=("admit", "turn_continues", "rows_within"),
     ),

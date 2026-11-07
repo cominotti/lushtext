@@ -2298,8 +2298,12 @@ property it weakens is the closed form for a symbolic charge; the agreement
 harness keeps a symbolic charge, and the unit and property tests cover random
 pairs. The concrete-charge run found an overflow in the harness's own
 `rows + 1` at charge 1 and `limit = u64::MAX` (not in `rows_within`), fixed with
-a checked add. Nine harnesses, 0.16 min locally with the build cached; the CI
-budget (2.8 min, build-dominated) is kept until a dispatched run.
+a checked add. Nine harnesses, 0.16 min locally with the build cached.
+**Measured in CI (archive, 2026-11-07):** PR #89's pull-request run
+`42372071326` took 1.83 min and 1.63 GiB for the nine harnesses (per-harness
+verification 0.02–1.93 s, `rows_within_is_the_largest_fitting_prefix` the
+widest), inside the 2.8 min / 1.7 GiB record, which stands (raise, never
+lower); the shard owes no dispatch.
 
 ### List budget and geometry policy shard re-split (`bound-lists-by-budget-not-count`, 2026-11-07)
 
