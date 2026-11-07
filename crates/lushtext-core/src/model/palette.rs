@@ -376,6 +376,80 @@ impl PaletteNoteCategory {
     }
 }
 
+/// One result group of the command palette, the unit a category view lists
+/// whole (`drill-down-palette-categories` D1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaletteCategory {
+    /// File-backed tabs open in the editor.
+    OpenTabs,
+    /// Files of the workspace index, open tabs excluded.
+    WorkspaceFiles,
+    /// One note group.
+    Note(PaletteNoteCategory),
+    /// The command registry.
+    Commands,
+}
+
+impl PaletteCategory {
+    /// Every category, in the grouped view's All-mode order.
+    pub const ALL: [Self; 7] = [
+        Self::OpenTabs,
+        Self::WorkspaceFiles,
+        Self::Note(PaletteNoteCategory::Bookmarks),
+        Self::Note(PaletteNoteCategory::FolderNotes),
+        Self::Note(PaletteNoteCategory::DocumentNotes),
+        Self::Note(PaletteNoteCategory::OpenTabs),
+        Self::Commands,
+    ];
+
+    /// Stable id used by automation snapshots and
+    /// `win.set-command-palette-category`.
+    #[must_use]
+    pub fn stable_id(self) -> &'static str {
+        match self {
+            Self::OpenTabs => "open-tabs",
+            Self::WorkspaceFiles => "workspace-files",
+            Self::Note(PaletteNoteCategory::Bookmarks) => "bookmarks",
+            Self::Note(PaletteNoteCategory::FolderNotes) => "folder-notes",
+            Self::Note(PaletteNoteCategory::DocumentNotes) => "document-notes",
+            Self::Note(PaletteNoteCategory::OpenTabs) => "open-tab-notes",
+            Self::Commands => "commands",
+        }
+    }
+
+    /// Parse a stable id; anything else is `None`.
+    #[must_use]
+    pub fn from_stable_id(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.stable_id() == value.trim())
+    }
+
+    /// Whether `mode`'s grouped view shows this category as a group.
+    #[must_use]
+    pub fn belongs_to(self, mode: SearchMode) -> bool {
+        match mode {
+            SearchMode::All => true,
+            SearchMode::Files => matches!(self, Self::OpenTabs | Self::WorkspaceFiles),
+            SearchMode::Notes => matches!(self, Self::Note(_)),
+            SearchMode::Commands => matches!(self, Self::Commands),
+        }
+    }
+
+    /// The label the grouped header uses for this category in `mode`; the
+    /// workspace group is labelled by the window's current scope.
+    #[must_use]
+    pub fn label(self, mode: SearchMode, workspace_group_label: &str) -> &str {
+        match self {
+            Self::OpenTabs => "Open Tabs",
+            Self::WorkspaceFiles => workspace_group_label,
+            Self::Note(category) if mode == SearchMode::All => category.all_mode_label(),
+            Self::Note(category) => category.label(),
+            Self::Commands => "Commands",
+        }
+    }
+}
+
 /// Activation target carried by one note palette row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteNoteTarget {
@@ -417,6 +491,13 @@ pub enum PaletteSearchRow {
         display_name: String,
         subtitle: String,
         target: PaletteNoteTarget,
+    },
+    /// The last row of a group that shows fewer rows than its category
+    /// matches: `hidden` matches are not shown, and activating it opens the
+    /// category view.
+    More {
+        category: PaletteCategory,
+        hidden: usize,
     },
 }
 
@@ -537,6 +618,58 @@ pub struct PaletteOpenTabSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_category_ids_round_trip() {
+        let mut ids = std::collections::HashSet::new();
+        for category in PaletteCategory::ALL {
+            assert!(ids.insert(category.stable_id()), "ids are unique");
+            assert_eq!(
+                PaletteCategory::from_stable_id(category.stable_id()),
+                Some(category)
+            );
+        }
+        assert_eq!(
+            PaletteCategory::from_stable_id(" commands "),
+            Some(PaletteCategory::Commands)
+        );
+        assert_eq!(PaletteCategory::from_stable_id(""), None);
+        assert_eq!(PaletteCategory::from_stable_id("nonexistent"), None);
+        assert_eq!(PaletteCategory::from_stable_id("Commands"), None);
+    }
+
+    #[test]
+    fn palette_category_labels_follow_the_grouped_headers() {
+        let open_tab_notes = PaletteCategory::Note(PaletteNoteCategory::OpenTabs);
+        assert_eq!(open_tab_notes.label(SearchMode::All, "W"), "Open Tab Notes");
+        assert_eq!(open_tab_notes.label(SearchMode::Notes, "W"), "Open Tabs");
+        assert_eq!(
+            PaletteCategory::WorkspaceFiles.label(SearchMode::Files, "All Workspaces"),
+            "All Workspaces"
+        );
+        assert_eq!(
+            PaletteCategory::OpenTabs.label(SearchMode::All, "W"),
+            "Open Tabs"
+        );
+        assert_eq!(
+            PaletteCategory::Commands.label(SearchMode::All, "W"),
+            "Commands"
+        );
+    }
+
+    #[test]
+    fn palette_categories_belong_to_their_modes() {
+        for category in PaletteCategory::ALL {
+            assert!(category.belongs_to(SearchMode::All));
+        }
+        assert!(PaletteCategory::WorkspaceFiles.belongs_to(SearchMode::Files));
+        assert!(!PaletteCategory::WorkspaceFiles.belongs_to(SearchMode::Notes));
+        assert!(
+            PaletteCategory::Note(PaletteNoteCategory::Bookmarks).belongs_to(SearchMode::Notes)
+        );
+        assert!(!PaletteCategory::Commands.belongs_to(SearchMode::Files));
+        assert!(PaletteCategory::Commands.belongs_to(SearchMode::Commands));
+    }
 
     #[test]
     fn test_indexed_file_relative_display() {

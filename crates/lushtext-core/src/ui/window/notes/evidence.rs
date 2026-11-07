@@ -48,9 +48,7 @@ use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::editor_page::LushtextEditorPage;
 
 use super::LushtextWindow;
-use super::browser::{ActiveNotesBrowser, NotesBrowserRuntimeSnapshot};
-#[cfg(feature = "test-utils")]
-use super::policy;
+use super::browser::{ActiveNotesBrowser, NotesBrowserRuntimeSnapshot, OpenEditorSnapshotEvidence};
 
 /// Everything observable about one window's notes and bookmarks workflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -114,8 +112,10 @@ pub struct OpenEditorNoteCaptureEvidence {
     pub bookmarks: usize,
     /// Retained bytes the capture accounted for.
     pub retained_bytes: u64,
-    /// Whether the capture stopped early against either budget.
+    /// Whether the byte budget cut the capture.
     pub truncated: bool,
+    /// Bookmark rows counted past the byte cut without being copied.
+    pub rows_not_retained: u64,
 }
 
 impl LushtextWindow {
@@ -219,22 +219,17 @@ impl LushtextWindow {
         }
     }
 
-    /// Run one bounded live-editor note capture against explicit budgets.
+    /// Run the open-editor capture (the same capture units the palette's and
+    /// the browser's sliced turns run) to completion against
+    /// `retained_byte_limit`, with no count
+    /// (`drill-down-palette-categories` D7).
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn capture_open_editor_note_evidence(
         &self,
-        item_limit: usize,
         retained_byte_limit: u64,
     ) -> OpenEditorNoteCaptureEvidence {
-        let workspaces_file = self.imp().sidebar.workspaces_file();
-        let scope_snapshot = workspaces_file.current_scope_snapshot();
-        let captured = self.open_editor_note_snapshots_bounded(
-            scope_snapshot.folder_paths(),
-            &workspaces_file.workspaces,
-            item_limit,
-            retained_byte_limit,
-        );
+        let captured = self.capture_open_editor_notes_now(retained_byte_limit);
         OpenEditorNoteCaptureEvidence {
             snapshots: captured.entries.len(),
             bookmarks: captured
@@ -242,21 +237,16 @@ impl LushtextWindow {
                 .iter()
                 .map(|snapshot| snapshot.bookmarks.len())
                 .sum(),
-            retained_bytes: captured.retained_bytes,
-            truncated: captured.truncated,
+            retained_bytes: captured.budget.charged(),
+            truncated: captured.counting_only || captured.budget.is_limited(),
+            rows_not_retained: captured.rows_not_retained,
         }
     }
 
-    /// Run the capture against the workflow's own production budgets.
-    #[cfg(feature = "test-utils")]
+    /// The palette's open-editor capture evidence: turns, restarts, rows
+    /// counted but not copied, and the longest turn.
     #[must_use]
-    pub fn capture_open_editor_note_evidence_at_item_limit(
-        &self,
-        item_limit: usize,
-    ) -> OpenEditorNoteCaptureEvidence {
-        self.capture_open_editor_note_evidence(
-            item_limit,
-            policy::NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT,
-        )
+    pub fn command_palette_note_capture_evidence(&self) -> OpenEditorSnapshotEvidence {
+        self.imp().command_palette_note_capture.evidence()
     }
 }

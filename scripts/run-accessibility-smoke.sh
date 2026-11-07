@@ -57,6 +57,8 @@ ACCESSIBILITY_CASES=(
     command-palette-commands
     command-palette-notes
     command-palette-dense-files
+    command-palette-category
+    command-palette-category-return
     command-palette-mode-changes
     command-palette-focus-restore
     command-palette-no-results
@@ -370,6 +372,8 @@ MATRIX_ROWS_BY_CASE = {
     "command-palette-commands": ["A11Y-PALETTE-COMMANDS"],
     "command-palette-notes": ["A11Y-PALETTE-NOTES"],
     "command-palette-dense-files": ["A11Y-PALETTE-FILES"],
+    "command-palette-category": ["A11Y-PALETTE-CATEGORY"],
+    "command-palette-category-return": ["A11Y-PALETTE-CATEGORY", "A11Y-PALETTE-DISMISS"],
     "command-palette-mode-changes": ["A11Y-PALETTE-NO-RESULTS"],
     "command-palette-focus-restore": ["A11Y-PALETTE-DISMISS"],
     "command-palette-no-results": ["A11Y-PALETTE-NO-RESULTS"],
@@ -1047,6 +1051,27 @@ seed_command_palette_dense_workspace_for_capture() {
         printf -v padded '%02d' "$index"
         printf 'palette dense file %s for accessibility command palette coverage\n' "$padded" \
             >"$dense_root/palette-dense-file-${padded}-with-long-name-for-accessibility-smoke.txt"
+    done
+}
+
+# More dense files than one palette group shows (64), so the workspace group
+# ends with a "More" row (drill-down-palette-categories). The More row is the
+# group's 66th row, below the overlay's 400 px viewport, so GTK has not
+# realized it and AT-SPI cannot see it until it is scrolled to: the cases wait
+# on a visible file row, and the return case finds the More row because leaving
+# the category selects and scrolls to it.
+seed_command_palette_category_workspace_for_capture() {
+    local capture="$1"
+    local dense_root="$ARTIFACT_DIR/fixtures/palette-category"
+    seed_workspace_for_capture "$capture"
+    mkdir -p "$dense_root"
+
+    local index
+    for index in $(seq 1 80); do
+        local padded
+        printf -v padded '%02d' "$index"
+        printf 'palette category file %s\n' "$padded" \
+            >"$dense_root/palette-category-file-${padded}.txt"
     done
 }
 
@@ -1926,6 +1951,44 @@ assert_anchor "command-palette-dense-files" "command palette" "combo box" "Files
 assert_anchor "command-palette-dense-files" "command palette" "label" "All Workspaces"
 assert_anchor "command-palette-dense-files" "command palette" "label" "palette-dense-file-01-with-long-name-for-accessibility-smoke.txt"
 record_focus_anchor "command-palette-dense-files" "Command palette query"
+fi
+
+if case_selected "command-palette-category"; then
+seed_command_palette_category_workspace_for_capture "command-palette-category"
+run_accessibility_capture "command-palette-category" \
+    --width 760 \
+    --height 640 \
+    --step window-action:toggle-command-palette \
+    --step wait-window-action:set-command-palette-query \
+    --step window-string-action:set-command-palette-mode=files \
+    --step window-string-action:set-command-palette-query=palette-category \
+    --step wait-atspi-text:"palette-category-file-01.txt" \
+    --step window-string-action:set-command-palette-category=workspace-files \
+    --step wait-atspi-text:"All Workspaces · 80 results"
+assert_anchor "command-palette-category" "command palette" "entry" "Command palette query"
+assert_anchor "command-palette-category" "command palette" "list" "Command palette results in All Workspaces"
+assert_anchor "command-palette-category" "command palette" "button" "Back to all results"
+assert_anchor "command-palette-category" "command palette" "label" "All Workspaces · 80 results"
+record_focus_anchor "command-palette-category" "Command palette query"
+fi
+
+if case_selected "command-palette-category-return"; then
+seed_command_palette_category_workspace_for_capture "command-palette-category-return"
+run_accessibility_capture "command-palette-category-return" \
+    --width 760 \
+    --height 640 \
+    --step window-action:toggle-command-palette \
+    --step wait-window-action:set-command-palette-query \
+    --step window-string-action:set-command-palette-mode=files \
+    --step window-string-action:set-command-palette-query=palette-category \
+    --step wait-atspi-text:"palette-category-file-01.txt" \
+    --step window-string-action:set-command-palette-category=workspace-files \
+    --step wait-atspi-text:"All Workspaces · 80 results" \
+    --step window-string-action:set-command-palette-category= \
+    --step wait-atspi-text:"16 more…"
+assert_anchor "command-palette-category-return" "command palette" "list" "Command palette results"
+assert_anchor "command-palette-category-return" "command palette" "label" "16 more…"
+record_focus_anchor "command-palette-category-return" "Command palette query"
 fi
 
 if case_selected "command-palette-mode-changes"; then

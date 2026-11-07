@@ -21,11 +21,23 @@
 //!   navigation over an activatable-flag sequence.
 //! * [`no_results_visible`], [`result_count_text`], and
 //!   [`accessible_value_text`] — the palette's presentation decisions.
+//! * The category view (`drill-down-palette-categories`): the "More" row's
+//!   wording ([`more_row_text`], [`more_row_accessible_name`]), the category
+//!   view's row limit ([`category_row_limit`] over
+//!   [`PALETTE_CATEGORY_RETAINED_BYTES`]), its navigation without a walk
+//!   ([`next_category_row`], [`page_activatable`]), the selection on leaving
+//!   ([`leave_selection`]), when Backspace leaves
+//!   ([`backspace_leaves_category`]), and its title, notices and
+//!   announcement.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::services::palette::{FileIndex, FileIndexMutationLedger, MAX_INDEXED_FILES};
+use crate::model::list_budget::{grouped_thousands, rows_within};
+use crate::model::palette::PaletteCategory;
+use crate::services::palette::{
+    FileIndex, FileIndexMutationLedger, MAX_INDEXED_FILES, PALETTE_CATEGORY_CANDIDATE_BYTES,
+};
 
 /// Debounce interval for handing incremental index updates to the worker.
 ///
@@ -48,6 +60,241 @@ pub const SEARCH_DEBOUNCE_MS: u64 = 150;
 /// Kind: presentation cap; 50 rounded up to a power of two
 /// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M1).
 pub const MAX_RESULTS_PER_SOURCE: usize = 64;
+
+/// Rows Page Up and Page Down move the selection, in both views.
+///
+/// Kind: out: presentation; about one viewport of 400 px at the rows' height.
+pub const RESULT_PAGE_ROWS: u32 = 16;
+
+/// Bytes a category view's ranking may hold at its peak, on the worker
+/// (`drill-down-palette-categories` D3).
+///
+/// Kind: presentation cap; up from `PALETTE_CATEGORY_FLOOR_RETENTION`, the
+/// power of two at or above it.
+pub const PALETTE_CATEGORY_RETAINED_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The ranking peak of the file index's largest admitted size, so the
+/// workspace category view of a full index is never cut.
+///
+/// Kind: derived; `MAX_INDEXED_FILES * PALETTE_CATEGORY_CANDIDATE_BYTES`.
+pub const PALETTE_CATEGORY_FLOOR_RETENTION: u64 =
+    MAX_INDEXED_FILES as u64 * PALETTE_CATEGORY_CANDIDATE_BYTES;
+
+// No loss at today's ceiling: the whole index fits the budget.
+const _: () = assert!(PALETTE_CATEGORY_FLOOR_RETENTION <= PALETTE_CATEGORY_RETAINED_BYTES);
+// And the budget is the power of two at or above the floor, not more: a change
+// of the candidate's size that leaves it further above (or below) fails here.
+const _: () = assert!(PALETTE_CATEGORY_RETAINED_BYTES / 2 < PALETTE_CATEGORY_FLOOR_RETENTION);
+
+/// Rows a category view lists at most: the budget's equal-charge prefix.
+#[must_use]
+pub fn category_row_limit() -> usize {
+    rows_within(
+        PALETTE_CATEGORY_RETAINED_BYTES,
+        PALETTE_CATEGORY_CANDIDATE_BYTES,
+    )
+}
+
+/// The "More" row's visible text: `"{N} more…"`, N grouped in thousands.
+#[must_use]
+pub fn more_row_text(hidden: usize) -> String {
+    format!("{} more…", grouped_thousands(hidden))
+}
+
+/// The "More" row's accessible name.
+#[must_use]
+pub fn more_row_accessible_name(hidden: usize, category_label: &str) -> String {
+    format!(
+        "Show {} more results in {category_label}",
+        grouped_thousands(hidden)
+    )
+}
+
+/// The "More" row's accessible description.
+#[must_use]
+pub fn more_row_description(category_label: &str) -> String {
+    format!("Opens a list of every result in {category_label}")
+}
+
+/// The category view's title: `"{category} · {N} results"`.
+#[must_use]
+pub fn category_title(category_label: &str, matching: usize) -> String {
+    let noun = if matching == 1 { "result" } else { "results" };
+    format!("{category_label} · {} {noun}", grouped_thousands(matching))
+}
+
+/// The category list's accessible label.
+#[must_use]
+pub fn category_list_label(category_label: &str) -> String {
+    format!("Command palette results in {category_label}")
+}
+
+/// The polite announcement raised once when a category view opens.
+#[must_use]
+pub fn category_entry_announcement(category_label: &str) -> String {
+    format!("{category_label}: showing all results. Escape returns to all results.")
+}
+
+/// The budget notice when the row limit cut a category: `"Showing X of Y
+/// results"`, or `None` when every match is listed.
+#[must_use]
+pub fn category_budget_notice(listed: usize, matching: usize) -> Option<String> {
+    (matching > listed).then(|| {
+        format!(
+            "Showing {} of {} results",
+            grouped_thousands(listed),
+            grouped_thousands(matching)
+        )
+    })
+}
+
+/// The notice of a note category whose source a byte ceiling cut.
+#[must_use]
+pub fn note_source_notice(held: usize, found: usize, found_is_lower_bound: bool) -> String {
+    let at_least = if found_is_lower_bound {
+        "at least "
+    } else {
+        ""
+    };
+    format!(
+        "Some notes are not searchable: the note source holds {} of {at_least}{} notes",
+        grouped_thousands(held),
+        grouped_thousands(found)
+    )
+}
+
+/// Next selection in a category view, which has no headers: one step or a
+/// page in `delta`'s direction, clamped to `[0, len)`. O(1).
+#[must_use]
+pub fn next_category_row(current: Option<u32>, len: u32, delta: i32) -> Option<u32> {
+    if len == 0 {
+        return None;
+    }
+    let last = len - 1;
+    let Some(current) = current.filter(|current| *current < len) else {
+        return Some(if delta < 0 { last } else { 0 });
+    };
+    let step = delta.unsigned_abs();
+    Some(if delta < 0 {
+        current.saturating_sub(step)
+    } else {
+        current.saturating_add(step).min(last)
+    })
+}
+
+/// A page move in the grouped view: `rows` rows in `delta`'s sign, landing on
+/// the nearest activatable row in the move's direction (else the nearest one
+/// back toward the start), so headers are skipped.
+#[must_use]
+pub fn page_activatable(activatable: &[bool], current: u32, delta: i32) -> Option<u32> {
+    let len = u32::try_from(activatable.len()).unwrap_or(u32::MAX);
+    if len == 0 {
+        return None;
+    }
+    if current >= len {
+        return first_activatable(activatable);
+    }
+    let step = delta.unsigned_abs();
+    let target = if delta < 0 {
+        current.saturating_sub(step)
+    } else {
+        current.saturating_add(step).min(len - 1)
+    };
+    let is_activatable =
+        |position: u32| usize::try_from(position).is_ok_and(|index| activatable[index]);
+    if is_activatable(target) {
+        return Some(target);
+    }
+    let direction = if delta < 0 { -1 } else { 1 };
+    match next_activatable(activatable, target, direction) {
+        Some(position) if position != target => Some(position),
+        _ => next_activatable(activatable, target, -direction)
+            .filter(|position| is_activatable(*position)),
+    }
+}
+
+/// What one grouped row is, for [`leave_selection`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupedRowKind {
+    /// A group header (not activatable).
+    Header,
+    /// A result row of a category.
+    Result(PaletteCategory),
+    /// A category's "More" row.
+    More(PaletteCategory),
+}
+
+/// Where the selection goes when the grouped rows arrive after leaving
+/// `category`: its "More" row if it is still cut, else its last row, else the
+/// first activatable row.
+#[must_use]
+pub fn leave_selection(rows: &[GroupedRowKind], category: PaletteCategory) -> Option<u32> {
+    let position = |index: usize| u32::try_from(index).ok();
+    if let Some(index) = rows
+        .iter()
+        .position(|row| *row == GroupedRowKind::More(category))
+    {
+        return position(index);
+    }
+    if let Some(index) = rows
+        .iter()
+        .rposition(|row| *row == GroupedRowKind::Result(category))
+    {
+        return position(index);
+    }
+    rows.iter()
+        .position(|row| *row != GroupedRowKind::Header)
+        .and_then(position)
+}
+
+/// Whether a Backspace press leaves the category view: only on a query that
+/// was already empty, with a key release seen since it became empty, so the
+/// auto-repeat of the Backspace that emptied it (presses without releases)
+/// does not leave (`drill-down-palette-categories` D5).
+#[must_use]
+pub const fn backspace_leaves_category(
+    query_is_empty: bool,
+    release_seen_since_empty: bool,
+) -> bool {
+    query_is_empty && release_seen_since_empty
+}
+
+/// Tracks [`backspace_leaves_category`]'s second input from the key events
+/// the capture controller sees.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BackspaceLeaveTracker {
+    release_seen_since_empty: bool,
+}
+
+impl BackspaceLeaveTracker {
+    /// The query changed: a non-empty query forgets any release, so the
+    /// count starts again when it next becomes empty.
+    pub fn query_changed(&mut self, query_is_empty: bool) {
+        if !query_is_empty {
+            self.release_seen_since_empty = false;
+        }
+    }
+
+    /// A key was released while the query was `query_is_empty`.
+    pub fn key_released(&mut self, query_is_empty: bool) {
+        if query_is_empty {
+            self.release_seen_since_empty = true;
+        }
+    }
+
+    /// A Backspace press: whether it leaves the category view.
+    #[must_use]
+    pub const fn backspace_pressed(&self, query_is_empty: bool) -> bool {
+        backspace_leaves_category(query_is_empty, self.release_seen_since_empty)
+    }
+
+    /// Forget everything (entering or leaving a category view). An empty
+    /// query on entry counts as released: the key that activated the More row
+    /// is not a Backspace.
+    pub fn reset(&mut self, query_is_empty: bool) {
+        self.release_seen_since_empty = query_is_empty;
+    }
+}
 
 /// Maximum incremental mutations retained before overflow escalates to a rebuild.
 ///
@@ -916,5 +1163,196 @@ mod tests {
             accessible_value_text(None, false, 0),
             "No command palette results"
         );
+    }
+
+    // --- drill-down-palette-categories ---
+
+    #[test]
+    fn more_row_wording_groups_thousands() {
+        assert_eq!(more_row_text(39_936), "39,936 more…");
+        assert_eq!(more_row_text(1), "1 more…");
+        assert_eq!(
+            more_row_accessible_name(39_936, "All Workspaces"),
+            "Show 39,936 more results in All Workspaces"
+        );
+        assert_eq!(
+            more_row_description("Commands"),
+            "Opens a list of every result in Commands"
+        );
+        assert_eq!(category_title("Bookmarks", 1), "Bookmarks · 1 result");
+        assert_eq!(
+            category_title("All Workspaces", 131_040),
+            "All Workspaces · 131,040 results"
+        );
+        assert_eq!(
+            category_list_label("Bookmarks"),
+            "Command palette results in Bookmarks"
+        );
+        assert_eq!(
+            category_entry_announcement("Open Tabs"),
+            "Open Tabs: showing all results. Escape returns to all results."
+        );
+    }
+
+    #[test]
+    fn the_budget_notice_shows_only_a_cut() {
+        assert_eq!(category_budget_notice(10, 10), None);
+        assert_eq!(
+            category_budget_notice(233_016, 300_000).as_deref(),
+            Some("Showing 233,016 of 300,000 results")
+        );
+        assert_eq!(
+            note_source_notice(16 * 1024, 20_000, false),
+            "Some notes are not searchable: the note source holds 16,384 of 20,000 notes"
+        );
+        assert_eq!(
+            note_source_notice(5, 9, true),
+            "Some notes are not searchable: the note source holds 5 of at least 9 notes"
+        );
+    }
+
+    #[test]
+    fn the_category_budget_holds_the_whole_index() {
+        assert_eq!(PALETTE_CATEGORY_RETAINED_BYTES, 0x0080_0000, "8 MiB");
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            PALETTE_CATEGORY_FLOOR_RETENTION, 4_718_592,
+            "4.5 MiB at 36 bytes"
+        );
+        assert!(category_row_limit() >= MAX_INDEXED_FILES);
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(category_row_limit(), 233_016);
+        assert_eq!(RESULT_PAGE_ROWS, 16);
+    }
+
+    #[test]
+    fn category_rows_step_and_page_with_clamping() {
+        assert_eq!(next_category_row(Some(0), 0, 1), None);
+        assert_eq!(next_category_row(Some(0), 10, 1), Some(1));
+        assert_eq!(next_category_row(Some(0), 10, -1), Some(0));
+        assert_eq!(next_category_row(Some(9), 10, 1), Some(9));
+        assert_eq!(next_category_row(Some(3), 10, 16), Some(9));
+        assert_eq!(next_category_row(Some(12), 128 * 1024, -16), Some(0));
+        assert_eq!(next_category_row(Some(20), 128 * 1024, -16), Some(4));
+        assert_eq!(next_category_row(None, 10, 1), Some(0));
+        assert_eq!(next_category_row(None, 10, -1), Some(9));
+        assert_eq!(
+            next_category_row(Some(99), 10, 1),
+            Some(0),
+            "stale selection"
+        );
+        assert_eq!(
+            next_category_row(Some(u32::MAX - 1), u32::MAX, i32::MAX),
+            Some(u32::MAX - 1)
+        );
+    }
+
+    #[test]
+    fn grouped_pages_skip_headers_in_the_move_direction() {
+        // header, 3 rows, header, 3 rows
+        let rows = [false, true, true, true, false, true, true, true];
+        assert_eq!(
+            page_activatable(&rows, 1, 3),
+            Some(5),
+            "lands on a header, goes on"
+        );
+        assert_eq!(
+            page_activatable(&rows, 1, 16),
+            Some(7),
+            "clamps to the last row"
+        );
+        assert_eq!(
+            page_activatable(&rows, 7, -3),
+            Some(3),
+            "header skipped going up"
+        );
+        assert_eq!(
+            page_activatable(&rows, 7, -16),
+            Some(1),
+            "row 0 is a header"
+        );
+        assert_eq!(page_activatable(&rows, 99, 16), Some(1));
+        assert_eq!(page_activatable(&[], 0, 16), None);
+        assert_eq!(page_activatable(&[false], 0, 16), None);
+    }
+
+    #[test]
+    fn leaving_selects_the_more_row_then_the_last_row_then_the_first() {
+        use crate::model::palette::PaletteNoteCategory;
+        use GroupedRowKind::{Header, More, Result};
+        let files = PaletteCategory::WorkspaceFiles;
+        let notes = PaletteCategory::Note(PaletteNoteCategory::Bookmarks);
+        let rows = [
+            Header,
+            Result(files),
+            Result(files),
+            More(files),
+            Header,
+            Result(notes),
+        ];
+        assert_eq!(leave_selection(&rows, files), Some(3));
+        assert_eq!(leave_selection(&rows, notes), Some(5));
+        let rows = [Header, Result(files), Result(files), Header, Result(notes)];
+        assert_eq!(leave_selection(&rows, files), Some(2), "no longer cut");
+        assert_eq!(
+            leave_selection(&rows, PaletteCategory::Commands),
+            Some(1),
+            "category gone"
+        );
+        assert_eq!(leave_selection(&[Header], files), None);
+    }
+
+    #[test]
+    fn backspace_leaves_only_after_a_release_on_an_empty_query() {
+        assert!(!backspace_leaves_category(false, true));
+        assert!(!backspace_leaves_category(true, false));
+        assert!(backspace_leaves_category(true, true));
+        // Holding Backspace over "rs": press, press (query now empty), press…
+        let mut tracker = BackspaceLeaveTracker::default();
+        tracker.reset(false);
+        assert!(!tracker.backspace_pressed(false));
+        tracker.query_changed(false);
+        assert!(!tracker.backspace_pressed(false));
+        tracker.query_changed(true);
+        assert!(!tracker.backspace_pressed(true), "auto-repeat stays");
+        assert!(!tracker.backspace_pressed(true), "and stays");
+        // Release, then press: leaves.
+        tracker.key_released(true);
+        assert!(tracker.backspace_pressed(true));
+        // Typing again forgets the release.
+        tracker.query_changed(false);
+        tracker.key_released(false);
+        tracker.query_changed(true);
+        assert!(!tracker.backspace_pressed(true));
+        // Entering with an empty query: the first Backspace leaves.
+        tracker.reset(true);
+        assert!(tracker.backspace_pressed(true));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn category_moves_stay_in_range(
+            current in proptest::option::of(0u32..300),
+            len in 0u32..300,
+            delta in -40i32..40,
+        ) {
+            match next_category_row(current, len, delta) {
+                None => proptest::prop_assert_eq!(len, 0),
+                Some(position) => proptest::prop_assert!(position < len),
+            }
+        }
+
+        #[test]
+        fn grouped_pages_land_on_activatable_rows(
+            rows in proptest::collection::vec(proptest::bool::ANY, 0..80),
+            current in 0u32..90,
+            delta in -40i32..40,
+        ) {
+            if let Some(position) = page_activatable(&rows, current, delta) {
+                proptest::prop_assert!(rows[position as usize]);
+            } else {
+                proptest::prop_assert!(!rows.contains(&true) || rows.is_empty());
+            }
+        }
     }
 }

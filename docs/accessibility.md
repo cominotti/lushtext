@@ -232,6 +232,18 @@ Expected screen-reader behavior includes:
 - Alerts, durability warnings, failed loads, destructive confirmations, Replace
   All completion, undo availability, recovery warnings, and user-initiated
   long-running operations use bounded announcements or alert semantics.
+- A command palette group that shows fewer results than it matches ends with a
+  "More" row named "Show N more results in {category}" (N grouped in
+  thousands). Enter on it opens that category's view: one polite announcement
+  ("{category}: showing all results. Escape returns to all results."), a list
+  labelled "Command palette results in {category}" whose set size and value
+  text come from its model's length, a "Back to all results" button, and,
+  when the 8 MiB ranking budget or the note source's byte ceilings cut it, a
+  "Showing X of Y results" or note-source notice announced once per change.
+  Focus stays in the query entry; Page Up/Page Down move by 16 rows; Escape,
+  Backspace on an already empty query, the back button and Tab return to the
+  grouped results with the More row selected, one level per Escape
+  (`drill-down-palette-categories`, A11Y-PALETTE-CATEGORY).
 - Workspace lists that a retained-byte budget cuts, or that are still loading,
   say so in text and in accessible names (`bound-lists-by-budget-not-count`).
   A workspace search that reaches its budget raises **one** polite

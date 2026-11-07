@@ -64,11 +64,6 @@ const MAX_NOTE_FIELD_FUZZY_SCORE: u32 = u16::MAX as u32;
 ///
 /// Kind: cap; a power of two, rounded down.
 const NOTE_TEXT_CANCEL_CHECK_INTERVAL: usize = 1_024;
-/// Maximum note and bookmark rows retained for command-palette search.
-///
-/// Kind: presentation cap; 10,000 rounded up to a power of two
-/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
-pub const MAX_PALETTE_NOTE_ENTRIES: usize = 16 * 1024;
 /// Maximum aggregate searchable UTF-8 bytes retained for palette note rows.
 ///
 /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
@@ -107,12 +102,15 @@ const MAX_PALETTE_NOTE_DIAGNOSTICS: usize = 1_024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ByteRefusal {
     /// The first refusal ends construction: the source is a prefix of the
-    /// construction order. The command palette's rule, unchanged.
+    /// construction order. No production consumer uses it since
+    /// `drill-down-palette-categories` D7 moved the palette to
+    /// [`ByteRefusal::SkipAndCount`]; unit tests keep it as `main`'s reference.
     Stop,
     /// A refused row is skipped and counted, and later rows that fit are still
-    /// admitted. Browse Notes' rule: its rows are regrouped by category before
-    /// display, so the construction order is never what the user navigates, and
-    /// a prefix latch would only starve the later categories.
+    /// admitted. Both consumers' rule: Browse Notes and the command palette
+    /// regroup rows by category before display, so the construction order is
+    /// never what the user navigates, and a prefix latch would only starve the
+    /// later categories.
     SkipAndCount,
 }
 
@@ -138,16 +136,19 @@ pub struct NoteSourceLimits {
     pub on_byte_refusal: ByteRefusal,
 }
 
-/// Command-palette note-source policy.
+/// Command-palette note-source policy: bounded by its byte ceilings alone,
+/// with no row or sidecar count, skipping and counting a refused row
+/// (`drill-down-palette-categories` D7, the browser's rule from
+/// `bound-notes-browser-by-budget` D3).
 pub const PALETTE_NOTE_SOURCE_LIMITS: NoteSourceLimits = NoteSourceLimits {
-    entries: Some(MAX_PALETTE_NOTE_ENTRIES),
+    entries: None,
     searchable_text_bytes: MAX_PALETTE_NOTE_TEXT_BYTES,
     retained_bytes: MAX_PALETTE_NOTE_RETAINED_BYTES,
-    sidecar_entries: Some(MAX_PALETTE_NOTE_ENTRIES),
+    sidecar_entries: None,
     sidecar_path_bytes: MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES,
     construction_bytes: MAX_PALETTE_NOTE_CONSTRUCTION_BYTES,
     diagnostics: MAX_PALETTE_NOTE_DIAGNOSTICS,
-    on_byte_refusal: ByteRefusal::Stop,
+    on_byte_refusal: ByteRefusal::SkipAndCount,
 };
 
 /// Inventory mode shared by bounded source construction and browser queries.
@@ -2522,10 +2523,11 @@ mod tests {
         );
     }
 
-    /// The palette keeps its prefix latch under the same cut: its admitted
-    /// rows and worker cost are unchanged.
+    /// `drill-down-palette-categories` D7: a text cut in bookmarks no longer
+    /// hides the palette's folder and document notes (`main` stopped at the
+    /// first refusal and kept only bookmarks).
     #[test]
-    fn the_palette_still_stops_at_the_first_byte_refusal() {
+    fn the_palette_skips_and_counts_a_byte_refusal() {
         let data = TempDir::new().expect("data tempdir");
         let scope = seed_bookmarks_then_notes(data.path(), 4_096);
         let limits = NoteSourceLimits {
@@ -2535,9 +2537,14 @@ mod tests {
         let (load, _) = load_all_notes(data.path(), &scope, limits);
         assert_eq!(
             categories(&load.entries),
-            vec![PaletteNoteCategory::Bookmarks]
+            vec![
+                PaletteNoteCategory::Bookmarks,
+                PaletteNoteCategory::FolderNotes,
+                PaletteNoteCategory::DocumentNotes,
+            ]
         );
-        assert!(load.found_is_lower_bound, "a stopped scan is only a floor");
+        assert_eq!(load.rows_found, 4, "the refused bookmark is counted");
+        assert!(!load.found_is_lower_bound);
     }
 
     /// D3: without a count, a source above the palette's 16,384 rows is
@@ -2569,8 +2576,8 @@ mod tests {
         let (palette, _) = load_all_notes(data.path(), &scope, PALETTE_NOTE_SOURCE_LIMITS);
         assert_eq!(
             palette.entries.len(),
-            16 * 1024,
-            "the palette keeps its count"
+            17_000,
+            "the palette has no count (drill-down-palette-categories D7)"
         );
     }
 
@@ -2650,11 +2657,11 @@ mod tests {
         };
         assert_eq!(retained(10_000), (10_000, vec![]));
         assert_eq!(retained(16 * 1024), (16 * 1024, vec![]));
-        assert_eq!(
-            retained(16 * 1024 + 1),
-            (16 * 1024, vec![NoteSourceTruncationReason::EntryLimit])
-        );
-        assert_eq!(PALETTE_NOTE_SOURCE_LIMITS.sidecar_entries, Some(16 * 1024));
+        // drill-down-palette-categories D7: no count, so a source above the
+        // former 16,384 is admitted whole within its byte ceilings.
+        assert_eq!(retained(16 * 1024 + 1), (16 * 1024 + 1, vec![]));
+        assert_eq!(PALETTE_NOTE_SOURCE_LIMITS.entries, None);
+        assert_eq!(PALETTE_NOTE_SOURCE_LIMITS.sidecar_entries, None);
     }
 
     #[test]

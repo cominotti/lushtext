@@ -537,6 +537,9 @@ pub struct LushtextWindow {
     /// One paced capacity wakeup for the command-palette note source.
     pub(super) command_palette_note_capacity_wakeup:
         crate::ui::plain_disposal::DisposalCapacityWakeup,
+    /// The palette's sliced open-editor bookmark capture, which precedes each
+    /// note-source request (`drill-down-palette-categories` D7).
+    pub(crate) command_palette_note_capture: std::rc::Rc<super::notes::OpenEditorCaptureOwner>,
     /// Focus widget saved before the command palette steals focus.
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// One-tick latch for Escape already handled by a child command-palette entry.
@@ -663,6 +666,7 @@ impl Default for LushtextWindow {
             command_palette_note_admission: RefCell::default(),
             command_palette_note_capacity_wakeup:
                 crate::ui::plain_disposal::DisposalCapacityWakeup::default(),
+            command_palette_note_capture: std::rc::Rc::default(),
             saved_focus: RefCell::new(None),
             transient_child_escape_handled: Cell::new(false),
             user_input_since_map: Cell::new(false),
@@ -1057,12 +1061,19 @@ impl ObjectImpl for LushtextWindow {
         });
 
         let window_weak = obj.downgrade();
-        self.command_palette.connect_close_requested(move || {
-            if let Some(window) = window_weak.upgrade() {
-                window.mark_child_transient_escape_handled();
-                window.close_command_palette();
-            }
-        });
+        self.command_palette
+            .connect_escape_consumed(move |outcome| {
+                if let Some(window) = window_weak.upgrade() {
+                    // Latch every Escape the palette consumed, a category leave as
+                    // much as a close: the window's Bubble controller sees the same
+                    // key press after `stop-search`, and would otherwise give up one
+                    // more level (`drill-down-palette-categories` D5).
+                    window.mark_child_transient_escape_handled();
+                    if outcome == crate::ui::command_palette::PaletteEscape::CloseRequested {
+                        window.close_command_palette();
+                    }
+                }
+            });
 
         let window_weak = obj.downgrade();
         self.tab_view
@@ -1143,6 +1154,7 @@ impl ObjectImpl for LushtextWindow {
             .invalidate();
         self.command_palette_note_admission.borrow_mut().take();
         self.command_palette_note_capacity_wakeup.cancel();
+        self.command_palette_note_capture.stop();
         if let Some(source_id) = self.drafts.autosave_source_id.take() {
             source_id.remove();
         }

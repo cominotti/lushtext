@@ -21,6 +21,9 @@
 pub enum TransientDismissal {
     /// The window-level command palette overlay.
     CommandPalette,
+    /// The command palette's category view: Escape returns the palette to its
+    /// grouped results and keeps it open (`drill-down-palette-categories` D5).
+    CommandPaletteCategory,
     /// The active editor page's in-editor find bar.
     EditorSearch,
     /// The workspace-wide search panel revealer.
@@ -44,6 +47,8 @@ pub enum TransientDismissal {
 pub struct TransientSurfaceState {
     /// Whether the palette revealer currently reveals its child.
     pub command_palette_revealed: bool,
+    /// Whether the palette shows a category view rather than grouped results.
+    pub command_palette_category_shown: bool,
     /// Whether the selected editor page shows its find bar.
     pub editor_search_visible: bool,
     /// Whether the workspace search panel revealer reveals its child.
@@ -87,7 +92,12 @@ impl EscapeOutcome {
 #[must_use]
 pub fn topmost_dismissible(state: TransientSurfaceState) -> Option<TransientDismissal> {
     if state.command_palette_revealed {
-        return Some(TransientDismissal::CommandPalette);
+        // The palette gives up one level per Escape: its category view first.
+        return Some(if state.command_palette_category_shown {
+            TransientDismissal::CommandPaletteCategory
+        } else {
+            TransientDismissal::CommandPalette
+        });
     }
     if state.editor_search_visible {
         return Some(TransientDismissal::EditorSearch);
@@ -164,6 +174,7 @@ mod tests {
             search_panel_revealed: true,
             primary_menu_active: true,
             notes_menu_active: true,
+            ..TransientSurfaceState::default()
         };
         assert_eq!(
             topmost_dismissible(state),
@@ -261,5 +272,45 @@ mod tests {
         assert!(!palette_click_away_dismisses(true, true));
         assert!(!palette_click_away_dismisses(false, false));
         assert!(!palette_click_away_dismisses(false, true));
+    }
+
+    #[test]
+    fn a_palette_category_view_is_left_before_the_palette_closes() {
+        let state = TransientSurfaceState {
+            command_palette_revealed: true,
+            command_palette_category_shown: true,
+            search_panel_revealed: true,
+            ..TransientSurfaceState::default()
+        };
+        assert_eq!(
+            topmost_dismissible(state),
+            Some(TransientDismissal::CommandPaletteCategory)
+        );
+        assert_eq!(
+            escape_outcome(false, state, true),
+            EscapeOutcome::Dismiss(TransientDismissal::CommandPaletteCategory)
+        );
+        assert_eq!(
+            escape_outcome(true, state, false),
+            EscapeOutcome::ChildAlreadyHandled,
+            "the entry's own leave latched this Escape"
+        );
+        let grouped = TransientSurfaceState {
+            command_palette_category_shown: false,
+            ..state
+        };
+        assert_eq!(
+            topmost_dismissible(grouped),
+            Some(TransientDismissal::CommandPalette)
+        );
+        let hidden = TransientSurfaceState {
+            command_palette_revealed: false,
+            ..state
+        };
+        assert_eq!(
+            topmost_dismissible(hidden),
+            Some(TransientDismissal::SearchPanel),
+            "a stale category flag on a hidden palette is ignored"
+        );
     }
 }

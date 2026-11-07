@@ -23,17 +23,20 @@
 //!    `seams::NotesBrowserTicket` against live facts before publishing.
 //! 3. **The palette's refresh is debounced.** A live note or bookmark burst
 //!    resumes once, after the quiet window, in the debounce callback.
-//! 4. **The browser's open-editor capture is sliced.** It runs in turns from a
-//!    `G_PRIORITY_DEFAULT_IDLE` source owned by the browser state, each turn
-//!    taking units while `model::list_budget::turn_continues` holds, and
-//!    resumes in [`run_open_editor_capture_turn`] until every editor is
-//!    captured; only then is the worker request submitted.
+//! 4. **The open-editor capture is sliced, for both consumers.** It runs in
+//!    turns from a `G_PRIORITY_DEFAULT_IDLE` source owned by the consumer's
+//!    `OpenEditorCaptureOwner` (the browser state's, or the window's for the
+//!    palette, `drill-down-palette-categories` D7), each turn taking units
+//!    while `model::list_budget::turn_continues` holds, and resumes in
+//!    `run_open_editor_capture_turn` until every editor is captured; only
+//!    then is the worker request submitted. A palette close stops it.
 //!
 //! Worker-side guarding lives in [`guard_note_source_on_worker`], which reserves
 //! the retained-byte weight the load actually produced and shrinks the
 //! reservation to it, so a rejected or stale result is retired off the GTK thread
 //! rather than freed inside a completion turn.
 
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -57,7 +60,7 @@ use crate::services::{json_store, palette as palette_service};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 
-use super::browser::{NotesBrowserEntry, NotesBrowserState, OpenEditorNoteSnapshots};
+use super::browser::{NotesBrowserEntry, NotesBrowserState, OpenEditorSnapshotEvidence};
 use super::policy;
 use super::policy::{
     CaptureSliceDecision, NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT, NotesBrowserListedCount,
@@ -112,95 +115,6 @@ impl LushtextWindow {
             tracing::warn!("{}", diagnostic.summary());
         }
     }
-    /// Snapshot open saved-editor note state without touching the filesystem.
-    ///
-    /// This runs on the GTK main thread because `bookmark_records()` reads the
-    /// live `GtkSourceMark` projection. Sidecar loading and identity
-    /// deduplication stay in the existing background browse task.
-    pub(super) fn open_editor_note_snapshots_bounded(
-        &self,
-        scope_folders: &[PathBuf],
-        all_workspaces: &[WorkspaceConfig],
-        max_snapshots_and_bookmarks: usize,
-        max_retained_bytes: u64,
-    ) -> OpenEditorNoteSnapshots {
-        let tab_view = &self.imp().tab_view;
-        let snapshot_size = std::mem::size_of::<PaletteOpenEditorNoteSnapshot>();
-        let page_count = usize::try_from(tab_view.n_pages()).unwrap_or(usize::MAX);
-        let capacity = policy::open_editor_snapshot_capacity(
-            max_snapshots_and_bookmarks,
-            page_count,
-            max_retained_bytes,
-            snapshot_size,
-        );
-        let mut snapshots = Vec::with_capacity(capacity);
-        let mut retained_bytes =
-            policy::open_editor_snapshot_reserved_bytes(capacity, snapshot_size);
-        let mut retained_bookmarks = 0usize;
-        let mut truncated = false;
-        for index in 0..tab_view.n_pages() {
-            let retained_items = snapshots.len().saturating_add(retained_bookmarks);
-            if retained_items >= max_snapshots_and_bookmarks || snapshots.len() == capacity {
-                truncated = true;
-                break;
-            }
-            let page = tab_view.nth_page(index);
-            let child = page.child();
-            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
-                continue;
-            };
-            let Some(path) = editor.file_path() else {
-                continue;
-            };
-            let open_tab_source = (!palette_service::path_is_in_folders(&path, scope_folders))
-                .then(|| palette_service::open_tab_source_for_path(all_workspaces, &path));
-            let snapshot_heap_bytes = policy::open_editor_snapshot_heap_bytes(
-                path.capacity(),
-                open_tab_source
-                    .as_ref()
-                    .and_then(|source| source.workspace_name.as_ref().map(String::capacity)),
-                open_tab_source.as_ref().and_then(|source| {
-                    source
-                        .workspace_folder
-                        .as_ref()
-                        .map(std::path::PathBuf::capacity)
-                }),
-            );
-            if retained_bytes.saturating_add(snapshot_heap_bytes) > max_retained_bytes {
-                truncated = true;
-                break;
-            }
-            let bookmark_byte_limit = max_retained_bytes
-                .saturating_sub(retained_bytes)
-                .saturating_sub(snapshot_heap_bytes);
-            let (bookmarks, bookmark_bytes, bookmarks_truncated) = editor
-                .bookmark_records_bounded_by_retained_bytes(
-                    max_snapshots_and_bookmarks
-                        .saturating_sub(retained_items)
-                        .saturating_sub(1),
-                    bookmark_byte_limit,
-                );
-            retained_bookmarks = retained_bookmarks.saturating_add(bookmarks.len());
-            retained_bytes = retained_bytes
-                .saturating_add(snapshot_heap_bytes)
-                .saturating_add(bookmark_bytes);
-            snapshots.push(PaletteOpenEditorNoteSnapshot {
-                path,
-                bookmarks,
-                open_tab_source,
-            });
-            if bookmarks_truncated {
-                truncated = true;
-                break;
-            }
-        }
-        OpenEditorNoteSnapshots {
-            entries: snapshots,
-            retained_bytes,
-            truncated,
-            rows_not_retained: 0,
-        }
-    }
     /// Start the browser's source for `mode`: present the loading label, then
     /// capture the open editors in sliced turns; the worker request follows the
     /// last turn (`bound-notes-browser-by-budget` D4).
@@ -209,6 +123,25 @@ impl LushtextWindow {
         state: &Rc<NotesBrowserState>,
         mode: palette_service::NotesBrowserMode,
     ) {
+        state.limit_label.set_label(mode.loading_label());
+        state.limit_label.set_visible(true);
+        let capture = self.new_open_editor_capture(mode);
+        let state_weak = Rc::downgrade(state);
+        state.snapshot_capture.start(capture, move |capture| {
+            if let Some(state) = state_weak.upgrade()
+                && !state.disposed.get()
+            {
+                submit_captured_notes_browser_source(&state, capture);
+            }
+        });
+    }
+
+    /// A capture of every open editor's bookmarks under the 4 MiB snapshot
+    /// budget, with no count, for `mode` in the current workspace scope.
+    fn new_open_editor_capture(
+        &self,
+        mode: palette_service::NotesBrowserMode,
+    ) -> OpenEditorSnapshotCapture {
         let workspaces_file = self.imp().sidebar.workspaces_file();
         let scope_snapshot = workspaces_file.current_scope_snapshot();
         let all_workspaces = workspaces_file.workspaces;
@@ -223,31 +156,31 @@ impl LushtextWindow {
             })
             .map(|editor| editor.downgrade())
             .collect();
-        state.limit_label.set_label(mode.loading_label());
-        state.limit_label.set_visible(true);
-        cancel_open_editor_capture(state);
-        state
-            .snapshot_capture
-            .replace(Some(OpenEditorSnapshotCapture {
-                mode,
-                scope_snapshot,
-                all_workspaces,
-                editors,
-                next_editor: 0,
-                current: None,
-                entries: Vec::new(),
-                budget: RetainedBudget::new(NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT),
-                counting_only: false,
-                rows_not_retained: 0,
-            }));
-        let state_weak = Rc::downgrade(state);
-        let source = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
-            let Some(state) = state_weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            run_open_editor_capture_turn(&state)
-        });
-        state.snapshot_source.replace(Some(source));
+        OpenEditorSnapshotCapture::new(
+            mode,
+            scope_snapshot,
+            all_workspaces,
+            editors,
+            NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT,
+        )
+    }
+
+    /// Run one open-editor capture to completion in this turn, against
+    /// `retained_byte_limit`: the same capture units the sliced turns run,
+    /// for the evidence helper (`drill-down-palette-categories` D7).
+    #[cfg(feature = "test-utils")]
+    pub(super) fn capture_open_editor_notes_now(
+        &self,
+        retained_byte_limit: u64,
+    ) -> OpenEditorSnapshotCapture {
+        let mut capture = self.new_open_editor_capture(palette_service::NotesBrowserMode::AllNotes);
+        capture.budget = RetainedBudget::new(retained_byte_limit);
+        let mut evidence = OpenEditorSnapshotEvidence::default();
+        while matches!(
+            capture_unit(&mut capture, &mut evidence),
+            CaptureUnit::Continue
+        ) {}
+        capture
     }
 
     /// Coalesce cached note-row refreshes after bursty note and bookmark edits.
@@ -268,33 +201,40 @@ impl LushtextWindow {
 
     /// Refresh cached command-palette note rows from the current workspace scope.
     ///
-    /// The GTK thread only snapshots open-editor bookmark metadata here. Sidecar
-    /// listing and document identity work stay in the background task, and the
-    /// generation guard prevents stale completions from replacing newer rows.
+    /// The open editors' bookmarks are captured in sliced turns under the
+    /// 4 MiB snapshot budget with no count, the capture the notes browser
+    /// uses (`drill-down-palette-categories` D7); the worker request follows
+    /// the last turn. Sidecar listing and identity work stay on the worker,
+    /// and the generation guard keeps a stale completion from replacing newer
+    /// rows.
     pub(in crate::ui::window) fn refresh_command_palette_note_source(&self) {
         if !self.imp().palette_revealer.reveals_child() {
             self.invalidate_command_palette_note_source();
             return;
         }
+        let capture = self.new_open_editor_capture(palette_service::NotesBrowserMode::AllNotes);
+        let window_weak = self.downgrade();
+        self.imp()
+            .command_palette_note_capture
+            .start(capture, move |capture| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.submit_captured_command_palette_note_source(capture);
+                }
+            });
+    }
 
-        let workspaces_file = self.imp().sidebar.workspaces_file();
-        let scope_snapshot = workspaces_file.current_scope_snapshot();
-        let all_workspaces = workspaces_file.workspaces;
-        let open_editor_snapshots = self.open_editor_note_snapshots_bounded(
-            scope_snapshot.folder_paths(),
-            &all_workspaces,
-            palette_service::MAX_PALETTE_NOTE_ENTRIES,
-            NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT,
-        );
-        debug_assert!(
-            open_editor_snapshots.retained_bytes <= NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT
-        );
+    /// Hand the palette's captured snapshots to its source coordinator.
+    fn submit_captured_command_palette_note_source(&self, capture: OpenEditorSnapshotCapture) {
+        if !self.imp().palette_revealer.reveals_child() {
+            return;
+        }
+        debug_assert!(capture.budget.charged() <= NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT);
         let request = NoteSourceRefreshRequest {
             data_dir: json_store::data_dir(),
-            scope_snapshot,
-            open_editor_snapshots: Arc::from(open_editor_snapshots.entries),
-            open_editor_snapshots_truncated: open_editor_snapshots.truncated,
-            open_editor_rows_not_retained: open_editor_snapshots.rows_not_retained,
+            scope_snapshot: capture.scope_snapshot,
+            open_editor_snapshots: Arc::from(capture.entries),
+            open_editor_snapshots_truncated: capture.counting_only || capture.budget.is_limited(),
+            open_editor_rows_not_retained: capture.rows_not_retained,
             mode: palette_service::NotesBrowserMode::AllNotes,
             limits: palette_service::PALETTE_NOTE_SOURCE_LIMITS,
         };
@@ -308,6 +248,11 @@ impl LushtextWindow {
         } else {
             self.finish_cancelled_command_palette_note_admission();
         }
+    }
+
+    /// Cancel the palette's capture in progress (palette close).
+    pub(in crate::ui::window) fn stop_command_palette_note_capture(&self) {
+        self.imp().command_palette_note_capture.stop();
     }
 
     fn start_command_palette_note_refresh(&self, start: NoteSourceRefreshStart) {
@@ -444,6 +389,14 @@ impl LushtextWindow {
                     had_recovery_diagnostics,
                 } => {
                     let was_truncated = !load.truncation_reasons.is_empty();
+                    let held = entries.len();
+                    self.imp()
+                        .command_palette
+                        .set_note_source_cut(was_truncated.then_some((
+                            held,
+                            load.rows_found.max(held),
+                            load.found_is_lower_bound,
+                        )));
                     self.imp().command_palette.set_guarded_note_entries(entries);
                     if was_truncated && self.imp().palette_revealer.reveals_child() {
                         self.publish_status_message(
@@ -480,6 +433,7 @@ impl LushtextWindow {
     }
 
     fn invalidate_command_palette_note_source(&self) {
+        self.imp().command_palette_note_capture.stop();
         self.imp()
             .command_palette_note_refreshes
             .borrow_mut()
@@ -687,9 +641,12 @@ impl NotesBrowserState {
     }
 }
 
-/// The browser's sliced open-editor capture (`bound-notes-browser-by-budget`
-/// D4): GTK-side work that grows with bookmarks, so it runs in turns and
-/// admits bytes through `RetainedBudget` at the unchanged 4 MiB, with no count.
+/// One sliced open-editor capture (`bound-notes-browser-by-budget` D4):
+/// GTK-side work that grows with bookmarks, so it runs in turns and admits
+/// bytes through `RetainedBudget` at the unchanged 4 MiB, with no count. Both
+/// consumers use it, Browse Notes and the command palette's note refresh
+/// (`drill-down-palette-categories` D7), each through its own
+/// [`OpenEditorCaptureOwner`].
 pub(super) struct OpenEditorSnapshotCapture {
     mode: palette_service::NotesBrowserMode,
     scope_snapshot: WorkspaceScopeSnapshot,
@@ -697,11 +654,88 @@ pub(super) struct OpenEditorSnapshotCapture {
     editors: Vec<glib::WeakRef<LushtextEditorPage>>,
     next_editor: usize,
     current: Option<EditorCapture>,
-    entries: Vec<PaletteOpenEditorNoteSnapshot>,
-    budget: RetainedBudget,
+    pub(super) entries: Vec<PaletteOpenEditorNoteSnapshot>,
+    pub(super) budget: RetainedBudget,
     /// The byte budget latched: later rows are counted, never copied.
-    counting_only: bool,
-    rows_not_retained: u64,
+    pub(super) counting_only: bool,
+    pub(super) rows_not_retained: u64,
+}
+
+impl OpenEditorSnapshotCapture {
+    fn new(
+        mode: palette_service::NotesBrowserMode,
+        scope_snapshot: WorkspaceScopeSnapshot,
+        all_workspaces: Vec<WorkspaceConfig>,
+        editors: Vec<glib::WeakRef<LushtextEditorPage>>,
+        retained_byte_limit: u64,
+    ) -> Self {
+        Self {
+            mode,
+            scope_snapshot,
+            all_workspaces,
+            editors,
+            next_editor: 0,
+            current: None,
+            entries: Vec::new(),
+            budget: RetainedBudget::new(retained_byte_limit),
+            counting_only: false,
+            rows_not_retained: 0,
+        }
+    }
+}
+
+type CaptureDone = Box<dyn FnOnce(OpenEditorSnapshotCapture)>;
+
+/// The owner of one consumer's capture: the capture in progress, the idle
+/// source running its turns, what to do with it once every editor is
+/// captured, and its evidence. A new start replaces a running capture.
+#[derive(Default)]
+pub(crate) struct OpenEditorCaptureOwner {
+    capture: RefCell<Option<OpenEditorSnapshotCapture>>,
+    source: RefCell<Option<glib::SourceId>>,
+    on_done: RefCell<Option<CaptureDone>>,
+    evidence: Cell<OpenEditorSnapshotEvidence>,
+}
+
+impl OpenEditorCaptureOwner {
+    /// Start `capture` in sliced `G_PRIORITY_DEFAULT_IDLE` turns; `on_done`
+    /// runs after the last one.
+    pub(super) fn start(
+        self: &Rc<Self>,
+        capture: OpenEditorSnapshotCapture,
+        on_done: impl FnOnce(OpenEditorSnapshotCapture) + 'static,
+    ) {
+        self.stop();
+        self.capture.replace(Some(capture));
+        self.on_done.replace(Some(Box::new(on_done)));
+        let owner = Rc::downgrade(self);
+        let source = glib::idle_add_local_full(glib::Priority::DEFAULT_IDLE, move || {
+            let Some(owner) = owner.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            run_open_editor_capture_turn(&owner)
+        });
+        self.source.replace(Some(source));
+    }
+
+    /// Stop a running capture and remove its turn source.
+    pub(in crate::ui::window) fn stop(&self) {
+        if let Some(source) = self.source.borrow_mut().take() {
+            source.remove();
+        }
+        self.capture.borrow_mut().take();
+        self.on_done.borrow_mut().take();
+    }
+
+    /// Whether a capture is in progress.
+    pub(crate) fn is_capturing(&self) -> bool {
+        self.capture.borrow().is_some()
+    }
+
+    /// Turns, restarts, rows counted but not copied, and the longest turn.
+    pub(super) fn evidence(&self) -> OpenEditorSnapshotEvidence {
+        self.evidence.get()
+    }
 }
 
 /// One editor's capture in progress.
@@ -725,14 +759,7 @@ struct EditorCapture {
 
 /// Stop a running capture and remove its turn source (dispose, mode switch).
 pub(super) fn stop_open_editor_capture(state: &NotesBrowserState) {
-    if let Some(source) = state.snapshot_source.borrow_mut().take() {
-        source.remove();
-    }
-    state.snapshot_capture.borrow_mut().take();
-}
-
-fn cancel_open_editor_capture(state: &NotesBrowserState) {
-    stop_open_editor_capture(state);
+    state.snapshot_capture.stop();
 }
 
 /// What one unit of the capture did.
@@ -753,23 +780,19 @@ const fn capture_turn_capped_for_test(_units: usize) -> bool {
     false
 }
 
-/// Run one capture turn; at its end, submit the source request.
-fn run_open_editor_capture_turn(state: &Rc<NotesBrowserState>) -> glib::ControlFlow {
-    if state.disposed.get() {
-        state.snapshot_source.borrow_mut().take();
-        return glib::ControlFlow::Break;
-    }
+/// Run one capture turn; after the last, hand the capture to its consumer.
+fn run_open_editor_capture_turn(owner: &Rc<OpenEditorCaptureOwner>) -> glib::ControlFlow {
     let start = std::time::Instant::now();
     let mut units = 0usize;
     let mut done = false;
     {
-        let mut slot = state.snapshot_capture.borrow_mut();
+        let mut slot = owner.capture.borrow_mut();
         let Some(capture) = slot.as_mut() else {
             drop(slot);
-            state.snapshot_source.borrow_mut().take();
+            owner.source.borrow_mut().take();
             return glib::ControlFlow::Break;
         };
-        let mut evidence = state.snapshot_evidence.get();
+        let mut evidence = owner.evidence.get();
         while turn_continues(
             u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX),
             units,
@@ -786,16 +809,17 @@ fn run_open_editor_capture_turn(state: &Rc<NotesBrowserState>) -> glib::ControlF
             .worst_turn_us
             .max(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
         evidence.rows_counted_not_retained = capture.rows_not_retained;
-        state.snapshot_evidence.set(evidence);
+        owner.evidence.set(evidence);
     }
     if !done {
         return glib::ControlFlow::Continue;
     }
-    state.snapshot_source.borrow_mut().take();
-    let Some(capture) = state.snapshot_capture.borrow_mut().take() else {
-        return glib::ControlFlow::Break;
-    };
-    submit_captured_notes_browser_source(state, capture);
+    owner.source.borrow_mut().take();
+    let capture = owner.capture.borrow_mut().take();
+    let on_done = owner.on_done.borrow_mut().take();
+    if let (Some(capture), Some(on_done)) = (capture, on_done) {
+        on_done(capture);
+    }
     glib::ControlFlow::Break
 }
 
@@ -803,7 +827,7 @@ fn run_open_editor_capture_turn(state: &Rc<NotesBrowserState>) -> glib::ControlF
 /// current editor's bookmarks.
 fn capture_unit(
     capture: &mut OpenEditorSnapshotCapture,
-    evidence: &mut super::browser::OpenEditorSnapshotEvidence,
+    evidence: &mut OpenEditorSnapshotEvidence,
 ) -> CaptureUnit {
     let Some(current) = capture.current.as_mut() else {
         return start_next_editor(capture);

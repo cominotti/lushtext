@@ -174,6 +174,10 @@ CLOSE_PROTECTED_FINAL_RAISED_IN = "; raised by runs 42281883363, 42291228680 (ma
 # bound-lists-by-budget-not-count's two CI pull-request runs on PR #87:
 # 42322273437 (2.76 min, 1.63 GiB) and 42331071390 (2.53 min, 1.63 GiB);
 # the larger of the two, rounded up (the local make kani run took 1.03 min).
+# drill-down-palette-categories added B5 (three harnesses, 3.0 s of local
+# verification against the shard's 1.5 s before; the local run took 0.16 min
+# with the build cached, 2026-11-07): the CI figure, dominated by the build,
+# is kept until a dispatched run re-measures it.
 LIST_BUDGET_MINUTES = 2.8
 LIST_BUDGET_PEAK_GIB = 1.7
 LIST_BUDGET_MEASURED_IN = "runs 42322273437, 42331071390 (pull_request, max of the two)"
@@ -845,13 +849,16 @@ ORACLES: dict[str, Oracle] = {
         _CORE,
         (
             _h(_LIST_BUDGET + "every_turn_makes_progress", 0.02, "ci"),
+            _h(_LIST_BUDGET + "rows_within_a_zero_charge_bounds_nothing", 0.02, "ci"),
             _h(_LIST_BUDGET + "the_retained_items_are_a_prefix", 0.06, "ci"),
             _h(_LIST_BUDGET + "a_turn_stops_at_the_first_unit_after_the_slice", 0.08, "ci"),
             _h(_LIST_BUDGET + "a_budget_one_byte_below_n_times_w_refuses_the_last_item", 0.1, "ci"),
             _h(_LIST_BUDGET + "the_charge_never_exceeds_the_limit", 0.17, "ci"),
             _h(_LIST_BUDGET + "a_budget_of_n_times_w_loses_nothing", 1.07, "ci"),
+            _h(_LIST_BUDGET + "rows_within_agrees_with_the_budget", 1.13, "ci"),
+            _h(_LIST_BUDGET + "rows_within_is_the_largest_fitting_prefix", 1.87, "ci"),
         ),
-        functions=("admit", "turn_continues"),
+        functions=("admit", "turn_continues", "rows_within"),
     ),
     "crates/lushtext-core/src/model/document_scale.rs": Oracle(
         _CORE,

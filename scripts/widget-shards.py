@@ -169,6 +169,7 @@ SHARDS: dict[str, Shard] = {
             "accessibility",
             "app",
             "command_palette",
+            "command_palette_category",
             "editor_memory_eviction",
             "file_tree_item",
             "focus_mode",

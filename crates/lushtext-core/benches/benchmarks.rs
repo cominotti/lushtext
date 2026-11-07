@@ -43,8 +43,9 @@ use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
 use lushtext_core::model::migration_ledger::MigrationKind;
 use lushtext_core::model::palette::{
-    IndexedFile, PaletteFileIdentity, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget,
-    PaletteOpenEditorNoteSnapshot, PaletteSearchRow, SearchMode, SearchResultItem,
+    IndexedFile, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
+    PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot, PaletteSearchRow,
+    SearchMode, SearchResultItem,
 };
 use lushtext_core::model::paragraph_boundary::{DocumentProfile, ProfileSummary};
 use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
@@ -832,6 +833,77 @@ fn bench_file_index_search(c: &mut Criterion) {
     group.finish();
 }
 
+/// `drill-down-palette-categories` M2 and D3: the empty query's count pass
+/// over the rest of a full index (0, 32 and 256 open tabs), and one category
+/// ranked whole at the index ceiling.
+fn bench_palette_categories(c: &mut Criterion) {
+    let index = make_synthetic_index(palette::MAX_INDEXED_FILES);
+    let open_tabs = |count: usize| -> Vec<PaletteFileEntry> {
+        index.files()[..count]
+            .iter()
+            .map(|file| {
+                PaletteFileEntry::new(
+                    file.name.clone(),
+                    file.relative_display(),
+                    file.path.clone(),
+                    file.identity.clone(),
+                )
+            })
+            .collect()
+    };
+    let cancellation = palette::PaletteSearchCancellation::default();
+    let mut group = c.benchmark_group("palette_categories");
+    group.sample_size(20);
+    for open in [0usize, 32, 256] {
+        let tabs = open_tabs(open);
+        group.bench_with_input(
+            BenchmarkId::new("empty_query_grouped_files_131072", open),
+            &tabs,
+            |b, tabs| {
+                b.iter(|| {
+                    palette::grouped_search(
+                        palette::GroupedSearchInput {
+                            index: &index,
+                            open_tabs: black_box(tabs),
+                            note_entries: &[],
+                            workspace_group_label: "All Workspaces",
+                            query: "",
+                            mode: SearchMode::Files,
+                            max_per_source: 64,
+                        },
+                        &cancellation,
+                    )
+                });
+            },
+        );
+    }
+    for query in ["", "file"] {
+        group.bench_with_input(
+            BenchmarkId::new(
+                "category_ranking_131072",
+                if query.is_empty() { "empty" } else { query },
+            ),
+            query,
+            |b, query| {
+                b.iter(|| {
+                    palette::category_search(
+                        palette::CategorySearchInput {
+                            index: &index,
+                            open_tabs: &[],
+                            note_entries: &[],
+                            category: PaletteCategory::WorkspaceFiles,
+                            query: black_box(query),
+                            row_limit: 233_016,
+                        },
+                        &cancellation,
+                    )
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 fn bench_palette_pipeline_hardening(c: &mut Criterion) {
     let index = make_synthetic_index(100_000);
     let evidence_cancel = palette::PaletteSearchCancellation::default();
@@ -1219,7 +1291,10 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
     assert!(real_note_metrics.peak_construction_bytes > 0);
     assert!(!real_note_load.diagnostics.is_empty());
 
-    let entry_bodies = (0..=palette::MAX_PALETTE_NOTE_ENTRIES)
+    // drill-down-palette-categories D7: the palette has no row count, so
+    // more rows than the former 16,384 are all retained within the bytes.
+    let uncounted_rows = 16 * 1024 + 1;
+    let entry_bodies = (0..uncounted_rows)
         .map(|index| format!("note-{index:05}"))
         .collect::<Vec<_>>();
     let entry_outcome = palette::admit_synthetic_note_bodies_for_benchmark(&entry_bodies, None);
@@ -1230,10 +1305,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
     else {
         panic!("entry-budget evidence must complete");
     };
-    assert_eq!(
-        entry_metrics.retained_entries,
-        palette::MAX_PALETTE_NOTE_ENTRIES
-    );
+    assert_eq!(entry_metrics.retained_entries, uncounted_rows);
 
     let byte_bodies = (0..65).map(|_| "n".repeat(1024 * 1024)).collect::<Vec<_>>();
     let byte_outcome = palette::admit_synthetic_note_bodies_for_benchmark(&byte_bodies, None);
@@ -4278,6 +4350,7 @@ criterion_group!(
     bench_fuzzy_score,
     bench_recent_document_search,
     bench_file_index_search,
+    bench_palette_categories,
     bench_palette_pipeline_hardening,
     bench_file_index_rebuild,
     bench_end_to_end_boundedness,

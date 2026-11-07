@@ -14,11 +14,13 @@
 //!
 //! `item(position)` builds one small [`NotesBrowserRow`] when GTK asks for it,
 //! and GTK asks only for the realized range, the selected item and an activated
-//! one (ledger A93). Publishing a projection swaps one `Rc<[u32]>` and emits a
-//! removal then an addition (not one replacing `items-changed`, which makes GTK
-//! look up every added row, A93), so publication costs the same at 512 rows as
-//! at 131,072, where a `GListStore` of row objects would create one GObject per
-//! row on GTK.
+//! one (ledger A93). Publishing a projection swaps one `Rc<[u32]>`, retargets
+//! the row objects GTK holds below the shorter length in place (their
+//! `content-changed` signal rebinds them), and emits `items-changed` for the
+//! tail alone: a removal or an addition, never one replacing `items-changed`,
+//! which makes GTK look up every added row (A93). Publication therefore costs
+//! the same at 512 rows as at 131,072, where a `GListStore` of row objects
+//! would create one GObject per row on GTK.
 //!
 //! # Ownership
 //!

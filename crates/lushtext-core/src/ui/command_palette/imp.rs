@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Command palette GObject implementation: template binding, search scheduling,
-//! and grouped result presentation.
+//! grouped result presentation, and the category view
+//! (`drill-down-palette-categories`): entering and leaving it, its navigation
+//! without a walk, and its accessible projection.
 //!
 //! # Role
 //!
@@ -11,18 +13,24 @@
 //! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
 //! behavior obligations are unchanged. Named in that workflow's matrix row.
 
-use crate::model::palette::{PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode};
+use crate::model::palette::{
+    PaletteCategory, PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode,
+};
 use crate::services::palette::{self, FileIndex};
-use crate::ui::accessibility::{self, RowAccessibility};
+use crate::ui::accessibility;
+use crate::ui::command_palette::PaletteEscape;
+use crate::ui::command_palette::category_model::PaletteCategoryModel;
 use crate::ui::command_palette::item::PaletteItem;
-use crate::ui::command_palette::policy;
+use crate::ui::command_palette::policy::{self, BackspaceLeaveTracker, GroupedRowKind};
 use crate::ui::command_palette::query_execution::PaletteQueryRequest;
+use crate::ui::command_palette::row_factory::PaletteView;
 use crate::ui::plain_disposal::DisposalOwned;
 use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Owned transport type for search results that can cross thread boundaries.
@@ -30,8 +38,17 @@ use std::sync::Arc;
 /// Created on the background thread, then converted to `PaletteItem` GObjects
 /// on the main thread. Only owned display data crosses the thread boundary;
 /// GTK objects stay on the main thread.
-fn palette_row_into_item(row: PaletteSearchRow) -> PaletteItem {
+fn palette_row_into_item(
+    row: PaletteSearchRow,
+    mode: SearchMode,
+    workspace_group_label: &str,
+) -> PaletteItem {
     match row {
+        PaletteSearchRow::More { category, hidden } => PaletteItem::new_more(
+            category,
+            hidden,
+            category.label(mode, workspace_group_label),
+        ),
         PaletteSearchRow::Header { label } => PaletteItem::new_header_raw(label),
         PaletteSearchRow::File {
             display_name,
@@ -52,7 +69,40 @@ fn palette_row_into_item(row: PaletteSearchRow) -> PaletteItem {
 }
 
 type ActivateCallback = Box<dyn Fn(&PaletteItem)>;
-type CloseCallback = Box<dyn Fn()>;
+type EscapeCallback = Box<dyn Fn(PaletteEscape)>;
+
+/// The category of each grouped row, from the group headers in display
+/// order: a header's label is matched against the categories of `mode` in
+/// order, so a workspace labelled like another group cannot be confused with
+/// it. Rows before any header (Commands mode) are commands.
+fn grouped_row_categories(
+    rows: &[PaletteSearchRow],
+    mode: SearchMode,
+    workspace_group_label: &str,
+) -> Vec<Option<PaletteCategory>> {
+    let order: Vec<PaletteCategory> = PaletteCategory::ALL
+        .into_iter()
+        .filter(|category| category.belongs_to(mode))
+        .collect();
+    let mut next = 0usize;
+    let mut current = (mode == SearchMode::Commands).then_some(PaletteCategory::Commands);
+    rows.iter()
+        .map(|row| match row {
+            PaletteSearchRow::Header { label } => {
+                if let Some(offset) = order[next.min(order.len())..]
+                    .iter()
+                    .position(|category| category.label(mode, workspace_group_label) == label)
+                {
+                    current = Some(order[next + offset]);
+                    next += offset + 1;
+                }
+                current
+            }
+            PaletteSearchRow::More { category, .. } => Some(*category),
+            _ => current,
+        })
+        .collect()
+}
 
 // CompositeTemplate loads the UI layout from a compiled XML file (bundled
 // as a GResource). Each #[template_child] is auto-bound to the widget with
@@ -77,6 +127,27 @@ pub struct LushtextCommandPalette {
     /// "No results" message shown when a non-empty query has zero matches.
     #[template_child]
     pub no_results_label: TemplateChild<gtk4::Label>,
+    /// Scroller of the grouped results, hidden while a category view is shown.
+    #[template_child]
+    pub results_scroll: TemplateChild<gtk4::ScrolledWindow>,
+    /// The category view's bar: back button, title and notice.
+    #[template_child]
+    pub category_bar: TemplateChild<gtk4::Box>,
+    /// "Back to all results".
+    #[template_child]
+    pub category_back_button: TemplateChild<gtk4::Button>,
+    /// "{category} · {N} results".
+    #[template_child]
+    pub category_title_label: TemplateChild<gtk4::Label>,
+    /// The budget or note-source notice, when one applies.
+    #[template_child]
+    pub category_notice_label: TemplateChild<gtk4::Label>,
+    /// Scroller of the category view.
+    #[template_child]
+    pub category_scroll: TemplateChild<gtk4::ScrolledWindow>,
+    /// The category view's list over `category_model`.
+    #[template_child]
+    pub category_view: TemplateChild<gtk4::ListView>,
 
     /// Current search mode filter (All, Files, Notes, or Commands).
     pub mode: Cell<SearchMode>,
@@ -119,8 +190,36 @@ pub struct LushtextCommandPalette {
     pub(super) last_cancelled_search_examined: Cell<usize>,
     /// Callback invoked when the user activates a result (Enter or click).
     pub activate_callback: RefCell<Option<ActivateCallback>>,
-    /// Callback invoked when the palette should close (Escape key).
-    pub close_callback: RefCell<Option<CloseCallback>>,
+    /// Callback invoked for every Escape the palette consumes: a category
+    /// leave or a close request (`drill-down-palette-categories` D5).
+    pub escape_callback: RefCell<Option<EscapeCallback>>,
+    /// The category view shown, `None` for the grouped view.
+    pub category: Cell<Option<PaletteCategory>>,
+    /// The category view's lazy model.
+    pub category_model: PaletteCategoryModel,
+    /// The deferred clear of the hidden category model after leaving.
+    pub(super) category_clear_source: RefCell<Option<glib::SourceId>>,
+    /// Matches of the shown category, listed or not.
+    pub category_matching: Cell<usize>,
+    /// Whether the row limit cut the shown category.
+    pub category_limited: Cell<bool>,
+    /// The category just left, whose "More" row the next grouped publish
+    /// selects.
+    pub(super) leaving_category: Cell<Option<PaletteCategory>>,
+    /// When a Backspace press leaves the category view.
+    pub(super) backspace: Cell<BackspaceLeaveTracker>,
+    /// The notice last announced in the category view.
+    pub(super) announced_notice: RefCell<Option<String>>,
+    /// Category-view entry announcements raised (evidence).
+    pub(super) category_entry_announcements: Cell<u64>,
+    /// Category-view notice announcements raised (evidence).
+    pub(super) category_notice_announcements: Cell<u64>,
+    /// The palette's note source: rows held, rows found, and whether found is
+    /// a floor, when a byte ceiling cut it.
+    pub(super) note_source_cut: Cell<Option<(usize, usize, bool)>>,
+    /// The `content-changed` handler each bound row holds, by list item, so a
+    /// retargeted category row rebinds in place.
+    pub(super) bound_rows: RefCell<HashMap<gtk4::ListItem, (PaletteItem, glib::SignalHandlerId)>>,
     /// Debounce for non-empty text queries; the runtime coordinator owns freshness.
     pub search_debounce: Debounce,
     /// Queue of incremental index mutations waiting to be flushed.
@@ -146,6 +245,13 @@ impl Default for LushtextCommandPalette {
             mode_dropdown: TemplateChild::default(),
             results_view: TemplateChild::default(),
             no_results_label: TemplateChild::default(),
+            results_scroll: TemplateChild::default(),
+            category_bar: TemplateChild::default(),
+            category_back_button: TemplateChild::default(),
+            category_title_label: TemplateChild::default(),
+            category_notice_label: TemplateChild::default(),
+            category_scroll: TemplateChild::default(),
+            category_view: TemplateChild::default(),
             mode: Cell::new(SearchMode::All),
             results_store: gio::ListStore::new::<PaletteItem>(),
             file_index: RefCell::new(Arc::new(DisposalOwned::small_unreserved(
@@ -165,7 +271,19 @@ impl Default for LushtextCommandPalette {
             #[cfg(feature = "test-utils")]
             last_cancelled_search_examined: Cell::new(0),
             activate_callback: RefCell::default(),
-            close_callback: RefCell::default(),
+            escape_callback: RefCell::default(),
+            category: Cell::new(None),
+            category_model: PaletteCategoryModel::default(),
+            category_clear_source: RefCell::new(None),
+            category_matching: Cell::new(0),
+            category_limited: Cell::new(false),
+            leaving_category: Cell::new(None),
+            backspace: Cell::new(BackspaceLeaveTracker::default()),
+            announced_notice: RefCell::new(None),
+            category_entry_announcements: Cell::new(0),
+            category_notice_announcements: Cell::new(0),
+            note_source_cut: Cell::new(None),
+            bound_rows: RefCell::default(),
             search_debounce: Debounce::default(),
             pending_index_updates: RefCell::default(),
             pending_index_update_bytes: Cell::new(0),
@@ -217,7 +335,25 @@ impl ObjectImpl for LushtextCommandPalette {
         });
         self.results_view.set_model(Some(&selection));
 
-        self.setup_factory();
+        let category_selection = gtk4::SingleSelection::new(Some(self.category_model.clone()));
+        category_selection.set_autoselect(false);
+        let obj_weak = self.obj().downgrade();
+        category_selection.connect_selected_notify(move |_| {
+            if let Some(obj) = obj_weak.upgrade() {
+                obj.imp().refresh_accessibility_state();
+            }
+        });
+        self.category_view.set_model(Some(&category_selection));
+        let obj_weak = self.obj().downgrade();
+        self.category_back_button.connect_clicked(move |_| {
+            if let Some(obj) = obj_weak.upgrade() {
+                obj.imp().leave_category();
+                obj.imp().search_entry.grab_focus();
+            }
+        });
+
+        self.setup_factory(PaletteView::Grouped);
+        self.setup_factory(PaletteView::Category);
         self.setup_mode_selector();
         self.setup_search();
         self.setup_key_controller();
@@ -227,6 +363,7 @@ impl ObjectImpl for LushtextCommandPalette {
 
     fn dispose(&self) {
         self.index_update_capacity_wakeup.cancel();
+        self.cancel_category_clear();
     }
 }
 
@@ -254,6 +391,12 @@ impl LushtextCommandPalette {
             "Command palette results",
             "Matching files, notes, and commands",
         );
+        accessibility::set_role(&*self.category_view, gtk4::AccessibleRole::List);
+        accessibility::set_labelled_description(
+            &*self.category_back_button,
+            "Back to all results",
+            "Return to the grouped command palette results",
+        );
         accessibility::set_role(&*self.no_results_label, gtk4::AccessibleRole::Status);
         accessibility::set_labelled_description(
             &*self.no_results_label,
@@ -261,115 +404,6 @@ impl LushtextCommandPalette {
             "No matching files, notes, or commands",
         );
         self.refresh_accessibility_state();
-    }
-
-    fn setup_factory(&self) {
-        let factory = gtk4::SignalListItemFactory::new();
-
-        factory.connect_setup(|_, list_item| {
-            // SignalListItemFactory uses GObject signals to set up and bind
-            // recycled rows. GTK passes rows as generic Objects, so handlers
-            // downcast before attaching or updating row widgets.
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .expect("ListItem");
-
-            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-            row.set_margin_start(8);
-            row.set_margin_end(8);
-            row.set_margin_top(4);
-            row.set_margin_bottom(4);
-
-            let name_label = gtk4::Label::new(None);
-            name_label.set_halign(gtk4::Align::Start);
-            name_label.set_hexpand(true);
-            name_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-
-            let section_separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-            section_separator.set_hexpand(true);
-            section_separator.set_visible(false);
-
-            let subtitle_label = gtk4::Label::new(None);
-            subtitle_label.set_halign(gtk4::Align::End);
-            subtitle_label.add_css_class("dim-label");
-            subtitle_label.add_css_class("caption");
-            subtitle_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-
-            row.append(&name_label);
-            row.append(&section_separator);
-            row.append(&subtitle_label);
-
-            list_item.set_child(Some(&row));
-        });
-
-        let bind_obj_weak = self.obj().downgrade();
-        factory.connect_bind(move |_, list_item| {
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .expect("ListItem");
-            let item = list_item
-                .item()
-                .and_downcast::<PaletteItem>()
-                .expect("PaletteItem");
-
-            let row = list_item
-                .child()
-                .and_downcast::<gtk4::Box>()
-                .expect("palette row child should be the layout box");
-            let name_label = row
-                .first_child()
-                .and_downcast::<gtk4::Label>()
-                .expect("palette row should start with the title label");
-            let section_separator = name_label
-                .next_sibling()
-                .and_downcast::<gtk4::Separator>()
-                .expect("palette row title should be followed by the section separator");
-            let subtitle_label = section_separator
-                .next_sibling()
-                .and_downcast::<gtk4::Label>()
-                .expect("palette row separator should be followed by the subtitle label");
-
-            list_item.set_activatable(item.is_activatable());
-            list_item.set_selectable(item.is_activatable());
-            name_label.set_label(&item.display_name());
-            if item.is_header() {
-                row.add_css_class("command-palette-section-row");
-                name_label.add_css_class("command-palette-section-header");
-                name_label.set_hexpand(false);
-                name_label.set_ellipsize(gtk4::pango::EllipsizeMode::None);
-                section_separator.set_visible(true);
-                subtitle_label.set_visible(false);
-            } else {
-                row.remove_css_class("command-palette-section-row");
-                name_label.remove_css_class("command-palette-section-header");
-                name_label.set_hexpand(true);
-                name_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-                section_separator.set_visible(false);
-                subtitle_label.set_visible(true);
-                subtitle_label.set_label(&item.subtitle());
-            }
-
-            let position = i32::try_from(list_item.position()).unwrap_or(i32::MAX - 1) + 1;
-            let set_size = bind_obj_weak.upgrade().map_or(position, |obj| {
-                i32::try_from(obj.imp().results_store.n_items()).unwrap_or(i32::MAX)
-            });
-            let selected = bind_obj_weak
-                .upgrade()
-                .and_then(|obj| obj.imp().selection_model())
-                .is_some_and(|selection| selection.selected() == list_item.position());
-            apply_palette_row_accessibility(&row, &item, selected, position, set_size);
-        });
-
-        factory.connect_unbind(|_, list_item| {
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .expect("ListItem");
-            if let Some(row) = list_item.child().and_downcast::<gtk4::Box>() {
-                accessibility::clear_row_accessibility(&row);
-            }
-        });
-
-        self.results_view.set_factory(Some(&factory));
     }
 
     /// Wire the dropdown to the same mode state that Tab cycling uses.
@@ -442,6 +476,24 @@ impl LushtextCommandPalette {
                     imp.restart_query();
                     glib::Propagation::Stop
                 }
+                gdk4::Key::Page_Up | gdk4::Key::KP_Page_Up => {
+                    imp.move_selection(-policy::RESULT_PAGE_ROWS.cast_signed());
+                    glib::Propagation::Stop
+                }
+                gdk4::Key::Page_Down | gdk4::Key::KP_Page_Down => {
+                    imp.move_selection(policy::RESULT_PAGE_ROWS.cast_signed());
+                    glib::Propagation::Stop
+                }
+                gdk4::Key::BackSpace
+                    if imp.category.get().is_some()
+                        && imp
+                            .backspace
+                            .get()
+                            .backspace_pressed(imp.search_entry.text().is_empty()) =>
+                {
+                    imp.leave_category();
+                    glib::Propagation::Stop
+                }
                 gdk4::Key::ISO_Left_Tab => {
                     imp.set_mode(imp.mode.get().previous());
                     imp.restart_query();
@@ -459,7 +511,27 @@ impl LushtextCommandPalette {
             }
         });
 
+        let obj_weak = self.obj().downgrade();
+        key_controller.connect_key_released(move |_, _, _, _| {
+            if let Some(obj) = obj_weak.upgrade() {
+                let imp = obj.imp();
+                let mut tracker = imp.backspace.get();
+                tracker.key_released(imp.search_entry.text().is_empty());
+                imp.backspace.set(tracker);
+            }
+        });
+
         self.search_entry.add_controller(key_controller);
+
+        let obj_weak = self.obj().downgrade();
+        self.search_entry.connect_changed(move |entry| {
+            if let Some(obj) = obj_weak.upgrade() {
+                let imp = obj.imp();
+                let mut tracker = imp.backspace.get();
+                tracker.query_changed(entry.text().is_empty());
+                imp.backspace.set(tracker);
+            }
+        });
 
         let obj_weak = self.obj().downgrade();
         self.search_entry.connect_activate(move |_| {
@@ -470,10 +542,8 @@ impl LushtextCommandPalette {
 
         let obj_weak = self.obj().downgrade();
         self.search_entry.connect_stop_search(move |_| {
-            if let Some(obj) = obj_weak.upgrade()
-                && let Some(ref cb) = *obj.imp().close_callback.borrow()
-            {
-                cb();
+            if let Some(obj) = obj_weak.upgrade() {
+                obj.imp().dismiss_one_level();
             }
         });
     }
@@ -483,6 +553,12 @@ impl LushtextCommandPalette {
         self.results_view.connect_activate(move |_, position| {
             if let Some(obj) = obj_weak.upgrade() {
                 obj.imp().activate_at(position);
+            }
+        });
+        let obj_weak = self.obj().downgrade();
+        self.category_view.connect_activate(move |_, position| {
+            if let Some(obj) = obj_weak.upgrade() {
+                obj.imp().activate_category_at(position);
             }
         });
     }
@@ -501,25 +577,61 @@ impl LushtextCommandPalette {
     /// `query_execution::settle_query_flight` owns stage 4 and calls this once it
     /// has proved the completion is still current.
     pub(super) fn publish_search_rows(&self, rows: Vec<PaletteSearchRow>, query: &str) {
-        let items: Vec<PaletteItem> = rows.into_iter().map(palette_row_into_item).collect();
+        let mode = self.mode.get();
+        let workspace_group_label = self.workspace_group_label.borrow().clone();
+        let categories = grouped_row_categories(&rows, mode, &workspace_group_label);
+        let items: Vec<PaletteItem> = rows
+            .into_iter()
+            .zip(categories)
+            .map(|(row, category)| {
+                let item = palette_row_into_item(row, mode, &workspace_group_label);
+                item.set_category(category);
+                item
+            })
+            .collect();
 
         // One splice keeps GTK projection work independent of the match count.
         let old_count = self.results_store.n_items();
         self.results_store.splice(0, old_count, &items);
 
-        let has_results = items.iter().any(PaletteItem::is_activatable);
+        let has_results = items.iter().any(PaletteItem::is_result);
         self.no_results_label
             .set_visible(policy::no_results_visible(has_results, query.is_empty()));
 
-        if let Some(first_result) = self.first_activatable_position()
+        let selected = match self.leaving_category.take() {
+            Some(category) => policy::leave_selection(&grouped_row_kinds(&items), category),
+            None => self.first_activatable_position(),
+        };
+        if let Some(position) = selected
             && let Some(selection) = self.selection_model()
         {
-            selection.set_selected(first_result);
+            selection.set_selected(position);
+            self.results_view
+                .scroll_to(position, gtk4::ListScrollFlags::NONE, None);
         }
         self.refresh_accessibility_state();
     }
 
+    /// Move the selection one row (`delta` ±1) or one page in the visible
+    /// view: headers skipped in the grouped view, an O(1) clamp in the
+    /// category view.
     fn move_selection(&self, delta: i32) {
+        if self.category.get().is_some() {
+            let Some(selection) = self.category_selection() else {
+                return;
+            };
+            let current = Some(selection.selected()).filter(|p| *p != gtk4::INVALID_LIST_POSITION);
+            let Some(position) =
+                policy::next_category_row(current, self.category_model.len(), delta)
+            else {
+                return;
+            };
+            selection.set_selected(position);
+            self.category_view
+                .scroll_to(position, gtk4::ListScrollFlags::NONE, None);
+            self.refresh_accessibility_state();
+            return;
+        }
         let Some(selection) = self.selection_model() else {
             return;
         };
@@ -528,7 +640,13 @@ impl LushtextCommandPalette {
             return;
         }
         let current = selection.selected();
-        let Some(new_pos) = self.next_activatable_position(current, delta) else {
+        let flags = self.activatable_flags();
+        let new_pos = if delta.unsigned_abs() > 1 {
+            policy::page_activatable(&flags, current, delta)
+        } else {
+            policy::next_activatable(&flags, current, delta)
+        };
+        let Some(new_pos) = new_pos else {
             return;
         };
         selection.set_selected(new_pos);
@@ -537,11 +655,17 @@ impl LushtextCommandPalette {
         self.refresh_accessibility_state();
     }
 
-    /// Activate the currently selected actionable row.
+    /// Activate the currently selected actionable row of the visible view.
     ///
     /// Presentation-only source headers are ignored before forwarding the row
     /// to the registered activation callback.
     pub fn activate_selected(&self) {
+        if self.category.get().is_some() {
+            if let Some(selection) = self.category_selection() {
+                self.activate_category_at(selection.selected());
+            }
+            return;
+        }
         let Some(selection) = self.selection_model() else {
             return;
         };
@@ -555,16 +679,45 @@ impl LushtextCommandPalette {
         let Some(palette_item) = item.downcast_ref::<PaletteItem>() else {
             return;
         };
-        if !palette_item.is_activatable() {
+        self.activate_item(palette_item);
+    }
+
+    fn activate_category_at(&self, position: u32) {
+        if position >= self.category_model.len() {
+            return;
+        }
+        let Some(item) = self
+            .category_model
+            .item(position)
+            .and_downcast::<PaletteItem>()
+        else {
+            return;
+        };
+        self.activate_item(&item);
+    }
+
+    /// A "More" row opens its category view inside the palette and never
+    /// reaches the window; any other activatable row goes to the callback.
+    fn activate_item(&self, item: &PaletteItem) {
+        if item.is_more() {
+            if let Some(category) = item.category() {
+                let _ = self.enter_category(category);
+            }
+            return;
+        }
+        if !item.is_activatable() {
             return;
         }
         if let Some(ref cb) = *self.activate_callback.borrow() {
-            cb(palette_item);
+            cb(item);
         }
     }
 
     /// Update the active search mode and sync all dependent widgets.
     pub fn set_mode(&self, mode: SearchMode) {
+        // A mode change leaves a category view; the caller restarts the
+        // query in the new mode.
+        let _ = self.leave_category_view();
         self.mode.set(mode);
         self.syncing_mode_selector.set(true);
         self.mode_dropdown.set_selected(mode.position());
@@ -592,42 +745,84 @@ impl LushtextCommandPalette {
         policy::first_activatable(&self.activatable_flags())
     }
 
-    /// Move keyboard selection across result rows while skipping source headers.
-    fn next_activatable_position(&self, current: u32, delta: i32) -> Option<u32> {
-        policy::next_activatable(&self.activatable_flags(), current, delta)
+    pub(super) fn selection_model(&self) -> Option<gtk4::SingleSelection> {
+        self.results_view
+            .model()
+            .and_then(|m| m.downcast::<gtk4::SingleSelection>().ok())
     }
 
-    fn selection_model(&self) -> Option<gtk4::SingleSelection> {
-        self.results_view
+    /// The selected position of the visible view, when one is selected.
+    /// Read through `try_get`, so the evidence surface stays honest on a
+    /// disposed widget.
+    pub(super) fn visible_selected_position(&self) -> Option<u32> {
+        let view = if self.category.get().is_some() {
+            self.category_view.try_get()
+        } else {
+            self.results_view.try_get()
+        };
+        view.and_then(|view| view.model())
+            .and_then(|model| model.downcast::<gtk4::SingleSelection>().ok())
+            .map(|selection| selection.selected())
+            .filter(|position| *position != gtk4::INVALID_LIST_POSITION)
+    }
+
+    pub(super) fn category_selection(&self) -> Option<gtk4::SingleSelection> {
+        self.category_view
             .model()
             .and_then(|m| m.downcast::<gtk4::SingleSelection>().ok())
     }
 
     /// Project live palette search state into accessible states and values.
     pub(super) fn refresh_accessibility_state(&self) {
-        let activatable = self.activatable_flags();
-        let result_count = activatable.iter().filter(|flag| **flag).count();
         let searching = self.searching.get();
+        let in_category = self.category.get().is_some();
+        let (result_count, selected_name) = if in_category {
+            // The model's length and the selection's own item: no walk.
+            let selected = self
+                .category_selection()
+                .and_then(|selection| selection.selected_item())
+                .and_downcast::<PaletteItem>()
+                .map(|item| item.display_name());
+            (
+                usize::try_from(self.category_model.len()).unwrap_or(usize::MAX),
+                selected,
+            )
+        } else {
+            let results = (0..self.results_store.n_items())
+                .filter(|position| {
+                    self.results_store
+                        .item(*position)
+                        .and_downcast_ref::<PaletteItem>()
+                        .is_some_and(PaletteItem::is_result)
+                })
+                .count();
+            let selected = self
+                .selection_model()
+                .and_then(|selection| self.results_store.item(selection.selected()))
+                .and_downcast::<PaletteItem>()
+                .filter(PaletteItem::is_activatable)
+                .map(|item| item.display_name());
+            (results, selected)
+        };
         // The label's own visibility already encodes the non-empty-query half of
-        // the no-results decision, set by `publish_search_rows`; this only adds
-        // the live "and nothing is activatable, and we are not still searching"
-        // half that AT-SPI hiding needs.
+        // the no-results decision, set by the publish; this only adds the live
+        // "and nothing is listed, and we are not still searching" half that
+        // AT-SPI hiding needs.
         let status_visible = self.no_results_label.is_visible() && result_count == 0 && !searching;
+        let visible_list: &gtk4::ListView = if in_category {
+            &self.category_view
+        } else {
+            &self.results_view
+        };
 
         accessibility::set_busy(&*self.search_entry, searching);
-        accessibility::set_busy(&*self.results_view, searching);
+        accessibility::set_busy(visible_list, searching);
         accessibility::set_hidden(&*self.no_results_label, !status_visible);
-        accessibility::set_hidden(&*self.results_view, status_visible);
+        accessibility::set_hidden(visible_list, status_visible);
 
-        let selected_name = self
-            .selection_model()
-            .and_then(|selection| self.results_store.item(selection.selected()))
-            .and_downcast::<PaletteItem>()
-            .filter(PaletteItem::is_activatable)
-            .map(|item| item.display_name());
         let value_text =
             policy::accessible_value_text(selected_name.as_deref(), searching, result_count);
-        accessibility::set_value_text(&*self.results_view, &value_text);
+        accessibility::set_value_text(visible_list, &value_text);
         accessibility::set_value_text(&*self.no_results_label, &policy::result_count_text(0));
     }
 
@@ -680,34 +875,16 @@ impl LushtextCommandPalette {
     }
 }
 
-pub(super) fn apply_palette_row_accessibility(
-    row: &gtk4::Box,
-    item: &PaletteItem,
-    selected: bool,
-    position: i32,
-    set_size: i32,
-) {
-    let label = if item.is_header() {
-        format!("{} section", item.display_name())
-    } else if item.is_file() {
-        format!("Open file {}", item.display_name())
-    } else if item.is_note() {
-        format!("Open note {}", item.display_name())
-    } else {
-        format!("Run command {}", item.display_name())
-    };
-    let description = if item.is_header() {
-        "Command palette result group".to_string()
-    } else if let Some(path) = item.file_path() {
-        format!("{}; {}", item.subtitle(), path.display())
-    } else {
-        item.subtitle()
-    };
-    accessibility::apply_row_accessibility(
-        row,
-        RowAccessibility::new(&label)
-            .description(&description)
-            .selected(selected)
-            .position(position, set_size),
-    );
+/// The kind of each grouped row, for `policy::leave_selection`.
+fn grouped_row_kinds(items: &[PaletteItem]) -> Vec<GroupedRowKind> {
+    items
+        .iter()
+        .map(
+            |item| match (item.is_header(), item.is_more(), item.category()) {
+                (false, true, Some(category)) => GroupedRowKind::More(category),
+                (false, false, Some(category)) => GroupedRowKind::Result(category),
+                _ => GroupedRowKind::Header,
+            },
+        )
+        .collect()
 }

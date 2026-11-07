@@ -37,7 +37,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 
 use crate::model::palette::{
-    PaletteFileEntry, PaletteFileIdentity, PaletteFileIdentityFailure, SearchMode,
+    PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteFileIdentityFailure, SearchMode,
 };
 use crate::services::palette::{
     FileIndex, FileIndexBuildMetrics, FileIndexBuildOutcome, FileIndexBuildRequest,
@@ -95,6 +95,7 @@ impl LushtextWindow {
 
     pub(super) fn close_command_palette(&self) {
         let imp = self.imp();
+        self.stop_command_palette_note_capture();
         imp.command_palette.close();
         imp.palette_revealer.set_reveal_child(false);
         self.set_command_palette_actions_enabled(false);
@@ -103,7 +104,11 @@ impl LushtextWindow {
 
     /// Enable actions that require the visible command-palette overlay.
     pub(super) fn set_command_palette_actions_enabled(&self, enabled: bool) {
-        for name in ["set-command-palette-query", "set-command-palette-mode"] {
+        for name in [
+            "set-command-palette-query",
+            "set-command-palette-mode",
+            "set-command-palette-category",
+        ] {
             if let Some(action) = self.lookup_action(name)
                 && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
             {
@@ -132,6 +137,27 @@ impl LushtextWindow {
             return;
         };
         self.imp().command_palette.set_search_mode(mode);
+    }
+
+    /// Show a category view by its stable id, or the grouped results for `""`
+    /// (`drill-down-palette-categories` D11). An id that is not a group of
+    /// the current mode is refused and changes nothing.
+    pub(super) fn set_command_palette_category(&self, category_id: &str) {
+        if !self.imp().palette_revealer.reveals_child() {
+            return;
+        }
+        let palette = &self.imp().command_palette;
+        if category_id.trim().is_empty() {
+            let _ = palette.leave_category();
+            return;
+        }
+        let shown = PaletteCategory::from_stable_id(category_id)
+            .is_some_and(|category| palette.show_category(category));
+        if !shown {
+            tracing::error!(
+                "set-command-palette-category: expected a category id of the current mode, or an empty string"
+            );
+        }
     }
 
     /// Restore focus to the widget saved before an overlay was opened.

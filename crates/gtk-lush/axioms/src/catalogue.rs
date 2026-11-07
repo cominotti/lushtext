@@ -1464,6 +1464,34 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a95),
     },
+    Axiom {
+        id: AxiomId::new(96),
+        name: "a96_a_natural_height_lazy_list_measures_around_its_realized_rows",
+        statement: "a GtkListView over a lazy GListModel in a GtkScrolledWindow with \
+                    propagate-natural-height and max-content-height presents and publishes \
+                    (remove then add) asking get_item only around its realized rows, flat in \
+                    the item count (512 against 131,072)",
+        dependent_designs: &[
+            "drill-down-palette-categories D2: the command palette's category view keeps the \
+             grouped scroller's natural-height sizing over its lazy PaletteCategoryModel",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a96),
+    },
+    Axiom {
+        id: AxiomId::new(97),
+        name: "a97_search_entry_escape_and_backspace_repeat",
+        statement: "GtkSearchEntry emits stop-search on Escape with or without text and keeps \
+                    the text; a capture-phase key controller on it sees Backspace before the \
+                    entry handles it, on an empty entry, and its release, and a held Backspace \
+                    arrives as several presses with no release before one release",
+        dependent_designs: &[
+            "drill-down-palette-categories D5: Escape in the palette entry leaves a category \
+             view through stop-search; Backspace leaves only after a release on the empty query",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a97),
+    },
 ];
 
 #[cfg(test)]

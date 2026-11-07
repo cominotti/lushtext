@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! GTK-free source grouping, priority, and canonical-file deduplication.
+//!
+//! Every group that shows fewer rows than its category matches ends with one
+//! [`PaletteSearchRow::More`] row stating how many it does not show
+//! (`drill-down-palette-categories` D1): the source's `matching_candidates`,
+//! which the selector counts exactly for every query, including the empty one.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::model::palette::{
-    PaletteFileEntry, PaletteNoteCategory, PaletteNoteEntry, PaletteSearchRow, SearchMode,
-    SearchResultItem,
+    PaletteCategory, PaletteFileEntry, PaletteNoteCategory, PaletteNoteEntry, PaletteSearchRow,
+    SearchMode, SearchResultItem,
 };
 
 use super::commands::{search_commands_cancellable, search_open_files_cancellable};
@@ -80,7 +85,7 @@ pub fn grouped_search(
                     if cancellation.is_cancelled() {
                         return PaletteSearchOutcome::Cancelled { metrics };
                     }
-                    value
+                    (value, source_metrics.matching_candidates)
                 }
                 PaletteSearchOutcome::Cancelled {
                     metrics: source_metrics,
@@ -100,30 +105,7 @@ pub fn grouped_search(
         }
         SearchMode::Notes => {
             for category in PaletteNoteCategory::ALL {
-                let results = completed!(search_note_entries_cancellable(
-                    note_entries,
-                    Some(category),
-                    query,
-                    max_per_source,
-                    cancellation,
-                ));
-                append_group(&mut rows, category.label(), note_rows_from_results(results));
-            }
-        }
-        SearchMode::Commands => {
-            let results = completed!(search_commands_cancellable(
-                query,
-                max_per_source,
-                cancellation,
-            ));
-            rows.extend(command_rows_from_results(results));
-        }
-        SearchMode::All => {
-            if let Err(cancelled) = append_file_groups(&mut rows, &mut metrics, &file_input) {
-                return cancelled;
-            }
-            for category in PaletteNoteCategory::ALL {
-                let results = completed!(search_note_entries_cancellable(
+                let (results, matching) = completed!(search_note_entries_cancellable(
                     note_entries,
                     Some(category),
                     query,
@@ -132,16 +114,59 @@ pub fn grouped_search(
                 ));
                 append_group(
                     &mut rows,
-                    category.all_mode_label(),
+                    Some(category.label()),
                     note_rows_from_results(results),
+                    PaletteCategory::Note(category),
+                    matching,
                 );
             }
-            let results = completed!(search_commands_cancellable(
+        }
+        SearchMode::Commands => {
+            let (results, matching) = completed!(search_commands_cancellable(
                 query,
                 max_per_source,
                 cancellation,
             ));
-            append_group(&mut rows, "Commands", command_rows_from_results(results));
+            append_group(
+                &mut rows,
+                None,
+                command_rows_from_results(results),
+                PaletteCategory::Commands,
+                matching,
+            );
+        }
+        SearchMode::All => {
+            if let Err(cancelled) = append_file_groups(&mut rows, &mut metrics, &file_input) {
+                return cancelled;
+            }
+            for category in PaletteNoteCategory::ALL {
+                let (results, matching) = completed!(search_note_entries_cancellable(
+                    note_entries,
+                    Some(category),
+                    query,
+                    max_per_source,
+                    cancellation,
+                ));
+                append_group(
+                    &mut rows,
+                    Some(category.all_mode_label()),
+                    note_rows_from_results(results),
+                    PaletteCategory::Note(category),
+                    matching,
+                );
+            }
+            let (results, matching) = completed!(search_commands_cancellable(
+                query,
+                max_per_source,
+                cancellation,
+            ));
+            append_group(
+                &mut rows,
+                Some("Commands"),
+                command_rows_from_results(results),
+                PaletteCategory::Commands,
+                matching,
+            );
         }
     }
 
@@ -160,12 +185,8 @@ fn append_file_groups(
     metrics: &mut PaletteSearchMetrics,
     input: &FileGroupInput<'_>,
 ) -> Result<(), PaletteSearchOutcome<Vec<PaletteSearchRow>>> {
-    let open_canonical_paths: HashSet<PathBuf> = input
-        .open_tabs
-        .iter()
-        .filter_map(|file| file.identity.canonical_path().map(PathBuf::from))
-        .collect();
-    let open_results = match search_open_files_cancellable(
+    let open_canonical_paths = open_tab_canonical_paths(input.open_tabs);
+    let (open_results, open_matching) = match search_open_files_cancellable(
         input.open_tabs,
         input.query,
         input.max_per_source,
@@ -179,7 +200,7 @@ fn append_file_groups(
             if input.cancellation.is_cancelled() {
                 return Err(PaletteSearchOutcome::Cancelled { metrics: *metrics });
             }
-            value
+            (value, source_metrics.matching_candidates)
         }
         PaletteSearchOutcome::Cancelled {
             metrics: source_metrics,
@@ -201,9 +222,15 @@ fn append_file_groups(
             | SearchResultItem::Note(_) => None,
         })
         .collect();
-    append_group(rows, "Open Tabs", open_rows);
+    append_group(
+        rows,
+        Some("Open Tabs"),
+        open_rows,
+        PaletteCategory::OpenTabs,
+        open_matching,
+    );
 
-    let workspace_results = match input.index.search_cancellable_excluding(
+    let (workspace_results, workspace_matching) = match input.index.search_cancellable_excluding(
         input.query,
         input.max_per_source,
         &open_canonical_paths,
@@ -217,7 +244,7 @@ fn append_file_groups(
             if input.cancellation.is_cancelled() {
                 return Err(PaletteSearchOutcome::Cancelled { metrics: *metrics });
             }
-            value
+            (value, source_metrics.matching_candidates)
         }
         PaletteSearchOutcome::Cancelled {
             metrics: source_metrics,
@@ -239,8 +266,23 @@ fn append_file_groups(
             | SearchResultItem::Note(_) => None,
         })
         .collect();
-    append_group(rows, input.workspace_group_label, workspace_rows);
+    append_group(
+        rows,
+        Some(input.workspace_group_label),
+        workspace_rows,
+        PaletteCategory::WorkspaceFiles,
+        workspace_matching,
+    );
     Ok(())
+}
+
+/// The canonical paths of the open file-backed tabs, which the workspace
+/// group excludes.
+pub(super) fn open_tab_canonical_paths(open_tabs: &[PaletteFileEntry]) -> HashSet<PathBuf> {
+    open_tabs
+        .iter()
+        .filter_map(|file| file.identity.canonical_path().map(PathBuf::from))
+        .collect()
 }
 
 fn note_rows_from_results(
@@ -279,12 +321,32 @@ fn command_rows_from_results(
         .collect()
 }
 
-fn append_group(rows: &mut Vec<PaletteSearchRow>, label: &str, group: Vec<PaletteSearchRow>) {
+/// Append one group: its header (when the mode labels groups), its rows, and
+/// a More row when `matching` exceeds the rows shown.
+fn append_group(
+    rows: &mut Vec<PaletteSearchRow>,
+    label: Option<&str>,
+    group: Vec<PaletteSearchRow>,
+    category: PaletteCategory,
+    matching: usize,
+) {
     if group.is_empty() {
         return;
     }
-    rows.push(PaletteSearchRow::Header {
-        label: label.to_string(),
-    });
+    let shown = group.len();
+    if let Some(label) = label {
+        rows.push(PaletteSearchRow::Header {
+            label: label.to_string(),
+        });
+    }
     rows.extend(group);
+    if let Some(hidden) = hidden_matches(shown, matching) {
+        rows.push(PaletteSearchRow::More { category, hidden });
+    }
+}
+
+/// How many matches a group of `shown` rows does not show, when any.
+#[must_use]
+pub fn hidden_matches(shown: usize, matching: usize) -> Option<usize> {
+    (matching > shown).then(|| matching - shown)
 }

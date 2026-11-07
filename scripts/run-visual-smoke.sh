@@ -54,6 +54,8 @@ VISUAL_CASES=(
     command-palette-notes
     command-palette-no-results
     command-palette-dense-files
+    command-palette-category
+    command-palette-category-dark
     command-palette-dismissed
     dark-style
     high-contrast-style
@@ -294,6 +296,8 @@ MATRIX_ROWS_BY_CASE = {
     "command-palette-notes": ["A11Y-PALETTE-NOTES"],
     "command-palette-no-results": ["A11Y-PALETTE-NO-RESULTS"],
     "command-palette-dense-files": ["A11Y-PALETTE-FILES"],
+    "command-palette-category": ["A11Y-PALETTE-CATEGORY"],
+    "command-palette-category-dark": ["A11Y-PALETTE-CATEGORY"],
     "command-palette-dismissed": ["A11Y-PALETTE-DISMISS"],
     "dark-style": ["A11Y-EDITOR-REPRESENTATIVE"],
     "high-contrast-style": ["A11Y-EDITOR-REPRESENTATIVE"],
@@ -901,8 +905,11 @@ import sys
 from pathlib import Path
 
 name, capture_dir = sys.argv[1:]
-if name != "command-palette-dense-files":
+if name not in ("command-palette-dense-files", "command-palette-category", "command-palette-category-dark"):
     raise SystemExit(0)
+# The category captures need more files than one group shows (64), so the
+# workspace group ends with a "More" row (drill-down-palette-categories).
+file_count = 64 if name == "command-palette-dense-files" else 80
 
 capture_dir = Path(capture_dir)
 data_dir = capture_dir / "data" / "lushtext"
@@ -910,7 +917,7 @@ workspace = capture_dir / "palette-fixtures" / "workspace"
 data_dir.mkdir(parents=True, exist_ok=True)
 workspace.mkdir(parents=True, exist_ok=True)
 
-for index in range(64):
+for index in range(file_count):
     path = workspace / "src" / f"palette-dense-{index:02d}.rs"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"pub fn palette_dense_{index:02d}() {{}}\n", encoding="utf-8")
@@ -1147,6 +1154,34 @@ print(f"result_count={palette['result_count']}")
 print(f"file_index_count={palette['file_index_count']}")
 print(f"open_tab_source_count={palette['open_tab_source_count']}")
 print(f"snapshot={snapshot_path}")
+PY
+}
+
+# The category view's own snapshot fields (drill-down-palette-categories).
+assert_command_palette_category_snapshot() {
+    local name="$1"
+    local capture_dir="$2"
+    local expected_category="$3"
+    local expected_rows="$4"
+    local expected_total="$5"
+    local snapshot_path="$capture_dir/automation-snapshot.json"
+    local summary_path="$ARTIFACT_DIR/assertions/${name}-command-palette-category.txt"
+
+    /usr/bin/python3 - "$snapshot_path" "$expected_category" "$expected_rows" "$expected_total" >"$summary_path" <<'PY' \
+        || smoke_fail "visual smoke '${name}' category snapshot assertions failed. Artifacts: $ARTIFACT_DIR"
+import json
+import sys
+
+snapshot_path, category, rows, total = sys.argv[1:]
+with open(snapshot_path, encoding="utf-8") as handle:
+    palette = json.load(handle)["window"]["command_palette"]
+assert palette["category"] == category, palette
+assert palette["category_result_count"] == int(rows), palette
+assert palette["category_total_count"] == int(total), palette
+assert palette["category_limited"] is False, palette
+print(f"category={palette['category']}")
+print(f"category_result_count={palette['category_result_count']}")
+print(f"category_total_count={palette['category_total_count']}")
 PY
 }
 
@@ -1427,7 +1462,7 @@ run_capture() {
             --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
             --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
         )
-        if [[ "$name" == "command-palette-dense-files" ]]; then
+        if [[ "$name" == "command-palette-dense-files" || "$name" == command-palette-category* ]]; then
             capture_args+=(--wait-predicate workspace-refresh-complete)
         fi
         if [[ "$name" != "command-palette-dismissed" ]]; then
@@ -1471,6 +1506,16 @@ run_capture() {
                     --window-string-action "set-command-palette-mode=files"
                     --window-string-action "set-command-palette-query=palette-dense"
                     --wait-atspi-text "palette-dense-00.rs"
+                    --wait-predicate idle
+                )
+                ;;
+            command-palette-category | command-palette-category-dark)
+                capture_args+=(
+                    --window-string-action "set-command-palette-mode=files"
+                    --window-string-action "set-command-palette-query=palette-dense"
+                    --wait-atspi-text "palette-dense-00.rs"
+                    --window-string-action "set-command-palette-category=workspace-files"
+                    --wait-atspi-text "All Workspaces · 80 results"
                     --wait-predicate idle
                 )
                 ;;
@@ -1592,6 +1637,10 @@ run_capture() {
         command-palette-dense-files)
             assert_command_palette_capture_artifacts "$name" "$capture_dir" "true" "files" "palette-dense" 64 "any" 64
             ;;
+        command-palette-category | command-palette-category-dark)
+            assert_command_palette_capture_artifacts "$name" "$capture_dir" "true" "files" "palette-dense" 80 80 80
+            assert_command_palette_category_snapshot "$name" "$capture_dir" "workspace-files" 80 80
+            ;;
         command-palette-dismissed)
             assert_command_palette_capture_artifacts "$name" "$capture_dir" "false" "all" "" 0 0 0
             ;;
@@ -1664,6 +1713,8 @@ run_selected_capture "command-palette-commands" "$TEXT_FIXTURE" "$ARTIFACT_DIR/s
 run_selected_capture "command-palette-notes" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-notes.png" "1280" "860" "" "0" "default" "toggle-command-palette"
 run_selected_capture "command-palette-no-results" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-no-results.png" "1280" "860" "" "0" "default" "toggle-command-palette"
 run_selected_capture "command-palette-dense-files" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-dense-files.png" "1280" "860" "" "0" "default" "toggle-command-palette"
+run_selected_capture "command-palette-category" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-category.png" "1280" "860" "" "0" "default" "toggle-command-palette"
+run_selected_capture "command-palette-category-dark" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-category-dark.png" "1280" "860" "" "0" "force-dark" "toggle-command-palette"
 run_selected_capture "command-palette-dismissed" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-dismissed.png" "1280" "860" "" "0" "default" "toggle-command-palette" "toggle-command-palette"
 run_selected_capture "dark-style" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/dark-style.png" "$WIDTH" "$HEIGHT" "" "0" "force-dark"
 run_selected_capture "high-contrast-style" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/high-contrast-style.png" "$WIDTH" "$HEIGHT" "" "0" "default"

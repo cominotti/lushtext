@@ -30,6 +30,51 @@ template $LushtextCommandPalette: Box {
     }
   }
 
+  Box category_bar {
+    orientation: horizontal;
+    spacing: 8;
+    margin-start: 8;
+    margin-end: 8;
+    margin-top: 4;
+    visible: false;
+
+    Button category_back_button {
+      icon-name: "go-previous-symbolic";
+      tooltip-text: _("Back to all results");
+      valign: center;
+
+      styles [
+        "flat",
+      ]
+    }
+
+    Box {
+      orientation: vertical;
+      hexpand: true;
+      valign: center;
+
+      Label category_title_label {
+        halign: start;
+        ellipsize: middle;
+
+        styles [
+          "heading",
+        ]
+      }
+
+      Label category_notice_label {
+        halign: start;
+        wrap: true;
+        visible: false;
+
+        styles [
+          "dim-label",
+          "caption",
+        ]
+      }
+    }
+  }
+
   ScrolledWindow results_scroll {
     max-content-height: 400;
     propagate-natural-height: true;
@@ -39,6 +84,20 @@ template $LushtextCommandPalette: Box {
     margin-bottom: 4;
 
     child: ListView results_view {
+      single-click-activate: false;
+    };
+  }
+
+  ScrolledWindow category_scroll {
+    max-content-height: 400;
+    propagate-natural-height: true;
+    vscrollbar-policy: automatic;
+    hscrollbar-policy: never;
+    margin-top: 4;
+    margin-bottom: 4;
+    visible: false;
+
+    child: ListView category_view {
       single-click-activate: false;
     };
   }

@@ -17857,7 +17857,7 @@ fn test_notes_browser_reports_a_text_cut_as_showing_x_of_y() {
 }
 
 #[test]
-fn test_notes_browser_open_editor_snapshot_respects_aggregate_limit() {
+fn test_notes_browser_open_editor_snapshot_is_bounded_by_bytes_not_rows() {
     ensure_gtk_init();
     let _data_dir = isolated_data_dir();
     let files = tempfile::tempdir().expect("open-editor snapshot tempdir");
@@ -17875,12 +17875,19 @@ fn test_notes_browser_open_editor_snapshot_respects_aggregate_limit() {
         ]);
     }
 
-    let captured = window.capture_open_editor_note_evidence_at_item_limit(2);
-    assert!(captured.snapshots.saturating_add(captured.bookmarks) <= 2);
-    assert!(
-        captured.bookmarks < 4,
-        "bookmark capture must stop at the aggregate bound"
-    );
+    // drill-down-palette-categories D7: no row count, so the 4 MiB budget
+    // holds every bookmark of both editors.
+    let captured = window.capture_open_editor_note_evidence(4 * 1024 * 1024);
+    assert_eq!(captured.snapshots, 2);
+    assert_eq!(captured.bookmarks, 4);
+    assert!(!captured.truncated);
+    // A budget below one snapshot's charge retains nothing and counts the
+    // rows it cannot retain.
+    let starved = window.capture_open_editor_note_evidence(1);
+    assert_eq!(starved.snapshots, 0);
+    assert_eq!(starved.bookmarks, 0);
+    assert!(starved.truncated);
+    assert_eq!(starved.rows_not_retained, 4);
 }
 
 #[test]
@@ -17926,7 +17933,7 @@ fn test_notes_browser_open_editor_snapshot_caps_oversized_labels_before_admissio
     )
     .expect("save open-tab document note");
 
-    let captured = window.capture_open_editor_note_evidence(10_000, 4 * 1024 * 1024);
+    let captured = window.capture_open_editor_note_evidence(4 * 1024 * 1024);
     assert_eq!(captured.snapshots, 1);
     assert_eq!(captured.bookmarks, 0);
     assert!(captured.retained_bytes <= 4 * 1024 * 1024);

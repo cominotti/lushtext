@@ -150,6 +150,16 @@ impl LushtextWindow {
                     window.set_command_palette_mode(&mode);
                 })
                 .build(),
+            gio::ActionEntry::builder("set-command-palette-category")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(category) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("set-command-palette-category: expected string parameter");
+                        return;
+                    };
+                    window.set_command_palette_category(&category);
+                })
+                .build(),
             gio::ActionEntry::builder("toggle-search-panel")
                 .activate(|window: &Self, _, _| window.toggle_search_panel())
                 .build(),

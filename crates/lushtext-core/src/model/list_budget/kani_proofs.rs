@@ -6,9 +6,12 @@
 //! Domain: every `u64` limit and charge, sequences of at most
 //! [`MAX_SEQUENCE`] offers (B1, B2) or worst-case items (B3, B4), every `u64`
 //! elapsed time and every unit count (T1), and turns of at most
-//! [`MAX_SEQUENCE`] units of any `u64` cost below 2^32 µs (T2).
+//! [`MAX_SEQUENCE`] units of any `u64` cost below 2^32 µs (T2); every `u64`
+//! limit with a zero charge, every `u64` limit at seven concrete charges (B5's
+//! closed form, a recorded restriction), and results of at most
+//! [`MAX_SEQUENCE`] rows (B5's agreement with the budget).
 
-use super::{Admission, LIST_TURN_SLICE_US, RetainedBudget, turn_continues};
+use super::{Admission, LIST_TURN_SLICE_US, RetainedBudget, rows_within, turn_continues};
 
 /// Offers per harness. The properties are per step, so a short sequence
 /// covers every transition the latch can take (fits before, refused once,
@@ -92,6 +95,69 @@ fn a_budget_one_byte_below_n_times_w_refuses_the_last_item() {
     for _ in 0..n {
         assert_eq!(budget.admit(w), Admission::Retained);
     }
+}
+
+/// B5, zero charge: a charge of zero bounds nothing, for every `u64` limit.
+#[kani::proof]
+fn rows_within_a_zero_charge_bounds_nothing() {
+    assert_eq!(rows_within(kani::any(), 0), usize::MAX);
+}
+
+/// The charges B5's closed form is checked at: the small ones, the palette's
+/// 36-byte ranked row, a page, one past `u32`, and `u64::MAX`.
+const CLOSED_FORM_CHARGES: [u64; 7] = [1, 2, 3, 36, 4_096, (1 << 32) + 1, u64::MAX];
+
+/// B5, closed form: `rows_within` is the largest `r` with
+/// `r * charge <= limit`, with no overflow (checked arithmetic), for **every**
+/// `u64` limit at each charge of [`CLOSED_FORM_CHARGES`].
+///
+/// **Restricted domain (charge):** with a symbolic charge the 64-bit division
+/// did not finish, neither for the closed form over every `u64` (16 minutes)
+/// or under `limit < 2^32, charge < 2^16` (12 minutes), nor for the bare
+/// equality with `limit / charge` over every `u64` (15 minutes) (2026-11-07,
+/// `drill-down-palette-categories` task 2.1); a concrete divisor keeps the
+/// limit symbolic over every `u64`. A symbolic charge is covered by
+/// `rows_within_agrees_with_the_budget` (every charge, results of at most
+/// four rows) and by the unit and property tests.
+#[kani::proof]
+#[kani::unwind(8)]
+fn rows_within_is_the_largest_fitting_prefix() {
+    let limit: u64 = kani::any();
+    for charge in CLOSED_FORM_CHARGES {
+        let rows = rows_within(limit, charge) as u64;
+        let used = rows
+            .checked_mul(charge)
+            .expect("r * charge cannot overflow");
+        assert!(used <= limit);
+        match rows
+            .checked_add(1)
+            .and_then(|next| next.checked_mul(charge))
+        {
+            Some(next) => assert!(next > limit),
+            None => kani::cover!(true, "the next row would overflow u64"),
+        }
+    }
+}
+
+/// B5, agreement: for results of at most `MAX_SEQUENCE` rows, `rows_within`
+/// equals the number of `charge`-byte offers a `RetainedBudget` retains.
+#[kani::proof]
+#[kani::unwind(6)]
+fn rows_within_agrees_with_the_budget() {
+    let limit: u64 = kani::any();
+    let charge: u64 = kani::any();
+    kani::assume(charge > 0);
+    let rows = rows_within(limit, charge);
+    kani::assume(rows <= MAX_SEQUENCE);
+    let mut budget = RetainedBudget::new(limit);
+    let mut retained = 0usize;
+    for _ in 0..=MAX_SEQUENCE {
+        if budget.admit(charge) == Admission::Retained {
+            retained += 1;
+        }
+    }
+    assert_eq!(retained, rows);
+    kani::cover!(rows == MAX_SEQUENCE, "a full sequence fits");
 }
 
 /// T1: every turn takes its first unit, whatever the clock says.
