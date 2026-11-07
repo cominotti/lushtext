@@ -8,7 +8,6 @@
 
 mod accessibility;
 mod bookmarks;
-
 mod buffer_replacement;
 mod document_identity;
 pub mod document_scale;

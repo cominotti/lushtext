@@ -714,7 +714,8 @@ struct EditorCapture {
     next: usize,
     bookmarks: Vec<BookmarkRecord>,
     /// Whether the editor's path snapshot fit the budget (else its rows are
-    /// only counted).
+    /// only counted; an in-scope editor whose path did not fit is skipped,
+    /// since the worker counts its bookmark sidecar instead).
     path_retained: bool,
     /// Budget state once the path was admitted, restored on a restart.
     charged_before: u64,
@@ -890,6 +891,12 @@ fn start_next_editor(capture: &mut OpenEditorSnapshotCapture) -> CaptureUnit {
             capture.counting_only = true;
         }
         let path_retained = !capture.counting_only;
+        if !path_retained && open_tab_source.is_none() {
+            // In scope and not in the snapshot: the worker reads this file's
+            // bookmark sidecar in its place and counts those rows itself, so
+            // counting the live rows here too would count them twice.
+            continue;
+        }
         let charged_before = capture.budget.charged();
         let counting_only_before = capture.counting_only;
         let generation = editor.bookmark_change_generation();

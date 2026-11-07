@@ -603,6 +603,35 @@ fn test_a_snapshot_byte_cut_counts_the_rows_it_did_not_copy() {
     flush_events();
 }
 
+/// D4/D5: an in-scope editor the capture reaches only after its byte cut is
+/// counted once. The worker reads that file's bookmark sidecar in its place
+/// (the editor is not in the snapshot), so counting its live rows as well
+/// made "of Y" count them twice.
+#[test]
+fn test_an_in_scope_editor_past_the_capture_cut_is_counted_once() {
+    let (_folders, folder) = seed_workspace();
+    let window = new_window();
+    // The first editor's 3,000 bookmarks with 2 KiB labels exceed the 4 MiB
+    // capture budget, so the second editor's path is never retained.
+    open_editor_with_bookmarks(&window, &folder, "labelled.rs", 3_000, 2_048);
+    open_editor_with_bookmarks(&window, &folder, "after.rs", 5, 0);
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(60), || {
+        window.notes_evidence().browser.is_some_and(|b| {
+            b.source_ready && b.query.active == 0 && b.query.pending == 0 && b.listed_rows > 0
+        })
+    });
+    let snapshot = browser(&window);
+    assert!(snapshot.limited);
+    assert_eq!(
+        snapshot.rows_found,
+        3_000 + 5,
+        "every bookmark counted once"
+    );
+    dialog(&window).close();
+    flush_events();
+}
+
 /// D4: closing the dialog mid-capture removes the turn source; nothing
 /// publishes afterwards.
 #[test]

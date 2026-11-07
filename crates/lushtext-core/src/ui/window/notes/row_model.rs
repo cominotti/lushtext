@@ -166,6 +166,12 @@ mod model_imp {
 
         fn item(&self, position: u32) -> Option<glib::Object> {
             let projection = self.projection.borrow();
+            // While a shrinking publish announces its removal, `rows` still
+            // holds the old rows past the new length: answer by the reported
+            // length, as `GListModel` requires.
+            if position >= projection.sections.len() {
+                return None;
+            }
             let source_index = *projection.rows.get(usize::try_from(position).ok()?)?;
             let mut live = self.live.borrow_mut();
             if let Some(row) = live.get(&position).and_then(glib::WeakRef::upgrade) {
