@@ -738,3 +738,26 @@ pub mod a86 {
         FontScopeFixture, MONO_ROWS, Mechanism, REPS, UNRELATED_ROWS, describe, measure_all,
     };
 }
+
+/// The fixture and values the A87 probe drives, for its sample.
+pub mod a87 {
+    pub use crate::probes::a87::{
+        APPENDS, BOUNDED_GROWTH, ListState, SIZES, SPLICE_ADVANTAGE, label_list, numbered_store,
+        time_one_splice, time_single_appends,
+    };
+}
+
+/// The fixture and values the A88 probe drives, for its sample.
+pub mod a88 {
+    pub use crate::probes::a88::{BATCH, ExpandedTree, SIZES, time_end_batch};
+}
+
+/// The fixture and values the A89 probe drives, for its sample.
+pub mod a89 {
+    pub use crate::probes::a89::{CHILDREN, SIZES, collapsed_tree, time_tail_expansion};
+}
+
+/// The fixture and values the A90 probe drives, for its sample.
+pub mod a90 {
+    pub use crate::probes::a90::{SIZES, time_first_reveal};
+}

@@ -1336,6 +1336,64 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a86),
     },
+    Axiom {
+        id: AxiomId::new(87),
+        name: "a87_a_presented_list_view_pays_per_items_changed_not_per_item",
+        statement: "on a presented, visible GtkListView every items-changed of its model costs \
+                    a fixed amount that does not grow with the item count, so single appends \
+                    cost several times one splice of the same items; an unrealized list \
+                    (unparented, or under an invisible GtkScrolledWindow) does not pay per item \
+                    on an append either",
+        dependent_designs: &[
+            "bound-lists-by-budget-not-count D4: workspace search applies a turn's matches as \
+             one splice per touched store, so the results list pays the per-emission cost once \
+             per touched file per turn, not once per match",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a87),
+    },
+    Axiom {
+        id: AxiomId::new(88),
+        name: "a88_an_end_of_store_batch_splice_costs_the_batch",
+        statement: "one splice appending a batch at the end of an expanded row's child \
+                    GListStore, under a GtkTreeListModel (passthrough = false) shown by a \
+                    presented GtkListView, costs a small fraction of a list turn and grows \
+                    sub-linearly, far below the rows already in the store (16,384 against \
+                    262,144)",
+        dependent_designs: &[
+            "bound-lists-by-budget-not-count D6: the workspace sidebar loads a directory of any \
+             size in 256-row batch splices within LIST_TURN_SLICE_US",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a88),
+    },
+    Axiom {
+        id: AxiomId::new(89),
+        name: "a89_expanding_the_last_tree_row_costs_its_children",
+        statement: "TreeListRow::set_expanded(true) on the last row of a flattened \
+                    GtkTreeListModel shown by a presented list costs a few tens of microseconds \
+                    and grows sub-linearly, far below the row's position (1,024 against 16,384 \
+                    rows); extends A22",
+        dependent_designs: &[
+            "bound-lists-by-budget-not-count D4: workspace search expands the new tail file rows \
+             of a turn by position, without walking the flattened model",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a89),
+    },
+    Axiom {
+        id: AxiomId::new(90),
+        name: "a90_revealing_a_list_costs_its_realized_rows",
+        statement: "making the invisible GtkScrolledWindow around a GtkListView visible in a \
+                    presented window maps the list at a cost bounded by the rows it realizes \
+                    (A1), not by the model's rows (256 against 16,384)",
+        dependent_designs: &[
+            "bound-lists-by-budget-not-count D4: the workspace search results list is revealed \
+             in the turn its first matches arrive, whatever the model already holds",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a90),
+    },
 ];
 
 #[cfg(test)]

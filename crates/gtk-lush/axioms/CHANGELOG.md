@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A87, A88, A89 and A90 probes and samples (`bound-lists-by-budget-not-count`):
+  a presented list view pays a fixed cost per `items-changed` (so one splice
+  undercuts single appends; an unrealized list does not walk its items), an
+  end-of-store batch splice under a tree list grows sub-linearly in the store,
+  expanding the last tree row grows sub-linearly in its position, and
+  revealing a list costs its realized rows, not its model. New fixtures
+  `fixtures::a87`..`fixtures::a90`; `session::Presented::detached`.
 - A52 probe and sample (`explore-editing-long-paragraphs`): a `GtkTextView`
   unparented but still alive keeps re-laying out the paragraphs an edit
   invalidates, and dropping its last reference finalizes it silently. New
