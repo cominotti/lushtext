@@ -56,8 +56,8 @@ single dispatch, 3 repetitions):
 | `set_text` of 64 × 8,192 wrapped characters, settle | 646–694 ms | 645–789 ms | none |
 
 With the windows **not** destroyed, as in PT's M7, the long-line phase grows
-with each repetition: 9.6, then 432 ms with the minimap, and 3.3, 305, then
-727 ms without it. This is the source of PT's 118 and 137 ms in repetitions
+with each repetition: 9.6, 10.5, then 432 ms with the minimap, and 3.3, 305,
+then 727 ms without it. This is the source of PT's 118 and 137 ms in repetitions
 1–2, against 17 ms in repetition 0.
 
 **A2, `main` at its caps with no runs merging** (2,048 alternating runs of
@@ -66,8 +66,11 @@ search, modified and long lines; 216 inside the band):
 - projecting every run for all four kinds (four calls, one per kind; one draw
   projects each run once): 20.3–22.7 ms, so ≈ 5–5.7 ms per draw;
 - the search refresh, 10.1–11.7 ms; a forced refresh, 10.4–10.6 ms;
+- 2,100 single-character inserts on alternating lines outside the loop, next
+  dispatches: 112.6–125.4 ms, the same shape as A1's modified phase;
 - 20 scroll frames, worst: 13.4–15.9 ms with every kind and 11.3–12.7 ms with
-  long lines only.
+  long lines only. These are whole frame dispatches (editor, map and strip);
+  the minimap-off share is measured in task 1.1.
 
 **A3, an O(rows) binning prototype over public GTK API**, at 131,072 search
 matches and 131,072 tagged lines (262,144 lines, 2.1 MB), 713 rows, top,
@@ -97,7 +100,15 @@ The tag and mark operations measured in the same run:
 - per-row `forward` probe after the scan completed: 1.1–1.2 ms;
 - the same probe on a context that had not scanned: 68–81 ms, because the
   first `forward` scans synchronously to the match;
-- the scan itself: 322–323 ms of idle time.
+- the scan itself: 322–323 ms of idle time;
+- the worst dispatch in the 2 s after the scan completed: 4.8–11.3 ms.
+
+A4 started timing only after the scan completed. On `main` the 80 ms
+refresh debounce fires before this 323 ms scan ends, so its capped walk
+meets an unscanned context and its first `forward` scans synchronously, as
+the probe above did (68–81 ms). That dispatch was not captured; task 1.4
+measures the worst dispatch over the whole search, scan included, on `main`
+and on the branch.
 
 ## Goals / Non-Goals
 
@@ -203,10 +214,14 @@ the group form (D8).
 
 Per kind, adjacent marked rows coalesce into runs `[top, bottom)` in strip
 pixels. A run shorter than `MINIMAP_MARKER_MIN_HEIGHT` (2 px, which becomes an
-`i32` constant) grows around its centre, then is pushed back inside the
+`i32` constant) grows around its centre: by `(min - height) / 2` above and the
+rest below, so an odd remainder goes below. It is then pushed back inside the
 rendered-content band `[max(content_top, 0), min(content_bottom, h))`. This is
 the integer twin of `expanded_to_min_height`'s rule, so no marker reaches the
-EOF overscroll tail. Lanes keep `marker_lane_width` and `marker_lane_x`. The
+EOF overscroll tail. Runs of one kind that overlap or touch after expansion
+are merged, so the builder returns disjoint runs in increasing order, and a
+lane never draws its translucent colour twice over one pixel (`main` could,
+for two expanded runs that met). Lanes keep `marker_lane_width` and `marker_lane_x`. The
 cairo call converts each edge with `f64::from` once.
 
 `fit_marker_bounds` and `MarkerProjectionSpace` are retired, with their three
@@ -220,7 +235,10 @@ The band edges come from GTK as `f64` (`compute_bounds`) and `i32`
 (`buffer_to_window_coords`). The adapter rounds the band **outward** to whole
 pixels: `floor` the top, `ceil` the bottom, then clamp to the strip. That
 matches today's clamp, so a marker on the first or last content line is not
-lost.
+lost. The cost is that, at a fractional `content_bottom`, a marker on the last
+line may cover the one pixel row that line shares with the EOF tail; it never
+covers a row wholly inside the tail. The Kani bound `bottom <= upper` is
+stated on the integer band.
 
 Pixel effect: today a 1 px run expands to 2 px centred on a half pixel, which
 cairo anti-aliases over three rows. Binned runs are crisp whole pixels. The
@@ -233,18 +251,48 @@ the removed anti-alias row.
 
 The insert after-handler applies the tag `lushtext-minimap-modified-<gen>`
 over `[start of first line, end of last line]` of the inserted run. The
-delete handler does the same over the joined line. A restored draft tags the
-whole buffer. A clean transition (save, undo to the saved state, a clean
-restore) swaps in a fresh tag:
+delete handler becomes an **after**-handler too (today it runs before the
+default handler and reads the pre-deletion lines): once the default handler
+has joined the lines, it tags the joined line at the deletion point. Both
+keep the existing `tracking_suspended` early return. Tagging whole lines
+merges with any run already on the line, so the tag holds at most one run,
+two toggles, per line. A restored draft tags the whole buffer.
 
-- the strip stops reading the old tag at once, so markers clear in the same
-  dispatch, as today;
-- a coordination step (`retirement.rs`) removes the old tag's toggles in
-  bounded slices at `G_PRIORITY_LOW` with a generation guard;
-- each slice removes the tag over a line range sized so it fits
-  `B_INTERACT_US`. The size is derived from A3's 31 ms for 131,072 toggle
-  pairs and re-measured;
-- once the old tag has no toggles, it is removed from the tag table.
+A clean transition swaps in a fresh tag. The transitions are every site that
+calls `clear_modified_line_marks` or `release_modified_line_marks` today:
+
+- the save terminal (`save/execution.rs`);
+- load, at two sites (`load/execution.rs`);
+- the buffer-replacement terminal (`buffer_replacement/execution.rs`);
+- the local-history restore (`editor_page/local_history.rs`);
+- the memory-eviction terminal (`editor_page/mod.rs`);
+- the minimap's own `modified-changed` handler (undo to the saved state).
+
+`mark_entire_buffer_modified` (draft restore,
+`window/drafts/restore_execution.rs`) swaps in a fresh tag and applies it to
+the whole buffer. A swap:
+
+- makes the strip stop reading the old tag at once, so markers clear in the
+  same dispatch, as today;
+- queues the old tag for a coordination step (`retirement.rs`) that removes
+  its toggles in bounded slices at `G_PRIORITY_LOW` with a generation guard.
+  Retiring tags form a FIFO, so saving again while one is still retiring adds
+  a second, and dispose cancels the queue and removes every queued tag from
+  the table (by then the buffer's text is going away with the editor);
+- bounds each slice by **toggles**, not lines: from a `GtkTextMark` cursor
+  (edits between slices invalidate iters, not marks), it advances
+  `forward_to_tag_toggle` at most `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES` times
+  and removes the tag over that range. The constant is an internal cap
+  (`Kind: cap`, a power of two rounded down), derived from A3's 31 ms for
+  131,072 toggle pairs so that a slice fits `B_INTERACT_US`, and
+  re-measured. A line-sized slice would rely on the one-run-per-line
+  invariant, which a later change could break silently;
+- removes the old tag from the tag table once it has no toggles, and deletes
+  the cursor mark.
+
+Text deleted by a load or buffer replacement takes its toggles with it, so
+those swaps leave little or nothing to retire; the replacement's clear turns
+now also remove toggles, which task 5.1 re-measures at 131,072 runs.
 
 `MinimapState::modified_marks`, `modified_lines_cache`,
 `MINIMAP_MODIFIED_LINE_MARK_CAP` and `modified_line_mark_samples` are
@@ -259,6 +307,13 @@ deleted.
   131,072 applications; a whole-buffer application cost a 5.8–9.5 ms frame,
   a redraw);
 - undo history records text, not tags (AX1 pins all of this).
+
+**Memory.** The tag holds at most two toggle segments per line, so it is
+bounded by the line count, not by a cap: about 12 MB of segments at 131,072
+runs, against `main`'s 2,048 marks. The realistic path to that many runs is
+an in-tab Replace All, where every replacement is a delete and an insert.
+Task 5.1 measures the peak RSS and the Replace All dispatch at 131,072
+replacements on `main` and on the branch.
 
 *Alternatives rejected:*
 
@@ -288,7 +343,11 @@ the refresh re-arms. A completed scan's `forward` walks the context's match
 tag (A4: 1.1–1.2 ms for 713 sparse probes). AX3 pins both costs.
 
 While the scan runs, the strip shows the previous search bins only if the
-query is unchanged, else none.
+query is unchanged and the bins' draw inputs (D7) still hold, else none.
+An edit makes the context report `-1` until its idle rescan of the edited
+region ends, usually within one idle cycle; a scroll in that window drops
+the search lane until the count returns. Task 3.8 bounds that gap with a
+widget test (type, then scroll, with a search active).
 
 **Latency:** on `main`, a query with more than 2,048 matches showed the first
 2,048 (the top of the document) after the debounce. The branch shows all of
@@ -303,21 +362,39 @@ branch for three documents:
 - sparse: 262,144 lines with one match;
 - dense: 131,072 matches.
 
-If the branch is later than `main` by more than one reference frame on the
-ordinary document, the fallback is adopted: a cancellable
-`forward_async` walk from the band's first line, generation-guarded, whose
-completions fill the bins progressively (AX4 must show it never blocks a
-dispatch over `B_INTERACT_US`). Either outcome is recorded in this design.
+The decision is taken on **all three** documents, because the maintainer's
+standard is no user-visible loss and the dense and sparse documents are where
+waiting for the scan is slowest (6.4 s and 0.32 s against `main`'s capped
+walk right after the 80 ms debounce). For each document it compares the time
+to the first search marker inside the band and the worst dispatch over the
+whole search, scan included:
+
+- if the branch is within one reference frame of `main` on every document,
+  the completed-scan rule stands alone;
+- otherwise the fallback is adopted: a cancellable `forward_async` walk from
+  the band's first line, generation-guarded, whose completions fill the bins
+  progressively until the scan completes (AX4 must show it never blocks a
+  dispatch over `B_INTERACT_US`);
+- a document on which `main` is earlier only because its marker came from a
+  dispatch over `B_INTERACT_US` (A4's synchronous scan) is recorded as an
+  explicit exception: the branch is then bounded by GtkSourceView's
+  asynchronous scan speed, with both figures.
+
+The outcome and figures are recorded in this design.
 
 ### D6. Long lines keep every line
 
 The analysis policy's `marker_limit` is `usize::MAX` in `PRODUCTION`. The
 field stays for the fuzz, bench and property callers. The retained vector
-holds at most one `u32` per line of at least 121 characters. Analysis runs
-only while the minimap is available (at most `S_MINIMAP` = 10,000,000 bytes),
-so it is bounded by the document: at most 82,645 entries, about 323 KiB. This
-is a bound by construction, recorded in the evidence and `docs/thresholds.md`
-rather than as a constant. `MINIMAP_LONG_LINE_MARK_CAP` is deleted.
+holds at most one `u32` per line of at least 121 characters, so at most
+4 bytes per 122 bytes of analysed text, about 3.3 % of the live buffer. The
+bound is relative to the live buffer, not to `S_MINIMAP`: the document scale
+turns the minimap off from loaded or saved bytes and from paragraph shape,
+not from the live byte count, so typing or pasting can grow a buffer past
+10,000,000 bytes while the minimap stays on until the next save. At
+`S_MINIMAP` the bound is 82,645 entries, about 323 KiB. This is a bound by
+construction, recorded in the evidence and `docs/thresholds.md` rather than
+as a constant. `MINIMAP_LONG_LINE_MARK_CAP` is deleted.
 
 ### D7. The strip redraws on map scroll; bins are cached per draw input
 
@@ -326,6 +403,8 @@ The row table depends on the map's scroll value. The map's vadjustment
 these change:
 
 - the map's vertical value or the strip height;
+- the map adjustment's `upper` (its laid-out height, which a font zoom,
+  style or line-count change moves without moving the value);
 - the band;
 - a per-kind marker generation.
 
@@ -356,7 +435,7 @@ bounded at a small number of rows and lines, prove these properties:
   times. Runs number at most `ceil(rows / 2)` per kind.
 - **Runs.** Run building plus minimum-height expansion keep every run inside
   the band, at least `min(MIN, band height)` tall, and covering every marked
-  row.
+  row. The runs it returns are disjoint and in increasing order.
 
 The affected shards are `core-geometry-policies` (prefix `marker_`, where the
 retired harnesses lived) and `core-minimap-fit`. Both are rerun whole, and
@@ -372,14 +451,22 @@ and a ledger row, numbered from the next free id at implementation:
   - it queues no relayout of either view, at most a redraw;
   - it creates no undo entry;
   - it moves with its text, and inserted text does not inherit it;
-  - pasting into a buffer with another tag table does not carry it.
+  - pasting into a buffer with another tag table does not carry it;
+  - on a `GtkSourceBuffer` with syntax highlighting and bracket matching on,
+    adding a fresh tag to the table, applying it and removing it from the
+    table trigger no re-highlight and no relayout;
+  - applying it from an `insert-text` or `delete-range` after-handler leaves
+    the signal's iterators valid for the handlers after it (the
+    document-scale watch is one).
 - **AX2:** `gtk_text_view_get_line_at_y` on a `GtkSourceMap` is monotone in
   `y`. It skips zero-height (invisible) lines, which then fall between two
   rows' starts. Its cost is sublinear.
 - **AX3:** `GtkSourceSearchContext::forward` costs O(log n) inside a completed
   scan. From an unscanned position it scans synchronously to the next match.
   It honours `visible-only` (A33): folded text is not searched, so its
-  markers follow the search bar.
+  markers follow the search bar. `occurrences-count` reads `-1` from an edit
+  until the rescan of the edited region ends, and `notify::occurrences-count`
+  fires when any scan ends, an edit's rescan included.
 - **AX4** (only if D5's fallback is adopted): `forward_async` never blocks a
   dispatch over `B_INTERACT_US` on an unscanned `S_MINIMAP` document.
 - **AX5:** a `GtkOverlay` sibling is not re-snapshotted when the
@@ -387,9 +474,20 @@ and a ledger row, numbered from the next free id at implementation:
 
 ### D10. Budgets and measurement
 
-Every minimap dispatch fits `B_INTERACT_US`. A refresh, a scroll frame with
-markers, and a scan-completion refresh fit `B_SETTLE_US` and stay within
-`main` + one reference frame.
+Two scopes, so the budget names what the minimap controls:
+
+- **Dispatches the minimap owns** (the refresh debounce, a scan-completion
+  re-arm, each retirement slice, the tag application inside an edit's
+  handlers) fit `B_INTERACT_US`. So does the minimap's own marker work
+  inside a frame: the strip's draw function, row table and bins included,
+  timed on its own.
+- **The frame dispatch that shows the change** (editor, map and strip
+  together) fits `B_SETTLE_US` and stays within `main` + one reference
+  frame. A2's scroll frames are 11.3–15.9 ms on `main`, so the toolkit's
+  share is measured with the minimap off (task 1.1) before a frame is judged.
+
+A miss with a toolkit cause is an explicit exception with its axiom and its
+figures; a miss in the minimap's own work is a defect.
 
 **Fixtures** (in the strip at 713 and 1,425 rows):
 
@@ -404,6 +502,19 @@ markers, and a scan-completion refresh fit `B_SETTLE_US` and stay within
 the real process. A dispatch that misses its budget for a toolkit reason is
 recorded as an exception with its axiom.
 
+### D11. Readiness and the test seams follow the new state
+
+- The `minimap-refresh` readiness blocker (`minimap_work_pending`) also
+  covers search bins waiting for a scan and queued tag retirement, so an
+  automation client or widget test that waits for idle sees settled markers.
+  `docs/automation.md` and `docs/automation-reference.md` describe the
+  blocker, so they are updated and `make check-automation-docs` runs.
+- `minimap_marker_count` and `minimap_marker_bounds` now report the runs
+  drawn in the band, not every run in the document. Their 37 uses in
+  `crates/lushtext/tests/widget/editor_page.rs` (16) and `window.rs` (21) are
+  reviewed one by one. An assertion about a marker outside the band scrolls
+  the map to it first; none is weakened or dropped.
+
 ## Risks / Trade-offs
 
 - **Search markers appear when the scan completes (D5).** This is later than
@@ -415,6 +526,10 @@ recorded as an exception with its axiom.
   invisibility. AX1 and a widget test cover undo and paste.
 - **Taller windows.** The row-table lookups are O(rows), 0.64 ms worst at 713
   rows. The 1,425-row measurement bounds a 4K-tall window.
+- **Toggle memory** grows with the number of separately edited lines, up to
+  two segments per line (D4). Measured in task 5.1.
+- **Search lane gap after an edit.** A scroll inside an edit's rescan drops
+  the search lane until the count returns (D5). Bounded by task 3.8.
 - **Pixel baseline shift** from crisp whole-pixel runs (D3), proven by `make
   visual-geometry-smoke`.
 - **Facade budget.** The minimap `mod.rs` is at 366 of 370 lines. New stage
