@@ -690,7 +690,9 @@ GTK's own synchronous `set_expanded(false)` of a directory costs about
 the outlier above is likely its tail. Not fixed here; queued as a follow-up
 (measure and remove the per-row cost of collapsing, for example by not
 materializing tree rows for file entries in the watch mirror). The
-re-expansion measurement is printed, not enforced.
+re-expansion measurement is printed, not enforced. *(Superseded by the stage 4
+review below: the collapse was attributed, `main` was found over the budget
+at its own cap, and the store's disposal moved out of the collapse.)*
 
 **Reveal re-scroll.** With the first rows loaded in small batches, a
 directory realizes few rows before a `win.reveal-workspace-path` lands, so
@@ -756,7 +758,9 @@ each (`impl/widget/evidence.txt`, labels `m83-*`).
 | Sidebar expansion, 131,072 entries | not listable | 9.1–9.5 ms | met |
 | Directory terminal, 10,000 / 131,072 | 17–19 ms (recache) | 0.08 / 0.14 ms | does not grow |
 
-No toolkit-floor exception was needed (task 3.5): the first realize of the
+No toolkit-floor exception was needed for these cases (task 3.5; the stage 4
+review later recorded one for collapsing a directory past about 16,000
+entries, citing A91): the first realize of the
 results list costs 0.4–1.6 ms (A90).
 
 **Memory (tasks 2.4, 8.3).** Resident high-water growth, measured in the
@@ -773,3 +777,99 @@ Both sit inside the 5/4 bound, which the two widget tests now enforce. Not
 measured: the branch's peak against `main`'s at `main`'s own worst case
 (4 KiB lines under 4 KiB paths); the worst-case widget test proves that case
 is retained in full, not its peak. Recorded as open.
+
+## Stage 4 review (2026-11-06)
+
+An independent review of `origin/main..HEAD` (code, evidence and the stage 3
+report) found the work sound, and the following, each fixed on the branch.
+Raw evidence: `.claude/handoffs/bound-lists-by-budget-not-count/review/`, the
+`m86`–`m89` campaigns in `runs.log` and `impl/widget/evidence.txt`.
+
+**Findings fixed.**
+
+- *CI, this change (must-fix).* The rustdoc lint gate failed:
+  `probes/a89.rs` linked the private `TAIL_ROWS` from public documentation.
+  SonarQube reported a wildcard import (`rust:S2208`) in
+  `model/list_budget/kani_proofs.rs`. Both fixed.
+- *CI, pre-existing on `main` (must-fix, `preexisting-blockers.md`).*
+  Every `main` CI run since `42168810591` failed two jobs. `cargo deny`
+  reported RUSTSEC-2026-0433 against `pulldown-cmark` 0.13.5 (quadratic
+  parsing of nested image wikilinks; LushText never sets `ENABLE_WIKILINKS`,
+  but the gate fails): bumped to 0.13.6, `build-aux/cargo-sources.json`
+  regenerated. `font_zoom::test_focus_mode_margins_follow_the_zoom_as_on_main`
+  read its first margin while Focus Mode's fullscreen was still resizing the
+  view (2,530 against 2,560 px on the runner, both margins at the width / 3
+  cap, so the larger one came second): it now reads both margins at the one
+  settled width, and asserts strictly smaller margins only below the cap.
+- *Collapse (should-fix; the report's open decision 1).* Measured
+  interleaved with `main` (`m86`, load 0.4–0.7), the collapse call of a
+  sidebar directory took 18.0–18.6 / 21.0–21.3 / 55.8–61.4 ms at 10,000 /
+  16,385 / 131,072 entries, and **`main` took 17.9–24.5 ms at its own
+  10,004-row cap**: a pre-existing over-budget dispatch, not only a follow-up.
+  A `perf` profile of the 131,072 collapse (`review/collapse-attribution.txt`)
+  put 53 % in GTK's rb-tree teardown, 25 % in the child store's disposal (the
+  collapse dropped its last reference, finalizing every `FileTreeItem`), 16 %
+  in the list view's teardown of the row widgets it keeps around its anchor
+  (A1), and 11 % in LushText frames. The implementer's hypothesis (the watch
+  mirror materializing rows) was not supported. Fix: the section holds the
+  child store each expanded directory shows (`retained_child_stores`), so a
+  collapse only unlinks it; the collapsed listing (store and row mirror) then
+  retires in `RETIRED_LISTING_ROWS_PER_UNIT` (4,096) slices under
+  `turn_continues`, at `G_PRIORITY_LOW` so that, by A81, it never shares an
+  iteration with a load turn (at the default priority, re-expanding a
+  collapsed 131,072-entry directory measured 17.5–23.0 ms iterations, `m87`).
+  A store anyone else still holds (GTK through another row, an in-flight
+  scan, a load's next batch) is only let go, never emptied; descendants of a
+  collapsed directory, removed roots and a whole-model reset release theirs
+  too. Failing first: `test_collapsing_a_large_directory_retires_its_listing_after_the_collapse`
+  failed on the stage 3 code (the store was gone when `set_expanded(false)`
+  returned), and passes; two guard tests pin the release of descendants and
+  that a shared store keeps every item. After (`m88`, interleaved, load
+  0.5–1.2): collapse 15.1–15.3 / 16.0–16.8 / 23.3–23.7 ms; `main` 18.0–21.9.
+  A side effect: `directory_listings` no longer reports a collapsed
+  directory's stale mirror beside its live one.
+
+**Decisions on the report's open items (user experience first).**
+
+1. *Collapsing a very large directory* stays over `B_SETTLE_US` past about
+   16,000 entries: 16.0–16.8 ms at 16,385 (5 % over) and 23.3–23.7 ms at
+   131,072. What remains is GTK's: the rb-tree teardown grows with the
+   children in one call nothing can slice (new axiom **A91**, probe and
+   sample; 1.8 / 5.6 ms at 16,384 / 131,072 with the store kept alive), plus
+   the A1 row-widget teardown, about 10 ms whatever the size. **Recorded as a
+   measured toolkit-floor exception** citing A91 and A1, because listing every
+   entry of such a directory (which `main` could not show) is worth one
+   ~24 ms dispatch when the user collapses it, and the alternative that
+   removes it (an owned collapse path that empties the store in slices before
+   GTK's collapse, intercepting the expander's click, keys and actions) is a
+   design of its own: queued as the follow-up `slice-large-directory-collapse`.
+   The collapse is printed by the expansion verdict test, not enforced.
+2. *Re-expansion right after a collapse* stays printed, not enforced: at
+   10,000 and 16,385 entries 7.4–8.9 ms in every run since `m86`; at 131,072
+   6.5–9.3 ms in most runs, with outliers of 14.4–17.9 ms in 3 of 8 runs
+   (`m88` and five instrumented runs), against 14.6 ms in 1 of 2 runs at
+   stage 3 (`m85`) and 21.2 ms at 16,385. Instrumentation showed every load
+   turn at 4.0–4.7 ms and every retirement turn under 4.8 ms, so the outlier
+   is neither; pausing retirement during loads (tried, `m89`) made it worse
+   (16,385: 16.3–21.5 ms) and was reverted. Attributing it is part of the
+   follow-up above. It only follows a collapse of the same directory, which
+   is rare, and stays under 2 frames.
+3. *Kani shard `core-list-budget`.* The pull-request run `42322273437`
+   measured 2.76 min and 1.63 GiB on the runner (the local 1.03 min was
+   low): recorded as 2.8 min / 1.7 GiB, still `PENDING DISPATCH` until the
+   second CI run, which the review's push starts.
+4. *CI widget shard time.* The pull-request run measured `surfaces` at
+   10.24 min (record 11.0–11.5, limit 20). No change.
+5. *Not run at stage 3.* `make performance-smoke` ran (see the PR body for
+   its verdict). Retirement of a search generation is bounded per turn (250
+   references), so measuring it at 18,000 matches bounds every dispatch; not
+   re-measured at a full budget. The peak against `main` at `main`'s worst
+   case (4 KiB lines under 4 KiB paths, 16,384 matches) stays unmeasured:
+   building that fixture means 16,384 files under 4 KiB-deep paths, and the
+   branch retains less per match than `main` did (one shared `Arc<Path>` per
+   file instead of a `PathBuf` per match), measured at 0.80 of its charge;
+   task 8.3 is annotated accordingly.
+6. *Smaller deviations* are accepted as recorded: the eight-copy path charge
+   (it can only cut a listing earlier, never retain past the budget), the
+   test-seam ceiling 171, and the checker-derived AT-SPI anchor ids.
+

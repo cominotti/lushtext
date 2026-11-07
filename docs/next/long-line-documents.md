@@ -3904,17 +3904,34 @@ review", "Implementation decisions"); evidence in
   case and 131,072 typical rows), one scan pass when it fits, time-sliced
   batches behind a loading row, a budget row only past it.
 - `model/list_budget.rs`, Kani shard `core-list-budget` (pull-request gated;
-  local 1.03 min, 1.63 GiB, **pending dispatch**).
+  CI run 42322273437 2.76 min, 1.63 GiB, recorded at 2.8 min / 1.7 GiB;
+  **pending** the second CI run).
 - Verdicts (optimized widget build, presented, load below 4, interleaved with
   `main`; `runs.log`) are tabulated in the design's "Verdicts" table; every
   dispatch of the three former blockers is now within `B_SETTLE_US`, with no
   toolkit-floor exception.
+- **Stage 4 review (2026-11-06).** Collapsing a sidebar directory was over
+  `B_SETTLE_US` on `main` too (17.9–24.5 ms at its 10,004-row cap). The
+  section now holds each expanded directory's child store, so GTK's collapse
+  only unlinks it, and retires the listing in time-sliced turns at
+  `G_PRIORITY_LOW`: collapse 15.1–15.3 / 16.0–16.8 / 23.3–23.7 ms at 10,000 /
+  16,385 / 131,072 entries (before: 18.0–18.6 / 21.0–21.3 / 55.8–61.4).
+  Past about 16,000 entries what remains is GTK's rb-tree teardown (new
+  axiom **A91**) plus the realized-row teardown (A1): a **recorded
+  toolkit-floor exception**. The review also fixed the rustdoc gate
+  (`probes/a89.rs`), a Sonar finding, and two failures `main`'s CI already
+  had: RUSTSEC-2026-0433 (`pulldown-cmark` 0.13.6) and the Focus Mode zoom
+  test's unsettled width. Decisions on every open item: the design's "Stage
+  4 review".
 - **Follow-ups recorded:** a process-wide retained-byte ledger across many
   expanded huge sidebar directories (the budget, like the count before it, is
   per directory); sharing the sidebar's cached path copies as `Arc<Path>`
   (the charge counts eight copies); not scanning the discarded
   `is_expandable()` probe store at all (`main` scans it in full, then the
-  expansion scans again).
+  expansion scans again); `slice-large-directory-collapse` (stage 4 review):
+  an owned collapse path that empties a large directory's store in slices
+  before GTK's collapse, removing A91's share of the exception, and the
+  attribution of the rare 14–18 ms re-expansion outlier at 131,072 entries.
 
 ## Axioms each change cites
 
@@ -3931,7 +3948,7 @@ review", "Implementation decisions"); evidence in
 | EV `defer-background-tab-layout` | A31, A70, A80; added by EV: A81 (every ready source of the top priority runs in one iteration, so N validating views make an iteration N batches long), A82 (a never-selected `AdwTabView` page's source view validates its buffer while hidden: the scroller creates its layout), A83 (an empty buffer stops it at once and leaves the document untouched; a reattach re-lays out from nothing, back at the start; a scroll queued right after it lands elsewhere, re-scrolling on each `upper` change keeps it) |
 | C6b `chunked-highlight-attach` | A27, A67, A68, A69, A70, A80, A83; added by C6b: A84 (the largest `highlight-updated` end since an insert or attach reaches the end of the last line's text once the context engine has analysed the buffer; a `G_PRIORITY_LOW + 1` idle always finds it there) |
 | C6c `bound-context-flip-keystrokes` | A27, A69, A84; added by C6c: A85 (an edit's first update runs right after an idle queued at its priority before the edit and before a `G_PRIORITY_LOW - 1` idle; `ensure_highlight` on an empty range from a `G_PRIORITY_HIGH_IDLE - 1` idle re-analyses in steps whose report says whether it merged; removing the language between steps removes the first update and worker) |
-| BL `bound-lists-by-budget-not-count` | A1 (realized-row cap), A10 (mapped is not drawn), A22 (synchronous expansion; the `is_expandable()` probe store); added by BL: A87 (a presented list view pays per `items-changed`, not per item; an unrealized one does not walk its items), A88 (an end-of-store batch splice under a tree list grows sub-linearly), A89 (a tail `set_expanded` grows sub-linearly in its position), A90 (revealing a list costs its realized rows) |
+| BL `bound-lists-by-budget-not-count` | A1 (realized-row cap), A10 (mapped is not drawn), A22 (synchronous expansion; the `is_expandable()` probe store); added by BL: A87 (a presented list view pays per `items-changed`, not per item; an unrealized one does not walk its items), A88 (an end-of-store batch splice under a tree list grows sub-linearly), A89 (a tail `set_expanded` grows sub-linearly in its position), A90 (revealing a list costs its realized rows), A91 (a row's collapse removes its children in one call whose cost grows with them; stage 4 review) |
 | CF `scope-font-zoom-restyle` | A47 (hidden widgets take a class without a restyle until shown), A72 (why the font stays CSS, not a tag); added by CF: A86 (a display provider reload revalidates every widget even with unchanged text and grows with the window; an unmatched load changes no font; a per-widget class swap applies the new size and does not grow with unrelated widgets) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 

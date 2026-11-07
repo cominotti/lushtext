@@ -170,8 +170,10 @@ CLOSE_PROTECTED_STEP_MEASURED_IN = (
     "the last two on the final harnesses)"
 )
 CLOSE_PROTECTED_FINAL_RAISED_IN = "; raised by runs 42281883363, 42291228680 (max of the two)"
-# Local make kani (2026-11-06): 1.03 min wall, 1.63 GiB peak; rounded up.
-LIST_BUDGET_MINUTES = 1.1
+# CI pull-request run 42322273437 (2026-11-07): 2.76 min wall, 1.63 GiB peak,
+# rounded up (the local make kani run took 1.03 min). One CI run so far; the
+# larger of two is owed once a second run lands.
+LIST_BUDGET_MINUTES = 2.8
 LIST_BUDGET_PEAK_GIB = 1.7
 SETTLE_EVIDENCE_MEASURED_IN = (
     "; with the settle-evidence harnesses by runs 42169248534, 42172535348 (max of the two)"
@@ -347,14 +349,14 @@ SHARDS: dict[str, Shard] = {
     ),
     # bound-lists-by-budget-not-count: the list budget both workspace
     # workflows rely on (admission B1-B4, turn continuation T1-T2), so it
-    # gates pull requests. Its figure is a local run until two dispatches.
+    # gates pull requests. Its figure is one CI run; a second is owed.
     "core-list-budget": Shard(
         "lushtext-core",
         ("model::list_budget::kani_proofs::",),
         gate="pull-request",
         ci_minutes=LIST_BUDGET_MINUTES,
         ci_peak_gib=LIST_BUDGET_PEAK_GIB,
-        measured_in="PENDING DISPATCH (owed by bound-lists-by-budget-not-count): local make kani run 1.03 min, 1.63 GiB",
+        measured_in="PENDING DISPATCH (owed by bound-lists-by-budget-not-count): CI run 42322273437 (pull_request) 2.76 min, 1.63 GiB; the second run is owed",
     ),
     "core-document-scale": Shard(
         "lushtext-core",
