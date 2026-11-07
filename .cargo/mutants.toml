@@ -317,6 +317,10 @@ exclude_re = [
     # all, and the remaining boundary mutants in that function are its
     # reject-outside and non-empty guards, which the co-located edge-touching and
     # zero-minimum tests kill.
+    # History: `fit_marker_bounds` itself was retired by
+    # `bin-minimap-markers-per-row` (markers are binned per strip pixel row by
+    # the integer `marker_row_groups` / `mark_row_groups` / `marker_row_runs`,
+    # which need no exclusion), so nothing here names it any more.
     # Equivalent in `fit_native_slider_to_source_map_bounds` (found by the
     # proof-strength lane, surviving both the Kani harnesses and the tests):
     # weakening the early `!source_map_bounds.y.is_finite()` or

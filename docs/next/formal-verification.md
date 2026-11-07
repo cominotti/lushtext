@@ -1619,7 +1619,9 @@ cluster:
 - `ui/editor_page/minimap/policy.rs` (62 survivors, 7 timeouts):
   `native_slider_estimate_from_inputs` (27 + 1 timeout) has only the no-panic
   harness; the fit functions' input-rejection guard chains
-  (`fit_projected_bounds` 11, `fit_marker_bounds` 10,
+  (`fit_projected_bounds` 11, `fit_marker_bounds` 10 — retired with its
+  three harnesses by `bin-minimap-markers-per-row`, see "Minimap marker row
+  binning" below —
   `fit_native_slider_to_source_map_bounds` 13 + 4 timeouts) are redundant for
   the proved properties (finite, inside the content band) because a later
   guard or the clamp still holds them, so only the tests' exact `None` cases
@@ -2378,6 +2380,45 @@ the derived figures come from the slowest runner seen on these harnesses
 (16.57 min unsplit), and two faster runs cannot show that runner will not
 come back; lowering `core-minimap-fit` to 8.5 min would only hide the margin
 the re-split bought. The deferral is discharged: the split form is measured.
+
+### Minimap marker row binning (`bin-minimap-markers-per-row`, 2026-11-07)
+
+`fit_marker_bounds`, `MarkerProjectionSpace` and their three harnesses
+(`marker_fit_never_panics`, `marker_bounds_stay_in_content_for_finite_f64`,
+`marker_min_height_fails_for_general_f64`) are **retired**: the minimap now
+bins markers per strip pixel row with integer policy (`marker_row_groups`,
+`mark_row_groups`, `marker_row_runs`, `expanded_run`, `push_expanded_run`),
+proved by eleven `marker_rows_*` harnesses in a new shard,
+`core-minimap-binning` (split off rather than added to
+`core-geometry-policies`, whose pull-request margin it would break; gated
+`scheduled` with derived figures, 12.0 min / 12.0 GiB, until a dispatched run
+measures it). The proof-strength oracle names them and the five functions.
+
+| Harness | Local seconds |
+| --- | --- |
+| `marker_rows_groups_partition_the_band_{one_row,two_rows,three_rows}` | 0.43, 0.85, 1.83 |
+| `marker_rows_walk_is_sound_complete_and_bounded_{one_row,two_rows,three_rows}` | 1.50, 61.6, 108.19 |
+| `marker_rows_runs_stay_in_the_band_at_the_minimum_height_{one_row,two_rows,three_rows}` | 1.84, 4.29, 142.19 |
+| `marker_rows_expansion_stays_in_the_band_on_whole_pixels` | 28.47 |
+| `marker_rows_merge_keeps_runs_disjoint_and_ordered` | 3.94 |
+
+Shard runs (local, 2026-11-07, `make kani KANI_MEASURE`):
+`core-minimap-binning` 6.31 min, peak 11.64 GiB; `core-geometry-policies`
+2.33 min, 2.61 GiB (30 harnesses, the three retired ones gone);
+`core-minimap-fit` 5.55 min, 2.29 GiB. The CI figures of the last two stand
+(raise, never lower).
+
+**Reduced bound (fit order step 3), recorded here and in the harness doc.**
+The end-to-end harnesses prove bands of one to three rows: at four rows the
+walker and the run builder exhausted the 14 GiB address-space cap in CBMC's
+propositional reduction. `marker_rows_expansion_*` proves the run growth on
+every whole-pixel band up to 2^20 with minimum heights up to 2^16, and
+`marker_rows_merge_*` proves the merge of two runs on bands up to 16 rows.
+Solver-cost findings on the way: a symbolic band start exhausted the cap at
+one row (the grouping is translation-invariant; the harness fixes the start),
+as did a symbolic `Vec` capacity (the policy sizes the group vector from the
+table's length) and, at three rows, `i64` arithmetic in the run builder (now
+`i32`, saturating).
 
 ## 4. Deferral inventory
 

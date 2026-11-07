@@ -20259,6 +20259,94 @@ fn test_startup_restore_applies_matching_file_backed_draft() {
     assert_eq!(notification.title, "Draft Changes Restored");
 }
 
+/// A restored draft of 131,072 lines shows every line modified
+/// (`bin-minimap-markers-per-row` 3.2): one modified run covers the whole
+/// rendered band at the top and at the end of the document. `main` sampled
+/// 2,048 of the lines as source marks, leaving gaps between them.
+#[test]
+fn test_restored_large_draft_marks_every_minimap_row_modified() {
+    ensure_gtk_init();
+    let settings = lushtext_core::ui::settings_writes::shared();
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("enable minimap");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("restored-large.txt");
+    fixture::write_text(&file_path, "disk content\n");
+    let body: String = (0..1 << 17)
+        .map(|line| format!("draft line {line}\n"))
+        .collect();
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    draft_service::fixture::write_body(&data_dir, &draft_id, &body).expect("seed draft");
+    let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id,
+                original_path: Some(file_path.clone()),
+                original_mtime_secs: Some(current_mtime),
+                saved_at_secs: 1,
+            }],
+            cleanup_continuation: None,
+        },
+    )
+    .expect("save manifest");
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(file_path),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(10), || {
+        window.imp().tab_view.n_pages() == 1 && active_editor(&window).is_draft_restored()
+    });
+    let editor = active_editor(&window);
+    let whole_band = |editor: &LushtextEditorPage| {
+        let runs = editor.minimap_marker_bounds(MinimapMarkerKind::Modified);
+        let Some(strip) = editor.minimap_marker_strip_widget() else {
+            return false;
+        };
+        runs.len() == 1 && runs[0].top <= 6.0 && runs[0].bottom >= f64::from(strip.height()) - 6.0
+    };
+    wait_until(Duration::from_secs(10), || {
+        editor.is_minimap_visible() && whole_band(&editor)
+    });
+    let buffer = editor.buffer();
+    let last = buffer.end_iter();
+    let mark = buffer.create_mark(None, &last, true);
+    editor
+        .source_view()
+        .scroll_to_mark(&mark, 0.0, true, 0.0, 1.0);
+    wait_until(Duration::from_secs(10), || {
+        editor
+            .minimap_source_map_widget()
+            .and_then(|map| map.vadjustment())
+            .is_some_and(|adjustment| adjustment.value() > 0.0)
+            && editor.minimap_marker_count(MinimapMarkerKind::Modified) == 1
+    });
+    let runs = editor.minimap_marker_bounds(MinimapMarkerKind::Modified);
+    assert_eq!(
+        runs.len(),
+        1,
+        "one run, no sampled gaps, at the end: {runs:?}"
+    );
+    buffer.delete_mark(&mark);
+}
+
 /// Evict `background` for memory and select it again, so it reloads from disk.
 ///
 /// Production's eviction reload (`editor_memory_eviction::reload_if_evicted`)

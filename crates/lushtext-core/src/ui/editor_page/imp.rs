@@ -24,7 +24,6 @@ use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -35,7 +34,8 @@ use super::document_scale::DocumentScaleState;
 use super::frame_validation::FrameValidationState;
 use super::language_attach::LanguageAttachState;
 use super::minimap::{
-    MinimapAnalysisCache, MinimapAnalysisSession, MinimapAvailability, MinimapMarker,
+    MinimapAnalysisCache, MinimapAnalysisSession, MinimapAvailability, MinimapMarkerBins,
+    MinimapModifiedTracking,
 };
 use super::style_scheme::apply_color_scheme_to_editor;
 
@@ -421,10 +421,24 @@ pub struct MinimapState {
     pub retired_maps: RefCell<Vec<glib::WeakRef<sourceview5::Map>>>,
     /// Narrow drawing layer that paints semantic markers over the map edge.
     pub marker_strip: RefCell<Option<gtk4::DrawingArea>>,
-    /// Last computed render model for the semantic marker strip.
-    pub markers: RefCell<Vec<MinimapMarker>>,
-    /// Source marks that keep modified-since-save lines aligned with later edits.
-    pub modified_marks: RefCell<Vec<sourceview5::Mark>>,
+    /// Per-row marker bins of the last strip draw, reused while its draw
+    /// inputs (map scroll, layout height, strip height, band, generations)
+    /// hold.
+    pub(super) marker_bins: RefCell<Option<MinimapMarkerBins>>,
+    /// Advances whenever any marker kind may have changed (refresh, tag swap,
+    /// scan completion), invalidating `marker_bins`.
+    pub marker_generation: Cell<u64>,
+    /// Advances when the in-tab search query or session changes, so search
+    /// bins kept across a rescan are never another query's.
+    pub search_generation: Cell<u64>,
+    /// The search context whose `notify::occurrences-count` re-arms the
+    /// refresh, held weakly, and its handler.
+    pub(super) watched_search_context: RefCell<Option<glib::WeakRef<sourceview5::SearchContext>>>,
+    /// Handler on `watched_search_context`.
+    pub search_signals: SignalBag,
+    /// Modified-since-save tracking: the current property-less tag and the
+    /// FIFO of swapped-out tags retiring in slices.
+    pub(super) modified: MinimapModifiedTracking,
     /// Current availability state for the minimap on this tab.
     pub availability: Cell<MinimapAvailability>,
     /// Monotonic identity invalidating every stale minimap analysis slice.
@@ -468,8 +482,6 @@ pub struct MinimapState {
     pub reflow_reveal_pending: Cell<bool>,
     /// Prevents programmatic loads and evictions from being recorded as user edits.
     pub tracking_suspended: Cell<bool>,
-    /// Tracks which lines already own a modified marker for O(1) de-duplication.
-    pub modified_lines_cache: RefCell<BTreeSet<u32>>,
     /// One-shot guard so the "minimap reduced" message does not repeat on each edit.
     pub reduced_feedback_shown: Cell<bool>,
     /// Handler ID for the buffer's `insert-text` signal. Disconnected in dispose.
@@ -849,9 +861,9 @@ impl ObjectImpl for LushtextEditorPage {
         self.minimap.marker_strip.borrow_mut().take();
         self.minimap.render_hold.borrow_mut().take();
         self.focus_mode.text_origin_guide.borrow_mut().take();
-        self.minimap.modified_marks.borrow_mut().clear();
-        self.minimap.modified_lines_cache.borrow_mut().clear();
-        self.minimap.markers.borrow_mut().clear();
+        self.minimap.search_signals.clear();
+        self.obj().cancel_modified_tag_retirement();
+        self.minimap.marker_bins.borrow_mut().take();
         // Cancel file monitor to stop receiving events for this tab.
         if let Some(monitor) = self.monitor.file_monitor.take() {
             monitor.cancel();

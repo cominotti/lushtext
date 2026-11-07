@@ -4,7 +4,15 @@
 //!
 //! Maintaining observation of the external sources this workflow reacts to: the
 //! buffer's insert/delete/modified/changed signals, the editor and source-map
-//! vertical adjustments, and the in-tab search session. Everything installed
+//! vertical adjustments, and the in-tab search session and its scan.
+//!
+//! Edits tag the lines they touch with the current modified tag from handlers
+//! connected **after** the default one (ledger A98: that leaves the signal's
+//! iterators valid for the document-scale watch after it). The map
+//! adjustment's `value-changed` redraws the strip (A101: otherwise its
+//! markers stay where they were while the map scrolls under them), and the
+//! search context's `notify::occurrences-count` redraws the strip when a
+//! scan, or an edit's rescan, completes (A100). Everything installed
 //! here that can outlive its closure is tracked in `MinimapState::buffer_signals`
 //! (a `SignalBag`) so `dispose()` can disconnect it.
 //!
@@ -92,17 +100,18 @@ impl LushtextEditorPage {
         }
         {
             let editor_weak = self.downgrade();
-            let handler_id = buffer.connect_delete_range(move |_, start, end| {
-                let Some(editor) = editor_weak.upgrade() else {
-                    return;
-                };
+            // An after-handler too: the default handler has joined the lines
+            // by now, so the line at the deletion point is the joined one.
+            let handler_id = buffer.connect_local("delete-range", true, move |values| {
+                let editor = editor_weak.upgrade()?;
                 if editor.imp().minimap.tracking_suspended.get() {
-                    return;
+                    return None;
                 }
-                let start_line = u32::try_from(start.line()).unwrap_or(0);
-                let end_line = u32::try_from(end.line()).unwrap_or(start_line);
-                editor.record_modified_line_marks(start_line, end_line);
+                let start = values.get(1)?.get::<gtk4::TextIter>().ok()?;
+                let line = u32::try_from(start.line()).unwrap_or(0);
+                editor.record_modified_line_marks(line, line);
                 editor.arm_minimap_refresh();
+                None
             });
             imp.minimap.buffer_signals.track(&buffer, handler_id);
         }
@@ -116,7 +125,7 @@ impl LushtextEditorPage {
                     return;
                 }
                 if !buffer.is_modified() {
-                    editor.release_modified_line_marks();
+                    editor.swap_modified_tag();
                 }
                 editor.arm_minimap_refresh();
             });
@@ -141,6 +150,9 @@ impl LushtextEditorPage {
             let editor_weak = self.downgrade();
             self.search_bar().connect_search_state_changed(move || {
                 if let Some(editor) = editor_weak.upgrade() {
+                    let generation = &editor.imp().minimap.search_generation;
+                    generation.set(generation.get().wrapping_add(1));
+                    editor.watch_search_scan();
                     editor.arm_minimap_refresh();
                 }
             });
@@ -188,7 +200,8 @@ impl LushtextEditorPage {
         self.arm_minimap_refresh();
     }
 
-    /// Track the per-instance adjustment guard of one map.
+    /// Track the per-instance adjustment guard of one map, and redraw the
+    /// marker strip when the map scrolls (ledger A101).
     fn watch_source_map_adjustment(&self, source_map: &sourceview5::Map) {
         if let Some(vadj) = source_map.vadjustment() {
             let editor_weak = self.downgrade();
@@ -198,7 +211,52 @@ impl LushtextEditorPage {
                 }
             });
             self.imp().minimap.map_signals.track(&vadj, handler_id);
+            let editor_weak = self.downgrade();
+            let handler_id = vadj.connect_value_changed(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.queue_marker_strip_draw();
+                }
+            });
+            self.imp().minimap.map_signals.track(&vadj, handler_id);
         }
+    }
+
+    /// Redraw the strip when the current search context's scan completes.
+    ///
+    /// The strip's bins read search matches only from a completed scan, so
+    /// the scan's end is the earliest moment they can appear; the handler
+    /// invalidates the bins and queues the draw directly instead of re-arming
+    /// the 80 ms refresh debounce, which would delay them past `main`'s capped
+    /// walk on an ordinary document (design D5). The search bar replaces its
+    /// context per session, so the handler follows the context it was
+    /// connected to and is replaced with it.
+    pub(super) fn watch_search_scan(&self) {
+        let imp = self.imp();
+        let context = self.search_bar().search_context();
+        let watched = imp
+            .minimap
+            .watched_search_context
+            .borrow()
+            .as_ref()
+            .and_then(glib::WeakRef::upgrade);
+        if watched == context {
+            return;
+        }
+        imp.minimap.search_signals.clear();
+        imp.minimap.watched_search_context.replace(None);
+        let Some(context) = context else {
+            return;
+        };
+        let editor_weak = self.downgrade();
+        let handler_id = context.connect_occurrences_count_notify(move |_| {
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.note_marker_change();
+            }
+        });
+        imp.minimap.search_signals.track(&context, handler_id);
+        imp.minimap
+            .watched_search_context
+            .replace(Some(context.downgrade()));
     }
 
     /// Keep GtkSourceMap 5.20 out of its zero-range adjustment division.

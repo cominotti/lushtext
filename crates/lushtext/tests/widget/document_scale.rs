@@ -37,8 +37,18 @@ fn n(value: u64) -> usize {
     usize::try_from(value).expect("policy constants fit usize")
 }
 
-/// Category of the minimap's modified-since-save source marks.
-const MODIFIED_MARK_CATEGORY: &str = "lushtext-minimap-modified";
+/// Name prefix of the minimap's modified-since-save tags (one per generation).
+const MODIFIED_TAG_PREFIX: &str = "lushtext-minimap-modified-";
+
+/// Whether the start of `line` carries the minimap's modified tag.
+fn line_has_modified_tag(buffer: &sourceview5::Buffer, line: i32) -> bool {
+    buffer.iter_at_line(line).is_some_and(|iter| {
+        iter.tags().iter().any(|tag| {
+            tag.name()
+                .is_some_and(|name| name.starts_with(MODIFIED_TAG_PREFIX))
+        })
+    })
+}
 
 fn enable_minimap(enabled: bool) -> gio::Settings {
     let settings = lushtext_core::ui::settings_writes::shared();
@@ -151,9 +161,7 @@ fn test_minimap_marks_cover_lines_inserted_with_gtk_paragraph_delimiters() {
     assert_eq!(buffer.line_count(), 4);
     for line in 0..4 {
         assert!(
-            !buffer
-                .source_marks_at_line(line, Some(MODIFIED_MARK_CATEGORY))
-                .is_empty(),
+            line_has_modified_tag(&buffer, line),
             "line {line} inserted with a GTK paragraph delimiter must be marked modified"
         );
     }

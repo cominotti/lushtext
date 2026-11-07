@@ -14,13 +14,23 @@
 //!
 //! ## Seam value objects
 //!
-//! [`MinimapProjectionSpace`] and [`MarkerProjectionSpace`] carry the coordinate
+//! [`MinimapProjectionSpace`] carries the coordinate
 //! spaces across the boundary between the GTK gatherers in
 //! `projection_execution` and the fitting arithmetic here. The minimap mixes
 //! source-map widget coordinates, marker-strip coordinates, editor buffer
 //! coordinates, and caller-supplied target coordinates, several of them as bare
 //! `f64`; reifying the space is what makes passing one space's value where
 //! another is expected a type error instead of a silent drift.
+//!
+//! ## Marker row binning
+//!
+//! The marker strip decides per pixel row, inside the rendered-content band
+//! ([`MarkerRowBand`]): [`marker_row_groups`] groups the rows by the line GTK
+//! shows there, [`mark_row_groups`] asks each marker kind's index at most once
+//! per group plus once, and [`marker_row_runs`] coalesces and grows the marked
+//! rows into whole-pixel runs. All of it is integer arithmetic, so the cost and
+//! the geometry depend on the strip height, never on the marker count
+//! (`bin-minimap-markers-per-row` D2, D3; Kani `marker_rows_*`).
 //!
 //! ## Content analysis
 //!
@@ -80,16 +90,6 @@ pub(super) const MINIMAP_REFRESH_DEBOUNCE: Duration = Duration::from_millis(80);
 /// so it stays exact (`power-of-two-thresholds` stage 4; 128 would leave
 /// 121–128-character lines unmarked).
 pub(super) const MINIMAP_LONG_LINE_WARNING_THRESHOLD: usize = 120;
-/// Cap on search matches converted into minimap markers during one refresh.
-///
-/// The minimap only needs a spatial hint, not every exact hit, so we stop once
-/// the marker strip is already dense enough to communicate "many matches here".
-///
-/// Kind: presentation cap; 2,000 rounded up to a power of two
-/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M7).
-/// It bounds GTK-thread work per refresh, in document order: past the
-/// 2,048th, lower markers are not drawn.
-pub(super) const MINIMAP_SEARCH_MATCH_CAP: usize = 2_048;
 /// Maximum document size before wrapped minimap layout needs a long-line check.
 ///
 /// Ordinary prose and source files stay below this budget, while multi-megabyte
@@ -111,19 +111,23 @@ pub(super) const MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET: usize = 8_192;
 ///
 /// Kind: cap; a power of two, rounded down.
 pub(super) const MINIMAP_ANALYSIS_CHARS_PER_SLICE: usize = 32 * 1024;
-/// Maximum retained long-line identities shared with marker projection.
-///
-/// Kind: presentation cap; 2,000 rounded up to a power of two
-/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M7).
-/// It bounds GTK-thread work per refresh, in document order: past the
-/// 2,048th, lower markers are not drawn.
-pub(super) const MINIMAP_LONG_LINE_MARK_CAP: usize = 2_048;
-/// Minimum visual height for a semantic marker after projection.
+/// Minimum height, in whole strip rows, of a drawn semantic marker run.
 ///
 /// Collapsed or sub-pixel source-map lines still need to be discoverable, but
 /// this height is clamped to the rendered document content so it cannot leak
-/// into the blank EOF overscroll tail.
-pub(super) const MINIMAP_MARKER_MIN_HEIGHT: f64 = 2.0;
+/// into the blank EOF overscroll tail ([`marker_row_runs`]).
+///
+/// Kind: out: geometry; two whole pixels keep a one-pixel line visible
+/// without anti-aliasing (`bin-minimap-markers-per-row` D3).
+pub(super) const MINIMAP_MARKER_MIN_HEIGHT: i32 = 2;
+/// Toggles of a swapped-out modified tag removed by one retirement slice.
+///
+/// Removing a property-less tag costs about 0.12 µs per toggle (A3: 262,144
+/// toggles in 30.6–32.4 ms; ledger A98), so 16,384 toggles (8,192 runs) is
+/// about 2 ms, a quarter of `B_INTERACT_US`, leaving room for slower hosts.
+///
+/// Kind: cap; a power of two, rounded down (`bin-minimap-markers-per-row` D4).
+pub(super) const MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES: usize = 1 << 14;
 /// Minimum height for the viewport highlight when the projected visible area is tiny.
 ///
 /// Two logical pixels keeps edge anchors detectable on very short documents
@@ -157,13 +161,6 @@ pub(super) const MINIMAP_REFLOW_SETTLE_DEBOUNCE: Duration = Duration::from_milli
 /// frame proof because longer delays keep the minimap frozen for immediate
 /// scrolls until the early-reveal path runs.
 pub(super) const MINIMAP_REFLOW_REVEAL_DELAY: Duration = Duration::from_millis(800);
-/// Maximum live source marks used for the modified-line minimap layer.
-///
-/// Kind: presentation cap; 2,000 rounded up to a power of two
-/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M7).
-/// It bounds GTK-thread work per refresh, in document order: past the
-/// 2,048th, lower markers are not drawn.
-pub(super) const MINIMAP_MODIFIED_LINE_MARK_CAP: usize = 2_048;
 
 /// Whether the minimap is currently usable for the active editor state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -204,17 +201,6 @@ pub enum MinimapMarkerKind {
     Modified,
     /// Lines that exceed the minimap long-line threshold.
     LongLine,
-}
-
-/// One normalized marker segment rendered in the minimap strip.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MinimapMarker {
-    /// Semantic category used to pick color and lane width.
-    pub kind: MinimapMarkerKind,
-    /// Inclusive start line in the current buffer.
-    pub start_line: u32,
-    /// Inclusive end line in the current buffer.
-    pub end_line: u32,
 }
 
 /// Current vertical bounds for a projected minimap marker segment.
@@ -621,30 +607,6 @@ fn text_exceeds_line_char_budget(text: &str, line_char_budget: usize) -> bool {
     analysis.wrapped_layout_too_large()
 }
 
-pub(super) fn modified_line_mark_samples(start_line: u32, end_line: u32, cap: usize) -> Vec<u32> {
-    if cap == 0 || start_line > end_line {
-        return Vec::new();
-    }
-    let total = u64::from(end_line - start_line) + 1;
-    let cap = u64::try_from(cap).unwrap_or(u64::MAX);
-    if total <= cap {
-        return (start_line..=end_line).collect();
-    }
-
-    let sample_count = cap.max(1);
-    let span = total - 1;
-    let denominator = sample_count.saturating_sub(1).max(1);
-    let mut samples = Vec::with_capacity(usize::try_from(sample_count).unwrap_or(usize::MAX));
-    for index in 0..sample_count {
-        let offset = (index * span) / denominator;
-        let line = start_line.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX));
-        if samples.last().copied() != Some(line) {
-            samples.push(line);
-        }
-    }
-    samples
-}
-
 #[cfg(test)]
 fn long_line_warning_lines(text: &str) -> Vec<u32> {
     let policy = MinimapAnalysisPolicy {
@@ -655,45 +617,6 @@ fn long_line_warning_lines(text: &str) -> Vec<u32> {
     let mut analysis = MinimapAnalysisAccumulator::new(policy, true);
     analysis.inspect_slice(text.chars(), usize::MAX);
     analysis.finish().long_line_lines
-}
-
-pub(super) fn markers_from_lines(
-    kind: MinimapMarkerKind,
-    lines: impl IntoIterator<Item = u32>,
-) -> Vec<MinimapMarker> {
-    let mut sorted = lines.into_iter().collect::<Vec<_>>();
-    sorted.sort_unstable();
-    sorted.dedup();
-    normalize_line_runs(kind, &sorted)
-}
-
-fn normalize_line_runs(kind: MinimapMarkerKind, lines: &[u32]) -> Vec<MinimapMarker> {
-    let Some((&first, rest)) = lines.split_first() else {
-        return Vec::new();
-    };
-
-    let mut markers = Vec::new();
-    let mut start = first;
-    let mut end = first;
-    for &line in rest {
-        if line == end.saturating_add(1) {
-            end = line;
-            continue;
-        }
-        markers.push(MinimapMarker {
-            kind,
-            start_line: start,
-            end_line: end,
-        });
-        start = line;
-        end = line;
-    }
-    markers.push(MinimapMarker {
-        kind,
-        start_line: start,
-        end_line: end,
-    });
-    markers
 }
 
 /// Shared coordinate-space contract for minimap projections.
@@ -716,15 +639,6 @@ pub(super) struct MinimapProjectionSpace {
     pub(super) content_top: f64,
     /// Bottom of the last rendered minimap line in target widget coordinates.
     pub(super) content_bottom: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct MarkerProjectionSpace {
-    pub(super) strip_height: f64,
-    pub(super) content_top: f64,
-    pub(super) content_bottom: f64,
-    pub(super) map_y_in_strip: f64,
-    pub(super) min_height: f64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -826,52 +740,6 @@ fn expanded_to_min_height(
     }
 
     (top.max(lower), bottom.min(upper))
-}
-
-/// Fit a marker span into the rendered-content band of the marker strip.
-///
-/// Kani proves it never panics or returns a non-finite edge for any `f64`, and
-/// that every returned marker lies inside `[max(content_top, 0),
-/// min(content_bottom, strip_height)]` for every finite `f64`, so no marker
-/// reaches the EOF overscroll tail. Its minimum height is
-/// [`expanded_to_min_height`]'s guarantee and domain.
-pub(super) fn fit_marker_bounds(
-    kind: MinimapMarkerKind,
-    raw_top: f64,
-    raw_bottom: f64,
-    space: MarkerProjectionSpace,
-) -> Option<MinimapMarkerBounds> {
-    if !raw_top.is_finite()
-        || !raw_bottom.is_finite()
-        || !space.strip_height.is_finite()
-        || !space.content_top.is_finite()
-        || !space.content_bottom.is_finite()
-        || space.strip_height <= 0.0
-    {
-        return None;
-    }
-
-    let lower = space.content_top.max(0.0);
-    let upper = space.content_bottom.min(space.strip_height);
-    if upper <= lower {
-        return None;
-    }
-
-    let (raw_top, raw_bottom) = if raw_top <= raw_bottom {
-        (raw_top, raw_bottom)
-    } else {
-        (raw_bottom, raw_top)
-    };
-    if raw_bottom < lower || raw_top > upper {
-        return None;
-    }
-
-    let top = raw_top.max(lower);
-    let bottom = raw_bottom.min(upper).max(top);
-
-    let (top, bottom) = expanded_to_min_height(top, bottom, lower, upper, space.min_height);
-
-    (bottom > top).then_some(MinimapMarkerBounds { kind, top, bottom })
 }
 
 /// Fit a projected minimap rectangle into rendered content bounds.
@@ -984,6 +852,612 @@ pub(super) fn marker_rgba(kind: MinimapMarkerKind, dark: bool) -> (f64, f64, f64
     }
 }
 
+/// The rendered-content band of the marker strip, in whole strip pixel rows
+/// `[lower, upper)`.
+///
+/// The adapter rounds GTK's fractional content edges **outward** (floor the
+/// top, ceil the bottom) and clamps them to the strip, so a marker on the
+/// first or last rendered line is never lost; at a fractional
+/// `content_bottom` a marker on the last line may cover the one pixel row
+/// that line shares with the EOF tail, never a row wholly inside the tail.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub(super) struct MarkerRowBand {
+    /// First strip row of rendered content.
+    pub(super) lower: i32,
+    /// One past the last strip row of rendered content.
+    pub(super) upper: i32,
+}
+
+impl MarkerRowBand {
+    /// The band from whole-pixel content edges, clamped to a strip of
+    /// `strip_height` rows; empty when nothing renders.
+    pub(super) fn clamped(content_top: i32, content_bottom: i32, strip_height: i32) -> Self {
+        let lower = content_top.max(0);
+        let upper = content_bottom.min(strip_height).max(lower);
+        Self { lower, upper }
+    }
+
+    /// Rows in the band.
+    pub(super) fn rows(self) -> usize {
+        usize::try_from(self.upper.saturating_sub(self.lower)).unwrap_or(0)
+    }
+}
+
+/// Consecutive strip rows that show the same first document line.
+///
+/// Rows `[row_start, row_end)` show the lines `[line_start, line_end)`: a line
+/// taller than one pixel spans several rows of one group, and lines no row
+/// starts on (hidden, zero-height lines, ledger A99) fall inside the group
+/// above them, so they are still represented.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct MarkerRowGroup {
+    /// First strip row of the group.
+    pub(super) row_start: i32,
+    /// One past the group's last strip row.
+    pub(super) row_end: i32,
+    /// First document line the group shows.
+    pub(super) line_start: u32,
+    /// One past the last document line the group shows.
+    pub(super) line_end: u32,
+}
+
+/// One coalesced, drawable marker rectangle of a lane, in strip rows
+/// `[top, bottom)`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct MarkerRowRun {
+    /// First strip row of the run.
+    pub(super) top: i32,
+    /// One past the run's last strip row.
+    pub(super) bottom: i32,
+}
+
+/// Group the band's rows by the line each one starts on.
+///
+/// `row_lines[i]` is the line GTK's `line_at_y` reports at strip row
+/// `band.lower + i` (one entry per band row; extra entries are ignored and a
+/// short table yields fewer rows), and `line_past_band` the line at the first
+/// row after the band. The table is made monotone by construction (each entry
+/// at least the one before it, ledger A99 says GTK's already is), so group
+/// starts are strictly increasing and every row is in exactly one group. The
+/// last group extends to `line_past_band`, at least one line.
+pub(super) fn marker_row_groups(
+    band: MarkerRowBand,
+    row_lines: &[u32],
+    line_past_band: u32,
+) -> Vec<MarkerRowGroup> {
+    let rows = band.rows().min(row_lines.len());
+    // Sized once from the table (the adapter passes one entry per band row):
+    // at most one group per row, so pushing never reallocates. Sizing from the
+    // table's length rather than the band keeps the allocation size concrete
+    // for Kani, where a symbolic size exhausted the solver's memory.
+    let mut groups: Vec<MarkerRowGroup> = Vec::with_capacity(row_lines.len());
+    let mut previous_line = 0;
+    let mut row = band.lower;
+    for &line in &row_lines[..rows] {
+        let line = line.max(previous_line);
+        previous_line = line;
+        let next_row = row.saturating_add(1);
+        match groups.last_mut() {
+            Some(group) if group.line_start == line => group.row_end = next_row,
+            last => {
+                if let Some(group) = last {
+                    group.line_end = line;
+                }
+                groups.push(MarkerRowGroup {
+                    row_start: row,
+                    row_end: next_row,
+                    line_start: line,
+                    line_end: line.saturating_add(1),
+                });
+            }
+        }
+        row = next_row;
+    }
+    if let Some(group) = groups.last_mut() {
+        group.line_end = line_past_band.max(group.line_start.saturating_add(1));
+    }
+    groups
+}
+
+/// Mark the groups that show at least one marker line of one kind.
+///
+/// `first_marker_at_or_after(line)` is the kind's index query: the first
+/// marker line at or after `line`, or `None`. The walk starts at the first
+/// group's first line, maps each answer to its group by binary search over
+/// the group starts, marks it and resumes at the next group's start, and
+/// stops at an answer past the band. So it asks at most `groups + 1` times,
+/// whatever the marker count, and touches only lines the strip shows.
+/// Returns the marked flag of each group and the number of queries asked.
+pub(super) fn mark_row_groups(
+    groups: &[MarkerRowGroup],
+    mut first_marker_at_or_after: impl FnMut(u32) -> Option<u32>,
+) -> (Vec<bool>, usize) {
+    let mut marked = vec![false; groups.len()];
+    let mut queries = 0;
+    let Some(first) = groups.first() else {
+        return (marked, queries);
+    };
+    let mut next_line = first.line_start;
+    loop {
+        queries += 1;
+        let Some(marker_line) = first_marker_at_or_after(next_line) else {
+            break;
+        };
+        // An honest index never answers before the line asked about.
+        let marker_line = marker_line.max(next_line);
+        let index = groups
+            .partition_point(|group| group.line_start <= marker_line)
+            .saturating_sub(1);
+        let Some(group) = groups.get(index) else {
+            break;
+        };
+        if marker_line >= group.line_end {
+            break;
+        }
+        marked[index] = true;
+        let Some(next) = groups.get(index + 1) else {
+            break;
+        };
+        next_line = next.line_start;
+    }
+    (marked, queries)
+}
+
+/// Coalesce the marked groups of one kind into drawable runs.
+///
+/// Adjacent marked rows form one run. A run shorter than `min_height` grows
+/// around its centre, `(min - height) / 2` rows above and the rest (the odd
+/// row) below, then is pushed back inside the band, so no marker reaches the
+/// EOF overscroll tail (the integer twin of `expanded_to_min_height`). Runs
+/// that then overlap or touch merge, so the result is disjoint, in increasing
+/// order, and no lane pixel is painted twice. Every run lies inside the band,
+/// covers every marked row, and is at least `min(min_height, band height)`
+/// tall; there are at most `ceil(rows / 2)` of them.
+pub(super) fn marker_row_runs(
+    groups: &[MarkerRowGroup],
+    marked: &[bool],
+    band: MarkerRowBand,
+    min_height: i32,
+) -> Vec<MarkerRowRun> {
+    let target = min_height.max(0).min(band.upper.saturating_sub(band.lower));
+    // At most one run per marked group, so pushing never reallocates.
+    let mut runs: Vec<MarkerRowRun> = Vec::with_capacity(groups.len().min(marked.len()));
+    let mut pending: Option<MarkerRowRun> = None;
+    for (group, &is_marked) in groups.iter().zip(marked) {
+        let top = group.row_start.max(band.lower);
+        let bottom = group.row_end.min(band.upper);
+        if !is_marked || bottom <= top {
+            continue;
+        }
+        pending = match pending {
+            Some(run) if top <= run.bottom => Some(MarkerRowRun {
+                top: run.top,
+                bottom: bottom.max(run.bottom),
+            }),
+            Some(run) => {
+                push_expanded_run(&mut runs, run, band, target);
+                Some(MarkerRowRun { top, bottom })
+            }
+            None => Some(MarkerRowRun { top, bottom }),
+        };
+    }
+    if let Some(run) = pending {
+        push_expanded_run(&mut runs, run, band, target);
+    }
+    runs
+}
+
+/// Grow `run` (inside `band`) to `target` rows, at most the band height:
+/// `(target - height) / 2` rows above and the rest, the odd row, below, then
+/// pushed back inside the band. The integer twin of `expanded_to_min_height`;
+/// Kani proves it on every whole-pixel band up to 2^20
+/// (`marker_rows_expansion_*`).
+pub(super) fn expanded_run(run: MarkerRowRun, band: MarkerRowBand, target: i32) -> MarkerRowRun {
+    let MarkerRowRun {
+        mut top,
+        mut bottom,
+    } = run;
+    let height = bottom.saturating_sub(top);
+    if height < target {
+        let grow = target - height;
+        top = top.saturating_sub(grow / 2);
+        bottom = bottom.saturating_add(grow - grow / 2);
+        if top < band.lower {
+            bottom = bottom.saturating_add(band.lower - top);
+            top = band.lower;
+        }
+        if bottom > band.upper {
+            top = top.saturating_sub(bottom - band.upper);
+            bottom = band.upper;
+        }
+        top = top.max(band.lower);
+    }
+    MarkerRowRun { top, bottom }
+}
+
+/// Grow `run` to `target` rows inside the band and append it to `runs`,
+/// merging it with the runs it now overlaps or touches. `target` is at most
+/// the band height, so the pushes never leave the band.
+fn push_expanded_run(
+    runs: &mut Vec<MarkerRowRun>,
+    run: MarkerRowRun,
+    band: MarkerRowBand,
+    target: i32,
+) {
+    let MarkerRowRun {
+        mut top,
+        mut bottom,
+    } = expanded_run(run, band, target);
+    while let Some(last) = runs.last().copied()
+        && top <= last.bottom
+    {
+        top = top.min(last.top);
+        bottom = bottom.max(last.bottom);
+        runs.pop();
+    }
+    runs.push(MarkerRowRun { top, bottom });
+}
+
+/// The first value in `sorted` at or after `line`: the index query of a kind
+/// held as sorted line numbers (bookmarks, long lines).
+pub(super) fn first_sorted_line_at_or_after(sorted: &[u32], line: u32) -> Option<u32> {
+    sorted
+        .get(sorted.partition_point(|&value| value < line))
+        .copied()
+}
+
+#[cfg(test)]
+mod marker_row_tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// Every line a group shows, by brute force over the model's lines.
+    fn model_marked(groups: &[MarkerRowGroup], markers: &[u32]) -> Vec<bool> {
+        groups
+            .iter()
+            .map(|group| {
+                markers
+                    .iter()
+                    .any(|&line| (group.line_start..group.line_end).contains(&line))
+            })
+            .collect()
+    }
+
+    fn walk(groups: &[MarkerRowGroup], markers: &[u32]) -> (Vec<bool>, usize) {
+        let mut sorted = markers.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        mark_row_groups(groups, |line| first_sorted_line_at_or_after(&sorted, line))
+    }
+
+    /// A monotone row table from per-row line steps.
+    fn table(first: u32, steps: &[u8]) -> Vec<u32> {
+        let mut line = first;
+        steps
+            .iter()
+            .map(|&step| {
+                line += u32::from(step);
+                line
+            })
+            .collect()
+    }
+
+    #[test]
+    fn groups_follow_a_monotone_row_table() {
+        let band = MarkerRowBand {
+            lower: 10,
+            upper: 16,
+        };
+        // Line 3 spans rows 10-12, line 4 row 13, lines 5-7 (6 and 7 hidden)
+        // row 14, line 8 row 15; line 9 starts after the band.
+        let groups = marker_row_groups(band, &[3, 3, 3, 4, 5, 8], 9);
+        assert_eq!(
+            groups,
+            vec![
+                MarkerRowGroup {
+                    row_start: 10,
+                    row_end: 13,
+                    line_start: 3,
+                    line_end: 4
+                },
+                MarkerRowGroup {
+                    row_start: 13,
+                    row_end: 14,
+                    line_start: 4,
+                    line_end: 5
+                },
+                MarkerRowGroup {
+                    row_start: 14,
+                    row_end: 15,
+                    line_start: 5,
+                    line_end: 8
+                },
+                MarkerRowGroup {
+                    row_start: 15,
+                    row_end: 16,
+                    line_start: 8,
+                    line_end: 9
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_decreasing_table_entry_is_held_at_the_previous_line() {
+        let band = MarkerRowBand { lower: 0, upper: 3 };
+        let groups = marker_row_groups(band, &[5, 4, 6], 6);
+        assert_eq!(groups.len(), 2);
+        assert_eq!((groups[0].row_start, groups[0].row_end), (0, 2));
+        assert_eq!((groups[1].line_start, groups[1].line_end), (6, 7));
+    }
+
+    #[test]
+    fn the_last_group_reaches_the_line_past_the_band() {
+        let band = MarkerRowBand { lower: 0, upper: 2 };
+        let groups = marker_row_groups(band, &[0, 1], 4);
+        assert_eq!(groups[1].line_end, 4);
+        let groups = marker_row_groups(band, &[0, 1], 1);
+        assert_eq!(groups[1].line_end, 2, "at least the group's own line");
+    }
+
+    #[test]
+    fn an_empty_band_has_no_groups_and_asks_nothing() {
+        let groups = marker_row_groups(MarkerRowBand::default(), &[1, 2], 3);
+        assert!(groups.is_empty());
+        assert_eq!(walk(&groups, &[1, 2]), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn hidden_lines_inside_one_group_mark_it() {
+        let band = MarkerRowBand { lower: 0, upper: 3 };
+        let groups = marker_row_groups(band, &[0, 1, 9], 10);
+        let (marked, _) = walk(&groups, &[5]);
+        assert_eq!(marked, vec![false, true, false]);
+    }
+
+    #[test]
+    fn markers_past_the_band_are_ignored_and_stop_the_walk() {
+        let band = MarkerRowBand { lower: 0, upper: 3 };
+        let groups = marker_row_groups(band, &[10, 11, 12], 13);
+        let (marked, queries) = walk(&groups, &[2, 13, 14, 500]);
+        assert_eq!(marked, vec![false; 3]);
+        assert_eq!(queries, 1);
+    }
+
+    #[test]
+    fn the_walk_asks_at_most_once_per_group_plus_once() {
+        let band = MarkerRowBand { lower: 0, upper: 4 };
+        let groups = marker_row_groups(band, &[0, 1, 2, 3], 4);
+        let every_line: Vec<u32> = (0..4).collect();
+        assert_eq!(walk(&groups, &every_line), (vec![true; 4], 4));
+        assert_eq!(walk(&groups, &[1]), (vec![false, true, false, false], 2));
+    }
+
+    #[test]
+    fn the_band_clamps_to_the_strip() {
+        assert_eq!(
+            MarkerRowBand::clamped(-3, 40, 30),
+            MarkerRowBand {
+                lower: 0,
+                upper: 30
+            }
+        );
+        assert_eq!(
+            MarkerRowBand::clamped(5, 4, 30),
+            MarkerRowBand { lower: 5, upper: 5 }
+        );
+        assert_eq!(MarkerRowBand::clamped(5, 4, 30).rows(), 0);
+        assert_eq!(MarkerRowBand::clamped(5, 9, 30).rows(), 4);
+    }
+
+    fn runs_of(rows: &[i32], band: MarkerRowBand, min_height: i32) -> Vec<(i32, i32)> {
+        let groups: Vec<MarkerRowGroup> = (band.lower..band.upper)
+            .map(|row| MarkerRowGroup {
+                row_start: row,
+                row_end: row + 1,
+                line_start: u32::try_from(row - band.lower).unwrap_or(0),
+                line_end: u32::try_from(row - band.lower).unwrap_or(0) + 1,
+            })
+            .collect();
+        let marked: Vec<bool> = groups
+            .iter()
+            .map(|group| rows.contains(&group.row_start))
+            .collect();
+        marker_row_runs(&groups, &marked, band, min_height)
+            .into_iter()
+            .map(|run| (run.top, run.bottom))
+            .collect()
+    }
+
+    #[test]
+    fn adjacent_rows_coalesce_into_one_run() {
+        let band = MarkerRowBand {
+            lower: 0,
+            upper: 20,
+        };
+        assert_eq!(runs_of(&[3, 4, 5, 9], band, 0), vec![(3, 6), (9, 10)]);
+    }
+
+    #[test]
+    fn a_one_row_run_grows_with_the_odd_row_below() {
+        let band = MarkerRowBand {
+            lower: 0,
+            upper: 20,
+        };
+        assert_eq!(runs_of(&[9], band, 2), vec![(9, 11)]);
+        assert_eq!(runs_of(&[9], band, 3), vec![(8, 11)]);
+    }
+
+    #[test]
+    fn a_run_at_the_band_edges_is_pushed_inside_never_below_content() {
+        let band = MarkerRowBand {
+            lower: 4,
+            upper: 10,
+        };
+        assert_eq!(
+            runs_of(&[9], band, 2),
+            vec![(8, 10)],
+            "EOF tail: never past upper"
+        );
+        assert_eq!(runs_of(&[4], band, 3), vec![(4, 7)]);
+        assert_eq!(runs_of(&[6], band, 50), vec![(4, 10)], "at most the band");
+    }
+
+    #[test]
+    fn runs_that_meet_after_growing_merge() {
+        let band = MarkerRowBand {
+            lower: 0,
+            upper: 20,
+        };
+        // Rows 5 and 7 grow to [5, 7) and [7, 9): they touch, so one run.
+        assert_eq!(runs_of(&[5, 7], band, 2), vec![(5, 9)]);
+        assert_eq!(runs_of(&[5, 9], band, 2), vec![(5, 7), (9, 11)]);
+    }
+
+    #[test]
+    fn sorted_line_index_answers_the_first_line_at_or_after() {
+        let sorted = [2, 5, 9];
+        assert_eq!(first_sorted_line_at_or_after(&sorted, 0), Some(2));
+        assert_eq!(first_sorted_line_at_or_after(&sorted, 5), Some(5));
+        assert_eq!(first_sorted_line_at_or_after(&sorted, 6), Some(9));
+        assert_eq!(first_sorted_line_at_or_after(&sorted, 10), None);
+    }
+
+    /// The integer expansion against the `f64` one it twins, on whole pixels
+    /// sampled up to 2^20 (the fit's containment domain).
+    #[test]
+    fn integer_expansion_agrees_with_expanded_to_min_height_on_whole_pixels() {
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = |bound: i32| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let span = u64::try_from(bound).unwrap_or(1).max(1);
+            i32::try_from((state >> 33) % span).unwrap_or(0)
+        };
+        for _ in 0..20_000 {
+            let lower = next(1 << 20);
+            let upper = lower + 1 + next(1 << 10);
+            let top = lower + next(upper - lower);
+            let bottom = top + 1 + next((upper - top).min(4));
+            let bottom = bottom.min(upper);
+            let min_height = next(1 << 6);
+            let band = MarkerRowBand { lower, upper };
+            let group = MarkerRowGroup {
+                row_start: top,
+                row_end: bottom,
+                line_start: 0,
+                line_end: 1,
+            };
+            let runs = marker_row_runs(&[group], &[true], band, min_height);
+            let (float_top, float_bottom) = expanded_to_min_height(
+                f64::from(top),
+                f64::from(bottom),
+                f64::from(lower),
+                f64::from(upper),
+                f64::from(min_height),
+            );
+            let run = runs[0];
+            let height = run.bottom - run.top;
+            assert!(lower <= run.top && run.bottom <= upper);
+            assert!(run.top <= top && bottom <= run.bottom);
+            assert!(height >= min_height.min(upper - lower));
+            // The float form centres on a half pixel; the integer one puts
+            // the odd row below. Both have the same height and differ by at
+            // most half a pixel at each edge.
+            assert_eq!(
+                f64::from(height),
+                (float_bottom - float_top).max(f64::from(bottom - top))
+            );
+            assert!((f64::from(run.top) - float_top).abs() <= 0.5);
+        }
+    }
+
+    fn row_table() -> impl Strategy<Value = (i32, Vec<u32>, u32)> {
+        (
+            0i32..40,
+            0u32..6,
+            proptest::collection::vec(0u8..4, 0..48),
+            0u32..4,
+        )
+            .prop_map(|(lower, first, steps, past)| {
+                let lines = table(first, &steps);
+                let last = lines.last().copied().unwrap_or(first);
+                (lower, lines, last + past)
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4_000))]
+
+        #[test]
+        fn groups_partition_the_band(
+            (lower, lines, past) in row_table(),
+        ) {
+            let band = MarkerRowBand { lower, upper: lower + i32::try_from(lines.len()).unwrap_or(0) };
+            let groups = marker_row_groups(band, &lines, past);
+            let mut row = band.lower;
+            for window in groups.windows(2) {
+                prop_assert!(window[0].line_start < window[1].line_start);
+                prop_assert_eq!(window[0].line_end, window[1].line_start);
+            }
+            for group in &groups {
+                prop_assert_eq!(group.row_start, row);
+                prop_assert!(group.row_end > group.row_start);
+                prop_assert!(group.line_end > group.line_start);
+                row = group.row_end;
+            }
+            prop_assert_eq!(row, band.upper);
+        }
+
+        #[test]
+        fn the_walk_is_sound_complete_and_bounded(
+            (lower, lines, past) in row_table(),
+            markers in proptest::collection::vec(0u32..240, 0..64),
+        ) {
+            let band = MarkerRowBand { lower, upper: lower + i32::try_from(lines.len()).unwrap_or(0) };
+            let groups = marker_row_groups(band, &lines, past);
+            let (marked, queries) = walk(&groups, &markers);
+            prop_assert_eq!(&marked, &model_marked(&groups, &markers));
+            prop_assert!(queries <= groups.len() + 1);
+        }
+
+        #[test]
+        fn runs_cover_marks_inside_the_band(
+            (lower, lines, past) in row_table(),
+            markers in proptest::collection::vec(0u32..240, 0..64),
+            min_height in 0i32..8,
+            extra_band in 0i32..6,
+        ) {
+            let band = MarkerRowBand {
+                lower,
+                upper: lower + i32::try_from(lines.len()).unwrap_or(0) + extra_band,
+            };
+            let groups = marker_row_groups(band, &lines, past);
+            let (marked, _) = walk(&groups, &markers);
+            let runs = marker_row_runs(&groups, &marked, band, min_height);
+            let rows = band.rows();
+            prop_assert!(runs.len() <= rows.div_ceil(2));
+            for window in runs.windows(2) {
+                prop_assert!(window[0].bottom < window[1].top);
+            }
+            for run in &runs {
+                prop_assert!(band.lower <= run.top && run.bottom <= band.upper);
+                prop_assert!(run.bottom - run.top >= min_height.min(band.upper - band.lower));
+            }
+            for (group, &is_marked) in groups.iter().zip(&marked) {
+                if is_marked {
+                    for row in group.row_start..group.row_end {
+                        prop_assert!(runs.iter().any(|run| run.top <= row && row < run.bottom));
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,47 +1551,16 @@ mod tests {
         assert_eq!(MINIMAP_MARKER_STRIP_WIDTH, 8);
         assert_eq!(MINIMAP_REFRESH_DEBOUNCE, Duration::from_millis(80));
         assert_eq!(MINIMAP_LONG_LINE_WARNING_THRESHOLD, 120);
-        assert_eq!(MINIMAP_SEARCH_MATCH_CAP, 2_048);
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET, 2 * 1024 * 1024);
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, 8_192);
         assert_eq!(MINIMAP_ANALYSIS_CHARS_PER_SLICE, 32 * 1024);
-        assert_eq!(MINIMAP_LONG_LINE_MARK_CAP, 2_048);
-        assert_eq!(MINIMAP_MARKER_MIN_HEIGHT, 2.0);
+        assert_eq!(MINIMAP_MARKER_MIN_HEIGHT, 2);
+        assert_eq!(MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES, 1 << 14);
         assert_eq!(MINIMAP_TOP_CONTENT_MARGIN, 5);
         assert_eq!(MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR, 5);
         assert_eq!(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET, 13);
         assert_eq!(MINIMAP_REFLOW_SETTLE_DEBOUNCE, Duration::from_millis(150));
         assert_eq!(MINIMAP_REFLOW_REVEAL_DELAY, Duration::from_millis(800));
-        // Owned by `projection_execution`, which creates the marks; asserted
-        // here so every minimap constant's stability lives in one test.
-        assert_eq!(
-            super::super::projection_execution::MINIMAP_MODIFIED_MARK_CATEGORY,
-            "lushtext-minimap-modified"
-        );
-        assert_eq!(MINIMAP_MODIFIED_LINE_MARK_CAP, 2_048);
-    }
-
-    #[test]
-    fn test_modified_line_mark_samples_cover_large_ranges_with_a_cap() {
-        let samples = modified_line_mark_samples(0, 9_999, 2_000);
-
-        assert_eq!(samples.len(), 2_000);
-        assert_eq!(samples.first().copied(), Some(0));
-        assert_eq!(samples.last().copied(), Some(9_999));
-        assert!(samples.windows(2).all(|window| window[0] < window[1]));
-    }
-
-    #[test]
-    fn test_modified_line_mark_samples_reject_empty_or_reversed_ranges() {
-        assert!(modified_line_mark_samples(4, 4, 0).is_empty());
-        assert!(modified_line_mark_samples(5, 4, 1).is_empty());
-        assert_eq!(modified_line_mark_samples(7, 7, 1), vec![7]);
-    }
-
-    #[test]
-    fn test_modified_line_mark_samples_preserve_full_small_ranges_and_sample_edges() {
-        assert_eq!(modified_line_mark_samples(5, 7, 10), vec![5, 6, 7]);
-        assert_eq!(modified_line_mark_samples(10, 14, 3), vec![10, 12, 14]);
     }
 
     #[test]
@@ -1553,56 +1996,6 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_line_runs_merges_contiguous_lines() {
-        let markers = normalize_line_runs(MinimapMarkerKind::Bookmark, &[1, 2, 3, 8, 10, 11]);
-        assert_eq!(
-            markers,
-            vec![
-                MinimapMarker {
-                    kind: MinimapMarkerKind::Bookmark,
-                    start_line: 1,
-                    end_line: 3,
-                },
-                MinimapMarker {
-                    kind: MinimapMarkerKind::Bookmark,
-                    start_line: 8,
-                    end_line: 8,
-                },
-                MinimapMarker {
-                    kind: MinimapMarkerKind::Bookmark,
-                    start_line: 10,
-                    end_line: 11,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn test_markers_from_lines_deduplicates_before_normalizing() {
-        let markers = markers_from_lines(MinimapMarkerKind::Search, [4, 4, 5, 9]);
-        assert_eq!(
-            markers,
-            vec![
-                MinimapMarker {
-                    kind: MinimapMarkerKind::Search,
-                    start_line: 4,
-                    end_line: 5,
-                },
-                MinimapMarker {
-                    kind: MinimapMarkerKind::Search,
-                    start_line: 9,
-                    end_line: 9,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn test_markers_from_lines_handles_empty_input() {
-        assert!(markers_from_lines(MinimapMarkerKind::LongLine, []).is_empty());
-    }
-
-    #[test]
     fn test_buffer_line_budget_resets_on_newlines_and_uses_strict_overflow() {
         assert!(!text_exceeds_line_char_budget("abcd\nabcde\nxy", 5));
         assert!(text_exceeds_line_char_budget("abcd\nabcde\nxy", 4));
@@ -1732,268 +2125,6 @@ mod tests {
             "c".repeat(128)
         );
         assert_eq!(long_line_warning_lines(&text), vec![1, 2]);
-    }
-
-    #[test]
-    fn test_fit_marker_bounds_keeps_min_height_above_eof_tail() {
-        let bounds = fit_marker_bounds(
-            MinimapMarkerKind::Search,
-            98.7,
-            98.8,
-            MarkerProjectionSpace {
-                strip_height: 140.0,
-                content_top: 10.0,
-                content_bottom: 100.0,
-                map_y_in_strip: 0.0,
-                min_height: 8.0,
-            },
-        )
-        .expect("bottom marker should still be drawable");
-
-        assert_eq!(bounds.kind, MinimapMarkerKind::Search);
-        assert!((bounds.top - 92.0).abs() < f64::EPSILON);
-        assert!((bounds.bottom - 100.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_fit_marker_bounds_expands_collapsed_line_inside_content() {
-        let bounds = fit_marker_bounds(
-            MinimapMarkerKind::Bookmark,
-            40.0,
-            40.0,
-            MarkerProjectionSpace {
-                strip_height: 100.0,
-                content_top: 0.0,
-                content_bottom: 80.0,
-                map_y_in_strip: 0.0,
-                min_height: 6.0,
-            },
-        )
-        .expect("collapsed but visible line should get a minimum marker");
-
-        assert!((bounds.top - 37.0).abs() < f64::EPSILON);
-        assert!((bounds.bottom - 43.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_fit_marker_bounds_clamps_to_content_and_handles_reversed_input() {
-        let bounds = fit_marker_bounds(
-            MinimapMarkerKind::LongLine,
-            60.0,
-            20.0,
-            MarkerProjectionSpace {
-                strip_height: 120.0,
-                content_top: 25.0,
-                content_bottom: 55.0,
-                map_y_in_strip: 0.0,
-                min_height: 2.0,
-            },
-        )
-        .expect("partially visible reversed marker should be clamped");
-
-        assert_eq!(bounds.kind, MinimapMarkerKind::LongLine);
-        assert_eq!(bounds.top, 25.0);
-        assert_eq!(bounds.bottom, 55.0);
-    }
-
-    #[test]
-    fn test_fit_marker_bounds_fills_content_when_minimum_exceeds_content_height() {
-        let bounds = fit_marker_bounds(
-            MinimapMarkerKind::Modified,
-            42.0,
-            42.0,
-            MarkerProjectionSpace {
-                strip_height: 100.0,
-                content_top: 40.0,
-                content_bottom: 45.0,
-                map_y_in_strip: 0.0,
-                min_height: 20.0,
-            },
-        )
-        .expect("minimum height should be capped to visible content");
-
-        assert_eq!(bounds.top, 40.0);
-        assert_eq!(bounds.bottom, 45.0);
-    }
-
-    #[test]
-    fn test_fit_marker_bounds_leaves_already_tall_markers_unchanged() {
-        let bounds = fit_marker_bounds(
-            MinimapMarkerKind::Search,
-            10.0,
-            16.0,
-            MarkerProjectionSpace {
-                strip_height: 100.0,
-                content_top: 0.0,
-                content_bottom: 90.0,
-                map_y_in_strip: 0.0,
-                min_height: 4.0,
-            },
-        )
-        .expect("marker taller than the minimum should stay drawable");
-
-        assert_eq!(bounds.top, 10.0);
-        assert_eq!(bounds.bottom, 16.0);
-    }
-
-    #[test]
-    fn test_fit_marker_bounds_keeps_markers_that_touch_content_edges() {
-        let top_bounds = fit_marker_bounds(
-            MinimapMarkerKind::Bookmark,
-            25.0,
-            25.0,
-            MarkerProjectionSpace {
-                strip_height: 120.0,
-                content_top: 25.0,
-                content_bottom: 55.0,
-                map_y_in_strip: 0.0,
-                min_height: 4.0,
-            },
-        )
-        .expect("line at content top should still be visible");
-        assert_eq!(top_bounds.top, 25.0);
-        assert_eq!(top_bounds.bottom, 29.0);
-
-        let bottom_bounds = fit_marker_bounds(
-            MinimapMarkerKind::Bookmark,
-            55.0,
-            55.0,
-            MarkerProjectionSpace {
-                strip_height: 120.0,
-                content_top: 25.0,
-                content_bottom: 55.0,
-                map_y_in_strip: 0.0,
-                min_height: 4.0,
-            },
-        )
-        .expect("line at content bottom should still be visible");
-        assert_eq!(bottom_bounds.top, 51.0);
-        assert_eq!(bottom_bounds.bottom, 55.0);
-    }
-
-    #[test]
-    fn test_fit_marker_bounds_rejects_each_non_finite_input() {
-        let finite_space = MarkerProjectionSpace {
-            strip_height: 100.0,
-            content_top: 10.0,
-            content_bottom: 80.0,
-            map_y_in_strip: 0.0,
-            min_height: 2.0,
-        };
-
-        assert!(
-            fit_marker_bounds(MinimapMarkerKind::Search, f64::NAN, 20.0, finite_space).is_none()
-        );
-        assert!(
-            fit_marker_bounds(MinimapMarkerKind::Search, 20.0, f64::NAN, finite_space).is_none()
-        );
-        assert!(
-            fit_marker_bounds(
-                MinimapMarkerKind::Search,
-                20.0,
-                21.0,
-                MarkerProjectionSpace {
-                    strip_height: f64::NAN,
-                    ..finite_space
-                },
-            )
-            .is_none()
-        );
-        assert!(
-            fit_marker_bounds(
-                MinimapMarkerKind::Search,
-                20.0,
-                21.0,
-                MarkerProjectionSpace {
-                    content_top: f64::NAN,
-                    ..finite_space
-                },
-            )
-            .is_none()
-        );
-        assert!(
-            fit_marker_bounds(
-                MinimapMarkerKind::Search,
-                20.0,
-                21.0,
-                MarkerProjectionSpace {
-                    content_bottom: f64::NAN,
-                    ..finite_space
-                },
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn test_fit_marker_bounds_rejects_zero_height_when_minimum_is_zero() {
-        assert!(
-            fit_marker_bounds(
-                MinimapMarkerKind::Search,
-                30.0,
-                30.0,
-                MarkerProjectionSpace {
-                    strip_height: 100.0,
-                    content_top: 0.0,
-                    content_bottom: 90.0,
-                    map_y_in_strip: 0.0,
-                    min_height: 0.0,
-                },
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn test_fit_marker_bounds_rejects_unprojectable_geometry() {
-        let space = MarkerProjectionSpace {
-            strip_height: 100.0,
-            content_top: 0.0,
-            content_bottom: 80.0,
-            map_y_in_strip: 0.0,
-            min_height: 2.0,
-        };
-
-        assert!(
-            fit_marker_bounds(MinimapMarkerKind::Modified, 90.0, 91.0, space).is_none(),
-            "markers below rendered content must not be clamped into the EOF tail"
-        );
-        assert!(
-            fit_marker_bounds(MinimapMarkerKind::Modified, f64::NAN, 10.0, space).is_none(),
-            "non-finite geometry must not revive the old full-height fallback"
-        );
-        assert!(
-            fit_marker_bounds(
-                MinimapMarkerKind::Modified,
-                10.0,
-                11.0,
-                MarkerProjectionSpace {
-                    strip_height: 0.0,
-                    content_top: 0.0,
-                    content_bottom: 80.0,
-                    map_y_in_strip: 0.0,
-                    min_height: 2.0,
-                },
-            )
-            .is_none(),
-            "unallocated marker strips should not draw semantic markers"
-        );
-        assert!(
-            fit_marker_bounds(
-                MinimapMarkerKind::Modified,
-                10.0,
-                11.0,
-                MarkerProjectionSpace {
-                    strip_height: 100.0,
-                    content_top: 20.0,
-                    content_bottom: 20.0,
-                    map_y_in_strip: 0.0,
-                    min_height: 2.0,
-                },
-            )
-            .is_none(),
-            "empty rendered content should not synthesize marker bounds"
-        );
     }
 
     #[test]
@@ -2531,7 +2662,7 @@ impl MinimapAnalysisPolicy {
     pub const PRODUCTION: Self = Self {
         warning_line_chars: MINIMAP_LONG_LINE_WARNING_THRESHOLD,
         wrapped_line_chars: MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET,
-        marker_limit: MINIMAP_LONG_LINE_MARK_CAP,
+        marker_limit: usize::MAX,
     };
 }
 
@@ -2803,23 +2934,16 @@ mod analysis_tests {
         analysis.finish()
     }
 
-    /// No loss against `main` (`power-of-two-thresholds` D12): `main` drew
-    /// 2,000 markers of each kind and took the wrapped-layout analysis for
-    /// lines up to 8,000 characters; the caps round up to 2,048 and 8,192.
+    /// No cap (`bin-minimap-markers-per-row` D6): every line above the
+    /// warning threshold is retained, past `main`'s former 2,048, and the
+    /// wrapped-layout budget is unchanged.
     #[test]
-    fn no_loss_the_minimap_draws_every_marker_main_drew() {
-        assert_eq!(production_analysis(2_000, 200).long_line_lines.len(), 2_000);
-        assert_eq!(production_analysis(2_049, 200).long_line_lines.len(), 2_048);
-        assert_eq!(
-            modified_line_mark_samples(1, 2_000, MINIMAP_MODIFIED_LINE_MARK_CAP).len(),
-            2_000
-        );
-        assert_eq!(
-            modified_line_mark_samples(1, 2_049, MINIMAP_MODIFIED_LINE_MARK_CAP).len(),
-            2_048
-        );
-        assert_eq!(MINIMAP_SEARCH_MATCH_CAP, 2_048);
-        assert!(!production_analysis(1, 8_000).wrapped_layout_too_large);
+    fn production_analysis_keeps_every_long_line() {
+        assert_eq!(production_analysis(2_049, 200).long_line_lines.len(), 2_049);
+        let many = production_analysis(4_096, 130);
+        assert_eq!(many.long_line_lines.len(), 4_096);
+        assert_eq!(many.long_line_lines.last().copied(), Some(4_095));
+        assert_eq!(MinimapAnalysisPolicy::PRODUCTION.marker_limit, usize::MAX);
         assert!(!production_analysis(1, 8_192).wrapped_layout_too_large);
         assert!(production_analysis(1, 8_193).wrapped_layout_too_large);
     }

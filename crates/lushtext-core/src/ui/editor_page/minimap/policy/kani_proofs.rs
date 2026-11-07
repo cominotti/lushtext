@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Kani harnesses over the minimap fit functions:
-//! [`fit_native_slider_to_source_map_bounds`], [`fit_marker_bounds`],
-//! [`fit_projected_bounds`], [`expanded_to_min_height`], and
-//! [`native_slider_estimate_from_inputs`].
+//! [`fit_native_slider_to_source_map_bounds`], [`fit_projected_bounds`],
+//! [`expanded_to_min_height`], and [`native_slider_estimate_from_inputs`];
+//! and over the integer marker row binning, [`marker_row_groups`],
+//! [`mark_row_groups`] and [`marker_row_runs`] (`marker_rows_*`), on a
+//! bounded domain: bands of one to three rows and documents of at most eight
+//! lines, marker sets as eight-bit masks; the run growth on every whole-pixel
+//! band up to 2^20 and the merge of two runs on bands up to 16 rows. `fit_marker_bounds`, its three
+//! harnesses and `MarkerProjectionSpace` were retired with the binning
+//! (`bin-minimap-markers-per-row` D8).
 //!
 //! Two domains, as in the `gtk-lush-widgets` slice-geometry precedent:
 //!
@@ -35,10 +41,11 @@
 //! never see this module. The harnesses check the functions that ship.
 
 use super::{
-    LineThresholds, MINIMAP_VIEWPORT_MIN_HEIGHT, MarkerProjectionSpace, MinimapMarkerKind,
+    LineThresholds, MINIMAP_VIEWPORT_MIN_HEIGHT, MarkerRowBand, MarkerRowGroup, MarkerRowRun,
     MinimapProjectedBounds, MinimapProjectionSpace, NativeSliderEstimateInput, ProjectedBoundsFit,
-    expanded_to_min_height, fit_marker_bounds, fit_native_slider_to_source_map_bounds,
-    fit_projected_bounds, native_slider_estimate_from_inputs, paragraph_may_cross,
+    expanded_run, expanded_to_min_height, fit_native_slider_to_source_map_bounds,
+    fit_projected_bounds, mark_row_groups, marker_row_groups, marker_row_runs,
+    native_slider_estimate_from_inputs, paragraph_may_cross, push_expanded_run,
 };
 
 /// The largest coordinate magnitude of the whole-pixel domain.
@@ -102,16 +109,6 @@ fn any_bounds(coordinate: fn() -> f64) -> MinimapProjectedBounds {
     }
 }
 
-fn any_marker_space(coordinate: fn() -> f64, min_height: fn() -> f64) -> MarkerProjectionSpace {
-    MarkerProjectionSpace {
-        strip_height: coordinate(),
-        content_top: coordinate(),
-        content_bottom: coordinate(),
-        map_y_in_strip: coordinate(),
-        min_height: min_height(),
-    }
-}
-
 fn any_projection_space(coordinate: fn() -> f64) -> MinimapProjectionSpace {
     MinimapProjectionSpace {
         target_height: coordinate(),
@@ -145,19 +142,6 @@ fn native_slider_fit_never_panics() {
     );
     if let Some(bounds) = fitted {
         assert!(is_finite_bounds(bounds));
-    }
-}
-
-#[kani::proof]
-fn marker_fit_never_panics() {
-    let fitted = fit_marker_bounds(
-        kani::any::<MinimapMarkerKind>(),
-        kani::any(),
-        kani::any(),
-        any_marker_space(kani::any::<f64>, kani::any::<f64>),
-    );
-    if let Some(bounds) = fitted {
-        assert!(bounds.top.is_finite() && bounds.bottom.is_finite());
     }
 }
 
@@ -224,36 +208,7 @@ fn native_slider_estimate_never_panics() {
     }
 }
 
-// ─── Markers ──────────────────────────────────────────────────────────
-
-/// Fit a marker from `coordinate` inputs; the band and the fitted marker.
-fn fitted_marker(
-    coordinate: fn() -> f64,
-    min_height: fn() -> f64,
-) -> Option<(f64, f64, f64, f64, f64)> {
-    let raw_top = coordinate();
-    let raw_bottom = coordinate();
-    let space = any_marker_space(coordinate, min_height);
-    let bounds = fit_marker_bounds(kani::any::<MinimapMarkerKind>(), raw_top, raw_bottom, space)?;
-    let (lower, upper) = band(space.content_top, space.content_bottom, space.strip_height);
-    kani::cover!(raw_top.min(raw_bottom) < lower, "clamped at the top");
-    kani::cover!(raw_top.max(raw_bottom) > upper, "clamped at the bottom");
-    kani::cover!(
-        raw_top.max(raw_bottom) - raw_top.min(raw_bottom) < space.min_height,
-        "expanded to the minimum height"
-    );
-    Some((lower, upper, bounds.top, bounds.bottom, space.min_height))
-}
-
-/// A fitted marker lies inside the rendered-content band, so it never reaches
-/// the EOF overscroll tail. This holds for every finite `f64`: the edges are
-/// clamped with `max`/`min`, which are exact.
-#[kani::proof]
-fn marker_bounds_stay_in_content_for_finite_f64() {
-    if let Some((lower, upper, top, bottom, _)) = fitted_marker(finite, finite) {
-        assert!(lower <= top && top < bottom && bottom <= upper);
-    }
-}
+// ─── Minimum height ───────────────────────────────────────────────────
 
 /// The minimum-height guarantee, proved on the helper both fits delegate it
 /// to: grown from any span inside a non-empty band, the result is at least the
@@ -283,15 +238,281 @@ fn min_height_expansion_reaches_the_minimum_on_small_whole_pixels() {
     assert!(bottom - top >= min_height.min(upper - lower));
 }
 
-/// With fractional coordinates the centred expansion rounds, and the marker can
-/// come out a hair shorter than the minimum.
+// ─── Marker row binning ───────────────────────────────────────────────
+
+/// Document lines the binning harnesses explore; marker sets are bitmasks
+/// over them.
+const MAX_LINES: u32 = 8;
+
+/// The first set bit of `markers` at or after `from`: the index query of a
+/// marker set held as a bitmask, loop-free so the solver unwinds nothing.
+fn first_marker_bit(markers: u8, from: u32) -> Option<u32> {
+    let masked = u32::from(markers) & !((1u32 << from.min(31)) - 1);
+    (masked != 0).then(|| masked.trailing_zeros())
+}
+
+/// Whether `markers` holds a line in `[start, end)`, loop-free.
+fn holds_marker_in(markers: u8, start: u32, end: u32) -> bool {
+    let end = end.min(MAX_LINES + 1);
+    start < end && (u32::from(markers) >> start.min(31)) & ((1u32 << (end - start)) - 1) != 0
+}
+
+/// A band of exactly `N` rows starting at a small offset, and an arbitrary
+/// row table for it: entries in `0..MAX_LINES`, not assumed monotone (the
+/// grouping makes them monotone by construction). Each property has one
+/// harness per `N` of one to three rows (an empty band has no groups and no
+/// runs by construction). **Domain: at most three rows**, a reduced bound
+/// recorded in the programme record: at four rows the walk and run-builder
+/// harnesses exhausted the 14 GiB address-space cap in CBMC's propositional
+/// reduction. The unit property tests run the same properties over bands of
+/// up to 53 rows.
+fn row_table<const N: usize>() -> (MarkerRowBand, [u32; N], u32) {
+    // The grouping is translation-invariant in the band's first row, so the
+    // band starts at a fixed row; a symbolic start exhausted the solver's
+    // memory even at one row.
+    let lower: i32 = 4;
+    let lines: [u32; N] = kani::any();
+    for line in lines {
+        kani::assume(line < MAX_LINES);
+    }
+    let past: u32 = kani::any();
+    kani::assume(past <= MAX_LINES);
+    let upper = lower + i32::try_from(N).unwrap_or(0);
+    (MarkerRowBand { lower, upper }, lines, past)
+}
+
+/// Group starts strictly increase, line ranges are contiguous and non-empty,
+/// and the groups partition the band's rows: every row is in exactly one.
+fn groups_partition_the_band<const N: usize>() {
+    let (band, lines, past) = row_table::<N>();
+    let groups = marker_row_groups(band, &lines, past);
+    let mut row = band.lower;
+    for (index, group) in groups.iter().enumerate() {
+        assert!(group.row_start == row);
+        assert!(group.row_end > group.row_start);
+        assert!(group.line_end > group.line_start);
+        if let Some(next) = groups.get(index + 1) {
+            assert!(group.line_start < next.line_start);
+            assert!(group.line_end == next.line_start);
+        }
+        row = group.row_end;
+    }
+    assert!(row == band.upper);
+}
+
 #[kani::proof]
-#[kani::should_panic]
-fn marker_min_height_fails_for_general_f64() {
-    if let Some((lower, upper, top, bottom, min_height)) =
-        fitted_marker(fractional_pixel, fractional_min_height)
-    {
-        assert!(bottom - top >= min_height.min(upper - lower));
+#[kani::unwind(5)]
+fn marker_rows_groups_partition_the_band_one_row() {
+    groups_partition_the_band::<1>();
+}
+
+#[kani::proof]
+#[kani::unwind(5)]
+fn marker_rows_groups_partition_the_band_two_rows() {
+    groups_partition_the_band::<2>();
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn marker_rows_groups_partition_the_band_three_rows() {
+    groups_partition_the_band::<3>();
+}
+
+/// For any marker-line set, the walker marks exactly the groups whose line
+/// range holds a marker line, so each in-band marker line lands in exactly
+/// one group (the ranges are disjoint), and it asks the index at most
+/// `groups + 1` times.
+fn walk_is_sound_complete_and_bounded<const N: usize>() {
+    let (band, lines, past) = row_table::<N>();
+    let groups = marker_row_groups(band, &lines, past);
+    let markers: u8 = kani::any();
+    let (marked, queries) = mark_row_groups(&groups, |from| first_marker_bit(markers, from));
+    kani::cover!(marked.contains(&true), "a marked group");
+    assert!(queries <= groups.len() + 1);
+    for (group, &is_marked) in groups.iter().zip(&marked) {
+        assert!(is_marked == holds_marker_in(markers, group.line_start, group.line_end));
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(5)]
+fn marker_rows_walk_is_sound_complete_and_bounded_one_row() {
+    walk_is_sound_complete_and_bounded::<1>();
+}
+
+#[kani::proof]
+#[kani::unwind(5)]
+fn marker_rows_walk_is_sound_complete_and_bounded_two_rows() {
+    walk_is_sound_complete_and_bounded::<2>();
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn marker_rows_walk_is_sound_complete_and_bounded_three_rows() {
+    walk_is_sound_complete_and_bounded::<3>();
+}
+
+/// Runs stay inside the band (no row of the EOF tail), are disjoint and in
+/// increasing order, cover every marked row, are at least the smaller of the
+/// minimum height and the band height, and number at most `ceil(rows / 2)`.
+///
+/// The groups are one row each: a taller group behaves as adjacent marked
+/// one-row groups, which coalesce into the same run. Separate runs that meet
+/// after growing are also proved on bands up to 16 rows by
+/// `marker_rows_merge_keeps_runs_disjoint_and_ordered`, and the growth itself
+/// on every whole-pixel band up to 2^20 by
+/// `marker_rows_expansion_stays_in_the_band_on_whole_pixels`.
+fn runs_stay_in_the_band<const N: usize>() {
+    // Translation-invariant, as for the row table above.
+    let lower: i32 = 4;
+    let band = MarkerRowBand {
+        lower,
+        upper: lower + i32::try_from(N).unwrap_or(0),
+    };
+    let groups: Vec<MarkerRowGroup> = (0..N)
+        .map(|index| {
+            let row = lower + i32::try_from(index).unwrap_or(0);
+            let line = u32::try_from(index).unwrap_or(0);
+            MarkerRowGroup {
+                row_start: row,
+                row_end: row + 1,
+                line_start: line,
+                line_end: line + 1,
+            }
+        })
+        .collect();
+    let marked: [bool; N] = kani::any();
+    let min_height: i32 = kani::any();
+    kani::assume((0..=6).contains(&min_height));
+    let runs = marker_row_runs(&groups, &marked, band, min_height);
+    kani::cover!(
+        runs.last().is_some_and(|run| run.bottom == band.upper),
+        "a run against the EOF tail"
+    );
+    assert!(runs.len() <= band.rows().div_ceil(2));
+    for (index, run) in runs.iter().enumerate() {
+        assert!(band.lower <= run.top && run.top < run.bottom && run.bottom <= band.upper);
+        assert!(run.bottom - run.top >= min_height.min(band.upper - band.lower));
+        if let Some(next) = runs.get(index + 1) {
+            assert!(run.bottom < next.top);
+        }
+    }
+    for (group, &is_marked) in groups.iter().zip(&marked) {
+        if is_marked {
+            assert!(
+                runs.iter()
+                    .any(|run| run.top <= group.row_start && group.row_end <= run.bottom)
+            );
+        }
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn marker_rows_runs_stay_in_the_band_at_the_minimum_height_one_row() {
+    runs_stay_in_the_band::<1>();
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn marker_rows_runs_stay_in_the_band_at_the_minimum_height_two_rows() {
+    runs_stay_in_the_band::<2>();
+}
+
+#[kani::proof]
+#[kani::unwind(6)]
+fn marker_rows_runs_stay_in_the_band_at_the_minimum_height_three_rows() {
+    runs_stay_in_the_band::<3>();
+}
+
+/// The integer growth of one run, on the whole-pixel domain of the fits
+/// (coordinates with magnitude at most 2^20, minimum heights up to 2^16): the
+/// result stays inside the band, covers the run, and is the target height
+/// exactly when the run was shorter, else unchanged.
+#[kani::proof]
+fn marker_rows_expansion_stays_in_the_band_on_whole_pixels() {
+    let row = || {
+        let value: i32 = kani::any();
+        kani::assume((-MAX_PIXEL..=MAX_PIXEL).contains(&value));
+        value
+    };
+    let band = MarkerRowBand {
+        lower: row(),
+        upper: row(),
+    };
+    let run = MarkerRowRun {
+        top: row(),
+        bottom: row(),
+    };
+    kani::assume(band.lower <= run.top && run.top < run.bottom && run.bottom <= band.upper);
+    let min_height: i32 = kani::any();
+    kani::assume((0..=MAX_MIN_HEIGHT).contains(&min_height));
+    let target = min_height.min(band.upper - band.lower);
+    let grown = expanded_run(run, band, target);
+    kani::cover!(grown.top < run.top, "grown above");
+    kani::cover!(
+        grown.bottom == band.upper && run.bottom < band.upper,
+        "pushed off the EOF tail"
+    );
+    assert!(band.lower <= grown.top && grown.top <= run.top);
+    assert!(run.bottom <= grown.bottom && grown.bottom <= band.upper);
+    let height = run.bottom - run.top;
+    if height < target {
+        assert!(grown.bottom - grown.top == target);
+    } else {
+        assert!(grown == run);
+    }
+}
+
+/// Appending a run after an earlier one (the coalescing loop guarantees a
+/// gap of at least one row between them) leaves the runs disjoint, in
+/// increasing order and inside the band, each at least the target height,
+/// and every row of both covered: they stay apart, or they met after growing
+/// and merged.
+#[kani::proof]
+#[kani::unwind(4)]
+fn marker_rows_merge_keeps_runs_disjoint_and_ordered() {
+    let small = || {
+        let value: i32 = kani::any();
+        kani::assume((0..=16).contains(&value));
+        value
+    };
+    let band = MarkerRowBand {
+        lower: small(),
+        upper: small(),
+    };
+    let first = MarkerRowRun {
+        top: small(),
+        bottom: small(),
+    };
+    let second = MarkerRowRun {
+        top: small(),
+        bottom: small(),
+    };
+    kani::assume(band.lower <= first.top && first.top < first.bottom);
+    kani::assume(first.bottom < second.top && second.top < second.bottom);
+    kani::assume(second.bottom <= band.upper);
+    let min_height: i32 = kani::any();
+    kani::assume((0..=8).contains(&min_height));
+    let target = min_height.min(band.upper - band.lower);
+    let mut runs = Vec::with_capacity(2);
+    push_expanded_run(&mut runs, first, band, target);
+    push_expanded_run(&mut runs, second, band, target);
+    kani::cover!(runs.len() == 1, "merged");
+    kani::cover!(runs.len() == 2, "kept apart");
+    assert!(!runs.is_empty() && runs.len() <= 2);
+    for (index, run) in runs.iter().enumerate() {
+        assert!(band.lower <= run.top && run.top < run.bottom && run.bottom <= band.upper);
+        assert!(run.bottom - run.top >= target);
+        if let Some(next) = runs.get(index + 1) {
+            assert!(run.bottom < next.top);
+        }
+    }
+    for original in [first, second] {
+        assert!(
+            runs.iter()
+                .any(|run| run.top <= original.top && original.bottom <= run.bottom)
+        );
     }
 }
 

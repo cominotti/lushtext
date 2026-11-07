@@ -57,15 +57,19 @@ impl LushtextEditorPage {
 
     /// Report whether queued minimap work is still pending.
     ///
-    /// This covers both the debounced marker refresh and a pending width-reflow
-    /// settle/reveal repair, so visual proof captures cannot race a frozen or
-    /// not-yet-repaired native slider.
+    /// This covers the debounced marker refresh, a pending width-reflow
+    /// settle/reveal repair, search bins waiting for a scan to complete, and a
+    /// swapped-out modified tag still retiring, so visual proof captures and
+    /// idle waits cannot race a frozen or not-yet-repaired native slider or
+    /// markers that are not settled yet.
     pub(super) fn minimap_work_outstanding(&self) -> bool {
         let minimap = &self.imp().minimap;
         minimap.refresh_pending.get()
             || minimap.analysis_session.borrow().is_some()
             || minimap.reflow_settle.pending()
             || minimap.reflow_reveal_pending.get()
+            || self.modified_tag_retirement_pending()
+            || (minimap.source_map.borrow().is_some() && self.search_scan_pending())
     }
 
     pub(super) fn ensure_minimap_analysis(&self, request: MinimapAnalysisRequest) {

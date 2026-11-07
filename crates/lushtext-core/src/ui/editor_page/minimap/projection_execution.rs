@@ -16,6 +16,17 @@
 //! `arm_minimap_refresh` returns immediately and control resumes in
 //! `run_minimap_refresh` once the burst of edits, search updates, and adjustment
 //! notifies has quietened.
+//!
+//! **Markers are binned per strip pixel row** (`bin-minimap-markers-per-row`
+//! D2, D3, D7). The strip's draw function gathers the rendered-content band,
+//! rounded outward to whole rows, and the line GTK's `line_at_y` shows at each
+//! row (ledger A99), then asks each kind's index — the completed search scan
+//! (A100), the modified tag (A98), the sorted long-line and bookmark lines —
+//! at most once per row group plus once, through `policy`'s walker. The bins
+//! are cached per draw input (map scroll value, map layout height, strip
+//! height, band, marker generation), so a map scroll (A101: the strip is not
+//! redrawn unless it asks) recomputes them and an unchanged frame reuses them.
+//! Nothing here enumerates markers, so the cost follows the strip height.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{self, cairo};
@@ -26,63 +37,196 @@ use super::admission::{
     cheap_minimap_availability, current_availability, minimap_analysis_request,
 };
 use super::policy::{
-    MINIMAP_MARKER_MIN_HEIGHT, MINIMAP_MODIFIED_LINE_MARK_CAP, MINIMAP_REFRESH_DEBOUNCE,
-    MINIMAP_SEARCH_MATCH_CAP, MINIMAP_TOP_CONTENT_MARGIN, MINIMAP_VIEWPORT_HORIZONTAL_OUTSET,
-    MINIMAP_VIEWPORT_MIN_HEIGHT, MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS, MarkerProjectionSpace,
-    MinimapAdjustmentDiagnostics, MinimapAvailability, MinimapMarker, MinimapMarkerBounds,
-    MinimapMarkerKind, MinimapNativeProjectionSource, MinimapNativeSliderDiagnostics,
-    MinimapProjectedBounds, MinimapProjectionSpace, MinimapTextViewRect, NativeSliderEstimateInput,
-    ProjectedBoundsFit, document_height_from_line_span, fit_marker_bounds,
+    MINIMAP_MARKER_MIN_HEIGHT, MINIMAP_REFRESH_DEBOUNCE, MINIMAP_TOP_CONTENT_MARGIN,
+    MINIMAP_VIEWPORT_HORIZONTAL_OUTSET, MINIMAP_VIEWPORT_MIN_HEIGHT,
+    MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS, MarkerRowBand, MarkerRowGroup, MarkerRowRun,
+    MinimapAdjustmentDiagnostics, MinimapAvailability, MinimapMarkerBounds, MinimapMarkerKind,
+    MinimapNativeProjectionSource, MinimapNativeSliderDiagnostics, MinimapProjectedBounds,
+    MinimapProjectionSpace, MinimapTextViewRect, NativeSliderEstimateInput, ProjectedBoundsFit,
+    document_height_from_line_span, first_sorted_line_at_or_after,
     fit_native_slider_to_source_map_bounds, fit_projected_bounds, line_bottom_in_target,
-    line_top_in_target, marker_lane_width, marker_lane_x, marker_rgba, markers_from_lines,
-    minimap_unavailable_message, modified_line_mark_samples, native_slider_estimate_from_inputs,
-    wide_editor_slider_offset_class,
+    line_top_in_target, mark_row_groups, marker_lane_width, marker_lane_x, marker_rgba,
+    marker_row_groups, marker_row_runs, minimap_unavailable_message,
+    native_slider_estimate_from_inputs, wide_editor_slider_offset_class,
 };
 use crate::config::keys;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
 
-/// Hidden source-mark category used to keep modified lines attached to buffer edits.
-pub(super) const MINIMAP_MODIFIED_MARK_CATEGORY: &str = "lushtext-minimap-modified";
+/// The marker kinds in drawing order (later kinds paint over earlier ones).
+const DRAW_ORDER: [MinimapMarkerKind; 4] = [
+    MinimapMarkerKind::Bookmark,
+    MinimapMarkerKind::Search,
+    MinimapMarkerKind::Modified,
+    MinimapMarkerKind::LongLine,
+];
+
+/// The draw inputs the bins depend on; equal keys reuse the bins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MarkerBinGeometry {
+    /// Map scroll value, in milli-pixels.
+    map_value_milli: i64,
+    /// Map laid-out height (`upper`), in milli-pixels: a zoom or line-count
+    /// change moves the layout without moving the value.
+    map_upper_milli: i64,
+    /// Strip height in rows.
+    strip_height: i32,
+    /// Map top edge in strip rows.
+    map_y: i32,
+    /// Rendered-content band in strip rows.
+    band: MarkerRowBand,
+}
+
+/// The per-row bins of the last draw (`MinimapState::marker_bins`).
+pub(crate) struct MinimapMarkerBins {
+    geometry: MarkerBinGeometry,
+    marker_generation: u64,
+    search_generation: u64,
+    /// Whether the search runs came from a completed scan (`false` while
+    /// they are kept across a rescan or absent while a scan runs).
+    search_complete: bool,
+    /// Drawn runs per kind, in `DRAW_ORDER`.
+    runs: [Vec<MarkerRowRun>; 4],
+    /// Index queries per kind in the last recomputation, in `DRAW_ORDER`.
+    #[cfg_attr(
+        not(feature = "test-utils"),
+        expect(dead_code, reason = "evidence only")
+    )]
+    pub(super) queries: [usize; 4],
+    /// Row groups in the last recomputation.
+    #[cfg_attr(
+        not(feature = "test-utils"),
+        expect(dead_code, reason = "evidence only")
+    )]
+    pub(super) groups: usize,
+    /// Band rows in the last recomputation.
+    #[cfg_attr(
+        not(feature = "test-utils"),
+        expect(dead_code, reason = "evidence only")
+    )]
+    pub(super) rows: usize,
+    /// Whether search bins wait for a scan to complete.
+    #[cfg_attr(
+        not(feature = "test-utils"),
+        expect(dead_code, reason = "evidence only")
+    )]
+    pub(super) search_waiting: bool,
+}
+
+impl MinimapMarkerBins {
+    fn runs(&self, kind: MinimapMarkerKind) -> &[MarkerRowRun] {
+        &self.runs[kind_index(kind)]
+    }
+}
+
+fn kind_index(kind: MinimapMarkerKind) -> usize {
+    match kind {
+        MinimapMarkerKind::Bookmark => 0,
+        MinimapMarkerKind::Search => 1,
+        MinimapMarkerKind::Modified => 2,
+        MinimapMarkerKind::LongLine => 3,
+    }
+}
 
 impl LushtextEditorPage {
-    /// Count the currently rendered markers for one semantic category.
+    /// Count the marker runs the strip draws for one semantic category, in the
+    /// band the map shows.
     ///
     /// This exists mainly so widget tests can assert that bookmark, search,
-    /// modified, and long-line markers appear and disappear as expected.
+    /// modified, and long-line markers appear and disappear as expected. A
+    /// marker on a line scrolled out of the map is not drawn and not counted.
     #[must_use]
     pub(super) fn projected_marker_count(&self, kind: MinimapMarkerKind) -> usize {
-        self.imp()
-            .minimap
-            .markers
-            .borrow()
-            .iter()
-            .filter(|marker| marker.kind == kind)
-            .count()
+        self.with_marker_bins(|bins| bins.runs(kind).len())
+            .unwrap_or_default()
     }
 
-    /// Return currently drawable marker bounds for one semantic category.
+    /// Return the drawn marker runs for one semantic category, in strip
+    /// coordinates.
     ///
-    /// The bounds are projected through the real `GtkSourceMap` layout, so
-    /// widget tests can assert the marker strip follows source-map geometry
-    /// instead of a hand-rolled line-count ratio.
+    /// The runs are binned through the real `GtkSourceMap` layout, so widget
+    /// tests can assert the marker strip follows source-map geometry instead
+    /// of a hand-rolled line-count ratio.
     #[must_use]
     pub(super) fn projected_marker_bounds_for_kind(
         &self,
         kind: MinimapMarkerKind,
     ) -> Vec<MinimapMarkerBounds> {
-        let imp = self.imp();
-        let Some(source_map) = imp.minimap.source_map.borrow().as_ref().cloned() else {
-            return Vec::new();
-        };
-        let Some(marker_strip) = imp.minimap.marker_strip.borrow().as_ref().cloned() else {
-            return Vec::new();
-        };
+        self.with_marker_bins(|bins| {
+            bins.runs(kind)
+                .iter()
+                .map(|run| MinimapMarkerBounds {
+                    kind,
+                    top: f64::from(run.top),
+                    bottom: f64::from(run.bottom),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
 
-        projected_minimap_marker_bounds(self, &source_map, &marker_strip, marker_strip.height())
-            .into_iter()
-            .filter(|bounds| bounds.kind == kind)
-            .collect()
+    /// Run `read` on the bins of the current draw inputs, recomputing them when
+    /// an input changed; `None` while the strip or the map has no geometry.
+    pub(super) fn with_marker_bins<T>(
+        &self,
+        read: impl FnOnce(&MinimapMarkerBins) -> T,
+    ) -> Option<T> {
+        let imp = self.imp();
+        let source_map = imp.minimap.source_map.borrow().as_ref().cloned()?;
+        let marker_strip = imp.minimap.marker_strip.borrow().as_ref().cloned()?;
+        let geometry = marker_bin_geometry(&source_map, &marker_strip)?;
+        let marker_generation = imp.minimap.marker_generation.get();
+        let search_generation = imp.minimap.search_generation.get();
+        let search_complete = self.search_scan_complete();
+        let reusable = imp
+            .minimap
+            .marker_bins
+            .borrow()
+            .as_ref()
+            .is_some_and(|bins| {
+                bins.geometry == geometry
+                    && bins.marker_generation == marker_generation
+                    && bins.search_generation == search_generation
+                    && bins.search_complete == search_complete
+            });
+        if !reusable {
+            let previous = imp.minimap.marker_bins.borrow_mut().take();
+            let bins = compute_marker_bins(
+                self,
+                &source_map,
+                geometry,
+                (marker_generation, search_generation, search_complete),
+                previous.as_ref(),
+            );
+            imp.minimap.marker_bins.replace(Some(bins));
+        }
+        let bins = imp.minimap.marker_bins.borrow();
+        bins.as_ref().map(read)
+    }
+
+    /// Whether the in-tab search has a completed scan the search index may
+    /// read (`occurrences-count >= 0`, ledger A100); `false` with no search.
+    pub(super) fn search_scan_complete(&self) -> bool {
+        self.is_search_visible()
+            && self
+                .search_bar()
+                .search_context()
+                .is_some_and(|context| context.occurrences_count() >= 0)
+    }
+
+    /// Whether a visible search is still scanning, so search bins wait.
+    pub(super) fn search_scan_pending(&self) -> bool {
+        self.is_search_visible()
+            && self.search_bar().search_context().is_some_and(|context| {
+                context.occurrences_count() < 0 && context.regex_error().is_none()
+            })
+    }
+
+    /// Invalidate the bins of every kind and redraw the strip.
+    pub(super) fn note_marker_change(&self) {
+        let generation = &self.imp().minimap.marker_generation;
+        generation.set(generation.get().wrapping_add(1));
+        self.queue_marker_strip_draw();
     }
 
     /// Return the native source-map viewport-highlight bounds relative to `target`.
@@ -188,8 +332,8 @@ impl LushtextEditorPage {
             self.imp().overscroll.reflow_pause.borrow_mut().take();
             self.sync_projection_geometry();
             self.drop_minimap_reflow_freeze();
-            self.imp().minimap.markers.borrow_mut().clear();
-            self.queue_marker_strip_draw();
+            self.imp().minimap.marker_bins.borrow_mut().take();
+            self.note_marker_change();
             if availability != MinimapAvailability::Visible {
                 self.publish_minimap_unavailable_feedback_if_needed(availability);
             }
@@ -197,8 +341,8 @@ impl LushtextEditorPage {
         }
 
         self.sync_projection_geometry();
-        *self.imp().minimap.markers.borrow_mut() = collect_markers(self);
-        self.queue_marker_strip_draw();
+        self.watch_search_scan();
+        self.note_marker_change();
     }
 
     /// Debounce marker recomputation after search, edits, or viewport changes.
@@ -221,39 +365,42 @@ impl LushtextEditorPage {
         }
     }
 
-    /// Mark the inclusive line range as modified-since-save.
+    /// Tag the inclusive line range as modified-since-save, from the start of
+    /// `start_line` to the start of the line after `end_line` (the buffer end
+    /// on the last line). Tagging whole lines merges with a run already on
+    /// them, so the tag holds at most two toggles per line. An empty last line
+    /// has no character to tag; its terminator above is tagged instead, so
+    /// the edit shows on the line above it.
     pub(super) fn record_modified_line_marks(&self, start_line: u32, end_line: u32) {
-        let mut known_lines = self.imp().minimap.modified_lines_cache.borrow_mut();
-        let remaining_capacity = MINIMAP_MODIFIED_LINE_MARK_CAP.saturating_sub(known_lines.len());
-        if remaining_capacity == 0 {
-            return;
-        }
-        let mut marks = self.imp().minimap.modified_marks.borrow_mut();
         let buffer = self.buffer();
-
-        for line in modified_line_mark_samples(start_line, end_line, remaining_capacity) {
-            if !known_lines.insert(line) {
-                continue;
+        let mut start = text_iter_at_line_or_last(buffer.upcast_ref(), start_line);
+        let mut end = end_line
+            .checked_add(1)
+            .and_then(|line| i32::try_from(line).ok())
+            .and_then(|line| buffer.iter_at_line(line))
+            .filter(|end| end.line() > start.line())
+            .unwrap_or_else(|| buffer.end_iter());
+        if start == end {
+            if !start.backward_char() {
+                return;
             }
-            let iter = iter_at_line_or_last(&buffer, line);
-            let mark = buffer.create_source_mark(None, MINIMAP_MODIFIED_MARK_CATEGORY, &iter);
-            marks.push(mark);
+            end = buffer.end_iter();
         }
+        let tag = self.current_modified_tag();
+        buffer.apply_tag(&tag, &start, &end);
     }
 
     /// Mark every current line as modified-since-save.
     ///
     /// Restored drafts are already different from the saved file content, so
-    /// this helper lets that programmatic restore surface as minimap feedback.
-    /// Large drafts are sampled rather than projected as one `GtkSourceMark`
-    /// per line, keeping the semantic marker layer bounded.
+    /// this helper lets that programmatic restore surface as minimap feedback:
+    /// a fresh tag over the whole buffer, one toggle pair (10–12 µs, A3).
     pub(super) fn mark_all_lines_modified(&self) {
-        self.release_modified_line_marks();
-        let total_lines = document_line_count(self);
-        if total_lines == 0 {
-            return;
-        }
-        self.record_modified_line_marks(0, total_lines.saturating_sub(1));
+        self.swap_modified_tag();
+        let buffer = self.buffer();
+        let tag = self.current_modified_tag();
+        buffer.apply_tag(&tag, &buffer.start_iter(), &buffer.end_iter());
+        self.note_marker_change();
         self.arm_minimap_refresh();
     }
 
@@ -492,141 +639,243 @@ fn adjustment_diagnostics(adjustment: &gtk4::Adjustment) -> MinimapAdjustmentDia
     }
 }
 
-/// Total lines in the buffer, always at least 1.
-///
-/// A `GtkTextBuffer` always has one line, so adding 1 to the last line index
-/// cannot yield 0. `mark_all_lines_modified` keeps its zero guard as defensive
-/// depth; a `.max(1)` here would instead claim the value could be 0 while the
-/// arithmetic above already guarantees it cannot.
-fn document_line_count(editor: &LushtextEditorPage) -> u32 {
-    u32::try_from(editor.buffer().end_iter().line())
-        .unwrap_or(0)
-        .saturating_add(1)
-}
-
-fn collect_markers(editor: &LushtextEditorPage) -> Vec<MinimapMarker> {
-    let mut markers = Vec::new();
-    markers.extend(markers_from_lines(
-        MinimapMarkerKind::Bookmark,
-        editor
-            .bookmark_records()
-            .into_iter()
-            .map(|bookmark| bookmark.line),
-    ));
-    markers.extend(markers_from_lines(
-        MinimapMarkerKind::Search,
-        collect_search_match_lines(editor),
-    ));
-    markers.extend(markers_from_lines(
-        MinimapMarkerKind::Modified,
-        collect_modified_lines(editor),
-    ));
-    if editor
-        .imp()
-        .settings
-        .boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE)
-    {
-        let long_line_lines = editor
-            .imp()
-            .minimap
-            .analysis_cache
-            .borrow()
+/// Gather the draw inputs of the bins: the map scroll, its layout height,
+/// the strip height and the rendered-content band rounded outward to whole
+/// rows (`bin-minimap-markers-per-row` D3).
+fn marker_bin_geometry(
+    source_map: &sourceview5::Map,
+    marker_strip: &gtk4::DrawingArea,
+) -> Option<MarkerBinGeometry> {
+    let strip_height = marker_strip.height();
+    let space = minimap_projection_space(source_map, marker_strip.upcast_ref(), strip_height)?;
+    let band = MarkerRowBand::clamped(
+        whole_pixel(space.content_top.floor()),
+        whole_pixel(space.content_bottom.ceil()),
+        strip_height,
+    );
+    let adjustment = source_map.vadjustment();
+    Some(MarkerBinGeometry {
+        map_value_milli: adjustment
             .as_ref()
-            .filter(|cache| {
-                cache.generation == editor.imp().minimap.analysis_generation.get()
-                    && cache.markers_collected
-            })
-            .map_or_else(Vec::new, |cache| cache.result.long_line_lines.clone());
-        markers.extend(markers_from_lines(
-            MinimapMarkerKind::LongLine,
-            long_line_lines,
-        ));
-    }
-    markers
+            .map_or(0, |adj| gtk_f64_to_milli(adj.value())),
+        map_upper_milli: adjustment
+            .as_ref()
+            .map_or(0, |adj| gtk_f64_to_milli(adj.upper())),
+        strip_height,
+        map_y: whole_pixel(space.map_y.round()),
+        band,
+    })
 }
 
-fn collect_search_match_lines(editor: &LushtextEditorPage) -> Vec<u32> {
-    if !editor.is_search_visible() {
+/// Recompute every kind's runs for `geometry`.
+///
+/// While a search scan runs, the previous search runs are kept only if they
+/// came from the same query and the same geometry (an edit's rescan, ledger
+/// A100); otherwise the search lane waits for the scan, because a `forward`
+/// outside a completed scan scans synchronously.
+fn compute_marker_bins(
+    editor: &LushtextEditorPage,
+    source_map: &sourceview5::Map,
+    geometry: MarkerBinGeometry,
+    (marker_generation, search_generation, search_complete): (u64, u64, bool),
+    previous: Option<&MinimapMarkerBins>,
+) -> MinimapMarkerBins {
+    let groups = row_groups(source_map, geometry);
+    let mut runs: [Vec<MarkerRowRun>; 4] = Default::default();
+    let mut queries = [0; 4];
+    let mut search_waiting = false;
+    for kind in DRAW_ORDER {
+        let index = kind_index(kind);
+        let marked = match kind {
+            MinimapMarkerKind::Bookmark => {
+                let mut lines: Vec<u32> = editor
+                    .bookmark_records()
+                    .into_iter()
+                    .map(|bookmark| bookmark.line)
+                    .collect();
+                lines.sort_unstable();
+                Some(mark_row_groups(&groups, |line| {
+                    first_sorted_line_at_or_after(&lines, line)
+                }))
+            }
+            MinimapMarkerKind::Search => {
+                if search_complete {
+                    editor.search_bar().search_context().map(|context| {
+                        mark_row_groups(&groups, |line| first_search_match_line(&context, line))
+                    })
+                } else {
+                    search_waiting = editor.search_scan_pending();
+                    if search_waiting
+                        && let Some(previous) = previous
+                        && previous.geometry == geometry
+                        && previous.search_generation == search_generation
+                    {
+                        runs[index] = previous.runs(kind).to_vec();
+                    }
+                    None
+                }
+            }
+            MinimapMarkerKind::Modified => editor
+                .imp()
+                .minimap
+                .modified
+                .current
+                .borrow()
+                .clone()
+                .map(|tag| {
+                    mark_row_groups(&groups, |line| {
+                        first_tagged_line(&editor.buffer(), &tag, line)
+                    })
+                }),
+            MinimapMarkerKind::LongLine => {
+                let imp = editor.imp();
+                if imp
+                    .settings
+                    .boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE)
+                {
+                    let cache = imp.minimap.analysis_cache.borrow();
+                    cache
+                        .as_ref()
+                        .filter(|cache| {
+                            cache.generation == imp.minimap.analysis_generation.get()
+                                && cache.markers_collected
+                        })
+                        .map(|cache| {
+                            mark_row_groups(&groups, |line| {
+                                first_sorted_line_at_or_after(&cache.result.long_line_lines, line)
+                            })
+                        })
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some((marked, asked)) = marked {
+            queries[index] = asked;
+            runs[index] =
+                marker_row_runs(&groups, &marked, geometry.band, MINIMAP_MARKER_MIN_HEIGHT);
+        }
+    }
+    MinimapMarkerBins {
+        geometry,
+        marker_generation,
+        search_generation,
+        search_complete,
+        runs,
+        queries,
+        groups: groups.len(),
+        rows: geometry.band.rows(),
+        search_waiting,
+    }
+}
+
+/// Read the line `line_at_y` shows at each band row and group the rows.
+///
+/// A line taller than one row answers for every row it covers, so the table
+/// costs one `line_at_y` per line shown, not per row (ledger A99).
+fn row_groups(source_map: &sourceview5::Map, geometry: MarkerBinGeometry) -> Vec<MarkerRowGroup> {
+    let band = geometry.band;
+    if band.rows() == 0 {
         return Vec::new();
     }
-
-    let Some(context) = editor.search_bar().search_context() else {
-        return Vec::new();
-    };
-
-    let buffer = context.buffer();
-    let mut iter = buffer.start_iter();
-    let mut lines = std::collections::BTreeSet::new();
-
-    for _ in 0..MINIMAP_SEARCH_MATCH_CAP {
-        let Some((match_start, match_end, wrapped)) = context.forward(&iter) else {
-            break;
-        };
-        if wrapped {
-            break;
-        }
-        if let Ok(line) = u32::try_from(match_start.line()) {
-            lines.insert(line);
-        }
-
-        if match_end == iter {
-            if !iter.forward_char() {
+    // Strip row `r` is map widget row `r - map_y`; the conversion to buffer
+    // coordinates is a fixed offset, read once.
+    let map_y = geometry.map_y;
+    let (_, buffer_origin) = source_map.window_to_buffer_coords(gtk4::TextWindowType::Widget, 0, 0);
+    let buffer_y = |row: i32| buffer_origin.saturating_add(row.saturating_sub(map_y));
+    let mut lines = Vec::with_capacity(band.rows());
+    let mut row = band.lower;
+    while row < band.upper {
+        let (iter, line_top) = source_map.line_at_y(buffer_y(row));
+        let line = u32::try_from(iter.line()).unwrap_or(0);
+        let (_, height) = source_map.line_yrange(&iter);
+        let covered_until = line_top.saturating_add(height.max(1));
+        loop {
+            lines.push(line);
+            row += 1;
+            if row >= band.upper || buffer_y(row) >= covered_until {
                 break;
             }
-        } else {
-            iter = match_end;
         }
     }
-
-    lines.into_iter().collect()
+    let (past, _) = source_map.line_at_y(buffer_y(band.upper));
+    let line_past_band = u32::try_from(past.line()).unwrap_or(0);
+    marker_row_groups(band, &lines, line_past_band)
 }
 
-fn collect_modified_lines(editor: &LushtextEditorPage) -> Vec<u32> {
-    // Bound outside the loop, matching `record_modified_line_marks`: `buffer()`
-    // performs a checked downcast on every call.
-    let buffer = editor.buffer();
-    editor
-        .imp()
-        .minimap
-        .modified_marks
-        .borrow()
-        .iter()
-        .filter_map(|mark| u32::try_from(buffer.iter_at_mark(mark).line()).ok())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
+/// The first search match line at or after `line`, from a completed scan
+/// (ledger A100: microseconds there, a synchronous scan outside one).
+fn first_search_match_line(context: &sourceview5::SearchContext, line: u32) -> Option<u32> {
+    let buffer = context.buffer();
+    let from = text_iter_at_line_or_last(buffer.upcast_ref(), line);
+    if u32::try_from(from.line()).unwrap_or(0) < line {
+        return None;
+    }
+    let (match_start, _, wrapped) = context.forward(&from)?;
+    if wrapped {
+        return None;
+    }
+    u32::try_from(match_start.line()).ok()
+}
+
+/// The first line at or after `line` that carries `tag` (ledger A98).
+fn first_tagged_line(buffer: &sourceview5::Buffer, tag: &gtk4::TextTag, line: u32) -> Option<u32> {
+    let mut iter = text_iter_at_line_or_last(buffer.upcast_ref(), line);
+    if u32::try_from(iter.line()).unwrap_or(0) < line {
+        return None;
+    }
+    if iter.has_tag(tag) {
+        return u32::try_from(iter.line()).ok();
+    }
+    // From an untagged position the next toggle turns the tag on.
+    if !iter.forward_to_tag_toggle(Some(tag)) || !iter.has_tag(tag) {
+        return None;
+    }
+    u32::try_from(iter.line()).ok()
+}
+
+/// A finite GTK coordinate as a whole `i32` pixel, saturating.
+fn whole_pixel(value: f64) -> i32 {
+    if !value.is_finite() {
+        return 0;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a widget coordinate already floored, ceiled or rounded; `as` saturates at the i32 range"
+    )]
+    {
+        value as i32
+    }
 }
 
 pub(super) fn draw_marker_strip(
     editor: &LushtextEditorPage,
-    marker_strip: &gtk4::DrawingArea,
+    _marker_strip: &gtk4::DrawingArea,
     cr: &cairo::Context,
     width: i32,
-    height: i32,
+    _height: i32,
 ) {
     let width = width.max(1);
     let dark = libadwaita::StyleManager::default().is_dark();
-    let Some(source_map) = editor.imp().minimap.source_map.borrow().as_ref().cloned() else {
-        return;
-    };
-    let markers = projected_minimap_marker_bounds(editor, &source_map, marker_strip, height);
-
-    for marker in &markers {
-        let lane_width = marker_lane_width(marker.kind, width);
-        let x = marker_lane_x(width, lane_width);
-        let (red, green, blue, alpha) = marker_rgba(marker.kind, dark);
-        cr.set_source_rgba(red, green, blue, alpha);
-        // Cairo takes a height; the policy hands over edges, so the one
-        // subtraction of two fractional widget coordinates happens here. The
-        // lane is whole-pixel and becomes `f64` only at this cairo call.
-        cr.rectangle(
-            f64::from(x),
-            marker.top,
-            f64::from(lane_width),
-            marker.bottom - marker.top,
-        );
-        let _ = cr.fill();
-    }
+    let _ = editor.with_marker_bins(|bins| {
+        for kind in DRAW_ORDER {
+            let lane_width = marker_lane_width(kind, width);
+            let x = marker_lane_x(width, lane_width);
+            let (red, green, blue, alpha) = marker_rgba(kind, dark);
+            cr.set_source_rgba(red, green, blue, alpha);
+            // Whole-pixel runs and lanes become `f64` only at this cairo call,
+            // so no edge is anti-aliased.
+            for run in bins.runs(kind) {
+                cr.rectangle(
+                    f64::from(x),
+                    f64::from(run.top),
+                    f64::from(lane_width),
+                    f64::from(run.bottom - run.top),
+                );
+            }
+            let _ = cr.fill();
+        }
+    });
 }
 
 /// Project the editor viewport's visible line range through `GtkSourceMap`.
@@ -722,41 +971,6 @@ fn minimap_first_content_row_bounds(
     )
 }
 
-fn projected_minimap_marker_bounds(
-    editor: &LushtextEditorPage,
-    source_map: &sourceview5::Map,
-    marker_strip: &gtk4::DrawingArea,
-    strip_height: i32,
-) -> Vec<MinimapMarkerBounds> {
-    let Some(space) = marker_projection_space(source_map, marker_strip, strip_height) else {
-        return Vec::new();
-    };
-
-    editor
-        .imp()
-        .minimap
-        .markers
-        .borrow()
-        .iter()
-        .filter_map(|marker| project_marker_bounds(marker, source_map, space))
-        .collect()
-}
-
-fn marker_projection_space(
-    source_map: &sourceview5::Map,
-    marker_strip: &gtk4::DrawingArea,
-    strip_height: i32,
-) -> Option<MarkerProjectionSpace> {
-    let target = minimap_projection_space(source_map, marker_strip.upcast_ref(), strip_height)?;
-    Some(MarkerProjectionSpace {
-        strip_height: target.target_height,
-        content_top: target.content_top,
-        content_bottom: target.content_bottom,
-        map_y_in_strip: target.map_y,
-        min_height: MINIMAP_MARKER_MIN_HEIGHT,
-    })
-}
-
 /// Build target-relative minimap geometry shared by markers and pixel anchors.
 ///
 /// Unmapped widgets and empty allocations are rejected because GTK cannot
@@ -809,31 +1023,7 @@ fn minimap_projection_space(
     })
 }
 
-fn project_marker_bounds(
-    marker: &MinimapMarker,
-    source_map: &sourceview5::Map,
-    space: MarkerProjectionSpace,
-) -> Option<MinimapMarkerBounds> {
-    let buffer = source_map.buffer();
-    let start_iter = text_iter_at_line_or_last(&buffer, marker.start_line);
-    let end_iter = text_iter_at_line_or_last(&buffer, marker.end_line);
-    let (start_y, _) = source_map.line_yrange(&start_iter);
-    let raw_top = line_top_in_target(space.map_y_in_strip, start_y, |buffer_y| {
-        source_map_widget_y(source_map, buffer_y)
-    });
-    let (end_y, end_height) = source_map.line_yrange(&end_iter);
-    let raw_bottom = line_bottom_in_target(space.map_y_in_strip, end_y, end_height, |buffer_y| {
-        source_map_widget_y(source_map, buffer_y)
-    });
-
-    fit_marker_bounds(marker.kind, raw_top, raw_bottom, space)
-}
-
 /// Iter at `line`, clamped to the last line's **start** when `line` is past the end.
-///
-/// Deliberately different from `iter_at_line_or_last` below, which falls back to
-/// the buffer's end position instead. The two names differ only by a prefix while
-/// they disagree at exactly the edge case both advertise, so each says which.
 fn text_iter_at_line_or_last(buffer: &gtk4::TextBuffer, line: u32) -> gtk4::TextIter {
     let end_iter = buffer.end_iter();
     let end_line = u32::try_from(end_iter.line()).unwrap_or_default();
@@ -843,15 +1033,6 @@ fn text_iter_at_line_or_last(buffer: &gtk4::TextBuffer, line: u32) -> gtk4::Text
         .ok()
         .and_then(|line| buffer.iter_at_line(line))
         .unwrap_or(end_iter)
-}
-
-/// Iter at `line`, falling back to the buffer's **end** iter when `line` is past
-/// the end — not to the last line's start; see `text_iter_at_line_or_last`.
-fn iter_at_line_or_last(buffer: &sourceview5::Buffer, line: u32) -> gtk4::TextIter {
-    i32::try_from(line)
-        .ok()
-        .and_then(|line| buffer.iter_at_line(line))
-        .unwrap_or_else(|| buffer.end_iter())
 }
 
 /// Serialize a GTK adjustment value as integer milli-units for Automation1

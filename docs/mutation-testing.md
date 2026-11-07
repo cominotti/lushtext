@@ -335,6 +335,8 @@ light/dark marker palette. The remaining 86 survivors were classified as:
   color helpers remain in the mutation scope.
 - Five equivalent `fit_marker_bounds` exact-boundary mutants that produce the
   same final clamped marker bounds or mutate unreachable post-clamp states.
+  (History: `fit_marker_bounds` was retired by `bin-minimap-markers-per-row`;
+  the integer marker row binning that replaced it carries no exclusion.)
 
 Those minimap leftovers were captured as narrow documented exclusions in
 `.cargo/mutants.toml`.

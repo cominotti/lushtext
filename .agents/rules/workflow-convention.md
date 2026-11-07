@@ -249,11 +249,12 @@ carries the pixel relationship (rows per 2000 px validation batch), so it is
 integer-only by the same rule. `ui/editor_page/protected_view/policy.rs`
 (`long-line-protected-view`) is a budget policy too: viewport steps, inspector
 windows and find batches in whole characters, bytes and adjustment increments,
-never fractional. The minimap's ten are GTK
-widget and adjustment coordinates (projected-bounds edges, the native-slider
-estimate and fit, the adjustment distance and fitting page size, the
-target-relative line offset, the minimum-height expansion, and the two marker
-lane functions, whose fractional lane shares are a visible design choice). The
+never fractional. The minimap's eight are GTK
+widget and adjustment coordinates (the projected-bounds bottom and fit, the
+native-slider estimate and fit, the adjustment distance and fitting page size,
+the target-relative line offset, and the minimum-height expansion). The marker
+lanes and the marker row binning (`bin-minimap-markers-per-row`) are whole
+pixels and admit nothing. The
 `gtk-lush-widgets` slice geometry (`slice_geometry.rs`, `scroll_request.rs`) is
 **deliberately not listed**: every function in both modules is arithmetic on
 `GtkAdjustment` values, which are fractional under smooth scrolling, so the
