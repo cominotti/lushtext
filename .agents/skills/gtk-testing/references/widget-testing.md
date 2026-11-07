@@ -280,6 +280,18 @@ If the confusing part is `connect_setup`, `connect_bind`, `connect_unbind`, row 
   `common::worst_dispatch_until`; gate a timing assertion on
   `common::timing_verdicts_enforced()` so the ordinary debug suite prints
   without failing.
+- **Destroy each repetition's window before the next** (`window.destroy()`,
+  then drain). A measurement test that leaves its windows alive measures every
+  earlier repetition's editors too: their validation idles and relayouts run in
+  the later repetitions' dispatches. `power-of-two-thresholds`' M7 recorded
+  118–140 ms long-line dispatches that were exactly that; with the windows
+  destroyed the same dispatch was 9.6 ms (`bin-minimap-markers-per-row` D1).
+- **A line the view has not laid out yet has zero height.** `line_yrange` and
+  `line_at_y` read the text layout without validating it, so lines inserted a
+  moment ago report height 0 until the view's validation idle or the next
+  frame lays them out. An assertion about where such a line is drawn either
+  waits for its height to become positive or treats a zero-height line as part
+  of the row above it, as the minimap's row groups do (ledger A99).
 - **The first rows into an empty `GtkListView` create its row widgets**, up to
   its realized cap (about 205, A1), in the dispatch that adds them and the
   frame after: each is a factory setup, a bind and a first layout. A

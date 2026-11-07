@@ -212,6 +212,21 @@ GEOMETRY_SPLIT_MEASURED_IN = (
     "form by runs 42333476867, 42352722531 (6.63 min / 2.38 GiB and 8.46 min / "
     "2.17 GiB max, inside the figures)"
 )
+# core-minimap-binning (bin-minimap-markers-per-row) has no CI run yet. Its
+# figures are derived the way the geometry split's were: the local run of
+# `make kani KANI_SHARD=core-minimap-binning` (2026-11-07: 6.31 min with its
+# build, peak 11.64 GiB, 11 harnesses)
+# scaled by the largest CI/local ratio of the minimap fit harnesses (the
+# core-minimap-fit shard, 8.46 CI minutes for 5.3 local minutes of verification
+# plus its build, about 1.6), plus a CI build; the peak is the local peak.
+# Re-measure from the first dispatched run and raise, never lower.
+MINIMAP_BINNING_CI_MINUTES = 12.0
+MINIMAP_BINNING_CI_PEAK_GIB = 12.0
+MINIMAP_BINNING_MEASURED_IN = (
+    "derived (no CI run yet): local per-harness verification times of 2026-11-07 "
+    "scaled by core-minimap-fit's CI/local ratio of about 1.6, plus a CI build; "
+    "peak from the local run"
+)
 SETTLE_EVIDENCE_MEASURED_IN = (
     "; with the settle-evidence harnesses by runs 42169248534, 42172535348 (max of the two)"
 )
@@ -360,12 +375,12 @@ SHARDS: dict[str, Shard] = {
         measured_in=POLICY_MEASURED_IN,
     ),
     # A required check on main (ruleset 23911547), so the name stays with the
-    # larger half when the shard is split. Every minimap harness that is not one
-    # of core-minimap-fit's three is named here by its prefix.
+    # larger half when the shard is split. Every minimap fit harness that is not
+    # one of core-minimap-fit's three is named here by its prefix; the marker
+    # row binning harnesses have their own shard, core-minimap-binning.
     "core-geometry-policies": Shard(
         "lushtext-core",
         (
-            "ui::editor_page::minimap::policy::kani_proofs::marker_",
             "ui::editor_page::minimap::policy::kani_proofs::native_slider_containment_",
             "ui::editor_page::minimap::policy::kani_proofs::native_slider_estimate_",
             "ui::editor_page::minimap::policy::kani_proofs::native_slider_fit_",
@@ -393,6 +408,20 @@ SHARDS: dict[str, Shard] = {
         ci_minutes=12.9,
         ci_peak_gib=2.4,
         measured_in=GEOMETRY_SPLIT_MEASURED_IN,
+    ),
+    # bin-minimap-markers-per-row D8: the integer marker row binning (row
+    # groups, the per-kind index walker, the run builder, its growth and merge),
+    # which replaced fit_marker_bounds and its three core-geometry-policies
+    # harnesses. Split off rather than added to core-geometry-policies, which
+    # would then exceed the pull-request margin (D3: split first). Scheduled
+    # until a dispatched CI run measures it; the figures are derived (below).
+    "core-minimap-binning": Shard(
+        "lushtext-core",
+        ("ui::editor_page::minimap::policy::kani_proofs::marker_rows_",),
+        gate="scheduled",
+        ci_minutes=MINIMAP_BINNING_CI_MINUTES,
+        ci_peak_gib=MINIMAP_BINNING_CI_PEAK_GIB,
+        measured_in=MINIMAP_BINNING_MEASURED_IN,
     ),
     "core-post-open-settle": Shard(
         "lushtext-core",
@@ -796,29 +825,41 @@ ORACLES: dict[str, Oracle] = {
         _CORE,
         (
             _h(_MINIMAP + "native_slider_fit_never_panics", 0.29, "ci"),
-            _h(_MINIMAP + "marker_fit_never_panics", 0.78, "ci"),
+            _h(_MINIMAP + "marker_rows_groups_partition_the_band_one_row", 0.43, "ci"),
+            _h(_MINIMAP + "marker_rows_groups_partition_the_band_two_rows", 0.85, "ci"),
             _h(_MINIMAP + "min_height_expansion_panics_on_an_inverted_band", 1.31, "ci"),
+            _h(_MINIMAP + "marker_rows_walk_is_sound_complete_and_bounded_one_row", 1.49, "ci"),
             _h(_MINIMAP + "skipped_line_crosses_no_threshold", 1.64, "ci"),
+            _h(_MINIMAP + "marker_rows_groups_partition_the_band_three_rows", 1.83, "ci"),
             _h(_MINIMAP + "projected_fit_never_panics", 1.83, "ci"),
-            _h(_MINIMAP + "marker_bounds_stay_in_content_for_finite_f64", 4.48, "ci"),
+            _h(_MINIMAP + "marker_rows_runs_stay_in_the_band_at_the_minimum_height_one_row", 1.84, "ci"),
+            _h(_MINIMAP + "marker_rows_merge_keeps_runs_disjoint_and_ordered", 3.94, "ci"),
             _h(_MINIMAP + "projected_fit_rejects_a_span_outside_the_band", 3.96, "ci"),
-            _h(_MINIMAP + "marker_min_height_fails_for_general_f64", 3.96, "ci"),
+            _h(_MINIMAP + "marker_rows_runs_stay_in_the_band_at_the_minimum_height_two_rows", 4.29, "ci"),
             _h(_MINIMAP + "native_slider_estimate_never_panics", 4.67, "ci"),
             _h(_MINIMAP + "projected_containment_fails_for_general_f64", 5.55, "ci"),
             _h(_MINIMAP + "native_slider_containment_fails_for_general_f64", 7.12, "ci"),
+            _h(_MINIMAP + "marker_rows_expansion_stays_in_the_band_on_whole_pixels", 28.47, "ci"),
             _h(_MINIMAP + "skipped_line_crosses_no_threshold_per_character", 30.29, "ci"),
             _h(_MINIMAP + "projected_bounds_stay_in_content_on_whole_pixels", 44.21, "ci"),
+            _h(_MINIMAP + "marker_rows_walk_is_sound_complete_and_bounded_two_rows", 61.6, "ci"),
             _h(_MINIMAP + "min_height_expansion_reaches_the_minimum_on_small_whole_pixels", 101.64, "ci"),
             _h(_MINIMAP + "min_height_expansion_never_panics_inside_its_band", 102.5, "ci"),
+            _h(_MINIMAP + "marker_rows_walk_is_sound_complete_and_bounded_three_rows", 108.19, "ci"),
             _h(_MINIMAP + "native_slider_stays_in_the_source_map_on_whole_pixels", 116.0, "ci"),
+            _h(_MINIMAP + "marker_rows_runs_stay_in_the_band_at_the_minimum_height_three_rows", 142.19, "ci"),
         ),
         functions=(
+            "expanded_run",
             "expanded_to_min_height",
-            "fit_marker_bounds",
             "fit_native_slider_to_source_map_bounds",
             "fit_projected_bounds",
+            "mark_row_groups",
+            "marker_row_groups",
+            "marker_row_runs",
             "native_slider_estimate_from_inputs",
             "paragraph_may_cross",
+            "push_expanded_run",
         ),
     ),
     "crates/lushtext-core/src/ui/markdown_preview/policy.rs": Oracle(

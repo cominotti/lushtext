@@ -123,7 +123,9 @@ SHARDS: dict[str, Shard] = {
     "window": Shard(
         # `notes_browser` (bound-notes-browser-by-budget) joined after the
         # last CI measurement; its twelve tests took about two minutes locally.
-        modules=("window", "notes_browser"),
+        # `minimap_markers` (bin-minimap-markers-per-row) joined the same way;
+        # its nine tests build 131,072-marker documents.
+        modules=("window", "notes_browser", "minimap_markers"),
         tests=(),
         ci_minutes=11.5,
         measured_in=MEASURED_IN,

@@ -35,25 +35,22 @@
 //! | this file | narrative facade | the entry points, this narration, and nothing else |
 //! | `admission` | coordination | availability classification, analysis eligibility, generation/lifetime reservation |
 //! | `analysis_execution` | coordination | the bounded cursor, the sliced scan, stale-slice rejection |
-//! | `projection_execution` | coordination | marker collection, strip drawing, native geometry sync, diagnostics |
+//! | `projection_execution` | coordination | per-row marker bins, strip drawing, native geometry sync, diagnostics |
 //! | `reflow_execution` | coordination | the width-reflow freeze/settle/reveal state machine |
 //! | `watch` | coordination | buffer, adjustment, and search observation. **Not** the
 //!   GSettings bindings: `show-minimap`, `minimap-long-line-markers-visible`, and
 //!   the `minimap-width` → `width-request` mapping are bound in
 //!   `ui/editor_page/imp.rs` beside the page's other preference bindings, which
 //!   `.agents/rules/ui.md` requires for a pure settings-to-widget projection |
-//! | `retirement` | coordination | cancellation, cursor and cache release, modified-mark clearing |
+//! | `retirement` | coordination | cancellation, cursor and cache release, the modified-tag swap and sliced retirement |
 //! | `policy` | pure policy | every threshold, clamp, lane, colour, and the GTK-free content accumulator |
 //! | `evidence` | evidence | `MinimapEvidence`, the one typed value observers read; `test-utils`-gated, so production reads live state directly |
 //! | `test_policy` | — | the one test policy value and the single kept actuation seam, also `test-utils`-gated |
 //! | `widgets` | *called presentation surface, not a role* | four read-only widget accessors read by `ui/automation.rs`, the app's D-Bus automation surface, from another workflow |
 //!
-//! Three `execution` modules is permitted rather than a workaround: analysis,
-//! projection, and reflow are **three of this workflow's five stage orders**
-//! (the other two are install and retire), each ordered and distinct, and the
-//! convention lets a workflow that owns several qualify the bounded role name
-//! with the stage order it serves rather than take an ill-fitting bounded name
-//! for two of them.
+//! Three `execution` modules are permitted: analysis, projection, and reflow are
+//! three of this workflow's five stage orders (with install and retire), and the
+//! convention lets a workflow qualify a bounded role name by its stage order.
 //!
 //! `MinimapState` — this workflow's widgets, markers, generations, timers, and
 //! signal bag — deliberately stays in `ui/editor_page/imp.rs` as a **called
@@ -85,25 +82,25 @@
 //!    cursor at most `MINIMAP_ANALYSIS_CHARS_PER_SLICE` (32 KiB) characters per
 //!    turn. The document is never copied.
 //!
-//! 4. **Project markers and geometry.** `projection_execution` recomputes the
-//!    marker model — bookmarks, search matches, modified lines, accepted
-//!    long-line identities, each capped — projects it and GTK's native slider
-//!    through live source-map layout, keeps the map's wrap mode and margins
-//!    aligned with the editor, and redraws the strip.
+//! 4. **Project markers and geometry.** `projection_execution` bins every
+//!    marker kind per strip pixel row — bookmarks, search matches from a
+//!    completed scan, the modified tag, accepted long-line identities, none
+//!    capped — through live source-map layout, at a cost that follows the
+//!    strip height; projects GTK's native slider; keeps the map's wrap mode and
+//!    margins aligned with the editor; and redraws the strip.
 //!
 //! 5. **Survive the editor changing width.** `reflow_execution` owns the freeze,
 //!    the settled repair, and the reveal. See below; this is the stage the
 //!    workflow exists to get right.
 //!
-//! 6. **Give payloads back.** `retirement` cancels an in-flight scan, deletes
-//!    its cursor mark, removes the sole continuation source, releases the
-//!    accepted cache and retained marker identities, and clears the
-//!    modified-since-save source marks.
+//! 6. **Give payloads back.** `retirement` cancels a scan and its cursor mark
+//!    and source, releases the cache and marker identities, and swaps the
+//!    modified tag, retiring the old one in bounded slices.
 //!
-//! Alongside all of it, stage 4's modified-line marks are maintained by **four
-//! other workflows** — document load, document save, local-history restore, and
-//! draft restore — each of which suspends minimap edit tracking around its own
-//! programmatic buffer mutation so a replacement is not recorded as a user edit.
+//! Alongside all of it, stage 4's modified tag is cleared by **other
+//! workflows** — load, save, buffer replacement, local-history restore,
+//! eviction, draft restore — each of which suspends minimap edit tracking around
+//! its own programmatic buffer mutation so a replacement is not an edit.
 //!
 //! ## What happens between the sidebar starting to animate and the live map
 //! coming back
@@ -144,7 +141,7 @@
 //!
 //! ## Where control leaves, and where it comes back
 //!
-//! Six resumption points across five stage orders. Every one re-validates
+//! Nine resumption points across five stage orders. Every one re-validates
 //! freshness before it does anything:
 //!
 //! 1. **`glib::idle_add_local`** — the analysis slice loop yields the main loop
@@ -169,6 +166,9 @@
 //! 6. **The passive `ViewportObserver`** — `ui/editor_page/overscroll.rs`
 //!    re-enters stage 5 from scroll-adjustment page-size changes, without a
 //!    freeze.
+//! 7. **Scan completion** — `watch`'s `notify::occurrences-count` redraws the strip.
+//! 8. **Map scroll** — the map's `value-changed` redraws the strip (cached bins).
+//! 9. **Retirement slices** — a low-priority idle resumes in `retirement`.
 
 mod admission;
 mod analysis_execution;
@@ -193,8 +193,10 @@ pub(crate) use policy::{
 };
 pub use policy::{
     MinimapAnalysisAccumulator, MinimapAnalysisPolicy, MinimapAnalysisResult, MinimapAvailability,
-    MinimapMarker, MinimapMarkerBounds, MinimapMarkerKind, MinimapProjectedBounds,
+    MinimapMarkerBounds, MinimapMarkerKind, MinimapProjectedBounds,
 };
+pub(crate) use projection_execution::MinimapMarkerBins;
+pub(crate) use retirement::MinimapModifiedTracking;
 
 impl LushtextEditorPage {
     /// Stage 1 — install the minimap widgets and observation for this tab.
@@ -322,14 +324,16 @@ impl LushtextEditorPage {
         self.queue_minimap_draw();
     }
 
-    /// Mark every current line as modified-since-save, sampled under the cap.
+    /// Mark every current line as modified-since-save: a fresh tag over the
+    /// whole buffer, no count cap.
     pub(crate) fn mark_entire_buffer_modified(&self) {
         self.mark_all_lines_modified();
     }
 
-    /// Stage 6 — clear all modified-since-save markers for this editor.
+    /// Stage 6 — clear all modified-since-save markers for this editor in this
+    /// dispatch; the old tag retires in bounded slices.
     pub(crate) fn clear_modified_line_marks(&self) {
-        self.release_modified_line_marks();
+        self.swap_modified_tag();
     }
 
     /// Stage 6 — discard accepted content evidence after a buffer edit.

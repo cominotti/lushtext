@@ -45,9 +45,12 @@
 //! reads the surface *after* each one.
 //!
 //! **Aggregates are bounded and honest at zero.**
-//! [`MinimapEvidence::long_line_warning_count`] is capped by
-//! `MINIMAP_LONG_LINE_MARK_CAP` in the accumulator that produces it, and reports
-//! `0` when no accepted marker cache exists rather than pretending.
+//! [`MinimapEvidence::long_line_warning_count`] holds at most one entry per
+//! analysed line longer than the warning threshold, so at most 4 bytes per
+//! 122 bytes of analysed text (about 3.3 % of the live buffer, with no count
+//! cap), and reports `0` when no accepted marker cache exists rather than
+//! pretending. The binning fields describe the last recomputation of the
+//! strip's bins and are `0` before the first draw.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -85,7 +88,8 @@ pub struct MinimapEvidence {
     pub cancellations: usize,
     /// Current generations that reached accepted cache publication.
     pub terminals: usize,
-    /// Accepted long-line marker identities, bounded by the marker cap.
+    /// Accepted long-line marker identities: every analysed line above the
+    /// warning threshold, no count cap.
     ///
     /// `0` both when no scan has completed and when a completed scan found no
     /// long line; `marker_cache_owned` distinguishes the two.
@@ -106,6 +110,27 @@ pub struct MinimapEvidence {
     pub reflow_settle_pending: bool,
     /// Whether any queued minimap work is still pending.
     pub work_pending: bool,
+    /// Band rows of the strip's last bin recomputation.
+    pub binned_rows: usize,
+    /// Row groups of that recomputation.
+    pub row_groups: usize,
+    /// Index queries of that recomputation, per kind: bookmark, search,
+    /// modified, long line. Each is at most `row_groups + 1`.
+    pub bookmark_queries: usize,
+    /// See `bookmark_queries`.
+    pub search_queries: usize,
+    /// See `bookmark_queries`.
+    pub modified_queries: usize,
+    /// See `bookmark_queries`.
+    pub long_line_queries: usize,
+    /// Whether search bins wait for the search scan to complete.
+    pub search_waiting_for_scan: bool,
+    /// Swapped-out modified tags still retiring.
+    pub retiring_modified_tags: usize,
+    /// Whether the retirement slice source is armed.
+    pub retirement_armed: bool,
+    /// Retirement slices run so far.
+    pub retirement_slices: usize,
     /// Native viewport-highlight bounds in source-map coordinates.
     pub viewport_bounds: Option<MinimapProjectedBounds>,
     /// First rendered minimap content row in source-map coordinates.
@@ -158,6 +183,16 @@ impl LushtextEditorPage {
 
         let reflow_settle_pending = minimap.reflow_settle.pending();
         let work_pending = self.minimap_work_outstanding();
+        let (binned_rows, row_groups, queries, search_waiting_for_scan) = minimap
+            .marker_bins
+            .borrow()
+            .as_ref()
+            .map_or((0, 0, [0; 4], false), |bins| {
+                (bins.rows, bins.groups, bins.queries, bins.search_waiting)
+            });
+        let retiring_modified_tags = minimap.modified.retiring.borrow().len();
+        let retirement_armed = minimap.modified.retirement_source.borrow().is_some();
+        let retirement_slices = minimap.modified.retirement_slices.get();
         // `wrapped_layout_analysis_required` reads the source view's wrap mode
         // and live byte estimate, both of which reach the panicking
         // `TemplateChild` accessor. GTK4 clears template children in
@@ -223,6 +258,16 @@ impl LushtextEditorPage {
                 .count(),
             reflow_settle_pending,
             work_pending,
+            binned_rows,
+            row_groups,
+            bookmark_queries: queries[0],
+            search_queries: queries[1],
+            modified_queries: queries[2],
+            long_line_queries: queries[3],
+            search_waiting_for_scan,
+            retiring_modified_tags,
+            retirement_armed,
+            retirement_slices,
             viewport_bounds,
             first_content_row_bounds,
             overlay_width_request,

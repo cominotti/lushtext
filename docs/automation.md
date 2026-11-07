@@ -145,7 +145,10 @@ by the projection, and `make check-automation-docs` fails when a projected
 evidence field drifts from the documented mapping.
 Screenshot scenario helpers should use
 `visual-geometry-settled` before capture so layout, adaptive shell state,
-workspace sidebar transitions, minimap refresh/debounce, and visual workflow
+workspace sidebar transitions, minimap refresh/debounce (the `minimap-refresh`
+blocker also holds while the visible in-tab search is still scanning, because
+minimap search markers are read only from a completed scan, and while a
+swapped-out modified-since-save tag retires in slices), and visual workflow
 blockers have settled. Accessibility smoke captures use
 `accessibility-settled` before querying AT-SPI so focus targets, recycled rows,
 search or preview rendering, and announcement-sensitive workflow state have

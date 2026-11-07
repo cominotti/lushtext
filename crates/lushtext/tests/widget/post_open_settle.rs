@@ -787,12 +787,20 @@ fn test_a_replacement_leaves_no_modified_marks_collapsed_on_the_first_line() {
     let mut end = buffer.end_iter();
     buffer.insert(&mut end, &dense(500, 400));
     flush_after_delay(Duration::from_millis(200));
-    let marks_before: usize = (0..buffer.line_count())
-        .map(|line| buffer.source_marks_at_line(line, None).len())
-        .sum();
+    // Modified lines are a property-less tag since
+    // `bin-minimap-markers-per-row`, so the edit leaves no source marks to
+    // collapse; the guard below still holds any mark another feature adds.
+    let tagged_before = (0..buffer.line_count()).any(|line| {
+        buffer.iter_at_line(line).is_some_and(|iter| {
+            iter.tags().iter().any(|tag| {
+                tag.name()
+                    .is_some_and(|name| name.starts_with("lushtext-minimap-modified-"))
+            })
+        })
+    });
     assert!(
-        marks_before > 1,
-        "precondition: the edit recorded modified marks"
+        tagged_before,
+        "precondition: the edit recorded modified lines"
     );
 
     let outcomes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));

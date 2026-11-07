@@ -761,13 +761,24 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_TOP_CONTENT_MARGIN` | 5 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR` | 5 | out: factor | factor, divisor or unit (D1) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_LONG_LINE_WARNING_THRESHOLD` | 120 | external fact | the 120-column style convention; bounds no work, kept exact (stage 4) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_SEARCH_MATCH_CAP` | 2,048 | presentation cap | up from 2,000: M7, every refresh within main + one reference frame (D12) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET` | 2,097,152 | presentation cap | up from 2,097,152: past it markers follow the unwrapped projection (D12) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET` | 8,192 | presentation cap | up from 8,000: M7 (D12) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_ANALYSIS_CHARS_PER_SLICE` | 32,768 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_LONG_LINE_MARK_CAP` | 2,048 | presentation cap | up from 2,000: M7 (D12) |
+| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MARKER_MIN_HEIGHT` | 2 | out: geometry | UI geometry in whole strip rows; an `i32` since `bin-minimap-markers-per-row` D3 (was `f64` 2.0) |
+| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES` | 16,384 | cap | power of two, rounded down: about 2 ms of tag removal per slice at A3's 0.12 µs per toggle, a quarter of `B_INTERACT_US` (`bin-minimap-markers-per-row` D4; measured in its design, "Measured verdicts") |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_VIEWPORT_HORIZONTAL_OUTSET` | 13 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MODIFIED_LINE_MARK_CAP` | 2,048 | presentation cap | up from 2,000: M7 (D12) |
+
+The minimap's three marker caps (`MINIMAP_SEARCH_MATCH_CAP`,
+`MINIMAP_MODIFIED_LINE_MARK_CAP`, `MINIMAP_LONG_LINE_MARK_CAP`, 2,048 each)
+were removed by `bin-minimap-markers-per-row`: markers are binned per strip
+pixel row, so the marker work is bounded by the strip height, not a count.
+The retained long-line list is bounded **by construction** rather than by a
+constant: at most one `u32` per analysed line longer than
+`MINIMAP_LONG_LINE_WARNING_THRESHOLD`, so at most 4 bytes per 122 bytes of
+analysed text, about 3.3 % of the **live** buffer (the document scale turns the
+minimap off from loaded or saved bytes, so a paste can grow the live buffer past
+`S_MINIMAP` with the minimap on until the next save); at `S_MINIMAP` that is
+82,645 entries, about 323 KiB (design D6).
 
 ### `crates/lushtext-core/src/ui/editor_page/overscroll.rs`
 
