@@ -9,8 +9,11 @@
 //!
 //! This module owns the query flight: it snapshots the query plus its four
 //! shared sources into one compact request, submits that request to the
-//! one-active/one-latest coordinator, spawns the grouped fuzzy-search worker,
-//! and arbitrates the completion.
+//! one-active/one-latest coordinator, spawns the fuzzy-search worker (the
+//! grouped search, or the category search when a category view is shown,
+//! `drill-down-palette-categories` D4), and arbitrates the completion: it
+//! publishes only when the generation is current **and** the request's
+//! category is still the one shown.
 //!
 //! Control inversion: [`LushtextCommandPalette::start_query_flight`] returns as
 //! soon as the worker is spawned. Control resumes in the `spawn_blocking_then`
@@ -25,10 +28,12 @@ use std::sync::Arc;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 
-use crate::model::palette::{PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode};
+use crate::model::palette::{
+    PaletteCategory, PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode,
+};
 use crate::services::palette::{
-    self, FileIndex, GroupedSearchInput, PaletteSearchCancellation, PaletteSearchOutcome,
-    grouped_search,
+    self, CategoryRanking, CategorySearchInput, FileIndex, GroupedSearchInput,
+    PaletteSearchCancellation, PaletteSearchOutcome, category_search, grouped_search,
 };
 use crate::ui::plain_disposal::DisposalOwned;
 
@@ -46,15 +51,38 @@ pub(super) struct PaletteQueryRequest {
     pub open_tabs: Arc<[PaletteFileEntry]>,
     pub note_entries: Arc<DisposalOwned<Box<[PaletteNoteEntry]>>>,
     pub workspace_group_label: Arc<str>,
+    /// The category view shown when the request was captured, `None` for the
+    /// grouped view.
+    pub category: Option<PaletteCategory>,
 }
 
-/// Run one grouped palette search on the worker thread.
+/// What one flight computed: grouped rows, or one category ranked whole.
+pub(super) enum PaletteQueryResult {
+    Grouped(Vec<PaletteSearchRow>),
+    Category(CategoryRanking),
+}
+
+/// Run one palette search on the worker thread.
 fn search_palette_sources(
     request: &PaletteQueryRequest,
     cancellation: &PaletteSearchCancellation,
-) -> PaletteSearchOutcome<Vec<PaletteSearchRow>> {
+) -> PaletteSearchOutcome<PaletteQueryResult> {
     #[cfg(feature = "test-utils")]
     super::test_policy::delay_search_worker();
+    if let Some(category) = request.category {
+        return category_search(
+            CategorySearchInput {
+                index: request.index.as_ref(),
+                open_tabs: &request.open_tabs,
+                note_entries: request.note_entries.as_ref(),
+                category,
+                query: &request.query,
+                row_limit: category_row_limit(),
+            },
+            cancellation,
+        )
+        .map(PaletteQueryResult::Category);
+    }
     grouped_search(
         GroupedSearchInput {
             index: request.index.as_ref(),
@@ -63,10 +91,31 @@ fn search_palette_sources(
             workspace_group_label: &request.workspace_group_label,
             query: &request.query,
             mode: request.mode,
-            max_per_source: policy::MAX_RESULTS_PER_SOURCE,
+            max_per_source: max_results_per_source(),
         },
         cancellation,
     )
+    .map(PaletteQueryResult::Grouped)
+}
+
+/// The category view's row limit: the retained-byte budget's, or a test
+/// override.
+fn category_row_limit() -> usize {
+    #[cfg(feature = "test-utils")]
+    if let Some(limit) = super::test_policy::category_row_limit_override() {
+        return limit;
+    }
+    policy::category_row_limit()
+}
+
+/// The grouped view's per-group cap, or a test override that forces "More"
+/// rows on small sources.
+fn max_results_per_source() -> usize {
+    #[cfg(feature = "test-utils")]
+    if let Some(limit) = super::test_policy::results_per_source_override() {
+        return limit;
+    }
+    policy::MAX_RESULTS_PER_SOURCE
 }
 
 impl LushtextCommandPalette {
@@ -85,6 +134,7 @@ impl LushtextCommandPalette {
             open_tabs: Arc::clone(&imp.open_tabs.borrow()),
             note_entries: Arc::clone(&imp.note_entries.borrow()),
             workspace_group_label: Arc::from(imp.workspace_group_label.borrow().as_str()),
+            category: imp.category.get(),
         };
         let start = imp.search_flight.borrow_mut().submit(request);
         if let Some(start) = start {
@@ -102,10 +152,10 @@ impl LushtextCommandPalette {
             self.clone(),
             move || {
                 let outcome = search_palette_sources(&request, &cancellation);
-                (outcome, request.query)
+                (outcome, request)
             },
-            move |palette, (outcome, query)| {
-                palette.settle_query_flight(generation, outcome, &query);
+            move |palette, (outcome, request)| {
+                palette.settle_query_flight(generation, outcome, &request);
             },
         );
     }
@@ -114,12 +164,14 @@ impl LushtextCommandPalette {
     ///
     /// This is where control resumes after the worker inversion. The
     /// coordinator's `is_current` is the query seam's freshness check — it owns
-    /// the generation, so no separate ticket value exists on this side.
+    /// the generation, so no separate ticket value exists on this side. The
+    /// request's category is checked beside it: a category entered or left
+    /// while the worker ran publishes nothing.
     fn settle_query_flight(
         &self,
         generation: u64,
-        outcome: PaletteSearchOutcome<Vec<PaletteSearchRow>>,
-        query: &str,
+        outcome: PaletteSearchOutcome<PaletteQueryResult>,
+        request: &PaletteQueryRequest,
     ) {
         let imp = self.imp();
         let (is_current, next) = {
@@ -129,9 +181,19 @@ impl LushtextCommandPalette {
             (is_current, next)
         };
 
+        let is_current = is_current && request.category == imp.category.get();
         match outcome {
-            PaletteSearchOutcome::Complete { value, .. } if is_current => {
-                imp.publish_search_rows(value, query);
+            PaletteSearchOutcome::Complete {
+                value: PaletteQueryResult::Grouped(rows),
+                ..
+            } if is_current => {
+                imp.publish_search_rows(rows, &request.query);
+            }
+            PaletteSearchOutcome::Complete {
+                value: PaletteQueryResult::Category(ranking),
+                ..
+            } if is_current => {
+                imp.publish_category_ranking(ranking, request);
             }
             PaletteSearchOutcome::Cancelled { metrics } => {
                 #[cfg(feature = "test-utils")]

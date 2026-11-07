@@ -99,7 +99,12 @@ local history, and careful recovery behavior.
   editable `Always Excluded Names` list (default `.git`) keeps chosen names out
   of every surface regardless.
 - **Recent Open and command palette** via `Ctrl+K` and `Ctrl+Shift+P` for
-  recent documents, workspace files, note records, and commands.
+  recent documents, workspace files, note records, and commands. A result group
+  that has more matches than it shows ends with a **"N more…"** row; Enter on it
+  opens that category's view, which lists every result it matches (all of a
+  131,072-file workspace) ranked as the group was, keeps filtering as you type,
+  pages with Page Up/Page Down, and returns to all results with Escape or
+  Backspace on an empty query.
 - **Stays current with the outside world**: switch a git branch, run a build, or
   create a file from a terminal, and both the command palette and the workspace
   sidebar pick it up when you come back to the window — no restart, no manual

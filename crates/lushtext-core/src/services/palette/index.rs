@@ -21,8 +21,9 @@ use crate::services::single_flight::{
 };
 
 use super::fuzzy::{
-    SearchProgressPolicy, search_items, search_items_cancellable,
-    search_items_cancellable_with_progress, search_items_full_sort_reference,
+    CountedSelection, RestCount, SearchProgressPolicy, search_items, search_items_cancellable,
+    search_items_cancellable_counting, search_items_cancellable_with_progress,
+    search_items_full_sort_reference,
 };
 use super::runtime::{PaletteSearchCancellation, PaletteSearchOutcome};
 
@@ -818,18 +819,24 @@ impl FileIndex {
         excluded_canonical_paths: &HashSet<PathBuf>,
         cancellation: &PaletteSearchCancellation,
     ) -> PaletteSearchOutcome<Vec<ScoredResult<'_>>> {
-        search_items_cancellable(
+        let exclusion = OpenTabExclusion::new(excluded_canonical_paths);
+        let mut prefiltered = |file: &IndexedFile| exclusion.admits_prefiltered(file);
+        let rest = if excluded_canonical_paths.is_empty() {
+            RestCount::Length
+        } else {
+            RestCount::WalkWith(&mut prefiltered)
+        };
+        search_items_cancellable_counting(
             self.files.iter(),
-            |file| {
-                file.identity
-                    .canonical_path()
-                    .is_none_or(|path| !excluded_canonical_paths.contains(path))
-            },
+            |file| exclusion.admits(file),
             |file, fuzzy_query| fuzzy_query.score(&file.name),
             SearchResultItem::File,
             query,
-            max,
-            cancellation,
+            CountedSelection {
+                max,
+                cancellation,
+                rest,
+            },
         )
     }
 
@@ -867,6 +874,63 @@ impl FileIndex {
             query,
             max,
         )
+    }
+}
+
+/// The workspace group's exclusion of files open in tabs, by canonical path
+/// (`drill-down-palette-categories` D1).
+///
+/// [`OpenTabExclusion::admits`] hashes every file's canonical path against
+/// the open set; the empty query's count continuation uses
+/// [`OpenTabExclusion::admits_prefiltered`], which first looks the canonical
+/// path's **length and last eight bytes** up among the open paths' (a binary
+/// search over at most the open tabs) and hashes the whole path only on a
+/// match. Both admit exactly the same files: an excluded path's key is always
+/// among the open keys, and the test reads the canonical path, never the
+/// display name, so a symlinked alias cannot slip through. (A first version
+/// prefiltered by the canonical file name, `Path::file_name` plus an `OsStr`
+/// hash: 5.4–5.6 ms over 131,072 files with 32 or 256 open tabs.)
+pub struct OpenTabExclusion<'a> {
+    paths: &'a HashSet<PathBuf>,
+    keys: Vec<(usize, u64)>,
+}
+
+/// A canonical path's prefilter key: its byte length and its last eight
+/// bytes (fewer for a shorter path, zero-padded).
+fn exclusion_key(path: &Path) -> (usize, u64) {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let tail = &bytes[bytes.len().saturating_sub(8)..];
+    let mut word = [0u8; 8];
+    word[..tail.len()].copy_from_slice(tail);
+    (bytes.len(), u64::from_le_bytes(word))
+}
+
+impl<'a> OpenTabExclusion<'a> {
+    /// The exclusion of `paths`.
+    #[must_use]
+    pub fn new(paths: &'a HashSet<PathBuf>) -> Self {
+        let mut keys: Vec<(usize, u64)> = paths.iter().map(|path| exclusion_key(path)).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        Self { paths, keys }
+    }
+
+    /// Whether `file` stays in the workspace group (full-path test).
+    #[must_use]
+    pub fn admits(&self, file: &IndexedFile) -> bool {
+        file.identity
+            .canonical_path()
+            .is_none_or(|path| !self.paths.contains(path))
+    }
+
+    /// The same decision as [`Self::admits`], hashing the path only when its
+    /// length and last eight bytes are an open tab's.
+    #[must_use]
+    pub fn admits_prefiltered(&self, file: &IndexedFile) -> bool {
+        let Some(path) = file.identity.canonical_path() else {
+            return true;
+        };
+        self.keys.binary_search(&exclusion_key(path)).is_err() || !self.paths.contains(path)
     }
 }
 

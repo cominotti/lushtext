@@ -2,6 +2,11 @@
 
 //! One test policy value for the whole command-palette workflow.
 //!
+//! Two row-count overrides (`results_per_source`, `category_row_limit`) let a
+//! test force a "More" row and a category budget cut on small fixtures
+//! (`drill-down-palette-categories`); both are read once per flight in
+//! `query_execution`.
+//!
 //! Widget tests need to slow one of the palette's two workers down so a
 //! supersession or a generation race becomes observable. Each stage order owns
 //! one such delay, and each is read at exactly one point:
@@ -14,11 +19,13 @@
 //! that feature compiles no override storage and no override selection: the
 //! workflow reads its ordinary policy values with nothing in front of them.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 static SEARCH_WORKER_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 static INDEX_UPDATE_WORKER_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+static RESULTS_PER_SOURCE: AtomicUsize = AtomicUsize::new(0);
+static CATEGORY_ROW_LIMIT: AtomicUsize = AtomicUsize::new(0);
 
 /// Test-only timing overrides for the command-palette workflow.
 ///
@@ -31,6 +38,13 @@ pub struct CommandPaletteTestPolicy {
     pub search_worker_delay: Duration,
     /// Artificial delay before the incremental index-mutation worker starts.
     pub index_update_worker_delay: Duration,
+    /// Per-group row cap of the grouped view in place of
+    /// `MAX_RESULTS_PER_SOURCE` (0: the production cap), so a test can force
+    /// a "More" row on any group.
+    pub results_per_source: usize,
+    /// Row limit of a category view in place of the retained-byte budget's
+    /// (0: the production limit), so a test can force a budget cut.
+    pub category_row_limit: usize,
 }
 
 impl CommandPaletteTestPolicy {
@@ -40,6 +54,8 @@ impl CommandPaletteTestPolicy {
         Self {
             search_worker_delay: load_delay(&SEARCH_WORKER_DELAY_MS),
             index_update_worker_delay: load_delay(&INDEX_UPDATE_WORKER_DELAY_MS),
+            results_per_source: RESULTS_PER_SOURCE.load(Ordering::Acquire),
+            category_row_limit: CATEGORY_ROW_LIMIT.load(Ordering::Acquire),
         }
     }
 
@@ -50,6 +66,8 @@ impl CommandPaletteTestPolicy {
             &INDEX_UPDATE_WORKER_DELAY_MS,
             self.index_update_worker_delay,
         );
+        RESULTS_PER_SOURCE.store(self.results_per_source, Ordering::Release);
+        CATEGORY_ROW_LIMIT.store(self.category_row_limit, Ordering::Release);
     }
 
     /// Restore the production posture: no delays.
@@ -61,6 +79,20 @@ impl CommandPaletteTestPolicy {
     #[must_use]
     pub const fn with_search_worker_delay(mut self, delay: Duration) -> Self {
         self.search_worker_delay = delay;
+        self
+    }
+
+    /// Cap each grouped group at `rows` rows.
+    #[must_use]
+    pub const fn with_results_per_source(mut self, rows: usize) -> Self {
+        self.results_per_source = rows;
+        self
+    }
+
+    /// Limit a category view to `rows` rows.
+    #[must_use]
+    pub const fn with_category_row_limit(mut self, rows: usize) -> Self {
+        self.category_row_limit = rows;
         self
     }
 
@@ -97,4 +129,16 @@ pub(super) fn delay_search_worker() {
 /// Delay index-mutation worker entry for deterministic replacement-race tests.
 pub(super) fn delay_index_update_worker() {
     sleep(load_delay(&INDEX_UPDATE_WORKER_DELAY_MS));
+}
+
+/// The grouped view's per-group cap override, when one is installed.
+pub(super) fn results_per_source_override() -> Option<usize> {
+    let rows = RESULTS_PER_SOURCE.load(Ordering::Acquire);
+    (rows != 0).then_some(rows)
+}
+
+/// The category view's row-limit override, when one is installed.
+pub(super) fn category_row_limit_override() -> Option<usize> {
+    let rows = CATEGORY_ROW_LIMIT.load(Ordering::Acquire);
+    (rows != 0).then_some(rows)
 }

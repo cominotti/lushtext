@@ -46,6 +46,10 @@ pub(super) fn observed_surface_state(window: &LushtextWindow) -> TransientSurfac
             .palette_revealer
             .try_get()
             .is_some_and(|revealer| revealer.reveals_child()),
+        command_palette_category_shown: imp
+            .command_palette
+            .try_get()
+            .is_some_and(|palette| palette.category().is_some()),
         editor_search_visible: selected_editor_page(window).is_some_and(|editor| {
             editor
                 .imp()
@@ -119,6 +123,11 @@ pub(super) fn dismiss(window: &LushtextWindow, surface: TransientDismissal) {
     let imp = window.imp();
     match surface {
         TransientDismissal::CommandPalette => window.close_command_palette(),
+        TransientDismissal::CommandPaletteCategory => {
+            if let Some(palette) = imp.command_palette.try_get() {
+                let _ = palette.leave_category();
+            }
+        }
         TransientDismissal::EditorSearch => {
             if let Some(editor) = selected_editor_page(window) {
                 editor.hide_search();

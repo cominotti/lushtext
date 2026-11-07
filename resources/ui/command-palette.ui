@@ -37,6 +37,53 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
       </object>
     </child>
     <child>
+      <object class="GtkBox" id="category_bar">
+        <property name="orientation">0</property>
+        <property name="spacing">8</property>
+        <property name="margin-start">8</property>
+        <property name="margin-end">8</property>
+        <property name="margin-top">4</property>
+        <property name="visible">false</property>
+        <child>
+          <object class="GtkButton" id="category_back_button">
+            <property name="icon-name">go-previous-symbolic</property>
+            <property name="tooltip-text" translatable="yes">Back to all results</property>
+            <property name="valign">3</property>
+            <style>
+              <class name="flat"/>
+            </style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">1</property>
+            <property name="hexpand">true</property>
+            <property name="valign">3</property>
+            <child>
+              <object class="GtkLabel" id="category_title_label">
+                <property name="halign">1</property>
+                <property name="ellipsize">2</property>
+                <style>
+                  <class name="heading"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="category_notice_label">
+                <property name="halign">1</property>
+                <property name="wrap">true</property>
+                <property name="visible">false</property>
+                <style>
+                  <class name="dim-label"/>
+                  <class name="caption"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
       <object class="GtkScrolledWindow" id="results_scroll">
         <property name="max-content-height">400</property>
         <property name="propagate-natural-height">true</property>
@@ -46,6 +93,22 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         <property name="margin-bottom">4</property>
         <property name="child">
           <object class="GtkListView" id="results_view">
+            <property name="single-click-activate">false</property>
+          </object>
+        </property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkScrolledWindow" id="category_scroll">
+        <property name="max-content-height">400</property>
+        <property name="propagate-natural-height">true</property>
+        <property name="vscrollbar-policy">1</property>
+        <property name="hscrollbar-policy">2</property>
+        <property name="margin-top">4</property>
+        <property name="margin-bottom">4</property>
+        <property name="visible">false</property>
+        <property name="child">
+          <object class="GtkListView" id="category_view">
             <property name="single-click-activate">false</property>
           </object>
         </property>

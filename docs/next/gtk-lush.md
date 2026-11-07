@@ -207,6 +207,20 @@ Small widget and overlay-owner primitives that exist to keep geometry honest.
   hold them over the live child (opacity-managed) across a caller-declared
   storm, warm the live child underneath, then reveal/clear through one owner so
   an unbalanced hide cannot leave an invisible child.
+- **Extraction candidate, not extracted (`drill-down-palette-categories`,
+  2026-11-07): a lazy `GListModel` with a retarget cache.** Two in-tree
+  models now share one shape: the notes browser's sectioned
+  `NotesBrowserRowModel` (`ui/window/notes/row_model.rs`) and the command
+  palette's flat `PaletteCategoryModel` (`ui/command_palette/category_model.rs`).
+  Each holds a shared slice of source indexes, builds a row object only for a
+  position GTK asks for (A93, A95, A96), keeps a weak map of handed-out rows
+  pruned past 1,024 entries, and publishes by retargeting the live rows below
+  the shorter length (`content-changed`) plus one tail-only `items-changed`.
+  The two differ in sections, in what a row object carries and in how a row
+  is built, so the shared part would be the publish algebra and the live map,
+  not a widget. That is the second consumer the discriminating test asks for;
+  extracting it is a separate change, decided when a third model or a
+  divergence in the copied algebra makes the cost worth paying.
 - **Rust features:** `ClipBin` is a GObject widget subclass, while
   `RenderHoldOverlay` is a plain Rust owner installed around a caller-provided
   `GtkOverlay`. The family does not avoid subclassing, it avoids requiring

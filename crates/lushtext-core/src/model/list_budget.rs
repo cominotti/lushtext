@@ -4,12 +4,14 @@
 //! per-turn time instead of by a count (`bound-lists-by-budget-not-count`,
 //! design D2).
 //!
-//! **Cross-cutting pure policy with three owning workflows**, `WFR-SEARCH-REPLACE`
+//! **Cross-cutting pure policy with four owning workflows**, `WFR-SEARCH-REPLACE`
 //! (the workspace search worker charges each match), `WFR-WORKSPACE-TREE`
 //! (the sidebar applies a directory's rows in time-sliced batches) and
 //! `WFR-NOTES-BOOKMARKS` (Browse Notes captures open-editor bookmarks in
 //! time-sliced turns under one retained-byte budget,
-//! `bound-notes-browser-by-budget` D4). It is shared
+//! `bound-notes-browser-by-budget` D4) and `WFR-COMMAND-PALETTE` (the category
+//! view sizes its ranked rows with [`rows_within`],
+//! `drill-down-palette-categories` D3). It is shared
 //! rather than placed beside either one, as `model/attention_refresh.rs` is:
 //! `.agents/rules/workflow-convention.md` counts owning workflows, and a forked
 //! copy of the admission or continuation rule could drift while both halves
@@ -36,7 +38,8 @@
 //! (`list_budget/kani_proofs.rs`, shard `core-list-budget`): B1 the charge
 //! never exceeds the limit, B2 the retained items are a prefix and the refusal
 //! latches, B3 no loss against a count cap (`limit >= n * w` retains any `n`
-//! items of at most `w` bytes), B4 a counter-example one byte below that, T1
+//! items of at most `w` bytes), B4 a counter-example one byte below that, B5
+//! [`rows_within`] is the equal-charge prefix the budget retains, T1
 //! every turn makes progress, and T2 a turn stops at the first unit started at
 //! or after the slice, so the guarded work costs at most the slice plus one
 //! unit.
@@ -139,6 +142,27 @@ pub const fn turn_continues(elapsed_us: u64, units_done: usize) -> bool {
     units_done == 0 || elapsed_us < LIST_TURN_SLICE_US
 }
 
+/// The number of equal-charge rows a budget of `limit` bytes retains: the
+/// largest `n` with `n * charge <= limit`.
+///
+/// It states [`RetainedBudget::admit`]'s prefix rule for equal charges, so a
+/// list that ranks rows of one fixed charge (the command palette's category
+/// view, `drill-down-palette-categories` D3) can size its cut without offering
+/// every row. A `charge` of zero bounds nothing and returns `usize::MAX`; a
+/// quotient above `usize::MAX` saturates. Kani B5 proves the zero-charge case
+/// for every `u64` limit, the closed form (`r * charge <= limit < (r + 1) *
+/// charge`) for every `u64` limit at seven concrete charges (1, 2, 3, 36,
+/// 4,096, 2^32 + 1, `u64::MAX`), and its agreement with [`RetainedBudget`] for
+/// every charge and results of at most four rows; a symbolic 64-bit charge in
+/// the closed form did not finish (`kani_proofs.rs`).
+#[must_use]
+pub fn rows_within(limit: u64, charge: u64) -> usize {
+    if charge == 0 {
+        return usize::MAX;
+    }
+    usize::try_from(limit / charge).unwrap_or(usize::MAX)
+}
+
 /// `count` with comma thousands separators ("16,384"): how every
 /// budget-limited list notice prints its counts ("Showing X of Y"), so the
 /// workspace tree, workspace search and Browse Notes read alike.
@@ -167,6 +191,23 @@ mod tests {
         assert_eq!(grouped_thousands(1_000), "1,000");
         assert_eq!(grouped_thousands(128 * 1024), "131,072");
         assert_eq!(grouped_thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn rows_within_is_the_equal_charge_prefix() {
+        assert_eq!(rows_within(0, 36), 0);
+        assert_eq!(rows_within(35, 36), 0);
+        assert_eq!(rows_within(36, 36), 1);
+        assert_eq!(rows_within(71, 36), 1);
+        assert_eq!(rows_within(72, 36), 2);
+        assert_eq!(rows_within(8 * 1024 * 1024, 36), 233_016);
+        assert_eq!(rows_within(u64::MAX, 1), usize::MAX);
+    }
+
+    #[test]
+    fn a_zero_charge_bounds_nothing() {
+        assert_eq!(rows_within(0, 0), usize::MAX);
+        assert_eq!(rows_within(17, 0), usize::MAX);
     }
 
     #[test]
@@ -246,6 +287,22 @@ mod tests {
                 prop_assert_eq!(budget.charged(), retained_sum);
                 prop_assert_eq!(budget.is_limited(), refused);
             }
+        }
+
+        /// B5 on random values: `rows_within` agrees with offering equal
+        /// charges to a `RetainedBudget`.
+        #[test]
+        fn rows_within_agrees_with_the_budget(
+            limit in 0u64..20_000,
+            charge in 1u64..2_000,
+        ) {
+            let rows = rows_within(limit, charge);
+            let mut budget = RetainedBudget::new(limit);
+            let mut retained = 0usize;
+            while budget.admit(charge) == Admission::Retained {
+                retained += 1;
+            }
+            prop_assert_eq!(rows, retained);
         }
 
         /// B3: no loss against a count cap at its worst charge.

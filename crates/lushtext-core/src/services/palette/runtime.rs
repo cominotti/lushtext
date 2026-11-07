@@ -28,6 +28,9 @@ pub struct PaletteSearchMetrics {
     pub note_bodies_examined: usize,
     /// Note bodies skipped because their maximum contribution could not improve the row score.
     pub note_bodies_safely_pruned: usize,
+    /// Items the empty query's count continuation visited after the retained
+    /// prefix, without retaining or scoring them (0 when counted by length).
+    pub candidates_counted: usize,
 }
 
 impl PaletteSearchMetrics {
@@ -50,6 +53,9 @@ impl PaletteSearchMetrics {
         self.note_bodies_safely_pruned = self
             .note_bodies_safely_pruned
             .saturating_add(other.note_bodies_safely_pruned);
+        self.candidates_counted = self
+            .candidates_counted
+            .saturating_add(other.candidates_counted);
     }
 }
 
@@ -109,6 +115,7 @@ mod tests {
             candidates_scored: 1,
             note_bodies_examined: 5,
             note_bodies_safely_pruned: 2,
+            candidates_counted: 8,
         };
         metrics.merge(PaletteSearchMetrics {
             candidates_examined: 7,
@@ -117,6 +124,7 @@ mod tests {
             candidates_scored: 6,
             note_bodies_examined: 4,
             note_bodies_safely_pruned: 3,
+            candidates_counted: 2,
         });
         assert_eq!(metrics.candidates_examined, 10);
         assert_eq!(metrics.matching_candidates, 3);
@@ -124,6 +132,7 @@ mod tests {
         assert_eq!(metrics.candidates_scored, 7);
         assert_eq!(metrics.note_bodies_examined, 9);
         assert_eq!(metrics.note_bodies_safely_pruned, 5);
+        assert_eq!(metrics.candidates_counted, 10);
     }
 
     #[test]

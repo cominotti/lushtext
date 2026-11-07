@@ -34,7 +34,7 @@ use crate::model::automation::{
     READINESS_BLOCKER_WORKSPACE_SEARCH, READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
-use crate::model::palette::SearchMode;
+use crate::model::palette::{PaletteCategory, SearchMode};
 use crate::services::action_catalog;
 use crate::services::local_history_service::LocalHistoryAvailability;
 use crate::services::notifications::NotificationSeverity;
@@ -784,7 +784,8 @@ fn window_readiness_blocker(
         predicate,
         palette_evidence.pending_index_update_count > 0
             || imp.file_index_builds.borrow().has_work()
-            || imp.command_palette_note_refreshes.borrow().has_work(),
+            || imp.command_palette_note_refreshes.borrow().has_work()
+            || imp.command_palette_note_capture.is_capturing(),
         READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
     ) {
         return Some(blocker);
@@ -1103,6 +1104,7 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
 fn command_palette_snapshot(window: &LushtextWindow) -> AutomationCommandPaletteSnapshot {
     let imp = window.imp();
     let evidence = imp.command_palette.evidence();
+    let category_id = evidence.category.map(PaletteCategory::stable_id);
 
     AutomationCommandPaletteSnapshot {
         visible: imp.palette_revealer.reveals_child(),
@@ -1110,6 +1112,10 @@ fn command_palette_snapshot(window: &LushtextWindow) -> AutomationCommandPalette
         query: bounded_snapshot_text(evidence.query),
         mode: search_mode_name(evidence.mode).to_string(),
         result_count: evidence.result_count,
+        category: category_id.unwrap_or_default().to_string(),
+        category_result_count: evidence.category_rows,
+        category_total_count: bounded_len(evidence.category_total),
+        category_limited: evidence.category_limited,
         file_index_count: bounded_len(evidence.file_index_len),
         open_tab_source_count: bounded_len(evidence.open_tab_source_count),
         pending_index_update_count: bounded_len(evidence.pending_index_update_count),

@@ -35,7 +35,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use crate::model::palette::SearchMode;
+use crate::model::palette::{PaletteCategory, SearchMode};
 use crate::services::palette::PaletteSearchCoordinatorSnapshot;
 
 use super::LushtextCommandPalette;
@@ -52,8 +52,39 @@ pub struct CommandPaletteEvidence {
     pub query: String,
     /// Current search-mode filter.
     pub mode: SearchMode,
-    /// Rows currently rendered by the results model, including section headers.
+    /// Items in the **visible** list's model: in the grouped view headers and
+    /// "More" rows included, in a category view every listed row (not the
+    /// about 205 rows GTK realizes).
     pub result_count: u32,
+
+    // --- category view (drill-down-palette-categories) ---
+    /// The category view shown, `None` for the grouped results.
+    pub category: Option<PaletteCategory>,
+    /// Rows the category view lists (0 in the grouped view).
+    pub category_rows: u32,
+    /// Matches of the shown category, listed or not (0 in the grouped view).
+    pub category_total: usize,
+    /// Whether the retained-byte budget cut the shown category.
+    pub category_limited: bool,
+    /// Whether the category model holds source snapshots (it must not once
+    /// the view is left or the palette closed).
+    pub category_holds_sources: bool,
+    /// The selected position in the visible view, when one is selected.
+    pub selected_position: Option<u32>,
+    /// The category of the selected grouped "More" row, when one is selected.
+    pub selected_more: Option<PaletteCategory>,
+    /// The grouped view's "More" rows: category and hidden count, in order.
+    pub more_rows: Vec<(PaletteCategory, usize)>,
+    /// Category-view entry announcements raised.
+    pub category_entry_announcements: u64,
+    /// Category-view notice announcements raised.
+    pub category_notice_announcements: u64,
+    /// The category view's visible notice, when one is shown.
+    pub category_notice: Option<String>,
+    /// Row objects the category model created on demand: GTK asks only
+    /// around the realized rows, the selection and an activated row.
+    #[cfg(feature = "test-utils")]
+    pub category_item_requests: u64,
 
     // --- query flight ---
     /// Whether the visible palette owns active or latest query work.
@@ -115,10 +146,58 @@ impl LushtextCommandPalette {
     #[must_use]
     pub fn evidence(&self) -> CommandPaletteEvidence {
         let imp = self.imp();
+        let category = imp.category.get();
+        let category_shown = category.is_some();
+        let more_rows = (0..imp.results_store.n_items())
+            .filter_map(|position| {
+                imp.results_store
+                    .item(position)
+                    .and_downcast::<super::item::PaletteItem>()
+            })
+            .filter(super::item::PaletteItem::is_more)
+            .filter_map(|item| item.category().map(|c| (c, item.hidden_count())))
+            .collect();
+        let selected_position = imp.visible_selected_position();
+        let selected_more = if category_shown {
+            None
+        } else {
+            selected_position
+                .and_then(|position| imp.results_store.item(position))
+                .and_downcast::<super::item::PaletteItem>()
+                .filter(super::item::PaletteItem::is_more)
+                .and_then(|item| item.category())
+        };
+        let category_notice = imp
+            .category_notice_label
+            .try_get()
+            .filter(|label| label.property::<bool>("visible"))
+            .map(|label| label.label().to_string());
         CommandPaletteEvidence {
             query: self.query(),
             mode: self.mode(),
             result_count: self.result_count(),
+
+            category,
+            category_rows: if category_shown {
+                imp.category_model.len()
+            } else {
+                0
+            },
+            category_total: if category_shown {
+                imp.category_matching.get()
+            } else {
+                0
+            },
+            category_limited: category_shown && imp.category_limited.get(),
+            category_holds_sources: imp.category_model.holds_sources(),
+            selected_position,
+            selected_more,
+            more_rows,
+            category_entry_announcements: imp.category_entry_announcements.get(),
+            category_notice_announcements: imp.category_notice_announcements.get(),
+            category_notice,
+            #[cfg(feature = "test-utils")]
+            category_item_requests: imp.category_model.item_requests(),
 
             searching: self.is_searching(),
             search_flight: imp.search_flight.borrow().snapshot(),
@@ -161,10 +240,16 @@ impl LushtextCommandPalette {
         self.imp().mode.get()
     }
 
-    /// Number of rows currently rendered by the palette results model.
+    /// Items in the visible list's model (the category model's length in a
+    /// category view).
     #[must_use]
     pub fn result_count(&self) -> u32 {
-        self.imp().results_store.n_items()
+        let imp = self.imp();
+        if imp.category.get().is_some() {
+            imp.category_model.len()
+        } else {
+            imp.results_store.n_items()
+        }
     }
 
     /// Whether the visible palette owns active or latest query work.

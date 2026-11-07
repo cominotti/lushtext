@@ -822,16 +822,6 @@ impl LushtextEditorPage {
         bookmarks::bookmark_records(self)
     }
 
-    /// Snapshot live bookmarks without exceeding a retained request-byte budget.
-    #[must_use]
-    pub(crate) fn bookmark_records_bounded_by_retained_bytes(
-        &self,
-        max_records: usize,
-        max_retained_bytes: u64,
-    ) -> (Vec<BookmarkRecord>, u64, bool) {
-        bookmarks::bookmark_records_bounded_by_retained_bytes(self, max_records, max_retained_bytes)
-    }
-
     /// Visit one bounded slice of the live bookmarks (see
     /// `bookmarks::bookmark_record_slice`).
     pub(crate) fn bookmark_record_slice(

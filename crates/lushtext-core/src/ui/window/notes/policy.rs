@@ -420,33 +420,6 @@ pub fn open_editor_snapshot_heap_bytes(
     u64::try_from(bytes).unwrap_or(u64::MAX)
 }
 
-/// Snapshot vector capacity admitted for one bounded live-editor capture.
-///
-/// Three independent ceilings apply and the smallest wins: the caller's combined
-/// snapshot-and-bookmark row limit, the number of open tabs that actually exist,
-/// and how many fixed-size snapshots fit inside the retained-byte budget.
-#[must_use]
-pub fn open_editor_snapshot_capacity(
-    max_snapshots_and_bookmarks: usize,
-    open_page_count: usize,
-    max_retained_bytes: u64,
-    snapshot_size: usize,
-) -> usize {
-    let byte_limited = usize::try_from(
-        max_retained_bytes / u64::try_from(snapshot_size.max(1)).unwrap_or(u64::MAX),
-    )
-    .unwrap_or(usize::MAX);
-    max_snapshots_and_bookmarks
-        .min(open_page_count)
-        .min(byte_limited)
-}
-
-/// Bytes already reserved once a capture has admitted `capacity` fixed-size snapshots.
-#[must_use]
-pub fn open_editor_snapshot_reserved_bytes(capacity: usize, snapshot_size: usize) -> u64 {
-    u64::try_from(capacity.saturating_mul(snapshot_size)).unwrap_or(u64::MAX)
-}
-
 /// User-facing vocabulary for one notes-browser inventory mode.
 ///
 /// Fourteen strings, one decision each. They live here rather than beside the
@@ -868,7 +841,10 @@ mod tests {
 
     proptest! {
         /// D3: the count-free skip-and-continue rule admits a superset of
-        /// `main`'s count-and-byte prefix latch, and counts every row.
+        /// `main`'s count-and-byte prefix latch, and counts every row. The
+        /// command palette's limits take the same rule since
+        /// `drill-down-palette-categories` D7, so `main`'s palette (16,384
+        /// rows, `Stop`) is this `main_prefix_latch` too.
         #[test]
         fn skip_and_count_admits_a_superset_of_mains_prefix_latch(
             charges in prop::collection::vec(0u64..1_000, 0..120),
@@ -919,11 +895,6 @@ mod tests {
         }
     }
 
-    /// Fixed struct size used by the arithmetic tests, pinned rather than
-    /// computed from the production type so a layout change cannot silently
-    /// move the expected numbers.
-    const SNAPSHOT_SIZE_BYTES: usize = 64;
-
     fn workspace(name: &str, folders: &[&str]) -> WorkspaceConfig {
         WorkspaceConfig {
             id: WorkspaceId::new(name),
@@ -969,8 +940,13 @@ mod tests {
         );
         assert_eq!(
             palette_service::PALETTE_NOTE_SOURCE_LIMITS.on_byte_refusal,
-            palette_service::ByteRefusal::Stop,
-            "the palette keeps its prefix latch"
+            palette_service::ByteRefusal::SkipAndCount,
+            "both consumers skip and count (drill-down-palette-categories D7)"
+        );
+        assert_eq!(palette_service::PALETTE_NOTE_SOURCE_LIMITS.entries, None);
+        assert_eq!(
+            palette_service::PALETTE_NOTE_SOURCE_LIMITS.sidecar_entries,
+            None
         );
     }
 
@@ -1062,46 +1038,6 @@ mod tests {
     fn bookmark_menu_label_follows_the_cursor_line() {
         assert_eq!(bookmark_menu_label(true), "Remove Bookmark");
         assert_eq!(bookmark_menu_label(false), "Add Bookmark");
-    }
-
-    #[test]
-    fn open_editor_snapshot_capacity_takes_the_smallest_of_three_ceilings() {
-        // Row limit wins.
-        assert_eq!(
-            open_editor_snapshot_capacity(3, 10, 4 * 1024 * 1024, SNAPSHOT_SIZE_BYTES),
-            3
-        );
-        // Open-tab count wins.
-        assert_eq!(
-            open_editor_snapshot_capacity(100, 7, 4 * 1024 * 1024, SNAPSHOT_SIZE_BYTES),
-            7
-        );
-        // Byte budget wins: 640 bytes / 64 bytes per snapshot = 10.
-        assert_eq!(
-            open_editor_snapshot_capacity(100, 50, 640, SNAPSHOT_SIZE_BYTES),
-            10
-        );
-        // Zero open tabs is honest rather than saturating.
-        assert_eq!(
-            open_editor_snapshot_capacity(100, 0, 4 * 1024 * 1024, SNAPSHOT_SIZE_BYTES),
-            0
-        );
-    }
-
-    #[test]
-    fn open_editor_snapshot_capacity_survives_a_zero_snapshot_size() {
-        // `snapshot_size.max(1)` must prevent a division by zero rather than
-        // panicking on a hypothetical zero-sized snapshot type.
-        assert_eq!(open_editor_snapshot_capacity(5, 5, 64, 0), 5);
-    }
-
-    #[test]
-    fn open_editor_snapshot_reserved_bytes_multiplies_without_overflowing() {
-        assert_eq!(open_editor_snapshot_reserved_bytes(10, 64), 640);
-        assert_eq!(
-            open_editor_snapshot_reserved_bytes(usize::MAX, 64),
-            u64::try_from(usize::MAX.saturating_mul(64)).unwrap_or(u64::MAX)
-        );
     }
 
     #[test]

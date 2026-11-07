@@ -2280,6 +2280,27 @@ four harnesses (load 0.74 before, 3.34 after; a pass/fail run, not a figure).
 | `widgets-slice-loop-rest-three` | 0 / 15.21 / 1.62 | 0 / 14.13 / 1.63 |
 | `widgets-slice-loop-unbounded` | 0 / 13.32 / 1.63 | 0 / 10.4 / 1.63 |
 
+### List budget B5, `rows_within` (`drill-down-palette-categories`, 2026-11-07)
+
+`core-list-budget` gained three harnesses for `model::list_budget::rows_within`,
+the equal-charge prefix the palette's category view sizes its ranking with:
+`rows_within_a_zero_charge_bounds_nothing` (every `u64` limit),
+`rows_within_agrees_with_the_budget` (every limit and charge, results of at most
+four rows, equal to the `charge`-byte offers a `RetainedBudget` retains) and
+`rows_within_is_the_largest_fitting_prefix` (the closed form
+`r * charge <= limit < (r + 1) * charge`, checked arithmetic). **Bound reduced,
+recorded here and in the harness:** the closed form with a symbolic 64-bit
+charge did not finish, over every `u64` (CBMC killed after 16 minutes), under
+`limit < 2^32, charge < 2^16` (12 minutes), nor as the bare equality with
+`limit / charge` (15 minutes); it is checked for **every `u64` limit at seven
+concrete charges** (1, 2, 3, 36, 4,096, 2^32 + 1, `u64::MAX`), 1.87 s. The
+property it weakens is the closed form for a symbolic charge; the agreement
+harness keeps a symbolic charge, and the unit and property tests cover random
+pairs. The concrete-charge run found an overflow in the harness's own
+`rows + 1` at charge 1 and `limit = u64::MAX` (not in `rows_within`), fixed with
+a checked add. Nine harnesses, 0.16 min locally with the build cached; the CI
+budget (2.8 min, build-dominated) is kept until a dispatched run.
+
 ### List budget and geometry policy shard re-split (`bound-lists-by-budget-not-count`, 2026-11-07)
 
 `core-list-budget` (the list-budget admission and turn-continuation harnesses,

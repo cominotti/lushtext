@@ -11,8 +11,9 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::model::palette::{
-    CommandCategory, IndexedFile, PaletteFileEntry, PaletteFileIdentity,
-    PaletteFileIdentityFailure, PaletteSearchRow, SearchMode, SearchResultItem,
+    CommandCategory, IndexedFile, PaletteCategory, PaletteFileEntry, PaletteFileIdentity,
+    PaletteFileIdentityFailure, PaletteNoteCategory, PaletteNoteEntry, PaletteSearchRow,
+    SearchMode, SearchResultItem,
 };
 use crate::services::filesystem::fixture;
 
@@ -552,7 +553,8 @@ fn grouped_search_excludes_open_identity_before_top_one_workspace_retention() {
             PaletteSearchRow::File { file_path, .. } => Some(file_path),
             PaletteSearchRow::Header { .. }
             | PaletteSearchRow::Command { .. }
-            | PaletteSearchRow::Note { .. } => None,
+            | PaletteSearchRow::Note { .. }
+            | PaletteSearchRow::More { .. } => None,
         })
         .collect();
     assert_eq!(
@@ -1300,4 +1302,284 @@ fn file_index_recursion_depth_includes_boundary_and_skips_beyond_it() {
     let names = file_names(&index);
     assert!(names.contains(&"boundary.txt"));
     assert!(!names.contains(&"too-deep.txt"));
+}
+
+// --- drill-down-palette-categories: More rows, counts, category ranking ---
+
+fn synthetic_index(count: usize) -> FileIndex {
+    let root = Arc::new(PathBuf::from("/workspace"));
+    FileIndex::from(
+        (0..count)
+            .map(|n| {
+                let path = root.join(format!("dir{}/file{n}.rs", n % 7));
+                IndexedFile::new(
+                    path.clone(),
+                    PaletteFileIdentity::canonical(path),
+                    Arc::clone(&root),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn open_tab_for(file: &IndexedFile) -> PaletteFileEntry {
+    PaletteFileEntry::new(
+        file.name.clone(),
+        file.path.display().to_string(),
+        file.path.clone(),
+        file.identity.clone(),
+    )
+}
+
+fn more_rows(rows: &[PaletteSearchRow]) -> Vec<(PaletteCategory, usize)> {
+    rows.iter()
+        .filter_map(|row| match row {
+            PaletteSearchRow::More { category, hidden } => Some((*category, *hidden)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn grouped(
+    index: &FileIndex,
+    open_tabs: &[PaletteFileEntry],
+    notes: &[PaletteNoteEntry],
+    query: &str,
+    mode: SearchMode,
+    max: usize,
+) -> Vec<PaletteSearchRow> {
+    let cancellation = PaletteSearchCancellation::default();
+    let PaletteSearchOutcome::Complete { value, .. } = grouped_search(
+        GroupedSearchInput {
+            index,
+            open_tabs,
+            note_entries: notes,
+            workspace_group_label: "All Workspaces",
+            query,
+            mode,
+            max_per_source: max,
+        },
+        &cancellation,
+    ) else {
+        panic!("fresh grouped search must complete");
+    };
+    value
+}
+
+#[test]
+fn empty_query_workspace_group_ends_with_an_exact_more_row() {
+    let index = synthetic_index(1_000);
+    let open_tabs: Vec<_> = index.files()[..32].iter().map(open_tab_for).collect();
+    let rows = grouped(&index, &open_tabs, &[], "", SearchMode::Files, 64);
+    assert_eq!(
+        more_rows(&rows),
+        vec![(PaletteCategory::WorkspaceFiles, 1_000 - 32 - 64)]
+    );
+    // The More row is the workspace group's last row.
+    assert!(matches!(rows.last(), Some(PaletteSearchRow::More { .. })));
+}
+
+#[test]
+fn empty_query_without_open_tabs_counts_by_length() {
+    let index = synthetic_index(500);
+    let rows = grouped(&index, &[], &[], "", SearchMode::Files, 64);
+    assert_eq!(
+        more_rows(&rows),
+        vec![(PaletteCategory::WorkspaceFiles, 500 - 64)]
+    );
+}
+
+#[test]
+fn a_query_states_its_hidden_matches_and_a_group_that_fits_has_no_more_row() {
+    let index = synthetic_index(300);
+    let rows = grouped(&index, &[], &[], "file", SearchMode::Files, 64);
+    assert_eq!(
+        more_rows(&rows),
+        vec![(PaletteCategory::WorkspaceFiles, 300 - 64)]
+    );
+    let small = synthetic_index(10);
+    let rows = grouped(&small, &[], &[], "file", SearchMode::Files, 64);
+    assert!(more_rows(&rows).is_empty());
+}
+
+#[test]
+fn commands_fit_the_cap_and_the_rule_holds_when_forced() {
+    let index = synthetic_index(0);
+    let rows = grouped(&index, &[], &[], "", SearchMode::All, 64);
+    assert!(
+        more_rows(&rows)
+            .iter()
+            .all(|(category, _)| *category != PaletteCategory::Commands),
+        "35 commands fit 64 rows"
+    );
+    let commands = all_commands().len();
+    for mode in [SearchMode::All, SearchMode::Commands] {
+        let rows = grouped(&index, &[], &[], "", mode, 4);
+        assert_eq!(
+            more_rows(&rows),
+            vec![(PaletteCategory::Commands, commands - 4)],
+            "{mode:?}"
+        );
+        assert!(matches!(rows.last(), Some(PaletteSearchRow::More { .. })));
+    }
+}
+
+#[test]
+fn open_tabs_and_note_groups_end_with_more_rows_when_forced() {
+    let index = synthetic_index(20);
+    let open_tabs: Vec<_> = index.files()[..6].iter().map(open_tab_for).collect();
+    let notes: Vec<_> = (0..9)
+        .map(|n| PaletteNoteEntry {
+            category: PaletteNoteCategory::Bookmarks,
+            title: format!("note {n}"),
+            subtitle: String::new(),
+            detail: None,
+            note_text: None,
+            target: crate::model::palette::PaletteNoteTarget::FolderNote {
+                workspace_name: "w".into(),
+                folder: PathBuf::from("/workspace"),
+            },
+        })
+        .collect();
+    let rows = grouped(&index, &open_tabs, &notes, "", SearchMode::All, 4);
+    let more = more_rows(&rows);
+    assert!(more.contains(&(PaletteCategory::OpenTabs, 2)));
+    assert!(more.contains(&(PaletteCategory::WorkspaceFiles, 20 - 6 - 4)));
+    assert!(more.contains(&(PaletteCategory::Note(PaletteNoteCategory::Bookmarks), 5)));
+}
+
+fn ranking(
+    index: &FileIndex,
+    open_tabs: &[PaletteFileEntry],
+    notes: &[PaletteNoteEntry],
+    category: PaletteCategory,
+    query: &str,
+    row_limit: usize,
+) -> CategoryRanking {
+    let cancellation = PaletteSearchCancellation::default();
+    let PaletteSearchOutcome::Complete { value, .. } = category_search(
+        CategorySearchInput {
+            index,
+            open_tabs,
+            note_entries: notes,
+            category,
+            query,
+            row_limit,
+        },
+        &cancellation,
+    ) else {
+        panic!("fresh category search must complete");
+    };
+    value
+}
+
+#[test]
+fn the_category_ranking_lists_every_match_and_counts_a_cut() {
+    let index = synthetic_index(1_000);
+    let open_tabs: Vec<_> = index.files()[..3].iter().map(open_tab_for).collect();
+    let whole = ranking(
+        &index,
+        &open_tabs,
+        &[],
+        PaletteCategory::WorkspaceFiles,
+        "",
+        10_000,
+    );
+    assert_eq!(whole.ordinals.len(), 997);
+    assert_eq!(whole.matching, 997);
+    assert!(!whole.limited);
+    assert_eq!(
+        whole.ordinals[0], 3,
+        "open tabs are excluded in source order"
+    );
+    let cut = ranking(
+        &index,
+        &open_tabs,
+        &[],
+        PaletteCategory::WorkspaceFiles,
+        "file",
+        100,
+    );
+    assert_eq!(cut.ordinals.len(), 100);
+    assert_eq!(cut.matching, 997);
+    assert!(cut.limited);
+    let commands = ranking(&index, &[], &[], PaletteCategory::Commands, "", 10_000);
+    assert_eq!(commands.ordinals.len(), all_commands().len());
+}
+
+fn file_rows(rows: &[PaletteSearchRow], label: &str) -> Vec<PathBuf> {
+    let mut in_group = false;
+    let mut out = Vec::new();
+    for row in rows {
+        match row {
+            PaletteSearchRow::Header { label: header } => in_group = header == label,
+            PaletteSearchRow::File { file_path, .. } if in_group => out.push(file_path.clone()),
+            _ => {}
+        }
+    }
+    out
+}
+
+proptest::proptest! {
+    /// The category view's first 64 rows are the grouped rows (design D3).
+    #[test]
+    fn the_category_view_begins_with_the_grouped_rows(
+        count in 0usize..400,
+        open in 0usize..12,
+        query in "(|f|fi|1|2|rs|d3|ile9)",
+    ) {
+        let index = synthetic_index(count);
+        let open_tabs: Vec<_> = index.files()[..open.min(count)].iter().map(open_tab_for).collect();
+        let rows = grouped(&index, &open_tabs, &[], &query, SearchMode::Files, 64);
+        let grouped_files = file_rows(&rows, "All Workspaces");
+        let whole = ranking(&index, &open_tabs, &[], PaletteCategory::WorkspaceFiles, &query, 1 << 20);
+        let ranked: Vec<PathBuf> = whole
+            .ordinals
+            .iter()
+            .take(64)
+            .map(|ordinal| index.files()[*ordinal as usize].path.clone())
+            .collect();
+        proptest::prop_assert_eq!(&ranked, &grouped_files);
+        let hidden = more_rows(&rows)
+            .into_iter()
+            .find(|(category, _)| *category == PaletteCategory::WorkspaceFiles)
+            .map_or(0, |(_, hidden)| hidden);
+        proptest::prop_assert_eq!(whole.matching, grouped_files.len() + hidden);
+    }
+
+    /// The prefiltered exclusion equals the full one, symlinked aliases
+    /// included (design D1).
+    #[test]
+    fn the_prefiltered_exclusion_equals_the_full_one(
+        names in proptest::collection::vec("(a|b|c)(|x)\\.rs", 1..40),
+        open_picks in proptest::collection::vec(0usize..40, 0..10),
+        alias_picks in proptest::collection::vec(0usize..40, 0..10),
+    ) {
+        let root = Arc::new(PathBuf::from("/w"));
+        let files: Vec<IndexedFile> = names
+            .iter()
+            .enumerate()
+            .map(|(n, name)| {
+                let path = root.join(format!("d{}/{name}", n % 3));
+                // Some files are aliases: their canonical path lives elsewhere
+                // under a different file name.
+                let canonical = if alias_picks.contains(&n) {
+                    PathBuf::from(format!("/real/target{}.rs", n % 4))
+                } else {
+                    path.clone()
+                };
+                IndexedFile::new(path, PaletteFileIdentity::canonical(canonical), Arc::clone(&root))
+            })
+            .collect();
+        let excluded: std::collections::HashSet<PathBuf> = open_picks
+            .iter()
+            .filter_map(|pick| files.get(*pick))
+            .filter_map(|file| file.identity.canonical_path().map(PathBuf::from))
+            .chain(std::iter::once(PathBuf::from("/real/target1.rs")))
+            .collect();
+        let exclusion = OpenTabExclusion::new(&excluded);
+        for file in &files {
+            proptest::prop_assert_eq!(exclusion.admits(file), exclusion.admits_prefiltered(file));
+        }
+    }
 }

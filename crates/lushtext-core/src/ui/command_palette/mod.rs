@@ -27,7 +27,18 @@
 //!    `grouped_search` with the per-source result cap.
 //! 4. **Publish rows.** One `splice` replaces the whole model, the first
 //!    activatable row is auto-selected, and the accessible projection refreshes
-//!    (`imp::publish_search_rows`).
+//!    (`imp::publish_search_rows`). A group cut by the cap ends with a "More"
+//!    row stating its exact hidden count.
+//!
+//! **The category view is a branch of this order, not a second one**
+//! (`drill-down-palette-categories`). Activating a "More" row (or
+//! `win.set-command-palette-category`) sets the palette's category and
+//! restarts stage 1 (`category_view::enter_category`); stage 3 then ranks that
+//! category whole within the retained-byte budget, and stage 4 publishes only
+//! when the generation is current **and** the request's category is still the
+//! one shown, handing the ordinals to the lazy `category_model`. Escape,
+//! Backspace on an empty query, the back button and a mode change leave it and
+//! restart stage 1 in the grouped view, which selects the "More" row again.
 //!
 //! Three inversions connect those stages:
 //!
@@ -42,8 +53,7 @@
 //!
 //! # Stage order: incremental file-index mutation
 //!
-//! This half has no visible surface. It keeps the palette's index consistent
-//! with the filesystem after sidebar operations and watcher reconciliation.
+//! No visible surface: it keeps the index consistent with the filesystem.
 //!
 //! 1. **Retain the mutation.** [`LushtextCommandPalette::update_index_file_created`],
 //!    [`LushtextCommandPalette::update_index_file_deleted`], and
@@ -86,12 +96,10 @@
 //!   flush turn resumes in the flush debounce callback in `index_admission`,
 //!   which is why a refilled queue never runs a second worker concurrently.
 //!
-//! A **full** index replacement (`set_guarded_file_index`, driven by workspace
-//! folder changes rather than by file operations) is not part of that queue. It
-//! installs a new index directly through
+//! A **full** replacement (`set_guarded_file_index`, on workspace folder
+//! changes) bypasses the queue through
 //! `index_execution::install_replacement_file_index`, advancing the same
-//! generation counter, which is exactly what makes stage 6's arbitration
-//! necessary.
+//! generation, which is what makes stage 6's arbitration necessary.
 //!
 //! # Roles
 //!
@@ -101,10 +109,13 @@
 //! | pure policy | `policy` |
 //! | coordination | `query_execution` (query flight), `index_admission` (bounded mutation queue), `index_execution` (mutation worker), `retirement` (index retirement accounting) |
 //! | evidence | `evidence` |
-//! | called presentation surface (no role) | `imp`, `item` |
+//! | called presentation surface (no role) | `imp`, `item`, `row_factory`, `category_view`, `category_model` |
 //!
 //! See `docs/workflow-readability-matrix.md`, row `WFR-COMMAND-PALETTE`.
 
+mod category_model;
+mod category_view;
+pub use category_view::PaletteEscape;
 mod evidence;
 // Private implementation module required by gtk-rs: imp.rs owns template
 // children, state, and trait impls; this file exposes the public widget API.
@@ -117,6 +128,7 @@ pub mod item;
 pub mod policy;
 mod query_execution;
 mod retirement;
+mod row_factory;
 #[cfg(feature = "test-utils")]
 mod test_policy;
 
@@ -182,6 +194,8 @@ impl LushtextCommandPalette {
         let imp = self.imp();
         imp.palette_open.set(false);
         self.abandon_query_flight();
+        let _ = imp.leave_category_view();
+        imp.leaving_category.set(None);
         imp.search_entry.set_text("");
         imp.results_store.remove_all();
         imp.no_results_label.set_visible(false);
@@ -280,11 +294,6 @@ impl LushtextCommandPalette {
         *self.imp().activate_callback.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Register a callback for when the palette should close (Escape).
-    pub fn connect_close_requested<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().close_callback.borrow_mut() = Some(Box::new(f));
-    }
-
     /// Index stage 1: add a newly created file to the search index.
     pub fn update_index_file_created(&self, path: &Path) {
         let folder = self.imp().file_index.borrow().workspace_folder_for(path);
@@ -331,5 +340,5 @@ pub fn apply_palette_row_accessibility_for_test(
     position: i32,
     set_size: i32,
 ) {
-    imp::apply_palette_row_accessibility(row, item, selected, position, set_size);
+    row_factory::apply_palette_row_accessibility(row, item, selected, position, set_size);
 }

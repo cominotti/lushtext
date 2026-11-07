@@ -580,6 +580,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/services/palette/fuzzy.rs` | `PALETTE_CANCEL_CHECK_INTERVAL` | 256 | cap | power of two |
+| `crates/lushtext-core/src/services/palette/fuzzy.rs` | `PALETTE_CATEGORY_CANDIDATE_BYTES` | 36 | external fact | the pinned layout of one ranked row's peak (a 32-byte retained candidate plus its `u32` ordinal), checked by a `const` assertion on 64-bit targets (`drill-down-palette-categories` D3) |
 
 ### `crates/lushtext-core/src/services/palette/index.rs`
 
@@ -598,7 +599,6 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_NOTE_FUZZY_SCORE_BYTES` | 4,096 | presentation cap | up from 4,096: the prefix nucleo scores orders results (D12) |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_NOTE_FIELD_FUZZY_SCORE` | 65,535 | external fact | exact, cited from its source |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `NOTE_TEXT_CANCEL_CHECK_INTERVAL` | 1,024 | cap | power of two |
-| `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_ENTRIES` | 16,384 | presentation cap | up from 10,000: M12, 85.9-86.1 MiB vs main 62.5-62.8 (growth ratio 1.67), 17 ms (D12) |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_TEXT_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it palette notes are truncated (D12) |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_RETAINED_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it palette notes are truncated (D12); also bounds Browse Notes' source, its second consumer (`bound-notes-browser-by-budget` D10) |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES` | 8,388,608 | presentation cap | up from 8,388,608: past it palette notes are truncated (D12); also bounds Browse Notes' source, its second consumer (`bound-notes-browser-by-budget` D10) |
@@ -682,6 +682,12 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/buffer_snapshot.rs` | `BUFFER_SNAPSHOT_CHUNK_CHARS` | 65,536 | cap | power of two |
 | `crates/lushtext-core/src/ui/buffer_snapshot.rs` | `BUFFER_SNAPSHOT_CHUNK_MAX_BYTES` | 262,144 | cap | power of two |
 
+### `crates/lushtext-core/src/ui/command_palette/category_model.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/ui/command_palette/category_model.rs` | `CATEGORY_LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`drill-down-palette-categories` D2) |
+
 ### `crates/lushtext-core/src/ui/command_palette/item.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
@@ -690,6 +696,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/command_palette/item.rs` | `KIND_COMMAND` | 1 | out: identifier | format version, discriminant or sentinel (D1) |
 | `crates/lushtext-core/src/ui/command_palette/item.rs` | `KIND_HEADER` | 2 | out: identifier | format version, discriminant or sentinel (D1) |
 | `crates/lushtext-core/src/ui/command_palette/item.rs` | `KIND_NOTE` | 3 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-core/src/ui/command_palette/item.rs` | `KIND_MORE` | 4 | out: identifier | format version, discriminant or sentinel (D1) |
 
 ### `crates/lushtext-core/src/ui/command_palette/policy.rs`
 
@@ -698,6 +705,9 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `INDEX_UPDATE_DEBOUNCE_MS` | 75 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `SEARCH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_RESULTS_PER_SOURCE` | 64 | presentation cap | up from 50: M1, settle worst 6.4-7.9 ms within B_interact (main 5.0-5.7 ms) (D12) |
+| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `RESULT_PAGE_ROWS` | 16 | out: presentation | presentation shape: rows Page Up and Page Down move (`drill-down-palette-categories` D6) |
+| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_FLOOR_RETENTION` | 4,718,592 | derived | the ranking peak of a full index, `MAX_INDEXED_FILES * PALETTE_CATEGORY_CANDIDATE_BYTES` (`drill-down-palette-categories` D3) |
+| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_RETAINED_BYTES` | 8,388,608 | presentation cap | up from PALETTE_CATEGORY_FLOOR_RETENTION: a category view's retained-byte budget, so a full index is listed whole (`drill-down-palette-categories` D3) |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_PENDING_INDEX_UPDATES` | 1,024 | cap | power of two |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_PENDING_INDEX_UPDATE_BYTES` | 4,194,304 | cap | power of two |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PENDING_QUEUE_MIN_CAPACITY` | 4 | cap | power of two |

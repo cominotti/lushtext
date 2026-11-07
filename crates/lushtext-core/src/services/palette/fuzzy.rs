@@ -46,6 +46,40 @@ struct RetainedCandidate<'a> {
     source_ordinal: usize,
 }
 
+/// Bytes one ranked row costs the selector at its peak: the retained
+/// candidate (the borrowed item, its score and its source ordinal) plus the
+/// `u32` ordinal it becomes, which coexist while the ranking is converted
+/// (`drill-down-palette-categories` D3): a 16-byte `SearchResultItem` (four
+/// reference variants, which no niche packs), a `u32` and a `usize` make a
+/// 32-byte candidate, plus 4.
+///
+/// Written as the literal the layout gives on a 64-bit target, because the
+/// threshold inventory evaluates it (`PALETTE_CATEGORY_FLOOR_RETENTION`); the
+/// assertion below fails the build if the layout moves, and on a 32-bit
+/// target the literal overstates the charge, which only lowers the row limit.
+///
+/// Kind: external fact; the pinned layout of `RetainedCandidate` plus a `u32`.
+pub const PALETTE_CATEGORY_CANDIDATE_BYTES: u64 = 36;
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(
+    PALETTE_CATEGORY_CANDIDATE_BYTES
+        == (std::mem::size_of::<RetainedCandidate<'static>>() + std::mem::size_of::<u32>()) as u64
+);
+
+/// How a selector counts the included items after its retained prefix on the
+/// empty query (`drill-down-palette-categories` D1). The count retains and
+/// scores nothing and observes cancellation at the selector's interval.
+pub(super) enum RestCount<'p, T> {
+    /// Count with the retention predicate itself.
+    Walk,
+    /// The predicate admits every item: count the rest by its exact length,
+    /// in O(1).
+    Length,
+    /// Count with a cheaper predicate that equals the retention predicate.
+    WalkWith(&'p mut dyn FnMut(&T) -> bool),
+}
+
 #[derive(Clone, Copy)]
 struct SelectionPolicy<'a> {
     max: usize,
@@ -116,10 +150,13 @@ where
 }
 
 /// Select one source with filtering, custom scoring, and cooperative cancellation.
+///
+/// On the empty query the included items after the retained prefix are
+/// counted with `include` itself ([`RestCount::Walk`]).
 pub(super) fn search_items_cancellable<'a, I, T, P, F, G>(
     items: I,
-    mut include: P,
-    mut score: F,
+    include: P,
+    score: F,
     wrap: G,
     query: &str,
     max: usize,
@@ -132,6 +169,51 @@ where
     F: FnMut(&T, &mut FuzzyQuery) -> Option<u32>,
     G: Fn(&'a T) -> SearchResultItem<'a>,
 {
+    search_items_cancellable_counting(
+        items,
+        include,
+        score,
+        wrap,
+        query,
+        CountedSelection {
+            max,
+            cancellation,
+            rest: RestCount::Walk,
+        },
+    )
+}
+
+/// One counted selection: the row limit, the cancellation token and the rule
+/// for counting the empty query's rest, crossing from a source into the
+/// selector as one value.
+pub(super) struct CountedSelection<'c, 'p, T> {
+    pub max: usize,
+    pub cancellation: &'c PaletteSearchCancellation,
+    pub rest: RestCount<'p, T>,
+}
+
+/// [`search_items_cancellable`] with an explicit rule for counting the
+/// empty query's rest.
+pub(super) fn search_items_cancellable_counting<'a, I, T, P, F, G>(
+    items: I,
+    mut include: P,
+    mut score: F,
+    wrap: G,
+    query: &str,
+    selection: CountedSelection<'_, '_, T>,
+) -> PaletteSearchOutcome<Vec<ScoredResult<'a>>>
+where
+    I: Iterator<Item = &'a T>,
+    T: 'a,
+    P: FnMut(&T) -> bool,
+    F: FnMut(&T, &mut FuzzyQuery) -> Option<u32>,
+    G: Fn(&'a T) -> SearchResultItem<'a>,
+{
+    let CountedSelection {
+        max,
+        cancellation,
+        rest,
+    } = selection;
     search_items_cancellable_controlled(
         items,
         &mut include,
@@ -144,6 +226,7 @@ where
             cancellation_interval: PALETTE_CANCEL_CHECK_INTERVAL,
             progress: None,
         },
+        rest,
     )
 }
 
@@ -179,6 +262,7 @@ where
             cancellation_interval: PALETTE_CANCEL_CHECK_INTERVAL,
             progress: Some(progress),
         },
+        RestCount::Walk,
     )
 }
 
@@ -189,6 +273,7 @@ fn search_items_cancellable_controlled<'a, I, T, P, F, G>(
     wrap: G,
     query: &str,
     policy: SelectionPolicy<'_>,
+    rest: RestCount<'_, T>,
 ) -> PaletteSearchOutcome<Vec<ScoredResult<'a>>>
 where
     I: Iterator<Item = &'a T>,
@@ -217,7 +302,8 @@ where
     if query.is_empty() {
         let reserve = items.size_hint().1.map_or(0, |upper| upper.min(max));
         let mut results = Vec::with_capacity(reserve);
-        for (source_ordinal, item) in items.enumerate() {
+        let mut items = items.enumerate();
+        for (source_ordinal, item) in items.by_ref() {
             if metrics.candidates_examined % cancellation_interval.max(1) == 0 {
                 if let Some(progress) = progress {
                     progress(metrics.candidates_examined);
@@ -241,6 +327,17 @@ where
             }
         }
         metrics.peak_retained_per_source = results.len();
+        if results.len() == max {
+            let rest = count_rest(items.map(|(_, item)| item), include, rest, &policy);
+            match rest {
+                Some(counted) => {
+                    metrics.matching_candidates =
+                        metrics.matching_candidates.saturating_add(counted.matching);
+                    metrics.candidates_counted = counted.visited;
+                }
+                None => return PaletteSearchOutcome::Cancelled { metrics },
+            }
+        }
         return PaletteSearchOutcome::Complete {
             value: results,
             metrics,
@@ -304,6 +401,62 @@ where
             .collect(),
         metrics,
     }
+}
+
+/// What [`count_rest`] found after the retained prefix.
+struct RestCounted {
+    matching: usize,
+    visited: usize,
+}
+
+/// Count the included items after the empty query's retained prefix without
+/// retaining or scoring them; `None` when cancellation was observed.
+fn count_rest<'a, T: 'a, P>(
+    items: impl Iterator<Item = &'a T>,
+    include: &mut P,
+    rest: RestCount<'_, T>,
+    policy: &SelectionPolicy<'_>,
+) -> Option<RestCounted>
+where
+    P: FnMut(&T) -> bool,
+{
+    match rest {
+        RestCount::Walk => walk_rest(items, include, policy),
+        RestCount::WalkWith(predicate) => walk_rest(items, predicate, policy),
+        RestCount::Length => {
+            let (lower, upper) = items.size_hint();
+            if upper == Some(lower) {
+                Some(RestCounted {
+                    matching: lower,
+                    visited: 0,
+                })
+            } else {
+                walk_rest(items, include, policy)
+            }
+        }
+    }
+}
+
+fn walk_rest<'a, T: 'a>(
+    items: impl Iterator<Item = &'a T>,
+    predicate: &mut dyn FnMut(&T) -> bool,
+    policy: &SelectionPolicy<'_>,
+) -> Option<RestCounted> {
+    let interval = policy.cancellation_interval.max(1);
+    let mut counted = RestCounted {
+        matching: 0,
+        visited: 0,
+    };
+    for item in items {
+        if counted.visited.is_multiple_of(interval) && policy.cancellation.is_cancelled() {
+            return None;
+        }
+        counted.visited = counted.visited.saturating_add(1);
+        if predicate(item) {
+            counted.matching = counted.matching.saturating_add(1);
+        }
+    }
+    Some(counted)
 }
 
 pub(super) fn search_items_full_sort_reference<'a, I, T, P, F, G>(
@@ -446,6 +599,116 @@ mod tests {
         assert_eq!(value.len(), 2);
         assert_eq!(metrics.candidates_examined, 2);
         assert_eq!(metrics.peak_retained_per_source, 2);
+    }
+
+    #[test]
+    fn empty_query_counts_the_rest_by_length_when_nothing_is_excluded() {
+        let cancellation = PaletteSearchCancellation::default();
+        let outcome = search_items_cancellable_counting(
+            COMMANDS.iter(),
+            |_| true,
+            |_command, _fuzzy| panic!("empty query must not score"),
+            SearchResultItem::Command,
+            "",
+            CountedSelection {
+                max: 1,
+                cancellation: &cancellation,
+                rest: RestCount::Length,
+            },
+        );
+        let PaletteSearchOutcome::Complete { value, metrics } = outcome else {
+            panic!("fresh search should complete");
+        };
+        assert_eq!(value.len(), 1);
+        assert_eq!(metrics.matching_candidates, COMMANDS.len());
+        assert_eq!(
+            metrics.candidates_counted, 0,
+            "an O(1) count visits nothing"
+        );
+        assert_eq!(metrics.peak_retained_per_source, 1);
+    }
+
+    #[test]
+    fn empty_query_counts_the_rest_with_the_predicate() {
+        let cancellation = PaletteSearchCancellation::default();
+        let outcome = search_items_cancellable(
+            COMMANDS.iter(),
+            |command| command.id != "third",
+            |_command, _fuzzy| panic!("empty query must not score"),
+            SearchResultItem::Command,
+            "",
+            1,
+            &cancellation,
+        );
+        let PaletteSearchOutcome::Complete { value, metrics } = outcome else {
+            panic!("fresh search should complete");
+        };
+        assert_eq!(value.len(), 1);
+        assert_eq!(metrics.matching_candidates, 3);
+        assert_eq!(metrics.candidates_counted, 3);
+    }
+
+    #[test]
+    fn empty_query_count_uses_the_cheaper_predicate_when_given() {
+        let cancellation = PaletteSearchCancellation::default();
+        let mut cheaper = |command: &CommandDef| command.id.starts_with('f');
+        let outcome = search_items_cancellable_counting(
+            COMMANDS.iter(),
+            |command| command.id.starts_with('f'),
+            |_command, _fuzzy| panic!("empty query must not score"),
+            SearchResultItem::Command,
+            "",
+            CountedSelection {
+                max: 1,
+                cancellation: &cancellation,
+                rest: RestCount::WalkWith(&mut cheaper),
+            },
+        );
+        let PaletteSearchOutcome::Complete { metrics, .. } = outcome else {
+            panic!("fresh search should complete");
+        };
+        // "first" retained; "fourth" counted.
+        assert_eq!(metrics.matching_candidates, 2);
+    }
+
+    #[test]
+    fn empty_query_count_observes_cancellation() {
+        const SAME: CommandDef = CommandDef {
+            id: "same",
+            label: "same",
+            category: CommandCategory::App,
+            shortcut: None,
+        };
+        static MANY: [CommandDef; 600] = [SAME; 600];
+        let cancellation = PaletteSearchCancellation::default();
+        let calls = std::cell::Cell::new(0usize);
+        let outcome = search_items_cancellable(
+            MANY.iter(),
+            |_| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 10 {
+                    let _ = cancellation.cancel();
+                }
+                true
+            },
+            |_command, _fuzzy| None,
+            SearchResultItem::Command,
+            "",
+            1,
+            &cancellation,
+        );
+        assert!(matches!(outcome, PaletteSearchOutcome::Cancelled { .. }));
+        assert!(
+            calls.get() <= 1 + PALETTE_CANCEL_CHECK_INTERVAL,
+            "the count stops within one check interval"
+        );
+    }
+
+    #[test]
+    fn the_category_candidate_charge_is_36_bytes_on_x86_64() {
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(PALETTE_CATEGORY_CANDIDATE_BYTES, 36);
+        assert_eq!(std::mem::size_of::<SearchResultItem<'static>>(), 16);
     }
 
     #[test]

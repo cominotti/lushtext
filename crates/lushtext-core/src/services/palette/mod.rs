@@ -6,6 +6,7 @@
 //! split by workflow so file indexing, command registry maintenance, and fuzzy
 //! scoring can evolve independently without one giant service file.
 
+mod category;
 mod charge_scope;
 mod commands;
 mod fuzzy;
@@ -14,6 +15,9 @@ mod index;
 mod notes;
 mod runtime;
 
+pub use category::{
+    CategoryRanking, CategorySearchInput, PALETTE_CATEGORY_CANDIDATE_BYTES, category_search,
+};
 pub use commands::{
     NoteCommandSection, all_commands, is_note_command, note_command_section, search_all,
     search_commands, search_non_note_commands, search_note_commands,
@@ -25,26 +29,25 @@ pub use commands::{
     open_file_selection_equivalence_for_property_test,
 };
 pub use fuzzy::{PALETTE_CANCEL_CHECK_INTERVAL, compare_palette_rank, fuzzy_score};
-pub use grouped::{GroupedSearchInput, grouped_search};
+pub use grouped::{GroupedSearchInput, grouped_search, hidden_matches};
 pub(crate) use index::FileIndexMutationLedger;
 pub use index::{
     FileIndex, FileIndexBuildCoordinator, FileIndexBuildCoordinatorSnapshot, FileIndexBuildMetrics,
     FileIndexBuildOutcome, FileIndexBuildRequest, FileIndexBuildStart, FileIndexTruncationReason,
     MAX_FILE_INDEX_BUILD_RETAINED_BYTES, MAX_FILE_INDEX_RETAINED_BYTES, MAX_INDEXED_DIRECTORIES,
-    MAX_INDEXED_FILES,
+    MAX_INDEXED_FILES, OpenTabExclusion,
 };
 #[cfg(test)]
 pub use notes::load_note_entries_for_scope;
 pub use notes::{
-    ByteRefusal, MAX_PALETTE_NOTE_CONSTRUCTION_BYTES, MAX_PALETTE_NOTE_ENTRIES,
-    MAX_PALETTE_NOTE_RETAINED_BYTES, MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES,
-    MAX_PALETTE_NOTE_TEXT_BYTES, NoteSourceLimits, NoteSourceMetrics, NoteSourceRefreshCoordinator,
-    NoteSourceRefreshCoordinatorSnapshot, NoteSourceRefreshRequest, NoteSourceRefreshStart,
-    NoteSourceTruncationReason, NotesBrowserMode, NotesBrowserQueryCoordinator,
-    NotesBrowserQueryRequest, NotesBrowserQueryResult, PALETTE_NOTE_SOURCE_LIMITS,
-    PaletteNoteSourceLoad, PaletteNoteSourceOutcome, admit_synthetic_note_bodies_for_benchmark,
-    bookmark_display_label, build_note_entries, format_line_label,
-    load_note_entries_bounded_for_scope, load_palette_note_entries_for_scope,
+    ByteRefusal, MAX_PALETTE_NOTE_CONSTRUCTION_BYTES, MAX_PALETTE_NOTE_RETAINED_BYTES,
+    MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES, MAX_PALETTE_NOTE_TEXT_BYTES, NoteSourceLimits,
+    NoteSourceMetrics, NoteSourceRefreshCoordinator, NoteSourceRefreshCoordinatorSnapshot,
+    NoteSourceRefreshRequest, NoteSourceRefreshStart, NoteSourceTruncationReason, NotesBrowserMode,
+    NotesBrowserQueryCoordinator, NotesBrowserQueryRequest, NotesBrowserQueryResult,
+    PALETTE_NOTE_SOURCE_LIMITS, PaletteNoteSourceLoad, PaletteNoteSourceOutcome,
+    admit_synthetic_note_bodies_for_benchmark, bookmark_display_label, build_note_entries,
+    format_line_label, load_note_entries_bounded_for_scope, load_palette_note_entries_for_scope,
     open_tab_source_for_path, path_is_in_folders, query_notes_browser_source, search_note_entries,
     search_note_entries_in_category,
 };

@@ -150,6 +150,7 @@ pub(in crate::ui::window) use browser::ActiveNotesBrowser;
 pub use browser::{NotesBrowserRuntimeSnapshot, OpenEditorSnapshotEvidence};
 #[cfg(feature = "test-utils")]
 pub use evidence::{NotesEvidence, OpenEditorNoteCaptureEvidence};
+pub(crate) use source_execution::OpenEditorCaptureOwner;
 // The note-source delay and the browser-query delay stay in
 // `services/palette/notes.rs`, which owns the behavior they change and shares it
 // with the migrated command-palette row; only this workflow's own two overrides

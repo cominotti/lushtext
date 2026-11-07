@@ -690,6 +690,20 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
     ),
     ActionCatalogEntry::new(
         ActionScope::Window,
+        "set-command-palette-category",
+        "Set Command Palette Category",
+        ActionValueType::String,
+        ActionValueType::None,
+        "Requires a visible command palette; accepts a category id of the current mode, or an empty string to return to all results.",
+        "window/palette_shell",
+        &[ActionSurface::DbusAction],
+        ExternalActivationSafety::ContextualUserCommand,
+        ActionExposure::Exported,
+        "action-win-set-command-palette-category",
+        &[ActionCoverageLane::Unit, ActionCoverageLane::Widget],
+    ),
+    ActionCatalogEntry::new(
+        ActionScope::Window,
         "toggle-search-panel",
         "Workspace Search",
         ActionValueType::None,
@@ -2263,6 +2277,12 @@ pub const BASELINE_WINDOW_ACTIONS: &[ObservedAction] = &[
     ObservedAction::new(
         ActionScope::Window,
         "set-command-palette-mode",
+        ActionValueType::String,
+        ActionValueType::None,
+    ),
+    ObservedAction::new(
+        ActionScope::Window,
+        "set-command-palette-category",
         ActionValueType::String,
         ActionValueType::None,
     ),

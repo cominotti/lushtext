@@ -1188,8 +1188,18 @@ pub struct AutomationCommandPaletteSnapshot {
     pub query: String,
     /// Current search mode: `all`, `files`, `notes`, or `commands`.
     pub mode: String,
-    /// Number of rendered result rows, including section headers.
+    /// Items in the visible list's model: headers and "More" rows included
+    /// in the grouped view, every listed row in a category view.
     pub result_count: u32,
+    /// Stable id of the shown category view, empty for the grouped results.
+    pub category: String,
+    /// Rows the category view lists (0 in the grouped view), saturating.
+    pub category_result_count: u32,
+    /// Matches of the shown category, listed or not (0 in the grouped view),
+    /// saturating.
+    pub category_total_count: u32,
+    /// Whether the retained-byte budget cut the shown category.
+    pub category_limited: bool,
     /// Number of indexed workspace files.
     pub file_index_count: u32,
     /// Number of open file-backed tabs supplied as a palette source.

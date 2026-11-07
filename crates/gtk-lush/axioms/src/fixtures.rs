@@ -786,3 +786,13 @@ pub mod a94 {
 pub mod a95 {
     pub use crate::probes::a95::{SIZES, time_select_far};
 }
+
+/// The fixture and values the A96 probe drives, for its sample.
+pub mod a96 {
+    pub use crate::probes::a96::{MAX_CONTENT_HEIGHT, NaturalHeightRun, SIZES, run};
+}
+
+/// The fixture and values the A97 probe drives, for its sample.
+pub mod a97 {
+    pub use crate::probes::a97::{EntryFixture, Seen, entry_fixture, presses_then_release};
+}

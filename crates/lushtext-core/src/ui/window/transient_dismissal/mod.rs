@@ -28,7 +28,10 @@
 //!    Focus Mode into one `EscapeOutcome`; or resolves a pointer press into a
 //!    dismiss/ignore verdict. No widget is touched in this stage.
 //! 3. **Apply.** Close exactly the one surface the decision named, and claim the
-//!    event only when the shell actually did something. Focus restoration belongs
+//!    event only when the shell actually did something. The palette gives up
+//!    one level per Escape: a shown category view is left (back to grouped
+//!    results, the palette stays open) before the palette closes
+//!    (`drill-down-palette-categories` D5). Focus restoration belongs
 //!    to the palette's own close path — a dismissal that hid the revealer
 //!    directly would strand focus on a sidebar button.
 //!

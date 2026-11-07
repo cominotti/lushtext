@@ -34,7 +34,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, NavigationPageExt};
 
-use crate::model::palette::{PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot};
+use crate::model::palette::{PaletteNoteEntry, PaletteNoteTarget};
 use crate::services::palette as palette_service;
 use crate::ui::accessibility;
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
@@ -49,7 +49,7 @@ use super::chrome::{
 use super::policy::{NotesBrowserListedCount, NotesBrowserModeExt as _};
 use super::query_execution::schedule_notes_browser_search;
 use super::row_model::{NotesBrowserRow, NotesBrowserRowModel};
-use super::source_execution::OpenEditorSnapshotCapture;
+use super::source_execution::OpenEditorCaptureOwner;
 
 /// Stack child name for Markdown/status bookmark and note previews.
 pub(super) const NOTES_PREVIEW_MARKDOWN_CHILD: &str = "markdown";
@@ -62,15 +62,6 @@ pub(super) const NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP: i32 = 10;
 
 /// One entry shown in the unified notes browser.
 pub(super) type NotesBrowserEntry = PaletteNoteEntry;
-
-/// Bounded live-editor request material plus content-free omission evidence.
-pub(super) struct OpenEditorNoteSnapshots {
-    pub(super) entries: Vec<PaletteOpenEditorNoteSnapshot>,
-    pub(super) retained_bytes: u64,
-    pub(super) truncated: bool,
-    /// Bookmark rows counted past the byte cut without copying them.
-    pub(super) rows_not_retained: u64,
-}
 
 /// Space between a browser row's icon, text and Open button.
 const NOTES_ROW_SPACING_SP: i32 = 12;
@@ -139,13 +130,10 @@ pub(super) struct NotesBrowserState {
     /// True while a query publish selects programmatically, so the selection
     /// handler does not treat it as the user's navigation.
     pub(super) publishing: Cell<bool>,
-    /// The sliced open-editor capture in progress, if any.
-    pub(super) snapshot_capture: RefCell<Option<OpenEditorSnapshotCapture>>,
-    /// The idle source running the capture's turns.
-    pub(super) snapshot_source: RefCell<Option<glib::SourceId>>,
-    /// Capture evidence: turns, restarts, rows counted but not copied, and
-    /// the longest turn.
-    pub(super) snapshot_evidence: Cell<OpenEditorSnapshotEvidence>,
+    /// The sliced open-editor capture: the capture in progress, its turn
+    /// source, and its evidence (turns, restarts, rows counted but not copied,
+    /// the longest turn).
+    pub(super) snapshot_capture: Rc<OpenEditorCaptureOwner>,
     /// The `content-changed` handler each bound row and header holds on its
     /// row object, keyed by the list item or header, so a retargeted row
     /// rebinds in place and an unbound one stops listening. Bounded by the
@@ -334,7 +322,7 @@ impl ActiveNotesBrowser {
         let query = state.query_runtime.borrow().snapshot();
         let source = state.source_refreshes.borrow().snapshot();
         let preview = state.preview_loads.borrow().snapshot();
-        let snapshot_capturing = state.snapshot_capture.borrow().is_some();
+        let snapshot_capturing = state.snapshot_capture.is_capturing();
         let count = state.listed_count.get();
         let selected_source_index = state.selected_source_index();
         Some(NotesBrowserRuntimeSnapshot {
@@ -351,7 +339,7 @@ impl ActiveNotesBrowser {
             found_is_lower_bound: count.found_is_lower_bound,
             limited: count.is_limited(),
             limit_announcements: state.limit_announcements.get(),
-            snapshot: state.snapshot_evidence.get(),
+            snapshot: state.snapshot_capture.evidence(),
             snapshot_capturing,
             realized_row_widgets: realized_row_widgets(&state.list_view),
             selected_source_index,
@@ -591,9 +579,7 @@ impl LushtextWindow {
             limit_announced_generation: Cell::new(None),
             limit_announcements: Cell::new(0),
             publishing: Cell::new(false),
-            snapshot_capture: RefCell::new(None),
-            snapshot_source: RefCell::new(None),
-            snapshot_evidence: Cell::new(OpenEditorSnapshotEvidence::default()),
+            snapshot_capture: Rc::default(),
             bound_rows: RefCell::default(),
             search_debounce: Debounce::default(),
             preview_loads: RefCell::default(),

@@ -1500,9 +1500,12 @@ fn test_command_palette_notes_mode_handles_dense_awkward_rows() {
     palette.set_note_entries(entries);
     palette.imp().set_mode(SearchMode::Notes);
 
-    rebuild_and_wait_until(&palette, "dense awkward", |labels| labels.len() == 65);
+    // Header, 64 rows, and the More row stating the 16 the cap hides
+    // (drill-down-palette-categories D1).
+    rebuild_and_wait_until(&palette, "dense awkward", |labels| labels.len() == 66);
     let labels = palette_labels(&palette);
     assert_eq!(labels.first().map(String::as_str), Some("Bookmarks"));
+    assert_eq!(labels.last().map(String::as_str), Some("16 more…"));
     assert_eq!(
         labels
             .iter()
@@ -1757,19 +1760,23 @@ fn test_command_palette_connect_item_activated() {
 }
 
 #[test]
-fn test_command_palette_connect_close_requested() {
+fn test_command_palette_connect_escape_consumed_requests_close() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
 
-    let closed = Rc::new(Cell::new(false));
-    let closed_clone = closed.clone();
-    palette.connect_close_requested(move || {
-        closed_clone.set(true);
+    let outcome = Rc::new(Cell::new(None));
+    let outcome_clone = outcome.clone();
+    palette.connect_escape_consumed(move |escape| {
+        outcome_clone.set(Some(escape));
     });
 
-    // Trigger stop-search (Escape)
+    // Trigger stop-search (Escape) in the grouped view.
     palette.imp().search_entry.emit_stop_search();
-    assert!(closed.get(), "close callback should have fired");
+    assert_eq!(
+        outcome.get(),
+        Some(lushtext_core::ui::command_palette::PaletteEscape::CloseRequested),
+        "a grouped-view Escape requests the close"
+    );
 }
 
 #[test]

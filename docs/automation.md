@@ -543,6 +543,13 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
 - `win.set-preview-mode` with a boolean parameter
 - `win.select-tab` with a zero-based unsigned tab index
 - `win.set-command-palette-mode` with `all`, `files`, `notes`, or `commands` while the command palette is visible
+- `win.set-command-palette-category` with a category id of the current mode
+  (`open-tabs`, `workspace-files`, `bookmarks`, `folder-notes`,
+  `document-notes`, `open-tab-notes`, `commands`) to show that category's view
+  of every ranked result, or `""` to return to the grouped results, while the
+  command palette is visible; any other value is refused and changes nothing.
+  Wait on `command-palette-search`, then read `command_palette.category`,
+  `category_result_count`, `category_total_count` and `category_limited`
 - `win.set-command-palette-query` with a string parameter while the command palette is visible
 - `win.set-open-popover-query` with a string parameter while the recent-document Open popover is visible
 - `win.set-notes-browser-query` with a string parameter while Browse Notes is visible
