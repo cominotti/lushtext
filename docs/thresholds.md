@@ -764,8 +764,9 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET` | 2,097,152 | presentation cap | up from 2,097,152: past it markers follow the unwrapped projection (D12) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET` | 8,192 | presentation cap | up from 8,000: M7 (D12) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_ANALYSIS_CHARS_PER_SLICE` | 32,768 | cap | power of two |
+| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_INTERIM_SEARCH_CHARS` | 32,768 | cap | power of two, rounded down: the band's own text searched for interim search markers while the scan runs; past it the search lane waits for the scan (`bin-minimap-markers-per-row` D5) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MARKER_MIN_HEIGHT` | 2 | out: geometry | UI geometry in whole strip rows; an `i32` since `bin-minimap-markers-per-row` D3 (was `f64` 2.0) |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES` | 16,384 | cap | power of two, rounded down: about 2 ms of tag removal per slice at A3's 0.12 µs per toggle, a quarter of `B_INTERACT_US` (`bin-minimap-markers-per-row` D4; measured in its design, "Measured verdicts") |
+| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES` | 4,096 | cap | power of two, rounded down: 16,384 toggles measured 6.9–9.1 ms per slice in a presented editor (over `B_INTERACT_US`); 4,096 is about a quarter of that (`bin-minimap-markers-per-row` D4; measured in its design, "Measured verdicts") |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_VIEWPORT_HORIZONTAL_OUTSET` | 13 | out: geometry | UI geometry in sp or px (D1) |
 
 The minimap's three marker caps (`MINIMAP_SEARCH_MATCH_CAP`,

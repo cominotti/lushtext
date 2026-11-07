@@ -123,7 +123,8 @@ pub struct MinimapEvidence {
     pub modified_queries: usize,
     /// See `bookmark_queries`.
     pub long_line_queries: usize,
-    /// Whether search bins wait for the search scan to complete.
+    /// Whether search bins wait for the search scan to complete (they are
+    /// then the interim marks of the band's own text, design D5).
     pub search_waiting_for_scan: bool,
     /// Swapped-out modified tags still retiring.
     pub retiring_modified_tags: usize,
@@ -131,6 +132,8 @@ pub struct MinimapEvidence {
     pub retirement_armed: bool,
     /// Retirement slices run so far.
     pub retirement_slices: usize,
+    /// Longest retirement slice so far, its own work in microseconds.
+    pub retirement_slice_worst_us: u64,
     /// Native viewport-highlight bounds in source-map coordinates.
     pub viewport_bounds: Option<MinimapProjectedBounds>,
     /// First rendered minimap content row in source-map coordinates.
@@ -193,6 +196,7 @@ impl LushtextEditorPage {
         let retiring_modified_tags = minimap.modified.retiring.borrow().len();
         let retirement_armed = minimap.modified.retirement_source.borrow().is_some();
         let retirement_slices = minimap.modified.retirement_slices.get();
+        let retirement_slice_worst_us = minimap.modified.retirement_slice_worst_us.get();
         // `wrapped_layout_analysis_required` reads the source view's wrap mode
         // and live byte estimate, both of which reach the panicking
         // `TemplateChild` accessor. GTK4 clears template children in
@@ -268,6 +272,7 @@ impl LushtextEditorPage {
             retiring_modified_tags,
             retirement_armed,
             retirement_slices,
+            retirement_slice_worst_us,
             viewport_bounds,
             first_content_row_bounds,
             overlay_width_request,

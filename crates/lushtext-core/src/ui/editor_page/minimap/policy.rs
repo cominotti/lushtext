@@ -122,12 +122,22 @@ pub(super) const MINIMAP_ANALYSIS_CHARS_PER_SLICE: usize = 32 * 1024;
 pub(super) const MINIMAP_MARKER_MIN_HEIGHT: i32 = 2;
 /// Toggles of a swapped-out modified tag removed by one retirement slice.
 ///
-/// Removing a property-less tag costs about 0.12 µs per toggle (A3: 262,144
-/// toggles in 30.6–32.4 ms; ledger A98), so 16,384 toggles (8,192 runs) is
-/// about 2 ms, a quarter of `B_INTERACT_US`, leaving room for slower hosts.
+/// A slice walks the toggles one by one (`forward_to_tag_toggle`) and then
+/// removes the tag over the range, about 0.5 µs per toggle in a presented
+/// editor: 16,384 toggles measured 6.9-9.1 ms per slice (over
+/// `B_INTERACT_US`), so the cap is 4,096, about 2 ms, a quarter of the budget.
 ///
 /// Kind: cap; a power of two, rounded down (`bin-minimap-markers-per-row` D4).
-pub(super) const MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES: usize = 1 << 14;
+pub(super) const MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES: usize = 1 << 12;
+/// Characters of the band's own text searched for interim search markers
+/// while the in-tab search's scan still runs (design D5's fallback).
+///
+/// The band usually shows a few thousand characters (about 142 lines); a
+/// band of long lines can show far more, and copying and scanning it would
+/// grow with them, so past this the search lane waits for the scan.
+///
+/// Kind: cap; a power of two, rounded down (`bin-minimap-markers-per-row` D5).
+pub(super) const MINIMAP_INTERIM_SEARCH_CHARS: usize = 1 << 15;
 /// Minimum height for the viewport highlight when the projected visible area is tiny.
 ///
 /// Two logical pixels keeps edge anchors detectable on very short documents
@@ -1555,7 +1565,8 @@ mod tests {
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, 8_192);
         assert_eq!(MINIMAP_ANALYSIS_CHARS_PER_SLICE, 32 * 1024);
         assert_eq!(MINIMAP_MARKER_MIN_HEIGHT, 2);
-        assert_eq!(MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES, 1 << 14);
+        assert_eq!(MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES, 1 << 12);
+        assert_eq!(MINIMAP_INTERIM_SEARCH_CHARS, 1 << 15);
         assert_eq!(MINIMAP_TOP_CONTENT_MARGIN, 5);
         assert_eq!(MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR, 5);
         assert_eq!(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET, 13);

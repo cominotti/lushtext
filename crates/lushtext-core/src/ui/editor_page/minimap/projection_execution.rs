@@ -37,8 +37,8 @@ use super::admission::{
     cheap_minimap_availability, current_availability, minimap_analysis_request,
 };
 use super::policy::{
-    MINIMAP_MARKER_MIN_HEIGHT, MINIMAP_REFRESH_DEBOUNCE, MINIMAP_TOP_CONTENT_MARGIN,
-    MINIMAP_VIEWPORT_HORIZONTAL_OUTSET, MINIMAP_VIEWPORT_MIN_HEIGHT,
+    MINIMAP_INTERIM_SEARCH_CHARS, MINIMAP_MARKER_MIN_HEIGHT, MINIMAP_REFRESH_DEBOUNCE,
+    MINIMAP_TOP_CONTENT_MARGIN, MINIMAP_VIEWPORT_HORIZONTAL_OUTSET, MINIMAP_VIEWPORT_MIN_HEIGHT,
     MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS, MarkerRowBand, MarkerRowGroup, MarkerRowRun,
     MinimapAdjustmentDiagnostics, MinimapAvailability, MinimapMarkerBounds, MinimapMarkerKind,
     MinimapNativeProjectionSource, MinimapNativeSliderDiagnostics, MinimapProjectedBounds,
@@ -678,7 +678,7 @@ fn compute_marker_bins(
     source_map: &sourceview5::Map,
     geometry: MarkerBinGeometry,
     (marker_generation, search_generation, search_complete): (u64, u64, bool),
-    previous: Option<&MinimapMarkerBins>,
+    _previous: Option<&MinimapMarkerBins>,
 ) -> MinimapMarkerBins {
     let groups = row_groups(source_map, geometry);
     let mut runs: [Vec<MarkerRowRun>; 4] = Default::default();
@@ -705,14 +705,11 @@ fn compute_marker_bins(
                     })
                 } else {
                     search_waiting = editor.search_scan_pending();
-                    if search_waiting
-                        && let Some(previous) = previous
-                        && previous.geometry == geometry
-                        && previous.search_generation == search_generation
-                    {
-                        runs[index] = previous.runs(kind).to_vec();
+                    if search_waiting {
+                        interim_search_marks(editor, &groups)
+                    } else {
+                        None
                     }
-                    None
                 }
             }
             MinimapMarkerKind::Modified => editor
@@ -767,6 +764,61 @@ fn compute_marker_bins(
         rows: geometry.band.rows(),
         search_waiting,
     }
+}
+
+/// Search marks for the rows the map shows while the search context's own
+/// scan still runs (design D5's progressive fallback).
+///
+/// The scan of a large document runs behind the editor's and the map's
+/// layout validation, so it can end seconds after the query, and a `forward`
+/// on the live context before then scans synchronously (A100: 70-80 ms on a
+/// sparse document). `main`'s capped walk paid that dispatch to show the top
+/// matches after its 80 ms debounce. Instead, the text of the lines the band
+/// shows, at most `MINIMAP_INTERIM_SEARCH_CHARS` characters, is copied into a
+/// small private buffer searched with the same query and options, where a
+/// synchronous `forward` scans only that text. The marks are an interim hint:
+/// once the live scan completes the bins come from it. The copy carries no
+/// tags, so text hidden in the document (folds) can match here until then.
+///
+/// `forward_async` on the live context was tried first: it never blocks a
+/// dispatch (A102), but GtkSourceView 5.20 drops a pending request without
+/// returning when the query changes, which GIO reports as a CRITICAL (A102),
+/// so it cannot serve a request a keystroke may supersede.
+fn interim_search_marks(
+    editor: &LushtextEditorPage,
+    groups: &[MarkerRowGroup],
+) -> Option<(Vec<bool>, usize)> {
+    let context = editor.search_bar().search_context()?;
+    let settings = context.settings();
+    let query = settings.search_text()?;
+    let (first, last) = (groups.first()?, groups.last()?);
+    let buffer = editor.buffer();
+    let start = text_iter_at_line_or_last(buffer.upcast_ref(), first.line_start);
+    let end = i32::try_from(last.line_end)
+        .ok()
+        .and_then(|line| buffer.iter_at_line(line))
+        .filter(|end| end.line() >= start.line())
+        .unwrap_or_else(|| buffer.end_iter());
+    let chars = usize::try_from(end.offset().saturating_sub(start.offset())).unwrap_or(usize::MAX);
+    if chars > MINIMAP_INTERIM_SEARCH_CHARS {
+        return None;
+    }
+    let copy = sourceview5::Buffer::new(None);
+    copy.set_highlight_matching_brackets(false);
+    copy.set_text(&buffer.text(&start, &end, true));
+    let copy_settings = sourceview5::SearchSettings::new();
+    copy_settings.set_search_text(Some(&query));
+    copy_settings.set_case_sensitive(settings.is_case_sensitive());
+    copy_settings.set_at_word_boundaries(settings.is_at_word_boundaries());
+    copy_settings.set_regex_enabled(settings.is_regex_enabled());
+    copy_settings.set_wrap_around(false);
+    let copy_context = sourceview5::SearchContext::new(&copy, Some(&copy_settings));
+    copy_context.set_highlight(false);
+    let offset = first.line_start;
+    Some(mark_row_groups(groups, |line| {
+        first_search_match_line(&copy_context, line.saturating_sub(offset))
+            .map(|found| found.saturating_add(offset))
+    }))
 }
 
 /// Read the line `line_at_y` shows at each band row and group the rows.
