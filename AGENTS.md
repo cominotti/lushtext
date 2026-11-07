@@ -87,7 +87,7 @@ src/
 │   ├── folder_note.rs # FolderNoteIdentity, FolderNoteDocument — one rich note per workspace folder
 │   ├── migration_ledger.rs # MigrationLedgerDocument — retry state for post-rename sidecar/history migrations
 │   ├── language_guess.rs # LanguageGlobTable — GtkSourceView's path guess as plain data a load-planning worker runs (`bound-post-open-settle`)
-│   ├── list_budget.rs  # RetainedBudget (latching retained-byte admission: what is kept is a prefix of delivery order) and turn_continues (LIST_TURN_SLICE_US = B_INTERACT_US / 2): cross-cutting pure policy owned by WFR-SEARCH-REPLACE and WFR-WORKSPACE-TREE; Kani-proved (shard `core-list-budget`, B1–B4, T1–T2)
+│   ├── list_budget.rs  # RetainedBudget (latching retained-byte admission: what is kept is a prefix of delivery order) and turn_continues (LIST_TURN_SLICE_US = B_INTERACT_US / 2): plus `grouped_thousands`, the counts wording of every "showing X of Y" notice: cross-cutting pure policy owned by WFR-SEARCH-REPLACE, WFR-WORKSPACE-TREE and WFR-NOTES-BOOKMARKS; Kani-proved (shard `core-list-budget`, B1–B4, T1–T2)
 │   ├── held_input.rs   # Held typing's pure half: HeldText (4 KiB cap, whole-or-nothing, Backspace), ContentDisposition/HeldEpisode, insert/removal/settle decisions
 │   └── formatting_overrides.rs  # FormattingOverrides — per-file EditorConfig overrides
 ├── services/           # Business logic

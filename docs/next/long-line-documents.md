@@ -3871,7 +3871,10 @@ separate change, in this order:
      any minimap blocker.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
-   directory). From BN: the local-history browser's `AdwSidebar` (bounded by
+   directory). From BN: `lighten-notes-browser-rows` (stage 4 review: measure
+   whether E1–E3 come from the realized-row count or the row's widgets
+   before trading the separate accessible title and subtitle), the
+   local-history browser's `AdwSidebar` (bounded by
    retention at 64 snapshots per file, so no blocker; a candidate if
    retention grows), and the palette's note counts
    (`MAX_PALETTE_NOTE_ENTRIES`, its sidecar count and its stop-at-first-refusal
@@ -3948,6 +3951,58 @@ review", "Implementation decisions"); evidence in
   an owned collapse path that empties a large directory's store in slices
   before GTK's collapse, removing A91's share of the exception, and the
   attribution of the rare 14–18 ms re-expansion outlier at 131,072 entries.
+
+## BN `bound-notes-browser-by-budget` (implementation record, 2026-11-07)
+
+**Status:** implemented on branch `bound-notes-browser-by-budget` from
+`main` `e4ec2624` (stage 3, commits `a778212c` and `cc687cc8`), reviewed in
+stage 4 on 2026-11-07. PR #88 is open and not merged. Design and decisions:
+`openspec/changes/bound-notes-browser-by-budget/design.md` (D1–D10, "Spec
+review (stage 2)", "Implementation decisions (stage 3)", "Stage 4
+review"). Evidence: `.claude/handoffs/bound-notes-browser-by-budget/`.
+
+- Browse Notes and Browse Bookmarks list every row the source retains. They
+  use a virtualized `GtkListView` with section headers over a lazy row model
+  (`ui/window/notes/row_model.rs`), which replaced `AdwSidebar`. A92 found
+  that `AdwSidebar` builds one widget per item. The 512-row cap is gone. The
+  source has no row or sidecar count: a byte refusal skips the row and
+  counts it (`ByteRefusal::SkipAndCount`), and the palette keeps its
+  stop-at-first-refusal rule (`Stop`). The open-editor capture runs in turns
+  under the unchanged 4 MiB `RetainedBudget`, with no count.
+- "Showing X of Y notes and bookmarks" is shown only past a byte budget,
+  with one polite announcement per source generation. Since the stage 4
+  review its counts are grouped in thousands, through the shared
+  `model/list_budget.rs::grouped_thousands`, like the workspace tree's and
+  workspace search's notices.
+- Verdicts (optimized widget build, interleaved with `main`, load below
+  2.5): every dispatch costs the same at 512, 16,384 and 90,687 rows. Query
+  publish is 2–3 ms (`main`: 78 ms to 17 s), the keystroke at most 0.4 ms,
+  and the worst capture turn 2.3 ms. Peak RSS at 90,687 rows is 168–246 MiB
+  (`main`: 4.8 GiB). **Recorded toolkit-floor exceptions**, enforced at twice
+  their measured worst:
+  - **E1**, the dialog's first frames: 47–76 ms.
+  - **E2**, the frame after a query that changes the rows on screen:
+    22–23 ms.
+  - **E3**, closing the dialog: 26–34 ms.
+  
+  All three come from the about 205 rows GTK realizes for any list (A1,
+  A90).
+- **Stage 4 review.** It fixed a double count in "of Y": an in-scope editor
+  the capture reached after its byte cut was counted both live and from its
+  sidecar. It also grouped the notice's counts, made `item()` answer by the
+  reported length during a shrinking publish, and fixed a misplaced doc
+  comment. `core-list-budget` was rerun (6 of 6). It decided to keep E1–E3,
+  the list's 18 px lower start (a `:first-child` header rule would change
+  row heights while the list recycles), and the `WordChar` metadata wrap.
+- **Follow-ups recorded:**
+  - `lighten-notes-browser-rows`. It first measures whether the
+    realized-row count or the row's widgets dominate E1–E3, and keeps
+    separate accessible title and subtitle.
+  - The local-history browser's `AdwSidebar`. It is bounded by retention
+    (64 snapshots per file), so it is not a blocker, but it is a candidate
+    if retention grows.
+  - The palette's note counts (`MAX_PALETTE_NOTE_ENTRIES`, its sidecar
+    count and `Stop`), for `drill-down-palette-categories`.
 
 ## Axioms each change cites
 

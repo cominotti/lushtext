@@ -738,7 +738,95 @@ assertion at twice the measured worst, task 8.2,
   (`WordChar`, the pre-existing width fix above), so a long path breaks inside
   a segment instead of only at spaces. Neither moves a control or hides text.
 - **Kani.** `model/list_budget.rs` did not change; `core-list-budget` was not
-  rerun (task 9.3). No new shard (D7).
+  rerun (task 9.3). No new shard (D7). (Stage 4 added `grouped_thousands` to
+  that file and reran the shard; see "Stage 4 review".)
+
+## Stage 4 review (2026-11-07)
+
+An independent review of `origin/main..HEAD` (code, evidence, docs), then
+fixes. Evidence: `.claude/handoffs/bound-notes-browser-by-budget/review/`.
+
+**Evidence checked.** Every measured run in `runs.log` was interleaved with
+`main` and taken at a 1-minute load of 0.45–2.49, recorded before and after.
+The failing-first logs exist (`impl/failing-first-red.log`, 9 failures, and
+`impl/thresholds-red.log`). The MODIFIED and RENAMED requirements keep every
+scenario of the requirement they replace, by name (checked by script). Every
+task is checked.
+
+**Findings fixed in this stage:**
+
+- **Should-fix: an in-scope editor the capture reached after its byte cut
+  was counted twice in "of Y".** Such an editor is not in the snapshot, so
+  the worker reads that file's bookmark sidecar in its place and counts
+  those rows. The capture also counted the editor's live rows. Red:
+  `notes_browser::test_an_in_scope_editor_past_the_capture_cut_is_counted_once`
+  found 3,010 for 3,005 bookmarks (`review/double-count-red.log`). Fix:
+  `source_execution::start_next_editor` skips such an editor, so only its
+  sidecar counts. An out-of-scope editor is still counted, because the
+  worker reads no sidecar for it. The rows counted are what is on disk, the
+  same rows the browser would list for that file.
+- **Should-fix (UX consistency): the limit notice printed bare counts**
+  ("Showing 90687 of 131072"), while the workspace tree's and workspace
+  search's notices group thousands ("16,384"). Red:
+  `policy::tests::large_counts_are_grouped_like_the_other_list_budget_notices`.
+  Fix: one shared helper, `model/list_budget.rs::grouped_thousands`, now used
+  by all three notices. The sidebar's and the search panel's private copies
+  were removed. `core-list-budget` was rerun because the file changed: 6 of 6
+  harnesses verified (`review/kani-core-list-budget.log`).
+- **Nit: `NotesBrowserRowModel::item()` answered past the reported length.**
+  While a shrinking publish announces its removal, `rows` still holds the old
+  rows, so `item(position)` for `position >= n_items()` returned a row. It now
+  returns `None` there, as `GListModel` requires. GTK did not ask for such a
+  position in any test, so no red test was possible.
+- **Nit: a misplaced doc comment.** `holds_top_line` had been inserted
+  between `attach_view` and its doc comment, so the comment described the
+  wrong function. A stray blank line in `editor_page/mod.rs` was also
+  removed.
+- **Docs: the programme record pointed at a "BN" section that did not
+  exist.** It is now written (`docs/next/long-line-documents.md`).
+
+**Reviewed without change:**
+
+- *Selection across a query.* A row object at a kept position is
+  retargeted without `items-changed`, so `GtkSingleSelection` keeps its
+  position while the content there changes. The query publish then reselects
+  the previous source index by position, and refreshes the preview only if
+  the selected entry changed. This is correct, and
+  `test_the_selection_survives_a_query_without_reloading_the_preview` pins
+  it.
+- *Rows from a replaced source.* A source is published only after
+  `begin_mode` cleared the rows, or into the initial empty list. So the main
+  Open button and Enter never see rows from an older source. The row suffix
+  button also checks the generation.
+- *The clamps that stand down* (`overscroll.rs`). Each resize schedules its
+  own idle with that resize's value, so the last resize of a burst still
+  clamps. Every widget test that covers those clamps passed in stage 3's
+  full run.
+- *SkipAndCount leaves holes in construction order.* That is the decided D3,
+  and it is disclosed: the notice states X of Y.
+
+**Open decisions, decided (user experience first):**
+
+- **E1–E3 stay as recorded toolkit-floor exceptions for this change.** They
+  are flat in rows, and they are better than `main` at every size, `main`'s
+  smallest case included (first frame 84–136 ms → 47–76 ms, a query's frame
+  112 ms → 22–23 ms). The rows are already light: an icon, two labels, and a
+  hidden suffix button that is not laid out. The remaining cost is laying
+  out the about 205 rows GTK realizes for any list (A1, A90). A lighter row
+  (one label with markup) would cost the separate title and subtitle that
+  Orca reads, and the design ranks accessible names above a frame. Recorded
+  as the follow-up `lighten-notes-browser-rows` in the programme record. It
+  must measure first whether the realized-row count, not the row's widgets,
+  dominates.
+- **The list starting about 18 px lower stays.** Removing Adwaita's
+  list-header padding from the first header needs a `:first-child` selector.
+  In a `GtkListView` the first child changes as the list scrolls and
+  recycles, so the selector would change row heights in the middle of a
+  scroll. That risks a scroll jump. A fixed 18 px is the better trade.
+- **The metadata line's `WordChar` wrap stays.** Pango breaks inside a word
+  only when the word does not fit the line. The alternative was the
+  pre-existing blocker it fixed: a single unbreakable line that widened the
+  dialog to tens of thousands of pixels.
 
 ## Open questions (answered by tasks, not by the reviewer)
 
