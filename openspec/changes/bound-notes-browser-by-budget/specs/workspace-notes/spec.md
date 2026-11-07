@@ -34,12 +34,17 @@ The system SHALL present folder-note entries in the workspace-scoped `Browse Not
 - **AND** if no notes of any kind match, the browser shows an explicit empty filtered state
 
 ### Requirement: Notes browser source construction and querying remain bounded
-The system SHALL construct the `Browse Notes...` source with explicit searchable-text byte, retained-graph byte, sidecar path-byte, construction-scratch byte, open-editor snapshot byte, and recovery-diagnostic limits. The browser source SHALL NOT be limited by a row count, a sidecar count, or an open-editor snapshot count. A row that does not fit a byte limit SHALL be skipped while later rows that fit are still admitted, so the browser never retains fewer rows than the count-and-byte rule it replaces. The open-editor snapshot SHALL be captured on GTK in time-sliced turns admitted against its retained-byte limit, and each editor's bookmarks SHALL be captured from one consistent bookmark generation. The browser SHALL retain one bounded immutable source, SHALL execute note-body matching and category grouping outside GTK, and SHALL retain at most one active query plus one latest compact superseding query. A source cut MUST be explicit without changing workspace-scope, section ordering, canonical de-duplication, preview, or Open semantics for admitted rows.
+The system SHALL construct the `Browse Notes...` source with explicit searchable-text byte, retained-graph byte, sidecar path-byte, construction-scratch byte, open-editor snapshot byte, and recovery-diagnostic limits. The browser source SHALL NOT be limited by a row count, a sidecar count, or an open-editor snapshot count. A row that does not fit a byte limit SHALL be skipped while later rows that fit are still admitted, so the browser never retains fewer rows than the count-and-byte rule it replaces, which stopped construction at its first refusal. The command palette's note source keeps stopping at its first refusal. The open-editor snapshot SHALL be captured on GTK in time-sliced turns admitted against its retained-byte limit, and each editor's bookmarks SHALL be captured from one consistent bookmark generation. The browser SHALL retain one bounded immutable source, SHALL execute note-body matching and category grouping outside GTK, and SHALL retain at most one active query plus one latest compact superseding query. A source cut MUST be explicit without changing workspace-scope, section ordering, canonical de-duplication, preview, or Open semantics for admitted rows.
 
 #### Scenario: Aggregate Notes source exceeds admission limits
 - **WHEN** bookmarks, folder notes, document notes, and eligible open-tab rows exceed a browser byte limit
 - **THEN** source construction retains no more than the configured byte budgets, and rows that fit are still admitted after a row that did not
 - **AND** construction keeps counting the rows it parses without retaining them, and the browser states how many rows it shows of how many it found instead of presenting the admitted source as complete
+
+#### Scenario: A byte cut in one category does not hide the later categories
+- **WHEN** the browser's searchable-text limit is reached while bookmarks are admitted, and folder notes and document notes that fit the remaining budgets exist
+- **THEN** those folder notes and document notes are still admitted and listed in their sections
+- **AND** the limited state counts the refused bookmarks among the rows found
 
 #### Scenario: Open editors contain many bookmark rows
 - **WHEN** open editors hold more bookmark rows than one GTK turn can snapshot within the turn slice

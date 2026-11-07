@@ -15,8 +15,10 @@ Rules for every task:
       `perf`: dialog build, open-editor snapshot, first `AdwSidebar`
       population, first preview, first frame.
       - Measure three cases: 512 rows; 16,384 and 131,072 rows with the
-        render cap raised by a measurement-only patch; and 20,000 bookmarks
-        in one open editor.
+        render cap, the source entry count and the sidecar scan count
+        raised by a measurement-only patch (`main`'s source stops at 16,384
+        rows, so the render cap alone cannot reach 131,072); and 20,000
+        bookmarks in one open editor (with the snapshot count raised).
       - Also measure the snapshot cost per bookmark, the selection-restore
         scan at 131,072 rows (design D2), and the worker query time at
         131,072 rows (design Risks).
@@ -43,10 +45,11 @@ Rules for every task:
       - the limited-label and announcement wording covers both modes,
         "at least", and the query form (design D5);
       - the admission superset property: for random row charges and byte
-        limits, the count-free rule admits a superset of `main`'s
-        count-and-byte rule (design D3);
-      - the snapshot restart rule restarts on a generation change, and
-        captures whole after two restarts (design D4).
+        limits, the count-free skip-and-continue rule admits a superset of
+        `main`'s count-and-byte prefix latch (design D3);
+      - the snapshot restart rule restarts on any generation change between
+        an editor's first and last slice, and never captures an editor in
+        one unbounded unit (design D4).
 - [ ] 2.2 Implement them. The module stays free of GTK imports and keeps its
       `forbid` attributes.
 
@@ -91,16 +94,26 @@ Rules for every task:
 
 - [ ] 4.1 Failing first:
       - a source above 16,384 rows (no byte cut) is admitted in full;
+      - a text-budget cut inside the bookmarks still lists the folder and
+        document notes that fit (red on `main`, which stops at the first
+        refusal);
+      - the palette's note source is unchanged under the same cut (it keeps
+        `ByteRefusal::Stop`);
       - a text-budget cut (test override in `test_policy.rs`) shows
         "Showing X of Y …", raises exactly one announcement across three
         later queries, and lists the rows that fit after a refused row;
       - a path-byte cut says "at least";
       - the 20,000-bookmark editor is captured across several turns, each
         within `B_SETTLE_US`;
-      - a bookmark added between slices is captured consistently;
+      - a bookmark added between slices is captured consistently, and the
+        restart is counted in the evidence;
+      - a snapshot byte cut counts the rows it did not retain into Y;
       - closing the dialog mid-capture removes the turn source.
 - [ ] 4.2 `services/palette/notes.rs`:
       - make the `entries` and `sidecar_entries` limits `Option`;
+      - add `on_byte_refusal: ByteRefusal` (`Stop` for the palette,
+        `SkipAndCount` for the browser), so a byte refusal skips the row
+        and construction continues;
       - add `rows_found` and `found_is_lower_bound` to the metrics;
       - keep counting after a byte refusal.
 
@@ -108,8 +121,10 @@ Rules for every task:
       tests stay green.
 - [ ] 4.3 `source_execution.rs`: the sliced capture with `turn_continues`
       and `RetainedBudget` at the unchanged 4 MiB, as a named resumption
-      point in the facade (`notes/mod.rs`, within 370 lines). The palette
-      keeps its one-turn plan.
+      point in the facade (`notes/mod.rs`, within 370 lines). Captured
+      bookmarks are sorted on the worker, not on GTK, and the capture counts
+      the rows past the byte cut without cloning them. The palette keeps
+      its one-turn plan.
 - [ ] 4.4 Labels and the once-per-generation announcement
       (`query_execution.rs`, `policy.rs`).
 - [ ] 4.5 Evidence (`evidence.rs`): the fields of design D8.
@@ -136,7 +151,8 @@ Rules for every task:
       `cargo check -p lushtext --bins --locked`.
 - [ ] 6.3 Accessibility smoke:
       - the new case `notes-limited`, with the anchor
-        `atspi-anchor-notes-browser-label-limited`;
+        `atspi-anchor-notes-browser-status-bar-showing`
+        (role `status bar`, the existing limit label);
       - the existing `notes-populated` and `notes-no-results` cases keep
         their anchors;
       - section headers, or the row descriptions, are checked per A94.

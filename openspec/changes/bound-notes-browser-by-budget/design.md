@@ -70,13 +70,21 @@ rebuild blocker. It also says to probe `AdwSidebar` first.
    browser's counts and keeps those byte ceilings (D3). It does not add a
    result budget that could never cut: a list of `u32` indexes into a
    bounded source is bounded by that source.
-2. **The source keeps skip-and-continue admission, not a prefix latch.**
-   BL latched its budgets to a prefix because search order is what the user
+2. **The browser source moves from a prefix latch to skip-and-continue.**
+   *Corrected at spec review:* `main` does **not** skip and continue. Every
+   refusal in `load_note_entries_bounded_for_scope`
+   (`services/palette/notes.rs`) ends construction: a refused `admit`
+   breaks the sidecar loop and returns `admission.complete()`. Because
+   construction runs bookmarks, then folder notes, then document notes,
+   then open tabs, a text or retained-byte cut inside the bookmarks hides
+   **every** folder note, document note and open-tab row on `main`. BL
+   latched its budgets to a prefix because search order is what the user
    navigates (F4) and what Replace All acts on. The notes source is
    regrouped by category before display, so its admission order is never
-   user-visible. `main` keeps admitting smaller rows after refusing a large
-   one. A latch would retain fewer rows than `main` in exactly the cases a
-   byte ceiling bites, which is a loss against `main` (D3).
+   user-visible, and a latch here only starves later categories. The
+   browser therefore skips a refused row and keeps admitting later rows that
+   fit. That retains a superset of `main`'s latch (D3) and is what lets
+   construction count the rows it does not retain (D5).
 3. **`model/list_budget.rs` is reused where its contract fits: GTK-side
    work.** The open-editor snapshot is the browser's only GTK work that
    grows with data once the list is virtualized. It is captured on GTK
@@ -190,7 +198,12 @@ pinned `gnome_50` feature). It holds one `NotesBrowserProjection`:
 - `sections: [u32; 5]`, the start of each `PaletteNoteCategory` section
   plus the end. Empty sections have zero length, and the header factory
   never sees them;
-- the source `Arc` and the mode, so a row object can be built on demand.
+- the source generation and the mode. The model holds **no owning
+  reference** to the source payload. The browser state keeps the source in
+  its `DisposalOwned` guard, so its final drop stays on a disposal worker
+  and never on GTK (CLAUDE.md, "Plain-data disposal ownership"). The row
+  object carries only the source index; the item factory's `bind` reads the
+  entry through the browser state and checks the generation.
 
 `item(position)` returns a small `NotesBrowserRow` GObject carrying the
 source index. Row objects are created only when GTK asks for them. GTK asks
@@ -206,12 +219,19 @@ fallback, decided by the probe and not up front.
 (presented list: a fixed cost per `items-changed`, not per item) and A93
 (no item walk on publish) together make it O(1) in rows on GTK.
 
-**Grouping moves to the worker.** `query_notes_browser_source` returns the
-grouped indexes and section bounds, built in one pass with four per-category
-cursors. The current GTK-side `append_notes_sidebar_sections` filter (four
-passes over the matches, on GTK) is removed. The grouping order is pure
-policy in `notes/policy.rs` (`group_note_rows`), so the worker and the tests
-share it.
+**Grouping moves to the worker.** The bounded source is already assembled
+in category order (`NoteSourceAdmission::complete` appends bookmarks, folder
+notes, document notes and open tabs, the order of
+`PaletteNoteCategory::ALL`), and the match walks the source in index order.
+The matches are therefore already grouped, and the current GTK-side
+`append_notes_sidebar_sections` filter (four passes over the matches, on
+GTK) only re-derives that order. `query_notes_browser_source` returns the
+matching indexes plus the section bounds, which it records in the same pass
+when the category changes. The section-bound rule is pure policy in
+`notes/policy.rs` (`group_note_rows`), so the worker and the tests share
+it. A property test pins that its output equals the old four-pass grouping
+for random sources, so a future change to the source order cannot
+silently break the sections.
 
 **Selection restore.** A publish keeps the previously selected source
 index if it is still listed. The position lookup is a linear scan over a
@@ -223,20 +243,32 @@ checks the generation.
 ### D3. No count caps in the browser source; byte ceilings unchanged
 
 `NoteSourceLimits.entries` and `.sidecar_entries` become `Option<usize>`.
-The palette passes `Some(16,384)`. The browser passes `None`. The byte
+The palette passes `Some(16,384)`. The browser passes `None`.
+`NoteSourceLimits` also gains `on_byte_refusal: ByteRefusal`, either
+`Stop` (today's latch) or `SkipAndCount`. The palette passes `Stop`, so its
+admitted rows, worker cost and tests are unchanged; the palette's own cut is
+`drill-down-palette-categories`' concern. The browser passes
+`SkipAndCount`. A count refusal (palette only) always stops, because every
+later row would be refused too. The byte
 ceilings (searchable text, retained graph, sidecar path bytes, construction
 scratch) and the diagnostic count stay mandatory for every consumer, so no
 consumer can request an unbounded source. `notes_browser_source_limits_for_entries`
 is replaced by a test-only byte override (`test_policy.rs`).
 
-**No loss against `main`, by construction.** Admission is `main`'s, with two
-conjuncts removed: a row is admitted if it fits every remaining byte
-ceiling, and a refused row does not stop later rows (skip and continue, as
-today). Removing a conjunct can only admit more. A unit and property test
-states this: for random row sequences and limits, the branch admits a
-superset of what `main`'s rule admits. Removing a count cannot break any
-byte bound either: the retained graph, text, path and scratch ledgers are
-the same code.
+**No loss against `main`, by construction.** `main`'s rule is a prefix
+latch: rows are admitted in order while each fits the count and every
+remaining byte ceiling, and the first refusal ends construction. The
+browser's rule drops the count and replaces the latch with skip and
+continue: a row is admitted if it fits every remaining byte ceiling, and a
+refused row does not stop later rows. Up to `main`'s first refusal both
+rules admit the same rows with the same charges, and the browser's rule
+only adds rows after it, so it admits a superset. A unit and property test
+states this: for random row sequences, charges and limits, the browser's
+rule admits a superset of `main`'s latch, and a failing-first widget test
+shows `main` hiding every folder note behind a text cut in the bookmarks.
+Removing a count or the latch cannot break any byte bound: the retained
+graph, text, path and scratch ledgers are the same code, and each refusal
+releases its charge as today.
 
 **Counting what is not retained.** `NoteSourceMetrics` gains `rows_found`,
 every row the construction parsed, admitted or not, and
@@ -281,12 +313,28 @@ For the browser it becomes a sliced capture in `source_execution.rs`:
   retains at least `main`'s 16,384 rows wherever `main` did, because `main`
   applied the same 4 MiB).
 - **Consistency.** Each editor records `bookmark_change_generation()` at its
-  first slice. If the generation differs at its last slice, that editor's
-  captured bookmarks are dropped and the editor is captured again. After
-  two restarts the editor is captured whole in one turn: the unit is then
-  that editor's bookmarks, and task 1.1 measures its cost. Live bookmark
-  state (the "freshly changed open-editor bookmarks" scenario) is therefore
-  never torn.
+  first slice. If the generation differs at any later slice, that editor's
+  captured bookmarks are dropped (their charge returned) and the editor is
+  captured again from its first slice. There is no whole-editor one-turn
+  fallback: it would put an unbounded unit on GTK and break D6's budget.
+  *Corrected at spec review:* the stage-1 draft captured an editor whole
+  after two restarts. Restarting until consistent terminates in practice
+  because the browser is an `AdwDialog`, which blocks input to its window,
+  so the user cannot edit bookmarks during the capture. The generation then
+  moves only on an async bookmark-sidecar apply
+  (`load_bookmarks_if_generation_matches`), at most once per load, or by
+  automation. The evidence counts restarts (D8), and a widget test drives a
+  change between slices. Live bookmark state (the "freshly changed
+  open-editor bookmarks" scenario) is therefore never torn.
+- **Sorting.** `bookmark_records_bounded_by_retained_bytes` sorts each
+  editor's records by line on GTK today. The sliced capture leaves them in
+  capture order and the worker sorts them, so no GTK step is
+  `O(n log n)` in one editor's bookmarks.
+- **Counting past the cut.** After the byte budget latches, the capture
+  keeps walking the remaining editors and bookmarks in the same sliced
+  turns. It resolves each mark's line and counts it, but clones nothing, so
+  D5's Y includes the open-editor rows the snapshot did not retain. That
+  walk is GTK work linear in bookmarks, so it is sliced like the capture.
 - **Order with the dialog.** The dialog is presented first, showing the
   existing loading label. The capture then runs in turns. The worker source
   request is submitted when the capture completes. The source generation
@@ -309,8 +357,9 @@ browser), so the two consumers share the per-editor code.
 - With a query, the label keeps stating the source cut. Matching runs over
   the admitted rows only, and the label says so: "Searching {X} of {Y}
   notes and bookmarks."
-- An open-editor snapshot cut is folded into the same X and Y (its refused
-  rows count toward Y).
+- An open-editor snapshot cut is folded into the same X and Y. Its rows
+  that were counted but not retained (D4, "Counting past the cut") count
+  toward Y.
 
 The label is visible and its accessible label carries the same text. One
 polite announcement is raised when a source generation publishes as
@@ -399,8 +448,8 @@ unchanged. `make gtk-axioms` runs first after the probes land.
 - `notes/evidence.rs`: `NotesBrowserRuntimeSnapshot` gains:
   - `listed_rows`, `rows_found`, `found_is_lower_bound` and `limited`;
   - `limit_announcements`;
-  - `snapshot_turns`, `snapshot_restarts` and the worst snapshot turn
-    (µs, `test-utils` only);
+  - `snapshot_turns`, `snapshot_restarts`, `snapshot_rows_counted_not_retained`
+    and the worst snapshot turn (µs, `test-utils` only);
   - `realized_row_widgets`.
 - `notes/mod.rs`, the facade, names the new resumption point. It stays
   within the 370-line budget.
@@ -425,8 +474,13 @@ re-derives its measured cells, and `make check-workflow-boundaries` passes.
   the section title) when A94 shows the header widget's role is settable.
   Otherwise the probe records what GTK exposes, and each row's accessible
   description carries its section name. Either way Orca hears the section.
-  A new anchor, `atspi-anchor-notes-browser-label-limited` (prefix
-  "Showing"), names the limited label.
+  The limited label is the existing `limit_label`, whose accessible role
+  is `Status` (AT-SPI `status bar`). Its accessible name, today the fixed
+  "Notes result limit", now tracks its visible text, so a screen reader
+  reads the counts. No existing anchor names it. A new anchor,
+  `atspi-anchor-notes-browser-status-bar-showing` (role `status bar`, name
+  prefix "Showing"), names it. *Corrected at spec review:* the stage-1
+  draft gave it role `label`, which the widget does not have.
 - **Smoke.** A new accessibility case, `notes-limited`, reaches a byte cut
   through `LUSHTEXT_NOTES_SOURCE_TEXT_BYTES`. That variable is compiled only
   under the existing `smoke-list-budgets` feature, which release, Meson,
@@ -487,6 +541,53 @@ No persisted format changes. The automation snapshot only adds fields. All
 existing AT-SPI anchors keep their names. The truncation message text
 changes from "Showing first 512 matches…" and the per-reason source
 messages to the D5 wording. No public anchor named those strings.
+
+## Spec review (stage 2, 2026-11-07)
+
+Reviewed against `main` at `e4ec2624`. The approach stands. Corrections made
+in place, each marked *Corrected at spec review*:
+
+1. **Admission on `main` is a prefix latch, not skip-and-continue.** Every
+   refusal in `load_note_entries_bounded_for_scope` returns
+   `admission.complete()`, so a byte cut inside the bookmarks hides every
+   later category. Refinement 2 and D3 now describe the browser's move to
+   skip-and-continue as a change. It is an improvement, and the superset
+   claim still holds against the latch. The palette keeps `Stop` through
+   a per-consumer `ByteRefusal`, so its behaviour and worker cost are
+   unchanged. A failing-first test and a new spec scenario pin it.
+2. **No whole-editor one-turn snapshot fallback.** That fallback was an
+   unbounded GTK unit and contradicted the budget requirement ("whatever
+   the number of rows"). An editor now restarts until it is captured
+   consistently. That terminates because the `AdwDialog` blocks input to
+   its window. The worker sorts the captured records, which removes an
+   `O(n log n)` GTK step.
+3. **Y for a snapshot cut was unspecified.** The capture now counts the
+   rows past the cut in the same sliced turns, without cloning them.
+4. **The row model must not own the source.** The source is
+   `DisposalOwned`. If the model kept an owning `Arc`, its last drop would
+   land on GTK.
+5. **The grouping is already in source order.** The worker records the
+   section bounds in the match pass. The property test keeps the old
+   four-pass grouping as its reference.
+6. **The limited anchor has the wrong role.** The label's role is
+   `Status`, so the anchor is now
+   `atspi-anchor-notes-browser-status-bar-showing`.
+7. **Task 1.1's 131,072-row baseline on `main`** also needs the source and
+   sidecar counts raised, because the render cap alone stops at 16,384.
+
+Checked and confirmed:
+
+- the libadwaita 1.9.3 citations (lines 1964, 1973 and 1334);
+- the 35 `find_adw_sidebar` call sites;
+- the scenario names of every MODIFIED requirement (unchanged);
+- the `gtk4` 0.11 `SectionModelImpl` under `gnome_50`;
+- the `list_budget` API (`turn_continues`, latching `RetainedBudget`);
+- the `smoke-list-budgets` feature and the `core-list-budget` shard;
+- that the next free axiom number is A92.
+
+No new measurement was taken. The host's 1-minute load was 19–25 for most
+of the review and 1.66 at its end. The baseline is task 1.1's job, and it
+runs interleaved before any fix.
 
 ## Open questions (answered by tasks, not by the reviewer)
 
