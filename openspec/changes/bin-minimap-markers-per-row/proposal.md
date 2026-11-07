@@ -28,7 +28,7 @@ through two `GtkSourceMap` line lookups, including runs that are scrolled out
 of view. Measured on `main` at its caps (2,048 separate runs of each kind),
 projecting every run costs about 5 ms per draw (20.3–22.7 ms for four calls,
 one per kind; spec measurement A2). Without the caps that cost would grow
-linearly, to about 100 times as much at 131,072 markers per kind.
+linearly, to 64 times as much at 131,072 markers per kind.
 
 ## What Changes
 
@@ -60,15 +60,21 @@ linearly, to about 100 times as much at 131,072 markers per kind.
   - A restored draft tags the whole buffer in 10–12 µs, so every line shows
     as modified.
   - On save the tag is swapped for a fresh one, so markers clear at once. The
-    old tag's toggles are removed in bounded low-priority slices: removing
-    131,072 toggles in one call costs 30.6–32.4 ms.
+    old tag's toggles are removed in bounded low-priority slices, each a
+    power-of-two count of toggles: removing 131,072 toggle pairs in one call
+    costs 30.6–32.4 ms.
   - One `GtkSourceMark` per line was measured and rejected: 768–784 ms to
     create 131,072 marks, and 147–156 ms to remove them.
 - **Search markers are read from the search context's scanned matches, and
   are never forced by a synchronous scan.** On `main` a `forward` call from
   an unscanned position scans synchronously up to the next match: 68–81 ms
   for 262,144 lines with one match at the end (A4). After the scan completes,
-  the same probe takes 1.1–1.2 ms.
+  the same probe takes 1.1–1.2 ms. Waiting for the scan can show markers
+  later than `main`'s capped walk (6.4 s at 131,072 matches), so time to the
+  first in-band search marker is measured on an ordinary, a sparse and a
+  dense document, and a cancellable asynchronous band-first fill is adopted
+  wherever the branch is later than `main` by more than one reference frame
+  (design D5).
 - **The long-line analysis keeps every long line.** At most one entry per
   121-character line is kept, so the list stays below about 323 KiB under
   `S_MINIMAP`.
@@ -147,12 +153,21 @@ None.
   visual-geometry-smoke` rendered-pixel proof (`native-minimap-*-anchors`,
   `minimap-search-marker-row`).
 - **Kani:** the minimap policy harnesses in `core-geometry-policies` and
-  `core-minimap-fit`, rerun and re-measured.
+  `core-minimap-fit`, rerun and re-measured, and the minimap entry of the
+  proof-strength oracle in `scripts/kani-shards.py` (its harness list and
+  `functions=`).
+- **Callers outside the minimap** that clear or mark modified lines: save,
+  load (two sites), buffer replacement, local-history restore, memory
+  eviction and draft restore.
+- **Mutation testing:** the `fit_marker_bounds` notes in
+  `.cargo/mutants.toml` and `docs/mutation-testing.md`.
 - **Docs:**
   - `docs/thresholds.md` and `make check-thresholds`;
   - the WFR minimap row in `docs/workflow-readability-matrix.md`;
   - `AGENTS.md`;
   - the GTK axiom ledger;
   - `docs/next/long-line-documents.md`;
-  - `docs/automation*.md`, only if evidence fields reach the snapshot;
+  - `docs/automation*.md`: the `minimap-refresh` readiness blocker's
+    meaning (it now also covers a pending scan wait and tag retirement), and
+    evidence fields if any reach the snapshot;
   - the release notes draft.

@@ -44,14 +44,19 @@ Rules for every task:
       Run `make gtk-axioms` and `make check-gtk-axioms`. If AX1 fails
       (layout invalidation, undo entries or O(lines) cost), stop and revise
       D4 before task 4.
-- [ ] 1.4 Measure time to the first search marker on `main` and with a
-      measurement-only completed-scan probe, for three documents: ordinary
-      (10,000 lines, 100 matches), sparse (262,144 lines, one match) and
-      dense (131,072 matches). Decide D5:
-      - if the completed-scan rule is within one reference frame of `main`
-        on the ordinary document, keep it;
+- [ ] 1.4 Measure, on `main` and with a measurement-only completed-scan
+      probe, the time to the first search marker inside the band and the
+      worst dispatch over the whole search, from the query to 2 s after the
+      scan ends (A4 timed only after the scan, so it missed `main`'s
+      synchronous scan), for three documents: ordinary (10,000 lines, 100
+      matches), sparse (262,144 lines, one match on the last line, map at
+      the end) and dense (131,072 matches). Decide D5 by its rule:
+      - within one reference frame of `main` on every document: keep the
+        completed-scan rule alone;
       - otherwise add AX4 (`forward_async` never blocks past
-        `B_INTERACT_US`) and adopt the progressive fallback.
+        `B_INTERACT_US`) and adopt the progressive fallback;
+      - where `main` is earlier only through a dispatch over
+        `B_INTERACT_US`, record the exception with both figures.
 
       Record the decision and figures in the design.
 
@@ -91,14 +96,20 @@ Rules for every task:
       - at most `groups + 1` probe calls and at most `ceil(rows / 2)` runs;
       - runs stay inside the band at the minimum height.
 
-      Remove the three `fit_marker_bounds` harnesses. Then:
+      Remove the three `fit_marker_bounds` harnesses. In
+      `scripts/kani-shards.py`, update the minimap entry of the
+      proof-strength oracle: drop the three harnesses and
+      `fit_marker_bounds` from `functions=`, add the `marker_rows_*`
+      harnesses with their measured seconds and the new walker and run
+      builder functions, and run `make proof-strength-list`. Then:
       - run `make kani KANI_SHARD=core-geometry-policies` and
         `make kani KANI_SHARD=core-minimap-fit` whole, with `KANI_MEASURE`;
       - update `ci_minutes` and `ci_peak_gib` in `scripts/kani-shards.py`
         only upward, and its evidence strings;
       - run `make check-kani-shards`;
       - record the per-harness times in
-        `docs/next/formal-verification.md`.
+        `docs/next/formal-verification.md`, and mark its
+        `fit_marker_bounds` entry as retired by this change.
 - [ ] 2.6 Recount the minimap policy's admitted float functions. Lower the
       ceiling in `.agents/rules/workflow-convention.md` and the script if
       a retired function was admitted, and never raise it. Run
@@ -136,33 +147,62 @@ Rules for every task:
       `B_INTERACT_US`, and the frame after fits `B_SETTLE_US`, at 2,048 and
       131,072 markers of each kind, 713 and 1,425 rows: refresh, scan
       completion, scroll frames, save with 131,072 modified runs plus every
-      retirement slice, and a draft restore of 131,072 lines.
+      retirement slice, and a draft restore of 131,072 lines. The
+      minimap's own work is timed on its own against `B_INTERACT_US`; the
+      whole frame against `B_SETTLE_US` and `main` + one reference frame
+      (design D10).
+- [ ] 3.8 Search lane after an edit. With a search active, type, then
+      scroll the map before the rescan ends: the search lane returns within
+      the rescan's idle cycle (design D5), and no dispatch exceeds
+      `B_INTERACT_US`.
+- [ ] 3.9 Retirement queue. Save twice while the first retirement is still
+      slicing: both old tags are retired and removed from the table, the
+      current tag is untouched, and disposing the editor mid-retirement
+      cancels the slices and leaves no tag behind. Edits between slices do
+      not disturb the mark cursor.
 
 ## 4. Coordination and adapter
 
-- [ ] 4.1 `projection_execution.rs`:
+- [ ] 4.1 Review the 37 uses of `minimap_marker_count` and
+      `minimap_marker_bounds` in `crates/lushtext/tests/widget/editor_page.rs`
+      (16) and `window.rs` (21) for the band-only semantics (design D11).
+      An assertion about a marker outside the band scrolls the map to it
+      first; none is weakened or dropped.
+- [ ] 4.2 `projection_execution.rs`:
       - gather the band (rounded outward) and the row table once per draw
         input;
       - the per-kind probes (search on a completed scan, tag, long-line
         vector, bookmarks);
-      - the cache keyed by map value, strip height, band and per-kind
-        generations;
+      - the cache keyed by map value, map adjustment `upper`, strip height,
+        band and per-kind generations;
       - draw the integer runs with one `f64::from` per edge;
       - `minimap_marker_count` and `minimap_marker_bounds` report the drawn
         runs.
-- [ ] 4.2 `watch.rs`:
-      - tag the inserted or joined lines in the insert and delete handlers;
+- [ ] 4.3 `watch.rs`:
+      - tag the inserted lines in the insert after-handler, and make the
+        delete handler an after-handler that tags the joined line (design
+        D4);
       - redraw the strip on the map vadjustment's `value-changed` (tracked
         in `map_signals`);
       - re-arm on scan completion (`occurrences-count`).
-- [ ] 4.3 `retirement.rs`: swap the tag on a clean transition; sliced
-      `G_PRIORITY_LOW` retirement of the old tag with a generation guard and
-      the per-slice line count measured to fit `B_INTERACT_US`; remove it
-      from the table when empty; cancel it on dispose.
-- [ ] 4.4 `imp.rs` `MinimapState`: drop `modified_marks`,
+- [ ] 4.4 `retirement.rs`: swap the tag at every site design D4 lists
+      (save, both load sites, buffer replacement, local-history restore,
+      memory eviction, undo to the saved state) and in
+      `mark_entire_buffer_modified` (draft restore), updating the facade
+      rustdoc that says "sampled under the cap". Retire old tags from a FIFO
+      at `G_PRIORITY_LOW` with a generation guard, each slice bounded by
+      `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES` toggles from a `GtkTextMark`
+      cursor; the constant has a `Kind: cap` rustdoc line (a power of two,
+      rounded down) and is measured to fit `B_INTERACT_US`. Remove each tag
+      from the table when empty; cancel the queue on dispose.
+- [ ] 4.5 `imp.rs` `MinimapState`: drop `modified_marks`,
       `modified_lines_cache` and `markers`. Add the current and retiring
       tags, the bin cache and the generations.
-- [ ] 4.5 `evidence.rs`: add
+- [ ] 4.6 Readiness: `minimap_work_pending` also covers a scan wait and
+      queued retirement (design D11). Update the `minimap-refresh` blocker
+      in `docs/automation.md` and `docs/automation-reference.md` and run
+      `make check-automation-docs`.
+- [ ] 4.7 `evidence.rs`: add
       - the binned row count;
       - the group count;
       - the probe calls per kind in the last draw;
@@ -173,7 +213,7 @@ Rules for every task:
       No document text. If any field reaches the automation snapshot,
       update `docs/automation.md` and `docs/automation-reference.md` and run
       `make check-automation-docs`.
-- [ ] 4.6 Keep the facade `minimap/mod.rs` within 370 lines, narrating the
+- [ ] 4.8 Keep the facade `minimap/mod.rs` within 370 lines, narrating the
       new stage and resumption points (scan completion, map scroll,
       retirement slices).
 
@@ -184,7 +224,11 @@ Rules for every task:
       - A2 at the caps;
       - the 131,072 fixtures at 713 and 1,425 rows;
       - the save retirement;
-      - the draft restore.
+      - the draft restore;
+      - an in-tab Replace All of 131,072 matches: its dispatch and the
+        peak RSS of the toggle segments (design D4, Memory);
+      - a buffer replacement and a load over a buffer holding 131,072
+        modified runs (their clear turns now remove toggles).
 
       Tabulate them in the design under "Measured verdicts". Any miss with
       a toolkit cause becomes an exception with its axiom and a bounding
@@ -205,15 +249,25 @@ Rules for every task:
       check-widget-shards` (assign new widget tests),
       `make test-prop`, and `cargo check -p lushtext --bins --locked`.
       Benchmarks compile.
+- [ ] 5.6 Mutation scope: remove the `fit_marker_bounds` notes from
+      `.cargo/mutants.toml` and `docs/mutation-testing.md` (or reword them
+      as history), and run `make mutants-diff` over the minimap policy so
+      every surviving mutant of the walker and the run builder is killed or
+      recorded as equivalent with its reason.
 
 ## 6. Documentation (per `.agents/rules/documentation.md`)
 
 - [ ] 6.1 `docs/thresholds.md`: remove the three cap rows; note D6's bound
-      by construction under the minimap policy. Run `make check-thresholds`.
+      by construction (relative to the live buffer) under the minimap
+      policy; add a row for `MINIMAP_MARKER_MIN_HEIGHT`, now an `i32`
+      (`out: geometry`), and for `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES`
+      (`cap`, with its measurement). Run `make check-thresholds`.
 - [ ] 6.2 `docs/workflow-readability-matrix.md`, minimap row:
       - re-derive the measured cells (size, seam counts, pure-policy
         consumers, excluding `#[cfg(test)]`);
       - name the new coordination step;
+      - remove `MarkerProjectionSpace` from the row's seam value objects
+        (the seam list near line 2651);
       - run `make check-workflow-boundaries`.
 - [ ] 6.3 `AGENTS.md` (`.claude/CLAUDE.md`): the minimap module line and the
       "Minimap byte classifier" decision gain the binning, the tag

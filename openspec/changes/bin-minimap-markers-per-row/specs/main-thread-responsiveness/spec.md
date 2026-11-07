@@ -1,9 +1,13 @@
 ## ADDED Requirements
 
 ### Requirement: Minimap marker dispatches fit the interaction budgets at any marker count
-On the reference host, with the minimap visible, every dispatch that
-refreshes, bins or draws minimap markers SHALL fit `B_INTERACT_US`, and the
-frame that shows the change SHALL fit `B_SETTLE_US`. This covers:
+On the reference host, with the minimap visible, every dispatch the minimap
+owns (a marker refresh, a scan-completion re-arm, a tag-retirement slice) and
+the minimap's own marker work inside any other dispatch (the strip's draw
+function with its row table and bins, the tag application in an edit's
+handlers) SHALL fit `B_INTERACT_US`. The frame dispatch that shows the
+change SHALL fit `B_SETTLE_US` and stay within the base revision's figure
+plus one reference frame. This covers:
 
 - an edit, a search change, a scan completion, a save, or a scroll of the
   editor or the map;

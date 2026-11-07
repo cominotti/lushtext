@@ -119,7 +119,8 @@ marker line at or after a line" from its own index. A row group that holds
 any marker line of a kind SHALL draw that kind's lane on every pixel row of
 the group. Adjacent marked rows of a kind SHALL be drawn as one rectangle.
 Rectangles shorter than the minimum marker height SHALL grow to it inside the
-band. The binning SHALL call each kind's probe at most once per row group
+band, and rectangles of one kind that then overlap or touch SHALL be merged,
+so no pixel of a lane is painted twice. The binning SHALL call each kind's probe at most once per row group
 plus once, so its cost depends on the strip height and not on the marker
 count. Row tables, runs and the minimum height SHALL be whole pixels in the
 pure policy, converted to floating point only at the drawing call. The band
@@ -134,7 +135,9 @@ The pure walker SHALL be proved by Kani on a bounded domain:
 - the walker marks exactly the groups whose line range contains a marker
   line, and each marker line inside the band lands in exactly one group;
 - no row outside the band is marked;
-- it calls the probe at most `groups + 1` times.
+- it calls the probe at most `groups + 1` times;
+- the runs it builds are disjoint, in increasing order, inside the band, and
+  at least the smaller of the minimum height and the band height.
 
 #### Scenario: Hidden lines are still represented
 - **WHEN** a range of folded, zero-height lines that contains a modified line lies between two strip rows
@@ -153,10 +156,14 @@ The system SHALL track modified-since-save lines with a buffer-attached
 representation that moves with the text and has no count cap: a `GtkTextTag`
 without properties, applied over the lines an insertion or deletion touches.
 A restored draft SHALL mark every line of the buffer. A transition to the
-saved state SHALL clear the markers in the same dispatch, by swapping in a
-fresh tag. The old tag's toggles SHALL be removed in bounded, low-priority,
-generation-guarded slices, each within `B_INTERACT_US`. The old tag SHALL then
-be removed from the tag table. Tracking SHALL NOT create undo entries, change
+saved state, and every load, buffer replacement, local-history restore and
+memory eviction that clears the markers today, SHALL clear them in the same
+dispatch, by swapping in a fresh tag. The old tag's toggles SHALL be removed
+in low-priority, generation-guarded slices, each bounded by a count of
+toggles and within `B_INTERACT_US`. A tag still retiring when another swap
+happens SHALL stay queued until it is retired. Each retired tag SHALL then be
+removed from the tag table, and disposing the editor SHALL cancel the
+retirement. Tracking SHALL NOT create undo entries, change
 layout, or reach saved, draft or local-history text. Programmatic buffer
 replacement SHALL keep suspending tracking exactly as before.
 
@@ -178,14 +185,18 @@ replacement SHALL keep suspending tracking exactly as before.
 - **THEN** the undo history holds only the text edits, and the saved bytes are exactly the buffer text
 
 ### Requirement: Search markers never force a synchronous scan
-The minimap SHALL read search markers from the in-tab search context only
-after the context reports a completed scan. It SHALL re-arm its refresh when
-the scan completes. No minimap dispatch SHALL call a search probe that scans
-unscanned text synchronously. Time to the first search marker SHALL be
-measured against the base revision. If it is later by more than one
-reference frame on an ordinary document, the minimap SHALL instead fill the
-search bins progressively from cancellable, generation-guarded asynchronous
-probes that never block a dispatch past `B_INTERACT_US`.
+The minimap SHALL read search markers from the in-tab search context's
+synchronous probe only after the context reports a completed scan. It SHALL
+re-arm its refresh when the scan completes. No minimap dispatch SHALL call a
+search probe that scans unscanned text synchronously. Time to the first
+in-band search marker SHALL be measured against the base revision on an
+ordinary, a sparse and a dense document. If it is later by more than one
+reference frame on any of them, the minimap SHALL also fill the search bins
+progressively, until the scan completes, from cancellable,
+generation-guarded asynchronous probes that never block a dispatch past
+`B_INTERACT_US`. Where the base revision is earlier only through a dispatch
+over `B_INTERACT_US`, the difference SHALL be recorded as an exception with
+both figures.
 
 #### Scenario: Sparse matches in a large document
 - **WHEN** the user searches a 262,144-line document whose only match is on its last line
