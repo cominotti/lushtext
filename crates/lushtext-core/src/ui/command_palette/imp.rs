@@ -49,7 +49,7 @@ fn palette_row_into_item(
             hidden,
             category.label(mode, workspace_group_label),
         ),
-        PaletteSearchRow::Header { label } => PaletteItem::new_header_raw(label),
+        PaletteSearchRow::Header { label, .. } => PaletteItem::new_header_raw(label),
         PaletteSearchRow::File {
             display_name,
             subtitle,
@@ -71,31 +71,19 @@ fn palette_row_into_item(
 type ActivateCallback = Box<dyn Fn(&PaletteItem)>;
 type EscapeCallback = Box<dyn Fn(PaletteEscape)>;
 
-/// The category of each grouped row, from the group headers in display
-/// order: a header's label is matched against the categories of `mode` in
-/// order, so a workspace labelled like another group cannot be confused with
-/// it. Rows before any header (Commands mode) are commands.
+/// The category of each grouped row: a header's own category, carried down
+/// to the rows that follow it (review finding R3: matching header labels
+/// confused a workspace named like an absent group). Rows before any header
+/// (Commands mode) are commands.
 fn grouped_row_categories(
     rows: &[PaletteSearchRow],
     mode: SearchMode,
-    workspace_group_label: &str,
 ) -> Vec<Option<PaletteCategory>> {
-    let order: Vec<PaletteCategory> = PaletteCategory::ALL
-        .into_iter()
-        .filter(|category| category.belongs_to(mode))
-        .collect();
-    let mut next = 0usize;
     let mut current = (mode == SearchMode::Commands).then_some(PaletteCategory::Commands);
     rows.iter()
         .map(|row| match row {
-            PaletteSearchRow::Header { label } => {
-                if let Some(offset) = order[next.min(order.len())..]
-                    .iter()
-                    .position(|category| category.label(mode, workspace_group_label) == label)
-                {
-                    current = Some(order[next + offset]);
-                    next += offset + 1;
-                }
+            PaletteSearchRow::Header { category, .. } => {
+                current = Some(*category);
                 current
             }
             PaletteSearchRow::More { category, .. } => Some(*category),
@@ -217,6 +205,9 @@ pub struct LushtextCommandPalette {
     /// The palette's note source: rows held, rows found, and whether found is
     /// a floor, when a byte ceiling cut it.
     pub(super) note_source_cut: Cell<Option<(usize, usize, bool)>>,
+    /// The query of the category view's last published ranking, so a
+    /// same-query republish keeps the selection (`None` after entering).
+    pub(super) category_published_query: RefCell<Option<String>>,
     /// The `content-changed` handler each bound row holds, by list item, so a
     /// retargeted category row rebinds in place.
     pub(super) bound_rows: RefCell<HashMap<gtk4::ListItem, (PaletteItem, glib::SignalHandlerId)>>,
@@ -283,6 +274,7 @@ impl Default for LushtextCommandPalette {
             category_entry_announcements: Cell::new(0),
             category_notice_announcements: Cell::new(0),
             note_source_cut: Cell::new(None),
+            category_published_query: RefCell::new(None),
             bound_rows: RefCell::default(),
             search_debounce: Debounce::default(),
             pending_index_updates: RefCell::default(),
@@ -579,7 +571,7 @@ impl LushtextCommandPalette {
     pub(super) fn publish_search_rows(&self, rows: Vec<PaletteSearchRow>, query: &str) {
         let mode = self.mode.get();
         let workspace_group_label = self.workspace_group_label.borrow().clone();
-        let categories = grouped_row_categories(&rows, mode, &workspace_group_label);
+        let categories = grouped_row_categories(&rows, mode);
         let items: Vec<PaletteItem> = rows
             .into_iter()
             .zip(categories)
@@ -887,4 +879,41 @@ fn grouped_row_kinds(items: &[PaletteItem]) -> Vec<GroupedRowKind> {
             },
         )
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grouped_row_categories;
+    use crate::model::palette::{PaletteCategory, PaletteSearchRow, SearchMode};
+    use std::path::PathBuf;
+
+    fn file(name: &str) -> PaletteSearchRow {
+        PaletteSearchRow::File {
+            display_name: name.to_string(),
+            subtitle: String::new(),
+            file_path: PathBuf::from(name),
+        }
+    }
+
+    /// Review finding R3: a workspace whose label equals another group's
+    /// ("Open Tabs") is not mistaken for that group when the other group is
+    /// absent; the grouped search knows each header's category.
+    #[test]
+    fn a_workspace_labelled_like_an_absent_group_keeps_its_category() {
+        let rows = vec![
+            PaletteSearchRow::Header {
+                label: "Open Tabs".to_string(),
+                category: PaletteCategory::WorkspaceFiles,
+            },
+            file("a.rs"),
+            PaletteSearchRow::More {
+                category: PaletteCategory::WorkspaceFiles,
+                hidden: 3,
+            },
+        ];
+        assert_eq!(
+            grouped_row_categories(&rows, SearchMode::Files),
+            vec![Some(PaletteCategory::WorkspaceFiles); 3]
+        );
+    }
 }

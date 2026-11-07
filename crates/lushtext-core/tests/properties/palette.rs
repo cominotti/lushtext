@@ -297,7 +297,7 @@ proptest! {
         let headers = rows
             .iter()
             .filter_map(|row| match row {
-                PaletteSearchRow::Header { label } => Some(label.as_str()),
+                PaletteSearchRow::Header { label, .. } => Some(label.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>();

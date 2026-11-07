@@ -337,6 +337,7 @@ fn append_group(
     if let Some(label) = label {
         rows.push(PaletteSearchRow::Header {
             label: label.to_string(),
+            category,
         });
     }
     rows.extend(group);

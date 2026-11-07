@@ -4068,6 +4068,15 @@ verdicts"). Evidence: `.claude/handoffs/drill-down-palette-categories/`.
   rows it kept. **Recorded toolkit-floor exception X1**: the frame after the
   first category publish, 13.2–16.6 ms (at most 0.6 ms over `B_SETTLE_US`),
   the about 205 realized rows; bounded at twice its worst by a widget test.
+- **Review (stage 4, 2026-11-07):** three defects fixed failing-first: the
+  category action left the shown view before refusing an id of another mode
+  (R1); a same-query republish (an index or note-source change) sent the
+  category selection back to row 0 (R2, now kept, clamped); and grouped rows'
+  categories were inferred from header labels (R3, `Header` now carries its
+  category). Open decisions accepted: the note-source worker cost, the
+  empty-query count (index-kept count to `scale-file-index`), the deferred
+  clear (to `lighten-notes-browser-rows`); the `core-list-budget` CI budget
+  awaits a dispatched Kani run. Record: design.md "Review (stage 4)".
 - **Follow-ups recorded:** the GTK Lush lazy-model extraction candidate (two
   consumers now, `docs/next/gtk-lush.md`); the empty-query count's remaining
   per-file cost is one canonical-path read, which a canonical-path count kept

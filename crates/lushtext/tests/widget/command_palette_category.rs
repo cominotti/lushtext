@@ -850,3 +850,80 @@ fn test_palette_category_republishes_over_realized_rows() {
     palette.close();
     window.close();
 }
+
+/// Review finding R1: a category id that is valid but not a group of the
+/// current mode is refused **without changing state**, also while another
+/// category view is shown (spec "An unknown category is refused"; `main` of
+/// this branch left the shown view first, then refused, stranding the
+/// grouped list on the rows of the query it held before entering).
+#[test]
+fn test_palette_category_action_refusal_keeps_the_shown_view() {
+    ensure_gtk_init();
+    let _reset = PolicyReset;
+    let window = window_with_commands_cut(4);
+    let palette = open_commands_category(&window);
+    quiet(&palette);
+    let before = palette.evidence();
+    assert_eq!(before.category, Some(PaletteCategory::Commands));
+    activate_string_action(&window, "set-command-palette-category", "workspace-files");
+    quiet(&palette);
+    let after = palette.evidence();
+    assert_eq!(
+        after.category,
+        Some(PaletteCategory::Commands),
+        "a group of another mode is refused and the shown view kept"
+    );
+    assert_eq!(after.category_rows, before.category_rows);
+    assert_eq!(after.query, before.query);
+    activate_string_action(&window, "set-command-palette-category", "nonexistent");
+    assert_eq!(palette.category(), Some(PaletteCategory::Commands));
+}
+
+/// Review finding R2: a republish of the **same query** (a source changed:
+/// the index replaced, a file created by a build) keeps the user's place in
+/// a category view, clamped to the new length; only a new query (or entering
+/// the view) returns to the first row.
+#[test]
+fn test_palette_category_source_republish_keeps_the_selection() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let window = gtk4::Window::new();
+    window.set_default_size(640, 480);
+    window.set_child(Some(&palette));
+    present_window(&window);
+    palette.set_file_index(synthetic_index(2_000));
+    palette.open();
+    enter_by_more_row(&palette, PaletteCategory::WorkspaceFiles);
+    quiet(&palette);
+    select_category_row(&palette, 1_500);
+    flush_events();
+    assert_eq!(palette.evidence().selected_position, Some(1_500));
+
+    palette.set_file_index(synthetic_index(2_000));
+    quiet(&palette);
+    let evidence = palette.evidence();
+    assert_eq!(evidence.category, Some(PaletteCategory::WorkspaceFiles));
+    assert_eq!(
+        evidence.selected_position,
+        Some(1_500),
+        "a source republish keeps the selected row"
+    );
+
+    palette.set_file_index(synthetic_index(1_000));
+    quiet(&palette);
+    assert_eq!(
+        palette.evidence().selected_position,
+        Some(999),
+        "clamped to the shorter list"
+    );
+
+    palette.set_query("f-0001");
+    quiet(&palette);
+    assert_eq!(
+        palette.evidence().selected_position,
+        Some(0),
+        "a new query starts at the first row"
+    );
+    palette.close();
+    window.close();
+}

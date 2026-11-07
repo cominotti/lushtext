@@ -746,6 +746,70 @@ fix; it was measured interleaved with the branch at the end instead (same
 harness on `main`), so the before/after comparison holds but the order did
 not.
 
+## Review (stage 4, 2026-11-07)
+
+An independent review of `origin/main..HEAD` (code and evidence, not the stage 3
+report). Measurements were checked against `runs.log` and the per-run evidence:
+every run was interleaved with `main` and started at a 1-minute load below 4;
+M6's 0.3–1.3 ms Escape comes from round 2 only (round 1 measured the defect,
+4.7–11.2 ms). No MODIFIED scenario was renamed (checked against
+`openspec/specs/`). Kani B5 and A96/A97 constrain shipped code (`rows_within`,
+the `stop-search` and capture-controller paths). Findings, each fixed
+failing-first (red runs in `.claude/handoffs/drill-down-palette-categories/review/`):
+
+- **R1 (should-fix, spec):** `show_category` left the shown category view
+  *before* checking that the requested id belongs to the current mode, so
+  `win.set-command-palette-category` with a valid id of another mode (Commands
+  mode showing `commands`, asked for `workspace-files`) dropped the user to the
+  grouped list, with no query restart, still holding the rows of the query typed
+  before entering. The spec says any such value "is refused without changing
+  state". Fixed by refusing first;
+  `test_palette_category_action_refusal_keeps_the_shown_view`.
+- **R2 (should-fix, user experience):** every category publish selected row 0
+  and scrolled to it. A source change while the view is shown (an index
+  mutation from a build, a note refresh) restarts the same query, so a user
+  browsing deep in a 131,072-row category was thrown back to the top by
+  background churn. Decision: a same-query republish keeps the selected row,
+  clamped to the new length, and scrolls only when the clamp moved it; the
+  first publish after entering and a new query still select the first row
+  (`policy::category_publish_selection`, O(1); the selection is read before
+  the model publishes, because a shrinking publish removes the selected row and
+  `GtkSingleSelection` forgets it; keeping the row by identity was
+  rejected: the ordinals of a replaced index name a different source, and the
+  position is what the user is looking at).
+  `test_palette_category_source_republish_keeps_the_selection`.
+- **R3 (minor, correctness):** the GTK side re-derived each grouped row's
+  category by matching header labels, so a workspace named "Open Tabs" with no
+  open tab was taken for the Open Tabs group (its rows, and the leave-selection
+  fallback, got the wrong category). `PaletteSearchRow::Header` now carries the
+  category the grouped search already knows;
+  `imp::tests::a_workspace_labelled_like_an_absent_group_keeps_its_category`.
+- Noted, not changed: the empty-query exclusion prefilter compares path bytes
+  while the `HashSet<PathBuf>` compares components; both sides hold
+  canonicalized paths (no `//`, `.` or trailing separator), so they agree.
+  Re-entering a category before the deferred clear's low-priority idle ran
+  clears synchronously inside Enter; the idle runs within a frame of the leave,
+  so this needs a re-entry faster than a human keypress.
+
+**Open decisions (stage 3), decided, user experience first:**
+
+1. **Note-source cost at 131,072 sidecar bookmarks — accepted.** The 269–347 ms
+   build and 158–254 MiB peak are worker-side, inside the source's unchanged
+   64 MiB retained and construction byte ceilings; what the user gets is every
+   bookmark searchable instead of a silent 16,384 cut. The GTK-side worst
+   dispatch is the grouped publish (M1's class), not the source.
+2. **Empty-query count (2.7–4.4 ms worker) — accepted** inside the first-rows
+   budget (M2 wall time equals `main`'s); an index-maintained canonical-path
+   count is folded into `scale-file-index` as a follow-up.
+3. **Deferred clear (9.5–11.5 ms, within `B_SETTLE_US`) — accepted**;
+   `lighten-notes-browser-rows` is to cover the palette's row factory too.
+4. **Task 6.2 as a widget allocation test, and the More row's accessible name
+   checked in the widget test — accepted**: both invariants are geometric or
+   metadata, not pixel-visible.
+5. **`core-list-budget` CI budget — maintainer**: needs a dispatched Kani run
+   (`gh workflow run kani.yml`) to re-measure; the local run took 0.16 min
+   cached, well inside the recorded 2.8.
+
 ## Migration
 
 None: no persisted format, GSettings key or action changes meaning. The new
