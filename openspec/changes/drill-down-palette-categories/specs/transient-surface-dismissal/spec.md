@@ -27,6 +27,7 @@ The system SHALL route Escape and equivalent dismiss requests through a window-l
 - **WHEN** the command palette shows a category view
 - **AND** the user presses Escape with focus in the query entry, in the palette's list, or outside the palette
 - **THEN** the palette shows its grouped results with the query kept and stays open
+- **AND** that one Escape changes nothing else: no lower surface is dismissed and the palette is not closed by the window's own Escape handling of the same key press
 - **AND** a second Escape closes the palette through the shared close path
 
 ## ADDED Requirements

@@ -57,8 +57,10 @@ with every category full). What is missing is a way past it.
   microbenchmark).
 - **The palette's note source loses its counts.** It admits by its byte
   ceilings alone and skips and counts a refused row (`SkipAndCount`), so it
-  admits a superset of today's rows (BN D3's argument). A note category view
-  says when the source itself was cut.
+  admits a superset of today's rows (BN D3's argument). Its open-editor
+  bookmark capture, today one synchronous GTK pass that stops at 16,384 rows,
+  moves onto the sliced, byte-bounded capture BN built for Browse Notes. A
+  note category view says when the source itself was cut.
 - **Automation:** `window.command_palette` gains `category`,
   `category_result_count`, `category_total_count` and `category_limited`; a
   new action `win.set-command-palette-category` opens or leaves a category
@@ -104,8 +106,17 @@ None.
   `More` row), `model/list_budget.rs` (a rows-for-budget helper with a Kani
   harness).
 - `crates/lushtext-core/src/ui/window/transient_dismissal/policy.rs` (the
-  palette rung leaves a category first), `ui/window/palette_shell.rs` (the
-  action), `ui/automation.rs`, `services/action_catalog`.
+  palette rung leaves a category first), `ui/window/actions.rs` and
+  `ui/window/palette_shell.rs` (the action's registration and handler),
+  `ui/window/imp.rs` (the palette's Escape callback sets the child-handled
+  latch for a leave as well as a close), `ui/automation.rs`,
+  `services/action_catalog`.
+- `crates/lushtext-core/src/ui/window/notes/` (`WFR-NOTES-BOOKMARKS`):
+  `source_execution.rs` (the palette's note refresh moves onto the sliced,
+  byte-bounded open-editor capture, which loses its 16,384 count),
+  `policy.rs` (its test of the palette's `Stop`), `evidence.rs`, and
+  `row_model.rs`'s stale module doc.
+- `scripts/kani-shards.py` (B5 in the list-budget proof-strength oracle).
 - `resources/ui/command-palette.blp` and its generated `.ui`.
 - `crates/gtk-lush/axioms` (A96, A97), the axiom ledger.
 - Docs: `docs/thresholds.md`, `docs/automation.md`,
