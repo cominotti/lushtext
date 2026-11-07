@@ -761,3 +761,8 @@ pub mod a89 {
 pub mod a90 {
     pub use crate::probes::a90::{SIZES, time_first_reveal};
 }
+
+/// The fixture and values the A91 probe drives, for its sample.
+pub mod a91 {
+    pub use crate::probes::a91::{LINEAR_FLOOR, SIZES, time_collapse};
+}

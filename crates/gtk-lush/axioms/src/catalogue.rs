@@ -1394,6 +1394,21 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a90),
     },
+    Axiom {
+        id: AxiomId::new(91),
+        name: "a91_collapsing_a_tree_row_costs_its_children",
+        statement: "TreeListRow::set_expanded(false) on a row expanded over a large child \
+                    store, shown by a presented GtkListView, removes every child row in one \
+                    synchronous call whose cost grows with the children (16,384 against \
+                    131,072), unlike expanding it (A89) or appending a batch (A88)",
+        dependent_designs: &[
+            "bound-lists-by-budget-not-count: collapsing a sidebar directory of tens of \
+             thousands of entries is one dispatch over B_SETTLE_US, recorded as a measured \
+             toolkit-floor exception",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a91),
+    },
 ];
 
 #[cfg(test)]
