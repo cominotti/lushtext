@@ -117,7 +117,8 @@ MEASURED_IN = "runs 35920992670, 35923346671, 35925626107, 35927734943, 35930757
 # shard; where they exceeded its recorded figure (core-journal-and-write 21.1,
 # core-second-writer 17.4) the figure was raised to the larger value.
 POLICY_MEASURED_IN = "runs 36052583128, 36054671084, 36059814296, 36061831286 (max of the four)"
-GEOMETRY_POLICY_MEASURED_IN = "runs 36059814296, 36061831286 (max of the two, final whole-pixel form)"
+# (core-geometry-policies has been recorded from GEOMETRY_SPLIT_MEASURED_IN since
+# its 2026-11-07 re-split.)
 RESAMPLED_IN = (
     "runs 35920992670, 35923346671, 35925626107, 35927734943, 35930757261, "
     "36059814296, 36061831286 (max of the seven)"
@@ -170,11 +171,31 @@ CLOSE_PROTECTED_STEP_MEASURED_IN = (
     "the last two on the final harnesses)"
 )
 CLOSE_PROTECTED_FINAL_RAISED_IN = "; raised by runs 42281883363, 42291228680 (max of the two)"
-# CI pull-request run 42322273437 (2026-11-07): 2.76 min wall, 1.63 GiB peak,
-# rounded up (the local make kani run took 1.03 min). One CI run so far; the
-# larger of two is owed once a second run lands.
+# bound-lists-by-budget-not-count's two CI pull-request runs on PR #87:
+# 42322273437 (2.76 min, 1.63 GiB) and 42331071390 (2.53 min, 1.63 GiB);
+# the larger of the two, rounded up (the local make kani run took 1.03 min).
 LIST_BUDGET_MINUTES = 2.8
 LIST_BUDGET_PEAK_GIB = 1.7
+LIST_BUDGET_MEASURED_IN = "runs 42322273437, 42331071390 (pull_request, max of the two)"
+# core-geometry-policies broke the pull-request margin on PR #87's run
+# 42331071390 (16.57 min, unchanged harnesses; it had also taken 15.87 in
+# 41995267728). Eleven runs of the same 37 harnesses spread 9.21-16.57 min,
+# so this is the runner's ordinary variance, not an outlier a second run could
+# dismiss: the larger figure stands, and the shard was re-split (D3: split
+# first) instead of leaving the pull-request gate. The required check keeps its
+# name and every harness except the three widest minimap fits; those three
+# (about 9 of the 12.8 CBMC minutes) form core-minimap-fit, still gated
+# pull-request so a minimap-policy regression is caught before merge. The
+# split figures are derived from the per-harness `Verification Time:` lines of
+# the two slowest runs plus each run's whole non-verification time (build,
+# CBMC start-up), counted once per shard: 12.88 / 12.37 min and 7.50 / 7.04 min,
+# max of the two, rounded up; peak memory is the unsplit shard's (2.36 GiB at
+# most). Per-run detail: docs/next/formal-verification.md, "Geometry policy
+# shard re-split".
+GEOMETRY_SPLIT_MEASURED_IN = (
+    "derived from runs 42331071390, 41995267728 (per-harness verification times plus "
+    "each run's whole build and start-up time; max of the two)"
+)
 SETTLE_EVIDENCE_MEASURED_IN = (
     "; with the settle-evidence harnesses by runs 42169248534, 42172535348 (max of the two)"
 )
@@ -322,18 +343,40 @@ SHARDS: dict[str, Shard] = {
         ci_peak_gib=9.0,
         measured_in=POLICY_MEASURED_IN,
     ),
+    # A required check on main (ruleset 23911547), so the name stays with the
+    # larger half when the shard is split. Every minimap harness that is not one
+    # of core-minimap-fit's three is named here by its prefix.
     "core-geometry-policies": Shard(
         "lushtext-core",
         (
-            "ui::editor_page::minimap::policy::kani_proofs::",
+            "ui::editor_page::minimap::policy::kani_proofs::marker_",
+            "ui::editor_page::minimap::policy::kani_proofs::native_slider_containment_",
+            "ui::editor_page::minimap::policy::kani_proofs::native_slider_estimate_",
+            "ui::editor_page::minimap::policy::kani_proofs::native_slider_fit_",
+            "ui::editor_page::minimap::policy::kani_proofs::projected_",
+            "ui::editor_page::minimap::policy::kani_proofs::skipped_line_",
             "ui::window::geometry::policy::kani_proofs::",
             "ui::sidebar::width_preset::kani_proofs::",
             "ui::markdown_preview::policy::kani_proofs::",
         ),
         gate="pull-request",
-        ci_minutes=14.6,
+        ci_minutes=7.5,
         ci_peak_gib=2.4,
-        measured_in=GEOMETRY_POLICY_MEASURED_IN + CLOSE_PROTECTED_RAISED_IN + CLOSE_PROTECTED_FINAL_RAISED_IN,
+        measured_in=GEOMETRY_SPLIT_MEASURED_IN,
+    ),
+    # Split from core-geometry-policies (GEOMETRY_SPLIT_MEASURED_IN): the
+    # minimum-height expansion and the whole-pixel native-slider containment,
+    # the three widest minimap fits.
+    "core-minimap-fit": Shard(
+        "lushtext-core",
+        (
+            "ui::editor_page::minimap::policy::kani_proofs::min_height_expansion_",
+            "ui::editor_page::minimap::policy::kani_proofs::native_slider_stays_",
+        ),
+        gate="pull-request",
+        ci_minutes=12.9,
+        ci_peak_gib=2.4,
+        measured_in=GEOMETRY_SPLIT_MEASURED_IN,
     ),
     "core-post-open-settle": Shard(
         "lushtext-core",
@@ -349,14 +392,14 @@ SHARDS: dict[str, Shard] = {
     ),
     # bound-lists-by-budget-not-count: the list budget both workspace
     # workflows rely on (admission B1-B4, turn continuation T1-T2), so it
-    # gates pull requests. Its figure is one CI run; a second is owed.
+    # gates pull requests.
     "core-list-budget": Shard(
         "lushtext-core",
         ("model::list_budget::kani_proofs::",),
         gate="pull-request",
         ci_minutes=LIST_BUDGET_MINUTES,
         ci_peak_gib=LIST_BUDGET_PEAK_GIB,
-        measured_in="PENDING DISPATCH (owed by bound-lists-by-budget-not-count): CI run 42322273437 (pull_request) 2.76 min, 1.63 GiB; the second run is owed",
+        measured_in=LIST_BUDGET_MEASURED_IN,
     ),
     "core-document-scale": Shard(
         "lushtext-core",

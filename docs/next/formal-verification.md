@@ -2280,6 +2280,64 @@ four harnesses (load 0.74 before, 3.34 after; a pass/fail run, not a figure).
 | `widgets-slice-loop-rest-three` | 0 / 15.21 / 1.62 | 0 / 14.13 / 1.63 |
 | `widgets-slice-loop-unbounded` | 0 / 13.32 / 1.63 | 0 / 10.4 / 1.63 |
 
+### List budget and geometry policy shard re-split (`bound-lists-by-budget-not-count`, 2026-11-07)
+
+`core-list-budget` (the list-budget admission and turn-continuation harnesses,
+gated `pull-request`) has its two CI runs, both pull-request runs of PR #87:
+`42322273437` (2.76 min, 1.63 GiB) and `42331071390` (2.53 min, 1.63 GiB). The
+record keeps the larger, 2.8 min / 1.7 GiB rounded up, and no longer owes a
+dispatch.
+
+The same run `42331071390` took **16.57 minutes** for `core-geometry-policies`
+(recorded 14.6, pull-request margin 15), with harnesses unchanged since the
+record. Its earlier runs on the same 37 harnesses:
+
+| run | event | shard min | peak GiB |
+|---|---|---|---|
+| `42331071390` | pull_request | 16.57 | 2.33 |
+| `42322273437` | pull_request | 11.42 | 2.35 |
+| `42299562304` | push | 14.17 | 2.36 |
+| `42296940734` | pull_request | 9.21 | 2.34 |
+| `42291228680` | workflow_dispatch | 10.08 | 2.35 |
+| `42282249377` | pull_request | 14.12 | 2.33 |
+| `42281883363` | workflow_dispatch | 14.53 | 2.33 |
+| `42172535348` | workflow_dispatch | 14.23 | 2.31 |
+| `42172264843` | push | 14.53 | 2.33 |
+| `42169248534` | workflow_dispatch | 13.42 | 2.35 |
+| `41995267728` | pull_request | 15.87 | 2.32 |
+
+**Decision: re-split, keep the pull-request gate.** The spread (9.21–16.57)
+is the runner's ordinary variance, and 15.87 had already happened once, so a
+second run could not show 16.57 to be a one-off: the record takes the larger
+figure, which breaks the margin. Gating the shard `scheduled` would leave the
+required check `Kani Proof Harnesses (core-geometry-policies)` (ruleset
+`23911547`) unreported on pull requests, and would stop proving the shell,
+sidebar, preview and minimap policies before merge, so the shard was split
+(design D3: split first). The name and 33 harnesses stay in
+`core-geometry-policies`; the three widest minimap fits
+(`min_height_expansion_never_panics_inside_its_band`,
+`min_height_expansion_reaches_the_minimum_on_small_whole_pixels`,
+`native_slider_stays_in_the_source_map_on_whole_pixels`, 9.1 of the 12.8 CBMC
+minutes in the slowest run) plus the fast
+`min_height_expansion_panics_on_an_inverted_band` form `core-minimap-fit`,
+also gated `pull-request`.
+
+The split figures are derived from runner data, not a developer machine: each
+part's `Verification Time:` lines in the two slowest runs, plus that run's
+whole non-verification time (build and CBMC start-up, 3.81 and 3.54 min),
+counted in full for each part because each job builds on its own.
+
+| shard | from `42331071390` | from `41995267728` | recorded |
+|---|---|---|---|
+| `core-geometry-policies` | 7.50 min | 7.04 min | 7.5 min, 2.4 GiB |
+| `core-minimap-fit` | 12.88 min | 12.37 min | 12.9 min, 2.4 GiB |
+
+Peak memory is the unsplit shard's (2.36 GiB at most), which bounds each part.
+`core-minimap-fit` is not a required check; adding it to ruleset `23911547` is
+the maintainer's decision. A dispatched `kani.yml` run on the split form
+replaces these derived figures with measured ones, raising either if exceeded
+(deferral inventory).
+
 ## 4. Deferral inventory
 
 - ~~`sliced-protected-install` (C3): the planner's whole-plan properties
@@ -2442,4 +2500,9 @@ four harnesses (load 0.74 before, 3.34 after; a pass/fail run, not a figure).
   GTK Lush scope decision (`gtk-lush-stewardship`), left open; and whether
   the `ci` tier should run on the weekly Kani schedule, left open because it
   needs more than twenty 25-minute shards.
-
+- Geometry policy re-split (2026-11-07): `core-geometry-policies` (7.5 min)
+  and `core-minimap-fit` (12.9 min) hold figures derived from the per-harness
+  times of runs `42331071390` and `41995267728`, not a run of the split form.
+  The next dispatched `kani.yml` run measures both; raise either record it
+  exceeds. Whether `core-minimap-fit` joins the required checks of ruleset
+  `23911547` is the maintainer's decision.
