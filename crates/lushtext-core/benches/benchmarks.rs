@@ -60,7 +60,7 @@ use lushtext_core::model::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
 use lushtext_core::services::file_tree::{
-    self, DirectoryEntry, DirectoryReconciliationPlan, DirectoryRowState,
+    self, DirectoryEntry, DirectoryPlaceholder, DirectoryReconciliationPlan, DirectoryRowState,
 };
 use lushtext_core::services::filesystem::{
     DirectoryScanPolicy, fixture, metadata as fs_metadata, read as fs_read, tree as fs_tree,
@@ -153,7 +153,7 @@ fn run_content_search_benchmark_with_cancel(
                         outcome.matches = outcome.matches.saturating_add(1);
                         outcome
                             .match_identities
-                            .push((search_match.path, search_match.line_number));
+                            .push((search_match.path.to_path_buf(), search_match.line_number));
                     }
                     SearchEvent::Incomplete(_) => {
                         outcome.incomplete = outcome.incomplete.saturating_add(1);
@@ -302,9 +302,14 @@ fn make_near_policy_long_path_tree(file_count: usize) -> TempDir {
 }
 
 /// Mirror bounded breadth-first sidebar model population and batching costs.
-fn populate_tree_store(entries: Vec<DirectoryEntry>, truncated: bool) -> gio::ListStore {
-    // Match the production directory safety cap used by the sidebar fixture.
-    const MAX_DIR_ENTRIES: usize = 10_000;
+///
+/// `limited` carries the budget row's counts when the sidebar's retained-byte
+/// budget cut the listing (`bound-lists-by-budget-not-count`; the former
+/// 10,000-entry mirror constant is gone with the cap).
+fn populate_tree_store(
+    entries: Vec<DirectoryEntry>,
+    limited: Option<(usize, usize)>,
+) -> gio::ListStore {
     // Match the production append batch so relayout costs stay representative.
     const CHILD_APPEND_BATCH_SIZE: usize = 256;
 
@@ -325,10 +330,11 @@ fn populate_tree_store(entries: Vec<DirectoryEntry>, truncated: bool) -> gio::Li
         store.splice(store.n_items(), 0, &batch);
     }
 
-    if truncated {
-        let placeholder = [FileTreeItem::new_placeholder(format!(
-            "{MAX_DIR_ENTRIES}+ items - showing first {MAX_DIR_ENTRIES}"
-        ))];
+    if let Some((shown, total)) = limited {
+        let placeholder = [FileTreeItem::new_placeholder(
+            format!("Showing {shown} of {total} entries"),
+            DirectoryPlaceholder::Budget { shown, total },
+        )];
         store.splice(store.n_items(), 0, &placeholder);
     }
 
@@ -1333,7 +1339,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
             path: Some(PathBuf::from(format!("row-{index:05}"))),
             is_dir: false,
             is_empty: None,
-            is_placeholder: false,
+            placeholder: None,
         })
         .collect::<Vec<_>>();
     let mut desired_rows = current_rows.clone();
@@ -1343,7 +1349,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
             path: Some(PathBuf::from(format!("changed-{index:05}"))),
             is_dir: false,
             is_empty: None,
-            is_placeholder: false,
+            placeholder: None,
         }),
     );
     let reconciliation = file_tree::plan_directory_reconciliation(&current_rows, &desired_rows);
@@ -2144,26 +2150,47 @@ fn bench_tree_population(c: &mut Criterion) {
     // real sidebar scan contract instead of silently skipping empty-dir probes.
     const BENCH_LOOKAHEAD_CAP: usize = 1000;
 
-    for &(label, entry_count, max_entries) in &[
-        ("full", 10_000usize, 10_000usize),
-        ("truncated", 12_000usize, 10_000usize),
+    // `full` fits the production budget (one scan pass); `budget_cut` crosses
+    // a lowered budget, so the scan falls back to the two-pass top-k
+    // (`bound-lists-by-budget-not-count` D6).
+    for &(label, entry_count, retained_bytes) in &[
+        (
+            "full",
+            16 * 1024usize,
+            lushtext_core::ui::sidebar::policy::SIDEBAR_DIRECTORY_RETAINED_BYTES,
+        ),
+        ("budget_cut", 12_000usize, 8 * 1024 * 1024u64),
     ] {
+        group.bench_function(BenchmarkId::new("sidebar_scan", label), |b| {
+            let dir = make_flat_dir(entry_count);
+            b.iter(|| {
+                black_box(file_tree::scan_sidebar_directory(
+                    dir.path(),
+                    lushtext_core::ui::sidebar::policy::sidebar_scan_budget(retained_bytes),
+                    BENCH_LOOKAHEAD_CAP,
+                    || false,
+                    &WorkspaceEntryVisibility::default(),
+                ))
+            });
+        });
         group.bench_function(BenchmarkId::new("scan_and_splice", label), |b| {
             b.iter_batched(
                 || {
                     let dir = make_flat_dir(entry_count);
-                    let cancel = AtomicBool::new(false);
-                    let scan = file_tree::scan_directory_bounded(
+                    let scan = file_tree::scan_sidebar_directory(
                         dir.path(),
-                        max_entries,
+                        lushtext_core::ui::sidebar::policy::sidebar_scan_budget(retained_bytes),
                         BENCH_LOOKAHEAD_CAP,
-                        Some(&cancel),
+                        || false,
                         &WorkspaceEntryVisibility::default(),
                     );
                     (dir, scan)
                 },
                 |(dir, scan)| {
-                    let store = populate_tree_store(scan.entries, scan.truncated);
+                    let limited = scan
+                        .truncated
+                        .then_some((scan.entries.len(), scan.examined_entries));
+                    let store = populate_tree_store(scan.entries, limited);
                     (store, dir)
                 },
                 BatchSize::SmallInput,

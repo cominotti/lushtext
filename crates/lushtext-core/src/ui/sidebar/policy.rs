@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::model::workspace_visibility::WorkspaceEntryVisibility;
-use crate::services::file_tree::compare_directory_entries;
+use crate::services::file_tree::{SidebarScanBudget, compare_directory_entries};
 
 /// Attempts `create_unique` makes before giving up on a free name.
 ///
@@ -29,6 +29,106 @@ use crate::services::file_tree::compare_directory_entries;
 /// Kind: retry budget; 1,000 rounded up to a power of two
 /// (`power-of-two-thresholds` D6).
 pub const MAX_UNIQUE_NAME_ATTEMPTS: u32 = 1_024;
+
+/// Path copies a sidebar row retains: the item, the store mirror, the sibling
+/// cache, the location key and its parent, the visible-count key, and the
+/// watch contribution, rounded up (`bound-lists-by-budget-not-count` D3).
+///
+/// Kind: coverage window; a power of two, rounded up.
+pub const SIDEBAR_ROW_PATH_COPIES: u64 = 8;
+/// Bytes a sidebar row retains beyond its path copies: its `FileTreeItem`,
+/// tree row, mirror row and cache entries.
+///
+/// Kind: coverage window; rounded up to a power of two from the measured
+/// per-row growth (`bound-lists-by-budget-not-count` task 2.4).
+pub const SIDEBAR_ROW_FIXED_CHARGE: u64 = 1_024;
+/// The per-path graph overhead the scanner charges beyond a path's bytes
+/// (`directory_path_graph_bytes`: two `usize` words).
+///
+/// Kind: external fact; `2 * size_of::<usize>()` on the 64-bit targets.
+pub const SIDEBAR_PATH_GRAPH_OVERHEAD: u64 = 16;
+/// The entry count `main` listed before this budget (`MAX_DIR_ENTRIES`).
+///
+/// Kind: external fact; the retired cap the budget must not lose against.
+pub const MAIN_SIDEBAR_CAP_ENTRIES: u64 = 10_000;
+/// `main`'s worst case: 10,000 rows whose paths are near Linux `PATH_MAX`
+/// (4,096 bytes: 255-byte names under a deep parent).
+///
+/// Kind: derived; computed from the constants it names, not rounded.
+pub const MAIN_SIDEBAR_WORST_RETENTION: u64 = MAIN_SIDEBAR_CAP_ENTRIES
+    * ((4_096 + SIDEBAR_PATH_GRAPH_OVERHEAD) * SIDEBAR_ROW_PATH_COPIES + SIDEBAR_ROW_FIXED_CHARGE);
+/// The user-experience target: 131,072 rows whose names are 32 bytes under a
+/// 256-byte parent path (a separator between them).
+///
+/// Kind: derived; computed from the constants it names, not rounded.
+pub const SIDEBAR_TYPICAL_FLOOR_RETENTION: u64 = 128
+    * 1024
+    * ((256 + 1 + 32 + SIDEBAR_PATH_GRAPH_OVERHEAD) * SIDEBAR_ROW_PATH_COPIES
+        + SIDEBAR_ROW_FIXED_CHARGE);
+/// The retained-byte budget of one expanded sidebar directory.
+///
+/// The power of two at or above the larger of
+/// [`MAIN_SIDEBAR_WORST_RETENTION`] and [`SIDEBAR_TYPICAL_FLOOR_RETENTION`], so
+/// a directory never lists less than `main` listed and 131,072 typical entries
+/// are listed in full. Past it the listing ends with a budget row.
+///
+/// Kind: presentation cap; up from `SIDEBAR_TYPICAL_FLOOR_RETENTION`
+/// (`bound-lists-by-budget-not-count` D3).
+pub const SIDEBAR_DIRECTORY_RETAINED_BYTES: u64 = 512 * 1024 * 1024;
+const _: () = assert!(SIDEBAR_DIRECTORY_RETAINED_BYTES >= MAIN_SIDEBAR_WORST_RETENTION);
+const _: () = assert!(SIDEBAR_DIRECTORY_RETAINED_BYTES >= SIDEBAR_TYPICAL_FLOOR_RETENTION);
+
+/// The scan budget of one sidebar directory under `retained_bytes`.
+#[must_use]
+pub const fn sidebar_scan_budget(retained_bytes: u64) -> SidebarScanBudget {
+    SidebarScanBudget {
+        retained_bytes,
+        path_copies: SIDEBAR_ROW_PATH_COPIES,
+        row_fixed_charge: SIDEBAR_ROW_FIXED_CHARGE,
+    }
+}
+
+/// The label of the row that ends a directory the budget cut.
+#[must_use]
+pub fn budget_row_label(shown: usize, total: usize) -> String {
+    format!("Showing {} of {} entries", grouped(shown), grouped(total))
+}
+
+/// The accessible description of the budget row: why, and how to reach the rest.
+#[must_use]
+pub fn budget_row_description() -> &'static str {
+    "This folder has more entries than the sidebar keeps in memory; \
+     open files past the list with Open (Ctrl+O)"
+}
+
+/// The label of the row that ends a directory still loading.
+#[must_use]
+pub fn loading_row_label(listed: usize, total: usize) -> String {
+    format!(
+        "Loading entries\u{2026} {} of {}",
+        grouped(listed),
+        grouped(total)
+    )
+}
+
+/// The accessible description of the loading row.
+#[must_use]
+pub fn loading_row_description() -> &'static str {
+    "Entries are still being added to this folder"
+}
+
+/// `count` with comma thousands separators.
+fn grouped(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
 
 /// Debounce interval for persisting workspace changes to disk, in milliseconds.
 ///
@@ -936,6 +1036,37 @@ pub fn classify_missing_reveal_component(
         WorkspaceRevealMiss::BeyondEntryCap
     } else {
         WorkspaceRevealMiss::NotFound
+    }
+}
+
+#[cfg(test)]
+mod directory_budget_tests {
+    use super::*;
+
+    #[test]
+    fn the_budget_is_the_power_of_two_above_the_larger_floor() {
+        assert_eq!(MAIN_SIDEBAR_WORST_RETENTION, 10_000 * (4_112 * 8 + 1_024));
+        assert_eq!(
+            SIDEBAR_TYPICAL_FLOOR_RETENTION,
+            128 * 1024 * (305 * 8 + 1_024)
+        );
+        let floor = MAIN_SIDEBAR_WORST_RETENTION.max(SIDEBAR_TYPICAL_FLOOR_RETENTION);
+        let budget = SIDEBAR_DIRECTORY_RETAINED_BYTES;
+        assert!(budget.is_power_of_two() && budget >= floor && budget / 2 < floor);
+    }
+
+    #[test]
+    fn the_rows_state_counts_and_how_to_reach_the_rest() {
+        assert_eq!(
+            budget_row_label(12_345, 200_000),
+            "Showing 12,345 of 200,000 entries"
+        );
+        assert_eq!(
+            loading_row_label(256, 128 * 1024),
+            "Loading entries\u{2026} 256 of 131,072"
+        );
+        assert!(budget_row_description().contains("Ctrl+O"));
+        assert!(!loading_row_description().is_empty());
     }
 }
 

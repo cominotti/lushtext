@@ -43,6 +43,7 @@ pub mod search_backup;
 pub mod search_history;
 pub mod session_service;
 pub mod single_flight;
+pub mod smoke_list_budgets;
 pub(crate) mod sync;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_isolation;

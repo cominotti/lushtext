@@ -427,7 +427,8 @@ when the expected focus target remains visible in the same AT-SPI tree.
 | <span id="atspi-anchor-workspace-search-status-bar-no-workspace-folders"></span>`atspi-anchor-workspace-search-status-bar-no-workspace-folders` | Workspace search | `status bar` | `No workspace folders` | No-workspace state for workspace search | Stable public accessibility anchor |
 | <span id="atspi-anchor-workspace-search-status-bar-no-results-found"></span>`atspi-anchor-workspace-search-status-bar-no-results-found` | Workspace search | `status bar` | `No results found` | No-results state for seeded smoke workspace | Stable public accessibility anchor |
 | <span id="atspi-anchor-workspace-search-status-bar-16-results-in-16-files"></span>`atspi-anchor-workspace-search-status-bar-16-results-in-16-files` | Workspace search | `status bar` | `16 results in 16 files` | Dense constrained result count for seeded smoke workspace | Stable public accessibility anchor for smoke fixture |
-| <span id="atspi-anchor-workspace-search-status-bar-16-384-results-truncated"></span>`atspi-anchor-workspace-search-status-bar-16-384-results-truncated` | Workspace search | `status bar` | `16,384+ results (truncated)` | Result-cap truncation warning prefix for the over-cap smoke workspace | Stable public accessibility anchor prefix for smoke fixture |
+| <span id="atspi-anchor-workspace-search-status-bar-showing"></span>`atspi-anchor-workspace-search-status-bar-showing` | Workspace search | `status bar` | `Showing ` | Limited-search label prefix ("Showing X matches in F files; N more not shown — refine the search to see them") when the retained-byte budget cut the results; the smoke reaches it with a lowered budget | Stable public accessibility anchor prefix for smoke fixture |
+| <span id="atspi-anchor-workspace-tree-list-item-showing"></span>`atspi-anchor-workspace-tree-list-item-showing` | Workspace tree | `list item` | `Showing ` | Budget row prefix ("Showing X of Y entries") ending a directory the per-directory retained-byte budget cut; the smoke reaches it with a lowered budget | Stable public accessibility anchor prefix for smoke fixture |
 | <span id="atspi-anchor-workspace-search-text-workspace-replacement-text"></span>`atspi-anchor-workspace-search-text-workspace-replacement-text` | Workspace search | `text` | `Workspace replacement text` | Workspace Replace All replacement entry | Stable public accessibility anchor |
 | <span id="atspi-anchor-workspace-search-button-undo-replacements"></span>`atspi-anchor-workspace-search-button-undo-replacements` | Workspace search | `button` | `Undo replacements` | Replace All undo command after a completed replacement | Stable public accessibility anchor |
 | <span id="atspi-anchor-workspace-search-label-replaced-2-of-2-matches-in-1-files"></span>`atspi-anchor-workspace-search-label-replaced-2-of-2-matches-in-1-files` | Workspace search | `label` | `Replaced 2 of 2 matches in 1 files` | Replace All completion status for seeded smoke workspace | Stable public accessibility anchor for smoke fixture |
@@ -650,6 +651,8 @@ once, by the identity's owner, not by every workflow that consumes it.*
 | `window.content_search` | `SearchPanelEvidence` | `file_count` | `content_search.file_count` |
 | `window.content_search` | `SearchPanelEvidence` | `match_count` | `content_search.match_count` |
 | `window.content_search` | `SearchPanelEvidence` | `result_capped` | `content_search.result_capped` |
+| `window.content_search` | `SearchPanelEvidence` | `retained_matches` | `content_search.retained_match_count` |
+| `window.content_search` | `SearchPanelEvidence` | `matches_found` | `content_search.matches_found` |
 | `window.content_search` | `SearchPanelEvidence` | `replace_query` | `content_search.replace_query_present` |
 | `window.content_search` | `SearchPanelEvidence` | `replace_preview_mode` | `content_search.replace_preview_mode` |
 | `window.content_search` | `SearchPanelEvidence` | `replace_preview_pending` | `content_search.replace_preview_pending` |
@@ -692,10 +695,13 @@ once, by the identity's owner, not by every workflow that consumes it.*
 | `window.workspace` | `WorkspaceTreeEvidence` | `reveal_status` | `workspace.reveal_status` |
 | `window.workspace` | `WorkspaceTreeEvidence` | `reveal_generation` | `workspace.reveal_generation` |
 | `window.workspace` | `WorkspaceTreeEvidence` | `reveal_depth` | `workspace.reveal_depth` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `limited_directory_count` | `workspace.limited_directory_count` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `loading_directory_count` | `workspace.loading_directory_count` |
 
 Registered by slot 5b: `window.workspace` is the sixth projecting object, and **all
-thirteen of its evidence-derived fields** (ten from slot 5b, plus the three reveal
-fields `add-sidebar-visual-proof-scenario` added) project from the workspace tree surface's
+fifteen of its evidence-derived fields** (ten from slot 5b, the three reveal
+fields `add-sidebar-visual-proof-scenario` added, and the two directory-listing
+counts `bound-lists-by-budget-not-count` added) project from the workspace tree surface's
 single shared derivation, read once per snapshot. Its three remaining fields —
 `show_hidden_files`, `excluded_names`, and `excluded_names_truncated` — are
 preference state read from the two `workspace-*` visibility GSettings keys that
@@ -781,7 +787,7 @@ sidebar show/hide animation and belongs to `WFR-SHELL-GEOMETRY`, not to this row
 | <span id="snapshot-field-workspace-searching"></span>`snapshot-field-workspace-searching` | `search.workspace_searching` | `bool` | Whether workspace search is currently running. |
 | <span id="snapshot-field-workspace-match-count"></span>`snapshot-field-workspace-match-count` | `search.workspace_match_count` | `u32` | Total workspace matches accumulated for the current query. |
 | <span id="snapshot-field-workspace-file-count"></span>`snapshot-field-workspace-file-count` | `search.workspace_file_count` | `u32` | Number of files with workspace matches. |
-| <span id="snapshot-field-workspace-result-capped"></span>`snapshot-field-workspace-result-capped` | `search.workspace_result_capped` | `bool` | Whether the workspace search result cap was reached. |
+| <span id="snapshot-field-workspace-result-capped"></span>`snapshot-field-workspace-result-capped` | `search.workspace_result_capped` | `bool` | Whether the workspace search's retained-byte budget cut the results (the name predates the budget). |
 | <span id="snapshot-field-workspace"></span>`snapshot-field-workspace` | `window.workspace` | `object` | Workspace configuration and current scope state, without scanning the filesystem. |
 | <span id="snapshot-field-command-palette"></span>`snapshot-field-command-palette` | `window.command_palette` | `object` | Command palette visibility, mode, query, and index counters without result row text. |
 | <span id="snapshot-field-notes"></span>`snapshot-field-notes` | `window.notes` | `object` | Notes and bookmark state already live in the window, without sidecar reads or note bodies. |
@@ -864,6 +870,8 @@ sidebar show/hide animation and belongs to `WFR-SHELL-GEOMETRY`, not to this row
 | <span id="snapshot-field-reveal-status"></span>`snapshot-field-reveal-status` | `workspace.reveal_status` | `string` | The latest `win.reveal-workspace-path` outcome: `none` (no reveal yet), `pending`, `revealed`, or one typed failure: `not-in-workspace`, `outside-scope`, `not-found`, `hidden-by-visibility`, `beyond-entry-cap`, `superseded`, `unsettled`. |
 | <span id="snapshot-field-reveal-generation"></span>`snapshot-field-reveal-generation` | `workspace.reveal_generation` | `u64` | Request generation of the latest reveal; `0` before any reveal. Each activation advances it, so a client can tell its reveal's status from an earlier one. |
 | <span id="snapshot-field-reveal-depth"></span>`snapshot-field-reveal-depth` | `workspace.reveal_depth` | `u32?` | Tree depth of the latest reveal's target row (`0` for a workspace folder row), once the path has resolved. Never a path or a listing. |
+| <span id="snapshot-field-limited-directory-count"></span>`snapshot-field-limited-directory-count` | `workspace.limited_directory_count` | `u32` | Expanded directories whose listing the per-directory retained-byte budget cut; each ends with a "Showing X of Y entries" row. A directory has no entry-count cap. |
+| <span id="snapshot-field-loading-directory-count"></span>`snapshot-field-loading-directory-count` | `workspace.loading_directory_count` | `u32` | Expanded directories still applying their rows in time-sliced batches (each ends with a "Loading entries… X of Y" row); `0` once `workspace-refresh-complete` holds. |
 | <span id="snapshot-field-visible"></span>`snapshot-field-visible` | `command_palette.visible`, `content_search.visible` | `bool` | Whether the palette or workspace-search panel is currently revealed. |
 | <span id="snapshot-field-command-palette-searching"></span>`snapshot-field-command-palette-searching` | `command_palette.searching` | `bool` | Whether one current active or latest palette query still owns readiness. |
 | <span id="snapshot-field-query"></span>`snapshot-field-query` | `command_palette.query`, `content_search.query` | `string` | Current query text for the palette or workspace-search panel. |
@@ -888,8 +896,10 @@ sidebar show/hide animation and belongs to `WFR-SHELL-GEOMETRY`, not to this row
 | <span id="snapshot-field-glob-filter"></span>`snapshot-field-glob-filter` | `content_search.glob_filter` | `string?` | Current glob filter text when present. |
 | <span id="snapshot-field-searching"></span>`snapshot-field-searching` | `content_search.searching` | `bool` | Whether a workspace search worker is currently running. |
 | <span id="snapshot-field-file-count"></span>`snapshot-field-file-count` | `content_search.file_count` | `u32` | Number of files with matches in the current workspace search summary. |
-| <span id="snapshot-field-match-count"></span>`snapshot-field-match-count` | `content_search.match_count` | `u32` | Total match count in the current workspace search summary. |
-| <span id="snapshot-field-result-capped"></span>`snapshot-field-result-capped` | `content_search.result_capped` | `bool` | Whether the workspace search result cap was reached. |
+| <span id="snapshot-field-match-count"></span>`snapshot-field-match-count` | `content_search.match_count` | `u32` | Matches retained and shown in the current workspace search (the same as `retained_match_count`). |
+| <span id="snapshot-field-result-capped"></span>`snapshot-field-result-capped` | `content_search.result_capped` | `bool` | Whether the workspace search's retained-byte budget cut the results (the name predates the budget, which replaced the 16,384-match cap; workspace search has no match-count cap). |
+| <span id="snapshot-field-retained-match-count"></span>`snapshot-field-retained-match-count` | `content_search.retained_match_count` | `u32` | Matches retained and shown: a gapless prefix of the matches found. |
+| <span id="snapshot-field-matches-found"></span>`snapshot-field-matches-found` | `content_search.matches_found` | `u32` | Matches found, including those past the retained-byte budget, saturating at `u32::MAX`; grows until the search ends and equals `retained_match_count` when the budget did not cut. |
 | <span id="snapshot-field-replace-query-present"></span>`snapshot-field-replace-query-present` | `content_search.replace_query_present` | `bool` | Whether replacement text is present, without exposing its contents. |
 | <span id="snapshot-field-replace-preview-mode"></span>`snapshot-field-replace-preview-mode` | `content_search.replace_preview_mode` | `bool` | Whether Replace All preview rows are visible. |
 | <span id="snapshot-field-replace-preview-pending"></span>`snapshot-field-replace-preview-pending` | `content_search.replace_preview_pending` | `bool` | Whether Replace All preview generation is pending. |

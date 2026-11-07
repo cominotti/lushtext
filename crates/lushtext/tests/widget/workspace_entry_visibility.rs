@@ -311,7 +311,7 @@ fn search_and_collect_files(window: &LushtextWindow, spec: &SearchQuerySpec) -> 
         .file_groups
         .borrow()
         .keys()
-        .cloned()
+        .map(|path| path.to_path_buf())
         .collect()
 }
 

@@ -744,17 +744,234 @@ fn test_continuous_outer_scrolling_stays_stable() {
     drop(tree.window);
 }
 
+/// Run `test` with the sidebar's directory budget lowered to `bytes`.
+fn with_directory_budget(bytes: u64, test: impl FnOnce()) {
+    lushtext_core::ui::sidebar::set_sidebar_directory_retained_bytes_for_test(bytes);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+    lushtext_core::ui::sidebar::set_sidebar_directory_retained_bytes_for_test(0);
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// The listing evidence of `directory`, from the section's plain mirrors.
+fn listing(
+    section: &LushtextWorkspaceSection,
+    directory: &Path,
+) -> lushtext_core::ui::sidebar::evidence::DirectoryListingEvidence {
+    section
+        .workspace_section_evidence()
+        .directory_listings
+        .into_iter()
+        .find(|listing| listing.path == directory)
+        .expect("the directory is materialized")
+}
+
+/// A directory past the per-directory budget ends with the budget row,
+/// rendered at the bottom, stating exactly X of Y.
 #[test]
 fn test_truncation_placeholder_is_reachable_at_the_bottom() {
-    let tree = large_tree(&[("nested", 10_050)], 800);
-    expand_path(&tree.section, &tree.root, &tree.root.join("nested"));
-    scroll_outer_to_bottom(&tree.sidebar);
-    let labels = rendered_labels(&tree.section);
-    assert!(
-        labels.iter().any(|label| label.contains("showing first")),
-        "the truncation placeholder must be rendered at the bottom; got {:?}",
-        labels.iter().next_back()
+    with_directory_budget(256 * 1024, || {
+        let tree = large_tree(&[("nested", 2_000)], 800);
+        let nested = tree.root.join("nested");
+        expand_path(&tree.section, &tree.root, &nested);
+        let evidence = listing(&tree.section, &nested);
+        assert!(evidence.directory_limited);
+        assert_eq!(evidence.directory_total_entries, 2_000);
+        let shown = evidence.directory_retained_entries;
+        assert!(
+            shown > 0 && shown < 2_000,
+            "the budget cut the listing: {shown}"
+        );
+        assert_eq!(evidence.loading_tail_rows, 0);
+        scroll_outer_to_bottom(&tree.sidebar);
+        let expected = format!("Showing {} of 2,000 entries", group_thousands(shown));
+        let labels = drawn_labels(&tree.sidebar, &tree.section);
+        assert!(
+            labels.contains(&expected),
+            "the budget row must be drawn at the bottom; got {:?}",
+            labels.iter().next_back()
+        );
+        // X entries above it, in sort order.
+        assert!(labels.contains(&file_name(shown - 1)));
+        drop(tree.window);
+    });
+}
+
+fn group_thousands(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// No count cap (`bound-lists-by-budget-not-count`): 16,385 entries are all
+/// listed, with no placeholder row, and the last one is drawn.
+#[test]
+fn test_directory_past_mains_cap_lists_every_entry() {
+    let tree = large_tree(&[("nested", 16 * 1024 + 1)], 800);
+    let nested = tree.root.join("nested");
+    expand_path(&tree.section, &tree.root, &nested);
+    let evidence = listing(&tree.section, &nested);
+    assert_eq!(evidence.directory_retained_entries, 16 * 1024 + 1);
+    assert_eq!(evidence.directory_total_entries, 16 * 1024 + 1);
+    assert!(!evidence.directory_limited);
+    assert_eq!(
+        evidence.loading_tail_rows, 0,
+        "no loading row after the terminal"
     );
+    assert_last_row_rendered(&tree.section, &tree.sidebar, 16 * 1024 + 1);
+    assert!(
+        !rendered_labels(&tree.section)
+            .iter()
+            .any(|label| label.contains("showing first") || label.starts_with("Showing ")),
+        "no placeholder row ends a directory within its budget"
+    );
+    let section_evidence = tree.section.workspace_section_evidence();
+    assert_eq!(section_evidence.cache_full_rebuilds, 0);
+    drop(tree.window);
+}
+
+/// 131,072 entries are listed and reachable: the loading row ends the
+/// directory while batches remain and readiness stays pending, the first rows
+/// are interactive before the last batch, the last row is drawn after a
+/// focus scroll (what keyboard traversal does) and after a path reveal, and
+/// realized rows stay bounded (A1).
+#[test]
+fn test_directory_of_131072_entries_is_listed_and_reachable() {
+    let tree = large_tree(&[("nested", 128 * 1024)], 800);
+    let nested = tree.root.join("nested");
+    wait_until(Duration::from_secs(10), || {
+        row_for_path(&tree.section, &nested).is_some()
+    });
+    row_for_path(&tree.section, &nested)
+        .expect("directory row")
+        .set_expanded(true);
+    let mut saw_loading = false;
+    let mut first_rows_while_loading = false;
+    wait_until(Duration::from_secs(240), || {
+        let evidence = tree.section.workspace_section_evidence();
+        let loading = evidence
+            .directory_listings
+            .iter()
+            .any(|listing| listing.path == nested && listing.loading_tail_rows == 1);
+        if loading {
+            saw_loading = true;
+            assert!(
+                evidence.refresh_blocks_readiness,
+                "readiness stays pending while the directory loads"
+            );
+            if rendered_labels(&tree.section).contains(&file_name(0)) {
+                first_rows_while_loading = true;
+            }
+        }
+        evidence.directory_listings.iter().any(|listing| {
+            listing.path == nested
+                && listing.directory_retained_entries == 128 * 1024
+                && listing.loading_tail_rows == 0
+        }) && !evidence.refresh_blocks_readiness
+    });
+    assert!(
+        saw_loading,
+        "a large directory shows its loading row while it loads"
+    );
+    assert!(
+        first_rows_while_loading,
+        "the first screen of rows is interactive before the last batch"
+    );
+    let evidence = listing(&tree.section, &nested);
+    assert_eq!(evidence.directory_total_entries, 128 * 1024);
+    assert!(!evidence.directory_limited);
+    assert_eq!(
+        tree.section
+            .workspace_section_evidence()
+            .cache_full_rebuilds,
+        0
+    );
+
+    let last = nested.join(file_name(128 * 1024 - 1));
+    select_and_scroll_to(&tree.section, &last);
+    flush_after_delay(Duration::from_millis(300));
+    assert!(
+        drawn_labels(&tree.sidebar, &tree.section).contains(&file_name(128 * 1024 - 1)),
+        "the last of 131,072 rows is drawn after a focus scroll"
+    );
+    assert!(rendered_rows(&tree.section).len() <= GTK_LIST_VIEW_REALIZED_CAP + 8);
+
+    let middle = nested.join(file_name(64 * 1024));
+    assert_eq!(
+        reveal_and_settle(&tree.window, &tree.sidebar, &middle),
+        WorkspaceRevealStatus::Revealed
+    );
+    assert!(drawn_labels(&tree.sidebar, &tree.section).contains(&file_name(64 * 1024)));
+    drop(tree.window);
+}
+
+/// Collapsing, and refreshing, a directory that is still loading leaves no
+/// stale batch, cache entry or loading row, and the next load completes.
+#[test]
+fn test_superseding_a_loading_directory_leaves_no_stale_rows() {
+    let tree = large_tree(&[("nested", 20_000)], 800);
+    let nested = tree.root.join("nested");
+    tree.section
+        .set_reconciliation_batch_delay_for_test(Duration::from_millis(30));
+    wait_until(Duration::from_secs(10), || {
+        row_for_path(&tree.section, &nested).is_some()
+    });
+    let row = row_for_path(&tree.section, &nested).expect("directory row");
+    row.set_expanded(true);
+    wait_until(Duration::from_secs(30), || {
+        tree.section
+            .workspace_section_evidence()
+            .directory_listings
+            .iter()
+            .any(|listing| listing.path == nested && listing.loading_tail_rows == 1)
+    });
+    // Collapse mid-load: once the section settles, no loading row is left
+    // behind by the collapsed directory's load.
+    row.set_expanded(false);
+    wait_for_refresh_idle(&tree.section);
+    flush_after_delay(Duration::from_millis(200));
+    assert!(
+        !tree
+            .section
+            .workspace_section_evidence()
+            .directory_listings
+            .iter()
+            .any(|listing| listing.loading_tail_rows > 0),
+        "no loading row survives a collapse"
+    );
+    // Expand again, and refresh while it loads.
+    row_for_path(&tree.section, &nested)
+        .expect("directory row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(30), || {
+        tree.section
+            .workspace_section_evidence()
+            .directory_listings
+            .iter()
+            .any(|listing| listing.path == nested && listing.loading_tail_rows == 1)
+    });
+    tree.section.imp().refresh_button.emit_clicked();
+    tree.section
+        .set_reconciliation_batch_delay_for_test(Duration::ZERO);
+    wait_for_refresh_idle(&tree.section);
+    flush_after_delay(Duration::from_millis(300));
+    wait_for_refresh_idle(&tree.section);
+    let evidence = listing(&tree.section, &nested);
+    assert_eq!(evidence.directory_retained_entries, 20_000);
+    assert_eq!(evidence.loading_tail_rows, 0);
+    let section = tree.section.workspace_section_evidence();
+    assert_eq!(
+        section.cache_full_rebuilds, 0,
+        "no batch left the caches stale"
+    );
+    assert_last_row_rendered(&tree.section, &tree.sidebar, 20_000);
     drop(tree.window);
 }
 
@@ -1928,15 +2145,19 @@ fn test_reveal_through_a_hidden_component_fails_without_changing_visibility() {
 
 #[test]
 fn test_reveal_past_the_directory_entry_cap_fails_as_beyond_entry_cap() {
-    // 10,000 is the per-directory cap; the target sorts after every kept row.
-    let tree = collapsed_tree(&[("huge", 10_050)], 800);
-    assert_reveal_fails_without_side_effects(
-        &tree.window,
-        &tree.sidebar,
-        &tree.root.join("huge").join(file_name(10_040)),
-        WorkspaceRevealStatus::BeyondEntryCap,
-    );
-    drop(tree.window);
+    // A directory has no entry-count cap (`bound-lists-by-budget-not-count`);
+    // its retained-byte budget, lowered here, is what can cut it, and the
+    // target sorts after every kept row.
+    with_directory_budget(256 * 1024, || {
+        let tree = collapsed_tree(&[("huge", 2_000)], 800);
+        assert_reveal_fails_without_side_effects(
+            &tree.window,
+            &tree.sidebar,
+            &tree.root.join("huge").join(file_name(1_990)),
+            WorkspaceRevealStatus::BeyondEntryCap,
+        );
+        drop(tree.window);
+    });
 }
 
 #[test]
@@ -2155,6 +2376,136 @@ fn test_reveal_geometry_snapshot_is_bounded_and_unlabelled() {
     assert!(
         !json.contains("row-00"),
         "no file name may cross the automation privacy boundary"
+    );
+    drop(tree.window);
+}
+
+/// `bound-lists-by-budget-not-count` tasks 4.1 and 8.1–8.2: expanding
+/// directories of 10,000, 16,385 and 131,072 entries, presented: every
+/// dispatch from the expansion to the directory's terminal fits `B_SETTLE_US`
+/// on the optimized widget build (printed on every build), and the terminal
+/// does not grow with the directory: at 10,000 and 131,072 entries it differs
+/// by less than one 120 Hz reference frame (8.3 ms) on every build.
+#[test]
+fn test_directory_expansion_dispatches_fit_the_settle_budget() {
+    use crate::common::{timing_verdicts_enforced, worst_dispatch_until};
+    use lushtext_core::model::responsiveness_budget::B_SETTLE_US;
+    let mut terminals = Vec::new();
+    for count in [10_000usize, 16 * 1024 + 1, 128 * 1024] {
+        let tree = large_tree(&[("nested", count)], 800);
+        let nested = tree.root.join("nested");
+        wait_until(Duration::from_secs(10), || {
+            row_for_path(&tree.section, &nested).is_some()
+        });
+        wait_for_refresh_idle(&tree.section);
+        row_for_path(&tree.section, &nested)
+            .expect("directory row")
+            .set_expanded(true);
+        let (held, worst) = worst_dispatch_until(Duration::from_secs(240), || {
+            listing(&tree.section, &nested).directory_retained_entries == count
+                && !tree
+                    .section
+                    .workspace_section_evidence()
+                    .refresh_blocks_readiness
+        });
+        assert!(held, "the expansion of {count} entries settles");
+        let evidence = tree.section.workspace_section_evidence();
+        terminals.push(evidence.reconcile_last_terminal_us);
+        println!(
+            "list-budget-evidence {{\"m\":\"sidebar\",\"entries\":{count},\"worst_dispatch_us\":{},\"terminal_us\":{},\"batches_per_turn\":{},\"realized_rows\":{},\"owner_resets\":{}}}",
+            worst.as_micros(),
+            evidence.reconcile_last_terminal_us,
+            evidence.reconcile_max_batches_per_turn,
+            rendered_rows(&tree.section).len(),
+            evidence.cache_owner_resets,
+        );
+        if timing_verdicts_enforced() {
+            assert!(
+                worst.as_micros() <= u128::from(B_SETTLE_US),
+                "a dispatch of the {count}-entry expansion took {} us, over B_SETTLE_US",
+                worst.as_micros()
+            );
+        }
+        // Collapse and expand again: the new store takes the directory's
+        // path caches over from the old one, forgetting its rows in slices.
+        row_for_path(&tree.section, &nested)
+            .expect("directory row")
+            .set_expanded(false);
+        wait_for_refresh_idle(&tree.section);
+        row_for_path(&tree.section, &nested)
+            .expect("directory row")
+            .set_expanded(true);
+        let (held, again) = worst_dispatch_until(Duration::from_secs(240), || {
+            listing(&tree.section, &nested).directory_retained_entries == count
+                && !tree
+                    .section
+                    .workspace_section_evidence()
+                    .refresh_blocks_readiness
+        });
+        assert!(held, "the re-expansion of {count} entries settles");
+        assert_eq!(
+            tree.section
+                .workspace_section_evidence()
+                .cache_full_rebuilds,
+            0
+        );
+        println!(
+            "list-budget-evidence {{\"m\":\"sidebar-reexpand\",\"entries\":{count},\"worst_dispatch_us\":{}}}",
+            again.as_micros()
+        );
+        // Printed, not enforced: GTK's synchronous collapse of the old
+        // listing (19 ms at 16,000 rows, before this measurement starts) can
+        // leave work that lands in the re-expansion's first dispatches (one
+        // 21 ms outlier in 6 runs at 16,385); recorded in the design as an
+        // open follow-up.
+        drop(tree.window);
+    }
+    assert!(
+        terminals[2].abs_diff(terminals[0]) < 8_333,
+        "terminal durations {terminals:?} µs grow with the directory"
+    );
+}
+
+/// `bound-lists-by-budget-not-count` tasks 2.4 and 8.3: what 16,384 expanded
+/// rows really cost, presented, against what the directory budget charges
+/// them: resident high-water growth at most 5/4 of the charge. Prints the
+/// per-row growth the fixed charge is calibrated from.
+#[test]
+fn test_directory_retention_stays_within_its_charge() {
+    use crate::common::{proc_status_kib, reset_vm_hwm};
+    use lushtext_core::ui::sidebar::policy::{
+        SIDEBAR_PATH_GRAPH_OVERHEAD, SIDEBAR_ROW_FIXED_CHARGE, SIDEBAR_ROW_PATH_COPIES,
+    };
+    let tree = large_tree(&[("nested", 16 * 1024)], 800);
+    let nested = tree.root.join("nested");
+    wait_until(Duration::from_secs(10), || {
+        row_for_path(&tree.section, &nested).is_some()
+    });
+    wait_for_refresh_idle(&tree.section);
+    flush_after_delay(Duration::from_millis(300));
+    reset_vm_hwm();
+    let before_kib = proc_status_kib("VmRSS:");
+    row_for_path(&tree.section, &nested)
+        .expect("directory row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(120), || {
+        listing(&tree.section, &nested).directory_retained_entries == 16 * 1024
+    });
+    wait_for_refresh_idle(&tree.section);
+    flush_after_delay(Duration::from_millis(300));
+    let growth = proc_status_kib("VmHWM:").saturating_sub(before_kib) * 1024;
+    let path_len = nested.join(file_name(0)).as_os_str().len() as u64;
+    let charged = 16
+        * 1024
+        * ((path_len + SIDEBAR_PATH_GRAPH_OVERHEAD) * SIDEBAR_ROW_PATH_COPIES
+            + SIDEBAR_ROW_FIXED_CHARGE);
+    println!(
+        "list-budget-evidence {{\"m\":\"sidebar-memory\",\"rows\":16384,\"path_len\":{path_len},\"growth_bytes\":{growth},\"charged_bytes\":{charged},\"growth_per_row\":{}}}",
+        growth / (16 * 1024)
+    );
+    assert!(
+        growth * 4 <= charged * 5,
+        "16,384 rows grew the resident set by {growth} bytes, over 5/4 of the {charged} bytes charged"
     );
     drop(tree.window);
 }

@@ -216,6 +216,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
+| `crates/lushtext-core/src/model/content_search.rs` | `BEYOND_BUDGET_REPORT_INTERVAL_MS` | 250 | out: time | cadence of the running found count (`bound-lists-by-budget-not-count` D4) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_SEARCH_MATCH_LINE_BYTES` | 4,096 | presentation cap | up from 4,096: past it a match line is cut (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_PREVIEW_ROWS` | 16,384 | presentation cap | up from 10,000: M3, preview worst dispatch 27.8-29.2 ms vs main 26.0-28.6 ms, 64 MiB budget unchanged (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_PREVIEW_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace Preview omits rows (D12) |
@@ -455,12 +456,6 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_UNDO_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace All skips files (D12) |
 | `crates/lushtext-core/src/services/content_search/replace.rs` | `MAX_REPLACE_UNDO_RETAINED_BYTES` | 67,108,864 | cap | power of two |
 
-### `crates/lushtext-core/src/services/content_search/search.rs`
-
-| File | Constant | Value | Kind | Rounding or reason |
-|---|---|---|---|---|
-| `crates/lushtext-core/src/services/content_search/search.rs` | `RESULT_CAP` | 16,384 | presentation cap | up from 10,000: M2, search worst 22-26 ms vs main 20-23 ms (the first-results reveal), 256 events per turn (D12) |
-
 ### `crates/lushtext-core/src/services/draft_service.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
@@ -651,7 +646,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/services/search_backup.rs` | `JOURNAL_SCAN_MAX_ENTRIES` | 16,384 | presentation cap | up from 10,000: at least RESULT_CAP (asserted); M12, 33.9-34.5 MiB, 381-392 ms (D12) |
+| `crates/lushtext-core/src/services/search_backup.rs` | `JOURNAL_SCAN_MAX_ENTRIES` | 16,384 | presentation cap | up from 10,000: at least MAX_REPLACE_PREVIEW_ROWS, the files one Replace All can touch (asserted; `bound-lists-by-budget-not-count` D3); M12, 33.9-34.5 MiB, 381-392 ms (D12) |
 
 ### `crates/lushtext-core/src/services/search_history.rs`
 
@@ -991,6 +986,12 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
+| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `SEARCH_MATCH_FIXED_CHARGE` | 2,048 | coverage window | per-match retention measured and rounded up to a power of two (`bound-lists-by-budget-not-count` task 2.4) |
+| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `MAIN_SEARCH_WORST_RETENTION` | 234,881,024 | derived | 16,384 x (4,096-byte line + 2 x 4,096-byte path + fixed charge): main's worst case under RESULT_CAP (D3) |
+| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `MAIN_SEARCH_CAP_MATCHES` | 16,384 | external fact | the retired RESULT_CAP the budget must not lose against (D3) |
+| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `LINUX_PATH_MAX_BYTES` | 4,096 | external fact | Linux PATH_MAX (`<linux/limits.h>`) |
+| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `SEARCH_RESULTS_RETAINED_BYTES` | 268,435,456 | presentation cap | up from MAIN_SEARCH_WORST_RETENTION: the search's retained-byte budget, replacing RESULT_CAP (D3) |
+| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `REVEAL_TURN_MAX_EVENTS` | 32 | cap | power of two; the reveal turn and those after it until 256 matches carry small batches (D4 b) |
 | `crates/lushtext-core/src/ui/search_panel/policy.rs` | `PREVIEW_ROW_RETAINED_BYTES` | `expr: std::mem::size_of::<Replacement>() .saturating_add(std::mem::size_of::<Option<usize>>()) .saturating_add(std::mem::size_of::<SearchMatchId>())` | derived | computed from named inputs; not rounded (D2) |
 
 ### `crates/lushtext-core/src/ui/search_panel/retirement.rs`
@@ -1010,6 +1011,13 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_ROW_PATH_COPIES` | 8 | coverage window | path copies a row retains, rounded up (`bound-lists-by-budget-not-count` D3) |
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_ROW_FIXED_CHARGE` | 1,024 | coverage window | per-row retention measured and rounded up to a power of two (task 2.4) |
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_PATH_GRAPH_OVERHEAD` | 16 | external fact | two `usize` words, the scanner's per-path graph overhead |
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAIN_SIDEBAR_CAP_ENTRIES` | 10,000 | external fact | the retired MAX_DIR_ENTRIES the budget must not lose against (D3) |
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAIN_SIDEBAR_WORST_RETENTION` | 339,200,000 | derived | 10,000 rows of PATH_MAX paths (D3) |
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_TYPICAL_FLOOR_RETENTION` | 454,033,408 | derived | 131,072 rows of 32-byte names under a 256-byte parent (D3) |
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_DIRECTORY_RETAINED_BYTES` | 536,870,912 | presentation cap | up from SIDEBAR_TYPICAL_FLOOR_RETENTION, the larger floor: a directory's retained-byte budget, replacing MAX_DIR_ENTRIES (D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAX_UNIQUE_NAME_ATTEMPTS` | 1,024 | retry budget | rounded up (D6) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `PERSIST_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `REVEAL_SETTLE_FRAME_BUDGET` | 64 | coverage window | rounded up (D5) |
@@ -1019,6 +1027,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs` | `REVEAL_NEIGHBOURS_PER_SIDE` | 4 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
+| `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs` | `REVEAL_RESCROLL_BUDGET` | 2 | retry budget | power of two; re-issued scrolls once a clipped target row is realized (`bound-lists-by-budget-not-count`) |
 
 ### `crates/lushtext-core/src/ui/sidebar/workspace_section/peek_execution.rs`
 
@@ -1046,8 +1055,9 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `MAX_DIR_ENTRIES` | 10,000 | presentation cap, exception | up from 10,000, kept: M5 measured the terminal dispatch of a capped expansion at 25-30 ms (main, 10,000) and 41-43 ms (16,384), past main + one reference frame (D12) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_APPEND_BATCH_SIZE` | 256 | cap | power of two |
+| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `FIRST_BATCH_ROWS` | 32 | cap | power of two; the first rows of an empty directory, while the list creates its row widgets (`bound-lists-by-budget-not-count`) |
+| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `STALE_CACHE_ROWS_PER_UNIT` | 4,096 | cap | power of two; a superseded store's cached rows forgotten per unit of a load (`bound-lists-by-budget-not-count`) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_RECONCILE_DIRECT_ROWS` | 256 | cap | power of two |
 
 ### `crates/lushtext-core/src/ui/sidebar/workspace_section/watch.rs`

@@ -23,6 +23,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{self, gio, glib};
 
+use super::LushtextSearchPanel;
 use super::imp;
 use super::item::SearchResultItem;
 use crate::ui::accessibility::{self, RowAccessibility};
@@ -50,7 +51,7 @@ impl imp::LushtextSearchPanel {
                         .runtime
                         .file_groups
                         .borrow()
-                        .get(&path)
+                        .get(path.as_path())
                         .map(|group| group.child_store.clone().upcast())
                 } else {
                     None
@@ -146,210 +147,29 @@ impl imp::LushtextSearchPanel {
             let list_item = list_item
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("ListItem");
-            let Some(expander) = list_item
-                .child()
-                .and_then(|w| w.downcast::<gtk4::TreeExpander>().ok())
-            else {
-                return;
-            };
-
-            let Some(row) = list_item
-                .item()
-                .and_then(|item| item.downcast::<gtk4::TreeListRow>().ok())
-            else {
-                return;
-            };
-            expander.set_list_row(Some(&row));
-
-            let Some(result_item) = row.item().and_downcast::<SearchResultItem>() else {
-                return;
-            };
-
-            let Some(content_box) = expander
-                .child()
-                .and_then(|w| w.downcast::<gtk4::Box>().ok())
-            else {
-                return;
-            };
-
-            let preview_checkbox = content_box
-                .first_child()
-                .and_then(|w| w.downcast::<gtk4::CheckButton>().ok());
-            if let Some(ref checkbox) = preview_checkbox {
-                checkbox.set_visible(false);
-                accessibility::set_hidden(checkbox, true);
+            if let Some(panel) = bind_panel_weak.upgrade() {
+                panel
+                    .imp()
+                    .bound_result_items
+                    .borrow_mut()
+                    .insert(list_item.as_ptr() as usize, list_item.downgrade());
             }
-
-            let file_label = preview_checkbox
-                .as_ref()
-                .and_then(gtk4::prelude::WidgetExt::next_sibling)
-                .and_then(|w| w.downcast::<gtk4::Label>().ok());
-            let count_badge = file_label
-                .as_ref()
-                .and_then(gtk4::prelude::WidgetExt::next_sibling)
-                .and_then(|w| w.downcast::<gtk4::Label>().ok());
-            let line_num_label = count_badge
-                .as_ref()
-                .and_then(gtk4::prelude::WidgetExt::next_sibling)
-                .and_then(|w| w.downcast::<gtk4::Label>().ok());
-            let line_content_label = line_num_label
-                .as_ref()
-                .and_then(gtk4::prelude::WidgetExt::next_sibling)
-                .and_then(|w| w.downcast::<gtk4::Label>().ok());
-
-            if result_item.is_file_item() {
-                apply_result_row_accessibility(&expander, &result_item, Some(row.is_expanded()));
-                if let Some(ref label) = file_label {
-                    label.set_text(&result_item.display_path());
-                    label.set_visible(true);
-                }
-                if let Some(ref badge) = count_badge {
-                    badge.set_visible(true);
-                    let binding = result_item
-                        .bind_property("match-count", badge, "label")
-                        .transform_to(|_: &glib::Binding, value: &glib::Value| {
-                            let count: u32 = value.get().ok()?;
-                            Some(format!("{count}").to_value())
-                        })
-                        .sync_create()
-                        .build();
-                    let bindings = BindingBag::new();
-                    bindings.track(binding);
-                    // SAFETY: the binding bag is removed in connect_unbind
-                    // below using the same storage key on the recycled ListItem.
-                    unsafe {
-                        list_item.set_data("count-bindings", bindings);
-                    }
-                }
-                if let Some(ref label) = line_num_label {
-                    label.set_visible(false);
-                }
-                if let Some(ref label) = line_content_label {
-                    label.set_visible(false);
-                }
-            } else {
-                apply_result_row_accessibility(&expander, &result_item, None);
-                let in_preview = bind_panel_weak
-                    .upgrade()
-                    .is_some_and(|p| p.imp().preview.preview_mode.get());
-
-                if let Some(ref label) = file_label {
-                    label.set_visible(false);
-                }
-                if let Some(ref badge) = count_badge {
-                    badge.set_visible(false);
-                }
-                if let Some(ref label) = line_num_label {
-                    label.set_text(&format!("{}", result_item.line_number()));
-                    label.set_visible(true);
-                }
-
-                if in_preview {
-                    if let Some(panel) = bind_panel_weak.upgrade() {
-                        let imp = panel.imp();
-                        let match_id = result_item.match_id();
-                        let outcome = imp.preview.preview_outcome.borrow();
-                        let match_idx = outcome
-                            .as_ref()
-                            .and_then(|outcome| outcome.preview_index(match_id));
-
-                        if let Some(idx) = match_idx {
-                            let r = &outcome.as_ref().expect("preview outcome").replacements[idx];
-                            let replacement_line_number = r.line_number;
-                            let original = &r.original_line;
-                            let replaced = &r.replaced_line;
-                            let start = r.match_range.start.min(original.len());
-                            let end = r.match_range.end.min(original.len());
-
-                            let markup = render_preview_markup(original, replaced, start, end);
-                            let is_checked =
-                                imp.preview.checked_match_ids.borrow().contains(&match_id);
-                            drop(outcome);
-
-                            if let Some(ref label) = line_content_label {
-                                label.set_markup(&markup);
-                                label.set_visible(true);
-                            }
-
-                            if let Some(ref checkbox) = preview_checkbox {
-                                accessibility::set_labelled_description(
-                                    checkbox,
-                                    &format!(
-                                        "Include replacement at line {replacement_line_number}"
-                                    ),
-                                    "Toggle whether this replacement is applied",
-                                );
-                                accessibility::set_pressed(checkbox, is_checked);
-                                accessibility::set_hidden(checkbox, false);
-                                checkbox.set_active(is_checked);
-                                checkbox.set_visible(true);
-                            }
-                        } else {
-                            drop(outcome);
-                            if let Some(ref label) = line_content_label {
-                                let content = result_item.line_content();
-                                let markup = render_match_markup(
-                                    &content,
-                                    result_item.match_start() as usize,
-                                    result_item.match_end() as usize,
-                                );
-                                label.set_markup(&markup);
-                                label.set_visible(true);
-                            }
-                        }
-                    }
-                } else if let Some(ref label) = line_content_label {
-                    let content = result_item.line_content();
-                    let markup = render_match_markup(
-                        &content,
-                        result_item.match_start() as usize,
-                        result_item.match_end() as usize,
-                    );
-                    label.set_markup(&markup);
-                    label.set_visible(true);
-                }
-            }
-
-            // Disable expander gesture for match rows, mirroring the sidebar tree fix.
-            for controller in expander.observe_controllers().into_iter().flatten() {
-                if let Ok(gesture) = controller.downcast::<gtk4::GestureClick>() {
-                    if result_item.is_match_item() {
-                        gesture.set_propagation_phase(gtk4::PropagationPhase::None);
-                    } else {
-                        gesture.set_propagation_phase(gtk4::PropagationPhase::Bubble);
-                    }
-                }
-            }
+            bind_result_row(&bind_panel_weak, list_item);
         });
 
-        factory.connect_unbind(|_, list_item| {
+        let unbind_panel_weak = self.obj().downgrade();
+        factory.connect_unbind(move |_, list_item| {
             let list_item = list_item
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("ListItem");
-            // SAFETY: mirrors set_data("count-bindings") in connect_bind above.
-            unsafe {
-                if let Some(bindings) = list_item.steal_data::<BindingBag>("count-bindings") {
-                    bindings.clear();
-                }
+            if let Some(panel) = unbind_panel_weak.upgrade() {
+                panel
+                    .imp()
+                    .bound_result_items
+                    .borrow_mut()
+                    .remove(&(list_item.as_ptr() as usize));
             }
-            if let Some(expander) = list_item
-                .child()
-                .and_then(|w| w.downcast::<gtk4::TreeExpander>().ok())
-            {
-                accessibility::clear_row_accessibility(&expander);
-                accessibility::set_expanded(&expander, None);
-                if let Some(content_box) = expander
-                    .child()
-                    .and_then(|w| w.downcast::<gtk4::Box>().ok())
-                    && let Some(checkbox) = content_box
-                        .first_child()
-                        .and_then(|w| w.downcast::<gtk4::CheckButton>().ok())
-                {
-                    checkbox.set_visible(false);
-                    accessibility::set_hidden(&checkbox, true);
-                }
-                expander.set_list_row(None::<&gtk4::TreeListRow>);
-            }
+            unbind_result_row(list_item);
         });
 
         self.results_list.set_factory(Some(&factory));
@@ -380,6 +200,240 @@ impl imp::LushtextSearchPanel {
                 }
             }
         });
+    }
+}
+
+/// Project one bound result row: file header or match, in search or preview
+/// mode. The factory's `bind` and [`rebind_bound_result_rows`] both run it.
+fn bind_result_row(
+    bind_panel_weak: &glib::WeakRef<LushtextSearchPanel>,
+    list_item: &gtk4::ListItem,
+) {
+    let list_item = list_item
+        .downcast_ref::<gtk4::ListItem>()
+        .expect("ListItem");
+    let Some(expander) = list_item
+        .child()
+        .and_then(|w| w.downcast::<gtk4::TreeExpander>().ok())
+    else {
+        return;
+    };
+
+    let Some(row) = list_item
+        .item()
+        .and_then(|item| item.downcast::<gtk4::TreeListRow>().ok())
+    else {
+        return;
+    };
+    expander.set_list_row(Some(&row));
+
+    let Some(result_item) = row.item().and_downcast::<SearchResultItem>() else {
+        return;
+    };
+
+    let Some(content_box) = expander
+        .child()
+        .and_then(|w| w.downcast::<gtk4::Box>().ok())
+    else {
+        return;
+    };
+
+    let preview_checkbox = content_box
+        .first_child()
+        .and_then(|w| w.downcast::<gtk4::CheckButton>().ok());
+    if let Some(ref checkbox) = preview_checkbox {
+        checkbox.set_visible(false);
+        accessibility::set_hidden(checkbox, true);
+    }
+
+    let file_label = preview_checkbox
+        .as_ref()
+        .and_then(gtk4::prelude::WidgetExt::next_sibling)
+        .and_then(|w| w.downcast::<gtk4::Label>().ok());
+    let count_badge = file_label
+        .as_ref()
+        .and_then(gtk4::prelude::WidgetExt::next_sibling)
+        .and_then(|w| w.downcast::<gtk4::Label>().ok());
+    let line_num_label = count_badge
+        .as_ref()
+        .and_then(gtk4::prelude::WidgetExt::next_sibling)
+        .and_then(|w| w.downcast::<gtk4::Label>().ok());
+    let line_content_label = line_num_label
+        .as_ref()
+        .and_then(gtk4::prelude::WidgetExt::next_sibling)
+        .and_then(|w| w.downcast::<gtk4::Label>().ok());
+
+    if result_item.is_file_item() {
+        apply_result_row_accessibility(&expander, &result_item, Some(row.is_expanded()));
+        if let Some(ref label) = file_label {
+            label.set_text(&result_item.display_path());
+            label.set_visible(true);
+        }
+        if let Some(ref badge) = count_badge {
+            badge.set_visible(true);
+            let binding = result_item
+                .bind_property("match-count", badge, "label")
+                .transform_to(|_: &glib::Binding, value: &glib::Value| {
+                    let count: u32 = value.get().ok()?;
+                    Some(format!("{count}").to_value())
+                })
+                .sync_create()
+                .build();
+            let bindings = BindingBag::new();
+            bindings.track(binding);
+            // SAFETY: the binding bag is removed in connect_unbind
+            // below using the same storage key on the recycled ListItem.
+            unsafe {
+                list_item.set_data("count-bindings", bindings);
+            }
+        }
+        if let Some(ref label) = line_num_label {
+            label.set_visible(false);
+        }
+        if let Some(ref label) = line_content_label {
+            label.set_visible(false);
+        }
+    } else {
+        apply_result_row_accessibility(&expander, &result_item, None);
+        let in_preview = bind_panel_weak
+            .upgrade()
+            .is_some_and(|p| p.imp().preview.preview_mode.get());
+
+        if let Some(ref label) = file_label {
+            label.set_visible(false);
+        }
+        if let Some(ref badge) = count_badge {
+            badge.set_visible(false);
+        }
+        if let Some(ref label) = line_num_label {
+            label.set_text(&format!("{}", result_item.line_number()));
+            label.set_visible(true);
+        }
+
+        if in_preview {
+            if let Some(panel) = bind_panel_weak.upgrade() {
+                let imp = panel.imp();
+                let match_id = result_item.match_id();
+                let outcome = imp.preview.preview_outcome.borrow();
+                let match_idx = outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.preview_index(match_id));
+
+                if let Some(idx) = match_idx {
+                    let r = &outcome.as_ref().expect("preview outcome").replacements[idx];
+                    let replacement_line_number = r.line_number;
+                    let original = &r.original_line;
+                    let replaced = &r.replaced_line;
+                    let start = r.match_range.start.min(original.len());
+                    let end = r.match_range.end.min(original.len());
+
+                    let markup = render_preview_markup(original, replaced, start, end);
+                    let is_checked = imp.preview.checked_match_ids.borrow().contains(&match_id);
+                    drop(outcome);
+
+                    if let Some(ref label) = line_content_label {
+                        label.set_markup(&markup);
+                        label.set_visible(true);
+                    }
+
+                    if let Some(ref checkbox) = preview_checkbox {
+                        accessibility::set_labelled_description(
+                            checkbox,
+                            &format!("Include replacement at line {replacement_line_number}"),
+                            "Toggle whether this replacement is applied",
+                        );
+                        accessibility::set_pressed(checkbox, is_checked);
+                        accessibility::set_hidden(checkbox, false);
+                        checkbox.set_active(is_checked);
+                        checkbox.set_visible(true);
+                    }
+                } else {
+                    drop(outcome);
+                    if let Some(ref label) = line_content_label {
+                        let content = result_item.line_content();
+                        let markup = render_match_markup(
+                            &content,
+                            result_item.match_start() as usize,
+                            result_item.match_end() as usize,
+                        );
+                        label.set_markup(&markup);
+                        label.set_visible(true);
+                    }
+                }
+            }
+        } else if let Some(ref label) = line_content_label {
+            let content = result_item.line_content();
+            let markup = render_match_markup(
+                &content,
+                result_item.match_start() as usize,
+                result_item.match_end() as usize,
+            );
+            label.set_markup(&markup);
+            label.set_visible(true);
+        }
+    }
+
+    // Disable expander gesture for match rows, mirroring the sidebar tree fix.
+    for controller in expander.observe_controllers().into_iter().flatten() {
+        if let Ok(gesture) = controller.downcast::<gtk4::GestureClick>() {
+            if result_item.is_match_item() {
+                gesture.set_propagation_phase(gtk4::PropagationPhase::None);
+            } else {
+                gesture.set_propagation_phase(gtk4::PropagationPhase::Bubble);
+            }
+        }
+    }
+}
+
+/// Undo [`bind_result_row`]'s per-row state before recycling or rebinding.
+fn unbind_result_row(list_item: &gtk4::ListItem) {
+    let list_item = list_item
+        .downcast_ref::<gtk4::ListItem>()
+        .expect("ListItem");
+    // SAFETY: mirrors set_data("count-bindings") in connect_bind above.
+    unsafe {
+        if let Some(bindings) = list_item.steal_data::<BindingBag>("count-bindings") {
+            bindings.clear();
+        }
+    }
+    if let Some(expander) = list_item
+        .child()
+        .and_then(|w| w.downcast::<gtk4::TreeExpander>().ok())
+    {
+        accessibility::clear_row_accessibility(&expander);
+        accessibility::set_expanded(&expander, None);
+        if let Some(content_box) = expander
+            .child()
+            .and_then(|w| w.downcast::<gtk4::Box>().ok())
+            && let Some(checkbox) = content_box
+                .first_child()
+                .and_then(|w| w.downcast::<gtk4::CheckButton>().ok())
+        {
+            checkbox.set_visible(false);
+            accessibility::set_hidden(&checkbox, true);
+        }
+        expander.set_list_row(None::<&gtk4::TreeListRow>);
+    }
+}
+
+/// Re-project every currently bound row, after a mode switch such as entering
+/// or leaving Replace Preview. GTK binds only the rows it realizes (A1, about
+/// 205), so this costs the realized rows, not the result model
+/// (`bound-lists-by-budget-not-count` task 1.2: the former
+/// `set_model(None)`/`set_model(model)` swap rebuilt the list over the whole
+/// model in one dispatch, 24-28 ms at 16,384 matches).
+pub(super) fn rebind_bound_result_rows(panel: &LushtextSearchPanel) {
+    let items: Vec<gtk4::ListItem> = panel
+        .imp()
+        .bound_result_items
+        .borrow()
+        .values()
+        .filter_map(glib::WeakRef::upgrade)
+        .collect();
+    let panel_weak = panel.downgrade();
+    for list_item in &items {
+        unbind_result_row(list_item);
+        bind_result_row(&panel_weak, list_item);
     }
 }
 

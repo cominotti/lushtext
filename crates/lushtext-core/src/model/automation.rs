@@ -1129,7 +1129,7 @@ pub struct AutomationSearchSnapshot {
     pub workspace_match_count: u32,
     /// Number of files with matches for the current query.
     pub workspace_file_count: u32,
-    /// Whether the workspace search result cap was reached.
+    /// Whether the retained-byte budget cut the workspace search results.
     pub workspace_result_capped: bool,
 }
 
@@ -1170,6 +1170,11 @@ pub struct AutomationWorkspaceSnapshot {
     /// Tree depth of the latest reveal's target row (`0` for a folder row), once
     /// resolved.
     pub reveal_depth: Option<u32>,
+    /// Expanded directories whose listing the retained-byte budget cut (they
+    /// end in a "Showing X of Y entries" row).
+    pub limited_directory_count: u32,
+    /// Expanded directories still loading their entries in batches.
+    pub loading_directory_count: u32,
 }
 
 /// Command palette state that avoids exposing result row bodies.
@@ -1246,8 +1251,14 @@ pub struct AutomationContentSearchSnapshot {
     pub file_count: u32,
     /// Total match count.
     pub match_count: u32,
-    /// Whether the search result cap was reached.
+    /// Whether the retained-byte budget cut the results (the name predates the
+    /// budget; it meant the former 16,384-match cap).
     pub result_capped: bool,
+    /// Matches retained and shown (the same as `match_count`).
+    pub retained_match_count: u32,
+    /// Matches found, including those past the budget, saturating at
+    /// `u32::MAX`; grows until the search ends.
+    pub matches_found: u32,
     /// Whether non-empty replacement text is present, without exposing it.
     pub replace_query_present: bool,
     /// Whether Replace All preview rows are visible.

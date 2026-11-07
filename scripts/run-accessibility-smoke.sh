@@ -44,6 +44,7 @@ ACCESSIBILITY_CASES=(
     workspace-tree-zero-folder
     workspace-tree-dense-constrained
     workspace-tree-deep-expanded
+    workspace-tree-limited
     workspace-tree-file-peek
     workspace-tree-folder-context-menu
     workspace-header-context-menu
@@ -355,6 +356,7 @@ MATRIX_ROWS_BY_CASE = {
     "workspace-tree-zero-folder": ["A11Y-WORKSPACE-ZERO-FOLDER"],
     "workspace-tree-dense-constrained": ["A11Y-WORKSPACE-DENSE-DEEP"],
     "workspace-tree-deep-expanded": ["A11Y-WORKSPACE-DENSE-DEEP"],
+    "workspace-tree-limited": ["A11Y-WORKSPACE-DENSE-DEEP", "A11Y-WORKSPACE-BUSY-ERROR"],
     "workspace-tree-file-peek": ["A11Y-WORKSPACE-PEEK"],
     "workspace-tree-folder-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-WORKSPACE-DRAG-DROP", "A11Y-CONTEXT-MENUS-GENERAL"],
     "workspace-header-context-menu": ["A11Y-WORKSPACE-CONTEXT", "A11Y-CONTEXT-MENUS-GENERAL"],
@@ -559,6 +561,18 @@ begin_read_fault_capture() {
 end_read_fault_capture() {
     BINARY="$DEFAULT_BINARY"
     unset LUSHTEXT_DENY_READ
+}
+# Run the next capture on the same smoke binary (it also carries the
+# smoke-list-budgets feature) with one list budget lowered, so a small fixture
+# reaches the limited state; `end_list_budget_capture` restores the default.
+begin_list_budget_capture() {
+    [[ -x "$READ_FAULT_BINARY" ]] || smoke_fail "smoke binary is missing: $READ_FAULT_BINARY (make accessibility-smoke builds it)"
+    BINARY="$READ_FAULT_BINARY"
+    export "$1=$2"
+}
+end_list_budget_capture() {
+    BINARY="$DEFAULT_BINARY"
+    unset LUSHTEXT_SEARCH_RETAINED_BYTES LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES
 }
 
 collect_accessibility_warnings() {
@@ -945,12 +959,12 @@ seed_capped_results_workspace_for_capture() {
     local root="$ARTIFACT_DIR/fixtures-capped/capped-results-root"
     mkdir -p "$data_dir" "$root"
 
-    # The content-search result cap is a service constant, so the truncation
-    # warning can only be reached with a fixture that really exceeds it. This
-    # workspace stays outside the shared "$ARTIFACT_DIR/fixtures" root so no
-    # other case has to walk 18,000 matching lines.
+    # Workspace search has no match-count cap: its retained-byte budget is
+    # lowered for this capture (LUSHTEXT_SEARCH_RETAINED_BYTES, smoke binary
+    # only), so 600 matching lines reach the limited state. The workspace stays
+    # outside the shared "$ARTIFACT_DIR/fixtures" root so no other case walks it.
     local block index padded
-    block=$(printf 'cappedmatchterm line for accessibility truncation coverage\n%.0s' $(seq 1 600))
+    block=$(printf 'cappedmatchterm line for accessibility truncation coverage\n%.0s' $(seq 1 20))
     for index in $(seq 1 30); do
         printf -v padded '%02d' "$index"
         printf '%s\n' "$block" >"$root/capped-results-${padded}.txt"
@@ -971,6 +985,44 @@ seed_capped_results_workspace_for_capture() {
         "folders": [
           {
             "id": "capped-results-root",
+            "path": "$root"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
+}
+
+# A workspace of its own whose one directory of 400 entries passes the
+# sidebar's directory budget once it is lowered for the capture
+# (LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES, smoke binary only), so the
+# listing ends in its "Showing X of Y entries" budget row.
+seed_limited_directory_workspace_for_capture() {
+    local capture="$1"
+    local data_dir="$ARTIFACT_DIR/captures/$capture/data/lushtext"
+    local root="$ARTIFACT_DIR/fixtures-limited/limited-root"
+    mkdir -p "$data_dir" "$root/limited-directory"
+    local index
+    for index in $(seq -w 1 400); do
+        printf 'x\n' >"$root/limited-directory/limited-entry-$index.txt"
+    done
+    cat >"$data_dir/workspaces.json" <<JSON
+{
+  "kind": "dev.cominotti.lushtext.workspace-state",
+  "version": 1,
+  "data": {
+    "current_scope": {
+      "kind": "all"
+    },
+    "workspaces": [
+      {
+        "id": "limited-directory-smoke",
+        "name": "Limited Directory Smoke",
+        "folders": [
+          {
+            "id": "limited-root",
             "path": "$root"
           }
         ]
@@ -1600,16 +1652,19 @@ fi
 
 if case_selected "workspace-search-capped"; then
 seed_capped_results_workspace_for_capture "workspace-search-capped"
+begin_list_budget_capture LUSHTEXT_SEARCH_RETAINED_BYTES 262144
 run_accessibility_capture "workspace-search-capped" \
     --step window-action:toggle-search-panel \
     --step wait-window-action:set-search-panel-query \
     --step window-string-action:set-search-panel-query=cappedmatchterm \
     --step wait-predicate:search-complete \
-    --step wait-atspi-text:"16,384+ results (truncated)"
+    --step wait-atspi-text:"Showing "
+end_list_budget_capture
 assert_anchor "workspace-search-capped" "workspace search" "entry" "Workspace search query"
 assert_anchor "workspace-search-capped" "workspace search" "list" "Workspace search results"
-# The truncation is announced as text, not only as a warning colour.
-assert_anchor_prefix "workspace-search-capped" "workspace search" "status bar" "16,384+ results (truncated)"
+# The budget cut is stated as text (shown and more found), not only as a
+# warning colour.
+assert_anchor_prefix "workspace-search-capped" "workspace search" "status bar" "Showing "
 fi
 
 if case_selected "workspace-search-replace-undo"; then
@@ -1687,6 +1742,20 @@ assert_anchor "workspace-tree-deep-expanded" "workspace sidebar" "list" "Workspa
 assert_anchor "workspace-tree-deep-expanded" "workspace sidebar" "list item" "Folder deep-tree-root"
 assert_anchor "workspace-tree-deep-expanded" "workspace sidebar" "list item" "Folder Level 1 Deep Folder"
 assert_anchor "workspace-tree-deep-expanded" "workspace sidebar" "list item" "Folder Level 2 Deep Folder"
+fi
+
+if case_selected "workspace-tree-limited"; then
+seed_limited_directory_workspace_for_capture "workspace-tree-limited"
+limited_dir="$ARTIFACT_DIR/fixtures-limited/limited-root/limited-directory"
+begin_list_budget_capture LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES 16384
+run_accessibility_capture "workspace-tree-limited" \
+    --step wait-window-action:reveal-workspace-path \
+    --step window-string-action:reveal-workspace-path="$limited_dir/limited-entry-001.txt" \
+    --step wait-predicate:workspace-refresh-complete \
+    --step wait-atspi-text:"Showing "
+end_list_budget_capture
+# The budget row states shown and total entries and how to reach the rest.
+assert_anchor_prefix "workspace-tree-limited" "workspace tree" "list item" "Showing "
 fi
 
 if case_selected "workspace-tree-file-peek"; then

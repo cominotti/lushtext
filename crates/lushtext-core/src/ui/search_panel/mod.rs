@@ -202,8 +202,8 @@ impl SearchFileGroup {
 /// linear sequence of file/line destinations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchMatchLocation {
-    /// File containing the match.
-    pub path: PathBuf,
+    /// File containing the match, the path its search match interned.
+    pub path: Arc<Path>,
     /// 1-based line number for the match.
     pub line_number: u32,
 }
@@ -211,7 +211,8 @@ pub struct SearchMatchLocation {
 impl SearchMatchLocation {
     /// Build one match-navigation target.
     #[must_use]
-    pub fn new(path: PathBuf, line_number: u32) -> Self {
+    pub fn new(path: impl Into<Arc<Path>>, line_number: u32) -> Self {
+        let path = path.into();
         Self { path, line_number }
     }
 }

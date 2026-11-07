@@ -1048,3 +1048,51 @@ pub fn assert_monospace_widgets_registered(context: &str) -> usize {
     }
     seen
 }
+
+/// Run the main loop one dispatch at a time until `predicate` holds or `budget`
+/// passes, returning whether it held and the longest single dispatch
+/// (`power-of-two-thresholds` task 9.5; `bound-lists-by-budget-not-count`
+/// task 8.2 enforces it against `B_SETTLE_US` on the optimized build).
+pub fn worst_dispatch_until(
+    budget: Duration,
+    mut predicate: impl FnMut() -> bool,
+) -> (bool, Duration) {
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + budget;
+    let mut worst = Duration::ZERO;
+    while std::time::Instant::now() < deadline {
+        if predicate() {
+            return (true, worst);
+        }
+        let start = std::time::Instant::now();
+        let dispatched = context.iteration(false);
+        let took = start.elapsed();
+        if dispatched {
+            worst = worst.max(took);
+        } else {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    (predicate(), worst)
+}
+
+/// Whether timing verdicts are enforced: only on the optimized widget build
+/// (`CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false`, opt-level 2), where dispatch
+/// times are the product's; the ordinary debug suite prints them only.
+pub const fn timing_verdicts_enforced() -> bool {
+    !cfg!(debug_assertions)
+}
+
+/// Reset this process's resident high-water mark (`/proc/self/clear_refs`).
+pub fn reset_vm_hwm() {
+    fixture::write_text(std::path::Path::new("/proc/self/clear_refs"), "5");
+}
+
+/// One `/proc/self/status` field in KiB (`VmRSS:`, `VmHWM:`).
+pub fn proc_status_kib(field: &str) -> u64 {
+    fixture::read_text(std::path::Path::new("/proc/self/status"))
+        .lines()
+        .find_map(|line| line.strip_prefix(field))
+        .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
+        .unwrap_or(0)
+}

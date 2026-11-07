@@ -22,6 +22,11 @@
 //!   generation-guarded journal install, clear, disk save, and disk delete
 //!   compares against.
 //! * [`ReplaceApplyCounts`] — the last durable apply's observable counts.
+//! * [`SEARCH_RESULTS_RETAINED_BYTES`] and [`SEARCH_MATCH_FIXED_CHARGE`] — the
+//!   retained-byte budget that replaced the 16,384-match count cap
+//!   (`bound-lists-by-budget-not-count` D3), and the wording that states what it
+//!   cut ([`limited_count_label`], [`budget_reached_announcement`],
+//!   [`search_limit_clause`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -349,15 +354,97 @@ impl ReplacePreviewTicket {
     }
 }
 
-/// The count label shown when the search service stopped at its result cap
-/// (`RESULT_CAP`), named from the cap itself so the label never states a figure
-/// the service does not apply.
+/// Bytes charged per retained match beyond its line text: the plain match
+/// (`SearchMatch`, its `Arc<str>` header), its list item and the item's display
+/// copy of the line (at most 500 bytes plus an ellipsis), its tree row and its
+/// two navigation entries.
+///
+/// Kind: coverage window; rounded up to a power of two from the measured
+/// per-match growth (`bound-lists-by-budget-not-count` task 2.4).
+pub const SEARCH_MATCH_FIXED_CHARGE: u64 = 2 * 1024;
+/// `main`'s worst case under the former 16,384-match cap: every match a
+/// 4,096-byte line (`MAX_SEARCH_MATCH_LINE_BYTES`) in its own file whose path
+/// is 4,096 bytes (Linux `PATH_MAX`), charged twice (canonical and display
+/// path), plus the fixed charge.
+///
+/// Kind: derived; computed from the constants it names, not rounded.
+pub const MAIN_SEARCH_WORST_RETENTION: u64 = MAIN_SEARCH_CAP_MATCHES
+    * (crate::model::content_search::MAX_SEARCH_MATCH_LINE_BYTES as u64
+        + 2 * LINUX_PATH_MAX_BYTES
+        + SEARCH_MATCH_FIXED_CHARGE);
+/// The match-count cap `main` applied before this budget (`RESULT_CAP`).
+///
+/// Kind: external fact; the retired cap the budget must not lose against.
+pub const MAIN_SEARCH_CAP_MATCHES: u64 = 16 * 1024;
+/// Linux `PATH_MAX`, bytes.
+///
+/// Kind: external fact; `<linux/limits.h>`.
+pub const LINUX_PATH_MAX_BYTES: u64 = 4_096;
+/// The retained-byte budget of one workspace search's results.
+///
+/// The power of two at or above [`MAIN_SEARCH_WORST_RETENTION`], so the
+/// budget never shows less than `main` showed at `main`'s worst case (Kani B3
+/// over `model::list_budget`). Typical matches (a 120-byte line, about 20 per
+/// file) retain far more than 16,384 matches in it.
+///
+/// Kind: presentation cap; up from `MAIN_SEARCH_WORST_RETENTION`
+/// (`bound-lists-by-budget-not-count` D3).
+pub const SEARCH_RESULTS_RETAINED_BYTES: u64 = 256 * 1024 * 1024;
+const _: () = assert!(SEARCH_RESULTS_RETAINED_BYTES >= MAIN_SEARCH_WORST_RETENTION);
+// ... and the smallest such power of two (never rounded past it).
+const _: () = assert!(
+    SEARCH_RESULTS_RETAINED_BYTES.is_power_of_two()
+        && SEARCH_RESULTS_RETAINED_BYTES / 2 < MAIN_SEARCH_WORST_RETENTION
+);
+
+/// Events a turn may receive while the results list holds fewer matches than
+/// one full turn (256): the turn that reveals the results and the few after
+/// it. The first rows make `GtkListView` create its row widgets, up to its
+/// realized-row cap (A1), each with a setup, a bind and a first layout, so a
+/// full first turn spent 13.8 ms applying and its frame 17–19 ms laying them
+/// out (`bound-lists-by-budget-not-count` task 1.2 on the branch); small turns
+/// spread that one-time cost (D4 b).
+///
+/// Kind: cap; a power of two, rounded down.
+pub const REVEAL_TURN_MAX_EVENTS: usize = 32;
+
+/// The count label while results stream or once they end, unlimited.
 #[must_use]
-pub fn result_cap_notice() -> String {
+pub fn count_label(matches: usize, files: usize) -> String {
+    format!("{matches} results in {files} files")
+}
+
+/// The count label of a search its budget limited: what is shown, and how many
+/// more were found (growing until the search ends).
+#[must_use]
+pub fn limited_count_label(shown: usize, files: usize, found: usize) -> String {
+    let more = found.saturating_sub(shown);
     format!(
-        "{}+ results (truncated) \u{2014} narrow your search",
-        grouped_thousands(crate::services::content_search::RESULT_CAP)
+        "Showing {} matches in {} files; {} more not shown \u{2014} refine the search to see them",
+        grouped_thousands(shown),
+        grouped_thousands(files),
+        grouped_thousands(more)
     )
+}
+
+/// The one polite announcement raised when a search reaches its budget.
+#[must_use]
+pub fn budget_reached_announcement(shown: usize) -> String {
+    format!(
+        "Search results limited: showing {} matches; more were found",
+        grouped_thousands(shown)
+    )
+}
+
+/// The Replace Preview summary clause after a limited search, or `None` when
+/// the search retained every match it found.
+#[must_use]
+pub fn search_limit_clause(retained: usize, found: usize) -> Option<String> {
+    let past = found.checked_sub(retained).filter(|past| *past > 0)?;
+    Some(format!(
+        "{} matches past the search limit are not included",
+        grouped_thousands(past)
+    ))
 }
 
 /// `count` with comma thousands separators ("16,384"), as the result labels print it.
@@ -374,19 +461,48 @@ fn grouped_thousands(count: usize) -> String {
 }
 
 #[cfg(test)]
-mod result_cap_notice_tests {
+mod search_budget_wording_tests {
     use super::*;
 
     #[test]
-    fn no_loss_the_result_cap_notice_names_the_cap_main_raised_to() {
+    fn the_budget_covers_mains_worst_case() {
         assert_eq!(
-            result_cap_notice(),
-            "16,384+ results (truncated) \u{2014} narrow your search"
+            MAIN_SEARCH_WORST_RETENTION,
+            16 * 1024 * (4_096 + 8_192 + 2_048)
         );
+    }
+
+    #[test]
+    fn the_limited_label_states_shown_and_more() {
+        assert_eq!(
+            limited_count_label(245_301, 1_200, 353_530),
+            "Showing 245,301 matches in 1,200 files; 108,229 more not shown \u{2014} refine the search to see them"
+        );
+        assert_eq!(count_label(12, 3), "12 results in 3 files");
         assert_eq!(grouped_thousands(0), "0");
         assert_eq!(grouped_thousands(999), "999");
         assert_eq!(grouped_thousands(1_000), "1,000");
         assert_eq!(grouped_thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn the_announcement_is_bounded_and_content_free() {
+        let text = budget_reached_announcement(16 * 1024);
+        assert_eq!(
+            text,
+            "Search results limited: showing 16,384 matches; more were found"
+        );
+        assert!(text.len() < 96);
+    }
+
+    #[test]
+    fn the_preview_clause_only_follows_a_limited_search() {
+        assert_eq!(search_limit_clause(100, 100), None);
+        assert_eq!(search_limit_clause(100, 99), None);
+        assert_eq!(
+            search_limit_clause(16 * 1024, 40_000),
+            Some("23,616 matches past the search limit are not included".to_string())
+        );
     }
 }
 

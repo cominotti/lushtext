@@ -232,6 +232,22 @@ Expected screen-reader behavior includes:
 - Alerts, durability warnings, failed loads, destructive confirmations, Replace
   All completion, undo availability, recovery warnings, and user-initiated
   long-running operations use bounded announcements or alert semantics.
+- Workspace lists that a retained-byte budget cuts, or that are still loading,
+  say so in text and in accessible names (`bound-lists-by-budget-not-count`).
+  A workspace search that reaches its budget raises **one** polite
+  announcement ("Search results limited: showing X matches; more were
+  found"); its count label then reads "Showing X matches in F files; N more not
+  shown — refine the search to see them" (styled warning, value text on the
+  label), the running found count is never announced, and completion uses the
+  existing debounced result announcement of that label. A Replace Preview after
+  a limited search adds "N matches past the search limit are not included" to
+  its summary. A sidebar directory past its budget ends with a list item named
+  "Showing X of Y entries" whose description says why and offers Open
+  (`Ctrl+O`); a directory loading in batches ends with "Loading entries… X of
+  Y", relabelled at most once per turn and never announced, and removed when
+  the directory finishes. AT-SPI anchors:
+  `atspi-anchor-workspace-search-status-bar-showing`,
+  `atspi-anchor-workspace-tree-list-item-showing`.
 - An inline alert (a load error, an external change, a restored draft, a
   line-ending warning, a local-history restore) is announced **once**, at the
   first moment it becomes perceivable: when it appears on the selected

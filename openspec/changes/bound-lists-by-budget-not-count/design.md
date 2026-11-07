@@ -623,3 +623,153 @@ recorded here so the implementation does not re-derive them:
 The baseline was not re-measured in this review. PT's raw lines
 (`amend/widget/evidence.txt`) were checked against the table above and agree,
 and task 1.1 re-measures before any fix.
+
+## Implementation decisions (stage 3, 2026-11-06)
+
+Raw evidence, logs and the load before and after every measured run are in
+`.claude/handoffs/bound-lists-by-budget-not-count/` (`runs.log`,
+`impl/baseline-1.1.txt`, `impl/attribution-1.2.txt`, `impl/failing-first.txt`,
+`impl/widget/evidence.txt`).
+
+**Baseline re-confirmed (task 1.1).** On `origin/main` `469e3f84` with PT's
+measurement code, optimized widget build, presented, load below 4: search
+worst dispatch 18.9–29.3 ms, Replace Preview entry 24.9–26.6 ms, sidebar
+10,000-entry expansion 24.5–29.3 ms. Every figure is within one reference
+frame of PT's table.
+
+**Attribution changed the mechanisms (task 1.2), not the targets.**
+
+- D4's hypothesis is **refuted** by the new axiom A87: an unrealized
+  `GtkListView` does not walk its items per `items-changed`. A presented one
+  pays a fixed ~25–30 µs per emission (256 single appends 6.2 ms against one
+  256-item splice 0.29 ms). The first search turn's 18–27 ms was 256 per-match
+  emissions plus, once the list was non-empty, the creation of its row widgets
+  up to the realized cap (~205, A1): each a factory setup, a bind and a first
+  layout, in that dispatch and the frame after it. The batched splices (D4 a)
+  remove the first; the second is one-time and is spread: turns carry at most
+  32 events (`REVEAL_TURN_MAX_EVENTS`, 64 in the spec) until the list holds
+  one full turn of 256 matches, the reveal turn included (D4 b).
+- The Replace Preview entry's whole 24–28 ms was `refresh_results_display`
+  (`results_list.set_model(None)` then `set_model(model)`), which rebuilt the
+  list over the whole model to re-render rows with preview markup. No preview
+  rows are installed at all (the preview is markup over the existing rows), so
+  the spec's "time-sliced splices behind a Preparing preview state" has
+  nothing to slice: the fix rebinds only the bound rows
+  (`list_factory::rebind_bound_result_rows`, a registry filled in `bind` and
+  emptied in `unbind`), 6.7 ms worst after. The existing "Preparing Preview…"
+  button state covers the worker.
+- The sidebar terminal was `recache_child_rows_from_mirror`: 17–19 ms per
+  terminal at 10,000, confirming D6. Tracing the branch then found two more
+  costs `main` has too: the first 256-row splice into an expanded empty store
+  (19.2 ms: GtkListView creating ~200 row widgets, then a 19.5 ms frame laying
+  them out) and a 10 ms cache reset, because GTK's `is_expandable()` probe
+  (A22) gives a directory a store that is scanned and cached and then
+  discarded. Fixes: the path caches follow only the **live store of an
+  expanded directory** (`child_store_is_live`, owner tracking in
+  `child_cache_owners`), and the first 256 rows of a directory that was empty
+  go in 32-row batches (`FIRST_BATCH_ROWS`) with a 20 ms wait past one frame
+  after the first (`AFTER_FIRST_BATCH_DELAY`). The per-batch cache splice
+  (`splice_child_cache`) is property-tested equal to the full rebuild. At
+  131,072 entries two single batches still took 23 and 41 ms: the two
+  path-keyed cache maps doubling mid-load and rehashing every key. The load
+  now reserves the directory's row count in both maps, the sibling list and
+  the mirror before its first batch (`reserve_child_cache_capacity`), when
+  they hold only other directories' entries.
+
+**Re-expansion and collapse.** A collapsed directory's path caches stay
+(as on `main`); re-expanding gives it a new store, which takes the caches over
+and forgets the previous store's rows in 4,096-row slices before its first
+batch (`take_over_child_cache`, `STALE_CACHE_ROWS_PER_UNIT`), reserving map
+capacity only after that, because a reservation rehashes what the maps hold.
+Re-expansion then measured 6.8–8.9 ms worst at 10,000, 16,385 and 131,072
+entries (`m85-*`), with one 21.2 ms outlier at 16,385 in six runs. **Open:**
+GTK's own synchronous `set_expanded(false)` of a directory costs about
+1.2 µs per row (19 ms at 16,000 rows, traced, `impl/trace8.log`); at
+`main`'s 10,000 that is about 12 ms, but a 131,072-entry directory, which
+`main` could not list, collapses in one dispatch far over `B_SETTLE_US`, and
+the outlier above is likely its tail. Not fixed here; queued as a follow-up
+(measure and remove the per-row cost of collapsing, for example by not
+materializing tree rows for file entries in the watch mirror). The
+re-expansion measurement is printed, not enforced.
+
+**Reveal re-scroll.** With the first rows loaded in small batches, a
+directory realizes few rows before a `win.reveal-workspace-path` lands, so
+the list places a never-realized target by a coarser height estimate, and in
+the nested case (`workspace-tree-reveal` `nested-beyond-cap`, widget test
+`test_reveal_expands_two_collapsed_ancestors_to_reach_entry_250`) the row
+settled realized but clipped (y 661 + 36 in a 665 px viewport), and the reveal
+ended `unsettled`. `main` passed because its first 256-row batch realized
+about 200 rows at once. The settle step now re-issues the scroll once the
+target is realized at rest but clipped, at most `REVEAL_RESCROLL_BUDGET` (2)
+times; the row's real geometry is known only then.
+
+**Axioms (task 1.3).** A87–A90 as above; A88 found the end-of-store batch
+splice sub-linear (56–62 µs at 16,384 rows, 126–303 µs at 262,144), not
+O(batch) exactly but far inside a slice, so D6's fallback (a growing custom
+`GListModel`) was **not** taken. A89: tail `set_expanded` 12–13 µs vs 57–58 µs
+(1,024 vs 16,384 rows). A90: revealing a list costs 0.4–1.6 ms, 205 rows
+realized at either model size. The probes assert growth below half the size
+ratio (8× for 16×), which a linear cost cannot pass.
+
+**Smaller deviations.**
+
+- `LIST_TURN_SLICE_US` is recorded as `4,000` with the expression in the
+  reason: the threshold checker evaluates `B_INTERACT_US / 2` and compares the
+  value.
+- The charge arithmetic (`SearchRetention::match_charge`) lives in
+  `model/content_search.rs`, because the worker is a service and cannot import
+  `ui/search_panel/policy.rs`; the budget, the fixed charge and the wording
+  stay in that policy, as D8 says.
+- The sidebar charge counts the path **eight times** (`SIDEBAR_ROW_PATH_COPIES`,
+  a coverage window: item, mirror, sibling cache, location key and parent,
+  visible-count key, watch contribution) plus the fixed charge, rather than
+  sharing the cache paths as `Arc<Path>` first. Sharing them is a refactor of
+  every cache writer (rename, remove, create); the budget follows the typical
+  floor either way (131,072 × 3,464 B → 512 MiB), which only directories far
+  past the target reach.
+- The AT-SPI anchors are the ids the docs checker derives from surface, role
+  and name prefix: `atspi-anchor-workspace-search-status-bar-showing` and
+  `atspi-anchor-workspace-tree-list-item-showing` (D9 named the first
+  `…-limited`).
+- "Keyboard traversal to the last row" is driven as the list's own focus
+  scroll (`scroll_to(…, FOCUS)`), which is what its key bindings call; widget
+  tests cannot send `GtkListBase` shortcut keys.
+- The `*_for_test` ceiling rose 170 → 171 for the directory-budget limit
+  override (`set_sidebar_directory_retained_bytes_for_test`), recorded in the
+  matrix.
+
+### Verdicts (tasks 8.1–8.4)
+
+Optimized widget build (dev opt-level 2, no debug assertions), surface
+presented, host 1-minute load 0.7–1.6 throughout (`runs.log`, campaign
+"round 3"), `main` and the branch interleaved, three runs of three repetitions
+each (`impl/widget/evidence.txt`, labels `m83-*`).
+
+| Case | `main` `469e3f84` | Branch | Budget |
+|---|---|---|---|
+| Search worst dispatch while results stream (main 16,384 shown; branch 18,000) | 18.7–27.7 ms | 5.7–10.9 ms | `B_SETTLE_US` 16 ms, met |
+| Worst receive turn (drain + batch apply) | (11.6–14.9 ms, PT) | 3.7–8.5 ms | met |
+| Replace Preview entry | 24.5–26.5 ms | 6.6–8.0 ms | met |
+| Retirement of the generation | 1.1–1.3 ms | 1.1–1.3 ms | met, unchanged |
+| Sidebar expansion, 10,000 entries | 24.3–28.4 ms | 7.7–7.8 ms | met |
+| Sidebar expansion, 16,385 entries | (40.7–43.1 ms, PT) | 8.5–8.6 ms | met |
+| Sidebar expansion, 131,072 entries | not listable | 9.1–9.5 ms | met |
+| Directory terminal, 10,000 / 131,072 | 17–19 ms (recache) | 0.08 / 0.14 ms | does not grow |
+
+No toolkit-floor exception was needed (task 3.5): the first realize of the
+results list costs 0.4–1.6 ms (A90).
+
+**Memory (tasks 2.4, 8.3).** Resident high-water growth, measured in the
+test's own child process after the fixture is written (`m83-mem-*`):
+
+- search, 16,400 matches of 119-byte lines: 28.6 MB grown against 35.7 MB
+  charged (ratio 0.80; 1,743 B per match, so the measured fixed part is about
+  1.6 KiB, inside the 2 KiB coverage window `SEARCH_MATCH_FIXED_CHARGE`);
+- sidebar, 16,384 rows with 101-byte paths: 32.3 MB grown against 32.1 MB
+  charged (ratio 1.005; 1,970 B per row against a charge of
+  117 × 8 + 1,024 = 1,960 B).
+
+Both sit inside the 5/4 bound, which the two widget tests now enforce. Not
+measured: the branch's peak against `main`'s at `main`'s own worst case
+(4 KiB lines under 4 KiB paths); the worst-case widget test proves that case
+is retained in full, not its peak. Recorded as open.

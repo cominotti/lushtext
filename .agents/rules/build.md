@@ -1213,7 +1213,14 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   (`services::read_fault`): a mode-000 fixture is still readable by root, and
   the scheduled smoke containers run as root. Never enable that feature in
   release, Meson, Flatpak, or Snap builds, which must compile
-  `services::read_fault::denied` as an empty inline function.
+  `services::read_fault::denied` as an empty inline function. The same smoke
+  binary carries the smoke-only `smoke-list-budgets` feature
+  (`services::smoke_list_budgets`): `LUSHTEXT_SEARCH_RETAINED_BYTES` and
+  `LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES` lower the workspace list budgets
+  so the limited-search and limited-directory captures reach them with small
+  fixtures; the same rule applies (never in a shipped build, where both
+  overrides are empty inline functions, audited by a unit test and by CI's
+  default-feature `cargo check -p lushtext --bins`).
 - `make command-palette-notes-smoke` builds the debug binary, seeds an isolated
   workspace with bookmark, folder-note, document-note, and open-tab note
   sidecars, opens the command palette in Notes mode, captures one screenshot,

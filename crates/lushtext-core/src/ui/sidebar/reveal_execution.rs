@@ -99,8 +99,24 @@ enum RevealStage {
         frames: u32,
         last_frame: Option<i64>,
         started: Instant,
+        /// Scrolls re-issued after the target row was realized at rest but
+        /// clipped (see `check_settle`).
+        rescrolls: u32,
     },
 }
+
+/// Scrolls a reveal may re-issue once its target row is realized at rest but
+/// clipped by the viewport edge.
+///
+/// A row that has never been realized is placed by the list's height estimate
+/// for unmeasured rows, so the first `scroll_to` can land a row or so short;
+/// the row's real geometry is known only once it is realized. Directories
+/// loaded in small batches (`bound-lists-by-budget-not-count`) realize few
+/// rows before the reveal, so their estimates are coarser than when one
+/// 256-row batch realized about 200 rows at once.
+///
+/// Kind: retry budget; a power of two, rounded up.
+const REVEAL_RESCROLL_BUDGET: u32 = 2;
 
 /// Who retires the poll source when a reveal terminates.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -289,7 +305,8 @@ impl LushtextSidebar {
                 frames,
                 last_frame,
                 started,
-            } => self.check_settle(&section, frames, last_frame, started),
+                rescrolls,
+            } => self.check_settle(&section, frames, last_frame, started, rescrolls),
         };
         match step {
             RevealStep::Wait => glib::ControlFlow::Continue,
@@ -350,6 +367,7 @@ impl LushtextSidebar {
                 frames: 0,
                 last_frame: None,
                 started: Instant::now(),
+                rescrolls: 0,
             };
         }
         RevealStep::Wait
@@ -371,6 +389,7 @@ impl LushtextSidebar {
         frames: u32,
         last_frame: Option<i64>,
         started: Instant,
+        rescrolls: u32,
     ) -> RevealStep {
         let target = {
             let active = self.imp().reveal.active.borrow();
@@ -380,17 +399,34 @@ impl LushtextSidebar {
             active.plan.target.clone()
         };
         let outer = self.imp().outer_scrolled_window.get();
-        let at_rest = !section.file_tree_slice_bin().outer_request_pending()
-            && section
-                .mapped_row_widget_for_path(&target)
-                .and_then(|row| row.compute_bounds(&outer))
-                .is_some_and(|bounds| {
-                    bounds.y() >= 0.0
-                        && bounds.y() + bounds.height() <= outer.height() as f32
-                        && bounds.height() > 0.0
-                });
-        if at_rest {
+        let idle = !section.file_tree_slice_bin().outer_request_pending();
+        let bounds = section
+            .mapped_row_widget_for_path(&target)
+            .and_then(|row| row.compute_bounds(&outer))
+            .filter(|bounds| bounds.height() > 0.0);
+        let inside = bounds.is_some_and(|bounds| {
+            bounds.y() >= 0.0 && bounds.y() + bounds.height() <= outer.height() as f32
+        });
+        if idle && inside {
             return RevealStep::Finish(WorkspaceRevealStatus::Revealed);
+        }
+        // Realized, at rest, but clipped: its real geometry is now known, so
+        // scroll to it again (bounded by `REVEAL_RESCROLL_BUDGET`).
+        if idle
+            && bounds.is_some()
+            && rescrolls < REVEAL_RESCROLL_BUDGET
+            && let Some((position, _)) = section.flattened_row_for_path(&target)
+        {
+            section.select_and_scroll_to_position(position);
+            if let Some(active) = self.imp().reveal.active.borrow_mut().as_mut() {
+                active.stage = RevealStage::Settling {
+                    frames: 0,
+                    last_frame: None,
+                    started,
+                    rescrolls: rescrolls + 1,
+                };
+            }
+            return RevealStep::Wait;
         }
         // Count frames the clock actually produced; an unrealized list has no
         // clock, and every poll then counts as one.
@@ -412,6 +448,7 @@ impl LushtextSidebar {
                 frames,
                 last_frame: frame,
                 started,
+                rescrolls,
             };
         }
         RevealStep::Wait
