@@ -192,9 +192,17 @@ LIST_BUDGET_MEASURED_IN = "runs 42322273437, 42331071390 (pull_request, max of t
 # max of the two, rounded up; peak memory is the unsplit shard's (2.36 GiB at
 # most). Per-run detail: docs/next/formal-verification.md, "Geometry policy
 # shard re-split".
+# Measured on the split form by CI runs 42333476867 (push of e4ec2624) and
+# 42352722531 (pull request #88): core-geometry-policies 6.63 / 5.70 min,
+# 2.32 / 2.38 GiB; core-minimap-fit 8.46 / 8.42 min, 2.17 / 2.17 GiB. Both
+# shards measured inside their derived figures, which stand (raise, never
+# lower): the derived figures come from the slowest runner seen on these
+# harnesses (16.57 min unsplit), and two runs cannot rule that runner out.
 GEOMETRY_SPLIT_MEASURED_IN = (
     "derived from runs 42331071390, 41995267728 (per-harness verification times plus "
-    "each run's whole build and start-up time; max of the two)"
+    "each run's whole build and start-up time; max of the two); measured on the split "
+    "form by runs 42333476867, 42352722531 (6.63 min / 2.38 GiB and 8.46 min / "
+    "2.17 GiB max, inside the figures)"
 )
 SETTLE_EVIDENCE_MEASURED_IN = (
     "; with the settle-evidence harnesses by runs 42169248534, 42172535348 (max of the two)"

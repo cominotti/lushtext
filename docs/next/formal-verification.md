@@ -2338,6 +2338,22 @@ the maintainer's decision. A dispatched `kani.yml` run on the split form
 replaces these derived figures with measured ones, raising either if exceeded
 (deferral inventory).
 
+**Measured on the split form (2026-11-07, archive of
+`bound-notes-browser-by-budget`).** Two CI runs ran both shards on the split
+form, read from each job's `Kani shard …` summary line:
+
+| shard | `42333476867` (push, `e4ec2624`) | `42352722531` (PR #88) | recorded |
+|---|---|---|---|
+| `core-geometry-policies` | 6.63 min, 2.32 GiB (job 7m47s) | 5.70 min, 2.38 GiB (job 6m53s) | 7.5 min, 2.4 GiB (unchanged) |
+| `core-minimap-fit` | 8.46 min, 2.17 GiB (job 9m54s) | 8.42 min, 2.17 GiB (job 9m46s) | 12.9 min, 2.4 GiB (unchanged) |
+
+Both shards measured inside their derived figures, so the records keep them
+(raise, never lower) and `measured_in` now names both runs as well. Decision:
+the derived figures come from the slowest runner seen on these harnesses
+(16.57 min unsplit), and two faster runs cannot show that runner will not
+come back; lowering `core-minimap-fit` to 8.5 min would only hide the margin
+the re-split bought. The deferral is discharged: the split form is measured.
+
 ## 4. Deferral inventory
 
 - ~~`sliced-protected-install` (C3): the planner's whole-plan properties
@@ -2502,7 +2518,8 @@ replaces these derived figures with measured ones, raising either if exceeded
   needs more than twenty 25-minute shards.
 - Geometry policy re-split (2026-11-07): `core-geometry-policies` (7.5 min)
   and `core-minimap-fit` (12.9 min) hold figures derived from the per-harness
-  times of runs `42331071390` and `41995267728`, not a run of the split form.
-  The next dispatched `kani.yml` run measures both; raise either record it
-  exceeds. Whether `core-minimap-fit` joins the required checks of ruleset
+  times of runs `42331071390` and `41995267728`. **Measured 2026-11-07** by
+  runs `42333476867` and `42352722531` on the split form (6.63 and 8.46 min
+  at most), inside both figures, which stand (see "List budget and geometry
+  policy shard re-split"). Still open: whether `core-minimap-fit` joins the required checks of ruleset
   `23911547` is the maintainer's decision.
