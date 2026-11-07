@@ -4,9 +4,12 @@
 //! per-turn time instead of by a count (`bound-lists-by-budget-not-count`,
 //! design D2).
 //!
-//! **Cross-cutting pure policy with two owning workflows**, `WFR-SEARCH-REPLACE`
-//! (the workspace search worker charges each match) and `WFR-WORKSPACE-TREE`
-//! (the sidebar applies a directory's rows in time-sliced batches). It is shared
+//! **Cross-cutting pure policy with three owning workflows**, `WFR-SEARCH-REPLACE`
+//! (the workspace search worker charges each match), `WFR-WORKSPACE-TREE`
+//! (the sidebar applies a directory's rows in time-sliced batches) and
+//! `WFR-NOTES-BOOKMARKS` (Browse Notes captures open-editor bookmarks in
+//! time-sliced turns under one retained-byte budget,
+//! `bound-notes-browser-by-budget` D4). It is shared
 //! rather than placed beside either one, as `model/attention_refresh.rs` is:
 //! `.agents/rules/workflow-convention.md` counts owning workflows, and a forked
 //! copy of the admission or continuation rule could drift while both halves
@@ -24,6 +27,9 @@
 //!   unit of work while the turn's elapsed time is under
 //!   [`LIST_TURN_SLICE_US`], and always lets it take the first, so every turn
 //!   makes progress.
+//!
+//! It also owns the one wording helper those lists' "showing X of Y" notices
+//! share, [`grouped_thousands`], so the three notices print counts alike.
 //!
 //! The clock is read by the GTK caller (`glib::monotonic_time`) and passed in,
 //! so the module stays pure and integer only. Kani proves it
@@ -133,10 +139,35 @@ pub const fn turn_continues(elapsed_us: u64, units_done: usize) -> bool {
     units_done == 0 || elapsed_us < LIST_TURN_SLICE_US
 }
 
+/// `count` with comma thousands separators ("16,384"): how every
+/// budget-limited list notice prints its counts ("Showing X of Y"), so the
+/// workspace tree, workspace search and Browse Notes read alike.
+#[must_use]
+pub fn grouped_thousands(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn counts_are_grouped_in_thousands() {
+        assert_eq!(grouped_thousands(0), "0");
+        assert_eq!(grouped_thousands(999), "999");
+        assert_eq!(grouped_thousands(1_000), "1,000");
+        assert_eq!(grouped_thousands(128 * 1024), "131,072");
+        assert_eq!(grouped_thousands(1_234_567), "1,234,567");
+    }
 
     #[test]
     fn the_slice_is_half_the_interaction_budget() {

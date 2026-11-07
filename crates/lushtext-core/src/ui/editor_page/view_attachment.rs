@@ -351,16 +351,16 @@ impl LushtextEditorPage {
         }
     }
 
-    /// Give the view its document back, scrolled to the kept top line.
-    ///
-    /// Called from `map` before the children map, so the first frame of a
-    /// shown tab lays out the document (only its visible part, at once).
     /// Whether a reattached view is still being held at its kept top line
     /// while it lays the document out.
     pub(super) fn holds_top_line(&self) -> bool {
         self.imp().view_attachment.restoring.borrow().is_some()
     }
 
+    /// Give the view its document back, scrolled to the kept top line.
+    ///
+    /// Called from `map` before the children map, so the first frame of a
+    /// shown tab lays out the document (only its visible part, at once).
     pub(super) fn attach_view(&self) {
         self.stop_hidden_validation_watch();
         let state = &self.imp().view_attachment;

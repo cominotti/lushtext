@@ -17,6 +17,7 @@
 
 use std::path::PathBuf;
 
+use crate::model::list_budget::grouped_thousands;
 use crate::model::palette::PaletteNoteCategory;
 use crate::model::workspace::WorkspaceConfig;
 use crate::services::bookmark_excerpt;
@@ -260,7 +261,10 @@ pub fn notes_browser_limit_message(
     } else {
         "of"
     };
-    let (listed, found) = (count.listed, count.found.max(count.listed));
+    let (listed, found) = (
+        grouped_thousands(count.listed),
+        grouped_thousands(count.found.max(count.listed)),
+    );
     Some(if searching {
         format!("Searching {listed} {of} {found} {noun}.")
     } else {
@@ -1250,6 +1254,25 @@ mod tests {
         assert_eq!(
             notes_browser_limit_message(NotesBrowserMode::Bookmarks, count, true).as_deref(),
             Some("Searching 3 of 7 bookmarks.")
+        );
+    }
+
+    #[test]
+    fn large_counts_are_grouped_like_the_other_list_budget_notices() {
+        let count = NotesBrowserListedCount {
+            listed: 90_687,
+            found: 128 * 1024,
+            found_is_lower_bound: false,
+        };
+        assert_eq!(
+            notes_browser_limit_message(NotesBrowserMode::AllNotes, count, false).as_deref(),
+            Some(
+                "Showing 90,687 of 131,072 notes and bookmarks. The rest exceed the memory budget."
+            )
+        );
+        assert_eq!(
+            notes_browser_limit_message(NotesBrowserMode::Bookmarks, count, true).as_deref(),
+            Some("Searching 90,687 of 131,072 bookmarks.")
         );
     }
 

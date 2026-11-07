@@ -16,6 +16,7 @@ use std::cmp::Ordering;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+use crate::model::list_budget::grouped_thousands;
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::services::file_tree::{SidebarScanBudget, compare_directory_entries};
@@ -91,7 +92,11 @@ pub const fn sidebar_scan_budget(retained_bytes: u64) -> SidebarScanBudget {
 /// The label of the row that ends a directory the budget cut.
 #[must_use]
 pub fn budget_row_label(shown: usize, total: usize) -> String {
-    format!("Showing {} of {} entries", grouped(shown), grouped(total))
+    format!(
+        "Showing {} of {} entries",
+        grouped_thousands(shown),
+        grouped_thousands(total)
+    )
 }
 
 /// The accessible description of the budget row: why, and how to reach the rest.
@@ -106,8 +111,8 @@ pub fn budget_row_description() -> &'static str {
 pub fn loading_row_label(listed: usize, total: usize) -> String {
     format!(
         "Loading entries\u{2026} {} of {}",
-        grouped(listed),
-        grouped(total)
+        grouped_thousands(listed),
+        grouped_thousands(total)
     )
 }
 
@@ -115,19 +120,6 @@ pub fn loading_row_label(listed: usize, total: usize) -> String {
 #[must_use]
 pub fn loading_row_description() -> &'static str {
     "Entries are still being added to this folder"
-}
-
-/// `count` with comma thousands separators.
-fn grouped(count: usize) -> String {
-    let digits = count.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
 }
 
 /// Debounce interval for persisting workspace changes to disk, in milliseconds.

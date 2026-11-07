@@ -34,6 +34,7 @@ use std::sync::Arc;
 use crate::model::content_search::{
     ReplacePreviewBudget, ReplacePreviewOutcome, Replacement, SearchMatchId, SearchQuerySpec,
 };
+use crate::model::list_budget::grouped_thousands;
 use crate::services::single_flight::SingleFlightCoordinator;
 
 /// Bytes one generated preview row retains besides its charged source text.
@@ -445,19 +446,6 @@ pub fn search_limit_clause(retained: usize, found: usize) -> Option<String> {
         "{} matches past the search limit are not included",
         grouped_thousands(past)
     ))
-}
-
-/// `count` with comma thousands separators ("16,384"), as the result labels print it.
-fn grouped_thousands(count: usize) -> String {
-    let digits = count.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
 }
 
 #[cfg(test)]
