@@ -70,6 +70,12 @@ impl Presented {
         Self::present(window)
     }
 
+    /// Present `content` in the default fixture window without a control
+    /// step, for a measurement repeated many times in one probe.
+    pub(crate) fn detached(content: &impl IsA<gtk4::Widget>) -> Self {
+        Self::new(content, FIXTURE_WINDOW_SIZE)
+    }
+
     /// Present `window`, which the probe built itself, and wait for it to
     /// receive a size.
     fn present(window: libadwaita::Window) -> Self {

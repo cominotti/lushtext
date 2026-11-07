@@ -116,7 +116,11 @@ re-analysis) followed with LushText's paced re-analysis of edits
 document, with `--paced` LushText's pacing. A86 (a display provider
 reload against a zoom class swapped on the font-following widgets) followed
 with LushText's zoom classes (`scope-font-zoom-restyle`); its sample has one
-button per mechanism. Every sample prints its usage on `--help`/`-h` and
+button per mechanism. A87–A90 (what a list view pays per `items-changed`, an
+end-of-store batch splice, a tail row expansion, and a list's first reveal)
+followed with LushText's budgeted workspace lists
+(`bound-lists-by-budget-not-count`); each sample measures its two sizes on a
+button. Every sample prints its usage on `--help`/`-h` and
 refuses an unknown argument before GTK starts; a sample with its own modes
 declares them in a `SampleFlags` and calls `support::guard(&FLAGS)` first in
 `main` (`make check-gtk-axioms` checks it). Never run a sample without
