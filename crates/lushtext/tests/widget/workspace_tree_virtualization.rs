@@ -2428,9 +2428,16 @@ fn test_directory_expansion_dispatches_fit_the_settle_budget() {
         }
         // Collapse and expand again: the new store takes the directory's
         // path caches over from the old one, forgetting its rows in slices.
-        row_for_path(&tree.section, &nested)
-            .expect("directory row")
-            .set_expanded(false);
+        // The collapse is GTK's synchronous `set_expanded(false)`, whose cost
+        // follows the rows it removes (ledger A91); printed, not enforced
+        // (the recorded toolkit-floor exception in the design).
+        let collapsing = row_for_path(&tree.section, &nested).expect("directory row");
+        let started = std::time::Instant::now();
+        collapsing.set_expanded(false);
+        println!(
+            "list-budget-evidence {{\"m\":\"sidebar-collapse\",\"entries\":{count},\"collapse_call_us\":{}}}",
+            started.elapsed().as_micros()
+        );
         wait_for_refresh_idle(&tree.section);
         row_for_path(&tree.section, &nested)
             .expect("directory row")
@@ -2507,5 +2514,110 @@ fn test_directory_retention_stays_within_its_charge() {
         growth * 4 <= charged * 5,
         "16,384 rows grew the resident set by {growth} bytes, over 5/4 of the {charged} bytes charged"
     );
+    drop(tree.window);
+}
+
+/// Expand `directory` and wait until its listing holds `count` entries.
+fn expand_and_load(tree: &LargeTree, directory: &Path, count: usize) {
+    wait_until(Duration::from_secs(10), || {
+        row_for_path(&tree.section, directory).is_some()
+    });
+    wait_for_refresh_idle(&tree.section);
+    row_for_path(&tree.section, directory)
+        .expect("directory row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(120), || {
+        listing(&tree.section, directory).directory_retained_entries == count
+            && !tree
+                .section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+}
+
+/// A weak reference to the child store the expanded `directory` row shows.
+fn shown_store(tree: &LargeTree, directory: &Path) -> glib::WeakRef<gtk4::gio::ListStore> {
+    row_for_path(&tree.section, directory)
+        .expect("directory row")
+        .children()
+        .and_downcast::<gtk4::gio::ListStore>()
+        .expect("an expanded directory shows a child store")
+        .downgrade()
+}
+
+/// Stage 4 review of `bound-lists-by-budget-not-count` (ledger A91): GTK's
+/// collapse of a directory row also disposed the directory's child store
+/// inside `set_expanded(false)`, finalizing every listed item in that one
+/// dispatch (a quarter of a 131,072-entry collapse). The section holds the
+/// store an expanded directory shows, so the collapse only unlinks it, and
+/// retires the listing in time-sliced turns afterwards, releasing it.
+#[test]
+fn test_collapsing_a_large_directory_retires_its_listing_after_the_collapse() {
+    let count = 16 * 1024 + 1;
+    let tree = large_tree(&[("nested", count)], 800);
+    let nested = tree.root.join("nested");
+    expand_and_load(&tree, &nested, count);
+    let store = shown_store(&tree, &nested);
+    row_for_path(&tree.section, &nested)
+        .expect("directory row")
+        .set_expanded(false);
+    assert!(
+        store
+            .upgrade()
+            .is_some_and(|store| store.n_items() as usize > count / 2),
+        "the collapse itself must not free the directory's listing"
+    );
+    wait_until(Duration::from_secs(30), || store.upgrade().is_none());
+    assert!(
+        store.upgrade().is_none(),
+        "the retired listing is released once emptied"
+    );
+    drop(tree.window);
+}
+
+/// Collapsing an ancestor unlinks its expanded descendants' listings too:
+/// the section retires and releases them, so holding a shown store never
+/// keeps a collapsed subtree alive.
+#[test]
+fn test_collapsing_an_ancestor_releases_its_descendants_listings() {
+    let tree = large_tree(&[("outer/inner", 300)], 800);
+    let outer = tree.root.join("outer");
+    let inner = outer.join("inner");
+    expand_and_load(&tree, &outer, 1);
+    expand_and_load(&tree, &inner, 300);
+    let outer_store = shown_store(&tree, &outer);
+    let inner_store = shown_store(&tree, &inner);
+    row_for_path(&tree.section, &outer)
+        .expect("outer row")
+        .set_expanded(false);
+    wait_until(Duration::from_secs(30), || {
+        outer_store.upgrade().is_none() && inner_store.upgrade().is_none()
+    });
+    assert!(
+        outer_store.upgrade().is_none(),
+        "the collapsed listing is released"
+    );
+    assert!(
+        inner_store.upgrade().is_none(),
+        "the descendant's listing is released with it"
+    );
+    drop(tree.window);
+}
+
+/// A listing someone else still holds when its row collapses is only let
+/// go, never emptied: retirement drains a store only the section holds.
+#[test]
+fn test_a_collapsed_listing_held_elsewhere_is_released_not_emptied() {
+    let tree = large_tree(&[("nested", 300)], 800);
+    let nested = tree.root.join("nested");
+    expand_and_load(&tree, &nested, 300);
+    let held = shown_store(&tree, &nested)
+        .upgrade()
+        .expect("the shown store is alive");
+    row_for_path(&tree.section, &nested)
+        .expect("directory row")
+        .set_expanded(false);
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(held.n_items(), 300, "a shared listing keeps every item");
     drop(tree.window);
 }

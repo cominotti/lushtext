@@ -20,7 +20,7 @@ pub(super) use super::context_menus::FileContextTarget;
 use super::folder_execution::{
     ActiveFolderEmptyProbe, FolderEmptyProbeKey, PendingFolderEmptyProbe,
 };
-use super::scan_execution::{ActiveChildScan, PendingChildScan};
+use super::scan_execution::{ActiveChildScan, PendingChildScan, RetiringListing};
 use super::watch_targets::MaterializedWatchTargets;
 use crate::model::workspace::{
     FolderTreeEntry, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
@@ -360,6 +360,18 @@ pub struct LushtextWorkspaceSection {
     /// maintenance follows only the live, owning store
     /// (`bound-lists-by-budget-not-count` D6).
     pub child_cache_owners: RefCell<HashMap<PathBuf, usize>>,
+    /// The child store each expanded directory row shows, held strongly so
+    /// that collapsing the row only unlinks it. Without this hold GTK's
+    /// `set_expanded(false)` drops the store's last reference and finalizes
+    /// every listed item inside the collapse (ledger A91;
+    /// `bound-lists-by-budget-not-count`, stage 4 review). Released to
+    /// `retiring_child_stores` when the row collapses or is replaced.
+    pub(super) retained_child_stores: RefCell<HashMap<PathBuf, gio::ListStore>>,
+    /// Collapsed listings no one else holds, emptied in time-sliced turns
+    /// and then released.
+    pub(super) retiring_child_stores: RefCell<VecDeque<RetiringListing>>,
+    /// The timeout source draining `retiring_child_stores`, while one is armed.
+    pub(super) child_store_retirement_source: RefCell<Option<glib::SourceId>>,
     /// Visible path occurrence counts across top-level and child rows.
     ///
     /// Overlapping workspace folders can show the same path in more than one
@@ -521,6 +533,11 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.obj().unregister_folder_reorder_section();
         self.obj().stop_workspace_watch();
         super::scan_execution::clear_all_dir_state(&self.obj());
+        // A disposed section drains nothing later: release what is retiring.
+        if let Some(source) = self.child_store_retirement_source.take() {
+            source.remove();
+        }
+        self.retiring_child_stores.borrow_mut().clear();
 
         if let Some(popover) = self.context_menu.borrow_mut().take() {
             popover.unparent();

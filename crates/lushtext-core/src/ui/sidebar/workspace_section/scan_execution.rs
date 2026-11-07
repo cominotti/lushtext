@@ -136,6 +136,21 @@ const CHILD_APPEND_BATCH_SIZE: usize = 256;
 /// Kind: cap; a power of two, rounded down.
 const STALE_CACHE_ROWS_PER_UNIT: usize = 4 * 1024;
 
+/// Items a retiring listing's store, or rows its mirror, drop per unit; a
+/// turn runs units while `model::list_budget::turn_continues` holds.
+///
+/// Kind: cap; a power of two, rounded down.
+const RETIRED_LISTING_ROWS_PER_UNIT: usize = 4 * 1024;
+
+/// A collapsed directory's listing on its way out: the child store GTK no
+/// longer shows, which nothing else holds, and the plain row mirror that
+/// projected it. Both are emptied in slices, so no dispatch finalizes a
+/// whole listing (ledger A91).
+pub(crate) struct RetiringListing {
+    store: gio::ListStore,
+    mirror: Vec<DirectoryRowState>,
+}
+
 /// Rows per batch while a directory that was empty receives its first
 /// `CHILD_APPEND_BATCH_SIZE` rows (see `ChildReconcileProgress::warming_up`).
 ///
@@ -508,6 +523,7 @@ fn clear_dir_states(section: &LushtextWorkspaceSection, roots: &HashSet<PathBuf>
         .dir_stores
         .borrow_mut()
         .retain(|path, _| !under_removed_root(path));
+    section.release_retained_child_stores(under_removed_root);
     section
         .imp()
         .item_locations
@@ -515,6 +531,99 @@ fn clear_dir_states(section: &LushtextWorkspaceSection, roots: &HashSet<PathBuf>
         .retain(|path, _| roots.contains(path) || !under_removed_root(path));
 
     sync_child_scan_busy_state(section);
+}
+
+/// Retire `store`, which the section held for a directory GTK no longer
+/// shows through it. A store anyone else still holds (GTK through another
+/// row, an in-flight scan, a load's next batch) is only let go, so whoever
+/// holds it disposes it as before; a store only the section holds loses its
+/// scan runtime and mirror bookkeeping now and is emptied in slices.
+fn retire_child_store(section: &LushtextWorkspaceSection, store: gio::ListStore) {
+    if store.ref_count() > 1 {
+        return;
+    }
+    let store_key = child_store_key(&store);
+    cancel_child_store_runtime(section, store_key);
+    let imp = section.imp();
+    let mirror = imp
+        .child_row_mirrors
+        .borrow_mut()
+        .remove(&store_key)
+        .unwrap_or_default();
+    imp.child_row_mirror_generations
+        .borrow_mut()
+        .remove(&store_key);
+    imp.child_store_paths.borrow_mut().remove(&store_key);
+    imp.child_store_refs.borrow_mut().remove(&store_key);
+    imp.retiring_child_stores
+        .borrow_mut()
+        .push_back(RetiringListing { store, mirror });
+    if imp.child_store_retirement_source.borrow().is_some() {
+        return;
+    }
+    let section_weak = section.downgrade();
+    // `G_PRIORITY_LOW`: one main-loop iteration dispatches every ready source
+    // of its top priority together (ledger A81), so at the default priority a
+    // retirement turn stacks onto a directory's load turn; re-expanding a
+    // collapsed 131,072-entry directory measured 17.5–23.0 ms iterations that
+    // way. At low priority it runs only in iterations nothing else needs.
+    let source =
+        glib::timeout_add_local_full(Duration::from_millis(1), glib::Priority::LOW, move || {
+            let Some(section) = section_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if drain_retiring_listings(&section) {
+                return glib::ControlFlow::Continue;
+            }
+            section
+                .imp()
+                .child_store_retirement_source
+                .borrow_mut()
+                .take();
+            glib::ControlFlow::Break
+        });
+    imp.child_store_retirement_source.replace(Some(source));
+}
+
+/// One turn of listing retirement: drop retired items and mirror rows in
+/// units of `RETIRED_LISTING_ROWS_PER_UNIT` while the turn's slice lasts,
+/// releasing each listing once empty. Returns whether any remain.
+fn drain_retiring_listings(section: &LushtextWorkspaceSection) -> bool {
+    let started_us = glib::monotonic_time();
+    let mut units = 0usize;
+    loop {
+        let elapsed = u64::try_from(glib::monotonic_time().saturating_sub(started_us)).unwrap_or(0);
+        if !turn_continues(elapsed, units) {
+            return true;
+        }
+        // Take the listing out of the queue while its slice drops, so no
+        // borrow is held across the store's `items-changed` or a drop.
+        let Some(mut listing) = section.imp().retiring_child_stores.borrow_mut().pop_front() else {
+            return false;
+        };
+        let items = listing.store.n_items();
+        if items > 0 {
+            let unit = u32::try_from(RETIRED_LISTING_ROWS_PER_UNIT).unwrap_or(u32::MAX);
+            let take = items.min(unit);
+            listing
+                .store
+                .splice(items - take, take, &[] as &[glib::Object]);
+        } else if !listing.mirror.is_empty() {
+            let keep = listing
+                .mirror
+                .len()
+                .saturating_sub(RETIRED_LISTING_ROWS_PER_UNIT);
+            listing.mirror.truncate(keep);
+        }
+        units += 1;
+        if listing.store.n_items() > 0 || !listing.mirror.is_empty() {
+            section
+                .imp()
+                .retiring_child_stores
+                .borrow_mut()
+                .push_front(listing);
+        }
+    }
 }
 
 /// Clear all cached tree-loading state before reloading the workspace folders.
@@ -551,6 +660,7 @@ pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
     if let Some(source) = section.imp().refresh_runtime.scan_dispatch_source.take() {
         source.remove();
     }
+    section.release_retained_child_stores(|_| true);
     section.imp().dir_rows.borrow_mut().clear();
     section.imp().dir_stores.borrow_mut().clear();
     section.imp().child_paths.borrow_mut().clear();
@@ -1669,7 +1779,9 @@ impl LushtextWorkspaceSection {
         };
         let mut expanded = self.imp().expanded_paths.borrow_mut();
         if row.is_expanded() {
-            expanded.insert(path);
+            expanded.insert(path.clone());
+            drop(expanded);
+            self.retain_shown_child_store(&path, row);
             return;
         }
 
@@ -1693,8 +1805,49 @@ impl LushtextWorkspaceSection {
             }
         }
         drop(expanded);
+        // The collapse unlinked this listing and every expanded descendant's:
+        // retire them now that GTK holds none of them.
+        self.release_retained_child_stores(|retained| retained.starts_with(&path));
         if needs_model_reconcile {
             self.reconcile_expanded_subtree_from_model(&path);
+        }
+    }
+
+    /// Hold the child store the expanded row at `path` shows, retiring the
+    /// one held for that path before (a refresh's replacement row).
+    fn retain_shown_child_store(&self, path: &Path, row: &gtk4::TreeListRow) {
+        let Some(store) = row.children().and_downcast::<gio::ListStore>() else {
+            return;
+        };
+        let previous = self
+            .imp()
+            .retained_child_stores
+            .borrow_mut()
+            .insert(path.to_path_buf(), store.clone());
+        if let Some(previous) = previous
+            && previous != store
+        {
+            retire_child_store(self, previous);
+        }
+    }
+
+    /// Stop holding every retained store whose directory matches `released`,
+    /// retiring each one nothing else holds.
+    pub(super) fn release_retained_child_stores(&self, released: impl Fn(&Path) -> bool) {
+        let stores = {
+            let mut retained = self.imp().retained_child_stores.borrow_mut();
+            let paths = retained
+                .keys()
+                .filter(|path| released(path))
+                .cloned()
+                .collect::<Vec<_>>();
+            paths
+                .into_iter()
+                .filter_map(|path| retained.remove(&path))
+                .collect::<Vec<_>>()
+        };
+        for store in stores {
+            retire_child_store(self, store);
         }
     }
 
