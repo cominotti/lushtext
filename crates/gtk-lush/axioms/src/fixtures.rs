@@ -766,3 +766,23 @@ pub mod a90 {
 pub mod a91 {
     pub use crate::probes::a91::{LINEAR_FLOOR, SIZES, time_collapse};
 }
+
+/// The fixture and values the A92 probe drives, for its sample.
+pub mod a92 {
+    pub use crate::probes::a92::{LINEAR_FLOOR, SIZES, time_repopulate};
+}
+
+/// The fixture and values the A93 probe drives, for its sample.
+pub mod a93 {
+    pub use crate::probes::a93::{Publish, SIZES, fresh_items_keep_working, time_publish};
+}
+
+/// The fixture and values the A94 probe drives, for its sample.
+pub mod a94 {
+    pub use crate::probes::a94::observe_headers;
+}
+
+/// The fixture and values the A95 probe drives, for its sample.
+pub mod a95 {
+    pub use crate::probes::a95::{SIZES, time_select_far};
+}
