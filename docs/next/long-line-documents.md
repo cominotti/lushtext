@@ -3885,7 +3885,40 @@ separate change, in this order:
      2026-11-07): markers binned per pixel row. It must
      first attribute PT's M7 worst dispatches (118–140 ms and 741–823 ms,
      which include a whole-buffer `set_text` and relayout) before claiming
-     any minimap blocker;
+     any minimap blocker. **Proposal written 2026-11-07** (branch
+     `bin-minimap-markers-per-row`,
+     `openspec/changes/bin-minimap-markers-per-row/`), judged worth doing,
+     with refinements.
+
+     **The M7 attribution claims no minimap blocker** (`main` `9b8ba5ae`,
+     minimap on and off interleaved, load 0.3–1.3):
+     - the 118–140 ms came from PT's test, which never destroyed its windows;
+       with the windows destroyed the dispatch is 9.6 ms with the minimap and
+       3.3 ms without it;
+     - the 741–823 ms is the editor's wrapped layout of 8,192-character lines
+       installed with `set_text`: 646–694 ms with the minimap and 645–789 ms
+       without it (owner: DL);
+     - in the modified phase, the minimap's share is 8–11 ms of 115–124 ms
+       (owner: the toolkit relayout after 2,100 inserts made outside the main
+       loop).
+
+     **The cost the change removes** is the per-run projection on every
+     draw (about 5 ms at `main`'s caps, linear in the marker count), plus the
+     match walk.
+
+     **The refinements:**
+     - bin per strip row **group** with one probe per group;
+     - modified lines in a property-less `GtkTextTag`: per-line marks cost
+       768–784 ms at 131,072, the tag about 1.1 µs per edit; saving swaps in
+       a fresh tag and removes the old one in slices;
+     - search markers only from a completed scan, because an unscanned
+       `forward` scans synchronously (68–81 ms);
+     - the strip redraws on map scroll;
+     - Kani over the integer walker;
+     - GTK axioms AX1–AX5.
+
+     The binning prototype at 131,072 markers of each kind and 713 rows
+     costs at most about 6 ms with a probe per row;
    - `lighten-notes-browser-rows` (queued 2026-11-07 from BN's stage 4
      review, coordinator decision, user experience first): first measure
      whether the about 205 realized rows (A1) or each row's widgets cause
