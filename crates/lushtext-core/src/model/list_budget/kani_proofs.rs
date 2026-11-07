@@ -8,7 +8,7 @@
 //! elapsed time and every unit count (T1), and turns of at most
 //! [`MAX_SEQUENCE`] units of any `u64` cost below 2^32 µs (T2).
 
-use super::*;
+use super::{Admission, LIST_TURN_SLICE_US, RetainedBudget, turn_continues};
 
 /// Offers per harness. The properties are per step, so a short sequence
 /// covers every transition the latch can take (fits before, refused once,

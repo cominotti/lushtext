@@ -46,7 +46,7 @@ pub fn collapsed_tree(rows: u32) -> gtk4::TreeListModel {
     })
 }
 
-/// The fastest `set_expanded(true)` of one of the last [`TAIL_ROWS`] rows of
+/// The fastest `set_expanded(true)` of one of the last `TAIL_ROWS` rows of
 /// a presented tree of `rows`, and the flattened item count after.
 #[must_use]
 pub fn time_tail_expansion(rows: u32) -> (Duration, u32) {
