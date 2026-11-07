@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::common::{
     activate_action, ensure_gtk_init, fixture, flush_after_delay, flush_events, present_window,
-    test_window, wait_for_painted_frame, wait_until,
+    test_window, wait_for_painted_frame, wait_until, wait_until_or_false,
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio::prelude::SettingsExt;
@@ -370,8 +370,6 @@ fn test_focus_mode_margins_follow_the_zoom_as_on_main() {
         Some(&true.to_variant()),
     )
     .expect("set-focus-mode");
-    wait_for_painted_frame(&window);
-    flush_after_delay(Duration::from_millis(100));
     let char_width = |editor: &LushtextEditorPage| {
         editor
             .source_view()
@@ -379,21 +377,47 @@ fn test_focus_mode_margins_follow_the_zoom_as_on_main() {
             .metrics(None, None)
             .approximate_char_width()
     };
+    // Focus Mode fullscreens the window, and the margins follow the view's
+    // width as well as the character's: read both only once the view's width
+    // has settled (it used to be read mid-fullscreen, 2,530 against 2,560 px
+    // on CI, where both margins sat at the width / 3 cap and the larger one
+    // came second).
+    let settled_width = |editor: &LushtextEditorPage| {
+        let mut last = -1;
+        wait_until(Duration::from_secs(5), || {
+            wait_for_painted_frame(&window);
+            let width = editor.source_view().width();
+            let stable = width == last && window.is_fullscreen();
+            last = width;
+            stable
+        });
+        last
+    };
+    let width_100 = settled_width(&editor);
     let at_100 = (editor.focus_mode_left_margin(), char_width(&editor));
     set_zoom(130);
-    wait_for_painted_frame(&window);
-    flush_after_delay(Duration::from_millis(100));
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(2), || char_width(&editor) != at_100.1);
+    let width_130 = settled_width(&editor);
+    // At the width / 3 cap the margin does not move; give it two seconds.
+    let _moved = wait_until_or_false(Duration::from_secs(2), || {
         editor.focus_mode_left_margin() != at_100.0
     });
     let at_130 = (editor.focus_mode_left_margin(), char_width(&editor));
+    println!("focus-mode-zoom-margins {at_100:?} {at_130:?} at width {width_100}");
+    assert_eq!(
+        width_100, width_130,
+        "both zooms are read at the one settled width"
+    );
     assert!(
         at_130.1 > at_100.1,
         "the zoom widens the character: {at_100:?} {at_130:?}"
     );
+    // The margin is at most a third of the width; below that cap a wider
+    // column leaves strictly smaller margins, at it they stay equal.
+    let cap = (width_100 / 3).max(24);
     assert!(
-        at_130.0 < at_100.0,
-        "a wider column leaves smaller margins: {at_100:?} {at_130:?}"
+        at_130.0 <= at_100.0 && (at_100.0 == cap || at_130.0 < at_100.0),
+        "a wider column leaves smaller margins: {at_100:?} {at_130:?} at width {width_100}"
     );
     // The margins derive from the view's Pango character width alone, which
     // is main's under main's rules (the same width the readable-column policy

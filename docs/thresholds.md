@@ -1058,6 +1058,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_APPEND_BATCH_SIZE` | 256 | cap | power of two |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `FIRST_BATCH_ROWS` | 32 | cap | power of two; the first rows of an empty directory, while the list creates its row widgets (`bound-lists-by-budget-not-count`) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `STALE_CACHE_ROWS_PER_UNIT` | 4,096 | cap | power of two; a superseded store's cached rows forgotten per unit of a load (`bound-lists-by-budget-not-count`) |
+| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `RETIRED_LISTING_ROWS_PER_UNIT` | 4,096 | cap | power of two; a collapsed directory's retired store items or mirror rows dropped per unit of a low-priority retirement turn (`bound-lists-by-budget-not-count`, stage 4 review) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_RECONCILE_DIRECT_ROWS` | 256 | cap | power of two |
 
 ### `crates/lushtext-core/src/ui/sidebar/workspace_section/watch.rs`
