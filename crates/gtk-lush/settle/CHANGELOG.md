@@ -20,3 +20,9 @@ and this crate follows SemVer after functional publication.
 
 - `SupersedingTimer` now removes obsolete GLib sources immediately on re-arm or
   invalidation while preserving its existing generation-token API.
+- `Debounce` does the same: a new `schedule` or `invalidate` removes the
+  superseded GLib source, so one pending source (and one weak reference to the
+  target) remains however often it is scheduled in one dispatch. Keeping every
+  superseded source made 131,072 schedules in one dispatch exceed GLib's
+  per-object weak-reference limit (`Too many GWeakRef registered`). The
+  generation-token API is unchanged.
