@@ -57,14 +57,17 @@ fix is part of this work.
   - `NOTES_BROWSER_RENDER_LIMIT` is removed. Every row the source admitted
     and the query matched is listed.
   - The browser's source entry count and sidecar scan count are removed.
-    Its existing byte ceilings govern admission and keep their values and
-    skip-and-continue semantics, so the browser never retains fewer rows
-    than `main` did.
+    Its existing byte ceilings govern admission and keep their values.
+    `main` stops construction at the first refusal of any limit, so a text
+    cut inside the bookmarks hides every folder note, document note and
+    open-tab row. The browser now skips a refused row and keeps admitting
+    later rows that fit. It therefore retains a superset of `main`'s rows.
+    The palette keeps `main`'s stop-at-first-refusal rule.
   - The open-editor snapshot is captured in time-sliced GTK turns
     (`model/list_budget.rs`: `turn_continues`). Its 4 MiB retained-byte
     limit is admitted through `RetainedBudget`, and it has no count cap.
-    Each editor is captured whole or restarted when its bookmark generation
-    changes between slices.
+    An editor whose bookmark generation changes between slices is captured
+    again from its first slice, so no editor's bookmarks are mixed.
   - The command palette keeps its own counts. Its per-category cut is
     `drill-down-palette-categories`.
 - **"Showing X of Y", once.** If a byte ceiling cuts the source, source
