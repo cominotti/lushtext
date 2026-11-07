@@ -173,6 +173,74 @@ pub(super) fn bookmark_records_bounded_by_retained_bytes(
     (bookmarks, retained_bytes, truncated)
 }
 
+/// Progress of one bounded slice over an editor's live bookmarks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BookmarkSliceProgress {
+    /// Index of the next live entry to visit.
+    pub next: usize,
+    /// Live entries (with a resolvable mark) the slice visited.
+    pub visited: usize,
+    /// Whether `admit` refused a record (the slice stopped at it, uncopied).
+    pub refused: bool,
+    /// Whether every entry has been visited.
+    pub done: bool,
+}
+
+/// Visit at most `max` live bookmark entries from `start`.
+///
+/// With `out`, each record is offered to `admit` with its retained charge
+/// (record shell plus heap) and copied only if admitted; the first refusal
+/// stops the slice at that entry. Without `out`, the slice only counts. The
+/// sliced open-editor capture (`bound-notes-browser-by-budget` D4) calls it
+/// with at most `OPEN_EDITOR_SNAPSHOT_SLICE_ROWS` entries per unit.
+pub(super) fn bookmark_record_slice(
+    editor: &LushtextEditorPage,
+    start: usize,
+    max: usize,
+    mut admit: impl FnMut(u64) -> bool,
+    mut out: Option<&mut Vec<BookmarkRecord>>,
+) -> BookmarkSliceProgress {
+    let entries = editor.imp().bookmarks.entries.borrow();
+    let record_size = u64::try_from(std::mem::size_of::<BookmarkRecord>()).unwrap_or(u64::MAX);
+    let end = start.saturating_add(max).min(entries.len());
+    let mut progress = BookmarkSliceProgress {
+        next: start.min(entries.len()),
+        ..BookmarkSliceProgress::default()
+    };
+    for entry in entries.iter().take(end).skip(start) {
+        let Some(line) = current_mark_line(editor, &entry.mark) else {
+            progress.next = progress.next.saturating_add(1);
+            continue;
+        };
+        if let Some(out) = out.as_deref_mut() {
+            let heap_bytes = entry
+                .record
+                .id
+                .0
+                .capacity()
+                .saturating_add(entry.record.label.as_ref().map_or(0, String::capacity));
+            let charge = record_size.saturating_add(u64::try_from(heap_bytes).unwrap_or(u64::MAX));
+            if !admit(charge) {
+                progress.refused = true;
+                return progress;
+            }
+            let mut record = entry.record.clone();
+            record.line = line;
+            out.push(record);
+        }
+        progress.visited = progress.visited.saturating_add(1);
+        progress.next = progress.next.saturating_add(1);
+    }
+    progress.done = progress.next >= entries.len();
+    progress
+}
+
+/// Live bookmark entries, including any whose mark no longer resolves.
+#[must_use]
+pub(super) fn bookmark_entry_count(editor: &LushtextEditorPage) -> usize {
+    editor.imp().bookmarks.entries.borrow().len()
+}
+
 /// Return the live bookmark projection generation for async race guards.
 #[must_use]
 pub(super) fn bookmark_change_generation(editor: &LushtextEditorPage) -> u64 {

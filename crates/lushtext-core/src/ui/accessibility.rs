@@ -415,6 +415,22 @@ pub fn clear_row_accessibility<W: IsA<gtk4::Accessible>>(widget: &W) {
     reset_relation(widget, gtk4::AccessibleRelation::SetSize);
 }
 
+/// Apply a recycled `GtkListView` row's spoken label and description.
+///
+/// `GtkListItem` carries them to the row widget GTK creates (the AT-SPI list
+/// item), which is what a screen reader reads; GTK owns the row's selected
+/// state and position itself, so only the label and description are applied.
+pub fn apply_list_item_row_accessibility(item: &gtk4::ListItem, metadata: RowAccessibility<'_>) {
+    item.set_accessible_label(metadata.label);
+    item.set_accessible_description(metadata.description.unwrap_or(""));
+}
+
+/// Clear a `GtkListView` row's label and description before GTK recycles it.
+pub fn clear_row_accessibility_for_list_item(item: &gtk4::ListItem) {
+    item.set_accessible_label("");
+    item.set_accessible_description("");
+}
+
 /// Return a bounded announcement message, preserving UTF-8 character boundaries.
 #[must_use]
 pub fn bounded_announcement_text(message: &str, max_chars: usize) -> Cow<'_, str> {

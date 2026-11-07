@@ -546,7 +546,11 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
 - `win.set-command-palette-query` with a string parameter while the command palette is visible
 - `win.set-open-popover-query` with a string parameter while the recent-document Open popover is visible
 - `win.set-notes-browser-query` with a string parameter while Browse Notes is visible
-- `win.select-notes-browser-row` with a zero-based unsigned visible row index
+- `win.select-notes-browser-row` with a zero-based unsigned visible row index:
+  an index into the listed rows in visual order, section headers excluded; the
+  browser lists every matching row (no cap), and `notes.browser_row_count`,
+  `notes.browser_rows_found` and `notes.browser_limited` report what it lists
+  and whether a memory budget cut its source
 - `win.open-notes-browser-selection` to press the visible browser's `Open` action
 - `app.show-hidden-files` toggles the workspace-wide hidden-files view mode; its
   boolean state mirrors the `workspace-show-hidden-files` GSettings key and is

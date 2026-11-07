@@ -2071,6 +2071,7 @@ fn test_command_palette_note_source_refresh_blocks_idle_until_terminal_finish() 
             scope_snapshot: scope,
             open_editor_snapshots: Arc::from([]),
             open_editor_snapshots_truncated: false,
+            open_editor_rows_not_retained: 0,
             mode: lushtext_core::services::palette::NotesBrowserMode::AllNotes,
             limits: lushtext_core::services::palette::PALETTE_NOTE_SOURCE_LIMITS,
         })

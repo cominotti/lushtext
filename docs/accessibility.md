@@ -248,6 +248,20 @@ Expected screen-reader behavior includes:
   the directory finishes. AT-SPI anchors:
   `atspi-anchor-workspace-search-status-bar-showing`,
   `atspi-anchor-workspace-tree-list-item-showing`.
+- Browse Notes and Browse Bookmarks list every admitted row in a virtualized,
+  sectioned `GtkListView` (`bound-notes-browser-by-budget`). Arrows move from
+  row to row across section boundaries (headers are not focus stops, ledger
+  A94); each row's accessible name is its visible title and its description
+  starts with its section's name, so Orca hears the section; Enter previews
+  without opening. When a byte budget kept rows out of the source, the limit
+  label (`status bar`) reads "Showing X of Y notes and bookmarks. The rest
+  exceed the memory budget." ("of at least Y" when part of the source could
+  not be counted; "Searching X of Y …" while a query is active), its accessible
+  name follows that text, and **one** polite announcement is raised per source
+  generation (opening, or switching mode), never per query. An empty source cut
+  entirely says "No notes fit the memory budget". AT-SPI anchors:
+  `atspi-anchor-notes-browser-status-bar-showing`,
+  `atspi-anchor-notes-browser-status-bar-no-notes-fit-the-memory-budget`.
 - An inline alert (a load error, an external change, a restored draft, a
   line-ending warning, a local-history restore) is announced **once**, at the
   first moment it becomes perceivable: when it appears on the selected

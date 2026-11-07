@@ -1136,6 +1136,12 @@ fn notes_snapshot(window: &LushtextWindow) -> AutomationNotesSnapshot {
         active_line_has_bookmark: evidence.active_line_has_bookmark,
         document_note_available: active_document_file_backed,
         folder_note_available: evidence.folder_note_available,
+        browser_open: evidence.browser.is_some(),
+        browser_row_count: evidence.browser.map_or(0, |browser| browser.listed_rows),
+        browser_rows_found: evidence
+            .browser
+            .map_or(0, |browser| bounded_len(browser.rows_found)),
+        browser_limited: evidence.browser.is_some_and(|browser| browser.limited),
     }
 }
 

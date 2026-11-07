@@ -1213,6 +1213,14 @@ pub struct AutomationNotesSnapshot {
     pub document_note_available: bool,
     /// Whether a folder-note action is meaningful for the current workspace scope.
     pub folder_note_available: bool,
+    /// Whether the Browse Notes / Browse Bookmarks dialog is open.
+    pub browser_open: bool,
+    /// Rows the open browser lists for its current query (0 when closed).
+    pub browser_row_count: u32,
+    /// Rows the browser's source found, retained or not (saturating; 0 when closed).
+    pub browser_rows_found: u32,
+    /// Whether a byte budget kept rows out of the open browser's source.
+    pub browser_limited: bool,
 }
 
 /// Local-history state that can be read from the active editor policy.

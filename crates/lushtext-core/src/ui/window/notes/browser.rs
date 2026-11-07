@@ -5,8 +5,8 @@
 //! # Role
 //!
 //! This module carries **no role**. It projects `WFR-NOTES-BOOKMARKS` onto the
-//! browser dialog's widgets — the adaptive shell, the grouped Adwaita sidebar and
-//! its rows, the preview stack, and the per-session state those widgets need —
+//! browser dialog's widgets — the adaptive shell, the sectioned, virtualized
+//! `GtkListView` and its row and header factories, the preview stack, and the per-session state those widgets need —
 //! so under `gtk-adapter-module-boundaries` it is a called presentation surface:
 //! outside the five-name role taxonomy, taking none of those names, and owning no
 //! `policy.rs` and no `evidence.rs`. Named in the `WFR-NOTES-BOOKMARKS` matrix
@@ -32,11 +32,9 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_settle::Debounce;
 use gtk4::gio;
 use gtk4::prelude::*;
-use libadwaita::prelude::{AdwDialogExt, NavigationPageExt, SidebarItemExt};
+use libadwaita::prelude::{AdwDialogExt, NavigationPageExt};
 
-use crate::model::palette::{
-    PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot,
-};
+use crate::model::palette::{PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot};
 use crate::services::palette as palette_service;
 use crate::ui::accessibility;
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
@@ -48,8 +46,10 @@ use super::chrome::{
     build_dialog_close_button, empty_browser_label, focus_after_present,
     install_dialog_escape_close,
 };
-use super::policy::NotesBrowserModeExt as _;
+use super::policy::{NotesBrowserListedCount, NotesBrowserModeExt as _};
 use super::query_execution::schedule_notes_browser_search;
+use super::row_model::{NotesBrowserRow, NotesBrowserRowModel};
+use super::source_execution::OpenEditorSnapshotCapture;
 
 /// Stack child name for Markdown/status bookmark and note previews.
 pub(super) const NOTES_PREVIEW_MARKDOWN_CHILD: &str = "markdown";
@@ -68,7 +68,22 @@ pub(super) struct OpenEditorNoteSnapshots {
     pub(super) entries: Vec<PaletteOpenEditorNoteSnapshot>,
     pub(super) retained_bytes: u64,
     pub(super) truncated: bool,
+    /// Bookmark rows counted past the byte cut without copying them.
+    pub(super) rows_not_retained: u64,
 }
+
+/// Space between a browser row's icon, text and Open button.
+const NOTES_ROW_SPACING_SP: i32 = 12;
+/// Vertical inset of a browser row's content, so two text lines read as one row.
+const NOTES_ROW_MARGIN_VERTICAL_SP: i32 = 3;
+/// Start inset of a browser row's content, matching `AdwSidebar`'s rows.
+const NOTES_ROW_MARGIN_START_SP: i32 = 6;
+/// Start inset of a section title, matching `AdwSidebar`'s section headers.
+const NOTES_HEADER_MARGIN_START_SP: i32 = 10;
+/// Stack child name for the results list.
+const NOTES_RESULTS_LIST_CHILD: &str = "list";
+/// Stack child name for the results empty state.
+const NOTES_RESULTS_EMPTY_CHILD: &str = "empty";
 
 /// State for one open unified notes browser dialog.
 pub(super) struct NotesBrowserState {
@@ -82,9 +97,18 @@ pub(super) struct NotesBrowserState {
     pub(super) sidebar_page: libadwaita::NavigationPage,
     /// Search field driving the current filtered row set.
     pub(super) search_entry: gtk4::SearchEntry,
-    /// Adwaita browse rail for bookmarks, folder notes, and document notes.
-    pub(super) sidebar: libadwaita::Sidebar,
-    /// Visible notice when the current result set is capped for responsiveness.
+    /// Virtualized, sectioned browse rail for bookmarks, folder notes, and
+    /// document notes (`bound-notes-browser-by-budget` D1).
+    pub(super) list_view: gtk4::ListView,
+    /// Single selection over the rows; selection drives the preview.
+    pub(super) selection: gtk4::SingleSelection,
+    /// The lazy list and section model the list shows.
+    pub(super) rows: NotesBrowserRowModel,
+    /// Switches between the list and its empty state.
+    pub(super) results_stack: gtk4::Stack,
+    /// Empty-state status label ("No notes match that search", "No notes yet").
+    pub(super) empty_label: gtk4::Label,
+    /// Visible notice when a byte budget kept rows out of the source.
     pub(super) limit_label: gtk4::Label,
     /// Header label for the selected note.
     pub(super) preview_title: gtk4::Label,
@@ -103,8 +127,30 @@ pub(super) struct NotesBrowserState {
     /// Complete set of notes covered by this browser session.
     pub(super) all_entries:
         RefCell<Arc<crate::ui::plain_disposal::DisposalOwned<Box<[NotesBrowserEntry]>>>>,
-    /// Entry indexes currently shown in the sidebar's grouped visual order.
-    pub(super) filtered_indices: RefCell<Vec<usize>>,
+    /// Generation of the published source; rows carry it, so a row of a
+    /// replaced source can neither render nor open.
+    pub(super) source_generation: Cell<u64>,
+    /// Rows listed against rows found for the published source.
+    pub(super) listed_count: Cell<NotesBrowserListedCount>,
+    /// Source generation whose limit was last announced.
+    pub(super) limit_announced_generation: Cell<Option<u64>>,
+    /// Limit announcements raised by this dialog (evidence).
+    pub(super) limit_announcements: Cell<u64>,
+    /// True while a query publish selects programmatically, so the selection
+    /// handler does not treat it as the user's navigation.
+    pub(super) publishing: Cell<bool>,
+    /// The sliced open-editor capture in progress, if any.
+    pub(super) snapshot_capture: RefCell<Option<OpenEditorSnapshotCapture>>,
+    /// The idle source running the capture's turns.
+    pub(super) snapshot_source: RefCell<Option<glib::SourceId>>,
+    /// Capture evidence: turns, restarts, rows counted but not copied, and
+    /// the longest turn.
+    pub(super) snapshot_evidence: Cell<OpenEditorSnapshotEvidence>,
+    /// The `content-changed` handler each bound row and header holds on its
+    /// row object, keyed by the list item or header, so a retargeted row
+    /// rebinds in place and an unbound one stops listening. Bounded by the
+    /// realized rows (A1).
+    pub(super) bound_rows: RefCell<BoundRowHandlers>,
     /// Debounce used to rebuild browser search rows after typing settles.
     pub(super) search_debounce: Debounce,
     /// One-active/one-latest ownership for background full-source matching.
@@ -115,7 +161,7 @@ pub(super) struct NotesBrowserState {
     pub(super) source_admission: RefCell<Option<palette_service::NoteSourceRefreshStart>>,
     /// One paced capacity wakeup for the browser source.
     pub(super) source_capacity_wakeup: crate::ui::plain_disposal::ProgressDisposalCapacityWakeup,
-    /// Typed source omissions reported separately from query render truncation.
+    /// Typed source omissions (content-free evidence).
     pub(super) source_truncation: RefCell<Vec<palette_service::NoteSourceTruncationReason>>,
     /// Whether bounded source construction has published this dialog's source.
     pub(super) source_ready: Cell<bool>,
@@ -126,6 +172,46 @@ pub(super) struct NotesBrowserState {
     /// One-active/one-latest ownership for closed-file bookmark excerpt loads.
     pub(super) preview_loads:
         RefCell<crate::services::bookmark_excerpt::BookmarkExcerptPreviewCoordinator>,
+}
+
+/// `content-changed` handlers of bound rows and headers, by the address of
+/// the `GtkListItem` or `GtkListHeader` that binds them.
+#[derive(Default)]
+pub(super) struct BoundRowHandlers {
+    handlers: std::collections::HashMap<usize, (NotesBrowserRow, glib::SignalHandlerId)>,
+}
+
+impl BoundRowHandlers {
+    fn insert(&mut self, owner: usize, row: NotesBrowserRow, handler: glib::SignalHandlerId) {
+        if let Some((old_row, old_handler)) = self.handlers.insert(owner, (row, handler)) {
+            old_row.disconnect(old_handler);
+        }
+    }
+
+    fn remove(&mut self, owner: usize) {
+        if let Some((row, handler)) = self.handlers.remove(&owner) {
+            row.disconnect(handler);
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        for (_, (row, handler)) in self.handlers.drain() {
+            row.disconnect(handler);
+        }
+    }
+}
+
+/// Content-free evidence of the sliced open-editor capture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OpenEditorSnapshotEvidence {
+    /// Capture turns run for this dialog.
+    pub turns: u64,
+    /// Editors captured again because their bookmarks changed mid-capture.
+    pub restarts: u64,
+    /// Bookmark rows counted past the byte cut without being copied.
+    pub rows_counted_not_retained: u64,
+    /// The longest capture turn, in microseconds.
+    pub worst_turn_us: u64,
 }
 
 /// Scalar bounded-source and query-ownership evidence.
@@ -150,6 +236,26 @@ pub struct NotesBrowserRuntimeSnapshot {
     pub source: palette_service::NoteSourceRefreshCoordinatorSnapshot,
     /// Closed-file bookmark excerpt ownership counters.
     pub preview: crate::services::bookmark_excerpt::BookmarkExcerptPreviewCoordinatorSnapshot,
+    /// Rows the list shows for the current query.
+    pub listed_rows: u32,
+    /// Rows the source retained (X of "Showing X of Y").
+    pub source_rows: usize,
+    /// Rows construction found, retained or not (Y).
+    pub rows_found: usize,
+    /// Whether `rows_found` is only a floor.
+    pub found_is_lower_bound: bool,
+    /// Whether a byte budget kept rows out of the source.
+    pub limited: bool,
+    /// Polite limit announcements raised by this dialog.
+    pub limit_announcements: u64,
+    /// The sliced open-editor capture's evidence.
+    pub snapshot: OpenEditorSnapshotEvidence,
+    /// Whether a capture is still running.
+    pub snapshot_capturing: bool,
+    /// Row widgets the list has realized (bounded by GTK's cap, ledger A1).
+    pub realized_row_widgets: usize,
+    /// Source index of the selected row, if any.
+    pub selected_source_index: Option<u32>,
 }
 
 /// Weak handle to the currently visible unified notes browser.
@@ -197,13 +303,10 @@ impl ActiveNotesBrowser {
         let Some(state) = self.state.upgrade() else {
             return false;
         };
-        let Ok(row) = usize::try_from(index) else {
-            return false;
-        };
-        if row >= state.filtered_indices.borrow().len() {
+        if index >= state.rows.len() {
             return false;
         }
-        state.sidebar.set_selected(index);
+        state.selection.set_selected(index);
         true
     }
 
@@ -231,6 +334,9 @@ impl ActiveNotesBrowser {
         let query = state.query_runtime.borrow().snapshot();
         let source = state.source_refreshes.borrow().snapshot();
         let preview = state.preview_loads.borrow().snapshot();
+        let snapshot_capturing = state.snapshot_capture.borrow().is_some();
+        let count = state.listed_count.get();
+        let selected_source_index = state.selected_source_index();
         Some(NotesBrowserRuntimeSnapshot {
             source_entries,
             source_truncated,
@@ -239,6 +345,16 @@ impl ActiveNotesBrowser {
             query,
             source,
             preview,
+            listed_rows: state.rows.len(),
+            source_rows: count.listed,
+            rows_found: count.found,
+            found_is_lower_bound: count.found_is_lower_bound,
+            limited: count.is_limited(),
+            limit_announcements: state.limit_announcements.get(),
+            snapshot: state.snapshot_evidence.get(),
+            snapshot_capturing,
+            realized_row_widgets: realized_row_widgets(&state.list_view),
+            selected_source_index,
         })
     }
 }
@@ -295,16 +411,36 @@ impl LushtextWindow {
             "Filter bookmarks, document notes, and folder notes",
         );
 
-        let sidebar = libadwaita::Sidebar::new();
-        accessibility::set_role(&sidebar, gtk4::AccessibleRole::List);
-        sidebar.set_mode(libadwaita::SidebarMode::Sidebar);
-        sidebar.set_vexpand(true);
-        sidebar.set_placeholder(Some(&empty_browser_label("No notes match that search")));
+        let rows = NotesBrowserRowModel::default();
+        let selection = gtk4::SingleSelection::new(Some(rows.clone()));
+        selection.set_autoselect(false);
+        selection.set_can_unselect(false);
+        let list_view = gtk4::ListView::new(Some(selection.clone()), None::<gtk4::ListItemFactory>);
+        list_view.add_css_class("navigation-sidebar");
+        list_view.set_tab_behavior(gtk4::ListTabBehavior::Item);
+        list_view.set_vexpand(true);
+        accessibility::set_role(&list_view, gtk4::AccessibleRole::List);
         accessibility::set_labelled_description(
-            &sidebar,
+            &list_view,
             "Notes results",
             "Choose a bookmark, document note, or folder note",
         );
+        let empty_label = empty_browser_label("No notes match that search");
+        empty_label.set_valign(gtk4::Align::Center);
+        empty_label.set_wrap(true);
+        let results_stack = gtk4::Stack::new();
+        results_stack.set_vexpand(true);
+        results_stack.add_named(
+            &gtk4::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk4::PolicyType::Never)
+                .hexpand(true)
+                .vexpand(true)
+                .child(&list_view)
+                .build(),
+            Some(NOTES_RESULTS_LIST_CHILD),
+        );
+        results_stack.add_named(&empty_label, Some(NOTES_RESULTS_EMPTY_CHILD));
+        results_stack.set_visible_child_name(NOTES_RESULTS_EMPTY_CHILD);
         let limit_label = gtk4::Label::new(None);
         limit_label.set_halign(gtk4::Align::Start);
         limit_label.set_xalign(0.0);
@@ -316,13 +452,17 @@ impl LushtextWindow {
         accessibility::set_labelled_description(
             &limit_label,
             "Notes result limit",
-            "Shown when the notes browser limits a large result set",
+            "Shown when the memory budget keeps some notes out of the browser",
         );
 
         let preview_title = gtk4::Label::new(Some("Select a note"));
         preview_title.set_halign(gtk4::Align::Start);
         preview_title.set_xalign(0.0);
         preview_title.add_css_class("title-4");
+        // A bookmark label can be kilobytes long; a single unellipsized line
+        // made the dialog request tens of thousands of pixels
+        // (`AdwFloatingSheet … exceeds AdwBreakpointBin width`).
+        preview_title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
 
         let preview_meta = gtk4::Label::new(Some(
             "Choose a bookmark, folder note, or document note to preview it here.",
@@ -330,6 +470,7 @@ impl LushtextWindow {
         preview_meta.set_halign(gtk4::Align::Start);
         preview_meta.set_xalign(0.0);
         preview_meta.set_wrap(true);
+        preview_meta.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
         preview_meta.add_css_class("dim-label");
 
         let markdown_preview = LushtextMarkdownPreview::new();
@@ -408,7 +549,7 @@ impl LushtextWindow {
         split_view.set_min_sidebar_width(260.0);
         split_view.set_max_sidebar_width(340.0);
         let sidebar_page = libadwaita::NavigationPage::new(
-            &build_notes_sidebar(&dialog, &search_entry, &sidebar, &limit_label),
+            &build_notes_sidebar(&dialog, &search_entry, &results_stack, &limit_label),
             mode.title(),
         );
         split_view.set_sidebar(Some(&sidebar_page));
@@ -432,7 +573,11 @@ impl LushtextWindow {
             split_view,
             sidebar_page,
             search_entry,
-            sidebar,
+            list_view,
+            selection,
+            rows,
+            results_stack,
+            empty_label,
             limit_label,
             preview_title,
             preview_meta,
@@ -441,7 +586,15 @@ impl LushtextWindow {
             raw_preview_buffer,
             open_button,
             back_button,
-            filtered_indices: RefCell::new(Vec::new()),
+            source_generation: Cell::new(0),
+            listed_count: Cell::new(NotesBrowserListedCount::default()),
+            limit_announced_generation: Cell::new(None),
+            limit_announcements: Cell::new(0),
+            publishing: Cell::new(false),
+            snapshot_capture: RefCell::new(None),
+            snapshot_source: RefCell::new(None),
+            snapshot_evidence: Cell::new(OpenEditorSnapshotEvidence::default()),
+            bound_rows: RefCell::default(),
             search_debounce: Debounce::default(),
             preview_loads: RefCell::default(),
             all_entries: RefCell::new(Arc::new(
@@ -470,24 +623,40 @@ impl LushtextWindow {
                 }
             }
         });
-        state.sidebar.connect_selected_item_notify({
+        state
+            .list_view
+            .set_factory(Some(&build_notes_row_factory(&state)));
+        state
+            .list_view
+            .set_header_factory(Some(&build_notes_header_factory(&state)));
+        state.selection.connect_selected_notify({
             let state = Rc::downgrade(&state);
-            move |sidebar| {
-                if let Some(state) = state.upgrade() {
+            move |selection| {
+                // A publish selects programmatically, and teardown clears the
+                // model: neither is the user's navigation.
+                if let Some(state) = state.upgrade()
+                    && !state.publishing.get()
+                    && !state.disposed.get()
+                {
                     NotesBrowserState::refresh_preview(
                         &state,
-                        sidebar_item_index(sidebar.selected_item()),
+                        position_of_selection(selection.selected()),
                         true,
                     );
                 }
             }
         });
-        state.sidebar.connect_activated({
+        // Enter (or a double click) selects and previews; it never opens. The
+        // Open button and a bookmark row's Open button open.
+        state.list_view.connect_activate({
             let state = Rc::downgrade(&state);
-            move |sidebar, index| {
+            move |_, position| {
                 if let Some(state) = state.upgrade() {
-                    sidebar.set_selected(index);
-                    NotesBrowserState::refresh_preview(&state, usize::try_from(index).ok(), true);
+                    if state.selection.selected() == position {
+                        NotesBrowserState::refresh_preview(&state, Some(position), true);
+                    } else {
+                        state.selection.set_selected(position);
+                    }
                 }
             }
         });
@@ -684,7 +853,7 @@ fn build_notes_browser_shell(
 fn build_notes_sidebar(
     dialog: &libadwaita::Dialog,
     search_entry: &gtk4::SearchEntry,
-    sidebar: &libadwaita::Sidebar,
+    results_stack: &gtk4::Stack,
     limit_label: &gtk4::Label,
 ) -> gtk4::Box {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
@@ -695,13 +864,9 @@ fn build_notes_sidebar(
     install_dialog_escape_close(dialog, &content);
 
     content.append(search_entry);
-
-    let scroll = gtk4::ScrolledWindow::builder()
-        .hexpand(true)
-        .vexpand(true)
-        .child(sidebar)
-        .build();
-    content.append(&scroll);
+    // The list's own scroller is the only one, so the list gets a real
+    // viewport and stays virtualized (ledger A1).
+    content.append(results_stack);
     content.append(limit_label);
 
     content
@@ -756,7 +921,7 @@ pub(super) trait NotesBrowserEntryExt {
     fn preview_meta(&self) -> String;
     /// Render context used by the shared markdown preview widget.
     fn render_context(&self) -> MarkdownPreviewRenderContext;
-    /// Symbolic icon used by the grouped Adwaita sidebar item.
+    /// Symbolic icon used by the browser row.
     fn sidebar_icon_name(&self) -> &'static str;
 }
 
@@ -819,10 +984,9 @@ impl NotesBrowserState {
             mode.search_accessible_label(),
             mode.search_description(),
         );
-        self.sidebar
-            .set_placeholder(Some(&empty_browser_label(mode.empty_source_label())));
+        self.show_empty_results(mode.empty_source_label());
         accessibility::set_labelled_description(
-            &self.sidebar,
+            &self.list_view,
             mode.results_accessible_label(),
             mode.results_description(),
         );
@@ -840,8 +1004,8 @@ impl NotesBrowserState {
             .set_tooltip_text(Some(&format!("Back to {}", mode.title())));
         self.show_unselected_preview();
     }
-    /// Refresh the preview pane for one selected sidebar item.
-    pub(super) fn refresh_preview(state: &Rc<Self>, index: Option<usize>, user_selected: bool) {
+    /// Refresh the preview pane for the row at one list position.
+    pub(super) fn refresh_preview(state: &Rc<Self>, index: Option<u32>, user_selected: bool) {
         // Any newly rendered selection supersedes older closed-file excerpt
         // work; a closed-file bookmark branch resubmits below.
         state.preview_loads.borrow_mut().invalidate();
@@ -851,12 +1015,15 @@ impl NotesBrowserState {
             return;
         };
 
-        let Some(entry_index) = state.filtered_indices.borrow().get(index).copied() else {
+        let Some(entry_index) = state.rows.source_index_at(index) else {
             state.show_unselected_preview();
             return;
         };
         let all_entries = state.all_entries.borrow();
-        let Some(entry) = all_entries.get(entry_index) else {
+        let Some(entry) = usize::try_from(entry_index)
+            .ok()
+            .and_then(|index| all_entries.get(index))
+        else {
             state.show_unselected_preview();
             return;
         };
@@ -919,10 +1086,33 @@ impl NotesBrowserState {
         self.show_markdown_preview();
         self.markdown_preview.show_content_placeholder(description);
     }
-    /// Return the backing entry index for the currently selected sidebar item.
+    /// Return the source index of the selected row.
+    pub(super) fn selected_source_index(&self) -> Option<u32> {
+        self.rows
+            .source_index_at(position_of_selection(self.selection.selected())?)
+    }
+
+    /// Return the backing entry index for the selected row.
     pub(super) fn selected_entry_index(&self) -> Option<usize> {
-        let selected = sidebar_item_index(self.sidebar.selected_item())?;
-        self.filtered_indices.borrow().get(selected).copied()
+        usize::try_from(self.selected_source_index()?).ok()
+    }
+
+    /// Show the list, or the empty state with `message`.
+    pub(super) fn show_results(&self, empty_message: &str) {
+        if self.rows.is_empty() {
+            self.show_empty_results(empty_message);
+        } else {
+            self.results_stack
+                .set_visible_child_name(NOTES_RESULTS_LIST_CHILD);
+        }
+    }
+
+    /// Show the empty-state status label with `message`.
+    pub(super) fn show_empty_results(&self, message: &str) {
+        self.empty_label.set_label(message);
+        accessibility::set_label(&self.empty_label, message);
+        self.results_stack
+            .set_visible_child_name(NOTES_RESULTS_EMPTY_CHILD);
     }
     /// Open the currently selected note through the same window workflows used elsewhere.
     pub(super) fn open_selected(&self) {
@@ -948,69 +1138,207 @@ impl NotesBrowserState {
     }
 }
 
-/// Append note entries as semantic Adwaita sidebar sections and return the
-/// exact flat order used for selection lookup.
-///
-/// One section per `PaletteNoteCategory`, in that type's own order and under its
-/// own label, so the browser cannot disagree with the palette about which
-/// categories exist or what they are called.
-pub(super) fn append_notes_sidebar_sections(
-    state: &Rc<NotesBrowserState>,
-    all_entries: &[NotesBrowserEntry],
-    matching_indices: &[usize],
-) -> Vec<usize> {
-    let sidebar = &state.sidebar;
-    let mut ordered_indices = Vec::with_capacity(matching_indices.len());
-    for category in PaletteNoteCategory::ALL {
-        append_note_sidebar_section(
-            state,
-            sidebar,
-            category.label(),
-            matching_indices.iter().copied().filter(|index| {
-                all_entries
-                    .get(*index)
-                    .is_some_and(|entry| entry.category == category)
-            }),
-            all_entries,
-            &mut ordered_indices,
-        );
+impl NotesBrowserState {
+    /// Open the entry a listed row names, if the row still belongs to the
+    /// published source (a row of a replaced source opens nothing).
+    fn open_listed_row(&self, row: &NotesBrowserRow) {
+        if row.generation() != self.source_generation.get() || self.disposed.get() {
+            return;
+        }
+        if let Ok(index) = usize::try_from(row.source_index()) {
+            self.open_entry(index);
+        }
     }
-    ordered_indices
 }
 
-/// Add one non-empty Notes browser section to the sidebar.
-fn append_note_sidebar_section(
-    state: &Rc<NotesBrowserState>,
-    sidebar: &libadwaita::Sidebar,
-    title: &str,
-    indices: impl Iterator<Item = usize>,
-    all_entries: &[NotesBrowserEntry],
-    ordered_indices: &mut Vec<usize>,
+/// `GtkSingleSelection` reports "nothing selected" as `GTK_INVALID_LIST_POSITION`.
+fn position_of_selection(selected: u32) -> Option<u32> {
+    (selected != gtk4::INVALID_LIST_POSITION).then_some(selected)
+}
+
+/// Row widgets the list has realized: its direct `row` children. Bounded by
+/// GTK's realized-row cap (ledger A1), and reading it creates nothing.
+fn realized_row_widgets(list_view: &gtk4::ListView) -> usize {
+    let mut count = 0usize;
+    let mut child = list_view.first_child();
+    while let Some(widget) = child {
+        if widget.css_name() == "row" {
+            count = count.saturating_add(1);
+        }
+        child = widget.next_sibling();
+    }
+    count
+}
+
+/// The widgets of one browser row, built once per recycled row.
+struct NotesRowWidgets {
+    icon: gtk4::Image,
+    title: gtk4::Label,
+    subtitle: gtk4::Label,
+    open_button: gtk4::Button,
+}
+
+/// Find a row's widgets from its child box (icon, title box, Open button).
+fn notes_row_widgets(child: &gtk4::Widget) -> Option<NotesRowWidgets> {
+    let icon = child.first_child()?.downcast::<gtk4::Image>().ok()?;
+    let title_box = icon.next_sibling()?;
+    let open_button = title_box.next_sibling()?.downcast::<gtk4::Button>().ok()?;
+    let title = title_box.first_child()?.downcast::<gtk4::Label>().ok()?;
+    let subtitle = title.next_sibling()?.downcast::<gtk4::Label>().ok()?;
+    Some(NotesRowWidgets {
+        icon,
+        title,
+        subtitle,
+        open_button,
+    })
+}
+
+/// Build the row factory: the layout of `AdwSidebar`'s rows (an icon with the
+/// presentation role, an ellipsized title, a dimmed subtitle and, for a
+/// bookmark, an Open suffix button), created only for the realized rows.
+fn build_notes_row_factory(state: &Rc<NotesBrowserState>) -> gtk4::SignalListItemFactory {
+    let factory = gtk4::SignalListItemFactory::new();
+    factory.connect_setup({
+        let state = Rc::downgrade(state);
+        move |_, object| {
+            let Some(list_item) = object.downcast_ref::<gtk4::ListItem>() else {
+                return;
+            };
+            // `AdwSidebar`'s row: the icon, then the two text lines, then a
+            // suffix, spaced like its `.navigation-sidebar` row content.
+            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, NOTES_ROW_SPACING_SP);
+            row.set_margin_top(NOTES_ROW_MARGIN_VERTICAL_SP);
+            row.set_margin_bottom(NOTES_ROW_MARGIN_VERTICAL_SP);
+            row.set_margin_start(NOTES_ROW_MARGIN_START_SP);
+            row.add_css_class("notes-browser-row");
+            let icon = gtk4::Image::new();
+            icon.add_css_class("icon");
+            accessibility::set_role(&icon, gtk4::AccessibleRole::Presentation);
+            row.append(&icon);
+            let title_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            title_box.set_hexpand(true);
+            title_box.set_valign(gtk4::Align::Center);
+            let title = gtk4::Label::new(None);
+            title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            title.set_xalign(0.0);
+            title.add_css_class("title");
+            let subtitle = gtk4::Label::new(None);
+            subtitle.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            subtitle.set_xalign(0.0);
+            subtitle.add_css_class("subtitle");
+            subtitle.add_css_class("caption");
+            subtitle.add_css_class("dim-label");
+            title_box.append(&title);
+            title_box.append(&subtitle);
+            row.append(&title_box);
+            let open_button = gtk4::Button::builder()
+                .icon_name("document-open-symbolic")
+                .valign(gtk4::Align::Center)
+                .visible(false)
+                .build();
+            open_button.add_css_class("flat");
+            open_button.connect_clicked({
+                let state = state.clone();
+                let list_item = list_item.downgrade();
+                move |_| {
+                    let (Some(state), Some(list_item)) = (state.upgrade(), list_item.upgrade())
+                    else {
+                        return;
+                    };
+                    if let Some(row) = list_item
+                        .item()
+                        .and_then(|item| item.downcast::<NotesBrowserRow>().ok())
+                    {
+                        state.open_listed_row(&row);
+                    }
+                }
+            });
+            row.append(&open_button);
+            list_item.set_child(Some(&row));
+        }
+    });
+    factory.connect_bind({
+        let state = Rc::downgrade(state);
+        move |_, object| {
+            let Some(list_item) = object.downcast_ref::<gtk4::ListItem>() else {
+                return;
+            };
+            let (Some(state), Some(widgets)) = (
+                state.upgrade(),
+                list_item.child().as_ref().and_then(notes_row_widgets),
+            ) else {
+                return;
+            };
+            let Some(row) = list_item
+                .item()
+                .and_then(|item| item.downcast::<NotesBrowserRow>().ok())
+            else {
+                return;
+            };
+            bind_notes_row(&state, list_item, &row, &widgets);
+            // A republish retargets this row object in place (`row_model`):
+            // project it again without a new widget.
+            let handler = row.connect_content_changed({
+                let state = Rc::downgrade(&state);
+                let list_item = list_item.downgrade();
+                move |row| {
+                    let (Some(state), Some(list_item)) = (state.upgrade(), list_item.upgrade())
+                    else {
+                        return;
+                    };
+                    if let Some(widgets) = list_item.child().as_ref().and_then(notes_row_widgets) {
+                        bind_notes_row(&state, &list_item, row, &widgets);
+                    }
+                }
+            });
+            state
+                .bound_rows
+                .borrow_mut()
+                .insert(list_item.as_ptr() as usize, row, handler);
+        }
+    });
+    factory.connect_unbind({
+        let state = Rc::downgrade(state);
+        move |_, object| {
+            let Some(list_item) = object.downcast_ref::<gtk4::ListItem>() else {
+                return;
+            };
+            if let Some(state) = state.upgrade() {
+                state
+                    .bound_rows
+                    .borrow_mut()
+                    .remove(list_item.as_ptr() as usize);
+            }
+            accessibility::clear_row_accessibility_for_list_item(list_item);
+            if let Some(widgets) = list_item.child().as_ref().and_then(notes_row_widgets) {
+                widgets.title.set_label("");
+                widgets.subtitle.set_label("");
+                widgets.open_button.set_visible(false);
+                widgets.open_button.set_tooltip_text(None);
+                accessibility::clear_row_accessibility(&widgets.open_button);
+            }
+        }
+    });
+    factory
+}
+
+/// Project one source entry onto a recycled row.
+fn bind_notes_row(
+    state: &NotesBrowserState,
+    list_item: &gtk4::ListItem,
+    row: &NotesBrowserRow,
+    widgets: &NotesRowWidgets,
 ) {
-    let section = libadwaita::SidebarSection::new();
-    section.set_title(Some(title));
-
-    let start_len = ordered_indices.len();
-    for index in indices {
-        let Some(entry) = all_entries.get(index) else {
-            continue;
-        };
-        section.append(build_notes_sidebar_item(state, index, entry));
-        ordered_indices.push(index);
+    if row.generation() != state.source_generation.get() {
+        return;
     }
-
-    if ordered_indices.len() > start_len {
-        sidebar.append(section);
-    }
-}
-
-/// Build one Adwaita sidebar item while preserving the old row's searchable
-/// metadata and preview line in the visible subtitle/tooltip.
-fn build_notes_sidebar_item(
-    state: &Rc<NotesBrowserState>,
-    entry_index: usize,
-    entry: &NotesBrowserEntry,
-) -> libadwaita::SidebarItem {
+    let all_entries = state.all_entries.borrow();
+    let Some(entry) = usize::try_from(row.source_index())
+        .ok()
+        .and_then(|index| all_entries.get(index))
+    else {
+        return;
+    };
     let bookmark_label = matches!(&entry.target, PaletteNoteTarget::Bookmark { .. }).then(|| {
         entry
             .title
@@ -1026,36 +1354,101 @@ fn build_notes_sidebar_item(
         || entry.row_subtitle(),
         |detail| format!("{} · {detail}", entry.row_subtitle()),
     );
-    let mut builder = libadwaita::SidebarItem::builder()
-        .title(title)
-        .subtitle(subtitle.clone())
-        .tooltip(subtitle.clone())
-        .icon_name(entry.sidebar_icon_name());
-
+    widgets.icon.set_icon_name(Some(entry.sidebar_icon_name()));
+    widgets.title.set_label(&title);
+    widgets.subtitle.set_label(&subtitle);
+    widgets.subtitle.set_visible(!subtitle.is_empty());
+    if let Some(child) = list_item.child() {
+        child.set_tooltip_text(Some(&subtitle));
+    }
+    // The section name is spoken with every row: a header is not a focus stop
+    // (ledger A94), so the description is how Orca hears the section.
+    let section = row.category().map_or("", |category| category.label());
+    let description = format!("{section} · {subtitle}");
+    accessibility::apply_list_item_row_accessibility(
+        list_item,
+        accessibility::RowAccessibility::new(&title).description(&description),
+    );
     if let Some(bookmark_label) = bookmark_label {
         let action_label = format!("Open bookmark {bookmark_label}");
-        let open_button = gtk4::Button::builder()
-            .icon_name("document-open-symbolic")
-            .tooltip_text(&action_label)
-            .valign(gtk4::Align::Center)
-            .build();
-        open_button.add_css_class("flat");
-        accessibility::set_labelled_description(&open_button, &action_label, &subtitle);
-        open_button.connect_clicked({
-            let state = Rc::downgrade(state);
-            move |_| {
-                if let Some(state) = state.upgrade() {
-                    state.open_entry(entry_index);
-                }
-            }
-        });
-        builder = builder.suffix(&open_button);
+        widgets.open_button.set_tooltip_text(Some(&action_label));
+        accessibility::set_labelled_description(&widgets.open_button, &action_label, &subtitle);
+        widgets.open_button.set_visible(true);
+    } else {
+        widgets.open_button.set_visible(false);
     }
-
-    builder.build()
 }
 
-/// Resolve an Adwaita sidebar item back to the flat backing vector index.
-fn sidebar_item_index(item: Option<libadwaita::SidebarItem>) -> Option<usize> {
-    item.and_then(|item| usize::try_from(item.index()).ok())
+/// Build the section header factory: the section title, styled as
+/// `AdwSidebar`'s section header (`.heading`).
+fn build_notes_header_factory(state: &Rc<NotesBrowserState>) -> gtk4::SignalListItemFactory {
+    let factory = gtk4::SignalListItemFactory::new();
+    factory.connect_setup(|_, object| {
+        let Some(header) = object.downcast_ref::<gtk4::ListHeader>() else {
+            return;
+        };
+        let title = gtk4::Label::new(None);
+        title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        title.set_xalign(0.0);
+        title.add_css_class("heading");
+        title.set_margin_start(NOTES_HEADER_MARGIN_START_SP);
+        title.add_css_class("notes-browser-section-header");
+        accessibility::set_role(&title, gtk4::AccessibleRole::Heading);
+        header.set_child(Some(&title));
+    });
+    factory.connect_bind({
+        let state = Rc::downgrade(state);
+        move |_, object| {
+            let Some(header) = object.downcast_ref::<gtk4::ListHeader>() else {
+                return;
+            };
+            let Some(row) = header
+                .item()
+                .and_then(|item| item.downcast::<NotesBrowserRow>().ok())
+            else {
+                return;
+            };
+            project_section_header(header, &row);
+            if let Some(state) = state.upgrade() {
+                let handler = row.connect_content_changed({
+                    let header = header.downgrade();
+                    move |row| {
+                        if let Some(header) = header.upgrade() {
+                            project_section_header(&header, row);
+                        }
+                    }
+                });
+                state
+                    .bound_rows
+                    .borrow_mut()
+                    .insert(header.as_ptr() as usize, row, handler);
+            }
+        }
+    });
+    factory.connect_unbind({
+        let state = Rc::downgrade(state);
+        move |_, object| {
+            if let (Some(state), Some(header)) =
+                (state.upgrade(), object.downcast_ref::<gtk4::ListHeader>())
+            {
+                state
+                    .bound_rows
+                    .borrow_mut()
+                    .remove(header.as_ptr() as usize);
+            }
+        }
+    });
+    factory
+}
+
+/// Show the section title of the header's first row.
+fn project_section_header(header: &gtk4::ListHeader, row: &NotesBrowserRow) {
+    let label = row.category().map_or("", |category| category.label());
+    if let Some(title) = header
+        .child()
+        .and_then(|child| child.downcast::<gtk4::Label>().ok())
+    {
+        title.set_label(label);
+        accessibility::set_label(&title, label);
+    }
 }

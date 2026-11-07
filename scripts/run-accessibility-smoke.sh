@@ -63,6 +63,7 @@ ACCESSIBILITY_CASES=(
     notes-empty
     notes-populated
     notes-no-results
+    notes-limited
     bookmarks-populated
     local-history-empty
     local-history
@@ -375,6 +376,7 @@ MATRIX_ROWS_BY_CASE = {
     "notes-empty": ["A11Y-NOTES-EMPTY"],
     "notes-populated": ["A11Y-NOTES-POPULATED"],
     "notes-no-results": ["A11Y-NOTES-POPULATED"],
+    "notes-limited": ["A11Y-NOTES-POPULATED"],
     "bookmarks-populated": ["A11Y-BOOKMARKS"],
     "local-history-empty": ["A11Y-LOCAL-HISTORY-EMPTY"],
     "local-history": ["A11Y-LOCAL-HISTORY-POPULATED"],
@@ -572,7 +574,7 @@ begin_list_budget_capture() {
 }
 end_list_budget_capture() {
     BINARY="$DEFAULT_BINARY"
-    unset LUSHTEXT_SEARCH_RETAINED_BYTES LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES
+    unset LUSHTEXT_SEARCH_RETAINED_BYTES LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES LUSHTEXT_NOTES_SOURCE_TEXT_BYTES
 }
 
 collect_accessibility_warnings() {
@@ -2010,6 +2012,26 @@ assert_anchor "notes-no-results" "notes browser" "dialog" "Notes"
 assert_anchor "notes-no-results" "notes browser" "entry" "Search notes"
 assert_anchor "notes-no-results" "notes browser" "status bar" "No notes match that search"
 assert_anchor "notes-no-results" "notes browser" "button" "Close"
+fi
+
+if case_selected "notes-limited"; then
+seed_workspace_for_capture "notes-limited"
+# A one-byte searchable-text budget keeps the one bookmark out of the source,
+# so the browser states the cut ("Showing 0 of 1 ...") and announces it once
+# (bound-notes-browser-by-budget task 6.3).
+begin_list_budget_capture LUSHTEXT_NOTES_SOURCE_TEXT_BYTES 1
+run_accessibility_capture "notes-limited" \
+    --step wait-window-action:toggle-bookmark \
+    --step window-action:toggle-bookmark \
+    --step window-action:show-notes \
+    --step wait-atspi-text:"Showing "
+end_list_budget_capture
+assert_anchor "notes-limited" "notes browser" "dialog" "Notes"
+assert_anchor "notes-limited" "notes browser" "entry" "Search notes"
+# The limit label is a status bar whose name tracks its visible text.
+assert_anchor_prefix "notes-limited" "notes browser" "status bar" "Showing "
+assert_anchor "notes-limited" "notes browser" "status bar" "No notes fit the memory budget"
+assert_anchor "notes-limited" "notes browser" "button" "Close"
 fi
 
 if case_selected "bookmarks-populated"; then

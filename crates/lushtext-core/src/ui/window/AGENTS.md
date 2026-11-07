@@ -23,7 +23,12 @@ This folder owns the top-level application shell adapter.
   Notes and Browse Bookmarks are modes of one live dialog/source/query owner;
   mode participates in every generation check. Bound live-editor snapshot bytes
   before a deferred request can wait for progress-lane admission, and never
-  reintroduce an unrestricted production bookmark aggregate collector.
+  reintroduce an unrestricted production bookmark aggregate collector. The
+  browser lists every admitted row in a virtualized `GtkListView` over
+  `row_model.rs`; do not reintroduce a row cap or an `AdwSidebar` there
+  (ledger A92), keep publishes a removal then an addition (A93), keep the
+  open-editor capture sliced (`turn_continues`, `RetainedBudget`, no count),
+  and keep the model free of any reference to the `DisposalOwned` source.
 - Keep status-bar refresh and properties-panel refresh behavior aligned when window-level document state changes.
 - Keep search-panel shell integration here, but keep search-panel internal list/history/replace/runtime mechanics in `ui/search_panel/`.
 - Keep window-level transient dismissal in the `transient_dismissal/` role home (`WFR-TRANSIENT-DISMISSAL`, migrated in slot 7b; the file was `transient_surfaces.rs`): Escape closes one topmost dismissible shell surface before Focus Mode exit, and command-palette click-away routes through `close_command_palette()` so focus restoration stays centralized.

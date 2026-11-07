@@ -100,34 +100,54 @@ const NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES: u64 = 64 * 1024;
 /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 const MAX_PALETTE_NOTE_DIAGNOSTICS: usize = 1_024;
 
+/// What a byte ceiling's refusal of one row means for the rows after it.
+///
+/// Both consumers keep every byte ceiling; they differ only in what follows a
+/// refusal (`bound-notes-browser-by-budget` D3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByteRefusal {
+    /// The first refusal ends construction: the source is a prefix of the
+    /// construction order. The command palette's rule, unchanged.
+    Stop,
+    /// A refused row is skipped and counted, and later rows that fit are still
+    /// admitted. Browse Notes' rule: its rows are regrouped by category before
+    /// display, so the construction order is never what the user navigates, and
+    /// a prefix latch would only starve the later categories.
+    SkipAndCount,
+}
+
 /// Explicit aggregate limits for one immutable note-search source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoteSourceLimits {
-    /// Maximum admitted note and bookmark rows.
-    pub entries: usize,
+    /// Maximum admitted note and bookmark rows; `None` admits by bytes alone.
+    pub entries: Option<usize>,
     /// Maximum aggregate searchable UTF-8 bytes.
     pub searchable_text_bytes: usize,
     /// Maximum complete retained heap graph, including activation targets.
     pub retained_bytes: u64,
-    /// Maximum sidecar candidates retained by each directory scan.
-    pub sidecar_entries: usize,
+    /// Maximum sidecar candidates retained by each directory scan; `None`
+    /// bounds the scan by `sidecar_path_bytes` alone.
+    pub sidecar_entries: Option<usize>,
     /// Maximum complete path ownership retained by each sidecar scan.
     pub sidecar_path_bytes: u64,
     /// Maximum aggregate concurrently retained construction graph.
     pub construction_bytes: u64,
     /// Maximum recovery diagnostics retained for UI reporting.
     pub diagnostics: usize,
+    /// What a byte ceiling's refusal means for later rows.
+    pub on_byte_refusal: ByteRefusal,
 }
 
 /// Command-palette note-source policy.
 pub const PALETTE_NOTE_SOURCE_LIMITS: NoteSourceLimits = NoteSourceLimits {
-    entries: MAX_PALETTE_NOTE_ENTRIES,
+    entries: Some(MAX_PALETTE_NOTE_ENTRIES),
     searchable_text_bytes: MAX_PALETTE_NOTE_TEXT_BYTES,
     retained_bytes: MAX_PALETTE_NOTE_RETAINED_BYTES,
-    sidecar_entries: MAX_PALETTE_NOTE_ENTRIES,
+    sidecar_entries: Some(MAX_PALETTE_NOTE_ENTRIES),
     sidecar_path_bytes: MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES,
     construction_bytes: MAX_PALETTE_NOTE_CONSTRUCTION_BYTES,
     diagnostics: MAX_PALETTE_NOTE_DIAGNOSTICS,
+    on_byte_refusal: ByteRefusal::Stop,
 };
 
 /// Inventory mode shared by bounded source construction and browser queries.
@@ -156,13 +176,14 @@ pub struct NotesBrowserQueryRequest {
     pub mode: NotesBrowserMode,
 }
 
-/// Bounded ordered indexes produced by one Notes browser query.
+/// Every match of one Notes browser query, in source order.
+///
+/// No count cap: a list of `u32` indexes into a byte-bounded source is bounded
+/// by that source (`bound-notes-browser-by-budget` D3).
 #[derive(Debug, PartialEq, Eq)]
 pub struct NotesBrowserQueryResult {
     /// Source indexes in deterministic admission order.
-    pub matching_indices: Vec<usize>,
-    /// Whether at least one later match was omitted by the render cap.
-    pub truncated: bool,
+    pub matching_indices: Vec<u32>,
 }
 
 /// One-active/one-latest ownership for browser query requests.
@@ -244,6 +265,11 @@ pub struct NoteSourceMetrics {
     pub peak_retained_entries: usize,
     /// Stable reasons why later source material was omitted.
     pub truncation_reasons: Vec<NoteSourceTruncationReason>,
+    /// Every row construction parsed or counted, retained or not (saturating).
+    pub rows_found: usize,
+    /// Whether some rows were never parsed (a sidecar scan, parse or
+    /// construction ceiling stopped them), so `rows_found` is only a floor.
+    pub found_is_lower_bound: bool,
 }
 
 /// Complete palette note source plus diagnostics from partially recovered sidecars.
@@ -255,6 +281,10 @@ pub struct PaletteNoteSourceLoad {
     pub diagnostics: Vec<RecoveryDiagnostic>,
     /// Typed boundedness evidence safe to surface without note contents.
     pub truncation_reasons: Vec<NoteSourceTruncationReason>,
+    /// Rows construction found, retained or not (`NoteSourceMetrics::rows_found`).
+    pub rows_found: usize,
+    /// Whether `rows_found` is only a floor.
+    pub found_is_lower_bound: bool,
 }
 
 /// Typed terminal result from cancellable palette note-source construction.
@@ -285,6 +315,9 @@ pub struct NoteSourceRefreshRequest {
     pub open_editor_snapshots: Arc<[PaletteOpenEditorNoteSnapshot]>,
     /// Whether later live-editor metadata was omitted before worker admission.
     pub open_editor_snapshots_truncated: bool,
+    /// Live-editor bookmark rows the capture counted past its byte cut without
+    /// copying them; they count toward the browser's "of Y".
+    pub open_editor_rows_not_retained: u64,
     /// Inventory mode captured with this source generation.
     pub mode: NotesBrowserMode,
     /// Aggregate admission policy owned by the requesting surface.
@@ -376,6 +409,8 @@ pub fn load_note_entries_for_scope(
         entries,
         diagnostics,
         truncation_reasons: Vec::new(),
+        rows_found: 0,
+        found_is_lower_bound: false,
     })
 }
 
@@ -400,6 +435,7 @@ pub fn load_palette_note_entries_for_scope(
         scope_snapshot,
         open_editor_snapshots,
         false,
+        0,
         NotesBrowserMode::AllNotes,
         PALETTE_NOTE_SOURCE_LIMITS,
         cancellation,
@@ -418,38 +454,33 @@ enum NoteSourceTerminal {
     Cancelled,
 }
 
-/// Collapse a note-source charge scope into the enclosing body's control flow.
-///
-/// A rejected budget and a `Complete` terminal both mean "stop and complete",
-/// so they fold together; a `Cancelled` terminal and a clean run pass through.
-fn charge_scope_into_terminal(
-    outcome: &ChargeOutcome<NoteSourceTerminal>,
-) -> ControlFlow<NoteSourceTerminal, ()> {
-    match outcome {
-        ChargeOutcome::BudgetExhausted | ChargeOutcome::Broke(NoteSourceTerminal::Complete) => {
-            ControlFlow::Break(NoteSourceTerminal::Complete)
-        }
-        ChargeOutcome::Broke(NoteSourceTerminal::Cancelled) => {
-            ControlFlow::Break(NoteSourceTerminal::Cancelled)
-        }
-        ChargeOutcome::Ran => ControlFlow::Continue(()),
-    }
-}
-
 /// Load one immutable note inventory under a caller-owned aggregate policy.
 ///
 /// This is shared by the command palette and Browse Notes so sidecar ordering,
 /// canonical de-duplication, cancellation, and typed truncation stay identical.
 ///
+/// What a byte refusal means is the caller's choice
+/// ([`NoteSourceLimits::on_byte_refusal`]): the palette stops at the first
+/// refused row (its source is cut per category later anyway), while Browse
+/// Notes skips the refused row, keeps admitting later rows that fit, and keeps
+/// counting what it could not retain so it can say "showing X of Y". A count
+/// refusal always stops, because every later row would be refused too.
+///
 /// # Errors
 ///
 /// Returns an error when a covered sidecar directory cannot be scanned or a
 /// workspace folder identity cannot be resolved.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the source request's fields cross from GTK as one compact snapshot; \
+              grouping them here would only rename NoteSourceRefreshRequest"
+)]
 pub fn load_note_entries_bounded_for_scope(
     data_dir: &Path,
     scope_snapshot: &WorkspaceScopeSnapshot,
     open_editor_snapshots: &[PaletteOpenEditorNoteSnapshot],
     open_editor_snapshots_truncated: bool,
+    open_editor_rows_not_retained: u64,
     mode: NotesBrowserMode,
     limits: NoteSourceLimits,
     cancellation: &PaletteSearchCancellation,
@@ -466,6 +497,9 @@ pub fn load_note_entries_bounded_for_scope(
     if open_editor_snapshots_truncated {
         admission.add_truncation(NoteSourceTruncationReason::OpenEditorSnapshotLimit);
     }
+    admission.count_found_not_retained(
+        usize::try_from(open_editor_rows_not_retained).unwrap_or(usize::MAX),
+    );
 
     let mut live_scoped_document_ids = HashSet::new();
     for snapshot in open_editor_snapshots
@@ -503,7 +537,7 @@ pub fn load_note_entries_bounded_for_scope(
                         admission,
                     )?
                     else {
-                        return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                        return Ok(admission.unreadable_flow());
                     };
                     if cancellation.is_cancelled() {
                         return Ok(ControlFlow::Break(NoteSourceTerminal::Cancelled));
@@ -515,7 +549,10 @@ pub fn load_note_entries_bounded_for_scope(
                         let Some(parse) =
                             reserve_sidecar_parse(std::slice::from_ref(&entry.path), admission)?
                         else {
-                            return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                            if admission.unreadable_flow().is_break() {
+                                return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                            }
+                            continue;
                         };
                         let load = note_storage::load_json_file_recovering_with_max_bytes::<
                             BookmarkDocument,
@@ -535,7 +572,10 @@ pub fn load_note_entries_bounded_for_scope(
                             &load.diagnostics,
                             admission,
                         ) {
-                            return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                            if admission.unreadable_flow().is_break() {
+                                return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                            }
+                            continue;
                         }
                         let Some(document) = load.value else {
                             continue;
@@ -562,18 +602,21 @@ pub fn load_note_entries_bounded_for_scope(
                                     workspace_folder,
                                 };
                                 for bookmark in document.bookmarks {
-                                    if !admission.admit(bookmark_entry(
-                                        &source,
-                                        path.clone(),
-                                        bookmark.line,
-                                        bookmark.label.as_deref(),
-                                    )) {
+                                    if admission
+                                        .offer(bookmark_entry(
+                                            &source,
+                                            path.clone(),
+                                            bookmark.line,
+                                            bookmark.label.as_deref(),
+                                        ))
+                                        .stops()
+                                    {
                                         return ControlFlow::Break(());
                                     }
                                 }
                                 ControlFlow::Continue(())
                             });
-                        if !matches!(outcome, ChargeOutcome::Ran) {
+                        if !admission.charge_outcome_continues(&outcome) {
                             return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
                         }
                     }
@@ -581,17 +624,13 @@ pub fn load_note_entries_bounded_for_scope(
                     Ok(ControlFlow::Continue(()))
                 },
             )?;
-            Ok(charge_scope_into_terminal(&canonical_scope))
+            Ok(admission.scope_into_terminal(&canonical_scope))
         },
     )?;
-    match live_scope {
-        ChargeOutcome::BudgetExhausted | ChargeOutcome::Broke(NoteSourceTerminal::Complete) => {
-            return Ok(admission.complete());
-        }
-        ChargeOutcome::Broke(NoteSourceTerminal::Cancelled) => {
-            return Ok(admission.cancelled());
-        }
-        ChargeOutcome::Ran => {}
+    match admission.scope_into_terminal(&live_scope) {
+        ControlFlow::Break(NoteSourceTerminal::Complete) => return Ok(admission.complete()),
+        ControlFlow::Break(NoteSourceTerminal::Cancelled) => return Ok(admission.cancelled()),
+        ControlFlow::Continue(()) => {}
     }
 
     for snapshot in open_editor_snapshots
@@ -608,12 +647,15 @@ pub fn load_note_entries_bounded_for_scope(
             workspace_folder,
         };
         for bookmark in &snapshot.bookmarks {
-            if !admission.admit(bookmark_entry(
-                &source,
-                snapshot.path.clone(),
-                bookmark.line,
-                bookmark.label.as_deref(),
-            )) {
+            if admission
+                .offer(bookmark_entry(
+                    &source,
+                    snapshot.path.clone(),
+                    bookmark.line,
+                    bookmark.label.as_deref(),
+                ))
+                .stops()
+            {
                 return Ok(admission.complete());
             }
         }
@@ -628,7 +670,10 @@ pub fn load_note_entries_bounded_for_scope(
                 let (identity, paths) =
                     folder_note_service::sidecar_lookup_for_folder(data_dir, &folder)?;
                 let Some(parse) = reserve_sidecar_parse(&paths, &mut admission)? else {
-                    return Ok(admission.complete());
+                    if admission.unreadable_flow().is_break() {
+                        return Ok(admission.complete());
+                    }
+                    continue;
                 };
                 let load = folder_note_service::load_for_identity_recovering(
                     data_dir,
@@ -641,21 +686,27 @@ pub fn load_note_entries_bounded_for_scope(
                 );
                 if !admit_parsed_sidecar(&parse, document_bytes, &load.diagnostics, &mut admission)
                 {
-                    return Ok(admission.complete());
+                    if admission.unreadable_flow().is_break() {
+                        return Ok(admission.complete());
+                    }
+                    continue;
                 }
                 if let Some(document) = load.document {
                     let outcome = admission.with_construction_charge(document_bytes, |admission| {
-                        if admission.admit(folder_note_entry(
-                            workspace.name.clone(),
-                            folder,
-                            document.note,
-                        )) {
-                            ControlFlow::Continue(())
-                        } else {
+                        if admission
+                            .offer(folder_note_entry(
+                                workspace.name.clone(),
+                                folder,
+                                document.note,
+                            ))
+                            .stops()
+                        {
                             ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
                         }
                     });
-                    if !matches!(outcome, ChargeOutcome::Ran) {
+                    if !admission.charge_outcome_continues(&outcome) {
                         return Ok(admission.complete());
                     }
                 }
@@ -677,7 +728,7 @@ pub fn load_note_entries_bounded_for_scope(
                     retained_bytes: sidecar_path_bytes,
                 } = bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, admission)?
                 else {
-                    return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                    return Ok(admission.unreadable_flow());
                 };
                 if cancellation.is_cancelled() {
                     return Ok(ControlFlow::Break(NoteSourceTerminal::Cancelled));
@@ -689,7 +740,10 @@ pub fn load_note_entries_bounded_for_scope(
                     let Some(parse) =
                         reserve_sidecar_parse(std::slice::from_ref(&entry.path), admission)?
                     else {
-                        return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                        if admission.unreadable_flow().is_break() {
+                            return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                        }
+                        continue;
                     };
                     let load = note_storage::load_json_file_recovering_with_max_bytes::<
                         DocumentNoteDocument,
@@ -704,7 +758,10 @@ pub fn load_note_entries_bounded_for_scope(
                         .as_ref()
                         .map_or(0, DocumentNoteDocument::retained_heap_byte_weight);
                     if !admit_parsed_sidecar(&parse, document_bytes, &load.diagnostics, admission) {
-                        return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                        if admission.unreadable_flow().is_break() {
+                            return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                        }
+                        continue;
                     }
                     let Some(document) = load.value else {
                         continue;
@@ -724,13 +781,16 @@ pub fn load_note_entries_bounded_for_scope(
                             workspace_name: workspace.name.clone(),
                             workspace_folder,
                         };
-                        if admission.admit(document_note_entry(&source, path, document.note)) {
-                            ControlFlow::Continue(())
-                        } else {
+                        if admission
+                            .offer(document_note_entry(&source, path, document.note))
+                            .stops()
+                        {
                             ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
                         }
                     });
-                    if !matches!(outcome, ChargeOutcome::Ran) {
+                    if !admission.charge_outcome_continues(&outcome) {
                         return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
                     }
                 }
@@ -738,14 +798,12 @@ pub fn load_note_entries_bounded_for_scope(
                 Ok(ControlFlow::Continue(()))
             },
         )?;
-        match canonical_scope {
-            ChargeOutcome::BudgetExhausted | ChargeOutcome::Broke(NoteSourceTerminal::Complete) => {
-                return Ok(admission.complete());
-            }
-            ChargeOutcome::Broke(NoteSourceTerminal::Cancelled) => {
+        match admission.scope_into_terminal(&canonical_scope) {
+            ControlFlow::Break(NoteSourceTerminal::Complete) => return Ok(admission.complete()),
+            ControlFlow::Break(NoteSourceTerminal::Cancelled) => {
                 return Ok(admission.cancelled());
             }
-            ChargeOutcome::Ran => {}
+            ControlFlow::Continue(()) => {}
         }
     }
 
@@ -758,12 +816,15 @@ pub fn load_note_entries_bounded_for_scope(
         }
         let source = PaletteNoteDocumentSource::OpenTab(open_tab_source);
         for bookmark in &snapshot.bookmarks {
-            if !admission.admit(bookmark_entry(
-                &source,
-                snapshot.path.clone(),
-                bookmark.line,
-                bookmark.label.as_deref(),
-            )) {
+            if admission
+                .offer(bookmark_entry(
+                    &source,
+                    snapshot.path.clone(),
+                    bookmark.line,
+                    bookmark.label.as_deref(),
+                ))
+                .stops()
+            {
                 return Ok(admission.complete());
             }
         }
@@ -773,7 +834,10 @@ pub fn load_note_entries_bounded_for_scope(
             let sidecar_path = document_note_service::document_notes_dir(data_dir)
                 .join(note_storage::sidecar_filename(&identity.sidecar_id));
             let Some(parse) = reserve_sidecar_parse(&[sidecar_path], &mut admission)? else {
-                return Ok(admission.complete());
+                if admission.unreadable_flow().is_break() {
+                    return Ok(admission.complete());
+                }
+                continue;
             };
             let document = document_note_service::load_for_identity(
                 data_dir,
@@ -784,23 +848,29 @@ pub fn load_note_entries_bounded_for_scope(
                 .as_ref()
                 .map_or(0, DocumentNoteDocument::retained_heap_byte_weight);
             if !admit_parsed_sidecar(&parse, document_bytes, &[], &mut admission) {
-                return Ok(admission.complete());
+                if admission.unreadable_flow().is_break() {
+                    return Ok(admission.complete());
+                }
+                continue;
             }
             let Some(document) = document else {
                 continue;
             };
             let outcome = admission.with_construction_charge(document_bytes, |admission| {
-                if admission.admit(document_note_entry(
-                    &source,
-                    snapshot.path.clone(),
-                    document.note,
-                )) {
-                    ControlFlow::Continue(())
-                } else {
+                if admission
+                    .offer(document_note_entry(
+                        &source,
+                        snapshot.path.clone(),
+                        document.note,
+                    ))
+                    .stops()
+                {
                     ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
                 }
             });
-            if !matches!(outcome, ChargeOutcome::Ran) {
+            if !admission.charge_outcome_continues(&outcome) {
                 return Ok(admission.complete());
             }
         }
@@ -908,7 +978,7 @@ fn diagnostics_retained_byte_weight(diagnostics: &[RecoveryDiagnostic]) -> u64 {
 
 fn bounded_sidecar_entries(
     dir: &Path,
-    sidecar_limit: usize,
+    sidecar_limit: Option<usize>,
     cancellation: &PaletteSearchCancellation,
     admission: &mut NoteSourceAdmission,
 ) -> Result<BoundedSidecarEntries> {
@@ -922,9 +992,10 @@ fn bounded_sidecar_entries(
     let scan_byte_limit = admission
         .sidecar_path_byte_limit
         .min(remaining_construction);
+    // Without a count the scan is bounded by its path-byte ceiling alone.
     let scan = file_tree::scan_directory_bounded_with_cancel_and_bytes(
         dir,
-        sidecar_limit,
+        sidecar_limit.unwrap_or(usize::MAX),
         0,
         scan_byte_limit,
         || cancellation.is_cancelled(),
@@ -938,8 +1009,10 @@ fn bounded_sidecar_entries(
     }
     if scan.truncated {
         admission.add_truncation(NoteSourceTruncationReason::SidecarLimit);
+        admission.metrics.found_is_lower_bound = true;
     }
     if scan.byte_truncated {
+        admission.metrics.found_is_lower_bound = true;
         if scan_byte_limit == admission.sidecar_path_byte_limit {
             admission.add_truncation(NoteSourceTruncationReason::SidecarPathByteLimit);
         }
@@ -954,12 +1027,30 @@ fn bounded_sidecar_entries(
     if !admission.observe_construction_overlap(scan.peak_retained_bytes)
         || !admission.try_charge_sidecar_paths(scan.retained_bytes)
     {
+        admission.metrics.found_is_lower_bound = true;
         return Ok(BoundedSidecarEntries::LimitReached);
     }
     Ok(BoundedSidecarEntries::Admitted {
         entries: scan.entries,
         retained_bytes: scan.retained_bytes,
     })
+}
+
+/// What happened to one offered row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Offer {
+    /// Retained.
+    Admitted,
+    /// Refused by a byte ceiling and skipped; later rows may still fit.
+    Skipped,
+    /// Refused, and construction ends here.
+    Stop,
+}
+
+impl Offer {
+    const fn stops(self) -> bool {
+        matches!(self, Self::Stop)
+    }
 }
 
 struct NoteSourceAdmission {
@@ -969,7 +1060,8 @@ struct NoteSourceAdmission {
     open_tab_entries: Vec<PaletteNoteEntry>,
     diagnostics: Vec<RecoveryDiagnostic>,
     metrics: NoteSourceMetrics,
-    entry_limit: usize,
+    entry_limit: Option<usize>,
+    on_byte_refusal: ByteRefusal,
     text_byte_limit: usize,
     retained_byte_limit: u64,
     sidecar_path_byte_limit: u64,
@@ -994,6 +1086,7 @@ impl NoteSourceAdmission {
             diagnostics: Vec::new(),
             metrics: NoteSourceMetrics::default(),
             entry_limit: limits.entries,
+            on_byte_refusal: limits.on_byte_refusal,
             text_byte_limit: limits.searchable_text_bytes,
             retained_byte_limit: limits.retained_bytes,
             sidecar_path_byte_limit: limits.sidecar_path_bytes,
@@ -1010,21 +1103,94 @@ impl NoteSourceAdmission {
         diagnostic_limit: usize,
     ) -> Self {
         Self::with_limits(NoteSourceLimits {
-            entries: entry_limit,
+            entries: Some(entry_limit),
             searchable_text_bytes: text_byte_limit,
             retained_bytes: u64::MAX,
-            sidecar_entries: entry_limit,
+            sidecar_entries: Some(entry_limit),
             sidecar_path_bytes: u64::MAX,
             construction_bytes: u64::MAX,
             diagnostics: diagnostic_limit,
+            on_byte_refusal: ByteRefusal::Stop,
         })
     }
 
-    fn admit(&mut self, entry: PaletteNoteEntry) -> bool {
-        if self.metrics.retained_entries == self.entry_limit {
+    /// Offer one row: count it, then admit it if every ceiling still fits.
+    ///
+    /// A count refusal always stops. A byte refusal stops under
+    /// [`ByteRefusal::Stop`] and skips the row under
+    /// [`ByteRefusal::SkipAndCount`].
+    fn offer(&mut self, entry: PaletteNoteEntry) -> Offer {
+        self.metrics.rows_found = self.metrics.rows_found.saturating_add(1);
+        if self
+            .entry_limit
+            .is_some_and(|limit| self.metrics.retained_entries >= limit)
+        {
             self.add_truncation(NoteSourceTruncationReason::EntryLimit);
-            return false;
+            self.metrics.found_is_lower_bound = true;
+            return Offer::Stop;
         }
+        if self.admit_by_bytes(entry) {
+            return Offer::Admitted;
+        }
+        match self.on_byte_refusal {
+            ByteRefusal::Stop => {
+                self.metrics.found_is_lower_bound = true;
+                Offer::Stop
+            }
+            ByteRefusal::SkipAndCount => Offer::Skipped,
+        }
+    }
+
+    /// Admit one row by the count and byte ceilings (the palette's latch rule
+    /// for one row; benchmarks and unit tests use it directly).
+    fn admit(&mut self, entry: PaletteNoteEntry) -> bool {
+        matches!(self.offer(entry), Offer::Admitted)
+    }
+
+    /// Count rows the caller saw but could not retain (the open-editor
+    /// capture's rows past its byte cut).
+    fn count_found_not_retained(&mut self, rows: usize) {
+        self.metrics.rows_found = self.metrics.rows_found.saturating_add(rows);
+    }
+
+    /// A sidecar or section could not be parsed under the construction ceiling.
+    ///
+    /// Its rows are not counted, so the count becomes a floor. Under
+    /// [`ByteRefusal::SkipAndCount`] construction continues with the next one.
+    fn unreadable_flow(&mut self) -> ControlFlow<NoteSourceTerminal, ()> {
+        self.metrics.found_is_lower_bound = true;
+        match self.on_byte_refusal {
+            ByteRefusal::Stop => ControlFlow::Break(NoteSourceTerminal::Complete),
+            ByteRefusal::SkipAndCount => ControlFlow::Continue(()),
+        }
+    }
+
+    /// Whether construction continues after one item's charge scope.
+    fn charge_outcome_continues(&mut self, outcome: &ChargeOutcome<()>) -> bool {
+        match outcome {
+            ChargeOutcome::Ran => true,
+            ChargeOutcome::Broke(()) => false,
+            ChargeOutcome::BudgetExhausted => self.unreadable_flow().is_continue(),
+        }
+    }
+
+    /// Collapse a section's charge scope into the enclosing control flow.
+    ///
+    /// A section whose own scratch could not be charged is unreadable: it
+    /// stops construction under `Stop` and is skipped under `SkipAndCount`.
+    fn scope_into_terminal(
+        &mut self,
+        outcome: &ChargeOutcome<NoteSourceTerminal>,
+    ) -> ControlFlow<NoteSourceTerminal, ()> {
+        match outcome {
+            ChargeOutcome::BudgetExhausted => self.unreadable_flow(),
+            ChargeOutcome::Broke(terminal) => ControlFlow::Break(*terminal),
+            ChargeOutcome::Ran => ControlFlow::Continue(()),
+        }
+    }
+
+    /// Charge one row against the byte ceilings and retain it if all fit.
+    fn admit_by_bytes(&mut self, entry: PaletteNoteEntry) -> bool {
         let searchable_bytes = palette_note_searchable_bytes(&entry);
         if self
             .metrics
@@ -1224,6 +1390,8 @@ impl NoteSourceAdmission {
                 entries,
                 diagnostics: self.diagnostics,
                 truncation_reasons,
+                rows_found: self.metrics.rows_found,
+                found_is_lower_bound: self.metrics.found_is_lower_bound,
             },
             metrics: self.metrics,
         }
@@ -1362,21 +1530,18 @@ pub fn build_note_entries(
 
 /// Match one immutable Notes browser source in admission order.
 ///
-/// Cancellation is checked between rows and within large UTF-8 bodies. The
-/// returned indexes never exceed `max`, while `truncated` distinguishes a full
-/// current result from an admission-truncated source.
+/// Cancellation is checked between rows and within large UTF-8 bodies. Every
+/// match is returned: the browser lists all of them in a virtualized list.
 #[must_use]
 pub fn query_notes_browser_source(
     entries: &[PaletteNoteEntry],
     request: &NotesBrowserQueryRequest,
-    max: usize,
     cancellation: &PaletteSearchCancellation,
 ) -> PaletteSearchOutcome<NotesBrowserQueryResult> {
     delay_notes_browser_query_for_test();
     let prepared = PaletteNoteTextQuery::new(&request.query);
     let mut metrics = PaletteSearchMetrics::default();
-    let mut matching_indices = Vec::with_capacity(entries.len().min(max));
-    let mut truncated = false;
+    let mut matching_indices = Vec::new();
 
     for (index, entry) in entries.iter().enumerate() {
         if cancellation.is_cancelled() {
@@ -1415,20 +1580,18 @@ pub fn query_notes_browser_source(
             continue;
         }
         metrics.matching_candidates = metrics.matching_candidates.saturating_add(1);
-        if matching_indices.len() == max {
-            truncated = true;
+        // A byte-bounded source holds far fewer than `u32::MAX` rows; an index
+        // that did not fit would be a construction defect, so it ends the match.
+        let Ok(index) = u32::try_from(index) else {
             break;
-        }
+        };
         matching_indices.push(index);
         metrics.peak_retained_per_source =
             metrics.peak_retained_per_source.max(matching_indices.len());
     }
 
     PaletteSearchOutcome::Complete {
-        value: NotesBrowserQueryResult {
-            matching_indices,
-            truncated,
-        },
+        value: NotesBrowserQueryResult { matching_indices },
         metrics,
     }
 }
@@ -2133,7 +2296,6 @@ mod tests {
                 query: "missing needle".to_string(),
                 mode: NotesBrowserMode::AllNotes,
             },
-            500,
             &PaletteSearchCancellation::default(),
         );
 
@@ -2141,14 +2303,13 @@ mod tests {
             panic!("fresh query should complete");
         };
         assert!(value.matching_indices.is_empty());
-        assert!(!value.truncated);
         assert_eq!(metrics.candidates_examined, entries.len());
         assert_eq!(metrics.peak_retained_per_source, 0);
     }
 
     #[test]
-    fn notes_browser_query_retains_only_the_ordered_render_cap() {
-        let entries = (0..=500)
+    fn notes_browser_query_returns_every_match_in_source_order() {
+        let entries = (0..=1_000)
             .map(|index| {
                 test_note_entry(
                     PaletteNoteCategory::DocumentNotes,
@@ -2163,16 +2324,14 @@ mod tests {
                 query: "matching".to_string(),
                 mode: NotesBrowserMode::AllNotes,
             },
-            500,
             &PaletteSearchCancellation::default(),
         );
 
         let PaletteSearchOutcome::Complete { value, metrics } = outcome else {
             panic!("fresh query should complete");
         };
-        assert_eq!(value.matching_indices, (0..500).collect::<Vec<_>>());
-        assert!(value.truncated);
-        assert_eq!(metrics.peak_retained_per_source, 500);
+        assert_eq!(value.matching_indices, (0..=1_000).collect::<Vec<u32>>());
+        assert_eq!(metrics.peak_retained_per_source, 1_001);
     }
 
     #[test]
@@ -2210,7 +2369,6 @@ mod tests {
                 query: String::new(),
                 mode: NotesBrowserMode::Bookmarks,
             },
-            500,
             &PaletteSearchCancellation::default(),
         );
 
@@ -2218,7 +2376,6 @@ mod tests {
             panic!("fresh bookmark query should complete");
         };
         assert_eq!(value.matching_indices, vec![0, 2]);
-        assert!(!value.truncated);
         assert_eq!(metrics.candidates_examined, entries.len());
         assert_eq!(metrics.matching_candidates, 2);
     }
@@ -2253,6 +2410,7 @@ mod tests {
             &scope,
             &[],
             false,
+            0,
             NotesBrowserMode::Bookmarks,
             PALETTE_NOTE_SOURCE_LIMITS,
             &PaletteSearchCancellation::default(),
@@ -2269,6 +2427,196 @@ mod tests {
         ));
         assert_eq!(metrics.retained_entries, 1);
         assert_eq!(metrics.loaded_sidecars, 1);
+    }
+
+    /// The browser's limits as the notes workflow states them
+    /// (`ui::window::notes::policy::NOTES_BROWSER_SOURCE_LIMITS`), restated
+    /// here so the service tests do not depend on a UI module.
+    fn browser_limits(text_bytes: usize) -> NoteSourceLimits {
+        NoteSourceLimits {
+            entries: None,
+            searchable_text_bytes: text_bytes,
+            retained_bytes: MAX_PALETTE_NOTE_RETAINED_BYTES,
+            sidecar_entries: None,
+            sidecar_path_bytes: MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES,
+            construction_bytes: MAX_PALETTE_NOTE_CONSTRUCTION_BYTES,
+            diagnostics: MAX_PALETTE_NOTE_DIAGNOSTICS,
+            on_byte_refusal: ByteRefusal::SkipAndCount,
+        }
+    }
+
+    /// Bookmarks with long labels, then one folder note and one document note.
+    fn seed_bookmarks_then_notes(
+        data: &Path,
+        bookmark_label_bytes: usize,
+    ) -> WorkspaceScopeSnapshot {
+        let workspace_folder = data.join("workspace");
+        fixture::create_dir(&workspace_folder);
+        let path = workspace_folder.join("source.rs");
+        write_file(&path, "one\ntwo\nthree\n");
+        bookmark_service::save_for_path(
+            data,
+            &path,
+            &[
+                BookmarkRecord::new(0, Some("a".repeat(bookmark_label_bytes))),
+                BookmarkRecord::new(1, Some("b".repeat(bookmark_label_bytes))),
+            ],
+        )
+        .expect("save bookmarks");
+        folder_note_service::save_for_folder(data, &workspace_folder, &RichNoteBody::new("folder"))
+            .expect("save folder note");
+        document_note_service::save_for_path(data, &path, &RichNoteBody::new("document"))
+            .expect("save document note");
+        WorkspacesFile {
+            current_scope: WorkspaceScope::All,
+            workspaces: vec![workspace("core", "Core", vec![workspace_folder])],
+        }
+        .current_scope_snapshot()
+    }
+
+    fn load_all_notes(
+        data: &Path,
+        scope: &WorkspaceScopeSnapshot,
+        limits: NoteSourceLimits,
+    ) -> (PaletteNoteSourceLoad, NoteSourceMetrics) {
+        let outcome = load_note_entries_bounded_for_scope(
+            data,
+            scope,
+            &[],
+            false,
+            0,
+            NotesBrowserMode::AllNotes,
+            limits,
+            &PaletteSearchCancellation::default(),
+        )
+        .expect("load notes");
+        let PaletteNoteSourceOutcome::Complete { load, metrics } = outcome else {
+            panic!("a fresh source completes");
+        };
+        (load, metrics)
+    }
+
+    /// D3: a text cut inside the bookmarks hides nothing after it in the
+    /// browser (on `main` every later category was lost), and every row is
+    /// counted.
+    #[test]
+    fn a_byte_cut_in_one_category_does_not_hide_the_later_categories() {
+        let data = TempDir::new().expect("data tempdir");
+        let scope = seed_bookmarks_then_notes(data.path(), 4_096);
+        // Room for one 4 KiB bookmark label plus the two short notes.
+        let (load, metrics) = load_all_notes(data.path(), &scope, browser_limits(6_000));
+        assert_eq!(
+            categories(&load.entries),
+            vec![
+                PaletteNoteCategory::Bookmarks,
+                PaletteNoteCategory::FolderNotes,
+                PaletteNoteCategory::DocumentNotes,
+            ]
+        );
+        assert_eq!(load.rows_found, 4, "the refused bookmark is counted");
+        assert!(!load.found_is_lower_bound);
+        assert_eq!(metrics.retained_entries, 3);
+        assert!(
+            load.truncation_reasons
+                .contains(&NoteSourceTruncationReason::TextByteLimit)
+        );
+    }
+
+    /// The palette keeps its prefix latch under the same cut: its admitted
+    /// rows and worker cost are unchanged.
+    #[test]
+    fn the_palette_still_stops_at_the_first_byte_refusal() {
+        let data = TempDir::new().expect("data tempdir");
+        let scope = seed_bookmarks_then_notes(data.path(), 4_096);
+        let limits = NoteSourceLimits {
+            searchable_text_bytes: 6_000,
+            ..PALETTE_NOTE_SOURCE_LIMITS
+        };
+        let (load, _) = load_all_notes(data.path(), &scope, limits);
+        assert_eq!(
+            categories(&load.entries),
+            vec![PaletteNoteCategory::Bookmarks]
+        );
+        assert!(load.found_is_lower_bound, "a stopped scan is only a floor");
+    }
+
+    /// D3: without a count, a source above the palette's 16,384 rows is
+    /// admitted whole when no byte ceiling bites.
+    #[test]
+    fn the_browser_source_admits_more_rows_than_the_palette_count() {
+        let data = TempDir::new().expect("data tempdir");
+        let workspace_folder = data.path().join("workspace");
+        fixture::create_dir(&workspace_folder);
+        let path = workspace_folder.join("many.rs");
+        write_file(&path, "x\n");
+        let bookmarks = (0..17_000)
+            .map(|line| BookmarkRecord::new(line, None))
+            .collect::<Vec<_>>();
+        bookmark_service::save_for_path(data.path(), &path, &bookmarks).expect("save bookmarks");
+        let scope = WorkspacesFile {
+            current_scope: WorkspaceScope::All,
+            workspaces: vec![workspace("core", "Core", vec![workspace_folder])],
+        }
+        .current_scope_snapshot();
+        let (browser, _) = load_all_notes(
+            data.path(),
+            &scope,
+            browser_limits(MAX_PALETTE_NOTE_TEXT_BYTES),
+        );
+        assert_eq!(browser.entries.len(), 17_000);
+        assert_eq!(browser.rows_found, 17_000);
+        assert!(browser.truncation_reasons.is_empty());
+        let (palette, _) = load_all_notes(data.path(), &scope, PALETTE_NOTE_SOURCE_LIMITS);
+        assert_eq!(
+            palette.entries.len(),
+            16 * 1024,
+            "the palette keeps its count"
+        );
+    }
+
+    /// D5: a sidecar-path cut stops the scan itself, so the count is a floor
+    /// ("of at least").
+    #[test]
+    fn a_sidecar_path_cut_makes_the_count_a_lower_bound() {
+        let data = TempDir::new().expect("data tempdir");
+        let scope = seed_bookmarks_then_notes(data.path(), 8);
+        let limits = NoteSourceLimits {
+            sidecar_path_bytes: 1,
+            ..browser_limits(MAX_PALETTE_NOTE_TEXT_BYTES)
+        };
+        let (load, _) = load_all_notes(data.path(), &scope, limits);
+        assert!(load.found_is_lower_bound);
+        assert!(
+            categories(&load.entries).contains(&PaletteNoteCategory::FolderNotes),
+            "a skipped scan still lets the folder notes through"
+        );
+    }
+
+    /// D5: rows the open-editor capture counted past its cut join Y.
+    #[test]
+    fn open_editor_rows_counted_past_the_capture_cut_join_the_count() {
+        let data = TempDir::new().expect("data tempdir");
+        let scope = seed_bookmarks_then_notes(data.path(), 8);
+        let outcome = load_note_entries_bounded_for_scope(
+            data.path(),
+            &scope,
+            &[],
+            true,
+            7,
+            NotesBrowserMode::AllNotes,
+            browser_limits(MAX_PALETTE_NOTE_TEXT_BYTES),
+            &PaletteSearchCancellation::default(),
+        )
+        .expect("load notes");
+        let PaletteNoteSourceOutcome::Complete { load, .. } = outcome else {
+            panic!("a fresh source completes");
+        };
+        assert_eq!(load.entries.len(), 4);
+        assert_eq!(load.rows_found, 11);
+        assert!(
+            load.truncation_reasons
+                .contains(&NoteSourceTruncationReason::OpenEditorSnapshotLimit)
+        );
     }
 
     #[test]
@@ -2306,7 +2654,7 @@ mod tests {
             retained(16 * 1024 + 1),
             (16 * 1024, vec![NoteSourceTruncationReason::EntryLimit])
         );
-        assert_eq!(PALETTE_NOTE_SOURCE_LIMITS.sidecar_entries, 16 * 1024);
+        assert_eq!(PALETTE_NOTE_SOURCE_LIMITS.sidecar_entries, Some(16 * 1024));
     }
 
     #[test]
@@ -2368,13 +2716,14 @@ mod tests {
     #[test]
     fn sidecar_path_accounting_accepts_exact_bytes_and_rejects_one_over() {
         let mut admission = NoteSourceAdmission::with_limits(NoteSourceLimits {
-            entries: 1,
+            entries: Some(1),
             searchable_text_bytes: usize::MAX,
             retained_bytes: u64::MAX,
-            sidecar_entries: 1,
+            sidecar_entries: Some(1),
             sidecar_path_bytes: 10,
             construction_bytes: 20,
             diagnostics: 1,
+            on_byte_refusal: ByteRefusal::Stop,
         });
 
         assert!(admission.try_charge_sidecar_paths(10));
@@ -2398,13 +2747,14 @@ mod tests {
     #[test]
     fn construction_charge_scope_releases_on_admit_filter_break_and_exhaustion() {
         let mut admission = NoteSourceAdmission::with_limits(NoteSourceLimits {
-            entries: 8,
+            entries: Some(8),
             searchable_text_bytes: usize::MAX,
             retained_bytes: u64::MAX,
-            sidecar_entries: 8,
+            sidecar_entries: Some(8),
             sidecar_path_bytes: 1_024,
             construction_bytes: 100,
             diagnostics: 1,
+            on_byte_refusal: ByteRefusal::Stop,
         });
 
         // Admit path: the body runs with the charge visible, then the scope
@@ -2462,13 +2812,14 @@ mod tests {
             );
         }
         let limits = NoteSourceLimits {
-            entries: 16,
+            entries: Some(16),
             searchable_text_bytes: usize::MAX,
             retained_bytes: u64::MAX,
-            sidecar_entries: 16,
+            sidecar_entries: Some(16),
             sidecar_path_bytes: 32 * 1024,
             construction_bytes: 32 * 1024,
             diagnostics: 1,
+            on_byte_refusal: ByteRefusal::Stop,
         };
         let mut admission = NoteSourceAdmission::with_limits(limits);
         assert!(admission.try_charge_construction(1_024));
@@ -2507,13 +2858,14 @@ mod tests {
             .saturating_mul(NOTE_SIDECAR_MODEL_EXPANSION_MULTIPLIER.saturating_add(1))
             .saturating_add(NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES);
         let limits = |construction_bytes| NoteSourceLimits {
-            entries: 1,
+            entries: Some(1),
             searchable_text_bytes: usize::MAX,
             retained_bytes: u64::MAX,
-            sidecar_entries: 1,
+            sidecar_entries: Some(1),
             sidecar_path_bytes: u64::MAX,
             construction_bytes,
             diagnostics: 1,
+            on_byte_refusal: ByteRefusal::Stop,
         };
 
         let mut exact = NoteSourceAdmission::with_limits(limits(required.saturating_add(17)));
@@ -2547,13 +2899,14 @@ mod tests {
         write_file(&not_a_directory, "not a directory");
         let sidecar_path = not_a_directory.join("bookmark.json");
         let mut admission = NoteSourceAdmission::with_limits(NoteSourceLimits {
-            entries: 2,
+            entries: Some(2),
             searchable_text_bytes: usize::MAX,
             retained_bytes: u64::MAX,
-            sidecar_entries: 1,
+            sidecar_entries: Some(1),
             sidecar_path_bytes: u64::MAX,
             construction_bytes: u64::MAX,
             diagnostics: 1,
+            on_byte_refusal: ByteRefusal::Stop,
         });
         assert!(admission.admit(test_note_entry(
             PaletteNoteCategory::OpenTabs,
@@ -2617,13 +2970,14 @@ mod tests {
     #[test]
     fn construction_accounting_is_saturating_and_preserves_peak_after_release() {
         let mut admission = NoteSourceAdmission::with_limits(NoteSourceLimits {
-            entries: 1,
+            entries: Some(1),
             searchable_text_bytes: usize::MAX,
             retained_bytes: u64::MAX,
-            sidecar_entries: 1,
+            sidecar_entries: Some(1),
             sidecar_path_bytes: u64::MAX,
             construction_bytes: 10,
             diagnostics: 1,
+            on_byte_refusal: ByteRefusal::Stop,
         });
 
         assert!(admission.try_charge_construction(10));
@@ -2657,13 +3011,14 @@ mod tests {
             .unwrap_or(u64::MAX)
             .saturating_add(diagnostic.retained_heap_byte_weight());
         let limits = |construction_bytes| NoteSourceLimits {
-            entries: 1,
+            entries: Some(1),
             searchable_text_bytes: usize::MAX,
             retained_bytes: u64::MAX,
-            sidecar_entries: 1,
+            sidecar_entries: Some(1),
             sidecar_path_bytes: u64::MAX,
             construction_bytes,
             diagnostics: 1,
+            on_byte_refusal: ByteRefusal::Stop,
         };
 
         let mut exact = NoteSourceAdmission::with_limits(limits(diagnostic_bytes));
@@ -2692,13 +3047,14 @@ mod tests {
             .saturating_mul(2);
         let exact_bytes = retained.saturating_add(vector_overlap);
         let limits = |construction_bytes| NoteSourceLimits {
-            entries: 1,
+            entries: Some(1),
             searchable_text_bytes: usize::MAX,
             retained_bytes: u64::MAX,
-            sidecar_entries: 1,
+            sidecar_entries: Some(1),
             sidecar_path_bytes: u64::MAX,
             construction_bytes,
             diagnostics: 1,
+            on_byte_refusal: ByteRefusal::Stop,
         };
 
         let mut exact = NoteSourceAdmission::with_limits(limits(exact_bytes));
@@ -2744,13 +3100,14 @@ mod tests {
             .saturating_add(entry.retained_heap_byte_weight());
         assert!(target_bytes > 0);
         let mut admission = NoteSourceAdmission::with_limits(NoteSourceLimits {
-            entries: 4,
+            entries: Some(4),
             searchable_text_bytes: usize::MAX,
             retained_bytes: complete_bytes.saturating_sub(target_bytes),
-            sidecar_entries: 4,
+            sidecar_entries: Some(4),
             sidecar_path_bytes: u64::MAX,
             construction_bytes: u64::MAX,
             diagnostics: 4,
+            on_byte_refusal: ByteRefusal::Stop,
         });
 
         assert!(!admission.admit(entry));
@@ -2802,6 +3159,7 @@ mod tests {
             scope_snapshot: scope.clone(),
             open_editor_snapshots: Arc::from([]),
             open_editor_snapshots_truncated: false,
+            open_editor_rows_not_retained: 0,
             mode,
             limits: PALETTE_NOTE_SOURCE_LIMITS,
         };

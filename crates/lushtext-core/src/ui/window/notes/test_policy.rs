@@ -19,34 +19,41 @@
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use super::policy::{self, NOTES_BROWSER_SOURCE_ENTRY_LIMIT};
-
 /// Test-only overrides for one process's notes and bookmarks workflow.
 struct NotesTestPolicy {
-    /// Narrows the browser's admitted source-entry ceiling so a focused
-    /// truncation test does not have to create ten thousand sidecars.
-    browser_source_entry_limit: AtomicUsize,
+    /// Narrows the browser's searchable-text ceiling so a focused byte-cut
+    /// test does not have to write 64 MiB of notes (`0` means unset).
+    browser_source_text_bytes: AtomicUsize,
     /// Delays the closed-file bookmark excerpt worker so a widget test can
     /// observe a stale completion being refused.
     bookmark_excerpt_preview_delay_ms: AtomicU64,
+    /// Caps the units one open-editor capture turn takes, beside its clock,
+    /// so a test sees several turns however fast the host is (`0` = unset).
+    capture_units_per_turn: AtomicUsize,
 }
 
 impl NotesTestPolicy {
     const fn new() -> Self {
         Self {
-            browser_source_entry_limit: AtomicUsize::new(NOTES_BROWSER_SOURCE_ENTRY_LIMIT),
+            browser_source_text_bytes: AtomicUsize::new(0),
             bookmark_excerpt_preview_delay_ms: AtomicU64::new(0),
+            capture_units_per_turn: AtomicUsize::new(0),
         }
     }
 }
 
 static POLICY: NotesTestPolicy = NotesTestPolicy::new();
 
-/// Override the browser source-entry policy for focused truncation tests.
-pub fn set_notes_browser_source_entry_limit_for_test(limit: usize) {
+/// Narrow the browser's searchable-text budget (`text_bytes`) and cap the
+/// units of one open-editor capture turn (`capture_units_per_turn`) for
+/// focused tests; `0` restores production for either.
+pub fn set_notes_browser_budgets_for_test(text_bytes: usize, capture_units_per_turn: usize) {
     POLICY
-        .browser_source_entry_limit
-        .store(limit, Ordering::Release);
+        .browser_source_text_bytes
+        .store(text_bytes, Ordering::Release);
+    POLICY
+        .capture_units_per_turn
+        .store(capture_units_per_turn, Ordering::Release);
 }
 
 /// Delay closed-file bookmark excerpt loads so supersession can be observed.
@@ -56,11 +63,10 @@ pub fn set_bookmark_excerpt_preview_delay_for_test(delay_ms: u64) {
         .store(delay_ms, Ordering::Release);
 }
 
-/// Return the effective browser source policy for this process.
-pub(super) fn notes_browser_source_limits() -> crate::services::palette::NoteSourceLimits {
-    policy::notes_browser_source_limits_for_entries(
-        POLICY.browser_source_entry_limit.load(Ordering::Acquire),
-    )
+/// The test's narrowed searchable-text budget, if one is set.
+pub(super) fn notes_browser_source_text_bytes() -> Option<usize> {
+    let bytes = POLICY.browser_source_text_bytes.load(Ordering::Acquire);
+    (bytes > 0).then_some(bytes)
 }
 
 /// Sleep for the armed excerpt-preview delay, if a test set one.
@@ -71,4 +77,10 @@ pub(super) fn delay_bookmark_excerpt_preview() {
     if delay_ms > 0 {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
     }
+}
+
+/// Whether a test cap ends the capture turn after `units` units.
+pub(super) fn capture_turn_capped(units: usize) -> bool {
+    let cap = POLICY.capture_units_per_turn.load(Ordering::Acquire);
+    cap > 0 && units >= cap
 }

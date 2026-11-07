@@ -1096,3 +1096,164 @@ pub fn proc_status_kib(field: &str) -> u64 {
         .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
         .unwrap_or(0)
 }
+
+// ---------------------------------------------------------------------------
+// Notes browser list (`bound-notes-browser-by-budget` task 3.5): the browser's
+// virtualized `GtkListView` replaced `AdwSidebar`. This adapter keeps the
+// former call sites' shape (`items().n_items()`, `item(i).title()`,
+// `set_selected`, an activation, the section titles) so their assertions are
+// unchanged; row text is read from the realized row widgets, which for the
+// small lists these tests build is every row, in order.
+// ---------------------------------------------------------------------------
+
+/// The notes browser's result list.
+pub struct NotesBrowserList {
+    pub list_view: gtk4::ListView,
+}
+
+/// Text of one listed notes-browser row.
+pub struct NotesBrowserListItem {
+    title: Option<String>,
+    subtitle: Option<String>,
+    suffix: Option<gtk4::Widget>,
+}
+
+impl NotesBrowserListItem {
+    /// The row's title label.
+    pub fn title(&self) -> Option<String> {
+        self.title.clone()
+    }
+
+    /// The row's subtitle label.
+    pub fn subtitle(&self) -> Option<String> {
+        self.subtitle.clone()
+    }
+
+    /// The row's visible suffix button (a bookmark's Open), as `AdwSidebarItem`
+    /// exposed it.
+    pub fn suffix(&self) -> Option<gtk4::Widget> {
+        self.suffix.clone()
+    }
+}
+
+/// Find the notes browser's result list under `widget`.
+pub fn find_notes_browser_list(widget: &gtk4::Widget) -> Option<NotesBrowserList> {
+    find_descendant(widget, |candidate| {
+        candidate.is::<gtk4::ListView>() && candidate.has_css_class("navigation-sidebar")
+    })
+    .and_downcast::<gtk4::ListView>()
+    .map(|list_view| NotesBrowserList { list_view })
+}
+
+impl NotesBrowserList {
+    /// The list's selection model; `n_items()` is the listed row count.
+    pub fn items(&self) -> gio::ListModel {
+        self.list_view.model().expect("notes list model").upcast()
+    }
+
+    fn selection(&self) -> gtk4::SingleSelection {
+        self.list_view
+            .model()
+            .and_downcast::<gtk4::SingleSelection>()
+            .expect("notes list selection")
+    }
+
+    /// Mapped row widgets (not headers), in drawn order: a recycled row GTK
+    /// keeps for reuse is unmapped, so it never stands in for a listed one.
+    pub fn row_widgets(&self) -> Vec<gtk4::Widget> {
+        let mut rows: Vec<(f32, gtk4::Widget)> = mapped_list_rows(&self.list_view)
+            .filter(|widget| widget.css_name() == "row")
+            .map(|widget| {
+                let top = widget
+                    .compute_bounds(&self.list_view)
+                    .map_or(f32::MAX, |bounds| bounds.y());
+                (top, widget)
+            })
+            .collect();
+        rows.sort_by(|left, right| left.0.total_cmp(&right.0));
+        rows.into_iter().map(|(_, widget)| widget).collect()
+    }
+
+    /// The listed row at `index`, read from its realized widget.
+    pub fn item(&self, index: u32) -> Option<NotesBrowserListItem> {
+        if index >= self.items().n_items() {
+            return None;
+        }
+        // Rows are realized by the list's next layout, not by the publish.
+        let wanted = index as usize;
+        // A small list realizes every row, in position order, once its layout
+        // has dropped the rows of the previous projection.
+        let listed = self.items().n_items() as usize;
+        wait_until_or_false(Duration::from_secs(5), || {
+            let realized = self.row_widgets().len();
+            if listed <= 128 {
+                realized == listed
+            } else {
+                realized > wanted
+            }
+        });
+        let row = self.row_widgets().into_iter().nth(wanted)?;
+        let labels = labels_in(&row);
+        let suffix = find_descendant(&row, |widget| {
+            widget.is::<gtk4::Button>() && widget.property::<bool>("visible")
+        });
+        Some(NotesBrowserListItem {
+            title: labels.first().cloned(),
+            subtitle: labels.get(1).cloned(),
+            suffix,
+        })
+    }
+
+    /// Select the row at `index`, as a click does.
+    pub fn set_selected(&self, index: u32) {
+        self.selection().set_selected(index);
+    }
+
+    /// The selected position, if any.
+    pub fn selected(&self) -> Option<u32> {
+        let selected = self.selection().selected();
+        (selected != gtk4::INVALID_LIST_POSITION).then_some(selected)
+    }
+
+    /// Activate the row at `index`, as Enter or a double click does.
+    pub fn activate(&self, index: u32) {
+        self.list_view.emit_by_name::<()>("activate", &[&index]);
+    }
+
+    /// Titles of the realized section headers, in order.
+    pub fn section_titles(&self) -> Vec<String> {
+        let _ = wait_until_or_false(Duration::from_secs(5), || {
+            self.items().n_items() == 0 || !self.row_widgets().is_empty()
+        });
+        let mut titles = Vec::new();
+        let mut child = self.list_view.first_child();
+        while let Some(widget) = child {
+            if widget.css_name() == "header" && widget.is_visible() {
+                titles.extend(labels_in(&widget).into_iter().take(1));
+            }
+            child = widget.next_sibling();
+        }
+        titles
+    }
+}
+
+/// Every label's text under `root`, in depth-first child order.
+pub fn labels_in(root: &gtk4::Widget) -> Vec<String> {
+    let mut labels = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(current) = stack.pop() {
+        if let Ok(label) = current.clone().downcast::<gtk4::Label>()
+            && label.property::<bool>("visible")
+        {
+            labels.push(label.text().to_string());
+        }
+        let mut children = Vec::new();
+        let mut child = current.first_child();
+        while let Some(next) = child {
+            children.push(next.clone());
+            child = next.next_sibling();
+        }
+        stack.extend(children.into_iter().rev());
+    }
+    labels
+}

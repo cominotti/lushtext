@@ -50,10 +50,13 @@
 //!    `source_execution::begin_mode` advances the source and query generations
 //!    that make the requested mode the only publishable one.
 //! 2. **Build a bounded source.** `source_execution` captures live-editor
-//!    metadata under `policy`'s budgets, reserves disposal capacity, and hands a
-//!    compact request to the shared note-source coordinator.
-//! 3. **Query it.** `query_execution` debounces typing and matches against the
-//!    published source, publishing grouped rows or the mode's own empty copy.
+//!    metadata in sliced turns under one retained-byte budget, reserves
+//!    disposal capacity, and hands a compact request to the shared note-source
+//!    coordinator. The browser's source has no row count: a byte refusal skips
+//!    the row and counts it, so the browser can say "showing X of Y".
+//! 3. **Query it.** `query_execution` debounces typing, matches and groups on a
+//!    worker, and publishes every match into the lazy row model (`row_model`)
+//!    of a virtualized, sectioned `GtkListView`, or the mode's own empty copy.
 //!
 //! # Stage order: sidecar migration on rename
 //!
@@ -87,6 +90,9 @@
 //!   completion, once in the durable write's.
 //! - The folder chooser and both note dialogs resume in
 //!   `AdwAlertDialog::choose` after the dialog has already closed.
+//! - The browser's open-editor capture resumes in `source_execution`'s
+//!   `run_open_editor_capture_turn`, one idle turn at a time, until every editor
+//!   is captured; an editor whose bookmarks change mid-capture restarts.
 //! - Browser source construction resumes in the disposal-capacity wakeup when
 //!   admission refuses, and in `source_execution`'s worker completion otherwise.
 //! - Browser query resumes after the search debounce and in
@@ -102,7 +108,7 @@
 //! | seam value objects | `seams` (`NotesBrowserTicket`, phantom-typed by flight) |
 //! | coordination | `journal` (the migration ledger), `source_execution` (bounded source build for both the browser and the palette), `query_execution` (the browser query), `bookmark_execution` (bookmark lifecycle and editor note resolution), `editor_execution` (document and folder note editors) |
 //! | evidence | `evidence` |
-//! | called presentation surfaces, carrying **no** role | `browser` (dialog shell, session state, rows, preview projection), `menu` (the header Notes menu), `chrome` (dialog close/Escape/focus/empty-state helpers shared by three dialogs), `targets` (window-side target resolution) |
+//! | called presentation surfaces, carrying **no** role | `browser` (dialog shell, session state, row and header factories, preview projection), `row_model` (the lazy list and section model and its row object), `menu` (the header Notes menu), `chrome` (dialog close/Escape/focus/empty-state helpers shared by three dialogs), `targets` (window-side target resolution) |
 //! | test-only configuration | `test_policy` |
 //!
 //! # State this workflow shares with others
@@ -128,6 +134,7 @@ mod journal;
 mod menu;
 pub(crate) mod policy;
 mod query_execution;
+mod row_model;
 mod seams;
 mod source_execution;
 mod targets;
@@ -140,7 +147,7 @@ pub(in crate::ui::window) use browser::ActiveNotesBrowser;
 // harness needs the name. Re-exporting it unconditionally would widen this
 // crate's default public API for an internal readability goal.
 #[cfg(feature = "test-utils")]
-pub use browser::NotesBrowserRuntimeSnapshot;
+pub use browser::{NotesBrowserRuntimeSnapshot, OpenEditorSnapshotEvidence};
 #[cfg(feature = "test-utils")]
 pub use evidence::{NotesEvidence, OpenEditorNoteCaptureEvidence};
 // The note-source delay and the browser-query delay stay in
@@ -153,7 +160,7 @@ pub use crate::services::palette::{
 };
 #[cfg(feature = "test-utils")]
 pub use test_policy::{
-    set_bookmark_excerpt_preview_delay_for_test, set_notes_browser_source_entry_limit_for_test,
+    set_bookmark_excerpt_preview_delay_for_test, set_notes_browser_budgets_for_test,
 };
 
 use crate::services::palette as palette_service;
@@ -162,18 +169,15 @@ use super::LushtextWindow;
 
 /// Return the effective browser source policy for this process.
 ///
-/// Production reads `policy`'s budgets directly; only a `test-utils` build can
-/// narrow the entry ceiling, and it does so through the workflow's one
-/// test-policy value rather than through a second module static.
-#[cfg(feature = "test-utils")]
+/// Production reads `policy`'s budgets; a `test-utils` build or the
+/// `smoke-list-budgets` lane may only narrow the searchable-text ceiling, through
+/// the same function, so both take one code path.
 fn notes_browser_source_limits() -> palette_service::NoteSourceLimits {
-    test_policy::notes_browser_source_limits()
-}
-
-#[cfg(not(feature = "test-utils"))]
-fn notes_browser_source_limits() -> palette_service::NoteSourceLimits {
-    // Narrowing to the production ceiling is a no-op, and going through the same
-    // function the `test-utils` path uses keeps one code path in both feature
-    // configurations rather than two that could drift.
-    policy::notes_browser_source_limits_for_entries(policy::NOTES_BROWSER_SOURCE_ENTRY_LIMIT)
+    #[cfg(feature = "test-utils")]
+    let text_bytes = test_policy::notes_browser_source_text_bytes();
+    #[cfg(not(feature = "test-utils"))]
+    let text_bytes: Option<usize> = None;
+    let smoke = crate::services::smoke_list_budgets::notes_source_text_bytes()
+        .and_then(|bytes| usize::try_from(bytes).ok());
+    policy::notes_browser_source_limits_for_text_bytes(text_bytes.or(smoke).unwrap_or(usize::MAX))
 }

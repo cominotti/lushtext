@@ -465,6 +465,8 @@ when the expected focus target remains visible in the same AT-SPI tree.
 | <span id="atspi-anchor-notes-browser-grouping-notes-preview"></span>`atspi-anchor-notes-browser-grouping-notes-preview` | Notes browser | `grouping` | `Notes preview` | Read-only selected note or bookmark preview | Stable public accessibility anchor |
 | <span id="atspi-anchor-notes-browser-text-bookmark-source-preview"></span>`atspi-anchor-notes-browser-text-bookmark-source-preview` | Notes browser | `text` | `Bookmark source preview` | Read-only bookmark source excerpt and AT-SPI text interface | Stable public accessibility anchor for smoke fixture |
 | <span id="atspi-anchor-notes-browser-status-bar-no-notes-match-that-search"></span>`atspi-anchor-notes-browser-status-bar-no-notes-match-that-search` | Notes browser | `status bar` | `No notes match that search` | Notes browser no-results state | Stable public accessibility anchor |
+| <span id="atspi-anchor-notes-browser-status-bar-showing"></span>`atspi-anchor-notes-browser-status-bar-showing` | Notes browser | `status bar` | `Showing ` | Limited-source label prefix ("Showing X of Y notes and bookmarks. The rest exceed the memory budget.") when a byte budget kept rows out of the browser's source; its accessible name tracks its visible text; the smoke reaches it with a lowered text budget | Stable public accessibility anchor prefix for smoke fixture |
+| <span id="atspi-anchor-notes-browser-status-bar-no-notes-fit-the-memory-budget"></span>`atspi-anchor-notes-browser-status-bar-no-notes-fit-the-memory-budget` | Notes browser | `status bar` | `No notes fit the memory budget` | Notes browser empty state when a byte budget kept every row out | Stable public accessibility anchor for smoke fixture |
 | <span id="atspi-anchor-bookmarks-browser-dialog-bookmarks"></span>`atspi-anchor-bookmarks-browser-dialog-bookmarks` | Bookmarks browser | `dialog` | `Bookmarks` | Bookmarks browser shell | Stable public accessibility anchor |
 | <span id="atspi-anchor-bookmarks-browser-entry-search-bookmarks"></span>`atspi-anchor-bookmarks-browser-entry-search-bookmarks` | Bookmarks browser | `entry` | `Search bookmarks` | Bookmarks browser search entry | Stable public accessibility anchor |
 | <span id="atspi-anchor-bookmarks-browser-list-bookmark-results"></span>`atspi-anchor-bookmarks-browser-list-bookmark-results` | Bookmarks browser | `list` | `Bookmark results` | Bookmark result navigation | Stable public accessibility anchor |
@@ -682,6 +684,10 @@ once, by the identity's owner, not by every workflow that consumes it.*
 | `window.notes` | `NotesEvidence` | `active_document_bookmark_count` | `notes.active_document_bookmark_count` |
 | `window.notes` | `NotesEvidence` | `active_line_has_bookmark` | `notes.active_line_has_bookmark` |
 | `window.notes` | `NotesEvidence` | `folder_note_available` | `notes.folder_note_available` |
+| `window.notes` | `NotesEvidence` | `browser` | `notes.browser_open` |
+| `window.notes` | `NotesEvidence` | `browser.listed_rows` | `notes.browser_row_count` |
+| `window.notes` | `NotesEvidence` | `browser.rows_found` | `notes.browser_rows_found` |
+| `window.notes` | `NotesEvidence` | `browser.limited` | `notes.browser_limited` |
 | `window.workspace` | `WorkspaceTreeEvidence` | `scope_kind` | `workspace.scope_kind` |
 | `window.workspace` | `WorkspaceTreeEvidence` | `scope_workspace_id` | `workspace.scope_workspace_id` |
 | `window.workspace` | `WorkspaceTreeEvidence` | `scope_workspace_name` | `workspace.scope_workspace_name` |
@@ -886,6 +892,10 @@ sidebar show/hide animation and belongs to `WFR-SHELL-GEOMETRY`, not to this row
 | <span id="snapshot-field-active-line-has-bookmark"></span>`snapshot-field-active-line-has-bookmark` | `notes.active_line_has_bookmark` | `bool` | Whether the active cursor line has a bookmark. |
 | <span id="snapshot-field-document-note-available"></span>`snapshot-field-document-note-available` | `notes.document_note_available` | `bool` | Whether the active document can open the document-note workflow. |
 | <span id="snapshot-field-folder-note-available"></span>`snapshot-field-folder-note-available` | `notes.folder_note_available` | `bool` | Whether a folder-note action is meaningful for the current workspace scope. |
+| <span id="snapshot-field-browser-open"></span>`snapshot-field-browser-open` | `notes.browser_open` | `bool` | Whether the Browse Notes / Browse Bookmarks dialog is open. |
+| <span id="snapshot-field-browser-row-count"></span>`snapshot-field-browser-row-count` | `notes.browser_row_count` | `u32` | Rows the open notes browser lists for its current query; 0 when it is closed. Every admitted, matching row is listed: there is no row cap. |
+| <span id="snapshot-field-browser-rows-found"></span>`snapshot-field-browser-rows-found` | `notes.browser_rows_found` | `u32` | Rows the open browser's source found, retained or not (saturating); with `browser_limited`, the browser's "of Y". 0 when it is closed. |
+| <span id="snapshot-field-browser-limited"></span>`snapshot-field-browser-limited` | `notes.browser_limited` | `bool` | Whether a memory (byte) budget kept rows out of the open browser's source, which the browser then states as "Showing X of Y". |
 | <span id="snapshot-field-browse-available"></span>`snapshot-field-browse-available` | `local_history.browse_available` | `bool` | Whether the active document can browse local history. |
 | <span id="snapshot-field-automatic-capture-available"></span>`snapshot-field-automatic-capture-available` | `local_history.automatic_capture_available` | `bool` | Whether the active document can capture automatic local-history snapshots. |
 | <span id="snapshot-field-availability"></span>`snapshot-field-availability` | `local_history.availability` | `string` | Size-policy classification for the active document: `full`, `save-only`, or `unavailable`. |
