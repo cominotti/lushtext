@@ -159,10 +159,16 @@ Counts:
   retaining or scoring them, checking cancellation at the same interval
   (`PALETTE_CANCEL_CHECK_INTERVAL`). A source whose predicate is trivially
   true (no open-tab exclusion, commands) counts by length in O(1).
+- **Commands cannot be cut today:** the registry holds 35 commands
+  (`services/palette/commands.rs`), below the 64-row cap, so the Commands
+  group never ends with a "More" row on this revision. The decision is the
+  same generic rule for every group; its unit and widget tests force it with
+  a smaller per-source limit through `CommandPaletteTestPolicy` instead of
+  asserting a Commands "More" row the registry cannot produce (spec review).
 - **The workspace group's exclusion test** (`search_cancellable_excluding`)
   hashes the file's canonical path against the open-tab set. The count
   continuation tests the canonical path's file name against the open tabs'
-  names first, and hashes the full path only on a name match. A property test
+  canonical file names first, and hashes the full path only on a name match. A property test
   pins that the prefiltered predicate equals the full one on random indexes,
   including symlinked aliases whose display name differs from the canonical
   name. The selector's retained-row path keeps the full predicate.
@@ -208,7 +214,19 @@ BN's stage 3:
 - only the tail is removed or added, and every emission matches the length the
   model reports at that moment (the crash BN fixed in
   `gtk_list_item_manager_ensure_items`);
-- the map is pruned to live objects past 1,024 entries.
+- the map is pruned to live objects past 1,024 entries (its own `cap`
+  constant with a thresholds row, D12, the shape of the notes browser's
+  `LIVE_ROW_PRUNE_AT`);
+- **leaving and closing clear the projection** (a removal of every row, then
+  an empty projection), so a hidden category model never keeps a superseded
+  index or note source alive while the palette shows grouped results or is
+  closed (spec review).
+
+The notes browser's `row_model.rs` module doc still says a publish "swaps
+one `Rc<[u32]>` and emits a removal then an addition", which its code no
+longer does since BN's stage 3 (kept rows are retargeted, only the tail is
+added or removed). Since this change copies that pattern, it corrects that
+stale paragraph first (task 5.2), under the pre-existing-blockers rule.
 
 The item factory is the grouped factory's (the same row widget and
 accessibility projection), set on both list views, except that the category
@@ -237,12 +255,16 @@ and random sources and queries).
 
 The budget is the worker's peak: the selector retains one candidate
 (`RetainedCandidate`: the borrowed item, the score, the ordinal) per kept row
-until it sorts and converts them to `u32`s. So:
+until it sorts them, and the ranked candidates and the output `u32` ordinals
+coexist while one is converted into the other. So:
 
 - `PALETTE_CATEGORY_RETAINED_BYTES` = 8 MiB (presentation cap), in
   `ui/command_palette/policy.rs`;
-- `PALETTE_CATEGORY_CANDIDATE_BYTES` = `size_of` the candidate (derived;
-  exported from the service as a `const`);
+- `PALETTE_CATEGORY_CANDIDATE_BYTES` = `size_of::<RetainedCandidate>()` +
+  `size_of::<u32>()` (derived; exported from the service as a `const`). On
+  x86_64 the candidate is 32 bytes (a 16-byte `SearchResultItem` of four
+  reference variants, which no niche can pack, plus `u32` and `usize`), so
+  the charge is 36 bytes; a unit test pins the figure the floor below uses;
 - `category_row_limit()` = `list_budget::rows_within(limit, charge)`, a new
   pure helper: the largest `n` with `n * charge <= limit` (`charge > 0`). It
   states `RetainedBudget`'s admission for equal charges, so the view's cut is
@@ -251,9 +273,16 @@ until it sorts and converts them to `u32`s. So:
   `RetainedBudget` (retained count), and never overflows.
 - **No loss at today's ceiling:** `PALETTE_CATEGORY_FLOOR_RETENTION` (derived)
   = `MAX_INDEXED_FILES * PALETTE_CATEGORY_CANDIDATE_BYTES`, and a
-  `const` assertion pins `FLOOR <= RETAINED_BYTES`. With a 40-byte candidate
-  the floor is 5 MiB. The thresholds row records the cap as "up from
-  PALETTE_CATEGORY_FLOOR_RETENTION", BL's form.
+  `const` assertion pins `FLOOR <= RETAINED_BYTES`. With the 36-byte charge
+  the floor is 4,718,592 bytes (4.5 MiB), and 8 MiB is the power of two at or
+  above it, which is what `make check-thresholds` requires of a presentation
+  cap recorded "up from PALETTE_CATEGORY_FLOOR_RETENTION" (BL's form). A
+  second `const` assertion pins `RETAINED_BYTES / 2 < FLOOR`, so a change of
+  the candidate's size that would leave 8 MiB more than one power of two
+  above the floor (or below it) fails the build instead of the thresholds
+  gate. (The spec draft's "40-byte candidate, 5 MiB floor" was not the
+  pinned layout; the spec microbenchmark ranked 8-byte `(score, ordinal)`
+  pairs, so its 4.4 ms understates the 36-byte ranking task 1.3 measures.)
 
 When `matching > ordinals.len()`, the view's notice says "Showing {X} of {Y}
 results" (grouped thousands), announced politely once per category view and
@@ -303,10 +332,28 @@ inside the category view.
   activatable row. The palette remembers that one category id, nothing else.
 - **Escape routing:** in the entry, `stop-search` (A97) calls the palette's
   `dismiss_one_level()`, which leaves the category view or, in the grouped
-  view, asks the window to close as today. Outside the entry, the window's
+  view, asks the window to close as today. **Both outcomes set the window's
+  child-handled latch** (`mark_child_transient_escape_handled`): today only
+  the close-requested callback sets it, and `stop-search` runs before the
+  window's Bubble-phase Escape controller sees the same key press
+  (`transient_dismissal/policy.rs`), so a leave that did not latch would let
+  that controller find the palette still revealed and close it, turning one
+  Escape into two levels. The palette therefore reports every Escape it
+  consumed through one callback (`connect_escape_consumed`, replacing the
+  close-only wiring), and the window latches before acting on it (spec
+  review). Outside the entry, the window's
   dismissal ladder (`transient_dismissal/policy.rs`) gains the palette's
   category state in `TransientSurfaceState`; the palette rung's outcome becomes
   "leave category" or "close palette". Click-away still closes the palette.
+- **Backspace leaves only from a query that was already empty.** A held
+  Backspace that deletes `rs` keeps auto-repeating after the entry is empty;
+  GTK delivers repeats as presses without releases. Leaving on the first
+  repeat would throw the user out of the category they were filtering. So a
+  Backspace press leaves only when the query is empty **and** a key release
+  has been seen since it became empty (`policy::backspace_leaves_category`,
+  pure, unit-tested with a press, press sequence and a press, release, press
+  sequence; the capture controller tracks the release). A97's probe also
+  pins that the capture controller sees the release (spec review).
 - **Close** clears the category; reopening shows the grouped All view, as
   today.
 
@@ -343,6 +390,33 @@ skip-and-count only adds rows after it, so the palette admits a superset (the
 existing property test is extended to the palette's limits).
 `MAX_PALETTE_NOTE_ENTRIES` leaves the inventory with its thresholds row.
 
+**It has a second consumer, which this change must also convert.** The
+palette's note refresh (`ui/window/notes/source_execution.rs`,
+`refresh_command_palette_note_source`) captures the open editors' bookmarks
+**synchronously on GTK** with `open_editor_note_snapshots_bounded(…,
+MAX_PALETTE_NOTE_ENTRIES, NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT)`:
+at most 16,384 snapshots plus bookmarks, and the first editor that does not
+fit **stops** the capture (`truncated`, `rows_not_retained: 0`). BN gave the
+browser a sliced, byte-bounded capture (`OpenEditorSnapshotCapture`: one
+editor's bookmarks per unit within `LIST_TURN_SLICE_US`, counting the rows it
+cannot retain, generation-checked per editor) and left the palette's. The
+palette's refresh moves onto that capture, with the same 4 MiB budget and no
+count (spec review):
+
+- the capture state moves from `NotesBrowserState` to a small owner both
+  flights hold (the palette's held by the window, beside
+  `command_palette_note_refreshes`), so it is one capture routine, not two;
+- the palette's submit runs after the capture's last turn, as the browser's
+  does, and a palette close cancels the capture (`stop_open_editor_capture`);
+- `open_editor_note_snapshots_bounded` keeps no caller but the evidence
+  helper `capture_open_editor_note_evidence`, which is moved onto the same
+  capture so the test surface drives the production path;
+- `ui/window/notes/policy.rs`'s test that pins the palette's `Stop` is
+  inverted to pin `SkipAndCount` for both consumers.
+
+The `WFR-NOTES-BOOKMARKS` row is touched (task 7.4): its coordination module
+gains a consumer, no role moves.
+
 The cost is memory: the source can now fill its 64 MiB retained ceiling
 instead of stopping at 16,384 rows (PT M12 measured 85.9 MiB RSS at 16,384
 against 62.5 MiB at 10,000). Task 1.4 measures peak RSS and the source
@@ -367,7 +441,8 @@ below 4 before and after each run (recorded), with fixtures at 512, 16,384 and
 | M2 | Empty-query worker (palette open to first rows) at 131,072 files, 0 / 32 / 256 open tabs | recorded; first rows within `B_SETTLE_US` of `main`'s | name-prefiltered count |
 | M3 | Activating "More": the input dispatch; the first category publish; the frame after it | `B_INTERACT_US`; `B_SETTLE_US`; `B_SETTLE_US` | flat across 512 / 16,384 / 131,072 |
 | M4 | A keystroke in the category view; its publish; the frame after it | `B_INTERACT_US`; `B_SETTLE_US`; `B_SETTLE_US` | flat in rows |
-| M5 | Down, Page Down, and a scroll to the last row at 131,072 | `B_INTERACT_US` per input dispatch | A95 records growth |
+| M5 | Down, Page Down, and a scroll to the last row at 131,072 | `B_INTERACT_US` per input dispatch | A95 records growth; measured at a near move (Page Down from row 0) and a far one (to the last row) |
+| M8 | The palette's note refresh: worst open-editor capture turn with 20,000 editor bookmarks | `B_SETTLE_US` per turn | `main`'s one synchronous capture dispatch (D7) |
 | M6 | Leaving (Escape) until the grouped rows show | `B_SETTLE_US` | — |
 | M7 | Peak RSS and note-source build time at 131,072 sidecar bookmarks | recorded | `main` vs branch (D7) |
 
@@ -375,6 +450,14 @@ A dispatch that misses its budget because of the toolkit (BN's E2 frame after a
 row-changing publish is the expected candidate for M4's frame) is recorded as a
 toolkit-floor exception with its attribution and bounded by a widget assertion
 at twice its measured worst, as BN did. Anything else that misses is fixed.
+
+M5 has a known candidate too: A95 measured `set_selected` plus `scroll_to`
+of a far row at 1.3 ms over 16,384 rows and **10.4 ms over 131,071**, above
+`B_INTERACT_US`, and attributes the growth to the list's height estimate over
+unrealized rows, not to the distance. If a near Page Down at 131,072 rows also
+grows that way, every page move in a large category is over budget, and the
+attribution, the axiom and a widget bound are required before sign-off
+(task 8.2); the far move is the same exception at most.
 
 ### D9. GTK axioms and Kani
 
@@ -395,7 +478,17 @@ Cited: A1 (realized-row cap), A87 (per `items-changed`), A90 (revealing a list
 costs its realized rows), A93 (remove-then-add publish), A94 (if the category
 bar's title is exposed as a heading), A95 (far-row select and scroll).
 
-Kani: `core-list-budget` gains B5 (`rows_within`) and is rerun whole. No other
+Kani: `core-list-budget` gains B5 (`rows_within`) and is rerun whole. B5 has
+two parts, because offering items to a `RetainedBudget` needs a loop and
+`limit / charge` is unbounded: for **every** `u64` limit and every `charge >
+0`, `r = rows_within(limit, charge)` satisfies `r * charge <= limit` and
+`(r + 1) * charge > limit` (checked arithmetic, no overflow); and for results
+of at most `MAX_SEQUENCE` rows it equals the number of `charge`-byte offers a
+`RetainedBudget::new(limit)` retains. `charge == 0` returns `usize::MAX`
+(nothing to bound) and is unit-tested, not assumed away. `rows_within` also
+joins the list-budget proof-strength `Oracle` in `scripts/kani-shards.py`
+(its `functions` and B5's harnesses with their measured seconds), and the
+shard's `LIST_BUDGET_MINUTES` is re-measured if the rerun grows it. No other
 shard covers code this change touches; `make check-kani-shards` must pass.
 
 ### D10. Workflow placement
@@ -433,8 +526,10 @@ shard covers code this change touches; `make check-kani-shards` must pass.
   view), `category_result_count` (rows the category view lists, `u32`
   saturating), `category_total_count` (matches, saturating) and
   `category_limited` (bool), projected from the evidence surface, with no row
-  text. `result_count` keeps its meaning: rows the **visible** list renders
-  (headers and "More" rows included in the grouped view).
+  text. `result_count` keeps its meaning, stated precisely: the number of
+  items in the **visible** list's model (headers and "More" rows included in
+  the grouped view; every listed row in a category view, not the about 205
+  rows GTK realizes).
 - `win.set-command-palette-category` (string): a category id opens that
   category's view (requires a visible palette; an id that is not a group of
   the current mode is refused with the existing invalid-parameter behaviour);
@@ -449,7 +544,8 @@ New rows in `docs/thresholds.md` and rustdoc `Kind:` lines:
 `PALETTE_CATEGORY_RETAINED_BYTES` (8,388,608, presentation cap, up from
 `PALETTE_CATEGORY_FLOOR_RETENTION`), `PALETTE_CATEGORY_FLOOR_RETENTION`
 (derived), `PALETTE_CATEGORY_CANDIDATE_BYTES` (derived), `RESULT_PAGE_ROWS`
-(16, `out: presentation`), `KIND_MORE` (`out: identifier`). Removed:
+(16, `out: presentation`), `KIND_MORE` (`out: identifier`), the category
+model's live-row prune point (1,024, `cap`, D2). Removed:
 `MAX_PALETTE_NOTE_ENTRIES`. `make check-thresholds` fails first on the
 leftover and the missing rows.
 
@@ -467,7 +563,56 @@ leftover and the missing rows.
 - **Facade budget** (335 of 370) → narrate the category view as a branch, not
   a new stage order.
 - **Two Escape paths** (entry `stop-search`, window ladder) → both call one
-  palette method; a widget test drives each.
+  palette method, and the entry's path sets the window's child-handled latch
+  for a leave as for a close (D5); a widget test drives each and asserts one
+  level per press.
+- **Backspace auto-repeat** could leave a category the user is filtering →
+  leaving needs a key release seen since the query became empty (D5).
+
+## Spec review (stage 2, 2026-11-07)
+
+An independent review against the code, the rules, the Kani shards and the
+GTK ledger. Confirmed and fixed in these artifacts:
+
+1. **One Escape would have left the category and closed the palette.** The
+   window's Bubble-phase Escape controller runs after the entry's
+   `stop-search`, and only the close callback sets the child-handled latch
+   (`ui/window/imp.rs`, `transient_dismissal/policy.rs`). D5 now latches on
+   every Escape the palette consumes.
+2. **`MAX_PALETTE_NOTE_ENTRIES` has a second consumer**: the palette's
+   synchronous open-editor capture, which stops at 16,384 rows. Removing the
+   constant without converting it would not compile, and keeping a renamed
+   count would keep the loss. D7 moves it onto BN's sliced capture; M8
+   measures its turns.
+3. **The floor arithmetic did not match the layout.** The candidate is 32
+   bytes, not 40, and the ranked candidates coexist with the output
+   ordinals; with the 36-byte charge the floor is 4.5 MiB and 8 MiB is the
+   power of two at or above it. With a bare 32-byte charge the floor would be
+   exactly 4 MiB and `make check-thresholds` would reject 8 MiB as not the
+   power of two at or above the recorded floor (D3).
+4. **Commands cannot be truncated** (35 commands < 64), so the spec's "every
+   category including commands ends with a More row" scenario was untestable;
+   it now names the categories that can be cut and the forced-limit test
+   covers the generic rule (D1).
+5. **Backspace auto-repeat** (D5).
+6. **B5 as written needed an unbounded loop**; restated as a closed-form
+   property over every `u64` plus agreement on short sequences, with the
+   proof-strength oracle entry (D9).
+7. **M5's known candidate exception** (A95's 10.4 ms at 131,071) is named, and
+   a near page move is measured separately (D8).
+8. The hidden category model now releases its source snapshots on leave and
+   close; the category model's prune point gets its thresholds row; the
+   `row_model.rs` doc it copies from is corrected; `result_count` is defined
+   as the visible model's length (D2, D11, D12).
+
+Checked and found sound: the 64-row prefix identity (the selector's
+comparator is a total order on score then ordinal, so a bounded heap of any
+size `>= 64` yields the same first 64); the prefiltered exclusion (it tests
+the canonical path's own file name, so a symlinked alias's display name
+cannot cause a false negative); the axiom numbers (A95 is the ledger's last);
+the MODIFIED requirements keep every scenario name; the `Arc<DisposalOwned<…>>`
+clones in the model still hand their final drop to a disposal worker; the
+facade's 35 free lines.
 
 ## Migration
 

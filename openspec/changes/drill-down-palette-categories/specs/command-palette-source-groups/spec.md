@@ -17,8 +17,13 @@ The grouped command palette SHALL end every result group that holds fewer rows t
 - **THEN** its group ends with its last result row and no More row
 
 #### Scenario: Every category is counted in All mode
-- **WHEN** All mode shows open tabs, workspace files, each note category and commands, each with more matches than it shows
+- **WHEN** All mode shows open tabs, workspace files and each note category, each with more matches than it shows
 - **THEN** each group ends with its own More row, and the group order and labels are unchanged
+- **AND** the Commands group, whose 35 registered commands fit the cap, ends with no More row
+
+#### Scenario: The rule is the same for every group
+- **WHEN** the per-group limit is forced below a group's match count, for each group of each mode including Commands
+- **THEN** that group ends with a More row stating the exact number not shown
 
 ### Requirement: A palette category view lists every ranked result of one category
 Activating a "More" row SHALL show that category's view: only that category, every result it matches, ranked exactly as the grouped view ranks them (descending score, then source ordinal; source order for the empty query), so the view's first rows are the rows the grouped view showed. The view SHALL name its category and its result count, SHALL list its rows in a virtualized list whose model creates row objects only for rows the toolkit requests, and SHALL keep no per-row text for rows that are not shown. The ranked rows SHALL be bounded by a retained-byte budget through the shared list-budget policy, chosen so that the file index's largest admitted size fits it whole; if the budget cuts a category, the view SHALL say "Showing X of Y results". Activating a row in the view SHALL open the file, open the note or run the command exactly as the same row does in the grouped view.
@@ -41,7 +46,7 @@ Activating a "More" row SHALL show that category's view: only that category, eve
 - **THEN** the view says how many notes the source holds of how many it found
 
 ### Requirement: The palette category view keeps the query live and returns to grouped results
-In a category view, typing SHALL filter within the category through the palette's one query flight (the same debounce, generations, cancellation and one-active/one-latest coordinator), and a completion SHALL publish only if its generation is current and its category is still the one shown. Escape, Backspace while the query is empty, the view's back button and a mode change SHALL return to the grouped view with the query kept (in the new mode for a mode change), and SHALL select that category's "More" row again when it still exists. Closing the palette SHALL leave the category view, and reopening SHALL show the grouped All view.
+In a category view, typing SHALL filter within the category through the palette's one query flight (the same debounce, generations, cancellation and one-active/one-latest coordinator), and a completion SHALL publish only if its generation is current and its category is still the one shown. Escape, a Backspace press on a query that was already empty (a key release having been seen since it became empty, so an auto-repeat of the Backspace that emptied it does not leave), the view's back button and a mode change SHALL return to the grouped view with the query kept (in the new mode for a mode change), and SHALL select that category's "More" row again when it still exists. Closing the palette SHALL leave the category view, and reopening SHALL show the grouped All view.
 
 #### Scenario: Typing filters within the category
 - **WHEN** a category view is shown and the user types a query
@@ -55,6 +60,10 @@ In a category view, typing SHALL filter within the category through the palette'
 - **WHEN** a category view is shown, the query is empty, and the user presses Backspace
 - **THEN** the grouped view is shown and the query stays empty
 
+#### Scenario: Holding Backspace to clear the query stays in the category
+- **WHEN** a category view is shown with the query `rs` and the user holds Backspace, so its auto-repeat presses continue after the query is empty without a key release
+- **THEN** the query is empty and the category view is still shown
+
 #### Scenario: A stale completion after leaving publishes nothing
 - **WHEN** a category query is running and the user returns to the grouped view before it completes
 - **THEN** the category result is not published and the grouped result is
@@ -66,7 +75,7 @@ In a category view, typing SHALL filter within the category through the palette'
 ## MODIFIED Requirements
 
 ### Requirement: Palette source inventories are bounded and superseding
-The system SHALL keep palette source construction bounded before query scoring begins. File-index construction MUST retain at most 131,072 canonical files (a presentation cap rounded up from 100,000 by `power-of-two-thresholds`), MUST avoid materializing an unbounded flat directory, and MUST cooperatively cancel superseded traversal. Note-source construction MUST be bounded by its byte ceilings alone (64 MiB of aggregate searchable UTF-8 note text, a 64 MiB retained graph, 8 MiB of sidecar paths and 96 MiB of construction scratch) with no row or sidecar count, MUST skip and count a row a byte ceiling refuses while admitting later rows that fit, MUST therefore retain every note the former count-and-prefix rule retained, MUST report deterministic truncation diagnostics with the number of rows found, and MUST NOT retain bodies beyond those limits. File-index and note-source coordinators SHALL each own at most one active request plus one compact latest request.
+The system SHALL keep palette source construction bounded before query scoring begins. File-index construction MUST retain at most 131,072 canonical files (a presentation cap rounded up from 100,000 by `power-of-two-thresholds`), MUST avoid materializing an unbounded flat directory, and MUST cooperatively cancel superseded traversal. Note-source construction MUST be bounded by its byte ceilings alone (64 MiB of aggregate searchable UTF-8 note text, a 64 MiB retained graph, 8 MiB of sidecar paths and 96 MiB of construction scratch) with no row or sidecar count, MUST capture open editors' bookmarks in sliced main-loop turns bounded by the 4 MiB open-editor snapshot budget with no row count, counting the rows that budget cannot retain, MUST skip and count a row a byte ceiling refuses while admitting later rows that fit, MUST therefore retain every note the former count-and-prefix rule retained, MUST report deterministic truncation diagnostics with the number of rows found, and MUST NOT retain bodies beyond those limits. File-index and note-source coordinators SHALL each own at most one active request plus one compact latest request.
 
 #### Scenario: Huge flat directory exceeds remaining index capacity
 - **WHEN** one workspace directory contains more visible entries than the remaining 131,072-file index capacity
@@ -82,6 +91,10 @@ The system SHALL keep palette source construction bounded before query scoring b
 - **WHEN** eligible note sidecars exceed one of the note source's byte ceilings
 - **THEN** source construction skips and counts each refused row, admits later rows that fit, and retains no body beyond the ceilings
 - **AND** the palette remains usable with a visible bounded-truncation diagnostic that states the rows found
+
+#### Scenario: Many open-editor bookmarks
+- **WHEN** open editors hold more than 16,384 bookmarks and the palette's note source refreshes
+- **THEN** their capture runs in turns that each fit `B_SETTLE_US`, retains every bookmark the 4 MiB snapshot budget holds, and counts the rest
 
 #### Scenario: Note refresh is superseded repeatedly
 - **WHEN** note or bookmark edits request several refreshes while one sidecar load is active

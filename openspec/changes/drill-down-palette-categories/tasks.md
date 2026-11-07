@@ -30,12 +30,16 @@ Rules for every task:
       interruptible merge before task 4.
 - [ ] 1.4 Measure peak RSS (`VmHWM`) and the note-source build time at
       131,072 sidecar bookmarks on `main` (count 16,384) and with the counts
-      removed (design D7, M7).
+      removed (design D7, M7); and `main`'s synchronous palette open-editor
+      capture dispatch with 20,000 editor bookmarks (M8 baseline).
 - [ ] 1.5 Add GTK axioms A96 and A97 (design D9) to `gtk-lush-axioms`: each a
       probe (A96 marked `slow` where it times 131,072 items), an
       interactive/`--check` sample and a ledger row in
       `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`
-      ("Verified against" the pinned GTK and libadwaita). Run
+      ("Verified against" the pinned GTK and libadwaita). A97 also pins that
+      the capture controller sees a key release, and that two synthesized
+      Backspace presses without a release both reach it (the auto-repeat
+      shape D5's rule relies on). Run
       `make gtk-axioms` and `make check-gtk-axioms`. If A96 finds the
       natural-height measure walks items, change D2 (fixed list height in the
       category view) before task 5 and record it.
@@ -43,11 +47,15 @@ Rules for every task:
 ## 2. Pure policy and model (failing first)
 
 - [ ] 2.1 `model/list_budget.rs`: `rows_within(limit, charge)` and Kani
-      harness B5 (agrees with offering `n` equal charges to a
-      `RetainedBudget`; never overflows; `charge == 0` handled explicitly).
-      Unit tests first. Rerun shard `core-list-budget` whole
-      (`make kani KANI_SHARD=core-list-budget`) and record its time;
-      `make check-kani-shards`.
+      harness B5 in two parts (design D9): the closed form over every `u64`
+      limit and `charge > 0` (`r * charge <= limit < (r + 1) * charge`,
+      checked, no overflow), and agreement with a `RetainedBudget` for
+      results of at most `MAX_SEQUENCE` rows; `charge == 0` returns
+      `usize::MAX`, unit-tested. Unit tests first. Add `rows_within` and B5's
+      harnesses (with measured seconds) to the list-budget `Oracle` in
+      `scripts/kani-shards.py`. Rerun shard `core-list-budget` whole
+      (`make kani KANI_SHARD=core-list-budget`) and record its time,
+      updating `LIST_BUDGET_MINUTES` if it grew; `make check-kani-shards`.
 - [ ] 2.2 `model/palette.rs`: `PaletteCategory` with stable ids, labels per
       mode (All mode's "Open Tab Notes"), parsing; `PaletteSearchRow::More`.
       Unit tests first, including id round-trips.
@@ -58,6 +66,9 @@ Rules for every task:
         the grouped view, clamping in the category view);
       - the leave-selection rule (More row, else the category's last row, else
         the first activatable row);
+      - `backspace_leaves_category` (design D5): empty query and a release
+        seen since it became empty; press-press stays, press-release-press
+        leaves;
       - the entry announcement, "Showing X of Y results" and the note-source
         notice, including "at least";
       - the category budget constants, `PALETTE_CATEGORY_FLOOR_RETENTION` and
@@ -84,7 +95,12 @@ branch before the fix:
 - [ ] 3.3 Leaving: Escape (in the entry, in the list, and with focus in the
       editor), Backspace on an empty query, the back button and Tab each
       return to grouped results with the query kept and the More row
-      selected; a second Escape closes the palette.
+      selected; after the first Escape **the palette is still revealed** and
+      a workspace search panel below it is still shown (the entry's
+      `stop-search` path fails this on a leave that does not set the
+      child-handled latch, design D5); a second Escape closes the palette.
+      Holding Backspace over `rs` (presses without a release) empties the
+      query and stays in the category.
 - [ ] 3.4 Freshness: a category completion arriving after leaving publishes
       nothing; a grouped completion arriving after entering publishes
       nothing; an index replacement while a category view is shown republishes
@@ -99,7 +115,10 @@ branch before the fix:
       `CommandPaletteTestPolicy` with a small budget).
 - [ ] 3.7 Note source: with byte ceilings forced small, a text cut in
       bookmarks no longer hides folder notes (fails on `main`'s `Stop`), and
-      more than 16,384 small notes are all searchable.
+      more than 16,384 small notes are all searchable; with more than 16,384
+      open-editor bookmarks the palette's capture runs in turns, each within
+      `B_SETTLE_US` under the existing turn cap actuator, and every bookmark
+      the 4 MiB budget holds is searchable (fails on `main`'s 16,384 count).
 - [ ] 3.8 Activating a More row never reaches the window's activate callback
       and keeps the palette open; click-away from a category view closes once.
 
@@ -114,11 +133,19 @@ branch before the fix:
 - [ ] 4.3 `services/palette/grouped.rs`: per-group match counts and the More
       row; existing grouped tests unchanged.
 - [ ] 4.4 `services/palette/category.rs`: the category search returning
-      `CategoryRanking`, `PALETTE_CATEGORY_CANDIDATE_BYTES`; property test of
-      the 64-row prefix identity (design D3).
+      `CategoryRanking`, `PALETTE_CATEGORY_CANDIDATE_BYTES` (candidate plus
+      `u32`; a unit test pins 36 on x86_64) and the two `const` assertions
+      (`FLOOR <= RETAINED_BYTES`, `RETAINED_BYTES / 2 < FLOOR`); property test
+      of the 64-row prefix identity (design D3).
 - [ ] 4.5 `services/palette/notes.rs`: `PALETTE_NOTE_SOURCE_LIMITS` without
       counts and with `SkipAndCount`; extend BN's superset property test to the
       palette's limits; remove `MAX_PALETTE_NOTE_ENTRIES`.
+- [ ] 4.7 `ui/window/notes/`: move the open-editor capture out of
+      `NotesBrowserState` into an owner both flights use; the palette's note
+      refresh captures in sliced turns and submits after the last one, and a
+      palette close cancels it; `capture_open_editor_note_evidence` drives the
+      same capture; retire `open_editor_note_snapshots_bounded`; invert
+      `policy.rs`'s test that pins the palette's `Stop` (design D7).
 - [ ] 4.6 Criterion benchmarks in `crates/lushtext-core/benches/benchmarks.rs`
       for the empty-query count at 131,072 files and the category ranking at
       131,072 matches.
@@ -128,10 +155,14 @@ branch before the fix:
 - [ ] 5.1 `resources/ui/command-palette.blp`: the category bar and the
       category scroller and list; `make blueprint-generate`,
       `make check-blueprint`.
-- [ ] 5.2 `ui/command_palette/category_model.rs`: `PaletteCategoryModel` with
-      the retarget cache and emission discipline (design D2); a widget test
-      republishing repeated queries over realized rows (BN's crash
-      regression shape).
+- [ ] 5.2 Correct the stale module doc of `ui/window/notes/row_model.rs`
+      (it still describes remove-then-add of every row). Then
+      `ui/command_palette/category_model.rs`: `PaletteCategoryModel` with
+      the retarget cache, its prune constant and emission discipline, and a
+      clear on leave and close that releases the source snapshots (design
+      D2); a widget test republishing repeated queries over realized rows
+      (BN's crash regression shape) and one asserting the model's strong
+      count on the index snapshot drops after leaving.
 - [ ] 5.3 `item.rs`: `KIND_MORE`; the item factory handles it and rebinds on
       content change.
 - [ ] 5.4 `query_execution.rs`: the category in the request, the dispatch to
@@ -139,9 +170,12 @@ branch before the fix:
 - [ ] 5.5 `imp.rs`: enter and leave, the two views' navigation without a walk,
       Page Up and Page Down, Backspace on empty, `dismiss_one_level()` from
       `stop-search`, accessibility refresh from the visible view's length.
-- [ ] 5.6 Window: the dismissal ladder's palette rung, `palette_shell.rs`'s
-      action `win.set-command-palette-category`, catalog entry and observed
-      action in `services/action_catalog`.
+- [ ] 5.6 Window: the dismissal ladder's palette rung; the palette's
+      `connect_escape_consumed` replacing the close-only callback in
+      `ui/window/imp.rs`, setting the child-handled latch for a leave and a
+      close (design D5); the action `win.set-command-palette-category`
+      registered in `actions.rs` and handled in `palette_shell.rs`, catalog
+      entry and observed action in `services/action_catalog`.
 - [ ] 5.7 `evidence.rs` fields (design D10) and `ui/automation.rs` projection
       (design D11).
 - [ ] 5.8 Facade narration within 370 lines; `make check-workflow-boundaries`.
@@ -172,7 +206,8 @@ branch before the fix:
 - [ ] 7.4 `docs/workflow-readability-matrix.md`: re-derive
       `WFR-COMMAND-PALETTE`'s measured cells; add the fourth owner to
       `model/list_budget.rs`'s consumers; the transient-dismissal row's ladder
-      input.
+      input; `WFR-NOTES-BOOKMARKS`'s open-editor capture gaining the
+      palette's refresh as a consumer.
 - [ ] 7.5 `README.md` (palette features), `AGENTS.md` (module layout:
       `category_model.rs`, `services/palette/category.rs`; design decision
       text for the palette), `docs/next/gtk-lush.md` (the lazy-model extraction
@@ -182,7 +217,7 @@ branch before the fix:
 
 ## 8. Verdicts
 
-- [ ] 8.1 Measure M1–M7 (design D8) interleaved with `main`, two rounds, and
+- [ ] 8.1 Measure M1–M8 (design D8) interleaved with `main`, two rounds, and
       record the table in the design's "Implementation decisions".
 - [ ] 8.2 Any toolkit-floor exception: attribution, its axiom, and a widget
       assertion at twice its measured worst.
