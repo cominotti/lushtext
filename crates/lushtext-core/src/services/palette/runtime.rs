@@ -73,6 +73,18 @@ impl<T> PaletteSearchOutcome<T> {
             Self::Complete { metrics, .. } | Self::Cancelled { metrics } => *metrics,
         }
     }
+
+    /// Transform a complete value, keeping the metrics and a cancellation.
+    #[must_use]
+    pub fn map<U>(self, transform: impl FnOnce(T) -> U) -> PaletteSearchOutcome<U> {
+        match self {
+            Self::Complete { value, metrics } => PaletteSearchOutcome::Complete {
+                value: transform(value),
+                metrics,
+            },
+            Self::Cancelled { metrics } => PaletteSearchOutcome::Cancelled { metrics },
+        }
+    }
 }
 
 /// One request admitted as the coordinator's sole active palette generation.

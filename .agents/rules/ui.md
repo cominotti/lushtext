@@ -124,8 +124,13 @@ skeleton:
   the projection appends; both types need `ensure_type()` before
   `bind_template()`.
 - `AdwStatusPage` for empty states
-- `AdwSidebar` for shallow, sectioned dialog browse rails such as Notes and
-  Local History where each item activates or previews one record
+- `AdwSidebar` for shallow, sectioned dialog browse rails such as Local History
+  where each item activates or previews one record **and the item count is
+  small and bounded**: in sidebar mode it builds one `GtkListBoxRow` per item,
+  off-screen items included (ledger A92). A rail that can hold thousands of
+  rows (the notes browser) uses a `GtkListView` with a `header-factory` over a
+  lazy `GListModel` + `GtkSectionModel` instead, `navigation-sidebar` style,
+  and publishes a projection as a removal then an addition (ledger A93)
 - `AdwViewSwitcherSidebar` only for a small, stable set of page-like
   destinations already modeled as an `AdwViewStack`. Reject it for dynamic
   records, file trees, notes/history rows, search results, and any surface that

@@ -1201,6 +1201,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
         &note_scope,
         &[],
         false,
+        0,
         palette::NotesBrowserMode::Bookmarks,
         palette::PALETTE_NOTE_SOURCE_LIMITS,
         &palette::PaletteSearchCancellation::default(),
@@ -1306,6 +1307,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
         scope_snapshot,
         open_editor_snapshots: Arc::from(Vec::<PaletteOpenEditorNoteSnapshot>::new()),
         open_editor_snapshots_truncated: false,
+        open_editor_rows_not_retained: 0,
         mode: palette::NotesBrowserMode::AllNotes,
         limits: palette::PALETTE_NOTE_SOURCE_LIMITS,
     };
@@ -1439,6 +1441,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
                     black_box(&note_scope),
                     &[],
                     false,
+                    0,
                     palette::NotesBrowserMode::Bookmarks,
                     palette::PALETTE_NOTE_SOURCE_LIMITS,
                     &palette::PaletteSearchCancellation::default(),
@@ -2677,6 +2680,7 @@ fn bench_recovery_performance(c: &mut Criterion) {
                     black_box(&scope_snapshot),
                     &[],
                     false,
+                    0,
                     palette::NotesBrowserMode::Bookmarks,
                     palette::PALETTE_NOTE_SOURCE_LIMITS,
                     &palette::PaletteSearchCancellation::default(),
@@ -3405,7 +3409,6 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
     let note_outcome = palette::query_notes_browser_source(
         &note_entries,
         &note_request,
-        NOTE_RENDER_CAP,
         &palette::PaletteSearchCancellation::default(),
     );
     let note_metrics = note_outcome.metrics();
@@ -3691,7 +3694,6 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
             black_box(palette::query_notes_browser_source(
                 black_box(&note_entries),
                 black_box(&note_request),
-                NOTE_RENDER_CAP,
                 &palette::PaletteSearchCancellation::default(),
             ))
         });

@@ -207,6 +207,10 @@ struct TopLineRestore {
     handler: glib::SignalHandlerId,
     sentinel: Option<glib::SourceId>,
     since_us: i64,
+    /// Keeps the viewport rest state from recording the transient values the
+    /// view passes through while it lays out (its first allocation reads as
+    /// "at the top"); released when the hold ends, which records the rest.
+    rest_pause: gtk_lush_viewport::RestPause,
 }
 
 /// One step below GtkTextView's incremental validation idle
@@ -351,6 +355,12 @@ impl LushtextEditorPage {
     ///
     /// Called from `map` before the children map, so the first frame of a
     /// shown tab lays out the document (only its visible part, at once).
+    /// Whether a reattached view is still being held at its kept top line
+    /// while it lays the document out.
+    pub(super) fn holds_top_line(&self) -> bool {
+        self.imp().view_attachment.restoring.borrow().is_some()
+    }
+
     pub(super) fn attach_view(&self) {
         self.stop_hidden_validation_watch();
         let state = &self.imp().view_attachment;
@@ -396,6 +406,15 @@ impl LushtextEditorPage {
             && !mark.is_deleted()
         {
             view.scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
+            // The kept line is where this view rests, not the top its first
+            // tiny allocation reported: without this, a reflow settle or a
+            // top-edge clamp after the reattach read "at the top" and sent the
+            // tab back to line 0 (`bound-notes-browser-by-budget`, a flaky
+            // widget test traced to both).
+            self.imp().overscroll.rest_state.set_at_lower(
+                gtk_lush_viewport::ViewportAxis::Vertical,
+                document.iter_at_mark(&mark).line() == 0,
+            );
             self.hold_top_line_while_laying_out(mark);
         }
         self.schedule_minimap_refresh();
@@ -420,12 +439,14 @@ impl LushtextEditorPage {
             }
         });
         let sentinel = self.arm_laid_out_sentinel(laid_out_priority());
+        let rest_pause = self.imp().overscroll.rest_state.pause();
         *self.imp().view_attachment.restoring.borrow_mut() = Some(TopLineRestore {
             mark,
             adjustment,
             handler,
             sentinel: Some(sentinel),
             since_us,
+            rest_pause,
         });
     }
 
@@ -489,13 +510,28 @@ impl LushtextEditorPage {
         if let Some(restore) = restore {
             let now = glib::monotonic_time();
             crate::ui::responsiveness_probe::record_span("view_hold_end", now, now);
-            restore.adjustment.disconnect(restore.handler);
-            if let Some(sentinel) = restore.sentinel {
+            let TopLineRestore {
+                mark,
+                adjustment,
+                handler,
+                sentinel,
+                since_us: _,
+                rest_pause,
+            } = restore;
+            adjustment.disconnect(handler);
+            if let Some(sentinel) = sentinel {
                 sentinel.remove();
             }
-            if !restore.mark.is_deleted() {
-                self.buffer().delete_mark(&restore.mark);
+            if !mark.is_deleted() {
+                self.buffer().delete_mark(&mark);
             }
+            // Release the rest pause, then record where the view now rests.
+            drop(rest_pause);
+            let _ = self
+                .imp()
+                .overscroll
+                .rest_state
+                .record_adjustment(gtk_lush_viewport::ViewportAxis::Vertical, &adjustment);
         }
     }
 

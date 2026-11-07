@@ -8,6 +8,7 @@
 
 mod accessibility;
 mod bookmarks;
+
 mod buffer_replacement;
 mod document_identity;
 pub mod document_scale;
@@ -830,6 +831,24 @@ impl LushtextEditorPage {
         max_retained_bytes: u64,
     ) -> (Vec<BookmarkRecord>, u64, bool) {
         bookmarks::bookmark_records_bounded_by_retained_bytes(self, max_records, max_retained_bytes)
+    }
+
+    /// Visit one bounded slice of the live bookmarks (see
+    /// `bookmarks::bookmark_record_slice`).
+    pub(crate) fn bookmark_record_slice(
+        &self,
+        start: usize,
+        max: usize,
+        admit: impl FnMut(u64) -> bool,
+        out: Option<&mut Vec<BookmarkRecord>>,
+    ) -> bookmarks::BookmarkSliceProgress {
+        bookmarks::bookmark_record_slice(self, start, max, admit, out)
+    }
+
+    /// Live bookmark entries the projection holds.
+    #[must_use]
+    pub(crate) fn bookmark_entry_count(&self) -> usize {
+        bookmarks::bookmark_entry_count(self)
     }
 
     /// Snapshot the live bookmark projection generation for async race guards.

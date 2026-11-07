@@ -135,16 +135,38 @@ rebuild blocker. It also says to probe `AdwSidebar` first.
 | Rows reachable | 512 of any larger match set | `NOTES_BROWSER_RENDER_LIMIT` |
 | Source rows | ≤ 16,384 | `NOTES_BROWSER_SOURCE_ENTRY_LIMIT` |
 
-**Not re-measured at this stage.** Host load was 22–32 (1-minute) for the
-whole spec stage (`/proc/loadavg` at 2026-11-07, recorded in
-`.claude/handoffs/bound-notes-browser-by-budget/spec-stage.md`). The rule is
-load below 4. PT M6 is a recent, interleaved, load-qualified measurement of
-the same code path: `main` has not changed `ui/window/notes/` since. M6's
-worst dispatch is not attributed: it spans the dialog build, the first
-`AdwSidebar` population and the first preview. Task 1.1 attributes it on
-`main`, interleaved and at load below 4, before any fix. Task 1.1 also
-measures 16,384 and 131,072 rows on `main` with the render cap raised in a
-measurement-only patch, so the growth is known rather than assumed.
+**Task 1.1 baseline (measured 2026-11-07, stage 3).** Optimized widget build
+(`CARGO_PROFILE_DEV_OPT_LEVEL=2`, debug assertions off), presented, headless
+Mutter, `GSK_RENDERER=cairo`, CPUs 8–23, each run under `scripts/measure.sh`
+after a 30 s quiet gate (1-minute load below 4; 0.46–2.49 before every run,
+recorded in `.claude/handoffs/bound-notes-browser-by-budget/runs.log`). `main`
+is `e4ec2624` in the baseline worktree `.claude/worktrees/bnb-main`, with a
+measurement-only patch that raises the render cap, the source and sidecar
+counts and the snapshot count to 262,144 and prints `bnb-attr` timers. The
+fixture writes sidecars of 1,024 unlabelled bookmarks; "131,072" found that
+many rows but the 64 MiB retained-graph and 96 MiB construction ceilings
+admitted **90,687** of them, on `main` and on the branch alike (the test's
+long temporary paths make each row about 700 bytes). Figures are min–max over
+the runs (512: 15 reps; 16,384: 9; 20,000 editor bookmarks: 9; 131,072: 6).
+
+| Dispatch on `main` | 512 | 16,384 | 90,687 (131,072 found) | 20,000 editor bookmarks |
+|---|---|---|---|---|
+| `show-notes` action (dialog build 2.3–9.6 ms; snapshot 2.0–4.9 ms at 20,000) | 3.6–9.1 ms | 4.2–11.3 ms | 7.7–13.0 ms | 6.7–15.5 ms |
+| First publish (`AdwSidebar` population; preview 0.1–0.3 ms) | 29–40 ms | 1.05–1.23 s | 5.6–6.9 s | 1.41–1.57 s |
+| First frame after it | 84–136 ms | 3.71–3.81 s | 20.4–21.1 s | 4.56–4.70 s |
+| Query publish (`remove_all` plus append) | 78–90 ms | 1.91–1.97 s | 16.8–17.2 s | 3.61–4.08 s |
+| Frame after the query | 112–117 ms | 292–304 ms | 15 µs–0.59 s | 4.66–4.72 s |
+| Dialog close | 25–40 ms | 37–43 ms | 28–76 ms | 377–407 ms |
+| Peak RSS (`VmHWM`) | 111–155 MiB | 0.93–1.0 GiB | 4.7–4.8 GiB | 1.2–2.2 GiB |
+
+Attribution: the first publish is `append_notes_sidebar_sections` (one
+`GtkListBoxRow` per row, A92); the dialog build, the open-editor snapshot
+(0.10–0.25 µs per bookmark), the selection-restore scan (0 µs measured, a
+`position()` over `usize`s) and the first preview are each under 10 ms; the
+worker query is 23 ms at 20,000 rows and 113 ms at 90,687 with a filter (0.16
+ms unfiltered). **Task 1.2:** the dialog build alone (2.3–9.6 ms) fits
+`B_SETTLE_US`, so no staged-build task was added. Raw lines:
+`.claude/handoffs/bound-notes-browser-by-budget/impl/widget/main-*.log`.
 
 ## Decisions
 
@@ -588,6 +610,135 @@ Checked and confirmed:
 No new measurement was taken. The host's 1-minute load was 19–25 for most
 of the review and 1.66 at its end. The baseline is task 1.1's job, and it
 runs interleaved before any fix.
+
+## Implementation decisions (stage 3, 2026-11-07)
+
+### Verdicts (task 8.1, 8.4)
+
+Interleaved with `main` (two rounds, same conditions as the baseline above;
+`.claude/handoffs/bound-notes-browser-by-budget/impl/widget/{main,br}-*-r{1,2}.log`).
+
+| Dispatch | `main` 512 → 90,687 | Branch 512 | Branch 16,384 | Branch 90,687 | Branch 20,000 editor | Budget | Verdict |
+|---|---|---|---|---|---|---|---|
+| Keystroke in the search field | 0.2–0.4 ms | 0.14–0.38 ms | 0.17–0.40 ms | 0.21–0.40 ms | 0.14–0.15 ms | `B_INTERACT_US` | fits |
+| `show-notes` action | 3.6–13 ms | 4.7–10 ms | 4.0–11.7 ms | 8.5–9.9 ms | 3.5–10.2 ms | `B_SETTLE_US` | fits |
+| First publish (row model) | 29 ms → 6.9 s | 10.8–13.1 ms | 9.5–12.5 ms (attributed) | (same) | (same) | `B_SETTLE_US` | fits |
+| Worst dispatch until rows (includes the dialog's first frame when the worker is slower than a frame) | 29 ms → 6.9 s | 10.8–13.1 ms | 16.9–19.9 ms | 25.9–26.8 ms | 17.7–24.8 ms | `B_SETTLE_US` | **exception E1** |
+| First frame with rows | 84 ms → 21 s | 56–62 ms | 60–65 ms | 47–70 ms | 61–76 ms | `B_SETTLE_US` | **exception E1** |
+| Open-editor capture turn | (one 2–5 ms dispatch) | — | — | — | worst 0.2–2.3 ms, 1–11 turns | `B_SETTLE_US` | fits |
+| Query publish | 78 ms → 17 s | 1.8–2.9 ms | 2.2–2.8 ms | 2.2–2.6 ms | 1.1 ms | `B_SETTLE_US` | fits |
+| Frame after a query that changes the shown rows | 112 ms → 4.7 s | 3.0–5.8 ms (rows unchanged) | 22.3–22.9 ms | 22.7–22.9 ms | 2.0–2.1 ms | `B_SETTLE_US` | **exception E2** |
+| Dialog close | 25 ms → 407 ms | 25.7–28.7 ms | 26.7–34.4 ms | 28.2–28.9 ms | 26.2–28.7 ms | `B_SETTLE_US` | **exception E3** |
+| Peak RSS (`VmHWM`) | 111 MiB → 4.8 GiB | 94–110 MiB | 109–125 MiB | 168–246 MiB | 156–237 MiB | — | 20× lower at 90,687 |
+
+Every branch figure is **flat in rows**: at 16,384 and 90,687 the list costs
+what it costs at 512, because GTK realizes about 205 rows whatever the model
+holds (A1, A93, A95). The worker query (D2, Risks) is 113 ms at 90,687 rows
+with a filter on both sides, off GTK, cancellable and superseded; it was not
+acted on further (the existing loading label covers the source build, and a
+query never blocks GTK).
+
+**Recorded toolkit-floor exceptions** (D6; each bounded by an enforced widget
+assertion at twice the measured worst, task 8.2,
+`notes_browser::test_browser_dispatches_stay_within_their_measured_bounds`):
+
+- **E1, the dialog's first frames: 47–76 ms with rows, 17–27 ms before them.**
+  The first frame lays out the dialog and the about 205 rows GTK realizes
+  for any model (A1, A90: revealing a list costs its realized rows, not its
+  model), then paints them with the test's software `cairo` renderer. It does
+  not grow with rows (`main`: 84–136 ms at 512, 3.7 s at 16,384, 21 s at
+  90,687). Bounds: until rows < 40 ms, first frames < 130 ms.
+- **E2, the relayout after a query that changes the shown rows: 22–23 ms.**
+  The publish itself is 2–3 ms (row objects retargeted in place, below); the
+  next frame measures the realized rows again because their text changed
+  (A1). Bound < 46 ms. `main`: 112 ms at 512, 0.3–4.7 s above.
+- **E3, closing the dialog: 26–34 ms.** Destroying the dialog with its
+  realized rows; `main` paid 25–40 ms at 512 and 377–407 ms with 20,000
+  editor bookmarks. Bound < 70 ms.
+
+### Decisions made while implementing
+
+- **A93 changed D2's publish twice, and the row objects are now cached.**
+  The spec assumed one `items-changed(0, old, new)` asks only for the realized
+  rows. The probe found GTK's list item manager, and a `GtkSingleSelection`
+  holding an item, ask for **every added item** (262,350 calls, 71 ms at
+  131,072). Removing then adding asks only around the realized rows. A
+  further measurement found that replacing a realized row object always tears
+  down its widget and builds a new one in the factory's `setup` (205 rows:
+  6–7 ms of setup plus about 9 ms of teardown, a 20 ms query publish). So
+  `NotesBrowserRowModel` keeps a weak map of the row objects it handed out by
+  position: a publish **retargets** the live ones below the shorter length in
+  place (`content-changed`, which the row and header factories listen to and
+  rebind on), and only the tail is removed or added. The query publish fell
+  from 20 ms to 2–3 ms. D2's "fresh object per call" fallback question is
+  answered both ways: GTK accepts fresh objects (A93), and the model reuses
+  them anyway, for speed. The map is pruned to live objects past 1,024 entries.
+- **Every emission matches what the model reports.** A first version swapped
+  in the new projection before emitting the removal, and GTK's list item
+  manager crashed (`gtk_rb_tree_node_get_previous` from
+  `gtk_list_item_manager_ensure_items`, also from `sections_changed` emitted
+  before a length change). The tail is now removed while the model lists the
+  old rows cut to the new length (`NoteSectionBounds::truncated`), or added
+  once it lists the new rows; `sections-changed` follows the length change.
+  `notes_browser::test_repeated_queries_over_realized_rows_republish_safely`
+  is the regression test.
+- **Grouping is a stable counting sort**, not "record bounds in the match
+  pass": the result equals the four-pass reference even if the source order
+  changes (property test), at the same linear cost on the worker.
+- **D4's `CapturePlan` was not introduced.** The palette keeps
+  `open_editor_note_snapshots_bounded` (its one-turn capture with its count);
+  the browser's sliced capture is a separate state machine in
+  `source_execution.rs` that shares the editor's new
+  `bookmark_record_slice`. Sorting moved off GTK as decided: the capture keeps
+  capture order and the worker's `complete()` already orders rows by label.
+  A restart rebuilds the `RetainedBudget` at the charge taken before the
+  editor (`list_budget.rs` unchanged, so `core-list-budget` needs no rerun).
+- **A test-only cap on capture units per turn**
+  (`set_notes_browser_budgets_for_test(text_bytes, units)`, one setter that
+  replaced `set_notes_browser_source_entry_limit_for_test`, so the
+  `*_for_test` count is unchanged). On the optimized build 20,000 bookmarks
+  fit one 4 ms turn; the cap makes "several turns" and "a change between
+  slices restarts the editor" deterministic. The clock-driven slice is
+  `turn_continues`, proved by Kani T1/T2.
+- **Byte cuts are no longer a status-bar warning.** The limit label states
+  them and raises the one polite announcement (D5); the source's
+  `source_limit_message`/`source_limit_status_message` copy left the mode
+  vocabulary. An empty source cut entirely says "No notes fit the memory
+  budget" (`notes_browser_empty_label`) rather than "No notes yet".
+- **Selection after a publish.** A programmatic publish no longer drives the
+  preview through the selection handler (a `publishing` guard; also off during
+  disposal), and a row still selected after a query keeps its preview without
+  reloading it.
+- **Pre-existing blockers fixed (preexisting-blockers rule).**
+  - The preview title of a kilobytes-long bookmark label was an
+    unellipsized single line, so the dialog requested tens of thousands of
+    pixels (`AdwFloatingSheet … exceeds AdwBreakpointBin width`); it now
+    ellipsizes, and the meta line wraps by word or character.
+  - `window::test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode`
+    failed 2 runs in 3 on the branch (0 in 8 on `main`; the timing moved). A
+    reattached editor view lost its kept line to two idles that read its first,
+    tiny allocation as "at the top": the top-edge clamp
+    (`overscroll.rs`) and the minimap reflow settle. The viewport rest state
+    now pauses while a reattached view holds its kept line and records the
+    real rest when the hold ends; the attach records "not at the top" for a
+    non-zero kept line; and both clamps stand down if the value moved since
+    they were scheduled. 10 of 10 runs pass.
+- **D3's `found_is_lower_bound`.** It is set when a sidecar scan, a parse
+  reservation, a construction charge or a section scope could not be
+  parsed, and under `Stop` whenever construction stops; under `SkipAndCount`
+  construction continues past each of them.
+- **Visual smoke (task 6.5)**, `notes-few`, `notes-dense` and
+  `notes-constrained` captured on both sides
+  (`build/smoke/visual/screenshots/` in each worktree). Fixed to match `main`:
+  the row icon and text insets (12 px spacing, 6 px start) and the section
+  title (`.heading`, not dimmed, 10 px start). **Recorded differences:** the
+  list starts about 18 px lower, because `GtkListView`'s header node carries
+  Adwaita's list-header padding where `AdwSidebar`'s first header is marked
+  `first`; and the preview's metadata line wraps by word or character
+  (`WordChar`, the pre-existing width fix above), so a long path breaks inside
+  a segment instead of only at spaces. Neither moves a control or hides text.
+- **Kani.** `model/list_budget.rs` did not change; `core-list-budget` was not
+  rerun (task 9.3). No new shard (D7).
 
 ## Open questions (answered by tasks, not by the reviewer)
 

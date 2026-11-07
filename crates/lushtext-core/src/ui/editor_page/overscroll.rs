@@ -159,7 +159,13 @@ impl LushtextEditorPage {
     /// being narrowed. When the user was already at the left edge, that
     /// preservation turns into a stale right-biased viewport, so clamp after the
     /// new allocation settles.
+    ///
+    /// As for the vertical clamp, a value that moved between the resize and
+    /// the idle is the user's (or a scroll the app made) and is kept.
     pub(crate) fn schedule_left_edge_horizontal_scroll_clamp(&self) {
+        let Some(scheduled_value) = self.source_view().hadjustment().map(|adj| adj.value()) else {
+            return;
+        };
         let editor_weak = self.downgrade();
         glib::idle_add_local_once(move || {
             let Some(editor) = editor_weak.upgrade() else {
@@ -168,6 +174,9 @@ impl LushtextEditorPage {
             let Some(adjustment) = editor.source_view().hadjustment() else {
                 return;
             };
+            if (adjustment.value() - scheduled_value).abs() > 0.5 {
+                return;
+            }
             let lower = adjustment.lower();
             if (adjustment.value() - lower).abs() > 0.5 {
                 adjustment.set_value(lower);
@@ -181,7 +190,18 @@ impl LushtextEditorPage {
     /// `AdwBottomSheet` overlays can shorten the visible editor without changing
     /// the document. When the user was already at the first line, GTK's preserved
     /// vertical adjustment should not leave line one clipped under the chrome.
+    ///
+    /// The clamp only undoes the value GTK preserved at the resize: if the
+    /// value moved between the resize and the idle (a scroll, or a reattached
+    /// view scrolling itself to its kept line, which also holds that line
+    /// while it lays out), the user is no longer at the top and the clamp
+    /// stands down. Clamping regardless sent a reattached tab back to line 0
+    /// when the reattach's first, tiny allocation was read as "at the top"
+    /// (`bound-notes-browser-by-budget`, found as a flaky widget test).
     pub(crate) fn schedule_top_edge_vertical_scroll_clamp(&self) {
+        let Some(scheduled_value) = self.source_view().vadjustment().map(|adj| adj.value()) else {
+            return;
+        };
         let editor_weak = self.downgrade();
         glib::idle_add_local_once(move || {
             let Some(editor) = editor_weak.upgrade() else {
@@ -190,6 +210,9 @@ impl LushtextEditorPage {
             let Some(adjustment) = editor.source_view().vadjustment() else {
                 return;
             };
+            if editor.holds_top_line() || (adjustment.value() - scheduled_value).abs() > 0.5 {
+                return;
+            }
             let lower = adjustment.lower();
             if (adjustment.value() - lower).abs() > 0.5 {
                 adjustment.set_value(lower);

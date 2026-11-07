@@ -116,6 +116,7 @@ proptest! {
                 scope_snapshot: scope.clone(),
                 open_editor_snapshots: Arc::from([]),
                 open_editor_snapshots_truncated: false,
+                open_editor_rows_not_retained: 0,
                 mode: NotesBrowserMode::AllNotes,
                 limits: lushtext_core::services::palette::PALETTE_NOTE_SOURCE_LIMITS,
             });

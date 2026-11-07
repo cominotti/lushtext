@@ -121,7 +121,9 @@ class Shard:
 MEASURED_IN = "runs 39448450712, 39464816359, 40770877859 (recomputed for the 2026-10-28 membership; max of the runs)"
 SHARDS: dict[str, Shard] = {
     "window": Shard(
-        modules=("window",),
+        # `notes_browser` (bound-notes-browser-by-budget) joined after the
+        # last CI measurement; its ten tests took about two minutes locally.
+        modules=("window", "notes_browser"),
         tests=(),
         ci_minutes=11.5,
         measured_in=MEASURED_IN,

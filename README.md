@@ -122,7 +122,9 @@ local history, and careful recovery behavior.
   preview-only support.
 - **Bookmarks and rich notes** for saved files and workspace folders, including
   gutter marks, labels, bookmark navigation, document notes, folder notes, and
-  a unified notes browser.
+  a unified notes browser that lists every note and bookmark (tens of
+  thousands and beyond) in sections, and says "Showing X of Y" only if a
+  memory budget leaves some out.
 - **Local history** for saved files, with automatic baseline, periodic, and
   save-boundary snapshots, a read-only preview browser, restore safety
   snapshots, and one-click undo of a restore.

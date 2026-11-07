@@ -21,7 +21,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{
     ActionRowExt, AdwApplicationWindowExt, AdwDialogExt, AlertDialogExt, AlertDialogExtManual,
-    ComboRowExt, PreferencesRowExt, SidebarItemExt,
+    ComboRowExt, PreferencesRowExt,
 };
 use lushtext_core::config::keys;
 use lushtext_core::model::action_catalog::{ActionScope, ActionValueType, ObservedAction};
@@ -92,7 +92,7 @@ use lushtext_core::ui::window::{
     set_local_history_preview_install_delay_for_test,
     set_local_history_preview_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
     set_next_draft_body_disposal_probe_for_test, set_note_source_delay_for_test,
-    set_notes_browser_query_delay_for_test, set_notes_browser_source_entry_limit_for_test,
+    set_notes_browser_budgets_for_test, set_notes_browser_query_delay_for_test,
     set_orphan_cleanup_delays_for_test, set_replace_reload_facts_delay_for_test,
     with_print_runner_for_test,
 };
@@ -164,7 +164,7 @@ impl Drop for NotesBrowserPolicyReset {
     fn drop(&mut self) {
         set_notes_browser_query_delay_for_test(0);
         set_note_source_delay_for_test(0);
-        set_notes_browser_source_entry_limit_for_test(10_000);
+        set_notes_browser_budgets_for_test(0, 0);
     }
 }
 
@@ -1422,13 +1422,6 @@ fn find_status_page(widget: &gtk4::Widget) -> Option<libadwaita::StatusPage> {
     }
 
     None
-}
-
-fn adw_sidebar_section_titles(sidebar: &libadwaita::Sidebar) -> Vec<String> {
-    (0..sidebar.sections().n_items())
-        .filter_map(|index| sidebar.section(index))
-        .filter_map(|section| section.title().map(|title| title.to_string()))
-        .collect()
 }
 
 fn has_tree_list_model_list_view(widget: &gtk4::Widget) -> bool {
@@ -3789,7 +3782,7 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
     let search_entry = find_search_entry(&child).expect("notes browser search entry");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     let preview_stack = find_notes_preview_stack(&child).expect("notes browser preview stack");
     assert_back_button_follows_split_collapsed(&child, "Back to Notes");
     assert!(crate::common::assert_monospace_widgets_registered("notes browser") > 0);
@@ -3806,7 +3799,7 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
             gtk4::AccessibleProperty::Label,
             gtk4::AccessibleProperty::Description,
         ])
-        .assert_on(&sidebar);
+        .assert_on(&sidebar.list_view);
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::Group)
         .properties(&[
@@ -4363,6 +4356,10 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     assert!(!window_snapshot.notes.active_document_file_backed);
     assert_eq!(window_snapshot.notes.active_document_bookmark_count, 0);
     assert!(!window_snapshot.notes.active_line_has_bookmark);
+    assert!(!window_snapshot.notes.browser_open);
+    assert_eq!(window_snapshot.notes.browser_row_count, 0);
+    assert_eq!(window_snapshot.notes.browser_rows_found, 0);
+    assert!(!window_snapshot.notes.browser_limited);
     assert!(!window_snapshot.local_history.active_document_file_backed);
     assert!(!window_snapshot.local_history.browse_available);
     assert!(!window_snapshot.local_history.automatic_capture_available);
@@ -17048,7 +17045,8 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let dialog_child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&dialog_child).expect("notes browser sidebar");
+    let sidebar =
+        crate::common::find_notes_browser_list(&dialog_child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(2), || {
         sidebar.item(0).is_some()
             && find_button_by_label(&dialog_child, "Open")
@@ -17058,7 +17056,7 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
             && action_enabled(&window, "open-notes-browser-selection")
     });
 
-    sidebar.emit_by_name::<()>("activated", &[&0u32]);
+    sidebar.activate(0u32);
     flush_events();
     assert!(
         visible_alert_dialog(&window).is_none(),
@@ -17528,7 +17526,7 @@ fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
     });
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     let search_entry = find_search_entry(&child).expect("notes browser search entry");
 
     set_notes_browser_query_delay_for_test(250);
@@ -17786,7 +17784,7 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
     assert_eq!(visible_sheet_dialog(&window).as_ref(), Some(&dialog));
     assert_eq!(dialog.title().as_str(), "Bookmarks");
     let child = dialog.child().expect("unified bookmark browser child");
-    let sidebar = find_adw_sidebar(&child).expect("unified bookmark sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("unified bookmark sidebar");
     assert_eq!(sidebar.items().n_items(), 1);
     assert_eq!(
         sidebar.item(0).and_then(|item| item.title()).as_deref(),
@@ -17808,15 +17806,19 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
 }
 
 #[test]
-fn test_notes_browser_reports_source_truncation_separately() {
+fn test_notes_browser_reports_a_text_cut_as_showing_x_of_y() {
     ensure_gtk_init();
     let _reset = NotesBrowserPolicyReset;
-    set_notes_browser_source_entry_limit_for_test(1);
+    // Room for the short note only: the long one is refused, skipped and
+    // counted, whatever order the sidecar scan takes.
+    set_notes_browser_budgets_for_test(3_000, 0);
     let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
-    for index in 0..2 {
+    for (index, body) in [
+        ("long", "x".repeat(4_096)),
+        ("short", "bounded body".to_string()),
+    ] {
         let path = left_folder.join(format!("bounded-note-{index}.md"));
         fixture::write_text(&path, "bounded\n");
-        let body = format!("bounded body {index}");
         document_note_service::save_for_path(
             &json_store::data_dir(),
             &path,
@@ -17833,14 +17835,14 @@ fn test_notes_browser_reports_source_truncation_separately() {
         window
             .notes_evidence()
             .browser
-            .is_some_and(|snapshot| snapshot.source_ready && snapshot.source_truncated)
+            .is_some_and(|snapshot| snapshot.source_ready && snapshot.listed_rows == 1)
     });
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
     wait_until(Duration::from_secs(10), || {
         find_label_by_text(
             &child,
-            "Some later notes were omitted because the source reached its safety limits.",
+            "Showing 1 of 2 notes and bookmarks. The rest exceed the memory budget.",
         )
         .is_some()
     });
@@ -17849,6 +17851,9 @@ fn test_notes_browser_reports_source_truncation_separately() {
         .browser
         .expect("browser runtime snapshot");
     assert_eq!(snapshot.source_entries, 1);
+    assert_eq!(snapshot.rows_found, 2);
+    assert!(snapshot.limited && snapshot.source_truncated);
+    assert_eq!(snapshot.limit_announcements, 1);
 }
 
 #[test]
@@ -17988,7 +17993,7 @@ fn test_notes_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(10), || {
         sidebar.items().n_items() == 1
             && window
@@ -18036,7 +18041,8 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let dialog_child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&dialog_child).expect("notes browser sidebar");
+    let sidebar =
+        crate::common::find_notes_browser_list(&dialog_child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
     assert_eq!(sidebar.items().n_items(), 1);
     assert_eq!(
@@ -18056,7 +18062,7 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
         Some("Open bookmark jump here")
     );
 
-    sidebar.emit_by_name::<()>("activated", &[&0u32]);
+    sidebar.activate(0u32);
     flush_events();
     assert!(
         visible_sheet_dialog(&window).is_some(),
@@ -18104,7 +18110,7 @@ fn test_notes_browser_renders_markdown_bookmark_excerpt() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
     wait_for_notes_preview_text(&child, "Target bookmark heading");
 
@@ -18271,7 +18277,7 @@ fn test_notes_browser_ignores_stale_bookmark_excerpt_completion() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
     wait_for_notes_preview_text(&child, "Loading bookmark preview...");
 
@@ -18327,7 +18333,7 @@ fn test_notes_browser_rapid_selection_keeps_one_active_and_one_latest_preview() 
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 4);
     wait_for_notes_preview_text(&child, "Loading bookmark preview...");
 
@@ -18420,7 +18426,7 @@ fn test_notes_browser_close_cancels_active_and_pending_preview_work() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
     wait_for_notes_preview_text(&child, "Loading bookmark preview...");
 
@@ -18476,7 +18482,7 @@ fn test_notes_browser_mode_switch_cancels_closed_file_preview_work() {
     });
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
     wait_for_notes_preview_text(&child, "Loading bookmark preview...");
 
@@ -18535,7 +18541,7 @@ fn test_notes_browser_search_ignores_bookmark_excerpt_text() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
     wait_for_notes_preview_text(&child, "needle-only-in-source-excerpt");
 
@@ -18574,7 +18580,7 @@ fn test_browse_notes_includes_fresh_live_bookmark_before_sidecar_save() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || {
         sidebar
             .item(0)
@@ -18621,7 +18627,7 @@ fn test_browse_notes_prefers_open_editor_bookmarks_over_stale_sidecar() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || {
         sidebar.items().n_items() == 1
             && sidebar
@@ -18677,9 +18683,9 @@ fn test_browse_notes_shows_open_tab_bookmark_without_workspace() {
         Some("Search Notes…")
     );
 
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
-    assert_eq!(adw_sidebar_section_titles(&sidebar), ["Open Tabs"]);
+    assert_eq!(sidebar.section_titles(), ["Open Tabs"]);
     let item = sidebar.item(0).expect("open tab bookmark item");
     assert_eq!(item.title().as_deref(), Some("Bookmark · Line 2"));
     assert!(
@@ -18717,9 +18723,9 @@ fn test_browse_notes_shows_open_tab_document_note_without_workspace() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
-    assert_eq!(adw_sidebar_section_titles(&sidebar), ["Open Tabs"]);
+    assert_eq!(sidebar.section_titles(), ["Open Tabs"]);
     assert_eq!(
         sidebar.item(0).and_then(|item| item.title()).as_deref(),
         Some("Document Note · outside-note.md")
@@ -18786,12 +18792,9 @@ fn test_browse_notes_keeps_scope_rows_strict_and_lists_other_open_workspace_tab(
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
-    assert_eq!(
-        adw_sidebar_section_titles(&sidebar),
-        ["Bookmarks", "Open Tabs"]
-    );
+    assert_eq!(sidebar.section_titles(), ["Bookmarks", "Open Tabs"]);
     assert_eq!(
         sidebar.item(0).and_then(|item| item.title()).as_deref(),
         Some("Bookmark · left scoped")
@@ -18837,13 +18840,13 @@ fn test_notes_browser_uses_folder_order_for_overlapping_primary_context() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
 
     let primary_context_prefix = format!("overlap · {} · ", parent_folder.display());
     let subtitles = (0..sidebar.items().n_items())
         .filter_map(|index| sidebar.item(index))
-        .filter_map(|item| item.subtitle().map(|subtitle| subtitle.to_string()))
+        .filter_map(|item| item.subtitle())
         .collect::<Vec<_>>();
     assert!(
         subtitles
@@ -18909,10 +18912,10 @@ fn test_notes_browser_preserves_configured_folder_note_order() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
 
-    assert_eq!(adw_sidebar_section_titles(&sidebar), ["Folder Notes"]);
+    assert_eq!(sidebar.section_titles(), ["Folder Notes"]);
     assert!(
         sidebar
             .item(0)
@@ -18966,7 +18969,7 @@ fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
 
     let dialog = visible_sheet_dialog(&window).expect("bookmark browser dialog");
     let child = dialog.child().expect("bookmark browser child");
-    let sidebar = find_adw_sidebar(&child).expect("bookmark browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("bookmark browser sidebar");
     wait_until(Duration::from_secs(10), || {
         sidebar
             .item(0)
@@ -19093,10 +19096,10 @@ fn test_notes_browser_back_navigates_and_close_dismisses_collapsed_preview() {
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
     let split_view = find_navigation_split_view(&child).expect("notes browser split view");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.item(0).is_some());
     split_view.set_collapsed(true);
-    sidebar.emit_by_name::<()>("activated", &[&0u32]);
+    sidebar.activate(0u32);
     flush_events();
     wait_until(Duration::from_secs(2), || {
         split_view.is_collapsed()
@@ -19187,7 +19190,8 @@ fn test_empty_notes_browser_opens_from_header_without_workspace_or_open_tab_rows
         "Browse Notes should present an explicit empty state even without workspaces"
     );
     assert!(
-        find_adw_sidebar(&child).is_some_and(|sidebar| sidebar.items().n_items() == 0),
+        crate::common::find_notes_browser_list(&child)
+            .is_some_and(|sidebar| sidebar.items().n_items() == 0),
         "no-workspace empty state should keep one empty bounded browser source"
     );
 }
@@ -19234,7 +19238,7 @@ fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 1);
     assert!(
         sidebar
@@ -19251,7 +19255,7 @@ fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
 }
 
 #[test]
-fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
+fn test_notes_browser_uses_a_sectioned_list_and_filters_note_body() {
     ensure_gtk_init();
     let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_folder.join("sectioned-notes.md");
@@ -19287,7 +19291,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(2), || {
         sidebar.items().n_items() == 3
             && action_enabled(&window, "set-notes-browser-query")
@@ -19297,7 +19301,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     let notes_browser_size = settled_widget_outer_size(&dialog);
 
     for index in 0u32..3 {
-        sidebar.emit_by_name::<()>("activated", &[&index]);
+        sidebar.activate(index);
         flush_events();
         assert!(
             visible_alert_dialog(&window).is_none(),
@@ -19314,10 +19318,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         );
     }
 
-    let section_titles: Vec<_> = (0..sidebar.sections().n_items())
-        .filter_map(|index| sidebar.section(index))
-        .filter_map(|section| section.title().map(|title| title.to_string()))
-        .collect();
+    let section_titles = sidebar.section_titles();
     assert_eq!(
         section_titles,
         ["Bookmarks", "Folder Notes", "Document Notes"],
@@ -19363,6 +19364,10 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     );
 
     let search_entry = find_search_entry(&child).expect("notes search entry");
+    // The rows are read where the user reads them: back on the list page of
+    // the collapsed layout (a virtualized list binds only the rows it shows).
+    split_view.set_show_content(false);
+    flush_events();
     activate_string_action(&window, "set-notes-browser-query", "document needle");
     wait_until(Duration::from_secs(2), || {
         search_entry.text().as_str() == "document needle" && sidebar.items().n_items() == 1
@@ -19431,7 +19436,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
 }
 
 #[test]
-fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
+fn test_notes_browser_lists_every_match_without_a_refine_notice() {
     ensure_gtk_init();
     let _reset = NotesBrowserPolicyReset;
     let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
@@ -19464,26 +19469,16 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
-    wait_until(Duration::from_secs(2), || sidebar.items().n_items() == 512);
+    let sidebar = crate::common::find_notes_browser_list(&child).expect("notes browser sidebar");
+    // `bound-notes-browser-by-budget`: no render cap; all 520 are listed and
+    // nothing asks the user to refine the search.
+    wait_until(Duration::from_secs(10), || sidebar.items().n_items() == 520);
     assert!(
-        find_label_by_text(
-            &child,
-            "Showing first 512 matches. Refine search to narrow results."
-        )
-        .is_some(),
-        "large note sets should explain that the sidebar result set is capped"
+        crate::common::labels_in(&child)
+            .iter()
+            .all(|label| !label.contains("Refine") && !label.starts_with("Showing")),
+        "an uncut source shows no limit notice"
     );
-    AccessibleAudit::new()
-        .role(gtk4::AccessibleRole::Status)
-        .properties(&[gtk4::AccessibleProperty::Label])
-        .assert_on(
-            &find_label_by_text(
-                &child,
-                "Showing first 512 matches. Refine search to narrow results.",
-            )
-            .expect("notes result-limit status"),
-        );
 
     let search_entry = find_search_entry(&child).expect("notes browser search entry");
     set_notes_browser_query_delay_for_test(250);
@@ -21272,7 +21267,8 @@ fn test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode() {
     });
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let dialog_child = dialog.child().expect("notes browser child");
-    let sidebar = find_adw_sidebar(&dialog_child).expect("notes browser sidebar");
+    let sidebar =
+        crate::common::find_notes_browser_list(&dialog_child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
     let row_open_button = sidebar
         .item(0)
@@ -21291,10 +21287,17 @@ fn test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode() {
     // Shown again, the view comes back at the bookmarked line.
     activate_action(&window, "toggle-preview-mode");
     flush_after_delay(Duration::from_millis(500));
-    wait_until(Duration::from_secs(10), || {
+    let shown = crate::common::wait_until_or_false(Duration::from_secs(10), || {
         bookmarked.view_shows_document() && bookmarked.visible_top_line().abs_diff(300) <= 40
     });
-    assert!(bookmarked.view_shows_document());
+    assert!(
+        shown,
+        "shows document {}, top line {}, cursor {:?}, active is bookmarked {}",
+        bookmarked.view_shows_document(),
+        bookmarked.visible_top_line(),
+        bookmarked.cursor_position(),
+        active_editor(&window) == bookmarked
+    );
 }
 
 #[test]
@@ -21388,3 +21391,4 @@ fn test_local_history_restore_of_a_large_markdown_body_installs_it_highlighted_i
         "every attach met at most one chunk: {attaches:?}"
     );
 }
+// Measurement-only (bound-notes-browser-by-budget task 1.1, baseline on main).

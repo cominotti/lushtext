@@ -600,9 +600,9 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/palette/notes.rs` | `NOTE_TEXT_CANCEL_CHECK_INTERVAL` | 1,024 | cap | power of two |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_ENTRIES` | 16,384 | presentation cap | up from 10,000: M12, 85.9-86.1 MiB vs main 62.5-62.8 (growth ratio 1.67), 17 ms (D12) |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_TEXT_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it palette notes are truncated (D12) |
-| `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_RETAINED_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it palette notes are truncated (D12) |
-| `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES` | 8,388,608 | presentation cap | up from 8,388,608: past it palette notes are truncated (D12) |
-| `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_CONSTRUCTION_BYTES` | 100,663,296 | derived | computed from named inputs; not rounded (D2) |
+| `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_RETAINED_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it palette notes are truncated (D12); also bounds Browse Notes' source, its second consumer (`bound-notes-browser-by-budget` D10) |
+| `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES` | 8,388,608 | presentation cap | up from 8,388,608: past it palette notes are truncated (D12); also bounds Browse Notes' source, its second consumer (`bound-notes-browser-by-budget` D10) |
+| `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_CONSTRUCTION_BYTES` | 100,663,296 | derived | computed from named inputs; not rounded (D2); also bounds Browse Notes' source, its second consumer (`bound-notes-browser-by-budget` D10) |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `NOTE_SIDECAR_MODEL_EXPANSION_MULTIPLIER` | 4 | out: factor | factor, divisor or unit (D1) |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES` | 65,536 | cap | power of two |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_DIAGNOSTICS` | 1,024 | presentation cap | up from 1,024: diagnostics the user is shown (D12) |
@@ -1151,6 +1151,10 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_WIDTH_SP` | 980 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_HEIGHT_SP` | 700 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_ROW_SPACING_SP` | 12 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_ROW_MARGIN_VERTICAL_SP` | 3 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_ROW_MARGIN_START_SP` | 6 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_HEADER_MARGIN_START_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
 
 ### `crates/lushtext-core/src/ui/window/notes/editor_execution.rs`
 
@@ -1165,13 +1169,11 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_RENDER_LIMIT` | 512 | presentation cap | up from 500: M6, worst dispatch 34-40 ms vs main 32-38 ms (D12) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SOURCE_ENTRY_LIMIT` | 16,384 | presentation cap | up from 10,000: M12 (palette note source, same admission engine) (D12) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SOURCE_TEXT_LIMIT` | 67,108,864 | presentation cap | up from 67,108,864: past it the browser source is truncated (D12) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SIDECAR_SCAN_LIMIT` | 16,384 | presentation cap | up from 10,000: M12; the 8 MiB sidecar-path ledger bounds it (D12) |
+| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SOURCE_TEXT_LIMIT` | 67,108,864 | presentation cap | up from 67,108,864: past it the browser source is truncated (D12); the browser's only text bound, no row count (`bound-notes-browser-by-budget` D3) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_DIAGNOSTIC_LIMIT` | 1,024 | presentation cap | up from 1,024: diagnostics the user is shown (D12) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT` | 16,384 | presentation cap | up from 10,000: M6, capture in the open action 9.4-13.4 ms within B_settle (D12) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT` | 4,194,304 | presentation cap | up from 4,194,304: past it open-editor notes are dropped (D12) |
+| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT` | 4,194,304 | presentation cap | up from 4,194,304: past it open-editor notes are dropped (D12); admitted by `RetainedBudget` in sliced turns, no count (`bound-notes-browser-by-budget` D4) |
+| `crates/lushtext-core/src/ui/window/notes/row_model.rs` | `LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`bound-notes-browser-by-budget`, Implementation decisions) |
+| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `OPEN_EDITOR_SNAPSHOT_SLICE_ROWS` | 256 | cap | bookmark records per capture unit before the turn clock is read; a 20,000-bookmark capture took 2.0–4.9 ms in one dispatch on `main` (0.10–0.25 µs per bookmark), so 256 is far inside the 4 ms slice (`bound-notes-browser-by-budget` D4, D10) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_SAVE_DEBOUNCE_MS` | 200 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `MAX_BOOKMARK_SAVE_ATTEMPTS` | 4 | retry budget | rounded up (D6) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS` | 80 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
