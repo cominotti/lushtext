@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A91 probe and sample (`bound-lists-by-budget-not-count`, stage 4 review):
+  collapsing a tree row removes its children in one synchronous call whose
+  cost grows with the children. New fixture `fixtures::a91`.
 - A87, A88, A89 and A90 probes and samples (`bound-lists-by-budget-not-count`):
   a presented list view pays a fixed cost per `items-changed` (so one splice
   undercuts single appends; an unrealized list does not walk its items), an

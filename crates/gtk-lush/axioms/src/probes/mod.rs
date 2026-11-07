@@ -87,6 +87,7 @@ pub(crate) mod a87;
 pub(crate) mod a88;
 pub(crate) mod a89;
 pub(crate) mod a90;
+pub(crate) mod a91;
 pub(crate) mod adaptive;
 pub(crate) mod composition;
 pub(crate) mod gsettings;
@@ -178,6 +179,7 @@ pub use a87::probe_a87;
 pub use a88::probe_a88;
 pub use a89::probe_a89;
 pub use a90::probe_a90;
+pub use a91::probe_a91;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);
