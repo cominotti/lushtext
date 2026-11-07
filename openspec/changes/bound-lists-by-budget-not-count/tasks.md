@@ -302,7 +302,8 @@ Rules for every task:
 rows instead of slicing splices (design, "Implementation decisions"). 3.8:
 retirement was measured at 18,000 matches (1.1–1.3 ms), not at a full 256 MiB
 budget. 8.3: the 5/4 bound is enforced by two widget tests; the comparison
-with `main`'s peak at `main`'s own worst case was not measured. 9.5:
+with `main`'s peak at `main`'s own worst case was not measured (stage 4
+review decision 5 in the design records why, and the structural argument). 9.5:
 `make performance-smoke` was not run in this stage; the Criterion case for the
 single-pass and two-pass scan is added and compiles (`tree_population/sidebar_scan`).
 
@@ -318,10 +319,24 @@ single-pass and two-pass scan is added and compiles (`tree_population/sidebar_sc
   inputs change. If task 4.4 touches a Kani-modelled function, rerun its
   shard as well.
 - [x] 9.4 `make gtk-axioms` (slow probes included, locally).
-- [ ] 9.5 `make accessibility-smoke`, `make visual-smoke` and
+- [x] 9.5 `make accessibility-smoke`, `make visual-smoke` and
   `make performance-smoke`, headless. Add a Criterion case for the
-  single-pass versus two-pass scan if it is not covered.
+  single-pass versus two-pass scan if it is not covered. *(Stage 4 review:
+  all three ran and passed on the final tree, 2026-11-06.)*
 - [x] 9.6 `cargo check -p lushtext --bins --locked` with default features
   (no smoke feature leaks), and
   `cargo bench --no-run --features test-utils`.
 - [x] 9.7 `openspec validate bound-lists-by-budget-not-count --strict`.
+
+## 10. Stage 4 review (2026-11-06)
+
+- [x] 10.1 Fix the CI findings: the rustdoc link in `probes/a89.rs`, the
+  Sonar wildcard import in `model/list_budget/kani_proofs.rs`, and the two
+  failures `main` already had (RUSTSEC-2026-0433, `pulldown-cmark` 0.13.6;
+  the Focus Mode zoom test's unsettled width).
+- [x] 10.2 Attribute the collapse of a large directory (`perf`), retire its
+  listing after the collapse in time-sliced low-priority turns, failing
+  first, and record the remaining toolkit floor with axiom A91.
+- [x] 10.3 Re-measure the sidebar verdicts interleaved with `main` (`m86`,
+  `m88`) and record the decisions on every open item in the design.
+
