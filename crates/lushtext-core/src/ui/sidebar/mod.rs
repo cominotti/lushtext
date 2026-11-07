@@ -108,8 +108,8 @@ use seams::SidebarFileRowStateSnapshot;
 
 #[cfg(feature = "test-utils")]
 pub use test_policy::{
-    set_workspace_load_worker_delay_for_test, set_workspace_placeholder_cleanup_delay_for_test,
-    set_workspace_rename_worker_delay_for_test,
+    set_sidebar_directory_retained_bytes_for_test, set_workspace_load_worker_delay_for_test,
+    set_workspace_placeholder_cleanup_delay_for_test, set_workspace_rename_worker_delay_for_test,
 };
 
 pub use file_tree_item::FileTreeItem;

@@ -23,6 +23,7 @@ static PREVIEW_SELECTION_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 static UNDO_BACKUP_DISK_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 static REPLACE_PREVIEW_MAX_ROWS: AtomicU64 = AtomicU64::new(0);
 static REPLACE_PREVIEW_MAX_BYTES: AtomicU64 = AtomicU64::new(0);
+static SEARCH_RETAINED_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// Test-only timing and limit overrides for the workspace search workflow.
 ///
@@ -43,6 +44,8 @@ pub struct SearchPanelTestPolicy {
     pub replace_preview_max_rows: u64,
     /// Replace All preview byte ceiling; zero keeps the production budget.
     pub replace_preview_max_bytes: u64,
+    /// Workspace search retained-byte budget; zero keeps the production budget.
+    pub search_retained_bytes: u64,
 }
 
 impl SearchPanelTestPolicy {
@@ -56,6 +59,7 @@ impl SearchPanelTestPolicy {
             undo_backup_disk_delay: load_delay(&UNDO_BACKUP_DISK_DELAY_MS),
             replace_preview_max_rows: REPLACE_PREVIEW_MAX_ROWS.load(Ordering::Acquire),
             replace_preview_max_bytes: REPLACE_PREVIEW_MAX_BYTES.load(Ordering::Acquire),
+            search_retained_bytes: SEARCH_RETAINED_BYTES.load(Ordering::Acquire),
         }
     }
 
@@ -67,6 +71,7 @@ impl SearchPanelTestPolicy {
         store_delay(&UNDO_BACKUP_DISK_DELAY_MS, self.undo_backup_disk_delay);
         REPLACE_PREVIEW_MAX_ROWS.store(self.replace_preview_max_rows, Ordering::Release);
         REPLACE_PREVIEW_MAX_BYTES.store(self.replace_preview_max_bytes, Ordering::Release);
+        SEARCH_RETAINED_BYTES.store(self.search_retained_bytes, Ordering::Release);
     }
 
     /// Restore the production posture: no delays and no budget overrides.
@@ -105,6 +110,22 @@ impl SearchPanelTestPolicy {
         self.replace_preview_max_bytes = max_bytes;
         self
     }
+}
+
+impl SearchPanelTestPolicy {
+    /// Override the workspace search retained-byte budget; zero restores
+    /// production.
+    #[must_use]
+    pub const fn with_search_retained_bytes(mut self, bytes: u64) -> Self {
+        self.search_retained_bytes = bytes;
+        self
+    }
+}
+
+/// The overridden search retained-byte budget, when a test installed one.
+pub(super) fn search_retained_bytes_override() -> Option<u64> {
+    let bytes = SEARCH_RETAINED_BYTES.load(Ordering::Acquire);
+    (bytes > 0).then_some(bytes)
 }
 
 fn load_delay(cell: &AtomicU64) -> Duration {

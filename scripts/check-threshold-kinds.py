@@ -29,8 +29,11 @@ This check:
 6. checks a `presentation cap` (design D12: a cap on what the user sees or
    gets, never rounded down) against the former value its row records as
    `up from <value>`: the constant must be the power of two at or above it, or,
-   for `presentation cap, exception`, that value exactly. The retired kind
-   `text cap` is refused (its rows are presentation caps).
+   for `presentation cap, exception`, that value exactly. The former value may
+   also name a constant (`up from MAIN_WORST_RETENTION`), resolved like a
+   reference in an expression: a byte budget sized from a `derived` floor
+   (`bound-lists-by-budget-not-count` D3). The retired kind `text cap` is
+   refused (its rows are presentation caps).
 
 Out-of-scope rows name their D1 class as `out: <class>`; they need no `Kind:`
 line and may hold any value.
@@ -447,7 +450,7 @@ def pow2_at_or_above(v: int) -> int:
     return 1 if v <= 1 else 1 << (v - 1).bit_length()
 
 
-UP_FROM = re.compile(r"\bup from\s+(-?[\d,]+)")
+UP_FROM = re.compile(r"\bup from\s+`?(-?[\d,]+|[A-Z][A-Z0-9_]*)`?")
 
 
 def split_kind(kind: str) -> tuple[str, bool]:
@@ -515,7 +518,21 @@ def check(root: Path) -> list[str]:
                     f"`up from <value>` (its former value)"
                 )
             elif c.value is not None:
-                former = int(up.group(1).replace(",", ""))
+                token = up.group(1)
+                if token[0].isdigit() or token[0] == "-":
+                    former = int(token.replace(",", ""))
+                else:
+                    named = by_key.get((c.path, token))
+                    if named is None:
+                        unique = [k for k in consts if k.name == token]
+                        named = unique[0] if len(unique) == 1 else None
+                    if named is None or named.value is None:
+                        errors.append(
+                            f"{INVENTORY}:{r.line}: `{r.name}` is up from `{token}`, which names no "
+                            f"evaluable constant"
+                        )
+                        continue
+                    former = named.value
                 want_value = former if exc else pow2_at_or_above(former)
                 if c.value != want_value:
                     if exc:
@@ -599,6 +616,15 @@ pub const DERIVED: usize = GOOD_CAP / 3 + attach_threshold::JSON;
 
 pub const PADDING_PX: i32 = 24;
 
+/// Kind: derived.
+pub const WORST_RETENTION: u64 = 16_384 * 14_336;
+
+/// Kind: coverage window.
+pub const MATCH_FIXED_CHARGE: u64 = 2_048;
+
+/// Kind: presentation cap; up from `WORST_RETENTION`.
+pub const RESULTS_RETAINED_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Kind: presentation cap; up from 10,000.
 pub const SHOWN_CAP: usize = 16_384;
 
@@ -624,6 +650,9 @@ FIXTURE_INVENTORY = """\
 | `crates/demo/src/lib.rs` | `typing_threshold::JSON` | 20,480 | cap, exception | measured loss |
 | `crates/demo/src/lib.rs` | `DERIVED` | 27,306 | derived | GOOD_CAP / 3 + JSON |
 | `crates/demo/src/lib.rs` | `PADDING_PX` | 24 | out: geometry | |
+| `crates/demo/src/lib.rs` | `WORST_RETENTION` | 234,881,024 | derived | main's worst case |
+| `crates/demo/src/lib.rs` | `MATCH_FIXED_CHARGE` | 2,048 | coverage window | measured, rounded up |
+| `crates/demo/src/lib.rs` | `RESULTS_RETAINED_BYTES` | 268,435,456 | presentation cap | up from WORST_RETENTION |
 | `crates/demo/src/lib.rs` | `SHOWN_CAP` | 16,384 | presentation cap | up from 10,000 |
 | `crates/demo/src/lib.rs` | `SHOWN_EXC` | 10,000 | presentation cap, exception | up from 10,000; 16,384 measured over budget |
 """
@@ -746,6 +775,34 @@ def self_test() -> int:
         FIXTURE_LIB.replace("/// Kind: cap.\npub const GOOD_CAP", "/// Kind: text cap.\npub const GOOD_CAP"),
         FIXTURE_INVENTORY.replace("| 8,192 | cap |", "| 8,192 | text cap |"),
         "`text cap` is retired",
+    )
+    # bound-lists-by-budget-not-count task 5.1: a byte budget sized from a
+    # derived floor, a missing fixed-charge row, and a removed count cap.
+    run(
+        "a byte budget below its derived floor",
+        FIXTURE_LIB.replace("RESULTS_RETAINED_BYTES: u64 = 256 * 1024 * 1024;", "RESULTS_RETAINED_BYTES: u64 = 128 * 1024 * 1024;"),
+        FIXTURE_INVENTORY.replace("| 268,435,456 | presentation cap |", "| 134,217,728 | presentation cap |"),
+        "`RESULTS_RETAINED_BYTES` = 134,217,728 is a presentation cap up from 234,881,024, so it must be 268,435,456",
+    )
+    run(
+        "a byte budget up from a name that is no constant",
+        FIXTURE_LIB,
+        FIXTURE_INVENTORY.replace("| up from WORST_RETENTION |", "| up from NO_SUCH_FLOOR |"),
+        "`RESULTS_RETAINED_BYTES` is up from `NO_SUCH_FLOOR`, which names no evaluable constant",
+    )
+    run(
+        "a missing fixed-charge row",
+        FIXTURE_LIB,
+        FIXTURE_INVENTORY.replace(
+            "| `crates/demo/src/lib.rs` | `MATCH_FIXED_CHARGE` | 2,048 | coverage window | measured, rounded up |\n", ""
+        ),
+        "`MATCH_FIXED_CHARGE` = 2,048 is not listed",
+    )
+    run(
+        "a removed count cap's row left behind",
+        FIXTURE_LIB,
+        FIXTURE_INVENTORY + "| `crates/demo/src/lib.rs` | `RESULT_CAP` | 16,384 | presentation cap | up from 10,000 |\n",
+        "stale row `crates/demo/src/lib.rs` `RESULT_CAP`",
     )
     if failures:
         return 1

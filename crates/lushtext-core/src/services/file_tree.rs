@@ -51,17 +51,33 @@ impl PartialOrd for DirectoryEntry {
     }
 }
 
+/// The synthetic row that may end a materialized directory listing
+/// (`bound-lists-by-budget-not-count` D6).
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DirectoryPlaceholder {
+    /// The retained-byte budget cut the listing: `shown` of `total` visible
+    /// entries are listed, the first `shown` in sort order.
+    Budget {
+        /// Entries listed above the row.
+        shown: usize,
+        /// Visible entries the scan examined.
+        total: usize,
+    },
+    /// Rows are still being applied in time-sliced batches.
+    Loading,
+}
+
 /// Plain projection retained for one materialized GTK child store.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DirectoryRowState {
-    /// Filesystem path for a real row; absent only for the truncation placeholder.
+    /// Filesystem path for a real row; absent only for a placeholder row.
     pub path: Option<PathBuf>,
     /// Whether a real row represents a directory.
     pub is_dir: bool,
     /// Bounded empty-directory hint copied from the accepted scan.
     pub is_empty: Option<bool>,
-    /// Whether this row is the synthetic truncation placeholder.
-    pub is_placeholder: bool,
+    /// The synthetic row this is, if it is one.
+    pub placeholder: Option<DirectoryPlaceholder>,
 }
 
 impl DirectoryRowState {
@@ -72,19 +88,25 @@ impl DirectoryRowState {
             path: Some(entry.path),
             is_dir: entry.is_dir,
             is_empty: entry.is_empty,
-            is_placeholder: false,
+            placeholder: None,
         }
     }
 
-    /// Build the single synthetic row appended after a truncated scan.
+    /// The synthetic row `placeholder` ends a listing with.
     #[must_use]
-    pub const fn truncation_placeholder() -> Self {
+    pub const fn placeholder_row(placeholder: DirectoryPlaceholder) -> Self {
         Self {
             path: None,
             is_dir: false,
             is_empty: None,
-            is_placeholder: true,
+            placeholder: Some(placeholder),
         }
+    }
+
+    /// Whether this is a synthetic row rather than a filesystem entry.
+    #[must_use]
+    pub const fn is_placeholder(&self) -> bool {
+        self.placeholder.is_some()
     }
 }
 
@@ -172,7 +194,8 @@ pub struct DirectoryScan {
     pub retained_bytes: u64,
     /// Largest conservatively charged heap weight during selection.
     pub peak_retained_bytes: u64,
-    /// True if the directory had more entries than `max_entries`.
+    /// True if the directory had more entries than `max_entries`, or than
+    /// the retained-byte budget admits.
     pub truncated: bool,
     /// True when the caller-supplied scratch-byte ceiling omitted an entry.
     pub byte_truncated: bool,
@@ -392,6 +415,202 @@ where
     }
 }
 
+/// How a sidebar scan charges a retained row (`bound-lists-by-budget-not-count`
+/// D3): the entry's graph weight once per path copy the sidebar keeps, plus a
+/// fixed charge for its item, row and cache entries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SidebarScanBudget {
+    /// The directory's retained-byte budget.
+    pub retained_bytes: u64,
+    /// Path copies charged per row.
+    pub path_copies: u64,
+    /// Bytes charged per row beyond its path copies.
+    pub row_fixed_charge: u64,
+}
+
+impl SidebarScanBudget {
+    /// The charge of one row whose path has `graph_bytes` of graph weight.
+    #[must_use]
+    pub const fn row_charge(self, graph_bytes: u64) -> u64 {
+        graph_bytes
+            .saturating_mul(self.path_copies)
+            .saturating_add(self.row_fixed_charge)
+    }
+}
+
+/// Scan one sidebar directory against a retained-byte budget, with no entry
+/// count cap (`bound-lists-by-budget-not-count` D6).
+///
+/// A directory that fits the budget is scanned **once**: every entry is
+/// retained in that pass. Only when the running charge overflows does the scan
+/// fall back to the deterministic two-pass top-k selection of
+/// [`scan_directory_bounded_with_cancel_and_bytes`], and the overflowing pass
+/// itself serves as its first, scalar pass (count and largest graph weight),
+/// so an over-budget directory costs two passes, never three. Either way the
+/// result is the first entries in sort order: all of them, or the prefix the
+/// budget admits (`truncated`), with `examined_entries` the visible total.
+pub fn scan_sidebar_directory<F>(
+    dir_path: &Path,
+    budget: SidebarScanBudget,
+    lookahead_cap: usize,
+    mut is_cancelled: F,
+    visibility: &WorkspaceEntryVisibility,
+) -> DirectoryScan
+where
+    F: FnMut() -> bool,
+{
+    let mut entries: Vec<DirectoryEntry> = Vec::new();
+    let mut charged = 0u64;
+    let mut overflowed = false;
+    let mut cancelled = false;
+    let mut examined_entries = 0usize;
+    let mut maximum_graph_bytes = 0u64;
+    let mut dirs_checked = 0usize;
+    let mut peak_retained_bytes = 0u64;
+
+    let scan = fs_tree::visit_directory_with_visibility(
+        dir_path,
+        DirectoryScanPolicy::visible_workspace(),
+        visibility,
+        |entry| {
+            if is_cancelled() {
+                cancelled = true;
+                return false;
+            }
+            let is_dir = match entry.kind {
+                FileKind::Directory => true,
+                FileKind::File => false,
+                FileKind::Other => return true,
+            };
+            examined_entries = examined_entries.saturating_add(1);
+            let graph_bytes = directory_path_graph_bytes(&entry.path);
+            maximum_graph_bytes = maximum_graph_bytes.max(graph_bytes);
+            if overflowed {
+                return true;
+            }
+            let next = charged.saturating_add(budget.row_charge(graph_bytes));
+            if next > budget.retained_bytes {
+                // Switch to the scalar first pass of the two-pass selection.
+                overflowed = true;
+                entries = Vec::new();
+                return true;
+            }
+            charged = next;
+            peak_retained_bytes = peak_retained_bytes.max(charged);
+            let mut is_empty = None;
+            if is_dir && dirs_checked < lookahead_cap {
+                dirs_checked = dirs_checked.saturating_add(1);
+                is_empty = Some(is_dir_empty(&entry.path, visibility));
+            }
+            entries.push(DirectoryEntry {
+                path: entry.path,
+                is_dir,
+                is_empty,
+            });
+            true
+        },
+    );
+    if let Err(error) = scan {
+        let message = format!("Cannot read {}: {}", dir_path.display(), error);
+        tracing::warn!("{message}");
+        return DirectoryScan {
+            examined_entries,
+            error: Some(message),
+            ..DirectoryScan::default()
+        };
+    }
+    if cancelled {
+        return DirectoryScan {
+            examined_entries,
+            cancelled: true,
+            ..DirectoryScan::default()
+        };
+    }
+    if !overflowed {
+        entries.sort_unstable();
+        let retained = entries.len();
+        return DirectoryScan {
+            entries,
+            examined_entries,
+            peak_retained_entries: retained,
+            retained_bytes: charged,
+            peak_retained_bytes,
+            truncated: false,
+            byte_truncated: false,
+            cancelled: false,
+            error: None,
+        };
+    }
+
+    // Second pass: the deterministic top-k, every row charged at the largest
+    // row charge the first pass saw, so the result does not depend on the
+    // order the backend enumerates entries in.
+    let mut selector = BoundedDirectorySelector::with_row_charge(
+        examined_entries,
+        usize::MAX,
+        budget.retained_bytes,
+        maximum_graph_bytes,
+        budget.row_charge(maximum_graph_bytes).max(1),
+    );
+    let mut dirs_checked = 0usize;
+    let scan = fs_tree::visit_directory_with_visibility(
+        dir_path,
+        DirectoryScanPolicy::visible_workspace(),
+        visibility,
+        |entry| {
+            if is_cancelled() {
+                cancelled = true;
+                return false;
+            }
+            let is_dir = match entry.kind {
+                FileKind::Directory => true,
+                FileKind::File => false,
+                FileKind::Other => return true,
+            };
+            let mut is_empty = None;
+            if is_dir && dirs_checked < lookahead_cap {
+                dirs_checked = dirs_checked.saturating_add(1);
+                is_empty = Some(is_dir_empty(&entry.path, visibility));
+            }
+            selector.consider(DirectoryEntry {
+                path: entry.path,
+                is_dir,
+                is_empty,
+            });
+            true
+        },
+    );
+    if let Err(error) = scan {
+        let message = format!("Cannot read {}: {}", dir_path.display(), error);
+        tracing::warn!("{message}");
+        return DirectoryScan {
+            examined_entries,
+            error: Some(message),
+            ..DirectoryScan::default()
+        };
+    }
+    if cancelled {
+        return DirectoryScan {
+            examined_entries,
+            cancelled: true,
+            ..DirectoryScan::default()
+        };
+    }
+    let selection = selector.finish();
+    let truncated = selection.entries.len() < examined_entries;
+    DirectoryScan {
+        entries: selection.entries,
+        examined_entries,
+        peak_retained_entries: selection.peak_retained_entries,
+        retained_bytes: selection.retained_bytes,
+        peak_retained_bytes: selection.peak_retained_bytes,
+        truncated,
+        byte_truncated: truncated,
+        cancelled: false,
+        error: None,
+    }
+}
+
 fn scan_directory_without_byte_limit<F>(
     dir_path: &Path,
     max_entries: usize,
@@ -517,6 +736,23 @@ impl BoundedDirectorySelector {
         let row_charge = retained_u64(std::mem::size_of::<DirectoryEntry>())
             .saturating_add(maximum_graph_bytes)
             .max(1);
+        Self::with_row_charge(
+            eligible_entries,
+            max_entries,
+            max_retained_bytes,
+            maximum_graph_bytes,
+            row_charge,
+        )
+    }
+
+    /// A selector charging every retained row `row_charge` bytes.
+    fn with_row_charge(
+        eligible_entries: usize,
+        max_entries: usize,
+        max_retained_bytes: u64,
+        maximum_graph_bytes: u64,
+        row_charge: u64,
+    ) -> Self {
         let byte_capacity = usize::try_from(max_retained_bytes / row_charge).unwrap_or(usize::MAX);
         let desired_capacity = eligible_entries.min(max_entries);
         let capacity = desired_capacity.min(byte_capacity);
@@ -663,7 +899,7 @@ mod tests {
             path: Some(PathBuf::from(name.into())),
             is_dir: false,
             is_empty: None,
-            is_placeholder: false,
+            placeholder: None,
         }
     }
 
@@ -688,6 +924,75 @@ mod tests {
             current.splice(position..position + removed, replacement);
         }
         current
+    }
+
+    fn sidebar_budget(retained_bytes: u64) -> SidebarScanBudget {
+        SidebarScanBudget {
+            retained_bytes,
+            path_copies: 8,
+            row_fixed_charge: 1_024,
+        }
+    }
+
+    /// A directory that fits its budget is scanned in one pass and listed in
+    /// full, in sort order, with its visible total.
+    #[test]
+    fn a_sidebar_directory_within_its_budget_is_listed_in_full() {
+        let dir = TempDir::new().expect("tempdir");
+        for index in (0..300).rev() {
+            fixture::write_text(&dir.path().join(format!("f{index:03}")), "");
+        }
+        fixture::create_dir_all(&dir.path().join("zdir"));
+        let scan = scan_sidebar_directory(
+            dir.path(),
+            sidebar_budget(u64::MAX),
+            8,
+            || false,
+            &visibility(),
+        );
+        assert!(!scan.truncated && !scan.byte_truncated);
+        assert_eq!(scan.examined_entries, 301);
+        assert_eq!(scan.entries.len(), 301);
+        let full = scan_directory(dir.path());
+        assert_eq!(names(&scan.entries), names(&full));
+        assert_eq!(names(&scan.entries)[0], "zdir", "directories first");
+    }
+
+    /// Past its budget the scan keeps a deterministic prefix of the sorted
+    /// listing, the same on every run, and reports the visible total.
+    #[test]
+    fn a_sidebar_directory_past_its_budget_keeps_a_sorted_prefix() {
+        let dir = TempDir::new().expect("tempdir");
+        for index in 0..500 {
+            fixture::write_text(&dir.path().join(format!("f{index:03}")), "");
+        }
+        let full = names(&scan_directory(dir.path()));
+        let budget = sidebar_budget(64 * 1024);
+        let first = scan_sidebar_directory(dir.path(), budget, 8, || false, &visibility());
+        let second = scan_sidebar_directory(dir.path(), budget, 8, || false, &visibility());
+        assert!(first.truncated && first.byte_truncated);
+        assert_eq!(first.examined_entries, 500);
+        let kept = names(&first.entries);
+        assert!(!kept.is_empty() && kept.len() < 500);
+        assert_eq!(kept, full[..kept.len()].to_vec(), "a prefix in sort order");
+        assert_eq!(kept, names(&second.entries), "deterministic");
+        let charge = budget.row_charge(directory_path_graph_bytes(&first.entries[0].path));
+        assert!(kept.len() as u64 * charge <= budget.retained_bytes);
+    }
+
+    #[test]
+    fn a_cancelled_sidebar_scan_reports_cancellation() {
+        let dir = TempDir::new().expect("tempdir");
+        fixture::write_text(&dir.path().join("a"), "");
+        let scan = scan_sidebar_directory(
+            dir.path(),
+            sidebar_budget(u64::MAX),
+            8,
+            || true,
+            &visibility(),
+        );
+        assert!(scan.cancelled);
+        assert!(scan.entries.is_empty());
     }
 
     #[test]

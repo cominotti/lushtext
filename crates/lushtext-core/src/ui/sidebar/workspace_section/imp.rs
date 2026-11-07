@@ -138,6 +138,18 @@ pub struct RefreshRuntimeState {
     pub cache_rebuild_input_rows: Cell<usize>,
     /// Plain map/row operations in that terminal child-cache replacement.
     pub cache_rebuild_operations: Cell<usize>,
+    /// Full child-cache rebuilds a batch splice fell back to because the
+    /// caches disagreed with their mirror; zero in every normal flow.
+    pub cache_full_rebuilds: Cell<u64>,
+    /// Cache resets because a new live store took over a directory, each
+    /// costing the previous store's rows once.
+    pub cache_owner_resets: Cell<u64>,
+    /// Largest cache operation count one applied batch performed.
+    pub cache_batch_operations_high_water: Cell<usize>,
+    /// Largest number of row batches one GTK turn applied.
+    pub reconcile_max_batches_per_turn: Cell<usize>,
+    /// Wall time of the latest reconciliation terminal, microseconds.
+    pub reconcile_last_terminal_us: Cell<u64>,
     /// Largest active scan count observed for any one materialized store.
     pub scan_active_per_store_high_water: Cell<usize>,
     /// Largest pending request count observed for any one materialized store.
@@ -342,6 +354,12 @@ pub struct LushtextWorkspaceSection {
     pub folder_paths: RefCell<Vec<PathBuf>>,
     /// Ordered child paths per parent directory.
     pub child_paths: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    /// The child store whose rows each parent's path caches project. A
+    /// directory can have more than one store at once (GTK's expander probes
+    /// `is_expandable()` with a store it discards, A22), so per-batch cache
+    /// maintenance follows only the live, owning store
+    /// (`bound-lists-by-budget-not-count` D6).
+    pub child_cache_owners: RefCell<HashMap<PathBuf, usize>>,
     /// Visible path occurrence counts across top-level and child rows.
     ///
     /// Overlapping workspace folders can show the same path in more than one

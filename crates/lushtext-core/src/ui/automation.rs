@@ -1086,6 +1086,8 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
         reveal_status: reveal_status.as_str().to_string(),
         reveal_generation: evidence.reveal_generation,
         reveal_depth: evidence.reveal_depth,
+        limited_directory_count: bounded_len(evidence.limited_directory_count),
+        loading_directory_count: bounded_len(evidence.loading_directory_count),
     }
 }
 
@@ -1209,6 +1211,8 @@ fn content_search_snapshot(window: &LushtextWindow) -> AutomationContentSearchSn
         file_count: evidence.file_count,
         match_count: evidence.match_count,
         result_capped: evidence.result_capped,
+        retained_match_count: evidence.retained_matches,
+        matches_found: u32::try_from(evidence.matches_found).unwrap_or(u32::MAX),
         replace_query_present: !evidence.replace_query.is_empty(),
         replace_preview_mode: evidence.replace_preview_mode,
         replace_preview_pending: evidence.replace_preview_pending,

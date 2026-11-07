@@ -161,8 +161,8 @@ fn file_tree_row_description(
     tree_row: &gtk4::TreeListRow,
     section: &super::LushtextWorkspaceSection,
 ) -> String {
-    if file_item.is_placeholder() {
-        return "Additional children are hidden by the sidebar scan limit".to_string();
+    if let Some(placeholder) = file_item.placeholder() {
+        return placeholder_row_description(placeholder).to_string();
     }
 
     let mut parts = Vec::new();
@@ -205,4 +205,54 @@ fn file_tree_row_description(
     }
 
     parts.join(". ")
+}
+
+/// The accessible description of a placeholder row of `placeholder`.
+fn placeholder_row_description(
+    placeholder: crate::services::file_tree::DirectoryPlaceholder,
+) -> &'static str {
+    match placeholder {
+        crate::services::file_tree::DirectoryPlaceholder::Budget { .. } => {
+            crate::ui::sidebar::policy::budget_row_description()
+        }
+        crate::services::file_tree::DirectoryPlaceholder::Loading => {
+            crate::ui::sidebar::policy::loading_row_description()
+        }
+    }
+}
+
+impl super::LushtextWorkspaceSection {
+    /// Re-project a placeholder row whose label changed (the loading row's
+    /// progress, at most once per turn): its visible label and accessible
+    /// name, on the realized row that shows it, if any. Never announced.
+    pub(super) fn refresh_placeholder_row_accessibility(&self, item: &FileTreeItem) {
+        let Some(placeholder) = item.placeholder() else {
+            return;
+        };
+        super::for_each_realized_file_row_overlay(self, |overlay| {
+            let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>() else {
+                return;
+            };
+            if expander.item().and_downcast::<FileTreeItem>().as_ref() != Some(item) {
+                return;
+            }
+            let label = expander
+                .child()
+                .and_downcast::<gtk4::Box>()
+                .and_then(|content| content.first_child())
+                .and_then(|handle| handle.next_sibling())
+                .and_then(|indicator| indicator.next_sibling())
+                .and_then(|icon| icon.next_sibling())
+                .and_downcast::<gtk4::Label>();
+            if let Some(label) = label {
+                label.set_use_markup(false);
+                label.set_label(&item.name());
+            }
+            accessibility::set_labelled_description(
+                &overlay,
+                &item.name(),
+                placeholder_row_description(placeholder),
+            );
+        });
+    }
 }

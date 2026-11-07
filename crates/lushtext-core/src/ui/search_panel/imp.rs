@@ -58,7 +58,7 @@ pub struct SearchRuntimeState {
     /// Root-level model: contains one file-header row per matching file.
     pub root_store: RefCell<gio::ListStore>,
     /// Per-file child stores keyed by absolute file path.
-    pub file_groups: RefCell<BTreeMap<PathBuf, SearchFileGroup>>,
+    pub file_groups: RefCell<BTreeMap<std::sync::Arc<std::path::Path>, SearchFileGroup>>,
     /// Plain match data in arrival order for non-rendering workflows.
     ///
     /// Preview generation must not walk GTK tree models on the action path;
@@ -108,8 +108,16 @@ pub struct SearchRuntimeState {
     pub total_files: Cell<u32>,
     /// Whether a search is currently active (worker thread + polling timer alive).
     pub searching: Cell<bool>,
-    /// Whether the 10k result cap was reached for the current search.
+    /// Whether the retained-byte budget cut the current search's results.
     pub result_capped: Cell<bool>,
+    /// Matches found by the current search, retained or not (`BeyondBudget`,
+    /// `Done`); equals `total_matches` while the budget has not cut.
+    pub matches_found: Cell<usize>,
+    /// Events received by the turn that revealed the current results.
+    pub reveal_turn_events: Cell<usize>,
+    /// The last turn that applied matches: (matches, child-store splices,
+    /// root-store splices).
+    pub last_match_batch: Cell<(usize, usize, usize)>,
     /// Last progress count forwarded to the window for approximate completion totals.
     pub last_progress_count: Cell<usize>,
 }
@@ -144,6 +152,9 @@ impl Default for SearchRuntimeState {
             total_files: Cell::new(0),
             searching: Cell::new(false),
             result_capped: Cell::new(false),
+            matches_found: Cell::new(0),
+            reveal_turn_events: Cell::new(0),
+            last_match_batch: Cell::new((0, 0, 0)),
             last_progress_count: Cell::new(0),
         }
     }
@@ -217,7 +228,7 @@ pub struct SearchNavigationState {
     /// Visible tree rows for each navigation target, captured when rows are appended.
     pub match_rows: RefCell<Vec<Option<gtk4::TreeListRow>>>,
     /// File-header rows keyed by absolute file path for direct child-row lookup.
-    pub file_rows: RefCell<BTreeMap<PathBuf, gtk4::TreeListRow>>,
+    pub file_rows: RefCell<BTreeMap<std::sync::Arc<std::path::Path>, gtk4::TreeListRow>>,
     /// Current position in `match_positions` for wraparound navigation.
     pub current_match_index: Cell<Option<usize>>,
 }
@@ -347,6 +358,10 @@ pub struct LushtextSearchPanel {
     pub callbacks: SearchCallbacks,
     /// Throttles spoken workspace-search result summaries.
     pub results_announcement_throttler: accessibility::AnnouncementThrottler,
+    /// The result rows the list currently has bound, keyed by list item, so a
+    /// mode switch re-projects only them (`list_factory::rebind_bound_result_rows`).
+    pub bound_result_items:
+        RefCell<std::collections::HashMap<usize, glib::WeakRef<gtk4::ListItem>>>,
 }
 
 impl Default for LushtextSearchPanel {
@@ -420,6 +435,7 @@ impl Default for LushtextSearchPanel {
             navigation: SearchNavigationState::default(),
             callbacks: SearchCallbacks::default(),
             results_announcement_throttler: accessibility::AnnouncementThrottler::default(),
+            bound_result_items: RefCell::new(std::collections::HashMap::new()),
         }
     }
 }

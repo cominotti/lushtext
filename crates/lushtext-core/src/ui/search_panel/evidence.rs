@@ -69,8 +69,20 @@ pub struct SearchPanelEvidence {
     pub match_count: u32,
     /// Files with at least one match in the current search.
     pub file_count: u32,
-    /// Whether the current search hit its result cap.
+    /// Whether the retained-byte budget cut the current search
+    /// (`result_capped` keeps its name for automation clients).
     pub result_capped: bool,
+    /// Matches retained and shown (the same as `match_count`).
+    pub retained_matches: u32,
+    /// Matches found, including those past the budget; equals
+    /// `retained_matches` while the budget has not cut.
+    pub matches_found: usize,
+    /// Events received by the turn that revealed the first results.
+    pub reveal_turn_events: usize,
+    /// The last turn that applied matches: how many, and how many child-store
+    /// and root-store splices applied them (one per touched file plus at most
+    /// one root splice).
+    pub last_match_batch: (usize, usize, usize),
     /// Active controller/walker groups; the single-flight invariant keeps this at 0 or 1.
     pub active_worker_groups: u8,
     /// High-water active-group count observed by this panel.
@@ -241,6 +253,14 @@ impl LushtextSearchPanel {
             match_count: self.total_matches(),
             file_count: self.total_files(),
             result_capped: self.result_capped(),
+            retained_matches: self.total_matches(),
+            matches_found: imp
+                .runtime
+                .matches_found
+                .get()
+                .max(self.total_matches() as usize),
+            reveal_turn_events: imp.runtime.reveal_turn_events.get(),
+            last_match_batch: imp.runtime.last_match_batch.get(),
             active_worker_groups: imp.runtime.active_worker_groups.get(),
             active_worker_groups_high_water: imp.runtime.active_worker_groups_high_water.get(),
             pending_search_requests: imp.runtime.flight.borrow().snapshot().pending,

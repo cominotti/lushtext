@@ -150,11 +150,7 @@ impl LushtextSearchPanel {
 
     /// Trigger a visual refresh of the results list by invalidating the factory.
     pub(super) fn refresh_results_display(&self) {
-        let imp = self.imp();
-        if let Some(model) = imp.results_list.model() {
-            imp.results_list.set_model(None::<&gtk4::SelectionModel>);
-            imp.results_list.set_model(Some(&model));
-        }
+        super::list_factory::rebind_bound_result_rows(self);
     }
 
     /// Visually select the match row corresponding to `match_positions[match_index]`

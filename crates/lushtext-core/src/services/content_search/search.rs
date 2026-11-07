@@ -23,22 +23,17 @@ use grep_searcher::{BinaryDetection, SearcherBuilder};
 use ignore::overrides::OverrideBuilder;
 use ignore::{WalkBuilder, WalkState};
 
-use crate::model::content_search::{ContentSearchOptions, SearchEvent, SearchMatch};
+use crate::model::content_search::{
+    BEYOND_BUDGET_REPORT_INTERVAL_MS, ContentSearchOptions, SearchEvent, SearchMatch,
+    SearchRetention,
+};
+use crate::model::list_budget::{Admission, RetainedBudget};
 use crate::model::workspace_search::{
     WorkspaceSearchFallbackClaim, WorkspaceSearchFallbackLedger, WorkspaceSearchFallbackLimits,
     WorkspaceSearchFallbackMetrics, WorkspaceSearchTraversalPlan,
 };
 use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::services::filesystem::metadata as fs_metadata;
-
-/// Maximum number of matches before the search stops. Approximate under
-/// parallel walkers — concurrent threads may overshoot by up to the thread
-/// count before observing the stop signal. The UI should clamp display to
-/// this value.
-///
-/// Kind: presentation cap; 10,000 rounded up to a power of two
-/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M2).
-pub const RESULT_CAP: usize = 16 * 1024;
 
 /// Why the parallel walk should stop scanning, and who owns each reason.
 ///
@@ -47,18 +42,18 @@ pub const RESULT_CAP: usize = 16 * 1024;
 /// "nothing from this flight is wanted any more", and the consumer is entitled
 /// to discard every event still in flight. A service-internal termination is
 /// the opposite claim: production stops, but every event already queued —
-/// including the terminating `ResultCap` or `Incomplete` event itself — is the
-/// honest result the consumer still has to render. Terminating by writing the
-/// caller's flag conflated the two and silently discarded the cap notice plus
-/// up to a channel's worth of already-found matches.
+/// including the terminating `Incomplete` event itself — is the honest result
+/// the consumer still has to render. Terminating by writing the caller's flag
+/// conflated the two and silently discarded the terminal notice plus up to a
+/// channel's worth of already-found matches. Reaching the retained-byte budget
+/// stops nothing: the walk keeps counting (`bound-lists-by-budget-not-count`
+/// D4).
 #[derive(Clone)]
 struct WalkStop {
     /// Caller-owned supersede/user cancellation. Never written here.
     cancelled: Arc<AtomicBool>,
     /// One-shot claim on sending the single `Incomplete` event.
     incomplete_sent: Arc<AtomicBool>,
-    /// Set once the shared result cap has been reported.
-    result_capped: Arc<AtomicBool>,
 }
 
 impl WalkStop {
@@ -66,25 +61,103 @@ impl WalkStop {
         Self {
             cancelled,
             incomplete_sent: Arc::new(AtomicBool::new(false)),
-            result_capped: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Whether the walk should stop scanning, for any of the three reasons.
+    /// Whether the walk should stop scanning, for either reason.
     fn stopped(&self) -> bool {
-        self.cancelled.load(Ordering::Relaxed)
-            || self.incomplete_sent.load(Ordering::Acquire)
-            || self.result_capped.load(Ordering::Acquire)
+        self.cancelled.load(Ordering::Relaxed) || self.incomplete_sent.load(Ordering::Acquire)
     }
 
     /// Claim the exclusive right to send the one `Incomplete` event.
     fn claim_incomplete(&self) -> bool {
         !self.incomplete_sent.swap(true, Ordering::AcqRel)
     }
+}
 
-    /// Stop producing after the cap notice has been sent to the consumer.
-    fn record_result_cap(&self) {
-        self.result_capped.store(true, Ordering::Release);
+/// The retained-byte budget of one search, shared by its walker threads.
+///
+/// Admission and the send of an admitted match are one step under `budget`'s
+/// lock, so the channel delivers matches in admission order and
+/// `BudgetReached` is queued behind every retained match: the sequential
+/// prefix property `model::list_budget` proves holds for what the consumer
+/// receives. Once the budget latches, `limited` lets every walker count the
+/// rest with one atomic add and no lock.
+struct SearchAdmission {
+    retention: SearchRetention,
+    budget: Mutex<(RetainedBudget, usize)>,
+    limited: AtomicBool,
+    found: AtomicUsize,
+    started: std::time::Instant,
+    last_report_ms: std::sync::atomic::AtomicU64,
+}
+
+impl SearchAdmission {
+    fn new(retention: SearchRetention) -> Self {
+        Self {
+            retention,
+            budget: Mutex::new((RetainedBudget::new(retention.budget_bytes), 0)),
+            limited: AtomicBool::new(false),
+            found: AtomicUsize::new(0),
+            started: std::time::Instant::now(),
+            last_report_ms: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Offer one found match: send it if the budget retains it, otherwise
+    /// count it (and send `BudgetReached` once, at the first refusal).
+    /// Returns `false` when the consumer has gone.
+    fn offer(
+        &self,
+        tx: &Sender<SearchEvent>,
+        search_match: SearchMatch,
+        first_of_file_path_bytes: Option<usize>,
+    ) -> bool {
+        let found = self.found.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.limited.load(Ordering::Acquire) {
+            self.report_beyond_budget(tx, found);
+            return true;
+        }
+        let charge = self
+            .retention
+            .match_charge(search_match.line_content.len(), first_of_file_path_bytes);
+        let Ok(mut guard) = self.budget.lock() else {
+            return false;
+        };
+        let (budget, retained) = &mut *guard;
+        if budget.is_limited() {
+            drop(guard);
+            self.report_beyond_budget(tx, found);
+            return true;
+        }
+        match budget.admit(charge) {
+            Admission::Retained => {
+                *retained += 1;
+                tx.send(SearchEvent::Match(search_match)).is_ok()
+            }
+            Admission::Limited => {
+                let retained = *retained;
+                let sent = tx.send(SearchEvent::BudgetReached { retained }).is_ok();
+                self.limited.store(true, Ordering::Release);
+                sent
+            }
+        }
+    }
+
+    /// Best-effort running count, at most once per report interval.
+    fn report_beyond_budget(&self, tx: &Sender<SearchEvent>, found: usize) {
+        let now_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let last = self.last_report_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < BEYOND_BUDGET_REPORT_INTERVAL_MS {
+            return;
+        }
+        if self
+            .last_report_ms
+            .compare_exchange(last, now_ms, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            let _ = tx.try_send(SearchEvent::BeyondBudget(found));
+        }
     }
 }
 
@@ -119,6 +192,7 @@ pub fn search(
             plan: &plan,
             options,
             visibility: &WorkspaceEntryVisibility::default(),
+            retention: SearchRetention::UNLIMITED,
         },
         tx,
         cancel,
@@ -141,6 +215,8 @@ pub struct ContentSearchRequest<'a> {
     pub options: &'a ContentSearchOptions,
     /// Excluded-name rule; its dotfile axis is superseded by `options.hidden`.
     pub visibility: &'a WorkspaceEntryVisibility,
+    /// The retained-byte budget and its per-match charge.
+    pub retention: SearchRetention,
 }
 
 /// Search one pre-normalized immutable workspace traversal plan.
@@ -216,13 +292,14 @@ fn search_with_plan_and_limits(
         plan,
         options,
         visibility,
+        retention,
     } = request;
     // Empty query → Done immediately, no file traversal.
     if query.is_empty() {
         if let Some(flag) = &completion_flag {
             flag.store(true, Ordering::Relaxed);
         }
-        let _ = tx.send(SearchEvent::Done);
+        let _ = tx.send(SearchEvent::Done { matches_found: 0 });
         return;
     }
 
@@ -230,7 +307,7 @@ fn search_with_plan_and_limits(
         if let Some(flag) = &completion_flag {
             flag.store(true, Ordering::Relaxed);
         }
-        let _ = tx.send(SearchEvent::Done);
+        let _ = tx.send(SearchEvent::Done { matches_found: 0 });
         return;
     }
 
@@ -253,7 +330,7 @@ fn search_with_plan_and_limits(
                 if let Some(flag) = &completion_flag {
                     flag.store(true, Ordering::Relaxed);
                 }
-                let _ = tx.send(SearchEvent::Done);
+                let _ = tx.send(SearchEvent::Done { matches_found: 0 });
                 return;
             }
         }
@@ -263,7 +340,7 @@ fn search_with_plan_and_limits(
     // cooperative with GTK and other app-owned background work.
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     // Shared counters across walker threads and ordered workspace folders.
-    let match_count = Arc::new(AtomicUsize::new(0));
+    let admission = Arc::new(SearchAdmission::new(retention));
     let files_visited = progress_counter.unwrap_or_else(|| Arc::new(AtomicUsize::new(0)));
     let fallback_ledger = plan.fallback_identity_required().then(|| {
         Arc::new(Mutex::new(WorkspaceSearchFallbackLedger::new(
@@ -312,7 +389,7 @@ fn search_with_plan_and_limits(
                     if let Some(flag) = &completion_flag {
                         flag.store(true, Ordering::Relaxed);
                     }
-                    let _ = tx.send(SearchEvent::Done);
+                    let _ = tx.send(SearchEvent::Done { matches_found: 0 });
                     return;
                 }
             }
@@ -324,7 +401,7 @@ fn search_with_plan_and_limits(
             let tx = tx.clone();
             let stop = stop.clone();
             let matcher = matcher.clone();
-            let match_count = match_count.clone();
+            let admission = Arc::clone(&admission);
             let files_visited = files_visited.clone();
             let fallback_ledger = fallback_ledger.clone();
 
@@ -374,6 +451,9 @@ fn search_with_plan_and_limits(
                     let _ = tx.try_send(SearchEvent::Progress(count));
                 }
 
+                let shared_path: Arc<Path> = Arc::from(path.as_path());
+                let path_bytes = path.as_os_str().as_encoded_bytes().len();
+                let mut first_of_file = true;
                 let search_result = searcher.search_path(
                     &matcher,
                     &path,
@@ -387,31 +467,18 @@ fn search_with_plan_and_limits(
                         let content = line_content.trim_end_matches('\n').trim_end_matches('\r');
                         let match_range = find_match_range(&matcher, content.as_bytes());
 
-                        let search_match =
-                            SearchMatch::new(path.clone(), line_number, content, match_range)
-                                .with_traversal_root_index(traversal_root_index);
-
-                        // Increment match counter and enforce the shared cap.
-                        let prev = match_count.fetch_add(1, Ordering::Relaxed);
-                        if prev >= RESULT_CAP {
-                            return Ok(false);
-                        }
-
-                        let _ = tx.send(SearchEvent::Match(search_match));
-
-                        if prev + 1 >= RESULT_CAP {
-                            // Order matters: the cap notice is queued behind the
-                            // matches it describes, and only then is production
-                            // stopped. The caller's cancellation flag stays
-                            // untouched so the consumer keeps draining this
-                            // flight's buffered matches, the cap notice, and the
-                            // terminal `Done`.
-                            let _ = tx.send(SearchEvent::ResultCap);
-                            stop.record_result_cap();
-                            return Ok(false);
-                        }
-
-                        Ok(true)
+                        let search_match = SearchMatch::new(
+                            Arc::clone(&shared_path),
+                            line_number,
+                            content,
+                            match_range,
+                        )
+                        .with_traversal_root_index(traversal_root_index);
+                        let path_charge = first_of_file.then_some(path_bytes);
+                        first_of_file = false;
+                        // The budget never stops the walk: past it, matches
+                        // are counted, not retained.
+                        Ok(admission.offer(&tx, search_match, path_charge))
                     }),
                 );
 
@@ -441,7 +508,9 @@ fn search_with_plan_and_limits(
                 )
             });
     let _ = tx.send(SearchEvent::TraversalMetrics(fallback_metrics));
-    let _ = tx.send(SearchEvent::Done);
+    let _ = tx.send(SearchEvent::Done {
+        matches_found: admission.found.load(Ordering::Acquire),
+    });
 }
 
 /// Find the first byte range that matched within one line.
@@ -497,7 +566,7 @@ mod tests {
 
     /// Check that the last event is Done.
     fn assert_ends_with_done(events: &[SearchEvent]) {
-        assert_matches!(events.last(), Some(SearchEvent::Done));
+        assert_matches!(events.last(), Some(SearchEvent::Done { .. }));
     }
 
     #[test]
@@ -597,7 +666,7 @@ mod tests {
                         cancel_clone.store(true, Ordering::Relaxed);
                     }
                 }
-                if matches!(event, SearchEvent::Done) {
+                if matches!(event, SearchEvent::Done { .. }) {
                     break;
                 }
             }
@@ -727,13 +796,45 @@ mod tests {
         );
     }
 
-    /// No loss against `main` (`power-of-two-thresholds` D12): `main` stopped
-    /// at 10,000 matches, so a search finding 10,000 delivers every one.
+    /// Run a search under `retention`, collecting every event.
+    fn search_collect_with_retention(
+        query: &str,
+        workspace_folder: &Path,
+        retention: SearchRetention,
+    ) -> Vec<SearchEvent> {
+        let plan =
+            WorkspaceSearchTraversalPlan::build([workspace_folder], fs_metadata::canonical_path);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        search_with_plan(
+            ContentSearchRequest {
+                query,
+                plan: &plan,
+                options: &ContentSearchOptions::default(),
+                visibility: &WorkspaceEntryVisibility::default(),
+                retention,
+            },
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+            None,
+        );
+        rx.iter().collect()
+    }
+
+    fn done_total(events: &[SearchEvent]) -> usize {
+        match events.last() {
+            Some(SearchEvent::Done { matches_found }) => *matches_found,
+            other => panic!("expected Done last, got {other:?}"),
+        }
+    }
+
+    /// No count cap: a search past `main`'s 16,384 matches delivers every one
+    /// (`bound-lists-by-budget-not-count`), and `Done` reports the total.
     #[test]
-    fn no_loss_a_search_delivers_every_match_main_delivered() {
+    fn a_search_past_mains_count_cap_delivers_every_match() {
         let dir = tempdir().expect("expected operation to succeed");
         let workspace_folder = dir.path();
-        for i in 0..20 {
+        for i in 0..40 {
             fixture::write_text(
                 &workspace_folder.join(format!("big_{i}.txt")),
                 &"needle\n".repeat(500),
@@ -745,84 +846,137 @@ mod tests {
             &ContentSearchOptions::default(),
         );
         assert_ends_with_done(&events);
-        assert_eq!(count_matches(&events), 10_000);
-        assert!(!events.iter().any(|e| matches!(e, SearchEvent::ResultCap)));
-        assert_eq!(RESULT_CAP, 16 * 1024);
-    }
-
-    #[test]
-    fn result_cap_stops_the_search_past_the_cap() {
-        let dir = tempdir().expect("expected operation to succeed");
-        let workspace_folder = dir.path();
-
-        for i in 0..30 {
-            let content = "needle\n".repeat(600);
-            fixture::write_text(&workspace_folder.join(format!("big_{i}.txt")), &content);
-        }
-
-        let events = search_collect(
-            "needle",
-            &[workspace_folder],
-            &ContentSearchOptions::default(),
-        );
-        assert_ends_with_done(&events);
-
-        let match_count = count_matches(&events);
-        let max_allowed = RESULT_CAP + 8;
+        assert_eq!(count_matches(&events), 20_000);
+        assert_eq!(done_total(&events), 20_000);
         assert!(
-            match_count <= max_allowed,
-            "should not exceed {max_allowed} matches, got {match_count}"
+            !events
+                .iter()
+                .any(|e| matches!(e, SearchEvent::BudgetReached { .. }))
         );
-
-        let has_cap = events.iter().any(|e| matches!(e, SearchEvent::ResultCap));
-        assert!(has_cap, "should emit ResultCap event");
     }
 
+    /// A budget that cuts mid-stream across several walker threads: every
+    /// retained match precedes `BudgetReached` in the channel, the retained
+    /// count is what it reports, the walk is not stopped, and the retained
+    /// matches plus the counted remainder equal an unlimited run's total.
     #[test]
-    fn result_cap_terminates_without_touching_the_caller_cancel_flag() {
+    fn a_budget_cut_keeps_a_delivered_prefix_and_counts_the_rest() {
         let dir = tempdir().expect("expected operation to succeed");
         let workspace_folder = dir.path();
-
-        for i in 0..30 {
+        for i in 0..64 {
             fixture::write_text(
-                &workspace_folder.join(format!("big_{i}.txt")),
-                &"needle\n".repeat(600),
+                &workspace_folder.join(format!("file_{i:02}.txt")),
+                &"needle line\n".repeat(200),
             );
         }
+        let unlimited =
+            search_collect_with_retention("needle", workspace_folder, SearchRetention::UNLIMITED);
+        let total = done_total(&unlimited);
+        assert_eq!(total, 64 * 200);
 
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let retention = SearchRetention {
+            budget_bytes: 64 * 1024,
+            match_fixed_charge: 64,
+        };
+        for _ in 0..8 {
+            let events = search_collect_with_retention("needle", workspace_folder, retention);
+            let reached = events
+                .iter()
+                .position(|event| matches!(event, SearchEvent::BudgetReached { .. }))
+                .expect("the budget cuts this search");
+            let Some(SearchEvent::BudgetReached { retained }) = events.get(reached) else {
+                unreachable!("position found the variant");
+            };
+            let before = count_matches(&events[..reached]);
+            let after = count_matches(&events[reached..]);
+            assert_eq!(after, 0, "no match is delivered after BudgetReached");
+            assert_eq!(
+                *retained, before,
+                "BudgetReached reports the retained prefix"
+            );
+            let charged: u64 = search_matches(&events)
+                .iter()
+                .map(|m| retention.match_charge(m.line_content.len(), None))
+                .sum();
+            assert!(charged <= retention.budget_bytes);
+            assert_eq!(done_total(&events), total, "the walk counted every match");
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, SearchEvent::BudgetReached { .. }))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    /// `main`'s worst case is retained in full by the production arithmetic:
+    /// a budget of exactly 16,384 worst-case charges refuses nothing.
+    #[test]
+    fn no_loss_mains_worst_case_charge_fits_its_floor() {
+        let retention = SearchRetention {
+            budget_bytes: 16 * 1024 * (4_096 + 2 * 4_096 + 2_048),
+            match_fixed_charge: 2_048,
+        };
+        let mut budget = RetainedBudget::new(retention.budget_bytes);
+        for _ in 0..16 * 1024 {
+            assert_eq!(
+                budget.admit(retention.match_charge(4_096, Some(4_096))),
+                Admission::Retained
+            );
+        }
+        assert_eq!(
+            budget.admit(retention.match_charge(4_096, Some(4_096))),
+            Admission::Limited
+        );
+    }
+
+    /// Cancelling while the walk counts past the budget stops the counting.
+    #[test]
+    fn cancelling_a_counting_search_stops_it() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let workspace_folder = dir.path();
+        for i in 0..200 {
+            fixture::write_text(
+                &workspace_folder.join(format!("file_{i:03}.txt")),
+                &"needle\n".repeat(500),
+            );
+        }
+        let plan =
+            WorkspaceSearchTraversalPlan::build([workspace_folder], fs_metadata::canonical_path);
+        let (tx, rx) = crossbeam_channel::bounded(16);
         let cancel = Arc::new(AtomicBool::new(false));
-        search(
-            "needle",
-            &[workspace_folder],
-            &ContentSearchOptions::default(),
-            tx,
-            Arc::clone(&cancel),
-            None,
-            None,
-        );
-        let events: Vec<_> = rx.iter().collect();
-
-        assert!(
-            !cancel.load(Ordering::Acquire),
-            "the cap is a service-side stop; flipping the caller's cancel flag makes the \
-             consumer discard the cap notice and every buffered match",
-        );
-        let cap_index = events
-            .iter()
-            .position(|event| matches!(event, SearchEvent::ResultCap))
-            .expect("capped search should report the cap");
-        assert_ends_with_done(&events);
-        assert!(
-            cap_index > 0,
-            "the cap notice follows the matches it describes"
-        );
-        // Concurrent walkers may still be flushing their own matches when the
-        // capping thread reports, so only the total is exact enough to assert.
-        assert!(
-            count_matches(&events) >= RESULT_CAP,
-            "a capped search must still deliver every match it found up to the cap",
-        );
+        let worker_cancel = Arc::clone(&cancel);
+        let worker = std::thread::spawn(move || {
+            search_with_plan(
+                ContentSearchRequest {
+                    query: "needle",
+                    plan: &plan,
+                    options: &ContentSearchOptions::default(),
+                    visibility: &WorkspaceEntryVisibility::default(),
+                    retention: SearchRetention {
+                        budget_bytes: 1,
+                        match_fixed_charge: 0,
+                    },
+                },
+                tx,
+                worker_cancel,
+                None,
+                None,
+            );
+        });
+        // Wait for the cut, then cancel while the walk counts.
+        loop {
+            match rx.recv() {
+                Ok(SearchEvent::BudgetReached { .. }) => break,
+                Ok(_) => {}
+                Err(_) => panic!("the search ended before reaching the budget"),
+            }
+        }
+        cancel.store(true, Ordering::Release);
+        let rest: Vec<_> = rx.iter().collect();
+        worker.join().expect("the worker ends");
+        assert!(done_total(&rest) < 200 * 500, "counting stopped early");
     }
 
     #[test]
@@ -830,13 +984,6 @@ mod tests {
         let cancelled = Arc::new(AtomicBool::new(false));
         let stop = WalkStop::new(Arc::clone(&cancelled));
         assert!(!stop.stopped());
-
-        stop.record_result_cap();
-        assert!(stop.stopped());
-        assert!(
-            !cancelled.load(Ordering::Acquire),
-            "service termination must never write the caller's flag",
-        );
 
         let cancelled = Arc::new(AtomicBool::new(false));
         let stop = WalkStop::new(Arc::clone(&cancelled));
@@ -1049,7 +1196,7 @@ mod tests {
             assert!(
                 matches
                     .iter()
-                    .all(|search_match| search_match.path == nested_file),
+                    .all(|search_match| *search_match.path == *nested_file),
                 "overlap should not emit a second route to the same canonical file"
             );
         }
@@ -1078,8 +1225,8 @@ mod tests {
             .map(|search_match| search_match.path.clone())
             .collect();
         assert_eq!(paths.len(), 2);
-        assert!(paths.contains(&parent_file));
-        assert!(paths.contains(&nested_file));
+        assert!(paths.contains(parent_file.as_path()));
+        assert!(paths.contains(nested_file.as_path()));
     }
 
     #[test]
@@ -1101,8 +1248,8 @@ mod tests {
         let matches = search_matches(&events);
 
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].path, child_file);
-        assert_eq!(matches[1].path, sibling_file);
+        assert_eq!(&*matches[0].path, child_file.as_path());
+        assert_eq!(&*matches[1].path, sibling_file.as_path());
         assert_eq!(matches[0].traversal_root_index, 0);
         assert_eq!(matches[1].traversal_root_index, 1);
     }
@@ -1168,6 +1315,7 @@ mod tests {
                 plan: &plan,
                 options: &ContentSearchOptions::default(),
                 visibility: &WorkspaceEntryVisibility::default(),
+                retention: SearchRetention::UNLIMITED,
             },
             tx,
             Arc::new(AtomicBool::new(false)),
@@ -1200,7 +1348,7 @@ mod tests {
         let events = search_collect("", &[dir.path()], &ContentSearchOptions::default());
 
         assert_eq!(events.len(), 1, "should only contain Done");
-        assert_matches!(events[0], SearchEvent::Done);
+        assert_matches!(events[0], SearchEvent::Done { .. });
     }
 
     #[test]
@@ -1318,7 +1466,7 @@ mod tests {
             let event = rx
                 .recv_timeout(std::time::Duration::from_secs(2))
                 .expect("terminal events should drain after completion publication");
-            let done = matches!(event, SearchEvent::Done);
+            let done = matches!(event, SearchEvent::Done { .. });
             events.push(event);
             if done {
                 break;
@@ -1327,7 +1475,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event, SearchEvent::Done))
+                .any(|event| matches!(event, SearchEvent::Done { .. }))
         );
         handle.join().expect("expected operation to succeed");
     }
@@ -1370,13 +1518,15 @@ mod tests {
                 .expect("bounded search should keep producing events while drained");
             match event {
                 SearchEvent::Match(_) => match_count += 1,
-                SearchEvent::Done => break,
+                SearchEvent::Done { .. } => break,
                 SearchEvent::Progress(_) | SearchEvent::TraversalMetrics(_) => {}
                 SearchEvent::Error(message) => panic!("search should not emit an error: {message}"),
                 SearchEvent::Incomplete(reason) => {
                     panic!("fixture should not be incomplete: {reason:?}")
                 }
-                SearchEvent::ResultCap => panic!("fixture should stay below the result cap"),
+                SearchEvent::BudgetReached { .. } | SearchEvent::BeyondBudget(_) => {
+                    panic!("an unlimited search never reaches a budget")
+                }
             }
         }
 
@@ -1420,6 +1570,7 @@ mod tests {
                 plan: &plan,
                 options,
                 visibility,
+                retention: SearchRetention::UNLIMITED,
             },
             tx,
             Arc::new(AtomicBool::new(false)),

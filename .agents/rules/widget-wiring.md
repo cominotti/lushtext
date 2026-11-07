@@ -348,6 +348,37 @@ dependencies; external stability, publication, and repository graduation stay
 dormant until a future approved proposal reopens the gates in
 `crates/gtk-lush/GOVERNANCE.md`.
 
+## Large Lists: Budgets, Time-Sliced Batches, Per-Batch Caches
+
+`bound-lists-by-budget-not-count` replaced the workspace lists' count caps with
+retained-byte budgets and time slices. A new list that can grow with the
+workspace follows the same pattern:
+
+- **Bound what is retained by bytes, not by a count.** Charge each item through
+  `model::list_budget::RetainedBudget` (a refusal latches, so what is retained
+  is a prefix of delivery order and "showing X of Y" stays true), size the
+  budget as the power of two at or above a `derived` floor that is at least
+  `main`'s worst case under the count it replaces (a compile-time assertion
+  per floor), and state any cut in the UI, to assistive technologies (once)
+  and in the automation snapshot. A parallel producer serializes admission
+  with its send, so channel order is admission order.
+- **Apply rows in batches while the turn's time slice lasts.** Loop
+  `turn_continues(elapsed_us, units_done)` (`LIST_TURN_SLICE_US`, the clock
+  read by the GTK caller) over bounded units: one `splice` per touched store
+  per turn, never one `append` per item. A presented `GtkListView` pays a
+  fixed cost per `items-changed` (A87), while an end-of-store batch splice
+  and a tail `set_expanded` grow sub-linearly in the store (A88, A89).
+- **Keep derived caches current per applied batch.** A terminal that rebuilds
+  a cache over the whole list grows with the list; splice the cache with the
+  rows the batch inserted or removed instead (`splice_child_cache`,
+  property-tested equal to the full rebuild), and maintain it only for the
+  store the list currently shows: a `GtkTreeListModel` can create more than
+  one child store for one row (A22's `is_expandable()` probe).
+- **Re-project bound rows, not the model.** A mode switch that changes how
+  rows render rebinds the rows the factory has bound (a registry filled in
+  `bind` and emptied in `unbind`), never `set_model(None)`/`set_model(model)`,
+  which rebuilds the list over its whole model.
+
 ## GTK4 Signal Delivery Pitfalls
 
 Code that "looks wired correctly" can silently fail if GTK4's internal gesture system intercepts events before signals are emitted. When verifying that a user interaction reaches application code, check all three layers:

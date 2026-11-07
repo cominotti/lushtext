@@ -564,10 +564,14 @@ accessibility-smoke: build-debug smoke-read-faults-build
 # document load fails with "Permission denied" even when the lane runs as root,
 # where a mode-000 fixture stays readable. It has its own target directory so
 # the ordinary debug binary (and every release, Meson, Flatpak, and Snap build)
-# never carries it.
+# never carries it. The same smoke binary carries the smoke-only
+# smoke-list-budgets feature (services::smoke_list_budgets), whose
+# LUSHTEXT_SEARCH_RETAINED_BYTES / LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES
+# overrides let the limited-search and limited-directory captures reach their
+# budgets with small fixtures (bound-lists-by-budget-not-count task 6.2).
 smoke-read-faults-build:
 	@echo "Building the smoke-read-faults smoke binary..."
-	cargo build -p lushtext --features smoke-read-faults --target-dir target/smoke-read-faults
+	cargo build -p lushtext --features smoke-read-faults,smoke-list-budgets --target-dir target/smoke-read-faults
 
 BENCH_REPORT_OUT_DIR ?= docs/benchmarks
 SMOKE_ARTIFACT_DIR ?= build/smoke

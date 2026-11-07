@@ -6138,10 +6138,13 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
         reconcile_after.reconcile_superseded_count,
         reconcile_after.child_reconcile_sources,
     );
+    // The path caches follow each applied batch (`bound-lists-by-budget-not-count`
+    // D6): no batch falls back to a whole-directory rebuild, and one batch's
+    // cache work is bounded by its rows plus the siblings after it.
     let cache = section.workspace_section_evidence();
-    let (cache_input_rows, cache_operations) = (
-        cache.cache_rebuild_input_rows,
-        cache.cache_rebuild_operations,
+    let (full_rebuilds, cache_operations) = (
+        cache.cache_full_rebuilds,
+        cache.cache_batch_operations_high_water,
     );
     assert!(
         max_batch <= 256,
@@ -6151,13 +6154,13 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
         sources, 0,
         "terminal refresh must release every GLib source"
     );
-    assert!(cache_input_rows > 0);
+    assert_eq!(full_rebuilds, 0, "no batch rebuilt the directory's caches");
     assert!(
-        cache_operations <= cache_input_rows.saturating_mul(8),
-        "terminal cache rebuild must remain linear: input={cache_input_rows}, operations={cache_operations}"
+        cache_operations > 0 && cache_operations <= 2 * (256 + 501),
+        "one batch's cache work stays within its rows and the siblings after it: {cache_operations}"
     );
     eprintln!(
-        "workspace-cache-runtime-evidence input_rows={cache_input_rows} operations={cache_operations}"
+        "workspace-cache-runtime-evidence batch_operations_high_water={cache_operations} full_rebuilds={full_rebuilds}"
     );
     assert!(
         terminal_after > terminal_before,

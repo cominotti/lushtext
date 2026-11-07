@@ -11,11 +11,15 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
 use crate::model::workspace::WorkspaceFolderId;
+use crate::services::file_tree::DirectoryPlaceholder;
 
 // Private implementation module. In GTK's GObject system, every type has
 // a private struct (imp) holding data and a public wrapper providing the API.
 mod imp {
-    use super::{Cell, ObjectImpl, ObjectSubclass, PathBuf, RefCell, WorkspaceFolderId, glib};
+    use super::{
+        Cell, DirectoryPlaceholder, ObjectImpl, ObjectSubclass, PathBuf, RefCell,
+        WorkspaceFolderId, glib,
+    };
 
     // GObject methods take &self (not &mut self) because GTK's list model
     // infrastructure holds multiple references to each item. Interior
@@ -28,8 +32,9 @@ mod imp {
         pub display_name: RefCell<String>,
         /// Whether this entry is a directory (affects icon and expand behavior).
         pub is_dir: Cell<bool>,
-        /// True for synthetic rows like "10,000+ items — showing first 10,000".
-        pub is_placeholder: Cell<bool>,
+        /// The synthetic row this is, if it is one: the budget row that ends
+        /// a listing the retained-byte budget cut, or the loading row.
+        pub placeholder: Cell<Option<DirectoryPlaceholder>>,
         /// Flag set on freshly created items (New File/Folder) to trigger
         /// inline rename in `connect_bind`. Cleared after rename begins.
         pub pending_rename: Cell<bool>,
@@ -82,11 +87,26 @@ impl FileTreeItem {
         obj
     }
 
-    pub fn new_placeholder(display_name: impl Into<String>) -> Self {
+    /// A synthetic row of kind `placeholder`, labelled `display_name`.
+    pub fn new_placeholder(
+        display_name: impl Into<String>,
+        placeholder: DirectoryPlaceholder,
+    ) -> Self {
         let obj: Self = glib::Object::builder().build();
         obj.imp().display_name.replace(display_name.into());
-        obj.imp().is_placeholder.set(true);
+        obj.imp().placeholder.set(Some(placeholder));
         obj
+    }
+
+    /// The synthetic row this is, if it is one.
+    #[must_use]
+    pub fn placeholder(&self) -> Option<DirectoryPlaceholder> {
+        self.imp().placeholder.get()
+    }
+
+    /// Relabel a placeholder row (the loading row's progress).
+    pub fn set_placeholder_label(&self, display_name: impl Into<String>) {
+        self.imp().display_name.replace(display_name.into());
     }
 
     #[must_use]
@@ -104,7 +124,7 @@ impl FileTreeItem {
             .display_name
             .replace(display_name_for_path(&new_path));
         self.imp().path.replace(Some(new_path));
-        self.imp().is_placeholder.set(false);
+        self.imp().placeholder.set(None);
     }
 
     #[must_use]
@@ -124,7 +144,7 @@ impl FileTreeItem {
 
     #[must_use]
     pub fn is_placeholder(&self) -> bool {
-        self.imp().is_placeholder.get()
+        self.imp().placeholder.get().is_some()
     }
 
     #[must_use]

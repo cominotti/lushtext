@@ -489,6 +489,15 @@ impl LushtextSearchPanel {
         } else {
             format!("{generated} previewed, {checked} checked")
         };
+        let summary = if imp.runtime.result_capped.get()
+            && let Some(clause) = policy::search_limit_clause(
+                imp.runtime.total_matches.get() as usize,
+                imp.runtime.matches_found.get(),
+            ) {
+            format!("{summary}; {clause}")
+        } else {
+            summary
+        };
         imp.count_label.set_text(&summary);
         crate::ui::accessibility::set_labelled_description(
             &*imp.replace_all_button,
@@ -505,12 +514,16 @@ impl LushtextSearchPanel {
         if total == 0 {
             imp.count_label.set_text("No results found");
         } else if imp.runtime.result_capped.get() {
-            imp.count_label.set_text(&policy::result_cap_notice());
+            imp.count_label.set_text(&policy::limited_count_label(
+                total as usize,
+                files as usize,
+                imp.runtime.matches_found.get(),
+            ));
             imp.count_label.add_css_class("warning");
         } else {
             imp.count_label.remove_css_class("warning");
             imp.count_label
-                .set_text(&format!("{total} results in {files} files"));
+                .set_text(&policy::count_label(total as usize, files as usize));
         }
         crate::ui::accessibility::set_labelled_description(
             &*imp.replace_all_button,

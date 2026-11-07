@@ -228,7 +228,13 @@ they are not default PR gates:
   binary built with the smoke-only `smoke-read-faults` feature, which fails the
   named fixture's document read with `EACCES` (`LUSHTEXT_DENY_READ`), because a
   mode-000 fixture is still readable when the lane runs as root, as the
-  scheduled workflow's containers do. The lane writes bounded per-scenario manifests, assertion JSONL,
+  scheduled workflow's containers do. The same binary carries the smoke-only
+  `smoke-list-budgets` feature: the `workspace-search-capped` and
+  `workspace-tree-limited` cases lower the workspace search and sidebar
+  directory budgets (`LUSHTEXT_SEARCH_RETAINED_BYTES`,
+  `LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES`) so small fixtures reach the
+  limited-search label and the "Showing X of Y entries" budget row, which the
+  real hundreds-of-MiB budgets would not. The lane writes bounded per-scenario manifests, assertion JSONL,
   warning status, screenshots, AT-SPI tree/focus excerpts, `summary.txt`, and
   `summary.json`; unsupported AT-SPI or compositor hosts skip with an explicit
   reason that does not count as coverage. It complements widget tests that

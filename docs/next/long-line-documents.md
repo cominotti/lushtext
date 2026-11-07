@@ -3849,8 +3849,10 @@ separate change, in this order:
    - one Kani-proved `model/list_budget.rs`.
    It also discharges `main`'s first-results reveal (22–26 ms), the Replace
    Preview entry (27.8–29.2 ms, PT M3, found while reading PT's evidence) and
-   the 10,000-entry expansion terminal (25–30 ms). Queued as their own
-   changes, in this order, right after it:
+   the 10,000-entry expansion terminal (25–30 ms). **Implemented 2026-11-06**
+   (stage 3, branch `bound-lists-by-budget-not-count`, PR pending, not
+   merged): see "BL" below. Queued as their own changes, in this order, right
+   after it:
    - `bound-notes-browser-by-budget`: an incremental, virtualized notes
      browser bounded by retained bytes, with "showing X of Y". It discharges
      the notes rebuild blocker (34–40 ms at 512 rows) and first probes
@@ -3886,6 +3888,34 @@ minimap markers 2,048. Sizes are shown in MiB and KiB everywhere. Local
 history keeps more snapshots (64 per file, 256 in all), recent documents keep
 256 entries and search history 32, so nothing you have is trimmed."
 
+## BL `bound-lists-by-budget-not-count` (implementation record, 2026-11-06)
+
+**Status:** implemented on branch `bound-lists-by-budget-not-count` from
+`main` `469e3f84`; PR pending, not merged. Design and decisions:
+`openspec/changes/bound-lists-by-budget-not-count/design.md` (D1–D9, "Spec
+review", "Implementation decisions"); evidence in
+`.claude/handoffs/bound-lists-by-budget-not-count/`.
+
+- Workspace search has no match-count cap: a 256 MiB retained-byte budget
+  (`SEARCH_RESULTS_RETAINED_BYTES`, the power of two above `main`'s worst
+  case at 16,384 matches), admission serialized with the send, counting past
+  it; 40,000 ordinary matches are all shown. The sidebar has no entry-count
+  cap: a 512 MiB per-directory budget (above both `main`'s 10,000-row worst
+  case and 131,072 typical rows), one scan pass when it fits, time-sliced
+  batches behind a loading row, a budget row only past it.
+- `model/list_budget.rs`, Kani shard `core-list-budget` (pull-request gated;
+  local 1.03 min, 1.63 GiB, **pending dispatch**).
+- Verdicts (optimized widget build, presented, load below 4, interleaved with
+  `main`; `runs.log`) are tabulated in the design's "Verdicts" table; every
+  dispatch of the three former blockers is now within `B_SETTLE_US`, with no
+  toolkit-floor exception.
+- **Follow-ups recorded:** a process-wide retained-byte ledger across many
+  expanded huge sidebar directories (the budget, like the count before it, is
+  per directory); sharing the sidebar's cached path copies as `Arc<Path>`
+  (the charge counts eight copies); not scanning the discarded
+  `is_expandable()` probe store at all (`main` scans it in full, then the
+  expansion scans again).
+
 ## Axioms each change cites
 
 | Change | Axioms |
@@ -3901,6 +3931,7 @@ history keeps more snapshots (64 per file, 256 in all), recent documents keep
 | EV `defer-background-tab-layout` | A31, A70, A80; added by EV: A81 (every ready source of the top priority runs in one iteration, so N validating views make an iteration N batches long), A82 (a never-selected `AdwTabView` page's source view validates its buffer while hidden: the scroller creates its layout), A83 (an empty buffer stops it at once and leaves the document untouched; a reattach re-lays out from nothing, back at the start; a scroll queued right after it lands elsewhere, re-scrolling on each `upper` change keeps it) |
 | C6b `chunked-highlight-attach` | A27, A67, A68, A69, A70, A80, A83; added by C6b: A84 (the largest `highlight-updated` end since an insert or attach reaches the end of the last line's text once the context engine has analysed the buffer; a `G_PRIORITY_LOW + 1` idle always finds it there) |
 | C6c `bound-context-flip-keystrokes` | A27, A69, A84; added by C6c: A85 (an edit's first update runs right after an idle queued at its priority before the edit and before a `G_PRIORITY_LOW - 1` idle; `ensure_highlight` on an empty range from a `G_PRIORITY_HIGH_IDLE - 1` idle re-analyses in steps whose report says whether it merged; removing the language between steps removes the first update and worker) |
+| BL `bound-lists-by-budget-not-count` | A1 (realized-row cap), A10 (mapped is not drawn), A22 (synchronous expansion; the `is_expandable()` probe store); added by BL: A87 (a presented list view pays per `items-changed`, not per item; an unrealized one does not walk its items), A88 (an end-of-store batch splice under a tree list grows sub-linearly), A89 (a tail `set_expanded` grows sub-linearly in its position), A90 (revealing a list costs its realized rows) |
 | CF `scope-font-zoom-restyle` | A47 (hidden widgets take a class without a restyle until shown), A72 (why the font stays CSS, not a tag); added by CF: A86 (a display provider reload revalidates every widget even with unchanged text and grows with the window; an unmatched load changes no font; a per-widget class swap applies the new size and does not grow with unrelated widgets) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 

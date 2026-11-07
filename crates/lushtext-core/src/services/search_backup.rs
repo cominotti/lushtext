@@ -44,15 +44,17 @@ const CLEANUP_MARKER_FILE: &str = "cleanup-in-progress.json";
 /// Maximum journal entries scanned for orphan diagnostics in one recovery pass.
 ///
 /// It bounds damaged app-data startup work while staying at or above the files
-/// one Replace All can touch (at most one capped result set, `RESULT_CAP`).
+/// one Replace All can touch: Replace All acts only on previewed rows, so at
+/// most `MAX_REPLACE_PREVIEW_ROWS` files (`bound-lists-by-budget-not-count` D3).
 ///
 /// Kind: presentation cap; 10,000 rounded up to a power of two
 /// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M12).
 pub(crate) const JOURNAL_SCAN_MAX_ENTRIES: usize = 16 * 1024;
 
-// One Replace All touches at most the files of one capped result set, so the
+// One Replace All touches at most the files of its preview's rows, so the
 // startup inspection always reaches every entry it can have written.
-const _: () = assert!(JOURNAL_SCAN_MAX_ENTRIES >= crate::services::content_search::RESULT_CAP);
+const _: () =
+    assert!(JOURNAL_SCAN_MAX_ENTRIES >= crate::model::content_search::MAX_REPLACE_PREVIEW_ROWS);
 #[cfg(test)]
 thread_local! {
     static TEST_MAX_REPLACE_UNDO_BYTES: Cell<Option<u64>> = const { Cell::new(None) };

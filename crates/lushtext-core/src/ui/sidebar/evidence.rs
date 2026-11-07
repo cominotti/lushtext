@@ -184,6 +184,11 @@ pub struct WorkspaceTreeEvidence {
     pub reveal_generation: u64,
     /// Tree depth of the latest reveal's target row, once resolved.
     pub reveal_depth: Option<u32>,
+    /// Expanded directories whose listing the retained-byte budget cut
+    /// (`bound-lists-by-budget-not-count` D9).
+    pub limited_directory_count: usize,
+    /// Expanded directories still loading their rows in batches.
+    pub loading_directory_count: usize,
     /// Reveals that ended `superseded` (by a newer reveal or by disposal).
     pub reveal_superseded_count: u64,
     /// Whether a reveal is still expanding, scanning, or settling.
@@ -251,6 +256,18 @@ impl LushtextSidebar {
         };
         // Cells only: reading a reveal neither polls it nor touches the tree.
         let reveal = self.workspace_reveal_observation();
+        // The last mirror row of each materialized directory only.
+        let (limited_directory_count, loading_directory_count) = imp
+            .sections
+            .borrow()
+            .iter()
+            .map(LushtextWorkspaceSection::directory_tail_counts)
+            .fold(
+                (0, 0),
+                |(limited, loading), (more_limited, more_loading)| {
+                    (limited + more_limited, loading + more_loading)
+                },
+            );
 
         WorkspaceSnapshotEvidence {
             scope_kind,
@@ -266,6 +283,8 @@ impl LushtextSidebar {
             reveal_status: reveal.status,
             reveal_generation: reveal.generation,
             reveal_depth: reveal.depth,
+            limited_directory_count,
+            loading_directory_count,
         }
     }
 
@@ -369,6 +388,8 @@ impl LushtextSidebar {
             reveal_status: shared.reveal_status,
             reveal_generation: shared.reveal_generation,
             reveal_depth: shared.reveal_depth,
+            limited_directory_count: shared.limited_directory_count,
+            loading_directory_count: shared.loading_directory_count,
             reveal_superseded_count: reveal.superseded_count,
             reveal_pending: reveal.pending,
         }
@@ -395,6 +416,26 @@ pub(crate) struct WorkspaceSnapshotEvidence {
     pub(crate) reveal_status: super::policy::WorkspaceRevealStatus,
     pub(crate) reveal_generation: u64,
     pub(crate) reveal_depth: Option<u32>,
+    /// Expanded directories whose listing ends in a budget row.
+    pub(crate) limited_directory_count: usize,
+    /// Expanded directories still loading (ending in a loading row).
+    pub(crate) loading_directory_count: usize,
+}
+
+/// One materialized directory listing, read from its plain store mirror.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryListingEvidence {
+    /// The directory.
+    pub path: std::path::PathBuf,
+    /// Entries listed (rows with a path).
+    pub directory_retained_entries: usize,
+    /// The directory's visible entries: the budget row's total when the
+    /// budget cut the listing, the listed entries otherwise.
+    pub directory_total_entries: usize,
+    /// Whether a budget row ends the listing.
+    pub directory_limited: bool,
+    /// Loading rows ending the listing (zero or one).
+    pub loading_tail_rows: usize,
 }
 
 /// One complete observation of a single workspace **section**'s state.
@@ -437,6 +478,20 @@ pub struct WorkspaceSectionEvidence {
     pub cache_rebuild_input_rows: usize,
     /// Child-cache rebuild operations performed.
     pub cache_rebuild_operations: usize,
+    /// Full child-cache rebuilds a batch fell back to (zero in normal flows).
+    pub cache_full_rebuilds: u64,
+    /// Cache resets because a new live store took over a directory.
+    pub cache_owner_resets: u64,
+    /// Largest cache operation count one applied batch performed.
+    pub cache_batch_operations_high_water: usize,
+    /// Largest number of row batches one GTK turn applied.
+    pub reconcile_max_batches_per_turn: usize,
+    /// Wall time of the latest reconciliation terminal, microseconds.
+    pub reconcile_last_terminal_us: u64,
+    /// Every materialized directory listing: what it lists, of how many, and
+    /// whether a budget row or a loading row ends it
+    /// (`bound-lists-by-budget-not-count` D8).
+    pub directory_listings: Vec<DirectoryListingEvidence>,
     /// Empty-probe reads issued for top-level folder rows.
     pub empty_probe_reads: u64,
 
@@ -524,6 +579,12 @@ impl LushtextWorkspaceSection {
         let child_reconcile_sources = imp.child_reconcile_sources.borrow().len();
         let cache_rebuild_input_rows = refresh.cache_rebuild_input_rows.get();
         let cache_rebuild_operations = refresh.cache_rebuild_operations.get();
+        let cache_full_rebuilds = refresh.cache_full_rebuilds.get();
+        let cache_owner_resets = refresh.cache_owner_resets.get();
+        let cache_batch_operations_high_water = refresh.cache_batch_operations_high_water.get();
+        let reconcile_max_batches_per_turn = refresh.reconcile_max_batches_per_turn.get();
+        let reconcile_last_terminal_us = refresh.reconcile_last_terminal_us.get();
+        let directory_listings = self.directory_listing_evidence();
         let empty_probe_reads = refresh.empty_probe_reads_for_evidence();
 
         let (
@@ -564,6 +625,12 @@ impl LushtextWorkspaceSection {
             child_reconcile_sources,
             cache_rebuild_input_rows,
             cache_rebuild_operations,
+            cache_full_rebuilds,
+            cache_owner_resets,
+            cache_batch_operations_high_water,
+            reconcile_max_batches_per_turn,
+            reconcile_last_terminal_us,
+            directory_listings,
             empty_probe_reads,
             watch_targets,
             watch_target_generation,
@@ -583,5 +650,55 @@ impl LushtextWorkspaceSection {
             open_row_paths,
             active_row_paths,
         }
+    }
+
+    /// Every materialized directory listing, from the plain mirrors only
+    /// (inert: no store is read and nothing is materialized).
+    fn directory_listing_evidence(&self) -> Vec<DirectoryListingEvidence> {
+        use crate::services::file_tree::DirectoryPlaceholder;
+        let imp = self.imp();
+        let paths = imp.child_store_paths.borrow();
+        let mirrors = imp.child_row_mirrors.borrow();
+        let mut listings = mirrors
+            .iter()
+            .filter_map(|(key, rows)| {
+                let path = paths.get(key)?.clone();
+                let listed = rows.iter().filter(|row| row.path.is_some()).count();
+                let budget = rows.iter().rev().find_map(|row| match row.placeholder {
+                    Some(DirectoryPlaceholder::Budget { total, .. }) => Some(total),
+                    _ => None,
+                });
+                let loading = rows
+                    .iter()
+                    .filter(|row| row.placeholder == Some(DirectoryPlaceholder::Loading))
+                    .count();
+                Some(DirectoryListingEvidence {
+                    path,
+                    directory_retained_entries: listed,
+                    directory_total_entries: budget.unwrap_or(listed),
+                    directory_limited: budget.is_some(),
+                    loading_tail_rows: loading,
+                })
+            })
+            .collect::<Vec<_>>();
+        listings.sort_by(|left, right| left.path.cmp(&right.path));
+        listings
+    }
+
+    /// Expanded directories whose listing ends in a budget row, and those
+    /// still loading: their last mirror row only, for the polled snapshot.
+    pub(crate) fn directory_tail_counts(&self) -> (usize, usize) {
+        use crate::services::file_tree::DirectoryPlaceholder;
+        let mirrors = self.imp().child_row_mirrors.borrow();
+        let mut limited = 0;
+        let mut loading = 0;
+        for rows in mirrors.values() {
+            match rows.last().and_then(|row| row.placeholder) {
+                Some(DirectoryPlaceholder::Budget { .. }) => limited += 1,
+                Some(DirectoryPlaceholder::Loading) => loading += 1,
+                None => {}
+            }
+        }
+        (limited, loading)
     }
 }

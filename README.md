@@ -88,7 +88,11 @@ local history, and careful recovery behavior.
   workspace selector to view `All workspaces` or focus one workspace.
 - **Workspace sidebar** with automatic refresh for visible folders, manual
   refresh buttons, deep-folder focus, file/folder creation, rename, delete,
-  and a quick `Space` file peek before opening a tab.
+  and a quick `Space` file peek before opening a tab. Directories of any size
+  are listed in full (131,072 entries and far beyond): entries load in small
+  batches from the top while the first screen is already usable, and only a
+  directory past a 512 MiB memory budget ends with a "Showing X of Y entries"
+  row.
 - **Hidden files and excluded names** as one workspace-wide rule: `Show Hidden
   Files` (`Ctrl+Shift+H`, main menu, or Preferences) reveals dotfiles in the
   sidebar, the command palette, and workspace search together, while an
@@ -104,7 +108,9 @@ local history, and careful recovery behavior.
   whole-word matching, `.gitignore` support, glob filters, saved searches,
   search history (the last 32 searches), match navigation, and previewable
   multi-file Replace All (files up to 16 MiB) with undo during the active
-  safety window. A search stops at 16,384 matches and says so.
+  safety window. A search has no match limit: it keeps results within a
+  memory budget (256 MiB, far above what the old 16,384-match cap kept), and
+  past it says how many matches are shown and how many more were found.
 
 ### Writing, Notes, and History
 

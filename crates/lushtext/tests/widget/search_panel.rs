@@ -118,7 +118,7 @@ fn panel_with_one_search_match() -> LushtextSearchPanel {
     child_store.append(&match_item);
     panel.imp().runtime.root_store.borrow().append(&file_item);
     panel.imp().runtime.file_groups.borrow_mut().insert(
-        std::path::PathBuf::from("/test.rs"),
+        std::path::PathBuf::from("/test.rs").into(),
         SearchFileGroup::new(file_item, child_store),
     );
     panel
@@ -166,7 +166,7 @@ fn populate_large_result_generation(panel: &LushtextSearchPanel, path: &str, mat
         .runtime
         .file_groups
         .borrow_mut()
-        .insert(path, SearchFileGroup::new(header, child_store));
+        .insert(path.into(), SearchFileGroup::new(header, child_store));
     panel
         .imp()
         .runtime
@@ -244,7 +244,7 @@ fn populate_retirement_category(
                 let display = path.display().to_string();
                 let header = SearchResultItem::new_file(&display, &display, 0);
                 groups.insert(
-                    path,
+                    path.into(),
                     SearchFileGroup::new(header, gtk4::gio::ListStore::new::<SearchResultItem>()),
                 );
             }
@@ -268,7 +268,7 @@ fn populate_retirement_category(
                 .runtime
                 .file_groups
                 .borrow_mut()
-                .insert(path, SearchFileGroup::new(header, children));
+                .insert(path.into(), SearchFileGroup::new(header, children));
         }
         RetirementFixtureCategory::CachedMatchRows => panel
             .imp()
@@ -279,7 +279,10 @@ fn populate_retirement_category(
         RetirementFixtureCategory::CachedFileRows => {
             let mut file_rows = panel.imp().navigation.file_rows.borrow_mut();
             for (index, row) in retirement_fixture_tree_rows(count).into_iter().enumerate() {
-                file_rows.insert(PathBuf::from(format!("/cached-file-{index}.txt")), row);
+                file_rows.insert(
+                    PathBuf::from(format!("/cached-file-{index}.txt")).into(),
+                    row,
+                );
             }
         }
         RetirementFixtureCategory::StreamedMatches => {
@@ -3483,10 +3486,7 @@ fn test_evidence_reads_stay_side_effect_free_across_journal_mutation() {
     );
 }
 
-/// Write a workspace whose match count exceeds the content-search result cap.
-///
-/// The cap is a service constant, so the only honest way to reach the capped
-/// state through the real streaming path is a fixture large enough to trip it.
+/// Write a workspace of 18,000 matches (30 files of 600 lines).
 fn write_over_cap_fixture(root: &std::path::Path) {
     for index in 0..30 {
         fixture::write_text(
@@ -3496,55 +3496,304 @@ fn write_over_cap_fixture(root: &std::path::Path) {
     }
 }
 
+/// A search budget small enough for the 18,000-match fixture to cross it:
+/// about 2,000 matches of the fixture's 6-byte lines.
+const TEST_SEARCH_BUDGET: u64 = 4 * 1024 * 1024;
+
+/// Run `test` with the search budget lowered to `bytes`, restoring production.
+fn with_search_budget(bytes: u64, test: impl FnOnce()) {
+    SearchPanelTestPolicy::default()
+        .with_search_retained_bytes(bytes)
+        .install();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+    SearchPanelTestPolicy::reset();
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 #[test]
 fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
     ensure_gtk_init();
-    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    let dir = tempfile::tempdir().expect("expected operation to succeed");
-    write_over_cap_fixture(dir.path());
+    with_search_budget(TEST_SEARCH_BUDGET, || {
+        let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+        let dir = tempfile::tempdir().expect("expected operation to succeed");
+        write_over_cap_fixture(dir.path());
 
+        panel.clamp_results_height(240);
+        panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+        panel.start_search(&search_spec("needle"));
+
+        let mut found_seen = Vec::new();
+        wait_until(Duration::from_secs(60), || {
+            let evidence = panel.evidence();
+            if found_seen.last() != Some(&evidence.matches_found) {
+                found_seen.push(evidence.matches_found);
+            }
+            !evidence.searching && evidence.result_capped
+        });
+
+        let imp = panel.imp();
+        assert!(
+            imp.runtime.result_capped.get(),
+            "reaching the retained-byte budget must set the limited state, not stop silently",
+        );
+        let total = imp.runtime.total_matches.get();
+        let files = imp.runtime.total_files.get();
+        let evidence = panel.evidence();
+        assert_eq!(
+            evidence.matches_found, 18_000,
+            "the walk counted every match"
+        );
+        assert!(
+            total < 18_000 && total > 0,
+            "the budget cut the search: {total}"
+        );
+        assert_eq!(
+            imp.count_label.text().as_str(),
+            format!(
+                "Showing {} matches in {files} files; {} more not shown \u{2014} refine the search to see them",
+                group_thousands(total as usize),
+                group_thousands(18_000 - total as usize)
+            ),
+        );
+        assert!(
+            imp.count_label.has_css_class("warning"),
+            "a limited result set must be styled as a warning, not as a plain count",
+        );
+        assert!(imp.results_body_revealer.reveals_child());
+        // The retained matches are a gapless prefix: ids 0..total in order.
+        let accepted = imp.runtime.accepted_matches.borrow().clone();
+        let accepted = accepted.expect("a limited search is a completed search");
+        assert_eq!(accepted.len(), total as usize);
+        assert!(
+            accepted
+                .iter()
+                .enumerate()
+                .all(|(index, search_match)| search_match.id.index() == index)
+        );
+        assert_eq!(
+            imp.navigation.match_positions.borrow().len(),
+            total as usize
+        );
+        assert!(imp.save_button.property::<bool>("visible"));
+        assert!(
+            found_seen.windows(2).all(|pair| pair[0] <= pair[1]),
+            "the found count only grows: {found_seen:?}"
+        );
+        assert!(evidence.result_capped);
+        assert_eq!(evidence.match_count, total);
+        assert_eq!(evidence.retained_matches, total);
+        assert!(evidence.file_count > 0);
+    });
+}
+
+/// `count` with comma thousands separators, as the panel prints counts.
+fn group_thousands(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// No count cap (`bound-lists-by-budget-not-count`): 40,000 ordinary matches
+/// in 2,000 files are all shown and navigable, with no limited state, and
+/// Replace Preview lists its own 16,384-row budget and states the rest.
+#[test]
+fn test_search_past_mains_count_cap_shows_every_match() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let window = gtk4::Window::builder()
+        .default_width(900)
+        .default_height(700)
+        .child(&panel)
+        .build();
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    for index in 0..2_000 {
+        fixture::write_text(
+            &dir.path().join(format!("file_{index:04}.txt")),
+            &"let needle = value;\n".repeat(20),
+        );
+    }
     panel.clamp_results_height(240);
     panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
     panel.start_search(&search_spec("needle"));
-
-    // Streaming 16,384 matches costs at least 64 paced ticks, so the budget is
-    // generous; the predicate returns as soon as the flight settles.
-    wait_until(Duration::from_secs(60), || {
-        let imp = panel.imp();
-        !imp.runtime.searching.get() && imp.runtime.result_capped.get()
-    });
-
-    let imp = panel.imp();
-    assert!(
-        imp.runtime.result_capped.get(),
-        "reaching the service result cap must set the capped state, not stop silently",
-    );
-    assert_eq!(
-        imp.count_label.text().as_str(),
-        "16,384+ results (truncated) \u{2014} narrow your search",
-    );
-    assert!(
-        imp.count_label.has_css_class("warning"),
-        "a truncated result set must be styled as a warning, not as a plain count",
-    );
-    assert!(imp.results_body_revealer.reveals_child());
-    // Every match the service delivered before it stopped producing must still
-    // be rendered: the defect this covers discarded the whole bounded channel.
-    let total = imp.runtime.total_matches.get();
-    assert!(
-        total >= 16 * 1024,
-        "a capped search must keep the matches it found, got {total}",
-    );
-    assert!(
-        imp.runtime.accepted_matches.borrow().is_some(),
-        "a capped search is a completed search: its accepted snapshot must publish",
-    );
-    assert!(imp.save_button.property::<bool>("visible"));
+    wait_until(Duration::from_secs(120), || !panel.evidence().searching);
 
     let evidence = panel.evidence();
-    assert!(evidence.result_capped);
-    assert_eq!(evidence.match_count, total);
-    assert!(evidence.file_count > 0);
+    assert_eq!(evidence.match_count, 40_000, "every match is shown");
+    assert_eq!(evidence.file_count, 2_000);
+    assert_eq!(evidence.matches_found, 40_000);
+    assert!(!evidence.result_capped, "no limited state below the budget");
+    assert_eq!(evidence.navigation_match_count, 40_000);
+    assert_eq!(
+        panel.imp().count_label.text().as_str(),
+        "40000 results in 2000 files"
+    );
+    // F4 wraps through the whole list: Shift+F4 from the start lands on the
+    // last match, which is the 40,000th.
+    panel.navigate_prev_match();
+    assert_eq!(
+        panel.imp().navigation.current_match_index.get(),
+        Some(39_999)
+    );
+
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(120), || {
+        panel.is_preview_mode() && !panel.imp().preview.preview_pending.get()
+    });
+    let evidence = panel.evidence();
+    assert_eq!(evidence.replace_preview_count, 16 * 1024);
+    assert_eq!(evidence.omitted_replacement_count, 23_616);
+    let summary = panel.imp().count_label.text();
+    assert!(
+        summary.contains("23616 omitted") && !summary.contains("search limit"),
+        "the preview states its own omitted count and no search-limit clause: {summary}"
+    );
+    drop(window);
+}
+
+/// `main`'s worst case under the 16,384-match cap (every match a 4,096-byte
+/// line in its own file under a path near 4,096 bytes) is retained in full.
+#[test]
+fn test_search_keeps_mains_worst_case_in_full() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    // Nest 250-byte directory names until the file paths approach PATH_MAX.
+    let mut deep = dir.path().to_path_buf();
+    while deep.as_os_str().len() < 3_700 {
+        deep = deep.join("d".repeat(250));
+    }
+    fixture::create_dir_all(&deep);
+    let line = format!("needle{}\n", "x".repeat(4_090));
+    for index in 0..16 * 1024 {
+        fixture::write_text(&deep.join(format!("f{index:05}.txt")), &line);
+    }
+    panel.clamp_results_height(240);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(240), || !panel.evidence().searching);
+    let evidence = panel.evidence();
+    assert_eq!(
+        evidence.match_count,
+        16 * 1024,
+        "main's worst case is kept in full"
+    );
+    assert!(!evidence.result_capped);
+}
+
+/// A turn's matches reach the model as one splice per touched file plus at
+/// most one root splice, and the reveal turn takes at most one small batch.
+#[test]
+fn test_search_turn_applies_matches_as_one_splice_per_file() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    for index in 0..4 {
+        fixture::write_text(
+            &dir.path().join(format!("dense_{index}.txt")),
+            &"needle\n".repeat(2_000),
+        );
+    }
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    let mut largest_batch = (0, 0, 0);
+    wait_until(Duration::from_secs(60), || {
+        let evidence = panel.evidence();
+        if evidence.last_match_batch.0 > largest_batch.0 {
+            largest_batch = evidence.last_match_batch;
+        }
+        !evidence.searching
+    });
+    let evidence = panel.evidence();
+    assert_eq!(evidence.match_count, 8_000);
+    let (matches, child_splices, root_splices) = largest_batch;
+    assert!(
+        matches > 4,
+        "a turn applied several matches: {largest_batch:?}"
+    );
+    assert!(
+        (1..=4).contains(&child_splices),
+        "one splice per touched file, not per match: {largest_batch:?}"
+    );
+    assert!(root_splices <= 1);
+    assert!(
+        evidence.reveal_turn_events >= 1 && evidence.reveal_turn_events <= 32,
+        "the reveal turn carries one small batch: {}",
+        evidence.reveal_turn_events
+    );
+}
+
+/// Cancelling while the worker counts past the budget stops the counting:
+/// no later count reaches the panel.
+#[test]
+fn test_cancelling_a_limited_search_stops_its_count() {
+    ensure_gtk_init();
+    with_search_budget(64 * 1024, || {
+        let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+        let dir = tempfile::tempdir().expect("expected operation to succeed");
+        for index in 0..400 {
+            fixture::write_text(
+                &dir.path().join(format!("file_{index:03}.txt")),
+                &"needle\n".repeat(500),
+            );
+        }
+        panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+        panel.start_search(&search_spec("needle"));
+        wait_until(Duration::from_secs(60), || panel.evidence().result_capped);
+        panel.start_search(&search_spec(""));
+        wait_until(Duration::from_secs(30), || !panel.evidence().searching);
+        let after_cancel = panel.evidence();
+        flush_after_delay(Duration::from_millis(600));
+        let later = panel.evidence();
+        assert_eq!(later.matches_found, after_cancel.matches_found);
+        assert_eq!(
+            later.match_count, 0,
+            "the cancelled flight's results are gone"
+        );
+        assert!(!later.result_capped);
+    });
+}
+
+/// Replace Preview after a limited search lists only retained matches, states
+/// the excluded count, and replaces only checked rows; after an unlimited
+/// search it carries no clause (checked by the 40,000-match test above).
+#[test]
+fn test_preview_after_a_limited_search_states_the_search_limit() {
+    ensure_gtk_init();
+    with_search_budget(TEST_SEARCH_BUDGET, || {
+        let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+        let dir = tempfile::tempdir().expect("expected operation to succeed");
+        write_over_cap_fixture(dir.path());
+        panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+        panel.start_search(&search_spec("needle"));
+        wait_until(Duration::from_secs(60), || {
+            let evidence = panel.evidence();
+            !evidence.searching && evidence.result_capped
+        });
+        let retained = panel.evidence().match_count as usize;
+        panel.enter_preview_mode("thread");
+        wait_until(Duration::from_secs(60), || {
+            panel.is_preview_mode() && !panel.imp().preview.preview_pending.get()
+        });
+        let evidence = panel.evidence();
+        assert_eq!(evidence.replace_preview_count as usize, retained);
+        let summary = panel.imp().count_label.text();
+        assert!(
+            summary.ends_with(&format!(
+                "; {} matches past the search limit are not included",
+                group_thousands(18_000 - retained)
+            )),
+            "{summary}"
+        );
+    });
 }
 
 #[test]
@@ -3582,7 +3831,7 @@ fn test_search_panel_superseding_a_capped_search_discards_it_immediately() {
     });
 
     let imp = panel.imp();
-    // Cap termination is a service-side stop; a user supersede still discards
+    // A budget cut stops nothing; a user supersede still discards
     // everything the old flight had buffered.
     assert_eq!(imp.runtime.total_matches.get(), 1);
     assert_eq!(imp.runtime.total_files.get(), 1);
@@ -3685,4 +3934,117 @@ fn median(values: &[i64]) -> i64 {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
     sorted.get(sorted.len() / 2).copied().unwrap_or(0)
+}
+
+/// `bound-lists-by-budget-not-count` tasks 8.1–8.2: the search past the
+/// former cap (30 files of 600 matches, the PT M2/M3 fixture), its Replace
+/// Preview entry, and its retirement, presented: every dispatch fits
+/// `B_SETTLE_US` on the optimized widget build (printed on every build).
+#[test]
+fn test_search_and_preview_dispatches_fit_the_settle_budget() {
+    use crate::common::{timing_verdicts_enforced, worst_dispatch_until};
+    use lushtext_core::model::responsiveness_budget::B_SETTLE_US;
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    write_over_cap_fixture(dir.path());
+    for rep in 0..3 {
+        let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+        let window = gtk4::Window::builder()
+            .default_width(1000)
+            .default_height(800)
+            .child(&panel)
+            .build();
+        present_window(&window);
+        panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+        panel.start_search(&search_spec("needle"));
+        let (held, search_worst) =
+            worst_dispatch_until(Duration::from_secs(120), || !panel.evidence().searching);
+        assert!(held, "the search settles");
+        let evidence = panel.evidence();
+        assert_eq!(evidence.match_count, 18_000);
+        panel.enter_preview_mode("thread");
+        let (held, preview_worst) = worst_dispatch_until(Duration::from_secs(120), || {
+            panel.is_preview_mode() && !panel.imp().preview.preview_pending.get()
+        });
+        assert!(held, "the preview settles");
+        panel.start_search(&search_spec(""));
+        let (held, retire_worst) = worst_dispatch_until(Duration::from_secs(120), || {
+            !panel.is_searching() && !panel.evidence().retirement_pending
+        });
+        assert!(held, "the retirement settles");
+        let worst_turn = evidence
+            .event_turn_observations
+            .iter()
+            .map(|(_, us)| *us)
+            .max()
+            .unwrap_or(0);
+        println!(
+            "list-budget-evidence {{\"m\":\"search\",\"rep\":{rep},\"matches\":{},\"reveal_turn_events\":{},\"worst_turn_us\":{worst_turn},\"search_worst_us\":{},\"preview_worst_us\":{},\"retire_worst_us\":{}}}",
+            evidence.match_count,
+            evidence.reveal_turn_events,
+            search_worst.as_micros(),
+            preview_worst.as_micros(),
+            retire_worst.as_micros(),
+        );
+        if timing_verdicts_enforced() {
+            for (phase, worst) in [
+                ("search", search_worst),
+                ("preview", preview_worst),
+                ("retirement", retire_worst),
+            ] {
+                assert!(
+                    worst.as_micros() <= u128::from(B_SETTLE_US),
+                    "{phase} dispatch {} us exceeds B_SETTLE_US",
+                    worst.as_micros()
+                );
+            }
+        }
+        drop(window);
+    }
+}
+
+/// `bound-lists-by-budget-not-count` tasks 2.4 and 8.3: what 16,384 retained
+/// matches (120-byte lines, 20 per file) really cost, presented, against what
+/// the budget charges them: resident high-water growth at most 5/4 of the
+/// charge. Prints the per-match growth the fixed charge is calibrated from.
+#[test]
+fn test_search_retention_stays_within_its_charge() {
+    use crate::common::{proc_status_kib, reset_vm_hwm};
+    use lushtext_core::ui::search_panel::policy::SEARCH_MATCH_FIXED_CHARGE;
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let line = format!("needle {}\n", "x".repeat(112));
+    let mut path_bytes = 0u64;
+    for index in 0..820 {
+        let path = dir.path().join(format!("file_{index:04}.txt"));
+        path_bytes += path.as_os_str().len() as u64;
+        fixture::write_text(&path, &line.repeat(20));
+    }
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let window = gtk4::Window::builder()
+        .default_width(1000)
+        .default_height(800)
+        .child(&panel)
+        .build();
+    present_window(&window);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    flush_after_delay(Duration::from_millis(200));
+    reset_vm_hwm();
+    let before_kib = proc_status_kib("VmRSS:");
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(120), || !panel.evidence().searching);
+    flush_after_delay(Duration::from_millis(300));
+    let growth = proc_status_kib("VmHWM:").saturating_sub(before_kib) * 1024;
+    let matches = u64::from(panel.evidence().match_count);
+    assert_eq!(matches, 16_400);
+    let charged = matches * (119 + SEARCH_MATCH_FIXED_CHARGE) + 2 * path_bytes;
+    println!(
+        "list-budget-evidence {{\"m\":\"search-memory\",\"matches\":{matches},\"growth_bytes\":{growth},\"charged_bytes\":{charged},\"growth_per_match\":{}}}",
+        growth / matches
+    );
+    assert!(
+        growth * 4 <= charged * 5,
+        "16,400 matches grew the resident set by {growth} bytes, over 5/4 of the {charged} bytes charged"
+    );
+    drop(window);
 }

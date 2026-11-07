@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -15,9 +15,11 @@ use super::workspace_search::{WorkspaceSearchFallbackMetrics, WorkspaceSearchInc
 
 /// Maximum UTF-8 bytes retained for one matching search line.
 ///
-/// Workspace search can keep up to 16,384 matches in memory. Four KiB per
-/// match keeps worst-case retained line text in the tens of MiB rather than
-/// allowing minified or generated files to retain multi-GiB result sets.
+/// Workspace search retains matches against a byte budget
+/// (`ui::search_panel::policy::SEARCH_RESULTS_RETAINED_BYTES`) that charges
+/// each match's line. Four KiB per match keeps one minified or generated
+/// line from consuming a large share of it, and is the per-match line of
+/// `main`'s worst case that budget is sized against.
 ///
 /// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
 pub const MAX_SEARCH_MATCH_LINE_BYTES: usize = 4 * 1024;
@@ -64,8 +66,10 @@ impl SearchMatchId {
 pub struct SearchMatch {
     /// Dense identity assigned when the match enters the active search generation.
     pub id: SearchMatchId,
-    /// Absolute path to the file containing the match.
-    pub path: PathBuf,
+    /// Absolute path to the file containing the match, interned once per file
+    /// by the worker and shared by every match of that file, its file row and
+    /// the navigation index (`bound-lists-by-budget-not-count` task 3.3).
+    pub path: Arc<Path>,
     /// 1-based line number of the match.
     pub line_number: u64,
     /// Bounded text of the matching line (no trailing newline).
@@ -88,7 +92,7 @@ impl SearchMatch {
     /// Build one bounded search match from a full source line.
     #[must_use]
     pub fn new(
-        path: PathBuf,
+        path: impl Into<Arc<Path>>,
         line_number: u64,
         line_content: &str,
         match_range: Range<usize>,
@@ -98,7 +102,7 @@ impl SearchMatch {
             bounded_match_line(line_content, match_range);
         Self {
             id: SearchMatchId::from_index(0),
-            path,
+            path: path.into(),
             line_number,
             line_content: Arc::from(line_content),
             match_range,
@@ -308,8 +312,16 @@ impl SearchQuerySpec {
 pub enum SearchEvent {
     /// A matching line was found.
     Match(SearchMatch),
-    /// The 8,192-match result cap was reached; search stopped early.
-    ResultCap,
+    /// The retained-byte budget refused a match: every match sent before this
+    /// event is retained, none after it. The search keeps walking and counting.
+    BudgetReached {
+        /// Matches retained (sent as `Match`) before the refusal.
+        retained: usize,
+    },
+    /// Running count of matches found, including those past the budget.
+    /// Coalesced to at most one every [`BEYOND_BUDGET_REPORT_INTERVAL_MS`],
+    /// best-effort like `Progress`; `Done` carries the final count.
+    BeyondBudget(usize),
     /// Progress update: number of files visited so far. Sent approximately
     /// every 100 files to avoid flooding the channel. Best-effort — may be
     /// skipped if the channel is full.
@@ -320,8 +332,49 @@ pub enum SearchEvent {
     Incomplete(WorkspaceSearchIncompleteReason),
     /// Compact terminal evidence from the optional ambiguous-alias ledger.
     TraversalMetrics(WorkspaceSearchFallbackMetrics),
-    /// Search completed (always the last event sent).
-    Done,
+    /// Search completed (always the last event sent), with every match
+    /// found, retained or not.
+    Done {
+        /// Matches found by the whole walk, including those past the budget.
+        matches_found: usize,
+    },
+}
+
+/// Smallest interval between two `BeyondBudget` reports, milliseconds.
+///
+/// Kind: out: time; the cadence of a running count label.
+pub const BEYOND_BUDGET_REPORT_INTERVAL_MS: u64 = 250;
+
+/// How the search worker charges retained matches against its budget
+/// (`bound-lists-by-budget-not-count` D3). The budget and the fixed charge are
+/// the search panel's policy (`ui::search_panel::policy`); the arithmetic is
+/// here because the worker, a service, applies it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SearchRetention {
+    /// The retained-byte budget.
+    pub budget_bytes: u64,
+    /// Bytes charged per match beyond its line text: the match's own struct,
+    /// its list item, row and navigation entries.
+    pub match_fixed_charge: u64,
+}
+
+impl SearchRetention {
+    /// No budget: every match is retained (tests and benchmarks).
+    pub const UNLIMITED: Self = Self {
+        budget_bytes: u64::MAX,
+        match_fixed_charge: 0,
+    };
+
+    /// The charge of one match: its line bytes and the fixed charge, plus,
+    /// for the first match of a file, the file's path bytes twice (the
+    /// canonical path and the display path, which is never longer).
+    #[must_use]
+    pub fn match_charge(self, line_bytes: usize, first_of_file_path_bytes: Option<usize>) -> u64 {
+        let path = first_of_file_path_bytes.map_or(0u64, |bytes| (bytes as u64).saturating_mul(2));
+        (line_bytes as u64)
+            .saturating_add(self.match_fixed_charge)
+            .saturating_add(path)
+    }
 }
 
 /// A replacement instruction for Replace All, including preview data.
@@ -868,7 +921,7 @@ fn generate_replacement_preview_impl(
         }
         outcome.replacements.push(Replacement {
             match_id: m.id,
-            path: m.path.clone(),
+            path: m.path.to_path_buf(),
             line_number: m.line_number,
             original_line,
             replaced_line,

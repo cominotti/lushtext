@@ -40,6 +40,8 @@ struct WorkspaceTreeTestPolicy {
     /// Delays the workspace-list load worker so a test can create a workspace
     /// between the load's dispatch and its adoption.
     load_worker_delay_ms: AtomicU64,
+    /// Overrides a directory's retained-byte budget; zero keeps production.
+    directory_retained_bytes: AtomicU64,
 }
 
 impl WorkspaceTreeTestPolicy {
@@ -48,6 +50,7 @@ impl WorkspaceTreeTestPolicy {
             placeholder_cleanup_delay_ms: AtomicU64::new(0),
             rename_worker_delay_ms: AtomicU64::new(0),
             load_worker_delay_ms: AtomicU64::new(0),
+            directory_retained_bytes: AtomicU64::new(0),
         }
     }
 }
@@ -134,4 +137,23 @@ pub(super) fn delay_placeholder_cleanup() {
     if delay_ms > 0 {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
     }
+}
+
+/// Lower a sidebar directory's retained-byte budget; zero restores production.
+///
+/// **A limit override, not an actuation seam** (`bound-lists-by-budget-not-count`
+/// task 4.1): the production budget is hundreds of MiB, which no widget fixture
+/// should reach, so the budget-row and limited-directory tests lower it here.
+/// Every other step (scan, top-k selection, batch application, the budget row)
+/// runs the production path unchanged.
+pub fn set_sidebar_directory_retained_bytes_for_test(bytes: u64) {
+    POLICY
+        .directory_retained_bytes
+        .store(bytes, Ordering::Release);
+}
+
+/// The overridden directory budget, when a test installed one.
+pub(super) fn directory_retained_bytes_override() -> Option<u64> {
+    let bytes = POLICY.directory_retained_bytes.load(Ordering::Acquire);
+    (bytes > 0).then_some(bytes)
 }

@@ -16,7 +16,6 @@
 //! two generations were still retiring restarts from there.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -107,9 +106,9 @@ pub struct SearchRetirementSliceObservation {
 struct RetiredSearchGtkState {
     generation: u64,
     root_store: gtk4::gio::ListStore,
-    file_groups: BTreeMap<PathBuf, SearchFileGroup>,
+    file_groups: BTreeMap<std::sync::Arc<std::path::Path>, SearchFileGroup>,
     match_rows: Vec<Option<gtk4::TreeListRow>>,
-    file_rows: BTreeMap<PathBuf, gtk4::TreeListRow>,
+    file_rows: BTreeMap<std::sync::Arc<std::path::Path>, gtk4::TreeListRow>,
     search_matches: Vec<crate::model::content_search::SearchMatch>,
     accepted_matches: Option<Arc<Vec<crate::model::content_search::SearchMatch>>>,
     accepted_match_rows: Vec<crate::model::content_search::SearchMatch>,

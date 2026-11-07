@@ -20,6 +20,9 @@ crash-kill-points = []
 # builds only; see `services::read_fault`. Never enabled in release, Meson,
 # Flatpak, or Snap.
 smoke-read-faults = []
+# Smoke-only overrides of the workspace list budgets (`services::smoke_list_budgets`):
+# never in release, Meson, Flatpak or Snap builds.
+smoke-list-budgets = []
 # In-process responsiveness probes (main-loop lateness watchdog, frame and
 # input timing, probe input method) for the `make responsiveness-smoke`
 # measurement build only; see `ui::responsiveness_probe`. Never enabled in

@@ -273,6 +273,30 @@ If the confusing part is `connect_setup`, `connect_bind`, `connect_unbind`, row 
 
 - [../../gtk4-libadwaita-internals/references/containers-lists-and-factories.md](../../gtk4-libadwaita-internals/references/containers-lists-and-factories.md)
 
+### Timing a list's first rows (`bound-lists-by-budget-not-count`)
+
+- **Measure dispatches on the optimized widget build** (`CARGO_PROFILE_DEV_OPT_LEVEL=2
+  CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false`), presented, with
+  `common::worst_dispatch_until`; gate a timing assertion on
+  `common::timing_verdicts_enforced()` so the ordinary debug suite prints
+  without failing.
+- **The first rows into an empty `GtkListView` create its row widgets**, up to
+  its realized cap (about 205, A1), in the dispatch that adds them and the
+  frame after: each is a factory setup, a bind and a first layout. A
+  benchmark of a large list's steady state misses this one-time cost, and a
+  test that only counts model rows cannot see it; time the dispatch that
+  first makes the list non-empty. An unrealized list does **not** walk its
+  items per `items-changed` (A87), so a slow first turn is the widget
+  creation, not the model.
+- **A `GtkTreeListModel` row can own more than one child store**: the
+  expander's `is_expandable()` probe runs the create function and discards
+  the store (A22), so a cache keyed by directory path must follow the live
+  store of an expanded row, or the probe's rows leak into it.
+- **Resident memory**: reset the high-water mark (`common::reset_vm_hwm`) after
+  the fixture is written and read `VmHWM` growth against the charge the
+  budget made; each widget test runs in its own child process, so the reading
+  is the test's.
+
 ## When Widget Tests Are the Wrong Tool
 
 Switch tools when:
