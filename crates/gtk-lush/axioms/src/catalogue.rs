@@ -1409,6 +1409,61 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a91),
     },
+    Axiom {
+        id: AxiomId::new(92),
+        name: "a92_an_adw_sidebar_builds_a_row_per_item",
+        statement: "AdwSidebar in sidebar mode builds one GtkListBoxRow per item, off-screen \
+                    items included, so repopulating it (remove_all, then N items) costs in \
+                    proportion to N (512 against 16,384)",
+        dependent_designs: &[
+            "bound-notes-browser-by-budget D1: the notes browser replaces its AdwSidebar with a \
+             virtualized GtkListView with section headers",
+        ],
+        slow: true,
+        probe: Some(probes::probe_a92),
+    },
+    Axiom {
+        id: AxiomId::new(93),
+        name: "a93_a_lazy_section_model_publishes_by_remove_then_add",
+        statement: "on a presented GtkListView with a header-factory over a GtkSingleSelection \
+                    over a lazy GListModel + GtkSectionModel, one items-changed(0, old, new) \
+                    replacing realized rows asks get_item for every added item, while \
+                    items-changed(0, old, 0) then items-changed(0, 0, new) asks only around \
+                    the realized rows and costs the same at 512 and 131,072 items; a fresh \
+                    object per get_item is accepted",
+        dependent_designs: &[
+            "bound-notes-browser-by-budget D2: the notes browser's NotesBrowserRowModel creates \
+             rows on demand and keeps no row-object cache",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a93),
+    },
+    Axiom {
+        id: AxiomId::new(94),
+        name: "a94_section_headers_are_not_focus_stops",
+        statement: "section headers from a GtkListView header-factory are not focusable, and \
+                    moving focus down from a section's last row focuses the next section's first \
+                    row; the header widget's accessible role is recorded",
+        dependent_designs: &[
+            "bound-notes-browser-by-budget D9: each notes-browser row's accessible description \
+             carries its section name",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a94),
+    },
+    Axiom {
+        id: AxiomId::new(95),
+        name: "a95_scrolling_to_a_far_row_realizes_only_around_it",
+        statement: "on the A93 list, set_selected(p) plus scroll_to(p) for a far row realizes \
+                    only around p: its get_item calls stay bounded (16,383 against 131,071); \
+                    its time grows with the row count and is recorded",
+        dependent_designs: &[
+            "bound-notes-browser-by-budget D2: the selection restore and the last row are \
+             reached by position at any row count",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a95),
+    },
 ];
 
 #[cfg(test)]
