@@ -474,8 +474,12 @@ pub enum PaletteNoteTarget {
 /// Owned, GTK-free row emitted by grouped command-palette search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteSearchRow {
+    /// A group header: its visible label and the category it heads, which
+    /// the grouped search knows (a label alone can be ambiguous: a workspace
+    /// may be named like another group).
     Header {
         label: String,
+        category: PaletteCategory,
     },
     File {
         display_name: String,

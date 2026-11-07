@@ -65,6 +65,11 @@ impl super::LushtextCommandPalette {
         if imp.category.get() == Some(category) {
             return true;
         }
+        // Refuse before leaving: a refused id changes nothing, also while
+        // another category view is shown (review finding R1).
+        if !category.belongs_to(imp.mode.get()) {
+            return false;
+        }
         let _ = imp.leave_category_view();
         imp.leaving_category.set(None);
         let shown = imp.enter_category(category);
@@ -113,6 +118,7 @@ impl LushtextCommandPalette {
         let label = self.category_label(category);
         self.category.set(Some(category));
         self.leaving_category.set(None);
+        self.category_published_query.replace(None);
         self.cancel_category_clear();
         self.category_model.clear();
         self.category_matching.set(0);
@@ -222,6 +228,12 @@ impl LushtextCommandPalette {
         let listed = ranking.ordinals.len();
         self.category_matching.set(ranking.matching);
         self.category_limited.set(ranking.limited);
+        // Read the selection before publishing: a shrinking publish removes
+        // the selected row and `GtkSingleSelection` forgets it.
+        let selected_before = self
+            .category_selection()
+            .map(|selection| selection.selected())
+            .filter(|position| *position != gtk4::INVALID_LIST_POSITION);
         self.category_model.publish(
             ranking.ordinals,
             category,
@@ -240,12 +252,21 @@ impl LushtextCommandPalette {
                 listed > 0,
                 request.query.is_empty(),
             ));
-        if listed > 0
-            && let Some(selection) = self.category_selection()
-        {
-            selection.set_selected(0);
-            self.category_view
-                .scroll_to(0, gtk4::ListScrollFlags::NONE, None);
+        let same_query = self.category_published_query.borrow().as_deref() == Some(&*request.query);
+        self.category_published_query
+            .replace(Some(request.query.to_string()));
+        if let Some(selection) = self.category_selection() {
+            let selected = selected_before;
+            let length = u32::try_from(listed).unwrap_or(u32::MAX);
+            if let Some((position, scroll)) =
+                policy::category_publish_selection(same_query, selected, length)
+            {
+                selection.set_selected(position);
+                if scroll {
+                    self.category_view
+                        .scroll_to(position, gtk4::ListScrollFlags::NONE, None);
+                }
+            }
         }
         self.refresh_accessibility_state();
     }

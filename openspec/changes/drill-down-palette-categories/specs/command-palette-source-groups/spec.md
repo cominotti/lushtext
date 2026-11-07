@@ -71,6 +71,7 @@ In a category view, typing SHALL filter within the category through the palette'
 #### Scenario: Sources change while a category is shown
 - **WHEN** the file index is replaced while the workspace category view is shown
 - **THEN** the view is republished from the new index and stays in that category
+- **AND** the selected row stays selected, clamped to the new length, while a new query selects the first row
 
 ## MODIFIED Requirements
 

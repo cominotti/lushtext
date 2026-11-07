@@ -1512,7 +1512,7 @@ fn file_rows(rows: &[PaletteSearchRow], label: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for row in rows {
         match row {
-            PaletteSearchRow::Header { label: header } => in_group = header == label,
+            PaletteSearchRow::Header { label: header, .. } => in_group = header == label,
             PaletteSearchRow::File { file_path, .. } if in_group => out.push(file_path.clone()),
             _ => {}
         }

@@ -182,6 +182,30 @@ pub fn next_category_row(current: Option<u32>, len: u32, delta: i32) -> Option<u
     })
 }
 
+/// Where a category view's selection goes when a ranking is published: a
+/// republish of the **same query** (a source changed: the index replaced, a
+/// file created by a build, the note source refreshed) keeps the selected
+/// row, clamped to the new length, so background churn never sends a user
+/// browsing deep in a long category back to the top; the first publish after
+/// entering and a new query select the first row (review finding R2 of
+/// `drill-down-palette-categories`). Returns the row and whether to scroll to
+/// it (only when it moved), or `None` for an empty list. O(1).
+#[must_use]
+pub fn category_publish_selection(
+    same_query: bool,
+    selected: Option<u32>,
+    len: u32,
+) -> Option<(u32, bool)> {
+    let last = len.checked_sub(1)?;
+    match selected {
+        Some(position) if same_query => {
+            let kept = position.min(last);
+            Some((kept, kept != position))
+        }
+        _ => Some((0, true)),
+    }
+}
+
 /// A page move in the grouped view: `rows` rows in `delta`'s sign, landing on
 /// the nearest activatable row in the move's direction (else the nearest one
 /// back toward the start), so headers are skipped.
@@ -1327,6 +1351,27 @@ mod tests {
         // Entering with an empty query: the first Backspace leaves.
         tracker.reset(true);
         assert!(tracker.backspace_pressed(true));
+    }
+
+    #[test]
+    fn a_same_query_republish_keeps_the_category_selection() {
+        assert_eq!(
+            category_publish_selection(true, Some(1_500), 2_000),
+            Some((1_500, false))
+        );
+        assert_eq!(
+            category_publish_selection(true, Some(1_500), 1_000),
+            Some((999, true))
+        );
+        assert_eq!(
+            category_publish_selection(false, Some(1_500), 2_000),
+            Some((0, true))
+        );
+        assert_eq!(
+            category_publish_selection(true, None, 2_000),
+            Some((0, true))
+        );
+        assert_eq!(category_publish_selection(true, Some(3), 0), None);
     }
 
     proptest::proptest! {
