@@ -187,14 +187,16 @@ replacement SHALL keep suspending tracking exactly as before.
 ### Requirement: Search markers never force a synchronous scan
 The minimap SHALL read search markers from the in-tab search context's
 synchronous probe only after the context reports a completed scan. It SHALL
-re-arm its refresh when the scan completes. No minimap dispatch SHALL call a
-search probe that scans unscanned text synchronously. Time to the first
+redraw the strip when the scan completes. No minimap dispatch SHALL call a
+probe of the live search context that scans unscanned text synchronously. Time to the first
 in-band search marker SHALL be measured against the base revision on an
 ordinary, a sparse and a dense document. If it is later by more than one
 reference frame on any of them, the minimap SHALL also fill the search bins
-progressively, until the scan completes, from cancellable,
-generation-guarded asynchronous probes that never block a dispatch past
-`B_INTERACT_US`. Where the base revision is earlier only through a dispatch
+of the rows it shows before the scan completes, without blocking a dispatch
+past `B_INTERACT_US` and without a request a query change can leave
+unanswered: it SHALL search a bounded private copy of the text those rows
+show, with the same query and options, and use the scan's results once the
+scan completes. Where the base revision is earlier only through a dispatch
 over `B_INTERACT_US`, the difference SHALL be recorded as an exception with
 both figures.
 
