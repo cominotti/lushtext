@@ -97,11 +97,16 @@ fn run_if_current<T, F>(
 /// Debounces trailing main-loop work so only the newest request runs.
 ///
 /// `Debounce` is for rapid-fire UI input and persistence coalescing. It uses
-/// GLib's main loop for scheduling and a generation token for cancellation, so
-/// stale callbacks no-op instead of relying on fragile source removal.
+/// GLib's main loop for scheduling and a generation token for cancellation:
+/// a stale callback no-ops. A new `schedule` (and `invalidate`) also removes
+/// the superseded GLib source at once, so at most one source, and one weak
+/// reference to the target, is pending however many times it is scheduled in
+/// one dispatch. Keeping every superseded source until its deadline made a
+/// burst of 131,072 edits in one dispatch register 131,072 weak references on
+/// one object, past GLib's per-object limit (`Too many GWeakRef registered`).
 #[derive(Clone, Debug, Default)]
 pub struct Debounce {
-    gate: Rc<GenerationGate>,
+    state: Rc<SupersedingTimerState>,
 }
 
 impl Debounce {
@@ -115,19 +120,23 @@ impl Debounce {
     /// supersede any pending timer.
     #[must_use]
     pub fn advance(&self) -> TimerToken {
-        self.gate.advance()
+        self.state.gate.advance()
     }
 
-    /// Invalidate pending callbacks without scheduling a replacement.
+    /// Invalidate pending callbacks without scheduling a replacement, and
+    /// remove the pending source.
     #[must_use]
     pub fn invalidate(&self) -> TimerToken {
-        self.gate.invalidate()
+        let scheduled = self.state.take_scheduled();
+        let token = self.state.gate.invalidate();
+        SupersedingTimerState::remove_source(scheduled);
+        token
     }
 
     /// Check whether a previously captured token is still current.
     #[must_use]
     pub fn is_current(&self, token: TimerToken) -> bool {
-        self.gate.is_current(token)
+        self.state.gate.is_current(token)
     }
 
     /// Schedule a trailing callback on GTK's main loop.
@@ -140,12 +149,21 @@ impl Debounce {
         T: IsA<Object> + Clone + 'static,
         F: FnOnce(T, TimerToken) + 'static,
     {
-        let token = self.advance();
-        let gate = Rc::clone(&self.gate);
+        let scheduled = self.state.take_scheduled();
+        let token = self.state.gate.advance();
+        // Removing a source synchronously drops its callback captures. Advance
+        // first so a debounce re-entered from a destructor stays the newest.
+        SupersedingTimerState::remove_source(scheduled);
+        if !self.state.gate.is_current(token) {
+            return token;
+        }
+        let state = Rc::clone(&self.state);
         let target_weak = target.downgrade();
-        glib::timeout_add_local_once(delay, move || {
-            run_if_current(&target_weak, &gate, token, callback);
+        let source_id = glib::timeout_add_local_once(delay, move || {
+            state.forget_if_current(token);
+            run_if_current(&target_weak, &state.gate, token, callback);
         });
+        self.state.scheduled.replace(Some((token, source_id)));
         token
     }
 }
@@ -428,6 +446,44 @@ mod tests {
 
         assert!(!debounce.is_current(first));
         assert!(debounce.is_current(second));
+    }
+
+    #[test]
+    fn debounce_reschedule_removes_the_superseded_source_immediately() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let debounce = Debounce::default();
+        let target = Object::new::<Object>();
+        let drops = Rc::new(Cell::new(0));
+        let probe = DropProbe(Rc::clone(&drops));
+        let _ = debounce.schedule(&target, Duration::from_secs(60), move |_, _| {
+            let _probe = probe;
+        });
+
+        let _ = debounce.schedule(&target, Duration::from_secs(60), |_, _| {});
+
+        assert_eq!(drops.get(), 1);
+
+        let _ = debounce.invalidate();
+    }
+
+    #[test]
+    fn debounce_keeps_one_pending_source_across_a_burst() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let debounce = Debounce::default();
+        let target = Object::new::<Object>();
+        let drops = Rc::new(Cell::new(0));
+        // More schedules than GLib allows weak references on one object.
+        for _ in 0..70_000 {
+            let probe = DropProbe(Rc::clone(&drops));
+            let _ = debounce.schedule(&target, Duration::from_secs(60), move |_, _| {
+                let _probe = probe;
+            });
+        }
+
+        assert_eq!(drops.get(), 69_999);
+
+        let _ = debounce.invalidate();
+        assert_eq!(drops.get(), 70_000);
     }
 
     #[test]

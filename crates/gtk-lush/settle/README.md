@@ -28,7 +28,10 @@ assert!(debounce.is_current(token));
 - `Debounce` fits trailing latest-input work such as search queries, filter
   updates, and coalesced persistence scheduling. It also exposes
   advance/invalidate/current-token checks for immediate empty states and async
-  freshness gates tied to the same family.
+  freshness gates tied to the same family. A new schedule or an invalidation
+  removes the superseded GLib source, so a burst of schedules in one dispatch
+  (an edit signal re-arming it per edit) keeps one pending source and one weak
+  reference to the target, not one per schedule.
 - `SettleBurst` fits readiness-visible repair after noisy layout or rendering
   bursts. Its `pending()` state remains true until the current repair handle
   finishes.
