@@ -796,3 +796,25 @@ pub mod a96 {
 pub mod a97 {
     pub use crate::probes::a97::{EntryFixture, Seen, entry_fixture, presses_then_release};
 }
+
+/// The values and helpers the A98 probe drives, for its sample.
+pub mod a98 {
+    pub use crate::probes::a98::{bookkeeping_tag, numbered_lines, tag_line, tagged_lines};
+}
+
+/// The fixture and values the A99 probe drives, for its sample.
+pub mod a99 {
+    pub use crate::probes::a99::{HIDDEN, MapFixture, SWEEP_LINES, sweep};
+}
+
+/// The buffer, search and timing the A100 probe drives, for its sample.
+pub mod a100 {
+    pub use crate::probes::a100::{
+        NEEDLE, SPARSE_LINES, forward_from_start_us, needle_search, sparse_buffer,
+    };
+}
+
+/// The overlaid map the A101 probe drives, for its sample.
+pub mod a101 {
+    pub use crate::probes::a101::OverlaidMap;
+}

@@ -1492,6 +1492,59 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a97),
     },
+    Axiom {
+        id: AxiomId::new(98),
+        name: "a98_a_property_less_text_tag_is_bookkeeping_only",
+        statement: "a GtkTextTag with no properties costs a B-tree walk to apply, queues no \
+                    relayout, creates no undo entry, moves with its text, is not carried by a \
+                    paste into another tag table, triggers no GtkSourceView re-highlight, and \
+                    leaves an edit signal's iterators valid when applied from an after-handler",
+        dependent_designs: &[
+            "bin-minimap-markers-per-row D4: modified-since-save lines are one property-less \
+             tag, applied from the buffer's edit after-handlers and retired in slices",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a98),
+    },
+    Axiom {
+        id: AxiomId::new(99),
+        name: "a99_source_map_line_at_y_is_monotone_and_skips_hidden_lines",
+        statement: "gtk_text_view_get_line_at_y on a presented GtkSourceMap is monotone in y, \
+                    never returns a line hidden by an invisible tag, and costs about the same \
+                    near the end of 262,144 lines as of 1,024",
+        dependent_designs: &[
+            "bin-minimap-markers-per-row D2: the marker strip's row table reads one line per \
+             pixel row and groups rows showing the same line, hidden lines included",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a99),
+    },
+    Axiom {
+        id: AxiomId::new(100),
+        name: "a100_search_forward_is_cheap_only_inside_a_completed_scan",
+        statement: "GtkSourceSearchContext forward costs microseconds inside a completed scan \
+                    and scans synchronously to the match before it, skips hidden text by \
+                    default, and occurrences-count reads -1 after an edit until its rescan \
+                    ends, notifying when it does",
+        dependent_designs: &[
+            "bin-minimap-markers-per-row D5: search markers come from a completed scan and the \
+             strip re-arms on notify::occurrences-count",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a100),
+    },
+    Axiom {
+        id: AxiomId::new(101),
+        name: "a101_an_overlay_sibling_is_not_redrawn_when_the_source_map_scrolls",
+        statement: "a GtkDrawingArea overlaid on a GtkSourceMap is not redrawn when the map \
+                    scrolls with its view; only its own queue_draw redraws it",
+        dependent_designs: &[
+            "bin-minimap-markers-per-row D7: the marker strip redraws on the map \
+             vadjustment's value-changed",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a101),
+    },
 ];
 
 #[cfg(test)]
