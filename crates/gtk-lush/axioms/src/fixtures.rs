@@ -818,3 +818,8 @@ pub mod a100 {
 pub mod a101 {
     pub use crate::probes::a101::OverlaidMap;
 }
+
+/// The asynchronous walk the A102 probe times, for its sample.
+pub mod a102 {
+    pub use crate::probes::a102::{AsyncWalk, DISPATCH_BUDGET, walk_async};
+}

@@ -1545,6 +1545,20 @@ const CATALOGUE: &[Axiom] = &[
         slow: false,
         probe: Some(probes::probe_a101),
     },
+    Axiom {
+        id: AxiomId::new(102),
+        name: "a102_search_forward_async_never_blocks_a_dispatch",
+        statement: "GtkSourceSearchContext forward_async on a context that has not scanned \
+                    scans across main-loop turns, never blocking a dispatch past 8 ms, and a \
+                    walk that starts near its match calls back sooner; a pending request \
+                    superseded by a query change never calls back and GIO logs a CRITICAL",
+        dependent_designs: &[
+            "bin-minimap-markers-per-row D5: interim search markers come from a private copy \
+             of the band's text, not forward_async, which a query change can supersede",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a102),
+    },
 ];
 
 #[cfg(test)]
