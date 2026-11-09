@@ -284,7 +284,7 @@ exclude_re = [
     # default-feature build cargo-mutants tests never compiles them.
     "crates/lushtext-core/src/services/editor_io\\.rs:.*bench_(load_analysis|load_analysis_fused|health_scan|trim|normalize|crlf_check)",
     # `MinimapAnalysisAccumulator::inspect_str` (simd-line-scans). Only the
-    # first entry is line-anchored (re-key it on any edit above line 2601): it is
+    # first entry is line-anchored (re-key it on any edit above line 2804): it is
     # the per-character copy compiled only under `cfg(kani)`, which no test build
     # compiles, and shares its name with the tested copy. The rest are
     # equivalent and unique in their functions: `<` with `<=` in the paragraph
@@ -292,7 +292,7 @@ exclude_re = [
     # ignores; in `paragraph_may_cross` and `thresholds_in_play`, `>` with `>=`
     # and `&&` with `||` only count more lines exactly, never fewer, and an
     # exact count yields the same state.
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:2601:9: replace MinimapAnalysisAccumulator::inspect_str with \\(\\)",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:2804:9: replace MinimapAnalysisAccumulator::inspect_str with \\(\\)",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in MinimapAnalysisAccumulator::inspect_str",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in paragraph_may_cross",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace && with \\|\\| in MinimapAnalysisAccumulator::thresholds_in_play",
@@ -331,10 +331,21 @@ exclude_re = [
     # `native_slider_fit_rejects_a_source_map_whose_bottom_overflows`. The early
     # checks stay even so: without them `-inf + inf` computes a NaN sum, which
     # the Kani no-panic harness `native_slider_fit_never_panics` rejects.
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:490:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:491:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:513:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:514:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_to_min_height",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in expanded_to_min_height",
+    # Equivalent in `expanded_run`, the integer twin of `expanded_to_min_height`
+    # (`bin-minimap-markers-per-row`), for the same reasons: at `top ==
+    # band.lower` the block adds a zero offset and re-assigns `lower`, at
+    # `bottom == band.upper` it subtracts a zero offset and re-assigns `upper`;
+    # and `height < target` with `<=` grows a run already `target` tall by zero
+    # rows, after which both edge checks are false, because every caller passes
+    # a run inside the band (`marker_row_runs` clamps each group to it, and a
+    # merge of in-band runs stays in it). The `<` entry matches exactly those
+    # two mutants (lines 1072 and 1076 when written).
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_run",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in expanded_run",
     # Equivalent in `model/paragraph_boundary.rs` (document-scale-policy's
     # mutation smoke): `>` with `>=` where the tie picks an equal value (the
     # window clamp at exactly the ring capacity, the componentwise maxima, the

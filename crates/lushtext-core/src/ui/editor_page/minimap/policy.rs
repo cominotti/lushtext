@@ -1291,6 +1291,18 @@ mod marker_row_tests {
     }
 
     #[test]
+    fn adjacent_rows_coalesce_before_growing() {
+        let band = MarkerRowBand {
+            lower: 0,
+            upper: 20,
+        };
+        // Rows 10 and 11 are already two rows tall together: nothing grows.
+        // Growing each row alone first would give [10, 12) and [11, 13),
+        // merged into a three-row run.
+        assert_eq!(runs_of(&[10, 11], band, 2), vec![(10, 12)]);
+    }
+
+    #[test]
     fn a_one_row_run_grows_with_the_odd_row_below() {
         let band = MarkerRowBand {
             lower: 0,
