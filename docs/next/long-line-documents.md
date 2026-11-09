@@ -4157,7 +4157,12 @@ handoff's `runs.log` every run.
 - **Verdicts.** First in-band search marker 150–153 ms on every document
   (`main` 261–348 ms); the minimap's own work at 131,072 markers of each kind
   at most 0.11 ms per draw, 6.4 ms per refresh, 4.3 ms per retirement slice;
-  `main`'s per-draw projection at its caps was 16.8–22.5 ms.
+  `main`'s per-draw projection at its caps was 16.8–22.5 ms. Lane
+  (`minimap-markers/*`, full tier, interleaved with `main`, 2026-11-09): at
+  2,048 markers find 5.2–5.8 ms (`main` 9.9–10.7) and Page Down 1.9–2.8 ms
+  (`main` 5.3–5.8); at 131,072 every phase within noise of `main`, which
+  draws a 64th of the markers, and the open within `B_SETTLE_US` (`main` up
+  to 17.8 ms).
 - **Pre-existing defects fixed.** `gtk_lush_settle::Debounce` kept every
   superseded timeout source (131,072 edits in one dispatch: `Too many GWeakRef
   registered`, and `main` stalled for over 27 minutes); `main`'s modified
@@ -4167,10 +4172,15 @@ handoff's `runs.log` every run.
   `GtkSourceMap`'s own repaint (on `main` too; the branch stays within `main`
   + one reference frame); the A1 search phase is the map repainting its search
   highlights; edits outside the main loop and Replace All are toolkit costs.
-- **Open items for the maintainer.** Promote `core-minimap-binning` to the
-  pull-request gate after a dispatched CI measurement; attribute the load over
-  a buffer of 131,072 modified runs (worst dispatch up to 146.9 ms, no `main`
-  baseline); an axiom for the map's repaint cost on scroll; and the
+  Lane at 131,072 markers: typing 9.7–12.4 ms is the editor's own (8.9–13.5
+  ms with the minimap off), find 12.0–12.5 ms carries about 8 ms with the
+  minimap shown on both sides (3.6–4.6 ms off), equal to `main`. The load
+  over 131,072 modified runs (up to 146.9 ms) is the in-tab search left
+  active over it: the same load over a clean buffer with that search active
+  is 39.6–95.1 ms on the branch and 40.1–123.5 ms on `main`.
+- **Open items for the maintainer.** Split the 131,072-marker find dispatch
+  between the `GtkSourceMap` and the refresh; promote `core-minimap-binning` to the
+  pull-request gate after a dispatched CI measurement; an axiom for the map's repaint cost on scroll; and the
   GtkSourceView `forward_async` CRITICAL (A102) as a candidate upstream report.
 
 ## Axioms each change cites
