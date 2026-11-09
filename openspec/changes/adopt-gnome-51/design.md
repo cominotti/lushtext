@@ -64,7 +64,7 @@ before any statement is rewritten.
 | Class | Count | Shards | First attribution (from the log; to be confirmed per test) |
 |---|---|---|---|
 | W1 `Trying to snapshot GtkSourceMapSlider … without a current allocation` | 1,786 | window 1,576, editor-page 202, surfaces 8 | the native minimap's slider (`GtkSourceMap` child), across many minimap-on editor tests (`editor_page`, `document_scale`, `window_composition`, `command_palette*`, `search_panel`) |
-| W2 `Trying to measure GtkListView … for height of 0, but it needs at least N` (N = 162 seen) | 830 | surfaces | `workspace_section::*` tests: the sidebar file tree inside `ViewportSliceBin`. Candidate cause: GTK 4.23.2 `!9906` "Fix Gtk.ListView/Gtk.GridView measure with for_size != -1", or `!9778` |
+| W2 `Trying to measure GtkListView … for height of 0, but it needs at least N` (N from 10 to 19,124; most often 48 (268 lines), 124 (138), 86 (108) and 162 (84)) | 830 | surfaces | `workspace_section::*` tests: the sidebar file tree inside `ViewportSliceBin`. GTK emits this text when a widget is measured **horizontally** for a height (`for_size`) below its own minimum height, so something measures the list's width for height 0; the large N values track the trees' content heights. No allocation warning was logged. Candidate cause: GTK 4.23.2 `!9906` "Fix Gtk.ListView/Gtk.GridView measure with for_size != -1", or `!9778` |
 | W3 `AdwEntryRow … placed into AdwExpanderRow …, can only be placed into GtkListBox` | 20 | surfaces | Libadwaita 1.10: the template `[row]` `workspace_excluded_add_row` in `workspace_excluded_names_row` (`resources/ui/preferences.blp` l. 214–230); seen in `preferences::*` and the sections that build the preferences dialog |
 | `FLAKY` | 1 | window | `minimap_markers::test_minimap_replace_all_of_many_matches_keeps_one_pending_refresh` passed only on retry |
 
@@ -103,7 +103,7 @@ same lane:
   editor or inserted nothing.
 - **L3, `baseline/empty` fails** in every variant: `no-editor-point` on
   click, then exit −9. No archived run with this case was found, so whether
-  L3 predates GTK 4.24 is unknown (task 3.6).
+  L3 predates GTK 4.24 is unknown (task 3.5.3).
 - **Budget verdict `revise`.**
   - `B_interact` is within: worst interaction stall 6.0 ms.
   - `B_settle` is over: 17.8 ms at `baseline/small@at#0:background`, against
@@ -116,7 +116,7 @@ same lane:
 L1 is a user-visible regression candidate: text that appears one or more
 frames late while typing in a small plain document. It may also be an
 artifact of the lane's injection or presentation timing on mutter 51; task
-3.6 decides which. Either way the lane must pass before the change is
+3.5.1 decides which. Either way the lane must pass before the change is
 accepted. The rule is the existing `responsiveness-measurement` requirement
 that a withheld typing frame fails the run.
 
@@ -177,13 +177,43 @@ the slice-bin paths, but it would strand the Snap.
 
 - **Local development:** toolbox `hypatia-f45`.
 - **CI test, measurement and lint jobs:** `registry.fedoraproject.org/fedora:44`
-  → `fedora:45` (28 references, including `shared-key: fedora-44*` cache keys).
+  → `fedora:45`: 28 container `image:` references in eight workflows, plus
+  21 `shared-key: fedora-44*` cache keys that become `fedora-45*`. The
+  implementation checks that the `fedora:45` image resolves
+  (`skopeo inspect` or `podman pull`) before it edits the workflows.
 - **Flatpak jobs:** `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` →
   `gnome-51`. The tag exists; it was checked against the registry's tag list
   on 2026-11-09. The `flatpak-builder-gnome-50-*` cache keys become
   `-gnome-51-*`.
-- **`GTK Axioms`** becomes a two-entry matrix: `fedora:44` (floor, GTK 4.22)
-  and `fedora:45` (shipped, GTK 4.24).
+- **`GTK Axioms`** runs on both toolkits as two jobs, not a matrix. The
+  existing job keeps its id `gtk-axioms` and its check name `GTK Axioms`, and
+  moves to `fedora:45` (shipped, GTK 4.24). A new job `gtk-axioms-floor`,
+  named `GTK Axioms (GNOME 50 floor)`, runs the same steps on `fedora:44`
+  (GTK 4.22) with its own `fedora-44` cache key. A matrix would rename the
+  check to `GTK Axioms (<entry>)`; if `GTK Axioms` is a required check on
+  `main`, merges would then wait on a check that never reports. Keeping the
+  name avoids a branch-protection change, which is a maintainer action.
+- **Builder-diagnostics runtime image.** This was missing from the spec-stage
+  inventory. `build-aux/builder-diagnostics/Containerfile` builds a debug GTK
+  4.22.4 / Libadwaita 1.9.1 / GtkSourceView 5.20.0 stack on `fedora:44`,
+  published as `ghcr.io/cominotti/lushtext-builder-diagnostics-runtime:gnome-50-debug`
+  by `builder-diagnostics-runtime.yml` and consumed by the weekly
+  `end-user-smoke.yml` `builder-diagnostics` lane and by
+  `scripts/run-builder-diagnostics.sh`. Builder diagnostics exist to catch
+  builder and template warnings on the toolkit users run, and W3 is such a
+  warning on Libadwaita 1.10. The image therefore moves to `fedora:45`, GTK
+  4.24.1, Libadwaita 1.10.0 and GtkSourceView 5.22.0. Its blueprint-compiler
+  ref is re-checked against the Fedora 45 toolbox's version, and its tag
+  becomes `gnome-51-debug`. Every consumer moves with it:
+  `end-user-smoke.yml`, `run-builder-diagnostics.sh`'s default and
+  `docs/blueprint-validation.md`. The image is built locally with `podman`,
+  and `make builder-diagnostics-smoke` runs against it through
+  `LUSHTEXT_BUILDER_DIAGNOSTICS_IMAGE` before the change is accepted.
+  Publishing the `gnome-51-debug` tag needs a `workflow_dispatch` of
+  `builder-diagnostics-runtime.yml` on `main` after merge. That is an outward
+  action for the maintainer, listed in the handoff, and it must happen before
+  the next weekly End-User Smoke run. Until then, that lane cannot pull its
+  image. The lane is not a pull-request gate.
 - **`make gtk-axioms-runtimes`** defaults to `org.gnome.Sdk//50`,
   `org.gnome.Sdk//51` and `org.gnome.Sdk//master`.
 
@@ -245,13 +275,30 @@ unchanged `set_value`. On the floor they are still needed.
 
 The Kani slice loop (`crates/gtk-lush/widgets/src/kani_proofs.rs`) models a
 stray anchor's re-derivation as a nondeterministic `stray_value` in
-`[-MAX_CONTENT, 2·MAX_CONTENT]`. That range includes the unchanged value, so
-the 4.24 behaviour is a subset of the modelled reactions and every proved
-property holds for it. The change rewrites the citations as version-qualified
-(comments only) and reruns the `widgets-geometry` shard once, under
-`scripts/heavy.sh`, one CBMC at a time. Any code change in `scroll_request.rs`
-or `slice_geometry.rs` (for W2) also reruns the shards that cover those
-modules.
+`[-MAX_CONTENT, 2·MAX_CONTENT]`. That range includes the unchanged value, and
+the 4.24 anchor (the published value, alignment 0) lies inside the
+`stray_anchor` range `[0, content]`. So the measured half of the 4.24
+behaviour is a subset of the modelled reactions, and every proved property
+holds for it.
+
+The subset claim is **conditional on task 1.2**. The model also assumes, for
+a `scroll_to`, that the anchor lies inside the view (`view_anchors[0]` in
+`[0, page]`). It further assumes that a request moving the view up anchors
+at alignment 0 (`view_anchors[0] == 0`, citing A7). Those halves are not yet
+measured on 4.24. If task 1.2 measures any 4.24 behaviour outside an A7/A20
+`kani::assume`, the model is widened, never narrowed. Every shard that runs
+the slice loop then reruns, one CBMC at a time, under `scripts/heavy.sh`:
+`widgets-slice-loop-rest`, `-rest-three`, `-requests`, `-requests-two`,
+`-pairs` and `-unbounded`, all `scheduled`-gated, 11–16 min each on CI.
+Those shards, not `widgets-geometry`, exercise the A7/A20 anchor model. The
+`widgets-geometry` shard holds the pure band, containment and request
+harnesses.
+
+If the model is not widened, the change only rewrites the citations as
+version-qualified comments, so CBMC sees the same program. It then reruns
+only the pull-request-gated `widgets-geometry` shard once, as a sanity check.
+Any code change in `scroll_request.rs` or `slice_geometry.rs` (for W2)
+reruns `widgets-geometry` and the six slice-loop shards.
 
 W2 is the open risk here. If 4.24 changed the list's minimum-height
 contract (A2/A3), the bin's measure may now hand the list a height below its
@@ -297,10 +344,13 @@ not move.
 
 *Rationale:* the maintainer's rule is about the shipped binary, and the GNOME
 51 SDK builds it with `26.08`. A patch-level step down within 1.98 changes no
-language or lint surface the workspace depends on, and the MSRV lane already
-builds at 1.98.0. The lane's interleaved run (task 6) compares `main` (1.98.1)
-with the branch (1.98.0) on the same toolkit. Any compiler effect would
-therefore show up there and be recorded.
+language or lint surface the workspace depends on. That claim is checked,
+not assumed: the GTK Lush MSRV lane already builds the family at 1.98.0, and
+task 4.1 runs the whole workspace's all-feature Clippy and `make check` under
+the new pin. The branch carries the toolkit fixes as well as the compiler
+change, so a `main`-versus-branch pair cannot separate the two. Task 6.2
+therefore adds a compiler-attribution pair: `main` built with 1.98.1 against
+`main` built with 1.98.0, both on GTK 4.24, on the headline cases.
 
 *Alternative rejected:* naming `rust-stable//25.08` inside the 51 SDK. That
 pairs extensions across freedesktop branches, which Flathub does not support,
@@ -398,9 +448,19 @@ These steps run after the gate is green:
 The verdict compares branch with `main` on GTK 4.24 only. GTK 4.22 → 4.24
 deltas (`main` on F44, from the archived records of
 `bin-minimap-markers-per-row` and `power-of-two-thresholds`, against this
-change's B3) are a context table, not pass/fail. Any case over `B_interact` or
-`B_settle` that is not already a recorded exception becomes either a fix or
-an explicit, measured, recorded exception.
+change's B3) are a context table, not pass/fail.
+
+The branch must pass the lane outright: 0 withheld typing frames, 0
+misdirected typing phases and 0 failed cases. A green comparison with a
+failing `main` is not enough. Every lane budget is judged, not only
+`B_interact` and `B_settle`: input-to-frame (2 reference frames, 16.67 ms)
+and the scroll p95 frame gap (8.33 ms) count too. `main` on 4.24 is already
+over three of them: `B_settle` 17.8 ms, input-to-frame 378 ms and scroll
+p95 8.6 ms. Each case over any budget that is not already a recorded
+exception has two possible outcomes:
+
+- a fix in this change;
+- an explicit, measured, recorded exception, with cause and attribution.
 
 The visual-geometry, accessibility and visual smokes run once each on the
 branch. They are artifacts, not interleaved timing.
@@ -414,8 +474,11 @@ branch. They are artifacts, not interleaved timing.
   - CI images;
   - Snap gate unchanged.
 - **`build.md`:** Flatpak runtime, rust-stable `26.08`, CI containers, the
-  `GTK Axioms` matrix, the `gtk-axioms-runtimes` default, and the
-  toolkit-update procedure, which now names the shipped runtime and the floor.
+  two `GTK Axioms` jobs (shipped and floor), the builder-diagnostics image
+  tag, the `gtk-axioms-runtimes` default, and the toolkit-update procedure,
+  which now names the shipped runtime and the floor.
+- **`docs/blueprint-validation.md`:** the builder-diagnostics image tag and
+  its toolkit (D2).
 - **`rust.md`:** the platform feature floor line stays GNOME 50 and adds the
   shipped runtime.
 - **`ui.md`:** l. 363, the 4.22 / 1.9 warning note, is re-checked on 1.10.
@@ -438,6 +501,7 @@ branch. They are artifacts, not interleaved timing.
 - [The Rust pin steps down to 1.98.0] → The MSRV is already 1.98.0, and the interleaved lane would show a codegen effect.
 - [The floor is untested by widget tests] → Recorded residual (D2). The axioms run on the floor in CI, and the Snap change must reinstate floor widget runs.
 - [`org.gnome.Sdk//51` download (875 MB) and the first Flatpak build time] → One-time, local, approved.
+- [The builder-diagnostics lane cannot pull `gnome-51-debug` until the image is published after merge] → The lane is weekly and not a pull-request gate. The local `podman` build plus `make builder-diagnostics-smoke` proves the image and the lane before merge. Dispatching the publishing workflow is listed in the handoff as a maintainer action.
 - [The `gnome-51` CI image or `fedora:45` packages differ from the toolbox (e.g. a `gtksourceview5-devel` micro version)] → "Verified against" records where each run happened. The first CI run after merge is checked, but not waited on in this stage.
 
 ## Migration Plan
@@ -467,3 +531,43 @@ See B3. Artifacts are in `lane-f45-main/`:
 
 GTK 4.22 context comes from `power-of-two-thresholds/v-branch/lane`
 (2026-11-05, mutter 50.4, a case subset).
+
+## Spec review (2026-11-09)
+
+An independent review checked the artifacts against the code, the CI
+workflows, `scripts/kani-shards.py` and the spec-stage logs. It made these
+corrections:
+
+- **Inventory gap: the builder-diagnostics runtime image.** It was built on
+  GTK 4.22.4 / `fedora:44` with the tag `gnome-50-debug`, and the spec stage
+  had not listed it. It now moves to the GNOME 51 stack (D2, task 2.4).
+  *Rationale:* builder diagnostics exist to catch template warnings on the
+  toolkit users run, and W3 is one.
+- **Kani shards.** The A7/A20 anchor model is exercised by the six
+  `widgets-slice-loop-*` shards, not by `widgets-geometry`. The envelope's
+  subset claim also holds only for the measured host-`set_value` half; the
+  `scroll_to` half carries its own assumptions. D4 and tasks 1.3, 1.8, 3.2
+  and 4.4 now make the claim conditional on task 1.2, and rerun every
+  slice-loop shard if the model is widened.
+- **`GTK Axioms` check name.** Two jobs replace the planned matrix, and the
+  existing job keeps its name. *Rationale:* a matrix renames the check, and a
+  required check that never reports would block merges until the maintainer
+  changes branch protection.
+- **Compiler attribution.** The branch-versus-`main` pairs mix the 1.98.1 →
+  1.98.0 step with the toolkit fixes. A `main`@1.98.0 arm now separates them
+  (D6, task 6). The claim that the "MSRV lane builds at 1.98.0" was narrowed:
+  that lane covers only the GTK Lush family.
+- **Every lane budget is judged.** Input-to-frame and the scroll p95 frame
+  gap count as well as `B_interact` and `B_settle`. The branch must also pass
+  the lane outright (D8, task 6.4).
+- **W2 facts.** N ranges from 10 to 19,124, not only 162. The warning comes
+  from a horizontal measure for height 0, and no allocation warning was seen.
+  The `gtk-lush-viewport-slice` requirement no longer implies that the list
+  may never be allocated below its minimum height. Read literally, that would
+  have conflicted with band allocation if the list's minimum height had
+  become its content height.
+- **Counts corrected:** 28 `fedora:44` images plus 21 `fedora-44*` cache keys,
+  and 19 toolchain pins. Two references to task 3.6 now point to task 3.5.
+
+The review found no renamed scenario under a MODIFIED requirement, and
+`openspec validate adopt-gnome-51 --strict` passes. Verdict: sound.

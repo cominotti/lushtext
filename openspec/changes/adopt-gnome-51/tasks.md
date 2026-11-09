@@ -49,7 +49,11 @@ Rules for every task:
         and the A45 probe.
 
       Write down per dependent whether it is still needed on 4.22, a no-op on
-      4.24, or affected (design D4, D5).
+      4.24, or affected (design D4, D5). Check each 4.24 figure from task 1.2
+      against every A7/A20 `kani::assume` in the slice loop: `stray_anchor`
+      in `[0, content]`, `stray_value` in `[-MAX_CONTENT, 2·MAX_CONTENT]`,
+      `view_anchors[0]` in `[0, page]`, and `view_anchors[0] == 0` for an
+      upward request. Record whether the model must be widened.
 - [ ] 1.4 Install `org.gnome.Sdk//51` if missing
       (`flatpak install --user flathub org.gnome.Sdk//51`; local, approved).
       Then run `make gtk-axioms-runtimes GTK_AXIOMS_RUNTIMES="org.gnome.Sdk//50 org.gnome.Sdk//51"`
@@ -75,10 +79,19 @@ Rules for every task:
       5.22.0 for the text rows) into "Verified against" for **every** probed
       row, with "Fedora 45 toolbox host, `make gtk-axioms`, <date>".
 - [ ] 1.8 Update the citations in `kani_proofs.rs` and `scroll_request.rs`
-      to the version-qualified A7/A20, as comments only (design D4). Rerun
-      Kani shard `widgets-geometry` once:
-      `KANI_SHARD=widgets-geometry scripts/heavy.sh -- make kani`.
-      Record wall time and peak.
+      to the version-qualified A7/A20 (design D4).
+      - If task 1.3 found no assumption to widen, change comments only, and
+        rerun the pull-request-gated shard once:
+        `KANI_SHARD=widgets-geometry scripts/heavy.sh -- make kani`.
+      - If an assumption must be widened, widen the model; never narrow it.
+        Then rerun, one at a time under `scripts/heavy.sh`, every shard that
+        runs the slice loop: `widgets-slice-loop-rest`, `-rest-three`,
+        `-requests`, `-requests-two`, `-pairs` and `-unbounded`, plus
+        `widgets-geometry`. Any shard that exceeds its recorded
+        `ci_minutes`/`ci_peak_gib` margins is re-budgeted in
+        `scripts/kani-shards.py` (`make check-kani-shards`).
+
+      Record the wall time and peak of each run.
 
 ## 2. Packaging, toolchain and CI
 
@@ -97,19 +110,39 @@ Rules for every task:
       verifier expectations. `cargo-sources.json` changes only if
       `Cargo.lock` does, and it should not.
 - [ ] 2.3 CI:
-      - every `fedora:44` → `fedora:45`, including the `shared-key:
-        fedora-44*` caches;
+      - confirm that `registry.fedoraproject.org/fedora:45` resolves
+        (`skopeo inspect` or `podman pull`);
+      - every `fedora:44` container image (28) → `fedora:45`, and every
+        `shared-key: fedora-44*` cache key (21) → `fedora-45*`;
       - `flatpak-github-actions:gnome-50` → `gnome-51`, with
         `flatpak-builder-gnome-50-*` → `-gnome-51-*`;
-      - the `GTK Axioms` job becomes a matrix over `fedora:44` (floor) and
-        `fedora:45` (shipped), with its job name keeping the required-check
-        semantics;
+      - the existing `gtk-axioms` job keeps its id and its check name
+        `GTK Axioms` and moves to `fedora:45`. A new job `gtk-axioms-floor`
+        (`GTK Axioms (GNOME 50 floor)`) runs the same steps on `fedora:44`
+        with its own `fedora-44` cache key. Not a matrix, so the existing
+        check name keeps reporting (design D2);
       - the `snap.yml` comments stay on GNOME 50.
 
       Run `scripts/check-workflow-timeouts.py`,
       `make check-end-user-smoke-workflow`, and any workflow policy check in
       `make check-policy`.
-- [ ] 2.4 `scripts/run-gtk-axioms.sh runtimes` defaults to
+- [ ] 2.4 Builder-diagnostics runtime (design D2):
+      - `build-aux/builder-diagnostics/Containerfile` and
+        `builder-diagnostics-runtime.yml`: `fedora:45`, `GTK_REF=4.24.1`,
+        `LIBADWAITA_REF=1.10.0`, `GTKSOURCEVIEW_REF=5.22.0`, a
+        blueprint-compiler ref checked against the Fedora 45 toolbox, tag
+        `gnome-51-debug`;
+      - consumers: `end-user-smoke.yml`, the default in
+        `scripts/run-builder-diagnostics.sh`, and
+        `docs/blueprint-validation.md`.
+
+      Build the image locally with `podman` (under `scripts/heavy.sh`), then
+      run `make builder-diagnostics-smoke` with
+      `LUSHTEXT_BUILDER_DIAGNOSTICS_IMAGE` set to the local tag. Any new
+      builder diagnostic on Libadwaita 1.10 is a task 3 regression. List the
+      post-merge `workflow_dispatch` of `builder-diagnostics-runtime.yml` in
+      the handoff as a maintainer action.
+- [ ] 2.5 `scripts/run-gtk-axioms.sh runtimes` defaults to
       `org.gnome.Sdk//50 org.gnome.Sdk//51 org.gnome.Sdk//master`. Update
       the usage text and the Makefile comment.
 
@@ -138,9 +171,9 @@ Rules for every task:
       2. Probe the list's 4.24 minimum-height contract (candidate GTK
          `!9906`) next to A2/A3/A5, and add a ledger row if it is new.
       3. Fix the bin or section at the cause, failing first.
-      4. If `slice_geometry.rs` or `scroll_request.rs` changes, rerun the
-         Kani shards that cover them (`widgets-geometry` and the
-         slice-loop shards in `scripts/kani-shards.py`).
+      4. If `slice_geometry.rs` or `scroll_request.rs` changes, rerun
+         `widgets-geometry` and the six `widgets-slice-loop-*` shards, one at
+         a time (task 1.8).
       5. Run the `workspace-tree-reveal` visual-geometry scenario.
 - [ ] 3.3 W3, `AdwEntryRow placed into AdwExpanderRow` (Libadwaita 1.10):
       1. Write a widget test that constructs Preferences and fails on the
@@ -187,11 +220,10 @@ Rules for every task:
 - [ ] 4.3 `make gtk-axioms` passes in full on F45. The A7/A20/A32 floor
       verdicts pass via `make gtk-axioms-runtimes` against
       `org.gnome.Sdk//50`.
-- [ ] 4.4 Kani: `widgets-geometry` (task 1.8), plus any shard covering code
+- [ ] 4.4 Kani: the shards task 1.8 selected, plus any shard covering code
       changed in task 3, one at a time under `scripts/heavy.sh`.
 - [ ] 4.5 Run the smokes and keep their artifacts:
-      - `make visual-geometry-smoke`, or the repo's visual-geometry target
-        including `workspace-tree-reveal`;
+      - `make visual-geometry-smoke`, which includes `workspace-tree-reveal`;
       - `make accessibility-smoke`;
       - `make visual-smoke`.
 
@@ -234,21 +266,27 @@ Rules for every task:
 
 ## 6. Measurement (after the gate is green)
 
-- [ ] 6.1 Build two `responsiveness-probes` binaries and keep them in
+- [ ] 6.1 Build three `responsiveness-probes` binaries and keep them in
       `bin/`:
       - `main` (base revision, Rust 1.98.1);
+      - `main` built with the new pin (compiler attribution only);
       - branch (pinned compiler).
 - [ ] 6.2 Run the quick tier interleaved, main → branch → main → branch,
       with every case. Use `scripts/measure.sh` and `taskset -c 8-23`,
       waiting for load < 4, and record the load before and after each run
-      in `runs.log`. Take each branch-versus-main verdict on GTK 4.24, and
-      read the compiler effect from the same pairs.
+      in `runs.log`. Take each branch-versus-main verdict on GTK 4.24. The
+      branch must also pass outright: 0 withheld, 0 misdirected and 0 failed
+      cases. Then run the compiler-attribution pair, interleaved in the same
+      way: `main`@1.98.1 against `main`@new pin, on the headline cases.
+      The branch-versus-main pairs mix the compiler change with the toolkit
+      fixes, so they cannot attribute a compiler effect.
 - [ ] 6.3 Build a context table of GTK 4.22 (`main` on F44, from the
       archived `bin-minimap-markers-per-row` and `power-of-two-thresholds`
       records) versus 4.24 (task 6.2's `main` runs) for the headline cases.
       It is context only, never pass/fail.
-- [ ] 6.4 Any case over `B_interact` or `B_settle` that is not already a
-      recorded exception gets one of two outcomes:
+- [ ] 6.4 Any case over any lane budget (`B_interact`, `B_settle`,
+      input-to-frame, scroll p95 frame gap) that is not already a recorded
+      exception gets one of two outcomes:
       - fixed in this change;
       - recorded as an explicit, measured exception, with cause and
         attribution, in the design and the programme record.

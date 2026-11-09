@@ -59,8 +59,11 @@ the GNOME 51 SDK also changes the Rust compiler the Flatpak ships: its
   - Development moves to the Fedora 45 toolbox.
   - CI's Fedora containers move `fedora:44` → `fedora:45`, and the Flatpak
     containers move `gnome-50` → `gnome-51`.
-  - The `GTK Axioms` CI job runs on both `fedora:44` (the GNOME 50 floor) and
-    `fedora:45` (the shipped toolkit).
+  - The `GTK Axioms` CI job moves to `fedora:45` (the shipped toolkit) and
+    keeps its check name. A second job, `GTK Axioms (GNOME 50 floor)`, runs
+    on `fedora:44`.
+  - The builder-diagnostics debug runtime image moves from GTK 4.22.4 to the
+    GNOME 51 stack, with the tag `gnome-51-debug`.
   - `make gtk-axioms-runtimes` adds `org.gnome.Sdk//51` to its default SDKs.
 - **Axioms A7, A20 and A32 become version-qualified.** Each ledger entry
   states the verdict for each supported toolkit: GTK < 4.24 or GtkSourceView
@@ -74,8 +77,11 @@ the GNOME 51 SDK also changes the Rust compiler the Flatpak ships: its
   write-back and re-announcement. They are still needed on the GNOME 50 floor
   and are no-ops on 4.24. The Kani slice-loop envelope already admits the
   4.24 behaviour, because a stray anchor's re-derivation is nondeterministic
-  and includes "value unchanged". The citations are version-qualified, and
-  the `widgets-geometry` shard is rerun.
+  and includes "value unchanged". That holds for the measured host-`set_value`
+  half. The `scroll_to` half is measured first (design D4). If any 4.24
+  behaviour falls outside an assumption, the model is widened and the six
+  slice-loop Kani shards rerun. Otherwise only the citations change, and the
+  `widgets-geometry` shard is rerun as a sanity check.
 - **The minimap keeps retiring its map (A45) instead of clearing its view.**
   The defect is fixed on 5.22, but every supported runtime older than 5.22
   (the GNOME 50 floor, the Snap, distributions) still has it. Retiring is also
@@ -169,8 +175,14 @@ None.
   toolkit regression.
 - Packaging: the Flatpak manifest, and `scripts/test-release.sh`'s manifest
   fixture.
-- CI: about 28 `fedora:44` container references, 3 `gnome-50` Flatpak
-  images and cache keys, and the `GTK Axioms` matrix. About 20
-  `dtolnay/rust-toolchain@1.98.1` pins.
+- CI:
+  - 28 `fedora:44` container images and 21 `fedora-44*` cache keys;
+  - 3 `gnome-50` Flatpak images and their cache keys;
+  - the second `GTK Axioms` job;
+  - 19 `dtolnay/rust-toolchain@1.98.1` pins;
+  - the builder-diagnostics runtime image and its consumers
+    (`build-aux/builder-diagnostics/Containerfile`,
+    `builder-diagnostics-runtime.yml`, `end-user-smoke.yml`,
+    `scripts/run-builder-diagnostics.sh`).
 - Toolchain: `rust-toolchain.toml`, the CI pins and the Snap bootstrap.
 - Docs: listed above, plus the axiom ledger.
