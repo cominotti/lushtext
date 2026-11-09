@@ -13,7 +13,8 @@ A probe test binary built on `gtk-lush-proof-harness`, outside the family (in `g
 
 #### Scenario: Both supported toolkits are probed in CI
 - **WHEN** a pull request runs CI after the Flatpak moved to GNOME 51
-- **THEN** a `GTK Axioms` job runs `make gtk-axioms` in a `fedora:45` container (GTK 4.24) and another in a `fedora:44` container (GTK 4.22, the GNOME 50 floor)
+- **THEN** the `GTK Axioms` job runs `make gtk-axioms` in a `fedora:45` container (GTK 4.24), and the `GTK Axioms (GNOME 50 floor)` job runs it in a `fedora:44` container (GTK 4.22)
+- **AND** the existing `GTK Axioms` check name keeps reporting, so branch protection needs no change
 
 ### Requirement: A toolkit update runs the probes first
 The documented procedure for any GTK or Libadwaita version change SHALL run `make gtk-axioms` before other work. A failing probe SHALL be handled as an axiom change under the ledger's rule, before any probe is edited. The procedure SHALL cover a change of the Flatpak manifest's runtime, of the development toolbox or CI container toolkit, and of the GNOME source floor. Before a new runtime is shipped, `make gtk-axioms-runtimes` SHALL check the samples against that runtime's SDK; its default SDK list SHALL include the floor's SDK, the shipped runtime's SDK and the nightly SDK.
