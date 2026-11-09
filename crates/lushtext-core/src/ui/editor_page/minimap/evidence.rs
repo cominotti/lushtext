@@ -124,7 +124,8 @@ pub struct MinimapEvidence {
     /// See `bookmark_queries`.
     pub long_line_queries: usize,
     /// Whether search bins wait for the search scan to complete (they are
-    /// then the interim marks of the band's own text, design D5).
+    /// then the previous scan's runs kept across an edit's rescan, or the
+    /// interim marks of the band's own text, design D5).
     pub search_waiting_for_scan: bool,
     /// Swapped-out modified tags still retiring.
     pub retiring_modified_tags: usize,

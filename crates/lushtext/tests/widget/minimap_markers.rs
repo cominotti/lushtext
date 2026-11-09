@@ -559,10 +559,66 @@ fn test_minimap_search_lane_returns_after_an_edit_and_a_scroll() {
     window.destroy();
 }
 
+/// D5: an edit makes the search context report -1 until its rescan of the
+/// edited region ends (A100). While the query and every draw input hold, the
+/// strip keeps the completed scan's search runs instead of dropping the lane
+/// for that window. The band here shows far more than
+/// `MINIMAP_INTERIM_SEARCH_CHARS` characters, so the interim search of the
+/// band's own text cannot stand in for them.
+#[test]
+fn test_minimap_search_lane_is_kept_while_an_edit_rescans() {
+    ensure_gtk_init();
+    enable_minimap(false);
+    let page = LushtextEditorPage::new();
+    let tail = "y".repeat(400);
+    let text: String = (0..3_000)
+        .map(|line| {
+            if line % 10 == 0 {
+                format!("{line} needle {tail}\n")
+            } else {
+                format!("{line} {tail}\n")
+            }
+        })
+        .collect();
+    page.buffer().set_text(&text);
+    let window = present(&page, 800);
+    wait_for_scan(&page, "needle");
+    wait_until(Duration::from_secs(3), || {
+        page.minimap_marker_count(MinimapMarkerKind::Search) > 0
+    });
+    let before = page.minimap_marker_bounds(MinimapMarkerKind::Search);
+    let buffer = page.buffer();
+    let mut iter = buffer.iter_at_line_offset(5, 3).expect("line 5");
+    buffer.insert(&mut iter, "typed");
+    assert!(
+        page.search_bar()
+            .search_context()
+            .is_some_and(|context| context.occurrences_count() < 0),
+        "the edit's rescan has not run yet"
+    );
+    assert_eq!(
+        page.minimap_marker_bounds(MinimapMarkerKind::Search),
+        before,
+        "the scan's search runs are kept while the edit rescans"
+    );
+    wait_until(Duration::from_secs(3), || {
+        page.search_bar()
+            .search_context()
+            .is_some_and(|context| context.occurrences_count() >= 0)
+    });
+    assert_eq!(
+        page.minimap_marker_bounds(MinimapMarkerKind::Search),
+        before
+    );
+    window.destroy();
+}
+
 /// D5's progressive fallback: while the search context's own scan of a
 /// large document still runs behind the views' layout validation, the
-/// markers of the lines the map shows come from `forward_async` walks
-/// (ledger A102), long before the scan ends and without a long dispatch. A
+/// markers of the lines the map shows come from a synchronous search of a
+/// private copy of the band's own text (at most
+/// `MINIMAP_INTERIM_SEARCH_CHARS` characters; `forward_async` was dropped,
+/// ledger A102), long before the scan ends and without a long dispatch. A
 /// 262,144-line document whose only match is on its last line, the map at
 /// the end: `main` showed it after one 70-80 ms synchronous scan.
 #[test]
