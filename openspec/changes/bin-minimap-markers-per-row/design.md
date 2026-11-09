@@ -753,7 +753,37 @@ clean transition 0.10–0.14 ms with the markers cleared in that dispatch; an
 in-tab Replace All of 131,072 matches 43.4–43.7 s inside GtkSourceView's own
 `replace_all`, peak RSS growth 14.2–14.6 MiB, worst dispatch after it
 9.4–58.1 ms; a load over the buffer 142–438 ms, worst dispatch 16.3–146.9 ms
-and 11.8–80.3 ms after it (these used the first, 16,384-toggle slices).
+and 11.8–80.3 ms after it (these used the first, 16,384-toggle slices; the
+search left active over the load causes them, see "Exceptions").
+
+### Lane verdicts (task 5.2, 2026-11-09)
+
+`make responsiveness-smoke`'s full-tier `minimap-markers/*` cases, the
+branch's driver and fixtures against `main`'s (`9b8ba5ae`, worktree
+`bmm-main`) and the branch's measurement binaries, interleaved
+main/branch/main/branch, variant `plain`, `taskset -c 8-23`, each pass after
+the quiet gate (1-minute load 0.70–2.19 at every start and end; `runs.log`,
+artifacts in the handoff's `lane/`). Every pass completed (`PASS`); the
+131,072 case ran four passes per side (`lane/` and `lane/off-*`). Worst
+watchdog stall per phase, ms:
+
+| Phase | 2,048 `main` | 2,048 branch | 131,072 `main` | 131,072 branch | 131,072, minimap off |
+| --- | --- | --- | --- | --- | --- |
+| open | 9.1–11.7 | 8.2–10.2 | 15.0–**17.8** | 15.0–15.8 | 8.1–8.3 |
+| background | 11.0–14.2 | 11.7–13.1 | 9.9–10.2 | 9.8–10.0 | 6.6–8.0 |
+| click | 5.1–6.1 | 4.3–4.4 | 1.4–2.3 | 1.0–2.1 | 2.2–3.3 |
+| scroll | 6.6–7.0 | 7.0–7.2 | 6.2–7.7 | 6.8–8.1 | 3.4–3.9 |
+| Page Down | 5.3–5.8 | **1.9–2.8** | 1.8–2.1 | 1.7–2.4 | 1.4–2.6 |
+| type (start, middle, end) | 5.0–7.6 | 4.3–7.3 | 10.1–12.2 | 9.7–12.4 | 8.9–13.5 |
+| find | 9.9–10.7 | **5.2–5.8** | 12.5–12.6 | 12.0–12.5 | 3.6–4.6 |
+
+At `main`'s former cap the branch halves the find stall (now within
+`B_INTERACT_US`) and Page Down's; at 131,072 markers, where `main` draws only
+2,048 of each kind and the branch draws every one, every phase is within
+noise of `main`, and the open stays within `B_SETTLE_US` where `main` crossed
+it twice. Input-to-frame reaches three to four reference frames on scroll and
+typing on both sides and with the minimap off (the lane's pre-existing
+figure, not this change's). The phases over budget are recorded below.
 
 ### Exceptions (recorded)
 
@@ -773,7 +803,33 @@ and 11.8–80.3 ms after it (these used the first, 16,384-toggle slices).
 - **2,100 edits outside the main loop** (87–109 ms) and **Replace All of
   131,072 matches** (43.4 s in one GtkSourceView call): the toolkit's
   validation and replace (D1); the same with the minimap off.
+- **Lane, 131,072 markers: typing 9.7–12.4 ms and find 12.0–12.5 ms over
+  `B_INTERACT_US`; scroll 8.1 ms at most.** Equal to `main` (10.1–12.2,
+  12.5–12.6 and 7.7 ms) with `main` drawing a 64th of the markers. Typing is
+  the editor's own: 8.9–13.5 ms with the minimap off. Find is 3.6–4.6 ms with
+  the minimap off, so about 8 ms of it comes with the minimap shown, on both
+  sides; the branch's own marker work is at most 6.4 ms per refresh and
+  0.11 ms per draw at this count (the widget budget test), so the remainder
+  is the `GtkSourceMap`'s own work on a 262,144-line buffer. Splitting that
+  dispatch between the map and the refresh is an open item for the
+  maintainer. Scroll is the map's repaint (the scroll-frame exception
+  above): 3.4–3.9 ms with it hidden.
 - **Load over a buffer of 131,072 modified runs** (worst dispatch up to
-  146.9 ms): measured, not attributed; `main` has no figure to compare
-  (it cannot reach that state). Open item for the maintainer.
+  146.9 ms in the first run): attributed on 2026-11-09 to the in-tab search
+  left active over the load, not to the modified runs. Rerun with the
+  4,096-toggle slices (one pass of three repetitions each, minimap on, then
+  off with `BMM3_MINIMAP=0`): during the load 16.5–108.6 ms on, 5.0–21.4 ms
+  off; after it 13.3–68.3 ms on, 1.2–3.3 ms off. The same load over a clean
+  buffer with that search ("needle", 131,072 matches) active, interleaved
+  with `main` (two passes of three repetitions per side, `evidence4.txt`):
+  branch 39.6–95.1 ms during and 12.4–62.9 ms after with the minimap on,
+  75.1–89.2 and 0.9–2.1 ms off; `main` 40.1–123.5 and 14.8–96.0 ms on,
+  73.6–91.0 and 0.9–1.7 ms off. Without the search, a load over a clean
+  buffer is 15.2–17.6 / 11.9–17.5 ms on the branch and 15.7–19.0 /
+  12.3–19.7 ms on `main` (minimap off 8.8–9.5 / 0.6–1.3 ms). So the load's
+  worst dispatch is GtkSourceView's rescan of 131,072 matches (on with the
+  minimap off), the dispatches after it are the map's own search
+  highlighting of its band (gone with the minimap off), both present on
+  `main` and no worse on the branch, and the modified runs add nothing
+  measurable.
 

@@ -233,7 +233,7 @@ Rules for every task:
       Tabulate them in the design under "Measured verdicts". Any miss with
       a toolkit cause becomes an exception with its axiom and a bounding
       widget assertion.
-- [ ] 5.2 Lane cases `minimap-markers/2048` and `minimap-markers/131072` in
+- [x] 5.2 Lane cases `minimap-markers/2048` and `minimap-markers/131072` in
       `scripts/responsiveness-smoke-driver.py` (open, find, Page Down,
       scroll, type, save). Run interleaved with `main`, then
       `make check-responsiveness-lane`.
@@ -312,7 +312,11 @@ Rules for every task:
   tag; no evidence field reaches the automation snapshot.
 - 5.2: the `markers` fixture kind and the `minimap-markers/2048` and
   `/131072` lane cases (full tier) are added and self-tested; the lane never
-  saves, so the save's retirement is measured by the widget lane only.
+  saves, so the save's retirement is measured by the widget lane only. The
+  131,072 fixture first exceeded the minimap's size tier (about 18 MB: the
+  minimap was off); its marked lines are now short. A
+  `minimap-markers/131072/minimap-off` reference case attributes each phase.
+  Run interleaved with `main` on 2026-11-09 (design "Lane verdicts").
 - Pre-existing defects fixed: `gtk_lush_settle::Debounce` removes its
   superseded source (Too many GWeakRef registered), and the tag replaces the
   source marks that collapsed onto line 0.

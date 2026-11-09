@@ -1804,8 +1804,11 @@ def build_cases(tier: str) -> list[Case]:
     # and the lines typing modifies), with long-line markers on; the 2,048
     # case's marked lines are also long lines, the 131,072 case's are short so
     # the fixture stays under the minimap's size tier. The standard flow opens,
-    # scrolls, pages, types and finds; the lane never saves (a typed app is killed), so the save's tag retirement is
-    # measured by the widget lane instead.
+    # scrolls, pages, types and finds; the lane never saves (a typed app is
+    # killed), so the save's tag retirement is measured by the widget lane
+    # instead. `minimap-markers/131072/minimap-off` is the same document with
+    # the minimap hidden: its stalls are the editor's own, so the difference
+    # is the minimap's share.
     if tier == "full":
         for pairs in MINIMAP_MARKER_PAIRS:
             cases.append(
@@ -1818,6 +1821,17 @@ def build_cases(tier: str) -> list[Case]:
                     attrs={"wrap": True, "minimap": True},
                 )
             )
+        pairs = MINIMAP_MARKER_PAIRS[-1]
+        cases.append(
+            Case(
+                f"minimap-markers/{pairs}/minimap-off",
+                "minimap-markers",
+                FixtureSpec("markers", pairs, seed_for("minimap-markers", pairs)),
+                settings={"word-wrap": True, "show-minimap": False, "minimap-long-line-markers-visible": True},
+                length=pairs,
+                attrs={"wrap": True, "minimap": False},
+            )
+        )
     for total in grid["total-size"]:
         # The same bytes as .html and as .txt: S_syntax is the difference.
         for ext in ("html", "txt"):
