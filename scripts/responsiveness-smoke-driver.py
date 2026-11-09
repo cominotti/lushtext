@@ -1800,10 +1800,11 @@ def build_cases(tier: str) -> list[Case]:
             )
         )
     # bin-minimap-markers-per-row: the minimap's marker work at `main`'s
-    # former cap and at 131,072 markers of each kind (search matches on the
-    # find marker, long lines, and the lines typing modifies), with long-line
-    # markers on. The standard flow opens, scrolls, pages, types and finds; the
-    # lane never saves (a typed app is killed), so the save's tag retirement is
+    # former cap and at 131,072 markers (search matches on the find marker,
+    # and the lines typing modifies), with long-line markers on; the 2,048
+    # case's marked lines are also long lines, the 131,072 case's are short so
+    # the fixture stays under the minimap's size tier. The standard flow opens,
+    # scrolls, pages, types and finds; the lane never saves (a typed app is killed), so the save's tag retirement is
     # measured by the widget lane instead.
     if tier == "full":
         for pairs in MINIMAP_MARKER_PAIRS:
