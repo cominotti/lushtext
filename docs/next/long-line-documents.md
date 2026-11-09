@@ -4178,10 +4178,20 @@ handoff's `runs.log` every run.
   over 131,072 modified runs (up to 146.9 ms) is the in-tab search left
   active over it: the same load over a clean buffer with that search active
   is 39.6–95.1 ms on the branch and 40.1–123.5 ms on `main`.
-- **Open items for the maintainer.** Split the 131,072-marker find dispatch
-  between the `GtkSourceMap` and the refresh; promote `core-minimap-binning` to the
-  pull-request gate after a dispatched CI measurement; an axiom for the map's repaint cost on scroll; and the
-  GtkSourceView `forward_async` CRITICAL (A102) as a candidate upstream report.
+- **Stage 4 review (2026-11-09).** One finding, fixed failing-first: D5's
+  kept search bins were not implemented, so a strip draw during an edit's
+  rescan dropped the search lane on bands longer than
+  `MINIMAP_INTERIM_SEARCH_CHARS` (widget test
+  `test_minimap_search_lane_is_kept_while_an_edit_rescans`, red on the stage-3
+  tip). `origin/main` had not moved; no merge.
+- **Decided (design "Stage 4 review and decisions").** The 131,072-marker
+  find dispatch is not split here (equal to `main`; the minimap's own work is
+  bounded by the widget budget test); a probe of the `GtkSourceMap` repaint on
+  scroll is a **deferred follow-up** (next free axiom id), which also carries
+  that split; `core-minimap-binning` stays `scheduled` until a dispatched CI
+  run measures it within the pull-request margins; A102 is **recommended** for
+  an upstream GtkSourceView report through `upstream-gtk-reports`, not filed
+  (the maintainer's call).
 
 ## Axioms each change cites
 

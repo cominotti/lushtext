@@ -833,3 +833,75 @@ figure, not this change's). The phases over budget are recorded below.
   `main` and no worse on the branch, and the modified runs add nothing
   measurable.
 
+
+## Stage 4 review and decisions (2026-11-09)
+
+Independent review of `origin/main..HEAD` (code, tests, axioms, Kani
+harnesses, lane and widget evidence). `origin/main` had not moved from the
+branch base (`9b8ba5ae`), so no merge was needed and the branch holds no merge
+commit.
+
+### Finding fixed
+
+- **D5's kept search bins were not implemented.** D5 states that while a scan
+  runs the strip keeps the previous search bins when the query and the draw
+  inputs are unchanged. `compute_marker_bins` took the previous bins as an
+  unused `_previous` argument while its doc comment, and the doc of the bins'
+  `search_complete` field, said they were kept. An edit makes
+  `occurrences-count` read -1 until its rescan (A100), which flips the bins'
+  reuse key, so any strip draw inside that window recomputed the search lane
+  from the interim search of the band's own text, or dropped it when the band
+  shows more than `MINIMAP_INTERIM_SEARCH_CHARS` characters (a band of
+  400-character lines in an 800 px window: 15 runs before the edit, none
+  during the rescan). Fixed failing-first: the widget test
+  `test_minimap_search_lane_is_kept_while_an_edit_rescans` was red on the
+  stage-3 tip (lane `[]`) and is green with the fix. The search runs are kept
+  only when they came from a completed scan (or were kept from one), the
+  query generation is the same, the draw geometry is identical (an edit that
+  adds or removes lines changes the map's layout height, so its runs are
+  recomputed) and the scan is still pending; the evidence field
+  `search_waiting_for_scan` stays true while they are kept. The
+  `projection_execution` docs and the misleading `forward_async` wording in
+  the test for the interim marks were corrected with it.
+
+Everything else reviewed held: the `Debounce` fix removes only sources that
+have not fired (a firing source forgets itself first), with unit tests red on
+`main`; retirement slices are generation-guarded, dispose removes the source
+and cursor marks, and the swapped tags stay in a buffer finalized with the
+editor; tagging runs in after-handlers whose iterator validity A98 pins; the
+row binning is integer-only (the minimap policy's `deny` pair, eight admitted
+functions, the ledger and the convention's table agree); the Kani harnesses
+drive `marker_row_groups`, `mark_row_groups`, `marker_row_runs` and
+`expanded_run` themselves; the measurements are interleaved under the load
+gate; no MODIFIED requirement was renamed.
+
+### Open decisions, decided (user experience first)
+
+1. **The 131,072-marker find dispatch is not split in this change.** It
+   equals `main` (12.0–12.5 against 12.5–12.6 ms) while `main` draws a 64th
+   of the markers; the minimap-off reference case attributes about 8 ms to the
+   map being shown on both sides, and the widget budget test bounds the
+   minimap's own work at 6.4 ms per refresh and 0.11 ms per draw. Splitting
+   it further is a measurement that changes nothing a user sees here, so it
+   is deferred to the map-repaint probe below, which measures the same
+   `GtkSourceMap` work.
+2. **A probe for the `GtkSourceMap` repaint on scroll: yes, as its own
+   follow-up** (the next free axiom id, in a later change), not in this one:
+   no decision of this change depends on it, the scroll-frame exception is
+   present on `main`, and the branch stays within `main` + one reference
+   frame. It joins the deferred list in the programme record.
+3. **`core-minimap-binning` stays `scheduled`.** It is promoted to the
+   `pull-request` gate in the change that records a dispatched CI
+   measurement within the pull-request margins (15 minutes, 12 GiB); the
+   local 6.31 minutes and 11.64 GiB peak leave the memory margin too narrow
+   to promote on derived figures. Until then pull requests cover the same
+   functions through the unit property tests (bands up to 53 rows) that
+   `make test` runs, and the weekly schedule runs the harnesses.
+4. **A102 upstream: recommended, not filed.** A `forward_async` request
+   pending when the search settings change never completes, and GIO logs
+   `GTask ... finalized without ever returning` as a CRITICAL. That is a
+   GtkSourceView defect (the task should return `G_IO_ERROR_CANCELLED`), with a
+   minimal reproducer already in `gtk_lush_axioms::probe_a102`. Recommendation
+   for the maintainer: draft and file it through the `upstream-gtk-reports`
+   skill; filing is the maintainer's call, and nothing in this change depends
+   on it (the minimap does not use `forward_async`).

@@ -333,3 +333,7 @@ Rules for every task:
   superseded source (Too many GWeakRef registered), and the tag replaces the
   source marks that collapsed onto line 0.
 
+- Stage 4 review (2026-11-09): D5's kept search bins were missing (an
+  unused `_previous`); implemented failing-first with
+  `test_minimap_search_lane_is_kept_while_an_edit_rescans`. The four open
+  decisions are recorded in design "Stage 4 review and decisions".
