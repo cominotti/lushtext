@@ -82,9 +82,12 @@ pub(crate) struct MinimapMarkerBins {
     geometry: MarkerBinGeometry,
     marker_generation: u64,
     search_generation: u64,
-    /// Whether the search runs came from a completed scan (`false` while
-    /// they are kept across a rescan or absent while a scan runs).
+    /// Whether the search context reported a completed scan at this
+    /// recomputation (part of the reuse key).
     search_complete: bool,
+    /// Whether the search runs are a completed scan's, read from it or kept
+    /// from it across an edit's rescan (design D5), rather than interim marks.
+    search_from_scan: bool,
     /// Drawn runs per kind, in `DRAW_ORDER`.
     runs: [Vec<MarkerRowRun>; 4],
     /// Index queries per kind in the last recomputation, in `DRAW_ORDER`.
@@ -669,17 +672,32 @@ fn marker_bin_geometry(
 
 /// Recompute every kind's runs for `geometry`.
 ///
-/// While a search scan runs, the previous search runs are kept only if they
-/// came from the same query and the same geometry (an edit's rescan, ledger
-/// A100); otherwise the search lane waits for the scan, because a `forward`
-/// outside a completed scan scans synchronously.
+/// While a search scan runs, a `forward` on the live context would scan
+/// synchronously, so the search lane never reads it. It keeps the previous
+/// search runs when they came from a completed scan of the same query
+/// (`search_generation`) under the same geometry: an edit's rescan (ledger
+/// A100), which usually ends within one idle cycle, then leaves the lane in
+/// place instead of dropping it. An edit that adds or removes lines changes
+/// the map's layout height, so the geometry differs and the runs are not
+/// kept. Otherwise the lane shows the interim marks of the band's own text,
+/// or nothing when the band is too long for them.
 fn compute_marker_bins(
     editor: &LushtextEditorPage,
     source_map: &sourceview5::Map,
     geometry: MarkerBinGeometry,
     (marker_generation, search_generation, search_complete): (u64, u64, bool),
-    _previous: Option<&MinimapMarkerBins>,
+    previous: Option<&MinimapMarkerBins>,
 ) -> MinimapMarkerBins {
+    let kept_search_runs = previous
+        .filter(|previous| {
+            !search_complete
+                && previous.search_from_scan
+                && editor.search_scan_pending()
+                && previous.search_generation == search_generation
+                && previous.geometry == geometry
+        })
+        .map(|previous| previous.runs(MinimapMarkerKind::Search).to_vec());
+    let mut search_from_scan = false;
     let groups = row_groups(source_map, geometry);
     let mut runs: [Vec<MarkerRowRun>; 4] = Default::default();
     let mut queries = [0; 4];
@@ -700,9 +718,15 @@ fn compute_marker_bins(
             }
             MinimapMarkerKind::Search => {
                 if search_complete {
+                    search_from_scan = true;
                     editor.search_bar().search_context().map(|context| {
                         mark_row_groups(&groups, |line| first_search_match_line(&context, line))
                     })
+                } else if let Some(kept) = kept_search_runs.as_ref() {
+                    search_from_scan = true;
+                    search_waiting = true;
+                    runs[index].clone_from(kept);
+                    None
                 } else {
                     search_waiting = editor.search_scan_pending();
                     if search_waiting {
@@ -758,6 +782,7 @@ fn compute_marker_bins(
         marker_generation,
         search_generation,
         search_complete,
+        search_from_scan,
         runs,
         queries,
         groups: groups.len(),
