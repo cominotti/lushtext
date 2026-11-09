@@ -3925,7 +3925,13 @@ separate change, in this order:
      BM's archive): move the Flatpak runtime 50 -> 51 (GTK 4.24, GtkSourceView
      5.22, Pango 1.58) with the test environment on the same toolkit (toolbox
      `hypatia-f45`); like every GTK version change it starts with
-     `make gtk-axioms`. Ordered before `lighten-notes-browser-rows`
+     `make gtk-axioms`. Spec written 2026-11-09
+     (`openspec/changes/adopt-gnome-51/`): on GTK 4.24.1 axioms A7 and A20
+     (GTK !9778) and A32 (GtkSourceView 8d679ccd) changed verdict; the
+     widget suite passes but logs three new toolkit warning classes, and
+     the quick tier finds typed text drawn late (`baseline/small` p50
+     5.3 -> 10.0 ms, 33 withheld keys); all are in scope. The source floor
+     stays GNOME 50. Ordered before `lighten-notes-browser-rows`
      (coordinator decision, 2026-11-09): every later measurement, and the
      upstream re-tests below, should run on the toolkit users will get, and
      E1–E3 are fixed per-dialog costs that do not grow. After it, the GNOME
