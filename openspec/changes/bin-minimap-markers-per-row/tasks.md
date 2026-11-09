@@ -245,11 +245,11 @@ Rules for every task:
 - [x] 5.4 `make visual-smoke` (`main-search-minimap`) and
       `make accessibility-smoke` (`minimap-transition`). The strip stays
       decorative.
-- [ ] 5.5 `make check`, `make test` (shards parallel), `make
+- [x] 5.5 `make check`, `make test` (shards parallel), `make
       check-widget-shards` (assign new widget tests),
       `make test-prop`, and `cargo check -p lushtext --bins --locked`.
       Benchmarks compile.
-- [ ] 5.6 Mutation scope: remove the `fit_marker_bounds` notes from
+- [x] 5.6 Mutation scope: remove the `fit_marker_bounds` notes from
       `.cargo/mutants.toml` and `docs/mutation-testing.md` (or reword them
       as history), and run `make mutants-diff` over the minimap policy so
       every surviving mutant of the walker and the run builder is killed or
@@ -317,6 +317,18 @@ Rules for every task:
   minimap was off); its marked lines are now short. A
   `minimap-markers/131072/minimap-off` reference case attributes each phase.
   Run interleaved with `main` on 2026-11-09 (design "Lane verdicts").
+- 5.5 (2026-11-09): `make check` (the pre-commit gate), `make test` (2,423
+  non-widget and 1,657 widget tests, 0 FLAKY), `make test-prop` (94),
+  `cargo check -p lushtext --bins --locked` and the benchmarks' `--no-run`
+  build pass.
+- 5.6 (2026-11-09): the `fit_marker_bounds` notes are history. `mutants-diff`
+  over the minimap policy's diff: 63 mutants, 55 caught, 4 unviable, 4 missed.
+  `adjacent_rows_coalesce_before_growing` kills the `marker_row_runs` guard
+  mutant (growing each row before merging gave a three-row run); the three
+  `expanded_run` boundary mutants are equivalent and excluded with their
+  reasons. The policy's three line-anchored exclusions (`inspect_str` under
+  Kani, the native slider's two early rejections) were stale since before
+  this change and are re-keyed, checked with `cargo mutants --list`.
 - Pre-existing defects fixed: `gtk_lush_settle::Debounce` removes its
   superseded source (Too many GWeakRef registered), and the tag replaces the
   source marks that collapsed onto line 0.
