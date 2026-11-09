@@ -477,17 +477,27 @@ def write_dense(path: Path, delimiter: str, seed: int, line_length: int, count: 
 MARKERS_TAIL_CHARS = 130
 
 
+# The minimap's size tier (`S_MINIMAP`, 10,000,000 bytes) less a margin: a
+# markers fixture larger than this would turn the minimap off.
+MARKERS_LONG_TAIL_BUDGET = 9_500_000
+
+
 def write_markers(path: Path, delimiter: str, seed: int, pairs: int) -> dict:
-    """`pairs` pairs of lines: one holding the find marker and a 130-character
-    tail (a long line past the minimap's 120-column warning), then a short
-    one, so every marker kind lands on separate, unmerged lines
-    (`bin-minimap-markers-per-row` lane cases)."""
+    """`pairs` pairs of lines: one holding the find marker, then a short one,
+    so every marker kind lands on separate, unmerged lines
+    (`bin-minimap-markers-per-row` lane cases). The marked line also carries
+    a 130-character tail (a long line past the minimap's 120-column warning)
+    while the whole fixture stays under the minimap's size tier; beyond it
+    (131,072 pairs) the marked lines stay short, as the design's fixtures do."""
     rng = SplitMix64(seed)
     chunks = make_chunks(rng, "ascii")
     writer = FixtureWriter(path, delimiter)
+    long_tail = pairs * (len(FIND_MARKER) + 1 + MARKERS_TAIL_CHARS + 3) <= MARKERS_LONG_TAIL_BUDGET
     for _ in range(pairs):
-        writer.text(f"{FIND_MARKER} ")
-        giant_paragraph(writer, rng, chunks, MARKERS_TAIL_CHARS, marker=False)
+        writer.text(FIND_MARKER)
+        if long_tail:
+            writer.text(" ")
+            giant_paragraph(writer, rng, chunks, MARKERS_TAIL_CHARS, marker=False)
         writer.end_paragraph()
         writer.text("z")
         writer.end_paragraph()
@@ -860,6 +870,8 @@ def self_test() -> int:
         expect(markers["files"][0]["paragraphs"] == 128, "markers: two lines per pair")
         expect(len(marker_lines[0]) == len(FIND_MARKER) + 1 + MARKERS_TAIL_CHARS > 120, "markers: the marked line is a long line")
         expect(marker_lines[1] == "z", "markers: a short line separates marked lines")
+        big = generate("markers", 131_072, 5, scope, scope / "markers-big")
+        expect(big["files"][0]["bytes"] < MARKERS_LONG_TAIL_BUDGET, "markers: 131,072 pairs stay under the minimap's size tier")
 
         for delimiter, separator in DELIMITERS.items():
             result = generate("dense", 1_000, 5, scope, scope / f"d-{delimiter}", delimiter=delimiter, count=12)
