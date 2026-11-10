@@ -2272,7 +2272,7 @@
         {
           "internal-child": "",
           "path": "0:template:LushtextPreferences/2:child/0:object:AdwPreferencesPage/4:child/0:object:AdwPreferencesGroup/2:child/0:object:AdwExpanderRow#workspace_excluded_names_row/3:child",
-          "type": "row"
+          "type": ""
         },
         {
           "internal-child": "",

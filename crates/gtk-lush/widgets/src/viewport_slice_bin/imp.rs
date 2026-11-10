@@ -234,7 +234,17 @@ impl WidgetImpl for ViewportSliceBin {
         let Some(child) = child.as_ref().filter(|child| child.should_layout()) else {
             return (0, 0, -1, -1);
         };
-        let (minimum, natural, _, _) = child.measure(orientation, for_size);
+        // The child is never allocated the bin's height, only the visible
+        // band, so its width is measured for no height. Forwarding the bin's
+        // height measured a height-for-width `GtkListView` (GTK >= 4.24, ledger
+        // A104) for a height below its minimum, the unscrolled content (A2),
+        // which GTK reports as `Trying to measure GtkListView … for height of
+        // 0, but it needs at least N`.
+        let child_for_size = match orientation {
+            gtk4::Orientation::Horizontal => -1,
+            _ => for_size,
+        };
+        let (minimum, natural, _, _) = child.measure(orientation, child_for_size);
         match orientation {
             // The full content height is what the outer scroller must see so
             // its range stays exact. `GtkViewport` allocates a non-scrollable

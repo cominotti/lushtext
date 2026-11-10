@@ -898,7 +898,18 @@ mod measurement {
                 hooked.set(true);
                 hook_frame_phases(&clock);
                 let pending = Rc::new(RefCell::new(FrameTimingsQueue::new(MAX_PENDING_FRAMES)));
-                clock.connect_after_paint(move |clock| record_frames(clock, id, &pending));
+                // When each frame began on the main loop: GDK emits
+                // `before-paint` for every frame it runs. From GTK 4.24 the
+                // frame time is aligned to the refresh grid (ledger A105) and
+                // no longer says when the frame started.
+                let began = Rc::new(Cell::new(None::<i64>));
+                let began_for_paint = Rc::clone(&began);
+                clock.connect_before_paint(move |_| {
+                    began_for_paint.set(Some(glib::monotonic_time()));
+                });
+                clock.connect_after_paint(move |clock| {
+                    record_frames(clock, id, &pending, began.take());
+                });
             }
         };
         if window.is_realized() {
@@ -1039,10 +1050,11 @@ mod measurement {
         clock: &gtk4::gdk::FrameClock,
         window: u32,
         pending: &RefCell<FrameTimingsQueue>,
+        began_us: Option<i64>,
     ) {
         let mut pending = pending.borrow_mut();
         if let Some(current) = clock.current_timings() {
-            pending.painted(current.frame_counter(), current.frame_time());
+            pending.painted_at(current.frame_counter(), current.frame_time(), began_us);
         }
         let records = pending.take_final(window, glib::monotonic_time(), |counter| {
             match clock.timings(counter) {

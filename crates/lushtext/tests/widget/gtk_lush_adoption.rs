@@ -7,11 +7,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::common::{
-    RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
-    ensure_gtk_init, first_label, flush_after_delay, flush_events, force_layout, mapped_list_rows,
-    mapped_row_with_label, numbered_label_list, observed_between_dispatches, pin_scroller_height,
-    placement_relative_to, present_window, row_straddling_bottom, sample_placements,
-    test_application, wait_until, wait_until_or_false,
+    LogCapture, RowPlacement, RowStillnessProbe, assert_reveal_then_rest,
+    assert_rows_still_across_selection, ensure_gtk_init, first_label, flush_after_delay,
+    flush_events, force_layout, mapped_list_rows, mapped_row_with_label, numbered_label_list,
+    observed_between_dispatches, pin_scroller_height, placement_relative_to, present_window,
+    row_straddling_bottom, sample_placements, test_application, wait_until, wait_until_or_false,
 };
 use gtk_lush_tasks::{FreshnessToken, spawn_blocking_then};
 use gtk_lush_viewport::{ViewportAxis, ViewportObserver};
@@ -265,6 +265,45 @@ fn long_viewport_text() -> String {
         .map(|line| format!("viewport row {line} with a long adoption surface sample"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// W2 of `adopt-gnome-51`, GTK axiom A104: from GTK 4.24 a vertical
+/// `GtkListView` is height-for-width, so a width measured for a height below
+/// its minimum (its unscrolled content, A2) logs `Trying to measure GtkListView
+/// … for height of 0, but it needs at least N`. A parent box asks the bin for
+/// its width at the height it hands it, which can be 0 for an empty or
+/// collapsed section. The child is never allocated the bin's height (it gets
+/// the visible band), so the bin measures the child's width for no height.
+#[test]
+fn test_adoption_slice_bin_width_is_measured_for_no_child_height() {
+    ensure_gtk_init();
+    let list = adoption_list(40);
+    let bin = ViewportSliceBin::with_child(&list);
+    let window = libadwaita::ApplicationWindow::builder()
+        .default_width(240)
+        .default_height(320)
+        .content(&bin)
+        .build();
+    present_window(&window);
+    let capture = LogCapture::start();
+    let for_no_height = bin.measure(gtk4::Orientation::Horizontal, 0);
+    let unconstrained = bin.measure(gtk4::Orientation::Horizontal, -1);
+    let warnings: Vec<String> = capture
+        .entries()
+        .into_iter()
+        .filter(|entry| entry.message.contains("GtkListView"))
+        .map(|entry| entry.message)
+        .collect();
+    window.close();
+    assert!(
+        warnings.is_empty(),
+        "measuring the bin's width for a height must not measure the list below its minimum: {warnings:?}"
+    );
+    assert_eq!(
+        (for_no_height.0, for_no_height.1),
+        (unconstrained.0, unconstrained.1),
+        "the bin's width does not depend on the height it is given"
+    );
 }
 
 // --- ViewportSliceBin: the outer scroller belongs to the user -----------------

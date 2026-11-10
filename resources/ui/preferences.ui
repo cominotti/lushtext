@@ -263,7 +263,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     </style>
                   </object>
                 </child>
-                <child type="row">
+                <child>
                   <object class="AdwEntryRow" id="workspace_excluded_add_row">
                     <property name="title" translatable="yes">Add a name</property>
                     <property name="show-apply-button">true</property>

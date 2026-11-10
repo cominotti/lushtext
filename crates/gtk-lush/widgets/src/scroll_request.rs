@@ -192,14 +192,18 @@ pub(crate) struct ChildAnchorFacts {
 ///   A9), so nothing the child does in this allocation is a request; or
 /// * the child's anchor was set by a value the **bin** wrote and the bin then
 ///   changed the page or upper it hands the child. A `GtkListView` re-derives
-///   its value from its anchor on a page change (A7), and after a host moves
-///   its value that anchor's alignment is not confined to `[0, 1]`: GTK 4.22
-///   was measured moving the value 4.42 px per pixel of page change, and a
+///   its value from its anchor on a page change (A7), and on GTK < 4.24, after
+///   a host moves its value, that anchor's alignment is not confined to
+///   `[0, 1]`: GTK 4.22 was measured moving the value 4.42 px per pixel of
+///   page change, and a
 ///   viewport grown from 600 to 1600 px after an outer scroll of 3000 px
 ///   moved it 4664 px. Such a settle is unbounded by any correction the child
 ///   made itself (`reconfigure_shift` is zero: the bin changed the page), so
 ///   the magnitude rule of [`classify_child_scroll`] reads it as a request
 ///   and the outer scroller jumps.
+///   On GTK >= 4.24 the host move anchors at the published value with
+///   alignment 0 and the page change keeps the value, so the write-back is a
+///   no-op there; the GNOME 50 floor still needs it (`adopt-gnome-51` D4).
 ///
 /// An anchor the child set itself (`scroll_to`, keyboard focus) keeps the
 /// ordinary rule, so a request applied in an allocation whose band height the

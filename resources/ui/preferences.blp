@@ -226,7 +226,9 @@ template $LushtextPreferences: Adw.PreferencesDialog {
           ]
         }
 
-        [row]
+        // Untyped on purpose: AdwExpanderRow appends an untyped child through
+        // add_row. A `[row]` child falls through to GtkListBoxRow's
+        // set_child and replaces the expander's own header and list.
         Adw.EntryRow workspace_excluded_add_row {
           title: _("Add a name");
           show-apply-button: true;
