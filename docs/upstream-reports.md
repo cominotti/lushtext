@@ -8,11 +8,17 @@ drafts and reproducers live outside the repository, in
 `~/Documents/Agentic/Reports/GTK/<folder>/`. The `upstream-gtk-reports` skill
 drafts, triages and files new reports.
 
-Last checked: 2026-11-09.
+Last checked: 2026-11-10.
 
-None of the upstream fixes recorded below has reached the GNOME 50 or GNOME 51
-runtimes (GTK 4.22/4.24, GtkSourceView 5.20/5.22, Pango 1.57/1.58), so every
-LushText workaround stays until the fixed versions are the floor. The GNOME
+LushText ships the GNOME 51 runtime (GTK 4.24, GtkSourceView 5.22, Pango 1.58,
+Libadwaita 1.10) and keeps GNOME 50 (GTK 4.22, GtkSourceView 5.20, Pango 1.57)
+as the source floor for the Snap and distribution builds (`adopt-gnome-51`).
+One fix recorded below reached the shipped runtime: the `GtkSourceMap`
+detach CRITICAL (A32) is fixed in GtkSourceView 5.22.0, so the shipped Flatpak
+no longer needs its workaround, but the floor does, and the workaround (A45's
+retire-and-rebuild) stays. None of the other upstream fixes has reached the
+GNOME 50 or GNOME 51 runtimes, so every other LushText workaround stays until
+the fixed versions are the floor. The GNOME
 nightly re-test the maintainers asked for is queued after `adopt-gnome-51`
 (`docs/next/long-line-documents.md`).
 
@@ -33,6 +39,25 @@ nightly re-test the maintainers asked for is queued after `adopt-gnome-51`
 | 2026-11-04 | [GNOME/gtk#6057](https://gitlab.gnome.org/GNOME/gtk/-/issues/6057#note_2922623) | open (since 2023) | The default-style setters (margins, tabs, wrap mode…) invalidate every line and queue no allocation, so validation is flushed inside the snapshot (`Trying to snapshot GtkGizmo … without a current allocation`); a 12-frame margin repro, and `gtk_widget_queue_allocate` as the cure | `ui/editor_page/frame_validation.rs` queues the view's allocation after edits, caret moves, tag changes and default-style changes (axiom A37) | Keep `frame_validation.rs` until the fixed GTK is the floor, then retire it with the A37 probe |
 | 2026-11-04 | [GNOME/pango#582](https://gitlab.gnome.org/GNOME/pango/-/issues/582#note_2922624) | open (since 2020); the maintainer says commit `f60f461` on main (in no tag yet) likely fixes it and asked us to re-test (pending, after `adopt-gnome-51`). Not in the GNOME 50 or GNOME 51 runtimes (Pango 1.57/1.58), so our workaround stays until a fixed version is the floor. | Root cause: x positions are `int` Pango units and wrap negative past ~2.1M px (209,716 characters at a 10 px advance), and the logical width comes back 0 | Wrap-off paragraphs past the overflow length count as unrenderable in the document scale policy (C1, axiom A28) | Unlikely in Pango 1.x (ABI); revisit if Pango clamps or GTK moves to a wider unit |
 
+## Drafted, not filed
+
+Drafts waiting for the maintainer's per-report approval; nothing here has been
+filed.
+
+| Drafted | Project | What it is | Our workaround | Draft |
+|---|---|---|---|---|
+| 2026-11-10 | GNOME/gtksourceview (5.22.0 and master) | Since 5.22.0 (`8d679ccd`) the map skips allocating its slider while the slider rectangle is unchanged, even when the slider queued a resize; a CSS change of the slider's size then leaves it without a current allocation and every drawn frame logs `Trying to snapshot GtkSourceMapSlider … without a current allocation` (axiom A103). Not in any release; 5.20 is unaffected | The minimap applies its one-pixel wide-editor slider correction class only below GtkSourceView 5.22 (`adopt-gnome-51` W1) | `~/Documents/Agentic/Reports/GTK/gtksourceview-map-slider-unallocated/draft.md` |
+
+GtkSourceView 5.22's slider geometry (A106: the slider follows each view's
+content height, margins included, so a map must carry the view's margins scaled
+by its text scale), GTK's own changes behind W2 (A104, `GtkListView`
+height-for-width, `!9906`)
+and L1 (A105, the grid-aligned frame time of the reworked frame clock) are
+intended behaviour, not defects: LushText adapts (the slice bin measures its
+child's width for no height; the responsiveness probe stamps each frame's
+start; the minimap scales the overscroll margin it gives its map) and reports
+nothing.
+
 ## Followed, not filed
 
 These were triaged on 2026-11-04 and are not worth a new report, but their
@@ -40,7 +65,7 @@ outcome still matters to us.
 
 | Topic | Upstream state | Why not filed | What to do |
 |---|---|---|---|
-| `GtkSourceMap` update tick survives `set_view(NULL)` (A32, A45) | Fixed on master and in 5.22.0 (commit [`8d679ccd`](https://gitlab.gnome.org/GNOME/gtksourceview/-/commit/8d679ccd4143031e7f55efcc76b8af20b43e0ad4)); not on the dormant 5-20 branch | A backport request to a dormant branch adds little | Keep retiring the map (A45) while 5.20 is supported; drop it once 5.22 is the floor |
+| `GtkSourceMap` update tick survives `set_view(NULL)` (A32, A45) | Fixed on master and in 5.22.0 (commit [`8d679ccd`](https://gitlab.gnome.org/GNOME/gtksourceview/-/commit/8d679ccd4143031e7f55efcc76b8af20b43e0ad4)), so **in the shipped GNOME 51 runtime**; not on the dormant 5-20 branch (the GNOME 50 floor). A32 is now version-qualified and fails if the defect returns on 5.22 | A backport request to a dormant branch adds little | Keep retiring the map (A45) while 5.20 is supported (it is also correct on 5.22, `adopt-gnome-51` D5); drop the floor half once 5.22 is the floor |
 | Context engine CRITICAL after the per-line time-out (A29) | Fixed on master (commit [`aa6a36a3`](https://gitlab.gnome.org/GNOME/gtksourceview/-/commit/aa6a36a3), 2026-11-04); the 5-22 branch still lacks the guard, and the maintainer is backporting the series | Too early: it landed the same day | Re-check whether 5.22.x picks it up; then update A29 |
 | Context engine background analysis runs in fixed 10/30 ms idle slices (A54, C6 D4) | The slice constants are unchanged on master, but [MR !463](https://gitlab.gnome.org/GNOME/gtksourceview/-/merge_requests/463) ("Reduce repeated work in context engine") reworked that code and merged on 2026-11-04 | Too early to report against code that just changed | Re-measure the slices on the next release with !463 (A54); LushText paces around them meanwhile (C6, C6b) |
 | Search copies the line per match on long lines (A33) | The copy is in GTK's `gtk_text_iter_forward_search`, not in GtkSourceView | Wrong project for the candidate, and a borderline performance report | Triage again as a GTK report if long-line search becomes a goal |

@@ -119,10 +119,14 @@ skeleton:
   accepted shape for a rarely edited, user-extensible list such as the
   always-excluded names (a justified narrowing of the grouped-row rule below:
   the expander's children are the grouped rows, kept collapsed so the page stays
-  scannable). `AdwExpanderRow::remove` only accepts rows appended through
-  `add_row`, so keep template `[row]` children fixed and recycle only the rows
-  the projection appends; both types need `ensure_type()` before
-  `bind_template()`.
+  scannable). Declare a fixed template row as an **untyped** child of the
+  `AdwExpanderRow`, which its buildable appends through `add_row`: a Blueprint
+  `[row]` child (`<child type="row">`) falls through to `GtkListBoxRow`'s
+  `set_child` and replaces the expander's own header and list (Libadwaita 1.10
+  warns `AdwEntryRow … placed into AdwExpanderRow …, can only be placed into
+  GtkListBox`; 1.9 showed only the entry row, silently). Keep the template row
+  fixed and recycle only the rows the projection appends; both types need
+  `ensure_type()` before `bind_template()`.
 - `AdwStatusPage` for empty states
 - `AdwSidebar` for shallow, sectioned dialog browse rails such as Local History
   where each item activates or previews one record **and the item count is
@@ -363,7 +367,9 @@ add a new one before calling the work complete.
   GTK 4.22/Libadwaita 1.9 warning emitted by the `shortcuts-no-context`
   Keyboard Shortcuts probe after the app has migrated to `AdwShortcutsDialog`.
   Do not generalize that classifier to other probes or surfaces without fresh
-  toolkit and artifact evidence.
+  toolkit and artifact evidence. GTK 4.24 / Libadwaita 1.10 no longer emits it (builder diagnostics
+  on the `gnome-51-debug` image, 9/9 runtime probes, 0 actionable,
+  2026-11-10); the classifier stays for the GNOME 50 floor.
 
 ## Status Bar
 

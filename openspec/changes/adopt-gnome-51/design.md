@@ -571,3 +571,63 @@ corrections:
 
 The review found no renamed scenario under a MODIFIED requirement, and
 `openspec validate adopt-gnome-51 --strict` passes. Verdict: sound.
+
+## Implementation record (2026-11-10)
+
+Evidence: `.claude/handoffs/adopt-gnome-51/` (`runs.log` lists every run with
+the 1-minute load before and after).
+
+### Task 1.2: A7 and A20 measured sub-check by sub-check on GTK 4.24.1
+
+| Sub-check | GTK 4.22 (ledger; re-measured on the GNOME 50 SDK) | GTK 4.24.1 |
+|---|---|---|
+| A7 host `set_value(1360)`, pages 300/250/200/150 | 1360/1139/918/697, align −4.42 | 1360/1360/1360/1360, align 0 |
+| A7 `scroll_to(200)`, 300 → 200 px | 6534 → 6622, align 0.887, one `value-changed` | the same |
+| A20 rows 40 and 150, plain | align −4.42 / −16.89, values 918 / 3411 | align 0, values 1360 / 5100 unchanged |
+| A20 rows 40 and 150, re-announced | align 0 | align 0 |
+
+**Attribution.** The `gtklistbase.c` diff 4.22.5 → 4.24.1 is `!9778`'s
+zero-area guard and `isfinite` checks, the keypad bindings and
+`G_PARAM_STATIC_NAME`; `gtklistview.c` adds `get_request_mode`
+(height-for-width, `!9906`, A104); `gtklistitemmanager.c` is unchanged. The
+exact change behind the new host-`set_value` anchor is not bisected; it is
+attributed to the 4.23 list-base and request-mode work (`!9778`, `!9906`) with
+that caveat.
+
+### Task 1.3: dependents
+
+| Dependent | GNOME 50 floor | GNOME 51 (shipped) |
+|---|---|---|
+| `classify_child_scroll_in_frame` write-back (A7) | needed | a no-op (the value is unchanged), harmless |
+| the bin's re-announcement after an emitting publish (A20) | needed | a no-op (A11: no emission for an unchanged value) |
+| `classify_child_scroll`'s `reconfigure_shift` bound (A7 `scroll_to` half) | needed | needed, unchanged |
+| Kani slice loop: `stray_anchor ∈ [0, content]`, `stray_value ∈ [−MAX, 2·MAX]` | covers the stray anchor | covers it: the 4.24 anchor is the published value, a row of the content, and the value stays (inside the range) |
+| Kani slice loop: `view_anchors[0] ∈ [0, page]`, alignment 0 upward | as measured | unchanged on 4.24 |
+| minimap retirement (A45) and `test_minimap_retirement_after_scrolling_emits_no_critical` (A32) | needed | correct, kept (D5) |
+
+No assumption had to be widened: comments only, `widgets-geometry` rerun once.
+
+### Toolkit regressions
+
+| Item | Cause | Fix | Failing first |
+|---|---|---|---|
+| W1, 1,786 `GtkSourceMapSlider` snapshot warnings | GtkSourceView 5.22 skips allocating an unchanged slider rectangle even when the slider queued a resize (A103, `8d679ccd`); the minimap's `minimap-wide-editor-slider-offset` class moves the slider's margins on every projection | the class applies only below GtkSourceView 5.22 (`native_slider_needs_wide_editor_correction`); upstream report drafted, not filed | `editor_page::test_minimap_slider_correction_class_follows_the_sourceview_release` red with the gate disabled |
+| W2, 830 `GtkListView` measure warnings | `GtkListView` is height-for-width on GTK 4.24 (`!9906`, A104); `ViewportSliceBin` forwarded its own height to the child's width measure | the bin measures the child's width for no height (the child is only allocated the band) | `gtk_lush_adoption::test_adoption_slice_bin_width_is_measured_for_no_child_height` red (2 warnings) |
+| W3, `AdwEntryRow … placed into AdwExpanderRow` | a Blueprint `[row]` child reaches `AdwExpanderRow`'s buildable as `type="row"`, which it does not handle: it fell through to `GtkListBoxRow`'s `set_child` and replaced the expander's header and list on **every** Libadwaita; 1.10 added the parent check that reports it | the entry row is an untyped template child (appended through `add_row`) | `workspace_entry_visibility::test_excluded_names_add_row_is_a_row_of_the_expander_list` red (parent `AdwExpanderRow`) |
+| `FLAKY` `test_minimap_replace_all_of_many_matches_keeps_one_pending_refresh` | `wait_for_scan` accepted `occurrences_count() >= 0` of a context whose search text was still empty (the entry's search delay), so Replace All replaced nothing (4 of 11 first attempts in isolation) | wait for the context's search text to be the needle too | 10 of 10 isolated runs pass |
+| L1, typed text "drawn late" | GTK 4.24's frame clock aligns the frame time to its refresh grid (A105: −8.2 to +8.1 ms from `before-paint`); the lane driver matched keys to frames by frame time | the probe records `began_us` (`before-paint`), the driver attributes by `frame_start_us`, with a self-test | `baseline/small`: 52 withheld phases before, 0 after |
+| L2, `paragraph/10000/*` type-start misdirected | pre-existing (identical on GTK 4.22 in `power-of-two-thresholds/am14-main`: about 1.3 s per key, nothing inserted within the phase) | none here: covered by C2's recorded toolkit-floor exception for editable paragraphs of 3,500–50,000 characters and queued as DL | — |
+| L3, `baseline/empty` exit −9 | not reproduced on the branch (2 repetitions) | — | — |
+| V1 (task 3.6), `make visual-geometry-smoke`: the 8 `minimap-sidebar-mid` cases fail `pixel-anchor-failed` on `main` **and** the branch on GTK 4.24 (the search marker drawn 25 px above the native slider's top edge, required inside it) | GtkSourceView 5.22 places the slider from the two views' content heights, margins included (A106); the minimap copied the editor's end-of-document overscroll margin (hundreds of pixels) 1:1 onto its map, so the slider drew below the text the editor shows (a 600 px margin: 279 px off in the probe) | from 5.22 the map's bottom margin is the editor's margins scaled by the map's text scale (`scaled_source_map_bottom_margin`, integer, whole-pixel); below 5.22 it is still copied. A constant residual remains: the map keeps its 5 px top inset where the editor has 6 px, so the slider sits about 4 px above the text on 5.22 | `editor_page::test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin` red with the copy (186 px), green; 44/44 `minimap-sidebar*` visual cases pass |
+| V2 (task 3.6, pre-existing), the sample lanes skipped every sample from A100 on: `scripts/run-gtk-axioms.sh` listed samples with `a[0-9][0-9]_*`, so `make gtk-axioms` and `make gtk-axioms-runtimes` ran 88 of 95 samples and A100–A102 had never had a sample `--check` in any lane | the two-digit glob | the list matches any number of digits (`sort -V`), and the runner's self-test fails when the list and the samples on disk differ or no three-digit id is listed | the self-test (red with the old glob: 88 of 95) |
+
+**A104 restated (the floor half).** With V2 fixed, the GNOME 50 SDK run
+checked A104's floor branch for the first time and violated it: on GTK 4.22.2 a
+`GtkListView` width measured directly for height 0 logs the same measure
+warning (one), so "below 4.24 the same measure is silent" was wrong. What
+differs is the request mode (`ConstantSize` on 4.22.2, `HeightForWidth` on
+4.24.1): `ViewportSliceBin` reports its child's request mode, so only on 4.24
+does GTK measure the bin's width for a height that the bin then forwarded. The
+ledger row and the catalogue statement were restated first, then the probe: the
+direct warning is a control on both toolkits and the version branch asserts
+the request mode. W2's fix and its failing-first test are unchanged.
