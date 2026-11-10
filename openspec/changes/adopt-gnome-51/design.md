@@ -616,8 +616,8 @@ No assumption had to be widened: comments only, `widgets-geometry` rerun once.
 | W3, `AdwEntryRow … placed into AdwExpanderRow` | a Blueprint `[row]` child reaches `AdwExpanderRow`'s buildable as `type="row"`, which it does not handle: it fell through to `GtkListBoxRow`'s `set_child` and replaced the expander's header and list on **every** Libadwaita; 1.10 added the parent check that reports it | the entry row is an untyped template child (appended through `add_row`) | `workspace_entry_visibility::test_excluded_names_add_row_is_a_row_of_the_expander_list` red (parent `AdwExpanderRow`) |
 | `FLAKY` `test_minimap_replace_all_of_many_matches_keeps_one_pending_refresh` | `wait_for_scan` accepted `occurrences_count() >= 0` of a context whose search text was still empty (the entry's search delay), so Replace All replaced nothing (4 of 11 first attempts in isolation) | wait for the context's search text to be the needle too | 10 of 10 isolated runs pass |
 | L1, typed text "drawn late" | GTK 4.24's frame clock aligns the frame time to its refresh grid (A105: −8.2 to +8.1 ms from `before-paint`); the lane driver matched keys to frames by frame time | the probe records `began_us` (`before-paint`), the driver attributes by `frame_start_us`, with a self-test | `baseline/small`: 52 withheld phases before, 0 after |
-| L2, `paragraph/10000/*` type-start misdirected | pre-existing (identical on GTK 4.22 in `power-of-two-thresholds/am14-main`: about 1.3 s per key, nothing inserted within the phase) | none here: covered by C2's recorded toolkit-floor exception for editable paragraphs of 3,500–50,000 characters and queued as DL | — |
-| L3, `baseline/empty` exit −9 | not reproduced on the branch (2 repetitions) | — | — |
+| L2, `paragraph/10000/*` type-start and type-middle misdirected (keys inserted only after the phase) | pre-existing (identical on GTK 4.22 in `power-of-two-thresholds/am14-main`), and **not** C2/C5's typing floor as first recorded: gdb-parent stack sampling of the lane case put every busy sample in `gtk_text_view_move_cursor` → `pango_layout_move_cursor_visually` → `pango_layout_line_get_cursors`, the five Right presses before the typing. A visual cursor step is quadratic in the display line's length (A107: 76 ms at 2,500, 1,207 ms at 10,000 characters), and the C5 wrap gate shows a 10,001-character paragraph unwrapped, so every arrow key blocked 1.2 s and the typed keys queued behind it | the editor answers a visual step with a logical one (A107: same landing on left-to-right text) when the cursor's paragraph is longer than `L_LOGICAL_CURSOR_STEP` (256) and holds no right-to-left text, the step stays in the paragraph, the cursor is visible and no selection collapses (`model/cursor_step.rs`, `ui/editor_page/cursor_steps.rs`) | `editor_page::test_arrow_steps_in_a_long_left_to_right_paragraph_lay_nothing_out` red (1.22 s per step), green; the right-to-left control `…_with_right_to_left_text_stay_visual` passes on both. Lane `paragraph/10000/*` (36 repetitions): 0 misdirected, 0 withheld; type-start worst dispatch 1.20–1.32 s → 7.4–13.1 ms, type-middle 1.19–1.25 s → 1.4–6.9 ms |
+| L3, `baseline/empty` failed `no-editor-point`, then exit −9 | a driver defect, not GTK 4.24: the case opens no document, and since the first-keys editor-click gate its click phase aimed at an editor that does not exist, on every toolkit (also on the branch in `diag2-branch`, 2 of 2; the earlier "not reproduced" note was wrong). A failed case did not fail the run, so it went unnoticed | a case with no document records its editor interactions `unavailable` with the reason (`no_document_phases`), and the lane now fails on any failed case row (`failed_case_rows`, `failed_cases` in the summary) | driver self-tests (red without the helpers); the archived `lane-f45-main` report regenerated with the new driver fails on its three `baseline/empty` rows; `diag-l3fix`: `baseline/empty` ok in every variant |
 | V1 (task 3.6), `make visual-geometry-smoke`: the 8 `minimap-sidebar-mid` cases fail `pixel-anchor-failed` on `main` **and** the branch on GTK 4.24 (the search marker drawn 25 px above the native slider's top edge, required inside it) | GtkSourceView 5.22 places the slider from the two views' content heights, margins included (A106); the minimap copied the editor's end-of-document overscroll margin (hundreds of pixels) 1:1 onto its map, so the slider drew below the text the editor shows (a 600 px margin: 279 px off in the probe) | from 5.22 the map's bottom margin is the editor's margins scaled by the map's text scale (`scaled_source_map_bottom_margin`, integer, whole-pixel); below 5.22 it is still copied. A constant residual remains: the map keeps its 5 px top inset where the editor has 6 px, so the slider sits about 4 px above the text on 5.22 | `editor_page::test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin` red with the copy (186 px), green; 44/44 `minimap-sidebar*` visual cases pass |
 | V2 (task 3.6, pre-existing), the sample lanes skipped every sample from A100 on: `scripts/run-gtk-axioms.sh` listed samples with `a[0-9][0-9]_*`, so `make gtk-axioms` and `make gtk-axioms-runtimes` ran 88 of 95 samples and A100–A102 had never had a sample `--check` in any lane | the two-digit glob | the list matches any number of digits (`sort -V`), and the runner's self-test fails when the list and the samples on disk differ or no three-digit id is listed | the self-test (red with the old glob: 88 of 95) |
 | V3 (task 4.6, pre-existing), `make verify-flatpak-identity` failed after `make flatpak-install` ("not installed or its metadata cannot be read") whenever the published `stable` branch is installed beside the local `master` build: a bare app id is ambiguous to `flatpak info` | the verifier queried the app id, not a ref | the verifier reads the branch the active export launches (`Exec=… --branch=<b>`, overridable with `LUSHTEXT_FLATPAK_BRANCH`) and queries `app//branch` | `scripts/test-flatpak-identity-verifier.sh` gains the two-branch case (red without the fix: no `//master` ref) |
@@ -632,3 +632,66 @@ does GTK measure the bin's width for a height that the bin then forwarded. The
 ledger row and the catalogue statement were restated first, then the probe: the
 direct warning is a control on both toolkits and the version branch asserts
 the request mode. W2's fix and its failing-first test are unchanged.
+
+### Gate record (2026-11-10, branch `b493c60a`/`184d9bba`)
+
+- `make check`, `cargo check -p lushtext --bins --locked` and the rustdoc gate
+  pass; `make check-agent-docs`, `make check-policy` and
+  `openspec validate adopt-gnome-51 --strict` pass.
+- `make test`: 2,434 non-widget tests; widget shards window 416 (5.8 min,
+  430 MiB), editor-page 399 (4.3 min, 391 MiB), surfaces 847 (8.5 min,
+  1,219 MiB); 0 `FLAKY`, 0 `FLAKY-SHARD`, 0 warning lines (local timing,
+  not `ci_minutes`).
+- `make gtk-axioms` (F45): probe binary passes, 95 of 95 samples hold
+  (88 before V2). `make gtk-axioms-runtimes` (SDK 50 and 51): A7, A20, A32
+  and A103–A106 hold on both, each on its own branch; the remaining failures
+  are the documented sandbox ones (A23 with the SDK's fonts; A59–A61, A64,
+  A97 without RemoteDesktop).
+- Kani, one at a time under `scripts/heavy.sh`: `widgets-geometry` 11/11
+  (5.95 min, 1.70 GiB), `core-minimap-fit` 4/4 (6.81 min, 2.37 GiB),
+  `core-minimap-binning` 11/11 (6.81 min, 11.63 GiB). No assumption was
+  widened, so the six `widgets-slice-loop-*` shards were not rerun (task 1.8).
+- Smokes: `visual-geometry` 99/99 (pixel-verified `first-frame-shell-chrome`,
+  `native-minimap-highlight-anchors`, `workspace-tree-rendered-row-anchors`),
+  `visual` and `accessibility` pass; builder diagnostics on the local
+  `gnome-51-debug` image: 9/9 runtime probes, 0 actionable.
+- `make flatpak-install` on GNOME 51 (141 s; one retry after a transient
+  crates.io 500), then `make verify-flatpak-identity` passes after V3:
+  `Runtime: org.gnome.Platform/x86_64/51`, `Sdk: org.gnome.Sdk/x86_64/51`.
+  `org.gnome.Platform//51` was installed into the user installation from
+  `flathub-user` (the user `flathub` remote is disabled on this host).
+
+### Task 3.5 decisions (2026-11-10, stage 3 resumption)
+
+- **L2 is fixed here, not recorded against C2/C5.** The first attribution
+  ("covered by C2's toolkit-floor exception") read the misdirected phases as
+  slow typing. Sampling showed the typing itself costs one paragraph layout
+  (4–8 ms after the fix, C5's floor); the second-long stalls were the arrow
+  keys, a separate and much larger cost no exception covers. Users pressing
+  Left or Right in any unwrapped line of a few thousand characters (word wrap
+  off, or above `L_WRAP_EDIT`) paid it on GTK 4.22 too.
+- **Why a logical step and not another mechanism.** Re-emitting `move-cursor`
+  as `GTK_MOVEMENT_LOGICAL_POSITIONS` keeps every other part of GTK's step
+  (Shift-extension, the virtual cursor column for a following Up/Down, the
+  blink, scrolling the cursor on screen); replacing the step by hand would
+  have to re-implement them. Right-to-left text keeps GTK's visual step, the
+  only one that is correct there; the scan is O(paragraph) per arrow key, a
+  few microseconds at 10,000 characters. The residual per step is one
+  whole-paragraph layout (6–10 ms at 10,000 characters), the cost class C2/C5
+  already record as a toolkit-floor exception for editable paragraphs of
+  3,500–50,000 characters.
+- **`L_LOGICAL_CURSOR_STEP` = 256** (`policy tier`: it hides nothing). Below
+  it GTK's own step runs; A107's quadratic puts its cost there well under a
+  millisecond.
+- **Upstream.** The quadratic is Pango's (`pango_layout_move_cursor_visually`
+  lists every cursor position of the line, each by an extents pass). A report
+  draft is recorded in `docs/upstream-reports.md`; filing waits for the
+  maintainer.
+- **L3 is a driver defect fixed here**, and the lane now fails on failed case
+  rows, so the class cannot hide again. Run on GTK 4.22 was not needed to
+  decide it: the cause is the case having no editor, independent of the
+  toolkit.
+- **3.5.4 folded into task 6.** The branch's quick-tier pass (0 withheld, 0
+  misdirected, 0 failed cases) is read from the interleave's branch runs,
+  which use the final binary; a separate run first would only repeat one.
+

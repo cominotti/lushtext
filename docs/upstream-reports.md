@@ -46,6 +46,7 @@ filed.
 
 | Drafted | Project | What it is | Our workaround | Draft |
 |---|---|---|---|---|
+| 2026-11-10 | GNOME/pango (1.58.2; also 1.57 in GNOME 50) | `pango_layout_move_cursor_visually` lists every cursor position of the line (`pango_layout_line_get_cursors`), each found by its own extents pass, so one visual cursor step costs time quadratic in the line's length: 76 ms at 2,500 and 1.2 s at 10,000 ASCII characters on one unwrapped line, which is what GtkTextView's Left/Right does (axiom A107) | The editor answers a visual step with a logical one in long left-to-right paragraphs (`ui/editor_page/cursor_steps.rs`, `adopt-gnome-51` L2) | Not written yet: the reproducer is `crates/gtk-lush/axioms/examples/a107_a_visual_cursor_step_is_quadratic_in_the_line.rs`; check pango's tracker for an existing report before drafting |
 | 2026-11-10 | GNOME/gtksourceview (5.22.0 and master) | Since 5.22.0 (`8d679ccd`) the map skips allocating its slider while the slider rectangle is unchanged, even when the slider queued a resize; a CSS change of the slider's size then leaves it without a current allocation and every drawn frame logs `Trying to snapshot GtkSourceMapSlider … without a current allocation` (axiom A103). Not in any release; 5.20 is unaffected | The minimap applies its one-pixel wide-editor slider correction class only below GtkSourceView 5.22 (`adopt-gnome-51` W1) | `~/Documents/Agentic/Reports/GTK/gtksourceview-map-slider-unallocated/draft.md` |
 
 GtkSourceView 5.22's slider geometry (A106: the slider follows each view's
