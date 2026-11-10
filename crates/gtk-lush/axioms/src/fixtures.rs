@@ -854,3 +854,12 @@ pub mod a106 {
         slider_offset,
     };
 }
+
+/// The long line, the mixed line and the one-step measurement the A107 probe
+/// uses, for its sample.
+pub mod a107 {
+    pub use crate::probes::a107::{
+        LONG_CHARS, MIXED_OFFSET, MIXED_TEXT, SHORT_CHARS, START_OFFSET, line_view, step_right,
+    };
+    pub use crate::probes::text::TextViewFixture;
+}

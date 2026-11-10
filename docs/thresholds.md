@@ -223,6 +223,12 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_ENTRIES` | 32 | presentation cap | up from 32: diagnostics a user reads after Replace All (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_BYTES` | 32,768 | presentation cap | up from 32,768: diagnostic text a user reads (D12) |
 
+### `crates/lushtext-core/src/model/cursor_step.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/model/cursor_step.rs` | `L_LOGICAL_CURSOR_STEP` | 256 | policy tier | power of two: above it an arrow step in a left-to-right paragraph is answered logically, which lands on the same place (A107); hides nothing (`adopt-gnome-51` L2) |
+
 ### `crates/lushtext-core/src/model/document_scale.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |

@@ -13,6 +13,7 @@ pub mod bookmark;
 pub mod buffer_replacement;
 pub mod construction_spans;
 pub mod content_search;
+pub mod cursor_step;
 pub mod document_note;
 pub mod document_scale;
 pub mod draft;

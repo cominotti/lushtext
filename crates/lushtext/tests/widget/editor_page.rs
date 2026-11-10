@@ -6107,3 +6107,102 @@ fn test_tag_table_removals_in_frames_keep_adjustment_changes_out_of_the_snapshot
         },
     );
 }
+
+/// Characters of the long paragraph the arrow-step tests type into: over the
+/// C5 wrap gate's `L_WRAP_EDIT`, so it is one unwrapped display line.
+const ARROW_STEP_PARAGRAPH_CHARS: usize = 10_000;
+/// The longest one arrow step may block the GTK thread here. GTK's own visual
+/// step on this line takes about 1.2 s (ledger A107); a logical one a few
+/// milliseconds. Generous for a debug build on a loaded host.
+const ARROW_STEP_CEILING: Duration = Duration::from_millis(250);
+
+/// One `move-cursor` step of `step` on `page`'s view from `offset` (the
+/// selection bound at `bound`), returning where the insert and the bound
+/// landed and how long the emission took.
+fn arrow_step(
+    page: &LushtextEditorPage,
+    step: gtk4::MovementStep,
+    count: i32,
+    extend: bool,
+    (offset, bound): (i32, i32),
+) -> ((i32, i32), Duration) {
+    let buffer = page.buffer();
+    buffer.select_range(
+        &buffer.iter_at_offset(offset),
+        &buffer.iter_at_offset(bound),
+    );
+    let started = std::time::Instant::now();
+    page.source_view().emit_move_cursor(step, count, extend);
+    let elapsed = started.elapsed();
+    let insert = buffer.iter_at_mark(&buffer.get_insert()).offset();
+    let selection = buffer.iter_at_mark(&buffer.selection_bound()).offset();
+    ((insert, selection), elapsed)
+}
+
+#[test]
+fn test_arrow_steps_in_a_long_left_to_right_paragraph_lay_nothing_out() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present_editor_page(&page);
+    let text: String = "abcdefgh,"
+        .chars()
+        .cycle()
+        .take(ARROW_STEP_PARAGRAPH_CHARS)
+        .collect();
+    page.buffer().set_text(&format!("{text}\nshort\n"));
+    flush_after_delay(Duration::from_millis(200));
+    let visual = gtk4::MovementStep::VisualPositions;
+    for (count, extend, from, expected) in [
+        (1, false, (5, 5), (6, 6)),
+        (-1, false, (5, 5), (4, 4)),
+        (1, true, (5, 5), (6, 5)),
+        (1, true, (7, 5), (8, 5)),
+        (-1, true, (7, 5), (6, 5)),
+    ] {
+        let (landed, elapsed) = arrow_step(&page, visual, count, extend, from);
+        assert_eq!(
+            landed, expected,
+            "a step of {count} (extend {extend}) from {from:?} lands where Right/Left does"
+        );
+        assert!(
+            elapsed < ARROW_STEP_CEILING,
+            "a step of {count} (extend {extend}) in a {ARROW_STEP_PARAGRAPH_CHARS}-character \
+             paragraph lays nothing out: {elapsed:?}"
+        );
+    }
+    // A selection collapses to its edge (GTK's own path, already cheap).
+    let (landed, _) = arrow_step(&page, visual, 1, false, (5, 9));
+    assert_eq!(
+        landed,
+        (9, 9),
+        "Right without Shift collapses a selection to its end"
+    );
+    // At the paragraph's end the step crosses into the next paragraph as before.
+    let end = i32::try_from(ARROW_STEP_PARAGRAPH_CHARS).expect("fits");
+    let (landed, _) = arrow_step(&page, visual, 1, false, (end, end));
+    assert_eq!(
+        landed,
+        (end + 1, end + 1),
+        "Right at the end moves to the next paragraph"
+    );
+}
+
+#[test]
+fn test_arrow_steps_in_a_long_paragraph_with_right_to_left_text_stay_visual() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let _window = present_editor_page(&page);
+    // `abc ` then a Hebrew run, then enough ASCII to pass the threshold.
+    let tail: String = " def".chars().cycle().take(1_000).collect();
+    page.buffer()
+        .set_text(&format!("abc \u{05d0}\u{05d1}\u{05d2}\u{05d3}{tail}\n"));
+    flush_after_delay(Duration::from_millis(200));
+    // Inside the right-to-left run a visual step to the right moves backwards
+    // in the buffer (ledger A107: 6 -> 5), where a logical one would reach 7.
+    let (landed, _) = arrow_step(&page, gtk4::MovementStep::VisualPositions, 1, false, (6, 6));
+    assert_eq!(
+        landed,
+        (5, 5),
+        "a paragraph with right-to-left text keeps GTK's visual step"
+    );
+}
