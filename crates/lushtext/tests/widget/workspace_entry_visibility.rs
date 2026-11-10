@@ -650,6 +650,43 @@ fn test_excluded_names_editor_adds_removes_resets_and_reprojects() {
     assert_eq!(excluded_row_titles(&prefs), vec![".git"]);
 }
 
+/// The add row is one of the expander's rows, not the expander's own child.
+///
+/// A Blueprint `[row]` child reaches `AdwExpanderRow` as `<child type="row">`,
+/// which its buildable does not handle: the call falls through to
+/// `GtkListBoxRow`'s `set_child`, so the entry row replaced the expander's
+/// header-and-list box instead of joining the list. Libadwaita 1.10 reports
+/// it (`AdwEntryRow ... placed into AdwExpanderRow ..., can only be placed
+/// into GtkListBox`). An untyped template child goes through `add_row`.
+#[test]
+fn test_excluded_names_add_row_is_a_row_of_the_expander_list() {
+    let _reset = VisibilityKeysReset::new();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+    let add_row = &*imp.workspace_excluded_add_row;
+    assert!(
+        add_row
+            .parent()
+            .is_some_and(|parent| parent.is::<gtk4::ListBox>()),
+        "the add row sits in the expander's row list, got {:?}",
+        add_row.parent().map(|parent| parent.type_().name())
+    );
+    let expander: &gtk4::Widget = imp.workspace_excluded_names_row.upcast_ref();
+    assert!(
+        add_row.is_ancestor(expander),
+        "the add row stays inside the expander"
+    );
+    let first_row = add_row
+        .parent()
+        .and_then(|list| list.first_child())
+        .expect("the expander list has rows");
+    assert_eq!(
+        &first_row,
+        add_row.upcast_ref::<gtk4::Widget>(),
+        "the add row stays first, ahead of the projected name rows"
+    );
+}
+
 #[test]
 fn test_preferences_switch_and_app_action_agree() {
     let reset = VisibilityKeysReset::new();

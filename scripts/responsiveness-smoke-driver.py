@@ -591,7 +591,7 @@ def frame_gap_p95(parsed: dict, start_us: int, end_us: int, reference_frame_us: 
     main loop was free is idle time: no frame was requested. A gap with a
     main-loop stall inside it always counts.
     """
-    frames = sorted((r for r in parsed["records"]["frame"] if start_us <= int(r["frame_time_us"]) <= end_us), key=lambda r: int(r["frame_time_us"]))
+    frames = sorted((r for r in parsed["records"]["frame"] if start_us <= frame_start_us(r) <= end_us), key=frame_start_us)
     unpresented = sum(1 for r in frames if not r.get("presentation_us"))
     presented = [frame_presented(parsed, r, reference_frame_us)[0] if r.get("presentation_us") else None for r in frames]
     gaps: list[int] = []
@@ -602,7 +602,7 @@ def frame_gap_p95(parsed: dict, start_us: int, end_us: int, reference_frame_us: 
         gap = bt - at
         if gap <= 0:
             continue
-        if gap > IDLE_GAP_US and not loop_stalled(parsed, int(a["frame_time_us"]), int(b["frame_time_us"]), reference_frame_us):
+        if gap > IDLE_GAP_US and not loop_stalled(parsed, frame_start_us(a), frame_start_us(b), reference_frame_us):
             idle += 1
             continue
         gaps.append(gap)
@@ -624,6 +624,21 @@ def loop_stalled(parsed: dict, start_us: int, end_us: int, threshold_us: int) ->
     return any(int(record["lateness_us"]) >= threshold_us for record in overlapping_lates(parsed, start_us, end_us))
 
 
+def frame_start_us(frame: dict) -> int:
+    """When a `frame` record's frame began on the main loop.
+
+    The probe's `began_us` (its `before-paint` stamp) when the record has one,
+    else the frame clock's `frame_time_us`. Up to GTK 4.22 the two agree; from
+    GTK 4.24 the reworked frame clock aligns the frame time to its refresh grid
+    (ledger A105), so a frame dispatched right after a key can carry a frame
+    time from before the key, and a frame time can even follow the frame's
+    presentation. Matching input to frames by that time charged each such key
+    to the next key's frame (`withheld_frame`): `adopt-gnome-51` L1.
+    """
+    began = frame.get("began_us")
+    return int(began) if began is not None else int(frame["frame_time_us"])
+
+
 def frame_presented(parsed: dict, frame: dict, reference_frame_us: int) -> tuple[int, str]:
     """When a frame reached the screen, and how that time was obtained.
 
@@ -637,7 +652,7 @@ def frame_presented(parsed: dict, frame: dict, reference_frame_us: int) -> tuple
     with no presentation at all is likewise counted one reference frame
     after it started.
     """
-    start = int(frame["frame_time_us"])
+    start = frame_start_us(frame)
     presentation = frame.get("presentation_us")
     if not presentation:
         return start + reference_frame_us, "frame-start"
@@ -758,7 +773,7 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
     editor is flagged `protected`; its latency is reported apart from
     editable typing (`editable_latency`).
     """
-    frames = sorted(parsed["records"]["frame"], key=lambda r: int(r["frame_time_us"]))
+    frames = sorted(parsed["records"]["frame"], key=frame_start_us)
     value_marks = sorted(int(r["t_us"]) for r in parsed["records"]["mark"] if r.get("name") == ADJUSTMENT_VALUE_MARK)
     records = match_injections(parsed, injections)
     matched: list[tuple[dict, int | None]] = [(injection, int(record["t_us"]) if record else None) for injection, record in zip(injections, records)]
@@ -783,14 +798,14 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
             # frame shows is not the key (keep-keystrokes-during-install).
             delivery["held"] = True
         typed_into_editor = bool(injection.get("inserts")) and targets[position] == "editor"
-        frame = next((f for f in frames if int(f["frame_time_us"]) >= handler), None)
+        frame = next((f for f in frames if frame_start_us(f) >= handler), None)
         # A frame recorded at all after the handler: the probe writes a frame
         # only once it or a later one has its final timings, and headless
         # Mutter completes a lone last frame only at the next commit, so the
         # session's last frame can be missing from the log without having
         # been withheld.
         frame_recorded_later = frame is not None
-        if frame is not None and horizon_us is not None and int(frame["frame_time_us"]) > horizon_us:
+        if frame is not None and horizon_us is not None and frame_start_us(frame) > horizon_us:
             # The input changed nothing visible (for example Page Down at the
             # end of a short document); a later unrelated frame is not its frame.
             frame = None
@@ -799,7 +814,7 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
             results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-frame", **delivery, **withheld})
             continue
         next_handler = next((h for _inj, h in matched[position + 1 :] if h is not None and h > handler), None)
-        if next_handler is not None and int(frame["frame_time_us"]) > next_handler and not loop_stalled(parsed, handler, next_handler, reference_frame_us):
+        if next_handler is not None and frame_start_us(frame) > next_handler and not loop_stalled(parsed, handler, next_handler, reference_frame_us):
             if typed_into_editor:
                 # The insertion is drawn only in this later frame: hidden
                 # latency, measured to that frame and flagged.
@@ -807,7 +822,7 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
             else:
                 results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-visible-change", **delivery})
                 continue
-        if wanted == "scroll" and value_marks and not any(handler <= t <= int(frame["frame_time_us"]) for t in value_marks):
+        if wanted == "scroll" and value_marks and not any(handler <= t <= frame_start_us(frame) for t in value_marks):
             results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-visible-change", **delivery})
             continue
         presented, source = frame_presented(parsed, frame, reference_frame_us)
@@ -3859,7 +3874,7 @@ class Runner:
         post_open = post_open_entries(parsed, phases, read_settle_quiet())
         window_us = None
         if launches and merged["frame"]:
-            first_frame = min(int(r["frame_time_us"]) for r in merged["frame"])
+            first_frame = min(frame_start_us(r) for r in merged["frame"])
             window_us = first_frame - launches[0].spawn_us
         return {
             "case": case.id,
@@ -4119,7 +4134,7 @@ def construction_summary(records: dict[str, list[dict]], attrs: dict[str, Any], 
     # that frame no feedback; a later frame's presentation is not it.
     first_mapped = None
     if present_end is not None:
-        first_mapped = min((r for r in records.get("frame", []) if int(r["frame_time_us"]) >= present_end), key=lambda r: int(r["frame_time_us"]), default=None)
+        first_mapped = min((r for r in records.get("frame", []) if frame_start_us(r) >= present_end), key=frame_start_us, default=None)
     presented = first_mapped.get("presentation_us") if first_mapped else None
     result["first_presentation_us"] = since_origin(int(presented)) if presented else None
     filled_end = max((int(r["end_us"]) for r in (complete, shown) if r is not None), default=None)
@@ -6670,6 +6685,27 @@ def self_test() -> int:
     )
     on_time = withheld_frame_cases([{"case": "c", "variant": "v", "rep": 0, "phases": [{"name": "p", "input_to_frame": input_to_frame(on_time_log, spaced_inj, 8_333)}]}])
     expect(on_time == [], f"keys drawn in their own frames are not withheld ({on_time})")
+    # GTK 4.24 aligns a frame's frame time to the refresh grid (ledger A105):
+    # a frame that began 300 us after a key can carry a frame time 2 ms
+    # before it, and a later frame time than its presentation. The probe's
+    # `began_us` attributes each key to its own frame; without it the frame
+    # time charged every such key to the next key's frame (adopt-gnome-51 L1).
+    grid_frames = [
+        json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": i, "frame_time_us": inj["inject_us"] - 2_000, "began_us": inj["inject_us"] + 600, "presentation_us": inj["inject_us"] + 1_500, "refresh_interval_us": 8333, "source": "presentation"})
+        for i, inj in enumerate(spaced_inj)
+    ]
+    grid_log_lines = (
+        [json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000})]
+        + [json.dumps({"kind": "input", "t_us": inj["inject_us"] + 300, "window": 1, "event": "key-press", "event_time_ms": i, "target": "editor"}) for i, inj in enumerate(spaced_inj)]
+        + grid_frames
+    )
+    grid_rows = input_to_frame(parse_probe_log(grid_log_lines), spaced_inj, 8_333)
+    expect(not any(row.get("withheld_frame") for row in grid_rows), f"keys drawn in frames whose grid-aligned frame time precedes them are not withheld ({grid_rows})")
+    expect(grid_rows[0].get("latency_us") == 1_500, f"a key's latency runs to its own frame's presentation ({grid_rows[0]})")
+    no_began = [line.replace(', "began_us": ' + str(inj["inject_us"] + 600), "") for line, inj in zip(grid_frames, spaced_inj)]
+    grid_rows_old = input_to_frame(parse_probe_log(grid_log_lines[: 1 + len(spaced_inj)] + no_began), spaced_inj, 8_333)
+    expect(grid_rows_old[0].get("latency_us") == 51_500, f"without began_us the frame time still decides, as before: the key is charged to the next key's frame ({grid_rows_old[0]})")
+    expect(frame_start_us({"frame_time_us": 5, "began_us": 9}) == 9 and frame_start_us({"frame_time_us": 5}) == 5 and frame_start_us({"frame_time_us": 5, "began_us": None}) == 5, "frame_start_us prefers began_us")
 
     # A key into a protected (read-only) editor is reported apart.
     protected_log = parse_probe_log(

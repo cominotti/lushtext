@@ -291,8 +291,15 @@ pub enum ProbeRecord {
         window: u32,
         /// The frame clock's counter for the frame.
         frame_counter: i64,
-        /// The frame's start time.
+        /// The frame clock's frame time. Up to GTK 4.22 this was when the
+        /// frame started; from GTK 4.24 the reworked frame clock aligns it to
+        /// its refresh grid, so it can precede input the frame draws, and even
+        /// follow the presentation (ledger A105). The driver attributes input
+        /// to frames by `began_us` when present.
         frame_time_us: i64,
+        /// When the frame began on the main loop (the probe's `before-paint`
+        /// stamp, monotonic), if the probe saw it.
+        began_us: Option<i64>,
         /// When the compositor presented it, if it reported that.
         presentation_us: Option<i64>,
         /// The refresh interval the clock reported, if any.
@@ -429,6 +436,7 @@ impl ProbeRecord {
                 window,
                 frame_counter,
                 frame_time_us,
+                began_us,
                 presentation_us,
                 refresh_interval_us,
             } => {
@@ -441,7 +449,9 @@ impl ProbeRecord {
                     line,
                     "{{\"kind\":\"frame\",\"t_us\":{t_us},\"window\":{window},\
                      \"frame_counter\":{frame_counter},\"frame_time_us\":{frame_time_us},\
-                     \"presentation_us\":{},\"refresh_interval_us\":{},\"source\":\"{source}\"}}",
+                     \"began_us\":{},\"presentation_us\":{},\"refresh_interval_us\":{},\
+                     \"source\":\"{source}\"}}",
+                    JsonOption(*began_us),
                     JsonOption(*presentation_us),
                     JsonOption(*refresh_interval_us),
                 );
@@ -651,8 +661,8 @@ pub enum FrameTimingsState {
 /// the measurement build wrote no `frame` record at all.
 #[derive(Debug)]
 pub struct FrameTimingsQueue {
-    /// `(frame counter, frame time)`, oldest first.
-    pending: VecDeque<(i64, i64)>,
+    /// `(frame counter, frame time, began)`, oldest first.
+    pending: VecDeque<(i64, i64, Option<i64>)>,
     capacity: usize,
 }
 
@@ -669,7 +679,13 @@ impl FrameTimingsQueue {
 
     /// Queue the frame that just painted.
     pub fn painted(&mut self, frame_counter: i64, frame_time_us: i64) {
-        self.pending.push_back((frame_counter, frame_time_us));
+        self.painted_at(frame_counter, frame_time_us, None);
+    }
+
+    /// Queue the frame that just painted, with when it began on the main loop.
+    pub fn painted_at(&mut self, frame_counter: i64, frame_time_us: i64, began_us: Option<i64>) {
+        self.pending
+            .push_back((frame_counter, frame_time_us, began_us));
     }
 
     /// Frames still waiting for final timings.
@@ -696,7 +712,7 @@ impl FrameTimingsQueue {
         let states: Vec<FrameTimingsState> = self
             .pending
             .iter()
-            .map(|&(counter, _)| timings(counter))
+            .map(|&(counter, _, _)| timings(counter))
             .collect();
         // Every frame up to the newest complete one is final.
         let settled = states
@@ -709,7 +725,7 @@ impl FrameTimingsQueue {
             if index >= settled && state == FrameTimingsState::Incomplete && !over_capacity {
                 break;
             }
-            let Some((frame_counter, frame_time_us)) = self.pending.pop_front() else {
+            let Some((frame_counter, frame_time_us, began_us)) = self.pending.pop_front() else {
                 break;
             };
             let (presentation_us, refresh_interval_us) = match state {
@@ -724,6 +740,7 @@ impl FrameTimingsQueue {
                 window,
                 frame_counter,
                 frame_time_us,
+                began_us,
                 presentation_us,
                 refresh_interval_us,
             });
@@ -887,6 +904,7 @@ mod tests {
                 window: 1,
                 frame_counter: 7,
                 frame_time_us: 35,
+                began_us: Some(36),
                 presentation_us: None,
                 refresh_interval_us: Some(8_333),
             },
@@ -955,7 +973,7 @@ mod tests {
         assert_eq!(
             lines[4],
             "{\"kind\":\"frame\",\"t_us\":40,\"window\":1,\"frame_counter\":7,\
-             \"frame_time_us\":35,\"presentation_us\":null,\"refresh_interval_us\":8333,\
+             \"frame_time_us\":35,\"began_us\":36,\"presentation_us\":null,\"refresh_interval_us\":8333,\
              \"source\":\"frame-time\"}\n"
         );
         assert_eq!(
@@ -1210,6 +1228,25 @@ mod tests {
         });
         assert_eq!(frames(&written), vec![(3, None)]);
         assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn a_frame_keeps_when_it_began_beside_its_frame_time() {
+        // GTK 4.24 aligns the frame time to the refresh grid (ledger A105), so
+        // the probe also keeps when the frame began on the main loop.
+        let mut queue = FrameTimingsQueue::new(64);
+        queue.painted_at(5, 1_000, Some(1_400));
+        let written = queue.take_final(1, 9, presented);
+        assert!(matches!(
+            written.as_slice(),
+            [ProbeRecord::Frame {
+                frame_time_us: 1_000,
+                began_us: Some(1_400),
+                ..
+            }]
+        ));
+        let line = written[0].to_json_line();
+        assert!(line.contains("\"began_us\":1400"), "{line}");
     }
 
     #[test]

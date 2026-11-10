@@ -213,6 +213,35 @@ fn baseline_source_map_for_view(view: &sourceview5::View) -> sourceview5::Map {
     map
 }
 
+/// The bottom margin the minimap gives its map for `view`: the editor's
+/// overscroll margin copied below GtkSourceView 5.22, scaled by the map's text
+/// scale from 5.22 (the slider follows the content heights, GTK axiom A106).
+/// `None` from 5.22 while either document height is not laid out yet.
+fn expected_source_map_bottom_margin(
+    view: &sourceview5::View,
+    map: &sourceview5::Map,
+) -> Option<i32> {
+    let release = (
+        sourceview5::major_version(),
+        sourceview5::minor_version(),
+        sourceview5::micro_version(),
+    );
+    if release < (5, 22, 0) {
+        return Some(view.bottom_margin());
+    }
+    let end = view.buffer().end_iter();
+    let editor_end = view.iter_location(&end);
+    let map_end = map.iter_location(&end);
+    let editor_height = i64::from(editor_end.y() + editor_end.height());
+    let map_height = i64::from(map_end.y() + map_end.height());
+    if editor_height <= 0 || map_height < 0 {
+        return None;
+    }
+    let margins = i64::from(view.top_margin() + view.bottom_margin());
+    let scaled = (margins * map_height + editor_height / 2) / editor_height;
+    i32::try_from((scaled - i64::from(map.top_margin())).max(0)).ok()
+}
+
 fn enable_minimap_for_tests(long_line_markers: bool) -> gio::Settings {
     let settings = lushtext_core::ui::settings_writes::shared();
     settings
@@ -3031,7 +3060,9 @@ fn test_minimap_source_map_matches_upstream_geometry_contract() {
     assert_eq!(source_map.margin_end(), 13);
     assert_eq!(source_map.wrap_mode(), baseline_map.wrap_mode());
     assert_eq!(source_map.top_margin(), baseline_map.top_margin());
-    assert_eq!(source_map.bottom_margin(), baseline_map.bottom_margin());
+    if let Some(expected) = expected_source_map_bottom_margin(page.source_view(), &source_map) {
+        assert_eq!(source_map.bottom_margin(), expected);
+    }
     assert_eq!(source_map.left_margin(), baseline_map.left_margin());
     assert_eq!(source_map.right_margin(), baseline_map.right_margin());
     assert_eq!(source_map.overflow(), baseline_map.overflow());
@@ -3188,6 +3219,139 @@ fn test_minimap_slider_css_preserves_native_viewport_effect() {
     assert!(
         rule_body.contains("border-radius: 0;"),
         "native slider should remain a square-cornered geometry shell"
+    );
+}
+
+/// W1 of `adopt-gnome-51`, GTK axiom A103: on GtkSourceView 5.22 a class that
+/// moves the native slider's margins leaves the slider unallocated when the map
+/// is drawn (`Trying to snapshot GtkSourceMapSlider … without a current
+/// allocation`). The one-pixel wide-editor correction class is therefore
+/// applied only below 5.22, in both wrap states and across the switch between
+/// them (each projection re-decides it).
+#[test]
+fn test_minimap_slider_correction_class_follows_the_sourceview_release() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(120, &[], &[]));
+    let _window = present_editor_page_with_size(&page, 1000, 700);
+    wait_for_minimap_ready(&page);
+    let source_map = minimap_source_map(&page);
+    let corrected_release = (
+        sourceview5::major_version(),
+        sourceview5::minor_version(),
+        sourceview5::micro_version(),
+    ) < (5, 22, 0);
+    let mut saw_class = false;
+    for wrap in [false, true, false] {
+        settings
+            .set_boolean(keys::WORD_WRAP, wrap)
+            .expect("toggle word wrap");
+        flush_after_delay(Duration::from_millis(150));
+        wait_for_minimap_ready(&page);
+        let has_class = source_map.has_css_class("minimap-wide-editor-slider-offset");
+        saw_class |= has_class;
+        if !corrected_release {
+            assert!(
+                !has_class,
+                "GtkSourceView >= 5.22 must not carry the slider correction class (wrap={wrap})"
+            );
+        }
+    }
+    if corrected_release {
+        assert!(
+            saw_class,
+            "below GtkSourceView 5.22 the wide editor applies the slider correction class"
+        );
+    }
+}
+
+/// The native slider's top minus the map's drawing of the editor's first
+/// visible line, in map widget pixels.
+fn native_slider_offset_from_visible_text(page: &LushtextEditorPage) -> i32 {
+    let source_map = minimap_source_map(page);
+    let view = page.source_view();
+    let (top_iter, _) = view.line_at_y(view.visible_rect().y());
+    let in_map = source_map.iter_location(&top_iter);
+    let (_, line_y) =
+        source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, in_map.x(), in_map.y());
+    let mut child = source_map.first_child();
+    while let Some(widget) = child {
+        if widget.type_().name() == "GtkSourceMapSlider" {
+            let bounds = widget
+                .compute_bounds(&source_map)
+                .expect("the native slider has bounds in its map");
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a slider coordinate inside a map a few hundred pixels tall"
+            )]
+            let slider_y = bounds.y().round() as i32;
+            return slider_y - line_y;
+        }
+        child = widget.next_sibling();
+    }
+    panic!("the source map has no native slider");
+}
+
+#[test]
+fn test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin() {
+    // GtkSourceView 5.22 places the slider from the views' content heights,
+    // margins included (GTK axiom A106): the editor's end-of-document overscroll
+    // margin copied 1:1 onto the map drew the slider below the visible text
+    // (`minimap-sidebar-mid` visual geometry, red on GTK 4.24 before the fix).
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(2_000, &[], &[]));
+    let _window = present_editor_page_with_size(&page, 1000, 700);
+    wait_for_minimap_ready(&page);
+    assert!(
+        page.source_view().bottom_margin() > 100,
+        "precondition: the editor carries an end-of-document overscroll margin ({})",
+        page.source_view().bottom_margin()
+    );
+    // Let the first layout and minimap reflow settle (a reflow that began at
+    // the top re-anchors the top), then scroll through the insert mark,
+    // re-requested until the line is shown and stays shown.
+    flush_after_delay(Duration::from_millis(500));
+    let buffer = page.buffer();
+    buffer.place_cursor(&buffer.iter_at_line(1_000).expect("mid-document line"));
+    wait_until(Duration::from_secs(10), || {
+        page.source_view()
+            .scroll_to_mark(&buffer.get_insert(), 0.0, true, 0.0, 0.5);
+        flush_after_delay(Duration::from_millis(100));
+        page.source_view().visible_rect().y() > 10_000
+    });
+    flush_after_delay(Duration::from_millis(250));
+    wait_for_minimap_ready(&page);
+    flush_after_delay(Duration::from_millis(150));
+    assert!(
+        page.source_view().visible_rect().y() > 10_000,
+        "precondition: the editor stays scrolled to the middle ({:?})",
+        page.source_view().visible_rect()
+    );
+    let offset = native_slider_offset_from_visible_text(&page);
+    // The map keeps its own 5 px top inset (`MINIMAP_TOP_CONTENT_MARGIN`)
+    // where the editor has a 6 px one, so on GtkSourceView 5.22 the slider
+    // sits that inset minus the editor's scaled inset (about 4 px) above the
+    // text: a constant residual, not the margin-proportional drift.
+    assert!(
+        offset.abs() <= 5,
+        "the native slider must cover the map's drawing of the visible text: offset {offset} px, \
+         editor margins {}/{}, map margins {}/{}, editor visible {:?}",
+        page.source_view().top_margin(),
+        page.source_view().bottom_margin(),
+        minimap_source_map(&page).top_margin(),
+        minimap_source_map(&page).bottom_margin(),
+        page.source_view().visible_rect(),
     );
 }
 
@@ -3365,17 +3529,22 @@ fn test_minimap_source_map_inherits_dynamic_eof_tail_geometry() {
     // Width-reflow bursts pin minimap geometry sync until the viewport
     // settles, so wait for the map to actually mirror the editor's dynamic
     // EOF margin instead of accepting the first margin above the baseline.
+    // From GtkSourceView 5.22 the map carries the margin scaled by its text
+    // scale rather than copied (GTK axiom A106).
     wait_until(std::time::Duration::from_secs(5), || {
         let editor_margin = page.source_view().bottom_margin();
         editor_margin > 6
-            && page
-                .minimap_source_map_widget()
-                .is_some_and(|map| map.bottom_margin() == editor_margin)
+            && page.minimap_source_map_widget().is_some_and(|map| {
+                expected_source_map_bottom_margin(page.source_view(), &map)
+                    .is_some_and(|expected| expected > 6 && map.bottom_margin() == expected)
+            })
     });
 
     let source_map = minimap_source_map(&page);
-    let baseline_map = baseline_source_map_for_view(page.source_view());
-    assert_eq!(source_map.bottom_margin(), baseline_map.bottom_margin());
+    assert_eq!(
+        Some(source_map.bottom_margin()),
+        expected_source_map_bottom_margin(page.source_view(), &source_map)
+    );
     assert!(source_map.bottom_margin() > 6);
 }
 

@@ -47,7 +47,9 @@ use super::policy::{
     fit_native_slider_to_source_map_bounds, fit_projected_bounds, line_bottom_in_target,
     line_top_in_target, mark_row_groups, marker_lane_width, marker_lane_x, marker_rgba,
     marker_row_groups, marker_row_runs, minimap_unavailable_message,
-    native_slider_estimate_from_inputs, wide_editor_slider_offset_class,
+    native_slider_estimate_from_inputs, native_slider_needs_wide_editor_correction,
+    scaled_source_map_bottom_margin, source_map_bottom_margin_is_scaled,
+    wide_editor_slider_offset_class,
 };
 use crate::config::keys;
 use crate::ui::status_bar::MessageKind;
@@ -448,11 +450,6 @@ pub(super) fn sync_source_map_geometry(
         source_map.set_top_margin(top_margin);
     }
 
-    let bottom_margin = source_view.bottom_margin();
-    if source_map.bottom_margin() != bottom_margin {
-        source_map.set_bottom_margin(bottom_margin);
-    }
-
     if source_map.left_margin() != 0 {
         source_map.set_left_margin(0);
     }
@@ -461,12 +458,61 @@ pub(super) fn sync_source_map_geometry(
     }
 
     force_source_map_top_layout(source_map);
+    sync_source_map_bottom_margin(source_map, source_view);
     sync_wide_editor_slider_offset(source_map, source_view);
 }
 
+/// Give the map the editor's end-of-document overscroll margin.
+///
+/// Below GtkSourceView 5.22 the margin is copied, which keeps the map's own
+/// scroll range in step with the editor's at the end of the document. From 5.22
+/// the slider follows the views' content heights, margins included (GTK axiom
+/// A106), so a copied margin draws the slider below the text the editor shows;
+/// the margin is then scaled by the map's text scale. While the document
+/// heights are unknown (an unvalidated layout) the map keeps its margin.
+fn sync_source_map_bottom_margin(source_map: &sourceview5::Map, source_view: &sourceview5::View) {
+    let running = (
+        sourceview5::major_version(),
+        sourceview5::minor_version(),
+        sourceview5::micro_version(),
+    );
+    let bottom_margin = if source_map_bottom_margin_is_scaled(running) {
+        let Some(margin) =
+            source_map_editor_document_heights(source_map, source_view).and_then(|heights| {
+                scaled_source_map_bottom_margin(
+                    (source_view.top_margin(), source_view.bottom_margin()),
+                    heights,
+                    source_map.top_margin(),
+                )
+            })
+        else {
+            return;
+        };
+        margin
+    } else {
+        source_view.bottom_margin()
+    };
+    if source_map.bottom_margin() != bottom_margin {
+        source_map.set_bottom_margin(bottom_margin);
+    }
+}
+
 /// Apply the pure-tested wide-editor threshold to the native slider correction class.
+///
+/// Only below GtkSourceView 5.22: from 5.22 the slider needs no correction, and
+/// a class that moves the slider's margins would leave it unallocated when the
+/// map is drawn (GTK axiom A103).
 fn sync_wide_editor_slider_offset(source_map: &sourceview5::Map, source_view: &sourceview5::View) {
-    if wide_editor_slider_offset_class(source_map_editor_document_heights(source_map, source_view))
+    let running = (
+        sourceview5::major_version(),
+        sourceview5::minor_version(),
+        sourceview5::micro_version(),
+    );
+    if native_slider_needs_wide_editor_correction(running)
+        && wide_editor_slider_offset_class(source_map_editor_document_heights(
+            source_map,
+            source_view,
+        ))
         .is_some()
     {
         source_map.add_css_class(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS);

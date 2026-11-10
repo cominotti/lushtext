@@ -18,6 +18,7 @@ use gtk4::prelude::*;
 use lushtext_core::config::keys;
 use lushtext_core::model::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
 use lushtext_core::ui::editor_page::{LushtextEditorPage, MinimapMarkerKind};
+use sourceview5::prelude::SearchSettingsExt;
 use std::time::{Duration, Instant};
 
 /// 131,072 marked lines, the density the change measures.
@@ -107,13 +108,22 @@ fn show_line_in_map(page: &LushtextEditorPage, line: i32) {
     flush_events();
 }
 
+/// Open the search bar on `needle` and wait until its context has scanned for it.
+///
+/// The search entry hands its text to the context only after its search delay
+/// (`search-changed`), and a context whose search text is still empty already
+/// reads a count of 0, so the scan is waited on for `needle` itself: waiting
+/// on the count alone let a test act on an empty search
+/// (`minimap_markers::test_minimap_replace_all_of_many_matches_keeps_one_pending_refresh`
+/// replaced nothing and was `FLAKY`).
 fn wait_for_scan(page: &LushtextEditorPage, needle: &str) {
     page.show_search();
     page.search_bar().search_entry().set_text(needle);
     wait_until(Duration::from_secs(60), || {
-        page.search_bar()
-            .search_context()
-            .is_some_and(|context| context.occurrences_count() >= 0)
+        page.search_bar().search_context().is_some_and(|context| {
+            context.settings().search_text().as_deref() == Some(needle)
+                && context.occurrences_count() >= 0
+        })
     });
 }
 

@@ -74,9 +74,10 @@ impl LushtextPreferences {
 
     /// Rebuild the name rows from the persisted array.
     ///
-    /// The template's add row stays first and is never removed:
-    /// `AdwExpanderRow::remove` only accepts rows appended through `add_row`,
-    /// so the projection owns and recycles only the rows it appends itself.
+    /// The template's add row stays first and is never removed: it is an
+    /// untyped template child, which `AdwExpanderRow` appends through
+    /// `add_row` while the template is built, and the projection owns and
+    /// recycles only the rows it appends itself.
     fn project_excluded_names(&self) {
         let imp = self.imp();
         let expander = &*imp.workspace_excluded_names_row;

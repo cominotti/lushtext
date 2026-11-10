@@ -386,6 +386,73 @@ pub(super) fn fitting_source_map_page_size(
     Some(map_upper)
 }
 
+/// The first GtkSourceView release whose slider needs no wide-editor correction.
+///
+/// GtkSourceView 5.22 rewrote the map's slider geometry (it derives the slider
+/// from the two adjustments instead of the end iter's rasterized line), and it
+/// stopped reallocating an unchanged slider (GTK axiom A103), so toggling a
+/// class that moves the slider's margins leaves the slider unallocated when it
+/// is drawn (`Trying to snapshot GtkSourceMapSlider … without a current
+/// allocation`). The correction applies only below this release (the GNOME 50
+/// source floor ships 5.20).
+pub(super) const NATIVE_SLIDER_CORRECTION_LAST_EXCLUSIVE: (u32, u32, u32) = (5, 22, 0);
+
+/// Whether the running GtkSourceView, `(major, minor, micro)`, needs the
+/// one-pixel wide-editor slider correction.
+pub(super) fn native_slider_needs_wide_editor_correction(sourceview: (u32, u32, u32)) -> bool {
+    sourceview < NATIVE_SLIDER_CORRECTION_LAST_EXCLUSIVE
+}
+
+/// The first GtkSourceView release that places the map's slider from the
+/// views' content heights, margins included (GTK axiom A106).
+pub(super) const SLIDER_FROM_CONTENT_HEIGHTS_SINCE: (u32, u32, u32) = (5, 22, 0);
+
+/// Whether the running GtkSourceView, `(major, minor, micro)`, needs the map's
+/// bottom margin scaled rather than copied from the editor.
+///
+/// From 5.22 the slider is `visible_begin / view_height × map_height −
+/// map_value`, both heights including their margins (A106), so the editor's
+/// end-of-document overscroll margin copied 1:1 onto the map moves the slider
+/// below the text the editor shows. Below 5.22 the slider follows the end
+/// iter's line, and the copied margin keeps the map's own scroll range in step
+/// with the editor's (the EOF behaviour the copy was made for).
+pub(super) fn source_map_bottom_margin_is_scaled(sourceview: (u32, u32, u32)) -> bool {
+    sourceview >= SLIDER_FROM_CONTENT_HEIGHTS_SINCE
+}
+
+/// The map bottom margin that keeps the map's content height the editor's
+/// scaled by the map's text scale, in whole pixels.
+///
+/// The scale is `source_map_document_height / editor_document_height` (each
+/// the bottom of the end iter's line, margins excluded). The map's content is
+/// `map_top + map_document + map_bottom`, the editor's `editor_top +
+/// editor_document + editor_bottom`, so the map's bottom margin is the
+/// editor's two margins scaled, rounded half up, less the map's own top
+/// margin, never negative. `None` for an empty or negative height or margin,
+/// or a result outside `i32`.
+pub(super) fn scaled_source_map_bottom_margin(
+    editor_margins: (i32, i32),
+    document_heights: (i32, i32),
+    source_map_top_margin: i32,
+) -> Option<i32> {
+    let (editor_top, editor_bottom) = editor_margins;
+    let (editor_document_height, source_map_document_height) = document_heights;
+    if editor_document_height <= 0
+        || source_map_document_height < 0
+        || editor_top < 0
+        || editor_bottom < 0
+        || source_map_top_margin < 0
+    {
+        return None;
+    }
+    let editor_margins = i64::from(editor_top) + i64::from(editor_bottom);
+    let editor_document_height = i64::from(editor_document_height);
+    let scaled = (editor_margins * i64::from(source_map_document_height)
+        + editor_document_height / 2)
+        / editor_document_height;
+    i32::try_from((scaled - i64::from(source_map_top_margin)).max(0)).ok()
+}
+
 /// Choose the CSS class that compensates the native slider at the wide-editor threshold.
 pub(super) fn wide_editor_slider_offset_class(
     document_heights: Option<(i32, i32)>,
@@ -1720,6 +1787,79 @@ mod tests {
         assert_eq!(
             wide_editor_slider_offset_class(Some((1_000_000, 200_001))),
             Some(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS)
+        );
+    }
+
+    #[test]
+    fn test_native_slider_correction_applies_only_below_gtksourceview_5_22() {
+        assert!(native_slider_needs_wide_editor_correction((5, 20, 0)));
+        assert!(native_slider_needs_wide_editor_correction((5, 21, 99)));
+        assert!(!native_slider_needs_wide_editor_correction((5, 22, 0)));
+        assert!(!native_slider_needs_wide_editor_correction((5, 23, 1)));
+        assert!(!native_slider_needs_wide_editor_correction((6, 0, 0)));
+    }
+
+    #[test]
+    fn test_source_map_bottom_margin_is_scaled_from_gtksourceview_5_22() {
+        assert!(!source_map_bottom_margin_is_scaled((5, 20, 0)));
+        assert!(!source_map_bottom_margin_is_scaled((5, 21, 99)));
+        assert!(source_map_bottom_margin_is_scaled((5, 22, 0)));
+        assert!(source_map_bottom_margin_is_scaled((5, 23, 1)));
+        assert!(source_map_bottom_margin_is_scaled((6, 0, 0)));
+    }
+
+    #[test]
+    fn test_scaled_source_map_bottom_margin_keeps_the_content_heights_in_scale() {
+        // The `minimap-sidebar-mid` geometry: a 553 px overscroll margin on a
+        // 6,180 px document whose map draws it 1,403 px tall.
+        assert_eq!(
+            scaled_source_map_bottom_margin((0, 553), (6_180, 1_403), 5),
+            Some(121)
+        );
+        // Rounds half up, then removes the map's own top margin.
+        assert_eq!(scaled_source_map_bottom_margin((0, 3), (2, 1), 0), Some(2));
+        assert_eq!(scaled_source_map_bottom_margin((0, 10), (4, 1), 1), Some(2));
+        // The editor's top margin counts as well.
+        assert_eq!(
+            scaled_source_map_bottom_margin((100, 300), (1_000, 250), 0),
+            Some(100)
+        );
+        // Never negative.
+        assert_eq!(
+            scaled_source_map_bottom_margin((0, 0), (1_000, 250), 5),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn test_scaled_source_map_bottom_margin_rejects_unusable_inputs() {
+        assert_eq!(
+            scaled_source_map_bottom_margin((0, 553), (0, 1_403), 5),
+            None
+        );
+        assert_eq!(
+            scaled_source_map_bottom_margin((0, 553), (-1, 1_403), 5),
+            None
+        );
+        assert_eq!(
+            scaled_source_map_bottom_margin((0, 553), (6_180, -1), 5),
+            None
+        );
+        assert_eq!(
+            scaled_source_map_bottom_margin((-1, 553), (6_180, 1_403), 5),
+            None
+        );
+        assert_eq!(
+            scaled_source_map_bottom_margin((0, -1), (6_180, 1_403), 5),
+            None
+        );
+        assert_eq!(
+            scaled_source_map_bottom_margin((0, 553), (6_180, 1_403), -1),
+            None
+        );
+        assert_eq!(
+            scaled_source_map_bottom_margin((i32::MAX, i32::MAX), (1, i32::MAX), 0),
+            None
         );
     }
 
