@@ -920,6 +920,28 @@ def editor_point_in(surfaces: list, x_fraction: float = 1 / 3, y_fraction: float
     return None
 
 
+NO_DOCUMENT_REASON = "no document: the window shows its empty page, with no editor to scroll, click or type into"
+DOCUMENT_INTERACTIONS = ("scroll", "click", "pagedown", "type-start", "type-middle", "type-end", "find")
+
+
+def no_document_phases() -> list[dict]:
+    """The interaction phases of a case that opens no document
+    (`baseline/empty`): each is recorded unavailable, with the reason, the way
+    a host without RemoteDesktop records them. Measuring them aimed a click at
+    an editor that does not exist (`no-editor-point`) and failed the case on
+    every toolkit since the editor-click gate (adopt-gnome-51, L3)."""
+    return [{"name": name, "kind": PHASE_KINDS[name], "status": "unavailable", "reason": NO_DOCUMENT_REASON} for name in DOCUMENT_INTERACTIONS]
+
+
+def failed_case_rows(rows: list[dict]) -> list[str]:
+    """Every measured repetition whose case run failed (`outcome` `failed`):
+    a phase that could not run, not a budget overrun (those are results) and
+    not a capped measurement (`exceeded_cap`). The lane fails on one; before
+    adopt-gnome-51 a failed case only showed in its row, so `baseline/empty`
+    failed every run unnoticed (L3)."""
+    return [f"{r.get('case')}@{r.get('variant')}#{r.get('rep', 0)}" for r in rows if r.get("outcome") == "failed"]
+
+
 def misdirected_phase(delivery: dict | None) -> bool:
     """A phase whose text keys never reached the application (whatever the
     probe's vintage), or a verified phase whose text keys went elsewhere or
@@ -2834,7 +2856,7 @@ class Runner:
             return bool(self.only_phases & {"click", "pagedown", "type-start", "type-middle", "type-end"})
         return name in self.only_phases
 
-    def standard_interactions(self, phases: list[dict], tabs: int = 1, recover: Callable[[], bool] | None = None, ctx: dict | None = None, settle_then: Callable[[float], tuple[bool, str]] | None = None) -> bool:
+    def standard_interactions(self, phases: list[dict], tabs: int = 1, recover: Callable[[], bool] | None = None, ctx: dict | None = None, settle_then: Callable[[float], tuple[bool, str]] | None = None, document: bool = True) -> bool:
         """Background, then the standard interactions.
 
         With a post-open context (`ctx`, bound-post-open-settle) the
@@ -2854,6 +2876,9 @@ class Runner:
                 return False
             if ctx.get("tab_settle") and not self.tab_settles(phases, tabs, ctx, recover):
                 return False
+        if not document:
+            phases.extend(no_document_phases())
+            return True
         if not self.rd.available:
             for name in ("scroll", "click", "pagedown", "type-start", "type-middle", "type-end"):
                 phases.append({"name": name, "kind": PHASE_KINDS[name], "status": "unavailable", "reason": self.rd.error or "RemoteDesktop unavailable"})
@@ -3535,7 +3560,7 @@ class Runner:
                 elif ok and case.flow == "preview":
                     ok = self.standard_interactions(phases, recover=recover, ctx=ctx, settle_then=lambda deadline: self.wait_ready("visual-geometry-settled", deadline))
                 elif ok:
-                    ok = self.standard_interactions(phases, tabs=max(1, len(files)), recover=recover, ctx=ctx)
+                    ok = self.standard_interactions(phases, tabs=max(1, len(files)), recover=recover, ctx=ctx, document=case.fixture is not None or bool(files))
                 if ok and case.attrs.get("save_as") and self.wanted("save-as"):
                     ok = self.run_phase(phases, "save-as", cap, self.save_as_copy(files[0], rep_dir / "save-as-copy.txt"))
                 if ok and ctx is not None and case.attrs.get("typing"):
@@ -4828,15 +4853,17 @@ def run_failed(
     misdirected: list[str] | None = None,
     withheld: list[str] | None = None,
     undelivered_scrolls: list[str] | None = None,
+    failed_cases: list[str] | None = None,
 ) -> bool:
     """The lane fails on missing artifacts, an integrity violation, a driver
     failure, a warning of a pre-existing blocker the programme has fixed, a
     measured case that wrote no `frame` record (`frameless_row`), a phase
     whose typing reached no document (`misdirected_phase`), a phase whose
     typed text was drawn only in a withheld frame (`withheld_frame_cases`),
-    or a phase with a wheel step that never arrived
-    (`undelivered_scroll_cases`)."""
-    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions")) or bool(frameless) or bool(misdirected) or bool(withheld) or bool(undelivered_scrolls)
+    a phase with a wheel step that never arrived
+    (`undelivered_scroll_cases`), or a case whose run failed
+    (`failed_case_rows`)."""
+    return bool(missing) or bool(integrity.get("violations")) or bool(run_info.get("driver_failures")) or bool(warnings.get("regressions")) or bool(frameless) or bool(misdirected) or bool(withheld) or bool(undelivered_scrolls) or bool(failed_cases)
 
 
 def run_storage(artifact_dir: Path, rows: list[dict]) -> dict[str, Any]:
@@ -5050,6 +5077,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
     misdirected = misdirected_cases(rows)
     withheld = withheld_frame_cases(rows)
     undelivered_scrolls = undelivered_scroll_cases(rows)
+    failed_rows = failed_case_rows(rows)
     # The C6 verdict (bound-post-open-settle D8) over the post-open rows; with
     # a side-labelled merge (merge-runs --from baseline=DIR --from branch=DIR)
     # it also applies the no-regression rule.
@@ -5082,12 +5110,13 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "misdirected_typing": misdirected,
         "withheld_typing_frames": withheld,
         "undelivered_scrolls": undelivered_scrolls,
+        "failed_cases": failed_rows,
         "post_open": post_open_report(rows),
         "c6_verdict": c6,
     }
     (artifact_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (artifact_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
-    failed = run_failed(missing, integrity, run_info, warnings, frameless, misdirected, withheld, undelivered_scrolls)
+    failed = run_failed(missing, integrity, run_info, warnings, frameless, misdirected, withheld, undelivered_scrolls, failed_rows)
     # Window construction is the one budget this lane can enforce
     # (bound-window-construction-dispatch): with
     # RESPONSIVENESS_CONSTRUCTION_ENFORCE=1, a LushText-owned span or a
@@ -5117,6 +5146,7 @@ def write_report(artifact_dir: Path, axiom_path: Path | None, toolkit_floors: li
         "misdirected_typing": misdirected,
         "withheld_typing_frames": withheld,
         "undelivered_scrolls": undelivered_scrolls,
+        "failed_cases": failed_rows,
         "budget_verdict": derived["budget_verdict"].get("verdict"),
         "construction_over_budget": [f"{c['case']}@{c['variant']}#{c['rep']}: {','.join(c['over_budget'])}" for c in construction_over],
         "fill_in_over_accepted": [f"{c['case']}@{c['variant']}#{c['rep']}: fill-in {c['fill_in_us']} us" for c in fill_in_over],
@@ -5580,6 +5610,8 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- **TYPING REACHED NO DOCUMENT** in {len(report['misdirected_typing'])} phase(s): their keys arrived outside an editor or inserted nothing, so their input-to-frame figures measure a window with nothing to draw; the lane fails: {', '.join(report['misdirected_typing'][:8])}")
     if report.get("withheld_typing_frames"):
         lines.append(f"- **TYPED TEXT DRAWN LATE** in {len(report['withheld_typing_frames'])} phase(s): a key typed into an editable editor was drawn only after the next key was handled while the main loop was free, or never; its latency runs to that frame and the lane fails: {', '.join(report['withheld_typing_frames'][:8])}")
+    if report.get("failed_cases"):
+        lines.append(f"- **CASES FAILED** in {len(report['failed_cases'])} repetition(s): a phase could not run, so the case measured nothing past it; the lane fails: {', '.join(report['failed_cases'][:8])}")
     if report.get("undelivered_scrolls"):
         lines.append(f"- **WHEEL STEPS NEVER ARRIVED** in {len(report['undelivered_scrolls'])} phase(s): an injected scroll has no input record, so it measures nothing; the lane fails: {', '.join(report['undelivered_scrolls'][:8])}")
     if report.get("frameless_cases"):
@@ -6720,6 +6752,11 @@ def self_test() -> int:
     expect(held_rows[0].get("held") and not editable_latency(held_rows[0]) and not held_rows[0].get("withheld_frame"), f"a held key is kept out of editable latency and never flagged withheld ({held_rows[0]})")
     expect(protected_itf_note({"held_input_to_frame": {"keys": 3, "max_us": 9, "median_us": 5}}) == " (held: 3 keys, max 9 us)", "held keys are noted in the table")
 
+    empty_phases = no_document_phases()
+    expect([p["name"] for p in empty_phases] == list(DOCUMENT_INTERACTIONS) and all(p["status"] == "unavailable" and p["reason"] == NO_DOCUMENT_REASON for p in empty_phases), f"a case with no document records its editor interactions unavailable ({empty_phases})")
+    expect("click" in DOCUMENT_INTERACTIONS and not misdirected_cases([{"case": "baseline/empty", "variant": "plain", "rep": 0, "phases": empty_phases}]), "no editor click is attempted for, and no typing gate counts, a case with no document")
+    empty_case = next(c for c in build_cases("quick") if c.id == "baseline/empty")
+    expect(empty_case.fixture is None, "baseline/empty opens no document, so it takes the no-document phases")
     misdirected_row = {"case": "dense/500/wrap-off", "variant": "plain", "rep": 1, "phases": [{"name": "type-during-settle", "delivery": sidebar}, {"name": "click"}]}
     expect(misdirected_cases([misdirected_row]) == ["dense/500/wrap-off@plain#1:type-during-settle"], "the misdirected phase is named")
     expect(run_failed([], {"violations": []}, {"driver_failures": []}, {"regressions": {}}, [], ["dense/500/wrap-off@plain#1:type-during-settle"]), "typing that reached no document fails the lane")
@@ -7032,6 +7069,9 @@ def self_test() -> int:
     lost_case = {"case": "install/100000000", "variant": "plain", "rep": 0, "phases": [{"name": "mid-install", "scroll_delivery": scroll_delivery(lost_rows)}]}
     expect(undelivered_scroll_cases([lost_case]) == ["install/100000000@plain#0:mid-install"], "the phase that lost wheels is named")
     expect(run_failed([], {"violations": []}, {"driver_failures": []}, {"regressions": {}}, [], [], [], ["x"]), "an undelivered wheel fails the lane")
+    expect(run_failed([], {"violations": []}, {"driver_failures": []}, {"regressions": {}}, [], [], [], [], ["baseline/empty@plain#0"]), "a failed case fails the lane")
+    outcome_rows = [{"case": c, "variant": "plain", "rep": 0, "outcome": o} for c, o in (("a", "ok"), ("b", "failed"), ("c", "exceeded_cap"), ("d", "skipped"))]
+    expect(failed_case_rows(outcome_rows) == ["b@plain#0"], f"only a failed outcome is a failed case ({failed_case_rows(outcome_rows)})")
     delivered_case = {"case": "c", "variant": "plain", "rep": 0, "phases": [{"name": "scroll", "scroll_delivery": {"scrolled": 3, "undelivered": 0}}]}
     expect(undelivered_scroll_cases([delivered_case]) == [], "a phase whose wheels all arrived passes")
     # A stamp after the call returned (the first wheel after a pointer move,
