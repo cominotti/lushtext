@@ -23,12 +23,12 @@ Rules for every task:
 
 ## 1. Axioms first (toolkit-update procedure)
 
-- [ ] 1.1 Record the spec-stage evidence in `runs.log` with the `main`
+- [x] 1.1 Record the spec-stage evidence in `runs.log` with the `main`
       revision: B1 (`gtk-axioms-f45-main.log`), B2
       (`make-test-f45-main.log`), B3 (`lane-f45-main/`) and B4. Fill in the
       design's "Spec-stage lane baseline". If `main` moved, rerun
       `make gtk-axioms` on the branch's base before any other work.
-- [ ] 1.2 Measure every sub-check of A7 and A20 on GTK 4.24.1 without
+- [x] 1.2 Measure every sub-check of A7 and A20 on GTK 4.24.1 without
       editing the probes. Use a scratch copy of the probes, or an observation
       mode that runs all checks and reports each one. Cover:
       - A7's host-`set_value` half (pages 300/250/200/150);
@@ -38,7 +38,7 @@ Rules for every task:
       Read the `gtklistbase.c` diff between 4.22.5 and 4.24.1 and confirm
       or replace the `!9778` attribution. Record the figures and the
       attribution in the design.
-- [ ] 1.3 Review the dependents before restating:
+- [x] 1.3 Review the dependents before restating:
       - `classify_child_scroll_in_frame`, `classify_child_scroll` and the
         bin's re-announcement (`viewport_slice_bin/imp.rs`);
       - the Kani slice loop's A7/A20 `kani::assume` clauses
@@ -54,15 +54,15 @@ Rules for every task:
       in `[0, content]`, `stray_value` in `[-MAX_CONTENT, 2·MAX_CONTENT]`,
       `view_anchors[0]` in `[0, page]`, and `view_anchors[0] == 0` for an
       upward request. Record whether the model must be widened.
-- [ ] 1.4 Install `org.gnome.Sdk//51` if missing
+- [x] 1.4 Install `org.gnome.Sdk//51` if missing
       (`flatpak install --user flathub org.gnome.Sdk//51`; local, approved).
       Then run `make gtk-axioms-runtimes GTK_AXIOMS_RUNTIMES="org.gnome.Sdk//50 org.gnome.Sdk//51"`
       for the per-SDK verdicts, so the floor's A7/A20/A32 verdicts are
       measured, not assumed.
-- [ ] 1.5 Restate A7, A20 and A32 in the ledger as version-qualified
+- [x] 1.5 Restate A7, A20 and A32 in the ledger as version-qualified
       (design D3), with attribution and both "Verified against" runs.
       Revise the A45 row's and A32 consumers' wording for 5.22.
-- [ ] 1.6 Add a version helper to `gtk-lush-axioms`, unit-tested on version
+- [x] 1.6 Add a version helper to `gtk-lush-axioms`, unit-tested on version
       tuples: the running GTK and GtkSourceView version compared against a
       catalogue-named bound. Then make the A7, A20 and A32 probes and
       samples assert the range they run on, and print it in the observation.
@@ -70,7 +70,7 @@ Rules for every task:
       `scripts/check-gtk-axioms.py` (with a self-test case) so a
       version-qualified catalogue entry must name its bound, and its ledger
       row must state both ranges.
-- [ ] 1.7 Verify the restated probes on both toolkits:
+- [x] 1.7 Verify the restated probes on both toolkits:
       - `make gtk-axioms` on F45: the full lane, every sample included;
       - the A7, A20 and A32 samples via `make gtk-axioms-runtimes` against
         `org.gnome.Sdk//50`.
@@ -78,7 +78,7 @@ Rules for every task:
       Then copy GTK 4.24.1 / Adw 1.10.0 (/ Pango 1.58.2 / GtkSourceView
       5.22.0 for the text rows) into "Verified against" for **every** probed
       row, with "Fedora 45 toolbox host, `make gtk-axioms`, <date>".
-- [ ] 1.8 Update the citations in `kani_proofs.rs` and `scroll_request.rs`
+- [x] 1.8 Update the citations in `kani_proofs.rs` and `scroll_request.rs`
       to the version-qualified A7/A20 (design D4).
       - If task 1.3 found no assumption to widen, change comments only, and
         rerun the pull-request-gated shard once:
@@ -95,7 +95,7 @@ Rules for every task:
 
 ## 2. Packaging, toolchain and CI
 
-- [ ] 2.1 Re-query `rust-stable//26.08`'s version (design D6). Set the pin
+- [x] 2.1 Re-query `rust-stable//26.08`'s version (design D6). Set the pin
       to it in:
       - `rust-toolchain.toml`;
       - all `dtolnay/rust-toolchain@` sites (19);
@@ -105,11 +105,11 @@ Rules for every task:
       Install it with rustup if missing. Keep `rust-version = "1.98.0"`.
       Then run `make lint-advisory` and classify any new category the
       policy file requires.
-- [ ] 2.2 In the Flatpak manifest, set `runtime-version` 50 → 51 (the SDK
+- [x] 2.2 In the Flatpak manifest, set `runtime-version` 50 → 51 (the SDK
       follows). Update `scripts/test-release.sh`'s manifest fixture and any
       verifier expectations. `cargo-sources.json` changes only if
       `Cargo.lock` does, and it should not.
-- [ ] 2.3 CI:
+- [x] 2.3 CI:
       - confirm that `registry.fedoraproject.org/fedora:45` resolves
         (`skopeo inspect` or `podman pull`);
       - every `fedora:44` container image (28) → `fedora:45`, and every
@@ -126,7 +126,7 @@ Rules for every task:
       Run `scripts/check-workflow-timeouts.py`,
       `make check-end-user-smoke-workflow`, and any workflow policy check in
       `make check-policy`.
-- [ ] 2.4 Builder-diagnostics runtime (design D2):
+- [x] 2.4 Builder-diagnostics runtime (design D2):
       - `build-aux/builder-diagnostics/Containerfile` and
         `builder-diagnostics-runtime.yml`: `fedora:45`, `GTK_REF=4.24.1`,
         `LIBADWAITA_REF=1.10.0`, `GTKSOURCEVIEW_REF=5.22.0`, a
@@ -142,13 +142,13 @@ Rules for every task:
       builder diagnostic on Libadwaita 1.10 is a task 3 regression. List the
       post-merge `workflow_dispatch` of `builder-diagnostics-runtime.yml` in
       the handoff as a maintainer action.
-- [ ] 2.5 `scripts/run-gtk-axioms.sh runtimes` defaults to
+- [x] 2.5 `scripts/run-gtk-axioms.sh runtimes` defaults to
       `org.gnome.Sdk//50 org.gnome.Sdk//51 org.gnome.Sdk//master`. Update
       the usage text and the Makefile comment.
 
 ## 3. Toolkit regressions on GTK 4.24 (failing first, fixed at the cause)
 
-- [ ] 3.1 W1, the `GtkSourceMapSlider` snapshot without allocation:
+- [x] 3.1 W1, the `GtkSourceMapSlider` snapshot without allocation:
       1. Find the smallest LushText test that emits it, by running a single
          test with `make test-widget-shard` filters or the harness's
          `--exact`.
@@ -164,7 +164,7 @@ Rules for every task:
          the maintainer's approval.
       5. Rerun the minimap Kani shards (`core-minimap-fit`,
          `core-minimap-binning`) only if minimap policy code changed.
-- [ ] 3.2 W2, the `GtkListView` measured for height 0 below its minimum
+- [x] 3.2 W2, the `GtkListView` measured for height 0 below its minimum
       (`workspace_section::*`):
       1. Attribute it to the exact measure call (bin `measure`/`size_allocate`
          versus a hidden or empty section).
@@ -175,7 +175,7 @@ Rules for every task:
          `widgets-geometry` and the six `widgets-slice-loop-*` shards, one at
          a time (task 1.8).
       5. Run the `workspace-tree-reveal` visual-geometry scenario.
-- [ ] 3.3 W3, `AdwEntryRow placed into AdwExpanderRow` (Libadwaita 1.10):
+- [x] 3.3 W3, `AdwEntryRow placed into AdwExpanderRow` (Libadwaita 1.10):
       1. Write a widget test that constructs Preferences and fails on the
          warning.
       2. Add the entry row through the API Libadwaita accepts, keeping the
@@ -183,7 +183,7 @@ Rules for every task:
       3. Run `make check-blueprint` / `make blueprint-generate` if
          `preferences.blp` changes.
       4. Re-check `ui.md` l. 363's 4.22/1.9 warning note on 1.10.
-- [ ] 3.4 `FLAKY`
+- [x] 3.4 `FLAKY`
       `minimap_markers::test_minimap_replace_all_of_many_matches_keeps_one_pending_refresh`:
       1. Read the first attempt's panic and classify the wait.
       2. Rerun it in isolation 10 times on 4.24.
@@ -217,7 +217,7 @@ Rules for every task:
 - [ ] 4.2 `make test` passes with 0 `FLAKY`, 0 `FLAKY-SHARD` and 0
       unexpected warning lines. Record per-shard minutes and peaks. The
       local timing does not feed `ci_minutes`.
-- [ ] 4.3 `make gtk-axioms` passes in full on F45. The A7/A20/A32 floor
+- [x] 4.3 `make gtk-axioms` passes in full on F45. The A7/A20/A32 floor
       verdicts pass via `make gtk-axioms-runtimes` against
       `org.gnome.Sdk//50`.
 - [ ] 4.4 Kani: the shards task 1.8 selected, plus any shard covering code
@@ -251,14 +251,14 @@ Rules for every task:
       `gtk4-libadwaita-internals` skill's version-family lines, and its
       ledger preamble ("The GNOME 50 platform floor…" plus the shipped
       runtime).
-- [ ] 5.3 `docs/upstream-reports.md`:
+- [x] 5.3 `docs/upstream-reports.md`:
       - what the 51 runtime changes: A32 is fixed in the shipped runtime,
         and the workaround stays for the floor;
       - W1 or W2 if upstream;
       - every other row's "Not in the GNOME 50 or GNOME 51 runtimes" note
         re-checked;
       - "Last checked".
-- [ ] 5.4 `docs/next/long-line-documents.md`: the queue entry, and an
+- [x] 5.4 `docs/next/long-line-documents.md`: the queue entry, and an
       implementation record with the measured verdicts. In
       `docs/next/formal-verification.md`, the A7/A20 envelope note.
 - [ ] 5.5 `make check-agent-docs`, `make check-policy` and

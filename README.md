@@ -197,8 +197,10 @@ Release, Cominotti repository, and Cloudflare Pages hosting details live in
 ### Snap Status
 
 An Ubuntu Snap scaffold exists at `snap/snapcraft.yaml`, but it is not ready
-for users yet. LushText targets the GNOME 50 stack (GTK 4.22, Libadwaita 1.9,
-GtkSourceView 5.18), while Snapcraft's GNOME extension/content-snap support
+for users yet. LushText ships on the GNOME 51 runtime (GTK 4.24, Libadwaita
+1.10, GtkSourceView 5.22) and keeps the GNOME 50 stack (GTK 4.22, Libadwaita
+1.9, GtkSourceView 5.18 API floor, 5.20 at runtime) as its source floor, which
+the Snap targets; Snapcraft's GNOME extension/content-snap support
 must also support the `core26`/GNOME 50 platform before the scaffold can become
 a real release build.
 
@@ -462,7 +464,7 @@ stop the preview and say so.
 
 ### Dependencies
 
-- Rust 1.98.0+ (the pinned toolchain is 1.98.1)
+- Rust 1.98.0+ (the pinned toolchain is 1.98.0, the compiler the GNOME 51 SDK ships)
 - GTK4 development libraries
 - Libadwaita development libraries
 - GtkSourceView 5 development libraries
@@ -808,7 +810,8 @@ Cargo invocation needs the feature: `cargo bench -p lushtext-core --features tes
 | GUI | GTK4 0.11 + Libadwaita 0.9 + GtkSourceView 5 0.11 |
 | Config | GSettings |
 | Build | Cargo workspace + Makefile (dev), Meson (Flatpak/installed) |
-| Packaging | Flatpak (`org.gnome.Platform` 50); Snap scaffold in preparation |
+| Toolkit | Ships on the GNOME 51 runtime (GTK 4.24, Libadwaita 1.10, GtkSourceView 5.22); source floor GNOME 50 (GTK 4.22, Libadwaita 1.9, GtkSourceView 5.20) |
+| Packaging | Flatpak (`org.gnome.Platform` 51); Snap scaffold in preparation (GNOME 50 platform) |
 | License | GPL-3.0-or-later |
 
 ## License
