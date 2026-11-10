@@ -33,11 +33,13 @@ PROBE_MARKER = "**probe**"
 NO_SAMPLE_MARKER = "—"
 SLOW_MARKER = "**slow**"
 SLOW_RUNS_WHERE = "nightly"
+BOUND_LIBRARIES = {"gtk": "GTK", "sourceview": "GtkSourceView"}
 
 
 @dataclass(frozen=True)
 class LedgerRow:
     number: int
+    axiom: str
     pinned_by: str
     verified_against: str
     sample: str
@@ -49,6 +51,8 @@ class CatalogueEntry:
     name: str
     probe: str | None
     slow: bool = False
+    # (library, "major.minor") of a version-qualified entry, e.g. ("GTK", "4.24").
+    bound: tuple[str, str] | None = None
 
 
 def parse_ledger(text: str, errors: list[str]) -> dict[int, LedgerRow]:
@@ -81,6 +85,7 @@ def parse_ledger(text: str, errors: list[str]) -> dict[int, LedgerRow]:
             errors.append(f"A{number}: ledger lists the id twice")
         rows[number] = LedgerRow(
             number=number,
+            axiom=by_column["Axiom"],
             pinned_by=by_column["Pinned by"],
             verified_against=by_column["Verified against"],
             sample=by_column["Sample"],
@@ -97,6 +102,10 @@ def parse_catalogue(text: str, errors: list[str]) -> dict[int, CatalogueEntry]:
         name_match = re.search(r'name:\s*"([a-z0-9_]+)"', block)
         probe_match = re.search(r"probe:\s*(None|Some\(\s*probes::(probe_a\d+)\s*\))", block)
         slow_match = re.search(r"slow:\s*(true|false)", block)
+        bound_match = re.search(
+            r"version_bound:\s*Some\(\s*(?:crate::version::)?VersionBound::(gtk|sourceview)\(\s*(\d+),\s*(\d+),\s*\d+\s*\)\s*\)",
+            block,
+        )
         if not (id_match and name_match and probe_match):
             continue
         number = int(id_match.group(1))
@@ -107,7 +116,14 @@ def parse_catalogue(text: str, errors: list[str]) -> dict[int, CatalogueEntry]:
             name=name_match.group(1),
             probe=probe_match.group(2),
             slow=bool(slow_match and slow_match.group(1) == "true"),
+            bound=(
+                (BOUND_LIBRARIES[bound_match.group(1)], f"{bound_match.group(2)}.{bound_match.group(3)}")
+                if bound_match
+                else None
+            ),
         )
+        if re.search(r"version_bound:\s*Some", block) and not bound_match:
+            errors.append(f"A{number}: version_bound must name VersionBound::gtk or ::sourceview(major, minor, micro)")
     if not entries:
         errors.append("no catalogue entries found in crates/gtk-lush/axioms/src/catalogue.rs")
     return entries
@@ -159,6 +175,12 @@ def check(ledger_text: str, catalogue_text: str, example_stems: set[str]) -> lis
             )
         if marked_slow and not entry.slow:
             errors.append(f"A{number}: ledger row says {SLOW_MARKER} but the catalogue entry is not slow")
+        if entry.bound is not None:
+            library, release = entry.bound
+            for relation in ("<", "≥"):
+                stated = f"{library} {relation} {release}"
+                if stated not in row.axiom:
+                    errors.append(f"A{number}: a version-qualified row's Axiom must state both ranges, missing `{stated}`")
         if not row.verified_against:
             errors.append(f"A{number}: Verified against is empty")
         if entry.probe is not None:
@@ -241,6 +263,8 @@ def self_test() -> int:
         ("a probed row whose Sample is wrong", {"ledger": GOOD_LEDGER.replace("`examples/a01_one.rs`", "`examples/a01_other.rs`")}, "A1: Sample must name examples/a01_one.rs"),
         ("an unprobed row without a reason", {"ledger": GOOD_LEDGER.replace("— only approximately true", "—")}, "A2: an unprobed row's Sample must be"),
         ("a slow entry whose row does not say where it runs", {"catalogue": GOOD_CATALOGUE.replace('name: "a01_one",', 'name: "a01_one",\n        slow: true,')}, "A1: a slow entry's Pinned by must say **slow**"),
+        ("a version-qualified row missing a range", {"catalogue": GOOD_CATALOGUE.replace('name: "a01_one",', 'name: "a01_one",\n        version_bound: Some(VersionBound::gtk(4, 24, 0)),'), "ledger": GOOD_LEDGER.replace("| A1 | one |", "| A1 | GTK ≥ 4.24: one |")}, "A1: a version-qualified row's Axiom must state both ranges, missing `GTK < 4.24`"),
+        ("an unparseable version bound", {"catalogue": GOOD_CATALOGUE.replace('name: "a01_one",', 'name: "a01_one",\n        version_bound: Some(BOUND),')}, "A1: version_bound must name"),
         ("a slow row for an entry that is not slow", {"ledger": GOOD_LEDGER.replace("**probe**: `gtk_lush_axioms::probe_a01`", "**probe**: `gtk_lush_axioms::probe_a01`, **slow**: nightly only")}, "A1: ledger row says **slow** but the catalogue entry is not slow"),
     ]
     slow_ledger = GOOD_LEDGER.replace(
@@ -252,6 +276,13 @@ def self_test() -> int:
     failures: list[str] = []
     if baseline:
         failures.append(f"the good fixture must pass, saw: {baseline}")
+    bounded_baseline = check(
+        GOOD_LEDGER.replace("| A1 | one |", "| A1 | GTK < 4.24: one; GTK ≥ 4.24: two |"),
+        GOOD_CATALOGUE.replace('name: "a01_one",', 'name: "a01_one",\n        version_bound: Some(crate::version::VersionBound::gtk(4, 24, 0)),'),
+        GOOD_EXAMPLES,
+    )
+    if bounded_baseline:
+        failures.append(f"a version-qualified row stating both ranges must pass, saw: {bounded_baseline}")
     slow_baseline = check(slow_ledger, slow_catalogue, GOOD_EXAMPLES)
     if slow_baseline:
         failures.append(f"a slow entry whose row says where it runs must pass, saw: {slow_baseline}")

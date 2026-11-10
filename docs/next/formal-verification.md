@@ -240,6 +240,21 @@ The new probes also measured two behaviours the ledger did not record
   A8 stays an envelope assumption of the slice-bin model, to be revisited by
   `extend-closed-loop-geometry-verification`, whose A14–A18 probes are written
   in `gtk-lush-axioms`.
+- **GTK 4.24 changed the host-`set_value` half of A7 and A20**
+  (`adopt-gnome-51`, 2026-11-10). On GTK 4.24.1 a host `set_value` anchors the
+  list at the published value with alignment 0, so a page change keeps the
+  value (1360 at pages 300/250/200/150; A20's rows 40 and 150, plain or
+  re-announced, all alignment 0); the `scroll_to` half is unchanged (6534 →
+  6622, alignment 0.887). Both axioms are now version-qualified (GTK < 4.24
+  keeps the stray anchor; the GNOME 50 floor still has it, re-measured with
+  `make gtk-axioms-runtimes` against `org.gnome.Sdk//50`). The slice-loop
+  envelope already covers 4.24: its stray anchor ranges over `[0, content]`
+  and its re-derived value over `[-MAX_CONTENT, 2·MAX_CONTENT]`, both of which
+  contain "the published value, unchanged", and the `scroll_to` assumptions
+  (anchor inside the view, alignment 0 for an upward request) measured the
+  same on both toolkits. No assumption was widened, so only the citations
+  changed and `widgets-geometry` was rerun once as a sanity check (11 harnesses
+  verified, 5.95 min, 1.7 GiB peak, 2026-11-10).
 
 A8 is backed by the phase-0 instrumentation (39 requests, 0 settles, no
 `Defer` across 48 tests) and recorded as not isolable by a probe; A12 records

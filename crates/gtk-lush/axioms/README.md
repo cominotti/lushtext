@@ -138,6 +138,16 @@ follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.
 
+When a toolkit release changes a verdict that a supported older toolkit
+still has (`adopt-gnome-51`: GNOME 51 ships, GNOME 50 is the floor), the
+axiom is **version-qualified** instead of rewritten: set the catalogue entry's
+`version_bound` to the first release with the new verdict
+(`VersionBound::gtk(4, 24, 0)`, `VersionBound::sourceview(5, 22, 0)`), branch
+the probe on `version::catalogued_bound(recorder, id)?.reached()`, asserting
+each side's statement, and state both ranges in the ledger row
+(`GTK < 4.24` / `GTK ≥ 4.24`); `make check-gtk-axioms` requires both. A7,
+A20, A32 and A103–A106 are written this way.
+
 1. **Ledger row.** Add the row to the ledger table with the next unused id
    (ids are never reused), its statement, and its dependent designs.
 2. **Catalogue entry.** Append an `Axiom` to `CATALOGUE` in

@@ -31,6 +31,12 @@ pub struct Axiom {
     /// `make gtk-axioms` and the nightly workflow run them
     /// (`GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`), and the ledger row says where.
     pub slow: bool,
+    /// The toolkit release from which the axiom's newer verdict holds, for an
+    /// axiom whose verdict differs between supported toolkits (the GNOME 50
+    /// floor and the shipped GNOME 51 runtime). The probe asserts the old
+    /// statement below it and the new one at or above it, and the ledger row
+    /// states both ranges. `None` for an axiom that holds alike everywhere.
+    pub version_bound: Option<crate::version::VersionBound>,
     /// The isolated probe, or `None` when no minimal fixture can exhibit the
     /// axiom; the ledger row records why.
     pub probe: Option<fn() -> Observation>,
@@ -78,6 +84,7 @@ const CATALOGUE: &[Axiom] = &[
             "the sidebar file tree",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a01),
     },
     Axiom {
@@ -86,6 +93,7 @@ const CATALOGUE: &[Axiom] = &[
         statement: "a list outside a scroller reports its whole content as its minimum height",
         dependent_designs: &["ViewportSliceBin::measure (full content to the outer scroller)"],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a02),
     },
     Axiom {
@@ -98,6 +106,7 @@ const CATALOGUE: &[Axiom] = &[
              scroller exists",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a03),
     },
     Axiom {
@@ -107,6 +116,7 @@ const CATALOGUE: &[Axiom] = &[
                     as a write to its vadjustment",
         dependent_designs: &["classify_child_scroll reads the child's value after child.allocate"],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a04),
     },
     Axiom {
@@ -117,6 +127,7 @@ const CATALOGUE: &[Axiom] = &[
                     although nothing asked it to scroll",
         dependent_designs: &["viewport_slice never shrinks the band at the bottom edge"],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a05),
     },
     Axiom {
@@ -128,20 +139,24 @@ const CATALOGUE: &[Axiom] = &[
             "inset learning",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a06),
     },
     Axiom {
         id: AxiomId::new(7),
         name: "a07_value_is_rederived_from_the_anchor",
         statement: "the child re-derives its value from its scroll anchor when page or upper \
-                    change: value = anchor position − align × page; after a host moves the \
-                    value the align is not confined to [0, 1], after scroll_to it is",
+                    change: value = anchor position − align × page; after scroll_to the align \
+                    is in [0, 1] (both ranges); on GTK < 4.24, after a host moves the value the \
+                    align is not confined to [0, 1]; on GTK >= 4.24 a host move anchors at the \
+                    view's top edge with align 0, so a page change keeps the value",
         dependent_designs: &[
             "classify_child_scroll_in_frame writes back a settle under a published anchor",
             "the anchor model of the Kani slice loop",
             "the settle bound (reconfigure_shift) in classify_child_scroll",
         ],
         slow: false,
+        version_bound: Some(crate::version::VersionBound::gtk(4, 24, 0)),
         probe: Some(probes::probe_a07),
     },
     Axiom {
@@ -156,6 +171,7 @@ const CATALOGUE: &[Axiom] = &[
             "the child's own estimate settle in the Kani slice loop",
         ],
         slow: false,
+        version_bound: None,
         probe: None,
     },
     Axiom {
@@ -167,6 +183,7 @@ const CATALOGUE: &[Axiom] = &[
              value (child_value − viewport_top)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a09),
     },
     Axiom {
@@ -182,6 +199,7 @@ const CATALOGUE: &[Axiom] = &[
              (drawn_labels in workspace_tree_virtualization)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a10),
     },
     Axiom {
@@ -195,6 +213,7 @@ const CATALOGUE: &[Axiom] = &[
              follow_child_request)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a11),
     },
     Axiom {
@@ -203,6 +222,7 @@ const CATALOGUE: &[Axiom] = &[
         statement: "the child's natural height is independent of the outer scroll position",
         dependent_designs: &["the outer range stays exact while scrolling"],
         slow: false,
+        version_bound: None,
         probe: None,
     },
     Axiom {
@@ -216,6 +236,7 @@ const CATALOGUE: &[Axiom] = &[
                               an idle",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a13),
     },
     Axiom {
@@ -233,6 +254,7 @@ const CATALOGUE: &[Axiom] = &[
              window width against whole-sp thresholds (ui/window/geometry/policy.rs)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a14),
     },
     Axiom {
@@ -248,6 +270,7 @@ const CATALOGUE: &[Axiom] = &[
              from size_allocate (ui/window/geometry/execution.rs)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a15),
     },
     Axiom {
@@ -271,6 +294,7 @@ const CATALOGUE: &[Axiom] = &[
              properties breakpoint's setter also owns (ui/window/geometry/execution.rs)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a16),
     },
     Axiom {
@@ -288,6 +312,7 @@ const CATALOGUE: &[Axiom] = &[
              (ui/window/geometry/execution.rs)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a17),
     },
     Axiom {
@@ -306,6 +331,7 @@ const CATALOGUE: &[Axiom] = &[
              (ui/window/geometry/execution.rs, resources/ui/window.blp)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a18),
     },
     Axiom {
@@ -323,6 +349,7 @@ const CATALOGUE: &[Axiom] = &[
              instead of queueing inside layout",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a19),
     },
     Axiom {
@@ -331,14 +358,17 @@ const CATALOGUE: &[Axiom] = &[
         statement: "a value-changed a GtkListView receives before it has been allocated at \
                     the new value (a host set_value) leaves its scroll anchor far from the \
                     view, with an alignment outside [0, 1], so a later page change re-derives \
-                    the value along a steep line; the same value re-announced once after the \
-                    list was allocated there anchors it with an alignment in [0, 1]",
+                    the value along a steep line, on GTK < 4.24; the same value re-announced \
+                    once after the list was allocated there anchors it with an alignment in \
+                    [0, 1]; on GTK >= 4.24 a host set_value already anchors at the view's top \
+                    edge with alignment 0, re-announced or not",
         dependent_designs: &[
             "ViewportSliceBin::size_allocate re-announces the value after the child's \
              allocation whenever its publish changed the value",
             "the anchor_stray ghost of the Kani slice loop (gtk-lush-widgets kani_proofs.rs)",
         ],
         slow: false,
+        version_bound: Some(crate::version::VersionBound::gtk(4, 24, 0)),
         probe: Some(probes::probe_a20),
     },
     Axiom {
@@ -357,6 +387,7 @@ const CATALOGUE: &[Axiom] = &[
              (ui/window/drafts/admission.rs)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a21),
     },
     Axiom {
@@ -383,6 +414,7 @@ const CATALOGUE: &[Axiom] = &[
              advance_expansion, terminate_reveal)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a22),
     },
     Axiom {
@@ -402,6 +434,7 @@ const CATALOGUE: &[Axiom] = &[
              the layout, a fixed head",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a23),
     },
     Axiom {
@@ -418,6 +451,7 @@ const CATALOGUE: &[Axiom] = &[
              growing paragraph",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a24),
     },
     Axiom {
@@ -431,6 +465,7 @@ const CATALOGUE: &[Axiom] = &[
             "long-line-protected-view (C2): fold-at-insertion and edit-growth tagging",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a25),
     },
     Axiom {
@@ -448,6 +483,7 @@ const CATALOGUE: &[Axiom] = &[
              position inside a protected paragraph",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a26),
     },
     Axiom {
@@ -461,6 +497,7 @@ const CATALOGUE: &[Axiom] = &[
              unsaved and un-undoable",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a27),
     },
     Axiom {
@@ -477,6 +514,7 @@ const CATALOGUE: &[Axiom] = &[
              length",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a28),
     },
     Axiom {
@@ -492,6 +530,7 @@ const CATALOGUE: &[Axiom] = &[
              paragraph (L_syntax, S_syntax); folding cannot hide text from the engine",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a29),
     },
     Axiom {
@@ -507,6 +546,7 @@ const CATALOGUE: &[Axiom] = &[
             "document-scale-policy (C1): L_protect",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a30),
     },
     Axiom {
@@ -522,6 +562,7 @@ const CATALOGUE: &[Axiom] = &[
             "long-line-protected-view (C2): the fold policy's density bound",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a31),
     },
     Axiom {
@@ -529,13 +570,15 @@ const CATALOGUE: &[Axiom] = &[
         name: "a32_detaching_a_source_map_with_a_pending_tick_is_critical",
         statement: "detaching a GtkSourceMap from its view (gtk_source_map_set_view(NULL)) while \
                     its update tick is pending makes the tick run against no view and log Gtk and \
-                    GLib-GObject CRITICALs; a scroll queues the tick (a defect axiom: holds while \
-                    the defect is present)",
+                    GLib-GObject CRITICALs; a scroll queues the tick (a defect axiom: on \
+                    GtkSourceView < 5.22 holds while the defect is present; GtkSourceView 5.22.0 \
+                    fixed it, 8d679ccd, and on >= 5.22 the same detach must log nothing)",
         dependent_designs: &[
             "document-scale-policy (C1): the minimap retire-and-rebuild that removes the detach \
              CRITICAL",
         ],
         slow: false,
+        version_bound: Some(crate::version::VersionBound::sourceview(5, 22, 0)),
         probe: Some(probes::probe_a32),
     },
     Axiom {
@@ -551,6 +594,7 @@ const CATALOGUE: &[Axiom] = &[
             "document-scale-policy (C1): L_search_highlight",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a33),
     },
     Axiom {
@@ -564,6 +608,7 @@ const CATALOGUE: &[Axiom] = &[
              document (P3 extends this axiom)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a34),
     },
     Axiom {
@@ -579,6 +624,7 @@ const CATALOGUE: &[Axiom] = &[
             "sliced-protected-install (C3): per-slice AT payloads (A78 extends this axiom)",
         ],
         slow: false,
+        version_bound: None,
         probe: None,
     },
     Axiom {
@@ -592,6 +638,7 @@ const CATALOGUE: &[Axiom] = &[
             "long-line-protected-view (C2): the install bound for giant paragraphs",
         ],
         slow: false,
+        version_bound: None,
         probe: None,
     },
     Axiom {
@@ -616,6 +663,7 @@ const CATALOGUE: &[Axiom] = &[
              warning through it",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a37),
     },
     Axiom {
@@ -631,6 +679,7 @@ const CATALOGUE: &[Axiom] = &[
              the persisted one is dropped before it reaches GSettings",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a38),
     },
     Axiom {
@@ -645,6 +694,7 @@ const CATALOGUE: &[Axiom] = &[
              whole batch with one delay()/apply() pair, one backend write per flush",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a39),
     },
     Axiom {
@@ -663,6 +713,7 @@ const CATALOGUE: &[Axiom] = &[
              backend leaves every other reader stale for a monitor round trip",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a40),
     },
     Axiom {
@@ -680,6 +731,7 @@ const CATALOGUE: &[Axiom] = &[
              when it is made and the flush does not re-notify them",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a41),
     },
     Axiom {
@@ -699,6 +751,7 @@ const CATALOGUE: &[Axiom] = &[
              and the minimap's modified-line marks (edits)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a42),
     },
     Axiom {
@@ -713,6 +766,7 @@ const CATALOGUE: &[Axiom] = &[
              (ui/editor_page/document_scale.rs)",
         ],
         slow: false,
+        version_bound: None,
         probe: None,
     },
     Axiom {
@@ -727,6 +781,7 @@ const CATALOGUE: &[Axiom] = &[
              emission as the edit that makes a paragraph too long (A29)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a44),
     },
     Axiom {
@@ -741,6 +796,7 @@ const CATALOGUE: &[Axiom] = &[
              (ui/editor_page/minimap/retirement.rs) that replaces the A32 detach",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a45),
     },
     Axiom {
@@ -754,6 +810,7 @@ const CATALOGUE: &[Axiom] = &[
              window in a dispatch of its own",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a46),
     },
     Axiom {
@@ -769,6 +826,7 @@ const CATALOGUE: &[Axiom] = &[
              dispatches nothing",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a47),
     },
     Axiom {
@@ -782,6 +840,7 @@ const CATALOGUE: &[Axiom] = &[
              predecessor's painted frame",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a48),
     },
     Axiom {
@@ -794,6 +853,7 @@ const CATALOGUE: &[Axiom] = &[
              child (search panel, command palette, Focus Mode affordance) stays invisible",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a49),
     },
     Axiom {
@@ -808,6 +868,7 @@ const CATALOGUE: &[Axiom] = &[
              installed before the window is realized, so the first frame draws their state",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a50),
     },
     Axiom {
@@ -825,6 +886,7 @@ const CATALOGUE: &[Axiom] = &[
              presented frame and is not paced behind an unseen one",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a51),
     },
     Axiom {
@@ -839,6 +901,7 @@ const CATALOGUE: &[Axiom] = &[
              therefore refers to its live child weakly",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a52),
     },
     Axiom {
@@ -855,6 +918,7 @@ const CATALOGUE: &[Axiom] = &[
              and delete-range emission",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a53),
     },
     Axiom {
@@ -870,6 +934,7 @@ const CATALOGUE: &[Axiom] = &[
              keystroke",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a54),
     },
     Axiom {
@@ -887,6 +952,7 @@ const CATALOGUE: &[Axiom] = &[
              (design D3, step 3)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a59),
     },
     Axiom {
@@ -902,6 +968,7 @@ const CATALOGUE: &[Axiom] = &[
              (design D3, step 1)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a60),
     },
     Axiom {
@@ -917,6 +984,7 @@ const CATALOGUE: &[Axiom] = &[
              (design D3, step 2)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a61),
     },
     Axiom {
@@ -934,6 +1002,7 @@ const CATALOGUE: &[Axiom] = &[
             "sliced-protected-install (C3): per-slice AT payloads",
         ],
         slow: false,
+        version_bound: None,
         probe: None,
     },
     Axiom {
@@ -949,6 +1018,7 @@ const CATALOGUE: &[Axiom] = &[
              on the capture claim (A59) for drag-out (design D3, step 4)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a63),
     },
     Axiom {
@@ -968,6 +1038,7 @@ const CATALOGUE: &[Axiom] = &[
              (design D3, step 5)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a64),
     },
     Axiom {
@@ -984,6 +1055,7 @@ const CATALOGUE: &[Axiom] = &[
             "sliced-protected-install (C3): the per-MiB insert cost is its adoption-gate input",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a65),
     },
     Axiom {
@@ -999,6 +1071,7 @@ const CATALOGUE: &[Axiom] = &[
              (design D4)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a66),
     },
     Axiom {
@@ -1018,6 +1091,7 @@ const CATALOGUE: &[Axiom] = &[
              language catalog is built on a worker",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a67),
     },
     Axiom {
@@ -1032,6 +1106,7 @@ const CATALOGUE: &[Axiom] = &[
              sliced install instead of paying the document-sized toggle at publish",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a68),
     },
     Axiom {
@@ -1049,6 +1124,7 @@ const CATALOGUE: &[Axiom] = &[
              outranking the worker",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a69),
     },
     Axiom {
@@ -1067,6 +1143,7 @@ const CATALOGUE: &[Axiom] = &[
              dispatch holds more than one slice",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a70),
     },
     Axiom {
@@ -1081,6 +1158,7 @@ const CATALOGUE: &[Axiom] = &[
              flush is not the backend's monitor re-delivering the write",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a71),
     },
     Axiom {
@@ -1100,6 +1178,7 @@ const CATALOGUE: &[Axiom] = &[
              dense document",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a72),
     },
     Axiom {
@@ -1115,6 +1194,7 @@ const CATALOGUE: &[Axiom] = &[
              before the install, and later resize-driven changes are recorded against this axiom",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a73),
     },
     Axiom {
@@ -1129,6 +1209,7 @@ const CATALOGUE: &[Axiom] = &[
              notify in the lane; the cause is the pointer's first entry, :hover)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a74),
     },
     Axiom {
@@ -1144,6 +1225,7 @@ const CATALOGUE: &[Axiom] = &[
              the text area",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a75),
     },
     Axiom {
@@ -1161,6 +1243,7 @@ const CATALOGUE: &[Axiom] = &[
              D3), the deferred head (D2) and the backwards clear (D4)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a76),
     },
     Axiom {
@@ -1178,6 +1261,7 @@ const CATALOGUE: &[Axiom] = &[
              without a re-layout that grows with the tail; the tail-first order (design D2)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a77),
     },
     Axiom {
@@ -1193,6 +1277,7 @@ const CATALOGUE: &[Axiom] = &[
              bounded by the slice",
         ],
         slow: false,
+        version_bound: None,
         probe: None,
     },
     Axiom {
@@ -1209,6 +1294,7 @@ const CATALOGUE: &[Axiom] = &[
              floor",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a79),
     },
     Axiom {
@@ -1224,6 +1310,7 @@ const CATALOGUE: &[Axiom] = &[
              from one source one step above the validation idle, one completion per dispatch",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a80),
     },
     Axiom {
@@ -1241,6 +1328,7 @@ const CATALOGUE: &[Axiom] = &[
              iteration, so a hidden validating tab lengthens every iteration of the visible one",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a81),
     },
     Axiom {
@@ -1257,6 +1345,7 @@ const CATALOGUE: &[Axiom] = &[
              hidden (A83)",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a82),
     },
     Axiom {
@@ -1274,6 +1363,7 @@ const CATALOGUE: &[Axiom] = &[
              its tab is shown, and again once it is seen laying out while hidden",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a83),
     },
     Axiom {
@@ -1292,6 +1382,7 @@ const CATALOGUE: &[Axiom] = &[
              G_PRIORITY_LOW + 1 wait",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a84),
     },
     Axiom {
@@ -1314,6 +1405,7 @@ const CATALOGUE: &[Axiom] = &[
              slice",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a85),
     },
     Axiom {
@@ -1334,6 +1426,7 @@ const CATALOGUE: &[Axiom] = &[
              no widget carries them, then swaps the classes on a later frame",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a86),
     },
     Axiom {
@@ -1350,6 +1443,7 @@ const CATALOGUE: &[Axiom] = &[
              per touched file per turn, not once per match",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a87),
     },
     Axiom {
@@ -1365,6 +1459,7 @@ const CATALOGUE: &[Axiom] = &[
              size in 256-row batch splices within LIST_TURN_SLICE_US",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a88),
     },
     Axiom {
@@ -1379,6 +1474,7 @@ const CATALOGUE: &[Axiom] = &[
              of a turn by position, without walking the flattened model",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a89),
     },
     Axiom {
@@ -1392,6 +1488,7 @@ const CATALOGUE: &[Axiom] = &[
              in the turn its first matches arrive, whatever the model already holds",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a90),
     },
     Axiom {
@@ -1407,6 +1504,7 @@ const CATALOGUE: &[Axiom] = &[
              toolkit-floor exception",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a91),
     },
     Axiom {
@@ -1420,6 +1518,7 @@ const CATALOGUE: &[Axiom] = &[
              virtualized GtkListView with section headers",
         ],
         slow: true,
+        version_bound: None,
         probe: Some(probes::probe_a92),
     },
     Axiom {
@@ -1436,6 +1535,7 @@ const CATALOGUE: &[Axiom] = &[
              rows on demand and keeps no row-object cache",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a93),
     },
     Axiom {
@@ -1449,6 +1549,7 @@ const CATALOGUE: &[Axiom] = &[
              carries its section name",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a94),
     },
     Axiom {
@@ -1462,6 +1563,7 @@ const CATALOGUE: &[Axiom] = &[
              reached by position at any row count",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a95),
     },
     Axiom {
@@ -1476,6 +1578,7 @@ const CATALOGUE: &[Axiom] = &[
              grouped scroller's natural-height sizing over its lazy PaletteCategoryModel",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a96),
     },
     Axiom {
@@ -1490,6 +1593,7 @@ const CATALOGUE: &[Axiom] = &[
              view through stop-search; Backspace leaves only after a release on the empty query",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a97),
     },
     Axiom {
@@ -1504,6 +1608,7 @@ const CATALOGUE: &[Axiom] = &[
              tag, applied from the buffer's edit after-handlers and retired in slices",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a98),
     },
     Axiom {
@@ -1517,6 +1622,7 @@ const CATALOGUE: &[Axiom] = &[
              pixel row and groups rows showing the same line, hidden lines included",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a99),
     },
     Axiom {
@@ -1531,6 +1637,7 @@ const CATALOGUE: &[Axiom] = &[
              strip re-arms on notify::occurrences-count",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a100),
     },
     Axiom {
@@ -1543,6 +1650,7 @@ const CATALOGUE: &[Axiom] = &[
              vadjustment's value-changed",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a101),
     },
     Axiom {
@@ -1557,7 +1665,81 @@ const CATALOGUE: &[Axiom] = &[
              of the band's text, not forward_async, which a query change can supersede",
         ],
         slow: false,
+        version_bound: None,
         probe: Some(probes::probe_a102),
+    },
+    Axiom {
+        id: AxiomId::new(103),
+        name: "a103_source_map_skips_an_unchanged_slider",
+        statement: "On GtkSourceView >= 5.22 a GtkSourceMap does not reallocate its slider while \
+                    the slider rectangle is unchanged, so a resize of the slider (a CSS change \
+                    of its margins, such as a class on the map that a rule uses) leaves it \
+                    without a current allocation when the map is drawn (Gtk-WARNING Trying to \
+                    snapshot GtkSourceMapSlider without a current allocation) until the \
+                    rectangle next changes; on GtkSourceView < 5.22 the map allocates its \
+                    slider on every size_allocate and the same resize draws cleanly",
+        dependent_designs: &[
+            "adopt-gnome-51 D7 (W1): the minimap applies its one-pixel wide-editor slider \
+             correction class only below GtkSourceView 5.22 \
+             (ui/editor_page/minimap/projection_execution.rs)",
+        ],
+        slow: false,
+        version_bound: Some(crate::version::VersionBound::sourceview(5, 22, 0)),
+        probe: Some(probes::probe_a103),
+    },
+    Axiom {
+        id: AxiomId::new(104),
+        name: "a104_list_view_is_height_for_width",
+        statement: "On GTK >= 4.24 a vertical GtkListView is height-for-width, so a container \
+                    taking its request mode from it is measured for a height and, forwarding \
+                    it, measures the list's width for a height below the list's minimum (its \
+                    whole content outside a scroller, A2), which logs Gtk-WARNING Trying to \
+                    measure GtkListView for height of H, but it needs at least N; on GTK < 4.24 \
+                    the list is constant-size and such a container is never measured for a \
+                    height. A width measured directly for such a height warns on both",
+        dependent_designs: &[
+            "adopt-gnome-51 D7 (W2): ViewportSliceBin measures its child's width for no \
+             height, since the child is only allocated the visible band",
+        ],
+        slow: false,
+        version_bound: Some(crate::version::VersionBound::gtk(4, 24, 0)),
+        probe: Some(probes::probe_a104),
+    },
+    Axiom {
+        id: AxiomId::new(105),
+        name: "a105_frame_time_is_grid_aligned",
+        statement: "On GTK < 4.24 a frame's frame time is read when the frame starts; on GTK \
+                    >= 4.24 the reworked frame clock aligns it to its refresh grid, up to about \
+                    one refresh interval before or after the moment the frame began, so a frame \
+                    dispatched right after an input can carry a frame time earlier than it",
+        dependent_designs: &[
+            "adopt-gnome-51 L1: the responsiveness probe records when each frame began \
+             (began_us) and the lane driver attributes input to frames by it \
+             (frame_start_us), not by the frame time",
+        ],
+        slow: false,
+        version_bound: Some(crate::version::VersionBound::gtk(4, 24, 0)),
+        probe: Some(probes::probe_a105),
+    },
+    Axiom {
+        id: AxiomId::new(106),
+        name: "a106_source_map_slider_follows_content_heights",
+        statement: "On GtkSourceView >= 5.22 a GtkSourceMap places its slider from the two \
+                    vertical adjustments and the two views' content heights, margins included, \
+                    so the slider covers the map's drawing of the visible text only while the \
+                    map's margins are the view's scaled by the map's text scale (a view bottom \
+                    margin copied unscaled misplaces it); on GtkSourceView < 5.22 the slider \
+                    follows the end iter's line, and a bottom margin, copied or scaled, does not \
+                    move it",
+        dependent_designs: &[
+            "adopt-gnome-51 (visual geometry minimap-sidebar-mid): from GtkSourceView 5.22 the \
+             minimap gives its map the editor's overscroll bottom margin scaled by the map's \
+             text scale, not copied (ui/editor_page/minimap/projection_execution.rs, policy \
+             scaled_source_map_bottom_margin)",
+        ],
+        slow: false,
+        version_bound: Some(crate::version::VersionBound::sourceview(5, 22, 0)),
+        probe: Some(probes::probe_a106),
     },
 ];
 

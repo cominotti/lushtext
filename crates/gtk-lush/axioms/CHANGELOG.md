@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Version-qualified axioms (`adopt-gnome-51`): new `version` module with
+  `VersionBound` (`gtk(..)`, `sourceview(..)`, `reached_by`, `reached`,
+  `asserted_branch`) and the catalogue field `Axiom::version_bound`. A probe
+  whose verdict differs between the GNOME 50 floor and the shipped GNOME 51
+  runtime asserts the branch of the toolkit it runs on and records
+  `asserted_branch`. A7 and A20 (GTK 4.24: a host `set_value` anchors at the
+  view's top edge with alignment 0) and A32 (GtkSourceView 5.22 fixed the
+  detach CRITICAL) are version-qualified.
+- A103, A104 and A105 probes and samples: a GtkSourceView 5.22 map leaves its
+  resized slider unallocated; a GTK 4.24 `GtkListView` is height-for-width; a
+  GTK 4.24 frame time is aligned to the refresh grid. New fixtures
+  `fixtures::a103`, `fixtures::a104`, `fixtures::a105`.
+- A106 probe and sample: a GtkSourceView 5.22 map places its slider from the
+  views' content heights, margins included, so a view bottom margin copied
+  unscaled onto the map moves the slider off the visible text. New fixture
+  `fixtures::a106`.
+
 - A91 probe and sample (`bound-lists-by-budget-not-count`, stage 4 review):
   collapsing a tree row removes its children in one synchronous call whose
   cost grows with the children. New fixture `fixtures::a91`.

@@ -56,6 +56,7 @@ mod observation;
 mod probes;
 mod sample_args;
 mod session;
+pub mod version;
 
 use std::fmt;
 

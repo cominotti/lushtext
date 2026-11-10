@@ -823,3 +823,34 @@ pub mod a101 {
 pub mod a102 {
     pub use crate::probes::a102::{AsyncWalk, DISPATCH_BUDGET, walk_async};
 }
+
+/// The map and the resize rounds the A103 probe counts warnings for, for its
+/// sample.
+pub mod a103 {
+    pub use crate::probes::a99::MapFixture;
+    pub use crate::probes::a103::{
+        LINES, MARGIN_CLASS, Queued, SLIDER_WARNING, install_margin_rule, queue_and_count, slider,
+    };
+}
+
+/// The list and the width measure the A104 probe counts warnings for, for its
+/// sample.
+pub mod a104 {
+    pub use crate::probes::a104::{MEASURE_WARNING, width_for_height};
+}
+
+/// The stamped drawing area the A105 probe requests redraws of, for its
+/// sample.
+pub mod a105 {
+    pub use crate::probes::a105::{DrawnRequest, REQUEST_SPACING, StampedArea};
+}
+
+/// The map, its margins and the slider offset the A106 probe measures, for its
+/// sample.
+pub mod a106 {
+    pub use crate::probes::a99::MapFixture;
+    pub use crate::probes::a106::{
+        ALIGNED_PX, LINES, MISPLACED_PX, MapMargin, VIEW_BOTTOM_MARGIN, scaled_bottom_margin,
+        slider_offset,
+    };
+}
