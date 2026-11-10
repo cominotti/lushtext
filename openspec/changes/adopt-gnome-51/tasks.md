@@ -189,7 +189,7 @@ Rules for every task:
       2. Rerun it in isolation 10 times on 4.24.
       3. Fix the predicate, the budget or the race; do not tolerate the
          retry.
-- [ ] 3.5 Lane regressions L1–L3 (design B3, D7b), in this order:
+- [x] 3.5 Lane regressions L1–L3 (design B3, D7b), in this order:
       1. **L1, typed text drawn late.** Reproduce `baseline/small` typing in
          isolation (several repetitions; minimap on and off). Read the
          probe's frame-clock records against the key handlers to tell "no
@@ -207,39 +207,43 @@ Rules for every task:
          predates 4.24. Fix it either way.
       4. Rerun the quick tier on the branch and confirm 0 withheld, 0
          misdirected and 0 failed cases before task 6.
-- [ ] 3.6 Any other regression the gate in task 4 finds is handled the same
+      Done 2026-11-10: L1 by A105 (frame-start attribution); L2 by A107 (a
+      logical step for long left-to-right paragraphs, failing first); L3 a
+      driver defect (no-document phases; the lane now fails on failed cases).
+      Step 4 is read from task 6's branch runs (design, "Task 3.5 decisions").
+- [x] 3.6 Any other regression the gate in task 4 finds is handled the same
       way (pre-existing-blockers rule).
 
 ## 4. Full local gate on Fedora 45
 
-- [ ] 4.1 `make check` passes, including all-feature Clippy under the new
+- [x] 4.1 `make check` passes, including all-feature Clippy under the new
       pin, and `cargo check -p lushtext --bins --locked`.
-- [ ] 4.2 `make test` passes with 0 `FLAKY`, 0 `FLAKY-SHARD` and 0
+- [x] 4.2 `make test` passes with 0 `FLAKY`, 0 `FLAKY-SHARD` and 0
       unexpected warning lines. Record per-shard minutes and peaks. The
       local timing does not feed `ci_minutes`.
 - [x] 4.3 `make gtk-axioms` passes in full on F45. The A7/A20/A32 floor
       verdicts pass via `make gtk-axioms-runtimes` against
       `org.gnome.Sdk//50`.
-- [ ] 4.4 Kani: the shards task 1.8 selected, plus any shard covering code
+- [x] 4.4 Kani: the shards task 1.8 selected, plus any shard covering code
       changed in task 3, one at a time under `scripts/heavy.sh`.
-- [ ] 4.5 Run the smokes and keep their artifacts:
+- [x] 4.5 Run the smokes and keep their artifacts:
       - `make visual-geometry-smoke`, which includes `workspace-tree-reveal`;
       - `make accessibility-smoke`;
       - `make visual-smoke`.
 
       Investigate any new warning or failure.
-- [ ] 4.6 `make flatpak` on GNOME 51, then `make verify-flatpak-identity`
+- [x] 4.6 `make flatpak` on GNOME 51, then `make verify-flatpak-identity`
       (installing into the user Flatpak installation as that target
       requires). Record the build time and the `flatpak info` runtime line.
 
 ## 5. Docs (per `.agents/rules/documentation.md`)
 
-- [ ] 5.1 README and AGENTS:
+- [x] 5.1 README and AGENTS:
       - the tech stack: GNOME 51 runtime (GTK 4.24, GtkSourceView 5.22,
         Libadwaita 1.10), GNOME 50 source floor, the Rust pin;
       - the CI description;
       - the Recent Changes entry.
-- [ ] 5.2 `.agents/rules/build.md`:
+- [x] 5.2 `.agents/rules/build.md`:
       - Flatpak runtime 51 and rust-stable `26.08`;
       - the rust-version paragraph (l. 622);
       - CI containers and the `GTK Axioms` matrix;
@@ -261,12 +265,12 @@ Rules for every task:
 - [x] 5.4 `docs/next/long-line-documents.md`: the queue entry, and an
       implementation record with the measured verdicts. In
       `docs/next/formal-verification.md`, the A7/A20 envelope note.
-- [ ] 5.5 `make check-agent-docs`, `make check-policy` and
+- [x] 5.5 `make check-agent-docs`, `make check-policy` and
       `openspec validate adopt-gnome-51 --strict` pass.
 
 ## 6. Measurement (after the gate is green)
 
-- [ ] 6.1 Build three `responsiveness-probes` binaries and keep them in
+- [x] 6.1 Build three `responsiveness-probes` binaries and keep them in
       `bin/`:
       - `main` (base revision, Rust 1.98.1);
       - `main` built with the new pin (compiler attribution only);

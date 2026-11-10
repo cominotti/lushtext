@@ -11,3 +11,8 @@ Before the Flatpak manifest's GNOME runtime changes, the responsiveness lane's q
 #### Scenario: Typing that misses the document
 - **WHEN** the keys of a typing phase arrive outside an editor or insert nothing on the new toolkit
 - **THEN** the run fails and the cause (click point, focus, or held input) is fixed in the same change
+
+#### Scenario: A case that fails
+- **WHEN** a measured repetition ends with outcome `failed` (a phase could not run)
+- **THEN** the run fails with the repetition listed under `failed_cases`
+- **AND** a case that opens no document records its editor interactions as unavailable instead of aiming a click at an editor

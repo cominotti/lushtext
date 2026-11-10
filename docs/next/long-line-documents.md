@@ -4443,12 +4443,26 @@ floor. The bump found, and this change fixed at the cause:
   text scale; a constant residual of about 4 px remains (the map's own 5 px top
   inset).
 
-**L2 is pre-existing, not GNOME 51's:** `paragraph/10000/*` `type-start`
-stalls about 1.2–1.3 s per key and inserts nothing within the phase on GTK
-4.22 too (`power-of-two-thresholds/am14-main`, mutter 50), which is the
-editable-long-paragraph cost recorded under C2's toolkit-floor exception
-(3,500–50,000 characters) and queued as DL. **L3** (`baseline/empty` exit −9)
-did not reproduce on the branch (2 repetitions).
+**L2 was pre-existing, and is fixed here:** `paragraph/10000/*` `type-start`
+and `type-middle` stalled 1.2–1.3 s per key on GTK 4.22 too
+(`power-of-two-thresholds/am14-main`). The first reading charged it to C2's
+editable-paragraph floor; stack sampling put it in the five **Right** presses
+before the typing instead: GTK's visual cursor step lists every cursor position
+of the display line through Pango, quadratic in its length (ledger **A107**:
+76 ms at 2,500 characters, 1,207 ms at 10,000), and the C5 wrap gate shows the
+10,001-character paragraph unwrapped. The editor now answers a visual step with
+a logical one, which lands on the same place on left-to-right text, when the
+paragraph is longer than `L_LOGICAL_CURSOR_STEP` (256) and holds no
+right-to-left text (`model/cursor_step.rs`, `ui/editor_page/cursor_steps.rs`).
+Lane `paragraph/10000/*`: 0 misdirected; type-start 1.20–1.32 s → 7.4–13.1 ms,
+type-middle 1.19–1.25 s → 1.4–6.9 ms. Each remaining caret step or keystroke
+costs one whole-paragraph layout (6–10 ms at 10,000 characters), the toolkit
+floor already recorded for editable paragraphs of 3,500–50,000 characters (C2,
+C5). A Pango report is drafted (`docs/upstream-reports.md`). **L3**
+(`baseline/empty` failed `no-editor-point` on every toolkit) was a driver
+defect: the case opens no document; its editor interactions are now recorded
+unavailable, and the lane fails on any failed case (`failed_cases`), which it
+did not before.
 
 Axioms A7, A20 and A32 are version-qualified, as are the new A103–A106
 (catalogue `version_bound`,
