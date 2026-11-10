@@ -111,8 +111,12 @@ example_for() {
     printf '%s\n' "$match"
 }
 
+# Every sample, whatever the number of digits in its id: the pattern once read
+# `a[0-9][0-9]_*`, which silently skipped every sample from A100 on (A100-A106
+# ran in no lane until `adopt-gnome-51`); the self-test checks the count.
 all_examples() {
-    find "$EXAMPLES_DIR" -maxdepth 1 -name 'a[0-9][0-9]_*.rs' -printf '%f\n' | sed 's/\.rs$//' | sort
+    find "$EXAMPLES_DIR" -maxdepth 1 -regextype posix-extended -regex '.*/a[0-9]+_[^/]*\.rs' \
+        -printf '%f\n' | sed 's/\.rs$//' | sort -V
 }
 
 # Build the named example, or every example with no argument, and record the
@@ -206,7 +210,14 @@ self_test() {
     if [[ "$failed" -ne 0 ]]; then
         return 1
     fi
-    echo "GTK axiom warning classification and slow-skip self-test passed."
+    local listed on_disk
+    listed="$(all_examples | wc -l)"
+    on_disk="$(find "$EXAMPLES_DIR" -maxdepth 1 -name 'a*.rs' | wc -l)"
+    if [[ "$listed" -ne "$on_disk" ]] || ! all_examples | grep -qx 'a1[0-9][0-9]_.*'; then
+        echo "Error: the sample list has $listed of the $on_disk samples on disk (three-digit ids included?)." >&2
+        exit 1
+    fi
+    echo "GTK axiom warning classification, slow-skip and sample-list self-test passed."
 }
 
 # Run "$@" with its output teed to the log file $1, failing on a nonzero exit

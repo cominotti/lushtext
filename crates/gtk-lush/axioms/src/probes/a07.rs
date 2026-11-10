@@ -19,6 +19,7 @@ use super::{LAYOUT_SETTLE, SCROLL_SETTLE, row_stride, same_value};
 use crate::fixtures::{HostedList, LIST_HEIGHT, ROWS, count_value_changes};
 use crate::observation::Recorder;
 use crate::session::{Presented, settle};
+use crate::version::catalogued_bound;
 use crate::{AxiomId, Observation};
 
 /// The page heights the host sweeps through, starting from [`LIST_HEIGHT`].
@@ -76,10 +77,18 @@ pub fn probe_a07() -> Observation {
             "A7: across page changes the value stays on one line in the page height \
              (re-derived from one anchor)",
         )?;
-        recorder.axiom(
-            (last_value - first_value).abs() >= 1.0,
-            "A7: a page change moves the value although nobody wrote it",
-        )?;
+        if catalogued_bound(recorder, AxiomId::new(7))?.reached() {
+            recorder.axiom(
+                (last_value - first_value).abs() < ROUNDING,
+                "A7 (GTK >= 4.24): after a host set_value the list anchors at the view's top \
+                 edge with alignment 0, so a page change keeps the value",
+            )?;
+        } else {
+            recorder.axiom(
+                (last_value - first_value).abs() >= 1.0,
+                "A7 (GTK < 4.24): a page change moves the value although nobody wrote it",
+            )?;
+        }
         drop(shown);
 
         let bottom = HostedList::new();

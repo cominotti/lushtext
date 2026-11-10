@@ -13,6 +13,13 @@
 //! alignment inside `[0, 1]`, and the same page change moves the value by no
 //! more than the page change itself.
 //!
+//! **Version-qualified** (`adopt-gnome-51` D3): from GTK 4.24 the list no
+//! longer keeps a stray anchor after a host `set_value`: it anchors on the row
+//! at the view's top edge with alignment 0 whether or not the host
+//! re-announces the value (measured: rows 40 and 150, both runs, alignment 0,
+//! value unchanged by the shrink). The re-announcement is then a no-op that the
+//! GTK < 4.24 floor still needs.
+//!
 //! The probe moves the value to the top of a far row in two fresh fixtures,
 //! shrinks the page once in each, and reads the implied alignment
 //! `-(Δvalue / Δpage)` of `value = anchor − align × page`.
@@ -23,12 +30,15 @@ use super::{LAYOUT_SETTLE, row_stride, same_value};
 use crate::fixtures::{HostedList, LIST_HEIGHT, ROWS, RowPlacement, realized_rows, row_placement};
 use crate::observation::{Recorder, Stop};
 use crate::session::{Presented, settle};
+use crate::version::catalogued_bound;
 use crate::{AxiomId, Observation};
 
 /// The rows whose top the host moves the value to, from the top of the list.
 pub const TARGET_ROWS: [u32; 2] = [40, 150];
 /// The page height the list shrinks to after the move.
 pub const SHRUNK_PAGE: i32 = 200;
+/// An implied alignment within a pixel of the 100 px page change reads as 0.
+const ALIGN_ROUNDING: f64 = 0.015;
 
 /// Re-emit `value-changed` on `adjustment` without changing its value, as a
 /// host re-announcing the value it already published.
@@ -152,10 +162,19 @@ pub fn probe_a20() -> Observation {
             record(recorder, &moved, &KEYS[1][index]);
             reannounced.push(moved);
         }
-        recorder.axiom(
-            stale.iter().all(|run| run.align().abs() > 1.0),
-            "A20: after a host set_value the list's anchor alignment lies outside [0, 1]",
-        )?;
+        if catalogued_bound(recorder, AxiomId::new(20))?.reached() {
+            recorder.axiom(
+                stale.iter().all(|run| run.align().abs() < ALIGN_ROUNDING),
+                "A20 (GTK >= 4.24): after a host set_value the list anchors at the view's top \
+                 edge with alignment 0",
+            )?;
+        } else {
+            recorder.axiom(
+                stale.iter().all(|run| run.align().abs() > 1.0),
+                "A20 (GTK < 4.24): after a host set_value the list's anchor alignment lies \
+                 outside [0, 1]",
+            )?;
+        }
         recorder.axiom(
             reannounced
                 .iter()

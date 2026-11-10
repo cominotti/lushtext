@@ -7,11 +7,14 @@
 //! `g_object_get` on a null object). A scroll of the view queues the tick, so
 //! scrolling and detaching in the same main-loop turn is enough.
 //!
-//! "Holds" means the defect is present. Upstream fixed it in GtkSourceView
-//! 5.22.0 (commit 8d679ccd cancels the tick in `disconnect_view`); 5.20 still
-//! has it. That fix makes the probe report violated, which is an axiom change
-//! to review against the document scale policy (C1), which owns working
-//! around this CRITICAL (it retires the minimap instead of detaching it, A45).
+//! The axiom is **version-qualified** (`adopt-gnome-51` D3). On GtkSourceView
+//! < 5.22 "holds" means the defect is present (5.20, the GNOME 50 floor, has
+//! it). Upstream fixed it in 5.22.0 (commit 8d679ccd cancels the tick in
+//! `disconnect_view`), so on >= 5.22 "holds" means the same detach logs **no**
+//! CRITICAL, and a regression back to the defect fails the probe. The document
+//! scale policy (C1) still retires the minimap instead of detaching it (A45):
+//! the floor needs it, and a retired map is released rather than kept parented
+//! without a view (`adopt-gnome-51` D5).
 
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
@@ -19,6 +22,7 @@ use sourceview5::prelude::*;
 use crate::observation::Recorder;
 use crate::probes::text::{CapturedLog, LogCapture, SourceViewFixture};
 use crate::session::{Presented, settle};
+use crate::version::catalogued_bound;
 use crate::{AxiomId, Observation};
 
 use super::LAYOUT_SETTLE;
@@ -126,9 +130,18 @@ pub fn probe_a32() -> Observation {
             fixture.map.view().is_none(),
             "control: the map was detached",
         )?;
-        recorder.axiom(
-            !detached.is_empty(),
-            "a detach with the update tick pending logs a CRITICAL (the defect is present)",
-        )
+        if catalogued_bound(recorder, AxiomId::new(32))?.reached() {
+            recorder.axiom(
+                detached.is_empty(),
+                "A32 (GtkSourceView >= 5.22): a detach with the update tick pending logs no \
+                 CRITICAL (the defect is fixed)",
+            )
+        } else {
+            recorder.axiom(
+                !detached.is_empty(),
+                "A32 (GtkSourceView < 5.22): a detach with the update tick pending logs a \
+                 CRITICAL (the defect is present)",
+            )
+        }
     })
 }

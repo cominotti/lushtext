@@ -253,6 +253,17 @@ fn request_landing_fails_for_general_f64() {
 /// re-announcement, a write-back) or a request (A4) anchors it on a row edge
 /// inside its view. An emitting publish drops any pending request (A9).
 ///
+/// A7 and A20 are version-qualified (`adopt-gnome-51` D4): the stray anchor
+/// is GTK < 4.24's behaviour (the GNOME 50 floor). On GTK >= 4.24 a host
+/// `set_value` anchors the child at the published value with alignment 0, so a
+/// page change keeps the value. That reaction is inside the modelled ones: the
+/// anchor is a row of the content (`stray_anchor` in `[0, content]`) and the
+/// re-derived value may stay where it is (`stray_value` ranges over
+/// `[-MAX_CONTENT, 2·MAX_CONTENT]`). The `scroll_to` half (an anchor inside
+/// the view, alignment 0 for a request moving the view up) measured the same on
+/// both toolkits, so no assumption was widened and every property proved here
+/// holds on both.
+///
 /// Envelope assumptions narrower than the ledger's statements, recorded as the
 /// ledger requires:
 ///
@@ -538,8 +549,9 @@ mod slice_loop {
             let emitted = configured != bin.child;
             let bin_reconfigured = page != bin.page || upper != bin.upper;
             if emitted {
-                // A20: announced before the child is allocated at the new
-                // value, the anchor is stray.
+                // A20 (GTK < 4.24): announced before the child is allocated at
+                // the new value, the anchor is stray. On GTK >= 4.24 it is the
+                // published value itself, one of the anchors assumed here.
                 let anchor = reaction.stray_anchor;
                 kani::assume((0..=bin.content).contains(&anchor));
                 bin.anchor_pos = anchor;
