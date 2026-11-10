@@ -53,7 +53,9 @@ LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER=container make builder-diagnostics-smoke
 `auto` prefers a host GTK build that proves `GTK_DEBUG` support, then falls
 back to the reusable debug GTK container image when `podman` or `docker` is
 available. CI uses the pinned prebuilt image
-`ghcr.io/cominotti/lushtext-builder-diagnostics-runtime:gnome-50-debug`; that
+`ghcr.io/cominotti/lushtext-builder-diagnostics-runtime:gnome-51-debug`, a
+debug build of the shipped GNOME 51 toolkit (GTK 4.24.1, Libadwaita 1.10.0,
+GtkSourceView 5.22.0, blueprint-compiler 0.22.2 on Fedora 45); that
 image is built by `.github/workflows/builder-diagnostics-runtime.yml`, not by
 the diagnostics lane itself. Override the image or runner with
 `LUSHTEXT_BUILDER_DIAGNOSTICS_IMAGE` and

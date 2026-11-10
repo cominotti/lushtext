@@ -62,7 +62,7 @@ parts:
       export RUSTUP_HOME=/root/.rustup
       export CARGO_HOME=/root/.cargo
       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.98.1
+        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.98.0
     prime: []
 
   lushtext:

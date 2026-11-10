@@ -9,7 +9,7 @@ source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/builder-diagnostics}"
 PROVIDER="${LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER:-auto}"
-IMAGE="${LUSHTEXT_BUILDER_DIAGNOSTICS_IMAGE:-ghcr.io/cominotti/lushtext-builder-diagnostics-runtime:gnome-50-debug}"
+IMAGE="${LUSHTEXT_BUILDER_DIAGNOSTICS_IMAGE:-ghcr.io/cominotti/lushtext-builder-diagnostics-runtime:gnome-51-debug}"
 CONTAINER_RUNNER="${LUSHTEXT_BUILDER_DIAGNOSTICS_CONTAINER:-}"
 REQUIRED_RUNTIME="${LUSHTEXT_BUILDER_DIAGNOSTICS_REQUIRED:-0}"
 MANIFEST="$REPO_ROOT/scripts/builder-diagnostics-coverage.json"

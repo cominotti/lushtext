@@ -25,8 +25,8 @@ if [[ "$1" == "info" && "$2" == "--show-metadata" && "$3" == "dev.cominotti.lush
     cat <<'META'
 [Application]
 name=dev.cominotti.lushtext
-runtime=org.gnome.Platform/x86_64/50
-sdk=org.gnome.Sdk/x86_64/50
+runtime=org.gnome.Platform/x86_64/51
+sdk=org.gnome.Sdk/x86_64/51
 command=lushtext
 META
     exit 0

@@ -31,45 +31,45 @@ jobs:
       matrix:
         include:
           - lane: automation
-            container_image: registry.fedoraproject.org/fedora:44
+            container_image: registry.fedoraproject.org/fedora:45
             command: make automation-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/automation
           - lane: builder-diagnostics
-            container_image: ghcr.io/cominotti/lushtext-builder-diagnostics-runtime:gnome-50-debug
+            container_image: ghcr.io/cominotti/lushtext-builder-diagnostics-runtime:gnome-51-debug
             command: make builder-diagnostics-smoke SMOKE_ARTIFACT_DIR=build/smoke LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER=host LUSHTEXT_BUILDER_DIAGNOSTICS_REQUIRED=1
             artifact_path: build/smoke/builder-diagnostics
           - lane: visual-geometry
-            container_image: registry.fedoraproject.org/fedora:44
+            container_image: registry.fedoraproject.org/fedora:45
             command: make visual-geometry-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/visual-geometry
           - lane: visual
-            container_image: registry.fedoraproject.org/fedora:44
+            container_image: registry.fedoraproject.org/fedora:45
             command: make visual-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/visual
           - lane: editor-glyph-live
-            container_image: registry.fedoraproject.org/fedora:44
+            container_image: registry.fedoraproject.org/fedora:45
             command: make editor-glyph-live-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/editor-glyph-live
           - lane: crash-recovery
-            container_image: registry.fedoraproject.org/fedora:44
+            container_image: registry.fedoraproject.org/fedora:45
             command: make crash-recovery-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/crash-recovery
           - lane: portal-sandbox
-            container_image: registry.fedoraproject.org/fedora:44
+            container_image: registry.fedoraproject.org/fedora:45
             command: make portal-sandbox-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/portal-sandbox
           - lane: accessibility
-            container_image: registry.fedoraproject.org/fedora:44
+            container_image: registry.fedoraproject.org/fedora:45
             command: make accessibility-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/accessibility
           # The performance smoke ran past the 30-minute job ceiling as one
           # job, so it runs as two halves of its filter set.
           - lane: performance-search-index
-            container_image: registry.fedoraproject.org/fedora:44
+            container_image: registry.fedoraproject.org/fedora:45
             command: make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke PERFORMANCE_SMOKE_GROUP=search-index
             artifact_path: build/smoke/performance-search-index
           - lane: performance-io-recovery
-            container_image: registry.fedoraproject.org/fedora:44
+            container_image: registry.fedoraproject.org/fedora:45
             command: make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke PERFORMANCE_SMOKE_GROUP=io-recovery
             artifact_path: build/smoke/performance-io-recovery
 
@@ -120,11 +120,11 @@ jobs:
             xwd
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-end-user-smoke-${{ matrix.lane }}
+          shared-key: fedora-45-end-user-smoke-${{ matrix.lane }}
 
       - name: Run ${{ matrix.lane }} smoke
         run: ${{ matrix.command }}
@@ -145,7 +145,7 @@ jobs:
     # Deeper Criterion reports stay scheduled/manual and are split by scope so
     # no individual diagnostic job can run beyond the repository time budget.
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
     strategy:
       fail-fast: false
       matrix:
@@ -190,11 +190,11 @@ jobs:
             jq
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-end-user-bench-report-${{ matrix.scope }}
+          shared-key: fedora-45-end-user-bench-report-${{ matrix.scope }}
 
       - name: Run benchmark report
         env:

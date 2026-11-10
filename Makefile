@@ -69,7 +69,7 @@
 #   make gtk-lush-api-advisory - Run advisory semver/public-API checks for GTK Lush crates
 #   make gtk-axioms - Run every gtk-lush-axioms probe and sample --check under private headless Mutter (GTK_LUSH_AXIOMS_INCLUDE_SLOW=0 skips slow probes)
 #   make gtk-axiom-sample AXIOM=<id> [CHECK=1] - Open one axiom sample (CHECK=1: headless verdict)
-#   make gtk-axioms-runtimes - LOCAL ONLY: rerun sample checks inside installed GNOME SDKs (50, nightly)
+#   make gtk-axioms-runtimes - LOCAL ONLY: rerun sample checks inside installed GNOME SDKs (50, 51, nightly)
 #   make check-gtk-axioms - Keep the GTK axiom ledger, catalogue, probes, and samples in agreement
 #   make automation-client-self-test - Validate the reusable D-Bus automation CLI helper
 #   make check-agent-skills - validate maintained skill contracts and metadata
@@ -808,7 +808,8 @@ gtk-axiom-sample:
 	GTK_LUSH_AXIOMS_INCLUDE_SLOW=$(GTK_LUSH_AXIOMS_INCLUDE_SLOW) ./scripts/run-gtk-axioms.sh sample "$(AXIOM)" $(if $(filter 1,$(CHECK)),--check,)
 
 # LOCAL ONLY: rerun every sample --check against the toolkit of each installed
-# GNOME SDK (default 50 and nightly), before that toolkit becomes the floor.
+# GNOME SDK (default 50 = the source floor, 51 = the shipped runtime, and
+# nightly, before that toolkit ships).
 # Never a prerequisite of check, test, or any CI job; installs nothing.
 gtk-axioms-runtimes:
 	./scripts/run-gtk-axioms.sh runtimes $(GTK_AXIOMS_RUNTIMES)
