@@ -21,7 +21,7 @@ cat > "$tmpdir/bin/flatpak" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$1" == "info" && "$2" == "--show-metadata" && "$3" == "dev.cominotti.lushtext" ]]; then
+if [[ "$1" == "info" && "$2" == "--show-metadata" && ( "$3" == "dev.cominotti.lushtext" || "$3" == "dev.cominotti.lushtext//master" ) ]]; then
     cat <<'META'
 [Application]
 name=dev.cominotti.lushtext
@@ -32,7 +32,7 @@ META
     exit 0
 fi
 
-if [[ "$1" == "info" && "$2" == "--show-permissions" && "$3" == "dev.cominotti.lushtext" ]]; then
+if [[ "$1" == "info" && "$2" == "--show-permissions" && ( "$3" == "dev.cominotti.lushtext" || "$3" == "dev.cominotti.lushtext//master" ) ]]; then
     cat <<'PERMS'
 [Context]
 shared=ipc;
@@ -122,5 +122,17 @@ if "$repo_root/scripts/verify-flatpak-identity.sh" > "$tmpdir/source-mime.log" 2
     exit 1
 fi
 grep -q "expected '$expected_mime'" "$tmpdir/source-mime.log"
+
+# Several installed branches: the launcher's branch selects the ref.
+cat > "$tmpdir/xdg/flatpak/exports/share/applications/dev.cominotti.lushtext.desktop" <<'EOF'
+[Desktop Entry]
+Name=LushText
+Exec=/usr/bin/flatpak run --branch=master --arch=x86_64 --command=lushtext --file-forwarding dev.cominotti.lushtext @@u %U @@
+Type=Application
+MimeType=text/plain;application/x-zerosize;application/json;application/json5;application/toml;application/yaml;text/markdown;
+X-Flatpak=dev.cominotti.lushtext
+EOF
+"$repo_root/scripts/verify-flatpak-identity.sh" > "$tmpdir/branch.log"
+grep -q "Flatpak app: dev.cominotti.lushtext//master" "$tmpdir/branch.log"
 
 echo "flatpak identity verifier tests passed"
