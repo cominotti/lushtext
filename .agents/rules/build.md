@@ -1339,7 +1339,7 @@ driver: the scrollbar `GtkGizmo` snapshot warning, ledger A37) fails the lane,
 while an owned one is reported as a finding; so does a measured case that
   wrote no `frame` record (`frameless_cases` in `summary.json`), because every
   launch paints and a missing frame stream would otherwise read as `None`
-  first-frame and empty frame-gap figures. The probe writes a frame once it or
+  first-frame and empty frame-gap figures. A repetition whose outcome is `failed` (a phase could not run) fails the run too (`failed_cases`), and a case that opens no document records its editor interactions `unavailable` instead of clicking at an editor (`adopt-gnome-51` L3: `baseline/empty` failed every run unnoticed). The probe writes a frame once it or
   any later frame is final (`FrameTimingsQueue` in
   `services/responsiveness_log.rs`), so one frame that never gets presentation
   feedback cannot hold back the stream; the
