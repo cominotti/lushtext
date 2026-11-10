@@ -78,14 +78,32 @@ find_flatpak_export() {
     return 1
 }
 
+# The ref the exported launcher runs. With several branches installed (a local
+# `make flatpak-install` build, `master`, beside the published `stable`) a bare
+# app id is ambiguous to `flatpak info`, so take the branch the active export's
+# `Exec=... --branch=<b>` names; LUSHTEXT_FLATPAK_BRANCH overrides it.
+app_ref="$app_id"
+flatpak_branch="${LUSHTEXT_FLATPAK_BRANCH:-}"
+if [[ -z "$flatpak_branch" ]]; then
+    for candidate in "$user_export_dir/$desktop_id" "$system_export_dir/$desktop_id"; do
+        if [[ -r "$candidate" ]]; then
+            flatpak_branch="$(sed -n 's/^Exec=.*--branch=\([^[:space:]]*\).*/\1/p' "$candidate" | head -n 1)"
+            [[ -n "$flatpak_branch" ]] && break
+        fi
+    done
+fi
+if [[ -n "$flatpak_branch" ]]; then
+    app_ref="$app_id//$flatpak_branch"
+fi
+
 section "Flatpak metadata"
-metadata="$(flatpak info --show-metadata "$app_id" 2>/dev/null)" ||
+metadata="$(flatpak info --show-metadata "$app_ref" 2>/dev/null)" ||
     fail "Flatpak app '$app_id' is not installed or its metadata cannot be read."
 printf '%s\n' "$metadata" | grep -qx "name=$app_id" ||
     fail "Flatpak metadata does not identify application name '$app_id'."
 printf '%s\n' "$metadata" | grep -qx "command=lushtext" ||
     fail "Flatpak metadata does not declare command 'lushtext'."
-echo "Flatpak app: $app_id"
+echo "Flatpak app: $app_ref"
 echo "Command: lushtext"
 
 section "Flatpak desktop export"
@@ -119,7 +137,7 @@ else
 fi
 
 section "Effective Flatpak permissions"
-flatpak info --show-permissions "$app_id"
+flatpak info --show-permissions "$app_ref"
 
 section "MIME registration"
 for mime in "${required_mime_types[@]}"; do
