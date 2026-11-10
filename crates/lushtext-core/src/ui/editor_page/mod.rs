@@ -9,6 +9,7 @@
 mod accessibility;
 mod bookmarks;
 mod buffer_replacement;
+mod cursor_steps;
 mod document_identity;
 pub mod document_scale;
 pub(crate) mod edit_lock;

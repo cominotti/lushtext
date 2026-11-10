@@ -1741,6 +1741,24 @@ const CATALOGUE: &[Axiom] = &[
         version_bound: Some(crate::version::VersionBound::sourceview(5, 22, 0)),
         probe: Some(probes::probe_a106),
     },
+    Axiom {
+        id: AxiomId::new(107),
+        name: "a107_a_visual_cursor_step_is_quadratic_in_the_line",
+        statement: "A GtkTextView move-cursor step of GTK_MOVEMENT_VISUAL_POSITIONS (Left and \
+                    Right) goes through pango_layout_move_cursor_visually, which costs time \
+                    super-linear (quadratic) in the display line's length, about a second on a \
+                    10,000-character unwrapped line; a GTK_MOVEMENT_LOGICAL_POSITIONS step costs \
+                    no layout and, on left-to-right text, lands on the same iter, a collapsing \
+                    selection included; inside a right-to-left run the two land apart",
+        dependent_designs: &[
+            "adopt-gnome-51 L2: the editor answers a visual step with a logical one when the \
+             cursor's paragraph holds no right-to-left text \
+             (ui/editor_page/cursor_steps.rs)",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a107),
+    },
 ];
 
 #[cfg(test)]
