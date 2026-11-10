@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -47,7 +47,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-fuzz-smoke
+          shared-key: fedora-45-fuzz-smoke
 
       - name: Install cargo-fuzz
         run: cargo install --locked cargo-fuzz --version "${CARGO_FUZZ_VERSION}"

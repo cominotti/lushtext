@@ -18,7 +18,8 @@
 #       watch. This is `make gtk-axiom-sample AXIOM=<id> [CHECK=1]`.
 #   scripts/run-gtk-axioms.sh runtimes [<sdk-ref>...]
 #       LOCAL ONLY. Build the samples inside each installed GNOME SDK (default
-#       org.gnome.Sdk//50 and org.gnome.Sdk//master, each with the
+#       org.gnome.Sdk//50 (the source floor), org.gnome.Sdk//51 (the shipped
+#       runtime) and org.gnome.Sdk//master, each with the
 #       rust-stable extension) and run every --check against that SDK's own
 #       GTK and Libadwaita, under a private headless session on the host. The
 #       gtk-rs feature flags bind a binary to the SDK it was built against, so
@@ -328,7 +329,7 @@ run_runtimes() {
     require_command flatpak
     local refs=("$@")
     if [[ ${#refs[@]} -eq 0 ]]; then
-        refs=(org.gnome.Sdk//50 org.gnome.Sdk//master)
+        refs=(org.gnome.Sdk//50 org.gnome.Sdk//51 org.gnome.Sdk//master)
     fi
     LOG_DIR="$(mktemp -d)"
     trap 'rm -rf "$LOG_DIR"' EXIT

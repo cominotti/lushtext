@@ -61,7 +61,7 @@ jobs:
         # schedule and dispatch run every shard.
         shard: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'push') && needs.shards.outputs.pr-shards || needs.shards.outputs.shards) }}
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -80,11 +80,11 @@ jobs:
             python3
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-kani
+          shared-key: fedora-45-kani
           # Only the registry is worth caching here: nothing in this job builds
           # with the stable toolchain, and the Kani binaries have their own cache
           # below. Kani's target directory is deliberately not cached: measured
@@ -106,7 +106,7 @@ jobs:
             ~/.cargo/bin/kani
             ~/.kani
             ~/.rustup/toolchains/nightly-*
-          key: kani-${{ env.KANI_VERSION }}-fedora-44
+          key: kani-${{ env.KANI_VERSION }}-fedora-45
 
       - name: Install Kani
         # The official Kani action assumes an Ubuntu runner; this lane runs in

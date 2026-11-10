@@ -42,13 +42,13 @@ jobs:
           file: build-aux/builder-diagnostics/Containerfile
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:gnome-50-debug
+            ${{ env.IMAGE_NAME }}:gnome-51-debug
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.description=LushText reusable GTK debug runtime for builder diagnostics
           build-args: |
-            GTK_REF=4.22.4
-            LIBADWAITA_REF=1.9.1
-            GTKSOURCEVIEW_REF=5.20.0
-            BLUEPRINT_COMPILER_REF=v0.20.4
+            GTK_REF=4.24.1
+            LIBADWAITA_REF=1.10.0
+            GTKSOURCEVIEW_REF=5.22.0
+            BLUEPRINT_COMPILER_REF=v0.22.2

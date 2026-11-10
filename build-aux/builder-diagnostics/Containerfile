@@ -20,12 +20,12 @@
 # The matching `docker:S6471` finding is suppressed by resource in
 # `sonar-project.properties` with this rationale.
 
-FROM registry.fedoraproject.org/fedora:44
+FROM registry.fedoraproject.org/fedora:45
 
-ARG GTK_REF=4.22.4
-ARG LIBADWAITA_REF=1.9.1
-ARG GTKSOURCEVIEW_REF=5.20.0
-ARG BLUEPRINT_COMPILER_REF=v0.20.4
+ARG GTK_REF=4.24.1
+ARG LIBADWAITA_REF=1.10.0
+ARG GTKSOURCEVIEW_REF=5.22.0
+ARG BLUEPRINT_COMPILER_REF=v0.22.2
 ARG PREFIX=/opt/lushtext-gtk-debug
 
 ENV LUSHTEXT_GTK_DEBUG_PREFIX="${PREFIX}"

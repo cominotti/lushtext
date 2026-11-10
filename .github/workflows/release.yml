@@ -117,7 +117,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
       options: --privileged
     steps:
       - uses: actions/checkout@v6
@@ -129,7 +129,7 @@ jobs:
         with:
           manifest-path: build-aux/dev.cominotti.lushtext.Flatpak.json
           bundle: lushtext-${{ needs.metadata.outputs.version }}.flatpak
-          cache-key: release-flatpak-builder-gnome-50-${{ hashFiles('build-aux/dev.cominotti.lushtext.Flatpak.json', 'build-aux/cargo-sources.json', 'Cargo.lock', 'meson.build', 'meson_options.txt', 'build-aux/cargo.sh', 'data/meson.build', 'resources/meson.build') }}
+          cache-key: release-flatpak-builder-gnome-51-${{ hashFiles('build-aux/dev.cominotti.lushtext.Flatpak.json', 'build-aux/cargo-sources.json', 'Cargo.lock', 'meson.build', 'meson_options.txt', 'build-aux/cargo.sh', 'data/meson.build', 'resources/meson.build') }}
 
   cominotti-flatpak:
     name: Cominotti Flatpak Repository
@@ -138,7 +138,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
       options: --privileged
     permissions:
       contents: read

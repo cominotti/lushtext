@@ -31,7 +31,7 @@ jobs:
     # Ubuntu LTS only ships GTK 4.14, so CI uses Fedora's current GNOME stack.
     # Bump this when gtk4-rs minimum GTK version increases.
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -49,13 +49,13 @@ jobs:
             ripgrep
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44
+          shared-key: fedora-45
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -120,11 +120,11 @@ jobs:
             curl
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44
+          shared-key: fedora-45
 
       - name: Install cargo-nextest
         run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
@@ -151,7 +151,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -166,11 +166,11 @@ jobs:
             git
 
       - name: Install Rust MSRV toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-gtk-lush-msrv
+          shared-key: fedora-45-gtk-lush-msrv
 
       - name: Check GTK Lush family at MSRV
         run: make gtk-lush-msrv GTK_LUSH_MSRV="${GTK_LUSH_MSRV}"
@@ -180,7 +180,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -206,7 +206,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-gtk-lush-api
+          shared-key: fedora-45-gtk-lush-api
 
       - name: Install advisory API tools
         run: |
@@ -228,7 +228,55 @@ jobs:
     # gtk-lush-proof-harness private compositor) and every sample's --check,
     # headless. A failing probe after a toolkit change is an axiom change:
     # review the ledger row and its dependent designs before editing a probe.
+    # This job runs the shipped runtime's toolkit (Fedora 45: GTK 4.24,
+    # GtkSourceView 5.22, Libadwaita 1.10); `gtk-axioms-floor` runs the GNOME
+    # 50 floor.
     name: GTK Axioms
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: registry.fedoraproject.org/fedora:45
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            git \
+            mutter \
+            dbus-daemon \
+            python3 \
+            adwaita-mono-fonts
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-45
+
+      # adwaita-mono-fonts: the text probes (A70, A72) read columns and line
+      # widths from character counts, so "Monospace" must resolve to a
+      # fixed-pitch face as in every GNOME runtime; without it the container's
+      # only font is proportional and those probes stop at a control step.
+      # Probes marked slow in the catalogue (seconds-long fixtures, such as
+      # the A29 context-engine cut-off) are skipped here and reported as
+      # `skipped (slow): <id>`; the nightly responsiveness workflow runs them.
+      - name: Run GTK axiom probes and sample checks
+        run: make gtk-axioms GTK_LUSH_AXIOMS_INCLUDE_SLOW=0
+
+  gtk-axioms-floor:
+    # The same probes and samples on the GNOME 50 source floor (GTK 4.22,
+    # GtkSourceView 5.20, Libadwaita 1.9): the Snap and distribution builds
+    # still run it, and version-qualified axioms (A7, A20, A32) assert their
+    # floor branch here. A separate job, not a matrix, so the shipped-runtime
+    # job keeps its `GTK Axioms` check name.
+    name: GTK Axioms (GNOME 50 floor)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -251,7 +299,7 @@ jobs:
             adwaita-mono-fonts
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -272,7 +320,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -289,11 +337,11 @@ jobs:
             curl
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-property
+          shared-key: fedora-45-property
 
       - name: Install cargo-nextest
         run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
@@ -306,7 +354,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -322,11 +370,11 @@ jobs:
             git
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-fuzz-replay
+          shared-key: fedora-45-fuzz-replay
 
       - name: Replay committed fuzz corpus seeds
         # The replay test is guarded by `lushtext-core/fuzzing`, so default
@@ -366,7 +414,7 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.widget-shards.outputs.shards) }}
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -385,11 +433,11 @@ jobs:
             python3
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44
+          shared-key: fedora-45
 
       - name: Run widget tests
         # Widget tests use a custom single-threaded harness, so they must run
@@ -417,7 +465,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -433,11 +481,11 @@ jobs:
             git
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44
+          shared-key: fedora-45
 
       - name: Compile-check benchmarks
         run: cargo bench -p lushtext-core --features test-utils --no-run
@@ -451,7 +499,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
 

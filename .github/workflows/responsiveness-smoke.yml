@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
     strategy:
       fail-fast: false
       matrix:
@@ -76,11 +76,11 @@ jobs:
             at-spi2-core
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-responsiveness
+          shared-key: fedora-45-responsiveness
 
       - name: Run responsiveness lane (${{ matrix.group }}, quick tier)
         env:
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
 
     steps:
       - uses: actions/checkout@v6
@@ -123,11 +123,11 @@ jobs:
             adwaita-mono-fonts
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44
+          shared-key: fedora-45
 
       # adwaita-mono-fonts: see the GTK Axioms job in ci.yml (A70, A72 need a
       # fixed-pitch "Monospace").
