@@ -300,3 +300,12 @@ Rules for every task:
       97/93 withheld, 36 misdirected); the compiler pair is context only
       (maintainer, 2026-11-11) and shows no attributable effect; every
       over-budget figure is recorded as E1–E6, none fixed in task 6.
+
+## 7. Stage-4 review (2026-11-11)
+
+- [x] 7.1 Fix R1 failing-first: the logical arrow step also requires Pango's
+      base direction to be left to right
+      (`editor_page::test_arrow_steps_in_a_long_paragraph_with_no_left_to_right_text_stay_visual`;
+      A107 and the `long-paragraph-editing` delta restated).
+- [x] 7.2 Measure E1's attribution (find-only interleaved run) and record the
+      open decisions (design, "Stage-4 review"; programme record AG).

@@ -4479,8 +4479,10 @@ figures go from over a limit to within it. **Recorded exceptions:**
 
 - **E1** `paragraph/10000/*` `find` 8.1–10.5 ms (`main` 5.8–7.9): one
   whole-paragraph layout, the C2/C5 floor, which `main`'s 1.2 s visual arrow
-  steps had already paid before the find (inferred from the phase order, not
-  profiled).
+  steps had already paid before the find. Measured in the stage-4 review: with
+  only the find phase (no typing before it), interleaved, the branch's find is
+  no slower than `main`'s (median 4.1 / 4.4 against 4.8 / 4.6 ms, maximum 8.7 /
+  7.7 against 14.2 / 8.0 ms); accepted as a recorded exception.
 - **E2** seven single-sample figures at the budget edge, within one reference
   frame of `main` (dense scroll and typing, hidden-tab switch, re-analysis
   scroll, one 26 ms detach-minimap open).
@@ -4494,6 +4496,15 @@ figures go from over a limit to within it. **Recorded exceptions:**
 - **E6** everything else (179 dispatch, 254 input-to-frame figures) is over on
   `main` too, within a frame of it, and owned by C2/C5, C2b, C6, C6c, DL, EV
   or SC.
+
+**Stage-4 review (2026-11-11).** One should-fix, fixed failing-first: the
+logical arrow step was also taken in a long paragraph with no strong character
+(dashes, digits) shown by a right-to-left view, where GTK lays it out right to
+left and Right moved the caret backwards; the step now also requires Pango's
+base direction to be left to right (A107 restated). Decisions: E1 accepted with
+its measured attribution; `GTK Axioms (GNOME 50 floor)` should become a
+required check (maintainer applies the setting); the A103 and A107 upstream
+reports should be filed (maintainer approval per report).
 
 The `main`@1.98.1 against `main`@1.98.0 pair is context only (maintainer
 decision, 2026-11-11): its one usable pair shows a median per-phase delta of
