@@ -275,7 +275,7 @@ Rules for every task:
       - `main` (base revision, Rust 1.98.1);
       - `main` built with the new pin (compiler attribution only);
       - branch (pinned compiler).
-- [ ] 6.2 Run the quick tier interleaved, main → branch → main → branch,
+- [x] 6.2 Run the quick tier interleaved, main → branch → main → branch,
       with every case. Use `scripts/measure.sh` and `taskset -c 8-23`,
       waiting for load < 4, and record the load before and after each run
       in `runs.log`. Take each branch-versus-main verdict on GTK 4.24. The
@@ -284,13 +284,19 @@ Rules for every task:
       way: `main`@1.98.1 against `main`@new pin, on the headline cases.
       The branch-versus-main pairs mix the compiler change with the toolkit
       fixes, so they cannot attribute a compiler effect.
-- [ ] 6.3 Build a context table of GTK 4.22 (`main` on F44, from the
+- [x] 6.3 Build a context table of GTK 4.22 (`main` on F44, from the
       archived `bin-minimap-markers-per-row` and `power-of-two-thresholds`
       records) versus 4.24 (task 6.2's `main` runs) for the headline cases.
       It is context only, never pass/fail.
-- [ ] 6.4 Any case over any lane budget (`B_interact`, `B_settle`,
+- [x] 6.4 Any case over any lane budget (`B_interact`, `B_settle`,
       input-to-frame, scroll p95 frame gap) that is not already a recorded
       exception gets one of two outcomes:
       - fixed in this change;
       - recorded as an explicit, measured exception, with cause and
         attribution, in the design and the programme record.
+
+      Done 2026-11-11 (design, "Measured verdict"): the branch passes the
+      lane in both runs (0 withheld, 0 misdirected, 0 failed cases; `main`
+      97/93 withheld, 36 misdirected); the compiler pair is context only
+      (maintainer, 2026-11-11) and shows no attributable effect; every
+      over-budget figure is recorded as E1–E6, none fixed in task 6.
