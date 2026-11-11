@@ -846,3 +846,84 @@ No case was fixed in this step; every figure below is a recorded exception.
 - **Scroll p95 frame gap** 8.55–8.57 ms against 8.33 ms on both sides: the
   headless cairo presentation gap, informational in the budget verdict
   ("Lane measurement corrections"), unchanged.
+
+## Stage-4 review (2026-11-11)
+
+An independent review of `origin/main..HEAD` (code and evidence). Findings and
+the decisions taken on the open questions, user experience first.
+
+### Findings
+
+- **R1 (should-fix, fixed): the logical arrow step was taken in paragraphs
+  that are not laid out left to right.** `logical_step_suffices` required only
+  the absence of right-to-left characters. A paragraph with **no strong
+  character at all** (a rule of dashes, a row of digits and punctuation) has no
+  direction of its own; `GtkTextView` lays it out in the view's direction, so in
+  a right-to-left view (an Arabic or Hebrew desktop locale) its visual order
+  runs backwards and Right moved the caret the wrong way (measured: from offset
+  10, GTK's step lands on 9, the editor's on 11). The GTK half now also requires
+  `pango::find_base_dir(paragraph) == Ltr`, the paragraph's first strong
+  character; a paragraph with a strong left-to-right character stays logical in
+  a right-to-left view, because GTK lays it out left to right too. Failing first:
+  `editor_page::test_arrow_steps_in_a_long_paragraph_with_no_left_to_right_text_stay_visual`
+  compares the editor against a plain `GtkSourceView` reference in three
+  shapes (neutral paragraph after a Hebrew one in a left-to-right view; neutral
+  paragraph in a right-to-left view; letters in a right-to-left view) and failed
+  on the second before the fix. The ledger's A107 statement and the
+  `long-paragraph-editing` delta spec (requirement text plus one new scenario)
+  say the same. Cost: `find_base_dir` stops at the first strong character, so
+  the arrow-step ceiling test is unchanged. No lane re-run: every lane fixture
+  is left-to-right text in a left-to-right view, where the decision is
+  unchanged.
+- Reviewed with no finding: the minimap's version-gated slider class and
+  scaled bottom margin (integer policy, unit-tested, both toolkit branches
+  covered by the widget tests' release switch); `ViewportSliceBin`'s
+  width-for-no-height measure; the untyped `[row]` fix; the probe's `began_us`
+  (`before-paint` is emitted for every frame) and the driver's `frame_start_us`
+  fallback; L3's `failed_cases`; the version-qualified axioms and
+  `check-gtk-axioms`' both-ranges rule; the Kani comments (no assumption
+  widened, so the shard results stand); the CI floor job and cache keys;
+  `verify-flatpak-identity`'s branch selection. Protected View hides the caret,
+  so the arrow-step handler returns before it reads the paragraph there. No
+  MODIFIED scenario was renamed (`editor-minimap`, `gtk-lush-axioms`,
+  `rust-toolchain-adoption` keep every scenario name of the main specs).
+
+### E1 attribution measured (was inferred)
+
+Interleaved `paragraph/10000*` with **only** the `find` phase (no typing or
+arrow keys before it), quick tier, main → branch → main → branch
+(`e1-main1`, `e1-branch1`, `e1-main2`, `e1-branch2`; `e1-campaign.sh`,
+`e1.py`; loads before/after 0.74–1.43 / 0.92–1.24 in `runs.log`), worst
+dispatch of the find over the 36 variants:
+
+| | `main` | branch |
+|---|---|---|
+| median over samples | 4.8 / 4.6 ms | 4.1 / 4.4 ms |
+| maximum | 14.2 / 8.0 ms | 8.7 / 7.7 ms |
+| variant figures over 8 ms | 1 / 1 | 1 / 0 |
+
+Without the typing phases the branch's find is no slower than `main`'s, so
+E1's 8.1–10.5 ms exists only after typing, where `main`'s 1.2 s visual arrow
+steps had already laid the paragraph out. **Decision: E1 stays a recorded
+exception with a measured attribution.** The trade is one paragraph layout
+(about 4 ms) moved onto a find against 1.2 s per arrow key removed.
+
+### Open decisions
+
+- **E1:** accepted, as above.
+- **`GTK Axioms (GNOME 50 floor)` should be a required check.** The floor is
+  supported (Snap, distribution builds), and the version-qualified axioms
+  assert their floor branch only there; an optional job lets a floor
+  regression merge silently. Adding it to `main`'s required checks is a
+  repository setting, so the maintainer applies it after the first green run
+  on `main`.
+- **`builder-diagnostics-runtime.yml`:** dispatch after merge (the workflow
+  publishes from `main`); a maintainer action, unchanged.
+- **Upstream reports (GtkSourceView A103, Pango A107):** both should be
+  filed: A103 makes the minimap's correction class unusable on 5.22 and A107
+  costs every LushText user with long lines outside the editor's own guard.
+  Filing is an outward action that the `upstream-gtk-reports` skill gates on
+  per-report approval, so the drafts stay in `docs/upstream-reports.md` for the
+  maintainer.
+- **Cleanup:** the baseline worktree `agn-main-base` is removed once it is
+  verified clean and contained in `origin/main`.
