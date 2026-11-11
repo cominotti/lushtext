@@ -4467,7 +4467,36 @@ did not before.
 Axioms A7, A20 and A32 are version-qualified, as are the new A103–A106
 (catalogue `version_bound`,
 `asserted_branch` in the observation, both ranges required by
-`make check-gtk-axioms`). The interleaved `main` versus branch verdict and the
-GTK 4.22 → 4.24 context table are recorded in the change's design
-(`openspec/changes/adopt-gnome-51/design.md`, "Implementation record").
+`make check-gtk-axioms`).
+
+**Verdict (interleaved quick tier, every case, GTK 4.24.1, 2026-11-11;
+design "Measured verdict").** The branch passes the lane in both runs (0
+withheld, 0 misdirected, 0 failed cases); `main` fails both (97 / 93 withheld,
+36 misdirected). Baseline profiles: `B_settle` 11.2 / 14.0 ms (`main` 11.5 /
+642.3), input-to-frame 62.8 / 61.7 ms (`main` 374 / 379), `B_interact`
+indeterminate at 6.2 / 6.7 ms, scroll p95 8.55–8.57 ms on both sides. 188
+figures go from over a limit to within it. **Recorded exceptions:**
+
+- **E1** `paragraph/10000/*` `find` 8.1–10.5 ms (`main` 5.8–7.9): one
+  whole-paragraph layout, the C2/C5 floor, which `main`'s 1.2 s visual arrow
+  steps had already paid before the find (inferred from the phase order, not
+  profiled).
+- **E2** seven single-sample figures at the budget edge, within one reference
+  frame of `main` (dense scroll and typing, hidden-tab switch, re-analysis
+  scroll, one 26 ms detach-minimap open).
+- **E3** 99 input-to-frame figures of 16.7–20.0 ms over the limit on the
+  branch only: the lane's double-buffered floor; `main` reads lower only
+  through the L1 frame-time artifact.
+- **E4** 15 input-to-frame maxima more than a frame worse than `main`, all
+  single samples in classes already over on `main` (minimap/invisibles
+  scroll, `AdwDialog` inspect, Protected View keys, one session Page Down).
+- **E5** the A67 language attach landing in a different phase.
+- **E6** everything else (179 dispatch, 254 input-to-frame figures) is over on
+  `main` too, within a frame of it, and owned by C2/C5, C2b, C6, C6c, DL, EV
+  or SC.
+
+The `main`@1.98.1 against `main`@1.98.0 pair is context only (maintainer
+decision, 2026-11-11): its one usable pair shows a median per-phase delta of
++0.08 ms and no attributable compiler effect. GTK 4.22 → 4.24 on `main`'s
+dispatch figures is within noise (medians ±1 ms; context table in the design).
 

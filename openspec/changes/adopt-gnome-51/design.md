@@ -695,3 +695,154 @@ the request mode. W2's fix and its failing-first test are unchanged.
   misdirected, 0 failed cases) is read from the interleave's branch runs,
   which use the final binary; a separate run first would only repeat one.
 
+
+## Measured verdict (task 6, 2026-11-11)
+
+Evidence: `.claude/handoffs/adopt-gnome-51/` — runs `v-main1`, `v-branch1`,
+`v-main2`, `v-branch2` (quick tier, every case, interleaved in that order,
+`taskset -c 8-23`, `scripts/measure.sh`, each started after 30 s of 1-minute
+load < 4; loads before/after in `runs.log`: 0.89–1.79 / 1.30–1.73). Binaries:
+`bin/main-3dcbe682-f45` (`main`, Rust 1.98.1) and `bin/branch-l2fix-f45`
+(branch `6d003806` code, Rust 1.98.0), both on GTK 4.24.1 (`hypatia-f45`).
+Analysis: `verdict.py` (`verdict-v.txt`), `classify.py` (`classify-v.txt`),
+`ctx.py` (`context-422-vs-424.md`). Two earlier attempts (`v-main1` cut at
+18:06 on 2026-11-10, `v-main2` cut by a session limit) were discarded.
+
+### Task 6.2: branch against `main` on GTK 4.24
+
+**The branch passes the lane outright; `main` does not.**
+
+| | `main` (two runs) | branch (two runs) |
+|---|---|---|
+| status | failed / failed | **passed / passed** |
+| withheld typing phases | 97 / 93 | **0 / 0** |
+| misdirected typing phases | 36 / 36 | **0 / 0** |
+| failed cases | 0 / 0 | **0 / 0** |
+| `B_interact` (baseline profiles) | 7.1 / 5.3 ms | 6.2 / 6.7 ms (indeterminate: bounds 5.8–8.2) |
+| `B_settle` (baseline profiles) | 11.5 / **642.3** ms | 11.2 / 14.0 ms (within) |
+| input-to-frame (baseline profiles) | 374.0 / 378.6 ms | 62.8 / 61.7 ms |
+| scroll p95 frame gap | 8.57 / 8.59 ms | 8.55 / 8.57 ms |
+
+`main`'s 642 ms is one `baseline/small` `probe-im` background dispatch in
+`v-main2` (the other 59 samples ≤ 12 ms); no branch sample comes near it.
+
+Per (case, phase), the median over each side's runs of the worst dispatch
+(stall) and of the worst input-to-frame:
+
+- **188 improvements** (`main` over its limit, branch within). The largest:
+  `paragraph/10000/*` `type-middle` 1.20–1.31 s → 3.8–6.7 ms on every
+  variant (L2), the `baseline/small` profiles' typing input-to-frame
+  60–65 ms → 12–15 ms and scroll/Page Down 162–197 ms → 12–16 ms (L1),
+  `highlight/*/524288` and `invisibles/250000/*` typing input-to-frame
+  17–161 ms → 9–16 ms.
+- **16 regressions** by the programme's rule (branch over its limit **and**
+  more than one reference frame worse than `main`): one stall and 15
+  input-to-frame figures, each classified below (E1, E4).
+- **Branch phases over a limit:** 192 stall and 368 input-to-frame figures;
+  180 and 268 of them are over on `main` too.
+
+**Compiler attribution (context only, maintainer decision 2026-11-11).** The
+pair `main`@1.98.1 against `main`@1.98.0 on the headline cases ran as
+`c-main1981-1`, `c-main1980-1`, `c-main1981-2`; the campaign was stopped
+during `c-main1980-2` (discarded). `c-main1981-1` is contaminated (load rose
+to 7.38 during it) and `c-main1980-1` started at load 3.45 / 4.29 / 4.94, just
+after it. On the one usable pair (`c-main1981-2` against `c-main1980-1`,
+`verdict-compiler.txt`, `compare-compiler.txt`) the per-phase delta of the
+worst dispatch has median +0.08 ms over 513 phases (p10 −1.4, p90 +8.2 ms),
+and the worst-case figures (`B_interact` 7.3 → 18.2 ms, `B_settle` 11.9 →
+29.3 ms) sit in the run that followed the loaded one. **No compiler effect
+is claimed in either direction**; the branch-versus-`main` verdict, which
+mixes the compiler with the fixes, shows no stall regression a compiler
+would have to explain (E1 has a toolkit attribution).
+
+### Task 6.3: GTK 4.22 → 4.24 context (not pass/fail)
+
+GTK 4.22: `main` on F44 from the archived `power-of-two-thresholds` runs
+(`v-main`, 2026-11-05: `baseline/small`, `keystroke/*`, `dense/2000`;
+`am14-main`: `paragraph/10000`), an older `main` revision with fewer
+repetitions. GTK 4.24: `v-main1` + `v-main2`. Worst dispatch per phase,
+median / max over every sample of the family:
+
+| case family | phase | GTK 4.22 | GTK 4.24 |
+|---|---|---|---|
+| baseline/small | type-start / type-middle | 3.7 / 2.2 ms | 3.6 / 2.0 ms |
+| baseline/small | type-during-settle | 8.5 ms (1) | 8.9 / 18.7 ms |
+| keystroke/10000 | key-middle | 5.7 / 6.3 ms | 6.2 / 10.3 ms |
+| keystroke/10000 | place-middle | 8.2 / 10.1 ms | 8.3 / 11.7 ms |
+| keystroke/49950 | key-middle | 12.8 / 14.2 ms | 13.5 / 16.5 ms |
+| keystroke/49950 | place-start | 20.2 / 22.0 ms | 18.5 / 25.4 ms |
+| dense/2000 | open+background | 16.9 / 27.1 ms | 19.7 / 29.9 ms |
+| dense/2000 | type-middle | 30.6 / 53.5 ms | 30.3 / 55.6 ms |
+| dense/2000 | zoom-step | 24.0 / 27.2 ms | 26.6 / 29.8 ms |
+| paragraph/10000 | find | 5.9 / 8.6 ms | 5.3 / 8.7 ms |
+| paragraph/10000 | type-start | 1,296 / 2,022 ms | 1,231 / 1,318 ms |
+
+The full table is `context-422-vs-424.md`. On the dispatch figures GTK 4.24 is
+within noise of 4.22 (medians ±1 ms; the 4.24 maxima are over six times as
+many samples); L2's second-long stalls are on both. Input-to-frame is not
+compared: `main`'s binary has no `began_us`, so on 4.24 its keys are matched
+by the grid-aligned frame time (L1, A105) and its figures carry that artifact.
+
+### Task 6.4: every branch figure over a budget
+
+No case was fixed in this step; every figure below is a recorded exception.
+
+- **E1. `paragraph/10000/*` `find`, 8.1–10.5 ms (5 of 12 variants' medians;
+  `main` 5.8–7.9 ms).** Over all 72 samples per side the branch's worst
+  dispatch has median 5.5 / 6.2 ms against `main`'s 5.1 / 5.3 ms, maximum
+  10.4 / 12.7 against 7.1 / 8.7 ms. Cost class: one whole-paragraph layout of
+  the 10,001-character paragraph (6–10 ms; C2/C5's recorded toolkit floor for
+  editable paragraphs of 3,500–50,000 characters). Attribution (inferred from
+  the phase order, not profiled): `find` runs right after the typing phases;
+  on `main` the five visual Right steps per phase (1.2 s each, A107) left the
+  paragraph's layout computed, so the find's selection and scroll found it
+  cached; on the branch the logical steps lay nothing out (by design) and the
+  find pays the layout the typing invalidated. The user-visible trade is
+  1.2 s per arrow key for up to about 4 ms more on a find.
+- **E2. Seven figures at the budget edge, within one reference frame of
+  `main`:** `dense/2000/wrap-on` scroll 8.9 ms and type-end 8.4 ms,
+  `eviction/reselect` switch-hidden 8.2 ms, `reanalysis/{html,json,sh}` scroll
+  8.3–8.5 ms, `eviction/detach-minimap` open+background 20.7 ms (one 26.1 ms
+  sample; the other five equal `main`'s 7.5–15.2 ms). Each comes from one
+  sample over the budget whose distribution overlaps `main`'s; no cause is
+  attributable at this sample size, and the owners of the classes (DL, C6c,
+  EV, A67) are unchanged.
+- **E3. 99 input-to-frame figures over the limit on the branch only, all
+  16.7–20.0 ms.** This is the lane's double-buffered 120 Hz floor (16.7–19.3 ms,
+  "Lane measurement corrections" in `docs/next/long-line-documents.md`): an
+  input landing just after a frame starts waits one frame and one to present.
+  `main` reads lower (10–16.6 ms) only because its keys are matched by frame
+  time, which GTK 4.24 aligns to the refresh grid up to 8.2 ms before the
+  frame begins (L1, A105). Not a product regression; the branch's figures are
+  the honest ones.
+- **E4. The 15 input-to-frame regressions** are single-sample maxima in
+  phases whose worst dispatch is ≤ 5 ms (except `inspect`), on classes
+  already over the limit on `main`: scroll 36–61 ms with the minimap or
+  invisibles shown (BM's `GtkSourceMap` repaint exception), `inspect`
+  30–42 ms (C2b's `AdwDialog` transition exception), `paragraph/250000`
+  type-end 162–219 ms against `main`'s 125–197 ms (worst dispatch ≤ 3 ms;
+  attributed, not profiled, to Protected View refusing the key so nothing
+  is damaged and the next frame comes late with the main loop free), `delimiters/cr` type-middle 58.5 against
+  48.7 ms (the same 41–58 ms samples on both), `session/restore-3` pagedown
+  one 152 ms sample in `v-branch1` (28 ms in `v-branch2`, worst dispatch
+  1 ms), `recovery/protected-32mib` scroll one 39 ms sample (worst dispatch
+  1 ms), `reanalysis/css/37888/flip` click 9–18 ms against `main`'s 0 ms (an
+  impossible figure: the L1 artifact). Input-to-frame stays reported against
+  the floor, as since C6.
+- **E5. The stall regression** (`paragraph/10000/css/html/wrap-on/minimap-off`
+  open+background 31.3 against 22.1 ms) is the A67 language attach (about
+  31 ms, C6's toolkit-floor exception), which lands in `open` or `background`
+  by timing: `main` shows it in one of its two runs (30 ms in `v-main2`).
+- **E6. Every other over-budget figure (179 stall, 254 input-to-frame) is over
+  on `main` too and within one reference frame of it**, with an owner in the
+  programme record: the A67 attach (open+background 17–39 ms, C6), the Line
+  Inspector's `AdwDialog` transition (inspect 30–34 ms, C2b), the editable-
+  paragraph floor (`keystroke/10000` and `keystroke/49950` 8–25 ms,
+  `paragraph/10000` type-start 9.6–12.0 ms after L2, C2/C5), dense documents
+  (`dense/2000` 8–36 ms, DL), the detach exceptions (`eviction/detach` 84 ms,
+  `detach-minimap` 177 ms, EV), `eviction/reselect` `at` at its 20 s cap (EV,
+  M2), the edit re-analysis echo (`type-during-settle` 11–18 ms, C6c), and
+  the save completion (`save` 21.4 against 20.4 ms, SC).
+- **Scroll p95 frame gap** 8.55–8.57 ms against 8.33 ms on both sides: the
+  headless cairo presentation gap, informational in the budget verdict
+  ("Lane measurement corrections"), unchanged.
