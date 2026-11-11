@@ -10,7 +10,9 @@
 //! 10,000-character one. A *logical* step moves by the buffer's cursor
 //! positions and lays nothing out. On left-to-right text the two land on the
 //! same place (A107), so for a paragraph holding no right-to-left text the
-//! editor answers the visual step with a logical one.
+//! editor answers the visual step with a logical one, provided the paragraph
+//! is laid out left to right: one with no strong character takes the view's
+//! direction, which the GTK half checks (`pango::find_base_dir`).
 //!
 //! A paragraph is unwrapped, one display line, whenever word wrap is off or
 //! the C5 wrap gate unwraps it (longer than `L_WRAP_EDIT`), which is why the

@@ -4,7 +4,7 @@
 
 use crate::common::{
     accessible_hidden, ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read,
-    isolated_data_dir, rect_within, short_lines, test_application, wait_until,
+    isolated_data_dir, present_window, rect_within, short_lines, test_application, wait_until,
 };
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -6205,4 +6205,74 @@ fn test_arrow_steps_in_a_long_paragraph_with_right_to_left_text_stay_visual() {
         (5, 5),
         "a paragraph with right-to-left text keeps GTK's visual step"
     );
+}
+
+/// Where GTK's own `move-cursor` step lands in a plain `GtkSourceView` showing
+/// `text` with `direction`, from `offset`: the reference the editor's arrow
+/// steps must match.
+fn reference_visual_step(
+    text: &str,
+    direction: gtk4::TextDirection,
+    count: i32,
+    offset: i32,
+) -> i32 {
+    let view = sourceview5::View::new();
+    view.set_direction(direction);
+    view.buffer().set_text(text);
+    let window = gtk4::Window::builder()
+        .default_width(1000)
+        .default_height(800)
+        .child(&view)
+        .build();
+    present_window(&window);
+    flush_after_delay(Duration::from_millis(100));
+    let buffer = view.buffer();
+    buffer.place_cursor(&buffer.iter_at_offset(offset));
+    view.emit_move_cursor(gtk4::MovementStep::VisualPositions, count, false);
+    let landed = buffer.iter_at_mark(&buffer.get_insert()).offset();
+    window.destroy();
+    landed
+}
+
+#[test]
+fn test_arrow_steps_in_a_long_paragraph_with_no_left_to_right_text_stay_visual() {
+    // A paragraph holding no right-to-left character is not necessarily laid
+    // out left to right: one with no strong character at all takes its
+    // direction from the paragraph before it (GtkTextView propagates it) or,
+    // with none, from the view's direction. Visual and logical steps then
+    // differ, so the editor must keep GTK's visual step.
+    ensure_gtk_init();
+    let neutral: String = "- ".chars().cycle().take(1_000).collect();
+    let after_hebrew = format!("\u{05d0}\u{05d1}\u{05d2}\n{neutral}\n");
+    let alone = format!("{neutral}\n");
+    // A strong left-to-right character makes the paragraph left to right even
+    // in a right-to-left view: the logical step stays correct there.
+    let letters: String = "ab ".chars().cycle().take(1_000).collect();
+    let letters = format!("{letters}\n");
+    for (text, direction, offset) in [
+        (&after_hebrew, gtk4::TextDirection::Ltr, 10),
+        (&alone, gtk4::TextDirection::Rtl, 10),
+        (&letters, gtk4::TextDirection::Rtl, 10),
+    ] {
+        for count in [1, -1] {
+            let expected = reference_visual_step(text, direction, count, offset);
+            let page = LushtextEditorPage::new();
+            page.source_view().set_direction(direction);
+            let _window = present_editor_page(&page);
+            page.buffer().set_text(text);
+            flush_after_delay(Duration::from_millis(200));
+            let ((landed, _), _) = arrow_step(
+                &page,
+                gtk4::MovementStep::VisualPositions,
+                count,
+                false,
+                (offset, offset),
+            );
+            assert_eq!(
+                landed, expected,
+                "a step of {count} from {offset} in a neutral paragraph ({direction:?} view) \
+                 lands where GTK's visual step does"
+            );
+        }
+    }
 }

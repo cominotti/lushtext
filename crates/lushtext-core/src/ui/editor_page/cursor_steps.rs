@@ -11,8 +11,8 @@
 //! 10,000-character unwrapped paragraph each key press blocked the GTK thread
 //! for 1.2 s, and the keys typed after it waited behind it. A connected
 //! handler runs before `GtkTextView`'s class handler, so when the cursor's
-//! paragraph is long and holds no right-to-left text the editor re-emits the
-//! step as `GTK_MOVEMENT_LOGICAL_POSITIONS` (which lands on the same iter,
+//! paragraph is long, holds no right-to-left text and is laid out left to
+//! right the editor re-emits the step as `GTK_MOVEMENT_LOGICAL_POSITIONS` (which lands on the same iter,
 //! A107) and stops the visual emission. Everything else of the step stays
 //! GTK's: extending the selection, the virtual cursor, the blink, scrolling
 //! the cursor on screen.
@@ -23,6 +23,12 @@
 //! right-to-left), a visible cursor (a caret-free view scrolls instead), and
 //! not the collapse of a selection without Shift, which GTK answers without
 //! a layout pass anyway.
+//!
+//! "Laid out left to right" is Pango's base direction of the paragraph, its
+//! first strong character (`pango::find_base_dir`). A paragraph with no strong
+//! character at all (a rule of dashes, a row of digits and punctuation) takes
+//! the view's direction instead, and in a right-to-left view its visual order
+//! runs backwards, so it keeps GTK's visual step (review of `adopt-gnome-51`).
 
 use gtk4::prelude::*;
 
@@ -49,7 +55,8 @@ fn answers_logically(view: &gtk4::TextView, count: i32, extend_selection: bool) 
     if !end.ends_line() {
         end.forward_to_line_end();
     }
-    logical_step_suffices(&buffer.slice(&start, &end, true))
+    let paragraph = buffer.slice(&start, &end, true);
+    pango::find_base_dir(&paragraph) == pango::Direction::Ltr && logical_step_suffices(&paragraph)
 }
 
 impl LushtextEditorPage {
