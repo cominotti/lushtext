@@ -4,15 +4,14 @@
 Define LushText's Rust toolchain adoption contract (current floor: Rust 1.98.0, pinned toolchain Rust 1.98.1; the idiom and lint requirements below were adopted with Rust 1.96.0) so toolchain declarations,
 validation gates, contributor guidance, accepted idioms, and Cargo registry
 security posture stay aligned across development, CI, and packaging.
-
 ## Requirements
 ### Requirement: Rust floor is aligned across all stable toolchain surfaces
-The implementation SHALL pin LushText's stable Rust floor to Rust 1.98.0 and its pinned toolchain to Rust 1.98.1 everywhere the repository declares, installs, bootstraps, or documents the stable toolchain. The implementation MUST keep nightly-only tooling, such as coverage-guided fuzz smoke, explicitly separate from the stable MSRV.
+The implementation SHALL pin LushText's stable Rust floor (MSRV) to Rust 1.98.0. It SHALL pin the toolchain to the Rust version that `org.freedesktop.Sdk.Extension.rust-stable` ships for the Freedesktop SDK branch of the Flatpak manifest's GNOME runtime: `26.08` for GNOME 51, which shipped Rust 1.98.0 on 2026-11-09. The pin SHALL be identical everywhere the repository declares, installs, bootstraps, or documents the stable toolchain, so the binary that is tested and measured is built by the compiler that builds the shipped binary. A runtime change SHALL re-check that extension's version and move the pin in the same change. The implementation MUST keep nightly-only tooling, such as coverage-guided fuzz smoke, explicitly separate from the stable MSRV.
 
 #### Scenario: Stable version surfaces agree
 - **WHEN** the repository is searched for active Rust MSRV, rustup, CI stable-toolchain, Snap rustup bootstrap, README, AGENTS, rule, and skill references
-- **THEN** active references name Rust 1.98.0 as the floor and Rust 1.98.1 as the pinned toolchain instead of Rust 1.96.0
-- **AND** stale Rust 1.96.0 references remain only in archive/history context or are removed
+- **THEN** active references name Rust 1.98.0 as the floor and the shipped extension's Rust version as the pinned toolchain
+- **AND** a previous pin (such as Rust 1.98.1 from the GNOME 50 SDK's `25.08` extension) remains only in archive/history context or is removed
 
 #### Scenario: Nightly lanes remain explicit exceptions
 - **WHEN** fuzz smoke or other nightly-only tooling is inspected
@@ -21,8 +20,8 @@ The implementation SHALL pin LushText's stable Rust floor to Rust 1.98.0 and its
 
 #### Scenario: Packaging toolchains satisfy the floor
 - **WHEN** Flatpak and Snap packaging surfaces are inspected
-- **THEN** Snap's rustup bootstrap installs Rust 1.98.1
-- **AND** the Flatpak manifest either continues to use a GNOME SDK Rust stable extension that satisfies Rust 1.98.0 or documents a concrete blocker before implementation can be considered complete
+- **THEN** Snap's rustup bootstrap installs the pinned toolchain
+- **AND** the Flatpak manifest's GNOME SDK provides a Rust stable extension whose version equals the pinned toolchain and satisfies Rust 1.98.0, or a concrete blocker is documented before implementation can be considered complete
 
 ### Requirement: Rust 1.96 compatibility is proven before completion
 The implementation SHALL prove the upgraded toolchain with deterministic commands that exercise formatting, Clippy, rustdoc, and representative tests. The implementation MUST record or report any validation that cannot be run and why.
@@ -97,3 +96,4 @@ The implementation SHALL account for the Cargo security fixes included in Rust 1
 - **WHEN** any third-party registry or registry credential configuration is discovered during implementation
 - **THEN** the implementation does not treat the toolchain bump as complete until the registry flow is validated under Cargo 1.96.0
 - **AND** any required mitigation is captured in the tasks or design before code changes proceed
+

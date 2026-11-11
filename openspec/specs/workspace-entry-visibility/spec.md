@@ -2,9 +2,7 @@
 
 ## Purpose
 Define the single workspace-wide rule for which directory entries are visible — the hidden-files view mode and the always-excluded names list — and the surfaces, controls, refresh behavior, and automation projection that honor it.
-
 ## Requirements
-
 ### Requirement: Workspace entry visibility is one app-wide rule
 The application SHALL decide whether a workspace directory entry is visible using exactly one GTK-free rule, evaluated per entry basename: an entry whose basename is on the always-excluded names list is never visible; otherwise an entry whose basename begins with `.` is visible only while the hidden-files view mode is on; otherwise the entry is visible. The rule SHALL be applied identically by the workspace sidebar tree, the sidebar empty-folder detection, the command palette file index, and workspace content search.
 
@@ -208,3 +206,12 @@ The test suite SHALL include one widget test that, over a shared fixture contain
 #### Scenario: Parity holds for both modes
 - **WHEN** the parity test runs with the mode off and then on
 - **THEN** in each case the three surfaces report the same visible file set, and that set matches the rule applied directly to the fixture
+
+### Requirement: The excluded-names editor is built from rows its container accepts
+The `workspace-excluded-names` editor in Preferences SHALL add every row of its `AdwExpanderRow`, including the add-name `AdwEntryRow`, the way the supported Libadwaita versions accept, so that Libadwaita 1.9 and 1.10 log no warning such as `AdwEntryRow … placed into AdwExpanderRow …, can only be placed into GtkListBox`. Adding, removing, and resetting names SHALL keep working, and so SHALL the row-removal contract recorded in `ui/preferences/excluded_names.rs`.
+
+#### Scenario: Opening Preferences on Libadwaita 1.10
+- **WHEN** the preferences dialog is constructed on Libadwaita 1.10
+- **THEN** no Adwaita parent-placement warning is logged
+- **AND** the excluded-names editor still adds, removes, and resets names and re-projects the sidebar
+

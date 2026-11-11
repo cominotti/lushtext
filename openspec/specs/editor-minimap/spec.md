@@ -547,7 +547,7 @@ only at the drawing call.
 - **THEN** each lane is within half a pixel of its share, no wider than the strip, and no wider than the lane of the category before it
 
 ### Requirement: A live minimap is never detached while its update tick can fire
-The system SHALL NOT clear the `view` of a `GtkSourceMap` that may have an update tick armed. When the minimap must stop projecting a document, the system SHALL retire the map instance: hide its overlay, remove it from the widget tree and drop it. Removal unrealizes the map and disconnects it from the frame clock, so an armed tick never runs; that toolkit behaviour SHALL be a GTK axiom ledger entry with a probe. A later re-attach SHALL construct a fresh map with its view already set, with LushText's established map configuration, and with the reflow freeze and adjustment guard re-pointed at the new instance. A regression test SHALL reproduce the toolkit CRITICAL against the previous detach path before the fix lands, and it SHALL fail on any `Gtk-CRITICAL` or `GLib-GObject-CRITICAL` emitted by the minimap lifecycle.
+The system SHALL NOT clear the `view` of a `GtkSourceMap` that may have an update tick armed. This holds on every toolkit, including GtkSourceView 5.22 and later, which no longer logs on such a detach (ledger A32): the retire path stays while any supported runtime predates GtkSourceView 5.22, and because retirement also releases the map. When the minimap must stop projecting a document, the system SHALL retire the map instance: hide its overlay, remove it from the widget tree, and drop it. Removal unrealizes the map and disconnects it from the frame clock, so an armed tick never runs; that toolkit behaviour SHALL be a GTK axiom ledger entry with a probe (A45). A later re-attach SHALL construct a fresh map with its view already set, with LushText's established map configuration, and with the reflow freeze and adjustment guard re-pointed at the new instance. On GtkSourceView earlier than 5.22, a regression test SHALL reproduce the toolkit CRITICAL against the previous detach path before the fix lands. On every toolkit, the regression test SHALL fail on any `Gtk-CRITICAL`, `Gtk-WARNING` or `GLib-GObject-CRITICAL` emitted by the minimap lifecycle.
 
 #### Scenario: Unavailable transition after scrolling emits no CRITICAL
 - **WHEN** the user scrolls the editor so that the map arms its update tick, and the minimap becomes unavailable in the same frame
@@ -561,6 +561,11 @@ The system SHALL NOT clear the `view` of a `GtkSourceMap` that may have an updat
 #### Scenario: Preference toggled rapidly
 - **WHEN** the minimap preference is turned off and on repeatedly while the editor scrolls
 - **THEN** every transition completes without toolkit warnings, and at most one map instance is attached to the view
+
+#### Scenario: Retirement on GtkSourceView 5.22
+- **WHEN** the editor runs on GtkSourceView 5.22 or later and the minimap becomes unavailable after a scroll
+- **THEN** the map is still retired, not detached in place
+- **AND** no `Gtk-WARNING` about snapshotting the map's slider without an allocation, and no CRITICAL, is emitted during that or any later frame
 
 ### Requirement: A retired native map is released
 When the editor retires its native `GtkSourceMap` (the minimap is unavailable, hidden, or suspended for loading), nothing LushText owns SHALL keep the retired map alive: once retirement returns and the main loop has run, the map SHALL be finalized and SHALL no longer be attached to the document's buffer. A retired map SHALL NOT validate, lay out or draw document text afterwards. Retirement SHALL NOT clear a live map's `view` (ledger A32); it unparents the map, which unrealizes it (ledger A45), and drops it. Any helper that refers to the map, such as the reflow freeze, SHALL refer to it weakly.
@@ -684,4 +689,11 @@ available. Marker visibility SHALL keep following the long-line preference.
 #### Scenario: Long lines past the former cap are marked
 - **WHEN** long-line markers are enabled for a document with 65,536 long lines and the map is scrolled to its end
 - **THEN** the strip draws long-line markers on the rows that show those lines
+
+### Requirement: The native minimap draws no unallocated slider
+On every supported toolkit, the native `GtkSourceMap` and its slider SHALL be allocated in every frame in which they are snapshotted, while the map is shown, hidden, retired, re-attached, or reflowed. GTK SHALL never log `Trying to snapshot GtkSourceMapSlider … without a current allocation` for a LushText editor. If a toolkit change lets the slider be snapshotted unallocated, the change that adopts that toolkit SHALL isolate the behaviour as a ledger axiom with a probe before fixing LushText at the cause. Warning filters SHALL NOT be widened instead.
+
+#### Scenario: Minimap-on editor tests on GTK 4.24
+- **WHEN** the widget suite runs on GTK 4.24 / GtkSourceView 5.22 with the minimap enabled
+- **THEN** no `GtkSourceMapSlider` snapshot warning appears in any shard's output
 
