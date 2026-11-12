@@ -79,18 +79,33 @@ pub fn paragraph_geometry(fixture: &TextViewFixture) -> ParagraphGeometry {
 /// in the GNOME 51 and nightly SDKs).
 pub const SEPARATE_ROUNDING_PX: i32 = 1;
 
+/// The rounding [`last_char_on_last_display_line`] may allow for a
+/// paragraph whose last display line Pango places at `last_line_y_units` with
+/// a height of `last_line_height_units` (Pango units, laid out alone at the
+/// view's wrap width): [`SEPARATE_ROUNDING_PX`] when either is a fractional
+/// number of pixels, which is what makes the separate roundings differ, and
+/// none when both are whole pixels.
+#[must_use]
+pub const fn separate_rounding_px(last_line_y_units: i32, last_line_height_units: i32) -> i32 {
+    if last_line_y_units % pango::SCALE != 0 || last_line_height_units % pango::SCALE != 0 {
+        SEPARATE_ROUNDING_PX
+    } else {
+        0
+    }
+}
+
 /// Whether the last character's location is valid and on the paragraph's
 /// last display line: it is on the last display line by index, and its
 /// rectangle lies in that line's band at the paragraph's bottom, up to
-/// [`SEPARATE_ROUNDING_PX`].
+/// `rounding_px` (from [`separate_rounding_px`]).
 #[must_use]
-pub const fn last_char_on_last_display_line(geometry: ParagraphGeometry) -> bool {
+pub const fn last_char_on_last_display_line(geometry: ParagraphGeometry, rounding_px: i32) -> bool {
     let on_last_line =
         geometry.display_lines > 0 && geometry.last_char_line == geometry.display_lines - 1;
     let bottom_at_paragraph_bottom =
-        (geometry.last_char_bottom - geometry.height).abs() <= SEPARATE_ROUNDING_PX;
+        (geometry.last_char_bottom - geometry.height).abs() <= rounding_px;
     let top_in_last_line_band =
-        geometry.last_char_y >= geometry.height - geometry.line_height - SEPARATE_ROUNDING_PX;
+        geometry.last_char_y >= geometry.height - geometry.line_height - rounding_px;
     on_last_line && bottom_at_paragraph_bottom && top_in_last_line_band
 }
 
@@ -140,7 +155,9 @@ pub fn probe_a23() -> Observation {
                 .font_description()
                 .map_or_else(String::new, |font| font.to_string()),
         );
-        record_pango_line_units(recorder, &wrapped);
+        let rounding_px = record_pango_line_units(recorder, &wrapped)
+            .map_or(0, |(y, height)| separate_rounding_px(y, height));
+        recorder.measure("allowed_rounding_px", rounding_px);
         recorder.control(
             viewport > 0 && geometry.line_height > 0,
             "control: the view has a viewport and a display line height",
@@ -152,7 +169,7 @@ pub fn probe_a23() -> Observation {
         recorder.measure("independent_pango_height", pango_height);
         recorder.measure("text_area_width", text_area_width(&wrapped.view));
         record_layout_costs(recorder, &wrapped, &WRAP_COST_KEYS);
-        check_whole_paragraph(recorder, geometry, viewport)?;
+        check_whole_paragraph(recorder, geometry, viewport, rounding_px)?;
         // Lines, not pixels: the view sums each display line's rounded pixel
         // height while Pango rounds the whole layout once, so the heights may
         // differ by a pixel when the line counts agree.
@@ -224,7 +241,11 @@ fn independent_layout(fixture: &TextViewFixture) -> (i32, i32) {
 /// The Pango-unit geometry behind the pixel values, for attributing a
 /// rounding difference: the whole layout's logical height and the last two
 /// lines' logical tops, laid out alone at the view's wrap width and font.
-fn record_pango_line_units(recorder: &mut Recorder, fixture: &TextViewFixture) {
+/// Returns the last line's logical top and height, in Pango units.
+fn record_pango_line_units(
+    recorder: &mut Recorder,
+    fixture: &TextViewFixture,
+) -> Option<(i32, i32)> {
     let start = fixture.buffer.start_iter();
     let mut end = start;
     end.forward_to_line_end();
@@ -248,6 +269,7 @@ fn record_pango_line_units(recorder: &mut Recorder, fixture: &TextViewFixture) {
         recorder.measure("pango_last_line_y_units", last.0);
         recorder.measure("pango_last_line_height_units", last.1);
     }
+    tops.last().copied()
 }
 
 /// The recorded keys for each of [`LENGTHS`]: first layout time, and time per
@@ -278,20 +300,28 @@ fn check_whole_paragraph(
     recorder: &mut Recorder,
     geometry: ParagraphGeometry,
     viewport: i32,
+    rounding_px: i32,
 ) -> Result<(), Stop> {
     recorder.axiom(
         geometry.height > viewport.saturating_mul(4),
         "the shown paragraph's height covers its whole wrap count, far past the viewport",
     )?;
     recorder.axiom(
-        last_char_on_last_display_line(geometry),
+        last_char_on_last_display_line(geometry, rounding_px),
         "the last character's location is valid and on the paragraph's last display line",
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ParagraphGeometry, last_char_on_last_display_line};
+    use super::{
+        ParagraphGeometry, SEPARATE_ROUNDING_PX, last_char_on_last_display_line,
+        separate_rounding_px,
+    };
+
+    /// The SDK's last display line in Pango units (`a23-attribution-run.txt`):
+    /// top 6,770,418 and height 15,893, neither a whole number of pixels.
+    const SDK_ROUNDING: i32 = separate_rounding_px(6_770_418, 15_893);
 
     /// The GNOME 51 and nightly SDK geometry (`baseline-runtimes.out`): a
     /// 427-line paragraph, 6,627 px tall, whose last character's separately
@@ -307,45 +337,89 @@ mod tests {
 
     #[test]
     fn the_separately_rounded_sdk_geometry_holds() {
-        assert!(last_char_on_last_display_line(SDK));
+        assert!(last_char_on_last_display_line(SDK, SDK_ROUNDING));
     }
 
     #[test]
     fn equal_edges_on_the_last_line_hold() {
-        assert!(last_char_on_last_display_line(ParagraphGeometry {
-            last_char_bottom: 6_627,
-            last_char_y: 6_611,
-            ..SDK
-        }));
+        assert!(last_char_on_last_display_line(
+            ParagraphGeometry {
+                last_char_bottom: 6_627,
+                last_char_y: 6_611,
+                ..SDK
+            },
+            SDK_ROUNDING
+        ));
     }
 
     #[test]
     fn a_character_on_an_earlier_display_line_is_violated() {
-        assert!(!last_char_on_last_display_line(ParagraphGeometry {
-            last_char_line: 425,
-            ..SDK
-        }));
+        assert!(!last_char_on_last_display_line(
+            ParagraphGeometry {
+                last_char_line: 425,
+                ..SDK
+            },
+            SDK_ROUNDING
+        ));
     }
 
     #[test]
     fn an_edge_beyond_the_rounding_is_violated() {
-        assert!(!last_char_on_last_display_line(ParagraphGeometry {
-            last_char_bottom: 6_629,
-            last_char_y: 6_613,
-            ..SDK
-        }));
-        assert!(!last_char_on_last_display_line(ParagraphGeometry {
-            last_char_bottom: 6_611,
-            last_char_y: 6_595,
-            ..SDK
-        }));
+        assert!(!last_char_on_last_display_line(
+            ParagraphGeometry {
+                last_char_bottom: 6_629,
+                last_char_y: 6_613,
+                ..SDK
+            },
+            SDK_ROUNDING
+        ));
+        assert!(!last_char_on_last_display_line(
+            ParagraphGeometry {
+                last_char_bottom: 6_611,
+                last_char_y: 6_595,
+                ..SDK
+            },
+            SDK_ROUNDING
+        ));
     }
 
     #[test]
     fn a_location_above_the_last_line_band_is_violated() {
-        assert!(!last_char_on_last_display_line(ParagraphGeometry {
-            last_char_y: 6_600,
-            ..SDK
-        }));
+        assert!(!last_char_on_last_display_line(
+            ParagraphGeometry {
+                last_char_y: 6_600,
+                ..SDK
+            },
+            SDK_ROUNDING
+        ));
+    }
+
+    #[test]
+    fn a_fractional_last_line_allows_the_separate_rounding() {
+        assert_eq!(SDK_ROUNDING, SEPARATE_ROUNDING_PX);
+        assert_eq!(
+            separate_rounding_px(16 * 1024, 15_893),
+            SEPARATE_ROUNDING_PX
+        );
+        assert_eq!(
+            separate_rounding_px(6_770_418, 16 * 1024),
+            SEPARATE_ROUNDING_PX
+        );
+    }
+
+    /// Whole-pixel line positions round the same either way, so nothing
+    /// explains a one-pixel difference: the comparison is exact.
+    #[test]
+    fn whole_pixel_lines_allow_no_rounding() {
+        assert_eq!(separate_rounding_px(6_611 * 1024, 16 * 1024), 0);
+        assert!(!last_char_on_last_display_line(SDK, 0));
+        assert!(last_char_on_last_display_line(
+            ParagraphGeometry {
+                last_char_bottom: 6_627,
+                last_char_y: 6_611,
+                ..SDK
+            },
+            0
+        ));
     }
 }
