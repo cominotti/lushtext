@@ -3958,6 +3958,36 @@ separate change, in this order:
      Queued after `bin-minimap-markers-per-row` because E1–E3 are fixed
      per-dialog costs that no longer grow with the notes, while the palette
      and minimap still scale with the document or workspace.
+
+     **Spec written 2026-11-12** (branch `lighten-notes-browser-rows`,
+     `openspec/changes/lighten-notes-browser-rows/`). Measured on `main`
+     (`23518e53`, GTK 4.24.1, libadwaita 1.10.0) first.
+
+     - **The realized rows cause the row-dependent part, and text
+       measurement is most of it.** From 8 to 16,384 rows (205 realized):
+       - the first frame's layout grows from 3–7 to 36–38 ms;
+       - the close input dispatch grows from 0.3–0.6 to 13–15 ms;
+       - the query frame is 18–19 ms of layout, 82 % of it
+         `gtk_label_measure` and Pango.
+     - **E1's and E3's recorded worst values were the harness's cairo
+       renderer.** Its dialog animation frames cost 16–30 ms of paint with 8
+       rows as with 16,384. Under GL they cost 3–5 ms, and the first frame
+       with rows is 38.6 ms (36.4 of it layout).
+     - **E3 is really the close input dispatch** (14 ms of row teardown,
+       over `B_INTERACT_US`).
+
+     The change adds a measure-free row text widget, `LushtextRowText`. In
+     the isolated probe at 205 realized rows:
+     - the query frame goes from 19.2 to 6.4 ms, as flat as at 16 rows;
+     - the first frame goes from 20.5 to 12.3 ms;
+     - `GtkInscription` is rejected: its eager layout adds 15 ms of setup
+       per 205 rows (A109).
+
+     It also adds sliced row retirement outside input dispatches (A110), a
+     staged first publish only if the GL first frame still misses
+     `B_SETTLE_US`, and axioms A108–A111. It covers the palette's X1,
+     deferred clear and grouped publish too. Evidence:
+     `.claude/handoffs/lighten-notes-browser-rows/`.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
