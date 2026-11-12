@@ -227,6 +227,18 @@ MINIMAP_BINNING_MEASURED_IN = (
     "scaled by core-minimap-fit's CI/local ratio of about 1.6, plus a CI build; "
     "peak from the local run"
 )
+# core-minimap-fit became a required check on main (ruleset 23911547). PR #91's
+# run 43105455931 and PR #92's run 43144457562 measured it at 10.03 and
+# 10.93 min (2.19 / 2.32 GiB), inside its 12.9-min figure, which stands
+# (raise, never lower), so no re-split. PR #92's job took 16m39s only because
+# its `Install system dependencies` step (dnf) took 5m03s against 38 s in the
+# same run's core-geometry-policies job: a slow mirror, outside the shard, that
+# a split would not shorten. docs/next/formal-verification.md, "core-minimap-fit
+# as a required check".
+MINIMAP_FIT_MEASURED_IN = GEOMETRY_SPLIT_MEASURED_IN + (
+    "; as a required check by runs 43105455931, 43144457562 (10.03 / 10.93 min, "
+    "2.19 / 2.32 GiB, inside the figures)"
+)
 SETTLE_EVIDENCE_MEASURED_IN = (
     "; with the settle-evidence harnesses by runs 42169248534, 42172535348 (max of the two)"
 )
@@ -398,6 +410,7 @@ SHARDS: dict[str, Shard] = {
     # Split from core-geometry-policies (GEOMETRY_SPLIT_MEASURED_IN): the
     # minimum-height expansion and the whole-pixel native-slider containment,
     # the three widest minimap fits.
+    # Also a required check on main (ruleset 23911547): keep the name.
     "core-minimap-fit": Shard(
         "lushtext-core",
         (
@@ -407,7 +420,7 @@ SHARDS: dict[str, Shard] = {
         gate="pull-request",
         ci_minutes=12.9,
         ci_peak_gib=2.4,
-        measured_in=GEOMETRY_SPLIT_MEASURED_IN,
+        measured_in=MINIMAP_FIT_MEASURED_IN,
     ),
     # bin-minimap-markers-per-row D8: the integer marker row binning (row
     # groups, the per-kind index walker, the run builder, its growth and merge),

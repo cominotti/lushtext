@@ -2396,6 +2396,38 @@ the derived figures come from the slowest runner seen on these harnesses
 come back; lowering `core-minimap-fit` to 8.5 min would only hide the margin
 the re-split bought. The deferral is discharged: the split form is measured.
 
+**`core-minimap-fit` as a required check (2026-11-12, archive of
+`retest-upstream-fixes-on-nightly`).** `core-minimap-fit` is now a required
+check of ruleset `23911547`. PR #92's run `43144457562` showed its job at
+16m39s, over the 15-minute pull-request margin if that margin were read on the
+job. It is not: the margin, like the 16.57 min that forced the re-split, is the
+shard's measured time (the `Kani shard …` summary line that `check` compares
+against `ci_minutes`). Read from each job's summary line, its per-harness
+`Verification Time:` lines and its step times:
+
+| run | event | shard (measured) | CBMC verification | job | `Install system dependencies` |
+|---|---|---|---|---|---|
+| `42333476867` | push (`e4ec2624`) | 8.46 min, 2.17 GiB | 6.36 min | 9m54s | |
+| `42352722531` | PR #88 | 8.42 min, 2.17 GiB | 6.36 min | 9m46s | |
+| `43105455931` | PR #91 | 10.03 min, 2.19 GiB | 7.66 min | 11m22s | |
+| `43144457562` | PR #92 | 10.93 min, 2.32 GiB | 8.23 min | 16m39s | 5m03s (38 s in the same run's `core-geometry-policies` job) |
+
+**Decision: the record stands at 12.9 min / 2.4 GiB, and the shard is not
+re-split.** Every measurement is inside the figure derived from the slowest
+runner seen on these harnesses (12.88 min), so raise-never-lower changes
+nothing, and 10.93 min leaves 4.07 min to the pull-request margin. PR #92's
+extra five minutes were a slow `dnf` mirror in one job's dependency step,
+outside the shard: a re-split would add a required check name to the ruleset
+and a second container setup to every pull request without shortening that
+step, which every half would still run. The per-harness times did rise
+(the slowest harness 139 → 166 → 184 s across the four runs, on unchanged
+harnesses), within the runner variance the re-split already records
+(9.21–16.57 min for the unsplit shard); if a run measures the shard above
+12.9 min, the figure is raised and, above 15 min, the shard is re-split then
+(design D3), keeping the name `core-minimap-fit` on one half so the required
+check keeps reporting. `MINIMAP_FIT_MEASURED_IN` in `scripts/kani-shards.py`
+names both new runs.
+
 ### Minimap marker row binning (`bin-minimap-markers-per-row`, 2026-11-07)
 
 `fit_marker_bounds`, `MarkerProjectionSpace` and their three harnesses
@@ -2602,5 +2634,7 @@ table's length) and, at three rows, `i64` arithmetic in the run builder (now
   times of runs `42331071390` and `41995267728`. **Measured 2026-11-07** by
   runs `42333476867` and `42352722531` on the split form (6.63 and 8.46 min
   at most), inside both figures, which stand (see "List budget and geometry
-  policy shard re-split"). Still open: whether `core-minimap-fit` joins the required checks of ruleset
-  `23911547` is the maintainer's decision.
+  policy shard re-split"). `core-minimap-fit` has since joined the required
+  checks of ruleset `23911547`; runs `43105455931` and `43144457562` (10.03 and
+  10.93 min) measured it inside its figure, which stands (2026-11-12, "`core-minimap-fit`
+  as a required check").
