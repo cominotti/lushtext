@@ -10,9 +10,18 @@
 //! tagged `invisible`.
 //!
 //! Whether a given line reaches 2000 ms depends on the runner's speed, so the
-//! probe doubles a minified-markup line until the cut-off fires, up to a cap;
-//! reaching the cap without it is `FixtureInvalid`, never `Violated`. The
-//! line length that reached it and the call's duration are recorded values.
+//! probe doubles a minified-markup line until the cut-off fires, up to a
+//! length cap and a 60 s wall budget ([`next_attempt_fits`]: an attempt the
+//! earlier ones predict would end past the budget is not started); reaching
+//! either without the cut-off is `FixtureInvalid`, never `Violated`. The line
+//! length that reached it and every attempt's duration are recorded values.
+//!
+//! The 2000 ms deadline covers only `analyze_line`'s segment search for the
+//! one line (`gtksourcecontextengine.c`), not the call: a line whose analysis
+//! finishes under it is then tagged by `ensure_highlighted`, so a call
+//! without the cut-off can run far past 2000 ms (6.57 s at 32,768
+//! characters in the GNOME 51 SDK), while a cut-off call returns at about
+//! 2000 ms because the disabled engine applies no tags.
 //!
 //! The probe runs for a few seconds (the cut-off itself is 2000 ms), far
 //! below the pull-request probe job's timeout, so it is not marked slow.
@@ -38,6 +47,35 @@ pub const CUT_OFF_MESSAGE: &str = "Highlighting a single line took too much time
 /// The short line the hidden-text check highlights: a visible element, then
 /// an element inside the hidden range.
 pub const HIDDEN_LINE: (&str, &str) = ("<b class=\"v\">visible</b>", "<i class=\"h\">hidden</i>");
+
+/// The wall time, in microseconds, the doubling's attempts may take in all.
+/// An attempt is not started when the attempts so far predict it would end
+/// past this budget; the probe is then `FixtureInvalid`, never `Violated`.
+pub const WALL_BUDGET_US: u128 = 60_000_000;
+/// The least growth factor an attempt is predicted to take over the one
+/// before: analysis of this markup grows about quadratically with the line,
+/// so doubling the line costs about four times as much.
+pub const MIN_PREDICTED_GROWTH: u128 = 4;
+
+/// Whether the doubling may start another attempt after attempts that took
+/// `previous_us` microseconds each, in order: it may unless the time so far,
+/// plus the last attempt times the larger of [`MIN_PREDICTED_GROWTH`] and
+/// the last growth ratio, passes [`WALL_BUDGET_US`].
+#[must_use]
+pub fn next_attempt_fits(previous_us: &[u128]) -> bool {
+    let Some((&last, earlier)) = previous_us.split_last() else {
+        return true;
+    };
+    let by_minimum = last.saturating_mul(MIN_PREDICTED_GROWTH);
+    let by_ratio = earlier
+        .last()
+        .filter(|&&before| before > 0)
+        .map_or(0, |&before| last.saturating_mul(last) / before);
+    let so_far = previous_us
+        .iter()
+        .fold(0u128, |total, &micros| total.saturating_add(micros));
+    so_far.saturating_add(by_minimum.max(by_ratio)) <= WALL_BUDGET_US
+}
 
 /// The highlighting tags (every tag but `except`) at `offset` in `buffer`.
 #[must_use]
@@ -139,6 +177,7 @@ pub fn probe_a29() -> Observation {
 
         let mut chars = FIRST_LENGTH;
         let mut attempts = Vec::new();
+        let mut durations = Vec::new();
         let reached = loop {
             let attempt = recorder.require(
                 highlight_attempt(chars),
@@ -150,12 +189,18 @@ pub fn probe_a29() -> Observation {
                 attempt.micros,
                 if attempt.cut_off { " cut-off" } else { "" }
             ));
-            if attempt.cut_off || chars >= LENGTH_CAP {
+            durations.push(attempt.micros);
+            if attempt.cut_off || chars >= LENGTH_CAP || !next_attempt_fits(&durations) {
                 break attempt;
             }
             chars = chars.saturating_mul(2);
         };
         recorder.measure("attempts", super::join_entries(&attempts));
+        recorder.measure("attempts_wall_us", durations.iter().sum::<u128>());
+        recorder.control(
+            reached.cut_off || next_attempt_fits(&durations),
+            "control: the attempts reached the cut-off within the 60 s wall budget",
+        )?;
         recorder.measure("cut_off_line_chars", reached.chars);
         recorder.measure("cut_off_call_us", reached.micros);
         recorder.measure("captured_messages", super::join_entries(&reached.messages));
@@ -172,4 +217,60 @@ pub fn probe_a29() -> Observation {
             "after the cut-off, a short line added later gets no highlighting",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WALL_BUDGET_US, next_attempt_fits};
+
+    /// The GNOME 51 SDK's recorded attempts (`baseline-runtimes.out`): the
+    /// 32,768-character call ran 6.57 s without the cut-off, and the
+    /// 65,536-character call then cut off at 2.0005 s.
+    const GNOME_51: [u128; 4] = [112_065, 417_957, 1_661_444, 6_574_169];
+    /// The host's ledger sequence: the 32,768-character call cut off.
+    const HOST: [u128; 3] = [125_000, 464_000, 1_840_000];
+
+    #[test]
+    fn the_first_attempts_always_start() {
+        assert!(next_attempt_fits(&[]));
+        assert!(next_attempt_fits(&[1_000_000]));
+    }
+
+    #[test]
+    fn gnome_51_continues_to_its_cut_off() {
+        for end in 1..=GNOME_51.len() {
+            assert!(next_attempt_fits(&GNOME_51[..end]), "after {end} attempts");
+        }
+    }
+
+    #[test]
+    fn the_host_continues_to_its_cut_off() {
+        for end in 1..=HOST.len() {
+            assert!(next_attempt_fits(&HOST[..end]), "after {end} attempts");
+        }
+    }
+
+    #[test]
+    fn a_prediction_past_the_budget_stops() {
+        // 8.6 s so far, and 4 x 6.4 s = 25.6 s predicted: 34.2 s fits; one
+        // more doubling at the same growth predicts 34.2 + 102.4 s.
+        assert!(next_attempt_fits(&[100_000, 400_000, 1_600_000, 6_400_000]));
+        assert!(!next_attempt_fits(&[
+            100_000, 400_000, 1_600_000, 6_400_000, 25_600_000
+        ]));
+    }
+
+    #[test]
+    fn a_steeper_growth_than_four_predicts_with_the_ratio() {
+        // 13 s so far: 4 x 10 s = 40 s would fit, but the last growth was
+        // 5x, which predicts 50 s and 63 s in all.
+        assert!(!next_attempt_fits(&[1_000_000, 2_000_000, 10_000_000]));
+        // The same last attempt after a 4x growth predicts 53.5 s in all.
+        assert!(next_attempt_fits(&[1_000_000, 2_500_000, 10_000_000]));
+    }
+
+    #[test]
+    fn the_budget_is_sixty_seconds() {
+        assert_eq!(WALL_BUDGET_US, 60_000_000);
+    }
 }

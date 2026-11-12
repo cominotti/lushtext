@@ -27,8 +27,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use gtk_lush_axioms::{
-    AxiomId, SampleFlags, SampleRequest, classify_sample_args, find, include_slow_probes,
-    init_toolkit, sample_usage, slow_skip_line,
+    AxiomId, SampleFlags, SampleRequest, classify_sample_args, find, in_sdk_sandbox,
+    include_slow_probes, init_toolkit, remote_desktop_skip_line, sample_usage, slow_skip_line,
 };
 use gtk4::prelude::*;
 
@@ -140,6 +140,12 @@ fn check(axiom: AxiomId) -> ExitCode {
     };
     if entry.slow && !include_slow_probes() {
         println!("{}", slow_skip_line(entry));
+        return ExitCode::SUCCESS;
+    }
+    // Inside an SDK sandbox there is no session bus to reach the
+    // compositor's RemoteDesktop through: say so, before connecting.
+    if let Some(line) = remote_desktop_skip_line(axiom, in_sdk_sandbox()) {
+        println!("{line}");
         return ExitCode::SUCCESS;
     }
     if let Err(error) = init_toolkit() {

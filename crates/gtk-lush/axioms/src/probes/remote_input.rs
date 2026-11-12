@@ -25,6 +25,39 @@ use gtk4::prelude::*;
 
 use crate::session::settle;
 
+/// The variable an SDK sandbox run sets (`scripts/run-gtk-axioms.sh
+/// runtimes`): the sandbox has no session bus, so no compositor
+/// RemoteDesktop interface either. With it set to `1`, a sample whose probe
+/// needs this module prints [`remote_desktop_skip_line`] and exits `0`
+/// before connecting. The host lane and CI never set it, so a host
+/// compositor without RemoteDesktop still fails those samples as fixture
+/// invalid.
+pub const SANDBOX_ENV: &str = "GTK_LUSH_AXIOMS_SANDBOX";
+
+/// The axioms whose probe drives real input through [`RemoteInput`].
+pub const REMOTE_INPUT_AXIOMS: &[crate::AxiomId] = &[
+    crate::AxiomId::new(59),
+    crate::AxiomId::new(60),
+    crate::AxiomId::new(61),
+    crate::AxiomId::new(64),
+    crate::AxiomId::new(97),
+];
+
+/// Whether [`SANDBOX_ENV`] says this run is inside an SDK sandbox.
+#[must_use]
+pub fn in_sdk_sandbox() -> bool {
+    std::env::var(SANDBOX_ENV).as_deref() == Ok("1")
+}
+
+/// The line a sample prints instead of its observation when its probe needs
+/// RemoteDesktop and [`in_sdk_sandbox`] holds:
+/// `skipped (needs RemoteDesktop): <id>`; `None` for every other axiom.
+#[must_use]
+pub fn remote_desktop_skip_line(axiom: crate::AxiomId, sandbox: bool) -> Option<String> {
+    (sandbox && REMOTE_INPUT_AXIOMS.contains(&axiom))
+        .then(|| format!("skipped (needs RemoteDesktop): {axiom}"))
+}
+
 const BUS: &str = "org.gnome.Mutter.RemoteDesktop";
 const PATH: &str = "/org/gnome/Mutter/RemoteDesktop";
 const SESSION_INTERFACE: &str = "org.gnome.Mutter.RemoteDesktop.Session";
@@ -237,4 +270,41 @@ pub fn fullscreen_window(content: &impl IsA<gtk4::Widget>) -> libadwaita::Window
     let window = libadwaita::Window::builder().content(content).build();
     window.fullscreen();
     window
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{REMOTE_INPUT_AXIOMS, remote_desktop_skip_line};
+    use crate::AxiomId;
+
+    /// The list names exactly the probes that start a RemoteInput session, so
+    /// a new probe driving real input cannot be left out of the sandbox skip.
+    #[test]
+    fn remote_input_axioms_are_exactly_the_probes_that_start_a_session() {
+        let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/src/probes");
+        let mut users: Vec<AxiomId> = std::fs::read_dir(directory)
+            .expect("the probes directory is readable")
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                let stem = path.file_stem()?.to_str()?.strip_prefix('a')?.to_owned();
+                let number: u16 = stem.parse().ok()?;
+                let source = std::fs::read_to_string(&path).ok()?;
+                source
+                    .contains("RemoteInput::start(")
+                    .then_some(AxiomId::new(number))
+            })
+            .collect();
+        users.sort();
+        assert_eq!(users, REMOTE_INPUT_AXIOMS);
+    }
+
+    #[test]
+    fn only_a_remote_input_axiom_inside_the_sandbox_is_skipped() {
+        assert_eq!(
+            remote_desktop_skip_line(AxiomId::new(59), true).as_deref(),
+            Some("skipped (needs RemoteDesktop): A59")
+        );
+        assert_eq!(remote_desktop_skip_line(AxiomId::new(59), false), None);
+        assert_eq!(remote_desktop_skip_line(AxiomId::new(29), true), None);
+    }
 }
