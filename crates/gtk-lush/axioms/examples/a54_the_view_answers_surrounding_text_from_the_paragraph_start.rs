@@ -5,6 +5,9 @@
 //! own answer starts at the paragraph's start. "Connect a bounded answer"
 //! connects a handler answering with a short window after the view's; the
 //! readout shows it is never called and the answer stays the paragraph.
+//! "Time the answer on 50k characters" records, on a second view, the median
+//! of five answers on a 50,000-character paragraph: cold, repeated, and right
+//! after a one-character insert.
 
 mod support;
 
@@ -12,7 +15,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::a54::{connect_bounded_answer, fixture, view_im_context};
+use gtk_lush_axioms::fixtures::TextViewFixture;
+use gtk_lush_axioms::fixtures::a54::{
+    COST_PARAGRAPH_CHARS, connect_bounded_answer, fixture, surrounding_costs, view_im_context,
+};
 use gtk4::prelude::*;
 
 fn build(ui: &support::SampleUi) {
@@ -34,6 +40,24 @@ fn build(ui: &support::SampleUi) {
             );
         });
     }
+    let costs = Rc::new(RefCell::new(String::from("not timed yet")));
+    {
+        let costs = costs.clone();
+        let costly = TextViewFixture::new(gtk4::WrapMode::Word);
+        ui.add_control("Time the answer on 50k characters", move || {
+            *costs.borrow_mut() = view_im_context(&costly.view).map_or_else(
+                || "no input-method context".to_owned(),
+                |im| {
+                    let measured = surrounding_costs(&costly, &im);
+                    format!(
+                        "{COST_PARAGRAPH_CHARS} characters, median of 5: cold {} µs, repeat {} µs, \
+                         after an insert {} µs",
+                        measured.cold_us, measured.repeat_us, measured.after_insert_us
+                    )
+                },
+            );
+        });
+    }
     let calls: Rc<RefCell<Option<Rc<Cell<u32>>>>> = Rc::default();
     {
         let (view, calls) = (fixture.view, calls.clone());
@@ -50,7 +74,11 @@ fn build(ui: &support::SampleUi) {
             || "not connected".to_owned(),
             |calls| format!("called {} times", calls.get()),
         );
-        format!("last answer: {}; bounded handler: {later}", note.borrow())
+        format!(
+            "last answer: {}; bounded handler: {later}\ncost: {}",
+            note.borrow(),
+            costs.borrow()
+        )
     });
 }
 
