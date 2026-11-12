@@ -12,7 +12,8 @@
 //! Whether a given line reaches 2000 ms depends on the runner's speed, so the
 //! probe doubles a minified-markup line until the cut-off fires, up to a
 //! length cap and a 60 s wall budget ([`next_attempt_fits`]: an attempt the
-//! earlier ones predict would end past the budget is not started); reaching
+//! earlier ones predict, with a margin, would end past the budget is not
+//! started); reaching
 //! either without the cut-off is `FixtureInvalid`, never `Violated`. The line
 //! length that reached it and every attempt's duration are recorded values.
 //!
@@ -57,10 +58,16 @@ pub const WALL_BUDGET_US: u128 = 60_000_000;
 /// so doubling the line costs about four times as much.
 pub const MIN_PREDICTED_GROWTH: u128 = 4;
 
+/// The margin on the predicted growth, as a fraction: growth can steepen
+/// from one doubling to the next (the nightly SDK's last attempt grew 4.95x
+/// after 3.96x), so the prediction is a quarter above the larger of
+/// [`MIN_PREDICTED_GROWTH`] and the last ratio.
+pub const GROWTH_MARGIN: (u128, u128) = (5, 4);
+
 /// Whether the doubling may start another attempt after attempts that took
 /// `previous_us` microseconds each, in order: it may unless the time so far,
 /// plus the last attempt times the larger of [`MIN_PREDICTED_GROWTH`] and
-/// the last growth ratio, passes [`WALL_BUDGET_US`].
+/// the last growth ratio, with [`GROWTH_MARGIN`], passes [`WALL_BUDGET_US`].
 #[must_use]
 pub fn next_attempt_fits(previous_us: &[u128]) -> bool {
     let Some((&last, earlier)) = previous_us.split_last() else {
@@ -74,7 +81,9 @@ pub fn next_attempt_fits(previous_us: &[u128]) -> bool {
     let so_far = previous_us
         .iter()
         .fold(0u128, |total, &micros| total.saturating_add(micros));
-    so_far.saturating_add(by_minimum.max(by_ratio)) <= WALL_BUDGET_US
+    let (numerator, denominator) = GROWTH_MARGIN;
+    let predicted = by_minimum.max(by_ratio).saturating_mul(numerator) / denominator;
+    so_far.saturating_add(predicted) <= WALL_BUDGET_US
 }
 
 /// The highlighting tags (every tag but `except`) at `offset` in `buffer`.
@@ -221,7 +230,7 @@ pub fn probe_a29() -> Observation {
 
 #[cfg(test)]
 mod tests {
-    use super::{WALL_BUDGET_US, next_attempt_fits};
+    use super::{GROWTH_MARGIN, WALL_BUDGET_US, next_attempt_fits};
 
     /// The GNOME 51 SDK's recorded attempts (`baseline-runtimes.out`): the
     /// 32,768-character call ran 6.57 s without the cut-off, and the
@@ -229,6 +238,20 @@ mod tests {
     const GNOME_51: [u128; 4] = [112_065, 417_957, 1_661_444, 6_574_169];
     /// The host's ledger sequence: the 32,768-character call cut off.
     const HOST: [u128; 3] = [125_000, 464_000, 1_840_000];
+
+    /// The nightly SDK (`469c3f9d`, GtkSourceView 5.23.0) never logged the
+    /// cut-off, and its last growth (4.95x, 10.45 s to 51.7 s) was steeper
+    /// than the 4x the attempts before it showed: the 131,072-character
+    /// attempt ran the doubling to 65.7 s, past the budget.
+    const NIGHTLY: [u128; 5] = [50_395, 175_882, 675_084, 2_639_686, 10_454_336];
+
+    #[test]
+    fn the_nightly_stops_before_an_attempt_that_would_pass_the_budget() {
+        for end in 1..NIGHTLY.len() {
+            assert!(next_attempt_fits(&NIGHTLY[..end]), "after {end} attempts");
+        }
+        assert!(!next_attempt_fits(&NIGHTLY));
+    }
 
     #[test]
     fn the_first_attempts_always_start() {
@@ -252,8 +275,8 @@ mod tests {
 
     #[test]
     fn a_prediction_past_the_budget_stops() {
-        // 8.6 s so far, and 4 x 6.4 s = 25.6 s predicted: 34.2 s fits; one
-        // more doubling at the same growth predicts 34.2 + 102.4 s.
+        // 8.5 s so far, and 5 x 6.4 s = 32 s predicted: 40.5 s fits; one
+        // more doubling at the same growth predicts 34.1 + 128 s.
         assert!(next_attempt_fits(&[100_000, 400_000, 1_600_000, 6_400_000]));
         assert!(!next_attempt_fits(&[
             100_000, 400_000, 1_600_000, 6_400_000, 25_600_000
@@ -262,15 +285,17 @@ mod tests {
 
     #[test]
     fn a_steeper_growth_than_four_predicts_with_the_ratio() {
-        // 13 s so far: 4 x 10 s = 40 s would fit, but the last growth was
-        // 5x, which predicts 50 s and 63 s in all.
-        assert!(!next_attempt_fits(&[1_000_000, 2_000_000, 10_000_000]));
-        // The same last attempt after a 4x growth predicts 53.5 s in all.
-        assert!(next_attempt_fits(&[1_000_000, 2_500_000, 10_000_000]));
+        // 10.6 s so far: 4x growth with the margin (5 x 8 s = 40 s) would
+        // fit, but the last growth was 5x, which predicts 6.25 x 8 s = 50 s
+        // and 60.6 s in all.
+        assert!(!next_attempt_fits(&[1_000_000, 1_600_000, 8_000_000]));
+        // The same last attempt after a 4x growth predicts 51 s in all.
+        assert!(next_attempt_fits(&[1_000_000, 2_000_000, 8_000_000]));
     }
 
     #[test]
-    fn the_budget_is_sixty_seconds() {
+    fn the_budget_is_sixty_seconds_with_a_quarter_margin() {
         assert_eq!(WALL_BUDGET_US, 60_000_000);
+        assert_eq!(GROWTH_MARGIN, (5, 4));
     }
 }
