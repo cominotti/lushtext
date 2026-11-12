@@ -39,8 +39,14 @@ pub struct ParagraphGeometry {
     pub height: i32,
     /// Bottom edge (`y + height`) of the last character's location.
     pub last_char_bottom: i32,
+    /// Top edge of the last character's location.
+    pub last_char_y: i32,
     /// Height of the first character's location (one display line).
     pub line_height: i32,
+    /// The display line, counted from 0, that holds the last character.
+    pub last_char_line: i32,
+    /// How many display lines the paragraph wraps into.
+    pub display_lines: i32,
 }
 
 /// The geometry of the first paragraph of `fixture`'s buffer.
@@ -56,8 +62,36 @@ pub fn paragraph_geometry(fixture: &TextViewFixture) -> ParagraphGeometry {
     ParagraphGeometry {
         height,
         last_char_bottom: last_rect.y() + last_rect.height(),
+        last_char_y: last_rect.y(),
         line_height: first_rect.height(),
+        last_char_line: display_line_index(fixture, &last),
+        display_lines: display_line_count(fixture),
     }
+}
+
+/// The pixels by which the last character's bottom edge may differ from the
+/// paragraph's display height. `gtk_text_layout_get_iter_location` rounds the
+/// character's top and its height to pixels separately (`PANGO_PIXELS` of
+/// each), while the paragraph's display height is `PANGO_PIXELS` of the whole
+/// layout's height, rounded once (`gtktextlayout.c`, GTK 4.22–4.25). With a
+/// font whose line height is a fractional number of pixels, the two sums of
+/// rounded values differ by at most one pixel (measured: 6,627 against 6,628
+/// in the GNOME 51 and nightly SDKs).
+pub const SEPARATE_ROUNDING_PX: i32 = 1;
+
+/// Whether the last character's location is valid and on the paragraph's
+/// last display line: it is on the last display line by index, and its
+/// rectangle lies in that line's band at the paragraph's bottom, up to
+/// [`SEPARATE_ROUNDING_PX`].
+#[must_use]
+pub const fn last_char_on_last_display_line(geometry: ParagraphGeometry) -> bool {
+    let on_last_line =
+        geometry.display_lines > 0 && geometry.last_char_line == geometry.display_lines - 1;
+    let bottom_at_paragraph_bottom =
+        (geometry.last_char_bottom - geometry.height).abs() <= SEPARATE_ROUNDING_PX;
+    let top_in_last_line_band =
+        geometry.last_char_y >= geometry.height - geometry.line_height - SEPARATE_ROUNDING_PX;
+    on_last_line && bottom_at_paragraph_bottom && top_in_last_line_band
 }
 
 /// Microseconds the first layout of a `chars`-character paragraph takes in
@@ -96,6 +130,17 @@ pub fn probe_a23() -> Observation {
         recorder.measure("paragraph_height", geometry.height);
         recorder.measure("last_char_bottom", geometry.last_char_bottom);
         recorder.measure("line_height", geometry.line_height);
+        recorder.measure("last_char_y", geometry.last_char_y);
+        recorder.measure("last_char_line", geometry.last_char_line);
+        recorder.measure(
+            "font",
+            wrapped
+                .view
+                .pango_context()
+                .font_description()
+                .map_or_else(String::new, |font| font.to_string()),
+        );
+        record_pango_line_units(recorder, &wrapped);
         recorder.control(
             viewport > 0 && geometry.line_height > 0,
             "control: the view has a viewport and a display line height",
@@ -125,6 +170,17 @@ pub fn probe_a23() -> Observation {
         record_layout_costs(recorder, &unwrapped, &NOWRAP_COST_KEYS);
         Ok(())
     })
+}
+
+/// The display line, counted from 0, of `target` within its paragraph.
+fn display_line_index(fixture: &TextViewFixture, target: &gtk4::TextIter) -> i32 {
+    let mut iter = *target;
+    iter.set_line_offset(0);
+    let mut index = 0;
+    while fixture.view.forward_display_line(&mut iter) && iter <= *target {
+        index += 1;
+    }
+    index
 }
 
 /// How many display lines the view wraps the first paragraph into.
@@ -165,6 +221,35 @@ fn independent_layout(fixture: &TextViewFixture) -> (i32, i32) {
     (layout.line_count(), layout.pixel_size().1)
 }
 
+/// The Pango-unit geometry behind the pixel values, for attributing a
+/// rounding difference: the whole layout's logical height and the last two
+/// lines' logical tops, laid out alone at the view's wrap width and font.
+fn record_pango_line_units(recorder: &mut Recorder, fixture: &TextViewFixture) {
+    let start = fixture.buffer.start_iter();
+    let mut end = start;
+    end.forward_to_line_end();
+    let text = fixture.buffer.text(&start, &end, false);
+    let layout = fixture.view.create_pango_layout(Some(&text));
+    layout.set_width((text_area_width(&fixture.view) - SPACE_FOR_CURSOR).max(1) * pango::SCALE);
+    layout.set_wrap(pango::WrapMode::WordChar);
+    let (_, logical) = layout.extents();
+    recorder.measure("pango_height_units", logical.height());
+    let mut iter = layout.iter();
+    let mut tops = Vec::new();
+    loop {
+        let (_, line_logical) = iter.line_extents();
+        tops.push((line_logical.y(), line_logical.height()));
+        if !iter.next_line() {
+            break;
+        }
+    }
+    if let [.., previous, last] = tops.as_slice() {
+        recorder.measure("pango_previous_line_y_units", previous.0);
+        recorder.measure("pango_last_line_y_units", last.0);
+        recorder.measure("pango_last_line_height_units", last.1);
+    }
+}
+
 /// The recorded keys for each of [`LENGTHS`]: first layout time, and time per
 /// character.
 type CostKeys = [(&'static str, &'static str); LENGTHS.len()];
@@ -199,7 +284,68 @@ fn check_whole_paragraph(
         "the shown paragraph's height covers its whole wrap count, far past the viewport",
     )?;
     recorder.axiom(
-        geometry.last_char_bottom == geometry.height,
+        last_char_on_last_display_line(geometry),
         "the last character's location is valid and on the paragraph's last display line",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParagraphGeometry, last_char_on_last_display_line};
+
+    /// The GNOME 51 and nightly SDK geometry (`baseline-runtimes.out`): a
+    /// 427-line paragraph, 6,627 px tall, whose last character's separately
+    /// rounded bottom edge is 6,628.
+    const SDK: ParagraphGeometry = ParagraphGeometry {
+        height: 6_627,
+        last_char_bottom: 6_628,
+        last_char_y: 6_612,
+        line_height: 16,
+        last_char_line: 426,
+        display_lines: 427,
+    };
+
+    #[test]
+    fn the_separately_rounded_sdk_geometry_holds() {
+        assert!(last_char_on_last_display_line(SDK));
+    }
+
+    #[test]
+    fn equal_edges_on_the_last_line_hold() {
+        assert!(last_char_on_last_display_line(ParagraphGeometry {
+            last_char_bottom: 6_627,
+            last_char_y: 6_611,
+            ..SDK
+        }));
+    }
+
+    #[test]
+    fn a_character_on_an_earlier_display_line_is_violated() {
+        assert!(!last_char_on_last_display_line(ParagraphGeometry {
+            last_char_line: 425,
+            ..SDK
+        }));
+    }
+
+    #[test]
+    fn an_edge_beyond_the_rounding_is_violated() {
+        assert!(!last_char_on_last_display_line(ParagraphGeometry {
+            last_char_bottom: 6_629,
+            last_char_y: 6_613,
+            ..SDK
+        }));
+        assert!(!last_char_on_last_display_line(ParagraphGeometry {
+            last_char_bottom: 6_611,
+            last_char_y: 6_595,
+            ..SDK
+        }));
+    }
+
+    #[test]
+    fn a_location_above_the_last_line_band_is_violated() {
+        assert!(!last_char_on_last_display_line(ParagraphGeometry {
+            last_char_y: 6_600,
+            ..SDK
+        }));
+    }
 }

@@ -110,6 +110,9 @@ pub(crate) mod gsettings;
 pub(crate) mod lazy_sections;
 pub(crate) mod post_open;
 pub(crate) mod remote_input;
+pub use remote_input::{
+    REMOTE_INPUT_AXIOMS, SANDBOX_ENV, in_sdk_sandbox, remote_desktop_skip_line,
+};
 pub(crate) mod text;
 
 use gtk4::prelude::*;
