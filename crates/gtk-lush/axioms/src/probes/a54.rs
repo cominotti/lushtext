@@ -25,7 +25,8 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 
 use crate::observation::Recorder;
-use crate::probes::text::{ParagraphKind, TextViewFixture, paragraph};
+use crate::probes::post_open::median;
+use crate::probes::text::{ParagraphKind, TextViewFixture, paragraph, time_us};
 use crate::session::{Presented, settle};
 use crate::{AxiomId, Observation};
 
@@ -33,6 +34,10 @@ use super::LAYOUT_SETTLE;
 
 /// Characters in the paragraph the cursor sits in.
 pub const PARAGRAPH_CHARS: usize = 20_000;
+/// Characters in the paragraph the answer's cost is recorded on.
+pub const COST_PARAGRAPH_CHARS: usize = 50_000;
+/// Emissions per recorded median.
+pub const COST_REPETITIONS: usize = 5;
 /// Characters of context the replacement answer gives on each side.
 pub const WINDOW_CHARS: i32 = 100;
 
@@ -61,6 +66,61 @@ pub fn fixture() -> TextViewFixture {
         fixture.buffer.place_cursor(&middle);
     }
     fixture
+}
+
+/// Microseconds of one `retrieve-surrounding` emission on `im` (the view's
+/// own answer).
+#[must_use]
+pub fn surrounding_us(im: &gtk4::IMContext) -> u128 {
+    time_us(|| im.surrounding_with_selection()).1
+}
+
+/// The answer's cost on a [`COST_PARAGRAPH_CHARS`]-character paragraph with
+/// the cursor in its middle, as medians of [`COST_REPETITIONS`] emissions:
+/// cold (each right after the paragraph is set again), repeated with nothing
+/// changed, and right after a one-character insert at the cursor. GTK
+/// !10646 (in 4.25.0) changes what the word-boundary cache does after an
+/// edit; these are the numbers to compare, never a verdict.
+#[must_use]
+pub fn surrounding_costs(fixture: &TextViewFixture, im: &gtk4::IMContext) -> SurroundingCosts {
+    let reset = || {
+        fixture
+            .buffer
+            .set_text(&paragraph(ParagraphKind::Ascii, COST_PARAGRAPH_CHARS, 54));
+        let middle = fixture
+            .buffer
+            .iter_at_offset(i32::try_from(COST_PARAGRAPH_CHARS / 2).unwrap_or(0));
+        fixture.buffer.place_cursor(&middle);
+    };
+    let cold: Vec<u128> = (0..COST_REPETITIONS)
+        .map(|_| {
+            reset();
+            surrounding_us(im)
+        })
+        .collect();
+    let repeat: Vec<u128> = (0..COST_REPETITIONS).map(|_| surrounding_us(im)).collect();
+    let after_insert: Vec<u128> = (0..COST_REPETITIONS)
+        .map(|_| {
+            fixture.buffer.insert_at_cursor("x");
+            surrounding_us(im)
+        })
+        .collect();
+    SurroundingCosts {
+        cold_us: median(&cold),
+        repeat_us: median(&repeat),
+        after_insert_us: median(&after_insert),
+    }
+}
+
+/// Medians of the view's own `retrieve-surrounding` answer, in microseconds.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SurroundingCosts {
+    /// Right after the paragraph was set.
+    pub cold_us: u128,
+    /// Asked again with nothing changed.
+    pub repeat_us: u128,
+    /// Right after a one-character insert at the cursor.
+    pub after_insert_us: u128,
 }
 
 /// Answer `retrieve-surrounding` on `im` with `WINDOW_CHARS` on each side of
@@ -125,6 +185,26 @@ pub fn probe_a54() -> Observation {
         recorder.axiom(
             calls.get() == 0 && chars == gtk_chars,
             "a handler connected after the view's is never called: the view's answer stops the emission",
-        )
+        )?;
+        // Recorded only, after the verdict: what one answer costs on a long
+        // paragraph, on a second view whose context has no later handler.
+        let costly = TextViewFixture::new(gtk4::WrapMode::Word);
+        let _costly_shown = Presented::checked(
+            recorder,
+            &costly.scrolled,
+            "control: the cost view was presented",
+        )?;
+        let costly_im = recorder.require(
+            view_im_context(&costly.view),
+            "control: the cost view exposes its input-method context",
+        )?;
+        let costs = surrounding_costs(&costly, &costly_im);
+        recorder.measure("surrounding_50k_cold_median_us", costs.cold_us);
+        recorder.measure("surrounding_50k_repeat_median_us", costs.repeat_us);
+        recorder.measure(
+            "surrounding_50k_after_insert_median_us",
+            costs.after_insert_us,
+        );
+        Ok(())
     })
 }

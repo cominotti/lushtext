@@ -254,7 +254,8 @@ pub mod a44 {
 /// The fixture and helpers the A54 probe drives, for its sample.
 pub mod a54 {
     pub use crate::probes::a54::{
-        PARAGRAPH_CHARS, WINDOW_CHARS, connect_bounded_answer, fixture, view_im_context,
+        COST_PARAGRAPH_CHARS, PARAGRAPH_CHARS, SurroundingCosts, WINDOW_CHARS,
+        connect_bounded_answer, fixture, surrounding_costs, view_im_context,
     };
 }
 
