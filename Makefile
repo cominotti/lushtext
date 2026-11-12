@@ -69,7 +69,7 @@
 #   make gtk-lush-api-advisory - Run advisory semver/public-API checks for GTK Lush crates
 #   make gtk-axioms - Run every gtk-lush-axioms probe and sample --check under private headless Mutter (GTK_LUSH_AXIOMS_INCLUDE_SLOW=0 skips slow probes)
 #   make gtk-axiom-sample AXIOM=<id> [CHECK=1] - Open one axiom sample (CHECK=1: headless verdict)
-#   make gtk-axioms-runtimes - LOCAL ONLY: rerun sample checks inside installed GNOME SDKs (50, 51, nightly)
+#   make gtk-axioms-runtimes - LOCAL ONLY: rerun sample checks inside installed GNOME SDKs (50, 51, nightly; GTK_AXIOMS_ONLY=A28,A79 for a subset)
 #   make check-gtk-axioms - Keep the GTK axiom ledger, catalogue, probes, and samples in agreement
 #   make automation-client-self-test - Validate the reusable D-Bus automation CLI helper
 #   make check-agent-skills - validate maintained skill contracts and metadata
@@ -809,10 +809,13 @@ gtk-axiom-sample:
 
 # LOCAL ONLY: rerun every sample --check against the toolkit of each installed
 # GNOME SDK (default 50 = the source floor, 51 = the shipped runtime, and
-# nightly, before that toolkit ships).
+# nightly, before that toolkit ships), with a per-SDK summary.
+# GTK_AXIOMS_ONLY=A28,A79 checks only those samples (an unknown id fails);
+# GTK_AXIOMS_RUNTIMES picks the SDK refs. Inside the SDK sandbox the five
+# RemoteDesktop samples (A59-A61, A64, A97) report a skip, never on the host.
 # Never a prerequisite of check, test, or any CI job; installs nothing.
 gtk-axioms-runtimes:
-	./scripts/run-gtk-axioms.sh runtimes $(GTK_AXIOMS_RUNTIMES)
+	./scripts/run-gtk-axioms.sh runtimes $(if $(GTK_AXIOMS_ONLY),--only $(GTK_AXIOMS_ONLY),) $(GTK_AXIOMS_RUNTIMES)
 
 check-gtk-axioms:
 	@echo "Checking the GTK axiom ledger against gtk-lush-axioms..."
@@ -1144,7 +1147,7 @@ help:
 	@echo "  gtk-lush-api-advisory Run advisory semver/public-API checks"
 	@echo "  gtk-axioms       Run every GTK axiom probe and sample --check headless"
 	@echo "  gtk-axiom-sample Open one axiom sample: AXIOM=<id> [CHECK=1]"
-	@echo "  gtk-axioms-runtimes LOCAL ONLY: sample checks inside installed GNOME SDKs"
+	@echo "  gtk-axioms-runtimes LOCAL ONLY: sample checks inside installed GNOME SDKs (GTK_AXIOMS_ONLY=A28,A79 for a subset)"
 	@echo "  check-gtk-axioms Keep the axiom ledger, catalogue, probes, and samples in agreement"
 	@echo "  automation-client-self-test Validate the reusable D-Bus automation CLI helper"
 	@echo "  check-agent-helpers Self-test scripts/heavy.sh, measure.sh and wait-for.sh (shared-machine lock protocol)"

@@ -62,6 +62,11 @@ make gtk-axiom-sample AXIOM=A9           # one sample, interactive, on your desk
 `dbus-run-session -- mutter --headless`. A sample's `--check` exits `0`
 (holds), `1` (violated), or `2` (fixture invalid), and refuses with `77`,
 before touching GTK, unless `GTK_LUSH_AXIOMS_HEADLESS=1` is set.
+With `GTK_LUSH_AXIOMS_SANDBOX=1` (set only by `make gtk-axioms-runtimes`
+inside a GNOME SDK sandbox, which has no session bus), a sample whose probe
+drives the compositor's RemoteDesktop (`REMOTE_INPUT_AXIOMS`: A59–A61, A64,
+A97) prints `skipped (needs RemoteDesktop): <id>` and exits `0` before
+connecting.
 
 From your own gtk-rs code, with GTK and Libadwaita initialized:
 

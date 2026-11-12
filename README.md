@@ -736,7 +736,7 @@ make gtk-lush-msrv
 make gtk-lush-api-advisory
 make gtk-axioms                        # every GTK axiom probe + sample --check, headless (GTK_LUSH_AXIOMS_INCLUDE_SLOW=0 skips slow probes)
 make gtk-axiom-sample AXIOM=A9         # watch one axiom on your desktop (CHECK=1: headless verdict)
-make gtk-axioms-runtimes               # local only: rerun the samples inside installed GNOME SDKs
+make gtk-axioms-runtimes               # local only: rerun the samples inside installed GNOME SDKs, with a per-SDK summary (GTK_AXIOMS_ONLY=A28,A79 for a subset)
 ```
 
 On any GTK or Libadwaita version change, run `make gtk-axioms` first: a failing

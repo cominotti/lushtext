@@ -209,7 +209,14 @@ a fix (a revert), that is recorded and the fix is treated as absent.
   cumulative time so far plus the last attempt's duration times the larger
   of 4 and the last growth ratio (analysis of this markup grows about
   quadratically, so doubling the line costs about 4×; the GNOME 51 SDK
-  recorded 0.11 → 0.42 → 1.66 → 6.57 s, ratios 3.7–4.0). It then reports
+  recorded 0.11 → 0.42 → 1.66 → 6.57 s, ratios 3.7–4.0). **Amended at implementation (2026-11-11):** the prediction carries a
+  5/4 margin. On the nightly (build `469c3f9d`) the last growth steepened
+  from 3.96× to 4.95× (10.45 s → 51.7 s), so the unmargined rule admitted
+  the 131,072-character attempt and the doubling ended at 65.7 s, past the
+  budget the spec requires a run to end within. With the margin the nightly
+  stops after 14.0 s; GNOME 51's prediction before its last attempt is
+  8.8 s + 5 × 6.57 s ≈ 41.7 s, still inside 60 s. The nightly sequence is a
+  failing-first test case. It then reports
   `FixtureInvalid` with every attempt recorded, as the spec already requires
   for the length cap. Runner speed still cannot flip a verdict to
   `Violated`. A pure test of the stop rule over recorded attempt sequences
@@ -351,8 +358,10 @@ corrected.
 - **[A29 wall bound and runner speed]:** the bound only ever yields
   `FixtureInvalid`, never `Violated`, so a slow runner cannot flip the
   verdict. GNOME 51's attempts take about 10.8 s in total, and the
-  prediction before its last attempt is 8.8 s + 4 × 6.57 s ≈ 35 s, inside
-  60 s. A slower runner is expected to reach the cut-off at a shorter line,
+  prediction before its last attempt is 8.8 s + 5 × 6.57 s ≈ 41.7 s (with
+  the implementation's 5/4 margin), inside 60 s; the GNOME 51 and 50 SDKs and
+  the Fedora 45 host all reached the cut-off at 65,536 characters in
+  10.5–10.8 s on 2026-11-11. A slower runner is expected to reach the cut-off at a shorter line,
   so its sum stays about the same; task 2.9 records A29's attempts on the
   host and both SDKs to confirm the margin, because CI's `GTK Axioms` job
   runs A29. A runner whose prediction exceeds 60 s before the
@@ -361,6 +370,35 @@ corrected.
 ## Migration Plan
 
 Docs, probes and script only. Nothing ships to users. Rollback is a revert.
+
+## Implementation decisions (2026-11-11)
+
+- **I1, A29 margin** (D3 V1 amended above): a 5/4 margin on the predicted
+  growth, so a run ends within the budget the spec states; measured on the
+  nightly's own sequence.
+- **I2, A107 dropped as a new report:** Pango's tracker already has
+  GNOME/pango#763 (open since 2023, the same `pango_layout_line_get_cursors`
+  → `pango_layout_get_cursor_pos` chain in its backtrace), and a maintainer
+  answered there and in #762 that PangoLayout is not meant for arbitrarily
+  long paragraphs. Our numbers add nothing the issue asks for, so no comment
+  either; recorded under "Followed, not filed".
+- **I3, a second mislabel:** the `docs/upstream-reports.md` "Followed" row on
+  GtkSourceView's fixed idle slices cited A54; the slice axiom is A69 (the
+  same fifteen-id offset as the ledger's A67–A73 cells). Corrected; on the
+  nightly, which has !463, A69 holds.
+- **I4, gtk#8529's reproducer on GTK 4.24.1:** the filed `repro.c` stops at
+  its own setup on GTK 4.24.1 (its input method is not created before it
+  measures; also on the Fedora 45 host), and runs on the nightly. It is not
+  edited, because it is attached upstream; A54's recorded costs give the 4.24.1
+  numbers, and the facts sheet says how the reproducer would wait instead.
+- **I5, A29 on the nightly:** `FixtureInvalid` in every round, consistently
+  (not a flake): analysis is faster and never reaches the 2000 ms deadline
+  (still in `analyze_line` on master) within the budget. A preview item for
+  the next adoption, like B4; A29's statement is unchanged.
+- **I6, no production code, no Kani shard (D7, D8):** every GNOME 51 run agrees
+  with each workaround's premise (A79 linear, A54 whole paragraph, A67 over
+  `B_INTERACT_US`, A28 overflow, A29 cut-off, A102, A103, A107), so nothing in
+  `lushtext-core` changes and no proved module is touched.
 
 ## Open Questions
 

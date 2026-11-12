@@ -345,7 +345,7 @@ make responsiveness-build # Measurement binary with the smoke-only responsivenes
 make responsiveness-smoke # Long-line responsiveness lane, RESPONSIVENESS_TIER=quick|full (nightly/manual; not in end-user-smoke)
 make gtk-axioms  # Every gtk-lush-axioms probe + sample --check under private headless Mutter (CI job); run FIRST on any GTK/Libadwaita version change; GTK_LUSH_AXIOMS_INCLUDE_SLOW=0 skips probes marked slow (the PR job does; local and nightly include them)
 make gtk-axiom-sample AXIOM=<id> [CHECK=1] # Watch one GTK axiom sample on the desktop, or its headless verdict
-make gtk-axioms-runtimes # LOCAL ONLY: rerun sample checks inside installed GNOME SDKs (50 floor, 51 shipped, nightly)
+make gtk-axioms-runtimes # LOCAL ONLY: rerun sample checks inside installed GNOME SDKs (50 floor, 51 shipped, nightly) with a per-SDK summary; GTK_AXIOMS_ONLY=A28,A79 for a subset
 make check-gtk-axioms # (in check-policy) GTK axiom ledger, catalogue, probes, and samples agree
 make kani        # Every Kani proof harness (pinned Kani 0.68.0; KANI_SHARD=<shard> for one, KANI_MEASURE=<json> to record wall time/peak memory/per-harness time; whole run capped at KANI_MEMORY_MAX=16G, no swap, via scripts/with-memory-cap.sh; sharded CI lane, pull-request-gated shards also run on PRs)
 make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data); never a gate or CI lane — see docs/next/formal-verification-quint-vs-tlaplus.md
