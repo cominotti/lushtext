@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Measure-free row text keeps the accessible text of the labels it replaces
-A list row text shown through `LushtextRowText` SHALL expose the `label` accessible role with an accessible label equal to its current text. It SHALL update that label on every bind and retarget, and clear it on unbind, through `crate::ui::accessibility`. The Notes browser rows and section headers, and the command palette's grouped, header, More and category rows, SHALL keep their row-level accessible names, descriptions, selection, position and set-size metadata unchanged. Every AT-SPI anchor for these surfaces in `docs/automation-reference.md` (role `label`, name equal to the row text) SHALL be unchanged.
+A list row text shown through `LushtextRowText` SHALL expose the accessible role of the label it replaces (`label`; `heading` for the Notes browser's section headers) with an accessible label equal to its current text. It SHALL update that label on every bind and retarget, and clear it on unbind, through `crate::ui::accessibility`. The Notes browser rows and section headers, and the command palette's grouped, header, More and category rows, SHALL keep their row-level accessible names, descriptions, selection, position and set-size metadata unchanged. Every AT-SPI anchor for these surfaces in `docs/automation-reference.md` (role `label`, name equal to the row text) SHALL be unchanged.
 
 #### Scenario: Orca reads a notes row
 - **WHEN** a screen reader moves through the Notes browser's rows

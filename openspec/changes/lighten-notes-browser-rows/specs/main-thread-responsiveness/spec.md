@@ -1,9 +1,9 @@
 ## ADDED Requirements
 
 ### Requirement: Realized list rows do not measure their text and are retired outside input dispatches
-The rows of the Notes browser (its items and section headers) and of the command palette's grouped and category views SHALL show their text through a widget whose measured size does not depend on its text (`LushtextRowText`). It SHALL create its text layout only when it is drawn, so that changing the text of a realized row costs the next frame no layout, only the paint of the rows on screen (ledger A108). Only the palette's group headers MAY measure their text, for the separator that fills the rest of the header row. `GtkInscription` SHALL NOT be used for these rows, because its constructor lays out text and computes a style for a node with no parent yet (A109).
+The rows of the Notes browser (its items and section headers) and of the command palette's grouped and category views SHALL show their text through `LushtextRowText`, a widget that never lays out its text at its allocated width while measuring, and creates its text layout only when it is drawn. Its height SHALL be the single-line height a `GtkLabel` reports for the same text and style: for a text its primary font covers, a height cached per font description, so that changing a realized row's text to another covered text costs the next frame no text layout, only the paint of the rows on screen (ledger A108); a text that needs a fallback font SHALL be measured exactly, because the fallback changes the line height. Its natural width SHALL equal its minimum, except where siblings share the row's width by their natural widths (the palette row's name and subtitle, and its group headers), where it SHALL be the text's single-line width, shaped once per text and font. `GtkInscription` SHALL NOT be used for these rows, because its constructor lays out text and computes a style for a node with no parent yet (A109).
 
-Tearing down a list's realized rows SHALL NOT happen inside an input dispatch, and SHALL NOT happen in one dispatch. When the Notes browser closes, or a palette category view is left, its rows SHALL be removed from the end of its model in time-sliced `G_PRIORITY_LOW` turns. Each turn removes at least one unit of rows and stays within `LIST_TURN_SLICE_US` (A110). Any publish to that model or its disposal SHALL cancel the retirement. The model's sources and payloads SHALL be released when the model is empty, through the existing disposal paths, and its evidence SHALL report the rows still being retired.
+Tearing down a list's realized rows SHALL NOT happen inside an input dispatch, and SHALL NOT happen in one dispatch. When the Notes browser closes, or a palette category view is left, its rows SHALL be retired in time-sliced `G_PRIORITY_LOW` turns: first the rows GTK has not realized, in one emission on each side of the realized band, then the realized rows from the end of the model in units. Each turn removes at least one unit and starts none once `LIST_TURN_SLICE_US` has elapsed, so its row work costs at most the slice plus one unit, and the unit is sized so that fits `B_INTERACT_US` (A110). No retirement turn SHALL realize a row. The retirement SHALL keep the list view alive until the model is empty, so that no disposal tears the remaining rows down in one dispatch. Any publish to that model or its disposal SHALL cancel the retirement. The model's sources and payloads SHALL be released when the model is empty, through the existing disposal paths, and its evidence SHALL report the rows still being retired.
 
 #### Scenario: A query that changes the rows on screen
 - **WHEN** a Notes browser query over 16,384 listed rows changes the rows on screen
@@ -12,8 +12,12 @@ Tearing down a list's realized rows SHALL NOT happen inside an input dispatch, a
 #### Scenario: Closing the browser with realized rows
 - **WHEN** the user closes the Notes browser while 205 rows are realized
 - **THEN** the close input dispatch fits `B_INTERACT_US`
-- **AND** the rows are torn down afterwards in turns, each within `LIST_TURN_SLICE_US` of row work
-- **AND** the browser's sources are released once the rows are gone
+- **AND** the rows are torn down afterwards in turns, each within `LIST_TURN_SLICE_US` plus one unit of row work and within `B_INTERACT_US`
+- **AND** the browser's sources are released once the rows are gone, and the dialog is finalized only then
+
+#### Scenario: Closing a scrolled browser
+- **WHEN** the user scrolls the Notes browser to the middle of 16,384 rows and closes it
+- **THEN** the retirement creates no row widget, takes no turn over `B_INTERACT_US`, and completes
 
 #### Scenario: Leaving a category view
 - **WHEN** the user leaves a palette category view over 131,072 rows
@@ -24,8 +28,8 @@ Tearing down a list's realized rows SHALL NOT happen inside an input dispatch, a
 - **THEN** the retirement stops, the new publish lists the new rows, and every model emission matches the length the model reports
 
 #### Scenario: Rows look the same
-- **WHEN** the Notes browser and the palette show Latin, CJK and emoji titles in both modes and both palette views, in light, dark and high contrast
-- **THEN** row heights, text origins, ellipsis, fonts and colours match the base revision's in a same-session visual proof, and no glyph is clipped
+- **WHEN** the Notes browser and the palette show Latin, CJK, Arabic and emoji titles, and palette rows with long names and long subtitles, in both modes and both palette views, in light, dark and high contrast
+- **THEN** row heights, text origins, the width each palette row gives its name and its subtitle, ellipsis, fonts and colours match the base revision's in a same-session visual proof, and no glyph is clipped
 
 ## MODIFIED Requirements
 
@@ -69,4 +73,4 @@ On the reference host, publishing grouped palette results with every category fu
 
 #### Scenario: The frame after the first category publish
 - **WHEN** the user enters a category view over 131,072 files
-- **THEN** the frame after the first publish fits `B_SETTLE_US` under the GL renderer, and its layout phase fits `B_INTERACT_US`
+- **THEN** the frame after the first publish fits `B_SETTLE_US` under the GL renderer, and its layout phase fits `B_INTERACT_US`, or it is a recorded toolkit-floor exception whose figure, attribution and axiom are in the programme record and whose layout phase a widget test bounds at twice its measured worst

@@ -74,23 +74,30 @@ attributed to rows.
     measure does not depend on its text costs that frame nothing.
   - **A109**: `GtkInscription` builds its Pango layout, and so a style for its
     still detached node, in its constructor.
-  - **A110**: removing realized rows from the end of a list model tears down
-    only the removed rows' widgets, at a cost proportional to them, mapped or
-    not.
+  - **A110**: on a list that is not mapped, removing the rows GTK has not
+    realized tears nothing down, and removing realized rows from the end of
+    what is left tears down only those rows' widgets, at a cost proportional
+    to them, and realizes no other row.
   - **A111**: under `GSK_RENDERER=cairo`, every frame of an `AdwDialog`'s open
     and close animation costs a fixed paint that does not depend on its
     content. Under GL it does not.
 - **A measure-free row text widget.** New `LushtextRowText` widget in
   `ui/row_text/`, a called presentation surface:
   - Its height is the line height of its font, its width the containers'.
-    Neither depends on its text, so setting text only redraws the widget.
+    Neither depends on its text when its font covers the text, so setting
+    such text only redraws the widget. A text that needs a fallback font
+    (CJK, Arabic, emoji) is measured exactly, as a label would be, because
+    the fallback changes the line height (19 px Latin, 21 px CJK, 29 px
+    Arabic on this host): rows keep `main`'s heights.
   - It creates its Pango layout only when it is drawn, so only rows on screen
     lay out text. It ellipsizes like the label it replaces.
   - It keeps the label CSS node, so Adwaita's `.title`, `.subtitle`,
     `.caption`, `.dim-label` and `.heading` styling applies unchanged. It has
     the `label` accessible role, and its accessible label is its text.
-  - An opt-in `natural-width-from-text` mode measures its text, for the few
-    palette group headers whose separator fills the rest of the row.
+  - An opt-in `natural-width-from-text` mode reports its text's width as its
+    natural width, cached per text, where siblings share a row's width by
+    their natural widths: the palette row's name and subtitle, and its group
+    headers, whose separator fills the rest of the row.
 - **Lighter rows.** The notes browser rows and section headers and the
   palette's grouped and category rows use `LushtextRowText`. Nothing else
   changes: the row trees, icons, the bookmark row's Open button, the
@@ -99,8 +106,10 @@ attributed to rows.
 - **Row teardown leaves input dispatches.** Closing the notes browser and
   leaving a palette category view no longer tear down the realized rows in one
   dispatch. A shared, time-sliced retirement removes rows from the model's end
-  in `G_PRIORITY_LOW` turns, each within `LIST_TURN_SLICE_US` (A110). The
-  sources are released once the model is empty, as today.
+  in `G_PRIORITY_LOW` turns, after removing the rows GTK never realized in
+  one emission. A turn starts no unit after `LIST_TURN_SLICE_US` (A110). The
+  retirement keeps the list alive until it is empty, and the sources are
+  released then, as today.
 - **A conditional staged first publish.** If, after the lighter rows, the
   frame that first shows a large result list still exceeds `B_SETTLE_US` under
   the GL renderer, the first publish lists the rows one viewport needs and

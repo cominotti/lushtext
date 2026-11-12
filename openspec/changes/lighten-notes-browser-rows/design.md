@@ -194,31 +194,59 @@ no workflow role (it holds no decision logic).
   widget's Pango context and the colour from `gtk_widget_get_color`.
   `dim-label` is an opacity on the node and needs nothing.
 - **Measure.**
-  - Vertically, the height a `GtkLabel` would report for one line of a fixed
-    probe string in the widget's font. It is computed once per font
-    description (including size and CSS `line-height`) and cached per thread.
-    Rows therefore keep the height `main` gives a Latin title, which the
-    visual proof checks.
-  - Horizontally, the minimum is the width of the ellipsis and the natural
-    width equals the minimum, so containers decide the width, as with
-    `GtkInscription`.
-  - Neither depends on the text. In `natural-width-from-text` mode the
-    horizontal natural width is the text's shaped width. Only the palette's
-    group headers use it (a few rows), so a separator still fills the rest of
-    the header row.
+  - Vertically, the height a `GtkLabel` would report for one line of the text
+    in the widget's font, **without shaping the text when the primary font
+    covers it**. A single-font line's logical height is the font's ascent plus
+    descent (and CSS `line-height`), whatever its characters, so it is
+    computed once per font description (including size and `line-height`)
+    from a probe string and cached per thread, beside the primary font
+    (`pango_context_load_font`). A text with a character the primary font
+    does not cover (`pango_font_has_char`, a per-character lookup, no
+    shaping) is measured exactly, as a `GtkLabel` would measure it: a
+    fallback font changes the line's height. Measured on this host (spec
+    review, `.claude/handoffs/lighten-notes-browser-rows/spec-review/line-height-probe.txt`,
+    Adwaita Sans 11): Latin 19 px, CJK 21 px, Devanagari 20 px, Arabic 29 px.
+    A fixed height would shrink those rows against `main` and draw their
+    glyphs over the subtitle below, a visible loss. Rows therefore keep
+    exactly the height `main` gives every title, which the visual proof
+    checks; only covered texts (the common case) skip shaping.
+  - Horizontally, the minimum is the width of the ellipsis and, by default,
+    the natural width equals the minimum, so containers decide the width, as
+    with `GtkInscription`. That is exact only where the container gives the
+    widget the same width whatever its natural width: a vertical box, or a
+    box child that is the only one expanding. **Width parity**: where
+    siblings share a box's extra width by their natural widths (GtkBox gives
+    the space beyond the minimums to children in proportion to their missing
+    natural size, then to expanding children), the widget uses
+    `natural-width-from-text`, in which the natural width is the text's
+    shaped single-line width, computed once per text and font and cached
+    until either changes. The palette row needs it on both texts: its name
+    (`hexpand`) and its subtitle (`halign: end`) share the row by their
+    natural widths, and with min = natural the subtitle would be squeezed to
+    its ellipsis. The palette group header needs it too, so its separator
+    fills the rest of the header row.
+  - So the measure depends on the text only through primary-font coverage
+    and, in `natural-width-from-text` mode, through one cached shaping. It
+    never lays out the text at the allocated width (no height-for-width
+    pass), which is what `GtkLabel` repeats for every realized row (B3).
 - **Draw.** The Pango layout is created on the first snapshot, so a row that is
   never drawn never lays out text. It is updated on text, width and
   font-context change. It ellipsizes with the configured mode (end, middle or
   none, as the replaced labels did), is single-line with `xalign`, and is
   centred vertically in the allocation.
-- **Text changes.** Setting the text queues a redraw only (a resize only in
-  `natural-width-from-text` mode) and updates the accessible label. Rebinding
-  a realized row therefore costs the next frame only its paint, for the rows
-  on screen (B4, A108).
-- **Accessibility.** The `label` role, with the accessible label kept equal to
-  the text, so AT-SPI clients that read row children see the same text as
-  before (see the accessibility spec delta). Rows keep their list-item and row
-  accessible names and descriptions unchanged.
+- **Text changes.** Setting the text queues a redraw only, and updates the
+  accessible label. It queues a resize as well when the new text's coverage
+  differs from the old one's (either needs a fallback font) or in
+  `natural-width-from-text` mode. Rebinding a realized notes row with covered
+  text therefore costs the next frame only its paint, for the rows on screen
+  (B4, A108). A palette row still costs one cached shaping per changed text,
+  not `GtkLabel`'s two measures; task 1.5 measures what that leaves.
+- **Accessibility.** By default the `label` role, settable before the
+  accessible context exists, so the notes section header keeps the `heading`
+  role it has on `main` (`accessibility::set_role`). The accessible label is
+  kept equal to the text, so AT-SPI clients that read row children see the
+  same text as before (see the accessibility spec delta). Rows keep their
+  list-item and row accessible names and descriptions unchanged.
 - **Rejected:**
   - **`GtkInscription`**: the same measure contract, but an eager layout costs
     15 ms of setup per 205 rows (B4, A109). The cost lands in the publish
@@ -239,12 +267,22 @@ no workflow role (it holds no decision logic).
 - **Notes rows**: title and subtitle become `LushtextRowText` (end-ellipsized).
 - **Notes section headers**: become `LushtextRowText` with `heading`.
 - **Palette rows**:
-  - the name becomes `LushtextRowText`, middle-ellipsized; on headers it uses
-    `natural-width-from-text` with no ellipsis, as the label had;
-  - the subtitle becomes `LushtextRowText`.
+  - the name becomes `LushtextRowText`, middle-ellipsized, with
+    `natural-width-from-text` (D2 width parity); on headers it has no
+    ellipsis, as the label had;
+  - the subtitle becomes `LushtextRowText`, middle-ellipsized, with
+    `natural-width-from-text`.
 - **Unchanged**: every CSS class, margin, spacing, tooltip, icon and the
   per-row accessibility helpers. The row trees keep their shape, so the
-  widget-tree helpers that find the row parts change only the downcast type.
+  widget-tree helpers that find the row parts change only the downcast type:
+  `notes_row_widgets` and `project_section_header` (`ui/window/notes/browser.rs`),
+  the two row-part lookups in `ui/command_palette/row_factory.rs`, and the
+  widget-test helpers that read row text by `GtkLabel` (`labels_in` and
+  `first_label` in `crates/lushtext/tests/widget/common.rs`, the label
+  lookups in `notes_browser.rs`). A test helper that stopped finding row text
+  would make a negative assertion (`!labels_in(..)…`) pass vacuously, so the
+  helpers read `LushtextRowText` too, and each caller is checked to still
+  see rows.
 
 ### D4. Sliced realized-row retirement outside input dispatches
 
@@ -252,23 +290,49 @@ The close input dispatch tears the 205 rows down in one call: 13–15 ms (B2,
 B3), over `B_INTERACT_US`. The palette's deferred clear does the same in one
 `G_PRIORITY_LOW` dispatch (8–12 ms).
 
-- **The mechanism.** Both become a time-sliced retirement that removes rows
-  from the end of the model:
-  - each turn emits `items-changed(len - k, k, 0)` for units of rows while
-    `list_budget::turn_continues` holds;
-  - a turn takes at least one unit and stays within `LIST_TURN_SLICE_US`;
-  - turns run at `G_PRIORITY_LOW`.
+- **The mechanism.** Both become a time-sliced retirement:
+  - **Unrealized rows first, in one emission each.** The model knows which
+    rows GTK holds (its `live` map of row objects). The first turn removes
+    every row after the highest live position, then every row before the
+    lowest, one `items-changed` each. Removing rows GTK does not hold tears
+    nothing down, and doing it first means the realized band is all that is
+    left, so GTK has no other row to realize when the band shrinks (a list
+    scrolled to row 5,000 would otherwise move its anchor back as its band is
+    removed and realize earlier rows, turning the retirement into creation).
+    It also avoids thousands of emissions for 131,072 rows.
+  - **Then the band from the end, in units.** Each turn emits
+    `items-changed(len - k, k, 0)` for units of rows while
+    `list_budget::turn_continues` holds: a turn takes at least one unit (Kani
+    T1) and starts no unit at or after `LIST_TURN_SLICE_US` (T2), so its row
+    work costs at most the slice plus one unit.
+  - Turns run at `G_PRIORITY_LOW`.
 - **The unit** is a named power-of-two constant. It is a cap rounded down, set
-  by measurement so one unit's teardown fits `LIST_TURN_SLICE_US` with margin
-  (expected 16 rows at about 70 µs a row).
-- **A110** pins that removing realized rows from the end tears down only those
-  rows, at a cost proportional to them.
+  by measurement so the slice plus one unit's teardown fits `B_INTERACT_US`
+  with margin (expected 16 rows at about 70 µs a row).
+- **A110** pins that, on a list that is not mapped, removing unrealized rows
+  tears nothing down and realizes nothing, and removing realized rows from
+  the end of what is left tears down only those rows, at a cost proportional
+  to them, and realizes none.
+- **The list stays alive until the retirement completes.** Rows are torn down
+  one unit at a time only while the `GtkListView` exists and listens to the
+  model. Disposing the list (finalizing the dialog) or unsetting its model
+  tears every realized row down in that one dispatch. So the retirement owns
+  a strong reference to the list view (for the notes browser, through it the
+  dialog) and drops it after its last unit. Window disposal or application
+  shutdown cancels it and releases everything at once, outside any
+  interaction.
 - **The notes browser.**
   - The close input dispatch only starts the dialog's close.
   - Whatever currently empties the model or tears the rows down inside that
     dispatch is moved into the retirement, after the dialog's `closed`.
     Implementation identifies the call path first; the profile shows the list
-    item manager's teardown inside `close()`.
+    item manager's teardown inside `close()`. The one model emission the
+    browser owns there today is `dispose_runtime`'s `self.rows.clear()`
+    (`ui/window/notes/source_execution.rs`), called from the `closed`
+    handler, which also drops the state that keeps the dialog alive. If task
+    1.3 finds the teardown on a path the browser does not own (the dialog
+    host, a focus change, the list's unrealize), D4 is revised before task
+    5.
   - The model's sources, entries and payload ownership are released once the
     model is empty, through the existing disposal paths. `dispose_runtime`
     keeps its generation invalidation immediately, so no stale publish can
@@ -295,10 +359,14 @@ record the measured figure.
 
 - **How it works.**
   - A source's first publish lists `min(len, R_FIRST)` rows, then grows by
-    `R_STEP` rows per frame (a tick callback on the list) until the full
-    length.
+    `R_STEP` rows per frame (a tick callback on the list) until it lists
+    `min(len, R_BAND)` rows, then lists the rest in one emission. Rows past
+    GTK's realized band (A1) are not realized, so listing them costs no row
+    widgets; growing 16,384 rows by `R_STEP` would take about a thousand
+    frames instead of a few.
   - `R_FIRST` is a coverage window rounded up (it must cover the tallest
-    viewport the dialog allows: 64). `R_STEP` is a cap rounded down, set by
+    viewport the dialog allows: 64). `R_BAND` is a coverage window rounded up
+    over A1's realized band (256). `R_STEP` is a cap rounded down, set by
     measurement so each growth frame fits `B_SETTLE_US`.
 - **Scope.**
   - Only the first publish of a source is staged. A query publish retargets
@@ -312,8 +380,13 @@ record the measured figure.
     unchanged.
 - **The visible cost.** The overlay scrollbar's thumb settles within a few
   frames of opening; it is hidden unless the pointer is over the list. No row
-  on screen changes. Any other visible effect found in implementation reverses
-  this decision: the first frame then stays a measured exception.
+  on screen changes. The rows' set-size accessibility metadata reports the
+  final length from the first publish (it is the app's, not the model's), and
+  a key press that moves the selection (End, Page Down) during growth
+  completes the growth first, in that dispatch's budget, or is shown to land
+  where it would on the full list. Any other visible effect found in
+  implementation reverses this decision: the first frame then stays a
+  measured exception.
 
 ### D6. Measurement protocol and renderer attribution
 
@@ -365,9 +438,13 @@ skip. The probes reuse this stage's measurement fixture
   with a text-independent measure has no layout share and does not grow.
 - **A109** asserts that constructing 205 `GtkInscription`s costs several times
   constructing 205 `GtkLabel`s, measured as the constructor alone.
-- **A110** asserts that removing 64 of 205 realized rows from the end tears
-  down at most 64 row widgets, at a cost within a factor of 2 of 64/205 of a
-  full clear.
+- **A110** asserts, on an unmapped list of 16,384 rows with about 205
+  realized, that removing the unrealized rows on both sides of the band
+  disposes and creates no row widget, and that then removing 64 of the
+  remaining rows from the end disposes at most 64 row widgets, creates none,
+  and costs within a factor of 2 of 64/205 of a full clear. It records,
+  without asserting, what happens when the band is removed from the end
+  while unrealized rows remain before it (the case D4's order avoids).
 - **A111** asserts that under cairo an `AdwDialog`'s open-animation frames
   cost at least several ms of paint with 8 rows and with 205. It records the
   GL figure where available.
@@ -385,16 +462,18 @@ R_STEP)` frames". If so, it goes in `scripts/kani-shards.py` `ORACLES` too.
 
 ## Risks / Trade-offs
 
-- **Row height parity.**
-  - A fixed line height differs from `GtkLabel` when a title needs a taller
-    fallback font (emoji, some scripts). Such rows would draw their glyphs
-    past the line box instead of growing. Mitigations:
-    - the cached probe height is the label's own single-line height in the
-      primary font;
-    - the visual proof covers Latin, CJK and emoji titles;
-    - nothing is clipped.
-  - Uniform rows are also how `AdwSidebar` and GNOME lists read. If the proof
-    shows a clipped glyph, the probe string gains the fallback's ascent.
+- **Row height parity.** A fixed line height would differ from `GtkLabel`
+  whenever a title needs a fallback font (CJK 21 px, Arabic 29 px against
+  Latin 19 px on this host). D2 therefore uses the cached height only for
+  texts the primary font covers and measures the others exactly. A workspace
+  whose titles are mostly in another script gains less (those rows measure
+  as on `main`), but loses nothing. The visual proof covers Latin, CJK,
+  Arabic and emoji titles.
+- **Width parity.** A natural width equal to the minimum changes how a box
+  shares its width between siblings. D2's width-parity rule keeps the
+  palette's name/subtitle split exact, at the cost of one cached shaping per
+  palette row text; the visual proof checks text origins and ellipsis
+  against `main`.
 - **AT-SPI text interface.** `GtkLabel` implements `GtkAccessibleText` (caret
   and text-range queries). `LushtextRowText` exposes its text as the
   accessible label only. Orca speaks list rows by their row name and
@@ -410,6 +489,45 @@ R_STEP)` frames". If so, it goes in `scripts/kani-shards.py` `ORACLES` too.
   reported length) apply, and the BN crash-regression test is extended to a
   publish in the middle of a retirement.
 
+## Spec review (2026-11-12)
+
+An independent review checked the artifacts against the code and changed
+them in place. Decisions, with their rationale:
+
+- **Height parity by primary-font coverage (D2).** The proposed fixed line
+  height contradicted the "rows look the same" scenario: Pango on this host
+  gives a CJK title 21 px, Devanagari 20 px and Arabic 29 px against Latin's
+  19 px (Adwaita Sans 11; `spec-review/line-height-probe.txt`). A fixed
+  height would shrink those rows and draw their glyphs over the subtitle.
+  User experience first: texts the primary font covers keep the cached
+  height (no shaping), the others are measured exactly.
+- **Width parity in the palette (D2, D3).** The palette row's name
+  (`hexpand`) and subtitle (`halign: end`) share the row by their natural
+  widths (GtkBox gives the space beyond the minimums toward each child's
+  natural size first). With natural = minimum the subtitle would collapse to
+  its ellipsis. Both palette texts report their shaped width, cached per text;
+  task 1.5 measures what the palette still gains. The notes rows need no
+  such mode: their texts sit in a vertical box that is the row's only
+  expanding child.
+- **Band-first retirement and a live list (D4).** Removing 131,072 rows from
+  the end in 16-row units would take thousands of emissions, and removing a
+  scrolled list's band from the end can move GTK's anchor and realize earlier
+  rows. The rows GTK never realized go in one emission each first. The
+  retirement also owns the list view: the `closed` handler drops the state
+  that keeps the dialog alive, and finalizing the list would tear every row
+  down in one dispatch.
+- **Turn bound (D4, spec).** `turn_continues` lets a turn finish the unit it
+  started (Kani T2), so a turn is bounded by the slice plus one unit, not by
+  the slice; the unit is sized so that fits `B_INTERACT_US`.
+- **Staged growth stops at the band (D5).** Growing every row by `R_STEP`
+  would take about a thousand frames for 16,384 rows; only the rows GTK
+  realizes cost anything, so growth stops at `R_BAND` and lists the rest at
+  once.
+- **Header role (spec).** The notes section header has the `heading` role on
+  `main`, not `label`, and keeps it.
+- **Test helpers (task 2.6).** `labels_in` and `first_label` find row text by
+  `GtkLabel`; without an update a negative assertion would pass vacuously.
+
 ## Migration Plan
 
 None: no persisted format, setting, action or automation field changes
@@ -420,6 +538,7 @@ into the automation snapshot, `docs/automation*.md` are updated and
 ## Open Questions (answered by tasks)
 
 - The retirement unit and its measured per-unit cost (task 1.4).
-- Whether D5 is needed: the GL first-frame figure after D2–D3 (task 5).
+- Whether D5 is needed: the GL first-frame figure after D2–D3 (task 6).
+- What the palette row gains with width parity (task 1.5).
 - Which call path tears the rows down inside the browser's close input
   dispatch (task 1.3).

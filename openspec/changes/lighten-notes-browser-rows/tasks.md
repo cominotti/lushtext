@@ -42,12 +42,25 @@ Rules for every task:
       browser's close input dispatch (13–15 ms on `main`; the profile shows
       `gtk_list_item_manager` teardown inside `AdwDialog::close`). Use a
       backtrace or `perf` in a measurement build, and record it in design D4.
+      The candidate is `dispose_runtime`'s `self.rows.clear()`
+      (`ui/window/notes/source_execution.rs`), run from the `closed` handler.
+      Record whether `closed` is emitted inside `close()` in the harness, and
+      where the dialog is finalized. If the teardown is not a model emission
+      the browser owns, revise D4 before task 5.
 - [ ] 1.4 Measure the per-row teardown cost:
       - in the A110 probe and in the app (notes and palette rows);
       - choose the retirement unit, a power of two that is a cap rounded down,
         so one unit fits `LIST_TURN_SLICE_US` with margin;
       - add it as a named constant, with its classification in
-        `docs/thresholds.md`, and run `make check-thresholds`.
+        `docs/thresholds.md`, and run `make check-thresholds`. The slice plus
+      one unit must fit `B_INTERACT_US` with margin.
+- [ ] 1.5 Width parity, in the isolated probe (`zz_row_cost.rs`), before
+      task 4.2: measure the palette row with `natural-width-from-text` on the
+      name and the subtitle (design D2), and the notes row with a CJK and an
+      Arabic title on every row (exact measurement). Record the setup, E1 and
+      E2 frames beside B4. If the palette's X1 layout phase is then not
+      expected to fit `B_INTERACT_US`, record the expected exception in
+      design D7 now rather than after task 8.
 
 ## 2. Failing-first widget tests
 
@@ -73,15 +86,30 @@ Rules for every task:
       - a `LushtextRowText` and a `GtkLabel` with the same classes (`title`;
         `subtitle caption dim-label`; `heading`) and a Latin string allocate
         the same height in the same row;
-      - CJK and emoji titles are not clipped (the drawn layout's ink fits the
-        row's allocation, or the overflow is drawn and stated).
+      - a `LushtextRowText` and a `GtkLabel` allocate the same height for
+        CJK, Arabic, Devanagari and emoji titles (the fallback path), and a
+        retarget from a Latin to a CJK title resizes the row;
+      - a palette row with a long name and a long subtitle, at several row
+        widths, gives the name and the subtitle the same widths as `main`'s
+        labels (width parity);
+      - a notes section header keeps the `heading` role.
 - [ ] 2.5 Retirement freshness:
       - extend `test_palette_category_republishes_over_realized_rows` and BN's
         `test_repeated_queries_over_realized_rows_republish_safely` with a
         publish during a retirement: no GTK warning or critical, every
         emission matching the reported length, and the new rows listed;
       - a test that the notes sources are released when the retirement
-        completes.
+        completes, and that the dialog is finalized only then (a weak
+        reference);
+      - a test that closing the browser scrolled to the middle of 16,384 rows
+        creates no row widget during the retirement (count factory `setup`
+        calls) and completes with every turn within `B_INTERACT_US`.
+- [ ] 2.6 Row-text helpers in the widget tests: make `labels_in`,
+      `first_label` (`common.rs`) and the label lookups in `notes_browser.rs`
+      read `LushtextRowText` as well as `GtkLabel`, and check every caller
+      still sees rows (a negative assertion such as `!labels_in(..)…` must
+      not pass because the helper finds nothing). Do it with task 4, in the
+      same commit as the rows change.
 
 ## 3. `LushtextRowText` (design D2)
 
@@ -90,11 +118,16 @@ Rules for every task:
         accessible role;
       - properties: text, ellipsize mode (none, start, middle, end), `xalign`,
         `natural-width-from-text`;
-      - the measure: the cached single-line height per font description
-        (including size and `line-height`), and min = natural = ellipsis width
-        unless `natural-width-from-text`;
+      - the accessible role is `label` unless set before the accessible
+        context exists (`heading` for notes section headers);
+      - the measure (design D2): the cached single-line height per font
+        description (including size and `line-height`) when the primary font
+        covers the text, an exact single-line measure otherwise; min =
+        natural = ellipsis width, unless `natural-width-from-text`, where the
+        natural width is the text's shaped width, cached per text and font;
       - the layout is created on the first snapshot and kept; text changes
-        queue a draw only, except in `natural-width-from-text` mode;
+        queue a draw only, and a resize when the coverage changes or in
+        `natural-width-from-text` mode;
       - the accessible label goes through `crate::ui::accessibility`;
       - `ensure_type()` wherever a template uses it.
 - [ ] 3.2 Run `make check-accessibility-policy` (custom-row rules) and
@@ -107,25 +140,30 @@ Rules for every task:
       (`ui/window/notes/browser.rs`). Update `notes_row_widgets`, bind,
       unbind and the header projection.
 - [ ] 4.2 The palette's grouped and category rows use `LushtextRowText`
-      (`ui/command_palette/row_factory.rs`): the name middle-ellipsized,
-      headers with `natural-width-from-text` and no ellipsis, the subtitle as
-      before.
+      (`ui/command_palette/row_factory.rs`): the name middle-ellipsized and
+      the subtitle as before, both with `natural-width-from-text`; headers
+      with no ellipsis.
 - [ ] 4.3 Tasks 2.2 (query frame) and 2.3 (X1 layout) and 2.4 are green.
       Visual proof:
       - add or extend `make visual-geometry-smoke` cases for the notes browser
         (both modes) and the palette (grouped, header, More and category rows)
         in light, dark and high contrast;
       - pixel anchors: row heights and text origins identical to `main`;
-      - Latin, CJK and emoji titles.
+      - Latin, CJK, Arabic and emoji titles, and palette rows with long
+        names and long subtitles (width parity).
 
 ## 5. Sliced row retirement (design D4)
 
-- [ ] 5.1 Add one retirement helper shared by both lists. It removes units
-      from the model's end per `G_PRIORITY_LOW` turn while
-      `list_budget::turn_continues`, is owned by the model and its
+- [ ] 5.1 Add one retirement helper shared by both lists (design D4). Its
+      first turn removes the rows after and before the live band in one
+      emission each; later turns remove units from the model's end while
+      `list_budget::turn_continues`. It holds a strong reference to the list
+      view until the model is empty, is owned by the model and its
       generation, and is cancelled by a publish or disposal. Put it in a
       cross-cutting module (no role) or as each model's own coordination, as
-      the workflow convention decides, and declare it in the matrix rows.
+      the workflow convention decides (the palette already has a
+      `retirement.rs` coordination module), and declare it in the matrix
+      rows.
 - [ ] 5.2 Notes browser: the close input dispatch no longer tears the rows
       down. Retirement starts after `closed`, and the sources and payloads are
       released when it completes. Add `retiring_rows` to the notes evidence.
@@ -144,8 +182,10 @@ Rules for every task:
 - [ ] 6.2 Apply the rule:
       - if the median exceeds `B_SETTLE_US`, implement the staged first
         publish:
-        - `R_FIRST` is a coverage window rounded up and `R_STEP` a cap rounded
-          down, by measurement, both in `docs/thresholds.md`;
+        - `R_FIRST` and `R_BAND` are coverage windows rounded up and `R_STEP`
+          a cap rounded down, by measurement, all in `docs/thresholds.md`;
+        - growth by `R_STEP` stops at `R_BAND`, and the rest is listed in one
+          emission (design D5);
         - `growing_rows` evidence;
         - generation-guarded, and cancelled by a newer publish or disposal;
         - a failing-first test that each growth frame fits `B_SETTLE_US` and
