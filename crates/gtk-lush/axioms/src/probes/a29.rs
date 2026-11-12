@@ -208,7 +208,7 @@ pub fn probe_a29() -> Observation {
         recorder.measure("attempts_wall_us", durations.iter().sum::<u128>());
         recorder.control(
             reached.cut_off || next_attempt_fits(&durations),
-            "control: the attempts reached the cut-off within the 60 s wall budget",
+            "control: the 60 s wall budget did not stop the doubling before the cut-off",
         )?;
         recorder.measure("cut_off_line_chars", reached.chars);
         recorder.measure("cut_off_call_us", reached.micros);
