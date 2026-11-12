@@ -8,7 +8,8 @@
 # the reverse), a probed entry without its sample or whose probe is named for
 # another id, a sample naming an unknown axiom, a ledger row that claims a
 # probe the catalogue does not have (or omits one it has), a row missing its
-# "Verified against" or "Sample" cell, a "Pinned by" cell that still names
+# "Verified against" or "Sample" cell, a "Pinned by" cell naming another
+# axiom's `gtk_lush_axioms::probe_aNN`, a "Pinned by" cell that still names
 # the retired LushText-hosted probes (`gtk_axioms::`), or a slow catalogue
 # entry whose row does not say where it runs (`**slow**` and the nightly
 # workflow), or a row marked slow for an entry that is not.
@@ -166,6 +167,12 @@ def check(ledger_text: str, catalogue_text: str, example_stems: set[str]) -> lis
             errors.append(f"A{number}: ledger row is pinned by a probe the catalogue does not have")
         if entry.probe is not None and not claims_probe:
             errors.append(f"A{number}: catalogue has a probe but the ledger row does not say {PROBE_MARKER}")
+        # The ledger cell names the probe a reader runs: it must be this
+        # row's own (A67-A73 once named the probes fifteen ids lower).
+        own_probe = f"probe_a{number:02d}"
+        for named in sorted(set(re.findall(r"gtk_lush_axioms::(probe_a\d+)", row.pinned_by))):
+            if named != own_probe:
+                errors.append(f"A{number}: Pinned by names gtk_lush_axioms::{named}, not this row's {own_probe}")
         if RETIRED_PROBE_PREFIX in row.pinned_by:
             errors.append(f"A{number}: Pinned by still names the retired `{RETIRED_PROBE_PREFIX}` probes")
         marked_slow = SLOW_MARKER in row.pinned_by
@@ -258,6 +265,7 @@ def self_test() -> int:
         ("a ledger probe the catalogue lacks", {"catalogue": GOOD_CATALOGUE.replace("Some(probes::probe_a01)", "None")}, "A1: ledger row is pinned by a probe the catalogue does not have"),
         ("a catalogue probe the ledger omits", {"ledger": GOOD_LEDGER.replace("**probe**: `gtk_lush_axioms::probe_a01`", "indirectly")}, "does not say **probe**"),
         ("a Pinned by cell naming the retired probes", {"ledger": GOOD_LEDGER.replace("`gtk_lush_axioms::probe_a01`", "`gtk_axioms::test_axiom_a1`")}, "retired `gtk_axioms::` probes"),
+        ("a Pinned by cell naming another axiom's probe", {"ledger": GOOD_LEDGER.replace("**probe**: `gtk_lush_axioms::probe_a01`", "**probe**: `gtk_lush_axioms::probe_a02`")}, "A1: Pinned by names gtk_lush_axioms::probe_a02, not this row's probe_a01"),
         ("a probe named for another axiom", {"catalogue": GOOD_CATALOGUE.replace("Some(probes::probe_a01)", "Some(probes::probe_a02)")}, "catalogue probe probe_a02 must be probe_a01"),
         ("an empty Verified against cell", {"ledger": GOOD_LEDGER.replace("GTK 4.22.5 / Adw 1.9.3 (host) | `examples", " | `examples")}, "A1: Verified against is empty"),
         ("a probed row whose Sample is wrong", {"ledger": GOOD_LEDGER.replace("`examples/a01_one.rs`", "`examples/a01_other.rs`")}, "A1: Sample must name examples/a01_one.rs"),
