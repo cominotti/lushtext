@@ -73,17 +73,38 @@ Rules for every task:
   current exact-equality check. Then implement the structural predicate:
   the last display line index plus a bottom edge within the attributed
   rounding. The sample holds on the host, GNOME 51 and GNOME 50 SDKs.
-- [ ] 2.8 V1 (A29): add a pure unit test of the stop rule over recorded
-  attempt sequences that fails first. One sequence passes the 60 s budget;
-  one has a single call past 4000 ms with no CRITICAL. Implement the wall
-  budget and the single-call bound, reporting `FixtureInvalid` with every
-  attempt recorded. The A29 sample still holds on the host and the GNOME 51
-  SDK, with its recorded attempts unchanged in shape.
+- [ ] 2.8 V1 (A29): first attribute why the GNOME 51 SDK's 32,768-character
+  call ran 6.57 s without the cut-off while the host's cut off at 2.0006 s:
+  read what `MAX_TIME_FOR_ONE_LINE`'s timer covers in GtkSourceView 5.22's
+  `gtksourcecontextengine.c` (`update_syntax`) against what the probe's
+  `time_us` covers, and review the A29 ledger row ("in one call") before
+  the probe is edited. Then add a pure unit test of the stop rule over
+  recorded attempt sequences that fails first:
+  - a sequence whose prediction (cumulative time plus the last attempt times
+    the larger of 4 and the last growth ratio) passes the 60 s budget stops
+    before the next attempt, as `FixtureInvalid`;
+  - GNOME 51's recorded sequence (0.112 / 0.418 / 1.661 / 6.574 s, then the
+    cut-off) continues to its 65,536-character attempt;
+  - the host's ledger sequence (0.125 / 0.464 / 1.84 s, then the cut-off)
+    continues.
+
+  Implement the predicted-wall-budget rule only (no single-call bound,
+  design D3 V1), reporting `FixtureInvalid` with every attempt recorded. The
+  A29 sample still holds on the host and the GNOME 51 SDK, with its recorded
+  attempts unchanged in shape, and on nightly it ends within the budget.
 - [ ] 2.9 Run `make check-gtk-axioms` and `make check-agent-helpers` (shellcheck).
   Then run `make gtk-axioms` on the host (Fedora 45, GTK 4.24.1) and
   `scripts/run-gtk-axioms.sh runtimes org.gnome.Sdk//50 org.gnome.Sdk//51`.
   Both SDK summaries must have no violated or fixture-invalid sample. Record
-  the added `make gtk-axioms` wall time against the pull-request job's cap.
+  the added `make gtk-axioms` wall time against the pull-request job's cap,
+  and A29's recorded attempts on each run (the stop rule's margin under
+  60 s; CI's `GTK Axioms` job runs A29 because it is not slow).
+- [ ] 2.10 Ledger probe names (design D9): add the `check-gtk-axioms.py`
+  self-test case "a Pinned by cell naming another axiom's probe" and the rule
+  that every `gtk_lush_axioms::probe_aNN` in a row's "Pinned by" is the row's
+  own probe. Record `make check-gtk-axioms` red on exactly A67–A73 (which
+  name `probe_a52` … `probe_a58`), then correct the seven cells and record it
+  green.
 
 ## 3. A54 records the cost !10646 changes (design D4)
 
@@ -95,12 +116,13 @@ Rules for every task:
 ## 4. Interleaved re-test rounds (design D6)
 
 - [ ] 4.1 Run up to four rounds of
-  `scripts/measure.sh -- scripts/run-gtk-axioms.sh runtimes --only A28,A29,A54,A67,A79,A102,A103,A107 <first> <second>`,
+  `scripts/measure.sh -- scripts/run-gtk-axioms.sh runtimes --only A26,A28,A29,A54,A67,A79,A102,A103,A107 <first> <second>`,
   with the SDK order alternating (master,51 / 51,master / …). Slow samples
   are included. Keep each round's output and the measure log.
 - [ ] 4.2 Tabulate medians and ranges per SDK:
   - A79 lookups at 1/2/4 MiB, and the delimited lookup;
   - A28's advance and overflow index;
+  - A26's first, repeat and after-edit-elsewhere word-end costs;
   - A54's cold and after-edit costs;
   - A67's first attach per language, against `B_SETTLE_US`, `B_INTERACT_US`
     and the maintainer's 19/16/11 ms;
@@ -125,7 +147,8 @@ Rules for every task:
   `scripts/run-gtk-axioms.sh runtimes org.gnome.Sdk//master`. Record every
   sample that fails only on the nightly (expected from the baseline: A4,
   A70, A74, A83, A85, A86; A23 should now hold) with its failed check and
-  the build commit. Attribute none of them.
+  the build commit, and confirm each holds on the host and the GNOME 51 and
+  GNOME 50 SDK runs of 2.9. Attribute none of them.
 
 ## 5. Records (design D9; `.agents/rules/documentation.md`)
 
@@ -140,11 +163,11 @@ Rules for every task:
   - "Last checked" moves to the run date;
   - the intro paragraph no longer says the re-test is queued.
 - [ ] 5.2 Axiom ledger:
-  - A28, A29, A54, A67, A79, A102, A103 and A107 get the nightly "Verified
-    against" note, labelled as a preview build;
+  - A26, A28, A29, A54, A67, A79, A102, A103 and A107 get the nightly
+    "Verified against" note, labelled as a preview build;
   - A23 and A29 rows describe the reviewed checks;
   - A54 lists the new recorded values;
-  - the A67 row's `probe_a52` becomes `probe_a67`.
+  - the A67–A73 "Pinned by" cells name their own probes (task 2.10).
 
   Then run `make check-gtk-axioms`.
 - [ ] 5.3 `docs/next/long-line-documents.md`: mark
@@ -162,8 +185,9 @@ Rules for every task:
 
 ## 6. Upstream text, never posted (design D1, D5)
 
-- [ ] 6.1 Write `retest-facts.md` for gtk#8528, pango#582 and
-  gtksourceview#432 in their existing report folders. Each holds the
+- [ ] 6.1 Write `retest-facts.md` for gtk#8528, gtk#8529, pango#582 and
+  gtksourceview#432 in their existing report folders (gtk#8529's carries
+  A54's and A26's costs from 4.2, design D1/D4). Each holds the
   measured results, versions, source commits, commands, output files, and
   the open questions. For gtk#8528, note that !10228 is the open MR that
   touches the measured path, and that the sample can test it. No drafted

@@ -7,7 +7,7 @@ A probe's verdict SHALL be decided only by structural observations: positions, g
 
 A probe that needs an input method SHALL register its own probe `GtkIMContext` on the `gtk-im-module` extension point inside the probe's process, and SHALL select it only for its own view, through the view's `im-module` property, leaving the runner's `GTK_IM_MODULE` environment and the display's `gtk-im-module` setting unchanged. A probe that captures toolkit warnings SHALL restore the previous log handling before it returns.
 
-A structural verdict whose fixture only reaches its state after a toolkit time limit, such as the context engine's 2000 ms cut-off, SHALL grow the fixture until the state is reached, up to a fixed length cap and a fixed wall-time budget. It SHALL also stop when one call runs past twice the toolkit's limit without the state being reached. It SHALL report `FixtureInvalid` rather than `Violated` when any of these bounds is reached first, with every attempt recorded, so that runner speed cannot flip a verdict and a toolkit that removed the limit cannot make the probe run unbounded.
+A structural verdict whose fixture only reaches its state after a toolkit time limit, such as the context engine's 2000 ms cut-off, SHALL grow the fixture until the state is reached, up to a fixed length cap and a fixed wall-time budget. It SHALL NOT start an attempt that its recorded attempts predict would end past the wall-time budget. It SHALL NOT stop on one attempt's duration alone, because a toolkit's time check may let one call run past the limit before a later, longer fixture reaches it. It SHALL report `FixtureInvalid` rather than `Violated` when any of these bounds is reached first, with every attempt recorded, so that runner speed cannot flip a verdict and a toolkit that removed the limit cannot make the probe run unbounded.
 
 #### Scenario: A layout-cost axiom is probed
 - **WHEN** the A23 probe lays out paragraphs of increasing visible length
@@ -26,8 +26,12 @@ A structural verdict whose fixture only reaches its state after a toolkit time l
 - **THEN** the probe doubles the line and retries, and reports `FixtureInvalid` only if its cap is reached without the cut-off firing
 
 #### Scenario: A toolkit no longer reaches the time limit
-- **WHEN** the A29 probe runs against a toolkit whose context engine never logs the cut-off, and its attempts pass the 60 s wall budget, or one call passes 4000 ms, before the length cap
-- **THEN** the probe stops, reports `FixtureInvalid` with every attempt's length and duration, and the run ends within about the budget
+- **WHEN** the A29 probe runs against a toolkit whose context engine never logs the cut-off, and its recorded attempts predict that the next attempt would end past the 60 s wall budget before the length cap is reached
+- **THEN** the probe does not start that attempt, reports `FixtureInvalid` with every attempt's length and duration, and the run ends within the budget
+
+#### Scenario: One attempt runs past the limit before the cut-off fires
+- **WHEN** the A29 probe runs on the GNOME 51 toolkit, where a 32,768-character attempt runs 6.57 s without the cut-off and the 65,536-character attempt then cuts off at 2.0 s
+- **THEN** the probe continues to the 65,536-character attempt and the verdict holds
 
 #### Scenario: The last character of a paragraph sits on a fractional line position
 - **WHEN** the A23 probe runs with a font whose display lines start at fractional positions, and the last character's bottom edge rounds one pixel past the paragraph height
