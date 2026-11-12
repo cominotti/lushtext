@@ -37,7 +37,10 @@ The spec stage measured a baseline (design, "Measured baseline"):
     on nightly, against 78/152/297 ms on GNOME 51.
   - A28 still overflows on Pango 1.59.0, at 261,252 characters with the
     SDK's font.
-  - A54's view still answers with the whole 20,000-character paragraph.
+  - A54's view still answers with the whole 20,000-character paragraph, and
+    A26's word end on a 300,000-character paragraph still recomputes after
+    an edit elsewhere (13.1 ms on nightly, 14.7 ms on GNOME 51), the cost
+    !10646 targets.
   - A67's first attach drops to 12.7/12.8/8.5 ms on nightly, from
     32.4/33.1/21.2 ms on GNOME 51. That is under `B_SETTLE_US` (16 ms).
   - A102, A103 and A107 still reproduce.
@@ -70,7 +73,10 @@ The spec stage measured a baseline (design, "Measured baseline"):
     host lane is unchanged and still fails them when its compositor lacks
     RemoteDesktop.
   - A per-SDK verdict summary is printed.
-  - A29's fixture gets a wall-time bound next to its length cap.
+  - A29's fixture gets a wall-time bound next to its length cap: it does not
+    start an attempt its recorded attempts predict would end past 60 s. A
+    single-call bound was rejected, because GNOME 51's SDK runs one
+    32,768-character call for 6.57 s before the next attempt cuts off.
   - A23's check is made structural against fractional line positions,
     attributed first.
   - Each fix comes with a self-test or a probe test that fails first.
@@ -78,21 +84,24 @@ The spec stage measured a baseline (design, "Measured baseline"):
   - A54 records the cost of `retrieve-surrounding` on a 50,000-character
     paragraph, cold and after an edit, as a recorded value only. That is
     what !10646 changes.
-  - Four interleaved rounds (nightly, GNOME 51) of A79, A28, A54, A67, A29,
-    A102, A103 and A107 run at a 1-minute load below 4, with the load
+  - Four interleaved rounds (nightly, GNOME 51) of A79, A28, A26, A54, A67,
+    A29, A102, A103 and A107 run at a 1-minute load below 4, with the load
     recorded.
   - The upstream reproducers in `~/Documents/Agentic/Reports/GTK/<folder>/`
     are rerun inside the nightly SDK.
 - **Records:**
   - `docs/upstream-reports.md` gets each re-test result, fix containment, the
     corrected A67 id, and a precise retirement condition per workaround.
-  - The axiom ledger rows A28, A29, A54, A67, A79, A102, A103 and A107 get a
-    "Verified against" note for the nightly. The A67 row's probe name is
-    corrected (`probe_a67`).
+  - The axiom ledger rows A26, A28, A29, A54, A67, A79, A102, A103 and A107
+    get a "Verified against" note for the nightly.
+  - The A67–A73 "Pinned by" cells name the probe fifteen ids lower
+    (`probe_a52` … `probe_a58`). `make check-gtk-axioms` gains the rule that
+    a cell names its own row's probe, failing first on exactly those seven,
+    which are then corrected.
   - The programme record lists the nightly-only verdict changes for the next
     GNOME adoption.
 - **Upstream text, never posted:**
-  - Facts sheets for gtk#8528, pango#582 and gtksourceview#432: numbers,
+  - Facts sheets for gtk#8528, gtk#8529, pango#582 and gtksourceview#432: numbers,
     versions, commands and raw output, for the maintainer to write the reply.
     Ready-made replies are **not** drafted (design D1).
   - New report drafts for A102 (GtkSourceView) and A107 (Pango), and a
@@ -124,6 +133,8 @@ The spec stage measured a baseline (design, "Measured baseline"):
 ## Impact
 
 - **Code:**
+  - `scripts/check-gtk-axioms.py` (the ledger probe-name rule and its
+    self-test case);
   - `scripts/run-gtk-axioms.sh` (runtimes `--only`, sandbox skips,
     summary, self-test);
   - `crates/gtk-lush/axioms/src/probes/{a23,a29,a54}.rs` and their samples;

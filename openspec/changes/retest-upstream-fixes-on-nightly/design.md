@@ -13,7 +13,7 @@ The ids, corrected:
 | Issue | Axiom | Our workaround |
 |---|---|---|
 | gtk#8528 | A79 | Protected View's stand-in `"\n"` terminator (`ui::protected_fold::document_end_iter`) |
-| gtk#8529 | A54 | the bounded surrounding-text answer (`ui/editor_page/surrounding_text.rs`) |
+| gtk#8529 | A54 (the cache cost: A26) | the bounded surrounding-text answer (`ui/editor_page/surrounding_text.rs`) |
 | gtksourceview#432 | **A67** (recorded as A52 in `docs/upstream-reports.md` and in the task text; A52 is the unparented-view axiom) | C6 D2's toolkit-floor exception: the first attach runs at `G_PRIORITY_LOW` after input-quiet |
 | pango#582 | A28 | wrap-off paragraphs past the overflow length are unrenderable (C1) |
 | context-engine guard | A29 | syntax off before the engine sees a giant paragraph (C1) |
@@ -67,6 +67,7 @@ the `int` x-position arithmetic behind #582, and B2 agrees.
 |---|---|---|
 | A79 lookup below the layout, hidden 1/2/4 MiB | holds: 82.5 / 158.9 / 320.5 ms; delimited 11 / 11 / 12 µs | holds: 78.3 / 152.0 / 296.8 ms; delimited 5 / 3 / 8 µs |
 | A28 x-position overflow | holds: advance 8,220 units, overflow at 261,252 characters (x 2,147,483,220 → −2,147,475,856) | holds (ledger, host: 238,319 characters with the host font's 9,011-unit advance) |
+| A26 word end on a 300,000-character paragraph (first / repeat / after an edit elsewhere) | holds: 13.2 ms / 0 / 13.1 ms | holds: 14.9 ms / 0 / 14.7 ms |
 | A54 surrounding text | holds: view answers 20,000 of 20,000 characters; later handler 0 calls | holds: same |
 | A67 first attach html / markdown / json / rust | holds: **12.7 / 12.8 / 8.5** / 1.1 ms | holds: 32.4 / 33.1 / 21.2 / 2.9 ms |
 | A29 context-engine cut-off | **no verdict**: the sample ran over 600 s at 100% CPU and was stopped (exit 143) | holds: cut-off at 65,536 characters (2.0005 s), both CRITICALs |
@@ -159,7 +160,9 @@ tool" and "Reject comments and feedback that appear to be LLM/GenAI output".
 Asking for "human-sounding" text would also disguise AI help, which the
 skill's lessons file records as the failure that drew a maintainer's
 reproach on gtk#8529. Christian Hergert maintains all three projects, so the
-same rule is applied to pango#582 and gtksourceview#432. Alternative
+same rule is applied to pango#582, gtksourceview#432 and gtk#8529 (whose
+maintainer pointed at !10646 without asking for a re-test; its facts sheet
+carries D4's numbers in case he asks). Alternative
 considered: draft replies with a disclosure line. Rejected, because it
 contradicts both the skill's hard rule and GTK's review rule, and the
 facts carry the value either way.
@@ -200,13 +203,28 @@ a fix (a revert), that is recorded and the fix is treated as absent.
 
   The ledger row is reviewed before the probe is edited (ledger rule). A unit
   test of the predicate over the recorded 6,627/6,628 pair fails first.
-- **V1 (A29).** Next to the length cap, the fixture stops once the
-  cumulative analysis time passes a fixed wall budget, 60 s, or once one
-  `ensure_highlight` call passes twice the toolkit's 2000 ms cut-off without
-  the CRITICAL. It then reports `FixtureInvalid` with every attempt recorded,
-  as the spec already requires for the length cap. Runner speed still cannot
-  flip a verdict to `Violated`. A pure test of the stop rule over recorded
-  attempt sequences fails first. What nightly actually does to the cut-off
+- **V1 (A29).** Next to the length cap, the fixture gets a fixed wall
+  budget of 60 s for its attempts. It does not **start** an attempt that its
+  recorded attempts predict would end past the budget: the prediction is the
+  cumulative time so far plus the last attempt's duration times the larger
+  of 4 and the last growth ratio (analysis of this markup grows about
+  quadratically, so doubling the line costs about 4×; the GNOME 51 SDK
+  recorded 0.11 → 0.42 → 1.66 → 6.57 s, ratios 3.7–4.0). It then reports
+  `FixtureInvalid` with every attempt recorded, as the spec already requires
+  for the length cap. Runner speed still cannot flip a verdict to
+  `Violated`. A pure test of the stop rule over recorded attempt sequences
+  fails first, and it includes GNOME 51's recorded sequence, which must
+  **continue** to its cut-off.
+
+  Rejected during spec review: stopping once one call passes twice the
+  2000 ms cut-off (4000 ms) without the CRITICAL. The baseline refutes it:
+  in the GNOME 51 SDK the 32,768-character call ran **6.57 s with no
+  cut-off**, and the 65,536-character call then cut off at 2.0005 s, while
+  on the host the 32,768-character call cut off at 2.0006 s. So the probe's
+  call duration is not what the engine's 2000 ms timer measures; task 2.8
+  attributes what that timer covers before the probe is edited. That rule would have made
+  A29 `FixtureInvalid` on the shipped toolkit, and in the pull-request
+  `GTK Axioms` job, where A29 runs because it is not marked slow. What nightly actually does to the cut-off
   is then measured (D6). If the cut-off no longer fires there, that is a B4
   item for the next adoption, and A29's floor statement is unchanged.
 
@@ -220,6 +238,16 @@ stamp). The probe gains recorded-only values: the time of one
 right after a one-character insert, as the median of 5. Durations never
 decide the verdict (spec). These are the numbers gtk#8529's facts sheet
 needs, and the re-measure condition of C5's keystroke exception.
+
+A26 already measures the cache !10646 touches: "a character change anywhere
+invalidates the cached attrs" (`chars_changed_stamp`), with
+`word_end_after_edit_elsewhere_us` on a 300,000-character paragraph as a
+recorded value. Added during spec review, A26 joins the re-test inventory
+(D6, the ledger notes and gtk#8529's facts sheet). The baseline shows the
+recomputation still happens on nightly: 13.2 ms first call, 13.1 ms after
+an edit elsewhere (GNOME 51: 14.9 / 14.7 ms). Its statement is about the
+cache's invalidation, so if a round shows the after-edit cost dropping to
+the repeat cost (0 µs), that is a B4 preview, not a restatement.
 
 ### D5. New upstream drafts only where the nightly still reproduces
 
@@ -247,8 +275,8 @@ re-reading against the fetched template.
 
 Rounds:
 
-- Affected samples only (`--only`): A79, A28, A54, A67, A29, A102, A103,
-  A107.
+- Affected samples only (`--only`): A79, A28, A26, A54, A67, A29, A102,
+  A103, A107.
 - Four rounds at most. Each round runs nightly then GNOME 51, and the order
   alternates between rounds (N,51 / 51,N / …).
 - Each round goes through `scripts/measure.sh` with the load before and
@@ -299,7 +327,16 @@ The ledger rows get a nightly "Verified against" note, labelled as a preview
 build, never as a supported toolkit (the spec delta). B4 items go to the
 programme record under the next GNOME adoption. `docs/upstream-reports.md`
 "Last checked" moves to the run date. The `A52` mislabel is corrected to
-`A67`, and the A67 row's `probe_a52` to `probe_a67`.
+`A67`.
+
+The ledger's "Pinned by" cells for A67–A73 all name the probe of the axiom
+fifteen ids lower (`probe_a52` … `probe_a58`), found during spec review; the
+catalogue registers `probe_a67` … `probe_a73`, which `check-gtk-axioms.py`
+already enforces for the catalogue but not for the ledger cell. The checker
+gains that rule (a `gtk_lush_axioms::probe_aNN` in a row's "Pinned by" must
+be the row's own probe), with a self-test case; run against the current
+ledger it fails on exactly A67–A73 first, then the seven cells are
+corrected.
 
 ## Risks / Trade-offs
 
@@ -313,8 +350,13 @@ programme record under the next GNOME adoption. `docs/upstream-reports.md`
   check stays exact.
 - **[A29 wall bound and runner speed]:** the bound only ever yields
   `FixtureInvalid`, never `Violated`, so a slow runner cannot flip the
-  verdict. 60 s is far above GNOME 51's 2.0 s cut-off attempt, which takes
-  about 10 s of attempts in total.
+  verdict. GNOME 51's attempts take about 10.8 s in total, and the
+  prediction before its last attempt is 8.8 s + 4 × 6.57 s ≈ 35 s, inside
+  60 s. A slower runner is expected to reach the cut-off at a shorter line,
+  so its sum stays about the same; task 2.9 records A29's attempts on the
+  host and both SDKs to confirm the margin, because CI's `GTK Axioms` job
+  runs A29. A runner whose prediction exceeds 60 s before the
+  cut-off reports `FixtureInvalid`, never `Violated`.
 
 ## Migration Plan
 
