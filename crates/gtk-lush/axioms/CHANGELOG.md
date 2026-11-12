@@ -9,9 +9,12 @@
   before connecting; a unit test keeps the list equal to the probes that
   start a `RemoteInput`.
 - A23: the last-character check is structural (crate-private
-  `last_char_on_last_display_line`, `SEPARATE_ROUNDING_PX`): the last display line by index, and a bottom edge
+  `last_char_on_last_display_line`, `separate_rounding_px`,
+  `SEPARATE_ROUNDING_PX`): the last display line by index, and a bottom edge
   within the one pixel that rounding the character's top and height
-  separately produces. `ParagraphGeometry` gains `last_char_y`,
+  separately produces, allowed only when the last line's Pango top or height
+  is a fractional number of pixels (exact otherwise; recorded as
+  `allowed_rounding_px`). `ParagraphGeometry` gains `last_char_y`,
   `last_char_line` and `display_lines`; the probe records the font and the
   Pango-unit line geometry (`pango_*_units`).
 - A29: the doubling stops before an attempt its predecessors predict would end

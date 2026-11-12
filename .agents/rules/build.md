@@ -1049,7 +1049,8 @@ RemoteDesktop still fails them as `fixture-invalid`. After each SDK the lane
 prints a summary: each sample's verdict or skip reason, the toolkit versions the
 samples reported, and the SDK's `pkg-config` module versions. The SDKs' fonts
 are fine: A23's check allows the one pixel of separate rounding a fractional
-line height produces (`retest-upstream-fixes-on-nightly`), and the GNOME 50
+line height produces, and only when the last line's Pango position is
+fractional (`retest-upstream-fixes-on-nightly`), and the GNOME 50
 and 51 SDKs pass with 91 holds and 5 skips each. A nightly verdict is a preview
 of the next adoption, never a ledger restatement on its own.
 

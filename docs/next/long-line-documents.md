@@ -4558,7 +4558,8 @@ medians:
 Structural verdicts agreed across all four rounds. The lane itself was fixed
 first, under the pre-existing-blockers rule (it had never exited 0 on any
 SDK): `--only`, a sandbox skip for the five RemoteDesktop samples, a per-SDK
-summary, A23's structural last-line check (the one-pixel rounding attributed
+summary, A23's structural last-line check (the one-pixel rounding, allowed
+only when the last line's Pango position is fractional, attributed
 to `gtk_text_layout_get_iter_location` rounding top and height separately),
 and A29's predicted 60 s wall budget (with a 5/4 margin, after the nightly's
 4.95x growth carried the first rule's run to 65.7 s). The GNOME 50 and 51
