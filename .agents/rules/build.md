@@ -962,7 +962,7 @@ The ledger's isolated probes live in the GTK Lush family crate
 make gtk-axioms                          # every probe + every sample --check, private headless Mutter (CI job `GTK Axioms`)
 make gtk-axiom-sample AXIOM=A9           # interactive sample on the current desktop, for a person to watch
 make gtk-axiom-sample AXIOM=A9 CHECK=1   # that sample's headless verdict (exit 0 holds, 1 violated, 2 fixture invalid)
-make gtk-axioms-runtimes                 # LOCAL ONLY: sample checks inside each installed GNOME SDK (50 floor, 51 shipped, nightly)
+make gtk-axioms-runtimes                 # LOCAL ONLY: sample checks inside each installed GNOME SDK (50 floor, 51 shipped, nightly); GTK_AXIOMS_ONLY=A28,A79 for a subset
 make check-gtk-axioms                    # (in check-policy) ledger, catalogue, probes, samples agree
 ```
 
@@ -1035,10 +1035,23 @@ and the ledger row states both ranges (`GTK < 4.24` / `GTK ≥ 4.24`), which
 `make check-gtk-axioms` enforces. "Verified against" then lists a run on each
 side (Fedora 45 host or CI, and `make gtk-axioms-runtimes` against
 `org.gnome.Sdk//50` or the `GTK Axioms (GNOME 50 floor)` job). The runtimes
-lane is local only and, inside the SDK sandbox, cannot reach the private
-compositor's RemoteDesktop (A59–A61, A64, A97 report `fixture-invalid`) and
-renders A23 with the SDK's fonts; read those verdicts from the host or CI
-runs.
+lane is local only. `make gtk-axioms-runtimes GTK_AXIOMS_ONLY=A28,A79`
+(`scripts/run-gtk-axioms.sh runtimes --only A28,A79 <sdk-ref>…`) builds and
+checks only the named samples, for interleaved re-test rounds (run them through
+`scripts/measure.sh`, alternating the SDK order); an unknown id fails the run.
+The SDK sandbox has no session bus, so it cannot reach the private compositor's
+RemoteDesktop: the runtimes mode sets `GTK_LUSH_AXIOMS_SANDBOX=1`, and the five
+samples whose fixture drives real input (A59–A61, A64, A97, the
+`REMOTE_INPUT_AXIOMS` list a unit test keeps equal to the probes that start a
+`RemoteInput`) print `skipped (needs RemoteDesktop): <id>` and exit 0 there; the
+host lane and CI never set the variable, so a host compositor without
+RemoteDesktop still fails them as `fixture-invalid`. After each SDK the lane
+prints a summary: each sample's verdict or skip reason, the toolkit versions the
+samples reported, and the SDK's `pkg-config` module versions. The SDKs' fonts
+are fine: A23's check allows the one pixel of separate rounding a fractional
+line height produces (`retest-upstream-fixes-on-nightly`), and the GNOME 50
+and 51 SDKs pass with 91 holds and 5 skips each. A nightly verdict is a preview
+of the next adoption, never a ledger restatement on its own.
 
 ## Fuzzing
 

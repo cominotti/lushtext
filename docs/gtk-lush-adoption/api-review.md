@@ -60,7 +60,12 @@ spikes for `gtk4-rs` and Kooha.
   the text fixtures (`TextViewFixture`, `SourceViewFixture`, `LogCapture`,
   the probe input method), the catalogue's `slow` field with
   `INCLUDE_SLOW_ENV`, `include_slow_probes` and `slow_skip_line`, and probes
-  A23–A34; the same decision holds.
+  A23–A34; the same decision holds. `retest-upstream-fixes-on-nightly` added the sandbox
+  skip (`SANDBOX_ENV`, `REMOTE_INPUT_AXIOMS`, `in_sdk_sandbox`,
+  `remote_desktop_skip_line`) and the A54 fixture helpers
+  (`fixtures::a54::surrounding_costs`, `SurroundingCosts`,
+  `COST_PARAGRAPH_CHARS`); they serve the samples and the SDK runtimes lane, so
+  the same decision holds (the A23 and A29 predicates stay crate-private).
 
 ## Rejected Overreach
 

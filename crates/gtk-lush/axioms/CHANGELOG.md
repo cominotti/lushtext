@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- SDK sandbox runs (`retest-upstream-fixes-on-nightly`): `SANDBOX_ENV`
+  (`GTK_LUSH_AXIOMS_SANDBOX`), `REMOTE_INPUT_AXIOMS`, `in_sdk_sandbox` and
+  `remote_desktop_skip_line`. With the variable set, the A59, A60, A61, A64
+  and A97 samples print `skipped (needs RemoteDesktop): <id>` and exit `0`
+  before connecting; a unit test keeps the list equal to the probes that
+  start a `RemoteInput`.
+- A23: the last-character check is structural (crate-private
+  `last_char_on_last_display_line`, `SEPARATE_ROUNDING_PX`): the last display line by index, and a bottom edge
+  within the one pixel that rounding the character's top and height
+  separately produces. `ParagraphGeometry` gains `last_char_y`,
+  `last_char_line` and `display_lines`; the probe records the font and the
+  Pango-unit line geometry (`pango_*_units`).
+- A29: the doubling stops before an attempt its predecessors predict would end
+  past a 60 s wall budget (crate-private `next_attempt_fits`, `WALL_BUDGET_US`,
+  `MIN_PREDICTED_GROWTH`, `GROWTH_MARGIN`), as `FixtureInvalid`, and records
+  `attempts_wall_us`.
+- A54: records the median of five `retrieve-surrounding` emissions on a
+  50,000-character paragraph, cold, repeated and after a one-character insert
+  (`surrounding_costs`, `SurroundingCosts`, `COST_PARAGRAPH_CHARS`); the
+  sample's "Time the answer on 50k characters" shows them.
+
 - Version-qualified axioms (`adopt-gnome-51`): new `version` module with
   `VersionBound` (`gtk(..)`, `sourceview(..)`, `reached_by`, `reached`,
   `asserted_branch`) and the catalogue field `Axiom::version_bound`. A probe
