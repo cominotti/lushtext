@@ -400,6 +400,35 @@ Docs, probes and script only. Nothing ships to users. Rollback is a revert.
   `B_INTERACT_US`, A28 overflow, A29 cut-off, A102, A103, A107), so nothing in
   `lushtext-core` changes and no proved module is touched.
 
+## Review decisions (2026-11-11)
+
+- **R1, A23's pixel is derived, not constant.** The spec allows "only the
+  rounding that the observed fractional line positions explain", and D3 V2
+  allows the pixel "that fractional line positions produce", but the
+  implemented predicate allowed it unconditionally. `separate_rounding_px`
+  now allows `SEPARATE_ROUNDING_PX` only when the last display line's Pango
+  top or height is not a whole number of pixels, and none otherwise; the
+  probe records it as `allowed_rounding_px`. Failing-first
+  (`review/red/a23-whole-pixel-rounding.txt`). The host (`Adwaita Mono
+  14.667px`, last line 18,773 units) and the GNOME 51 and nightly SDKs
+  (15,893 units) are all fractional, so every verdict is unchanged: A23 holds
+  on the host and in both SDKs (`review/host-a23.txt`,
+  `review/sdk-a23-a29.txt`). Rationale: a font with whole-pixel lines has no
+  rounding to explain, so a one-pixel overshoot there would be a real change
+  the tolerance must not mask (risk "A23 tolerance masks a real change").
+- **R2, A29's budget control names what it checks.** The control that fails
+  when the wall budget stops the doubling read "the attempts reached the
+  cut-off within the 60 s wall budget", which also passed when the length cap
+  stopped it without a cut-off. It now reads "the 60 s wall budget did not
+  stop the doubling before the cut-off", so a nightly `failed_check` says
+  which bound ended the run. Label only; no verdict changes.
+- **R3, A54's sample cost view stays unpresented.** The sample times its
+  50k answer on a view it does not show, while the probe presents one; the
+  view's `retrieve-surrounding` handler reads the buffer, not the layout, so
+  the readout is comparable, and the sample's interactive window has no slot
+  for a second view. Recorded, not changed; the probe's numbers are the
+  record.
+
 ## Open Questions
 
 None blocking. Whether to ask for !10228 to be tested is the maintainer's
