@@ -3,7 +3,7 @@
 #
 # Lock paths of the shared-machine protocol, sourced by scripts/heavy.sh and
 # scripts/measure.sh (see "Shared-machine agent work" in
-# .agents/rules/build.md).
+# .agents/rules/verification-runs.md).
 #
 # The locks live in the MAIN checkout's target/ directory, whatever worktree a
 # helper runs from: every worktree of the repository competes for the same

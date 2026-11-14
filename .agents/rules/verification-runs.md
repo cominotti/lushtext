@@ -1,5 +1,5 @@
 ---
-description: When to run Kani, proof strength, GTK axioms and timing campaigns — only what a change needs, at the point it is needed
+description: How agents share the workstation (heavy work, measurements, waits) and when to run Kani, proof strength, GTK axioms and timing campaigns — only what a change needs, at the point it is needed
 ---
 <!-- global rule: loaded for every request -->
 
@@ -7,12 +7,11 @@ description: When to run Kani, proof strength, GTK axioms and timing campaigns �
 
 Kani shards, proof-strength mutation, GTK axiom samples and timing campaigns
 cost minutes to hours each, and a local run that CI repeats buys nothing. This
-rule decides **which** of them a change runs and **when**. How to run them
-(the lock protocol, memory cap, shard table, budgets) stays in
-[`build.md`](./build.md): the shared-machine section, "Formal Verification
-(Kani)" and "GTK Axioms and Toolkit Updates". It was adopted on 2026-11-14,
-after local Kani and lane runs of the long-line programme repeatedly cost
-hours, collided with timing campaigns and were lost to agent interruptions.
+rule decides **which** of them a change runs and **when**, and "Shared-machine
+agent work" below says how every agent runs heavy work, measurements and waits.
+The lanes themselves (memory cap, shard table, budgets) are in
+[`build.md`](./build.md), "Formal Verification (Kani)" and "GTK Axioms and
+Toolkit Updates".
 
 ## Kani
 
@@ -77,7 +76,7 @@ memory budget, and run it detached.
 
 - Every timed run goes through `scripts/measure.sh`, which takes the
   measurement lock and records the load and top processes before and after
-  (`build.md`, the lock protocol and its load gate).
+  (the lock protocol below).
 - An optimisation change measures the cases it affects: four rounds
   interleaved `main` → branch → `main` → branch. An environment change
   (toolkit or runtime) measures the full quick tier the same way.
@@ -94,3 +93,76 @@ memory budget, and run it detached.
 Commit and push per task group during implementation, so work survives an
 interruption. A resumed stage reads the branch, `tasks.md` and the handoff
 directory before redoing anything.
+
+## Shared-machine agent work
+
+Several agents and terminals share one workstation, its CPUs, memory and
+disk, across every worktree of this repository
+([why these rules exist](../../docs/memorials/shared-machine-lock-incidents.md)).
+
+**The helpers are THE way agents run heavy work, measurements, and waits.**
+Each has a `--self-test`; `make check-agent-helpers` (in `make check-policy`)
+runs all three plus `shellcheck`, against temporary locks only. Their headers
+document the mechanics.
+
+```
+scripts/heavy.sh [--mem <cap|none>] -- <command> [args...]       # every heavy non-measurement command
+scripts/measure.sh [--label L] [--log FILE] [--lock-timeout S] -- <command> ... # every timing verdict
+scripts/wait-for.sh (--pid N | --name EXACT_NAME | --file PATH [--nonempty]) [--timeout S]
+```
+
+**The lock protocol.** Two files in the **main checkout's** `target/`, shared by
+every worktree (resolved from `git rev-parse --git-common-dir`;
+`LUSHTEXT_AGENT_LOCK_DIR` overrides it for the self-tests): `INTENT` =
+`target/responsiveness-measure.intent` and `LOCK` =
+`target/responsiveness-measure.lock`.
+
+- **Heavy work** — `cargo build`/`check`/`clippy`/`test`, `make test`, Kani,
+  cargo-mutants, proof-strength, smoke lanes, and `git commit` (its hook runs
+  Clippy) — goes through `scripts/heavy.sh`. It waits, holding nothing, until
+  `scripts/with-memory-cap.sh --wait-admissible <cap>` would admit the cap
+  (default `12G`), probes `INTENT` shared, takes `LOCK` shared for the one
+  command, and runs it as a child with `CARGO_BUILD_JOBS=4` and the inherited
+  CPU affinity inside `scripts/with-memory-cap.sh <cap>`. **Memory before
+  locks**: a helper never waits for memory while holding `LOCK`, and never
+  reserves memory while waiting for a lock. `make test`/`test-widget` admit
+  their own per-shard scopes, so run them as `heavy.sh --mem none`.
+- **Measurements** — the responsiveness lane, interleaved benches, any timing
+  verdict — go through `scripts/measure.sh`: `INTENT` exclusively, then `LOCK`
+  exclusively, so new heavy starts wait while the running ones drain. It gives
+  up after `--lock-timeout` seconds (default 1800), printing every holder and
+  exiting 75. It records the load and the top five CPU processes before and
+  after, and runs the command with `LUSHTEXT_ADMISSION_NOWAIT=1`. Build the
+  measured binary first, with `heavy.sh`: `measure.sh` refuses to run inside
+  heavy work (exit 2). Test-suite wall-time comparisons are not verdicts: run
+  them through `heavy.sh` and record the load.
+- **One lock per command.** Never wrap a whole multi-hour script or agent
+  session in one `heavy.sh`; call it per command, so a pending measurement
+  runs between steps. A nested `heavy.sh` runs in place only with proof: the
+  marker `LUSHTEXT_AGENT_LOCK_HELD=<shared|exclusive>:<pid>` counts only when
+  that PID is an ancestor and its fd 7 is still `LOCK`.
+- **Never wait for other work while holding a lock**, least of all `LOCK`
+  exclusively. `measure.sh` does nothing but run its command.
+
+**Commits.** Commit through the protocol: `scripts/heavy.sh --mem none -- git
+commit ...` (`heavy.sh` does not pass stdin, so give the message with `-F`), or
+by hand `flock -s target/responsiveness-measure.intent true && flock -s
+target/responsiveness-measure.lock git commit ...` from the main checkout. The
+gate order before a commit is in [`testing.md`](./testing.md).
+
+**Waiting.** Use `scripts/wait-for.sh`, or `tail --pid=<pid> -f /dev/null` / a
+loop on `pgrep -x <name>` directly. **Never `pgrep -f`**, and never `pkill -f`
+with a pattern that matches your own shell: `-f` matches the waiting shell's own
+command line. Prefer `--pid` whenever the PID is known, and wait on processes
+you started. `--name` matches the kernel's process name exactly (at most 15
+characters). `wait-for.sh` exits 0 when the condition holds, 124 on
+`--timeout`, and 2 on a usage error. Its self-test fails if `pgrep -f` or
+`pkill -f` appears in `scripts/`, the `Makefile`, `.githooks/`, `.github/` or
+`.agents/skills/`, except on a line marked `agent-pgrep-f-ok: <reason>`,
+reserved for one-shot snapshots that filter out their own shell — never a wait
+loop.
+
+**Profiling.** A profiled measurement still goes through `scripts/measure.sh`,
+profiles user space only and launches the target as a child; a run under
+`perf` is attribution evidence, never a verdict figure. The commands are in
+[`docs/runbooks/profiling.md`](../../docs/runbooks/profiling.md).

@@ -516,8 +516,8 @@ hooks in `.githooks/`.
 On a workstation shared by several agents or terminals, run heavy commands
 through `scripts/heavy.sh -- <command>`, timing measurements through
 `scripts/measure.sh -- <command>`, and waits through `scripts/wait-for.sh`; they
-implement the lock protocol in `.agents/rules/build.md` ("Shared-machine agent
-work"), and `make check-agent-helpers` self-tests them.
+implement the lock protocol in `.agents/rules/verification-runs.md`
+("Shared-machine agent work"), and `make check-agent-helpers` self-tests them.
 
 ### UI Templates
 

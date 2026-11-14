@@ -144,7 +144,7 @@ report_leftovers() {
         shown=$((shown + 1))
     done
     echo "Every temporary file a test creates must be removed by its owner; see the" >&2
-    echo "temporary-file rule in .agents/rules/build.md." >&2
+    echo "temporary-file rule in .agents/rules/testing.md." >&2
     return 1
 }
 
