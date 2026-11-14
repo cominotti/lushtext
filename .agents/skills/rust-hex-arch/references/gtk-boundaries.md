@@ -170,7 +170,7 @@ GTK objects are not `Send`/`Sync` (raw pointers inside). This creates a hard bou
 Main Thread (GTK)                    Background Thread
 ┌─────────────────┐                 ┌─────────────────┐
 │ UI widgets       │                 │ File I/O         │
-│ Signal handlers  │◄── idle_add ───│ Directory scan   │
+│ Signal handlers  │◄─ completion ──│ Directory scan   │
 │ Property updates │    ─────────►  │ Data processing  │
 │                  │  ThreadGuard    │                  │
 └─────────────────┘                 └─────────────────┘
@@ -179,7 +179,7 @@ Main Thread (GTK)                    Background Thread
 `spawn_blocking_then` encodes this boundary:
 - `state` (GTK object) stays on the main thread via `ThreadGuard`
 - `work` runs on a background thread (must be `Send`)
-- `then` runs on the main thread via `glib::idle_add_once`
+- `then` runs on the main thread from one completion source at `gtk_lush_tasks::completion_priority()`
 
 This IS the adapter boundary for async operations. The background thread is a driven adapter performing I/O; the main thread callback is the driving adapter updating the UI with the result.
 

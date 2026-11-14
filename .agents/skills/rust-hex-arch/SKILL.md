@@ -1,6 +1,6 @@
 ---
 name: rust-hex-arch
-description: "Evaluate Rust changes and architecture decisions against Hexagonal Architecture, command-query separation, domain-driven design, and clean-code principles for GTK4/Libadwaita desktop applications. Use whenever Rust files are created, modified, reviewed, or refactored, or when deciding module ownership, domain purity, service boundaries, GTK adapter splits, GTK Lush platform boundaries, preview/apply workflows, value objects, grouped state, or maintainability tradeoffs."
+description: "Architecture review for LushText Rust: the ui, services, model dependency direction, domain purity, command-query separation, preview/apply, value objects, ports and module splits. Use when creating, moving, splitting or reviewing Rust modules, adding a service, port or value object, or deciding where a responsibility belongs."
 ---
 
 # Rust Hexagonal Architecture Review
@@ -88,101 +88,36 @@ line-count split whose siblings each still mix narration, coordination, and
 policy does not satisfy the convention. Avoid `helpers`, `misc`, and `runtime`:
 the first two name nothing and `runtime` says only that the module is machinery.
 
-### Assign one workflow role per module
+### Review workflow decomposition against the convention
 
 A **workflow** is one user-initiated operation with ordered stages that crosses
-the adapter boundary into coordination and pure policy. The convention is
-normative in `.agents/rules/workflow-convention.md`; the review checklist below
-is the reviewer's working summary of it, so consult the rule when the two could
-be read differently. Each module of a migrated workflow carries exactly one role:
+the adapter boundary into coordination and pure policy. Review a decomposition
+against `.agents/rules/workflow-convention.md`, which is normative for the roles
+(narrative facade, seam value objects, `policy.rs`, the bounded coordination
+names, `evidence.rs`), called presentation surfaces, the three role-home shapes,
+seam value objects, and policy purity and placement; the `lushtext-workflow`
+skill is the procedure. `docs/workflow-readability-matrix.md` is the completion
+source of truth: check the workflow's `WFR-*` row for its status, owned policy,
+seam value object, and risk tier before recommending a restructure, and do not
+force an `exempt`, `cross-cutting`, or `superseded` row into the convention.
+Facades have the normative size budget in that matrix's "Facade size budget"
+section.
 
-| Role | File | Owns |
-|---|---|---|
-| Narrative facade | the workflow's public module surface | ordered stages, intent names, delegation |
-| Seam value objects | with the workflow | identity/freshness/intent bundles |
-| Pure policy | `policy.rs` | pure decisions, no GTK-family imports |
-| Coordination | `admission`, `execution`, `retirement`, `watch`, `journal` | timers, budgets, generations, dispatch, durable generation-guarded records |
-| Evidence | `evidence.rs` | the workflow's observable state, one typed value |
+The findings a review most often raises:
 
-Rules to enforce when reviewing a decomposition:
-
-- The facade must not also be a coordination or policy module. If a stage needs
-  timers, admission bookkeeping, generation counters, or widget mutation, that
-  work stays in coordination or the adapter and the facade calls it by a named
-  operation.
-- The facade narrates inversions. Where stages connect through a deferred drain,
-  idle callback, or worker completion, the facade must name where control
-  resumes; a reader must not have to reconstruct it from the coordination module.
-- Facades have a normative size budget, set from the first migration's measured
-  facade and recorded in the "Facade size budget" section of
-  `docs/workflow-readability-matrix.md`; changing that number follows the
-  retroactive amendment rule.
-- Coordination file names come from the bounded set above and state the job. A
-  workflow may own more than one. A job no listed name describes requires amending
-  `openspec/specs/gtk-adapter-module-boundaries/spec.md`.
-- `policy.rs` and `evidence.rs` are fixed names, one of each per workflow.
-- **Two role homes are permitted, chosen per workflow.** A workflow whose role
-  file names do not collide with a sibling's keeps flat, workflow-scoped role
-  names in the shared directory. Where a directory hosts several workflows and
-  more than one of them owns pure policy or an evidence surface, the fixed names
-  cannot be shared, so one moves its roles into a **per-workflow subdirectory**
-  whose `mod.rs` is that workflow's facade and whose role files keep the
-  unqualified `policy.rs`, `evidence.rs`, and bounded coordination names
-  (`ui/editor_page/save/`). A workflow-prefixed `save_policy.rs` is not a
-  substitute: it leaves the `ui/**/policy.rs` mutation scope, which is a blocking
-  coverage regression. Migration still never requires restructuring a whole
-  directory into one subdirectory per workflow. The row records which home it
-  chose.
-- Do not introduce a trait, manager type, or crate to express a role split. Plain
-  modules and narrow owner references only.
-
-- Modules that only project the workflow onto widgets are **called presentation
-  surfaces**, not roles. They take none of the five names, own no `policy.rs` or
-  `evidence.rs`, and must be declared by a backticked path in the workflow's
-  matrix row — the gate fails on an undeclared `.rs` file in a migrated role home.
-
-`docs/workflow-readability-matrix.md` is the completion source of truth: check the
-workflow's `WFR-*` row for its status, owned policy, seam value object, and risk
-tier before recommending a restructure. Every row is terminal; a row marked
-`exempt`, `cross-cutting`, or `superseded` must not be forced into the
-convention.
-
-### Co-locate pure policy with its owning workflow
-
-Pure decision logic belongs in its workflow's `policy.rs` when the policy has a
-single **owning workflow**. Count owning workflows, not consuming files: policy
-whose only consumer is its own coordination adapter is cross-cutting when that
-adapter serves several workflows, and it stays in its shared location with the
-matrix recording it as cross-cutting (for example `plain_disposal`); the matrix's
-cross-cutting eligibility list is the authoritative set.
-
+- `[FLAG]` a facade that also coordinates or decides, or that leaves a reader to
+  reconstruct where control resumes after a deferred drain, idle callback, or
+  worker completion.
+- `[FLAG]` a trait, manager type, or crate introduced to express a role split.
 - `[FLAG]` a module placed in `model/` solely to obtain test or mutation tooling
-  reach. Mutation scope reaches `ui/**/policy.rs` by convention, so that is no
-  longer a reason to hoist.
-- `[FLAG]` any GTK-family import (`gtk4`, `glib`, `gio`, `libadwaita`,
-  `sourceview5`) in a `policy.rs`. Purity is what keeps it in mutation scope, and
-  `make check-workflow-boundaries` fails on it.
-- Relocating policy requires mutation-coverage parity evidence via
-  `make mutants-diff`; a relocation that stops generating mutants is a coverage
-  regression.
+  reach, or a GTK-family import (`gtk4`, `glib`, `gio`, `libadwaita`,
+  `sourceview5`) in a `policy.rs`; `make check-workflow-boundaries` fails on the
+  second. Relocated policy needs `make mutants-diff` parity evidence.
+- `[FLAG]` a value passed into a parameter that names it something else, and
+  `#[expect(clippy::too_many_arguments)]` at a cross-module workflow boundary
+  (an unreified seam, not an accepted exception).
 - Dependency direction `ui -> services -> model` is unchanged by co-location:
   policy moves *down* beside its consumer, never upward.
-
-### Reify seam bundles, and never rename across a seam
-
-Require a named value object when a field bundle crosses two or more function
-boundaries or is reconstructed at two or more call sites; a bundle used by one
-private helper does not need one. Construct it once at the workflow entry point
-and validate it as a unit. Reuse the shape the codebase already has — `*Ticket`
-plus `*Facts` plus one `*_is_current` predicate, or a coordinator that already
-owns the generation and exposes `is_current(generation)` — rather than adding a
-parallel one.
-
-`[FLAG]` a value passed into a parameter that names it something else: the rename
-is invisible to review and to tests while both names denote the same value.
-Treat `#[expect(clippy::too_many_arguments)]` at a cross-module workflow boundary
-as an unreified seam, not an accepted exception; domain catalog constructors whose
-parameters each name a documented external contract field are outside this rule.
 
 ### Prefer direct ports until a seam pays for itself
 
