@@ -181,6 +181,7 @@ SHARDS: dict[str, Shard] = {
             "plain_disposal",
             "preferences",
             "properties_panel",
+            "row_text",
             "search_bar",
             "search_panel",
             "shell_geometry",

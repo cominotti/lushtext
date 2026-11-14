@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A108, A109, A110 and A111 probes and samples (`lighten-notes-browser-rows`):
+  a label list's frame after a retext is mostly layout and grows with the
+  realized rows, where a text-independent measure does not; a
+  `GtkInscription` costs several labels to construct; on an unmapped list,
+  removing the rows GTK never realized tears nothing down and removing
+  realized rows from the end costs in proportion to them; under cairo a
+  dialog animation frame costs milliseconds of paint whatever its rows (the
+  GL half skipped where no GL renderer realizes). New shared fixture
+  `probes::row_lists` (`RowList`, `RowText`, `MeasureFreeText`,
+  `PhaseRecorder`, `FramePhases`, `median`) and fixtures `fixtures::a108`
+  to `fixtures::a111`.
 - SDK sandbox runs (`retest-upstream-fixes-on-nightly`): `SANDBOX_ENV`
   (`GTK_LUSH_AXIOMS_SANDBOX`), `REMOTE_INPUT_AXIOMS`, `in_sdk_sandbox` and
   `remote_desktop_skip_line`. With the variable set, the A59, A60, A61, A64

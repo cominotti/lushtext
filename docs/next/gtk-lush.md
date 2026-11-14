@@ -221,6 +221,19 @@ Small widget and overlay-owner primitives that exist to keep geometry honest.
   not a widget. That is the second consumer the discriminating test asks for;
   extracting it is a separate change, decided when a third model or a
   divergence in the copied algebra makes the cost worth paying.
+- **Extraction candidate, not extracted (`lighten-notes-browser-rows`,
+  2026-11-12): `LushtextRowText`, a measure-free list-row text widget**
+  (`ui/row_text/`), with two consumers: the notes browser's rows and section
+  headers and the command palette's rows. It measures a single line from its
+  primary font's cached metrics when the font covers the text (exactly, as a
+  `GtkLabel`, otherwise), reads CSS text attributes from a label probe,
+  draws lazily, and optionally reports its shaped width. The same change
+  added two pieces of shared list coordination, `ui/list_growth.rs` (a staged
+  first publish grown one step per frame) and `ui/list_retirement.rs` (sliced
+  realized-row retirement, ledger A110), both over the two lazy models above.
+  A GTK Lush widget would need the CSS-attribute probe and the metrics cache
+  generalized beyond Adwaita's classes; decided when a third consumer (the
+  workspace sidebar, search results, local history) adopts it.
 - **Rust features:** `ClipBin` is a GObject widget subclass, while
   `RenderHoldOverlay` is a plain Rust owner installed around a caller-provided
   `GtkOverlay`. The family does not avoid subclassing, it avoids requiring

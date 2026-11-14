@@ -577,6 +577,10 @@ pub struct LushtextWindow {
     pub tab_management: TabManagementState,
     /// Weak handle for browser-navigation actions while Browse Notes is visible.
     pub(super) active_notes_browser: RefCell<Option<ActiveNotesBrowser>>,
+    /// Closed notes browsers whose realized rows are still being retired in
+    /// slices (`lighten-notes-browser-rows` D4); each holds its dialog until
+    /// its list is empty. Dropped with the window, which releases the rest.
+    pub(super) notes_row_retirements: RefCell<Vec<crate::ui::list_retirement::RowRetirement>>,
     /// Active large note-save snapshots, owned until completion or window disposal.
     pub(super) note_save_snapshots: RefCell<Vec<BufferSnapshotHandle>>,
     /// Focus widget saved before the search panel steals focus.
@@ -682,6 +686,7 @@ impl Default for LushtextWindow {
             recent_documents: RecentDocumentsState::default(),
             tab_management: TabManagementState::default(),
             active_notes_browser: RefCell::new(None),
+            notes_row_retirements: RefCell::new(Vec::new()),
             note_save_snapshots: RefCell::new(Vec::new()),
             search_saved_focus: RefCell::new(None),
             notification_bus: NotificationBus::default(),
@@ -1137,6 +1142,10 @@ impl ObjectImpl for LushtextWindow {
 
     fn dispose(&self) {
         self.disposing.set(true);
+        // A retirement holds its browser state, which holds this window:
+        // release it here, outside the borrow (the rest of its rows go now).
+        let retirements = self.notes_row_retirements.take();
+        drop(retirements);
         // Normally already done when the window left its application
         // (`window-removed`); idempotent either way.
         self.obj().tear_down_composition();

@@ -185,8 +185,13 @@ pub struct LushtextCommandPalette {
     pub category: Cell<Option<PaletteCategory>>,
     /// The category view's lazy model.
     pub category_model: PaletteCategoryModel,
-    /// The deferred clear of the hidden category model after leaving.
-    pub(super) category_clear_source: RefCell<Option<glib::SourceId>>,
+    /// The category view's rows being retired in slices after the view was
+    /// left (`lighten-notes-browser-rows` D4); entering a category again
+    /// cancels it and publishes over the rows left.
+    pub(super) category_retirement: RefCell<Option<crate::ui::list_retirement::RowRetirement>>,
+    /// A category view's staged first publish growing one step per frame
+    /// (`lighten-notes-browser-rows` D5), while it grows.
+    pub(super) category_growth: RefCell<Option<crate::ui::list_growth::RowGrowth>>,
     /// Matches of the shown category, listed or not.
     pub category_matching: Cell<usize>,
     /// Whether the row limit cut the shown category.
@@ -265,7 +270,8 @@ impl Default for LushtextCommandPalette {
             escape_callback: RefCell::default(),
             category: Cell::new(None),
             category_model: PaletteCategoryModel::default(),
-            category_clear_source: RefCell::new(None),
+            category_retirement: RefCell::new(None),
+            category_growth: RefCell::new(None),
             category_matching: Cell::new(0),
             category_limited: Cell::new(false),
             leaving_category: Cell::new(None),
@@ -612,6 +618,12 @@ impl LushtextCommandPalette {
             let Some(selection) = self.category_selection() else {
                 return;
             };
+            if !self.category_rows_current() {
+                return;
+            }
+            // A key lands where it would on the full ranking: a staged
+            // first publish still growing lists the rest first (D5).
+            self.finish_category_growth();
             let current = Some(selection.selected()).filter(|p| *p != gtk4::INVALID_LIST_POSITION);
             let Some(position) =
                 policy::next_category_row(current, self.category_model.len(), delta)
@@ -675,7 +687,9 @@ impl LushtextCommandPalette {
     }
 
     fn activate_category_at(&self, position: u32) {
-        if position >= self.category_model.len() {
+        // Rows left by a cancelled retirement belong to the category shown
+        // before; they are hidden and never activated.
+        if !self.category_rows_current() || position >= self.category_model.len() {
             return;
         }
         let Some(item) = self
@@ -747,6 +761,9 @@ impl LushtextCommandPalette {
     /// Read through `try_get`, so the evidence surface stays honest on a
     /// disposed widget.
     pub(super) fn visible_selected_position(&self) -> Option<u32> {
+        if self.category.get().is_some() && !self.category_rows_current() {
+            return None;
+        }
         let view = if self.category.get().is_some() {
             self.category_view.try_get()
         } else {
@@ -770,13 +787,20 @@ impl LushtextCommandPalette {
         let in_category = self.category.get().is_some();
         let (result_count, selected_name) = if in_category {
             // The model's length and the selection's own item: no walk.
+            // Before the view's first publish it lists no rows of its own.
+            let current = self.category_rows_current();
             let selected = self
                 .category_selection()
+                .filter(|_| current)
                 .and_then(|selection| selection.selected_item())
                 .and_downcast::<PaletteItem>()
                 .map(|item| item.display_name());
             (
-                usize::try_from(self.category_model.len()).unwrap_or(usize::MAX),
+                if current {
+                    usize::try_from(self.category_model.full_len()).unwrap_or(usize::MAX)
+                } else {
+                    0
+                },
                 selected,
             )
         } else {

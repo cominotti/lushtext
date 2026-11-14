@@ -237,6 +237,37 @@ Rules:
 - If the behavior only reproduces with real frame-clock progression, run under `mutter --headless` or switch to `gtk-agentic-debugging`.
 - To assert something does **not** happen inside a frame's paint (snapshot), bracket the paint with a one-pixel `GtkDrawingArea` packed *before* the widget under test and redrawn at every frame clock `before-paint` (its draw function runs inside the snapshot), and the clock's `after-paint`. Bracketing with `connect_after("layout")` misses frames that paint without a layout phase. To make a change happen inside a frame (as input does), make it from a tick callback (update phase). See `editor_page::PaintPhaseAdjustmentChanges` and ledger A37.
 
+### Timing frames under the harness renderer
+
+- **Under `GSK_RENDERER=cairo` (the harness default) an `AdwDialog`'s
+  open and close animation frames cost 12–30 ms of paint** whatever the
+  dialog holds (ledger A111): cairo composites the scaled, faded dialog in
+  software. A whole-frame worst value in a dialog test is that paint, not the
+  widgets under test.
+- **The first GL dialog of a process includes the GL renderer's pipeline
+  warm-up** (a first frame of about 86 ms, a close of 81 ms), recurring in no
+  later dialog; a test that opens one dialog per process measures it.
+- **Judge a frame by its layout phase**, with
+  `common::phase_split_dispatch_until` (layout = dispatch start to the end of
+  the frame clock's `layout`; paint = the rest), or measure GL in steady
+  state (the second and later dialogs of a process). Print whole-frame worst
+  values; never assert them under cairo.
+
+### Parity with a stock widget is proved in situ
+
+- **A parity test between a custom widget and the stock widget it replaces
+  must run where the widget is used, not only in a test window.** CSS sizes
+  fonts, and with them values such as `.caption`'s absolute `line-height`,
+  from the widget's ancestors. `LushtextRowText` matched `GtkLabel` for every
+  class and script in `row_text.rs`, yet notes-browser rows came out 1 px
+  shorter, because its unparented CSS probe and the test window shared the
+  default font while the browser's rows did not (found by comparing visual
+  smoke screenshots of `main` and the branch). The in-situ test puts a
+  `GtkLabel` with the same classes and text beside each realized row text and
+  compares measure, baseline and allocation
+  (`notes_browser::test_notes_row_text_measures_like_a_label_in_the_browser`).
+  Add one for each new consumer surface.
+
 ## ListView, TreeListModel, and Row Reuse
 
 When testing list or tree widgets:
