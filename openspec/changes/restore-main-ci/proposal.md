@@ -39,11 +39,12 @@ product defects that CI caught by accident, not test problems:
    - The suspect is `finish_minimap_reflow_settle`. It moves the view back to
      the top whenever the rest state says "at top", and that rest state is
      paused for the whole passive burst.
-   - That suspicion comes from reading the code. It is not confirmed:
-     12 local runs passed, 6 idle and 6 with 16 spinners on 16 cores.
-   - The memory admission was full while this spec was written: a 48 GiB VM
-     started on the host. So the two discriminating experiments in the patch
-     could not run yet.
+   - An experiment on `main` reproduces it deterministically. At the top,
+     hide the minimap (a passive width burst), then scroll to line 1,000
+     before the burst settles: the view ends at `y = -6`, CI's exact
+     signature. A control that changes only the content width passes.
+   - The site that writes the value back is still to be pinned. Diagnosis
+     comes first in the tasks.
 
 3. **The GTK Lush API Advisory job is red** since the CI image moved to
    Fedora 45 (2026-11-11).
@@ -83,10 +84,11 @@ product defects that CI caught by accident, not test problems:
 - Diagnose the scroll reset first, failing first. Then fix the cause: a scroll
   the user or the app makes during a passive reflow burst is kept. The
   top-anchor repair for GTK-preserved offsets keeps working.
-- The API advisory installs `cargo-public-api` from its checksum-pinned crate.
-  The lockfile change is limited to `openssl-sys`, raised to a pinned 0.9.118,
-  and `--locked` is kept. Every pin sits in the workflow `env`, and the job
-  stays advisory.
+- The API advisory links the image's libcurl (`libcurl-devel`) and installs
+  `cargo-public-api` from its checksum-pinned crate. Exactly one lockfile
+  entry changes: `openssl-sys`, raised to a pinned 0.9.118. `--locked` is
+  kept. A `fedora:45` container verified it; it fails with either half
+  alone. Every pin sits in the workflow `env`, and the job stays advisory.
 - Diagnose the three retry-rescued tests by class (a synchronous UI flip, an
   asynchronous `spawn_blocking_then` completion, or a production race). Fix
   each cause and prove the fix with repeated isolated runs. A retry or a longer

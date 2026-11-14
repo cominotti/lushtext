@@ -60,12 +60,23 @@ a draft":
 
 None of the three is classified yet.
 
-**B5. Minimap test locally.** 12 of 12 runs passed: 6 idle and 6 with 16
-busy loops on CPUs 8–23 (`minimap-repro.sh`, logs `minimap-repro-load*.log`).
-Spreading the load over 16 cores does not starve the GTK thread the way a
-2–4 vCPU runner does. The discriminating experiments in the patch could not
-run: a 48 GiB VM took the host's memory headroom during this stage, and
-`scripts/heavy.sh` correctly refused admission.
+**B5. Minimap test locally.**
+
+- 12 of 12 runs of the original test passed: 6 idle and 6 with 16 busy
+  loops on CPUs 8–23 (`minimap-repro.sh`, logs `minimap-repro-load*.log`).
+  Spreading the load over 16 cores does not starve the GTK thread the way a
+  2–4 vCPU runner does.
+- The two experiments in the patch then ran on `main` `b129f378`, headless
+  (`exp2.log`; load 13.0 before, 11.8 after; not a timing figure):
+  - `scroll_during_content_width_growth_is_kept` **passed**. This is the
+    control: an upper-only change opens no burst, because `ViewportObserver`
+    filters on page size.
+  - `scroll_during_a_passive_width_reflow_is_kept` **failed deterministically**
+    on both attempts with `Rectangle { x: 0, y: -6, width: 927, height: 664 }`.
+    That is CI's signature: the view sits at the top margin after scrolling to
+    line 1,000.
+  - Its setup: at the top, hiding the minimap opens a passive burst, and the
+    view is scrolled before the burst settles.
 
 ## Decisions
 
@@ -106,11 +117,12 @@ run: a 48 GiB VM took the host's memory headroom during this stage, and
     between the terminal and the assertion is correct behaviour, not a
     failure.
 
-### D2. Diagnose the scroll reset before naming its cause
+### D2. A scroll during a passive burst is kept; pin the writer first
 
-The behaviour required by the spec does not depend on the diagnosis: a scroll
-made during a passive reflow burst is kept. The cause must be found failing
-first. The leading hypothesis comes from reading the code:
+The mechanism is reproduced deterministically (B5): a scroll made during a
+passive width burst is undone. CI reaches it when a starved main loop leaves
+the startup burst pending at the test's scroll. What remains is which site
+writes the value back. The leading candidate comes from reading the code:
 
 - A horizontal page-size change (`ViewportObserver` filters on page size) opens
   a passive burst. `schedule_minimap_reflow_settle_impl` then pauses the rest
@@ -126,14 +138,8 @@ A prior flake had the same class: `bound-notes-browser-by-budget`, recorded in
 `view_attachment.rs`, where a stale "at top" rest state after a reattach sent
 the tab to line 0.
 
-The experiments to run first are in the patch:
-
-- `scroll_during_a_passive_width_reflow_is_kept` hides the minimap to open a
-  passive burst at the top, then scrolls. It is the discriminator.
-- `scroll_during_content_width_growth_is_kept` is a control. The observer
-  ignores upper-only changes, so it must pass.
-- Next, pin the original test and 2–4 spinners to one or two cores. That
-  reproduces the CI starvation.
+The discriminating test from the patch is the failing-first test. Instrument
+it to name the writer before fixing.
 
 The likely fix shape is to snap to the lower edge at settle only when the
 value did not move after the burst began. This is the rule the vertical clamp
@@ -151,41 +157,52 @@ is kept.
   diagnosis shows the crate's contract is what is wrong. Its scenario "At-top
   state ignores reflow preservation" stays as it is.
 
-### D3. Install `cargo-public-api` from a pinned crate with one lockfile change
+### D3. Link the system libcurl and override one lockfile entry
 
-`cargo-public-api` has no features of its own. `openssl-sys` comes in through
-`curl` and `curl-sys`, and a dependency's feature cannot be selected through
-`cargo install`. The chosen install:
+`cargo-public-api` has no features of its own. OpenSSL enters through `curl`
+and `curl-sys`, and a dependency's feature cannot be selected through
+`cargo install`.
 
-1. Download `cargo-public-api-${CARGO_PUBLIC_API_VERSION}.crate` from
+Verified in the host's `fedora:45` image (OpenSSL 4.0.3, libcurl 8.21.0).
+Script and log: `api-advisory-container{,2}.{sh,log}`.
+
+| Candidate | Result |
+| --- | --- |
+| CI today: `cargo install --locked cargo-public-api@0.52.0` | fails: the `openssl-sys 0.9.88` version check |
+| + `libcurl-devel`, lock unchanged | fails: the same `openssl-sys` check |
+| `openssl-sys` 0.9.118 only | fails: `curl-sys 0.4.77` builds its bundled curl 8.10.1, whose `vtls/openssl.c` does not compile against OpenSSL 4's `const X509_NAME` |
+| **`libcurl-devel` + `openssl-sys` 0.9.118** | **installs**; `cargo public-api --version` prints 0.52.0; the binary links `/lib64/libcurl.so.4` and `libssl.so.4` |
+
+The lockfile diff of the chosen candidate is exactly one entry: `openssl-sys`
+0.9.88 → 0.9.118 (version and checksum). There are no resolver
+consequences.
+
+The chosen install:
+
+1. The job's dnf step adds `libcurl-devel`, so `curl-sys` links the image's
+   libcurl, which supports OpenSSL 4.
+2. Download `cargo-public-api-${CARGO_PUBLIC_API_VERSION}.crate` from
    static.crates.io.
-2. Verify it with `sha256sum` against `CARGO_PUBLIC_API_SHA256`. For 0.52.0
-   that is `80f55cea4022db86641f1ece5098c9df2f13d79624e61a461d5379dc5d4b7511`,
-   the sparse-index `cksum`; this stage checked it against a download.
-3. Unpack it and run `cargo update --package openssl-sys --precise
+3. Verify it against `CARGO_PUBLIC_API_SHA256`. For 0.52.0 that is
+   `80f55cea4022db86641f1ece5098c9df2f13d79624e61a461d5379dc5d4b7511`, the
+   sparse-index `cksum`; the container run confirmed it.
+4. Run `cargo update --package openssl-sys --precise
    ${CARGO_PUBLIC_API_OPENSSL_SYS_VERSION}` (0.9.118, `rust-version` 1.80).
-4. Fail if any other lock entry changed beyond the minimal resolver
-   consequences of that update. The implementation records which entries those
-   are, after a container run.
-5. Run `cargo install --locked --path .`.
+5. Fail if the lockfile changed anywhere except that one entry.
+6. Run `cargo install --locked --path .`.
 
 All three values go in `ci.yml`'s `env` and in `build.md`'s pin list. A small
 `scripts/install-cargo-public-api.sh` holds the steps, so a developer can run
-them in a `fedora:45` container. Drop the override when a release locks
-`openssl-sys >= 0.9.114`.
-
-**Status: unverified.**
-
-- The toolbox has no `openssl-devel`, and its OpenSSL is 3.6.3.
-- The memory admission was full, so the `fedora:45` container run did not
-  happen.
-- Task 3.1 runs it first: the current command must fail as on CI, and the
-  candidate must succeed.
+them in a `fedora:45` container. Drop the override, and `libcurl-devel` if it
+is no longer needed, when a release locks `openssl-sys >= 0.9.114` and a
+`curl-sys` that builds there.
 
 **Rejected:**
 
 - dropping `--locked`: every transitive dependency would float and could
   outgrow the pinned nightly toolchain;
+- also raising `curl-sys` to a bundled curl that supports OpenSSL 4: that
+  is a second override where the image's libcurl already works;
 - moving the job to `fedora:44` (OpenSSL 3.x): the GTK Lush crates need GTK
   4.24's development files, and `fedora:44` has 4.22;
 - a prebuilt binary: none is published that is linked for this image;

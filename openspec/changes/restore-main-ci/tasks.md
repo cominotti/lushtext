@@ -76,12 +76,10 @@ Timing: none (no timed path's cost changes).
 
 ## 2. A scroll survives a passive reflow burst (D2)
 
-- [ ] 2.1 Diagnose first. Apply the two minimap experiments from the patch and
-      run them isolated. Record which one fails, and with what value.
-      - `scroll_during_content_width_growth_is_kept` must pass. It is the
-        control; if it fails, the observer contract in the design is wrong,
-        so stop and re-derive.
-      - `scroll_during_a_passive_width_reflow_is_kept` is the discriminator.
+- [x] 2.1 Diagnose first: run the two minimap experiments from the patch
+      isolated. Done in the spec stage (design B5).
+      - The control passed.
+      - The discriminator failed deterministically with `y: -6`, as on CI.
 - [ ] 2.2 Reproduce the CI failure of
       `test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin`
       with starved isolated runs: `minimap-repro.sh`, adapted to one CPU and
@@ -91,8 +89,8 @@ Timing: none (no timed path's cost changes).
         hold);
       - whether the rest state was paused when the scroll happened.
 
-      Record the call site in design D2. If no starved run reproduces it,
-      record that and rely on 2.1's deterministic test.
+      Record the call site in design D2. If no starved run reproduces the
+      original, record that: 2.1's deterministic test is the proof.
 - [ ] 2.3 Failing first. Keep the discriminating test (renamed
       `test_a_scroll_during_a_passive_width_reflow_survives_the_settle`) red on
       `main` code. If the diagnosis depends on GTK adjustment ordering, add the
@@ -116,25 +114,22 @@ Timing: none (no timed path's cost changes).
 
 ## 3. API advisory installs on OpenSSL 4 (D3)
 
-- [ ] 3.1 Verify the claim first, in the host's `fedora:45` image:
-      `flatpak-spawn --host podman run --rm --cpuset-cpus=8-23 --memory=6g`,
-      run only when memory admission allows.
-      - The current CI step, `cargo install --locked cargo-public-api
-        --version 0.52.0` with `openssl-devel`, must fail with the CI error.
-      - The candidate must install, and `cargo public-api --version` must
-        print 0.52.0.
-      - Record the lockfile diff the `--precise` update produces. It sets the
-        allow-list for 3.2.
+- [x] 3.1 Verify the candidates in the host's `fedora:45` image. Done in
+      the spec stage (design D3 table, `api-advisory-container2.log`).
+      - The only working candidate is `libcurl-devel` plus `openssl-sys`
+        0.9.118.
+      - The lockfile diff is that one entry.
 - [ ] 3.2 Add `scripts/install-cargo-public-api.sh`. It downloads the crate,
       verifies its SHA-256, applies the precise `openssl-sys` update, rejects
-      any other lock change beyond the recorded list, and runs `cargo install
-      --locked --path .`.
+      any other lock change (exactly one entry may change), and runs `cargo
+      install --locked --path .`.
       - It takes `CARGO_PUBLIC_API_VERSION`, `CARGO_PUBLIC_API_SHA256` and
         `CARGO_PUBLIC_API_OPENSSL_SYS_VERSION` from the environment.
       - It works under `with-temp-scope.sh`, leaving no leak.
       - Its self-test covers a tampered checksum and an unexpected lock
         change.
-- [ ] 3.3 In `ci.yml`, add the two new pins to the top-level `env` and call the
+- [ ] 3.3 In `ci.yml`, add `libcurl-devel` to the job's dnf step and the two
+      new pins to the top-level `env`, and call the
       script from "Install advisory API tools". Keep the job advisory, its
       20-minute timeout and its snapshot upload.
 - [ ] 3.4 Update the docs: `.agents/rules/build.md` (the pin list and the
