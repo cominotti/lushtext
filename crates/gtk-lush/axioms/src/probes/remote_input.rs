@@ -34,7 +34,7 @@ use crate::session::settle;
 /// invalid.
 pub const SANDBOX_ENV: &str = "GTK_LUSH_AXIOMS_SANDBOX";
 
-/// The axioms whose probe drives real input through [`RemoteInput`].
+/// The axioms whose probe drives real input through `RemoteInput`.
 pub const REMOTE_INPUT_AXIOMS: &[crate::AxiomId] = &[
     crate::AxiomId::new(59),
     crate::AxiomId::new(60),
