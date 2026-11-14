@@ -153,9 +153,12 @@ Rules for every task:
       - Latin, CJK, Arabic and emoji titles, and palette rows with long
         names and long subtitles (width parity).
 
-      (Proved by `scripts/compare-blueprint-visuals.sh --baseline-ref`
-      against `main` over the visual-smoke matrix, plus `row_text.rs` for the
-      scripts and widths no smoke fixture carries; design "Visual parity".)
+      (Proved by `make visual-smoke` on a `main` worktree and on the branch,
+      with every notes, bookmarks and palette screenshot compared pixel for
+      pixel, plus `row_text.rs` for the scripts and widths no smoke fixture
+      carries. The comparison found a one-pixel row-height defect, fixed
+      failing-first with an in-browser parity test; dark and high-contrast
+      notes rows are not in the smoke matrix. Design "Visual parity".)
 
 ## 5. Sliced row retirement (design D4)
 

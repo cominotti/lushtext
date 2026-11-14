@@ -386,7 +386,31 @@ impl LushtextRowText {
             for class in self.classes.borrow().iter() {
                 probe.add_css_class(class);
             }
-            let attributes = probe.layout().attributes();
+            // The probe is unparented, so CSS sizes its font, and with it a
+            // `line-height` in pixels, from the default font, not from this
+            // widget's ancestors: in the notes browser a caption probe gave
+            // 15.31 px where the row's own label gets 15.56, and the row a
+            // baseline one pixel higher. Scale an absolute line height to
+            // this widget's font size, as CSS computes it for the widget.
+            let attributes = probe.layout().attributes().map(|attributes| {
+                let probe_size = probe
+                    .pango_context()
+                    .font_description()
+                    .map(|description| description.size());
+                let own_size = self
+                    .obj()
+                    .pango_context()
+                    .font_description()
+                    .map(|description| description.size());
+                match (probe_size, own_size) {
+                    (Some(probe_size), Some(own_size))
+                        if probe_size > 0 && probe_size != own_size =>
+                    {
+                        rescale_line_height(&attributes, probe_size, own_size)
+                    }
+                    _ => attributes,
+                }
+            });
             CSS_ATTRIBUTES.with(|cache| {
                 let mut cache = cache.borrow_mut();
                 if cache.len() >= FONT_METRICS_CACHE_ENTRIES {
@@ -414,6 +438,33 @@ impl LushtextRowText {
         *slot = Some(layout.clone());
         layout
     }
+}
+
+/// `attributes` with every absolute line height scaled from a font of
+/// `from_size` to one of `to_size` (Pango units), rounded to the nearest
+/// unit; the other attributes are kept as they are.
+fn rescale_line_height(
+    attributes: &pango::AttrList,
+    from_size: i32,
+    to_size: i32,
+) -> pango::AttrList {
+    let scaled = pango::AttrList::new();
+    for attribute in attributes.attributes() {
+        if attribute.type_() == pango::AttrType::AbsoluteLineHeight
+            && let Some(height) = attribute.downcast_ref::<pango::AttrInt>()
+        {
+            let value = (i64::from(height.value()) * i64::from(to_size) + i64::from(from_size) / 2)
+                / i64::from(from_size);
+            let mut line_height =
+                pango::AttrInt::new_line_height_absolute(i32::try_from(value).unwrap_or(i32::MAX));
+            line_height.set_start_index(attribute.start_index());
+            line_height.set_end_index(attribute.end_index());
+            scaled.insert(line_height);
+        } else {
+            scaled.insert(attribute);
+        }
+    }
+    scaled
 }
 
 /// A layout's logical width and height in whole pixels, rounded up, as

@@ -911,3 +911,66 @@ fn test_notes_row_text_is_a_label_carrying_the_row_text() {
         window.notes_evidence().retiring_rows == 0
     });
 }
+
+/// Row-height parity in the browser itself (`lighten-notes-browser-rows`
+/// D2): each realized row's title and subtitle measure and allocate what a
+/// `GtkLabel` with the same classes and text gets in the same box, so the
+/// rows keep `main`'s pitch. The visual smoke showed a one-pixel-shorter row
+/// that the isolated `row_text.rs` comparison did not.
+#[test]
+fn test_notes_row_text_measures_like_a_label_in_the_browser() {
+    use lushtext_core::ui::row_text::LushtextRowText;
+    let (_folders, folder) = seed_workspace();
+    seed_closed_bookmarks(&folder, 2, 2);
+    let window = new_window();
+    open_browser_and_wait(&window, 4);
+    let list = notes_list(&window);
+    wait_until(Duration::from_secs(5), || !list.row_widgets().is_empty());
+    let row = list.row_widgets().into_iter().next().expect("a drawn row");
+    let mut texts = Vec::new();
+    let mut stack = vec![row];
+    while let Some(widget) = stack.pop() {
+        if let Some(text) = widget.downcast_ref::<LushtextRowText>() {
+            texts.push(text.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(next) = child {
+            child = next.next_sibling();
+            stack.push(next);
+        }
+    }
+    assert_eq!(texts.len(), 2, "a title and a subtitle");
+    let mut pairs = Vec::new();
+    for text in &texts {
+        let label = gtk4::Label::new(Some(&text.text()));
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.set_xalign(0.0);
+        for class in text.css_classes() {
+            label.add_css_class(&class);
+        }
+        text.parent()
+            .and_downcast::<gtk4::Box>()
+            .expect("the title box")
+            .append(&label);
+        pairs.push((text.clone(), label));
+    }
+    flush_after_delay(Duration::from_millis(100));
+    for (text, label) in &pairs {
+        let (text_min, text_nat, text_base, _) = text.measure(gtk4::Orientation::Vertical, -1);
+        let (label_min, label_nat, label_base, _) = label.measure(gtk4::Orientation::Vertical, -1);
+        assert_eq!(
+            (text_min, text_nat, text_base, text.height()),
+            (label_min, label_nat, label_base, label.height()),
+            "{:?} {:?}: height and baseline against a label",
+            text.css_classes(),
+            text.text()
+        );
+    }
+    for (_, label) in pairs {
+        label.unparent();
+    }
+    dialog(&window).close();
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().retiring_rows == 0
+    });
+}

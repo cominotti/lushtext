@@ -679,16 +679,45 @@ committed notes bound test passes under both renderers on the final tree.
 
 ### Visual parity (task 4.3)
 
-A new visual-geometry scenario type would prove same-session invariants, but
-this change's claim is cross-build: the rows must look as they did on `main`.
-`scripts/compare-blueprint-visuals.sh --baseline-ref` captures a baseline ref
-and the branch through the same visual-smoke state matrix (notes empty, few,
-dense, constrained; palette files, commands, notes, dense files, category,
-category dark, no results) and compares the screenshots pixel for pixel, so
-it is the proof used, with its report in the handoff directory. Height parity
-for CJK, Arabic, Devanagari and emoji titles, and width parity at several
-row widths, are widget tests (`row_text.rs`), because no fixture of the smoke
-matrix carries those scripts.
+The claim is cross-build: the rows must look as they did on `main`.
+`scripts/compare-blueprint-visuals.sh --baseline-ref` was tried first, but it
+captures a fixed six-state Blueprint matrix with no notes or palette state,
+so it cannot prove this claim; its three differing states (compact
+properties, short layout, dark style) differ only by capture timing (the
+compact bottom sheet caught mid-slide in one capture and settled in the
+branch's own visual smoke) and fixture paths, and touch no surface of this
+change.
+
+The proof used is `make visual-smoke` run in a `main` worktree
+(`23518e53`, `lnbr-main`) and on the branch, then every notes, bookmarks and
+command-palette screenshot compared pixel for pixel
+(`impl/row-parity/summary*.txt` in the handoff directory):
+
+- **It found a defect.** Notes and bookmarks rows were one pixel shorter on
+  the branch (row pitch 43 px against 44), with the subtitle drawn two pixels
+  higher. `LushtextRowText` read the CSS text attributes from an unparented
+  `GtkLabel` probe, and CSS sizes that probe's caption font, and with it the
+  absolute `line-height` of `.caption`, from the default font rather than from
+  the row's ancestors: 15.31 px of line height where the row's own label gets
+  15.56, which gave a baseline of 12 px against 13 and a shorter line. The
+  isolated `row_text.rs` comparison did not see it, because there the probe
+  and the row share the default font. A new widget test,
+  `notes_browser::test_notes_row_text_measures_like_a_label_in_the_browser`,
+  puts a `GtkLabel` with the same classes and text beside each text of a
+  realized browser row and compares measure, baseline and allocation; it was
+  red (baseline 12 against 13) before the fix and is green after it. The fix
+  scales an absolute line height from the probe's font size to the widget's
+  (`rescale_line_height`).
+- **After the fix** the row column is pixel-identical: the vertical text
+  profile of `notes-dense` matches `main` row for row, and every remaining
+  difference in the notes and bookmarks states is the preview pane's path
+  text, which names the worktree. Every command-palette state differs from
+  `main` by the same 1,128-pixel header path as states this change does not
+  touch, so the palette rows are identical.
+- Not captured by a smoke: notes rows under dark and high contrast (the
+  smoke matrix has none) and the palette's long-name width split; height
+  parity for CJK, Arabic, Devanagari and emoji titles and width parity at
+  several row widths are widget tests (`row_text.rs`).
 
 ## Migration Plan
 

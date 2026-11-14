@@ -563,6 +563,13 @@ Cargo workspace:
   workspace tree workflow's own pure policy — per-store scan ownership,
   workspace-save generations, inline-rename intent, and the confirmed-delete
   identity verdict — lives beside that workflow in `ui/sidebar/policy.rs`.
+  The Browse Notes and command palette rows draw their text with
+  `ui/row_text/` (`LushtextRowText`, a label-role widget measured without
+  shaping when its font covers the text), retire their rows in bounded turns
+  outside the input dispatch through `ui/list_retirement.rs`, and the notes
+  browser lists a large first result in a few frames through
+  `ui/list_growth.rs`; the pure planning behind both is in
+  `model/list_budget.rs`.
 - `crates/lushtext` - thin binary entry point plus integration tests.
 - `crates/gtk-lush/` - governed `0.0.0` GTK Lush family crates for extracting
   reusable GTK4/Libadwaita patterns. These are functional in-tree APIs, not
