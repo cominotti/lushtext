@@ -1,6 +1,6 @@
 ---
 name: learn
-description: Automatically perform a final repository-learning review after completing architecture changes, refactors, features, or bug fixes. Identify durable guidance, hook, rule, and skill updates; detect stale or contradictory agent instructions; and produce a concrete candidate report. Keep automatic use read-only unless the current task explicitly authorizes repository-guidance edits, and never write Codex memory unless the user explicitly requests a memory update.
+description: "End-of-task review for durable repository lessons: proposes AGENTS.md, rule, skill or hook updates and flags stale guidance, read-only unless guidance edits were authorized. Use after finishing a feature, fix or refactor."
 ---
 
 # Review durable learnings

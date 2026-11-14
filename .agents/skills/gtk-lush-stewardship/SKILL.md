@@ -1,6 +1,6 @@
 ---
 name: gtk-lush-stewardship
-description: "Steward GTK Lush as LushText's internal platform. Use when adding, changing, or reviewing GTK Lush crates or APIs; deciding whether repeated GTK helper code belongs in GTK Lush; refreshing GTK Lush adoption evidence, README, CHANGELOG, policy, public-API advisory, proof, or governance docs; reopening publication, repository graduation, or upstreaming; or working in crates/gtk-lush/**, crates/gtk-lush-adoption-lab/**, fixtures/gtk-lush-adoption/**, docs/gtk-lush-adoption/**, crates/cargo-gtk-proof/**, or docs/next/gtk-lush.md. Do not use for ordinary LushText feature work unless it proposes a GTK Lush boundary decision."
+description: "GTK Lush platform stewardship: whether code belongs in GTK Lush, and changes to its crates, APIs, adoption evidence, proof tooling or governance, including reopening publication or repository graduation. Use for work in crates/gtk-lush/**, crates/gtk-lush-adoption-lab/**, crates/cargo-gtk-proof/**, fixtures/gtk-lush-adoption/**, docs/gtk-lush-adoption/** or docs/next/gtk-lush.md; not for ordinary feature work."
 ---
 
 # GTK Lush Stewardship
