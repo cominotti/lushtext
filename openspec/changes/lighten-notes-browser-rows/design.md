@@ -666,6 +666,22 @@ figures stay in their recorded ranges except where that load explains it
 (notes query publish 6.2 ms under GL, palette first category publish 2.4 ms
 and X1 layout 5.9 ms under GL).
 
+**Review rerun on the final tree (2026-11-14, stage 4, `f86590c5`).** Both
+committed bound tests, 4 interleaved `main` → branch rounds under GL on the
+optimized build (`review-*` in `runs.log` and `main/evidence.txt`), each
+started at load 1.35–2.85 and ended at 1.32–4.10 (4.10 only after `main`'s
+first run, which included its optimized build). Branch figures, with `main`
+in brackets: notes first-frame layout 5.9–6.0 ms (37.1–38.7), query frame
+layout 0.13–0.18 ms (18.6–19.6) and whole 2.9–3.3 ms (20.8–22.7), query
+publish 5.6–5.7 ms (2.2–2.5), close input 0.35–0.82 ms (8.1–13.7), the frame
+ending the close animation 6.8–7.1 ms of layout (0.6–0.9), retirement turns
+1.3–1.4 ms; palette first category publish 1.08–1.23 ms (7.1–7.2), X1 layout
+3.6–4.6 ms (13.7–14.6) and whole 6.0–7.1 ms (15.7–16.7), Escape 0.6–0.9 ms,
+retirement turns 4.0–4.4 ms, the frames after the leave 5.4–6.1 ms. Every
+branch run passes its bounds and every `main` run fails them, as before;
+the verdicts above hold on the final tree (the first-frame layout is 0.5 ms
+above the stage-3 range, within `B_SETTLE_US`).
+
 ### Exceptions after the change (task 8.3)
 
 - **E1, the first frame: closed.** Its layout is 5.0–5.4 ms (was 36–38) and
