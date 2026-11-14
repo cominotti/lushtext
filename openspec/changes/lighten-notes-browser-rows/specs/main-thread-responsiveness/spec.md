@@ -26,6 +26,7 @@ Tearing down a list's realized rows SHALL NOT happen inside an input dispatch, a
 #### Scenario: Re-entering during a retirement
 - **WHEN** the user enters a category view again before the previous retirement finished
 - **THEN** the retirement stops, the new publish lists the new rows, and every model emission matches the length the model reports
+- **AND** until that publish the view lists no rows of its own: the left category's rows stay hidden, Enter and the arrow keys act on none of them, and the evidence and the accessible state report no rows and no selection
 
 #### Scenario: Rows look the same
 - **WHEN** the Notes browser and the palette show Latin, CJK, Arabic and emoji titles, and palette rows with long names and long subtitles, in both modes and both palette views, in light, dark and high contrast

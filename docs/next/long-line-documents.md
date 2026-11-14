@@ -4011,6 +4011,12 @@ separate change, in this order:
        leave 5.6–7.2 ms worst;
      - axioms A108–A111 hold on GTK 4.24.1 / libadwaita 1.10.0;
        `core-list-budget` gained harnesses G1, R1 and R2 (12 of 12).
+     Reviewed 2026-11-14 (design "Review (stage 4)"): one must-fix, a
+     hidden row of the left palette category could be activated on
+     re-entry before the new view published (fixed: the view lists no rows
+     of its own until its first publish), plus a row-text resize on a first
+     text, the palette's in-situ parity test (light and dark) and the high
+     contrast decision.
      Follow-ups: the other realized-row lists (workspace sidebar, search
      results, local history, Recent Open) as `LushtextRowText` candidates,
      each measured first; `GtkAccessibleText` on the widget if a screen

@@ -464,7 +464,7 @@ skip. The probes reuse this stage's measurement fixture
   cost at least several ms of paint with 8 rows and with 205. It records the
   GL figure where available.
 
-### D9. No new Kani harness; `core-list-budget` rerun if touched
+### D9. `core-list-budget` rerun if touched (planned: no new harness; implemented: G1, R1, R2 added)
 
 The retirement reuses `list_budget::turn_continues`, whose properties
 `core-list-budget` already proves. If implementation adds a pure planning
@@ -742,6 +742,86 @@ command-palette screenshot compared pixel for pixel
   smoke matrix has none) and the palette's long-name width split; height
   parity for CJK, Arabic, Devanagari and emoji titles and width parity at
   several row widths are widget tests (`row_text.rs`).
+
+## Review (stage 4, 2026-11-14)
+
+An independent review of `origin/main..HEAD` (code, evidence, tests, probes,
+Kani harnesses and docs). Findings, each fixed failing-first where behaviour
+changed:
+
+- **Must-fix: a hidden row of the left category could be activated.**
+  Entering a category while the left view's rows were still being retired
+  cancelled the retirement and kept those rows listed (hidden) until the new
+  view's first publish. In that gap Enter activated the left category's
+  selected row (the red run opened `f-000303.rs`, a workspace file, from the
+  Open Tabs view), the arrows moved over it, and `category_rows`,
+  `result_count` and the accessible state counted 1,700 rows of the other
+  category. Decision (user experience first): keep the cheaper in-place
+  retarget, but the view lists **no rows of its own** until its first publish
+  (`category_rows_current`, from `category_published_query`, which only that
+  publish sets): activation, arrows, the selection, the counts and the
+  accessible state see none of the hidden rows. Restoring the synchronous
+  clear on entry was rejected: it would put the 8–12 ms teardown back into
+  the Enter dispatch. Test:
+  `command_palette_category::test_palette_reentry_during_a_retirement_acts_on_no_stale_row`
+  (red before, green after).
+- **Should-fix: a first text after an empty one did not resize.**
+  `LushtextRowText::set_text` queued only a redraw when the old text was
+  empty and both texts were covered, though the minimum width changes from 0
+  to the ellipsis width; GTK kept the cached measure and a zero-width
+  allocation. No current consumer sizes the text by its natural width, so no
+  row showed it, but the widget's contract was wrong. Fixed: an emptiness
+  change in either direction queues a resize. Test:
+  `row_text::test_a_first_text_after_an_empty_one_resizes_the_row_text` (red:
+  minimum 0 against the label's 11).
+- **Should-fix: no in-situ parity test for the palette**, which the rule this
+  change added to `ui.md` requires for every consumer surface (its subtitle
+  uses `.caption`, the class behind the notes defect). Added
+  `command_palette_category::test_palette_row_text_measures_like_a_label_in_the_palette`:
+  each row text of a realized palette row against a `GtkLabel` with the same
+  classes and text in the same row box, measure, baseline, allocation and CSS
+  colour, under the light and the dark style.
+- **Decision: dark and high contrast (task 4.3's open half).** Dark is now
+  proved in situ for the palette (above). High contrast is not forced by the
+  harness (libadwaita reads it from the settings portal) and is accepted
+  without a capture: the widget's CSS node is `label` with the label's
+  classes, so every colour and opacity rule a label gets applies to it, and
+  Adwaita's high-contrast rules change colours, not fonts or line heights;
+  the colour assertion above is the same mechanism. Recorded here rather than
+  as a gap.
+- **Sonar (CI):** two redundant `'static` lifetimes on `ObjectSubclass::NAME`
+  in new code (`ui/row_text/imp.rs`, `probes/row_lists.rs`), fixed.
+- **Doc drift fixed:** `ui/list_growth.rs` said the staged publish lists 64
+  rows (it is `LIST_FIRST_ROWS`, 32); the D9 heading said no harness was
+  added; the `category_holds_sources` evidence doc said sources go when the
+  view is left (they go when its retirement ends).
+
+- **Pre-existing CI failures this PR inherits from `main` (`94059763`).**
+  Fixed here: `Dependency Policy` (RUSTSEC-2026-0486, rustix 1.1.4's xattr
+  functions; bumped to 1.1.6, `cargo-sources.json` regenerated). Not fixed
+  here, left to the maintainer as their own changes: `GTK Lush API Advisory`
+  (`cargo install --locked cargo-public-api` 0.52.0 pins `openssl-sys` 0.9.88,
+  which refuses the runner's OpenSSL; a CI tooling change), and `main`'s
+  `Widget Tests (window)` failure
+  `window::test_autosave_during_a_local_history_restore_keeps_the_previous_draft`
+  ("the restored text is still owed a draft", every attempt) plus two
+  retry-recovered FLAKY tests on `main` (`window::test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode`,
+  `workspace_tree_virtualization::test_directory_retention_stays_within_its_charge`).
+  These touch no surface of this change (local history, drafts, the sidebar
+  tree); the draft one is a data-safety question that deserves its own work
+  stream rather than a fix folded into a row-rendering change.
+
+Checked and found sound: the growth and retirement emissions match the
+lengths the models report (sections cut at the listed rows); a notes
+retirement's selection changes reach a disposed browser's handler, which
+returns on `disposed`; no handler reached from a retirement's emissions reads
+the retirement's own state; the MODIFIED requirements keep every scenario
+name of the main spec (only scenarios were added); the axiom probes' wall
+clock ratios have wide margins (A108 layout share 94 % against 50 %, growth
+3.5× against 2×; A109 8× against 2×; A111 12 ms against 2 ms); G1, R1 and R2
+drive the production `next_growth`, `for_each_unheld_range` and
+`retirement_unit_cut`. Kani: none rerun (no proven module touched by the
+review's fixes).
 
 ## Migration Plan
 
