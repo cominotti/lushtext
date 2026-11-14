@@ -119,6 +119,26 @@ Why shared, not local: there were once five copy-pasted `wait_until`s, so fixing
 
 If a widget test fails then passes (or the harness prints `FLAKY:`), that is a blocker, not noise: read the real panic, classify the wait, fix the cause, and rerun to confirm. See the skill's Flake Discipline section.
 
+**Wait for the admission the action needs, not only for its precondition.**
+Some app operations share one process-wide admission and **reschedule** rather
+than queue when it is taken: a local-history periodic capture that finds the
+automatic-capture permit held (by the baseline capture the test's own edit
+started) tries again a whole interval later, five minutes. A test that calls
+such an operation right after the edit times out whenever a loaded runner has
+not finished the earlier capture (`protected_view_surfaces`, CI run
+43627976239). Wait for the admission to be free first
+(`local_history_evidence().automatic_capture_inflight`), and prove the fix with
+a test that slows the competing work deterministically
+(`set_local_history_baseline_delay_for_test`) rather than with load.
+
+**A scroll made while a reflow pauses the rest state is still a scroll.** The
+`editor_page` minimap flake (`y = -6`) was a settle repair undoing a
+`scroll_to_mark` made during a passive width burst. Reproduce such a class
+deterministically by opening the burst (toggle the minimap) and scrolling
+before it settles; then test a later reflow with a single `set_value`, because
+a `scroll_to_mark` keeps refining its value after the settle and that later
+`value-changed` can hide a missing rest-state record.
+
 Use predicates tied to visible behavior:
 
 - tab count changed

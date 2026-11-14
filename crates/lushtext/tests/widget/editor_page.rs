@@ -3356,6 +3356,165 @@ fn test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin(
     );
 }
 
+/// Present a 2,000-line unwrapped document at the top, minimap shown, every
+/// first-layout reflow settled.
+fn present_settled_minimap_document() -> (LushtextEditorPage, gtk4::ApplicationWindow, gio::Settings)
+{
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(2_000, &[], &[]));
+    let window = present_editor_page_with_size(&page, 1000, 700);
+    wait_for_minimap_ready(&page);
+    flush_after_delay(Duration::from_millis(800));
+    assert!(
+        page.source_view().visible_rect().y() < 10,
+        "precondition: at the top"
+    );
+    (page, window, settings)
+}
+
+/// Hide (or show) the minimap and wait until the editor's width changed: a
+/// passive width reflow burst has opened, and has not settled yet.
+fn open_minimap_width_reflow(page: &LushtextEditorPage, settings: &gio::Settings, show: bool) {
+    let width_before = page.source_view().visible_rect().width();
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, show)
+        .expect("toggle the minimap");
+    wait_until(Duration::from_secs(5), || {
+        page.source_view().visible_rect().width() != width_before
+    });
+}
+
+/// Scroll the view to line 1,000 through the insert mark, as GTK's own
+/// navigation does, and wait until the scroll landed.
+fn scroll_to_mid_document(page: &LushtextEditorPage) {
+    let buffer = page.buffer();
+    buffer.place_cursor(&buffer.iter_at_line(1_000).expect("mid-document line"));
+    page.source_view()
+        .scroll_to_mark(&buffer.get_insert(), 0.0, true, 0.0, 0.5);
+    wait_until(Duration::from_secs(10), || {
+        page.source_view().visible_rect().y() > 10_000
+    });
+}
+
+/// `restore-main-ci` D2, the CI flake of
+/// `test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin`:
+/// a scroll made while a passive width reflow burst is pending must survive
+/// the burst's settle. The settle's top-anchor repair moved the view back to
+/// the top (`y = -6`), because the rest state still said "at top": it was
+/// paused for the whole burst, so it never saw the scroll.
+#[test]
+fn test_a_scroll_during_a_passive_width_reflow_survives_the_settle() {
+    ensure_gtk_init();
+    let (page, _window, settings) = present_settled_minimap_document();
+    open_minimap_width_reflow(&page, &settings, false);
+    scroll_to_mid_document(&page);
+    flush_after_delay(Duration::from_millis(600));
+    let rect = page.source_view().visible_rect();
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("restore minimap");
+    assert!(
+        rect.y() > 10_000,
+        "a scroll made during a passive width reflow was undone ({rect:?})"
+    );
+}
+
+/// A scroll kept through one settle stays kept: the settle re-records the
+/// rest state, so neither the next width reflow's top-anchor repair nor the
+/// next height-only change's top-edge clamp reads the stale "at top" the
+/// paused burst left behind (`restore-main-ci` D2, "A kept scroll survives
+/// later reflows").
+///
+/// The scroll here is one `set_value` during the burst (a scrollbar drag or
+/// an application scroll), not `scroll_to_mark`: the mark scroll keeps
+/// refining its value after the burst settles, and that later `value-changed`
+/// would record the rest state by itself, hiding a missing re-record.
+#[test]
+fn test_a_kept_reflow_scroll_survives_later_reflows() {
+    ensure_gtk_init();
+    let (page, _window, settings) = present_settled_minimap_document();
+    open_minimap_width_reflow(&page, &settings, false);
+    let adjustment = page.source_view().vadjustment().expect("vadjustment");
+    adjustment.set_value(adjustment.lower() + 20_000.0);
+    flush_after_delay(Duration::from_millis(600));
+    assert!(
+        page.source_view().visible_rect().y() > 10_000,
+        "precondition: the scroll survived its own burst ({:?})",
+        page.source_view().visible_rect()
+    );
+
+    // A later width reflow, with no scroll in it.
+    open_minimap_width_reflow(&page, &settings, true);
+    flush_after_delay(Duration::from_millis(600));
+    assert!(
+        page.source_view().visible_rect().y() > 10_000,
+        "a later width reflow undid the kept scroll ({:?})",
+        page.source_view().visible_rect()
+    );
+
+    // A later height-only change: the view loses 120 px of height.
+    let height_before = page.source_view().visible_rect().height();
+    let scroller = page
+        .source_view()
+        .parent()
+        .and_downcast::<gtk4::ScrolledWindow>()
+        .expect("the editor view scrolls in a GtkScrolledWindow");
+    scroller.set_margin_bottom(scroller.margin_bottom() + 120);
+    wait_until(Duration::from_secs(5), || {
+        page.source_view().visible_rect().height() != height_before
+    });
+    flush_after_delay(Duration::from_millis(600));
+    let rect = page.source_view().visible_rect();
+    scroller.set_margin_bottom(scroller.margin_bottom() - 120);
+    assert!(
+        rect.y() > 10_000,
+        "a later height-only change undid the kept scroll ({rect:?})"
+    );
+}
+
+/// The top-anchor repair a kept scroll must not disable: at the top, a
+/// reallocation during a width reflow burst that leaves a preserved offset is
+/// still undone at the settle. GTK delivers that offset through
+/// `gtk_adjustment_configure` together with the bounds the rewrap changed
+/// (`changed` already carrying the value, then `value-changed`, ledger A112),
+/// which is what the test does: on GTK 4.24 no
+/// editor-page test or minimap visual case reached this repair, so it is
+/// emulated (`restore-main-ci` 2.1b).
+#[test]
+fn test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow() {
+    ensure_gtk_init();
+    let (page, _window, settings) = present_settled_minimap_document();
+    open_minimap_width_reflow(&page, &settings, false);
+    let adjustment = page.source_view().vadjustment().expect("vadjustment");
+    // A rewrap reconfigures the bounds and the value together.
+    adjustment.configure(
+        adjustment.lower() + 120.0,
+        adjustment.lower(),
+        adjustment.upper() + 240.0,
+        adjustment.step_increment(),
+        adjustment.page_increment(),
+        adjustment.page_size(),
+    );
+    assert!(
+        page.source_view().visible_rect().y() > 100,
+        "precondition: the reallocation left an offset"
+    );
+    flush_after_delay(Duration::from_millis(600));
+    let rect = page.source_view().visible_rect();
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("restore minimap");
+    assert!(
+        rect.y() < 10,
+        "the settle must restore the top a reallocation offset moved ({rect:?})"
+    );
+}
+
 #[test]
 fn test_minimap_native_viewport_effect_projects_inside_source_map() {
     ensure_gtk_init();
