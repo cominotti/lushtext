@@ -103,6 +103,17 @@ use `ui::accessibility::test_audit::AccessibleAudit`. It complements, but does
 not replace, `make accessibility-smoke` for AT-SPI-visible focus, tree, and text
 behavior.
 
+## Realized List Rows
+
+Factory rows whose text a publish retargets draw it with `LushtextRowText`,
+not `GtkLabel` (ledger A108) and never `GtkInscription` (A109); see
+`.agents/rules/ui.md` "Realized List Rows". A lazy model with a realized band
+is emptied by a `ui::list_retirement::RowRetirement` started after its list
+is unmapped (A110), never by one `items-changed` inside an input dispatch or
+a dialog's `closed` handler, and a publish into an empty lazy list grows
+through `ui::list_growth::RowGrowth`. Widget tests that read row text use
+`common::labels_in` / `common::visible_text_of`, which see both widgets.
+
 ## Signal And Binding Lifetimes
 
 Use `gtk_lush_signals` for GTK registration ownership that has an explicit

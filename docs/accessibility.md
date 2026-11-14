@@ -265,7 +265,14 @@ Expected screen-reader behavior includes:
   row to row across section boundaries (headers are not focus stops, ledger
   A94); each row's accessible name is its visible title and its description
   starts with its section's name, so Orca hears the section; Enter previews
-  without opening. When a byte budget kept rows out of the source, the limit
+  without opening. The rows' (and the command palette rows') text widgets are
+  `LushtextRowText` (`lighten-notes-browser-rows`): role `label` with the
+  visible text as accessible label, so a client reading a row's children
+  hears the same text as before, but without `GtkLabel`'s accessible text
+  interface (caret and text ranges), which rows do not use; the section
+  header keeps its `heading` role. Opening the browser on a large source
+  lists the first rows at once and the rest over the next frames; a key that
+  moves the selection lists them all first. When a byte budget kept rows out of the source, the limit
   label (`status bar`) reads "Showing X of Y notes and bookmarks. The rest
   exceed the memory budget." ("of at least Y" when part of the source could
   not be counted; "Searching X of Y …" while a query is active), its accessible

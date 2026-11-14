@@ -333,6 +333,21 @@ B3), over `B_INTERACT_US`. The palette's deferred clear does the same in one
     1.3 finds the teardown on a path the browser does not own (the dialog
     host, a focus change, the list's unrealize), D4 is revised before task
     5.
+  - **Call path, measured (task 1.3, 2026-11-12).** A measurement-only test
+    on `main` (`.claude/handoffs/lighten-notes-browser-rows/impl/`, probe
+    `zz13_probe.rs`) connected to the list's model and to the dialog's
+    `closed` around one `AdwDialog::close()` at 16,384 rows. The one
+    `items-changed(0, 16384, 0)` is emitted **inside** `close()`, by the
+    browser's own `closed` handler: libadwaita 1.10 emits `closed` in the
+    close call itself (before the close animation), and `dispose_runtime`'s
+    `self.rows.clear()` tears the realized rows down there. The list is
+    unmapped, unrealized and destroyed about 120 ms later, at the end of the
+    close animation (the dialog host's last reference), in one dispatch of
+    2.5 ms once the rows are gone. So the teardown is a model emission the
+    browser owns, and D4 stands as written. The retirement additionally waits
+    for the list to be **unmapped** before its first turn: removing rows while
+    the dialog is still fading would remove visible rows from it, and A110's
+    premise is an unmapped list.
   - The model's sources, entries and payload ownership are released once the
     model is empty, through the existing disposal paths. `dispose_runtime`
     keeps its generation invalidation immediately, so no stale publish can
@@ -527,6 +542,153 @@ them in place. Decisions, with their rationale:
   `main`, not `label`, and keeps it.
 - **Test helpers (task 2.6).** `labels_in` and `first_label` find row text by
   `GtkLabel`; without an update a negative assertion would pass vacuously.
+
+## Implementation record (2026-11-12/13)
+
+Same host, toolkit and build as the baseline; branch tree after D2–D5. Every
+run behind `scripts/measure.sh` with the 1-minute load below 4 for 30 s,
+recorded before and after in `.claude/handoffs/lighten-notes-browser-rows/runs.log`
+(0.29–1.25 during the verdict campaign). Evidence: that directory's `impl/`.
+
+### Tasks 1.1, 1.4 and 1.5
+
+- **Palette baseline phases (1.1)**, `main`, 131,072 files, from the red and
+  D5 rounds (cairo and GL alike): the first category publish 7.1–7.8 ms; X1
+  13.7–16.7 ms of layout and 1.7–2.5 ms of paint; Escape 0.4–1.0 ms; every
+  dispatch after the leave until the sources are released, worst 5.1–12.8 ms,
+  which is the deferred clear's teardown and the frame that shows the grouped
+  view again.
+- **Per-row teardown (1.4).** A110's probe removes 64 rows of the realized band
+  in 2.3 ms (37 µs a row) against 8.7 ms for a full clear of 206 (42 µs); a
+  notes row with its widgets costs about 70 µs in the app. The unit is
+  `LIST_RETIREMENT_UNIT_ROWS` = 16 (a cap, rounded down to a power of two):
+  about 1.1 ms, so `LIST_TURN_SLICE_US` (4 ms) plus one unit fits
+  `B_INTERACT_US` with margin. Measured turns: notes 1.2–1.5 ms, palette
+  3.9–5.1 ms.
+- **Width parity (1.5).** Measured in the app rather than the isolated probe,
+  because the palette row's widths depend on the real `GtkBox` and CSS: with
+  `natural-width-from-text` on the name and subtitle and D2–D3 alone, X1's
+  layout stayed at 14.0–14.9 ms (red rounds, cairo and GL), because the
+  frame after a publish into an empty view still realizes about 205 rows and
+  shapes each text once for its natural width. That is what decided D5 for
+  the palette as well (below). Width parity itself is proved by
+  `row_text::test_palette_row_text_splits_the_row_like_labels` at several row widths and
+  by the cross-ref pixel comparison of task 4.3.
+
+### Task 1.3 to 5: what differs from the design
+
+- **D2.** `LushtextRowText` reads its CSS text attributes from a label probe
+  per class set and caches font metrics per primary font
+  (`FONT_METRICS_CACHE_ENTRIES` = 64, a cap). Coverage (`pango_font_has_char`)
+  is checked on every text change, so a query publish that rebinds about 205
+  rows grew from 2.2–2.8 to 5.6–5.7 ms (about 17 µs a row), within
+  `B_INTERACT_US`, while the frame after it lost 18–19 ms of layout. The
+  committed bound for that dispatch moved from a 6 ms constant to
+  `B_INTERACT_US` with this figure recorded.
+- **D4.** The retirement's first turn removes every range nobody holds, not
+  only the two around the band: `list_budget::unheld_ranges` returns the
+  ranges after, between and before the held rows (the band, the focus row,
+  the selection), last first, so one emission per range tears nothing down
+  (A110). Its turns run from a `Priority::LOW` idle after the list is
+  unmapped.
+- **D5 decided by rule (task 6).** After D2–D3 the GL first frame that shows
+  16,384 rows still had 23.7–25.7 ms of layout (4 interleaved rounds,
+  `d5-*` logs), over `B_SETTLE_US`, so the staged first publish was
+  implemented, for the notes browser and for the palette's category view.
+  `R_FIRST` is 32, not the 64 the design named: the tallest viewport shows
+  about 20 rows, and 64 rows measured 10.3–10.6 ms of layout, which with a GL
+  frame's paint leaves no margin. `R_STEP` = 32 (cap) and `R_BAND` = 256
+  (coverage window), all in `docs/thresholds.md`. Growth stops at `R_BAND`
+  and lists the rest in one emission, so 16,384 rows are listed in at most
+  eight steps. Any key, a far selection or an index past the listed rows
+  finishes the growth first; the evidence and "Showing X of Y" report the
+  final length from the first publish.
+- **Kani (D9, task 7).** `list_budget.rs` gained pure functions, and three
+  invariants cross a budget, so the design's "no new harness" did not hold:
+  G1 (growth reaches every row in at most eight steps), R1 (the unheld ranges
+  keep every held row and with them cover the list) and R2 (a unit removes at
+  least one and at most `LIST_RETIREMENT_UNIT_ROWS` rows), all in
+  `core-list-budget` and in `ORACLES`. R1 first ran out of memory (14 GiB) on
+  the standard library's sort and a growing `Vec` over symbolic input; it now
+  proves the allocation-free core `for_each_unheld_range` over zero to two
+  strictly ascending held rows and every `u32` length, and the property tests
+  cover `unheld_ranges`' filter, sort and dedup. The shard: 12 of 12, 16 s,
+  1.5 GiB peak locally (R1 4.7 s). Its dispatched CI budget is the
+  maintainer's.
+
+### Measured verdicts (task 8.1)
+
+4 interleaved `main`/branch rounds, optimized widget build, the in-dialog
+phase harness (rounds 2–3 of each process, so GL is steady state) for the
+notes browser, the committed bound test for the palette. Min–max.
+
+| Case | `main` GL | branch GL | `main` cairo | branch cairo |
+|---|---|---|---|---|
+| Notes 16,384: first frame with rows, layout | 36.6–37.8 ms | 5.0–5.4 ms | 36.3–37.8 ms | 5.1–5.2 ms |
+| Notes 16,384: first frame, whole | 38.6–43.6 ms | 7.3–11.2 ms | 57.4–64.5 ms | 23.7–26.5 ms |
+| Notes 16,384: open-animation and growth frames, worst | 5.4 ms (one warm-up 83.6) | 6.9–10.7 ms | 27.7–29.1 ms | 32.7–35.2 ms |
+| Notes 16,384: query frame, layout / whole | 18.6–18.9 / 20.8–21.3 ms | 0.14–0.18 / 3.0–4.9 ms | 18.7–19.6 / 20.4–21.4 ms | 0.14–0.21 / 2.6–2.9 ms |
+| Notes 16,384: close input dispatch (`close()`) | 8.8–15.5 ms | 0.6–1.5 ms | 8.5–15.4 ms | 0.6–1.4 ms |
+| Notes 16,384: frame ending the close animation, update+layout | ≤ 1.1 ms | 6.9–10.0 ms | ≤ 0.8 ms | 6.5–7.2 ms |
+| Notes 16,384: retirement turns (bound test) | — | 1.36–1.38 ms | — | 1.43–1.46 ms |
+| Notes 8: first frame layout | 3.7–5.0 ms | 3.1–3.9 ms | | |
+| Palette 131,072: first category publish | 7.1–7.2 ms | 1.05–1.09 ms | 7.1–7.2 ms | 1.07–1.10 ms |
+| Palette: X1 layout / whole | 13.7–14.1 / 15.9–16.2 ms | 3.5–4.0 / 5.7–6.1 ms | 13.8–14.5 / 15.5–16.3 ms | 6.6–8.0 / 6.6–8.1 ms |
+| Palette: Escape input | 0.4–1.0 ms | 0.8–1.0 ms | 0.9–1.0 ms | 0.5–0.9 ms |
+| Palette: retirement turns | — (deferred clear) | 4.6–5.1 ms | — | 3.9–4.2 ms |
+| Palette: dispatches after the leave, worst / layout | 5.1–10.3 / ≤ 9.6 ms | 5.6–7.2 / 4.6–6.4 ms | 10.0–12.5 / 8.8–11.4 ms | 8.4–13.2 / 7.3–12.1 ms |
+
+`main`'s palette bound test fails every run (its X1 and leave are over the
+new assertions), as recorded red in task 2.3; the branch's passes. The
+committed notes bound test passes under both renderers on the final tree.
+
+### Exceptions after the change (task 8.3)
+
+- **E1, the first frame: closed.** Its layout is 5.0–5.4 ms (was 36–38) and
+  the whole GL frame 7.3–11.2 ms, within `B_SETTLE_US`. The cairo frame's
+  remaining 18–21 ms is the test renderer's paint (A111). Bound: the layout
+  phase against `B_SETTLE_US`.
+- **E2, the query frame: closed.** 0.14–0.21 ms of layout, 2.6–4.9 ms whole.
+  Its text measurement moved into the publish dispatch (5.6–5.7 ms, within
+  `B_INTERACT_US`). Bound: `B_INTERACT_US` for both.
+- **E3, closing: closed.** The input dispatch is 0.6–1.5 ms (was 8.5–15.5).
+  **New, within budget:** the frame that ends the close animation spends
+  6.5–10 ms in its update and layout phases. A profile of the branch
+  (`impl/perf-d5.*`) shows libadwaita's animation completion calling
+  `gtk_widget_unparent` on the dialog, which recurses `gtk_widget_unroot`
+  through `gtk_list_view_unroot` into the about 205 rows the retirement keeps
+  until the list is unmapped (A110's premise); on `main` those rows were
+  already destroyed inside `close()`. The frame stays within `B_SETTLE_US`,
+  and no row on screen changes. Retiring the rows before the dialog unparents
+  would remove visible rows from a fading dialog, so this is accepted and
+  recorded; A1 bounds it by the realized band.
+- **X1: closed under GL** (3.5–4.0 ms of layout, `B_INTERACT_US` met). Under
+  the harness's cairo it is 6.6–8.0 ms, at that target's edge, so the
+  committed bound stays `B_SETTLE_US` with these figures in the test.
+- **The deferred clear: closed.** Replaced by the retirement, whose turns are
+  3.9–5.1 ms (`turn_continues` lets a turn finish its unit, Kani T2).
+- **The grouped view shown again after a leave** (DP's grouped-publish
+  figure): 5.6–7.2 ms worst under GL, 8.4–13.2 ms under cairo, its layout
+  4.6–12.1 ms; within `B_SETTLE_US`, asserted on its layout phase. It is the
+  grouped list's own rows (A1, A90), outside this change's rows.
+- **Cairo animation paint (A111).** Open- and close-animation frames cost
+  16–35 ms of paint under cairo with 8 rows as with 16,384, 3–11 ms under GL;
+  a property of the test renderer, never asserted. On the branch the growth
+  frames add their 32 rows of layout to it (32.7–35.2 ms worst under cairo,
+  6.9–10.7 ms under GL).
+
+### Visual parity (task 4.3)
+
+A new visual-geometry scenario type would prove same-session invariants, but
+this change's claim is cross-build: the rows must look as they did on `main`.
+`scripts/compare-blueprint-visuals.sh --baseline-ref` captures a baseline ref
+and the branch through the same visual-smoke state matrix (notes empty, few,
+dense, constrained; palette files, commands, notes, dense files, category,
+category dark, no results) and compares the screenshots pixel for pixel, so
+it is the proof used, with its report in the handoff directory. Height parity
+for CJK, Arabic, Devanagari and emoji titles, and width parity at several
+row widths, are widget tests (`row_text.rs`), because no fixture of the smoke
+matrix carries those scripts.
 
 ## Migration Plan
 

@@ -546,6 +546,30 @@ JSONC is deferred (requires custom `.lang` file — see `docs/next/jsonc-support
 - Never attach a language directly: call `request_language_attach`, which
   defers the definition parse to the attach stage (A67).
 
+## Realized List Rows
+
+- **Row text in a realized list is `LushtextRowText`** (`ui/row_text/`) when a
+  publish rebinds or retargets the rows: a `GtkLabel` shapes its text for every
+  measure, and a `GtkListView` measures all its realized rows (about 205, A1)
+  in the frame after a rebind (ledger A108). Use `natural-width-from-text`
+  where siblings share a box's width by their natural widths (the palette row:
+  name `hexpand`, subtitle `halign: end`), keep the classes a label had, and
+  set a non-`label` role (`heading`) before the accessible context exists.
+  Widget tests compare its measure with a `GtkLabel`'s for each class and
+  script it is used with; add the case for a new class.
+- **Never `GtkInscription` for row text**: its constructor builds a Pango
+  layout from an unshared style, several labels' cost per row (A109).
+- **A first publish into an empty lazy list is staged** (`ui/list_growth.rs`,
+  `list_budget::staged_first_rows`/`next_growth`), and any key, far selection
+  or index past the listed rows finishes the growth first; the evidence
+  reports the final length.
+- **Realized rows are retired in slices outside input dispatches**
+  (`ui/list_retirement.rs`): never empty a lazy model with a realized band
+  inside an input dispatch or a dialog's `closed` (emitted inside
+  `AdwDialog::close()`); remove the unheld rows first (A110), then units from
+  the end, after the list is unmapped, and keep the list alive until it is
+  empty.
+
 ## Large-Buffer Preview And Marker Guardrails
 
 Markdown preview, minimap long-line markers, encoding-warning previews, and
