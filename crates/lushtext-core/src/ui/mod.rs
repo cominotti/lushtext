@@ -20,6 +20,8 @@ pub mod font_zoom;
 pub mod info_bar;
 pub mod input_quiet;
 pub mod language_catalog;
+pub(crate) mod list_growth;
+pub(crate) mod list_retirement;
 pub mod markdown_preview;
 pub mod open_popover;
 #[cfg(feature = "test-utils")]
@@ -30,6 +32,7 @@ pub mod preferences;
 pub mod properties_panel;
 pub mod protected_fold;
 pub mod responsiveness_probe;
+pub mod row_text;
 pub mod search_bar;
 pub mod search_panel;
 pub mod settings_writes;

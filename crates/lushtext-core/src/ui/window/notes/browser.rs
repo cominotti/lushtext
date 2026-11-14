@@ -38,6 +38,7 @@ use crate::model::palette::{PaletteNoteEntry, PaletteNoteTarget};
 use crate::services::palette as palette_service;
 use crate::ui::accessibility;
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
+use crate::ui::row_text::LushtextRowText;
 use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
@@ -139,6 +140,9 @@ pub(super) struct NotesBrowserState {
     /// rebinds in place and an unbound one stops listening. Bounded by the
     /// realized rows (A1).
     pub(super) bound_rows: RefCell<BoundRowHandlers>,
+    /// The staged first publish growing one step per frame
+    /// (`lighten-notes-browser-rows` D5), while it grows.
+    pub(super) row_growth: RefCell<Option<crate::ui::list_growth::RowGrowth>>,
     /// Debounce used to rebuild browser search rows after typing settles.
     pub(super) search_debounce: Debounce,
     /// One-active/one-latest ownership for background full-source matching.
@@ -224,8 +228,13 @@ pub struct NotesBrowserRuntimeSnapshot {
     pub source: palette_service::NoteSourceRefreshCoordinatorSnapshot,
     /// Closed-file bookmark excerpt ownership counters.
     pub preview: crate::services::bookmark_excerpt::BookmarkExcerptPreviewCoordinatorSnapshot,
-    /// Rows the list shows for the current query.
+    /// Rows the list shows for the current query, including the rows a
+    /// staged first publish is still listing (`lighten-notes-browser-rows`
+    /// D5): the final length from the first publish on.
     pub listed_rows: u32,
+    /// Rows a staged first publish has yet to list; 0 once the list holds
+    /// every row (tests and automation wait for it).
+    pub growing_rows: u32,
     /// Rows the source retained (X of "Showing X of Y").
     pub source_rows: usize,
     /// Rows construction found, retained or not (Y).
@@ -291,8 +300,11 @@ impl ActiveNotesBrowser {
         let Some(state) = self.state.upgrade() else {
             return false;
         };
-        if index >= state.rows.len() {
+        if index >= state.rows.full_len() {
             return false;
+        }
+        if index >= state.rows.len() {
+            state.finish_row_growth();
         }
         state.selection.set_selected(index);
         true
@@ -333,7 +345,8 @@ impl ActiveNotesBrowser {
             query,
             source,
             preview,
-            listed_rows: state.rows.len(),
+            listed_rows: state.rows.full_len(),
+            growing_rows: state.rows.growing_rows(),
             source_rows: count.listed,
             rows_found: count.found,
             found_is_lower_bound: count.found_is_lower_bound,
@@ -581,6 +594,7 @@ impl LushtextWindow {
             publishing: Cell::new(false),
             snapshot_capture: Rc::default(),
             bound_rows: RefCell::default(),
+            row_growth: RefCell::default(),
             search_debounce: Debounce::default(),
             preview_loads: RefCell::default(),
             all_entries: RefCell::new(Arc::new(
@@ -646,6 +660,21 @@ impl LushtextWindow {
                 }
             }
         });
+        // A key that moves the selection lands where it would on the full
+        // list: a staged first publish still growing lists the rest first
+        // (`lighten-notes-browser-rows` D5).
+        let keys = gtk4::EventControllerKey::new();
+        keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        keys.connect_key_pressed({
+            let state = Rc::downgrade(&state);
+            move |_, _, _, _| {
+                if let Some(state) = state.upgrade() {
+                    state.finish_row_growth();
+                }
+                glib::Propagation::Proceed
+            }
+        });
+        state.list_view.add_controller(keys);
         state.open_button.connect_clicked({
             let state = Rc::downgrade(&state);
             move |_| {
@@ -684,7 +713,8 @@ impl LushtextWindow {
             let state_holder = Rc::clone(&state_holder);
             let window_weak = self.downgrade();
             move |_| {
-                if let Some(state) = state_holder.borrow_mut().take() {
+                let state = state_holder.borrow_mut().take();
+                if let Some(state) = state {
                     state.dispose_runtime();
                 }
                 let Some(window) = window_weak.upgrade() else {
@@ -959,6 +989,30 @@ impl NotesBrowserEntryExt for NotesBrowserEntry {
 }
 
 impl NotesBrowserState {
+    /// Follow a publish: grow a staged first publish one step per frame, or
+    /// stop a growth a later publish ended.
+    pub(super) fn track_row_growth(&self) {
+        // A list with no frame clock yet has no frame to spare: list it all.
+        if !self.list_view.is_realized() {
+            self.rows.finish_growth();
+        }
+        let growth = (self.rows.growing_rows() > 0).then(|| {
+            crate::ui::list_growth::RowGrowth::start(Box::new(self.rows.clone()), &self.list_view)
+        });
+        let previous = self.row_growth.replace(growth);
+        drop(previous);
+    }
+
+    /// List every row a staged first publish has not listed yet.
+    pub(super) fn finish_row_growth(&self) {
+        if self.rows.growing_rows() == 0 {
+            return;
+        }
+        let growth = self.row_growth.take();
+        drop(growth);
+        self.rows.finish_growth();
+    }
+
     pub(super) fn configure_mode(&self, mode: palette_service::NotesBrowserMode) {
         self.mode.set(mode);
         self.dialog.set_title(mode.title());
@@ -1159,8 +1213,8 @@ fn realized_row_widgets(list_view: &gtk4::ListView) -> usize {
 /// The widgets of one browser row, built once per recycled row.
 struct NotesRowWidgets {
     icon: gtk4::Image,
-    title: gtk4::Label,
-    subtitle: gtk4::Label,
+    title: LushtextRowText,
+    subtitle: LushtextRowText,
     open_button: gtk4::Button,
 }
 
@@ -1169,8 +1223,11 @@ fn notes_row_widgets(child: &gtk4::Widget) -> Option<NotesRowWidgets> {
     let icon = child.first_child()?.downcast::<gtk4::Image>().ok()?;
     let title_box = icon.next_sibling()?;
     let open_button = title_box.next_sibling()?.downcast::<gtk4::Button>().ok()?;
-    let title = title_box.first_child()?.downcast::<gtk4::Label>().ok()?;
-    let subtitle = title.next_sibling()?.downcast::<gtk4::Label>().ok()?;
+    let title = title_box
+        .first_child()?
+        .downcast::<LushtextRowText>()
+        .ok()?;
+    let subtitle = title.next_sibling()?.downcast::<LushtextRowText>().ok()?;
     Some(NotesRowWidgets {
         icon,
         title,
@@ -1204,11 +1261,14 @@ fn build_notes_row_factory(state: &Rc<NotesBrowserState>) -> gtk4::SignalListIte
             let title_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
             title_box.set_hexpand(true);
             title_box.set_valign(gtk4::Align::Center);
-            let title = gtk4::Label::new(None);
+            // Row text measured without shaping (`lighten-notes-browser-rows`
+            // D2): a query that rebinds the realized rows redraws them
+            // instead of laying every one out again (ledger A108).
+            let title = LushtextRowText::new();
             title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
             title.set_xalign(0.0);
             title.add_css_class("title");
-            let subtitle = gtk4::Label::new(None);
+            let subtitle = LushtextRowText::new();
             subtitle.set_ellipsize(gtk4::pango::EllipsizeMode::End);
             subtitle.set_xalign(0.0);
             subtitle.add_css_class("subtitle");
@@ -1297,8 +1357,8 @@ fn build_notes_row_factory(state: &Rc<NotesBrowserState>) -> gtk4::SignalListIte
             }
             accessibility::clear_row_accessibility_for_list_item(list_item);
             if let Some(widgets) = list_item.child().as_ref().and_then(notes_row_widgets) {
-                widgets.title.set_label("");
-                widgets.subtitle.set_label("");
+                widgets.title.set_text("");
+                widgets.subtitle.set_text("");
                 widgets.open_button.set_visible(false);
                 widgets.open_button.set_tooltip_text(None);
                 accessibility::clear_row_accessibility(&widgets.open_button);
@@ -1341,8 +1401,8 @@ fn bind_notes_row(
         |detail| format!("{} · {detail}", entry.row_subtitle()),
     );
     widgets.icon.set_icon_name(Some(entry.sidebar_icon_name()));
-    widgets.title.set_label(&title);
-    widgets.subtitle.set_label(&subtitle);
+    widgets.title.set_text(&title);
+    widgets.subtitle.set_text(&subtitle);
     widgets.subtitle.set_visible(!subtitle.is_empty());
     if let Some(child) = list_item.child() {
         child.set_tooltip_text(Some(&subtitle));
@@ -1373,7 +1433,7 @@ fn build_notes_header_factory(state: &Rc<NotesBrowserState>) -> gtk4::SignalList
         let Some(header) = object.downcast_ref::<gtk4::ListHeader>() else {
             return;
         };
-        let title = gtk4::Label::new(None);
+        let title = LushtextRowText::new();
         title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         title.set_xalign(0.0);
         title.add_css_class("heading");
@@ -1432,9 +1492,8 @@ fn project_section_header(header: &gtk4::ListHeader, row: &NotesBrowserRow) {
     let label = row.category().map_or("", |category| category.label());
     if let Some(title) = header
         .child()
-        .and_then(|child| child.downcast::<gtk4::Label>().ok())
+        .and_then(|child| child.downcast::<LushtextRowText>().ok())
     {
-        title.set_label(label);
-        accessibility::set_label(&title, label);
+        title.set_text(label);
     }
 }

@@ -1076,6 +1076,106 @@ pub fn worst_dispatch_until(
     (predicate(), worst)
 }
 
+/// Whether the accessible `Label` property of `accessible` is exactly `label`
+/// (a value check; `AccessibleAudit` checks presence only).
+pub fn accessible_label_is(accessible: &impl IsA<gtk4::Accessible>, label: &str) -> bool {
+    use glib::translate::ToGlibPtr;
+    let expected = std::ffi::CString::new(label).expect("a label without NUL");
+    // SAFETY: `gtk_test_accessible_check_property` is variadic and, for the
+    // `Label` property, reads one `const char *` argument, which `expected`
+    // keeps alive for the call. The accessible pointer is borrowed for the
+    // call only. It returns NULL when the value matches, else a newly
+    // allocated message the caller frees.
+    unsafe {
+        let message = gtk4::ffi::gtk_test_accessible_check_property(
+            accessible.as_ref().to_glib_none().0,
+            gtk4::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL,
+            expected.as_ptr(),
+        );
+        if message.is_null() {
+            true
+        } else {
+            glib::ffi::g_free(message.cast());
+            false
+        }
+    }
+}
+
+/// The worst single dispatch and the worst frame phases seen by
+/// [`phase_split_dispatch_until`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhaseWorst {
+    /// The longest dispatch, whatever ran in it.
+    pub dispatch: Duration,
+    /// The longest layout phase of a frame dispatch: from the dispatch's start
+    /// to the end of the frame clock's `layout` phase (the update phase and
+    /// the layout of every widget).
+    pub layout: Duration,
+    /// The longest paint phase: from the end of `layout` to the end of
+    /// `paint` (snapshot and render).
+    pub paint: Duration,
+}
+
+/// Like [`worst_dispatch_until`], also splitting every frame dispatch at the
+/// end of the frame clock's `layout` and `paint` phases
+/// (`lighten-notes-browser-rows` task 2.1): under the harness's cairo
+/// renderer an animated frame's paint costs 16–30 ms whatever the widgets
+/// (ledger A111), so a list's own cost is judged by its frames' layout phase.
+/// `widget` names the frame clock (any realized widget of the window).
+pub fn phase_split_dispatch_until(
+    widget: &impl IsA<gtk4::Widget>,
+    budget: Duration,
+    mut predicate: impl FnMut() -> bool,
+) -> (bool, PhaseWorst) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    let clock = widget
+        .frame_clock()
+        .expect("a realized widget has a frame clock");
+    let layout_end: Rc<Cell<Option<Instant>>> = Rc::default();
+    let paint_end: Rc<Cell<Option<Instant>>> = Rc::default();
+    // Connected after GTK's own handlers, so each runs at its phase's end.
+    let layout_handler = clock.connect_layout({
+        let layout_end = Rc::clone(&layout_end);
+        move |_| layout_end.set(Some(Instant::now()))
+    });
+    let paint_handler = clock.connect_paint({
+        let paint_end = Rc::clone(&paint_end);
+        move |_| paint_end.set(Some(Instant::now()))
+    });
+    let context = glib::MainContext::default();
+    let deadline = Instant::now() + budget;
+    let mut worst = PhaseWorst::default();
+    let mut held = false;
+    while Instant::now() < deadline {
+        if predicate() {
+            held = true;
+            break;
+        }
+        layout_end.set(None);
+        paint_end.set(None);
+        let start = Instant::now();
+        let dispatched = context.iteration(false);
+        let took = start.elapsed();
+        if dispatched {
+            worst.dispatch = worst.dispatch.max(took);
+            if let Some(layout) = layout_end.get() {
+                worst.layout = worst.layout.max(layout.saturating_duration_since(start));
+                if let Some(paint) = paint_end.get() {
+                    worst.paint = worst.paint.max(paint.saturating_duration_since(layout));
+                }
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    clock.disconnect(layout_handler);
+    clock.disconnect(paint_handler);
+    (held || predicate(), worst)
+}
+
 /// Whether timing verdicts are enforced: only on the optimized widget build
 /// (`CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false`, opt-level 2), where dispatch
 /// times are the product's; the ordinary debug suite prints them only.
@@ -1237,15 +1337,31 @@ impl NotesBrowserList {
     }
 }
 
-/// Every label's text under `root`, in depth-first child order.
+/// The text of a visible `GtkLabel` or `LushtextRowText` (the notes browser
+/// and palette rows' text widget, `lighten-notes-browser-rows` D2), `None` for
+/// any other widget.
+pub fn visible_text_of(widget: &gtk4::Widget) -> Option<String> {
+    if !widget.property::<bool>("visible") {
+        return None;
+    }
+    if let Some(label) = widget.downcast_ref::<gtk4::Label>() {
+        return Some(label.text().to_string());
+    }
+    widget
+        .downcast_ref::<lushtext_core::ui::row_text::LushtextRowText>()
+        .map(lushtext_core::ui::row_text::LushtextRowText::text)
+}
+
+/// Every visible label's or row text's text under `root`, in depth-first
+/// child order. Both kinds count, so a row whose text moved from `GtkLabel`
+/// to `LushtextRowText` is still seen (a helper that found nothing would let
+/// a negative assertion pass vacuously).
 pub fn labels_in(root: &gtk4::Widget) -> Vec<String> {
     let mut labels = Vec::new();
     let mut stack = vec![root.clone()];
     while let Some(current) = stack.pop() {
-        if let Ok(label) = current.clone().downcast::<gtk4::Label>()
-            && label.property::<bool>("visible")
-        {
-            labels.push(label.text().to_string());
+        if let Some(text) = visible_text_of(&current) {
+            labels.push(text);
         }
         let mut children = Vec::new();
         let mut child = current.first_child();

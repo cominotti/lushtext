@@ -610,6 +610,8 @@ impl NotesBrowserState {
         self.source_ready.set(false);
         self.source_truncation.borrow_mut().clear();
         self.listed_count.set(NotesBrowserListedCount::default());
+        let growth = self.row_growth.take();
+        drop(growth);
         self.rows.clear();
         update_notes_browser_limit_label(self);
         self.split_view.set_show_content(false);
@@ -618,7 +620,15 @@ impl NotesBrowserState {
     }
 
     /// Cancel source/query publication and release retained browser payloads.
-    pub(super) fn dispose_runtime(&self) {
+    ///
+    /// Runs inside the dialog's `closed`, which `AdwDialog::close()` emits in
+    /// the close input's own dispatch (`lighten-notes-browser-rows` task 1.3).
+    /// Emptying the model there tore the about 205 realized rows down in that
+    /// dispatch (13–15 ms); the rows are instead retired in slices once the
+    /// close animation has unmapped the list, and the source is released when
+    /// the list is empty. The retirement holds this state (and through it the
+    /// dialog and its list) until then.
+    pub(super) fn dispose_runtime(self: &Rc<Self>) {
         if self.disposed.replace(true) {
             return;
         }
@@ -630,8 +640,23 @@ impl NotesBrowserState {
         self.preview_loads.borrow_mut().invalidate();
         self.source_ready.set(false);
         stop_open_editor_capture(self);
-        self.rows.clear();
+        let growth = self.row_growth.take();
+        drop(growth);
         self.bound_rows.borrow_mut().clear();
+        let state = Rc::clone(self);
+        let retirement = crate::ui::list_retirement::RowRetirement::start(
+            Box::new(self.rows.clone()),
+            &self.list_view,
+            Box::new(Rc::clone(self)),
+            Box::new(move || state.release_source()),
+        );
+        let mut retirements = self.window.imp().notes_row_retirements.borrow_mut();
+        retirements.retain(crate::ui::list_retirement::RowRetirement::is_retiring);
+        retirements.push(retirement);
+    }
+
+    /// Release the browser source once its rows are gone.
+    fn release_source(&self) {
         let source = self.all_entries.replace(Arc::new(
             crate::ui::plain_disposal::DisposalOwned::small_unreserved(
                 Vec::<NotesBrowserEntry>::new().into_boxed_slice(),

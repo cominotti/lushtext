@@ -69,6 +69,15 @@ pub struct CommandPaletteEvidence {
     /// Whether the category model holds source snapshots (it must not once
     /// the view is left or the palette closed).
     pub category_holds_sources: bool,
+    /// Whether the left category view's rows are still being retired in
+    /// slices (`lighten-notes-browser-rows` D4); the sources are released when
+    /// it ends.
+    pub category_rows_retiring: bool,
+    /// Ranked rows a staged first publish of the category view has yet to
+    /// list (`lighten-notes-browser-rows` D5); 0 once every row is listed.
+    pub category_growing_rows: u32,
+    /// The longest turn of the last category-row retirement, microseconds.
+    pub category_retirement_longest_turn_us: u64,
     /// The selected position in the visible view, when one is selected.
     pub selected_position: Option<u32>,
     /// The category of the selected grouped "More" row, when one is selected.
@@ -179,7 +188,7 @@ impl LushtextCommandPalette {
 
             category,
             category_rows: if category_shown {
-                imp.category_model.len()
+                imp.category_model.full_len()
             } else {
                 0
             },
@@ -190,6 +199,9 @@ impl LushtextCommandPalette {
             },
             category_limited: category_shown && imp.category_limited.get(),
             category_holds_sources: imp.category_model.holds_sources(),
+            category_rows_retiring: imp.category_rows_retiring(),
+            category_growing_rows: imp.category_model.growing_rows(),
+            category_retirement_longest_turn_us: imp.category_retirement_longest_turn_us(),
             selected_position,
             selected_more,
             more_rows,
@@ -246,7 +258,7 @@ impl LushtextCommandPalette {
     pub fn result_count(&self) -> u32 {
         let imp = self.imp();
         if imp.category.get().is_some() {
-            imp.category_model.len()
+            imp.category_model.full_len()
         } else {
             imp.results_store.n_items()
         }

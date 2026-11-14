@@ -144,6 +144,9 @@ mod model_imp {
     #[derive(Default)]
     pub struct NotesBrowserRowModel {
         pub(super) projection: RefCell<NotesBrowserProjection>,
+        /// While a first publish grows (`lighten-notes-browser-rows` D5), the
+        /// rows listed so far; `None` once every projected row is listed.
+        pub(super) listed: std::cell::Cell<Option<u32>>,
         pub(super) live:
             RefCell<std::collections::HashMap<u32, glib::WeakRef<super::NotesBrowserRow>>>,
     }
@@ -163,15 +166,17 @@ mod model_imp {
         }
 
         fn n_items(&self) -> u32 {
-            self.projection.borrow().sections.len()
+            self.listed_len()
         }
 
         fn item(&self, position: u32) -> Option<glib::Object> {
+            let listed = self.listed_len();
             let projection = self.projection.borrow();
             // While a shrinking publish announces its removal, `rows` still
-            // holds the old rows past the new length: answer by the reported
-            // length, as `GListModel` requires.
-            if position >= projection.sections.len() {
+            // holds the old rows past the new length, and a growing first
+            // publish projects rows it does not list yet: answer by the
+            // reported length, as `GListModel` requires.
+            if position >= listed {
                 return None;
             }
             let source_index = *projection.rows.get(usize::try_from(position).ok()?)?;
@@ -192,15 +197,30 @@ mod model_imp {
         }
     }
 
+    impl NotesBrowserRowModel {
+        /// The rows GTK is told about: the listed rows of a growing first
+        /// publish, else every projected row.
+        pub(super) fn listed_len(&self) -> u32 {
+            let projected = self.projection.borrow().sections.len();
+            self.listed
+                .get()
+                .map_or(projected, |listed| listed.min(projected))
+        }
+    }
+
     impl SectionModelImpl for NotesBrowserRowModel {
         fn section(&self, position: u32) -> (u32, u32) {
+            let listed = self.listed_len();
             let projection = self.projection.borrow();
             // GtkSectionModel's contract past the end: one range from the item
-            // count to G_MAXUINT.
+            // count to G_MAXUINT; a section is cut at the listed rows.
+            if position >= listed {
+                return (listed, u32::MAX);
+            }
             projection
                 .sections
                 .section_at(position)
-                .unwrap_or((projection.sections.len(), u32::MAX))
+                .map_or((listed, u32::MAX), |(start, end)| (start, end.min(listed)))
         }
     }
 }
@@ -221,6 +241,12 @@ impl Default for NotesBrowserRowModel {
 impl NotesBrowserRowModel {
     /// Replace the listed rows with one grouped projection: a removal and an
     /// addition, each answered around the realized rows only (A93).
+    ///
+    /// A publish into an empty list is **staged** (`lighten-notes-browser-rows`
+    /// D5): it lists `list_budget::staged_first_rows` rows, and
+    /// [`NotesBrowserRowModel::grow`] lists the rest over the next frames,
+    /// so the frame that first shows the rows realizes the rows on screen
+    /// rather than GTK's whole band (A1). Any other publish ends a growth.
     pub fn publish(&self, grouped: GroupedNoteRows, generation: u64) {
         let new_len = grouped.sections.len();
         let new = NotesBrowserProjection {
@@ -229,6 +255,17 @@ impl NotesBrowserRowModel {
             generation,
         };
         let old_len = self.len();
+        if old_len == 0 && new_len > 0 {
+            let first = crate::model::list_budget::staged_first_rows(new_len);
+            let _ = self.replace_projection(new);
+            self.imp().listed.set((first < new_len).then_some(first));
+            self.imp().live.borrow_mut().clear();
+            self.items_changed(0, 0, first);
+            return;
+        }
+        // The rows GTK knows are `old_len`; from here every projected row is
+        // listed.
+        self.freeze_growth();
         let kept = old_len.min(new_len);
         // Positions both projections list keep their row objects: the rows
         // GTK holds (its realized range, about 205, A1, and the selection)
@@ -312,10 +349,50 @@ impl NotesBrowserRowModel {
         self.publish(GroupedNoteRows::default(), self.generation());
     }
 
+    /// List the next growth step of a staged first publish (one
+    /// `items-changed` addition); `false` once every row is listed.
+    pub fn grow(&self) -> bool {
+        let Some(listed) = self.imp().listed.get() else {
+            return false;
+        };
+        let projected = self.full_len();
+        let Some(next) = crate::model::list_budget::next_growth(listed, projected) else {
+            self.imp().listed.set(None);
+            return false;
+        };
+        self.imp().listed.set((next < projected).then_some(next));
+        self.items_changed(listed, 0, next - listed);
+        next < projected
+    }
+
+    /// List every remaining row of a growing first publish at once (a key
+    /// that moves the selection, an index past the listed rows).
+    pub fn finish_growth(&self) {
+        let Some(listed) = self.imp().listed.take() else {
+            return;
+        };
+        let projected = self.full_len();
+        if projected > listed {
+            self.items_changed(listed, 0, projected - listed);
+        }
+    }
+
+    /// Rows a growing first publish still has to list (0 once listed).
+    #[must_use]
+    pub fn growing_rows(&self) -> u32 {
+        self.full_len() - self.len()
+    }
+
+    /// Rows the published projection holds, listed or still growing.
+    #[must_use]
+    pub fn full_len(&self) -> u32 {
+        self.imp().projection.borrow().sections.len()
+    }
+
     /// Rows listed.
     #[must_use]
     pub fn len(&self) -> u32 {
-        self.imp().projection.borrow().sections.len()
+        self.imp().listed_len()
     }
 
     /// Whether nothing is listed.
@@ -328,6 +405,66 @@ impl NotesBrowserRowModel {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.imp().projection.borrow().generation
+    }
+
+    /// End a growth where it stands: the projection keeps only the listed
+    /// rows (nothing GTK knows changes, so nothing is emitted).
+    fn freeze_growth(&self) {
+        if let Some(listed) = self.imp().listed.take() {
+            let mut projection = self.imp().projection.borrow_mut();
+            let sections = projection.sections.truncated(listed);
+            projection.sections = sections;
+        }
+    }
+
+    /// Stop listing `count` rows from `start`, as one removal; the held row
+    /// objects keep their entries and those past the range move down with
+    /// their positions (a retirement, `lighten-notes-browser-rows` D4).
+    fn cut_range(&self, start: u32, count: u32) {
+        self.freeze_growth();
+        let old_len = self.len();
+        let start = start.min(old_len);
+        let count = count.min(old_len - start);
+        if count == 0 {
+            return;
+        }
+        {
+            let mut projection = self.imp().projection.borrow_mut();
+            let (from, to) = (
+                usize::try_from(start).unwrap_or(usize::MAX),
+                usize::try_from(start + count).unwrap_or(usize::MAX),
+            );
+            let rows: Rc<[u32]> = projection
+                .rows
+                .get(..from)
+                .unwrap_or_default()
+                .iter()
+                .chain(projection.rows.get(to..).unwrap_or_default())
+                .copied()
+                .collect();
+            projection.rows = rows;
+            let sections = projection.sections.without_range(start, count);
+            projection.sections = sections;
+        }
+        {
+            let mut live = self.imp().live.borrow_mut();
+            let shifted = live
+                .drain()
+                .filter(|(position, _)| *position < start || *position >= start + count)
+                .map(|(position, row)| {
+                    (
+                        if position >= start + count {
+                            position - count
+                        } else {
+                            position
+                        },
+                        row,
+                    )
+                })
+                .collect();
+            *live = shifted;
+        }
+        self.items_changed(start, count, 0);
     }
 
     /// Source index listed at `position`, without creating a row object.
@@ -350,5 +487,35 @@ impl NotesBrowserRowModel {
             .iter()
             .position(|index| *index == source_index)
             .and_then(|position| u32::try_from(position).ok())
+    }
+}
+
+impl crate::ui::list_retirement::RetiringRows for NotesBrowserRowModel {
+    fn rows_len(&self) -> u32 {
+        self.len()
+    }
+
+    fn held_positions(&self) -> Vec<u32> {
+        crate::ui::list_retirement::held_positions(&self.imp().live.borrow())
+    }
+
+    fn remove_range(&self, start: u32, count: u32) {
+        self.cut_range(start, count);
+    }
+
+    fn release(&self) {
+        self.imp().listed.set(None);
+        let generation = self.generation();
+        *self.imp().projection.borrow_mut() = NotesBrowserProjection {
+            generation,
+            ..NotesBrowserProjection::default()
+        };
+        self.imp().live.borrow_mut().clear();
+    }
+}
+
+impl crate::ui::list_growth::GrowingRows for NotesBrowserRowModel {
+    fn grow(&self) -> bool {
+        Self::grow(self)
     }
 }

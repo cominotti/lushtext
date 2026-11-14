@@ -26,7 +26,6 @@ use crate::ui::accessibility::{self, AnnouncementLane};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
-use gtk4::subclass::prelude::ObjectSubclassExt;
 
 use super::category_model::CategorySources;
 use super::imp::LushtextCommandPalette;
@@ -119,8 +118,11 @@ impl LushtextCommandPalette {
         self.category.set(Some(category));
         self.leaving_category.set(None);
         self.category_published_query.replace(None);
+        // A retirement still running keeps its rows: this view's first
+        // publish retargets them in place, which is cheaper than tearing
+        // them down (`lighten-notes-browser-rows` D4). They belong to the
+        // category last shown, so the list stays hidden until that publish.
         self.cancel_category_clear();
-        self.category_model.clear();
         self.category_matching.set(0);
         self.category_limited.set(false);
         self.announced_notice.replace(None);
@@ -131,7 +133,8 @@ impl LushtextCommandPalette {
         self.results_scroll.set_visible(false);
         self.no_results_label.set_visible(false);
         self.category_bar.set_visible(true);
-        self.category_scroll.set_visible(true);
+        self.category_scroll
+            .set_visible(self.category_model.is_empty());
         self.category_title_label.set_label(&label);
         self.category_notice_label.set_visible(false);
         accessibility::set_labelled_description(
@@ -178,33 +181,75 @@ impl LushtextCommandPalette {
         true
     }
 
-    /// Clear the hidden category model, releasing its source snapshots, from
-    /// a low-priority idle after the leave's own dispatch: removing the rows
-    /// unbinds the about 205 the list realized (A1), which measured 4.7–11.2 ms
-    /// inside the Escape dispatch (`drill-down-palette-categories` M6). The
-    /// list is hidden first, so nothing it still holds is shown; entering a
-    /// category before the idle runs clears at once instead.
+    /// Retire the hidden category model's rows in slices, releasing its
+    /// source snapshots when the list is empty
+    /// (`lighten-notes-browser-rows` D4): removing the rows at once unbinds
+    /// the about 205 the list realized (A1), which measured 4.7–11.2 ms inside
+    /// the Escape dispatch (`drill-down-palette-categories` M6) and 8–12 ms in
+    /// the one low-priority idle that replaced it. The list is hidden first,
+    /// so it is unmapped and nothing it still holds is shown.
     fn schedule_category_clear(&self) {
         self.cancel_category_clear();
-        let obj = self.obj().downgrade();
-        let source = glib::idle_add_local_full(glib::Priority::LOW, move || {
-            if let Some(obj) = obj.upgrade() {
-                let imp = obj.imp();
-                imp.category_clear_source.borrow_mut().take();
-                if imp.category.get().is_none() {
-                    imp.category_model.clear();
-                }
-            }
-            glib::ControlFlow::Break
-        });
-        self.category_clear_source.replace(Some(source));
+        let growth = self.category_growth.take();
+        drop(growth);
+        let retirement = crate::ui::list_retirement::RowRetirement::start(
+            Box::new(self.category_model.clone()),
+            &self.category_view,
+            Box::new(()),
+            Box::new(|| {}),
+        );
+        self.category_retirement.replace(Some(retirement));
     }
 
-    /// Drop a pending deferred clear (entering again, disposal).
+    /// Stop a running retirement, keeping the rows it had not removed
+    /// (entering again, disposal).
     pub(super) fn cancel_category_clear(&self) {
-        if let Some(source) = self.category_clear_source.borrow_mut().take() {
-            source.remove();
+        let retirement = self.category_retirement.take();
+        drop(retirement);
+    }
+
+    /// Follow a publish: grow a staged first publish one step per frame, or
+    /// stop a growth a later publish ended.
+    fn track_category_growth(&self) {
+        // A list with no frame clock (the palette not in a window) has no
+        // frame to spare: list it all.
+        if !self.category_view.is_realized() {
+            self.category_model.finish_growth();
         }
+        let growth = (self.category_model.growing_rows() > 0).then(|| {
+            crate::ui::list_growth::RowGrowth::start(
+                Box::new(self.category_model.clone()),
+                &self.category_view,
+            )
+        });
+        let previous = self.category_growth.replace(growth);
+        drop(previous);
+    }
+
+    /// List every ranked row a staged first publish has not listed yet.
+    pub(super) fn finish_category_growth(&self) {
+        if self.category_model.growing_rows() == 0 {
+            return;
+        }
+        let growth = self.category_growth.take();
+        drop(growth);
+        self.category_model.finish_growth();
+    }
+
+    /// The longest turn of the last category-row retirement, microseconds.
+    pub(super) fn category_retirement_longest_turn_us(&self) -> u64 {
+        self.category_retirement
+            .borrow()
+            .as_ref()
+            .map_or(0, |retirement| retirement.evidence().longest_turn_us)
+    }
+
+    /// Whether the category view's rows are still being retired.
+    pub(super) fn category_rows_retiring(&self) -> bool {
+        self.category_retirement
+            .borrow()
+            .as_ref()
+            .is_some_and(crate::ui::list_retirement::RowRetirement::is_retiring)
     }
 
     /// The visible label of `category` in the current mode.
@@ -243,6 +288,8 @@ impl LushtextCommandPalette {
                 note_entries: Arc::clone(&request.note_entries),
             },
         );
+        self.category_scroll.set_visible(true);
+        self.track_category_growth();
         let label = self.category_label(category);
         self.category_title_label
             .set_label(&policy::category_title(&label, ranking.matching));
@@ -261,6 +308,9 @@ impl LushtextCommandPalette {
             if let Some((position, scroll)) =
                 policy::category_publish_selection(same_query, selected, length)
             {
+                if position >= self.category_model.len() {
+                    self.finish_category_growth();
+                }
                 selection.set_selected(position);
                 if scroll {
                     self.category_view

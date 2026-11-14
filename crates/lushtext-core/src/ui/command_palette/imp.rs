@@ -185,8 +185,13 @@ pub struct LushtextCommandPalette {
     pub category: Cell<Option<PaletteCategory>>,
     /// The category view's lazy model.
     pub category_model: PaletteCategoryModel,
-    /// The deferred clear of the hidden category model after leaving.
-    pub(super) category_clear_source: RefCell<Option<glib::SourceId>>,
+    /// The category view's rows being retired in slices after the view was
+    /// left (`lighten-notes-browser-rows` D4); entering a category again
+    /// cancels it and publishes over the rows left.
+    pub(super) category_retirement: RefCell<Option<crate::ui::list_retirement::RowRetirement>>,
+    /// A category view's staged first publish growing one step per frame
+    /// (`lighten-notes-browser-rows` D5), while it grows.
+    pub(super) category_growth: RefCell<Option<crate::ui::list_growth::RowGrowth>>,
     /// Matches of the shown category, listed or not.
     pub category_matching: Cell<usize>,
     /// Whether the row limit cut the shown category.
@@ -265,7 +270,8 @@ impl Default for LushtextCommandPalette {
             escape_callback: RefCell::default(),
             category: Cell::new(None),
             category_model: PaletteCategoryModel::default(),
-            category_clear_source: RefCell::new(None),
+            category_retirement: RefCell::new(None),
+            category_growth: RefCell::new(None),
             category_matching: Cell::new(0),
             category_limited: Cell::new(false),
             leaving_category: Cell::new(None),
@@ -612,6 +618,9 @@ impl LushtextCommandPalette {
             let Some(selection) = self.category_selection() else {
                 return;
             };
+            // A key lands where it would on the full ranking: a staged
+            // first publish still growing lists the rest first (D5).
+            self.finish_category_growth();
             let current = Some(selection.selected()).filter(|p| *p != gtk4::INVALID_LIST_POSITION);
             let Some(position) =
                 policy::next_category_row(current, self.category_model.len(), delta)
@@ -776,7 +785,7 @@ impl LushtextCommandPalette {
                 .and_downcast::<PaletteItem>()
                 .map(|item| item.display_name());
             (
-                usize::try_from(self.category_model.len()).unwrap_or(usize::MAX),
+                usize::try_from(self.category_model.full_len()).unwrap_or(usize::MAX),
                 selected,
             )
         } else {

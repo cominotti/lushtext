@@ -91,6 +91,12 @@ pub struct NotesEvidence {
     /// The longest note-body install turn so far, process-wide, in
     /// microseconds.
     pub largest_note_body_install_slice_us: u64,
+    /// Rows of closed browsers still waiting to be retired in slices
+    /// (`lighten-notes-browser-rows` D4); 0 once every closed browser's list is
+    /// empty and its source released.
+    pub retiring_rows: u32,
+    /// The longest retirement turn of those browsers, microseconds.
+    pub longest_row_retirement_turn_us: u64,
 }
 
 /// Bounded live-editor capture evidence for one explicit budget.
@@ -199,8 +205,25 @@ impl LushtextWindow {
             (busy, parked)
         };
 
+        let (retiring_rows, longest_row_retirement_turn_us) = {
+            let retirements = imp.notes_row_retirements.borrow();
+            let folded = retirements
+                .iter()
+                .map(crate::ui::list_retirement::RowRetirement::evidence)
+                .fold((0u32, 0u64), |(rows, longest), evidence| {
+                    (
+                        rows.saturating_add(evidence.retiring_rows),
+                        longest.max(evidence.longest_turn_us),
+                    )
+                });
+            drop(retirements);
+            folded
+        };
+
         NotesEvidence {
             browser,
+            retiring_rows,
+            longest_row_retirement_turn_us,
             active_note_save_captures,
             notes_menu_open,
             active_document_file_backed,

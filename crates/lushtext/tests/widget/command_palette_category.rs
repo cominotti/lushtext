@@ -164,7 +164,10 @@ fn enter_by_more_row(palette: &LushtextCommandPalette, category: PaletteCategory
     palette.imp().search_entry.emit_activate();
     wait_until(Duration::from_secs(20), || {
         let evidence = palette.evidence();
-        evidence.category == Some(category) && !evidence.searching && evidence.category_rows > 0
+        evidence.category == Some(category)
+            && !evidence.searching
+            && evidence.category_rows > 0
+            && evidence.category_growing_rows == 0
     });
 }
 
@@ -187,7 +190,10 @@ fn category_rows(palette: &LushtextCommandPalette, count: u32) -> Vec<String> {
 }
 
 fn quiet(palette: &LushtextCommandPalette) {
-    wait_until(Duration::from_secs(20), || !palette.evidence().searching);
+    wait_until(Duration::from_secs(20), || {
+        let evidence = palette.evidence();
+        !evidence.searching && evidence.category_growing_rows == 0
+    });
     flush_events();
 }
 
@@ -726,33 +732,19 @@ fn test_palette_category_bar_and_list_fit_a_narrow_overlay() {
     window.close();
 }
 
-/// The worst main-loop dispatch while `window` of wall time passes.
-fn worst_dispatch_for(window: Duration) -> Duration {
-    let context = glib::MainContext::default();
-    let deadline = std::time::Instant::now() + window;
-    let mut worst = Duration::ZERO;
-    while std::time::Instant::now() < deadline {
-        let start = std::time::Instant::now();
-        if context.iteration(false) {
-            worst = worst.max(start.elapsed());
-        } else {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-    worst
-}
-
-/// Recorded toolkit-floor exception X1 (`drill-down-palette-categories`,
-/// design "Implementation decisions"): the frame after the first category
-/// publish realizes the about 205 category rows (A1, A90) and measured
-/// 13.2–16.6 ms at 512 to 131,072 rows, flat in rows. Bounded at twice its
-/// measured worst; every input dispatch (Enter on the More row, Escape) stays
-/// within `B_INTERACT_US`, and the leave's deferred clear within
-/// `B_SETTLE_US`. Enforced on the optimized widget build only.
+/// The category view's dispatches at 131,072 files on the optimized widget
+/// build (`drill-down-palette-categories`, revised by
+/// `lighten-notes-browser-rows` D6 and task 8.2). Every input dispatch (Enter
+/// on the More row, Escape) fits `B_INTERACT_US`; X1, the frame after the
+/// first category publish, is judged by its layout phase (its paint is the
+/// harness renderer's, ledger A111) against `X1_LAYOUT_BOUND`; after Escape
+/// every turn retiring the left view's rows fits `B_INTERACT_US` (the rows go
+/// in slices, A110, where one deferred clear tore them down in 8–12 ms), and
+/// the frames that show the grouped view again fit `B_SETTLE_US` in layout.
+/// Whole-frame worst values are printed only.
 #[test]
 fn test_palette_category_dispatches_stay_within_their_budgets() {
     use lushtext_core::model::responsiveness_budget::B_INTERACT_US;
-    const X1_BOUND: Duration = Duration::from_micros(2 * 16_600);
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
     let window = gtk4::Window::new();
@@ -777,20 +769,29 @@ fn test_palette_category_dispatches_stay_within_their_budgets() {
         evidence.category.is_some() && !evidence.searching && evidence.category_rows > 0
     });
     assert!(held, "the category view published");
-    let frame = worst_dispatch_for(Duration::from_millis(200));
+    let (_, frame) =
+        crate::common::phase_split_dispatch_until(&window, Duration::from_millis(200), || false);
     let start = std::time::Instant::now();
     palette.imp().search_entry.emit_stop_search();
     let escape_input = start.elapsed();
-    let leave = worst_dispatch_for(Duration::from_millis(300));
+    let (released, leave) =
+        crate::common::phase_split_dispatch_until(&window, Duration::from_secs(10), || {
+            !palette.evidence().category_holds_sources
+        });
+    assert!(released, "the left view releases its sources");
+    assert!(!palette.evidence().category_rows_retiring);
+    let retirement_turn = palette.evidence().category_retirement_longest_turn_us;
     println!(
-        "palette-category-budgets enter_input_us={} publish_us={} frame_us={} escape_input_us={} leave_worst_us={}",
+        "palette-category-budgets enter_input_us={} publish_us={} frame_us={} frame_layout_us={} frame_paint_us={} escape_input_us={} leave_worst_us={} leave_layout_us={} retirement_turn_us={retirement_turn}",
         enter_input.as_micros(),
         publish.as_micros(),
-        frame.as_micros(),
+        frame.dispatch.as_micros(),
+        frame.layout.as_micros(),
+        frame.paint.as_micros(),
         escape_input.as_micros(),
-        leave.as_micros()
+        leave.dispatch.as_micros(),
+        leave.layout.as_micros(),
     );
-    assert!(!palette.evidence().category_holds_sources);
     if crate::common::timing_verdicts_enforced() {
         let interact = Duration::from_micros(B_INTERACT_US);
         let settle = Duration::from_micros(B_SETTLE_US);
@@ -800,15 +801,31 @@ fn test_palette_category_dispatches_stay_within_their_budgets() {
         );
         assert!(escape_input <= interact, "Escape: {escape_input:?}");
         assert!(publish <= settle, "the first category publish: {publish:?}");
-        assert!(frame <= X1_BOUND, "X1, the frame after it: {frame:?}");
         assert!(
-            leave <= settle,
-            "the leave and its deferred clear: {leave:?}"
+            frame.layout <= X1_LAYOUT_BOUND,
+            "X1's layout, the frame after it: {frame:?}"
+        );
+        assert!(
+            Duration::from_micros(retirement_turn) <= interact,
+            "a turn retiring the left view's rows: {retirement_turn} us"
+        );
+        assert!(
+            leave.layout <= settle,
+            "the frames after the leave (the grouped view shown again): {leave:?}"
         );
     }
     palette.close();
     window.close();
 }
+
+/// X1's layout phase bound (task 8.2): the frame budget. With the staged
+/// first publish (D5) every frame after it realizes about 32 rows; X1
+/// measured 3.5–4.0 ms of layout under GL and 6.6–8.0 ms under the harness's
+/// cairo on the optimized build (`main`: 13.7–14.5 under either), so it meets
+/// the `B_INTERACT_US` target of task 2.3 under GL. The bound stays the frame
+/// budget because the harness's cairo run reaches that target's edge
+/// (`lighten-notes-browser-rows` design D7).
+const X1_LAYOUT_BOUND: Duration = Duration::from_micros(B_SETTLE_US);
 
 /// BN's crash regression shape on the category model: repeated publishes
 /// that shrink and grow the list while GTK holds realized rows, each emission
@@ -847,6 +864,108 @@ fn test_palette_category_republishes_over_realized_rows() {
             assert!(first.is_file(), "{query:?}");
         }
     }
+    // `lighten-notes-browser-rows` task 2.5: leave, then enter again while the
+    // left view's rows are still being retired. The new publish lands over
+    // the rows left (every emission matching the reported length; the
+    // widget lane fails on any GTK warning) and lists the new ranking.
+    palette.set_query("f-00");
+    quiet(&palette);
+    crate::common::flush_after_delay(Duration::from_millis(60));
+    assert!(palette.leave_category());
+    assert!(palette.evidence().category_rows_retiring);
+    assert!(palette.show_category(PaletteCategory::WorkspaceFiles));
+    assert!(
+        !palette.evidence().category_rows_retiring,
+        "entering cancels it"
+    );
+    quiet(&palette);
+    crate::common::flush_after_delay(Duration::from_millis(60));
+    let evidence = palette.evidence();
+    assert_eq!(evidence.category, Some(PaletteCategory::WorkspaceFiles));
+    assert_eq!(evidence.category_rows as usize, evidence.category_total);
+    assert!(
+        palette.imp().category_scroll.is_visible(),
+        "the list is shown again"
+    );
+    let first = palette
+        .imp()
+        .category_model
+        .item(0)
+        .and_downcast::<PaletteItem>()
+        .expect("row 0");
+    assert!(first.is_file());
+    assert!(palette.leave_category());
+    wait_until(Duration::from_secs(10), || {
+        !palette.evidence().category_holds_sources
+    });
+    assert!(!palette.evidence().category_holds_sources);
+    assert_eq!(palette.imp().category_model.len(), 0);
+    palette.close();
+    window.close();
+}
+
+/// `lighten-notes-browser-rows` task 2.4: a palette row's name and subtitle
+/// are `label`s whose accessible label is the bound text, replaced when a
+/// publish retargets the row.
+#[test]
+fn test_palette_row_text_is_a_label_carrying_the_row_text() {
+    use lushtext_core::ui::row_text::LushtextRowText;
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let window = gtk4::Window::new();
+    window.set_default_size(640, 480);
+    window.set_child(Some(&palette));
+    present_window(&window);
+    palette.set_file_index(synthetic_index(2_000));
+    palette.open();
+    enter_by_more_row(&palette, PaletteCategory::WorkspaceFiles);
+    crate::common::flush_after_delay(Duration::from_millis(100));
+    let row_texts = |palette: &LushtextCommandPalette| -> Vec<(String, LushtextRowText)> {
+        let list = palette.imp().category_view.clone();
+        let mut rows: Vec<(f32, gtk4::Widget)> = crate::common::mapped_list_rows(&list)
+            .map(|row| {
+                let top = row.compute_bounds(&list).map_or(f32::MAX, |b| b.y());
+                (top, row)
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let row = rows.into_iter().next().expect("a drawn row").1;
+        let row_box = row.first_child().expect("the row box");
+        let name = row_box
+            .first_child()
+            .and_downcast::<LushtextRowText>()
+            .expect("the name");
+        let subtitle = row_box
+            .last_child()
+            .and_downcast::<LushtextRowText>()
+            .expect("the subtitle");
+        vec![("name".into(), name), ("subtitle".into(), subtitle)]
+    };
+    let before = row_texts(&palette);
+    for (part, text) in &before {
+        lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+            .role(gtk4::AccessibleRole::Label)
+            .assert_on(text);
+        assert!(!text.text().is_empty(), "{part}");
+        assert!(
+            crate::common::accessible_label_is(text, &text.text()),
+            "{part}: the accessible label is the text"
+        );
+    }
+    let first_name = before[0].1.text();
+    palette.set_query("f-0001");
+    quiet(&palette);
+    crate::common::flush_after_delay(Duration::from_millis(100));
+    let after = row_texts(&palette);
+    assert_ne!(
+        after[0].1.text(),
+        first_name,
+        "the row shows the new ranking"
+    );
+    assert!(crate::common::accessible_label_is(
+        &after[0].1,
+        &after[0].1.text()
+    ));
     palette.close();
     window.close();
 }

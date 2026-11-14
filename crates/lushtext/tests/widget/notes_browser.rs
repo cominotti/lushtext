@@ -7,11 +7,12 @@
 
 use crate::common::{
     NotesBrowserList, activate_action, ensure_gtk_init, find_descendant, find_notes_browser_list,
-    fixture, flush_after_delay, flush_events, labels_in, mapped_list_rows, present_window,
-    timing_verdicts_enforced, wait_until, worst_dispatch_until,
+    fixture, flush_after_delay, flush_events, labels_in, mapped_list_rows,
+    phase_split_dispatch_until, present_window, timing_verdicts_enforced, wait_until,
+    worst_dispatch_until,
 };
 use gio::prelude::{ActionGroupExt, ListModelExt};
-use glib::prelude::{Cast, ToVariant};
+use glib::prelude::{Cast, CastNone, ToVariant};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwApplicationWindowExt, AdwDialogExt};
@@ -131,7 +132,11 @@ fn open_browser_and_wait(window: &LushtextWindow, rows: u32) {
     activate_action(window, "show-notes");
     wait_until(Duration::from_secs(120), || {
         window.notes_evidence().browser.is_some_and(|b| {
-            b.source_ready && b.query.active == 0 && b.query.pending == 0 && b.listed_rows == rows
+            b.source_ready
+                && b.query.active == 0
+                && b.query.pending == 0
+                && b.listed_rows == rows
+                && b.growing_rows == 0
         })
     });
 }
@@ -234,13 +239,18 @@ fn test_the_list_stays_virtualized_at_131072_rows() {
     flush_events();
 }
 
-/// D6/task 8.2: the browser's dispatches at the 16,384-row reference case,
-/// against twice their measured worst on the optimized widget build
-/// (`bound-notes-browser-by-budget` "Implementation decisions"; the BL task
-/// 8.2 pattern). The query publish and the keystroke fit their budgets; the
-/// first frame, the relayout frame after a query that changes the shown rows,
-/// and the close are recorded toolkit-floor exceptions (about 205 realized
-/// rows laid out, A1, A90), bounded here so they cannot grow back with rows.
+/// D6/task 8.2: the browser's dispatches at the 16,384-row reference case on
+/// the optimized widget build (`bound-notes-browser-by-budget`; revised by
+/// `lighten-notes-browser-rows` D6 and task 8.2).
+///
+/// Frames are judged by their **layout phase**: under the harness's cairo
+/// renderer the dialog's animation frames cost 16–30 ms of paint whatever its
+/// rows (ledger A111), so whole-frame worst values are printed, never
+/// asserted. The query frame's layout and the close input dispatch fit
+/// `B_INTERACT_US` (rows measured without shaping, A108; rows retired in
+/// slices after the close, A110), and so does every retirement turn. The
+/// frames that first show the rows realize them in steps of 32 (D5), each
+/// within the frame budget in layout.
 #[test]
 fn test_browser_dispatches_stay_within_their_measured_bounds() {
     const MS: u128 = 1_000;
@@ -261,7 +271,8 @@ fn test_browser_dispatches_stay_within_their_measured_bounds() {
         })
     });
     assert!(held, "the browser lists every row");
-    let (_, first_frames) = worst_dispatch_until(Duration::from_millis(700), || false);
+    let (_, first_frames) =
+        phase_split_dispatch_until(&window, Duration::from_millis(700), || false);
 
     let child = dialog(&window).child().expect("child");
     let entry = find_descendant(&child, glib::object::ObjectExt::is::<gtk4::SearchEntry>)
@@ -277,39 +288,75 @@ fn test_browser_dispatches_stay_within_their_measured_bounds() {
         })
     });
     assert!(held, "the query publishes");
-    let (_, query_frames) = worst_dispatch_until(Duration::from_millis(500), || false);
+    let (_, query_frames) =
+        phase_split_dispatch_until(&window, Duration::from_millis(500), || false);
 
+    let closing = Instant::now();
     dialog(&window).close();
-    let (_, close) = worst_dispatch_until(Duration::from_millis(1_500), || false);
+    let close_input = closing.elapsed();
+    let (retired, close_frames) =
+        phase_split_dispatch_until(&window, Duration::from_secs(10), || {
+            window.notes_evidence().retiring_rows == 0
+        });
+    assert!(retired, "the closed browser's rows are retired");
+    let retirement_turn = window.notes_evidence().longest_row_retirement_turn_us;
     println!(
-        "list-budget-evidence {{\"case\":\"notes16384\",\"open_action_us\":{},\"until_rows_us\":{},\"first_frames_us\":{},\"keystroke_us\":{},\"query_publish_us\":{},\"query_frames_us\":{},\"close_us\":{}}}",
+        "list-budget-evidence {{\"case\":\"notes16384\",\"open_action_us\":{},\"until_rows_us\":{},\"first_frames_us\":{},\"first_frame_layout_us\":{},\"first_frame_paint_us\":{},\"keystroke_us\":{},\"query_publish_us\":{},\"query_frames_us\":{},\"query_frame_layout_us\":{},\"close_input_us\":{},\"close_frames_us\":{},\"close_frame_layout_us\":{},\"retirement_turn_us\":{}}}",
         open_action.as_micros(),
         until_rows.as_micros(),
-        first_frames.as_micros(),
+        first_frames.dispatch.as_micros(),
+        first_frames.layout.as_micros(),
+        first_frames.paint.as_micros(),
         keystroke.as_micros(),
         query_publish.as_micros(),
-        query_frames.as_micros(),
-        close.as_micros()
+        query_frames.dispatch.as_micros(),
+        query_frames.layout.as_micros(),
+        close_input.as_micros(),
+        close_frames.dispatch.as_micros(),
+        close_frames.layout.as_micros(),
+        retirement_turn,
     );
     if timing_verdicts_enforced() {
-        // Measured worst (optimized, interleaved, load < 2, 2026-11-07):
-        // open 11.7, until rows 19.9, first frames 64.9, keystroke 0.4,
-        // query publish 2.8, query frames 22.9, close 34.4 ms.
+        let interact = u128::from(B_INTERACT_US);
         assert!(
             open_action.as_micros() < u128::from(B_SETTLE_US),
             "{open_action:?}"
         );
         assert!(until_rows.as_micros() < 40 * MS, "{until_rows:?}");
-        assert!(first_frames.as_micros() < 130 * MS, "{first_frames:?}");
         assert!(
-            keystroke.as_micros() < u128::from(B_INTERACT_US),
-            "{keystroke:?}"
+            first_frames.layout.as_micros() < u128::from(FIRST_FRAME_LAYOUT_BOUND_US),
+            "the first frame's layout: {first_frames:?}"
         );
-        assert!(query_publish.as_micros() < 6 * MS, "{query_publish:?}");
-        assert!(query_frames.as_micros() < 46 * MS, "{query_frames:?}");
-        assert!(close.as_micros() < 70 * MS, "{close:?}");
+        assert!(keystroke.as_micros() < interact, "{keystroke:?}");
+        // The publish rebinds about 205 realized rows, each checking its
+        // primary font's coverage of the new text (D2): 5.6–5.7 ms on the
+        // optimized build (`main` 2.2–2.8, whose 18–19 ms of text measurement
+        // ran in the frame after it instead).
+        assert!(query_publish.as_micros() < interact, "{query_publish:?}");
+        assert!(
+            query_frames.layout.as_micros() < interact,
+            "the query frame's layout: {query_frames:?}"
+        );
+        assert!(
+            close_input.as_micros() < interact,
+            "the close input dispatch: {close_input:?}"
+        );
+        assert!(
+            close_frames.layout.as_micros() < u128::from(B_SETTLE_US),
+            "the close frames' layout (the dialog unmapped at the animation's end): {close_frames:?}"
+        );
+        assert!(
+            u128::from(retirement_turn) < interact,
+            "a retirement turn: {retirement_turn} us"
+        );
     }
 }
+
+/// The frames that first show 16,384 rows: each one's layout phase. A staged
+/// first publish lists 32 rows, then 32 more a frame (D5), so each frame
+/// realizes about 32 rows (5–6 ms of layout on the optimized build, where
+/// `main` laid out about 205 in 36–38 ms); bounded by the frame budget.
+const FIRST_FRAME_LAYOUT_BOUND_US: u64 = B_SETTLE_US;
 
 /// D2: a query that still lists the selected row keeps it selected and does
 /// not reload its preview.
@@ -339,7 +386,10 @@ fn test_the_selection_survives_a_query_without_reloading_the_preview() {
     ActionGroupExt::activate_action(&window, "set-notes-browser-query", Some(&file.to_variant()));
     wait_until(Duration::from_secs(10), || {
         let b = browser(&window);
-        b.query.started > started && b.query.active == 0 && b.listed_rows == 4
+        b.query.started > started
+            && b.query.active == 0
+            && b.listed_rows == 4
+            && b.growing_rows == 0
     });
     let after = browser(&window);
     assert_eq!(after.selected_source_index, Some(selected));
@@ -689,11 +739,175 @@ fn test_repeated_queries_over_realized_rows_republish_safely() {
         );
         wait_until(Duration::from_secs(10), || {
             let b = browser(&window);
-            b.query.started > started && b.query.active == 0 && b.listed_rows == rows
+            b.query.started > started
+                && b.query.active == 0
+                && b.listed_rows == rows
+                && b.growing_rows == 0
         });
         flush_after_delay(Duration::from_millis(100));
     }
     assert_eq!(list.items().n_items(), 1_024);
+    // `lighten-notes-browser-rows` task 2.5: close while GTK holds the
+    // scrolled band, then open the browser again before the closed one's rows
+    // are retired; the new browser lists every row and nothing warns.
     dialog(&window).close();
-    flush_events();
+    assert!(window.notes_evidence().retiring_rows > 0);
+    open_browser_and_wait(&window, 1_024);
+    // The closed dialog may still be the host's visible one while it fades;
+    // once its rows are retired the new browser's list is the one shown.
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().retiring_rows == 0
+    });
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(browser(&window).listed_rows, 1_024);
+    assert_eq!(notes_list(&window).items().n_items(), 1_024);
+    dialog(&window).close();
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().retiring_rows == 0
+    });
+}
+
+/// `lighten-notes-browser-rows` D4/task 2.5: closing the browser scrolled to
+/// the middle of 16,384 rows retires its rows in slices after the close:
+/// no row widget is created while they go (the rows GTK never realized are
+/// removed first, ledger A110), the dialog stays alive until its list is empty
+/// (finalizing it would tear every row down at once) and is finalized after,
+/// and every turn fits `B_INTERACT_US` on the optimized build.
+#[test]
+fn test_closing_a_scrolled_browser_retires_its_rows_in_slices() {
+    let (_folders, folder) = seed_workspace();
+    seed_closed_bookmarks(&folder, 16, 1_024);
+    let window = new_window();
+    open_browser_and_wait(&window, 16 * 1024);
+    let list = notes_list(&window);
+    list.list_view
+        .scroll_to(8_192, gtk4::ListScrollFlags::NONE, None);
+    flush_after_delay(Duration::from_millis(300));
+    assert!(
+        list.row_widgets().len() > 1,
+        "the scrolled band is realized"
+    );
+    let factory = list
+        .list_view
+        .factory()
+        .and_downcast::<gtk4::SignalListItemFactory>()
+        .expect("the row factory");
+    let setups = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    factory.connect_setup({
+        let setups = std::rc::Rc::clone(&setups);
+        move |_, _| setups.set(setups.get() + 1)
+    });
+    let dialog_weak = glib::object::ObjectExt::downgrade(&dialog(&window));
+    drop(list);
+    dialog(&window).close();
+    assert!(window.notes_evidence().retiring_rows > 0);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while window.notes_evidence().retiring_rows > 0 {
+        assert!(Instant::now() < deadline, "the retirement ends");
+        assert!(
+            dialog_weak.upgrade().is_some(),
+            "the dialog lives while its rows are retired"
+        );
+        flush_events();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(setups.get(), 0, "no row widget is created while retiring");
+    wait_until(Duration::from_secs(10), || dialog_weak.upgrade().is_none());
+    assert!(
+        dialog_weak.upgrade().is_none(),
+        "the dialog is finalized once its rows are gone"
+    );
+    let turn = window.notes_evidence().longest_row_retirement_turn_us;
+    println!("list-budget-evidence {{\"case\":\"notes-retire-scrolled\",\"turn_us\":{turn}}}");
+    if timing_verdicts_enforced() {
+        assert!(turn < B_INTERACT_US, "a retirement turn: {turn} us");
+    }
+}
+
+/// `lighten-notes-browser-rows` task 2.4: a row's text widgets expose the
+/// `label` role and the bound text as their accessible label; a query that
+/// retargets the row replaces it, and the section header keeps `heading`.
+#[test]
+fn test_notes_row_text_is_a_label_carrying_the_row_text() {
+    use lushtext_core::ui::row_text::LushtextRowText;
+    let (_folders, folder) = seed_workspace();
+    seed_closed_bookmarks(&folder, 2, 2);
+    let window = new_window();
+    open_browser_and_wait(&window, 4);
+    let list = notes_list(&window);
+    let first_row =
+        |list: &NotesBrowserList| list.row_widgets().into_iter().next().expect("a drawn row");
+    let texts = |row: &gtk4::Widget| -> Vec<LushtextRowText> {
+        let mut found = Vec::new();
+        let mut stack = vec![row.clone()];
+        while let Some(widget) = stack.pop() {
+            if let Some(text) = widget.downcast_ref::<LushtextRowText>() {
+                found.push(text.clone());
+            }
+            let mut child = widget.last_child();
+            while let Some(next) = child {
+                child = next.prev_sibling();
+                stack.push(next);
+            }
+        }
+        found
+    };
+    wait_until(Duration::from_secs(5), || !list.row_widgets().is_empty());
+    let row = first_row(&list);
+    let row_texts = texts(&row);
+    assert_eq!(row_texts.len(), 2, "a title and a subtitle");
+    for text in &row_texts {
+        lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+            .role(gtk4::AccessibleRole::Label)
+            .assert_on(text);
+        assert!(
+            crate::common::accessible_label_is(text, &text.text()),
+            "the accessible label is the row text {:?}",
+            text.text()
+        );
+    }
+    let before = row_texts[1].text();
+    // A query that keeps one file retargets the row in place.
+    let started = browser(&window).query.started;
+    ActionGroupExt::activate_action(
+        &window,
+        "set-notes-browser-query",
+        Some(&"c001".to_variant()),
+    );
+    wait_until(Duration::from_secs(10), || {
+        let b = browser(&window);
+        b.query.started > started
+            && b.query.active == 0
+            && b.listed_rows == 2
+            && b.growing_rows == 0
+    });
+    flush_after_delay(Duration::from_millis(100));
+    let row_texts = texts(&first_row(&list));
+    assert_ne!(row_texts[1].text(), before, "the row shows the new entry");
+    assert!(crate::common::accessible_label_is(
+        &row_texts[1],
+        &row_texts[1].text()
+    ));
+    // The section header keeps the heading role it has with a label.
+    let mut header = list.list_view.first_child();
+    let mut seen_header = false;
+    while let Some(widget) = header {
+        if widget.css_name() == "header" && widget.is_visible() {
+            let title = widget
+                .first_child()
+                .and_downcast::<LushtextRowText>()
+                .expect("the header's title");
+            lushtext_core::ui::accessibility::test_audit::AccessibleAudit::new()
+                .role(gtk4::AccessibleRole::Heading)
+                .assert_on(&title);
+            assert_eq!(title.text(), "Bookmarks");
+            seen_header = true;
+        }
+        header = widget.next_sibling();
+    }
+    assert!(seen_header, "a section header is drawn");
+    dialog(&window).close();
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().retiring_rows == 0
+    });
 }

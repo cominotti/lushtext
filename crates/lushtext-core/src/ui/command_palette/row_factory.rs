@@ -20,6 +20,7 @@ use super::imp::LushtextCommandPalette;
 use super::item::PaletteItem;
 use super::policy;
 use crate::ui::accessibility::{self, RowAccessibility};
+use crate::ui::row_text::LushtextRowText;
 
 /// Which of the palette's two lists a row factory projects.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,7 +47,12 @@ impl LushtextCommandPalette {
             row.set_margin_top(4);
             row.set_margin_bottom(4);
 
-            let name_label = gtk4::Label::new(None);
+            // Row text measured without laying the text out at the allocated
+            // width (`lighten-notes-browser-rows` D2, ledger A108). The name
+            // and the subtitle share the row by their natural widths, so both
+            // report their shaped width (width parity with `GtkLabel`).
+            let name_label = LushtextRowText::new();
+            name_label.set_natural_width_from_text(true);
             name_label.set_halign(gtk4::Align::Start);
             name_label.set_hexpand(true);
             name_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
@@ -55,7 +61,8 @@ impl LushtextCommandPalette {
             section_separator.set_hexpand(true);
             section_separator.set_visible(false);
 
-            let subtitle_label = gtk4::Label::new(None);
+            let subtitle_label = LushtextRowText::new();
+            subtitle_label.set_natural_width_from_text(true);
             subtitle_label.set_halign(gtk4::Align::End);
             subtitle_label.add_css_class("dim-label");
             subtitle_label.add_css_class("caption");
@@ -132,7 +139,7 @@ impl LushtextCommandPalette {
         };
         let name_label = row
             .first_child()
-            .and_downcast::<gtk4::Label>()
+            .and_downcast::<LushtextRowText>()
             .expect("palette row should start with the title label");
         let section_separator = name_label
             .next_sibling()
@@ -140,12 +147,12 @@ impl LushtextCommandPalette {
             .expect("palette row title should be followed by the section separator");
         let subtitle_label = section_separator
             .next_sibling()
-            .and_downcast::<gtk4::Label>()
+            .and_downcast::<LushtextRowText>()
             .expect("palette row separator should be followed by the subtitle label");
 
         list_item.set_activatable(item.is_activatable());
         list_item.set_selectable(item.is_activatable());
-        name_label.set_label(&item.display_name());
+        name_label.set_text(&item.display_name());
         if item.is_header() {
             row.add_css_class("command-palette-section-row");
             name_label.add_css_class("command-palette-section-header");
@@ -160,7 +167,7 @@ impl LushtextCommandPalette {
             name_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
             section_separator.set_visible(false);
             subtitle_label.set_visible(!item.is_more());
-            subtitle_label.set_label(&item.subtitle());
+            subtitle_label.set_text(&item.subtitle());
         }
         if item.is_more() {
             row.add_css_class("command-palette-more-row");
@@ -176,7 +183,7 @@ impl LushtextCommandPalette {
                     .is_some_and(|selection| selection.selected() == list_item.position()),
             ),
             PaletteView::Category => (
-                self.category_model.len(),
+                self.category_model.full_len(),
                 self.category_selection()
                     .is_some_and(|selection| selection.selected() == list_item.position()),
             ),
