@@ -31,10 +31,8 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 **Scenario**: User renames file in sidebar → `editor.file_path()` updated → autosave reads old path from manifest → writes manifest with old path → crash → draft orphaned from new path → `find_by_path` with new path returns None → draft not applied on next startup.
 
 ### DI-4: Concurrent manifest writes (CONFIRMED HISTORICAL)
-**Current owners**: `ui/window/drafts/autosave_execution.rs` and `ui/window/drafts/journal.rs`
-- `autosave_tick()` uses `spawn_blocking_then` → calls `save_manifest`
-- `delete_draft_by_id()` uses `std::thread::spawn` → calls `save_manifest`
-**Old code**: Both paths cloned the in-memory manifest at call time and wrote it independently. No serialization between them.
+**Current owners**: `ui/window/drafts/autosave_execution.rs` (`autosave_tick()`) and `ui/window/drafts/journal.rs` (`delete_draft_by_id()`)
+**Old code**: `autosave_tick()` called `save_manifest` from `spawn_blocking_then` while `delete_draft_by_id()` called it from `std::thread::spawn`. Both paths cloned the in-memory manifest at call time and wrote it independently. No serialization between them.
 **Scenario**: Tab close triggers `delete_draft_by_id` (thread A clones manifest after removal). Simultaneously, autosave fires (thread B clones manifest with removal already applied but also with new draft data). Thread A writes first, thread B overwrites. Or vice versa — either way, one write's changes are lost.
 **Current guardrail**: Persistent draft writes should go through the guarded async path; overlapping autosave batches must be serialized with a pending rerun when edits arrive mid-flight.
 

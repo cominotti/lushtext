@@ -81,4 +81,3 @@ reshaped GTK Lush contract, also use `gtk-lush-stewardship`.
 - When subclassing, never re-enter the measurement wrapper on `self` from your own `measure` implementation. Measuring child widgets via the wrapper is correct.
 - Keep GTK objects on the main thread. Background threads may compute data, parse files, or search the filesystem, but they must hand plain data back to the UI thread.
 - Use weak references or equivalent patterns for long-lived closures so disposal can complete and widgets can actually die.
-
