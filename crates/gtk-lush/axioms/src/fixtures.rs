@@ -864,3 +864,28 @@ pub mod a107 {
     };
     pub use crate::probes::text::TextViewFixture;
 }
+
+/// The row-list fixture, frame-phase recorder and measurements the A108
+/// probe uses, for its sample.
+pub mod a108 {
+    pub use crate::probes::a108::retext_frame;
+    pub use crate::probes::row_lists::{
+        BAND_MODEL_ROWS, FEW_ROWS, FramePhases, MeasureFreeText, RowText,
+    };
+}
+
+/// The constructors the A109 probe times, for its sample.
+pub mod a109 {
+    pub use crate::probes::a109::{WIDGETS, construct_us, inscription, label};
+}
+
+/// The hidden scrolled list the A110 probe trims, for its sample.
+pub mod a110 {
+    pub use crate::probes::a110::{MIDDLE, UNIT};
+    pub use crate::probes::row_lists::{BAND_MODEL_ROWS, RowList, RowText, row_list};
+}
+
+/// The row lists the A111 probe draws as animation frames, for its sample.
+pub mod a111 {
+    pub use crate::probes::row_lists::{BAND_MODEL_ROWS, FEW_ROWS, RowText, row_list};
+}

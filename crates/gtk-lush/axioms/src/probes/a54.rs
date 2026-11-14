@@ -76,7 +76,7 @@ pub fn surrounding_us(im: &gtk4::IMContext) -> u128 {
 }
 
 /// The answer's cost on a [`COST_PARAGRAPH_CHARS`]-character paragraph with
-/// the cursor in its middle, as medians of [`COST_REPETITIONS`] emissions:
+/// the cursor in its middle, as medians of `COST_REPETITIONS` emissions:
 /// cold (each right after the paragraph is set again), repeated with nothing
 /// changed, and right after a one-character insert at the cursor. GTK
 /// !10646 (in 4.25.0) changes what the word-boundary cache does after an

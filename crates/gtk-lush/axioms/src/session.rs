@@ -76,6 +76,17 @@ impl Presented {
         Self::new(content, FIXTURE_WINDOW_SIZE)
     }
 
+    /// Present `window`, a window the probe built, without a control step,
+    /// for a measurement repeated many times in one probe.
+    pub(crate) fn shown(window: libadwaita::Window) -> Self {
+        Self::present(window)
+    }
+
+    /// Whether the window received a size within the budget.
+    pub(crate) const fn realized(&self) -> bool {
+        self.realized
+    }
+
     /// Present `window`, which the probe built itself, and wait for it to
     /// receive a size.
     fn present(window: libadwaita::Window) -> Self {
