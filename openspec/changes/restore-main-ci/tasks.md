@@ -264,23 +264,24 @@ only, so `taskset -c 8` fails with `EINVAL`.
 - **2.1b** Snap deleted: the editor-page shard (404) and the 44 minimap
   visual-geometry cases all passed, so the top-anchor repair got its own test.
 - **2.2** The writer is the settle snap (trace in design D2). The original
-  minimap test passed 20/20 starved; it did not reproduce the CI failure
-  itself, so its regression proof is the branch's `editor-page` job on at
-  least eight CI runs (open, after the PR exists: `ci.yml` runs on
-  `pull_request` only).
+  minimap test did not reproduce the CI failure: 20/20 starved on the
+  `b129f378` core and 20/20 on the branch's. Its regression proof is the
+  branch's `editor-page` job on at least eight CI runs (open, after the PR
+  exists: `ci.yml` runs on `pull_request` only).
 - **2.3** Axiom A112 added with probe and sample; `make gtk-axioms` green
   (101 sample checks).
 - **2.4/2.5** Fix as in design D2; the three D2 tests and the original 20/20
   starved; discriminator variants recorded (`g2-green/`).
 - **3.5** Open until the PR's CI run: the advisory job must be green with eight
   snapshots, and the cold install time recorded against 20 minutes.
-- **4.1** Hypothesis (b)/(c): a first-expansion constant. Separate-process fit
-  on the workstation: 1,644 B/row + 5.3 MB (charge 1,960 B/row). A first
-  expansion in a three-directory fixture reproduced CI's over-bound modes
-  locally (2,379–2,692 B/row in 6 runs). The test now measures 32,768 rows
-  (20/20, 1,667–1,978 B/row); charge, budget, floor and 5/4 bound unchanged,
-  so no threshold row and no `core-list-budget` rerun.
-- **4.2** Not reproduced: 20/20 starved before and 20/20 after the D1/D2 code.
+- **4.1** Cause (c): the fixture's asynchronous setup tail overlapped the
+  measured window (design D4). The test waits for resident quiescence and
+  measures 32,768 rows (20/20, 1,369–1,552 B/row); charge, budget, floor and
+  5/4 bound unchanged, so no threshold row and no `core-list-budget` rerun.
+  Red-to-green locally only in the three-directory fixture (`g41-settle/`);
+  CI's figure is part of the eight-run proof (open).
+- **4.2** Not reproduced: 20/20 starved on the `b129f378` core, 40/40 on the
+  branch's.
   Diagnosis incomplete (CI: document shown, top line 69, cursor 300); the
   failure message now carries attach/detach counts and the adjustment. Proof
   and diagnosis stay open on eight branch CI runs.

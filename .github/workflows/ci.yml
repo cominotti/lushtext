@@ -218,6 +218,10 @@ jobs:
         with:
           shared-key: fedora-45-gtk-lush-api
 
+      # Offline: a fake crate and a fake cargo (make check-cargo-public-api-install).
+      - name: Self-test the cargo-public-api install script
+        run: ./scripts/install-cargo-public-api.sh --self-test
+
       - name: Install advisory API tools
         run: |
           cargo install --locked cargo-semver-checks --version "${CARGO_SEMVER_CHECKS_VERSION}"

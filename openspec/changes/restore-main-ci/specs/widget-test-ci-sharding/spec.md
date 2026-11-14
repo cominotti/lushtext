@@ -10,7 +10,7 @@ A widget test reported `FLAKY` on CI SHALL be reproduced in isolation (under CPU
 
 #### Scenario: Budget bound exceeded on one mode
 - **WHEN** a resident-memory test exceeds its charge bound on one of two measured modes
-- **THEN** the charge is recalibrated from the measured growth, or the measurement is made independent of allocator granularity
+- **THEN** the charge is recalibrated from the measured growth, or the measurement is made independent of allocator granularity and of asynchronous setup work that overlaps its window
 - **AND** the bound itself is unchanged
 - **AND** every constant derived from a recalibrated charge, and every assertion over it, still holds without lowering what the user is shown
 

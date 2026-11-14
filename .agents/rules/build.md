@@ -246,8 +246,9 @@ it) once a release locks `openssl-sys >= 0.9.114` and a `curl-sys` that builds
 there. The script enforces it: it fails when the crate's own lock already pins
 `openssl-sys` at or above the override, so the first such version bump is red
 until the override is removed. `make check-cargo-public-api-install` (in
-`make check-policy`) self-tests the script offline, with a fake crate and a
-fake `cargo`. To reproduce the CI install, run the script in a `fedora:45`
+`make check-policy`, and a step of the advisory job itself, since CI runs no
+`check-policy`) self-tests the script offline, with a fake crate and a fake
+`cargo`. To reproduce the CI install, run the script in a `fedora:45`
 container with the three variables from `ci.yml`.
 Governance and publication gates are in `crates/gtk-lush/GOVERNANCE.md`.
 

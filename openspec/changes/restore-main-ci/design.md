@@ -361,7 +361,9 @@ The script's self-test runs offline from a locally built fake `.crate`, with no
 network. It covers a tampered checksum, an unexpected lock change and an
 override that is no longer needed. It is wired into an existing CI-exercised
 policy target (`make check-policy`, or the one `build.md` names for script
-self-tests), so it cannot rot unexercised.
+self-tests), so it cannot rot unexercised. **As built:** `make
+check-cargo-public-api-install` in `make check-policy`, and a step of the
+advisory job itself, because no CI job runs `check-policy`.
 
 The container verification built with Fedora's packaged `rust`/`cargo`, not
 the job's pinned `nightly-2026-06-01`. `openssl-sys` 0.9.118 declares
@@ -473,21 +475,29 @@ Each test has its own first question:
 
 **Diagnosed (stage 3).**
 
-- **Directory charge: a first-expansion constant, (b)/(c), not an
-  undercharge.** Fitted in separate processes on the workstation (10 runs per
-  size): 16,384 rows 32.28 MB, 32,768 rows 59.21 MB median, so **1,644 B/row
-  plus about 5.3 MB**, against a charge of 1,960 B/row. Four CPUs instead of
-  sixteen changed nothing (1,969–1,974 B/row at 16,384). A first expansion in a
-  three-directory fixture grew 2,379–2,692 B/row, CI's modes, while the next
-  same-shape expansion grew exactly 1,612 B/row in every run: the excess is a
-  one-time cost of the process's first expansion, larger on CI. Decision: no
-  recalibration (the slope is 84 % of the charge), so no cascade, no budget or
-  floor change, no thresholds row, no `core-list-budget` rerun. The test
-  measures 32,768 rows, where the constant weighs half as much per row and a
-  per-row undercharge still fails; 20/20 isolated passes, 1,667–1,978 B/row
-  against a 2,450 B/row bound. A warm-up expansion was rejected: the measured
-  rows then reuse what it freed (1,381–1,612 B/row by fixture), which would
-  hide a regression.
+- **Directory charge: (c), asynchronous setup work overlapping the window,
+  not an undercharge.** Fitted in separate processes on the workstation (10
+  runs per size, the old 300 ms settle): 16,384 rows 32.28 MB, 32,768 rows
+  59.21 MB median, so 1,644 B/row plus about 5.3 MB, against a charge of
+  1,960 B/row. Four CPUs instead of sixteen changed nothing. The constant is
+  not a fixed cost of the rows: after the refresh went idle the resident set
+  kept rising for about a second (a single-directory trace: +2.5–3 MB, then
+  flat), and with two more large sibling directories in the fixture a 16,384
+  row first expansion grew 2,328–2,561 B/row after 300 ms (CI's modes; four of
+  five over the 2,430 B/row bound) but 1,322–1,329 B/row after a 5 s settle.
+  How much of that tail lands in the measured window depends on the machine's
+  speed: CI's bimodal excess. Decision: no recalibration, so no cascade, no
+  budget, floor or thresholds change and no `core-list-budget` rerun. The test
+  now waits for the resident set to be quiescent before `reset_vm_hwm`
+  (`common::wait_for_resident_quiescence`: four readings 250 ms apart within
+  256 KiB) and measures 32,768 rows, so a residual constant weighs half as much
+  per row while a per-row undercharge still fails: 20/20 isolated passes,
+  1,369–1,552 B/row against a 2,450 B/row bound. The expansion may reuse memory
+  the setup tail freed, so the figure checks the charge and does not calibrate
+  it. The cause is diagnosed locally, CI's figure with the fix is not yet
+  measured: the `surfaces` shard joins the eight-CI-run proof list. A warm-up
+  expansion before the measurement was tried and rejected (the measured rows
+  reuse what it freed, 1,381–1,612 B/row by fixture).
 - **Protected periodic capture: an asynchronous admission the test raced.**
   The CI log names the snapshot wait (`not met within 30s`). The edit that makes
   the document protected also starts its baseline capture, which holds the
@@ -497,8 +507,8 @@ Each test has its own first question:
   fix waits for `automatic_capture_inflight` to clear. Data-safety reading:
   production defers a colliding periodic snapshot by one interval, never loses
   one, and drafts protect the text meanwhile, so production is unchanged.
-- **Bookmark preview-only: not reproduced.** 20/20 starved runs before the
-  D1/D2 code and 20/20 after. The CI failure (document shown, top line 69,
+- **Bookmark preview-only: not reproduced.** 20/20 starved runs on the
+  `b129f378` core and 40/40 on the branch's. The CI failure (document shown, top line 69,
   cursor 300) is not explained by the reflow snap (it goes to line 0) or the
   top-edge clamp; the trace of a passing run shows the reattach scroll and
   GTK's anchor-keeping reconfigurations only. The failure message now carries

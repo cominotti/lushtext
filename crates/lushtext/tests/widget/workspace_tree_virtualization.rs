@@ -2476,20 +2476,24 @@ fn test_directory_expansion_dispatches_fit_the_settle_budget() {
 /// `bound-lists-by-budget-not-count` tasks 2.4 and 8.3: what 32,768 expanded
 /// rows really cost, presented, against what the directory budget charges
 /// them: resident high-water growth at most 5/4 of the charge. Prints the
-/// per-row growth the fixed charge is calibrated from.
+/// per-row growth.
 ///
-/// The growth of a process's first expansion is a per-row cost plus a
-/// constant (heap growth, row widgets, caches) that depends on the
-/// environment, not on the rows (`restore-main-ci` D4). Fitted on the
-/// workstation across 16,384 and 32,768 rows in separate processes: 1,644
-/// B/row plus about 5.3 MB, against a charge of 1,960 B/row. CI's constant
-/// is larger: at 16,384 rows its growth was bimodal, 2,362-2,375 or
-/// 2,534-2,537 B/row, against a 2,450 B/row bound, and the upper mode failed
-/// about every second attempt. At 32,768 rows the constant weighs half as
-/// much per row, so it stays inside the 5/4 margin, while a per-row
-/// undercharge still fails. (A warm-up expansion before the measurement was
-/// tried and rejected: the measured rows then reuse what the warm-up freed,
-/// 1,381-1,612 B/row depending on the fixture.)
+/// Measured only once the resident set is quiescent (`restore-main-ci` D4).
+/// The window is presented and the folder scanned just before, and their
+/// asynchronous tail kept allocating for about a second after the refresh
+/// went idle; with the former 300 ms settle part of it landed in the measured
+/// window, more of it the slower the machine. That made the growth bimodal on
+/// CI, 2,362-2,375 or 2,534-2,537 B/row against a 2,430 B/row bound at 16,384
+/// rows, where the workstation measured 1,970-1,985. In a fixture with two
+/// more large sibling directories the overlap reproduced locally: 2,328-2,561
+/// B/row after 300 ms, 1,322-1,329 after a 5 s settle. Fitted on the
+/// workstation in separate processes without the wait, the growth is 1,644
+/// B/row plus about 5.3 MB, against a charge of 1,960 B/row. The test also
+/// measures 32,768 rows rather than 16,384, so any constant left weighs half
+/// as much per row, while a per-row undercharge still fails. With both, 20
+/// workstation runs measured 1,369-1,552 B/row; the expansion can reuse
+/// memory the setup tail freed, so the figure checks that the charge is not
+/// exceeded; it does not calibrate the charge.
 #[test]
 fn test_directory_retention_stays_within_its_charge() {
     use crate::common::{proc_status_kib, reset_vm_hwm};
@@ -2503,7 +2507,7 @@ fn test_directory_retention_stays_within_its_charge() {
         row_for_path(&tree.section, &nested).is_some()
     });
     wait_for_refresh_idle(&tree.section);
-    flush_after_delay(Duration::from_millis(300));
+    crate::common::wait_for_resident_quiescence(Duration::from_secs(30));
     reset_vm_hwm();
     let before_kib = proc_status_kib("VmRSS:");
     row_for_path(&tree.section, &nested)
