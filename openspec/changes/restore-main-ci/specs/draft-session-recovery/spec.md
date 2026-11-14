@@ -5,7 +5,7 @@ When a bounded replacement completes and leaves a modified tab holding text its 
 
 #### Scenario: Restore after the draft settled
 - **WHEN** a modified file-backed tab's draft is written and no longer dirty
-- **AND** the user restores a local-history snapshot larger than the direct-replacement threshold
+- **AND** the user restores a local-history snapshot, either below or above the direct-replacement threshold
 - **THEN** after the replacement completes the tab is draft-dirty
 - **AND** the next autosave pass persists the restored text as the tab's draft
 

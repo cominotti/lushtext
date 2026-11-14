@@ -120,9 +120,9 @@ None of the three is classified yet.
 ### D2. A scroll during a passive burst is kept; pin the writer first
 
 The mechanism is reproduced deterministically (B5): a scroll made during a
-passive width burst is undone. CI reaches it when a starved main loop leaves
-the startup burst pending at the test's scroll. What remains is which site
-writes the value back. The leading candidate comes from reading the code:
+passive width burst is undone. *Hypothesis, not shown:* CI reaches it when a
+starved main loop leaves the startup burst pending at the test's scroll.
+What remains is which site writes the value back. The leading candidate comes from reading the code:
 
 - A horizontal page-size change (`ViewportObserver` filters on page size) opens
   a passive burst. `schedule_minimap_reflow_settle_impl` then pauses the rest
@@ -141,12 +141,25 @@ the tab to line 0.
 The discriminating test from the patch is the failing-first test. Instrument
 it to name the writer before fixing.
 
-The likely fix shape is to snap to the lower edge at settle only when the
-value did not move after the burst began. This is the rule the vertical clamp
-already applies to its own idle. Record the burst-start value with the pause,
-and compare it at settle. A GTK-preserved offset keeps the value fixed while
-the content moves under it, so it still snaps. A scroll moves the value, so it
-is kept.
+**The open design problem: telling a GTK-caused move from a scroll.**
+
+- `finish_minimap_reflow_settle` writes only when `at_lower` holds and the
+  value is more than 0.5 away from `lower`. So the snap fires *only* when the
+  value moved during the burst.
+- "Snap only if the value did not move" would therefore never fire. That
+  equals deleting the snap, which the rejected list forbids.
+- The fix must separate the two causes of a move during the burst:
+  - GTK reallocation preserving or clamping an offset (snap);
+  - a scroll the user or the application made (keep).
+- Candidate discriminators, chosen by evidence in task 2.1b:
+  - mark app-initiated scrolls (`scroll_to_document_iter`, mark scrolls) and
+    user input (scroll controller, scrollbar drag, keyboard navigation) as
+    intent that ends the pause for the vertical axis;
+  - compare the moved value with what GTK's reallocation can produce (for
+    example a clamp to the new `upper - page_size`).
+- Task 2.1b first deletes the snap and runs the `editor-page` shard. The tests
+  that go red show what a GTK-driven move looks like. If none go red, the
+  top-anchor scenario gets its own failing-first test before any fix.
 
 **Rejected:**
 

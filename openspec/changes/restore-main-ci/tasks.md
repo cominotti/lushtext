@@ -8,7 +8,8 @@ Rules for every task:
 - Spawn no sub-agents.
 - Evidence goes in `.claude/handoffs/restore-main-ci/`. This stage left there:
   - `spec-experiments.patch`, with the four experiment tests;
-  - `exp1.log`;
+  - `exp1.log` and `exp2.log`, the experiment results;
+  - `api-advisory-container{,2}.{sh,log}`, the `fedora:45` install checks;
   - `minimap-repro.sh`, a loop of N isolated runs under LOAD busy loops.
 - **Failing first** means the test is recorded red on `main` code (log in the
   handoff directory) before the fix that turns it green is written.
@@ -36,6 +37,10 @@ Timing: none (no timed path's cost changes).
         settled, then Restore. It fails with "still owed a draft".
       - `test_a_pass_captured_before_a_restore_cannot_clear_its_draft_owed`:
         a tick with the manifest delayed, then Restore. It fails the same way.
+      - `test_a_small_restore_after_the_draft_settled_owes_a_draft`: the same
+        with a snapshot below the direct-replacement threshold. `begin_guard`
+        runs for direct mode too, so expect it red. Record whether it is; that
+        says whether this defect hits every restore or only large ones.
       - `test_an_undo_restore_owes_a_draft`: the draft settled after a
         restore, then Undo Restore. Confirm it fails.
       - `test_a_save_formatting_mirror_back_owes_no_draft`: guards the
@@ -80,6 +85,14 @@ Timing: none (no timed path's cost changes).
       isolated. Done in the spec stage (design B5).
       - The control passed.
       - The discriminator failed deterministically with `y: -6`, as on CI.
+- [ ] 2.1b Characterise a GTK-driven move. Temporarily delete the settle snap
+      (`adjustment.set_value(lower)` in `finish_minimap_reflow_settle`) and
+      run the `editor-page` shard plus the minimap visual-geometry case.
+      - Record which tests go red and the value each one sees. These are
+        D2's discriminator evidence.
+      - If none go red, write a failing-first test for "Top anchor still
+        repaired after reflow" before any fix.
+      - Never commit the deletion.
 - [ ] 2.2 Reproduce the CI failure of
       `test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin`
       with starved isolated runs: `minimap-repro.sh`, adapted to one CPU and
@@ -89,15 +102,18 @@ Timing: none (no timed path's cost changes).
         hold);
       - whether the rest state was paused when the scroll happened.
 
-      Record the call site in design D2. If no starved run reproduces the
-      original, record that: 2.1's deterministic test is the proof.
+      Record the call site in design D2. 2.1's test proves the mechanism, not
+      the CI flake. If no starved run reproduces the original, record that.
+      The flake's proof then is the branch's `editor-page` job across at
+      least four CI runs (it failed on about half of recent runs).
 - [ ] 2.3 Failing first. Keep the discriminating test (renamed
       `test_a_scroll_during_a_passive_width_reflow_survives_the_settle`) red on
       `main` code. If the diagnosis depends on GTK adjustment ordering, add the
       ledger axiom with a `gtk-lush-axioms` probe and sample, then run
       `make gtk-axioms`.
-- [ ] 2.4 Fix at the diagnosed site: restore the top edge only when the value
-      has not moved since the burst began. Keep every existing minimap
+- [ ] 2.4 Fix at the diagnosed site. Use the discriminator chosen from 2.1b's
+      evidence (design D2) to keep a move that came from a scroll and still
+      snap a move that came from GTK reallocation. Keep every existing minimap
       top-anchor test green, in particular the "Minimap top content remains
       visible after shell reflow" scenarios.
 - [ ] 2.5 Prove it:
