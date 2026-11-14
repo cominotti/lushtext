@@ -1,9 +1,20 @@
 ## ADDED Requirements
 
 ### Requirement: Realized list rows do not measure their text and are retired outside input dispatches
-The rows of the Notes browser (its items and section headers) and of the command palette's grouped and category views SHALL show their text through `LushtextRowText`, a widget that never lays out its text at its allocated width while measuring, and creates its text layout only when it is drawn. Its height SHALL be the single-line height a `GtkLabel` reports for the same text and style: for a text its primary font covers, a height cached per font description, so that changing a realized row's text to another covered text costs the next frame no text layout, only the paint of the rows on screen (ledger A108); a text that needs a fallback font SHALL be measured exactly, because the fallback changes the line height. Its natural width SHALL equal its minimum, except where siblings share the row's width by their natural widths (the palette row's name and subtitle, and its group headers), where it SHALL be the text's single-line width, shaped once per text and font. `GtkInscription` SHALL NOT be used for these rows, because its constructor lays out text and computes a style for a node with no parent yet (A109).
+The Notes browser's rows and section headers and the command palette's grouped and category rows SHALL show their text through `LushtextRowText`, which measures without laying out its text at its allocated width and reports a `GtkLabel`'s single-line height. Their realized rows SHALL NOT be torn down inside an input dispatch or in one dispatch, but retired in time-sliced `G_PRIORITY_LOW` turns.
 
-Tearing down a list's realized rows SHALL NOT happen inside an input dispatch, and SHALL NOT happen in one dispatch. When the Notes browser closes, or a palette category view is left, its rows SHALL be retired in time-sliced `G_PRIORITY_LOW` turns: first the rows GTK has not realized, in one emission on each side of the realized band, then the realized rows from the end of the model in units. Each turn removes at least one unit and starts none once `LIST_TURN_SLICE_US` has elapsed, so its row work costs at most the slice plus one unit, and the unit is sized so that fits `B_INTERACT_US` (A110). No retirement turn SHALL realize a row. The retirement SHALL keep the list view alive until the model is empty, so that no disposal tears the remaining rows down in one dispatch. Any publish to that model or its disposal SHALL cancel the retirement. The model's sources and payloads SHALL be released when the model is empty, through the existing disposal paths, and its evidence SHALL report the rows still being retired.
+#### Scenario: How row text measures
+- **WHEN** a realized row's text changes
+- **THEN** a text its primary font covers takes a height cached per font description, so the next frame spends no text layout on it, only the paint of the rows on screen (ledger A108), and the widget creates its text layout only when it is drawn
+- **AND** a text that needs a fallback font is measured exactly, because the fallback changes the line height
+- **AND** its natural width equals its minimum, except where siblings share the row's width by their natural widths (the palette row's name and subtitle, and its group headers), where it is the text's single-line width, shaped once per text and font
+- **AND** `GtkInscription` is not used for these rows, because its constructor lays out text and computes a style for a node with no parent yet (A109)
+
+#### Scenario: How a retirement runs
+- **WHEN** the Notes browser closes or a palette category view is left
+- **THEN** the first turn removes the rows GTK has not realized, in one emission on each side of the realized band, and later turns remove the realized rows from the end of the model in units
+- **AND** each turn removes at least one unit and starts none once `LIST_TURN_SLICE_US` has elapsed, so its row work costs at most the slice plus one unit, and the unit is sized so that fits `B_INTERACT_US` (A110); no turn realizes a row
+- **AND** the retirement keeps the list view alive until the model is empty, any publish to that model or its disposal cancels it, the model's sources and payloads are released through the existing disposal paths when it is empty, and its evidence reports the rows still being retired
 
 #### Scenario: A query that changes the rows on screen
 - **WHEN** a Notes browser query over 16,384 listed rows changes the rows on screen

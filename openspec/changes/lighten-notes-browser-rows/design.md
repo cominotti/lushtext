@@ -811,6 +811,15 @@ changed:
   tree); the draft one is a data-safety question that deserves its own work
   stream rather than a fix folded into a row-rendering change.
 
+- **`openspec validate --strict` was red** (it was already on `18ac7017`):
+  three ADDED requirements exceeded the 500-character requirement text the
+  validator now warns on, and `--strict` fails on warnings. Each kept its
+  normative content: the detail moved into scenarios ("How row text
+  measures", "How a retirement runs", "The ledger rows state the four
+  behaviours", "The design and the programme record cite the axioms"), and
+  the accessibility requirement split in two (row text; row metadata and
+  anchors). No MODIFIED requirement or scenario was renamed.
+
 Checked and found sound: the growth and retirement emissions match the
 lengths the models report (sections cut at the listed rows); a notes
 retirement's selection changes reach a disposed browser's handler, which
