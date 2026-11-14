@@ -7,8 +7,8 @@
 - [Isolated Captures](#isolated-captures)
 - [Screenshots and Log Summaries](#screenshots-and-log-summaries)
 
-The helper catalogue of the [gtk-agentic-debugging skill](../SKILL.md). Every
-path is relative to the skill directory. Each script's role, precedence and
+The helper catalogue of the [gtk-agentic-debugging skill](../SKILL.md). Paths
+are relative to the skill directory unless marked as repository-root scripts. Each script's role, precedence and
 safety limits are here; the per-flag table for the scenario helpers (for
 example `capture-lushtext-mutter.py`) is in
 [docs/automation-reference.md](../../../../docs/automation-reference.md#scenario-helper-flags),
@@ -57,7 +57,7 @@ which `make check-automation-docs` keeps in sync with the scripts.
   - Starts PipeWire and WirePlumber in the same session, captures Mutter's existing virtual monitor with `org.gnome.Mutter.ScreenCast.Session.RecordMonitor("Meta-0")`, and saves one PNG through `gst-launch-1.0 pipewiresrc`.
   - Discovers its repository through Git and resolves bundled AT-SPI helpers relative to its own script directory. For renamed or relocated builds, pass `--repo-root`, `--binary`, `--app-id`, `--app-object-path`, `--automation-interface`, `--gsettings-schema`, and `--gsettings-schema-dir`, or use the matching `LUSHTEXT_DEBUG_*` environment variables. Never patch product identities into the helper for a one-off fixture.
   - Drives scenarios through exported actions, Automation1 readiness predicates, AT-SPI text waits and ordered `--step KIND:VALUE` sequences; see the flag table. AT-SPI text waits keep one fixed deadline (`ATSPI_TEXT_WAIT_SECONDS`) and bound each probe only by the time left, never by a shorter per-probe cap (reasons and measurements: the script's header comment). `automation-waits.txt` records `probe_ms=` per probe, and the probe's stdout records `walk_ms=` and `call_failures=`: swallowed AT-SPI call failures, which mean the dumped tree may be incomplete.
-- `scripts/visual-geometry-smoke.py`
+- `scripts/visual-geometry-smoke.py` (repository root)
   - Runs same-session visual invariant scenarios under isolated headless Mutter.
   - Captures before/after screenshots and bounded Automation1
     `visual_geometry` snapshots from one process, waits for
