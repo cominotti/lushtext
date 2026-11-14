@@ -165,6 +165,36 @@ records any change in the matrix row.
     between the terminal and the assertion is correct behaviour, not a
     failure.
 
+**Recorded (stage 3, failing first on `b129f378` code, logs in
+`.claude/handoffs/restore-main-ci/g1-red/`):**
+
+- Red with "still owed a draft", both attempts each: the settled-draft
+  restore, the pass captured before a restore, the **small (direct)** restore
+  (so the defect hit every restore, not only large ones), and Undo Restore.
+- The clean-tab restore: red on **both** assertions (`draft_dirty=false`,
+  title without "•").
+- Two more tabs of the same class lacked the "•" title: a startup-recovered
+  draft (`recovered.txt`; its `draft_dirty` was correctly false) and a
+  set-aside draft opened from Preferences (`Untitled`). Both terminals called
+  `set_modified(true)` after GTK had set the flag on the install's first edit.
+- Green, as expected: the save-formatting mirror-back owes no draft.
+
+**Implemented as two operations**, because startup recovery needs the bullet
+but must owe nothing:
+
+- `LushtextWindow::note_draft_owed` (`drafts/autosave_execution.rs`): mark
+  draft-dirty (advancing the generation), then the first-dirty schedule or
+  mark a running pass pending. The `changed` and `modified-changed` handlers,
+  Restore, Undo Restore and the set-aside open call it.
+- `LushtextWindow::project_modified_indicator` / `reproject_modified_indicator`
+  (`documents.rs`): the "•" title, header bar and discard action. The
+  `modified-changed` handler and every replacement terminal that leaves the
+  tab modified (the three above and startup `finish_applied_draft`) call it.
+
+`grep -rn "set_draft_dirty(true)"` after the change: the rename re-stamp and
+the two close-abort sites (unchanged, as decided), the set-aside open's
+no-window fallback, and `note_draft_owed` itself.
+
 ### D2. A scroll during a passive burst is kept; pin the writer first
 
 The mechanism is reproduced deterministically (B5): a scroll made during a
@@ -245,6 +275,46 @@ it to name the writer before fixing.
 - moving the decision into `gtk-lush-viewport`'s `RestState`, unless the
   diagnosis shows the crate's contract is what is wrong. Its scenario "At-top
   state ignores reflow preservation" stays as it is.
+
+**Diagnosed (stage 3; traces in `.claude/handoffs/restore-main-ci/g2-red/`,
+`g2-nosnap/`, `g2-green/`).**
+
+- **The writer is the settle snap.** An env-gated trace of every vertical
+  `changed`/`value-changed` (test-utils build only, never committed) showed,
+  in the failing experiment: the burst starts (`paused=true`, `at_lower=true`),
+  `scroll_to_mark` delivers `value-changed` 0 → 4,511.5 → 12,220.9 with every
+  `changed` still carrying 0, then `finish_minimap_reflow_settle` logs
+  `settle-snap from 12220.9 to 0.0`. The top-edge clamp and the reattach hold
+  never fired.
+- **2.1b, snap deleted:** the whole `editor-page` shard (404 tests) and all 44
+  minimap visual-geometry cases passed (`LUSHTEXT_DIAG_NOSNAP=1`, the debug
+  binary gated the same way for the lane). No existing test reached a
+  GTK-driven move at the top on GTK 4.24, so the top-anchor repair got its own
+  test, `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`:
+  during the burst it reconfigures the adjustment to a 120 px offset together
+  with a 240 px larger upper (what a rewrap does). Red with the snap deleted
+  (`y = 114`), green on `main` and with the fix.
+- **Discriminator chosen: the value the last `changed` carried.**
+  `gtk_adjustment_configure` sets the value before it emits `changed`, then
+  emits `value-changed`; `set_value` emits `value-changed` alone; and
+  `scroll_to_mark` moves the value with no `changed` (new ledger axiom **A112**,
+  probe and sample; the sample holds on GTK 4.24.1). The page records the value
+  each vertical `changed` carries (a raw handler: `ViewportObserver` reports
+  page-size changes only), and a vertical `value-changed` during a paused burst
+  to any other value sets `reflow_scrolled`. That is decided at the adjustment,
+  so it covers every scroll source alike, which is why no scroll-source
+  inventory ships. A reallocation that moves the value without changing a bound
+  would read as a scroll; GTK's offset preservation and clamping change `upper`
+  or the page with it, and no test or visual case showed another kind.
+- **The settle** consumes `reflow_scrolled` on the current handle: when set it
+  skips the snap and re-records the rest state from the settled adjustment;
+  otherwise the snap runs as before.
+- **Re-record proved separately.** `test_a_kept_reflow_scroll_survives_later_reflows`
+  scrolls by one `set_value` during the burst: a `scroll_to_mark` keeps refining
+  its value after the settle, and that later `value-changed` re-records the rest
+  state by itself (seen in the trace), which hid a missing re-record. With the
+  re-record disabled it is red at the next width burst (`y = -6`); with the
+  classifier disabled (the `main` behaviour) it is red at its precondition.
 
 ### D3. Link the system libcurl and override one lockfile entry
 
@@ -401,6 +471,40 @@ Each test has its own first question:
 - **Bookmark preview-only, protected periodic capture:** find which predicate
   timed out and what it waits on.
 
+**Diagnosed (stage 3).**
+
+- **Directory charge: a first-expansion constant, (b)/(c), not an
+  undercharge.** Fitted in separate processes on the workstation (10 runs per
+  size): 16,384 rows 32.28 MB, 32,768 rows 59.21 MB median, so **1,644 B/row
+  plus about 5.3 MB**, against a charge of 1,960 B/row. Four CPUs instead of
+  sixteen changed nothing (1,969–1,974 B/row at 16,384). A first expansion in a
+  three-directory fixture grew 2,379–2,692 B/row, CI's modes, while the next
+  same-shape expansion grew exactly 1,612 B/row in every run: the excess is a
+  one-time cost of the process's first expansion, larger on CI. Decision: no
+  recalibration (the slope is 84 % of the charge), so no cascade, no budget or
+  floor change, no thresholds row, no `core-list-budget` rerun. The test
+  measures 32,768 rows, where the constant weighs half as much per row and a
+  per-row undercharge still fails; 20/20 isolated passes, 1,667–1,978 B/row
+  against a 2,450 B/row bound. A warm-up expansion was rejected: the measured
+  rows then reuse what it freed (1,381–1,612 B/row by fixture), which would
+  hide a regression.
+- **Protected periodic capture: an asynchronous admission the test raced.**
+  The CI log names the snapshot wait (`not met within 30s`). The edit that makes
+  the document protected also starts its baseline capture, which holds the
+  process-wide automatic-capture admission on a worker; a periodic capture that
+  finds it taken reschedules a whole interval (5 min) later. The deterministic
+  test delays the baseline by 3 s: red without the fix, green with it; the
+  fix waits for `automatic_capture_inflight` to clear. Data-safety reading:
+  production defers a colliding periodic snapshot by one interval, never loses
+  one, and drafts protect the text meanwhile, so production is unchanged.
+- **Bookmark preview-only: not reproduced.** 20/20 starved runs before the
+  D1/D2 code and 20/20 after. The CI failure (document shown, top line 69,
+  cursor 300) is not explained by the reflow snap (it goes to line 0) or the
+  top-edge clamp; the trace of a passing run shows the reattach scroll and
+  GTK's anchor-keeping reconfigurations only. The failure message now carries
+  the attach/detach counts and the vertical adjustment, and the proof is the
+  `window` shard without its `FLAKY` line on eight branch CI runs (open).
+
 ### D5. Scope stays "every `ci.yml` job green on the first attempt"
 
 - Lanes outside `ci.yml` are a separate concern: weekly Kani, end-user smoke,
@@ -414,11 +518,11 @@ Each test has its own first question:
   owns, and on `GtkTextBuffer` setting its modified flag on any insert or
   delete. That is documented API behaviour, not a ledger axiom. The clean-tab
   test in task 1.1 observes it.
-- D2 may rely on the order in which `GtkTextView` updates its adjustments
-  relative to `value-changed` during `scroll_to_mark`, and on page-size
-  `changed` emissions during reallocation. If the diagnosis depends on that
-  order, the implementation adds a ledger axiom with a `gtk-lush-axioms` probe
-  and sample, and runs `make gtk-axioms`.
+- D2 relies on the emission order: **A112** (added, with probe
+  `probe_a112` and sample `a112_a_scroll_moves_the_value_no_changed_emission_carried`):
+  `configure` sets the value before `changed`, then `value-changed`;
+  `set_value` emits `value-changed` alone; `scroll_to_mark` moves the value
+  with no `changed`.
 - D3 and D4 rely on none.
 
 ## Kani
@@ -441,8 +545,10 @@ Timing: none (no timed path's cost changes).
   goes through the existing bounded snapshot-write pipeline (chunked capture
   across GTK turns, worker write), whose budgets are unchanged and which
   already runs for any edit of the same document. No new GTK-turn cost.
-- D2 adds one comparison per settle and, when a scroll is kept, one rest-state
-  record.
+- D2 adds one cell write per vertical `changed` emission and one comparison
+  per vertical `value-changed`, both O(1) on the GTK thread, plus one
+  rest-state record when a settle keeps a scroll. No timed path's cost
+  changes measurably, so no timing campaign runs.
 
 ## Risks
 

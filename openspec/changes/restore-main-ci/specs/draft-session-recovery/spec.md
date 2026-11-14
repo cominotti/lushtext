@@ -34,3 +34,4 @@ A replacement whose installed text the draft already holds (startup draft recove
 - **THEN** the replacement does not mark the tab draft-dirty
 - **AND** after the mirror-back the saved tab is unmodified and not draft-dirty
 - **AND** no autosave pass rewrites the recovered draft before the user edits it
+- **AND** a recovered draft's tab, which is modified, shows the modified indicator
