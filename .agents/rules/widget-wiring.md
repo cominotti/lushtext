@@ -324,7 +324,7 @@ slices, never by an item count:
   `model::list_budget::RetainedBudget` (a refusal latches, so what is retained
   is a prefix of delivery order and "showing X of Y" stays true), size the
   budget as the power of two at or above a `derived` floor that is at least
-  `main`'s worst case under the count it replaces (a compile-time assertion
+  the worst case the replaced count allowed (a compile-time assertion
   per floor), and state any cut in the UI, to assistive technologies (once)
   and in the automation snapshot. A parallel producer serializes admission
   with its send, so channel order is admission order.
