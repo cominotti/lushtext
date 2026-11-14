@@ -90,7 +90,10 @@ install_tool() {
     if [[ -n "${CARGO_PUBLIC_API_CRATE_FILE:-}" ]]; then
         cp -- "$CARGO_PUBLIC_API_CRATE_FILE" "$crate"
     else
-        curl --fail --silent --show-error --location --retry 3 \
+        # HTTPS only, redirects included: the checksum below is the integrity
+        # check, and this keeps a redirect from leaving TLS before it.
+        curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --silent --show-error --location --retry 3 \
             "$CRATE_URL_BASE/cargo-public-api-$version.crate" -o "$crate"
     fi
     echo "$sha256  $crate" | sha256sum --check --status \
