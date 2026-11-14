@@ -2322,6 +2322,29 @@ verification 0.02–1.93 s, `rows_within_is_the_largest_fitting_prefix` the
 widest), inside the 2.8 min / 1.7 GiB record, which stands (raise, never
 lower); the shard owes no dispatch.
 
+### List budget G1, R1, R2 (`lighten-notes-browser-rows`, 2026-11-14)
+
+`core-list-budget` gained three harnesses for the pure planning behind the
+notes browser's and palette's sliced row retirement and staged first publish:
+`growth_reaches_every_row_in_at_most_eight_steps` (G1, every `u32` length:
+`next_growth` from `staged_first_rows` grows strictly, stays within the length,
+reaches it in at most eight steps), `the_unheld_ranges_keep_every_held_row`
+(R1, the allocation-free core `for_each_unheld_range` over every `u32` length
+and zero to two strictly ascending held rows; the first version over
+`unheld_ranges` ran CBMC out of a 14 GiB cap on the standard library's sort and
+a growing `Vec`, so the filter, sort and dedup are covered by property tests
+instead) and `a_retirement_unit_removes_at_most_its_rows` (R2). Twelve
+harnesses, 16 s and 1.5 GiB locally (R1 4.7 s); the shard's CI record is
+re-measured by the PR run. **Proof strength** (both arms, `model/list_budget.rs`):
+51 mutants, 47 caught. Tests only: seven `unheld_ranges` mutants no harness
+reaches by design, and four `next_growth` mutants the Kani arm classifies as
+vacuity (G1's cover became unreachable). **Survivors, triaged equivalent:**
+four `<` to `<=` mutants at boundaries where both branches give the same value
+(`unheld_ranges`' filter at a held position equal to the length, which the core
+turns into the whole-list range anyway; `staged_first_rows` at
+`LIST_FIRST_ROWS`; `next_growth` at a step reaching `LIST_GROWTH_BAND_ROWS` and
+at a capped value equal to the length). No assertion or harness added.
+
 ### List budget and geometry policy shard re-split (`bound-lists-by-budget-not-count`, 2026-11-07)
 
 `core-list-budget` (the list-budget admission and turn-continuation harnesses,

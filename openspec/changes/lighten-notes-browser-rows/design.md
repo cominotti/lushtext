@@ -578,7 +578,8 @@ recorded before and after in `.claude/handoffs/lighten-notes-browser-rows/runs.l
 ### Task 1.3 to 5: what differs from the design
 
 - **D2.** `LushtextRowText` reads its CSS text attributes from a label probe
-  per class set and caches font metrics per primary font
+  per class set, scaling an absolute `line-height` to its own font size (see
+  "Visual parity") and caches font metrics per primary font
   (`FONT_METRICS_CACHE_ENTRIES` = 64, a cap). Coverage (`pango_font_has_char`)
   is checked on every text change, so a query publish that rebinds about 205
   rows grew from 2.2–2.8 to 5.6–5.7 ms (about 17 µs a row), within
@@ -617,9 +618,12 @@ recorded before and after in `.claude/handoffs/lighten-notes-browser-rows/runs.l
   maintainer's.
   Rerun on the final tree (2026-11-14): 12 of 12. Proof strength
   (`make proof-strength` on `model/list_budget.rs`, both arms): 51 mutants,
-  47 caught (36 by both arms, 11 by the tests only, all eleven in
-  `unheld_ranges`, which the harnesses reach through
-  `for_each_unheld_range` by design). Four survive both arms, and all four
+  47 caught (36 by both arms, 11 by the tests only). Seven of the eleven are
+  in `unheld_ranges`, which the harnesses reach only through
+  `for_each_unheld_range` by design. The other four are `next_growth`
+  mutants the Kani arm classifies as vacuity (G1's cover `steps == 8` became
+  unreachable; G1 also asserts `listed == len` after the loop), so they are
+  not counted as Kani kills. Four survive both arms, and all four
   are equivalent: each turns a `<` into `<=` at a boundary where both
   branches give the same value (`unheld_ranges`' filter at a held position
   equal to `len`, which `for_each_unheld_range` turns into the whole-list
@@ -652,6 +656,15 @@ notes browser, the committed bound test for the palette. Min–max.
 `main`'s palette bound test fails every run (its X1 and leave are over the
 new assertions), as recorded red in task 2.3; the branch's passes. The
 committed notes bound test passes under both renderers on the final tree.
+
+After the row-text line-height fix (`9e6580fa`) both bound tests were run
+once more on the optimized build, under GL and cairo (2026-11-14,
+`final2-*` in `runs.log` and `main/evidence.txt`): all four pass. These are
+confirmation runs, not verdicts: each started below load 4, but a virtual
+machine on the host pushed the load to 4.0–7.6 during three of them. The
+figures stay in their recorded ranges except where that load explains it
+(notes query publish 6.2 ms under GL, palette first category publish 2.4 ms
+and X1 layout 5.9 ms under GL).
 
 ### Exceptions after the change (task 8.3)
 

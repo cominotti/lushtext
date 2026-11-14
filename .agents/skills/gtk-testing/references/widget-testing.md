@@ -253,6 +253,21 @@ Rules:
   state (the second and later dialogs of a process). Print whole-frame worst
   values; never assert them under cairo.
 
+### Parity with a stock widget is proved in situ
+
+- **A parity test between a custom widget and the stock widget it replaces
+  must run where the widget is used, not only in a test window.** CSS sizes
+  fonts, and with them values such as `.caption`'s absolute `line-height`,
+  from the widget's ancestors. `LushtextRowText` matched `GtkLabel` for every
+  class and script in `row_text.rs`, yet notes-browser rows came out 1 px
+  shorter, because its unparented CSS probe and the test window shared the
+  default font while the browser's rows did not (found by comparing visual
+  smoke screenshots of `main` and the branch). The in-situ test puts a
+  `GtkLabel` with the same classes and text beside each realized row text and
+  compares measure, baseline and allocation
+  (`notes_browser::test_notes_row_text_measures_like_a_label_in_the_browser`).
+  Add one for each new consumer surface.
+
 ## ListView, TreeListModel, and Row Reuse
 
 When testing list or tree widgets:

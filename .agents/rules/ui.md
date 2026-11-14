@@ -556,7 +556,10 @@ JSONC is deferred (requires custom `.lang` file — see `docs/next/jsonc-support
   name `hexpand`, subtitle `halign: end`), keep the classes a label had, and
   set a non-`label` role (`heading`) before the accessible context exists.
   Widget tests compare its measure with a `GtkLabel`'s for each class and
-  script it is used with; add the case for a new class.
+  script it is used with; add the case for a new class, and an in-situ
+  comparison inside each new consumer surface (CSS sizes fonts and
+  `line-height` from the ancestors, so a test window alone missed a 1 px
+  row-height difference in the notes browser).
 - **Never `GtkInscription` for row text**: its constructor builds a Pango
   layout from an unshared style, several labels' cost per row (A109).
 - **A first publish into an empty lazy list is staged** (`ui/list_growth.rs`,
