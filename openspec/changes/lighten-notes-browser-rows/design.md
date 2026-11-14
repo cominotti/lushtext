@@ -615,6 +615,17 @@ recorded before and after in `.claude/handoffs/lighten-notes-browser-rows/runs.l
   cover `unheld_ranges`' filter, sort and dedup. The shard: 12 of 12, 16 s,
   1.5 GiB peak locally (R1 4.7 s). Its dispatched CI budget is the
   maintainer's.
+  Rerun on the final tree (2026-11-14): 12 of 12. Proof strength
+  (`make proof-strength` on `model/list_budget.rs`, both arms): 51 mutants,
+  47 caught (36 by both arms, 11 by the tests only, all eleven in
+  `unheld_ranges`, which the harnesses reach through
+  `for_each_unheld_range` by design). Four survive both arms, and all four
+  are equivalent: each turns a `<` into `<=` at a boundary where both
+  branches give the same value (`unheld_ranges`' filter at a held position
+  equal to `len`, which `for_each_unheld_range` turns into the whole-list
+  range anyway; `staged_first_rows` at `len == LIST_FIRST_ROWS`;
+  `next_growth` at a step reaching `LIST_GROWTH_BAND_ROWS` and at a capped
+  value equal to `len`). No harness or assertion is added for them.
 
 ### Measured verdicts (task 8.1)
 
