@@ -218,7 +218,7 @@ change.
 
 ## Nested AGENTS.md Files
 
-Use nested `AGENTS.md` files only when a subtree has stable local contracts that would otherwise make this root file churn constantly.
+Use nested `AGENTS.md` files only when a subtree has stable local contracts that would otherwise make this root file churn constantly. **Before editing a file under one of these directories, read its `AGENTS.md`** (and every one above it); each directory also carries a `CLAUDE.md` symlink to it, so agents that load subdirectory `CLAUDE.md` files load it on first touch.
 
 Current nested files:
 
@@ -230,7 +230,7 @@ Current nested files:
 - `crates/lushtext-core/src/ui/editor_page/AGENTS.md` — per-tab editor, save/load, monitor, and draft-sensitive rules
 - `crates/lushtext-core/src/ui/search_panel/AGENTS.md` — workspace search/replace panel contracts
 
-If you add another nested `AGENTS.md`, keep it local, non-duplicative, and worth its maintenance cost. Update this list in the same change.
+If you add another nested `AGENTS.md`, keep it local, non-duplicative, and worth its maintenance cost, add its `CLAUDE.md -> AGENTS.md` symlink, and update this list in the same change.
 
 ### Key Design Decisions
 
