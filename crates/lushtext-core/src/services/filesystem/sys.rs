@@ -615,8 +615,10 @@ pub(in crate::services) fn copy_xattrs_best_effort(_source: &Path, _dest: &File)
 
 #[cfg(target_os = "linux")]
 fn xattr_names(path: &Path) -> io::Result<Vec<u8>> {
-    let mut empty = [0u8; 0];
-    let len = rustix::fs::listxattr(path, &mut empty).map_err(io::Error::from)?;
+    // The `_query` form asks the kernel for the size; a zero-length buffer
+    // passed to `listxattr` returns an empty list instead (rustix 1.1.6,
+    // RUSTSEC-2026-0486).
+    let len = rustix::fs::listxattr_query(path).map_err(io::Error::from)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -632,8 +634,7 @@ fn get_xattr_with_name<Name: Copy + rustix::path::Arg>(
     path: &Path,
     name: Name,
 ) -> io::Result<Vec<u8>> {
-    let mut empty = [0u8; 0];
-    let len = rustix::fs::getxattr(path, name, &mut empty).map_err(io::Error::from)?;
+    let len = rustix::fs::getxattr_query(path, name).map_err(io::Error::from)?;
     let mut value = vec![0u8; len];
     let read = rustix::fs::getxattr(path, name, &mut value).map_err(io::Error::from)?;
     value.truncate(read);
