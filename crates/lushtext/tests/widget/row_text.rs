@@ -245,3 +245,37 @@ fn test_a_header_without_ellipsis_measures_its_whole_text() {
     );
     window.close();
 }
+
+/// Review finding (`lighten-notes-browser-rows` stage 4): a first text after
+/// an empty one changes the minimum width from 0 to the ellipsis width, so it
+/// must queue a resize; a redraw alone left GTK's cached measure and the
+/// zero-width allocation in place, and a text in a box that sizes it by its
+/// natural width was never drawn.
+#[test]
+fn test_a_first_text_after_an_empty_one_resizes_the_row_text() {
+    ensure_gtk_init();
+    let (window, column) = host();
+    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    let row_text = LushtextRowText::new();
+    row_text.add_css_class("title");
+    row.append(&row_text);
+    let label = gtk4::Label::new(None);
+    label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    label.add_css_class("title");
+    column.append(&row);
+    column.append(&label);
+    present_window(&window);
+    flush_after_delay(Duration::from_millis(60));
+    assert_eq!(row_text.width(), 0, "an empty text takes no width");
+    row_text.set_text("Release notes");
+    label.set_label("Release notes");
+    flush_after_delay(Duration::from_millis(60));
+    let horizontal = |widget: &gtk4::Widget| widget.measure(gtk4::Orientation::Horizontal, -1).0;
+    assert_eq!(
+        horizontal(row_text.upcast_ref()),
+        horizontal(label.upcast_ref()),
+        "the minimum width follows the first text"
+    );
+    assert!(row_text.width() > 0, "the first text is allocated a width");
+    window.close();
+}

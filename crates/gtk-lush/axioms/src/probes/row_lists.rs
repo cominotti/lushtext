@@ -50,7 +50,7 @@ mod measure_free {
 
     #[glib::object_subclass]
     impl ObjectSubclass for MeasureFreeText {
-        const NAME: &'static str = "GtkLushAxiomsMeasureFreeText";
+        const NAME: &str = "GtkLushAxiomsMeasureFreeText";
         type Type = super::MeasureFreeText;
         type ParentType = gtk4::Widget;
 

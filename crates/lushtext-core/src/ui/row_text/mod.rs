@@ -94,6 +94,7 @@ impl LushtextRowText {
             return;
         }
         let was_covered = imp.covered.get();
+        let was_empty = imp.text.borrow().is_empty();
         imp.text.replace(text.to_owned());
         imp.shaped.set(None);
         imp.covered.set(None);
@@ -105,8 +106,9 @@ impl LushtextRowText {
         // first measure resolves; until then a resize is queued anyway.
         let now_covered = imp.metrics.borrow().as_ref().map(|_| imp.is_covered());
         let height_may_change = !matches!((was_covered, now_covered), (Some(true), Some(true)));
-        // Empty and non-empty texts have different minimum widths.
-        if measure_follows_text || height_may_change || text.is_empty() {
+        // Empty and non-empty texts have different minimum widths, in
+        // either direction.
+        if measure_follows_text || height_may_change || text.is_empty() != was_empty {
             self.queue_resize();
         } else {
             self.queue_draw();

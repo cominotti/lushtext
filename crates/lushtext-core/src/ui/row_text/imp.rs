@@ -99,7 +99,7 @@ pub struct LushtextRowText {
 
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextRowText {
-    const NAME: &'static str = "LushtextRowText";
+    const NAME: &str = "LushtextRowText";
     type Type = super::LushtextRowText;
     type ParentType = gtk4::Widget;
 

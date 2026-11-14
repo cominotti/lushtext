@@ -12,7 +12,7 @@
 //! A first publish of 16,384 rows used to realize GTK's whole band (about
 //! 205 rows, A1) in the frame that first showed them: 29–36 ms under GL in the
 //! notes browser even with measure-free row text. A staged publish lists the
-//! first 64 rows, and this driver lists the next step from the list's frame
+//! first `LIST_FIRST_ROWS` (32) rows, and this driver lists the next step from the list's frame
 //! clock, once per frame (a tick callback runs in the frame's update phase,
 //! before its layout), until the model lists every row. Rows beyond the
 //! viewport appear a frame later, which nobody sees: the rows on screen are
