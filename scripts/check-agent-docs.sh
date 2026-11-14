@@ -54,4 +54,18 @@ python3 -B "$REPO_ROOT/scripts/test-gtk-debug-config.py"
 python3 -B "$REPO_ROOT/scripts/test-validate-agent-skills.py"
 python3 -B "$REPO_ROOT/scripts/validate-agent-skills.py"
 
+# openspec/config.yaml points at the files that hold the invariants instead of
+# restating them; a renamed or removed target must fail here, not drift.
+openspec_config="$REPO_ROOT/openspec/config.yaml"
+if [[ -f "$openspec_config" ]]; then
+  missing=0
+  while IFS= read -r ref; do
+    if [[ ! -e "$REPO_ROOT/$ref" ]]; then
+      echo "openspec/config.yaml names $ref, which does not exist" >&2
+      missing=1
+    fi
+  done < <(grep -oE '(AGENTS\.md|\.agents/[A-Za-z0-9_./-]*[A-Za-z0-9_-]|crates/[A-Za-z0-9_./-]*\.rs|docs/[A-Za-z0-9_./-]*\.md|scripts/[A-Za-z0-9_./-]*[A-Za-z0-9_-])' "$openspec_config" | sort -u)
+  [[ "$missing" -eq 0 ]] || exit 1
+fi
+
 echo "Agent documentation check passed."
