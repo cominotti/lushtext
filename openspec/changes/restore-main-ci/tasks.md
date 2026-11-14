@@ -291,3 +291,20 @@ only, so `taskset -c 8` fails with `EINVAL`.
   without the wait (`g43/`), green with it; both 20/20 starved.
 - **Kani: none (no proven module touched).**
 - **Timing: none** (no timed path's cost changes; design Timing).
+
+## Stage 4 record (review, 2026-11-14)
+
+Design "Stage 4 review" holds the findings and decisions (R1–R5); evidence is
+in `.claude/handoffs/restore-main-ci/stage4/`.
+
+- **R1** SonarQube S6506 fixed: HTTPS-only download (`e85ca31b`).
+- **R2** A112 gains its rewrap half (word-wrapped view, at the top and
+  mid-document: every move carried); sample check holds on GTK 4.24.1.
+- **R3** The owed-draft tests accept a draft already written, and the
+  pass-captured test keeps its pass in flight across the restore start
+  (`0b31df41`): red on the pre-fix core, 20/20 starved.
+- **R4** Two rest-state pausers checked; no change.
+- **R5** 4.2 stays open and blocks merge (design R5).
+- Still open on the PR's CI: 3.5 (API advisory job green, eight snapshots,
+  cold install time against 20 minutes) and the eight-run proof for the
+  `editor-page`, `window` and `surfaces` shards.

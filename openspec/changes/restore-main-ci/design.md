@@ -305,7 +305,11 @@ it to name the writer before fixing.
   so it covers every scroll source alike, which is why no scroll-source
   inventory ships. A reallocation that moves the value without changing a bound
   would read as a scroll; GTK's offset preservation and clamping change `upper`
-  or the page with it, and no test or visual case showed another kind.
+  or the page with it, and no test or visual case showed another kind. Stage 4
+  probed the case that matters, GTK's own first-line keeping after a rewrap
+  (A112's rewrap half): a word-wrapped view narrowed and widened moves its
+  value only through `configure`, mid-document (120 moves, every one carried)
+  and at the top (the value stays 0).
 - **The settle** consumes `reflow_scrolled` on the current handle: when set it
   skips the snap and re-records the rest state from the settled adjustment;
   otherwise the snap runs as before.
@@ -532,7 +536,8 @@ Each test has its own first question:
   `probe_a112` and sample `a112_a_scroll_moves_the_value_no_changed_emission_carried`):
   `configure` sets the value before `changed`, then `value-changed`;
   `set_value` emits `value-changed` alone; `scroll_to_mark` moves the value
-  with no `changed`.
+  with no `changed`; a word-wrapped view whose width changes moves its value
+  only through `configure` (the rewrap half, added in stage 4).
 - D3 and D4 rely on none.
 
 ## Kani
@@ -566,3 +571,74 @@ Timing: none (no timed path's cost changes).
   reattach hold. The spec's behaviour still holds; only the fix site moves.
 - D3 depends on static.crates.io being reachable from CI, as `cargo install`
   already does.
+
+## Stage 4 review (2026-11-14)
+
+Independent review of `origin/main..HEAD` at `7da3d54c`. Evidence is in
+`.claude/handoffs/restore-main-ci/stage4/`.
+
+- **R1. SonarQube S6506 on the crate download (must-fix, fixed).** The PR's
+  SonarQube Cloud job failed on `scripts/install-cargo-public-api.sh`:
+  `curl --location` could follow a redirect off TLS before the checksum ran.
+  The download is restricted to HTTPS for the request and every redirect
+  (`--proto '=https' --proto-redir '=https' --tlsv1.2`). Verified by running
+  the script against the real 0.52.0 crate with a stubbed `cargo install`
+  (download, checksum, `openssl-sys 0.9.88 -> 0.9.118`, no other lock change)
+  and by the offline self-test.
+- **R2. D2's negative half was unprobed (should-fix, fixed).** The guard test
+  for the top-anchor repair calls `configure` itself, and A112 covered only a
+  free adjustment and `scroll_to_mark`, so the claim "GTK's own relayout moves
+  the value only through `configure`" rested on reading. All three D2 widget
+  tests run unwrapped, where a width change cannot move the vertical value.
+  A temporary widget test (not kept) logged the editor's real vertical
+  adjustment through three wrapped minimap width bursts at the top and three
+  mid-document: no `value-changed` to a value its `changed` had not carried,
+  the top stayed at the top, mid-document moves were all carried. A112 now has
+  that half as a probe on a plain `GtkTextView` (word wrap, 800 long lines,
+  narrowed 240 px and widened back): holds on GTK 4.24.1; the GNOME 50 floor
+  is checked by the PR's `GTK Axioms (GNOME 50 floor)` job (the local runtime
+  rerun could not reach the SDK from this toolbox). No redesign needed.
+- **R3. The owed-draft tests raced the window's own tick (should-fix,
+  fixed).** Four new D1 tests asserted a strict `draft_dirty()` right after
+  the terminal, while the pre-existing test had been loosened to "owed or
+  already written" because the window's 5 s tick may write first. They now
+  share `owes_or_wrote`, still red on the pre-fix core. The pass-captured
+  test opened the browser after starting its pass, so a slow preview load
+  could let the 1.5 s-delayed commit land before the restore and pass
+  vacuously; it now opens the browser first, starts the pass, clicks Restore
+  and asserts the pass is still in flight once the replacement runs. Red on
+  the pre-fix core at the owed-draft assertion (`stage4/d1-red/`), 20/20
+  starved isolated runs green (`stage4/d1-starved/`).
+- **R4. Two rest-state pausers (checked, no change).** `is_paused()` is also
+  true during a reattach hold (`view_attachment.rs`), so the hold's own
+  re-scroll to its kept line sets `reflow_scrolled`; the settle then keeps it,
+  which is the hold's intent. A hold that ends inside a burst records nothing
+  (its record is paused by the burst), and a settle that neither snaps nor saw
+  a scroll records nothing either. Both gaps exist on `main` unchanged; this
+  change only ever snaps less than `main` did, and only for moves no
+  `changed` carried. Decision: keep the settle as is; not a blocker this
+  change revealed.
+- **R5. 4.2 (bookmark in preview-only mode) stays open, and blocks merge.**
+  User experience first: if real, the symptom is a bookmark jump landing at
+  the wrong line (CI: top line 69 for line 300), not a test artefact, so a
+  richer failure message is not a fix. The ADDED requirement "A retry-rescued
+  test that does not reproduce locally is still diagnosed" is not met yet.
+  Lead for the next attempt: CI failed it inside the full `window` shard
+  (after about 400 tests), while every local attempt ran it isolated, so
+  state left by earlier tests in the same process (settings, data dir, font)
+  may be part of the mechanism. Condition to merge: either a CI failure of the
+  enriched assertion names the mechanism and it is fixed failing first, or
+  the maintainer accepts eight clean branch runs of the `window` shard as the
+  regression proof with the diagnosis carried as a recorded follow-up.
+- **Also checked, no finding:** D1's handler refactor is behaviour-equivalent
+  for edits (the `modified-changed` path now also marks a running pass
+  pending, which the `changed` path already did); `is_modified()` excludes
+  only load installations and evictions, which leave tabs unmodified;
+  Undo Restore always leaves the tab modified, so owing it a draft is right;
+  the red logs in `g1-red/`, `g2-red/` and `g43/` panic at the named
+  assertions (the kept-scroll test at its precondition, as recorded); no
+  ADDED scenario renames a MODIFIED one (all four deltas are ADDED only); the
+  `gtk-lush-axioms` CHANGELOG lacked A112 and now has it.
+- **Kani: none (no proven module touched).** **Timing: none** (no timed
+  path's cost changes).
+
