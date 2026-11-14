@@ -40,8 +40,10 @@ The Notes browser's rows and section headers and the command palette's grouped a
 - **AND** until that publish the view lists no rows of its own: the left category's rows stay hidden, Enter and the arrow keys act on none of them, and the evidence and the accessible state report no rows and no selection
 
 #### Scenario: Rows look the same
-- **WHEN** the Notes browser and the palette show Latin, CJK, Arabic and emoji titles, and palette rows with long names and long subtitles, in both modes and both palette views, in light, dark and high contrast
-- **THEN** row heights, text origins, the width each palette row gives its name and its subtitle, ellipsis, fonts and colours match the base revision's in a same-session visual proof, and no glyph is clipped
+- **WHEN** the Notes browser and the palette show Latin, CJK, Arabic and emoji titles, and palette rows with long names and long subtitles, in both modes and both palette views
+- **THEN** row heights, text origins, the width each palette row gives its name and its subtitle, ellipsis, fonts and colours match the base revision's in a cross-build visual-smoke comparison, and no glyph is clipped
+- **AND** inside each surface every row text measures, places its baseline and allocates like a `GtkLabel` with the same classes and text in the same row, and in the palette takes the same CSS colour under the light and the dark style
+- **AND** high contrast, which the harness cannot force, relies on the widget's `label` CSS node taking every rule a label takes
 
 ## MODIFIED Requirements
 
