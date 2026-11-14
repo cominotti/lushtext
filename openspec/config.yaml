@@ -2,22 +2,20 @@ schema: spec-driven
 
 # Shown to the agent only while it writes OpenSpec artifacts. The normative
 # guidance lives in AGENTS.md and .agents/rules/*.md; this file names what
-# artifacts must carry and cites those rules, it does not restate them.
+# artifacts must carry and points at those files; it restates no invariant,
+# because a second copy would drift and no gate would notice (paths are
+# checked by scripts/check-agent-docs.sh).
 context: |
-  LushText is a GTK4/Libadwaita/GtkSourceView text editor in Rust (AGENTS.md
-  for architecture, .agents/rules/ for conventions). User experience comes
-  first: a change must cause no user-visible loss compared with main.
-  Responsiveness budgets are the constants in
-  crates/lushtext-core/src/model/responsiveness_budget.rs: B_INTERACT_US for a
-  dispatch the user is waiting on, B_SETTLE_US for work that follows an
-  interaction or an open without the user waiting on it directly. Cite the
-  constants, never restate the numbers. Which verification a change runs, and
-  when, follows .agents/rules/verification-runs.md; documentation obligations
-  follow .agents/rules/documentation.md (and .agents/rules/rust.md for the
-  threshold inventory); workflow structure follows
-  .agents/rules/workflow-convention.md. GTK behaviour a change relies on is an
-  axiom in .agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md
-  with a probe and a sample.
+  LushText: GTK4/Libadwaita/GtkSourceView text editor in Rust. Every
+  invariant lives in one place; read it there, do not paraphrase it here:
+  AGENTS.md (architecture, design decisions), .agents/rules/ (conventions),
+  crates/lushtext-core/src/model/responsiveness_budget.rs (the responsiveness
+  budgets, cited by constant name), .agents/rules/verification-runs.md (which
+  verification a change runs), .agents/rules/documentation.md and
+  .agents/rules/rust.md (documentation and threshold obligations),
+  .agents/rules/workflow-convention.md (workflow structure),
+  .agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md
+  (GTK behaviour LushText relies on).
 
 rules:
   proposal:
