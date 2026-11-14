@@ -342,8 +342,8 @@ If the confusing part is `connect_setup`, `connect_bind`, `connect_unbind`, row 
 
 ## Assertion Rules
 
-Assertion rules for widget and visual-geometry tests, kept here from the
-[skill](../SKILL.md#assertion-rules-that-save-time). State extremes and
+Assertion rules for widget and visual-geometry tests, which the
+[skill](../SKILL.md#assertion-rules-that-save-time) points to. State extremes and
 `is_visible()` versus the `visible` property are in `widget-wiring.md`,
 "Testing", and above.
 

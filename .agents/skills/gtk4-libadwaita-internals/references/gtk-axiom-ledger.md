@@ -17,8 +17,9 @@ edit-signal and widget-lifecycle behaviours of the document scale policy;
 from A59, the input, input-method, drag-and-drop, key-binding and hidden-text
 behaviours Protected View's interaction model depends on, several driven with
 real input through the private compositor's RemoteDesktop interface; from A67,
-the post-open settle, completion-priority, background-tab, list-budget,
-notes-browser, palette, minimap-marker and GNOME 51 adoption behaviours)
+the post-open settle, sliced-install, completion-priority, background-tab,
+highlight-attach, font-zoom restyle, list-budget, notes-browser, palette,
+minimap-marker and GNOME 51 adoption behaviours)
 depend on. Most
 geometry bugs in 2026 came from a wrong belief about one of these, not from code missing
 its own spec (see `docs/next/formal-verification.md` §1), so each belief is

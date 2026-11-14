@@ -87,8 +87,9 @@ rm -rf build/smoke/accessibility  && make accessibility-smoke
 rm -rf build/smoke/visual         && make visual-smoke
 ```
 
-A run that prints `SKIP:` leaves the previous summary unless the root was
-removed, so a skip would otherwise read as a fresh result. A skipped, filtered,
+An early `SKIP:` (the visual smoke's missing-binary check, for example) exits
+before the lane writes a summary, so without the `rm -rf` the previous run's
+summary would read as a fresh result. A skipped, filtered,
 name-only, or rectangle-only visual-geometry run does not count as proof.
 
 ## At ship time

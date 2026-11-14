@@ -27,7 +27,7 @@ You are adding to or amending a settled convention, not migrating a backlog.
 
 ### 2. Choose the role home and record it
 
-Choose one of the three shapes in `workflow-convention.md`, "Role homes" —
+Choose a role-home shape from `workflow-convention.md`, "Role homes" —
 **flat**, **per-workflow subdirectory** (needed when a sibling already owns
 `policy.rs` or `evidence.rs`; never a prefixed `save_policy.rs`), or **nested** —
 and record the choice in the row.

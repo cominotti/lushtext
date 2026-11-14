@@ -216,6 +216,8 @@ Widget recipes import the shared helpers from `crates/lushtext/tests/widget/comm
 instead of defining their own (`widget-wiring.md`, "Wait helpers are shared"):
 
 ```rust
+use std::time::Duration;
+
 use crate::common::{flush_events, wait_until};
 
 fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {

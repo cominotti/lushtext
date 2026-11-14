@@ -94,8 +94,9 @@ A **workflow** is one user-initiated operation with ordered stages that crosses
 the adapter boundary into coordination and pure policy. Review a decomposition
 against `.agents/rules/workflow-convention.md`, which is normative for the roles
 (narrative facade, seam value objects, `policy.rs`, the bounded coordination
-names, `evidence.rs`), called presentation surfaces, the three role-home shapes,
-seam value objects, and policy purity and placement; the `lushtext-workflow`
+names, `evidence.rs`), called presentation surfaces, the role-home shapes
+(flat, per-workflow subdirectory, nested), seam value objects, and policy
+purity and placement; the `lushtext-workflow`
 skill is the procedure. `docs/workflow-readability-matrix.md` is the completion
 source of truth: check the workflow's `WFR-*` row for its status, owned policy,
 seam value object, and risk tier before recommending a restructure, and do not
