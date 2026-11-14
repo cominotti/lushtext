@@ -1,12 +1,18 @@
 ## ADDED Requirements
 
 ### Requirement: Text a whole-buffer replacement installs is owed a draft
-When a bounded replacement completes and leaves a modified tab holding text its draft does not (draft recovery, local-history Restore, Undo Restore), the system SHALL mark the tab draft-dirty and advance its dirty generation, as an edit does. An autosave pass captured before the replacement MUST NOT clear the flag, so the next pass writes the installed text.
+When a bounded replacement (local-history Restore, Undo Restore, a set-aside draft opened in a new tab) completes and leaves a modified tab holding text its draft does not hold, the system SHALL mark the tab draft-dirty, advance its dirty generation and project its modified indicator, as an edit does, whether the tab was modified or clean before. An autosave pass captured before the replacement MUST NOT clear the flag.
 
 #### Scenario: Restore after the draft settled
 - **WHEN** a modified file-backed tab's draft is written and no longer dirty
 - **AND** the user restores a local-history snapshot, either below or above the direct-replacement threshold
 - **THEN** after the replacement completes the tab is draft-dirty
+- **AND** the next autosave pass persists the restored text as the tab's draft
+
+#### Scenario: Restore into a clean tab
+- **WHEN** an unmodified file-backed tab restores a local-history snapshot
+- **THEN** after the replacement completes the tab is modified and draft-dirty
+- **AND** its tab title shows the modified indicator
 - **AND** the next autosave pass persists the restored text as the tab's draft
 
 #### Scenario: A pass captured before the restore commits later
@@ -20,6 +26,11 @@ When a bounded replacement completes and leaves a modified tab holding text its 
 - **THEN** the tab is draft-dirty
 - **AND** the next autosave pass persists the pre-restore text
 
+### Requirement: A replacement the draft already holds owes nothing
+A replacement whose installed text the draft already holds (startup draft recovery), or that leaves the tab unmodified (save-formatting mirror-back, memory eviction), MUST NOT mark the tab draft-dirty.
+
 #### Scenario: Replacements that leave nothing owed
-- **WHEN** a save-formatting mirror-back or a memory eviction replaces the buffer
-- **THEN** the tab's draft-dirty state is not changed by the replacement
+- **WHEN** startup draft recovery installs a draft body, a save-formatting mirror-back replaces the buffer, or a memory eviction clears it
+- **THEN** the replacement does not mark the tab draft-dirty
+- **AND** after the mirror-back the saved tab is unmodified and not draft-dirty
+- **AND** no autosave pass rewrites the recovered draft before the user edits it

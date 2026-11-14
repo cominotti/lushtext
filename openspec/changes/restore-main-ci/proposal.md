@@ -26,7 +26,12 @@ product defects that CI caught by accident, not test problems:
    draft-dirty. Draft recovery already compensates for that at its terminal
    (`ui/window/drafts/restore_execution.rs`); Restore and Undo Restore do not.
    After a crash the user gets back the text from before the restore, not what
-   was on screen. The CI test only fails when the window's own 5 s autosave tick
+   was on screen.
+   - Reading the code, a Restore into a **clean** tab is no better. GTK sets
+     the modified flag on the replacement's first delete, while the handlers
+     are suspended, so that tab is also left not draft-dirty and without its
+     "•" title.
+   - That case is still to be confirmed by a test (design D1). The CI test only fails when the window's own 5 s autosave tick
    (`AUTOSAVE_TICK_INTERVAL`) runs before the replacement: failing attempts took
    5.33–5.52 s, passing ones 3.34–4.13 s.
 
@@ -58,8 +63,11 @@ product defects that CI caught by accident, not test problems:
 4. **Tests the retry rescues on CI.** These are `ok (FLAKY: passed on attempt
    2)` lines in runs from 2026-11-14:
    - `workspace_tree_virtualization::test_directory_retention_stays_within_its_charge`,
-     4 times. The growth is bimodal at 2362–2375 or 2534–2537 bytes per row,
-     against a bound of 5/4 × 1944 = 2430 bytes per row.
+     5 times (including 43108136719 on 2026-11-11). The growth is bimodal at
+     2362–2375 or 2534–2537 bytes per row, against a bound of 5/4 × 1944 =
+     2430 bytes per row.
+     Both modes exceed the charge itself. Recalibrating it cascades into the
+     directory budget (design D4).
    - `window::test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode`,
      once: "condition was not met within 10s".
    - `protected_view_surfaces::test_a_protected_periodic_capture_reads_the_source_not_the_buffer`,
@@ -75,15 +83,22 @@ product defects that CI caught by accident, not test problems:
 
 ## What Changes
 
-- A completed local-history Restore and Undo Restore mark the tab draft-dirty
-  and advance the dirty generation through the operation draft recovery uses
-  today, held once in the draft workflow so the three terminals cannot drift.
+- A completed local-history Restore and Undo Restore, into a modified or a
+  clean tab, mark the tab draft-dirty and project its modified indicator.
+  - They advance the dirty generation through the operation the set-aside
+    draft open uses today.
+  - That operation is held once in the draft workflow, so the owing
+    terminals cannot drift.
+  - Startup draft recovery stays exempt: its draft already holds the body.
   An autosave pass captured before the replacement can no longer clear it. The
   existing window test asserts the invariant ("owed or already written"), not
   the scheduling accident.
-- Diagnose the scroll reset first, failing first. Then fix the cause: a scroll
-  the user or the app makes during a passive reflow burst is kept. The
-  top-anchor repair for GTK-preserved offsets keeps working.
+- Diagnose the scroll reset first, failing first. Then fix the cause.
+  - A scroll made during a passive reflow burst is kept, whether the user,
+    the app or GTK's own navigation made it, and the rest state records it.
+  - The discriminator is decided at the adjustment, because both failing
+    tests scroll through raw `scroll_to_mark`.
+  - The top-anchor repair for GTK-preserved offsets keeps working.
 - The API advisory links the image's libcurl (`libcurl-devel`) and installs
   `cargo-public-api` from its checksum-pinned crate. Exactly one lockfile
   entry changes: `openssl-sys`, raised to a pinned 0.9.118. `--locked` is
@@ -103,13 +118,14 @@ None.
 ### Modified Capabilities
 
 - `draft-session-recovery`: adds the rule that text a whole-buffer replacement
-  installs is owed a draft like an edit.
+  installs is owed a draft like an edit. A companion rule says a replacement
+  whose text the draft already holds owes nothing.
 - `editor-minimap`: adds the rule that a reflow repair never undoes a scroll made
   during the burst.
 - `gtk-lush-internal-platform`: adds the reproducible advisory tool install on
   the CI image.
 - `widget-test-ci-sharding`: adds the rule that a retry-rescued test is diagnosed
-  and fixed, never tolerated.
+  and fixed, never tolerated, including when it does not reproduce locally.
 
 ## Impact
 

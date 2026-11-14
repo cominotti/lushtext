@@ -10,12 +10,22 @@ classified, what is measured and what is still a hypothesis.
 **B1. CI failure census.** Taken with `gh run view --log` over every `ci.yml`
 run since 2026-11-12, plus `43108136719`.
 
+The spec review re-took the `FLAKY` row independently. It read 52 widget job
+logs, one per completed `Widget Tests (*)` job of every `ci.yml` run since
+2026-11-11, through `gh run view --job <id> --log`. That form is required:
+`gh run view <run> --log` omits the jobs of a cancelled run, such as
+43627976239.
+
+- It found exactly the three tests below and no other.
+- The directory charge appears five times, not four: 43108136719 is
+  included.
+
 | Blocker | Runs | Signature |
 | --- | --- | --- |
 | window draft test | 43614093974, 43619204060, 43623373361, 43625734736, 43629270107 | "the restored text is still owed a draft" (both attempts, both job tries) |
 | editor-page minimap test | 43108136719, 43147416345, 43612937829, 43615947076, 43619204060, 43622208418, 43627345020, 43627976239, 43632470998 | "precondition: the editor stays scrolled to the middle (Rectangle { x: 0, y: -6, width: 808, height: 664 })" |
 | GTK Lush API Advisory | every run since 2026-11-11 | `openssl-sys-0.9.88` build script panics on OpenSSL `4_0_3` |
-| retry-rescued (`FLAKY`) | directory charge ×4 (43612937829, 43614093974, 43615947076, 43629270107); bookmark preview-only ×1 (43614093974); protected periodic capture ×1 (43627976239) | see B4 |
+| retry-rescued (`FLAKY`) | directory charge ×5 (43108136719, 43612937829, 43614093974, 43615947076, 43629270107); bookmark preview-only ×1 (43614093974); protected periodic capture ×1 (43627976239) | see B4 |
 
 Not in scope because they are already fixed on `main`:
 
@@ -94,13 +104,46 @@ None of the three is classified yet.
 - It lives once, in the draft workflow (`ui/window/drafts/`). The `changed`
   handler and every owing terminal call it.
 
-| Workflow | Owes a draft? | Why |
-| --- | --- | --- |
-| `DraftRecovery` | yes (already does it inline) | `restore_execution.rs` sets it, so the text survives even if the set-aside copy is deleted |
-| `LocalHistoryRestore` | **yes (missing)** | the buffer now holds the snapshot; the draft holds the pre-restore text |
-| `LocalHistoryUndo` | **yes (missing)** | same, in reverse |
-| `SaveFormatting` | no | the terminal mirrors the saved bytes and leaves the tab unmodified |
-| `MemoryEviction` | no | evicted tabs are never draft candidates; reload restores from disk |
+The inventory is keyed by **call site**, not by workflow enum: one enum
+(`DraftRecovery`) has two callers with opposite answers. These are all six
+production `replace_buffer_bounded` callers (`grep -rn replace_buffer_bounded`,
+excluding the `Test` workflow's test-utils seams):
+
+| Call site | Workflow | Owes a draft? | Why |
+| --- | --- | --- | --- |
+| `drafts/restore_execution.rs` `open_set_aside_draft` | `DraftRecovery` | yes (already does it inline) | a new untitled tab whose own draft holds nothing; it sets it so the text survives even if the set-aside copy is deleted |
+| `drafts/restore_execution.rs` `apply_draft` (startup recovery, terminal `finish_applied_draft`) | `DraftRecovery` | **no** | the draft on disk *is* the installed body; marking it would rewrite every restored draft on the first tick for nothing |
+| `local_history/restore_execution.rs` `restore_local_history_snapshot` | `LocalHistoryRestore` | **yes (missing)** | the buffer now holds the snapshot; the draft holds the pre-restore text |
+| `local_history/restore_execution.rs` `undo_local_history_restore` | `LocalHistoryUndo` | **yes (missing)** | same, in reverse |
+| `editor_page/save/execution.rs` (formatting mirror-back) | `SaveFormatting` | no | the terminal mirrors the saved bytes and `finish_accepted_save` leaves the tab unmodified |
+| `editor_page/mod.rs` `evict` | `MemoryEviction` | no | evicted tabs are never draft candidates (unmodified only); reload restores from disk |
+
+**The clean-tab case is not covered by the `modified-changed` handler.** Both
+B3 experiments start from an already-modified tab. For a clean tab, GTK sets
+the buffer's modified flag on the replacement's first delete, while the
+handlers are suspended (`documents.rs`: `if editor.load_projection_suspended()
+{ return; }`), so the terminal's `set_modified(true)`
+(`finish_local_history_buffer_replacement`) emits nothing. Reading the code,
+a Restore into a clean tab therefore leaves it **not draft-dirty and without
+the "•" title bullet or the header and discard-action refresh**, which only that
+handler projects. *Hypothesis, not shown:* task 1.1 adds a clean-tab test and
+records red or green. If the title is stale too, the operation also re-projects
+the modified indicator through the handler's own code. That is the same defect
+class and the same fix site.
+
+Every other `set_draft_dirty(true)` site was inventoried so the operation is
+held once without silently re-routing unrelated paths:
+
+| Site | Routes through the operation? |
+| --- | --- |
+| `documents.rs` buffer `changed` handler | yes: it is the operation's reference behaviour |
+| `documents.rs` `modified-changed` handler | yes: same contract (became modified → owed) |
+| `drafts/restore_execution.rs` `open_set_aside_draft` terminal | yes |
+| `documents.rs` rename re-stamp (`if editor.is_modified()`) | no: it re-stamps an identity, and its comment documents why it deliberately does not schedule |
+| `dialogs.rs` close-save freshness abort, `abort_async_close_safety` | no: batch restores after an aborted close, each already scheduling one first-dirty pass for the batch |
+
+The implementation re-checks this list (`grep -rn "set_draft_dirty(true)"`) and
+records any change in the matrix row.
 
 - Advancing the generation at the terminal covers both orderings in B3:
   - a pass committed **before** the terminal cleared the flag, and the
@@ -109,6 +152,11 @@ None of the three is classified yet.
     leaves the flag set.
 - Marking at the replacement **start** as well is not needed. A capture
   during the replacement is refused anyway (`draft_capture_blocked`).
+- **Rejected: compensating from `fire_content_republished`.** That hook fires
+  at every guard-restoring terminal, including `SaveFormatting`, cancelled
+  sessions and startup `apply_draft`. Each listener would have to re-derive
+  "owed" from state the terminal already knows. An explicit call on the
+  owing terminals' `Complete` arms keeps the decision where the facts are.
 - **Rejected: fixing the test.**
   - Removing the test's real timer would hide a deterministic production
     defect: B3's first experiment needs no timer at all.
@@ -151,15 +199,43 @@ it to name the writer before fixing.
 - The fix must separate the two causes of a move during the burst:
   - GTK reallocation preserving or clamping an offset (snap);
   - a scroll the user or the application made (keep).
+- **Constraint on any discriminator: it is decided at the adjustment.**
+  - Both the CI test and the failing-first experiment scroll through raw
+    `GtkTextView::scroll_to_mark`, not an app entry point.
+  - So do GTK's own cursor-onscreen, keyboard-navigation and search scrolls.
+  - Marking intent only at LushText entry points (`scroll_to_document_iter`,
+    the scroll controller) would leave both tests red. Making it pass by
+    routing the tests through an app entry point is the "fix the test" this
+    design rejects.
+  - A discriminator decided anywhere else must ship with an exhaustive
+    scroll-source inventory (every caller of `scroll_to_mark`,
+    `scroll_to_iter`, `scroll_mark_onscreen` and `set_value` on the editor's
+    vadjustment, plus GTK's internal ones) and a test per source.
 - Candidate discriminators, chosen by evidence in task 2.1b:
-  - mark app-initiated scrolls (`scroll_to_document_iter`, mark scrolls) and
-    user input (scroll controller, scrollbar drag, keyboard navigation) as
-    intent that ends the pause for the vertical axis;
+  - classify each vertical `value-changed` during the burst by whether the
+    same allocation also changed the vertical bounds or page size. A
+    reallocation preserves or clamps the value together with a bounds change.
+    A scroll changes the value alone. `ViewportObserver` already separates the
+    bounds and value callbacks;
   - compare the moved value with what GTK's reallocation can produce (for
-    example a clamp to the new `upper - page_size`).
+    example a clamp to the new `upper - page_size`);
+  - intent marking at entry points, only together with the inventory above.
 - Task 2.1b first deletes the snap and runs the `editor-page` shard. The tests
   that go red show what a GTK-driven move looks like. If none go red, the
   top-anchor scenario gets its own failing-first test before any fix.
+
+**A kept scroll must also leave the rest state true.**
+
+- The pause swallowed the scroll's `value-changed`, so after the settle,
+  `rest_state.at_lower(Vertical)` still says "at top" at line 1,000.
+- Keeping the value is therefore not enough:
+  - the next height change runs `schedule_top_edge_vertical_scroll_clamp`
+    (`on_viewport_bounds_changed`), whose value has not moved since it was
+    scheduled, so it clamps to the top;
+  - the next width burst snaps again.
+- So the settle re-records the rest state from the settled adjustment
+  whenever it keeps a moved value. The spec scenario "A kept scroll survives
+  later reflows" pins it, failing first.
 
 **Rejected:**
 
@@ -204,6 +280,29 @@ The chosen install:
 5. Fail if the lockfile changed anywhere except that one entry.
 6. Run `cargo install --locked --path .`.
 
+Before step 4, the script also fails if the crate's own lock already pins an
+`openssl-sys` at or above `CARGO_PUBLIC_API_OPENSSL_SYS_VERSION`. Otherwise,
+after a tool bump, the precise update would quietly *downgrade* a dependency,
+or keep an override nothing needs. With this check the retirement condition
+below enforces itself: the first `CARGO_PUBLIC_API_VERSION` bump that no
+longer needs the override fails until the override is removed.
+
+The script's self-test runs offline from a locally built fake `.crate`, with no
+network. It covers a tampered checksum, an unexpected lock change and an
+override that is no longer needed. It is wired into an existing CI-exercised
+policy target (`make check-policy`, or the one `build.md` names for script
+self-tests), so it cannot rot unexercised.
+
+The container verification built with Fedora's packaged `rust`/`cargo`, not
+the job's pinned `nightly-2026-06-01`. `openssl-sys` 0.9.118 declares
+`rust-version` 1.80, so no difference is expected. The branch's CI run (task
+3.5) is the proof on the pinned toolchain. That run also records the
+install step's duration on a cold cache against the job's 20-minute timeout,
+because `cargo install --path` rebuilds the tool even when `rust-cache`
+restores `~/.cargo/bin`. If the cold install leaves too little margin, the
+script skips the build when `cargo public-api --version` already reports the
+pinned version.
+
 All three values go in `ci.yml`'s `env` and in `build.md`'s pin list. A small
 `scripts/install-cargo-public-api.sh` holds the steps, so a developer can run
 them in a `fedora:45` container. Drop the override, and `libcurl-devel` if it
@@ -226,20 +325,79 @@ is no longer needed, when a release locks `openssl-sys >= 0.9.114` and a
 For each test, follow the gtk-testing skill's flake discipline:
 
 1. Reproduce it in isolation under CPU starvation pinned to one or two cores.
+   Build first on CPUs 8–23, and pin only the run.
 2. Classify the wait: a synchronous UI flip, an asynchronous completion, or a
    production race.
 3. Fix the cause failing first.
 4. Prove the fix with at least 20 consecutive isolated passes under the same
    starvation.
 
+**When starvation does not reproduce it.** The bookmark and capture tests each
+failed once, so a local reproduction may not come. Then:
+
+- the diagnosis comes from the CI log (which predicate, at which line) and from
+  instrumentation behind `test-utils`;
+- the failing-first test is a deterministic test of the diagnosed mechanism,
+  as 2.1 did for the minimap;
+- the flake's regression proof is CI: the affected shard without a `FLAKY`
+  line for that test on at least **eight** branch runs.
+
+  Four runs are not enough. Even a test failing on about half of all runs
+  passes four in a row about 6 % of the time (0.5⁴), and these failed on 1
+  of about 15 runs. That count is recorded, not presented as proof of absence.
+- The same branch applies to task 2.2's minimap original.
+
+A longer timeout is a fix only for a wait classified as an asynchronous
+completion whose budget is below the gtk-testing skill's class budget (≥5–10 s).
+These waits are already 10 s and 30 s, so a timeout bump is expected **not** to
+be the fix here.
+
 Each test has its own first question:
 
-- **Directory charge:** the upper mode exceeds the bound on every second CI
-  attempt. Is it a real undercharge of `SIDEBAR_ROW_FIXED_CHARGE` on this
-  toolkit? If so, recalibrate it from the measured CI growth and keep the 5/4
-  bound. Or is it allocator page granularity, in which case measure growth
-  over a larger row count so the granularity divides out? The 5/4 bound is a
-  budget claim; widening it is not a fix.
+- **Directory charge:** the upper mode exceeds the bound on about every
+  second CI attempt. It was rescued 5 times: 43108136719 (2026-11-11), 43612937829,
+  43614093974, 43615947076 and 43629270107.
+  - Both modes already exceed the charge itself: about 1.21× and 1.30× of
+    roughly 1,944–1,960 B/row. Granularity alone therefore cannot make a
+    1,024 B fixed charge right, and the bound holds only through its 5/4
+    margin.
+  - The two modes differ by a near-constant 2.7 MB (≈ 165 B/row × 16,384).
+    That points at a fixed-size event: an allocator arena, a `Vec`/store
+    doubling, or a worker scan batch alive at the same instant as the GTK
+    rows (`VmHWM` is a high-water mark, so a schedule-dependent overlap is
+    bimodal). Three hypotheses, not two:
+    - (a) undercharge: per-row cost really is higher on this toolkit;
+    - (b) a constant-size allocator or capacity step;
+    - (c) a schedule-dependent transient peak that the budget is meant to
+      cover.
+  - Decision procedure: measure `VmHWM` growth at two row counts (16,384 and
+    32,768, on the same fixture shape). Fit slope and intercept: the slope is
+    the per-row cost the charge must cover; a mode-dependent intercept is (b)
+    or (c).
+  - (c) is a production question, not a test one. If the budget's resource
+    claim is the high-water, the charge covers the transient. Otherwise the
+    test measures steady retention, and the rustdoc says so.
+  - **Recalibrating the charge cascades. The design must choose before
+    editing.**
+    - `SIDEBAR_ROW_FIXED_CHARGE` is a coverage window (`rust.md`): it rounds
+      up, so any value above 1,024 becomes 2,048.
+    - Then `SIDEBAR_TYPICAL_FLOOR_RETENTION` = 131,072 × ((256 + 1 + 32 + 16)
+      × 8 + 2,048) = 588,251,136 bytes, above the 512 MiB
+      `SIDEBAR_DIRECTORY_RETAINED_BYTES`. The `const` assertion stops
+      compiling.
+    - The budget is a presentation cap, so the only rounding is *up*, to
+      1 GiB. That doubles the memory one expanded directory may retain, and
+      `rust.md` requires measuring that the resource bound still holds.
+    - The alternative is a recorded exception: an exact charge with its
+      measurement.
+    - User experience first: keep listing 131,072 typical entries in full.
+      Never lower the floor to fit 512 MiB.
+    - Whichever is chosen updates the `docs/thresholds.md` rows, passes `make
+      check-thresholds` and builds the benches, which read
+      `SIDEBAR_DIRECTORY_RETAINED_BYTES` and `sidebar_scan_budget`. The
+      `core-list-budget` harnesses import only `model/list_budget.rs`, not the
+      sidebar constants, so that shard reruns only if that module changes.
+  - The 5/4 bound is a budget claim; widening it is not a fix.
 - **Bookmark preview-only, protected periodic capture:** find which predicate
   timed out and what it waits on.
 
@@ -253,7 +411,9 @@ Each test has its own first question:
 ## Axioms
 
 - D1 relies on no toolkit behaviour beyond the suspended handlers the app
-  owns.
+  owns, and on `GtkTextBuffer` setting its modified flag on any insert or
+  delete. That is documented API behaviour, not a ledger axiom. The clean-tab
+  test in task 1.1 observes it.
 - D2 may rely on the order in which `GtkTextView` updates its adjustments
   relative to `value-changed` during `scroll_to_mark`, and on page-size
   `changed` emissions during reallocation. If the diagnosis depends on that
@@ -274,8 +434,15 @@ Each test has its own first question:
 
 ## Timing
 
-Timing: none (no timed path's cost changes). D1 adds one flag write per
-replacement terminal. D2 adds one comparison per settle.
+Timing: none (no timed path's cost changes).
+
+- D1 adds one flag write per owing replacement terminal.
+- D1 also schedules the first-dirty autosave of the restored body. That body
+  goes through the existing bounded snapshot-write pipeline (chunked capture
+  across GTK turns, worker write), whose budgets are unchanged and which
+  already runs for any edit of the same document. No new GTK-turn cost.
+- D2 adds one comparison per settle and, when a scroll is kept, one rest-state
+  record.
 
 ## Risks
 

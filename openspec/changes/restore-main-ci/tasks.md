@@ -22,9 +22,10 @@ Kani: none expected (no proven module touched). Two conditional reruns:
 
 - if 2.4 adds or edits a function in `ui/editor_page/minimap/policy.rs`,
   rerun `core-geometry-policies` once on the final code;
-- if 4.x changes `model/list_budget.rs` or a sidebar policy item a harness
-  reads, rerun the shard `kani-shards.py oracle` and `grep -rln` name, once,
-  detached.
+- if 4.x changes `model/list_budget.rs` (the only module `core-list-budget`
+  imports; the sidebar constants are not read by any harness), rerun the shard
+  `kani-shards.py oracle` and `grep -rln` name, once, detached.
+- **Starved runs build first** on CPUs 8–23 and pin only the test run.
 
 Timing: none (no timed path's cost changes).
 
@@ -43,8 +44,17 @@ Timing: none (no timed path's cost changes).
         says whether this defect hits every restore or only large ones.
       - `test_an_undo_restore_owes_a_draft`: the draft settled after a
         restore, then Undo Restore. Confirm it fails.
+      - `test_a_restore_into_a_clean_tab_owes_a_draft`: an unmodified
+        file-backed tab restores a snapshot. Assert draft-dirty **and** the
+        "•" tab title. Reading the code, both are missing on `main`, because
+        GTK sets the modified flag on the first delete while the handlers are
+        suspended (design D1). Record red or green for each assertion.
       - `test_a_save_formatting_mirror_back_owes_no_draft`: guards the
         exempt rows. It passes on `main` and must keep passing.
+      - `test_a_recovered_draft_is_not_rewritten_before_an_edit`: startup
+        `apply_draft` leaves the tab not draft-dirty (the draft holds the
+        body). It passes on `main` and must keep passing. It guards against
+        routing the `apply_draft` terminal through the operation.
 
       Register them in the `window` shard if the module mapping does not cover
       them. Then run `make check-widget-shards`.
@@ -53,8 +63,19 @@ Timing: none (no timed path's cost changes).
       first-dirty autosave or mark the running pass pending.
       - Route the buffer `changed` handler (`ui/window/documents.rs`) through
         it.
-      - Route the draft-recovery terminal (`drafts/restore_execution.rs`)
-        through it.
+      - Route the `modified-changed` handler through it too (design D1's
+        `set_draft_dirty(true)` inventory).
+      - Route the `open_set_aside_draft` terminal (`drafts/restore_execution.rs`)
+        through it. **Not** `apply_draft`/`finish_applied_draft`: the draft
+        already holds that body.
+      - If 1.1's clean-tab test showed a stale title, the operation also
+        re-projects the modified indicator (tab title, header bar, discard
+        action) through the handler's own code, not a copy.
+      - Leave the rename re-stamp and the two close-abort sites as they are
+        (design D1). Record any new `set_draft_dirty(true)` site found by
+        `grep -rn`.
+      - Apply the data-safety skill to the change (draft persistence, async
+        ordering).
       - Call it from the Restore and Undo Restore terminals in
         `ui/window/local_history/restore_execution.rs`, only on their
         `Complete` arm.
@@ -69,6 +90,8 @@ Timing: none (no timed path's cost changes).
         runs each;
       - the `window` shard once, with `make test-widget-shard
         WIDGET_SHARD=window`;
+      - `make crash-recovery-smoke` once, the real-process draft-recovery
+        lane;
       - `make check`.
 - [ ] 1.5 Update the docs:
       - the drafts and local-history rows of
@@ -105,15 +128,27 @@ Timing: none (no timed path's cost changes).
       Record the call site in design D2. 2.1's test proves the mechanism, not
       the CI flake. If no starved run reproduces the original, record that.
       The flake's proof then is the branch's `editor-page` job across at
-      least four CI runs (it failed on about half of recent runs).
+      least eight CI runs. It failed on about half of recent runs, and four
+      clean runs would still leave about 6 % false confidence (design D4).
 - [ ] 2.3 Failing first. Keep the discriminating test (renamed
       `test_a_scroll_during_a_passive_width_reflow_survives_the_settle`) red on
-      `main` code. If the diagnosis depends on GTK adjustment ordering, add the
+      `main` code. Add `test_a_kept_reflow_scroll_survives_later_reflows`
+      ("A kept scroll survives later reflows"): after the kept scroll, a
+      width reflow and then a height-only change each settle at line 1,000.
+      Record it red on `main` code; it stays red against a fix that keeps the
+      value but leaves the rest state at "at top" (design D2). If the diagnosis depends on GTK adjustment ordering, add the
       ledger axiom with a `gtk-lush-axioms` probe and sample, then run
       `make gtk-axioms`.
 - [ ] 2.4 Fix at the diagnosed site. Use the discriminator chosen from 2.1b's
       evidence (design D2) to keep a move that came from a scroll and still
-      snap a move that came from GTK reallocation. Keep every existing minimap
+      snap a move that came from GTK reallocation.
+      - The discriminator is decided at the adjustment. Both tests scroll
+        through raw `scroll_to_mark`, so marking intent only at app entry
+        points does not fix them. Any other placement ships the exhaustive
+        scroll-source inventory with a test per source.
+      - Re-record the rest state from the settled adjustment when a moved
+        value is kept.
+      - Do not change either test's scroll path. Keep every existing minimap
       top-anchor test green, in particular the "Minimap top content remains
       visible after shell reflow" scenarios.
 - [ ] 2.5 Prove it:
@@ -142,8 +177,13 @@ Timing: none (no timed path's cost changes).
       - It takes `CARGO_PUBLIC_API_VERSION`, `CARGO_PUBLIC_API_SHA256` and
         `CARGO_PUBLIC_API_OPENSSL_SYS_VERSION` from the environment.
       - It works under `with-temp-scope.sh`, leaving no leak.
-      - Its self-test covers a tampered checksum and an unexpected lock
-        change.
+      - Before the precise update, it fails if the crate's own lock already
+        pins `openssl-sys` at or above the override. That makes the
+        retirement condition self-enforcing (spec "Override retired").
+      - Its self-test runs offline against a locally built fake `.crate`. It
+        covers a tampered checksum, an unexpected lock change and an override
+        no longer needed. It is wired into `make check-policy`, or the
+        script-self-test target `build.md` names.
 - [ ] 3.3 In `ci.yml`, add `libcurl-devel` to the job's dnf step and the two
       new pins to the top-level `env`, and call the
       script from "Install advisory API tools". Keep the job advisory, its
@@ -154,7 +194,12 @@ Timing: none (no timed path's cost changes).
       `make check-agent-docs` or the guidance validator `build.md` names.
       Commit and push.
 - [ ] 3.5 After the push, read the branch's GTK Lush API Advisory job (do not
-      wait on other jobs). It must be green with eight non-empty snapshots.
+      wait on other jobs).
+      - It must be green with eight non-empty snapshots.
+      - Record the install step's duration on a cold cache against the
+        20-minute timeout.
+      - If the margin is thin, add the skip-if-pinned-version check (design
+        D3).
 
 ## 4. Retry-rescued widget tests (D4)
 
@@ -163,16 +208,33 @@ Tests: each item's failing-first test is chosen by its diagnosis.
 - [ ] 4.1 `workspace_tree_virtualization::test_directory_retention_stays_within_its_charge`
       - Reproduce isolated. Record `list-budget-evidence` across 20 runs,
         locally and from the CI logs in design B4.
-      - Decide undercharge or allocator granularity (D4). Fix either
-        `SIDEBAR_ROW_FIXED_CHARGE` (rounded per `rust.md`'s
-        numeric-literal ownership) or the measurement. Keep the 5/4 bound.
+      - Measure `VmHWM` growth at 16,384 and 32,768 rows and fit slope and
+        intercept. Then decide between undercharge, a constant-size
+        allocator or capacity step, and a schedule-dependent transient peak
+        (D4).
+      - If the charge changes: it is a coverage window, so it rounds up to
+        2,048. That breaks the `SIDEBAR_TYPICAL_FLOOR_RETENTION` const
+        assertion against the 512 MiB budget.
+        - Either raise the budget (a presentation cap) to 1 GiB, with a
+          measurement that the resource bound holds, or record an exact-value
+          exception with its measurement.
+        - Never lower the 131,072-entry floor.
+        - Update `docs/thresholds.md`, then run `make check-thresholds` and
+          `cargo bench -p lushtext-core --features test-utils --no-run`
+          (CI's Bench Compile).
+      - Otherwise fix the measurement, and state in the rustdoc what it
+        measures.
+      - Keep the 5/4 bound.
       - Prove it with 20 isolated passes, then commit and push.
 - [ ] 4.2 `window::test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode`
       - Reproduce starved and find the timed-out predicate.
       - Classify it, fix it failing first, prove it with 20 starved isolated
         passes, then commit and push.
+      - If no starved run reproduces it, follow D4's "not reproducible"
+        branch: CI-log diagnosis, a deterministic mechanism test red on
+        `main`, and eight branch CI runs with no `FLAKY` line for it.
 - [ ] 4.3 `protected_view_surfaces::test_a_protected_periodic_capture_reads_the_source_not_the_buffer`
-      - The same procedure.
+      - The same procedure, including the "not reproducible" branch.
       - Treat it as data-safety first: it is a local-history capture. Use the
         data-safety skill.
 - [ ] 4.4 Add each diagnosed class and its fix pattern to the gtk-testing
