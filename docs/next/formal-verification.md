@@ -2396,6 +2396,18 @@ the derived figures come from the slowest runner seen on these harnesses
 come back; lowering `core-minimap-fit` to 8.5 min would only hide the margin
 the re-split bought. The deferral is discharged: the split form is measured.
 
+**Required checks and the verification-runs rule (2026-11-14, maintainer
+decision).** Ruleset `23911547` now requires five checks on `main`: the
+`widgets-geometry`, `core-geometry-policies` and `core-minimap-fit` Kani shards,
+and the `GTK Axioms` and `GTK Axioms (GNOME 50 floor)` jobs of `ci.yml` (both
+were green on every recent run; the GNOME 50 job is the only check of the
+version-qualified axioms on the source floor). The same day,
+`.agents/rules/verification-runs.md` made the run policy permanent: a change
+runs locally only the Kani shards whose harness inputs it edits (pull-request
+shards otherwise left to CI, a scheduled shard once after the final code,
+detached), proof strength only for new or changed harnesses, and timing
+campaigns in four interleaved rounds on the affected cases.
+
 **`core-minimap-fit` as a required check (2026-11-12, archive of
 `retest-upstream-fixes-on-nightly`).** `core-minimap-fit` is now a required
 check of ruleset `23911547`. PR #92's run `43144457562` showed its job at
