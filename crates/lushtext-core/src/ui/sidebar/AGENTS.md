@@ -49,19 +49,17 @@ surface: it is a plain incremental data structure the `watch` role owns, with no
 import and no stage of its own. Both classifications are stated in the modules' own docs
 and in the workflow's matrix row, so neither absence reads as an oversight.
 
-Do **not** rename `workspace_section/watch.rs`: it already carries a correct bounded
-role name, and renaming a stable correct module for symmetry is churn a reader must
-diff to understand.
+Do **not** rename `workspace_section/watch.rs`: it already carries a correct bounded role name.
 
 ## Local Contracts
 
 - The top workspace-selector row stays fixed outside the scroller. Do not let it scroll away.
 - Each persisted workspace owns one ordered folder set and therefore one workspace section. Keep one top-level tree entry per configured folder, in stored order, and preserve empty workspaces as real sections.
 - Width presets are selected from `Preferences > Workspace` and keep their `Small=20%`, `Comfy=30%`, `Large=40%` identities while the window layer clamps their visible width on large displays. Do not reinterpret them as local paned fractions.
-- A programmatic reveal reaches its row only through user paths: `TreeListRow::set_expanded(true)` per ancestor (so admitted scans, the 10,000-entry cap, and the generation guards apply), the section's `SingleSelection`, and `GtkListView::scroll_to` forwarded by the slice bin. Never move the outer scroller from the reveal, and settle on `ViewportSliceBin::outer_request_pending()` rather than elapsed frames (it stays true until the bin has re-sliced from the outer value the idle set). A failed reveal collapses what it expanded.
+- A programmatic reveal reaches its row only through user paths: `TreeListRow::set_expanded(true)` per ancestor (so admitted scans, the retained-byte directory budget, and the generation guards apply), the section's `SingleSelection`, and `GtkListView::scroll_to` forwarded by the slice bin. Never move the outer scroller from the reveal, and settle on `ViewportSliceBin::outer_request_pending()` rather than elapsed frames (it stays true until the bin has re-sliced from the outer value the idle set). A failed reveal collapses what it expanded.
 - Preserve the no-horizontal-scrollbar contract. Prefer tooltips, focused folders, or explicit drill-down behavior over widening the sidebar or clipping silently.
 - Keep workspace-section async tree loading off the main thread and preserve deduplication/placeholder behavior for large directories.
-- Give each materialized child store one `policy::WorkspaceScanFlight` (this workflow's own pure policy, relocated out of `model/` with mutation parity): one admitted scan and one replaceable latest weak/scalar request. Capture strong store ownership and the current mirror only at worker admission, and require lifetime, store, target-generation, and scan-generation agreement before reconciliation or empty-folder evidence may publish.
+- Give each materialized child store one `policy::WorkspaceScanFlight`: one admitted scan and one replaceable latest weak/scalar request. Capture strong store ownership and the current mirror only at worker admission, and require lifetime, store, target-generation, and scan-generation agreement before reconciliation or empty-folder evidence may publish.
 - Keep workspace watcher targets as an incremental mirror of flattened-row splices and expansion state; do not restore full `GtkTreeListModel` scans on restart. Watcher creation, registration, replacement teardown, and stale-handle disposal stay off the GTK thread, with at most one lifecycle worker per section and one latest-generation handoff.
 - Keep watcher event delivery in the per-handle GTK-free coalescing mailbox. Backend callbacks own tree-change filtering and bounded path deduplication; mailbox and refresh planning share the 1,024-path cap, raw normalization stops when overflow becomes one full refresh, and each non-blocking GTK poll consumes at most one notice. A pending full refresh releases and dominates targeted paths until it runs; targeted planning indexes expanded stores once per pass.
 - In workspace-section rows, workspace-folder reorder DnD hover belongs to the transparent row-level shield. `GtkTreeExpander` owns normal disclosure behavior, and any idle collapse after drag-hover child-model creation is defensive only, not the intended reorder path.
@@ -77,10 +75,10 @@ diff to understand.
   so a polled D-Bus read never allocates the per-section collections, and the surface and
   the snapshot cannot drift. Do not hand-copy the derivation back into both.
 - **A workspace load's adoption bit is written only by the load-adoption path.**
-  `imp.load_adopted` feeds `policy::superseded_load_action`, whose parameter is named
-  `any_load_adopted`; setting it from `build_sections_from_file` — which every mutation
-  reaches through `rebuild_sections_from_state` — made that guard inert and destroyed the
-  stored workspace list. Only `adopt_loaded_workspaces` may set it.
+  `imp.load_adopted` feeds `policy::superseded_load_action` (`any_load_adopted`); setting
+  it from `build_sections_from_file`, which every mutation reaches through
+  `rebuild_sections_from_state`, makes that guard inert and destroys the stored workspace
+  list. Only `adopt_loaded_workspaces` may set it.
 - **Reading `evidence.rs` must not make the toolkit do work.** This workflow's model is a lazily materialized `GtkTreeListModel`, so several innocuous-looking accessors *create* state: `build_children_model` is the create function itself; `find_store_for_dir` calls `row.children()` **and inserts into** the `dir_stores` cache; `find_dir_row` **evicts** from `dir_rows`; `visible_child_stores` calls `row.children()` with **no `is_expanded()` filter**; `derive_expanded_paths_from_model` advances the very capture counters the surface reports; and `set_expanded(true)` materializes children **and** queues a watcher restart. Derive from `expanded_paths` instead, and keep the inertness proof passing.
 - **Aggregates over the section set must stay bounded and honest.** Answer correctly with zero workspaces, and read only `Cell`/`RefCell` imp state — the surface deliberately reads **no** `TemplateChild`, which is what makes it disposal-safe. The section's `dispose()` does **not** call `dispose_template()`; if that ever changes, add a `try_get()` guard **together with** a test that drives the state.
 - Widget tests read the evidence surface. Do **not** add a new per-field `*_for_test` getter for something it does not expose — extend the surface instead.

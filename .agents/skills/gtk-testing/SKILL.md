@@ -133,7 +133,7 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
   artifacts and skip clearly when the host lacks required desktop, portal,
   accessibility, packaging, or benchmark support.
 - The widget harness supports `--list --format terse`, which matters for CI and nextest-style discovery.
-- Temporary files: the harness parent gives each child attempt its own empty `TMPDIR` inside one per-run `lushtext-test-<pid>-<random>` root and removes it when the child exits, so tests use `std::env::temp_dir()` / `tempfile` / `fixture` freely and a crashing child cannot leak. Test lanes run under `scripts/with-temp-scope.sh`, which fails with `TEMP-LEAK:` if a run leaves anything in its private `TMPDIR`; a `TEMP-LEAK` is a defect to fix at its owner, never to allowlist. See "Temporary Files" in `.agents/rules/build.md`.
+- Temporary files: the harness parent gives each child attempt its own empty `TMPDIR` inside one per-run `lushtext-test-<pid>-<random>` root and removes it when the child exits, so tests use `std::env::temp_dir()` / `tempfile` / `fixture` freely and a crashing child cannot leak. Test lanes run under `scripts/with-temp-scope.sh`, which fails with `TEMP-LEAK:` if a run leaves anything in its private `TMPDIR`; a `TEMP-LEAK` is a defect to fix at its owner, never to allowlist. See "Temporary Files" in `.agents/rules/testing.md`.
 
 ## Test Seams And Evidence Surfaces
 
