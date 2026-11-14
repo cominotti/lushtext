@@ -6,13 +6,17 @@
 //! `gtk_adjustment_set_value` emits `value-changed` alone, with no `changed`.
 //! A `GtkTextView` that scrolls to a mark in its laid-out document moves its
 //! vertical adjustment the same way: `value-changed` to a value no `changed`
-//! emission carried.
+//! emission carried. A wrapped `GtkTextView` whose width changes moves its
+//! value only through `configure`: when it keeps its first visible line in
+//! place after the rewrap, every `value-changed` reports the value the
+//! preceding `changed` already carried.
 //!
 //! LushText tells a scroll from a reallocation by exactly this
 //! (`restore-main-ci` D2, `ui/editor_page/overscroll.rs`): during a width
 //! reflow burst, a `value-changed` whose value differs from the value the
 //! last `changed` carried moved the view on its own, so the burst's settle
-//! keeps it instead of restoring the top anchor.
+//! keeps it instead of restoring the top anchor. The rewrap half is what
+//! keeps that rule from mistaking GTK's own relayout for a scroll.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -91,6 +95,47 @@ pub fn moved_on_its_own(emissions: &[Emission], value_before: f64) -> bool {
         }
     }
     moved
+}
+
+/// Whether every `value-changed` in `emissions` reports the value the
+/// preceding `changed` carried (or `value_before`, before any `changed`): the
+/// reconfiguration signature, with no move of the value's own.
+#[must_use]
+pub fn every_move_was_carried(emissions: &[Emission], value_before: f64) -> bool {
+    let mut carried = value_before;
+    emissions.iter().all(|emission| match *emission {
+        Emission::Changed(value) => {
+            carried = value;
+            true
+        }
+        Emission::ValueChanged(value) => (value - carried).abs() <= 0.5,
+    })
+}
+
+/// Lines in the wrapped rewrap document; each wraps several times at the
+/// fixture width.
+pub const WRAPPED_DOCUMENT_LINES: u32 = 800;
+/// How much narrower the rewrap makes the wrapped view, in pixels.
+pub const REWRAP_NARROWING: i32 = 240;
+
+/// A word-wrapped text view holding [`WRAPPED_DOCUMENT_LINES`] long lines.
+#[must_use]
+pub fn wrapped_document_view() -> TextViewFixture {
+    let fixture = TextViewFixture::new(gtk4::WrapMode::Word);
+    let text: String = (0..WRAPPED_DOCUMENT_LINES)
+        .map(|line| format!("{line} {}\n", "lorem ipsum ".repeat(40)))
+        .collect();
+    fixture.buffer.set_text(&text);
+    fixture
+}
+
+/// Narrow `fixture` by [`REWRAP_NARROWING`] and widen it back, settling
+/// after each, so the view rewraps twice under a kept first line.
+pub fn rewrap(fixture: &TextViewFixture) {
+    fixture.scrolled.set_margin_end(REWRAP_NARROWING);
+    settle(LAYOUT_SETTLE * 3);
+    fixture.scrolled.set_margin_end(0);
+    settle(LAYOUT_SETTLE * 3);
 }
 
 /// A text view holding [`DOCUMENT_LINES`] short lines, unwrapped.
@@ -181,13 +226,71 @@ pub fn probe_a112() -> Observation {
         recorder.axiom(
             moved_on_its_own(&emissions, value_before),
             "scroll_to_mark moves the vertical adjustment to a value no changed emission carried",
+        )?;
+        drop(_shown);
+
+        // A wrapped view rewrapped by a width change, at the top and in the
+        // middle of its document (`restore-main-ci` stage 4).
+        let fixture = wrapped_document_view();
+        let _shown = Presented::checked(
+            recorder,
+            &fixture.scrolled,
+            "control: the wrapped text view was presented",
+        )?;
+        let vadjustment = fixture.scrolled.vadjustment();
+        let laid_out = wait_until(std::time::Duration::from_secs(10), || {
+            vadjustment.upper() > vadjustment.page_size() * 8.0 && vadjustment.page_size() > 0.0
+        });
+        settle(LAYOUT_SETTLE * 3);
+        recorder.control(
+            laid_out && vadjustment.value() < 0.5,
+            "control: the wrapped view is laid out, much taller than its page, at the top",
+        )?;
+        let view_log = EmissionLog::attach(&vadjustment);
+        let upper_before = vadjustment.upper();
+        fixture.scrolled.set_margin_end(REWRAP_NARROWING);
+        let rewrapped = wait_until(std::time::Duration::from_secs(5), || {
+            (vadjustment.upper() - upper_before).abs() > 1.0
+        });
+        settle(LAYOUT_SETTLE * 3);
+        fixture.scrolled.set_margin_end(0);
+        settle(LAYOUT_SETTLE * 3);
+        let at_top = view_log.take();
+        recorder.measure("rewrap_at_top", at_top.len());
+        recorder.measure("rewrap_at_top_value_after", vadjustment.value());
+        recorder.control(rewrapped, "control: narrowing the view rewrapped it")?;
+        recorder.axiom(
+            every_move_was_carried(&at_top, 0.0) && vadjustment.value() < 0.5,
+            "a rewrap at the top moves the value only through configure, and leaves it at the top",
+        )?;
+
+        vadjustment.set_value((vadjustment.upper() - vadjustment.page_size()) / 2.0);
+        settle(LAYOUT_SETTLE * 3);
+        let value_before = vadjustment.value();
+        let _ = view_log.take();
+        rewrap(&fixture);
+        let mid = view_log.take();
+        let moves = mid
+            .iter()
+            .filter(|emission| matches!(emission, Emission::ValueChanged(_)))
+            .count();
+        recorder.measure("rewrap_mid_emissions", mid.len());
+        recorder.measure("rewrap_mid_value_moves", moves);
+        recorder.control(
+            moves > 0,
+            "control: a mid-document rewrap moved the value to keep the first visible line",
+        )?;
+        recorder.axiom(
+            every_move_was_carried(&mid, value_before),
+            "a mid-document rewrap moves the value only through configure: every value-changed \
+             reports the value the preceding changed carried",
         )
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Emission, moved_on_its_own};
+    use super::{Emission, every_move_was_carried, moved_on_its_own};
 
     #[test]
     fn a_value_carried_by_changed_is_not_a_scroll() {
@@ -208,5 +311,22 @@ mod tests {
             0.0
         ));
         assert!(!moved_on_its_own(&[], 0.0));
+    }
+
+    #[test]
+    fn a_reconfiguration_carries_every_move() {
+        assert!(every_move_was_carried(
+            &[
+                Emission::Changed(0.0),
+                Emission::Changed(40.0),
+                Emission::ValueChanged(40.0)
+            ],
+            0.0
+        ));
+        assert!(every_move_was_carried(&[], 7.0));
+        assert!(!every_move_was_carried(
+            &[Emission::Changed(40.0), Emission::ValueChanged(90.0)],
+            0.0
+        ));
     }
 }

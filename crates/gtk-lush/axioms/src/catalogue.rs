@@ -1830,7 +1830,8 @@ const CATALOGUE: &[Axiom] = &[
         statement: "gtk_adjustment_configure sets the new value before it emits changed, then \
                     emits value-changed; gtk_adjustment_set_value emits value-changed alone; a \
                     GtkTextView scrolling to a mark in its laid-out document moves its vertical \
-                    adjustment to a value no changed emission carried",
+                    adjustment to a value no changed emission carried; a word-wrapped GtkTextView \
+                    whose width changes moves its value only through configure",
         dependent_designs: &[
             "restore-main-ci D2: during a width reflow burst, a vertical value-changed whose \
              value differs from the one the last changed carried is a scroll, so the burst's \

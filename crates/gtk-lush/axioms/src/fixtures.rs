@@ -894,8 +894,9 @@ pub mod a111 {
 /// sample.
 pub mod a112 {
     pub use crate::probes::a112::{
-        DOCUMENT_LINES, Emission, EmissionLog, TARGET_LINE, document_view, moved_on_its_own,
-        scroll_to_target,
+        DOCUMENT_LINES, Emission, EmissionLog, REWRAP_NARROWING, TARGET_LINE,
+        WRAPPED_DOCUMENT_LINES, document_view, every_move_was_carried, moved_on_its_own, rewrap,
+        scroll_to_target, wrapped_document_view,
     };
     pub use crate::probes::text::TextViewFixture;
 }
