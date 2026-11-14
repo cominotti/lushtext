@@ -16,7 +16,9 @@ construction and the settings writer depend on; from A42, the paragraph,
 edit-signal and widget-lifecycle behaviours of the document scale policy;
 from A59, the input, input-method, drag-and-drop, key-binding and hidden-text
 behaviours Protected View's interaction model depends on, several driven with
-real input through the private compositor's RemoteDesktop interface)
+real input through the private compositor's RemoteDesktop interface; from A67,
+the post-open settle, completion-priority, background-tab, list-budget,
+notes-browser, palette, minimap-marker and GNOME 51 adoption behaviours)
 depend on. Most
 geometry bugs in 2026 came from a wrong belief about one of these, not from code missing
 its own spec (see `docs/next/formal-verification.md` §1), so each belief is
@@ -63,8 +65,8 @@ it is pinned against real GTK.
   The pull-request job (`GTK_LUSH_AXIOMS_INCLUDE_SLOW=0`) then prints
   `skipped (slow): <id>`, local `make gtk-axioms` and the nightly
   responsiveness workflow run it, and its row's "Pinned by" says `**slow**`
-  and that it runs nightly (`make check-gtk-axioms` enforces both). No probe
-  is slow today: A29, the longest, takes about 8 s in isolation.
+  and that it runs nightly (`make check-gtk-axioms` enforces both). A92 is
+  slow today.
 - **A probe that fails after a toolkit update is an axiom change**, reviewed as
   such: revisit the entry, every dependent design, and every verification
   envelope that cites the id before the failure is resolved. Do not adjust the

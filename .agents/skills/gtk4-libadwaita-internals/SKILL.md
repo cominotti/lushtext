@@ -1,6 +1,6 @@
 ---
 name: gtk4-libadwaita-internals
-description: "Deep operational guide to GTK4, Libadwaita, and GtkSourceView internals for Rust applications using gtk4-rs, libadwaita-rs, and sourceview5-rs. Use when investigating widget lifecycle, measurement and allocation, focus and actions, builder templates, CSS nodes, list virtualization, adaptive Libadwaita containers, GtkSourceView editor features, GTK Lush widget/viewport/signal/settle contracts, or GTK and Adwaita warnings and criticals. Trigger on warnings such as `Trying to measure ... needs at least ...`, allocation or snapshot or parenting errors, Paned or Revealer or Box or ListView or TreeListModel behavior, or when implementing or reviewing custom GTK widgets and editor projections in Rust and you need the toolkit contract rather than app-level heuristics."
+description: "Toolkit contracts of GTK4, Libadwaita and GtkSourceView for gtk-rs code, taken from official docs and source, and the GTK axiom ledger. Use for GTK or Adwaita warnings and criticals (Trying to measure, allocation, snapshot, parenting), widget lifecycle, measure and allocate, focus and actions, templates, CSS nodes, list virtualization, adaptive containers, GtkSourceView projections, custom widgets and the GTK Lush widget and viewport contracts, or a design that relies on a GTK behaviour."
 ---
 
 # GTK4 Libadwaita Internals
@@ -18,7 +18,7 @@ Use this skill when the real question is "what contract is GTK, Libadwaita, or G
 
 ## Version Discipline
 
-- This repo targets `gtk4 = 0.11` with feature `gnome_50`, `libadwaita = 0.9` with feature `v1_9`, and `sourceview5 = 0.11` with feature `v5_18`.
+- This repo targets `gtk4 = 0.11` with feature `gnome_50`, `libadwaita = 0.9` with features `v1_9` and `gtk_v4_22`, and `sourceview5 = 0.11` with feature `v5_18`.
 - LushText ships on GTK 4.24.x, Libadwaita 1.10.x and GtkSourceView 5.22.x (the GNOME 51 runtime) and keeps GTK 4.22.x, Libadwaita 1.9.x and GtkSourceView 5.20.x (GNOME 50) as the source floor: behaviour must hold on both (the GTK axiom ledger version-qualifies an axiom whose verdict differs), and the API floor stays at the GNOME 50 families.
 - The docs sites may render newer library versions. Honor `since` markers and do not recommend APIs added after GTK 4.22, Libadwaita 1.9, or the enabled GtkSourceView binding feature floor unless the user explicitly asks for forward-looking guidance.
 - Micro releases inside the same stable family are acceptable for source lookup because the invariants and warning paths are the same class of behavior this skill is documenting.
@@ -82,13 +82,3 @@ reshaped GTK Lush contract, also use `gtk-lush-stewardship`.
 - Keep GTK objects on the main thread. Background threads may compute data, parse files, or search the filesystem, but they must hand plain data back to the UI thread.
 - Use weak references or equivalent patterns for long-lived closures so disposal can complete and widgets can actually die.
 
-## References
-
-- [references/official-sources.md](references/official-sources.md): allowed sources, version bounds, source-file map, and repeatable upstream lookup commands
-- [references/lifecycle-and-ownership.md](references/lifecycle-and-ownership.md): widget lifecycle, parentage, visibility, mapping, and ownership invariants
-- [references/geometry-measurement-and-allocation.md](references/geometry-measurement-and-allocation.md): request modes, min and natural sizes, baselines, Box or Paned or Revealer math, and why `Trying to measure ...` happens
-- [references/containers-lists-and-factories.md](references/containers-lists-and-factories.md): `GtkListView`, `GtkSignalListItemFactory`, `GtkTreeListModel`, selection, reuse, and scroll integration
-- [references/builder-templates-actions-css-accessibility.md](references/builder-templates-actions-css-accessibility.md): Builder XML, composite templates, actions, focus, CSS nodes, and accessibility metadata
-- [references/libadwaita-adaptive-surfaces.md](references/libadwaita-adaptive-surfaces.md): `AdwBreakpoint`, `AdwNavigationSplitView`, `AdwToolbarView`, `AdwViewStack`, and adaptive chrome behavior
-- [references/gtk-axiom-ledger.md](references/gtk-axiom-ledger.md): the normative ledger of GTK behaviours geometry designs and Kani envelopes rely on, each pinned by an isolated headless probe in `gtk-lush-axioms` or recording why it cannot be
-- [references/warnings-and-criticals.md](references/warnings-and-criticals.md): high-signal warning atlas with upstream source paths and likely invariant violations

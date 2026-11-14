@@ -47,7 +47,7 @@ allocation, so a host that owns the adjustment must read it back **after**
 allocating the child and forward the request to the outer scroller against the
 unclamped viewport position, from an idle rather than inside the layout pass.
 
-Three more facts, each learned by shipping a regression (v0.8.1 → v0.8.2):
+Three more facts a viewport host must respect:
 
 - **A `GtkScrollable` works in its CSS content box.** `GtkListView` measures
   its page and content *inside* its padding and border, so a host that hands it
@@ -68,8 +68,8 @@ Three more facts, each learned by shipping a regression (v0.8.1 → v0.8.2):
   republishes *exactly* the value the child chose (`child_value −
   viewport_top`); configuring a different value emits, the anchor is wiped, and
   a request issued between the outer move and the re-slice is never made. The
-  gentler "move only by what the child asked" (`child_value − published`) was
-  implemented and lost keyboard-traversal requests. The cost is that an honoured
+  gentler "move only by what the child asked" (`child_value − published`)
+  loses keyboard-traversal requests. The cost is that an honoured
   request below chrome scrolls that chrome away.
 - **Rows around the selection and focus stay realized but unmapped.** They are
   real children with `compute_bounds`, no pixels, and `child_visible = false`;
