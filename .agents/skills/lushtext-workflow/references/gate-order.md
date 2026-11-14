@@ -8,23 +8,20 @@
 - [Smoke lanes, last and from clean roots](#smoke-lanes-last-and-from-clean-roots)
 - [At ship time](#at-ship-time)
 
+The general gate order, the rustdoc lint gate and the untracked-file hazard are
+normative in `.agents/rules/testing.md` ("Proof Obligations of a Change" and
+"Gate Order Before a Commit"); this page adds what a workflow change needs on top.
+
 ## Before the first gate
 
-**`git add -N` every new file.** Diff-aware gates —
-`make check-visual-proof-policy`, the diff-aware half of
-`make check-accessibility-policy`, and `make mutants-diff` — build their changed
-file set from `git diff <base>`, which does not list untracked paths at all. A
-change that adds whole new role-home directories otherwise gets a **green** gate
-computed over a file set that omits all of its new code, and a diff-scoped
-mutation run that generates no mutants for it.
+**`git add -N` every new file** (testing.md, "Proof Obligations of a Change"). A
+change that adds whole new role-home directories otherwise gets a **green**
+diff-aware gate computed over a file set that omits all of its new code, and a
+diff-scoped mutation run that generates no mutants for it.
 
 ```bash
 git add -N $(git ls-files --others --exclude-standard)
 ```
-
-A green diff-aware gate on a worktree with untracked new source files is not
-evidence. When adding the files changes a gate's digest and it starts failing, the
-fix is to re-run the lane, not to unstage the files and take the earlier green.
 
 ## The ordinary sequence
 
@@ -33,25 +30,17 @@ Run these in order; each is cheap relative to the next.
 ```bash
 make fmt                       # NOT bare `cargo fmt --all` -- that misses tests/widget/
 make check                     # fmt check + all-feature Clippy + fast policy audits
-cargo check -p lushtext-core --lib   # default features
+cargo check -p lushtext --bins --locked   # default features
 ```
 
-`cargo check --lib` with **default** features is not redundant with `make check`.
-`make check` runs Clippy with `--all-features`, which hides `unused_imports` and
-dead-code gate mismatches that a default-feature build emits — a real
-pre-existing-blocker class in this tree.
+The default-feature check is not redundant with `make check`, whose
+all-feature Clippy hides `unused_imports` and dead-code gate mismatches.
 
-```bash
-RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" \
-  cargo doc --workspace --no-deps
-```
-
-The rustdoc gate is **not** in `make check`, `make pre-commit`, or
-`make check-policy`, but CI's `Lint` job enforces it. Always run it for a new
-facade or role home: a narrative facade lives in a `pub` module and naturally
-wants to name its own coordination modules, `pub(crate)` seam types, and non-`pub`
-entry points — every one is a `private_intra_doc_links` error. The fix is always
-to drop the link and keep the name in backticks.
+Run the rustdoc lint gate from testing.md for every new facade or role home: a
+narrative facade lives in a `pub` module and naturally wants to name its own
+coordination modules, `pub(crate)` seam types, and non-`pub` entry points —
+every one is a `private_intra_doc_links` error. The fix is always to drop the
+link and keep the name in backticks.
 
 ```bash
 make check-workflow-boundaries   # also inside make check-policy
@@ -85,11 +74,12 @@ under widget-lane load produces timeouts that read as survivors.
 
 ## Smoke lanes, last and from clean roots
 
-**Any edit under `crates/lushtext-core/src/ui/` or `crates/lushtext/tests/widget/`
-voids the accessibility, visual, and visual-geometry summaries.** Those gates key
-on the **directory prefix**, not on `*.rs`, so even a module-layout `AGENTS.md`
-under `ui/` invalidates all three. Run them **last**, after every source edit is
-final, sequentially, each from a clean artifact root:
+**Any edit under `crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/`,
+`resources/ui/` or `resources/style/` voids the accessibility, visual, and
+visual-geometry summaries.** Those gates key on the **directory prefix**, not on
+`*.rs`, so even a module-layout `AGENTS.md` under `ui/` invalidates all three.
+Run them **last**, after every source edit is final, sequentially, each from a
+clean artifact root:
 
 ```bash
 rm -rf build/smoke/visual-geometry && make visual-geometry-smoke
@@ -97,21 +87,18 @@ rm -rf build/smoke/accessibility  && make accessibility-smoke
 rm -rf build/smoke/visual         && make visual-smoke
 ```
 
-A stale case directory from a previous run can make the root summary report
-failures or evidence the current binary did not produce. A skipped, filtered,
+An early `SKIP:` (the visual smoke's missing-binary check, for example) exits
+before the lane writes a summary, so without the `rm -rf` the previous run's
+summary would read as a fresh result. A skipped, filtered,
 name-only, or rectangle-only visual-geometry run does not count as proof.
 
 ## At ship time
 
 Staging files changes the visual-proof digest. If `make pre-commit` fails on
 `check-visual-proof-policy` after you stage, re-run `make visual-geometry-smoke`
-against the staged tree — do not unstage to recover the earlier green.
-
-```bash
-make pre-commit
-```
-
-Never use `--no-verify`, and never `-c commit.gpgsign=false`.
+against the staged tree — do not unstage to recover the earlier green. Commit
+through `scripts/heavy.sh`, and never with `--no-verify` or
+`-c commit.gpgsign=false` (testing.md, "Gate Order Before a Commit"; `git.md`).
 
 Two acceptance gates cannot be discharged headlessly and are **user-gated**: the
 live `make run` walkthrough against restored workspaces, watching stderr for

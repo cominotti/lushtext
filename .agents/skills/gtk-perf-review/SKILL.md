@@ -1,6 +1,6 @@
 ---
 name: gtk-perf-review
-description: Unified performance review entry point for LushText GTK4/Libadwaita Rust changes. Use automatically for Rust changes in ui, services, model, benches, GTK Lush signals, tasks, settle, viewport, or widgets code, related Cargo dependency or feature changes, pull-request reviews involving Rust, and requests about responsiveness, memory, large files, search, indexing, SIMD, benchmarks, or application hangs. Coordinates bounded leaf reviews for responsiveness, scale, and Rust hot-path correctness; do not invoke the three leaf performance skills separately for an ordinary review.
+description: "The single entry point for LushText performance review; it coordinates the responsiveness, scale and Rust hot-path leaf checklists. Use for Rust changes in ui, services, model, benches or the GTK Lush signals, tasks, settle, viewport and widgets crates, their Cargo dependency or feature changes, Rust pull-request reviews, and questions about responsiveness, hangs, memory, large files, search, indexing, SIMD or benchmarks."
 ---
 
 # GTK Performance Review
@@ -25,26 +25,8 @@ The leaf skills are detailed checklists. An assigned leaf reviewer must read its
 
 Prefer an explicit file list supplied by the user, a PR tool, or the parent task. Otherwise collect scope deterministically.
 
-For an explicit base and head, use:
-
-```bash
-git diff --find-renames --name-only --diff-filter=ACDMRTUXB <base>...<head>
-```
-
-For local work, take the sorted union of unstaged, staged, and untracked paths:
-
-```bash
-{
-  git diff --find-renames --name-only --diff-filter=ACDMRTUXB
-  git diff --cached --find-renames --name-only --diff-filter=ACDMRTUXB
-  git ls-files --others --exclude-standard
-} | LC_ALL=C sort -u
-```
-
-Do not silently substitute `HEAD` for an unknown PR base. Record the exact scope source in the report. Normalize paths to repository-relative form, use Git's rename detection, review deleted Rust through its deletion diff, and review an untracked Rust file from its full contents because it has no diff yet. Exclude generated/vendor output (`target/`, `vendor/`, generated Flatpak sources) unless the user explicitly puts it in scope.
-
-Resolve performance scope through Cargo metadata and package-local role metadata instead of
-assuming crate names or directories:
+For local work, take the sorted union of unstaged, staged, and untracked paths
+and resolve it through the topology helper:
 
 ```bash
 {
@@ -54,7 +36,14 @@ assuming crate names or directories:
 } | LC_ALL=C sort -u | scripts/agent-topology.py performance-scope
 ```
 
-The helper reads `cargo metadata --no-deps --format-version=1`, honors each package's
+For an explicit base and head, pipe
+`git diff --find-renames --name-only --diff-filter=ACDMRTUXB <base>...<head>`
+into `scripts/agent-topology.py performance-scope` the same way.
+
+Do not silently substitute `HEAD` for an unknown PR base. Record the exact scope source in the report. Normalize paths to repository-relative form, use Git's rename detection, review deleted Rust through its deletion diff, and review an untracked Rust file from its full contents because it has no diff yet. Exclude generated/vendor output (`target/`, `vendor/`, generated Flatpak sources) unless the user explicitly puts it in scope.
+
+The helper resolves performance scope through Cargo metadata and package-local role metadata
+instead of assuming crate names or directories. It reads `cargo metadata --no-deps --format-version=1`, honors each package's
 `package.metadata.lushtext-agent.performance-roots`, and retains normalized
 `src/ui`, `src/services`, `src/model`, and `benches` suffixes as a move-safe fallback. It also
 includes an owning package manifest and `Cargo.lock` when they can affect a registered

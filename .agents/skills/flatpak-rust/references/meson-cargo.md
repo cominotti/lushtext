@@ -25,16 +25,5 @@ disabled during the build and must allow Cargo to find the generator-produced so
 
 ## Validation
 
-```bash
-make meson-build
-make meson-test
-make flatpak
-make flatpak-install
-make verify-flatpak-identity
-git diff --check
-```
-
-Also run `make check-flatpak-permissions` for any packaging/policy change. A direct Cargo build is
-not proof that Meson installs the right resources or that the Flatpak export has the right identity.
-Likewise, `make flatpak` is build-only: install the just-built result immediately before identity
-verification, or describe the result as build evidence without making claims about installed state.
+Use the skill's "Proportional validation" commands. A direct Cargo build is not proof that Meson
+installs the right resources or that the Flatpak export has the right identity.

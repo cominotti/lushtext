@@ -1,6 +1,6 @@
 ---
 name: rust-comments
-description: "Review and guide high-signal comments in Rust and adjacent configuration for GTK4/Libadwaita applications. Auto-invoke when Rust changes introduce or alter public APIs, unsafe code, concurrency, persistence, GTK lifecycle or ownership constraints, subtle invariants, non-obvious algorithms, or durable configuration policy. Use explicitly for comment-quality, documentation, readability, onboarding, or stale-comment reviews. Do not trigger for trivial renames, formatting-only changes, obvious delegation, generated files, or changes whose intent is already clear from names and types."
+description: "High-signal Rust comments and rustdoc: when a comment is required (public contracts, SAFETY, ordering, workarounds, policy values, workflow facades) and when it is noise. Use when a Rust change alters such a contract, or for an explicit comment, documentation or stale-comment review; not for renames or formatting."
 ---
 
 # Rust Comments
@@ -56,23 +56,22 @@ for avoidable complexity.
   resource, protocol, retry, timeout, or geometry decision.
 - Give a module `//!` documentation when its architectural role, boundary, or
   split-workflow ownership is not obvious from the module path.
-- Give a workflow's narrative facade module `//!` documentation that names the
-  workflow's entry points and its ordered stages, in order, with each stage
-  pointing at the role that performs it. This is the one place where narration is
-  the deliverable: the facade exists so a reader can follow the workflow without
-  opening the coordination or policy modules.
+- Give a workflow's narrative facade module `//!` documentation that names its
+  entry points and ordered stages, each pointing at the role that performs it
+  (`.agents/rules/workflow-convention.md`, "Roles"); there, narration is the
+  deliverable.
 
 ### Narrating inverted control flow
 
-A workflow stage that resumes from a `glib::idle_add_once` drain, a timer, a
+A workflow stage that resumes from a deferred drain (idle or completion source), a timer, a
 worker completion closure, or a bounded per-turn continuation is not readable
 from the call graph. In the facade documentation, mark each inversion and name
 where control resumes and what revalidates freshness there:
 
 ```rust
 //! 4. `submit` queues the save and schedules the drain.
-//! 5. **Inversion:** control resumes in `begin_admitted_save` from an
-//!    `idle_add_once` drain; `QueuedSaveTicket` freshness is rechecked there
+//! 5. **Inversion:** control resumes in `admission::drain` from an idle at
+//!    `completion_priority()`; `QueuedSaveTicket` freshness is rechecked there
 //!    before any bytes are captured.
 ```
 
@@ -179,7 +178,8 @@ or removal. Do not report density totals or require comments for every symbol.
 After edits:
 
 1. Re-read each changed comment against the current implementation.
-2. Run `cargo fmt --all -- --check` when Rust doc formatting changed.
+2. Run `make check-fmt` when Rust doc formatting changed (`make fmt` to apply; bare
+   `cargo fmt` misses `tests/widget/*.rs`).
 3. Run the narrowest build, lint, or documentation check required by the owning
    project rules.
 4. Use `git diff --check` and confirm no unrelated comment churn entered scope.

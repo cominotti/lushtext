@@ -1,6 +1,6 @@
 ---
 name: gtk-perf-scale
-description: "Explicit deep-dive checklist for LushText performance at scale: large files, directory traversal, file indexes, search, bounded concurrency, memory budgets, and benchmark coverage. Use when explicitly invoked or when assigned as the scale leaf by gtk-perf-review; do not auto-invoke alongside the umbrella performance skill. Leaf reviewers must return findings directly and must not delegate."
+description: "Leaf checklist of gtk-perf-review for scale: large files, traversal, file indexes, search, bounded concurrency, memory budgets and benchmark coverage. Use only when gtk-perf-review assigns it or it is invoked by name; a leaf returns findings and never delegates."
 ---
 
 # Scale and Memory Deep Dive

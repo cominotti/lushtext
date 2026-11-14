@@ -51,7 +51,7 @@ If the tag pushed but the release workflow failed:
 
 ## GitHub Actions Problems
 
-Any GitHub Actions run for the release commit, release tag, or recovery commit with conclusion other than `success` is a release blocker. This includes `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, and required workflow runs that are skipped or expected but missing.
+Any non-success run for the release commit, release tag, or recovery commit is a release blocker under the skill's green standard (Non-Negotiables).
 
 Recovery:
 
@@ -106,25 +106,10 @@ If a deployed Cominotti repository is broken, prefer publishing a new fixed rele
 
 ## Flathub Is Not Planned
 
-**Decided 2026-09-16: LushText is not published to Flathub, and there is no
-plan or intention to start.** The Cominotti remote is the only Flatpak channel.
-
-The release workflow still carries a Flathub PR step. It always skips, and that
-skip is the expected result of this decision rather than a failure to recover
-from. There is nothing to diagnose here: do not check whether `FLATHUB_TOKEN`
-and `FLATHUB_REPOSITORY` are configured, do not rerun a workflow to produce a
-PR, do not create one manually from the artifact, and do not report the skip as
-an outstanding action. The manifest generator, verifier, and domain check are
-retained and still tested so the tooling does not rot, but they are dormant.
-
-Reviving Flathub publication requires an explicit decision reversing this one,
-at which point the removed recovery guidance can be restored from this file's
-history. See `openspec/specs/flathub-publication/spec.md`.
-
-Note the distinction: none of this concerns the Flathub **remote** as the source
-of the GNOME runtime and SDK. A Flatpak build that fails to fetch
-`org.gnome.Platform` from Flathub is an ordinary build failure, handled like any
-other.
+The skipped Flathub PR step is not a failure to recover from: do not rerun a
+workflow or create a PR to produce one (see the skill). A Flatpak build that
+fails to fetch `org.gnome.Platform` from the Flathub **remote** is an ordinary
+build failure, handled like any other.
 
 
 ## Transport And Signing
