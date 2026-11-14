@@ -18,7 +18,7 @@
 # LUSHTEXT_ADMISSION_NOWAIT=1 it checks once and exits 75 on a misfit).
 # scripts/heavy.sh calls it before taking the shared-machine locks, so it does
 # not wait for memory while holding LOCK (see "Shared-machine agent work" in
-# .agents/rules/build.md). With LUSHTEXT_ADMISSION_NOWAIT=1 (exported by
+# .agents/rules/verification-runs.md). With LUSHTEXT_ADMISSION_NOWAIT=1 (exported by
 # scripts/measure.sh to its command) admission never waits: a cap that does
 # not fit at once fails with exit 75, because waiting for memory inside a
 # measurement's exclusive locks would stall every agent for as long as the

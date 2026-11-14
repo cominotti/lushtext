@@ -7,7 +7,10 @@ paths:
   - "**/*.blp"
   - "**/*.ui"
   - "**/*.css"
-  - "**/*.rs"
+  - "crates/gtk-lush/**"
+  - "crates/gtk-lush-adoption-lab/**"
+  - "crates/lushtext-core/src/app.rs"
+  - "crates/lushtext-core/src/lib.rs"
 ---
 
 # UI Design Rules
@@ -30,15 +33,16 @@ LushtextWindow (AdwApplicationWindow)
 │   ├── GtkLushClipBin [window_content_clipper] (min-height 0, clips flexible center content)
 │   │   └── AdwOverlaySplitView [workspace_split_view]
 │   │       ├── [sidebar/start] LushtextSidebar
-│   │       │   ├── GtkBox ["New Workspace" label + button]
+│   │       │   ├── GtkBox [new_workspace_box: DropDown workspace_filter_dropdown + Button new_workspace_button]
 │   │       │   ├── GtkSeparator
-│   │       │   └── GtkScrolledWindow (outer, vexpand, vertical scrolling only)
-│   │       │       └── GtkBox [sections_box]
-│   │       │           └── LushtextWorkspaceSection (per workspace)
-│   │       │               ├── GtkSeparator
-│   │       │               ├── GtkBox [header: label + refresh_button]
-│   │       │               └── GtkLushViewportSliceBin [file_tree_slice] (full height to the outer scroller, visible band to the child)
-│   │       │                   └── GtkListView + TreeListModel
+│   │       │   └── GtkRevealer [workspace_list_revealer]
+│   │       │       └── GtkScrolledWindow [outer_scrolled_window] (vexpand, vertical scrolling only)
+│   │       │           └── GtkBox [sections_box]
+│   │       │               └── LushtextWorkspaceSection (per workspace)
+│   │       │                   ├── GtkSeparator
+│   │       │                   ├── GtkBox [header: label + refresh_button]
+│   │       │                   └── GtkLushViewportSliceBin [file_tree_slice] (full height to the outer scroller, visible band to the child)
+│   │       │                       └── GtkListView + TreeListModel
 │   │       └── [content] AdwMultiLayoutView [properties_layout_view]
 │   │           ├── [slot: primary] GtkBox [content_box] (vertical)
 │   │           │   ├── GtkStack [content_stack] (vexpand)
@@ -124,7 +128,7 @@ skeleton:
   `[row]` child (`<child type="row">`) falls through to `GtkListBoxRow`'s
   `set_child` and replaces the expander's own header and list (Libadwaita 1.10
   warns `AdwEntryRow … placed into AdwExpanderRow …, can only be placed into
-  GtkListBox`; 1.9 showed only the entry row, silently). Keep the template row
+  GtkListBox`). Keep the template row
   fixed and recycle only the rows the projection appends; both types need
   `ensure_type()` before `bind_template()`.
 - `AdwStatusPage` for empty states
@@ -252,11 +256,14 @@ add a new one before calling the work complete.
 
 ## Transient Shell Surfaces
 
-- Window-level overlays and secondary shell surfaces must have a clear dismissal contract. Escape closes one topmost visible dismissible surface, then stops; it must not cascade through every open surface in one press.
-- Child-owned popups, dropdowns, dialogs, and focused entries get first chance to handle Escape. The window shell should handle Escape only after child propagation reaches it.
-- Command-palette click-away must close the palette from outside the palette geometry even if keyboard focus has moved elsewhere. Inside clicks on the search entry, mode selector, result rows, scrollbars, or child popup roots must keep the palette open and allow the child interaction to continue.
-- Focus restoration is part of the close contract. Close command-palette overlays through `close_command_palette()` rather than hiding the revealer directly.
-- Test no-context, representative, dense, and constrained states for overlay dismissal, especially when the surface has result lists or can appear above another transient surface such as the search panel or Focus Mode affordance. New transient surfaces also need stable accessible names and focus-restoration proof.
+The dismissal contract (one topmost surface per Escape, children first, palette
+click-away through `close_command_palette()`, focus restoration) is in
+`widget-wiring.md`, "Window-Level Transient Surface Dismissal" and "Focus
+Restoration on Overlay Close". Test no-context, representative, dense, and
+constrained states for overlay dismissal, especially when the surface has
+result lists or can appear above another transient surface such as the search
+panel or Focus Mode affordance. New transient surfaces also need stable
+accessible names and focus-restoration proof.
 
 ## File Tree
 
@@ -271,12 +278,12 @@ add a new one before calling the work complete.
 
 ## Multi-Workspace Sidebar
 
-- `LushtextSidebar` is an orchestrator: manages the fixed top `New Workspace` affordance, workspace sections, and persistence (`workspaces.json`).
+- `LushtextSidebar` is an orchestrator: manages the fixed top row (the workspace-scope dropdown and the new-workspace button), workspace sections, and persistence (`workspaces.json`).
 - `LushtextWorkspaceSection` encapsulates per-workspace state: file tree, file context menu, header context menu.
 - **Viewport slice pattern (CRITICAL)**: Each section hosts its `GtkListView` in `gtk_lush_widgets::ViewportSliceBin` (`$GtkLushViewportSliceBin` in Blueprint). `GtkListView` realizes at most `GTK_LIST_VIEW_MAX_LIST_ITEMS` (200, plus two extra items per tracker; `gtk/gtklistview.c`) row widgets for one visible range, so a list view that is handed its whole content as viewport renders blank space after roughly the two-hundredth row while the model is complete. That is exactly what the retired `GtkScrolledWindow(propagate-natural-height=true, vscrollbar-policy=never)` host did. Never give a `GtkListView` its entire content as viewport when it can exceed ~200 rows; nest it in the slice bin (or a real scroller) so it stays virtualized. The bin reports the child's minimum width as its natural width, which is the former `propagate-natural-width=false` contract; labels inside the tree must still use `EllipsizeMode::End` so their minimum width yields to the container constraint. Tests for this surface must assert rendered rows after scrolling the outer scroller, not tree-model rows.
 - **Reveal through user paths**: `win.reveal-workspace-path` (`ui/sidebar/reveal_execution.rs`) expands ancestors with `TreeListRow::set_expanded(true)` (a `GtkTreeListRow` expands synchronously, ledger A22, so the admitted child scan is pending on the next poll), selects through the section's `SingleSelection`, and scrolls through `GtkListView::scroll_to`, so the slice bin forwards the request exactly as it does for keyboard navigation. It never touches the outer adjustment, waits on `ViewportSliceBin::outer_request_pending()` to settle (true until the bin has re-sliced from the outer value its idle set), re-issues the scroll at most `REVEAL_RESCROLL_BUDGET` (2) times when the target is realized at rest but clipped (a never-realized row is placed by the list's height estimate, coarse when a directory loaded in small batches realized few rows; `bound-lists-by-budget-not-count`), and ends in exactly one typed terminal. Proof that the row is *drawn* where the snapshot says lives in the `workspace-tree-reveal` visual scenario, not in widget tests alone.
-- **Pinned top row**: The "New Workspace" affordance sits above the outer ScrolledWindow and stays fixed while the workspace list scrolls.
-- **No horizontal sidebar scrollbar**: workspace headers and file-tree labels still avoid ellipsizing, but the left sidebar must not expose a horizontal scrollbar. Overflow is clipped by the viewport instead of enabling sideways scrolling.
+- **Pinned top row**: The top row sits above the outer scroller and stays fixed while the workspace list scrolls.
+- **No horizontal sidebar scrollbar**: the left sidebar must not expose a horizontal scrollbar. File-tree labels ellipsize at the end (`EllipsizeMode::End`) and other overflow is clipped by the viewport instead of enabling sideways scrolling.
 - **Width presets drive the shell**: `Preferences > Workspace` exposes compact `Small`, `Comfy`, and `Large` options that keep their `20%`, `30%`, and `40%` identities while clamping the visible sidebar width to a comfortable desktop range. The window layer owns the split-view math; the sidebar does not expose a duplicate width control.
 - **Live expansion state**: `expanded_paths` is authoritative live state, kept
   current by row `notify::expanded` transitions, accepted reconciliation
@@ -290,10 +297,7 @@ add a new one before calling the work complete.
   `schedule_child_state_restore`, whose `expanded_paths` borrow lives **inside**
   the deferred closure rather than in the scheduling scope; keep that placement
   when the function moves. Do not name a file or module here, because the owning
-  coordination module is renamed by workflow migrations. (Earlier revisions of
-  this rule also named `restore_materialized_state`, which has never existed in
-  the codebase; the nearest real name, `refresh_materialized_view`, is
-  synchronous and does not touch `expanded_paths`.)
+  coordination module is renamed by workflow migrations.
 - **A splice collapses the row it replaces**: splicing an item into a store,
   even the same `FileTreeItem` in place, gives it a fresh, collapsed
   `TreeListRow`, and the expansion recorder correctly ignores the teardown.
@@ -304,8 +308,8 @@ add a new one before calling the work complete.
   emptiness probe skips: once a folder is expanded, its own child scan owns
   what it shows. Without that check, an expanded folder silently collapsed
   while `expanded_paths` still recorded it as open.
-- **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder request, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
-- **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
+- **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder request, rename, remove). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
+- **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation marks persistence dirty; the save to `workspaces.json` through `workspace_manager::save()` is debounced (`PERSIST_DEBOUNCE_MS`, 150 ms) and runs off the GTK thread, serialized so an older snapshot never overwrites a newer one.
 
 ## File Context Menu (per WorkspaceSection)
 
@@ -319,10 +323,10 @@ add a new one before calling the work complete.
 
 ## Workspace Header Context Menu (per WorkspaceSection)
 
-- `GtkPopoverMenu` attached to `header_box` with "Add Folder...", "Rename Workspace", and "Unlist Workspace" actions.
+- `GtkPopoverMenu` attached to `header_box` with "Add Folder...", "Rename Workspace", and "Remove Workspace" actions.
 - Actions are in a `ws-header` action group on the section widget.
 - Rename shows `AdwAlertDialog` with `extra_child` text entry pre-filled with current name.
-- Unlist shows `AdwAlertDialog` confirmation. Files are NOT deleted from disk.
+- Remove shows an `AdwAlertDialog` confirmation. Files are NOT deleted from disk.
 
 ## UI Templates
 
@@ -367,9 +371,8 @@ add a new one before calling the work complete.
   GTK 4.22/Libadwaita 1.9 warning emitted by the `shortcuts-no-context`
   Keyboard Shortcuts probe after the app has migrated to `AdwShortcutsDialog`.
   Do not generalize that classifier to other probes or surfaces without fresh
-  toolkit and artifact evidence. GTK 4.24 / Libadwaita 1.10 no longer emits it (builder diagnostics
-  on the `gnome-51-debug` image, 9/9 runtime probes, 0 actionable,
-  2026-11-10); the classifier stays for the GNOME 50 floor.
+  toolkit and artifact evidence. GTK 4.24 / Libadwaita 1.10 no longer emits it; the classifier stays
+  for the GNOME 50 floor.
 
 ## Status Bar
 
@@ -477,9 +480,9 @@ Editor preferences use GSettings (`dev.cominotti.lushtext` schema) with `gio::Se
   the handler id in a `SignalBag` cleared in `dispose`, as `EditorPage` does);
   a bare `connect_changed` on it would outlive its owner.
 
-- **Direct bindings** for properties with matching types: `show-line-numbers`, `show-line-marks`, and `highlight-current-line`. Preferences dialog uses two-way (`DEFAULT`), editor pages use one-way (`GET`).
+- **Direct bindings** for properties with matching types: the keys `show-line-numbers`, `bookmark-gutter-visible` (to the view's `show-line-marks`) and `highlight-current-line`. Preferences dialog uses two-way (`DEFAULT`), editor pages use one-way (`GET`).
 - **Mapped bindings** for pure setting projections whose property type differs, such as `word-wrap` (bool -> `GtkWrapMode`) and `minimap-width` (integer -> clamped `width-request`). Keep separate `connect_changed()` handlers only for side effects such as minimap geometry or marker refresh.
-- **Manual formatting handlers** for editor-page `tab-width`, `insert-spaces`, and `indent-width` because EditorConfig overrides can take priority over the GSettings fallback.
+- **Manual formatting handlers** for the editor page's tab width (key `tab-width`), spaces-for-tabs (key `insert-spaces-instead-of-tabs`) and indent width (no key; EditorConfig only), because EditorConfig overrides take priority over the GSettings fallback.
 - **Color scheme**: stored as base ID string, dark variant appended automatically. Combo row uses manual wiring (position ↔ string ID).
 - **Font customization and zoom**: `ui/theme.rs` resolves the base font and zoom from `use-system-font`, `custom-font`, `zoom-level` and the desktop `monospace-font-name`, and hands them to `ui/font_zoom.rs`. The font rules live on two display providers, one generation per base font, a rule set per zoom level keyed by the class `lushtext-font-<g>-zoom-<z>` (ledger A86: any provider reload revalidates every widget). A zoom step swaps the class on the registered widgets and loads nothing; a base-font change loads the next generation, then swaps after the next paint. Every widget that renders the editor font registers: the editor surface with `font_zoom::follow_editor_font`, and any `.monospace` widget only through `font_zoom::follow_editor_font_monospace` (never `add_css_class("monospace")`, `set_monospace(true)`, a builder's `.monospace(true)`, `set_property("monospace", true)` or Blueprint `monospace: true` / `styles ["monospace"]` without a mapped registration; `make check-font-zoom-registration`). The file tree uses the default font.
 - **Word wrap default**: enabled (`true`). Maps to `WrapMode::Word`.
@@ -524,8 +527,7 @@ When a GtkGrid layout has toggle-visible rows sharing columns (e.g., Find/Replac
 
 ## Syntax Highlighting
 
-Supported via GtkSourceView built-in language specs: JSON, TOML, YAML, Markdown.
-JSONC is deferred (requires custom `.lang` file — see `docs/next/jsonc-support.md`).
+Every GtkSourceView language is used; which ones the document scale gates, and at what size, is `SyntaxLanguage` in `model/document_scale.rs`. JSONC is deferred (it requires a custom `.lang` file — see `docs/next/jsonc-support.md`).
 
 ## Dense Documents After Open (`bound-post-open-settle`)
 
@@ -599,8 +601,7 @@ draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
   documents are sliced too; iter-based
   clears extend to the next line start). GTK text layout validates whole
   paragraphs, so a slice that stops mid-paragraph re-lays-out everything
-  already installed in that paragraph on every later slice — quadratic work
-  that froze crash recovery of a 33 MB single-line draft for minutes. A
+  already installed in that paragraph on every later slice (quadratic work). A
   visible paragraph larger than the slice byte budget installs or clears in
   one turn; that single long turn matches the unavoidable layout cost its first
   render pays anyway. **The one exception is a protected hidden tail**

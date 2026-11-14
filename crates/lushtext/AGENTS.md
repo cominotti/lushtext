@@ -10,6 +10,6 @@ This crate is the thin binary entry point plus integration and widget tests.
 
 ## Tests
 
-- `tests/widget.rs` is the custom single-threaded GTK harness. Do not convert it to nextest/libtest patterns that would break the one-process-per-case model.
+- `tests/widget.rs` is the custom single-threaded GTK harness. Do not convert it to nextest/libtest patterns that would break its model of one child process per test attempt.
 - Keep widget test files split by feature under `crates/lushtext/tests/widget/`.
 - When test infrastructure changes, update `README.md` and the root `AGENTS.md` in the same change.

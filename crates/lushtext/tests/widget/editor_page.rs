@@ -426,9 +426,10 @@ fn present_editor_page_sized(page: &LushtextEditorPage, width: i32) -> gtk4::App
 fn wait_for_minimap_ready(page: &LushtextEditorPage) {
     // Realization, mapping and first allocation of the native source map are
     // frame-clock driven, so this is the generous-budget class per
-    // `.agents/rules/build.md`: the predicate returns the instant the widgets
-    // are ready, so a high ceiling costs nothing on the fast path and only
-    // matters when a loaded machine delays a frame.
+    // `.agents/rules/widget-wiring.md` ("Budget the wait"): the predicate
+    // returns the instant the widgets are ready, so a high ceiling costs
+    // nothing on the fast path and only matters when a loaded machine delays
+    // a frame.
     wait_until(std::time::Duration::from_secs(10), || {
         let source_map = minimap_source_map(page);
         let marker_strip = minimap_marker_strip(page);

@@ -1,11 +1,15 @@
 ---
-description: Build system and compilation rules
+description: Build system, CI, packaging and lane rules
 paths:
   - "Cargo.toml"
   - "Cargo.lock"
   - "*/Cargo.toml"
   - "crates/**/Cargo.toml"
-  - "crates/**/*.rs"
+  - "crates/gtk-lush/**"
+  - "crates/gtk-lush-adoption-lab/**"
+  - "crates/cargo-gtk-proof/**"
+  - "**/benches/**"
+  - "**/kani_proofs.rs"
   - "Makefile"
   - ".cargo/**"
   - ".config/**"
@@ -23,644 +27,178 @@ paths:
 
 # Build Rules
 
+Rules that every Rust edit needs (test isolation, temporary files, proof
+obligations, gate order, Kani and axiom authoring, runtime warnings) are in
+[`testing.md`](./testing.md). How agents run heavy work and measurements on
+the shared workstation, and which verification runs a change makes, is in
+[`verification-runs.md`](./verification-runs.md).
+
 ## Dev Builds
 
-Use `make` targets for development. The Makefile auto-detects nextest for non-widget tests across the workspace; `.config/nextest.toml` excludes the `widget` binary from nextest's default filter, while full-suite widget coverage in `make test` flows through the shared headless `scripts/run-widget-tests.sh` path so local verification matches CI. Widget tests must never use the developer's live desktop session: the script has no native mode, and the Cargo-visible widget harness self-supervises into private `mutter --headless` before GTK initializes.
+Use `make` targets for development; `make help` prints the catalogue. The
+Makefile auto-detects nextest for non-widget tests across the workspace;
+`.config/nextest.toml` excludes the `widget` binary (and `binary(=axiom_probes)`)
+from nextest's default filter, while widget coverage in `make test` flows
+through the shared headless `scripts/run-widget-tests.sh` path so local
+verification matches CI.
 
-Before GTK starts, the harness applies the **five** settings returned by
+Before GTK starts, the widget harness applies the **five** settings returned by
 `gtk_lush_proof_harness::recommended_pre_gtk_environment()` (including
-`NO_AT_BRIDGE=1` and `GTK_IM_MODULE=gtk-im-context-simple`). They all express one
-rule: the private compositor advertises desktop services it cannot provide, so
-the client half is not started against it. The input-method entry is a crash
-guard rather than noise suppression, and it is an environment statement rather
-than a claim that the underlying GTK race is fixed — see
-`crates/gtk-lush/proof-harness/README.md` for the contract and
-`docs/next/persistent-format-hardening.md` S7B-6 for the measurement and what
-remains unfixed.
+`NO_AT_BRIDGE=1` and `GTK_IM_MODULE=gtk-im-context-simple`): the private
+compositor advertises desktop services it cannot provide, so the client half is
+not started against it. The input-method entry is a crash guard, not a claim
+that the underlying GTK race is fixed — see
+`crates/gtk-lush/proof-harness/README.md` and
+`docs/next/persistent-format-hardening.md` S7B-6.
 
-```
-make dev-tools  # Flatpak runtime/SDK deps + GTK debug input/screenshot helpers
-make run        # build + force a fresh launch with temporary GNOME desktop staging
-make run-command-palette-notes-manual-test # launch isolated Notes palette fixtures for manual review
-make refresh-dock-icon # regenerate icon assets + force a fresh GNOME Shell dock icon reload
-make clear-lushtext-xdg # remove LushText-owned XDG data/config/cache/state and reset app settings (confirms first; ASSUME_YES=1 for automation)
-make meson-test # build with Meson and run registered desktop/AppStream metadata tests
-make flatpak-install # build and install the current Flatpak before installed-state verification
-make verify-flatpak-identity # after flatpak-install, verify installed identity, permissions, and MIME registration
-make test       # all tests
-make test-prop  # bounded property tests for pure deterministic logic
-make test-prop-deep # opt-in deeper property run with more generated cases
-make fuzz-corpus-replay # stable replay of committed fuzz corpus seeds
-make fuzz-smoke # bounded local cargo-fuzz smoke, requires nightly tooling
-make fuzz-operation-smoke # bounded structured-operation fuzz smoke
-make test-widget # every widget shard in parallel, each in its own capped headless session (WIDGET_PARALLEL=0 for one serial session)
-make test-widget-headless # the same with a per-shard rerun (--retries 1), as `make test` runs it
-make test-widget-shard WIDGET_SHARD=<shard> # one CI widget shard exactly as CI runs it (WIDGET_MEASURE=<json> for measurement mode)
-make test-workspace-row-states # focused workspace file-row state widget run
-make visual-geometry-smoke # same-session visual invariant screenshots and geometry snapshots
-make builder-diagnostics-smoke # GtkBuilder diagnostics under debug-enabled GTK
-make visual-smoke # real-session screenshot smoke with artifacts
-make command-palette-notes-smoke # focused Notes palette screenshot with all note kinds
-make crash-recovery-smoke # real-process SIGKILL/relaunch recovery smoke with artifacts
-make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
-make accessibility-smoke # AT-SPI-enabled accessibility smoke
-make performance-smoke # lightweight Criterion performance smoke
-make responsiveness-build # measurement binary with the smoke-only responsiveness-probes feature, into target/responsiveness/
-make responsiveness-smoke # long-line responsiveness lane (RESPONSIVENESS_TIER=quick|full); nightly/manual, not in end-user-smoke
-make check-responsiveness-lane # (in check-policy) fixture generator and lane driver self-tests
-make check-agent-helpers # (in check-policy) self-tests of scripts/heavy.sh, measure.sh, wait-for.sh (shared-machine lock protocol)
-make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode, KANI_MEMORY_MAX=16G memory cap)
-make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
-make check-kani-shards # every Kani harness in exactly one CI shard, each shard measured within its budget (no Kani needed)
-make proof-strength # LOCAL: Kani harnesses as a mutation oracle beside the cargo-mutants tests arm (PROOF_STRENGTH_MODULE=<path|all>, PROOF_STRENGTH_TIER=ci|all, PROOF_STRENGTH_SHARD=k/n, PROOF_STRENGTH_ARM=tests|kani|both)
-make proof-strength-list # the proof-strength population and harness order, without verifying
-make check-widget-shards # every widget test in exactly one CI shard, each shard measured within 20 minutes (no build needed)
-make check-filesystem-boundary # no disallowed raw filesystem calls/examples
-make check-settings-writes # (in check-policy) every GSettings write and the one application settings instance live in ui/settings_writes.rs
-make check-thresholds # (in check-policy) every integer constant of the production crates is classified in docs/thresholds.md; thresholds are powers of two or recorded exceptions with a rustdoc `Kind:` line, and a presentation cap is the power of two at or above the `up from <value>` its row records (.agents/rules/rust.md)
-make check-policy # fast policy audits beside rustfmt and Clippy
-make check-automation-docs # automation docs drift check against action/D-Bus contracts
-make check-accessibility-policy # accessibility helper/proof guardrail for new UI-sensitive lines
-make check-visual-proof-policy # require visual geometry proof for local visual-sensitive changes
-make check-workflow-boundaries # workflow readability convention and matrix conformance
-make check-explicit-simd # (in check-policy) explicit-SIMD policy: kernel allowlist, no build-time CPU flags, memchr keeps `std`
-make check-gtk-lush-policy # validate GTK Lush family scaffolding/dependency direction
-make check-terminology # workspace folder-set terminology guard over code, resources, and docs
-make check-gtk-lush-adoption # run GTK Lush adoption lab, stock fixture, and matrix checks
-make gtk-lush-adoption-lab # build/test the maintained GTK Lush adoption lab
-make gtk-lush-stock-fixtures # check stock one-crate GTK Lush adoption fixtures
-make gtk-lush-adoption-matrix # validate GTK Lush adoption matrix and evidence
-make gtk-lush-doctests # run doctests for GTK Lush family crates
-make gtk-lush-examples # compile standalone GTK Lush adoption examples
-make gtk-lush-msrv # check GTK Lush family crates with the declared MSRV
-make gtk-lush-api-advisory # advisory semver/public-API checks for GTK Lush crates
-make automation-client-self-test # reusable D-Bus automation client/parser self-test
-make blueprint-generate # regenerate generated .ui files from Blueprint sources
-make check-blueprint # validate Blueprint drift and UI template contract
-make lint-blueprint # advisory grouped Blueprint lint triage
-make lint-advisory # grouped advisory Clippy/rustc lint discovery
-make check-agent-skills # validate skill registry, metadata, links, and rename-safe topology discovery
-make check-agent-docs # validate agent rules/skills guidance
-make end-user-smoke # run all host-supported end-user smoke lanes
-make mutants-smoke # small cargo-mutants smoke run
-make mutants-diff  # mutation test current changes against origin/main
-make mutants-full  # mutation test the configured deterministic scope
-make fmt        # apply rustfmt everywhere, including widget tests cargo fmt cannot reach
-make check      # fmt + all-feature Clippy + fast policy audits
-make pre-commit # repo pre-commit gate (fmt + all-feature Clippy + policy audits)
-make install-git-hooks
-```
+**Validation gates.** These must stay aligned between the Makefile, the
+pre-commit hook, CI, and contributor docs:
 
-The blocking Clippy command is `cargo clippy --workspace --all-targets
---all-features -- -D warnings`, and it must stay identical in Makefile,
-pre-commit, CI, and contributor docs unless a narrower command is explicitly
-documented as a non-blocking smoke shortcut.
+- rustfmt and the blocking Clippy command `cargo clippy --workspace
+  --all-targets --all-features -- -D warnings`, identical everywhere unless a
+  narrower command is documented as a non-blocking smoke shortcut;
+- the fast policy audits, `make check-policy` (filesystem boundary, Blueprint
+  drift and template contract, workflow boundaries, accessibility and visual
+  proof policy, terminology, automation docs, and more);
+- the rustdoc lint gate (run by hand; [`testing.md`](./testing.md));
+- `cargo deny check advisories bans sources licenses`;
+- `openspec validate --all --strict` for OpenSpec changes and specs.
 
-**`cargo fmt --all` cannot reach the widget test modules, and `make check-fmt`
-now covers them separately.** They enter `crates/lushtext/tests/widget.rs`
-through `include!(concat!(env!("OUT_DIR"), "/widget_test_registry.rs"))`, a
-registry `build.rs` generates by scanning the directory, so rustfmt's module
-walk never sees them: `cargo fmt --all --check` passed while formatting
-**nothing** under `tests/widget/`, and eighteen files had accumulated
-unformatted code behind a green gate. `make check-fmt` runs
-`rustfmt --edition 2024 --check` over `crates/lushtext/tests/widget/*.rs` in
-addition to `cargo fmt --all -- --check`, and **`make fmt`** applies both. Use
-`make fmt` rather than bare `cargo fmt --all`, which still leaves those files
-untouched.
+`make check` runs rustfmt (`make check-fmt`, which also covers the widget test
+modules), all-feature Clippy and `make check-policy`; `make pre-commit` is the
+same gate. The repo-managed Git hooks live under `.githooks/`; install them
+with `make install-git-hooks`, which sets `core.hooksPath` for this checkout.
+The pre-commit hook runs `make pre-commit`.
 
-**The rustdoc lint gate is not in `make check`, `make pre-commit`, or
-`make check-policy` — run it by hand.** CI's `Lint` job enforces it, so a
-change that only ever ran the local gates can still red the pipeline:
-
-```
-RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" \
-  cargo doc --workspace --no-deps
-```
-
-Run it whenever a change adds or edits doc comments on a public module, and
-always for a new workflow facade or role home, because the facade convention
-produces exactly the failure this gate catches: **public module documentation
-must not intra-doc-link private items.** A narrative facade lives in a `pub`
-module and naturally wants to name its own coordination modules, its
-`pub(crate)` seam value objects, and its non-`pub` entry points — every one of
-those is a `private_intra_doc_links` error. `rustdoc::private_intra_doc_links`
-does not fire for `#[doc(hidden)]` or for private modules' own docs, so the
-errors cluster in precisely the files the convention asks to be most
-descriptive.
-
-The fix is **always** to drop the link and keep the name in backticks; never
-widen an item's visibility to satisfy documentation. Link only items that are
-genuinely public from the documenting module. This class has shipped three
-times (`session_service`, `WalkStop`, and slot 3a's `save` facade), each time
-because the local gates were green. `make check` runs rustfmt,
-all-feature Clippy, and fast policy audits, including Blueprint template drift
-and generated UI contract validation. Filesystem-sensitive changes should
-also pass `make check-agent-docs`; that target verifies the
-`services::filesystem` guidance in rules and skills, runs the raw filesystem
-no-leftovers audit, self-tests rename-safe Cargo/release/test topology discovery,
-self-tests the dependency-free agent-skill validator, and
-validates every maintained skill's metadata, body size, local links and
-anchors, icon containment, and progressive-disclosure structure.
-`.agents/skills/skill-policy.toml` is the single source of truth for maintained
-skill exclusions, implicit invocation, performance umbrella/leaf roles,
-filesystem-contract consumers, and required release workflow roles. Cargo
-packages expose move-safe review roots through
+`make check-agent-docs` verifies the `services::filesystem` guidance in rules
+and skills, runs the raw filesystem no-leftovers audit, self-tests rename-safe
+Cargo/release/test topology discovery and the agent-skill validator, and
+validates every rule's scope and every maintained skill's metadata, links and
+structure. `.agents/skills/skill-policy.toml` is the single source of truth for
+maintained skill exclusions, implicit invocation, performance umbrella/leaf
+roles, filesystem-contract consumers, and required release workflow roles.
+Cargo packages expose move-safe review roots through
 `[package.metadata.lushtext-agent]`; keep those roots beside the package they
 describe and update them in the same change as an internal layout move.
-Required release workflows carry an `agent-release-role` marker so filenames
-and display names may change without weakening publication checks.
+Required release workflows carry an `agent-release-role` marker, and
 `scripts/agent-topology.py validate` rejects missing role roots, missing or
 duplicate required workflow owners, and required workflows that no longer
 trigger on `v*` tags. Do not duplicate these registries in shell or Python
 allowlists.
-Automation-surface changes should also pass
-`make check-automation-docs`; it verifies user/developer docs against the
-exported action catalog, read-only D-Bus interface, snapshot schema, workflow
-event schema, readiness predicates/blockers, scenario manifest fields, and
-scenario-helper flag marker, plus the reusable automation-client command,
-status, exit, result-field, and artifact-summary contracts. If
-`scripts/lushtext-automation.py` changes, also run
-`make automation-client-self-test`; `make check-policy` includes both checks.
-Accessibility-sensitive UI changes should pass
-`make check-accessibility-policy`; it is a fast diff-aware and current-tree
-guard that catches new icon-only controls, custom row factories, transient
-surfaces, hover-only affordances, direct GTK accessible metadata calls that
-bypass `ui::accessibility`, missing row apply/clear coverage, stale or
-malformed AT-SPI smoke anchors, accessibility matrix/smoke crosswalk drift,
-manifest fixture-boundary drift, and missing manual Orca release-template
-links. The target is included in `make check-policy`. While
-accessibility-relevant files are dirty, it also requires the accessibility and
-visual smoke summaries to carry a source fingerprint matching the current
-tree. That fingerprint digests only relevant-file *contents*
-(`scripts/accessibility_source_fingerprint.py`), so staging or committing a
-byte-identical tree does not void live proof; only a real edit to a relevant
-file requires rerunning the lanes, and the module's own bytes are part of the
-relevant set. It selects those files by **prefix**
-(`crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/`), so creating,
-renaming, or splitting directories inside them cannot silently drop a file out
-of the fingerprint.
-Screenshot-reported or geometry-sensitive UI fixes should also run
-`make visual-geometry-smoke` when the intended invariant is same-session pixel
-stability across a layout action. Pixel-visible effects that have a named
-invariant must also appear in the root summary's
-`pixel_verified_invariant_ids`; a rectangle-only visual geometry pass or a
-name-only invariant pass is not sufficient for those files.
-`make check-visual-proof-policy` is part of `make check-policy` and fails local
-visual-sensitive worktree changes until a passing, unfiltered visual geometry
-summary under `build/smoke/visual-geometry` matches the current
-visual-sensitive diff, pixel-verifies all required invariant ids, and includes
-per-case pixel rows, final-frame rendered-anchor stability, and final geometry
-evidence; skipped, filtered, name-only, rectangle-only, or stale visual geometry
-runs do not count as proof. If the bug was first seen in a live window, capture
-its bounded Automation1 state with
-`scripts/lushtext-automation.py visual-geometry-capture ...` and replay the
-generated scenario under headless visual geometry before claiming coverage.
-Visual geometry runners must start from a clean artifact root; stale case
-directories from a previous run can make the root summary report failures or
-evidence that the current binary did not produce.
 
-**Widget tests are both visual-sensitive and accessibility-sensitive**, so a
-commit that touches `crates/lushtext/tests/widget/*.rs` needs all three lanes
-current: `make visual-geometry-smoke`, `make accessibility-smoke`, and
-`make visual-smoke`. The visual-proof digest hashes the *contents* of the
-visual-sensitive files in `git status`, not a commit range: landing the first
-commit of a series shrinks that set, which voids the proof for the rest and
-the hook refuses the next commit. Plan a series so visual-sensitive files
-change in as few commits as possible, rerun the lane once per distinct
-visual-sensitive set, and expect roughly ten minutes of lane time per such
-commit.
+`make check-workflow-boundaries` (in `make check-policy`) enforces the
+mechanical half of the workflow readability convention; the rules it checks
+are normative in [`workflow-convention.md`](./workflow-convention.md), and the
+script's own docstring lists them. `docs/workflow-readability-matrix.md` is the
+completion source of truth, and the ordered procedure is the
+`lushtext-workflow` skill.
 
-**Untracked files are invisible to every diff-aware gate, so `git add -N` new
-files before running one.** Gates that compare the worktree against a base ref —
-`make check-visual-proof-policy`, `make check-accessibility-policy`'s diff-aware
-half, and `make mutants-diff` — build their changed-file set from
-`git diff <base>`, which does not list untracked paths at all. A change that adds
-whole new directories therefore gets a **green** diff-aware gate computed over a
-file set that omits all of its new code, and a diff-scoped mutation run that
-generates no mutants for it. Run
-`git add -N <new-paths>` as soon as new files exist, before the first gate. A
-green diff-aware gate on a worktree with untracked new source files is not
-evidence; re-run the lane after the files are visible. When adding the files
-changes a gate's digest and it starts failing, the fix is to re-run the lane, not
-to unstage the files and take the earlier green.
-
-**A mechanical gate keyed on a literal file path is disarmed by the migration
-that moves that file, silently and greenly.** A gate is *path-keyed* when a
-checked-in configuration file, policy script, or policy implementation selects
-the files it protects by naming them literally — exact path equality, an explicit
-entry in a scope list, or a literal `line:column` anchor — rather than by a naming
-convention the migrated shape still satisfies. The path-keyed gates in this tree
-today are `.cargo/mutants.toml` (`examine_globs`, `exclude_globs`, and every
-path- or symbol-anchored `exclude_re` entry), the native-minimap invariant
-predicate implemented **twice** in `scripts/check-visual-proof-policy.py` and
-`crates/cargo-gtk-proof/src/policy.rs`, `scripts/check-accessibility-policy.py`,
-`scripts/accessibility_source_fingerprint.py`,
-`scripts/check-filesystem-boundary.sh`, and
-`scripts/run-performance-smoke.sh` — whose keys are literal **test names** and
-evidence labels rather than paths, but fail the same way.
-
-When a change relocates, renames, or splits a file such a gate names:
-
-- **Re-key or retire the entry in the same change.** Retiring is a permitted and
-  sometimes correct outcome — where an entry existed only to include code that
-  sat outside a naming convention, and the change moves that code inside the
-  convention, delete the entry rather than re-point it. Record which outcome was
-  chosen and why.
-- **Re-key every implementation of the predicate.** Leaving a script and a
-  compiled policy tool disagreeing about which files a gate protects is worse
-  than either answer alone. Add a parity assertion to each implementation's own
-  self-tests; one assertion on one side is half of parity, and it is the half
-  that passes while the other side is wrong.
-- **Prove the re-keying by running the gate against the final state, not by
-  reading the patch.** A path-keyed gate that matches nothing does not fail; it
-  passes while protecting nothing, and a diff cannot distinguish a correct re-key
-  from a silent disarm.
-- **Do not weaken the gate.** Broadening a predicate to files it did not protect,
-  or narrowing it so a protected file falls out, is a scope change to justify on
-  its own terms rather than a side effect of a rename.
-
-Prefer a prefix or naming-convention key over a literal path when re-keying, so a
-later split inside the same directory cannot disarm the gate again. (The contrast
-has been measured: a change that created six role-home directories and renamed
-two files needed **no edit** to the prefix-keyed accessibility fingerprint or to
-the `ui/**/policy.rs` mutation convention, while the literal-path native-minimap
-predicates needed a re-key in **both** implementations. Verifying after the move
-rather than assuming is still what turns that into evidence.)
-
-Workflow-readability changes should pass `make check-workflow-boundaries`; it is
-also part of `make check-policy`. It fails when a `policy.rs` module imports
-`gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5`; when a `policy.rs` sits at
-a path the mutation scope cannot reach; **when a GTK-free module under `ui/` holds
-decision logic but carries no declared workflow role**, which is the
-inclusion-side blind spot of a scope decided by naming convention — the purity
-and reachability halves can only inspect files the convention already selects, so
-pure policy under any other file name was silently uncovered while every command
-exited 0; **when a `.rs` file sits in a migrated row's role home and that row's
-matrix text declares it nowhere**, so a module in the one directory the
-convention claims to have classified cannot stay unclassified; when a workflow
-marked migrated in `docs/workflow-readability-matrix.md` lacks its required
-roles; when a matrix row claims evidence that is absent; when the matrix declares
-roles for a row that is not marked migrated; when a normative facade line budget
-has been declared and a migrated row's facade exceeds it; **when the count of
-externally reachable `*_for_test` declarations exceeds the figure recorded under
-the matrix's `### Externally reachable test-seam ceiling`**, which ratchets the
-shadow introspection API
-the evidence surfaces retired; **when a whole-pixel geometry policy module (rule
-10) lacks its `forbid` or `deny` of `clippy::float_arithmetic` and
-`clippy::disallowed_methods`, when it or a child file lowers either lint in a
-way Clippy's `allow_attributes` does not see (an inner or `cfg_attr`
-attribute, or an `expect` on an `impl` or `mod`), when its count of
-`expect`-admitted functions exceeds its recorded ceiling, or when the
-convention's whole-pixel table disagrees with the script** (the rule and the
-table are normative in the "Whole-pixel geometry policy" section of
-[`.agents/rules/workflow-convention.md`](./workflow-convention.md); the float
-methods it bans live in the root `clippy.toml`, allowed workspace-wide and
-raised only by those modules); or when the programme record's slot ledger in
-`docs/next/workflow-readability.md` disagrees with the matrix about which
-workflows are migrated. The programme is closed, so that record is frozen except
-its deferral inventory, which may be appended; the matrix row is what a change
-updates, in the same change as the code.
-
-`make check-terminology` is part of `make check-policy`. It runs the
+`make check-terminology` (in `make check-policy`) runs the
 `workspace_terminology` integration test, which scans `AGENTS.md`, `README.md`,
 `data/`, `docs/`, `openspec/specs/`, `resources/ui/`, and the crate sources for
-the retired `workspace root` / `workspace note` vocabulary, allowing it only
-inside the named sidecar compatibility constants and fixtures. It lives in the
-local gate as well as the CI test lane because it is the only gate that reads
-`data/dev.cominotti.lushtext.metainfo.xml.in`, where `scripts/release.sh`
-inserts AppStream release notes: `make release` runs no tests, so a forbidden
-phrase in release prose would otherwise fail CI only **after** the public tag
-was already pushed. That is not hypothetical - it is how the v0.7.0 release
-found `openspec/specs/workspace-entry-visibility/spec.md:34`, committed on
-`main` in `08a11823` because the guard ran nowhere local. The test costs under
-a second once the test binary is built.
+the retired folder-root and note vocabulary, allowing it only inside the named
+sidecar compatibility constants and fixtures. Keep it in the local gate: it is
+the only gate that reads the AppStream release notes `scripts/release.sh`
+inserts ([why](../../docs/memorials/release-terminology-guard.md)). Never quote
+the retired vocabulary in `docs/`.
 
-`docs/workflow-readability-matrix.md` is the completion source of truth for that
-convention, and the convention itself is normative in
-[`.agents/rules/workflow-convention.md`](./workflow-convention.md) with its
-ordered procedure in the `lushtext-workflow` skill.
-
-Portal and headless smoke scripts must keep their temporary runtime directories
-short (for example directly under `$XDG_RUNTIME_DIR` or `/tmp`) rather than
-under long artifact paths. Mutter/Wayland socket paths are length-limited, and
-an otherwise-valid smoke can fail before exercising the app if the runtime
-directory path is too deep. `with-temp-scope.sh --session-runtime` refuses a
-scope whose `wayland-0` socket path would exceed 100 bytes, naming `TMPDIR`.
-
-### Temporary Files
-
-Every temporary entry a test, harness, or smoke run creates must be removed by
-its owner on every exit path; a leak is a defect even when each run leaks one
-directory. A child-per-test harness multiplies it: one `lushtext-test-<pid>`
-directory per widget child once accumulated 45,978 directories and exhausted
-`/tmp`'s tmpfs inode table. The rules:
-
-- **One root per run, owned by the supervisor.** The
-  `gtk-lush-proof-harness` parent creates one `<prefix><pid>-<random>` root
-  (`lushtext-test-` for the widget suite), hands every child attempt its own
-  empty subdirectory as `TMPDIR`, removes it when the child exits, and removes
-  the root when the run ends. Tests therefore keep using
-  `std::env::temp_dir()`, `tempfile`, and the filesystem `fixture` helpers
-  unchanged; crashes and aborts cannot leak past the attempt.
-- **Drop guards in Rust, traps in shell, `try`/`finally` in Python.** A temp
-  directory outside an artifact tree (for example `cargo-gtk-proof`'s short
-  `lt-proof-<pid>-<hash>` runtime dir) is owned by a value whose `Drop` removes
-  it, so `?` early returns cannot skip cleanup. Shell scripts register their
-  temp paths with an `EXIT` trap plus `INT`/`TERM` traps; Python drivers remove
-  runtime roots in `finally`, keeping only a listing in the artifacts.
-- **Release session runtime dirs only after the session is gone.**
-  `dbus-run-session` returns before the services its private bus activated have
-  exited, and `xdg-document-portal` still holds its FUSE mount on `doc/`, so an
-  immediate removal fails and leaks the directory. Wait until no process
-  carries the directory as `XDG_RUNTIME_DIR` (the harness and
-  `scripts/with-temp-scope.sh --session-runtime` both do), then remove it. Keep
-  the runtime dir short, as above.
-- **PID-bearing names and a conservative sweep.** Names carry the owning PID
-  after an exact prefix so the next run can reclaim what a SIGKILLed run left:
-  only real directories owned by the current user, whose PID is gone and which
-  have been idle for an hour, are swept (a day for the one legacy PID-less
-  `gtk-lush-proof-runtime-*` form). A live run is never swept.
-- **Every test lane runs under `scripts/with-temp-scope.sh`**, which gives the
-  command a private `TMPDIR`, removes it on every exit, and fails with
-  `TEMP-LEAK:` when anything is left inside it. On Ctrl-C or SIGTERM it records
-  the signal and still waits for the session's services to release the runtime
-  directory before removing the scope (exiting from the trap once raced
-  xdg-document-portal, which recreated `doc/` after the removal), then exits
-  130 or 143. The check is scoped to its own
-  run, so parallel runs and CI shards cannot blame one another. `make test`,
-  `make test-unit`/`test-int`/`test-prop`, `make fuzz-corpus-replay`,
-  `scripts/run-widget-tests.sh` (so every CI widget shard and every shard of a
-  parallel local run, each in its own scope labelled `w0`, `w1`, …), the CI non-widget
-  step, `make gtk-axioms`, and the visual-geometry, visual, crash-recovery, and
-  accessibility smoke targets all use it; wrap a new test lane the same way.
-  `make check-temp-scope` (in `make check`) self-tests it. Mutation runs are
-  deliberately not wrapped: a mutant that breaks cleanup must be caught by the
-  tests, not fail the lane.
-
-### Test Isolation From Real App Data
-
-Tests must never read or write the developer's real application data or
-desktop state: `~/.local/share/lushtext`, `~/.config`, `~/.cache`,
-`~/.local/state`, or `~/.var/app/dev.cominotti.lushtext`. On 2026-10-20 a widget
-test saved a session before calling `ensure_gtk_init()`, which was then the
-only place that set `LUSHTEXT_DATA_DIR`, and overwrote the developer's real
-`session.json`; the contents were unrecoverable. Isolation is therefore a
-property of the test **process**, established before any test code runs, never
-a helper a test must remember to call first:
-
-- **Widget tests.** The first statement of `main` in
-  `crates/lushtext/tests/widget.rs` points `LUSHTEXT_DATA_DIR` and
-  `XDG_{DATA,CONFIG,CACHE,STATE}_HOME` at a root inside the process's own
-  `TMPDIR`, from `lushtext_core::services::test_isolation::isolated_environment`.
-  In a child that `TMPDIR` is the per-attempt directory the harness parent
-  creates and removes, so the isolation exists before the registry dispatches
-  the test and cannot outlive the attempt; a child re-roots the values it
-  inherits from the parent, and a hand-launched child isolates itself the same
-  way. Setting the XDG variables before GTK starts matters because GLib caches
-  them on first use (recent files, caches). The process that only lists tests
-  or relaunches into `mutter --headless` runs no test and leaves the
-  compositor's environment as it was. `ensure_gtk_init()` asserts the
-  isolation and no longer sets `LUSHTEXT_DATA_DIR` itself;
-  `common::isolated_data_dir()` still gives one test a fresh directory, and
-  `common::keyfile_settings_backend()` its own `XDG_CONFIG_HOME`, both inside
-  the same `TMPDIR`. `app::test_session_saved_before_gtk_init_lands_in_the_private_test_directory`
-  is the regression test.
-- **Unit and integration tests** (libtest binaries) have no entry point that
-  runs before their tests. They take explicit temporary directories
-  (`TestContext`, `tempfile`) and never resolve the global data directory.
-- **Defence in depth.** In test builds only (`cfg(test)` or the `test-utils`
-  feature), `json_store::data_dir()` panics when the directory it resolves lies
-  under `$HOME`'s XDG trees or the Flatpak home above, comparing after
-  resolving symlinks (`/home` versus `/var/home`). A test that reaches app data
-  without isolation therefore fails loudly before it can write. Production
-  builds compile none of it: `services::test_isolation` exists only under
-  those cfgs, which the default-feature `cargo check -p lushtext --bins` in CI
-  proves. A test that needs a different `HOME` fakes it with a temporary
-  directory and is held to that fake home in turn.
-- **Proving a fix failing-first** is done with `HOME` pointing at a temporary
-  directory and the XDG variables and `LUSHTEXT_DATA_DIR` unset, never against
-  the real home.
-
-Use `make builder-diagnostics-smoke` for runtime GtkBuilder diagnostics. The
-target scopes `GTK_DEBUG=builder,builder-objects`, validates standalone
-templates where possible, runs manifest-backed widget probes under headless
-Mutter, and preserves `coverage.json`, `findings.json`, and summaries under
-`build/smoke/builder-diagnostics`. Local runs may use `auto`, `host`, or
-`container` provider modes through `LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER`;
-scheduled CI uses the reusable debug GTK image published by
-`.github/workflows/builder-diagnostics-runtime.yml`. A local unsupported host
-skip is evidence about the host only, not template coverage.
+`make builder-diagnostics-smoke` runs runtime GtkBuilder diagnostics
+(`GTK_DEBUG=builder,builder-objects`, standalone templates where possible,
+manifest-backed widget probes under headless Mutter; artifacts under
+`build/smoke/builder-diagnostics`). Local runs choose `auto`, `host`, or
+`container` through `LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER`; scheduled CI uses
+the debug GTK image from `.github/workflows/builder-diagnostics-runtime.yml`. A
+local unsupported-host skip is evidence about the host only, not template
+coverage.
 
 Run `make lint-advisory` after Rust/Clippy toolchain updates or lint-policy
-reviews. It runs broad advisory Clippy groups plus selected design, numeric,
-and rustc probes, summarizes findings by lint code, and fails if a new category
-appears without a checked-in classification in
-`scripts/lint-advisory-policy.toml`.
-Blocking-candidate rules with `max_count = 0`, including
+reviews. It fails if a new category appears without a classification in
+`scripts/lint-advisory-policy.toml`. Rules with `max_count = 0`, including
 `clippy::debug_assert_with_mut_call`, document release-safety invariants and
-must stay zero across every target; fix the call site instead of adding an
+must stay zero across every target: fix the call site instead of adding an
 allow/expect or widening its path scope.
 
-Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-linux for fast linking.
+`make dev-tools` sets up a fresh checkout for deep GTK debugging or template
+editing (Flatpak runtime/SDK through `flatpak-deps`, headless screenshot and
+input tooling, AT-SPI bindings, `blueprint-compiler`). It must remain idempotent
+and must not pollute the host: no shell-wide exports, no pip installs, no
+dotfile edits, and no automatic rpm-ostree host layering (that requires
+`LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1`).
 
-The repo-managed Git hooks live under `.githooks/`. Install them with `make install-git-hooks`, which sets `core.hooksPath` for this checkout. The pre-commit hook runs `make pre-commit`, which must stay aligned with the formatting and Clippy gates enforced in CI.
+**Live desktop runs** ([how the launcher works](../../docs/runbooks/dev-desktop-staging.md)):
 
-Use `make dev-tools` on a fresh local checkout before deep GTK debugging or UI template editing. It must remain idempotent and depend on `flatpak-deps` so Flatpak runtime/SDK setup and live-debug helper setup stay available through one command. The helper script installs headless Mutter/PipeWire/WirePlumber/GStreamer screenshot tooling, portal screenshot tools, system Python AT-SPI bindings, ydotool, isolated Xvfb fallback tooling, D-Bus/GSettings utilities, and `blueprint-compiler` when missing, then starts a user `ydotoold` socket under `$XDG_RUNTIME_DIR` only when `/dev/uinput` is present and writable. Do not pollute the host/global environment: no shell-wide exports, no pip installs, no dotfile edits, and no automatic rpm-ostree host layering. Host layering requires `LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1`.
-
-On GNOME Shell, `make run` asks any already-running `dev.cominotti.lushtext` owner to quit before staging a development-only desktop file plus matching development `hicolor` icons and launching the freshly built debug binary. If the existing owner refuses to close, the launcher must fail instead of activating stale code. The launcher must recognize stale debug processes whose `/proc/$pid/exe` target ends with ` (deleted)` after a rebuild, and must fall back to the session bus owner check when `gapplication list-apps` misses an already-owned `dev.cominotti.lushtext` name. The staged desktop entry uses a content-addressed absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs while keeping the icon file alive for as long as a restored user-local desktop entry might reference it. The launcher must quarantine any stale same-ID non-Flatpak `~/.local/share/applications/dev.cominotti.lushtext.desktop` shadow before staging so the installed Flatpak export stays visible. Because the staged desktop file also carries `MimeType` associations, the launcher must refresh the applications desktop database after staging or restoring it so GNOME Settings and `gio mime` see current handler metadata.
-
-All dev staging, temporary or persistent, must use a non-production ID such as `dev.cominotti.lushtext.Devel`; leaving a same-ID non-Flatpak `~/.local/share/applications/dev.cominotti.lushtext.desktop` shadows the Flatpak export and makes GNOME Settings treat LushText as unsandboxed. After Flatpak or desktop-entry work, run `make flatpak-install` immediately before `make verify-flatpak-identity` so the verifier cannot pass against an older installed build; together they confirm the exported desktop entry has `X-Flatpak=dev.cominotti.lushtext`, no same-ID dev shadow exists, effective Flatpak permissions are reported, and required MIME handlers remain registered. If the task does not authorize modifying the user's Flatpak installation, omit installed-state verification and report only build-time evidence. Use `make clear-lushtext-xdg` to remove stale development launchers and development icon staging along with the app's XDG data when a live desktop run leaves leftovers behind. That target is destructive and confirms interactively: it lists the paths it will delete, refuses to delete anything when stdin is not a TTY unless `ASSUME_YES=1` (script flag `--yes`) is given, and `--help` only prints usage. Never invoke `scripts/clear-lushtext-xdg.sh` speculatively to discover its usage; use `DRY_RUN=1` to preview.
-
-For GNOME Settings File Types work, treat the desktop entry's explicit `MimeType=` line as the allowlist source of truth. `gio mime <type>` can still list LushText for source-like MIME types that inherit from `text/plain`, even when LushText does not explicitly advertise those types; that inherited output must not be used as proof that the File Types allowlist is wrong.
-
-Changing `data/icons/dev.cominotti.lushtext.svg` alone is not enough to refresh every icon surface. The fixed-size PNG fallbacks must be regenerated, and an already-running dev session still needs a fresh Shell app object. Use `make refresh-dock-icon` after icon asset changes: it regenerates the PNG fallbacks from the canonical SVG and then replaces the running dev instance so the dock rebuilds from the fresh file-backed icon.
-
-## Shared-machine agent work
-
-Several agents and terminals share one workstation, its CPUs, memory and
-disk, across every worktree of this repository. Two failures shaped the rules
-below. Agents wrote wait loops such as
-`until ! pgrep -f "cargo build -p foo"; do sleep 15; done`: `pgrep -f` matches
-whole command lines, the waiting shell's own command line contains the
-pattern, so the loop matched itself and never ended (some ran 32 hours). And an
-agent took the measurement lock exclusively and then waited, inside it, for
-other work with such a loop, deadlocking two agents for three hours.
-
-**The helpers are THE way agents run heavy work, measurements, and waits.**
-Each has a `--self-test`; `make check-agent-helpers` (in `make check-policy`)
-runs all three plus `shellcheck`, against temporary locks only.
-
-```
-scripts/heavy.sh [--mem <cap>] -- <command> [args...]       # every heavy non-measurement command
-scripts/measure.sh [--label L] [--log FILE] [--lock-timeout S] -- <command> ... # every timing verdict
-scripts/wait-for.sh (--pid N | --name EXACT_NAME | --file PATH [--nonempty]) [--timeout S]
-```
-
-**The lock protocol** (rev 2). Two files in the **main checkout's** `target/`,
-shared by every worktree (the helpers resolve it from
-`git rev-parse --git-common-dir`; `LUSHTEXT_AGENT_LOCK_DIR` overrides it, for
-the self-tests):
-
-- `INTENT` = `target/responsiveness-measure.intent`
-- `LOCK` = `target/responsiveness-measure.lock`
-
-- **Heavy work** — `cargo build`/`check`/`clippy`/`test`, `make test`, Kani,
-  cargo-mutants, proof-strength, smoke lanes, and `git commit` (its hook runs
-  Clippy) — goes through `scripts/heavy.sh`. In order: it waits, holding
-  nothing, until `scripts/with-memory-cap.sh --wait-admissible <cap>` says the
-  cap would be admitted (default `12G`; the host-wide slice budget is the
-  wrapper's own default, which the helper never overrides); probes `INTENT`
-  shared (blocks while a measurement is pending or running); takes `LOCK`
-  shared for the one command, and if memory went short meanwhile, releases it
-  and goes back to waiting for memory; then runs the command as a child, with
-  `CARGO_BUILD_JOBS=4` and its inherited CPU affinity, inside
-  `scripts/with-memory-cap.sh <cap>`. **Memory before locks**: a helper never
-  waits for memory while holding `LOCK` (a pending measurement would wait
-  behind it, and every new heavy start behind that), and never reserves memory
-  while waiting for a lock (a heavy job holding budget while it waits for a
-  measurement could starve the admission of work the measurement is waiting
-  for). The helper, not the command, holds the locks: the command does not
-  inherit the descriptors, so a daemon it leaves behind (a leaked
-  `dbus-daemon` or `mutter`, an `sccache` server) cannot keep `LOCK` held.
-  SIGINT, SIGTERM and SIGHUP are forwarded to the command and its exit status
-  is returned. `make test`/`test-widget` admit their own per-shard scopes, so
-  pass `--mem none` for them rather than nesting every shard under one cap;
-  those inner admissions do wait under the shared `LOCK`, the one place that
-  still happens.
-- **Measurements** — the responsiveness lane, interleaved benches, any timing
-  verdict — go through `scripts/measure.sh`: `INTENT` exclusively, then `LOCK`
-  exclusively. Holding `INTENT` first is the writer preference: new heavy
-  starts wait while the running ones drain, so a measurement is not starved
-  (rev 1, `LOCK` alone, let overlapping shared holders keep the exclusive
-  request waiting forever). It waits for `LOCK` at most `--lock-timeout`
-  seconds (default 1800); then it releases `INTENT`, prints every process that
-  has `LOCK` open and exits 75, so a hung or leaked holder cannot keep every
-  agent's heavy work blocked behind a pending measurement. It records the load
-  average and the top five CPU processes (instantaneous, from `top`) before
-  and after into `--log` (or stderr), runs the one command (without the lock
-  descriptors, with signals forwarded), and releases both. The command runs
-  with `LUSHTEXT_ADMISSION_NOWAIT=1`: a capped scope inside it that does not
-  fit at once fails with 75 instead of waiting for memory under the exclusive
-  locks. Build the measured binary first, with `heavy.sh`: `measure.sh`
-  refuses to run inside heavy work (exit 2) rather than deadlock, and a
-  `heavy.sh` started inside a measurement runs in place. Test-suite wall-time comparisons are not verdicts: run them
-  through `heavy.sh` and record the load.
-- **Granularity: one lock per command.** Never wrap a whole multi-hour script
-  or agent session in one `heavy.sh`; call it per command, so a pending
-  measurement runs between steps (one whole-script shared hold blocked a
-  measurement and a commit for 28+ minutes). A `heavy.sh` nested inside
-  another runs in place, because taking the locks again would deadlock as
-  soon as a measurement is pending. That needs proof, not a variable: the
-  marker `LUSHTEXT_AGENT_LOCK_HELD=<shared|exclusive>:<pid>` is honoured only
-  when that PID is an ancestor of the nested call and its fd 7 is still
-  `LOCK`. A bare or stale marker (carried by a measured command's children, a
-  leftover daemon, a copied environment) once let heavy work run in place in
-  the middle of a measurement.
-- **Never wait for other work while holding a lock**, least of all `LOCK`
-  exclusively. `measure.sh` does nothing but run its command.
-
-Commits run the hook's Clippy, so commit through the protocol too:
-`scripts/heavy.sh --mem none -- git commit ...` (the hook's own targets admit
-their scopes; the helper self-tests the hook runs shed the enclosing marker,
-and `heavy.sh --self-test` runs `measure.sh --self-test` inside a real
-`heavy.sh` to keep it so), or by hand
-`flock -s target/responsiveness-measure.intent true && flock -s target/responsiveness-measure.lock git commit ...`
-from the main checkout.
-
-**Waiting.** Use `scripts/wait-for.sh`, or `tail --pid=<pid> -f /dev/null` /
-a loop on `pgrep -x <name>` directly. **Never `pgrep -f`** (nor `pkill -f`
-with a pattern that matches your own shell). Prefer `--pid` whenever the PID
-is known (a positive number; a PID reused by an unrelated process after the
-awaited one exits keeps the wait going, so wait on processes you started).
-`--name` matches the kernel's process name exactly and literally (regex
-metacharacters are escaped), which is at most 15 characters; `wait-for.sh`
-refuses longer, space- or slash-containing names, which could never match and
-would report "gone" at once. It exits 0 when the condition holds, 124 on
-`--timeout` (`--timeout 0` checks once, in every mode; the deadline is not
-overshot by the polling interval), and 2 on a usage error or when `pgrep`
-itself fails. Its self-test also fails if `pgrep -f` or `pkill -f` appears in
-`scripts/`, the `Makefile`, `.githooks/`, `.github/` or `.agents/skills/`,
-except on a line marked `agent-pgrep-f-ok: <reason>`, reserved for one-shot
-snapshots that filter out their own shell (never a wait loop). On the
-maintainer's workstation a global Claude Code `PreToolUse` hook also blocks
-such commands before they run; the helpers are what keeps them unnecessary.
-
-**Gate order before a commit.** Run the cheap gates first, with the same
-`make` targets the hook runs: `make fmt`, `make check-fmt`, `make check-clippy`
-(it adds project lints a plain `cargo clippy` lacks), `make
-check-workflow-boundaries`, `make check-automation-docs` when the automation
-surface changed, and `cargo check -p lushtext --bins --locked` with default
-features (all-feature Clippy hides `test-utils`-only imports). Only then run the
-accessibility, visual and visual-geometry smokes, and commit right after them:
-their proofs fingerprint file contents, so any edit after a smoke, `make fmt`
-included, makes them stale and the hook refuses the commit.
-
-**Profiling.** On the maintainer's workstation `perf` and `gdb` are installed in
-the toolbox, and Fedora's debuginfod fetches GTK, Pango and GLib symbols on
-demand. Prefer them to hand-written timing shims. The host keeps
-`perf_event_paranoid = 2` and `ptrace_scope = 1`, so:
-
-- profile user space only and launch the target as a child; do not attach to a
-  running process:
-  `perf record -e cycles:u --call-graph dwarf --user-callchains -F 999 -o <file> -- <command>`
-  (without `:u` and `--user-callchains`, `perf record` fails with "Failure to
-  open any events for recording");
-- `gdb --args <command>` works on a child; `gdb -p`/`eu-stack -p` on another
-  process does not;
-- a profiled measurement still goes through `scripts/measure.sh`
-  (`scripts/measure.sh --label <l> -- perf record … -- <command>`), and a run
-  under `perf` is attribution evidence, never a verdict figure.
+- `make run` must fail rather than activate stale code when an existing
+  `dev.cominotti.lushtext` owner refuses to quit, must quarantine a stale
+  same-ID non-Flatpak `~/.local/share/applications/dev.cominotti.lushtext.desktop`
+  shadow, and must refresh the applications desktop database after staging or
+  restoring its desktop file.
+- All dev staging, temporary or persistent, uses a non-production ID such as
+  `dev.cominotti.lushtext.Devel`; a same-ID non-Flatpak desktop file shadows
+  the Flatpak export and makes GNOME Settings treat LushText as unsandboxed.
+- After Flatpak or desktop-entry work, run `make flatpak-install` immediately
+  before `make verify-flatpak-identity`, so the verifier cannot pass against an
+  older installed build. If the task does not authorize modifying the user's
+  Flatpak installation, omit installed-state verification and report only
+  build-time evidence.
+- `make clear-lushtext-xdg` is destructive: it refuses to delete when stdin is
+  not a TTY unless `ASSUME_YES=1` is given. Never invoke
+  `scripts/clear-lushtext-xdg.sh` speculatively to discover its usage; use
+  `DRY_RUN=1` to preview.
+- For GNOME Settings File Types work, the desktop entry's explicit `MimeType=`
+  line is the allowlist source of truth; inherited `gio mime` output is never
+  proof that the allowlist is wrong.
+- After icon asset changes, run `make refresh-dock-icon`, which regenerates the
+  fixed-size PNG fallbacks from the canonical SVG and replaces the running dev
+  instance.
 
 ## Compilation Speed
 
 These patterns are replicated from invowk-rust and must be maintained:
 
 1. **Profiles** in workspace `Cargo.toml` — do not change without benchmarking.
-2. **rust-lld** — default linker on x86_64-linux since Rust 1.90 (~10x faster than BFD, zero config). No manual linker override needed.
+2. **rust-lld** — default linker on x86_64-linux since Rust 1.90. No manual linker override needed.
 3. **cargo-hakari** — run `cargo hakari generate` after any dependency change.
 4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here.
-5. **`rust-version`** — keep `rust-version = "1.98.0"` in `[workspace.package]` and inherited by every package so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` (and every CI toolchain step and the Snap bootstrap) pins **1.98.0**, the compiler the shipped Flatpak's SDK extension ships — `org.freedesktop.Sdk.Extension.rust-stable//26.08`, the branch `org.gnome.Sdk//51` declares — because the binary we test and measure must be built by the same compiler as the binary we ship (maintainer decision, 2026-10-29; moved from 1.98.1 with `adopt-gnome-51`, 2026-11-10). The MSRV stays at 1.98.0. Before changing the pin, check what the extension the shipped SDK declares ships: `flatpak remote-info --user flathub-user runtime/org.freedesktop.Sdk.Extension.rust-stable/x86_64/26.08`. GTK Lush crates also have the dedicated `make gtk-lush-msrv` lane so their independently adoptable surface cannot drift ahead of the workspace floor.
+5. **`rust-version`** — keep `rust-version = "1.98.0"` in `[workspace.package]`, inherited by every package, so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` (and every CI toolchain step and the Snap bootstrap) pins **1.98.0**, the compiler the shipped Flatpak's SDK extension ships (`org.freedesktop.Sdk.Extension.rust-stable//26.08`, the branch `org.gnome.Sdk//51` declares), because the binary we test and measure must be built by the same compiler as the binary we ship. Before changing the pin, check what that extension ships: `flatpak remote-info --user flathub-user runtime/org.freedesktop.Sdk.Extension.rust-stable/x86_64/26.08`. GTK Lush crates also have the `make gtk-lush-msrv` lane so their independently adoptable surface cannot drift ahead of the workspace floor.
 
 ## SonarQube Cloud Scope
 
-`sonar-project.properties` is a maintained CI contract, not a one-time scanner
-bootstrap file. Any change that adds, removes, renames, or materially changes a
-source-bearing directory, workflow family, script family, build/packaging
-surface, generated-output directory, local cache/artifact root, or intentional
-Sonar suppression must review and update `sonar.sources`,
-`sonar.exclusions`, and any `sonar.issue.ignore.multicriteria` entry in the
-same change.
+`sonar-project.properties` is a maintained CI contract. Any change that adds,
+removes, renames, or materially changes a source-bearing directory, workflow
+family, script family, build/packaging surface, generated-output directory,
+local cache/artifact root, or intentional Sonar suppression must review and
+update `sonar.sources`, `sonar.exclusions`, and any
+`sonar.issue.ignore.multicriteria` entry in the same change.
 
 Keep `sonar.sources` explicit and code-focused: Rust crates, scripts,
-workflows, packaging/build inputs, resources, and root build/configuration files
-that Sonar should analyze. Do not let broad repo-root scanning pull in docs,
-agent guidance, archived OpenSpec changes, local worktrees, proof/smoke
-artifacts, generated vendoring data, or build output merely because those files
-are tracked or present locally.
+workflows, packaging/build inputs, resources, and root build/configuration
+files. Do not let broad repo-root scanning pull in docs, agent guidance,
+archived OpenSpec changes, local worktrees, proof/smoke artifacts, generated
+vendoring data, or build output.
 
 When the first scan after a scope or suppression change reports new issues,
-triage them before marking the Sonar work complete: fix actionable findings,
-or add a documented rule-and-resource-scoped suppression with a project-specific
-rationale. Blanket ignores without a concrete first-scan finding are not allowed.
+triage them before marking the Sonar work complete: fix actionable findings, or
+add a documented rule-and-resource-scoped suppression with a project-specific
+rationale. Blanket ignores without a concrete first-scan finding are not
+allowed.
 
 `make sonar-local` (`scripts/sonar-local.sh`) is also the CI verifier after the
-scan upload. On a pull request it must check that pull request's analysis, not
-`main`'s: `.github/workflows/sonarqube.yml` passes `SONAR_PULL_REQUEST` (the PR
-number) and `SONAR_EXPECTED_REVISION` as the PR **head** SHA, because SonarQube
-Cloud records a pull-request analysis against its head commit and never against
-the merge ref `github.sha` names. Branch runs keep `github.sha` and the branch
-query. Locally, `SONAR_PULL_REQUEST=<n> make sonar-local` reads one PR. The PR's revision comes from `api/project_pull_requests/list`;
-when that list omits a PR SonarQube Cloud has analyzed and gated (seen for
-PR 43, still omitted over an hour later), the verifier falls back to the latest
-successful REPORT task's scanner context, which is why the scan step passes
-`sonar.scm.revision` explicitly.
+scan upload. On a pull request it checks that pull request's analysis:
+`.github/workflows/sonarqube.yml` passes `SONAR_PULL_REQUEST` and
+`SONAR_EXPECTED_REVISION` as the PR **head** SHA, because SonarQube Cloud
+records a pull-request analysis against its head commit, never the merge ref
+`github.sha` names. Branch runs keep `github.sha`. Locally,
+`SONAR_PULL_REQUEST=<n> make sonar-local` reads one PR. When
+`api/project_pull_requests/list` omits an analyzed PR, the verifier falls back
+to the latest successful REPORT task's scanner context, which is why the scan
+step passes `sonar.scm.revision` explicitly.
 
 ## Adding Dependencies
 
 1. Add to `[workspace.dependencies]` in root `Cargo.toml`.
 2. Reference with `{ workspace = true }` in crate `Cargo.toml`.
 3. Run `cargo hakari generate` to update workspace-hack.
-4. Verify gtk-rs version alignment if adding any gtk/glib/gio/pango crate.
+4. Verify gtk-rs version alignment if adding any gtk/glib/gio/pango crate (`rust.md`, "Version Alignment").
 5. Run `make cargo-sources` to regenerate `build-aux/cargo-sources.json` for Flatpak.
 
 Adding a new internal workspace crate still requires `cargo hakari generate`
@@ -673,281 +211,140 @@ in the verification summary.
 
 GTK Lush family crates live under `crates/gtk-lush/<member>` and must stay
 independently adoptable leaf crates. They are current in-tree LushText platform
-APIs, so use the family-specific lanes while working on GTK Lush changes:
+APIs; use the family lanes while working on them: `make check-gtk-lush-policy`,
+`make check-gtk-lush-adoption`, `make gtk-lush-adoption-lab`,
+`make gtk-lush-stock-fixtures`, `make gtk-lush-adoption-matrix`,
+`make gtk-lush-doctests`, `make gtk-lush-examples`, `make gtk-lush-msrv`, and
+`make gtk-lush-api-advisory`.
 
-```
-make check-gtk-lush-policy
-make check-gtk-lush-adoption
-make gtk-lush-adoption-lab
-make gtk-lush-stock-fixtures
-make gtk-lush-adoption-matrix
-make gtk-lush-doctests
-make gtk-lush-examples
-make gtk-lush-msrv
-make gtk-lush-api-advisory
-```
-
-`make check-gtk-lush-policy` is part of `make check-policy` and fails on
-missing family scaffolding, missing MIT/Apache license metadata, missing SPDX
-headers, LushText crate dependencies, or runtime dependencies between GTK Lush
-family crates. `make gtk-lush-adoption-matrix` is also part of
-`make check-policy` and fails if the adoption lab, stock fixtures, matrix,
-evidence documents, ignored artifact roots, or one-crate fixture dependency
-contracts drift. Use `make check-gtk-lush-adoption` during GTK Lush adoption
-work to run the matrix check plus the maintained lab and stock fixture cargo
-checks. `gtk-lush-doctests` and `gtk-lush-examples` cover the documentation and
-standalone adoption example surface that `nextest` does not exercise.
+`make check-gtk-lush-policy` (in `make check-policy`) fails on missing family
+scaffolding, missing MIT/Apache license metadata, missing SPDX headers,
+LushText crate dependencies, or runtime dependencies between GTK Lush family
+crates. `make gtk-lush-adoption-matrix` (also in `make check-policy`) fails if
+the adoption lab, stock fixtures, matrix, evidence documents, ignored artifact
+roots, or one-crate fixture dependency contracts drift. `gtk-lush-doctests` and
+`gtk-lush-examples` cover what `nextest` does not exercise.
 
 `gtk-lush-api-advisory` runs `cargo-semver-checks` and `cargo-public-api`
-snapshots in advisory mode while GTK Lush remains an internal platform and
-until any future approved first `0.1.0` publication. A missing
-published baseline may produce advisory output, but missing tools, command
-rot, or missing/empty public API snapshots are infrastructure failures. The
-lane must still upload or leave inspectable public API snapshots. Once a crate
-publishes functionally, its semver/public-API job must become blocking for
-that crate.
+snapshots in advisory mode while GTK Lush remains an internal platform. A
+missing published baseline may produce advisory output, but missing tools,
+command rot, or missing/empty public API snapshots are infrastructure failures,
+and the lane must leave inspectable public API snapshots. Once a crate
+publishes, its semver/public-API job must become blocking for that crate.
+Governance and publication gates are in `crates/gtk-lush/GOVERNANCE.md`.
 
 ## Property Testing
 
 - Framework: `proptest`, wired only for the `lushtext-core` property-test target
-- Feature: `lushtext-core/property-tests`
+- Feature: `lushtext-core/property-tests` (implies `test-utils`, because the suite seeds bodies through the test-only fixture modules)
 - Target: `cargo nextest run -p lushtext-core --features property-tests --test properties --profile property`
-- Makefile targets: `test-prop`, `test-prop-deep`
-- Regression file location: `crates/lushtext-core/proptest-regressions/properties.txt`
+- Makefile targets: `test-prop` (64 cases per property, the CI-safe default), `test-prop-deep` (`PROPTEST_DEEP_CASES=1024` for a manual or scheduled pass)
+- Regression file: `crates/lushtext-core/proptest-regressions/properties.txt`
+- Docs: `docs/property-testing.md`
 
 The property target is guarded by `required-features = ["property-tests"]` and
-must stay outside default non-widget nextest and default mutation runs.
-`property-tests` implies `test-utils`, because the suite seeds bodies through
-the test-only fixture modules.
+must stay outside default non-widget nextest and default mutation runs. Do not
+raise the default case count to investigate one broad invariant; tighten the
+generator or use the deep lane. Use it for pure deterministic invariants over
+bounded generated data and tiny deterministic tempdir-backed service fixtures,
+never for GTK widget construction, compositor behavior, D-Bus/portal state,
+file chooser flows, watcher timing, or live session behavior.
 
-Both fixture modules, `services::filesystem::fixture` and
-`services::draft_service::fixture`, are compiled only under
-`#[cfg(any(test, feature = "test-utils"))]`: their writers skip the durable
-write and the `RegisteredDraft` token, so production must not be able to name
-them. `test-utils` is never a default feature and no shipping build (the
-`lushtext` `[dependencies]`, `build-aux/cargo.sh`, the Flatpak manifest, Snap)
-enables it, directly or through a feature that implies it (the check resolves
-those from the manifests, so `property-tests` and
-`manual-format-upgrade-fixtures` need no list entry). The raw backend operations
-only the filesystem fixture uses live in one gated `sys::fixture_ops` module.
-`make check-filesystem-boundary` enforces all of that, and CI's lint
-job runs `cargo check -p lushtext --bins --locked` with default features, the
-build that fails if production names a fixture (the all-features Clippy gate
-cannot see one). Unit tests get the fixtures from `cfg(test)`, the `lushtext`
-tests from their dev-dependency feature, and every benchmark command passes
-`--features test-utils` (`cargo bench -p lushtext-core --features test-utils`),
-so a missing flag is a loud compile error, not a silently skipped target. Use it
-for pure deterministic invariants over bounded generated strings, paths,
-vectors, Markdown fragments, replacement lists, encodings, sidecar hashes, and
-tiny deterministic tempdir-backed service fixtures. Do not put GTK widget
-construction, compositor behavior, D-Bus/portal state, file chooser flows,
-watcher timing, or live session behavior in this target.
+**Fixture gating.** Both fixture modules, `services::filesystem::fixture` and
+`services::draft_service::fixture`, compile only under
+`#[cfg(any(test, feature = "test-utils"))]`. `test-utils` is never a default
+feature, and no shipping build (the `lushtext` `[dependencies]`,
+`build-aux/cargo.sh`, the Flatpak manifest, Snap) enables it, directly or
+through a feature that implies it (the check resolves those from the
+manifests). The raw backend operations only the filesystem fixture uses live in
+one gated `sys::fixture_ops` module. `make check-filesystem-boundary` enforces
+all of that, and CI's lint job runs `cargo check -p lushtext --bins --locked`
+with default features, the build that fails if production names a fixture.
+Unit tests get the fixtures from `cfg(test)`, the `lushtext` tests from their
+dev-dependency feature, and every benchmark command passes
+`--features test-utils`.
 
-Failure-path filesystem fixtures, including property and integration tests,
-must not depend on ambient Unix permissions to make operations fail: CI
-containers may run as root and bypass those permissions. Prefer feature-gated,
-per-invocation fault seams with no global mutable state so failure evidence
-stays deterministic across privilege levels and parallel tests while production
-callers cannot select injected I/O. When a seam must be visible across threads,
-key it by the exact operation target and return cleanup ownership from
-registration (see the Replace/Undo after-metadata hook registry) instead of
-using one process-global slot that a parallel operation can consume.
-
-`make test-prop` uses the CI-safe default of 64 cases per property. Use
-`make test-prop-deep PROPTEST_DEEP_CASES=1024` for a manual or scheduled pass.
-Do not raise the default pull-request case count just to investigate one broad
-invariant; tighten the generator or use the deep lane.
+Failure-path fixtures use per-invocation fault seams, never ambient Unix
+permissions ([`testing.md`](./testing.md)); see the Replace/Undo
+after-metadata hook registry for a seam keyed by operation target that returns
+cleanup ownership from registration.
 
 ## Formal Verification (Kani)
 
-- Tool: Kani, the programme's **only** formal tool (see
-  `docs/next/formal-verification.md` §2). Quint is dropped and Lean is dormant;
-  the measured Quint vs TLA+ evaluation
-  (`docs/next/formal-verification-quint-vs-tlaplus.md`, 2026-09-24) confirmed
-  Kani-only for maintained properties and chose TLA+ with TLC only as the
-  disposable N6 design-sketch tool if that trigger fires. Its models live in
-  `formal/evaluation/` and run through the local-only `make formal-evaluation`
-  (tools in the gitignored `build/formal-evaluation/`); it is never a
-  prerequisite of `check`, `check-policy`, `test`, `kani`, or `end-user-smoke`,
-  and no workflow calls it;
-  do not add a second specification language without a recorded maintainer
-  decision.
-- Pin: `KANI_VERSION` in the Makefile and the `KANI_VERSION` env of
-  `.github/workflows/kani.yml`, currently `0.68.0` (CBMC 6.11.0). Kani pins its
-  own nightly, independent of `rust-toolchain.toml`; upgrades are deliberate and
-  change both pins together. Install with
+Which shards a change runs, and when, is decided by
+[`verification-runs.md`](./verification-runs.md); harness placement and style
+are in [`testing.md`](./testing.md). This section covers the lane.
+
+- **Tool.** Kani is the programme's **only** formal tool
+  (`docs/next/formal-verification.md` §2). Do not add a second specification
+  language without a recorded maintainer decision. The disposable Quint vs
+  TLA+ evaluation models in `formal/evaluation/` run only through the
+  local-only `make formal-evaluation`, which is never a prerequisite of
+  `check`, `check-policy`, `test`, `kani`, or `end-user-smoke`.
+- **Pin.** `KANI_VERSION` in the Makefile, currently `0.68.0` (CBMC 6.11.0), is
+  the only copy: `.github/workflows/kani.yml`'s `shards` job derives it from
+  the Makefile. Kani pins its own nightly, independent of
+  `rust-toolchain.toml`; upgrades are deliberate. Install with
   `cargo install --locked kani-verifier --version 0.68.0 && cargo kani setup`.
-- Placement: harnesses live in a `#[cfg(kani)] mod kani_proofs` of the crate
-  that owns the checked code (`gtk-lush-widgets` for geometry; `lushtext-core`
-  for the draft journal, the durable write, and the pure policies: the
-  editor-memory budget, the paragraph boundary and profile, the document
-  scale and the Protected View fold (`model/protected_fold.rs`) in `model/`,
-  and the `ui/**` policies of the minimap
-  fits, the adaptive-shell geometry, the width presets, the preview-width
-  clamp, and Protected View (`ui/editor_page/protected_view/policy.rs`)), over GTK-free, I/O-free code
-  that ships, or a pure core production drives. Never a copy of the code.
-  `cfg(kani)` is a declared expected cfg in the workspace lints, so ordinary
-  builds, Clippy, and tests compile none of it and need no Kani install.
-  The module name is mandatory: a harness module is a file named
-  `kani_proofs.rs`, declared by its parent as `#[cfg(kani)] mod kani_proofs;`
-  (`policy/kani_proofs.rs` by `policy.rs`, `x/kani_proofs.rs` by `x/mod.rs` or
-  `x.rs`, a crate-root one by `lib.rs`). A harness over a module goes in that
-  module's **child** directory (`ui/window/geometry/policy/kani_proofs.rs`, not
-  a sibling of `policy.rs`), so it can reach the module's private helpers
-  without widening their visibility, and so no `cfg(kani)` code lands inside a
-  `ui/**/policy.rs` mutation-scope file. That name is how the rest of the
-  tooling treats it as verification code: `.cargo/mutants.toml` excludes
-  `crates/**/kani_proofs.rs` (no build cargo-mutants runs compiles it, so no
-  test could kill its mutants), and `make check-workflow-boundaries` skips it in
-  the unclassified-decision-logic and role-home rules, but only when the parent
-  gates it on `cfg(kani)`; an ungated or orphaned `kani_proofs.rs` is a finding.
-- Harness style: only `kani::any`, `kani::assume`, `kani::cover!`,
-  `#[kani::unwind]`, `#[kani::should_panic]`, and `#[kani::solver(...)]` (the
-  latter only under the fit order below). Function and loop contracts are
-  experimental: loop contracts were attempted for the slice loop and failed on
-  resources (programme record, phase 3), so none is in the lane. A harness that
-  needs an experimental Kani flag gets it only through its shard's
-  `kani_flags` entry in `scripts/kani-shards.py` (`run` appends it to that
-  shard alone, and its logged command line shows them), never through a
-  global flag. A `kani::cover!` on each interesting branch keeps
-  a vacuous proof visible. A harness proving a property on a restricted domain states that domain
-  in the harness **and** in the checked function's rustdoc or spec; a rustdoc
-  promise must never claim more than was proved. A known-unsafe ordering or
-  guard removal is pinned by a `should_panic` harness showing the property
-  fails without it.
-- Lane: `make kani` runs every harness, shard by shard, through
+  `cfg(kani)` is a declared expected cfg, so ordinary builds, Clippy and tests
+  compile none of the harnesses.
+- **Lane.** `make kani` runs every harness, shard by shard, through
   `scripts/kani-shards.py` with its own `KANI_TARGET_DIR` (`target/kani`), and
-  fails when the installed Kani is not the pinned version or any harness fails;
-  `make kani KANI_SHARD=<shard>` runs one shard (`scripts/kani-shards.py list`).
-  The whole run executes inside a memory-capped systemd user scope
-  (`scripts/with-memory-cap.sh`, `KANI_MEMORY_MAX`, default `16G`,
-  `MemorySwapMax=0`), and each process is held to 7/8 of the cap in address
-  space (`--address-space`), so a CBMC that outgrows it fails its own allocation
-  and exits before the scope's OOM killer fires: on GNOME every OOM kill in a
-  user scope raises a "memory nearly full" notification. The cgroup cap stays the
-  backstop for the sum of all processes. The scope runs with
-  `OOMPolicy=continue`, so a kernel OOM kill takes only the process that
-  outgrew the cap and the scope is never marked `oom-kill`, the result
-  gsd-housekeeping raises as a CRITICAL notification that shows through Do Not
-  Disturb and over fullscreen games (2026-10-20: a `cargo-mutants` run at
-  `MUTANTS_LOCAL_BUILD_JOBS=8 MUTANTS_LOCAL_TEST_THREADS=12`, beside a second
-  one and a Kani shard, under a 12G cap). Any command run under the wrapper
-  must size its own parallelism to fit the cap (`cargo -j 4`, at most 4 test
-  threads, and the Makefile's `MUTANTS_LOCAL_*` defaults, never raised), one
-  capped heavy run per agent at a time; a mutant whose test was OOM-killed
-  reads as caught, so a run that hit the cap is discarded. Do not retry a harness that hits the
-  limit; shrink its bounds first. The wrapper's self-test reads the scope's
-  `memory.max` instead of provoking the OOM killer, for the same reason. On 2026-10-15 an unmeasured harness reached 59.6 GB and left the
-  workstation with ~250 MB free; hitting the cap is a finding to fix by the fit
-  order below, never a reason to raise it. Locally the wrapper refuses to run
-  uncapped when no user manager exists (`KANI_MEMORY_MAX=none` opts out
-  explicitly); CI containers have none and run uncapped under the shard
-  budget. Run new harnesses through `make kani`, not a bare `cargo kani`, so
-  the cap applies; `make check-kani-shards` self-tests the wrapper.
-  **The host-wide budget.** Every capped scope runs inside one shared user
-  slice, `lushtext-heavy.slice`, whose `MemoryMax` (`LUSHTEXT_HEAVY_MEMORY_MAX`,
-  default `48G` on the 93 GB reference workstation, overridable without editing
-  the checkout through the first line of `~/.config/lushtext/heavy-memory-max`;
-  no swap) bounds the sum of
-  all capped work on the machine. A per-command cap alone did not: on
-  2026-10-20 three agents each held to 12G, plus a 16G Kani shard, added up
-  past the desktop's headroom. The slice limit alone is not the safety either:
-  the admitted budget plus the 16G reserve must leave the desktop room, and a VM or
-  a game can take tens of GB at any moment. So before a scope starts, the
-  wrapper's admission (serialized by
-  `$XDG_RUNTIME_DIR/lushtext-heavy-admission.lock`) waits until the caps already
-  admitted to the slice plus the new one fit its budget, **and** until
-  `MemAvailable` covers the new cap plus `LUSHTEXT_MEMORY_RESERVE` (default
-  `16G`) for the desktop; it prints one line while it waits. The second
-  condition is what throttles automatically when something else on the desktop
-  is using memory. Caps of 1G or
-  less skip admission (the self-test runs in the pre-commit hook). A command
-  already inside a capped scope runs nested wrapper calls in place
-  (`LUSHTEXT_MEMORY_CAP_KIB`), so wrapping `make mutants-smoke` again neither
-  double-books the budget nor escapes the outer cap; a nested
-  `--address-space` call still sets RLIMIT_AS, at 7/8 of the smaller cap. The
-  wrapper `exec`s `systemd-run` (a detached watcher releases the admission
-  lock once the scope exists), so Ctrl-C and the exit status reach the command
-  directly: run as a background job, it once made every capped process ignore
-  SIGINT. It passes `--expand-environment=no`: systemd 254+ otherwise expands
-  `$VAR`/`${VAR}` in the command's arguments, turns `$$` into `$` and drops a
-  lone `$0`, silently rewriting `sh -c` scripts, commit messages and regexes
-  (the self-test sends such arguments through a real scope). The Makefile wraps
-  `make kani` (`KANI_MEMORY_MAX`), `make proof-strength`
-  (`PROOF_STRENGTH_MEMORY_MAX`, default `16G`) and the `mutants-*` targets
-  (`MUTANTS_MEMORY_MAX`, default `36G`), and the parallel widget run admits
-  its own scopes (one per shard, `WIDGET_SHARD_MEMORY_MAX`, plus one for its
-  shared build, `WIDGET_BUILD_MEMORY_MAX`, default `16G`), so start `make
-  test`/`test-widget` **unwrapped**: under an outer cap every shard runs in
-  place and shares it. Wrap any other heavy command an agent
-  runs (a full build, a serial widget run, a bench) the same way, from a checkout
-  whose wrapper has this admission, because a worktree created before it lands
-  still carries the old per-command-only script.
-  Every harness belongs to exactly one shard, and `make check-kani-shards` (in
-  `make check-policy`, no Kani needed) fails when a harness anywhere under
-  `crates/` matches no shard or several, so a harness cannot silently drop out
-  of CI. The shard table and the Makefile's `KANI_VERSION` are the only copies:
-  the workflow's `shards` job builds its matrix from
-  `scripts/kani-shards.py github-outputs`. CI runs one shard per matrix job in
-  `.github/workflows/kani.yml` (Fedora 45 container, `timeout-minutes: 30`),
-  because the whole lane is longer than one job's cap.
-- Shard gates and budgets: each `SHARDS` record in `scripts/kani-shards.py`
-  carries a `gate` (`pull-request` or `scheduled`) and its measured CI runner
-  budget (`ci_minutes`, `ci_peak_gib`, and `measured_in`, the run ids it came
-  from; developer-machine timing does not count). Pull requests and pushes to
-  `main` run only the `pull-request` shards (`github-outputs` emits them as
-  `pr-shards`); the weekly schedule and `workflow_dispatch` run every shard.
-  `make check-kani-shards` fails when a shard is unmeasured, over 25 minutes,
-  over 12 GiB, or gated `pull-request` while over 15 minutes. The one
-  exception to "developer timing does not count" is a record **pending
-  dispatch**: the table must hold some figure before a branch can push and
-  dispatch `kani.yml`, so a local figure is allowed, but only as
-  `PENDING DISPATCH (owed by <change>)` naming the open OpenSpec change that
-  will replace it. `make check-kani-shards` fails on a pending record (one
-  marked `PENDING DISPATCH` or `provisional`) that names no owner, or whose
-  owner is not an active directory under `openspec/changes/` (archived or
-  never created), so the commit that archives a change still owing a figure
-  fails its hook (close-protected-install-proof-strength, design D7: a
-  written "must not merge on it" was not enough). Measurement mode,
-  `make kani KANI_MEASURE=<json>` (`kani-shards.py run --measure`), records each
-  shard's wall time, the peak resident memory of its largest descendant (CBMC),
-  and every harness's `Verification Time:`; the workflow always runs in it and
-  uploads one `kani-measure-<shard>` artifact plus a job-summary table. Record a
-  new or changed shard's budget from a dispatched run, the larger of two. When a
-  shard breaks a margin, fit it in this order: split the shard, then try another
-  solver (`#[kani::solver(...)]`) only if the verdict is unchanged, and only as
-  a last resort reduce a bound, recording it in the programme record and the
-  harness's doc comment together with the property statement it weakens. Never
-  raise `timeout-minutes` instead. The Kani install (binaries, `~/.kani`, and the
-  nightly `cargo kani setup` installs) is cached on `KANI_VERSION`. A
-  counterexample is triaged like a failing test:
-  decide whether the code, the stated domain, or the envelope is wrong, and
-  record the outcome in the programme record. Kani cannot run two jobs on one
-  target directory; use a second `--target-dir` for a parallel local run.
-- Proof strength: `ORACLES` in `scripts/kani-shards.py` maps every
+  fails when the installed Kani is not the pinned version or any harness
+  fails; `make kani KANI_SHARD=<shard>` runs one shard
+  (`scripts/kani-shards.py list`). Kani cannot run two jobs on one target
+  directory.
+- **Memory.** The run executes inside a memory-capped systemd user scope
+  (`scripts/with-memory-cap.sh`, `KANI_MEMORY_MAX`, default `16G`, no swap,
+  each process held to 7/8 of the cap in address space), admitted into the
+  host-wide `lushtext-heavy.slice`; the wrapper's header documents admission,
+  the desktop reserve, nested in-place runs and the scope settings. Any command
+  run under the wrapper sizes its own parallelism to fit the cap (`cargo -j 4`,
+  at most 4 test threads), one capped heavy run per agent at a time. A run that
+  hit the cap is discarded, and hitting it is a finding to fix by the fit
+  order, never a reason to raise it; do not retry a harness that hits the
+  limit, shrink its bounds first. Locally the wrapper refuses to run uncapped
+  when no user manager exists (`KANI_MEMORY_MAX=none` opts out explicitly); CI
+  containers run uncapped under the shard budget.
+- **Shards.** Every harness belongs to exactly one shard, and
+  `make check-kani-shards` (in `make check-policy`, no Kani needed) fails when
+  a harness anywhere under `crates/` matches no shard or several. The
+  workflow's `shards` job builds its matrix from
+  `scripts/kani-shards.py github-outputs`; CI runs one shard per matrix job in
+  `.github/workflows/kani.yml` (Fedora 45 container, `timeout-minutes: 30`).
+- **Shard gates and budgets.** Each `SHARDS` record carries a `gate`
+  (`pull-request` or `scheduled`) and its measured CI runner budget
+  (`ci_minutes`, `ci_peak_gib`, and `measured_in`, the run ids it came from;
+  developer-machine timing does not count). Pull requests and pushes to `main`
+  run only the `pull-request` shards; the weekly schedule and
+  `workflow_dispatch` run every shard. `make check-kani-shards` fails when a
+  shard is unmeasured, over 25 minutes, over 12 GiB, or gated `pull-request`
+  while over 15 minutes. A record **pending dispatch** may hold a local figure
+  only as `PENDING DISPATCH (owed by <change>)`, and the check fails on a
+  pending record (`PENDING DISPATCH` or `provisional`) whose owner is not an
+  active directory under `openspec/changes/`, so the commit that archives a
+  change still owing a figure fails its hook. Record a budget from a
+  dispatched run, the larger of two; when a shard breaks a margin, fit it by
+  the order in [`docs/runbooks/kani-shards.md`](../../docs/runbooks/kani-shards.md)
+  (split, then solver, then a recorded bound reduction). Never raise
+  `timeout-minutes` instead. The Kani install is cached on `KANI_VERSION`.
+- **Counterexamples** are triaged like a failing test: decide whether the code,
+  the stated domain, or the envelope is wrong, and record the outcome in the
+  programme record.
+- **Proof strength.** `ORACLES` in `scripts/kani-shards.py` maps every
   Kani-checked module (optionally scoped to named functions) to its harnesses,
   cheapest first, with each harness's measured local seconds and a `ci` or
   `local` tier; `NOT_ORACLE_HARNESSES` and `NOT_ORACLE_MODULES` name the
   deliberate exceptions with reasons. `make check-kani-shards` fails when an
   oracle harness is missing, a harness is in no oracle list and not excepted,
-  or a harness file imports from a module that is neither. A new harness is
-  therefore added to both tables. `make proof-strength` runs the module's
-  mutants against those harnesses in a disposable worktree
-  (`scripts/proof-strength.py`, see `docs/mutation-testing.md`). Its Kani arm
-  is serial within one run; run shards of it in parallel with
-  `PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=k/n` and a distinct
-  `PROOF_STRENGTH_WORKTREE` per shard (each run is its own 16G admitted scope),
-  and the tests arm once, unsharded, because its cargo-mutants output directory
-  is shared. It waits for
-  14 GiB available memory before each run and caps each Kani run at 12 GiB of
-  address space (`PROOF_STRENGTH_MIN_AVAILABLE_GIB`,
-  `PROOF_STRENGTH_MEMORY_LIMIT_GIB`), and it is a measurement lane, not a
-  gate. A survivor it reports is triaged in the programme record: a real
-  defect is fixed failing-first; a missing property gets an assertion or a
-  harness in the owning shard, re-measured against the shard's budget.
-- Envelopes: a model that treats GTK as nondeterministic constrains it only
-  with `kani::assume` clauses citing ledger axiom ids from
-  `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`.
+  or a harness file imports from a module that is neither, so a new harness is
+  added to both tables. `make proof-strength` (`scripts/proof-strength.py`,
+  `docs/mutation-testing.md`; `PROOF_STRENGTH_MEMORY_MAX`, default `16G`) runs
+  the module's mutants against those harnesses in a disposable worktree. It is
+  a measurement lane, not a gate. A survivor is triaged in the programme
+  record: a real defect is fixed failing-first; a missing property gets an
+  assertion or a harness in the owning shard, re-measured against the shard's
+  budget.
 
 ## GTK Axioms and Toolkit Updates
 
@@ -966,167 +363,87 @@ make gtk-axioms-runtimes                 # LOCAL ONLY: sample checks inside each
 make check-gtk-axioms                    # (in check-policy) ledger, catalogue, probes, samples agree
 ```
 
-**Slow probes.** A catalogue entry may be marked `slow` when its fixture must
-run for seconds and would push the 20-minute `GTK Axioms` job toward its
-`timeout-minutes` (never raise the timeout instead). The runner and a sample's
-`--check` skip a slow probe unless `GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`, printing
-`skipped (slow): <id>`. Local `make gtk-axioms` and `make gtk-axiom-sample`
-default it to `1`; the `GTK Axioms` PR job runs
-`make gtk-axioms GTK_LUSH_AXIOMS_INCLUDE_SLOW=0`; the nightly
-`.github/workflows/responsiveness-smoke.yml` runs it with `1`.
-`make check-gtk-axioms` rejects a slow entry whose ledger row does not say
-`**slow**` and where it runs (nightly). No probe is slow today (A29 takes about
-8 s). The text probes (A23–A34) build GtkTextView, Pango and GtkSourceView
-fixtures, so the `GTK Axioms` job installs `gtksourceview5-devel`; probes that
-provoke a toolkit CRITICAL on purpose (A29, A32) capture it through the crate's
-log-capture guard and restore the previous writer, so the lane's warning scan
-still fails on any CRITICAL that escapes.
+**Slow probes.** The runner and a sample's `--check` skip a probe marked `slow`
+unless `GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`, printing `skipped (slow): <id>`. Local
+`make gtk-axioms` and `make gtk-axiom-sample` default it to `1`; the
+`GTK Axioms` PR jobs run with `0`; the nightly
+`.github/workflows/responsiveness-smoke.yml` runs with `1`. A92 is marked slow.
+The text probes build GtkTextView, Pango and GtkSourceView fixtures, so the
+`GTK Axioms` jobs install `gtksourceview5-devel`.
 
 A sample's `--check` refuses with exit 77 unless `GTK_LUSH_AXIOMS_HEADLESS=1`,
-which only the headless wrapper sets, so it never flashes windows on a live
-desktop. **Never run a sample without `--check` (or a measurement mode)
-outside a private headless session**: with no argument it opens its
-interactive window on whatever desktop it was started from, which is meant
-for a person watching, never for an agent. `--help`/`-h` print the usage and
-exit 0, and any argument a sample does not know (or a mode option without its
-mode) prints the usage and exits 2, both before GTK starts
-(`gtk_lush_axioms::classify_sample_args`, unit-tested; `support::guard`). A
-sample with its own measurement modes declares them in a `SampleFlags` and
-calls `support::guard(&FLAGS)` as the first statement of `main`;
-`make check-gtk-axioms` fails a sample that reads flags without it (on
-2026-11-04 a sample run with `--help`, which it then ignored, opened its
-window on the maintainer's live desktop). `scripts/run-gtk-axioms.sh` fails the lane on **any** `WARNING`,
-`CRITICAL`, `Broken pipe`, `cannot remove`, or `MESA: error:` line in the probe
-or sample output, whatever process printed it, except the private session's own
-`dbus-daemon` / `libmutter-Message` / EGL lines and the three mutter warnings
-its `BENIGN_NOISE_REGEX` names (taken from the widget runner's list). Matching
-only `Gtk-`/`GLib-`/`Adwaita-` prefixes missed helper processes, which log with
-no domain: `make gtk-axioms-runtimes` passed while the SDK sandbox's
-`xdg-dbus-proxy` printed
-`** (process:N): WARNING **: Error writing credentials to socket: Error sending message: Broken pipe`
-(a sample's gvfs client exiting mid-handshake) and the session could not remove
-the document portal's `doc` mount from its runtime directory. The runtimes lane
-therefore runs every SDK sandbox, build and checks alike, with
-`--no-session-bus --no-a11y-bus --no-documents-portal` (`SANDBOX_FLAGS`): the
-samples need no D-Bus, and without the proxy and portal neither race exists.
-`./scripts/run-gtk-axioms.sh --self-test` (in `make check-gtk-axioms`) asserts
-the benign lines pass and each defect class, those two included, fails; add a
-case there when a new class appears rather than widening the benign list.
+which only the headless wrapper sets. `--help`/`-h` print the usage and exit 0,
+and any argument a sample does not know prints the usage and exits 2, both
+before GTK starts (`gtk_lush_axioms::classify_sample_args`, `support::guard`).
 
-**Toolkit-update procedure (the upgrade alarm).** On any GTK or Libadwaita
+**Warning scan.** `scripts/run-gtk-axioms.sh` fails the lane on **any**
+`WARNING`, `CRITICAL`, `Broken pipe`, `cannot remove`, or `MESA: error:` line
+in the probe or sample output, whatever process printed it, except the private
+session's own `dbus-daemon` / `libmutter-Message` / EGL lines and the three
+mutter warnings its `BENIGN_NOISE_REGEX` names. The runtimes lane runs every
+SDK sandbox with `--no-session-bus --no-a11y-bus --no-documents-portal`
+(`SANDBOX_FLAGS`). `./scripts/run-gtk-axioms.sh --self-test` (in
+`make check-gtk-axioms`) asserts the benign lines pass and each defect class
+fails; a new class gets a case there, never a wider benign list
+([why](../../docs/memorials/axiom-lane-warning-scan.md)).
+
+**Toolkit updates.** On any GTK, Libadwaita, GtkSourceView, Pango or GLib
 version change — the CI Fedora container image, the shipped GNOME runtime in
-the Flatpak manifest (51 since `adopt-gnome-51`), the GNOME 50 source floor,
-the Snap `core26` platform — run `make gtk-axioms` **first**,
-before any other work. A failing probe is an axiom change under the ledger's
-rule: revisit the ledger entry, its dependent designs, and every verification
-envelope that cites the id (the Kani `kani::assume` clauses) before editing any
-probe, and never adjust a probe to match the new behaviour first. Then copy the
-printed `gtk`/`adw` versions into the rows' "Verified against", with where they
-ran. Before a new GNOME runtime becomes the floor, run
-`make gtk-axioms-runtimes GTK_AXIOMS_RUNTIMES="org.gnome.Sdk//<next>"` against
-it; it builds inside each SDK (the gtk-rs feature flags bind a binary to its
-SDK), installs nothing, and skips an SDK that is not installed.
-When the shipped runtime and the floor disagree on an axiom, the entry becomes
-**version-qualified** rather than rewritten: the catalogue entry names the
-first release with the new verdict (`version_bound: Some(VersionBound::gtk(4,
-24, 0))` or `::sourceview(..)`), the probe asserts the verdict of the toolkit
-it runs on through `version::catalogued_bound` and records `asserted_branch`,
-and the ledger row states both ranges (`GTK < 4.24` / `GTK ≥ 4.24`), which
-`make check-gtk-axioms` enforces. "Verified against" then lists a run on each
-side (Fedora 45 host or CI, and `make gtk-axioms-runtimes` against
-`org.gnome.Sdk//50` or the `GTK Axioms (GNOME 50 floor)` job). The runtimes
-lane is local only. `make gtk-axioms-runtimes GTK_AXIOMS_ONLY=A28,A79`
-(`scripts/run-gtk-axioms.sh runtimes --only A28,A79 <sdk-ref>…`) builds and
-checks only the named samples, for interleaved re-test rounds (run them through
-`scripts/measure.sh`, alternating the SDK order); an unknown id fails the run.
-The SDK sandbox has no session bus, so it cannot reach the private compositor's
-RemoteDesktop: the runtimes mode sets `GTK_LUSH_AXIOMS_SANDBOX=1`, and the five
-samples whose fixture drives real input (A59–A61, A64, A97, the
-`REMOTE_INPUT_AXIOMS` list a unit test keeps equal to the probes that start a
-`RemoteInput`) print `skipped (needs RemoteDesktop): <id>` and exit 0 there; the
-host lane and CI never set the variable, so a host compositor without
-RemoteDesktop still fails them as `fixture-invalid`. After each SDK the lane
-prints a summary: each sample's verdict or skip reason, the toolkit versions the
-samples reported, and the SDK's `pkg-config` module versions. The SDKs' fonts
-are fine: A23's check allows the one pixel of separate rounding a fractional
-line height produces, and only when the last line's Pango position is
-fractional (`retest-upstream-fixes-on-nightly`), and the GNOME 50
-and 51 SDKs pass with 91 holds and 5 skips each. A nightly verdict is a preview
-of the next adoption, never a ledger restatement on its own.
+the Flatpak manifest (51), the GNOME 50 source floor, the Snap `core26`
+platform — run `make gtk-axioms` **first**, before any other work. A failing
+probe is an axiom change: never adjust a probe to match the new behaviour
+first, and when the shipped runtime and the floor disagree, version-qualify the
+entry rather than rewrite it (`make check-gtk-axioms` enforces the ledger
+form). The steps are in
+[`docs/runbooks/gtk-toolkit-update.md`](../../docs/runbooks/gtk-toolkit-update.md).
+Interleaved `GTK_AXIOMS_ONLY` re-test rounds run through `scripts/measure.sh`.
+A nightly verdict is a preview of the next adoption, never a ledger
+restatement on its own.
 
 ## Fuzzing
 
 - Framework: `cargo-fuzz`, isolated under `fuzz/`
 - Feature: `lushtext-core/fuzzing`
 - Targets: `editor_bytes`, `markdown_preprocess`, `operation_script`
-- Makefile targets: `fuzz-list`, `fuzz-corpus-replay`, `fuzz-smoke`,
-  `fuzz-operation-smoke`
+- Makefile targets: `fuzz-list`, `fuzz-corpus-replay`, `fuzz-smoke`, `fuzz-operation-smoke`
 - Default tool: `cargo +nightly fuzz` (override with `CARGO_FUZZ=...`)
 - Docs: `docs/fuzzing.md`
 
-The fuzz project is excluded from the normal Cargo workspace. Fuzz discovery
-enables `lushtext-core/fuzzing` through the isolated `fuzz/` crate, while stable
-corpus replay enables the same helper feature from an ordinary Rust test target.
-Default `make test`, nextest, property, widget, benchmark, and mutation lanes
-must not invoke fuzz targets or corpus replay, and they must not require
-fuzz-only dependencies. GitHub Actions runs stable corpus replay as its own
-ordinary CI job through `make fuzz-corpus-replay`; keep coverage-guided
-`cargo-fuzz` smoke in scheduled/manual lanes instead of pull-request CI.
+The fuzz project is excluded from the normal Cargo workspace. Default
+`make test`, nextest, property, widget, benchmark, and mutation lanes must not
+invoke fuzz targets or corpus replay, and must not require fuzz-only
+dependencies. CI runs stable corpus replay as its own job through
+`make fuzz-corpus-replay`; coverage-guided `cargo-fuzz` smoke stays in
+scheduled/manual lanes. Local fuzz smoke needs a nightly toolchain,
+`cargo-fuzz`, and a C++ compiler for `libfuzzer-sys`.
 
-Local fuzz smoke needs a nightly Rust toolchain, `cargo-fuzz`, and a C++
-compiler for `libfuzzer-sys` (`gcc-c++` on Fedora/toolbox).
+Fuzz targets must stay deterministic and must not start GTK, construct widgets,
+open file choosers, watch filesystems, use D-Bus/portals, or require a
+compositor. `make fuzz-smoke` and `make fuzz-operation-smoke` run with explicit
+run, time, and input-length bounds against temporary corpus copies (the
+operation-script harness caps scripts at 32 operations); longer runs are manual
+or scheduled with explicit budgets. `make fuzz-corpus-replay` must stay
+read-only: no corpus mutation, no fuzz artifact or coverage writes, no
+`cargo-fuzz`, no `libfuzzer-sys`, no sanitizer flags, no nightly, and no C/C++
+compiler.
 
-Use fuzzing for hostile byte ingestion and bounded structured operation scripts:
-arbitrary bytes through editor decoding, encoding-state and file-health
-classification, text-level Markdown preprocessing/parser setup, replacement
-preview generation, save-formatting, session/draft JSON round trips, and corrupt
-session/draft JSON decode attempts. Fuzz targets must stay deterministic and
-must not start GTK, construct widgets, open file choosers, watch filesystems,
-use D-Bus/portals, or require a compositor.
-
-`make fuzz-smoke` runs each configured target with explicit run, time, and input
-length bounds against temporary corpus copies so generated corpus growth does
-not dirty the checkout. `make fuzz-operation-smoke` runs only the structured
-operation target with the same smoke bounds; the operation-script harness also
-caps generated scripts at 32 operations. Longer runs should be manual or
-scheduled with explicit budgets.
-
-`make fuzz-corpus-replay` replays committed `fuzz/corpus/**` seeds through
-stable Rust tests. It must stay read-only: no corpus mutation, no fuzz artifact
-or coverage writes, no `cargo-fuzz`, no `libfuzzer-sys`, no sanitizer flags, no
-nightly requirement, and no C/C++ compiler requirement.
-
-Do not add LibAFL unless a future OpenSpec change identifies a concrete need
-for custom executors, feedback, scheduling, distributed orchestration, or fuzzer
-state persistence.
-
-Real fuzz crashes should be minimized with
-`cargo +nightly fuzz tmin <target> <crash>` and fixed with a minimized corpus
-seed, deterministic regression test, or a reviewed rationale for why no durable
-seed is appropriate.
+Do not add LibAFL unless a future OpenSpec change identifies a concrete need.
+Minimize real crashes with `cargo +nightly fuzz tmin <target> <crash>` and fix
+them with a minimized corpus seed, a deterministic regression test, or a
+reviewed rationale for why no durable seed is appropriate.
 
 ## GResources
 
-- **Dev builds**: `build.rs` in `lushtext-core` compiles resources via `glib-build-tools`. Embedded in the binary via `include_bytes!` in `lib.rs`.
-- **Installed/Flatpak builds**: `resources/meson.build` compiles resources via `gnome.compile_resources()` and installs to `$(pkgdatadir)/`. `lib.rs` loads the `.gresource` file from `LUSHTEXT_PKGDATADIR` at runtime, falling back to `include_bytes!`.
-- **UI templates**: edit `resources/ui/*.blp`, then run
-  `make blueprint-generate` and `make check-blueprint`. The generated
-  `resources/ui/*.ui` files stay committed because all runtime, Meson, Flatpak,
-  and Snap resource builds consume GtkBuilder XML. `blueprint-compiler` is a
-  contributor and CI validation tool only, not an end-user runtime dependency.
-  Unknown compile warnings are blocking; no Blueprint compiler warnings are
-  currently accepted without an explicit spec-backed classification. Run `make
-  lint-blueprint` for curated advisory lint triage; promoted diagnostics must
-  stay clean and accepted findings are bounded by documented rule/file ceilings
-  before any broader lint rule becomes blocking.
+- **Dev builds**: `build.rs` in `lushtext-core` compiles resources via `glib-build-tools`, embedded through `include_bytes!` in `lib.rs`.
+- **Installed/Flatpak builds**: `resources/meson.build` compiles resources via `gnome.compile_resources()` and installs them to `$(pkgdatadir)/`. `lib.rs` loads the `.gresource` file from `LUSHTEXT_PKGDATADIR` at runtime, falling back to `include_bytes!`.
+- **UI templates**: edit `resources/ui/*.blp`, then run `make blueprint-generate` and `make check-blueprint`. The generated `resources/ui/*.ui` files stay committed because every runtime, Meson, Flatpak, and Snap resource build consumes GtkBuilder XML; `blueprint-compiler` is a contributor and CI tool only. Unknown compile warnings are blocking. `make lint-blueprint` is curated advisory triage: promoted diagnostics stay clean and accepted findings are bounded by rule/file ceilings.
 
 ## GSettings Schemas
 
 - Schema XML: `data/dev.cominotti.lushtext.gschema.xml`
-- `build.rs` in `lushtext-core` runs `glib-compile-schemas data/` to produce `data/gschemas.compiled` (gitignored).
-- `lib.rs::init_schema_dir()` sets `GSETTINGS_SCHEMA_DIR` to point to `data/` for dev builds. Installed builds use the system schema directory.
+- `build.rs` in `lushtext-core` runs `glib-compile-schemas data/` to produce `data/gschemas.compiled` (gitignored), and skips it when `LUSHTEXT_PKGDATADIR` is set (the source tree may be read-only in Flatpak).
+- `lib.rs::init_schema_dir()` sets `GSETTINGS_SCHEMA_DIR` to `data/` for dev builds. Installed builds use the system schema directory.
 - Requires `glib-compile-schemas` on the build machine (from `glib2-devel` / `libglib2.0-dev`).
-- Widget tests use `GSETTINGS_BACKEND=memory` for isolation (set in `ensure_gtk_init()`). A test that counts real backend writes calls `common::keyfile_settings_backend(seed)` first, which selects the keyfile backend over a private `XDG_CONFIG_HOME` for its own process (`window_construction` is the gate that does).
 
 ## Mutation Testing
 
@@ -1134,409 +451,239 @@ seed is appropriate.
 - Test runner: `cargo nextest`, matching the non-widget CI lane
 - Wrapper: `scripts/run-mutants.sh`
 - Makefile targets: `mutants-smoke`, `mutants-diff`, `mutants-full`, `mutants-list`
-- Output: `mutants.out` / `mutants.out.old` (gitignored; uploaded only when
-  mutation CI is explicitly re-enabled)
+- Output: `mutants.out` / `mutants.out.old` (gitignored)
+- Docs: `docs/mutation-testing.md`
 
-Mutation tests are local-only by default. The GitHub Actions workflow remains in
-place as a re-enable template, but its mutation jobs are gated by the repository
-variable `LUSHTEXT_ENABLE_MUTATION_CI=true`. Leave that variable unset or any
-value other than `true` for normal PR, scheduled, and manual CI. Use the local
-Makefile targets above while the lane is disabled.
+Mutation tests are local-only by default. The GitHub Actions workflow stays as
+a re-enable template whose jobs are gated by the repository variable
+`LUSHTEXT_ENABLE_MUTATION_CI=true`; leave it unset for normal CI.
 
-The default mutation scope is intentionally deterministic: model code, service
-code, and pure workflow policy modules. Scope membership is decided by
-**convention, not by directory**: `examine_globs` covers `model/**`,
-`services/**`, and `crates/lushtext-core/src/ui/**/policy.rs`, so a workflow's
-pure decision logic keeps mutation coverage wherever its owning workflow lives.
-A `policy.rs` module must contain no `gtk4`, `glib`, `gio`, `libadwaita`, or
-`sourceview5` import; that purity is what makes it eligible.
+The default scope is deterministic and decided by **convention, not
+directory**: `examine_globs` covers `model/**`, `services/**`, and
+`crates/lushtext-core/src/ui/**/policy.rs`. A `policy.rs` module must contain no
+`gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5` import; that purity is
+what makes it eligible. Do not add GTK widget construction, live signal wiring,
+file dialogs, or display-server-dependent code to the scope. The remaining
+hand-listed UI entries and the `exclude_re` entries naming GTK adapter methods
+retire when their workflow's pure logic lands in a `policy.rs`, never by being
+widened. When pure policy relocates, mutation-coverage parity is required
+evidence: record the generated and killed counts before and after the move via
+`make mutants-diff`.
 
-GTK adapters stay out of scope because they are not policy modules, not because
-they sit under `ui/`. Do not add GTK widget construction, live signal wiring,
-file dialogs, or display-server-dependent code to the cargo-mutants scope; keep
-that behavior in `scripts/run-widget-tests.sh`, where Mutter, D-Bus, renderer
-settings, retries, and warning filtering are controlled. The remaining
-hand-listed UI file entries and the `exclude_re` entries enumerating GTK adapter
-method names are legacy: each retires when its own workflow migrates and its
-pure logic lands in a `policy.rs`, not by being widened.
+Default mutation runs omit `lushtext-core/property-tests`. `MUTANTS_IN_PLACE=1`
+refuses dirty worktrees outside CI, because cargo-mutants rewrites source
+files; use a clean checkout, a disposable worktree, or the default copy-based
+mode. For survivor triage `scripts/run-mutants.sh` accepts `MUTANTS_RE`,
+`MUTANTS_EXCLUDE` and `MUTANTS_EXCLUDE_RE`. Keep `MUTANTS_JOBS=1` and small per-job thread caps when the user has asked to keep Rust build pressure low.
 
-When pure policy relocates between directories, mutation-coverage parity is
-required evidence, not an optional check. Record the generated and killed mutant
-counts before and after the move via `make mutants-diff`. A relocation whose
-mutants are no longer generated is a coverage regression, not an acceptable
-consequence of the move.
+Locally the targets run inside one `MUTANTS_MEMORY_MAX` scope (default `36G`)
+with `MUTANTS_LOCAL_JOBS=3`, `MUTANTS_LOCAL_BUILD_JOBS=4` and
+`MUTANTS_LOCAL_TEST_THREADS=4`. A mutant whose test was OOM-killed reads as
+caught, so a run that hit its cap is discarded, and raising a knob beyond these
+defaults is a measured decision for one run. If the CI mutation lane is
+re-enabled, it leaves all three unset and fans out through `MUTANTS_SHARD`.
 
-Default mutation runs must also omit `lushtext-core/property-tests`. Generated
-property cases belong in `make test-prop`; otherwise mutation runtime becomes
-mutants multiplied by generated cases. If a future change needs a tiny property
-under mutation, add a separate documented opt-in mode rather than changing the
-default wrapper.
-
-Local in-place mutation runs are guarded. `MUTANTS_IN_PLACE=1` refuses dirty
-worktrees outside CI because cargo-mutants rewrites source files while testing.
-Use a clean checkout, a disposable worktree, or the default copy-based local
-mode when experimenting.
-
-For survivor triage, prefer focused proof before another broad local sweep.
-`scripts/run-mutants.sh` accepts `MUTANTS_RE` to match the exact names shown by
-`mutants-list`, plus `MUTANTS_EXCLUDE` / `MUTANTS_EXCLUDE_RE` for one-off
-calibrated exclusions. Keep `MUTANTS_JOBS=1` and small per-job thread caps when
-the user has asked to keep Rust build pressure low.
-
-cargo-mutants is serial by default. Locally, memory rather than cores bounds
-its parallelism: each job is a full cargo build plus nextest processes, and the
-local Makefile targets run the whole pass inside one `MUTANTS_MEMORY_MAX` scope
-(`scripts/with-memory-cap.sh`, default `36G`, no swap, admitted into the
-host-wide slice). The defaults are `MUTANTS_LOCAL_JOBS=3`,
-`MUTANTS_LOCAL_BUILD_JOBS=4` and `MUTANTS_LOCAL_TEST_THREADS=4`: three jobs fit
-that scope and keep `jobs x build-jobs` near the 16-core affinity. On
-2026-10-20 runs at 6–8 build jobs and 8–12 test threads inside a 12G cap were
-OOM-killed. A mutant whose test was OOM-killed reads as caught, so a run that
-hit its cap is discarded, and raising a knob beyond these defaults is a
-measured decision for one run. `scripts/run-mutants.sh` only exports these /
-passes `--jobs` when the matching env var is set. If the gated CI mutation lane
-is re-enabled, it must leave all three unset so the sharded small runners keep
-the serial default and fan out through `MUTANTS_SHARD` instead.
-
-Treat survivors in this order: first decide whether the mutant represents a
-real missed behavior, then add or tighten deterministic tests, then consider
-small refactors that make the behavior testable. Only equivalent or explicitly
-out-of-scope mutants should be excluded, and exclusions must stay narrow enough
-that nearby behavior still mutates.
+Treat survivors in order: decide whether the mutant is a real missed behavior,
+then add or tighten deterministic tests, then consider small refactors that
+make the behavior testable. Exclude only equivalent or explicitly out-of-scope
+mutants, narrowly enough that nearby behavior still mutates.
 
 ## End-User Smoke Lanes
 
-`docs/end-user-coverage.md` is the coverage map for behavior that default unit,
+`docs/end-user-coverage.md` is the coverage map for behavior that unit,
 integration, property, fuzz, widget, benchmark, and mutation lanes cannot prove
-honestly. Keep those lane boundaries current when adding new smoke checks.
+honestly; keep its lane boundaries current when adding smoke checks. Each
+script owns its dependency checks, artifact paths (under `build/smoke/<lane>`)
+and skip messages; `make end-user-smoke` runs the host-supported lanes together.
 
-- `make automation-smoke` builds the debug binary, launches LushText under
-  isolated headless Mutter and a private D-Bus session, introspects the
-  app-owned automation object, reads catalog/readiness/snapshot state, verifies
-  exported stateful action state against snapshot fields, runs
-  `scripts/lushtext-automation.py` against the live app for
-  catalog/snapshot/predicate/wait/event/action commands, waits on named
-  readiness predicates, activates a parameterized GTK action, scans runtime logs
-  for unexpected GTK/GDK/Adwaita/GIO/D-Bus/portal/AT-SPI/filesystem warnings,
-  and stores D-Bus/log/assertion artifacts under `build/smoke/automation` by
-  default.
-- `make automation-client-self-test` runs the local
-  `scripts/lushtext-automation.py` parser, status-envelope, typed
-  action-parameter rendering, and artifact-summary checks without launching the
-  app. It is a fast policy gate for client and documentation changes, not a
-  replacement for real-process D-Bus smoke.
-- `make visual-geometry-smoke` builds the debug binary, launches LushText under
-  isolated headless Mutter, captures same-session before/after screenshots and
-  bounded visual geometry snapshots, compares protected regions exactly, and
-  stores per-case manifests, comparison artifacts, and a current visual-sensitive
-  diff fingerprint under `build/smoke/visual-geometry` by default.
-- `make visual-smoke` builds the debug binary, launches LushText under isolated
-  headless Mutter through the existing screenshot automation, captures a
-  representative editor/search/minimap screenshot, and stores environment and
-  session artifacts under `build/smoke/visual` by default. It and
-  `make accessibility-smoke` also build a second binary with the smoke-only
-  `smoke-read-faults` feature into `target/smoke-read-faults`
-  (`make smoke-read-faults-build`) and run their failed-load captures on it with
-  `LUSHTEXT_DENY_READ=<fixture>`, which fails that document read with `EACCES`
-  (`services::read_fault`): a mode-000 fixture is still readable by root, and
-  the scheduled smoke containers run as root. Never enable that feature in
-  release, Meson, Flatpak, or Snap builds, which must compile
-  `services::read_fault::denied` as an empty inline function. The same smoke
-  binary carries the smoke-only `smoke-list-budgets` feature
-  (`services::smoke_list_budgets`): `LUSHTEXT_SEARCH_RETAINED_BYTES` and
-  `LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES` lower the workspace list budgets
-  so the limited-search and limited-directory captures reach them with small
-  fixtures; the same rule applies (never in a shipped build, where both
-  overrides are empty inline functions, audited by a unit test and by CI's
-  default-feature `cargo check -p lushtext --bins`).
-- `make command-palette-notes-smoke` builds the debug binary, seeds an isolated
-  workspace with bookmark, folder-note, document-note, and open-tab note
-  sidecars, opens the command palette in Notes mode, captures one screenshot,
-  and asserts the Notes separators plus representative rows through AT-SPI. It
-  is a focused local drill, not part of the broad `make end-user-smoke` bundle.
-- `make run-command-palette-notes-manual-test` uses the same fixture data as the
-  focused Notes smoke lane, launches the live dev app with isolated cache,
-  config, and data directories, preselects the command palette's Notes mode, and
-  waits until the user closes LushText.
-- `make crash-recovery-smoke` builds the debug binary, launches LushText under
-  isolated headless Mutter with isolated XDG and `LUSHTEXT_DATA_DIR` state,
-  creates file-backed and untitled draft/session recovery data through the real
-  GTK process, sends `SIGKILL`, relaunches with the same app data, verifies
-  recovery through AT-SPI plus app-owned metadata, and stores before/after
-  metadata summaries, runtime logs, assertions, and a screenshot under
-  `build/smoke/crash-recovery` by default. It also builds a second binary with
-  the smoke-only `crash-kill-points` feature into `target/crash-kill-points` and
-  aborts it inside named protocol windows (`LUSHTEXT_KILL_AT`); never enable
-  that feature in release, Meson, Flatpak, or Snap builds, which must compile
-  `services::kill_point::reach` as an empty inline function.
-- `make portal-sandbox-smoke` records available Flatpak/Snap runtime state,
-  writes `permission-posture.txt`, preserves portal bus-name diagnostics, and
-  invokes supported confined smoke checks. It must skip explicitly when neither
-  runtime is installed or buildable; a skip is not proof that confinement works.
-  Portal/sandbox diagnostics must not imply a portals-only migration while the
-  Flatpak manifest intentionally keeps host filesystem access.
-- `make accessibility-smoke` keeps the accessibility bridge enabled and uses the
-  AT-SPI path. Do not rely on the widget harness for this class of coverage
-  because `scripts/run-widget-tests.sh` intentionally sets `NO_AT_BRIDGE=1` —
-  one of the five headless-environment settings described under Dev Builds.
-  Its warning allowlist classification lives once in
-  `scripts/accessibility_warning_allowlist.py`, imported by both the final
-  warning scan and the summary composer; edit the shared module instead of
-  embedding a second predicate copy in the lane script.
-- `make check-accessibility-policy` is the fast local guardrail for new
-  accessibility-sensitive UI lines. It does not replace widget tests or
-  AT-SPI smoke; it catches obvious helper, row-recycling, hover, transient, and
-  anchor-policy drift before heavier lanes run.
-- `make performance-smoke` runs a small Criterion smoke filter with coarse
-  timing artifacts (`PERFORMANCE_SMOKE_GROUP=search-index|io-recovery` runs one
-  half of the filter set and its keyed headless proofs into
-  `performance-<group>`; the scheduled workflow runs the halves as two jobs,
-  because the whole lane outran the 30-minute job ceiling), including recovery fixtures for malformed metadata, pending
-  migrations, duplicate sidecars, many local-history lineages, and first-dirty
-  autosave persistence. It is distinct from full `bench-report` output and
-  should stay forgiving enough to avoid routine shared-runner noise.
-- `make responsiveness-smoke` measures long-line responsiveness. It builds a
-  **separate** release binary with the smoke-only `responsiveness-probes`
-  feature into `target/responsiveness/` (`make responsiveness-build`), so
-  `target/debug/lushtext`, which the other smoke lanes use, never carries it;
-  never enable that feature in release, Meson, Flatpak, or Snap builds, which
-  must compile `ui::responsiveness_probe::install` as an empty inline function
-  (a default build carries none of the probe's environment names). The lane
-  generates synthetic fixtures only (`scripts/generate-long-line-fixtures.py`,
-  seeded and deterministic, written into the run's temp scope; never copy a user
-  file into a fixture), runs under a private `dbus-run-session` and
-  `mutter --headless --virtual-monitor 1280x800@120` with an affinity of at most
-  16 CPUs taken from the inherited mask (never widened), drives input through
-  Mutter's RemoteDesktop API (click inside the text area first: keys are not
-  delivered before; every editor click aims at an uncovered point of the
-  snapshot's `visual_geometry` `source-view` rectangle, corrects the pointer by
-  the probe's `motion` records (a requested screen point does not always arrive
-  at the same window point), and fails its phase unless the probe's record of
-  the press names an editor, and a phase whose text keys left no input record,
-  arrived outside an editor or inserted nothing fails the lane as
-  `misdirected_typing`: in
-  `investigate-first-keys-without-frames` a click at a fixed screen point landed
-  in the workspace sidebar and the lane measured 1–2 s "frameless" stretches of
-  a window that had nothing to draw; a key typed into an editable editor is
-  never "no visible change": drawn only after the next key was handled while
-  the loop was free, it is measured to that frame and fails the lane as
-  `withheld_typing_frames`; keys into a protected, read-only editor are
-  reported apart from editable typing, and so are keys into a **held** editor
-  (`held-editor`, `keep-keystrokes-during-install`: a workflow owns its
-  buffer or its load is in flight), which are drawn only when the held text is
-  inserted; they count as keys into an editor for `misdirected_typing`, whose
-  insertion marks are one per character, so a held key never inserted fails
-  the lane; a relaunch whose editor click cannot be
-  proven ends the case; every injection is paired with its probe `input`
-  record by mutter's event stamp, never by arrival order (`match_injections`:
-  the stamp must fall between 1 ms before the injection and 1 ms before the
-  next one, at most 20 ms after the injection's D-Bus call returned), because
-  in `sliced-protected-install` two wheels injected before the window was
-  composed never arrived and arrival-order pairing charged every later wheel
-  with the frame of the wheel two places on (270–300 ms for 12 ms); a phase
-  with a wheel step that left no input record fails the lane as
-  `undelivered_scrolls`, and the mid-install phase starts only once the
-  window's composition has run), seeds `split-view-layout-migrated` so the
-  case's declared layout is the one rendered (without it the legacy
-  `sidebar-visible` migration showed the workspace sidebar; the fresh profiles
-  that show no pane seed that legacy key hidden instead, so the one-shot
-  migration stays exercised), disables the caret blink (under headless Mutter the blink's
-  frames get no presentation feedback and GTK paces them at its 60 Hz fallback,
-  which would add up to 16.7 ms to every input), sets `GTK_IM_MODULE` explicitly for every variant (never
-  GTK's Wayland text-input default, S7B-6), never writes a fixture (an app holding typed
-  edits is `SIGKILL`ed; the one case that saves, `save/during-validation`, writes
-  only a scratch file it created in its own state directory, through
-  `win.save`, never a Control+letter chord), fails on any fixture digest change, and records
-  `btrfs-stall-report` evidence. Budget overruns are results, not failures; a
-warning of a pre-existing blocker the programme fixed (`FIXED_DEFECTS` in the
-driver: the scrollbar `GtkGizmo` snapshot warning, ledger A37) fails the lane,
-while an owned one is reported as a finding; so does a measured case that
-  wrote no `frame` record (`frameless_cases` in `summary.json`), because every
-  launch paints and a missing frame stream would otherwise read as `None`
-  first-frame and empty frame-gap figures. A repetition whose outcome is `failed` (a phase could not run) fails the run too (`failed_cases`), and a case that opens no document records its editor interactions `unavailable` instead of clicking at an editor (`adopt-gnome-51` L3: `baseline/empty` failed every run unnoticed). The probe writes a frame once it or
-  any later frame is final (`FrameTimingsQueue` in
-  `services/responsiveness_log.rs`), so one frame that never gets presentation
-  feedback cannot hold back the stream; the
-  nightly `quick` tier is trend evidence only, and verdicts come from a `full`
-  run on the reference machine, recorded in `docs/next/long-line-documents.md`.
-  It is not part of `make end-user-smoke`. A long `full` sweep may run group by
-  group, each part into its own artifact directory, joined for one report with
-  `scripts/responsiveness-smoke-driver.py merge-runs --artifact-dir <out> --from
-  <part>...` and then `scripts/responsiveness-smoke-driver.py report
-  --artifact-dir <out> [--axiom-observations <make gtk-axioms log>]`;
-  repetitions of a case measured by several parts accumulate. The post-open
-  cases (`bound-post-open-settle`) run the `background` phase until the
-  driver-computed settle (the probe's `highlight_updated`/`adjustment_upper`
-  marks and `settle_sentinel` records, the same clauses as the
-  `document-settled` predicate, so a baseline build without the predicate is
-  measured identically), capped; add `type-during-settle` and, on dense cases,
-  `wrap-toggle`, `zoom-step` and `font-change`; and report a "Post-open settle"
-  table attributing every dispatch by its `post_open_*` span or mark. The C6
-  verdict is computed by `report` from side-labelled runs
-  (`merge-runs --from baseline=DIR --from branch=DIR`), with toolkit-floor
-  exceptions passed as `--toolkit-floor ATTR=AXIOM[:REPORT]`; input-to-frame is
-  printed beside the documented headless floor and never gated. The reference
-  values come from the reduced sweep `scripts/responsiveness-reference-sweep.py`
-  (bisection over length, bracketing repetitions and variants only at each
-  boundary; design D7 of `probe-long-line-toolkit-costs`), which drives the lane
-  through `RESPONSIVENESS_LENGTHS` (probe points per group) and
-  `RESPONSIVENESS_PHASES` (only the interactions its thresholds read).
-  The `baseline/small` case runs on four settings profiles
-  (`bound-window-construction-dispatch`): fresh or steady-state (a previous,
-  gracefully quit launch), under the keyfile or the dconf backend. Those cases
-  keep their XDG state on the artifact filesystem (tmpfs hides a keyfile
-  write's `fsync`), and the dconf ones point the private bus's `dconf-service`
-  at the case's config directory before seeding it, so the user's dconf
-  database is never reached. The probe's `span` records feed the report's
-  "Construction spans against B_settle" table (startup, construction, first
-  frame, the largest dispatch before it, each construction stage, the settings
-  flush); `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1` makes an over-budget
-  LushText-owned span on the release build fail the run (never in CI).
-  A fifth construction profile, `baseline/small/steady-populated`
-  (`shorten-window-content-fill-in`), is a steady keyfile profile with one
-  restored workspace folder of 300 synthetic entries and both side panes
-  shown. The composition table reports **the first painted frame** derived the
-  same way for every build (the end of the first `frame_paint` that starts
-  after `composition_present`, so a build that ran an unseen frame on the
-  unmapped window, ledger A51, is not credited with it), the **first
-  presentation** from the `frame` records, composition complete, **activation
-  shown** (the first frame after the activation's file opens drained), and the
-  **content fill-in**, `max(complete, activation shown) − first painted frame`.
-  Every dispatch up to that later point is budgeted; each run's fill-in is
-  judged against the maintainer's 40 ms (`ACCEPTED_FILL_IN_US`; a run over it
-  fails only under `RESPONSIVENESS_CONSTRUCTION_ENFORCE=1`) and the median is
-  reported against three reference frames. A frame's repeated layout runs are
-  summed into that frame's `frame_layout`.
-  Since `first-frame-window-shell` the window composes in stages, and the
-  verdict covers **every dispatch until composition completes** (the largest
-  watchdog lateness up to the `composition_complete` span,
-  `largest_composition_dispatch`), with the "Composition dispatches and first
-  frames" table listing each stage's dispatch (`composition_<stage>` spans),
-  every dispatch of 4 ms or more in order, the layout and paint phases of the
-  first four frames (`frame_layout`/`frame_paint`), and the content fill-in
-  (`composition_complete − first_frame`, reported against the maintainer's
-  accepted 40 ms, five 120 Hz frames; it is not a budget). The probe also
-  records the window's first measures and allocations
-  (`window_measure_h`/`_v`, `window_size_allocate`, measurement build only).
-  **A timing verdict comes only from a run under the reference precondition**:
-  the 1-minute load average below 4 for 30 s, no process at 80 % CPU or more,
-  and no other agent's `cargo`, `rustc`, `nextest`, `kani`/`cbmc`,
-  `cargo-mutants` or `mutter --headless` running; record the load, the process
-  check and `btrfs-stall-report` for the window, run it through
-  `scripts/measure.sh` (see "Shared-machine agent work"), and discard a run that loses the
-  precondition part-way. Runs under load are labelled non-verdict.
-- `make end-user-smoke` runs the host-supported smoke lanes together. Individual
-  scripts own their dependency checks, artifact paths, and skip messages.
+- `make automation-smoke`: the app under isolated headless Mutter and a private
+  D-Bus session, exercised through the automation object and
+  `scripts/lushtext-automation.py`, with a runtime-log warning scan.
+- `make automation-client-self-test`: the client's parser, status envelope,
+  action-parameter rendering and artifact summaries, without the app; a policy
+  gate, not a replacement for real-process smoke.
+- `make visual-geometry-smoke`: same-session before/after screenshots and
+  bounded geometry snapshots, protected regions compared exactly, with a
+  visual-sensitive diff fingerprint.
+- `make visual-smoke` and `make accessibility-smoke` (AT-SPI bridge enabled;
+  the widget harness sets `NO_AT_BRIDGE=1` and cannot prove this class). Both
+  run their failed-load captures on a second binary built with the smoke-only
+  `smoke-read-faults` feature (`make smoke-read-faults-build`,
+  `target/smoke-read-faults`, `LUSHTEXT_DENY_READ=<fixture>`), because a
+  mode-000 fixture is still readable by root. The same binary carries
+  `smoke-list-budgets` (`LUSHTEXT_SEARCH_RETAINED_BYTES`,
+  `LUSHTEXT_SIDEBAR_DIRECTORY_RETAINED_BYTES`). The accessibility lane's
+  warning allowlist lives once in `scripts/accessibility_warning_allowlist.py`;
+  edit it there instead of embedding a second predicate copy.
+- `make command-palette-notes-smoke` and
+  `make run-command-palette-notes-manual-test`: a focused Notes palette drill
+  and its live manual launch with isolated XDG directories; not part of
+  `make end-user-smoke`.
+- `make crash-recovery-smoke`: draft/session recovery through a real
+  `SIGKILL` and relaunch, plus a second binary built with the smoke-only
+  `crash-kill-points` feature (`target/crash-kill-points`,
+  `LUSHTEXT_KILL_AT`) aborted inside named protocol windows.
+- `make portal-sandbox-smoke`: Flatpak/Snap runtime state and confined checks.
+  It skips explicitly when neither runtime is available; a skip is not proof
+  that confinement works, and its diagnostics must not imply a portals-only
+  migration while the Flatpak keeps host filesystem access.
+- `make performance-smoke`: a small Criterion filter with coarse timing
+  artifacts (`PERFORMANCE_SMOKE_GROUP=search-index|io-recovery` runs one half);
+  forgiving enough to avoid shared-runner noise, distinct from `bench-report`.
+- `make responsiveness-smoke` (`RESPONSIVENESS_TIER=quick|full`): long-line
+  responsiveness of a **separate** release binary built with the smoke-only
+  `responsiveness-probes` feature into `target/responsiveness/`
+  (`make responsiveness-build`), so `target/debug/lushtext` never carries it.
+  It generates synthetic fixtures only (`scripts/generate-long-line-fixtures.py`,
+  seeded, written into the run's temp scope), runs with an affinity of at most
+  16 CPUs taken from the inherited mask (never widened), never writes a
+  fixture, and fails on any fixture digest change. Budget overruns are results,
+  not failures. The nightly `quick` tier is trend evidence only; verdicts come
+  from a `full` run on the reference machine under the reference
+  precondition, through `scripts/measure.sh`, recorded in
+  `docs/next/long-line-documents.md`. It is not part of `make end-user-smoke`.
+  How to drive it and read its failure classes:
+  [`docs/runbooks/responsiveness-lane.md`](../../docs/runbooks/responsiveness-lane.md).
+  `make check-responsiveness-lane` (in `make check-policy`) self-tests the
+  generator and driver.
 
-The default pull-request path should stay bounded. Wire only cheap and stable
-parts of these smoke lanes into PR CI; keep screenshot, portal/sandbox,
-AT-SPI, installed-package, and deeper performance checks scheduled, manual,
-release-only, or opt-in unless a later change proves they are reliable as
-blocking PR gates.
-`.github/workflows/end-user-smoke.yml` is the scheduled/manual artifact lane
-for automation, visual-geometry, visual, crash-recovery, portal/sandbox,
-accessibility, performance smoke, release-safe benchmark report coverage, and
-split deeper diagnostic benchmark report coverage.
+The default pull-request path stays bounded: wire only cheap and stable parts
+of these lanes into PR CI, and keep screenshot, portal/sandbox, AT-SPI,
+installed-package, and deeper performance checks scheduled, manual,
+release-only, or opt-in until a change proves one reliable as a blocking gate.
+`.github/workflows/end-user-smoke.yml` is the scheduled/manual artifact lane.
 
 ## Meson Build (Installed / Flatpak)
 
 Meson wraps Cargo for installed and Flatpak builds:
 - Root `meson.build` → `subdir('resources')`, `subdir('data')`, `subdir('po')` → `cargo.sh` → `cargo build`
-- `build-aux/cargo.sh` bridges Meson→Cargo, exports `LUSHTEXT_PKGDATADIR` for GResource/GSettings dual-path
+- `build-aux/cargo.sh` bridges Meson→Cargo, exports `LUSHTEXT_PKGDATADIR` for the GResource/GSettings dual path
 - `data/meson.build` installs desktop file, metainfo, icons, GSettings schema
 - `gnome.post_install()` compiles schemas, updates icon cache and desktop database
-- `build.rs` skips `glib-compile-schemas` when `LUSHTEXT_PKGDATADIR` is set (source tree may be read-only in Flatpak)
+- `make meson-test` builds with Meson and runs the registered desktop/AppStream metadata tests
 
 ## Flatpak
 
 - Manifest: `build-aux/dev.cominotti.lushtext.Flatpak.json` (local builds, `type: "dir"`)
-- Runtime: `org.gnome.Platform` 51 (GTK 4.24, GtkSourceView 5.22, Libadwaita 1.10; `adopt-gnome-51`), SDK extension: `org.freedesktop.Sdk.Extension.rust-stable` (the SDK's `26.08` branch, Rust 1.98.0). The gtk-rs feature set stays at the GNOME 50 source floor, so compiling on 4.24 proves no newer API is used
-- The Rust stable extension must satisfy the workspace MSRV. If a local user
-  installation is stale after an MSRV bump, update it explicitly with
-  `flatpak update --user org.freedesktop.Sdk.Extension.rust-stable//25.08`
-  before treating a Flatpak build failure as an application regression.
-- Use `make flatpak` for a local build without installing it; it first ensures the user Flathub remote and manifest runtime/SDK dependencies are available
-- Use `make flatpak-install` to build and install the latest checkout into the user Flatpak installation; the target is idempotent and installs missing runtime/SDK dependencies from Flathub
-- Use `make check-flatpak-permissions` after automation, portal/sandbox, or
-  packaging changes to prove the local Flatpak manifest still declares the
-  intentional `--filesystem=host` permission
-- Use `make verify-flatpak-identity` after install/export changes to catch stale same-ID dev launchers and verify `X-Flatpak`, permissions, and MIME registration
-- `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds
-- Regenerate after dependency changes: `make cargo-sources` (requires `flatpak-cargo-generator`)
-- Dependency update chain: `cargo update` → `cargo hakari generate` → `make cargo-sources`
+- Runtime: `org.gnome.Platform` 51 (GTK 4.24, GtkSourceView 5.22, Libadwaita 1.10), SDK extension `org.freedesktop.Sdk.Extension.rust-stable` (the SDK's `26.08` branch, Rust 1.98.0). The gtk-rs feature set stays at the GNOME 50 source floor, so compiling on 4.24 proves no newer API is used.
+- The Rust stable extension must satisfy the workspace MSRV. If a local user installation is stale after an MSRV bump, update it with `flatpak update --user org.freedesktop.Sdk.Extension.rust-stable//26.08` before treating a Flatpak build failure as an application regression.
+- `make flatpak` builds without installing; it first ensures the user Flathub remote and manifest runtime/SDK dependencies are available
+- `make flatpak-install` builds and installs the checkout into the user Flatpak installation; idempotent
+- `make check-flatpak-permissions` after automation, portal/sandbox, or packaging changes proves the manifest still declares the intentional `--filesystem=host` permission
+- `make verify-flatpak-identity` after install/export changes catches stale same-ID dev launchers and verifies `X-Flatpak`, permissions, and MIME registration
+- `build-aux/cargo-sources.json` vendors all Cargo dependencies for offline builds; regenerate after dependency changes with `make cargo-sources` (requires `flatpak-cargo-generator`). Update chain: `cargo update` → `cargo hakari generate` → `make cargo-sources`
 
 ## Flatpak Release Automation
 
-- Release command surface: `make release VERSION=vX.Y.Z RELEASE_NOTES_FILE=...` for explicit releases and `make release-bump TYPE=major|minor|patch` for computed releases. Use `DRY_RUN=1` before real releases. `PRERELEASE=alpha|beta|rc` starts or continues prerelease streams, and `PROMOTE=1` is required to promote a prerelease stream to stable.
-- Real release commands must run from a clean `main` branch. The release helper stages only intended release metadata and packaging files, commits with `chore(release): vX.Y.Z`, creates a signed tag, and pushes `main` plus the tag only after validation passes.
-- `RELEASE_NOTES_FILE` is mandatory for real releases because the notes are inserted into `data/dev.cominotti.lushtext.metainfo.xml.in` as the AppStream release description.
+The release procedure is the `publish-release` skill. Rules:
+
+- Commands: `make release VERSION=vX.Y.Z RELEASE_NOTES_FILE=...` or `make release-bump TYPE=major|minor|patch`; use `DRY_RUN=1` first. `PRERELEASE=alpha|beta|rc` starts or continues a prerelease stream, and `PROMOTE=1` is required to promote one to stable.
+- Real releases run from a clean `main`. The helper stages only intended release files, commits `chore(release): vX.Y.Z`, creates a signed tag, and pushes `main` plus the tag only after validation passes.
+- `RELEASE_NOTES_FILE` is mandatory for real releases: the notes become the AppStream release description in `data/dev.cominotti.lushtext.metainfo.xml.in`.
 - Version surfaces that move together: `meson.build`, `crates/lushtext/Cargo.toml`, `crates/lushtext-core/Cargo.toml`, `Cargo.lock`, AppStream releases, and `build-aux/cargo-sources.json`.
-- The primary Flatpak publication channel is the Cominotti-owned remote at `https://flatpak.cominotti.dev/`. Use `make cominotti-flatpak-repo VERSION=vX.Y.Z COMINOTTI_FLATPAK_PUBLIC_KEY=... COMINOTTI_FLATPAK_GPG_KEY=...` to generate a signed repository under `build-aux/cominotti-flatpak/flatpak/repo/`, plus `cominotti.flatpakrepo` and `lushtext.flatpakref`. Always run `make verify-cominotti-flatpak-repo` and `make verify-cominotti-pages-limits`; use `make cominotti-flatpak-smoke` when a real repo summary should be present. Cloudflare Pages is the default hosted backend, `COMINOTTI_FLATPAK_DEPLOY_COMMAND` is an override, and Cloudflare R2 is the first fallback when Pages asset or file-count limits are exceeded.
-- Public Cominotti install instructions must keep GPG verification enabled. Do not publish `flatpak remote-add --no-gpg-verify` for the Cominotti remote except in clearly private local-testing notes.
-- The local Flatpak manifest remains checkout-oriented with `type: "dir"`. Flathub updates are generated with `make flathub-manifest VERSION=vX.Y.Z`, producing `build-aux/flathub/dev.cominotti.lushtext.json` plus `cargo-sources.json` with a public Git tag/commit source and `CARGO_NET_OFFLINE=true`.
-- Always run `make verify-flathub-manifest` after generating a Flathub-facing manifest. It rejects local `type: "dir"` sources and checks that app ID, runtime, SDK, Rust extension, command, finish args, cleanup rules, Meson profile, and Cargo sources match the reviewed local manifest.
-- Flathub app verification for `dev.cominotti.lushtext` is domain-based on `cominotti.dev`; linked GitHub accounts do not verify this custom-domain ID. Use `make verify-flathub-domain FLATHUB_VERIFICATION_TOKEN=<token>` after publishing the Flathub token to `https://cominotti.dev/.well-known/org.flathub.VerifiedApps.txt`.
-- **Flathub publication is not planned (decided 2026-09-16), and this is a standing decision rather than a deferral.** The Cominotti remote is the only Flatpak channel. A skipped Flathub PR is expected output, not a finding: do not report it as an outstanding action, do not treat absent `FLATHUB_TOKEN` / `FLATHUB_REPOSITORY` as configuration to complete, and do not propose work to enable it. Reviving it takes an explicit decision reversing this one. The manifest generator, verifier, and domain check are retained and still covered by `scripts/test-flathub-manifest.sh`, so the tooling does not rot while dormant. None of this touches the Flathub *remote* as the source of the GNOME runtime and SDK, which `make flatpak` and `make flatpak-install` still require.
+- The Flatpak publication channel is the Cominotti-owned remote at `https://flatpak.cominotti.dev/` (`make cominotti-flatpak-repo`, then always `make verify-cominotti-flatpak-repo` and `make verify-cominotti-pages-limits`). Cloudflare Pages is the default backend, `COMINOTTI_FLATPAK_DEPLOY_COMMAND` an override, and Cloudflare R2 the first fallback when Pages limits are exceeded.
+- Public Cominotti install instructions keep GPG verification enabled; never publish `flatpak remote-add --no-gpg-verify` for the Cominotti remote except in clearly private local-testing notes.
+- **Flathub publication is not planned, and this is a standing decision rather than a deferral.** A skipped Flathub PR is expected output: do not report it as an outstanding action, do not treat absent `FLATHUB_TOKEN` / `FLATHUB_REPOSITORY` as configuration to complete, and do not propose work to enable it. The dormant `make flathub-manifest`, `make verify-flathub-manifest` and `make verify-flathub-domain` tooling stays covered by `scripts/test-flathub-manifest.sh`. The Flathub *remote* remains the source of the GNOME runtime and SDK.
 
 ## Snap
 
 - Manifest: `snap/snapcraft.yaml`. Strict confinement + `home` / `removable-media` plugs; the `gnome` extension supplies Wayland/X11/GPU/portals. Identity stays `dev.cominotti.lushtext` via `common-id`; the snap NAME (`lushtext`) lives in Snap's flat namespace.
 - **Reuses the Meson/Cargo build**: the `meson` plugin drives the same `meson.build` → `cargo.sh` path as the Flatpak. A `layout:` bind-mounts the baked `LUSHTEXT_PKGDATADIR` (`/usr/share/lushtext`) to `$SNAP/usr/share/lushtext`, so `register_resources()` / `init_schema_dir()` work under confinement with no Rust changes.
-- **No `cargo-sources.json` for Snap**: snap builds are online by default, so the Flatpak vendoring artifact is not required here; crates are fetched during the build.
-- **Rust toolchain**: Ubuntu 24.04 packages `rustc` below the 1.98 MSRV (edition 2024), so the manifest bootstraps the pinned toolchain via rustup in a `rust-toolchain` part.
-- **App schema compile**: meson's `gnome.post_install()` skips `glib-compile-schemas` under DESTDIR staging and the extension does not compile the app's own schema, so the part compiles `dev.cominotti.lushtext.gschema.xml` explicitly in `override-build`.
-- **GATED on the GNOME 50 platform snap**: LushText needs GTK 4.22; the extension currently provides only `gnome-46-2404` (GTK 4.14, `core24`). The matching `core26` / GNOME 50 platform snap (`gnome-50-2604` or equivalent) is not published yet, so `make snap` is expected to fail until `base:` is switched to `core26` (the `core26` base itself is published). Do not vendor the GNOME stack from source or lower the GTK floor to work around this.
-- `make snap` (LXD build), `make snap-smoke` (confined smoke test — skips cleanly until the platform snap exists), `make verify-snap-identity` (confinement/plugs/common-id), and `make snap-store-readiness` (non-mutating Snap Store/platform gate report). `snap-store-readiness` exits nonzero while store registration, credentials, or the GNOME 50 platform gate are still pending. Smoke test fails on AppArmor/seccomp denials.
-- **Release posture**: Unlisted visibility + `edge`-only channel, so the snap is absent from search and `snap install lushtext` fails by default (`snap install lushtext --edge` is required). Promotion to stable/public is a store action, not a rebuild.
+- No `cargo-sources.json` for Snap: snap builds are online.
+- **Rust toolchain**: Ubuntu 24.04 packages `rustc` below the MSRV, so the manifest bootstraps the pinned toolchain via rustup in a `rust-toolchain` part.
+- **App schema compile**: meson's `gnome.post_install()` skips `glib-compile-schemas` under DESTDIR staging, so the part compiles `dev.cominotti.lushtext.gschema.xml` explicitly in `override-build`.
+- **GATED on the GNOME 50 platform snap**: LushText needs GTK 4.22; the extension currently provides only `gnome-46-2404` (GTK 4.14, `core24`). The `core26` / GNOME 50 platform snap is not published yet, so `make snap` is expected to fail until `base:` is switched to `core26`. Do not vendor the GNOME stack from source or lower the GTK floor to work around this.
+- Building locally: `make snap` (LXD build), `make snap-smoke` (confined smoke; skips cleanly until the platform snap exists; fails on AppArmor/seccomp denials), `make verify-snap-identity` (confinement/plugs/common-id), and `make snap-store-readiness` (non-mutating store/platform gate report; exits nonzero while a gate is pending).
+- **Release posture**: Unlisted visibility + `edge`-only channel (`snap install lushtext --edge`). Promotion to stable/public is a store action, not a rebuild.
 
 ## Benchmarks
 
-- Framework: Criterion.rs (`criterion = "0.8"` with `html_reports` feature)
-- Benchmark file: `crates/lushtext-core/benches/benchmarks.rs` (single file, all groups)
-- All benchmarked code is GTK-free — no display server needed for `cargo bench`
-- Benchmarks seed fixtures through the test-only fixture modules, so every
-  command passes `--features test-utils`: `cargo bench -p lushtext-core --features test-utils`
-  (the Makefile `bench*` targets, `scripts/bench-report.sh`,
-  `scripts/run-performance-smoke.sh`, and CI's bench compile already do)
-- `[profile.bench]` in workspace `Cargo.toml`: `opt-level = 3`, `lto = "thin"`, `codegen-units = 1` (no strip — criterion needs symbols)
-- `FileIndex::from(Vec<IndexedFile>)` enables synthetic index construction for benchmarks
-- Report script: `scripts/bench-report.sh` — clears stale Criterion `new/` results before each run, fails closed if `cargo bench` fails, then parses fresh JSON into markdown. Requires `jq`. `--scope release` is a bounded release-safe short report; `--scope diagnostic` is for deeper scheduled/manual analysis and can be split with repeated `--filter` values.
-- Report output: `docs/benchmarks/<timestamp>.md`
-- Makefile targets: `bench`, `bench-report` (release-safe), `bench-report-full` (diagnostic), `bench-baseline`, `bench-compare`
-- Baseline workflow: `make bench-baseline` saves as "main"; `make bench-compare` uses Criterion's lenient baseline comparison so every pre-existing benchmark is diffed while benchmark IDs added after the baseline are measured without aborting the run
-
-## Runtime Warnings
-
-**CRITICAL: GTK/pixman warnings are bugs, not noise.** When running the app via `make run`, the stderr output must be free of these warnings:
-
-- `*** BUG *** In pixman_region32_init_rect: Invalid rectangle passed` — a widget is being allocated with zero or negative dimensions. Typically caused by toggling `shrink-start-child` on GtkPaned, or by animating a raw pane child to 0 instead of animating a clipping wrapper (for example `GtkRevealer`) and hiding that wrapper at the collapsed endpoint.
-- `Gtk-CRITICAL` or `Gtk-WARNING` messages — usually indicate incorrect widget lifecycle, invalid property access, or constraint violations.
-- `GLib-GObject-WARNING` — usually indicate signal or property misuse.
-
-**Development is not finished if any of these warnings appear during normal usage.** Before considering a UI change complete, run the app and exercise the affected feature (toggle sidebar, resize window, open/close tabs, etc.) while watching stderr. Fix the root cause — do not suppress or ignore the warnings.
+- Framework: Criterion.rs (`criterion = "0.8"` with `html_reports`)
+- Benchmark file: `crates/lushtext-core/benches/benchmarks.rs` (single file, all groups); all benchmarked code is GTK-free
+- Every command passes `--features test-utils`: `cargo bench -p lushtext-core --features test-utils` (the Makefile `bench*` targets, `scripts/bench-report.sh`, `scripts/run-performance-smoke.sh`, and CI's bench compile already do)
+- `[profile.bench]`: `opt-level = 3`, `lto = "thin"`, `codegen-units = 1` (no strip — criterion needs symbols)
+- `FileIndex::from(Vec<IndexedFile>)` enables synthetic index construction
+- `scripts/bench-report.sh` clears stale Criterion `new/` results, fails closed if `cargo bench` fails, and writes `docs/benchmarks/<timestamp>.md` (requires `jq`; `--scope release` is the bounded release-safe report, `--scope diagnostic` the deeper one, splittable with repeated `--filter`)
+- Makefile targets: `bench`, `bench-report` (release-safe), `bench-report-full` (diagnostic), `bench-baseline` (saves "main"), `bench-compare` (lenient: benchmark IDs added after the baseline are measured without aborting)
 
 ## CI
 
-All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but this repo ships the GNOME 51 platform family (GTK 4.24, Libadwaita 1.10, GtkSourceView 5.22) and keeps GNOME 50 (GTK 4.22, Libadwaita 1.9, GtkSourceView 5.20) as its source floor. Test, measurement and lint jobs run `fedora:45` (the shipped toolkit); only `GTK Axioms (GNOME 50 floor)` (`gtk-axioms-floor`) runs `fedora:44`, so the floor's toolkit behaviour stays pinned by the axioms while widget tests run on what ships (a regression seen only on the floor and outside the ledger would go unseen until the Snap ships; the Snap change must run the widget suite on its platform first).
+All CI jobs use container images, because `ubuntu-latest` ships GTK 4.14. Test,
+measurement and lint jobs run `fedora:45` (the shipped GNOME 51 toolkit); only
+`GTK Axioms (GNOME 50 floor)` (`gtk-axioms-floor`) runs `fedora:44`, so the
+floor's toolkit behaviour stays pinned by the axioms. The Snap change must run
+the widget suite on its platform first.
 
-- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `GTK Axioms` (`make gtk-axioms`: every `gtk-lush-axioms` probe and sample `--check` under private headless Mutter, on `fedora:45`), `GTK Axioms (GNOME 50 floor)` (job `gtk-axioms-floor`, the same steps on `fedora:44`; two jobs rather than a matrix so the shipped-runtime check keeps its `GTK Axioms` name), `Widget Shard Table`, `Widget Tests (<shard>)`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 45 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, workflow-timeout policy, Blueprint template drift/contract validation, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; each widget shard runs through `scripts/widget-shards.py run <shard>`, which calls `scripts/run-widget-tests.sh --headless --retries 1 -- --exact <the shard's tests>`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s completions, delivered one per dispatch at `gtk_lush_tasks::completion_priority()`), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
-- Widget shards: the suite (1,292 tests) run serially in one job took 15–30 minutes on the shared runner and was cancelled at the cap, so CI runs it as one `Widget Tests (<shard>)` matrix job per shard of `scripts/widget-shards.py`, the single source of truth for membership (a `Widget Shard Table` job builds the matrix from `widget-shards.py github-outputs`, which re-runs the check). A test is owned by the shard naming it explicitly, else by the shard listing its module (its `tests/widget/<module>.rs` file stem); there is no catch-all, so a **new widget module file must be added to a shard** or `make check-widget-shards` (in `make check-policy`) fails, as it does for a module or name in two shards, a stale entry, or an explicit name its own shard already owns by module. New tests in an existing module join that module's shard with no edit. The check discovers tests statically with the same rule `crates/lushtext/build.rs` registers them by; each shard job cross-checks that discovery against the compiled binary's `--list` and fails on any difference, then fails unless the harness's `running N tests` equals the shard's count, so the shards provably sum to the full suite. Each shard records `ci_minutes` and `measured_in` (the largest widget-step wall time, build included, across at least two CI runs; developer timing does not count), and the check fails when a shard is unmeasured or over 20 minutes, leaving 10 of the 30-minute `timeout-minutes` ceiling for setup and runner noise. Every shard job runs in measurement mode and uploads `widget-measure-<shard>` (wall time, status, counts, per-test durations) plus a job-summary table. When a shard nears the margin, move a module or one slow test by name to another shard; never raise `timeout-minutes` (the hard ceiling `scripts/check-workflow-timeouts.py` enforces) and never shrink a threshold-sized test. Locally, `make test`, `make test-widget`, and `make test-widget-headless` run the table's shards **in parallel** (`widget-shards.py parallel`): one shared build (`cargo test -j $WIDGET_BUILD_JOBS --no-run` in a `WIDGET_BUILD_MEMORY_MAX` scope) and the same `--list` cross-check, then one `scripts/with-memory-cap.sh $WIDGET_SHARD_MEMORY_MAX scripts/run-widget-tests.sh --headless --scope-label wN …` per shard, so each shard has its own admitted memory scope, temp scope, D-Bus bus, Mutter, and `XDG_RUNTIME_DIR` (`with-temp-scope.sh` refuses a `TMPDIR` that would push a Wayland socket path past 100 bytes). Output is relayed live with a `[<shard>]` prefix, kept whole in `target/widget-parallel/<shard>.log`, and closed by one summary (status, attempts, selected/expected, minutes, peak MiB, failed and `FLAKY` tests); every shard runs to completion, any failure fails the run, and the selected counts must sum to the binary's total. `--retries 1` (`make test`, `make test-widget-headless`) reruns only a failed shard, in a new session, and a shard that passed only on a rerun is printed as `FLAKY-SHARD:` on stderr, a blocker like any `FLAKY`. Under `with-memory-cap.sh` the runner ends with `widget-memory: peak <MiB> MiB, oom_kill <n>` and fails with `OOM-KILL:` if anything in its scope was OOM-killed, so an OOM is never green even when the harness's retry recovered the test. Each shard starts in its own session; Ctrl-C reaches the driver, which forwards it to every shard's process group and waits for their scopes to clean up. `WIDGET_PARALLEL=0` restores the single serial session and `WIDGET_PARALLEL_JOBS=<n>` caps concurrency. The default `WIDGET_SHARD_MEMORY_MAX` (`2G`) is the largest shard peak of three parallel runs on 2026-10-30 (editor-page, 864 MiB) times 1.5, rounded up; those runs took 7.8–8.0 minutes against 18.6 for the serial session. Local timing never feeds `ci_minutes`. `make test-widget-shard WIDGET_SHARD=<shard>` reproduces one CI shard and ignores the parallel knobs. `scripts/run-widget-tests.sh` streams the sanitized harness output through `tee` while it runs, so a cancelled job still shows how far its shard got.
-- `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
-- `.github/workflows/kani.yml` — `make kani` lane in measurement mode, one `scripts/kani-shards.py` shard per matrix job, matrix and pinned `KANI_VERSION` derived from the script and Makefile by a `shards` job (Fedora 45 container, `timeout-minutes: 30`). Pull requests and pushes to `main` run only the shards the table gates `pull-request` (`widgets-geometry`, `core-geometry-policies`, `core-minimap-fit`, `core-list-budget` and `core-protected-fold`; the first two are required checks on `main`); schedule and dispatch run every shard.
-- `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive automation, visual-geometry, visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a split benchmark-report matrix. Its Fedora 45 containers run as root with no system D-Bus and no `/dev/fuse`: failed-load fixtures use the `smoke-read-faults` binary rather than file modes, the session services' reports of the missing system bus and FUSE device are classified once in `scripts/smoke_warning_classifiers.py` (self-tested by `make check-end-user-smoke-workflow`), and the screenshot pipeline needs `pipewire-gstreamer` and `gstreamer1-plugins-good` installed explicitly. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
-- `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
-- `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, Cominotti repository metadata tests, a no-mutation release preview, and current metadata validation.
-- `.github/workflows/release.yml` — `v*` tag release validation and manual dry-run workflow. It validates release metadata, builds the Flatpak from the release source, prepares/deploys Cominotti Flatpak repository artifacts when signing and deploy configuration are available, creates or updates the GitHub Release context, and carries a dormant Flathub manifest PR step that stays skipped because Flathub publication is not planned.
-- `.github/workflows/release-benchmark.yml` — bounded release-safe benchmark report uploaded as a release asset on `v*` tags or recovery dispatches, same `fedora:45` container
-- `.github/workflows/snap.yml` — always-on `validate` job runs `snapcraft expand-extensions` (structural/extension validation only; a full build cannot succeed until the GNOME 50 platform snap exists). The `build-publish` job (`snapcore/action-build` + `snapcore/action-publish`, release `edge`) is gated behind the `SNAP_PLATFORM_AVAILABLE` repository variable so the missing platform never reds the pipeline; it uses the `SNAPCRAFT_STORE_CREDENTIALS` secret.
+- `.github/workflows/ci.yml` — `Lint` (rustfmt, all-targets/all-features
+  Clippy, filesystem-boundary audit, workflow-timeout policy, Blueprint drift
+  and contract, the rustdoc gate, and the default-feature
+  `cargo check -p lushtext --bins --locked`), `Non-widget Tests`, `GTK Axioms`
+  and `GTK Axioms (GNOME 50 floor)` (two jobs rather than a matrix, so the
+  shipped-runtime check keeps its name), `Widget Shard Table`,
+  `Widget Tests (<shard>)`, `Property Tests` (keep it separate from the
+  non-widget and mutation jobs), `Bench Compile`, and `Dependency Policy`
+  (`cargo deny check advisories bans sources licenses`). Required checks on
+  `main` include `GTK Axioms`, `GTK Axioms (GNOME 50 floor)` and the Kani
+  `widgets-geometry`, `core-geometry-policies` and `core-minimap-fit` shards.
+- **Widget shards.** `scripts/widget-shards.py` is the single source of truth
+  for membership; its docstring documents the parallel local run, logs,
+  summary and retries. A test is owned by the shard naming it explicitly, else
+  by the shard listing its module; there is no catch-all, so a **new widget
+  module file must be added to a shard** or `make check-widget-shards` (in
+  `make check-policy`) fails, as it does for a module or name in two shards, a
+  stale entry, or a redundant explicit name. Each shard job cross-checks the
+  static discovery against the binary's `--list` and the harness's
+  `running N tests`, so the shards provably sum to the full suite. Each shard
+  records `ci_minutes` and `measured_in` (the largest widget-step wall time
+  across at least two CI runs; developer timing never counts), and the check
+  fails when a shard is unmeasured or over 20 minutes. When a shard nears the
+  margin, move a module or one slow test by name; never raise
+  `timeout-minutes` (`scripts/check-workflow-timeouts.py` enforces the hard
+  ceiling) and never shrink a threshold-sized test.
+- **Retries make flakes loud, not acceptable.** The harness retries a **test**
+  once in a fresh process and reports `ok (FLAKY: passed on attempt N)` plus a
+  stderr `FLAKY:` line; `--retries 1` reruns a failed **shard** in a new
+  session and prints `FLAKY-SHARD:`. Both are blockers per
+  `preexisting-blockers.md`. Under `with-memory-cap.sh` a run that OOM-killed
+  anything fails with `OOM-KILL:`, never green. Start `make test` and
+  `make test-widget` unwrapped (they admit one scope per shard plus one for
+  the shared build); `make test-widget-shard WIDGET_SHARD=<shard>` reproduces
+  one CI shard. The runner defaults to `GSK_RENDERER=cairo`.
+- `.github/workflows/kani.yml` — the Kani lane in measurement mode, one shard
+  per matrix job; pull requests and pushes to `main` run only the
+  `pull-request` shards (`widgets-geometry`, `core-geometry-policies`,
+  `core-minimap-fit`, `core-list-budget`, `core-protected-fold`); schedule and
+  dispatch run every shard.
+- `.github/workflows/end-user-smoke.yml` — scheduled/manual smoke lanes plus a
+  split benchmark-report matrix. Its containers run as root with no system
+  D-Bus and no `/dev/fuse`: failed-load fixtures use the `smoke-read-faults`
+  binary, missing-bus and FUSE reports are classified once in
+  `scripts/smoke_warning_classifiers.py` (self-tested by
+  `make check-end-user-smoke-workflow`), and the screenshot pipeline needs
+  `pipewire-gstreamer` and `gstreamer1-plugins-good`. Keep it outside required
+  PR checks unless a lane is proven cheap and stable.
+- `.github/workflows/flatpak.yml` — Flatpak build in the
+  `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` container, with cache
+  keys tied to the Flatpak build inputs.
+- `.github/workflows/release-dry-run.yml` — path-filtered release automation
+  check (release helper, Flathub manifest and Cominotti repository tests, a
+  no-mutation preview, metadata validation).
+- `.github/workflows/release.yml` — `v*` tag release validation and manual
+  dry run; its Flathub PR step stays skipped.
+- `.github/workflows/release-benchmark.yml` — release-safe benchmark report on
+  `v*` tags or recovery dispatches, `fedora:45`.
+- `.github/workflows/snap.yml` — `validate` runs `snapcraft expand-extensions`;
+  `build-publish` (release `edge`, `SNAPCRAFT_STORE_CREDENTIALS`) is gated on the
+  `SNAP_PLATFORM_AVAILABLE` repository variable.
 
-Rust validation helpers installed in CI must be version-pinned in workflow
-`env` blocks or an equally obvious central location. Current pins are
-`CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
+Rust validation helpers installed in CI are version-pinned in workflow `env`
+blocks: `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
 `CARGO_FUZZ_VERSION=0.13.1`, `CARGO_MUTANTS_VERSION=27.0.0`,
 `CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`,
-`GTK_LUSH_MSRV=1.98.0`, `KANI_VERSION=0.68.0` (also the Makefile default), and
-`GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`. Update the pin and rerun
-the affected local validation command when intentionally refreshing a tool.
+`GTK_LUSH_MSRV=1.98.0`, and `GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`;
+`KANI_VERSION` comes from the Makefile. Update the pin and rerun the affected
+local validation command when intentionally refreshing a tool.
 
-**When bumping gtk-rs version:** update the Fedora version in ci.yml and release-benchmark.yml, and the GNOME tag in flatpak.yml and the Flatpak manifest, to match the new minimum GTK requirement.
+**When bumping gtk-rs:** update the Fedora version in `ci.yml` and
+`release-benchmark.yml`, and the GNOME tag in `flatpak.yml` and the Flatpak
+manifest, to match the new minimum GTK requirement.

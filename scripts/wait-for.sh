@@ -22,7 +22,7 @@
 # one process (`tail --pid`), with no polling of the process table. A PID the
 # kernel reuses for an unrelated process after the awaited one exits keeps the
 # wait going; that is inherent to waiting by PID, so wait on a child or a
-# process you just started rather than on an old, remembered number. See "Shared-machine agent work" in .agents/rules/build.md.
+# process you just started rather than on an old, remembered number. See "Shared-machine agent work" in .agents/rules/verification-runs.md.
 #
 # Never call this while holding the measurement locks exclusively.
 

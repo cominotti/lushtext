@@ -3,7 +3,7 @@
 #
 # Run ONE measurement (responsiveness lane, interleaved bench, any timing
 # verdict) under the shared-machine protocol's writer preference (see
-# "Shared-machine agent work" in .agents/rules/build.md):
+# "Shared-machine agent work" in .agents/rules/verification-runs.md):
 #
 #   scripts/measure.sh [--label L] [--log FILE] [--lock-timeout S] -- <command> [args...]
 #   scripts/measure.sh --self-test
