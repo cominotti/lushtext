@@ -160,7 +160,7 @@ object rather than the release commit. The peeled `refs/tags/$VERSION^{}` ref
 must exist and equal `RELEASE_SHA`; comparing only the tag-object SHA is not a
 remote release-commit proof.
 
-Required release-critical runs are the tag-triggered workflows discovered for the `publication` and `benchmark-report` roles. The helper fails if either role is missing, duplicated, or no longer triggered by `v*` tags. Push-triggered workflows for the release commit, such as CI, Flatpak, Snap, and Release Dry Run, are also part of the green release surface whenever GitHub starts them. Recovery commits or manual recovery dispatches become part of the same surface and must also finish green. No release or recovery job may raise `timeout-minutes` above 30; timeout recovery must narrow scope, fix the harness, split the workflow, or dispatch a bounded replacement run.
+Required release-critical runs are the tag-triggered workflows discovered for the `publication` and `benchmark-report` roles. The helper fails if either role is missing, duplicated, or no longer triggered by `v*` tags. Push-triggered workflows for the release commit, such as CI, Flatpak, Snap, and Release Dry Run, are also part of the green release surface whenever GitHub starts them. Recovery commits or manual recovery dispatches become part of the same surface and must also finish green. The 30-minute timeout ceiling is in the skill's Non-Negotiables.
 
 Watch every discovered run until it is completed:
 
@@ -168,7 +168,7 @@ Watch every discovered run until it is completed:
 gh run watch <run-id> --exit-status
 ```
 
-Then re-query by exact commit, tag branch, and any recovery commit SHA. A release is not green unless every current workflow responsibility has `status=completed` and `conclusion=success`, either from the original run or from an explicit successful replacement run for the same responsibility. Treat `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, `skipped` for a required workflow, or an expected missing release workflow as blockers until they are fixed and rerun or superseded.
+Then re-query by exact commit, tag branch, and any recovery commit SHA, and judge the result against the skill's green standard (Non-Negotiables and Completion Standard).
 
 If any workflow is not successful, read its logs, fix the underlying issue, and rerun. If the public tag already exists and the fix is only in release tooling or workflow configuration, keep the tag immutable and dispatch the repaired workflow from the recovery ref while still checking out or otherwise resolving the public release tag. Repeat the workflow sweep after each fix until the surface is fully green or an external maintainer-controlled blocker prevents repair. When a replacement run supersedes a failed, cancelled, or timed-out run, keep both run IDs in the final report.
 
@@ -222,17 +222,10 @@ If the Pages-limit check fails, use Cloudflare R2 behind `flatpak.cominotti.dev`
 
 ## Flathub Is Not Planned
 
-**Decided 2026-09-16: there is no plan or intention to publish LushText to
-Flathub.** The Cominotti remote at `https://flatpak.cominotti.dev/` is the only
-Flatpak channel.
-
-The release workflow's Flathub PR step always skips. Treat that skip as expected
-output: no report, no manual action, no configuration to chase. Do not run
-`make flathub-manifest` or `make verify-flathub-manifest` as part of a release;
-they are retained and still tested only so the dormant tooling does not rot.
-
-Reversing this needs an explicit decision. See
-`openspec/specs/flathub-publication/spec.md`.
+The Cominotti remote at `https://flatpak.cominotti.dev/` is the only Flatpak
+channel; the skipped Flathub PR step needs no report, and `make flathub-manifest`
+/ `make verify-flathub-manifest` are not part of a release (see the skill and
+`openspec/specs/flathub-publication/spec.md`).
 
 ## Final Verification
 
