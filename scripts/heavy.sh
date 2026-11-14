@@ -4,7 +4,7 @@
 # Run ONE heavy, non-measurement command (cargo build/check/clippy/test, kani,
 # mutants, a smoke lane, `git commit` with its Clippy hook) the way the
 # shared-machine protocol requires (see "Shared-machine agent work" in
-# .agents/rules/build.md):
+# .agents/rules/verification-runs.md):
 #
 #   scripts/heavy.sh [--mem <cap|none>] -- <command> [args...]
 #   scripts/heavy.sh --self-test

@@ -8,7 +8,7 @@
 //! runs its Fedora containers as root, which reads the file anyway (root's
 //! `CAP_DAC_OVERRIDE`), so those cases waited for an alert that never came.
 //! Failure-path fixtures must not depend on ambient Unix permissions (see the
-//! "Property Testing" section of `.agents/rules/build.md`).
+//! "Test-Only Code Never Ships" section of `.agents/rules/testing.md`).
 //!
 //! With the `smoke-read-faults` Cargo feature, [`denied`] reads
 //! `LUSHTEXT_DENY_READ` once and reports `EACCES` for a document load whose

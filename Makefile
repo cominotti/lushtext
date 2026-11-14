@@ -107,7 +107,7 @@
 # go through the shared runner so native and headless execution stay aligned.
 # Every test lane runs under TEMP_SCOPE: a private TMPDIR that is removed
 # afterwards and fails the lane if a test left a temporary entry behind in it
-# (see the temporary-file rule in .agents/rules/build.md).
+# (see the temporary-file rule in .agents/rules/testing.md).
 TEMP_SCOPE := ./scripts/with-temp-scope.sh
 HAS_NEXTEST := $(shell command -v cargo-nextest 2>/dev/null && echo 1)
 ifdef HAS_NEXTEST

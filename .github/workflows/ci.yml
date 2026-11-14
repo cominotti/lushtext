@@ -131,7 +131,7 @@ jobs:
 
       - name: Run non-widget tests
         # The temp scope fails the step if a test leaves a temporary entry
-        # behind (see the temporary-file rule in .agents/rules/build.md).
+        # behind (see the temporary-file rule in .agents/rules/testing.md).
         run: ./scripts/with-temp-scope.sh nextest -- cargo nextest run --workspace
 
       - name: Run GTK Lush doctests
