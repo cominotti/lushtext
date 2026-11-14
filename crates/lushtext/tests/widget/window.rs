@@ -13042,8 +13042,9 @@ impl HistoryRestoreDraftFixture {
         });
     }
 
-    /// Open the local-history browser and press Restore on `snapshot`.
-    fn click_restore(&self, snapshot: &str) {
+    /// Open the local-history browser on `snapshot` and return its Restore
+    /// button once it can be pressed.
+    fn open_restore(&self, snapshot: &str) -> gtk4::Button {
         activate_action(&self.window, "show-local-history");
         wait_until(Duration::from_secs(5), || {
             visible_sheet_dialog(&self.window).is_some()
@@ -13053,7 +13054,22 @@ impl HistoryRestoreDraftFixture {
         wait_for_local_history_preview_text(&child, snapshot);
         let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
         wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
-        restore_button.emit_clicked();
+        restore_button
+    }
+
+    /// Open the local-history browser and press Restore on `snapshot`.
+    fn click_restore(&self, snapshot: &str) {
+        self.open_restore(snapshot).emit_clicked();
+    }
+
+    /// The tab still owes `text` a draft, or a pass already wrote it.
+    ///
+    /// The window's own autosave tick keeps running, so it may write the
+    /// owed text between the terminal and this check: that is the invariant
+    /// holding. Before `restore-main-ci` D1 neither held (the tab was not
+    /// draft-dirty and the draft kept the pre-restore text).
+    fn owes_or_wrote(&self, text: &str) -> bool {
+        self.editor.draft_dirty() || self.persisted().as_deref() == Some(text)
     }
 
     /// Wait until the buffer holds `text` and no replacement owns it.
@@ -13106,7 +13122,7 @@ fn test_a_restore_after_the_draft_settled_owes_a_draft() {
     fixture.click_restore(&restore_target);
     fixture.wait_for_installed(&restore_target);
     assert!(
-        editor.draft_dirty(),
+        fixture.owes_or_wrote(&restore_target),
         "the restored text is still owed a draft"
     );
     fixture.settle_draft(&restore_target);
@@ -13127,22 +13143,32 @@ fn test_a_pass_captured_before_a_restore_cannot_clear_its_draft_owed() {
     editor.buffer().set_text(&working_copy);
     editor.buffer().set_modified(true);
     fixture.settle_draft(&working_copy);
+
+    // Open the browser first, so the pass below is still in flight when the
+    // replacement starts however long the preview takes to load.
+    let restore_button = fixture.open_restore(&restore_target);
     // Edits newer than the draft, as the pass below captures them.
     editor.set_draft_dirty(true);
-
     lushtext_core::ui::window::set_draft_mutation_delays_for_test(0, 1_500, 0);
     fixture.window.autosave_tick_for_test();
     assert!(
         fixture.window.draft_evidence().autosave_inflight,
         "precondition: a pass in flight"
     );
-    fixture.click_restore(&restore_target);
+    restore_button.emit_clicked();
+    wait_until(Duration::from_secs(10), || {
+        editor.buffer_replacement_evidence().in_progress
+    });
+    assert!(
+        fixture.window.draft_evidence().autosave_inflight,
+        "precondition: the pass is still in flight when the replacement starts"
+    );
     fixture.wait_for_installed(&restore_target);
     wait_until(Duration::from_secs(10), || fixture.journal_idle());
     // The pass that was in flight marked a follow-up pass, which may already
     // have written the restored text: owed, or written, never neither.
     assert!(
-        editor.draft_dirty() || fixture.persisted().as_deref() == Some(restore_target.as_str()),
+        fixture.owes_or_wrote(&restore_target),
         "the restored text is still owed a draft"
     );
     lushtext_core::ui::window::set_draft_mutation_delays_for_test(0, 0, 0);
@@ -13175,7 +13201,7 @@ fn test_a_small_restore_after_the_draft_settled_owes_a_draft() {
     fixture.click_restore(&restore_target);
     fixture.wait_for_installed(&restore_target);
     assert!(
-        editor.draft_dirty(),
+        fixture.owes_or_wrote(&restore_target),
         "the restored text is still owed a draft"
     );
     fixture.settle_draft(&restore_target);
@@ -13217,7 +13243,7 @@ fn test_an_undo_restore_owes_a_draft() {
     .emit_clicked();
     fixture.wait_for_installed(&working_copy);
     assert!(
-        editor.draft_dirty(),
+        fixture.owes_or_wrote(&working_copy),
         "the text Undo Restore put back is still owed a draft"
     );
     fixture.settle_draft(&working_copy);
@@ -13242,11 +13268,11 @@ fn test_a_restore_into_a_clean_tab_owes_a_draft() {
     fixture.click_restore(&restore_target);
     fixture.wait_for_installed(&restore_target);
     assert!(editor.is_modified());
-    let draft_dirty = editor.draft_dirty();
+    let owed = fixture.owes_or_wrote(&restore_target);
     let title = fixture.tab_title();
     assert!(
-        draft_dirty && title.starts_with("• "),
-        "a restore into a clean tab: draft_dirty={draft_dirty}, title={title:?}"
+        owed && title.starts_with("• "),
+        "a restore into a clean tab: owed or written={owed}, title={title:?}"
     );
     fixture.settle_draft(&restore_target);
 }
