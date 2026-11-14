@@ -5,6 +5,7 @@ paths:
   - "crates/lushtext/tests/widget/**"
   - "crates/lushtext-core/src/services/action_catalog/**"
   - "resources/ui/**"
+  - "crates/gtk-lush/widgets/**"
 ---
 
 # Widget Wiring Rules
@@ -178,11 +179,9 @@ notifications, and prove that signal actually fires in the relevant widget:
 
 - **`notify::default-width` / `notify::maximized`** fire *before* the new allocation is applied. Reading `window.width()` in these handlers returns the **old** stale value. This causes constraints to silently fail during maximize/unmaximize transitions.
 - **`size_allocate(width, height, baseline)`** receives the **actual allocated dimensions as parameters** when GTK calls the vfunc for that subclass. Prove it fires before wiring repair logic to it. GTK4 can skip a subclass override on widgets whose class installs a layout manager; `LushtextEditorPage` inherits the `GtkBoxLayout` path, so editor viewport reflow must be observed through `gtk_lush_viewport::ViewportObserver` on the source view's scroll-adjustment page sizes instead.
-- **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes (e.g., user drags a `GtkPaned` divider), also connect `notify::position` on the child. For `GtkTextView`/`GtkSourceView` viewport width or height changes, the horizontal and vertical adjustments' `page-size` values are a reliable allocation-derived signal; use `gtk_lush_viewport::RestState`/`RestPause` to keep GTK-preserved transient offsets from replacing user scroll intent.
-- `size_allocate` fires on every layout pass. Keep the handler cheap (comparison + maybe one `set_position`). Guard GSettings writes with a value-change check to avoid D-Bus overhead.
+- **`size_allocate` is top-down only** — it fires when the widget itself is resized, not when children change internally. For child-initiated changes, connect the child's own notification. For `GtkTextView`/`GtkSourceView` viewport width or height changes, the horizontal and vertical adjustments' `page-size` values are a reliable allocation-derived signal; use `gtk_lush_viewport::RestState`/`RestPause` to keep GTK-preserved transient offsets from replacing user scroll intent.
+- `size_allocate` fires on every layout pass. Keep the handler cheap (a comparison against a cached width, then at most one write). Guard GSettings writes with a value-change check to avoid D-Bus overhead.
 - If allocation-derived geometry updates an `AdwBreakpoint` condition, cache the derived condition or threshold and call `set_condition()` only when it actually changes. Reparsing or reinstalling breakpoint conditions on every animation frame adds main-thread layout churn.
-- If `notify::position` also persists state, suppress that persistence while a programmatic paned animation is in flight. Clamp can stay live every frame; debounced settings writes should run once from the animation completion path.
-- Treat `notify::position` primarily as the **user-drag** path. If a timed animation is already driving valid paned positions directly, short-circuit the `notify::position` handler while that animation is active so the same frame is not reprocessed as if it were a manual drag.
 - When a `SettleBurst` or similar readiness gate protects notify handlers during a toolkit-owned animation, arm the gate **before** setting the animated property. GTK/Libadwaita notify signals can run synchronously from the setter; arming the gate afterward lets same-frame reconciliation run before the guard exists.
 - When a layout action is expected to leave neighboring chrome unchanged,
   protect that chrome with same-session visual geometry comparisons rather
@@ -205,7 +204,7 @@ notifications, and prove that signal actually fires in the relevant widget:
   be fitted to the visible allocation they describe so off-surface algebra cannot
   make widget tests fail or make screenshot searches miss the rendered pixels.
 
-**Known Flatpak animation regression:** sidebar and document-properties open/close animations looked like they were running below the monitor refresh rate even though no obvious blocking I/O was present. The root cause was allocation-frame churn: `size_allocate()` repeatedly synchronized split-view widths, the properties fraction notify path rewrote GSettings, and the adaptive properties breakpoint was reparsed/reinstalled for each animated frame. The durable fix pattern is:
+**Split-view and animated surfaces** (the allocation-frame rules; [history](../../docs/memorials/gtkpaned-shell-animation.md)):
 
 - `size_allocate()` compares the new allocated width against a cached width before doing split-view work.
 - allocation and programmatic notify paths clamp runtime geometry only; they do not persist sidebar fractions to GSettings.
@@ -230,9 +229,7 @@ When a custom container hosts a `GtkScrollable` child and owns its adjustments
   unclamped viewport position. The two agree only when the container starts
   exactly at the viewport's top edge; everywhere else the difference is read as
   a standing request and the container scrolls the outer window to satisfy it.
-  Shipping that comparison is what made a sidebar scroll its own section header
-  out of view and made two sections oscillate. Measure the resulting travel
-  against the unclamped viewport top — that part was right — and apply it from
+  Measure the resulting travel against the unclamped viewport top, and apply it from
   an idle: moving an outer adjustment from inside a layout pass does not
   reliably schedule another layout.
 - Allocate the child exactly the band the viewport shows: deduct chrome drawn
@@ -268,35 +265,9 @@ When a custom container hosts a `GtkScrollable` child and owns its adjustments
   minimum too while an outer scroller is present, because `GtkViewport`
   allocates non-scrollable children their minimum in the scroll direction.
 
-## GtkPaned Position Constraints
+## GtkPaned
 
-Any code that sets a `GtkPaned` position must ensure it's valid for the current allocation width. GTK4's `measure()` phase runs BEFORE `size_allocate()` — if a paned position is stale from a previous frame, GTK warns "Trying to measure ... for width of X, but needs at least Y."
-
-**Position restore from GSettings**: Always pre-clamp in `constructed()` immediately after `set_position()`. Use the restored window width from GSettings as the `for_width` parameter. Store the original unclamped value in `saved_*_pos` for animations that target the preferred position at wider widths.
-
-**Hidden restore state**: If the pane starts hidden, do **not** leave the live `GtkPaned::position` at the expanded saved width. Restore the live position to the same collapsed endpoint the hide animation uses, while `saved_*_pos` keeps the preferred visible width.
-
-**Animation targets**: When computing an animation target for a paned position (e.g., sidebar show), start from the saved preferred width but clamp the target against the current allocation before writing it. Clamp per-frame animation writes too — do not rely on `size_allocate` / `notify::position` to sanitize an already-invalid animation tick. If async child population can change the budget (for example restored workspaces adding sidebar sections), refresh the measured budget immediately before the animation starts.
-
-**Real-session proof beats harness-only proof**: Presented widget tests can verify action state, wrapper visibility, and persistence guards, but they can still miss live `GtkBox ... needs at least ...` warnings. Any sidebar/paned animation fix must also be exercised through `make run` against restored workspaces while watching stderr. Treat widget green + live warning as a failed fix, not a partial success.
-
-**Animation persistence**: Programmatic paned animations may still trigger `notify::position` and `size_allocate` on every frame. Those paths may clamp, but they must not enqueue debounced GSettings writes on every tick. Persist the preferred visible width once from `connect_done` (or the immediate-completion test path) after the animation settles.
-
-**Clamp against the real end-child**: If the warning references the end-child container (for example `GtkBox`), budget against that container's measured minimum, not a nested child that usually dominates it. One-pixel mismatches often come from clamping against the inner stack while GTK is actually measuring the wrapper box.
-
-**Use GTK's legal opposite-axis floor, not only the live-height floor**: `gtk_widget_measure()` validates a supplied `for_width` or `for_height` against the opposite orientation measured with `-1` before it continues. For paned budgeting, resolve each child's width floor as `max(measure(Horizontal, -1), measure(Horizontal, current_height))`. If you only use the height-adjusted floor, the app can still emit `Trying to measure ... needs at least ...` warnings even though the clamp looked correct in app code.
-
-**Prefer GTK's runtime paned budget**: Once a `GtkPaned` is allocated, prefer `max-position` / `min-position` over reverse-engineering the legal range from child widths. Those properties already include the current handle width and realized child constraints.
-
-**But know where `max-position` comes from**: GTK source (`gtkpaned.c`) computes positions with the handle widget's measured natural size and the current child minimums. During animated `GtkRevealer` transitions those minimums can round up by one pixel. If a live warning persists, inspect GTK's own `gtk_paned_compute_position` / `gtk_revealer_measure` behavior before adding more local clamp churn.
-
-**Wrap zero-width pane animations**: If a pane must fully disappear, wrap the real child widget in a `GtkRevealer` (or equivalent clipping wrapper) and animate the paned against the wrapper, not the raw child. Keep the wrapper revealed while the paned is shrinking, then drop `reveal-child` and `visible` together when the animation finishes so GTK stops reserving handle width while hidden without changing the layout budget too early.
-
-**Heavy child optimization**: If the wrapped pane contains a large tree/list that causes visible stutter, consider swapping the live child out for a frozen snapshot during the animation. But do not assume an intermediate container stops affecting layout; validate that the real child is truly out of the paned's measurement path in the live app.
-
-**Hide-time clamps stay live until the wrapper is hidden**: A toggle action may set a logical `*-visible` flag to `false` before the `GtkRevealer` has actually left layout. Clamp/budget helpers must keep treating the pane as layout-active while the wrapper's own `visible` property is still true, or a stale restored position can slip into the first hide frame.
-
-**New paned children**: When adding a new child to a `GtkPaned` with `shrink-end-child=false`, set `width-request` on the end-child to match its measured minimum. This makes the paned's minimum constraint explicit and prevents GTK from even attempting to measure the child at below its minimum during layout negotiation. Re-sync that width-request after map or async child restoration if the realized minimum changes.
+LushText has no `GtkPaned`. Before adding one (see `docs/next/split-panes.md`), read the `GtkPaned` sections of the `gtk4-libadwaita-internals` skill's geometry reference; the retired shell's paned rules are in [`docs/memorials/gtkpaned-shell-animation.md`](../../docs/memorials/gtkpaned-shell-animation.md).
 
 ## Focus Restoration on Overlay Close
 
@@ -341,18 +312,13 @@ change adds a dedicated primitive and proves the timing unchanged. Markdown
 code-block repair currently remains explicit because it pairs idle and timeout
 sources with `SourceId` cancellation and completion callbacks.
 
-`gtk-lush-settle`, `gtk-lush-tasks`, `gtk-lush-viewport`, and
-`gtk-lush-widgets` are functional in-tree crates for LushText's stable
-internal platform. LushText may consume them through workspace path
-dependencies; external stability, publication, and repository graduation stay
-dormant until a future approved proposal reopens the gates in
-`crates/gtk-lush/GOVERNANCE.md`.
+These helpers are stable in-tree platform crates consumed through workspace path
+dependencies; publication is governed by `crates/gtk-lush/GOVERNANCE.md`.
 
 ## Large Lists: Budgets, Time-Sliced Batches, Per-Batch Caches
 
-`bound-lists-by-budget-not-count` replaced the workspace lists' count caps with
-retained-byte budgets and time slices. A new list that can grow with the
-workspace follows the same pattern:
+A list that can grow with the workspace is bounded by retained bytes and time
+slices, never by an item count:
 
 - **Bound what is retained by bytes, not by a count.** Charge each item through
   `model::list_budget::RetainedBudget` (a refusal latches, so what is retained
@@ -387,7 +353,7 @@ Code that "looks wired correctly" can silently fail if GTK4's internal gesture s
 2. **Widget signal emission** — does the widget actually emit the signal on user input? (e.g., `GtkListView::activate` on click)
 3. **Gesture interception** — does an internal gesture on a child widget claim the event before the parent can process it?
 
-**Lesson learned (3 iterations):** The sidebar file-activation code was correctly wired (`connect_activate` → `open_document` → `tab_view.append`), and `open_document` always creates tabs. But `GtkTreeExpander`'s internal `GtkGestureClick` intercepted mouse clicks at BUBBLE phase, preventing `GtkListView::activate` from firing. Fix attempt 1 (`single-click-activate=true`) changed the UX to single-click. Fix attempt 2 (CAPTURE-phase gesture) was fragile and failed for the first file due to `SingleSelection::selected()` timing. The correct fix: disable the expander's gesture for file rows by setting `propagation_phase = None` via `observe_controllers()` in `connect_bind`. This lets `GtkListView`'s built-in double-click activation work for files while preserving directory expand/collapse. When a child widget's internal gesture blocks parent behavior, **disable the gesture at the source** rather than trying to race it from a higher phase.
+**Disable a blocking child gesture at the source.** `GtkTreeExpander`'s internal `GtkGestureClick` (BUBBLE phase) intercepts clicks on every row and stops `GtkListView::activate`; file rows set its `propagation_phase` to `None` through `observe_controllers()` in `connect_bind`, which keeps `GtkListView`'s double-click activation for files and expand/collapse for directories. When a child widget's internal gesture blocks parent behavior, disable that gesture rather than racing it from a higher phase ([history](../../docs/memorials/tree-expander-activation.md)).
 
 **Keyboard shortcut variant of the same pitfall:** `GtkListView` keyboard focus usually lands on a realized row widget inside the list, not on the `GtkListView` wrapper itself. For list-wide shortcuts such as sidebar `Space` peek, attach the `EventControllerKey` to the list view in `PropagationPhase::Capture` and gate the handler against focused controls that should still own their keys (for example inline rename `GtkEntry`s or row buttons). If the shortcut logic assumes `list_view.has_focus()` or only works when tests emit the key directly on the list widget, real users will see "nothing happens" even though synthetic tests pass.
 
@@ -415,9 +381,7 @@ over child sets, no read inside a mutable borrow, and quiescing worker-thread
 counters before comparing — plus the three driven proofs each surface owes, are
 normative in
 [`.agents/rules/workflow-convention.md`](./workflow-convention.md), as is the
-one-`test_policy.rs` rule for test-only timing and limit overrides. The criteria
-formerly stated here now live there, so an older citation of *this* file for one of
-them resolves in one hop. Test-only actuation seams remain a deferred category; see
+one-`test_policy.rs` rule for test-only timing and limit overrides. Test-only actuation seams remain a deferred category; see
 the `gtk-testing` skill's seam taxonomy before adding one.
 
 Widget tests that need accessibility metadata proof but not a live accessibility
@@ -439,7 +403,7 @@ When multiple actions select modes of one browser, reuse one live dialog and
 one bounded source/query owner. Mode is part of source, query, preview, and
 activation generation identity. Widget coverage must switch modes repeatedly
 and rapidly, prove stale completions cannot publish, preserve mode-specific
-empty/truncation/accessibility copy, and keep the shared visible-row cap.
+empty/truncation/accessibility copy.
 
 For these tests, assert the user-visible contract, not only model state: the
 right empty copy is shown, required header/menu/close controls are visible,
@@ -471,12 +435,12 @@ accepting the fix.
 
 **`spawn_blocking_then` results in tests:** Tests that depend on results from `gtk_lush_tasks::spawn_blocking_then` (e.g., command palette search results, file index rebuilds, workspace folder adds) must wait for the background thread to complete before asserting. `flush_events()` alone is insufficient — it only drains what's already on the main loop, but the background thread may not have queued its completion yet (completions are delivered at `gtk_lush_tasks::completion_priority()`, one per dispatch). Use `spin_until(|| predicate())` or `wait_until(timeout, || predicate())` to pump the main loop until results arrive. Without this, tests are flaky under parallel execution because thread scheduling varies.
 
-**Wait helpers are shared — do not copy them:** Use `wait_until` / `flush_events` / `flush_after_delay` / `present_window` from `crates/lushtext/tests/widget/common.rs`. They are imported, not re-defined per module (there were once five copy-pasted `wait_until`s; fixing one missed the rest). `wait_until` sleeps briefly then **drains all ready main-loop sources** — that drain is required to dispatch `spawn_blocking_then`'s low-priority `idle_add_once` completion. Do not rewrite it to a single blocking `MainContext::iteration(true)`: a higher-priority timeout source starves the idle and async-backed waits time out (verified failing 5/5). A private copy in a test module also gets missed when the shared helper changes.
+**Wait helpers are shared — do not copy them:** Use `wait_until` / `flush_events` / `flush_after_delay` / `present_window` from `crates/lushtext/tests/widget/common.rs`. They are imported, never re-defined per module: a private copy is missed when the shared helper changes. `wait_until` sleeps briefly then **drains all ready main-loop sources** — that drain is required to dispatch `spawn_blocking_then`'s completions, delivered one per dispatch at `gtk_lush_tasks::completion_priority()`. Do not rewrite it to a single blocking `MainContext::iteration(true)`: a higher-priority timeout source starves the idle and async-backed waits time out (verified failing 5/5).
 
-`present_window` in particular is **defined** in `common.rs` (LushText-side, generic over `IsA<gtk4::Window>`), not the weaker `gtk_lush_proof_harness::present_window` that only presents and flushes. The shared helper presents, then waits on a realization/allocation predicate with a ≥5s async-scale budget, then drains a short post-realization settle. Do not re-add a per-module `fn present_window` (sidebar once lacked the realization wait while `command_palette`/`window` had it — three divergent copies re-creating the copy-pasted-`wait_until` incident). A caller that needs an extra settle adds its own `flush_after_delay` after calling `present_window`.
+`present_window` in particular is **defined** in `common.rs` (LushText-side, generic over `IsA<gtk4::Window>`), not the weaker `gtk_lush_proof_harness::present_window` that only presents and flushes. The shared helper presents, then waits on a realization/allocation predicate with a ≥5s async-scale budget, then drains a short post-realization settle. Do not re-add a per-module `fn present_window`. A caller that needs an extra settle adds its own `flush_after_delay` after calling `present_window`.
 
 **Budget the wait to what it actually waits on:** Async/scheduling-dependent waits (window realization, `spawn_blocking_then` completion, file I/O) need a generous budget (≥5–10s); a tight 2s budget flakes under load. The predicate returns the instant the work lands, so a larger ceiling costs nothing on the fast path and only matters when a loaded machine delays the work. Keep short budgets for synchronous UI-state flips. If a widget test "passes on retry" or prints `FLAKY:`, treat it as a blocker per `preexisting-blockers.md` and the `gtk-testing` skill's Flake Discipline — investigate and fix the cause, do not just bump a number.
 
 **Timed animations in the custom widget harness:** Presented-window tests do not reliably advance `AdwTimedAnimation` frame clocks under the `crates/lushtext/tests/widget.rs` subprocess harness. Do not write tests that wait for the real animation duration to elapse. If the assertion depends on the settled post-animation state, expose a narrow test-only immediate-completion path keyed off `LUSHTEXT_WIDGET_CHILD`, or assert a state transition that does not depend on frame-clock progress.
 
-**Live paned warnings are a separate acceptance gate:** If a change touches `GtkPaned`, `GtkRevealer`, or a heavy animated sidebar subtree, widget tests are necessary but not sufficient. The acceptance checklist must include a real `make run` cycle with restored workspaces and an stderr check for `Trying to measure GtkBox ...` warnings.
+**Live warnings are a separate acceptance gate:** a change touching a `GtkRevealer` or a heavy animated sidebar subtree also needs a real `make run` cycle with restored workspaces and an stderr check for `Trying to measure …` warnings; widget tests are not sufficient (`testing.md`, "Runtime Warnings").

@@ -17,8 +17,8 @@ procedure — how to add or change a workflow, write the proofs, run the gates �
 the `lushtext-workflow` skill.
 
 The migration programme is **closed**: every workflow has a terminal row in
-`docs/workflow-readability-matrix.md` (22 `migrated`, 6 `cross-cutting`, 1
-`exempt`, 1 `superseded`), and the gate rejects any transitional status. New work
+`docs/workflow-readability-matrix.md` (`migrated`, `cross-cutting`, `exempt` or
+`superseded`), and the gate rejects any transitional status. New work
 adds or updates a row and follows the convention; it does not re-open the
 programme. `docs/next/workflow-readability.md` is the closed programme record and
 is **frozen** except its deferral inventory, which may be appended.
@@ -73,7 +73,7 @@ lifecycle, row accessibility projection, shared dialog chrome, window-side targe
 resolution, a per-surface capture adapter a role home calls) is outside the
 five-name taxonomy: it MUST NOT take a role name and MUST NOT own a `policy.rs` or
 `evidence.rs`. Record it in **both** its module doc and its matrix row. Do not
-call it "adapter detail" — that label is defined nowhere and was retired.
+call it "adapter detail", a label the convention does not define.
 
 Splitting a large file into siblings without assigning roles does not satisfy the
 convention. Roles are plain modules and narrow owner references; do not add a

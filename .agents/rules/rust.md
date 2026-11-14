@@ -45,7 +45,8 @@ Mixing versions (e.g. glib 0.21 with gtk4 0.11) causes "multiple versions of cra
 
 Every custom widget: `mod.rs` (public wrapper + `glib::wrapper!`) + `imp.rs` (private struct + trait impls).
 
-- Register child widget types with `ensure_type()` in `class_init()`.
+- Register child widget types with `ensure_type()` in `class_init()`, before template parsing.
+- The required trait chain for `AdwApplicationWindow` is `ObjectSubclass` → `ObjectImpl` → `WidgetImpl` → `WindowImpl` → `ApplicationWindowImpl` → `AdwApplicationWindowImpl`.
 - Use `connect_notify_local()` (not `connect_notify()`) for signal closures capturing GTK widgets — GTK types are not `Send`.
 - GTK initialization order: CSS/Display access requires GTK to be initialized. Load CSS in `startup()`, not before `app.run()`.
 
@@ -59,14 +60,10 @@ GtkSourceView has its own theming separate from GTK CSS. Always:
 
 ## Background I/O
 
-Use `gtk_lush_tasks::spawn_blocking_then(state, work, then)` for any I/O that may block:
-- `state`: non-Send GTK object (auto-wrapped in `ThreadGuard`)
-- `work`: runs on background thread, must be `Send`
-- `then`: runs on main thread with result, does NOT need to be `Send`
-
-Never pass GTK objects directly across threads — they are not `Send`/`Sync`.
-Let `gtk-lush-tasks` carry GTK-thread state through `ThreadGuard`, and keep
-workflow freshness checks explicit at the call site.
+Use `gtk_lush_tasks::spawn_blocking_then(state, work, then)` for any I/O that may
+block, never pass GTK objects directly across threads, and keep workflow
+freshness checks explicit at the call site. The contract (thread guards, the
+concurrency cap, completion priority) is in `AGENTS.md`, "Async I/O Pattern".
 
 ## GTK Main-Loop Timing
 
@@ -129,16 +126,11 @@ placement, evidence surfaces, intent-first naming, and re-derived measured cells
 is normative in
 [`.agents/rules/workflow-convention.md`](./workflow-convention.md), with the
 per-workflow status in `docs/workflow-readability-matrix.md` and the procedure in
-the `lushtext-workflow` skill. Read the rule before restructuring a workflow. The
-criteria formerly stated here — cross-cutting eligibility, the seam value-object
-rule, and the `#[expect(clippy::too_many_arguments)]` exemption for domain catalog
-construction — now live there, so an older citation of *this* file for one of them
-resolves in one hop. The same file holds the whole-pixel geometry policy rule
-(`#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]` in pure
-geometry and budget policy modules; the pair as `deny`, with fractional values
-admitted only by a reasoned `#[expect]` directly on the function, in a module
-with a recorded admission ceiling), and its table of protected modules, enforced
-by Clippy and `make check-workflow-boundaries`.
+the `lushtext-workflow` skill. Read the rule before restructuring a workflow; it also
+holds cross-cutting eligibility, the seam value-object rule, the
+`#[expect(clippy::too_many_arguments)]` exemption for domain catalog
+construction, and the whole-pixel geometry policy rule with its table of
+protected modules.
 
 ## Coordination Vocabulary
 
@@ -305,9 +297,8 @@ paragraphs, rows, counts) is a power of two (2, 4, 8, …, 1024, 64 KiB,
 - **Presentation cap** (a cap on what the user sees or gets: results, rows,
   notes, markers, entries listed, files a bulk action processes, characters
   shown or announced, and the size or length at which a feature turns off):
-  round **up** to the power of two at or above its intended value (for a
-  constant that predates `power-of-two-thresholds`, the value it had before
-  that change), provided the resource bound it protects (memory, per-turn GTK
+  round **up** to the power of two at or above its intended value (for an
+  existing constant, its former value, recorded in the inventory), provided the resource bound it protects (memory, per-turn GTK
   time against `B_interact` 8 ms or `B_settle` 16 ms, worker memory) still
   holds **by measurement**. If the measurement says it does not hold, the cap
   keeps its intended exact value as a recorded exception with that
@@ -340,7 +331,7 @@ two because it states the margin honestly (a measured 22,000 under load is not
 that precise), and because division and modulo by it are shifts and masks that
 Kani and CBMC verify cheaply.
 
-Four more kinds complete the set (`power-of-two-thresholds`, design D2):
+Four more kinds complete the set:
 
 - **Retention tier** (snapshots, recents, search history kept) and **retry
   budget** (attempts before a failure is reported): round **up**. A smaller
@@ -357,8 +348,7 @@ Four more kinds complete the set (`power-of-two-thresholds`, design D2):
 
 Accessible-text and announcement lengths are presentation caps (characters
 announced): they round up, and are never below the longest string the app
-ships (a unit test pins it). The former `text cap` kind, which rounded them
-down, is retired (`power-of-two-thresholds` design D12).
+ships (a unit test pins it).
 
 Corpus counts (the share of real files that would lose a feature at the power
 of two below) remain the evidence that a presentation cap must not fall; they
@@ -376,8 +366,7 @@ threshold therefore lands with its row and its
 `Kind: <kind>; …` line; `scripts/check-threshold-kinds.py --write` adds the
 row for review. Out-of-scope constants (geometry, percentages, priorities,
 codes, time, factors, rates, structural counts, presentation shapes,
-identifiers, tool data) name their class as `out: <class>`. The conversion of
-the constants that predated the rule is done (`power-of-two-thresholds`).
+identifiers, tool data) name their class as `out: <class>`.
 
 ## Mutable State on GObject Structs
 
@@ -390,8 +379,8 @@ the constants that predated the rule is done (`power-of-two-thresholds`).
 - Prefer `#[expect(lint, reason = "...")]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically. The reason must name the local GTK, generated-code, test, benchmark, or ownership invariant.
 - Reserve `#[allow(lint)]` only for cases where the lint may or may not fire depending on configuration or feature flags.
 - The workspace Clippy table is curated lint-by-lint after cleanup. Broad groups such as `clippy::restriction`, `clippy::pedantic`, `clippy::nursery`, and `clippy::cargo` are advisory discovery inputs only; do not enable them wholesale as blocking policy.
-- Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `decimal_literal_representation`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, `wildcard_imports`, and `debug_assert_with_mut_call` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents. In particular, execute mutations before `debug_assert!` and assert only the captured result so release builds cannot elide required state changes.
-- Clippy since the Rust 1.98 pin (toolchain 1.98.0 since `adopt-gnome-51`, before that 1.98.1; MSRV 1.98.0) no longer has `from_iter_instead_of_collect` (removed as "proved problematic"), so it is not in the workspace table. A removed lint left in `[workspace.lints.clippy]` prints `renamed_and_removed_lints`, which ignores `-D warnings`; delete the entry rather than letting the warning ride. Write `Result::is_ok_and` rather than `.ok().is_some_and(..)` on a `Result`: Clippy 1.99 rejects the latter, so the next toolchain bump would otherwise start red.
+- The Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `decimal_literal_representation`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, `wildcard_imports`, and `debug_assert_with_mut_call` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents. In particular, execute mutations before `debug_assert!` and assert only the captured result so release builds cannot elide required state changes.
+- Clippy no longer has `from_iter_instead_of_collect`, so it is not in the workspace table. A removed lint left in `[workspace.lints.clippy]` prints `renamed_and_removed_lints`, which ignores `-D warnings`; delete the entry rather than letting the warning ride. Write `Result::is_ok_and` rather than `.ok().is_some_and(..)` on a `Result`: Clippy 1.99 rejects the latter, so the next toolchain bump would otherwise start red.
 - `make lint-advisory` runs broad Clippy, selected design-smell Clippy, selected numeric Clippy, and selected rustc probes. Every current category is classified in `scripts/lint-advisory-policy.toml` as `blocking_candidate`, `must_stay_zero`, `accepted_advisory`, `generated_code_noise`, or `resolved_policy_exception`; refresh that policy only after fixing, promoting, or intentionally classifying new output.
 - The root `clippy.toml` holds two policies. The first is the whole-pixel `disallowed-methods` list (float methods that do arithmetic by call — `mul_add`, `powi`, `powf`, `sqrt`, `div_euclid`, `rem_euclid`, `recip`, `hypot`, `midpoint` — for `f64` and `f32`, each with a reason). It is not a global ban: `[workspace.lints.clippy]` sets `disallowed_methods = "allow"`, and only the whole-pixel policy modules raise it (`#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]`, or `deny`), with the module list held path-aware by rule 10 of `make check-workflow-boundaries` and the "Whole-pixel geometry policy" table in `workflow-convention.md`. The second is the explicit-SIMD `disallowed-macros` list (`std::is_x86_feature_detected`, `std::arch::is_aarch64_feature_detected`), which is **not** allowed workspace-wide: it stays at Clippy's default `warn`, so `-D warnings` makes it blocking everywhere (see "Explicit SIMD" below). Do not add a third list to `clippy.toml` unless it is globally safe (reason and replacement metadata, no broad suppressions in backend, fixture, generated, test, or build-support code); a list for a lint the workspace table allows would check nothing. Path-sensitive rules such as filesystem-boundary ownership stay in `scripts/check-filesystem-boundary.sh`, where backend, fixture, build-support, and approved engine-adapter exceptions can be expressed by path.
 
@@ -473,7 +462,7 @@ if let Some(obj) = obj_weak.upgrade() {
 }
 ```
 
-With Rust 1.96.0, also use `if let` match guards when a match arm needs both the matched value and a short fallible guard:
+Also use `if let` match guards when a match arm needs both the matched value and a short fallible guard:
 
 ```rust
 match encoding {
@@ -493,7 +482,7 @@ Prefer the new standard-library helpers when they make intent clearer:
 - Use `Vec::push_mut` / `insert_mut` only when the caller immediately needs a mutable reference to the inserted value; plain `push` remains clearer otherwise.
 - Use `cfg_select!` for expression-level or tightly grouped cfg choices. Keep item-level `#[cfg]` when separate Unix/non-Unix implementations are already clearer.
 
-Use the Rust 1.96 `core::range` value types only when they reduce real range-moving friction in named byte-span values. Range syntax still produces the legacy `std::ops` range types today, so do not mechanically rewrite every `std::ops::Range<usize>` import. Keep legacy ranges for proptest strategies, third-party APIs, and APIs meant to accept ordinary range syntax; prefer `impl RangeBounds<usize>` for new caller-facing range inputs.
+Use the `core::range` value types only when they reduce real range-moving friction in named byte-span values. Range syntax still produces the legacy `std::ops` range types today, so do not mechanically rewrite every `std::ops::Range<usize>` import. Keep legacy ranges for proptest strategies, third-party APIs, and APIs meant to accept ordinary range syntax; prefer `impl RangeBounds<usize>` for new caller-facing range inputs.
 
 When mapping a `Path::file_name()` or `Path::extension()` result, write
 `.and_then(OsStr::to_str)` (with `use std::ffi::OsStr;`) rather than
@@ -531,7 +520,7 @@ When production code approaches 1000 lines:
 
 - Unit tests: `#[cfg(test)]` inside service modules, no GTK dependency.
 - Integration tests: `crates/lushtext/tests/integration.rs` with `#[path]` split pattern.
-- Widget tests: `crates/lushtext/tests/widget.rs` with `#[path]` split pattern; require display server.
+- Widget tests: one file per feature under `crates/lushtext/tests/widget/`; `crates/lushtext/build.rs` generates the registry that `tests/widget.rs` includes, so a new file needs no `mod` line (but must join a CI shard). They run under the headless harness (`testing.md`).
 - Use `TestContext` for filesystem isolation (tempdir + simulated XDG dirs).
 - Use `services::filesystem::fixture` helpers for file setup and assertions in tests and benches.
 - Run `cargo hakari generate` after adding/removing dependencies.
