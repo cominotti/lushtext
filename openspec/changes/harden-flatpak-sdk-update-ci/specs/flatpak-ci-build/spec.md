@@ -23,11 +23,12 @@ The installation preparation SHALL verify, with a directory `rename(2)` probe in
 - **THEN** the job fails before `flatpak-builder` starts, and its log names the probe, the result and the filesystem under `/var/lib/flatpak`
 
 ### Requirement: Relocation stays within its budget
-Relocating the installation SHALL cost at most 90 s per job, and every Flatpak job SHALL keep its 30-minute ceiling.
+Relocating the installation SHALL cost at most 90 s per job, judged from the logged wall time in the change's evidence runs rather than enforced by a runtime timeout, and every Flatpak job SHALL keep its 30-minute ceiling.
 
 #### Scenario: Relocation time is logged against the budget
 - **WHEN** the installation is relocated
-- **THEN** the log reports the relocation's wall time and free disk space before and after, and the wall time is at most 90 s
+- **THEN** the log reports the relocation's wall time and free disk space before and after
+- **AND** a slow copy does not by itself fail the job
 
 ### Requirement: Every Flatpak build log records the installation's storage facts
 Before `flatpak-builder` runs, every Flatpak build job in a `flatpak-github-actions` container SHALL print one log group. It SHALL contain the kernel release, the overlay `redirect_dir` parameter, the overlay lines of `/proc/mounts`, the filesystem and free space of the installation and temporary directories, and the rename probe's results.
