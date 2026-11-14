@@ -2,7 +2,9 @@
 
 ## Purpose
 Record the GTK, GtkListBase, GtkScrollable, and Adwaita behaviours that LushText and GTK Lush geometry designs depend on in one normative ledger, pin each axiom with an isolated headless probe, and derive verification envelopes from it.
+
 ## Requirements
+
 ### Requirement: GTK behavioural axioms are recorded in one normative ledger
 The project SHALL keep one ledger of the GTK, GtkListBase, GtkScrollable, and
 Adwaita behaviours that LushText and GTK Lush geometry designs depend on. Each
@@ -510,3 +512,25 @@ The note SHALL be labelled as a preview build. It SHALL NOT be counted as a run 
 - **THEN** `make check-gtk-axioms` reports that A67's cell names another axiom's probe
 - **AND** the cell is corrected to `probe_a67`, which the A67 catalogue entry registers, as are the A68–A73 cells that name `probe_a53` … `probe_a58`
 
+### Requirement: List row cost behaviours are ledger axioms
+The ledger SHALL record four axioms, A108–A111, each pinned by an isolated `gtk-lush-axioms` probe with a sample that has an interactive and a `--check` mode, verified against the toolkit the change measured (GTK 4.24.1, libadwaita 1.10.0). A probe that records costs SHALL record magnitudes and assert only ratios or bounds stated in its ledger row.
+
+#### Scenario: The ledger rows state the four behaviours
+- **WHEN** the ledger rows A108–A111 are read
+- **THEN** **A108.** In a presented `GtkListView` with about 205 realized rows (A1), changing the text of every realized row's `GtkLabel` makes the next frame measure every realized row again, off-screen rows included. That frame's layout grows with the realized rows and dominates it. When the row's text widget has a measure that does not depend on its text, the same change costs the frame no layout, and the frame costs the same at 205 realized rows as at 16.
+- **AND** **A109.** `GtkInscription`'s constructor builds its Pango layout, and so computes a style for a node with no parent yet. Constructing 205 of them costs several times constructing 205 `GtkLabel`s.
+- **AND** **A110.** On a `GtkListView` that is not mapped, removing the rows it has not realized (after and before its realized band) tears down and realizes no row widget, whatever their number; removing realized rows from the end of what is left, `items-changed(len - k, k, 0)`, tears down only the removed rows' widgets, at a cost proportional to `k`, and realizes no other row. The probe also records, without asserting it, whether removing the band from the end of a list scrolled to its middle with unrealized rows still before the band realizes earlier rows.
+- **AND** **A111.** Under `GSK_RENDERER=cairo`, each frame of an `AdwDialog`'s open and close animation costs a paint that does not depend on the dialog's content (8 rows or 205). Under the GL renderer the same frames cost a few milliseconds. The probe records both, and skips the GL half, stating why, where no GL renderer is available.
+
+#### Scenario: The design and the programme record cite the axioms
+- **WHEN** the `lighten-notes-browser-rows` design and the programme record's exceptions E1–E3 and X1 are read
+- **THEN** the design cites these ids, and each exception cites the axiom its remaining cost rests on
+
+#### Scenario: The row cost axioms are probed
+- **WHEN** `make gtk-axioms` runs
+- **THEN** the A108–A111 probes and samples run under the private headless session, and any CRITICAL or WARNING they provoke fails the lane
+- **AND** `make check-gtk-axioms` finds the ledger, catalogue, probes and samples in agreement
+
+#### Scenario: A toolkit update changes a row cost
+- **WHEN** a GTK update makes a `GtkLabel` row's relayout stop growing with realized rows, or makes `GtkInscription` lay out lazily
+- **THEN** the A108 or A109 probe changes verdict, and the ledger, the row text design and the programme record are revisited before any probe is edited
