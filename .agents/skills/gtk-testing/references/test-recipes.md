@@ -28,7 +28,7 @@ fn open_file_creates_tab_with_filename() {
     let window = crate::common::test_window();
     window.open_document(&path);
 
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(5), || window.imp().tab_view.n_pages() == 1);
 
     let tab_view = &window.imp().tab_view;
     assert_eq!(tab_view.n_pages(), 1);
@@ -49,7 +49,7 @@ fn modified_indicator_appears_on_edit() {
 
     let window = crate::common::test_window();
     window.open_document(&path);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(5), || window.imp().tab_view.n_pages() == 1);
 
     let editor = active_editor(&window);
     let buffer = editor.buffer();
@@ -79,7 +79,7 @@ fn opening_same_file_twice_reuses_tab() {
 
     let window = crate::common::test_window();
     window.open_document(&path);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(5), || window.imp().tab_view.n_pages() == 1);
 
     window.open_document(&path);
     flush_events();
@@ -212,26 +212,11 @@ fn scan_directory_sorts_dirs_first() {
 
 ## Helper Functions
 
-Shared utilities for widget tests:
+Widget recipes import the shared helpers from `crates/lushtext/tests/widget/common.rs`
+instead of defining their own (`widget-wiring.md`, "Wait helpers are shared"):
 
 ```rust
-use std::time::{Duration, Instant};
-
-fn flush_events() {
-    while glib::MainContext::default().iteration(false) {}
-}
-
-fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        flush_events();
-        if predicate() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(predicate(), "timed out waiting for widget state");
-}
+use crate::common::{flush_events, wait_until};
 
 fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
     let tab_view = &window.imp().tab_view;

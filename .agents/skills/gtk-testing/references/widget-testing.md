@@ -9,6 +9,7 @@
 - [`AdwDialog` Geometry Assertions](#adwdialog-geometry-assertions)
 - [Animations and Frame Clocks](#animations-and-frame-clocks)
 - [List Models and Row Reuse](#listview-treelistmodel-and-row-reuse)
+- [Assertion Rules](#assertion-rules)
 - [When Widget Tests Are the Wrong Tool](#when-widget-tests-are-the-wrong-tool)
 
 Use this reference for the current LushText widget harness and the failure modes that make GTK widget tests confusing.
@@ -36,10 +37,10 @@ Important repo facts:
   `TMPDIR` (the per-attempt directory in a child), using
   `lushtext_core::services::test_isolation::isolated_environment`.
   `ensure_gtk_init()` only asserts it. A test may therefore save sessions,
-  drafts, or any app data before initializing GTK; on 2026-10-20 one did when
-  isolation still lived in `ensure_gtk_init()`, and it overwrote the
-  developer's real `session.json`. In test builds `json_store::data_dir()` also
-  panics if it resolves into `$HOME`'s XDG trees or the Flatpak home.
+  drafts, or any app data before initializing GTK (rule:
+  `.agents/rules/testing.md`, "Test Isolation From Real App Data"). In test
+  builds `json_store::data_dir()` also panics if it resolves into `$HOME`'s
+  XDG trees or the Flatpak home.
   `common::isolated_data_dir()` still gives one test a fresh directory of its own.
 
 Prefer the existing helpers:
@@ -55,13 +56,16 @@ Prefer `mutter --headless` for GTK4 and Libadwaita:
 Use `scripts/run-widget-tests.sh --headless` or `make test-widget-headless` when possible so CI and local repro share the same wrapper, retry policy, and monitor size. `make test-widget`/`test-widget-headless` run the CI shards side by side (`scripts/widget-shards.py parallel`), each shard through that same runner in its own memory scope and session; `WIDGET_PARALLEL=0` keeps one serial session. Plain `cargo test --test widget` is still Cargo-visible by default, but it must re-launch itself into headless Mutter before running tests.
 
 ```bash
-export XDG_RUNTIME_DIR="$(mktemp -d)"
 export GDK_BACKEND=wayland
 export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
-dbus-run-session -- \
+scripts/with-temp-scope.sh --session-runtime widget -- \
+  dbus-run-session -- \
   mutter --headless --wayland --no-x11 --virtual-monitor 2560x1600 -- \
     cargo test --test widget
 ```
+
+`--session-runtime` owns the private `XDG_RUNTIME_DIR` and removes it only
+after the session's services have exited; a bare `mktemp -d` runtime dir leaks.
 
 Never run widget tests against a live display server. The runner intentionally rejects native/live-display modes.
 
@@ -84,10 +88,9 @@ Wayland IM backend and enables the text-input protocol for every focused
 editable. Destroying a focused `GtkEntry` — an inline rename confirming, a search
 bar closing — races the compositor's reply, and when the event lands after the
 context is gone the result is `gtk_widget_get_display: assertion 'GTK_IS_WIDGET
-(widget)' failed` followed by a **SIGSEGV** inside `wl_proxy_get_version`. It
-reproduced in 9 of 40 isolated runs and presented as a `FLAKY:` line, which is
-exactly why a `FLAKY` line is a blocker rather than noise: the flake was a
-segfault.
+(widget)' failed` followed by a **SIGSEGV** inside `wl_proxy_get_version`,
+which presents as a `FLAKY:` line (history: `docs/next/persistent-format-hardening.md`
+S7B-6).
 
 Two lessons worth carrying:
 
@@ -95,10 +98,9 @@ Two lessons worth carrying:
   composite; focus lands on its internal `GtkText`. A focus guard written that
   way compiles, reads correctly, and never fires. Ask the root's focus widget
   instead: `window.focus()`, then `focused == entry || focused.is_ancestor(entry)`.
-- **Measure a toolkit-race "fix" before believing it.** Three application-side
-  orderings were tried against this one and each was neutral or *worse*; the
-  dangling state was in GTK's private per-display IM global, which application
-  code cannot reach. See `docs/next/persistent-format-hardening.md` S7B-6.
+- **Measure a toolkit-race "fix" before believing it.** Here the dangling
+  state is in GTK's private per-display IM global, which application code
+  cannot reach, so application-side reorderings do not fix it.
 
 ## Waiting for Async UI State
 
@@ -108,12 +110,13 @@ Many widget changes land through idle callbacks, timeouts, or `spawn_blocking_th
 use crate::common::{flush_events, wait_until};
 
 // `wait_until` polls, then drains ALL ready main-loop sources. The drain is
-// required: `spawn_blocking_then` delivers completion via a low-priority
-// idle_add_once source, which only runs once nothing higher-priority is pending.
+// required: `spawn_blocking_then` delivers completions from one source at
+// `gtk_lush_tasks::completion_priority()`, which runs only once nothing
+// higher-priority is pending.
 wait_until(Duration::from_secs(5), || window.imp().sidebar.section_count() == 1);
 ```
 
-Why shared, not local: there were once five copy-pasted `wait_until`s, so fixing one missed the rest. The canonical version lives once in `common.rs`; everything imports it. Do **not** rewrite it as a single blocking `MainContext::iteration(true)` with a timeout source — the timeout (higher priority) starves the idle completion and every `spawn_blocking_then`-backed wait then times out (verified failing 5/5 in isolation). The flake to fix is the *budget*, not the poll mechanism.
+Why shared, not local: a private copy is missed when the shared helper is fixed. The canonical version lives once in `common.rs`; everything imports it. Do **not** rewrite it as a single blocking `MainContext::iteration(true)` with a timeout source — the timeout (higher priority) starves the completion source and every `spawn_blocking_then`-backed wait then times out. The flake to fix is the *budget*, not the poll mechanism.
 
 **Budget the wait to what it waits on.** Window realization and `spawn_blocking_then`/file-I/O completion are async and scheduling-dependent — give them a generous budget (≥5–10s). A 2s budget for async work flakes under load. The predicate returns the moment the work lands, so a larger ceiling never slows the fast path and only matters when a loaded machine delays the thread. Keep short budgets for synchronous UI-state flips.
 
@@ -172,9 +175,8 @@ does not cancel the move; focusing a visible widget does, and so does
 clearing focus *before* the hide. A focus assertion right after a hide
 therefore passes only while no frame has painted, and flakes under load:
 call `wait_for_painted_frame(&window)` (`tests/widget/common.rs`) before
-asserting where focus went. (Found by
-`window_preview::test_non_markdown_alert_shows_above_placeholder_and_survives_escape`,
-2026-11-01; the preview alert copy now releases focus before it hides.)
+asserting where focus went. (The preview alert copy releases focus before it
+hides for this reason.)
 
 If the question becomes "what does GTK consider visible, mapped, realized, or accessible here?", stop and read:
 
@@ -283,9 +285,7 @@ If the confusing part is `connect_setup`, `connect_bind`, `connect_unbind`, row 
 - **Destroy each repetition's window before the next** (`window.destroy()`,
   then drain). A measurement test that leaves its windows alive measures every
   earlier repetition's editors too: their validation idles and relayouts run in
-  the later repetitions' dispatches. `power-of-two-thresholds`' M7 recorded
-  118–140 ms long-line dispatches that were exactly that; with the windows
-  destroyed the same dispatch was 9.6 ms (`bin-minimap-markers-per-row` D1).
+  the later repetitions' dispatches and inflate them several times over.
 - **A line the view has not laid out yet has zero height.** `line_yrange` and
   `line_at_y` read the text layout without validating it, so lines inserted a
   moment ago report height 0 until the view's validation idle or the next
@@ -308,6 +308,66 @@ If the confusing part is `connect_setup`, `connect_bind`, `connect_unbind`, row 
   the fixture is written and read `VmHWM` growth against the charge the
   budget made; each widget test runs in its own child process, so the reading
   is the test's.
+
+## Assertion Rules
+
+Assertion rules for widget and visual-geometry tests, kept here from the
+[skill](../SKILL.md#assertion-rules-that-save-time). State extremes and
+`is_visible()` versus the `visible` property are in `widget-wiring.md`,
+"Testing", and above.
+
+- For transient overlays, test the user's dismissal contract rather than only
+  the revealer property: focus moved away but Escape still closes, outside
+  pointer presses close and restore focus, inside pointer presses keep the
+  surface open, and one Escape closes only the topmost surface when stacked.
+- For accessible visibility, assert the `Hidden` state's **value** with `common::accessible_hidden` (`!accessible_hidden(w)` for "not hidden"). Never assert "not hidden" as `!gtk4::test_accessible_has_state(w, Hidden)`: `has_state` reports whether the state is *present*, and GTK writes `Hidden` itself (`true` at init and on unmap, `false` on map), so a widget that maps after the app cleared the state fails it while visible. When it maps is compositor timing (a revealer child maps on its transition's first frame, which a Wayland window awaiting a fullscreen configure does not draw), which is how `window::test_focus_mode_affordance_stays_visible_while_leave_button_has_focus` flaked. Likewise, focus a control only once it is mapped, as a user can: focus given to an unmapped widget may be dropped by the next configure.
+- For `GtkListView` keyboard shortcuts, do not assume the focused widget is the list itself. In real sessions focus usually sits on a realized row descendant, so synthetic key delivery should target the focused widget and, if needed, walk up its parent chain until it reaches the ancestor that owns the `EventControllerKey`. Emitting the key directly on the list view can produce false-green tests for shortcuts that do nothing in the live app.
+- For adaptive surfaces that animate, especially `AdwBottomSheet` used by the document-properties pane, do not close the animated surface as a cleanup step in headless widget tests unless the test is specifically proving the close animation. Assert the open/compact state, then explicitly destroy the presented test window and flush once. Closing the sheet right before process teardown can make Mutter report `gdk-frame-clock: layout continuously requested` and `Trying to snapshot LushtextWindow ... without a current allocation`, even when the production UI state is correct.
+- For split-view animation regressions, add widget tests around the contracts the harness can prove: allocation sync should not rewrite persisted GSettings fractions, and cached breakpoint thresholds should only change when the effective integer threshold changes. Do not try to prove frame-rate smoothness in the widget harness; confirm that part in the real app or locally installed Flatpak after the contract tests pass.
+- For same-session visual invariants, widget tests should assert the GTK
+  allocation and scroll-anchor contract, while `make visual-geometry-smoke`
+  should protect unaffected chrome with exact pixel comparisons and describe
+  every allowed-changing region. Do not count two unrelated screenshots from
+  separate launches as proof that an unaffected element had zero pixel variance.
+- For before/after visual-geometry cases with setup such as search queries,
+  scrolling, fixture selection, or focus state, drive that precondition and
+  wait for its narrow readiness predicate before capturing the baseline image.
+  A baseline taken before the intended state exists can make the comparison
+  pass or fail for the wrong reason.
+- For rendered effects such as highlights, edge lines, minimap markers, or
+  overlay chrome, widget tests should assert the app-owned allocation/projection
+  and `make visual-geometry-smoke` should assert named screenshot-derived
+  `pixel_anchors` for the actual pixels. If the proof policy requires a named
+  pixel invariant, the root summary must include it in
+  `pixel_verified_invariant_ids`, and the relevant case rows must include
+  screenshot-derived pixel row evidence plus final sidebar/editor/minimap
+  geometry and final-frame rendered-anchor stability; `verified_invariant_ids`
+  alone is not enough. If the rendered effect can drift during an animation,
+  require stream-frame evidence with at least one mapped intermediate frame;
+  a final settled frame is not proof for that class.
+- For user-reported visual oddities that only reproduce at a live desktop size,
+  run `scripts/lushtext-automation.py visual-geometry-capture ...` while the
+  window is in the reproduced state, provide explicit overrides for unknown
+  theme, word-wrap, fixture, direction, or viewport fields, and replay the
+  generated scenario with `scripts/visual-geometry-smoke.py --scenario-dir ...`.
+  Do not substitute nearby 720p, 1080p, 1440p, or generic maximized-like passes
+  for the captured threshold class.
+- For "the rows/rendering must not move" contracts inside a scroller, assert
+  **where a row is drawn**, not what an adjustment holds. A `GtkScrollable`
+  renders against its own adjustment value while the host positions it by a
+  transform; adjustment-value tests pass while the two disagree by a few pixels.
+  Use `common::RowStillnessProbe` /
+  `assert_rows_still_across_selection`: `compute_bounds` relative to a fixed
+  sibling above the host (the section header), resolved **by label each
+  sample** (list rows are recycled), over **mapped rows only** (rows around
+  the selection are realized but unmapped), across a *sequence* of forced
+  layouts (`queue_allocate` + `flush_after_delay(16ms)`; `flush_after_delay`
+  alone does not pump the frame clock), with the outer value unchanged as a
+  precondition. Drive selection with `set_selected` and focus with
+  `grab_focus` on already-visible rows; `select_and_scroll_to`/`scroll_to`
+  always issue a genuine request and belong in the positive control. Events
+  that change the model assert post-settle stability only, not across the
+  event.
 
 ## When Widget Tests Are the Wrong Tool
 
