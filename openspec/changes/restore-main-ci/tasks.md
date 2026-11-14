@@ -100,7 +100,7 @@ Timing: none (no timed path's cost changes).
       - the module comment of `drafts/restore_execution.rs` and the
         local-history facade;
       - `docs/end-user-coverage.md` if a lane mapping changes.
-- [ ] 1.6 Commit (signed, conventional, staged by name) and push the branch.
+- [x] 1.6 Commit (signed, conventional, staged by name) and push the branch.
 
 ## 2. A scroll survives a passive reflow burst (D2)
 
@@ -246,7 +246,7 @@ Tests: each item's failing-first test is chosen by its diagnosis.
       - Update `AGENTS.md` "Recent Changes" and `README.md` if they mention a
         behaviour that changed: the restore draft, the reflow scroll.
       - Update `docs/next/` records whose posture changed.
-- [ ] 5.2 Push and open the PR (the stage-3 workflow opens it, after the gates; not merged).
+- [x] 5.2 Push and open the PR (the stage-3 workflow opens it, after the gates; not merged): #99.
 
 ## Stage 3 record (implementation, 2026-11-14)
 
