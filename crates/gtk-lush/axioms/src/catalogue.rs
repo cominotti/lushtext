@@ -1759,6 +1759,71 @@ const CATALOGUE: &[Axiom] = &[
         version_bound: None,
         probe: Some(probes::probe_a107),
     },
+    Axiom {
+        id: AxiomId::new(108),
+        name: "a108_a_label_list_relayouts_its_realized_rows_on_a_retext",
+        statement: "After the text of every realized GtkListView row changes, the next frame \
+                    re-measures every realized row whose text is a GtkLabel (each shapes its \
+                    text to report its size): more than half the frame is layout at the about \
+                    205 realized rows (A1), and the layout grows from 16 rows to 205; with a \
+                    text widget whose measure ignores its text the frame has little layout and \
+                    does not grow",
+        dependent_designs: &[
+            "lighten-notes-browser-rows D2: the notes browser and palette rows draw their \
+             text with LushtextRowText, so a query frame redraws the rows instead of laying \
+             every one out (ui/row_text/)",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a108),
+    },
+    Axiom {
+        id: AxiomId::new(109),
+        name: "a109_an_inscription_costs_several_labels_to_construct",
+        statement: "Constructing a GtkInscription costs several times constructing a GtkLabel: \
+                    gtk_inscription_init creates its Pango layout at once, computing a style \
+                    for a CSS node with no parent yet, which the style cache cannot share",
+        dependent_designs: &[
+            "lighten-notes-browser-rows D2: GtkInscription is rejected for list-row text \
+             (about 15 ms more per 205 realized rows in the dispatch that creates them); \
+             LushtextRowText creates its layout on its first snapshot",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a109),
+    },
+    Axiom {
+        id: AxiomId::new(110),
+        name: "a110_removing_unrealized_rows_tears_nothing_down",
+        statement: "On a GtkListView that is not mapped, removing the rows GTK never realized, \
+                    after and before the realized band, destroys and creates no row widget; \
+                    removing realized rows from the end of what is left destroys only those \
+                    rows, at a cost in proportion to them, and creates none",
+        dependent_designs: &[
+            "lighten-notes-browser-rows D4: a closed notes browser's and a left palette \
+             category's rows are retired in slices outside the input dispatch, the \
+             unrealized rows first (ui/list_retirement.rs)",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a110),
+    },
+    Axiom {
+        id: AxiomId::new(111),
+        name: "a111_cairo_paints_a_dialog_animation_frame_in_milliseconds",
+        statement: "Under the cairo renderer, an AdwDialog animation frame (the dialog drawn as \
+                    one scaled, faded node) costs several milliseconds of paint, about as much \
+                    with 8 list rows as with 205; the GL renderer draws the same node in a \
+                    fraction of that",
+        dependent_designs: &[
+            "lighten-notes-browser-rows D1/D6: the widget harness runs GSK_RENDERER=cairo, so \
+             its dialog animation frames are judged by their layout phase, never by their \
+             paint",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a111),
+    },
 ];
 
 #[cfg(test)]

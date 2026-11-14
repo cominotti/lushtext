@@ -9,9 +9,14 @@
 //! [`MAX_SEQUENCE`] units of any `u64` cost below 2^32 µs (T2); every `u64`
 //! limit with a zero charge, every `u64` limit at seven concrete charges (B5's
 //! closed form, a recorded restriction), and results of at most
-//! [`MAX_SEQUENCE`] rows (B5's agreement with the budget).
+//! [`MAX_SEQUENCE`] rows (B5's agreement with the budget); every `u32`
+//! length (G1, R2) and every `u32` length and held span (R1).
 
-use super::{Admission, LIST_TURN_SLICE_US, RetainedBudget, rows_within, turn_continues};
+use super::{
+    Admission, LIST_RETIREMENT_UNIT_ROWS, LIST_TURN_SLICE_US, RetainedBudget,
+    for_each_unheld_range, next_growth, retirement_unit_cut, rows_within, staged_first_rows,
+    turn_continues,
+};
 
 /// Offers per harness. The properties are per step, so a short sequence
 /// covers every transition the latch can take (fits before, refused once,
@@ -186,5 +191,81 @@ fn a_turn_stops_at_the_first_unit_after_the_slice() {
     if done < MAX_SEQUENCE {
         assert!(elapsed >= LIST_TURN_SLICE_US);
         kani::cover!(true, "a turn yields at the slice");
+    }
+}
+
+/// G1 (`lighten-notes-browser-rows` D5): from its first listing, a growing
+/// first publish lists strictly more rows each step, never more than the
+/// list, and reaches every row in at most eight steps.
+#[kani::proof]
+#[kani::unwind(10)]
+fn growth_reaches_every_row_in_at_most_eight_steps() {
+    let len: u32 = kani::any();
+    let mut listed = staged_first_rows(len);
+    assert!(listed <= len);
+    let mut steps = 0u32;
+    while let Some(next) = next_growth(listed, len) {
+        assert!(next > listed && next <= len);
+        listed = next;
+        steps += 1;
+        assert!(steps <= 8);
+    }
+    assert_eq!(listed, len);
+    kani::cover!(steps == 8, "a long list grows in eight steps");
+}
+
+/// R1 (`lighten-notes-browser-rows` D4): a retirement's first turn removes
+/// only rows nobody holds, in ranges that stay valid when removed in order
+/// (descending, disjoint), and leaves every held row; with the held rows they
+/// cover the list. Domain: every `u32` length and zero, one or two held
+/// positions, strictly ascending and below the length (the core
+/// [`for_each_unheld_range`]; `unheld_ranges`' filter, sort and dedup are
+/// the standard library's, covered by the property tests).
+#[kani::proof]
+#[kani::unwind(5)]
+fn the_unheld_ranges_keep_every_held_row() {
+    let len: u32 = kani::any();
+    let held: [u32; 2] = [kani::any(), kani::any()];
+    let count: usize = kani::any();
+    kani::assume(count <= 2);
+    kani::assume(count < 1 || held[0] < len);
+    kani::assume(count < 2 || (held[0] < held[1] && held[1] < len));
+    let held = &held[..count];
+    let mut ranges = [(0u32, 0u32); 3];
+    let mut emitted = 0usize;
+    for_each_unheld_range(len, held, |start, count| {
+        assert!(emitted < 3);
+        ranges[emitted] = (start, count);
+        emitted += 1;
+    });
+    let ranges = &ranges[..emitted];
+    let mut covered = 0u64;
+    let mut previous_start = u32::MAX;
+    for &(start, count) in ranges {
+        assert!(count > 0);
+        assert!(u64::from(start) + u64::from(count) <= u64::from(len));
+        assert!(start + count <= previous_start);
+        previous_start = start;
+        for &row in held {
+            assert!(row < start || row >= start + count);
+        }
+        covered += u64::from(count);
+    }
+    let kept = u64::try_from(held.len()).unwrap_or(u64::MAX);
+    assert_eq!(covered + kept, u64::from(len));
+    kani::cover!(ranges.len() == 3, "rows go after, between and before");
+}
+
+/// R2: a retirement unit removes at least one and at most
+/// `LIST_RETIREMENT_UNIT_ROWS` rows from a non-empty list, and ends on empty.
+#[kani::proof]
+fn a_retirement_unit_removes_at_most_its_rows() {
+    let len: u32 = kani::any();
+    match retirement_unit_cut(len) {
+        None => assert_eq!(len, 0),
+        Some(next) => {
+            assert!(next < len);
+            assert!(len - next <= LIST_RETIREMENT_UNIT_ROWS);
+        }
     }
 }

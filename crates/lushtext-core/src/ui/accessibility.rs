@@ -218,6 +218,16 @@ pub fn set_role<W: IsA<gtk4::Accessible>>(widget: &W, role: gtk4::AccessibleRole
     widget.set_accessible_role(role);
 }
 
+/// Assign the default accessible role of a custom widget class, in its
+/// `class_init` (every instance starts with it; [`set_role`] may still
+/// change one instance before its accessible context exists).
+pub fn set_class_role<C: gtk4::subclass::widget::WidgetClassExt>(
+    klass: &mut C,
+    role: gtk4::AccessibleRole,
+) {
+    klass.set_accessible_role(role);
+}
+
 /// Assign the accessible label used as the widget's primary spoken name.
 pub fn set_label<W: IsA<gtk4::Accessible>>(widget: &W, label: &str) {
     widget.update_property(&[gtk4::accessible::Property::Label(label)]);

@@ -124,6 +124,9 @@ mod model_imp {
     #[derive(Default)]
     pub struct PaletteCategoryModel {
         pub(super) projection: RefCell<CategoryProjection>,
+        /// While a first publish grows (`lighten-notes-browser-rows` D5), the
+        /// rows listed so far; `None` once every ranked row is listed.
+        pub(super) listed: Cell<Option<u32>>,
         pub(super) live: RefCell<HashMap<u32, glib::WeakRef<PaletteItem>>>,
         /// Row objects created on demand (evidence: GTK asks only around the
         /// realized rows).
@@ -139,20 +142,32 @@ mod model_imp {
 
     impl ObjectImpl for PaletteCategoryModel {}
 
+    impl PaletteCategoryModel {
+        /// The rows GTK is told about.
+        pub(super) fn listed_len(&self) -> u32 {
+            let ranked = self.projection.borrow().len();
+            self.listed
+                .get()
+                .map_or(ranked, |listed| listed.min(ranked))
+        }
+    }
+
     impl ListModelImpl for PaletteCategoryModel {
         fn item_type(&self) -> glib::Type {
             PaletteItem::static_type()
         }
 
         fn n_items(&self) -> u32 {
-            self.projection.borrow().len()
+            self.listed_len()
         }
 
         fn item(&self, position: u32) -> Option<glib::Object> {
+            let listed = self.listed_len();
             let projection = self.projection.borrow();
             // While a shrinking publish announces its removal the ordinals
-            // still hold the old rows: answer by the reported length.
-            if position >= projection.len() {
+            // still hold the old rows, and a growing first publish ranks rows
+            // it does not list yet: answer by the reported length.
+            if position >= listed {
                 return None;
             }
             let mut live = self.live.borrow_mut();
@@ -208,6 +223,18 @@ impl PaletteCategoryModel {
     fn replace(&self, new: CategoryProjection) {
         let new_len = new.len();
         let old_len = self.len();
+        // A publish into an empty view is staged (`lighten-notes-browser-rows`
+        // D5): the frame after it (X1) realizes the first rows only, and the
+        // view's row growth lists the rest over the next frames.
+        if old_len == 0 && new_len > 0 {
+            let first = crate::model::list_budget::staged_first_rows(new_len);
+            *self.imp().projection.borrow_mut() = new;
+            self.imp().listed.set((first < new_len).then_some(first));
+            self.imp().live.borrow_mut().clear();
+            self.items_changed(0, 0, first);
+            return;
+        }
+        self.freeze_growth();
         let kept = old_len.min(new_len);
         // Every emission matches what the model reports while GTK handles it
         // (see the notes browser's row model): the tail alone changes length.
@@ -251,10 +278,112 @@ impl PaletteCategoryModel {
         }
     }
 
+    /// Stop listing `count` rows from `start`, as one removal (a retirement,
+    /// `lighten-notes-browser-rows` D4); held row objects past the range keep
+    /// their entries and move down with their positions.
+    fn cut_range(&self, start: u32, count: u32) {
+        self.freeze_growth();
+        let old_len = self.len();
+        let start = start.min(old_len);
+        let count = count.min(old_len - start);
+        if count == 0 {
+            return;
+        }
+        {
+            let mut projection = self.imp().projection.borrow_mut();
+            let (from, to) = (
+                usize::try_from(start).unwrap_or(usize::MAX),
+                usize::try_from(start + count).unwrap_or(usize::MAX),
+            );
+            let rest: Arc<[u32]> = projection
+                .ordinals
+                .get(..from)
+                .unwrap_or_default()
+                .iter()
+                .chain(projection.ordinals.get(to..).unwrap_or_default())
+                .copied()
+                .collect();
+            projection.ordinals = rest;
+        }
+        {
+            let mut live = self.imp().live.borrow_mut();
+            let shifted = live
+                .drain()
+                .filter(|(position, _)| *position < start || *position >= start + count)
+                .map(|(position, row)| {
+                    (
+                        if position >= start + count {
+                            position - count
+                        } else {
+                            position
+                        },
+                        row,
+                    )
+                })
+                .collect();
+            *live = shifted;
+        }
+        self.items_changed(start, count, 0);
+    }
+
+    /// End a growth where it stands: the ranking keeps only the listed rows
+    /// (nothing GTK knows changes, so nothing is emitted).
+    fn freeze_growth(&self) {
+        if let Some(listed) = self.imp().listed.take() {
+            let mut projection = self.imp().projection.borrow_mut();
+            let cut: Arc<[u32]> = Arc::from(
+                projection
+                    .ordinals
+                    .get(..usize::try_from(listed).unwrap_or(usize::MAX))
+                    .unwrap_or_default(),
+            );
+            projection.ordinals = cut;
+        }
+    }
+
+    /// List the next growth step of a staged first publish; `false` once
+    /// every ranked row is listed.
+    pub(super) fn grow(&self) -> bool {
+        let Some(listed) = self.imp().listed.get() else {
+            return false;
+        };
+        let ranked = self.full_len();
+        let Some(next) = crate::model::list_budget::next_growth(listed, ranked) else {
+            self.imp().listed.set(None);
+            return false;
+        };
+        self.imp().listed.set((next < ranked).then_some(next));
+        self.items_changed(listed, 0, next - listed);
+        next < ranked
+    }
+
+    /// List every ranked row a growing first publish has not listed yet.
+    pub(super) fn finish_growth(&self) {
+        let Some(listed) = self.imp().listed.take() else {
+            return;
+        };
+        let ranked = self.full_len();
+        if ranked > listed {
+            self.items_changed(listed, 0, ranked - listed);
+        }
+    }
+
+    /// Ranked rows still to be listed by a growing first publish.
+    #[must_use]
+    pub fn growing_rows(&self) -> u32 {
+        self.full_len() - self.len()
+    }
+
+    /// Rows the published ranking holds, listed or still growing.
+    #[must_use]
+    pub fn full_len(&self) -> u32 {
+        self.imp().projection.borrow().len()
+    }
+
     /// Rows listed.
     #[must_use]
     pub fn len(&self) -> u32 {
-        self.imp().projection.borrow().len()
+        self.imp().listed_len()
     }
 
     /// Whether nothing is listed.
@@ -273,5 +402,29 @@ impl PaletteCategoryModel {
     #[must_use]
     pub fn item_requests(&self) -> u64 {
         self.imp().item_requests.get()
+    }
+}
+
+impl crate::ui::list_retirement::RetiringRows for PaletteCategoryModel {
+    fn rows_len(&self) -> u32 {
+        self.len()
+    }
+
+    fn held_positions(&self) -> Vec<u32> {
+        crate::ui::list_retirement::held_positions(&self.imp().live.borrow())
+    }
+
+    fn remove_range(&self, start: u32, count: u32) {
+        self.cut_range(start, count);
+    }
+
+    fn release(&self) {
+        self.clear();
+    }
+}
+
+impl crate::ui::list_growth::GrowingRows for PaletteCategoryModel {
+    fn grow(&self) -> bool {
+        Self::grow(self)
     }
 }

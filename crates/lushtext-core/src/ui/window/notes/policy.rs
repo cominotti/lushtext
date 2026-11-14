@@ -148,6 +148,25 @@ impl NoteSectionBounds {
         Self { starts }
     }
 
+    /// The same sections with `count` rows from `start` removed (a section
+    /// wholly inside them becomes empty), for a retirement that removes the
+    /// rows nobody holds (`lighten-notes-browser-rows` D4).
+    #[must_use]
+    pub fn without_range(&self, start: u32, count: u32) -> Self {
+        let end = start.saturating_add(count);
+        let mut starts = self.starts;
+        for bound in &mut starts {
+            *bound = if *bound >= end {
+                *bound - count
+            } else if *bound > start {
+                start
+            } else {
+                *bound
+            };
+        }
+        Self { starts }
+    }
+
     /// The category of the section holding `position`.
     #[must_use]
     pub fn category_at(&self, position: u32) -> Option<PaletteNoteCategory> {
@@ -793,6 +812,42 @@ mod tests {
         assert_eq!(cut.section_at(3), None);
         assert_eq!(grouped.sections.truncated(9), grouped.sections);
         assert!(grouped.sections.truncated(0).is_empty());
+    }
+
+    #[test]
+    fn sections_without_a_range_shift_down_and_drop_emptied_sections() {
+        let categories = [
+            PaletteNoteCategory::Bookmarks,
+            PaletteNoteCategory::Bookmarks,
+            PaletteNoteCategory::FolderNotes,
+            PaletteNoteCategory::DocumentNotes,
+        ];
+        let grouped = group_note_rows(&[0, 1, 2, 3], |index| {
+            categories.get(index as usize).copied()
+        });
+        // The head.
+        let rest = grouped.sections.without_range(0, 1);
+        assert_eq!(rest.len(), 3);
+        assert_eq!(rest.section_at(0), Some((0, 1)));
+        assert_eq!(
+            rest.category_at(2),
+            Some(PaletteNoteCategory::DocumentNotes)
+        );
+        // The middle: the folder-note section empties.
+        let rest = grouped.sections.without_range(1, 2);
+        assert_eq!(rest.len(), 2);
+        assert_eq!(rest.category_at(0), Some(PaletteNoteCategory::Bookmarks));
+        assert_eq!(
+            rest.category_at(1),
+            Some(PaletteNoteCategory::DocumentNotes)
+        );
+        // The tail, everything, nothing.
+        assert_eq!(
+            grouped.sections.without_range(3, 1),
+            grouped.sections.truncated(3)
+        );
+        assert!(grouped.sections.without_range(0, 9).is_empty());
+        assert_eq!(grouped.sections.without_range(2, 0), grouped.sections);
     }
 
     #[test]

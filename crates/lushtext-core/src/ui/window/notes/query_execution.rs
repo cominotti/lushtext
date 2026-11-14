@@ -171,11 +171,16 @@ fn publish_notes_browser_query(state: &Rc<NotesBrowserState>, grouped: GroupedNo
                 .unwrap_or(0),
         )
     };
+    if selected.is_some_and(|position| position >= state.rows.len()) {
+        state.finish_row_growth();
+    }
     if let Some(position) = selected {
         state.selection.set_selected(position);
     }
     state.publishing.set(false);
     state.show_results(empty_message);
+    // After `show_results`: the list is realized once its stack page shows.
+    state.track_row_growth();
     update_notes_browser_limit_label(state);
 
     // A row that is still selected keeps its preview: re-rendering it would

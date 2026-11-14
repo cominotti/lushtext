@@ -319,6 +319,10 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
+| `crates/lushtext-core/src/model/list_budget.rs` | `LIST_FIRST_ROWS` | 32 | coverage window | power of two, rounded up; covers the tallest viewport the notes browser (700 sp) and palette (400 px) show, about 20 rows at the smallest row height (`lighten-notes-browser-rows` D5) |
+| `crates/lushtext-core/src/model/list_budget.rs` | `LIST_GROWTH_STEP_ROWS` | 32 | cap | power of two, rounded down; rows a growth frame realizes, about 5 ms of layout (64 measured 10.3–10.6 ms, task 6) |
+| `crates/lushtext-core/src/model/list_budget.rs` | `LIST_GROWTH_BAND_ROWS` | 256 | coverage window | power of two, rounded up over GTK's about 205 realized rows (A1); past it the rest is listed at once |
+| `crates/lushtext-core/src/model/list_budget.rs` | `LIST_RETIREMENT_UNIT_ROWS` | 16 | cap | power of two; rows one sliced-retirement unit removes, sized so `LIST_TURN_SLICE_US` plus one unit's teardown fits `B_INTERACT_US` (`lighten-notes-browser-rows` D4, task 1.4) |
 | `crates/lushtext-core/src/model/list_budget.rs` | `LIST_TURN_SLICE_US` | 4,000 | out: time | time unit; `B_INTERACT_US / 2`, half the interaction budget per list turn (`bound-lists-by-budget-not-count` D2) |
 
 ### `crates/lushtext-core/src/model/paragraph_boundary.rs`
@@ -983,6 +987,12 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 | `crates/lushtext-core/src/ui/responsiveness_probe.rs` | `measurement::RECENT_LATE_FLOOR_US` | 1,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/responsiveness_probe.rs` | `measurement::RECENT_LATE_CAPACITY` | 1,024 | cap | power of two |
 
+
+### `crates/lushtext-core/src/ui/row_text/imp.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/ui/row_text/imp.rs` | `FONT_METRICS_CACHE_ENTRIES` | 64 | cap | power of two; distinct primary fonts and class sets whose line metrics, CSS text attributes and measuring layout one thread keeps (`lighten-notes-browser-rows` D2) |
 ### `crates/lushtext-core/src/ui/search_panel/execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |

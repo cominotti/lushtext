@@ -3948,7 +3948,7 @@ separate change, in this order:
      for html / markdown / json (GtkSourceView !465), under `B_SETTLE_US`;
      A29 fixture-invalid on the nightly (no cut-off within its 60 s budget);
      A102 and A103 drafted, A107 dropped as already reported (pango#763);
-   - `lighten-notes-browser-rows` (**next**, after `retest-upstream-fixes-on-nightly`'s archive; queued 2026-11-07 from BN's stage 4
+   - `lighten-notes-browser-rows` (**implemented 2026-11-13, PR open**, after `retest-upstream-fixes-on-nightly`'s archive; queued 2026-11-07 from BN's stage 4
      review, coordinator decision, user experience first): first measure
      whether the about 205 realized rows (A1) or each row's widgets cause
      BN's recorded fixed costs E1–E3 (dialog first frames 47–76 ms, the
@@ -3958,6 +3958,70 @@ separate change, in this order:
      Queued after `bin-minimap-markers-per-row` because E1–E3 are fixed
      per-dialog costs that no longer grow with the notes, while the palette
      and minimap still scale with the document or workspace.
+
+     **Spec written 2026-11-12** (branch `lighten-notes-browser-rows`,
+     `openspec/changes/lighten-notes-browser-rows/`). Measured on `main`
+     (`23518e53`, GTK 4.24.1, libadwaita 1.10.0) first.
+
+     - **The realized rows cause the row-dependent part, and text
+       measurement is most of it.** From 8 to 16,384 rows (205 realized):
+       - the first frame's layout grows from 3–7 to 36–38 ms;
+       - the close input dispatch grows from 0.3–0.6 to 13–15 ms;
+       - the query frame is 18–19 ms of layout, 82 % of it
+         `gtk_label_measure` and Pango.
+     - **E1's and E3's recorded worst values were the harness's cairo
+       renderer.** Its dialog animation frames cost 16–30 ms of paint with 8
+       rows as with 16,384. Under GL they cost 3–5 ms, and the first frame
+       with rows is 38.6 ms (36.4 of it layout).
+     - **E3 is really the close input dispatch** (14 ms of row teardown,
+       over `B_INTERACT_US`).
+
+     The change adds a measure-free row text widget, `LushtextRowText`. In
+     the isolated probe at 205 realized rows:
+     - the query frame goes from 19.2 to 6.4 ms, as flat as at 16 rows;
+     - the first frame goes from 20.5 to 12.3 ms;
+     - `GtkInscription` is rejected: its eager layout adds 15 ms of setup
+       per 205 rows (A109).
+
+     It also adds sliced row retirement outside input dispatches (A110), a
+     staged first publish only if the GL first frame still misses
+     `B_SETTLE_US`, and axioms A108–A111. It covers the palette's X1,
+     deferred clear and grouped publish too. Evidence:
+     `.claude/handoffs/lighten-notes-browser-rows/`.
+
+     **Implemented 2026-11-13** (PR on branch `lighten-notes-browser-rows`;
+     design "Implementation record"). 4 interleaved GL rounds against
+     `main`, load 0.3–1.3:
+     - E1 closed: the first frame's layout 36.6–37.8 → 5.0–5.4 ms, the
+       whole GL frame 38.6–43.6 → 7.3–11.2 ms, through `LushtextRowText`
+       and the staged first publish (D5 was needed: after the row text
+       alone the layout was still 23.7–25.7 ms; `R_FIRST` 32, `R_STEP` 32,
+       `R_BAND` 256);
+     - E2 closed: the query frame 20.8–21.3 → 3.0–4.9 ms (layout
+       0.14–0.18); its publish dispatch grew 2.2–2.8 → 5.6–5.7 ms, within
+       `B_INTERACT_US`;
+     - E3 closed: the close input dispatch 8.8–15.5 → 0.6–1.5 ms; rows are
+       retired in 1.4 ms turns after the list is unmapped. New, within
+       `B_SETTLE_US`: the frame ending the close animation spends 6.5–10 ms
+       unrooting the still realized rows (libadwaita unparents the dialog
+       there);
+     - the palette: the first category publish 7.1 → 1.1 ms, X1
+       13.7–14.1 → 3.5–4.0 ms of layout, the deferred clear replaced by
+       3.9–5.1 ms retirement turns, the grouped view shown again after a
+       leave 5.6–7.2 ms worst;
+     - axioms A108–A111 hold on GTK 4.24.1 / libadwaita 1.10.0;
+       `core-list-budget` gained harnesses G1, R1 and R2 (12 of 12).
+     Reviewed 2026-11-14 (design "Review (stage 4)"): one must-fix, a
+     hidden row of the left palette category could be activated on
+     re-entry before the new view published (fixed: the view lists no rows
+     of its own until its first publish), plus a row-text resize on a first
+     text, the palette's in-situ parity test (light and dark) and the high
+     contrast decision.
+     Follow-ups: the other realized-row lists (workspace sidebar, search
+     results, local history, Recent Open) as `LushtextRowText` candidates,
+     each measured first; `GtkAccessibleText` on the widget if a screen
+     reader needs text ranges in a row; the A109 upstream report
+     (`docs/upstream-reports.md`, drafted, filing needs the maintainer).
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
@@ -4074,8 +4138,13 @@ review"). Evidence: `.claude/handoffs/bound-notes-browser-by-budget/`.
     22–23 ms.
   - **E3**, closing the dialog: 26–34 ms.
   
-  All three come from the about 205 rows GTK realizes for any list (A1,
-  A90).
+  These were first attributed to the about 205 rows GTK realizes for any
+  list (A1, A90). `lighten-notes-browser-rows` measured the split
+  (2026-11-12): the realized rows' **text measurement** made E2 and most of
+  E1's layout (A108), the realized rows' **teardown inside `close()`** made
+  E3's input dispatch (A110), and the rest of E1's and E3's recorded worst
+  was the harness's **cairo animation paint** (A111). All three are closed
+  by that change; its record is in the PT queue entry.
 - **Stage 4 review.** It fixed a double count in "of Y": an in-scope editor
   the capture reached after its byte cut was counted both live and from its
   sidecar. It also grouped the notice's counts, made `item()` answer by the
@@ -4135,6 +4204,10 @@ verdicts"). Evidence: `.claude/handoffs/drill-down-palette-categories/`.
   rows it kept. **Recorded toolkit-floor exception X1**: the frame after the
   first category publish, 13.2–16.6 ms (at most 0.6 ms over `B_SETTLE_US`),
   the about 205 realized rows; bounded at twice its worst by a widget test.
+  Attribution corrected and X1 closed by `lighten-notes-browser-rows`
+  (2026-11-13): the cost was those rows' text measurement (A108), and the
+  staged first publish plus `LushtextRowText` bring X1 to 3.5–4.0 ms of
+  layout under GL.
 - **Review (stage 4, 2026-11-07):** three defects fixed failing-first: the
   category action left the shown view before refusing an id of another mode
   (R1); a same-query republish (an index or note-source change) sent the

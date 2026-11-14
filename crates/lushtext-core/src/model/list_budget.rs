@@ -142,6 +142,127 @@ pub const fn turn_continues(elapsed_us: u64, units_done: usize) -> bool {
     units_done == 0 || elapsed_us < LIST_TURN_SLICE_US
 }
 
+/// Rows one unit of a sliced realized-row retirement removes
+/// (`lighten-notes-browser-rows` D4): the rows left once the rows GTK never
+/// realized are gone are its realized band (about 205, ledger A1), each torn
+/// down at about 70 µs (measured in task 1.4), so a unit costs about 1.1 ms and
+/// the slice plus one unit stays well within `B_INTERACT_US`.
+///
+/// Kind: cap; a power of two, rounded down.
+pub const LIST_RETIREMENT_UNIT_ROWS: u32 = 16;
+
+/// The rows of a list of `len` rows that nobody holds a row object for, given
+/// the held positions (GTK's realized band, its focus row, the selection):
+/// `(start, count)` ranges after the highest held row, between consecutive
+/// held rows, and before the lowest, **from the last to the first**, so
+/// removing them in this order keeps every earlier start valid
+/// (`lighten-notes-browser-rows` D4). Removing rows GTK holds no object for
+/// tears nothing down (ledger A110), so a retirement's first turn removes
+/// them all in a few emissions and leaves only the held rows for its units.
+/// With no held row the whole list is one range. Held positions at or past
+/// `len` (a stale map) and repeats are ignored; `held` need not be sorted.
+#[must_use]
+pub fn unheld_ranges(len: u32, held: &[u32]) -> Vec<(u32, u32)> {
+    let mut held: Vec<u32> = held
+        .iter()
+        .copied()
+        .filter(|position| *position < len)
+        .collect();
+    held.sort_unstable();
+    held.dedup();
+    let mut ranges = Vec::with_capacity(held.len() + 1);
+    for_each_unheld_range(len, &held, |start, count| ranges.push((start, count)));
+    ranges
+}
+
+/// The core of [`unheld_ranges`]: calls `emit(start, count)` for each range,
+/// last first, given held positions already strictly ascending and each below
+/// `len`. It allocates nothing, so the Kani harness proves it directly: CBMC
+/// cannot afford the standard library's sort or a growing `Vec` over symbolic
+/// input, and the property tests cover `unheld_ranges`' filter, sort and
+/// dedup instead.
+pub fn for_each_unheld_range(len: u32, held: &[u32], mut emit: impl FnMut(u32, u32)) {
+    let mut end = len;
+    for &position in held.iter().rev() {
+        let start = position + 1;
+        if start < end {
+            emit(start, end - start);
+        }
+        end = position;
+    }
+    if end > 0 {
+        emit(0, end);
+    }
+}
+
+/// Rows a lazy list's first publish of a source lists in the frame that
+/// first shows it (`lighten-notes-browser-rows` D5): it covers the tallest
+/// viewport the notes browser (a 700 sp dialog) and the palette (400 px of
+/// results) allow, about 20 rows at the smallest row height, so the frame
+/// realizes these rows only rather than GTK's whole band of about 205 (A1).
+///
+/// Kind: coverage window; a power of two, rounded up.
+pub const LIST_FIRST_ROWS: u32 = 32;
+
+/// Rows each later frame adds while a first publish grows towards
+/// [`LIST_GROWTH_BAND_ROWS`]: each step realizes this many rows, measured at
+/// about 0.16 ms of layout a row (task 6: 64 rows took 10.3–10.6 ms, which
+/// with a GL frame's 3–6 ms of paint leaves no margin under `B_SETTLE_US`),
+/// so a growth frame takes about 5 ms of layout.
+///
+/// Kind: cap; a power of two, rounded down.
+pub const LIST_GROWTH_STEP_ROWS: u32 = 32;
+
+/// Rows past which a growing first publish lists the rest in one emission:
+/// GTK realizes about 205 rows (A1), so rows past this many are never
+/// realized by the listing and cost no row widget.
+///
+/// Kind: coverage window; a power of two, rounded up.
+pub const LIST_GROWTH_BAND_ROWS: u32 = 256;
+
+/// Rows a first publish of `len` rows lists at once.
+#[must_use]
+pub const fn staged_first_rows(len: u32) -> u32 {
+    if len < LIST_FIRST_ROWS {
+        len
+    } else {
+        LIST_FIRST_ROWS
+    }
+}
+
+/// The rows a growing first publish lists after one more frame, from
+/// `listed` of `len`: [`LIST_GROWTH_STEP_ROWS`] more until
+/// [`LIST_GROWTH_BAND_ROWS`], then every row; `None` once every row is
+/// listed. From [`staged_first_rows`] it reaches `len` in at most eight
+/// steps (Kani G1).
+#[must_use]
+pub const fn next_growth(listed: u32, len: u32) -> Option<u32> {
+    if listed >= len {
+        return None;
+    }
+    if listed >= LIST_GROWTH_BAND_ROWS {
+        return Some(len);
+    }
+    let stepped = listed.saturating_add(LIST_GROWTH_STEP_ROWS);
+    let capped = if stepped < LIST_GROWTH_BAND_ROWS {
+        stepped
+    } else {
+        LIST_GROWTH_BAND_ROWS
+    };
+    Some(if capped < len { capped } else { len })
+}
+
+/// The length a list of `len` rows has after one more retirement unit: the
+/// unit is removed from the end. `None` when nothing is left.
+#[must_use]
+pub const fn retirement_unit_cut(len: u32) -> Option<u32> {
+    if len == 0 {
+        None
+    } else {
+        Some(len.saturating_sub(LIST_RETIREMENT_UNIT_ROWS))
+    }
+}
+
 /// The number of equal-charge rows a budget of `limit` bytes retains: the
 /// largest `n` with `n * charge <= limit`.
 ///
@@ -263,7 +384,101 @@ mod tests {
         assert!(!turn_continues(LIST_TURN_SLICE_US + 1, 7));
     }
 
+    #[test]
+    fn the_unheld_ranges_leave_only_the_held_rows() {
+        // The realized band in the middle and the focus row at the top.
+        let band: Vec<u32> = (5_000..=5_204).chain([0]).collect();
+        assert_eq!(
+            unheld_ranges(16 * 1024, &band),
+            [(5_205, 16 * 1024 - 5_205), (1, 4_999)]
+        );
+        // A band at the top removes nothing before it.
+        let top: Vec<u32> = (0..=204).collect();
+        assert_eq!(unheld_ranges(16 * 1024, &top), [(205, 16 * 1024 - 205)]);
+        // No held row: everything goes.
+        assert_eq!(unheld_ranges(128 * 1024, &[]), [(0, 128 * 1024)]);
+        // A stale position past the end is ignored, repeats too.
+        assert_eq!(unheld_ranges(10, &[40, 3, 3]), [(4, 6), (0, 3)]);
+        assert_eq!(unheld_ranges(0, &[0]), []);
+    }
+
+    #[test]
+    fn a_first_publish_grows_to_the_band_then_lists_the_rest() {
+        assert_eq!(staged_first_rows(10), 10);
+        assert_eq!(staged_first_rows(16 * 1024), 32);
+        let mut listed = staged_first_rows(16 * 1024);
+        let mut steps = Vec::new();
+        while let Some(next) = next_growth(listed, 16 * 1024) {
+            steps.push(next);
+            listed = next;
+        }
+        assert_eq!(steps, [64, 96, 128, 160, 192, 224, 256, 16 * 1024]);
+        assert_eq!(next_growth(64, 80), Some(80));
+        assert_eq!(next_growth(100, 100), None);
+        assert_eq!(next_growth(300, 1_000), Some(1_000));
+    }
+
+    #[test]
+    fn a_unit_removes_at_most_its_rows_from_the_end() {
+        assert_eq!(LIST_RETIREMENT_UNIT_ROWS, 16);
+        assert_eq!(retirement_unit_cut(205), Some(189));
+        assert_eq!(retirement_unit_cut(16), Some(0));
+        assert_eq!(retirement_unit_cut(3), Some(0));
+        assert_eq!(retirement_unit_cut(0), None);
+    }
+
     proptest! {
+        /// The unheld ranges are disjoint, descending, hold no held row,
+        /// and with the held rows cover the list.
+        #[test]
+        fn the_unheld_ranges_cover_every_unheld_row(
+            len in 0u32..5_000,
+            held in prop::collection::vec(0u32..6_000, 0..8),
+        ) {
+            let ranges = unheld_ranges(len, &held);
+            let mut covered = 0u32;
+            let mut previous_start = u32::MAX;
+            for &(start, count) in &ranges {
+                prop_assert!(count > 0 && start + count <= len);
+                prop_assert!(start + count <= previous_start);
+                previous_start = start;
+                prop_assert!(!held.iter().any(|row| *row >= start && *row < start + count));
+                covered += count;
+            }
+            let mut kept: Vec<u32> = held.iter().copied().filter(|row| *row < len).collect();
+            kept.sort_unstable();
+            kept.dedup();
+            prop_assert_eq!(covered + u32::try_from(kept.len()).expect("few held rows"), len);
+        }
+
+        /// A first publish reaches the full length in at most eight growth
+        /// steps, each listing more rows than the last.
+        #[test]
+        fn growth_reaches_every_row(len in 0u32..200_000) {
+            let mut listed = staged_first_rows(len);
+            let mut steps = 0;
+            while let Some(next) = next_growth(listed, len) {
+                prop_assert!(next > listed && next <= len);
+                listed = next;
+                steps += 1;
+            }
+            prop_assert_eq!(listed, len);
+            prop_assert!(steps <= 8);
+        }
+
+        /// Units reach an empty list in `ceil(len / unit)` steps.
+        #[test]
+        fn units_empty_the_list(len in 0u32..5_000) {
+            let mut left = len;
+            let mut steps = 0u32;
+            while let Some(next) = retirement_unit_cut(left) {
+                prop_assert!(left - next <= LIST_RETIREMENT_UNIT_ROWS);
+                left = next;
+                steps += 1;
+            }
+            prop_assert_eq!(steps, len.div_ceil(LIST_RETIREMENT_UNIT_ROWS));
+        }
+
         /// B1 and B2 over random sequences: the charge stays within the limit,
         /// the retained items are a prefix, and the latch holds.
         #[test]
