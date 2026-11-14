@@ -1,20 +1,41 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+# Shown to the agent only while it writes OpenSpec artifacts. The normative
+# guidance lives in AGENTS.md and .agents/rules/*.md; this file names what
+# artifacts must carry and cites those rules, it does not restate them.
+context: |
+  LushText is a GTK4/Libadwaita/GtkSourceView text editor in Rust (AGENTS.md
+  for architecture, .agents/rules/ for conventions). User experience comes
+  first: a change must cause no user-visible loss compared with main.
+  Responsiveness budgets are the constants in
+  crates/lushtext-core/src/model/responsiveness_budget.rs: B_INTERACT_US for a
+  dispatch the user is waiting on, B_SETTLE_US for work that follows an
+  interaction or an open without the user waiting on it directly. Cite the
+  constants, never restate the numbers. Which verification a change runs, and
+  when, follows .agents/rules/verification-runs.md; documentation obligations
+  follow .agents/rules/documentation.md (and .agents/rules/rust.md for the
+  threshold inventory); workflow structure follows
+  .agents/rules/workflow-convention.md. GTK behaviour a change relies on is an
+  axiom in .agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md
+  with a probe and a sample.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - State the problem with a measured or reproducible baseline (command, case, figures), not an estimate.
+    - Include a Non-goals section and the user-visible impact, including any loss compared with main.
+    - When the change is not worth doing as described, say so with the evidence instead of proposing it.
+    - For each new capability, give the one-sentence Purpose its main spec will carry, so the archive does not leave a placeholder.
+  design:
+    - Record every decision with its rationale and the alternatives rejected, with their evidence.
+    - Make every budget exception explicit, measured and attributed to its owner (LushText, GTK, GtkSourceView, Pango, Libadwaita or the test renderer).
+    - List the ledger axioms the change relies on; new toolkit behaviour gets a new axiom.
+    - "For a change on a timed path, state the measurement protocol and pass bar before measuring (verification-runs.md); otherwise write 'Timing: none (no timed path touched)'."
+  specs:
+    - Keep each new or rewritten requirement under 500 characters, with examples, edge cases and figures in scenarios. A MODIFIED requirement already over the limit is shortened when it is touched, keeping every scenario name.
+    - Under a MODIFIED requirement keep every existing scenario name exactly; add scenarios instead of renaming them.
+  tasks:
+    - "When behaviour changes, put the failing-first tests before the code that makes them pass and say where each must fail; a docs- or tooling-only change says 'Tests: none (no behaviour change)'."
+    - "State the Kani scope per verification-runs.md: 'Kani: none (no proven module touched)' or the shards whose harness inputs change."
+    - "State the timing scope per verification-runs.md: 'Timing: none (no timed path touched)' or the affected cases."
+    - Group tasks so each group ends in a signed commit and a push.
+    - Include the documentation updates documentation.md requires.
