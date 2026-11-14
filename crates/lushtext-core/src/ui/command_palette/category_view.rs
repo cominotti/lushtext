@@ -252,6 +252,15 @@ impl LushtextCommandPalette {
             .is_some_and(crate::ui::list_retirement::RowRetirement::is_retiring)
     }
 
+    /// Whether the shown category view lists its own rows: false from
+    /// entering it until its first publish, while the rows a cancelled
+    /// retirement left (the category shown before) are still listed, hidden
+    /// (`lighten-notes-browser-rows` D4). Until then the view has no rows to
+    /// select, activate, count or announce.
+    pub(super) fn category_rows_current(&self) -> bool {
+        self.category_published_query.borrow().is_some()
+    }
+
     /// The visible label of `category` in the current mode.
     fn category_label(&self, category: PaletteCategory) -> String {
         category

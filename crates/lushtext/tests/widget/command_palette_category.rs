@@ -904,6 +904,155 @@ fn test_palette_category_republishes_over_realized_rows() {
     window.close();
 }
 
+/// Review finding (`lighten-notes-browser-rows` stage 4): entering another
+/// category while the left view's rows are still being retired keeps those
+/// rows listed, hidden, until the new view's first publish. In that gap the
+/// view has no rows of its own: Enter activates nothing, arrows move nothing,
+/// and the evidence and accessible state report no rows and no selection.
+#[test]
+fn test_palette_reentry_during_a_retirement_acts_on_no_stale_row() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let window = gtk4::Window::new();
+    window.set_default_size(640, 480);
+    window.set_child(Some(&palette));
+    present_window(&window);
+    let index = synthetic_index(2_000);
+    palette.set_open_tabs(open_tabs_for(&index, 300));
+    palette.set_file_index(index);
+    palette.open();
+    let activated = Rc::new(RefCell::new(Vec::<String>::new()));
+    palette.connect_item_activated({
+        let activated = Rc::clone(&activated);
+        move |item| activated.borrow_mut().push(item.display_name())
+    });
+    assert!(palette.show_category(PaletteCategory::WorkspaceFiles));
+    quiet(&palette);
+    crate::common::flush_after_delay(Duration::from_millis(60));
+    select_category_row(&palette, 3);
+    assert!(palette.leave_category());
+    assert!(palette.show_category(PaletteCategory::OpenTabs));
+    // Precondition: the left view's rows are still listed (the retirement
+    // was cancelled before its first turn) and the new view has not
+    // published yet.
+    assert!(
+        !palette.imp().category_model.is_empty(),
+        "the left rows are still listed"
+    );
+    assert!(
+        palette.evidence().searching,
+        "the new view has not published"
+    );
+    palette.imp().search_entry.emit_activate();
+    press(&palette, gtk4::gdk::Key::Down);
+    release(&palette, gtk4::gdk::Key::Down);
+    assert!(
+        activated.borrow().is_empty(),
+        "Enter in the gap activated a hidden row of the left view: {:?}",
+        activated.borrow()
+    );
+    let evidence = palette.evidence();
+    assert_eq!(evidence.category_rows, 0, "no rows of the new view yet");
+    assert_eq!(evidence.selected_position, None, "no selection yet");
+    assert_eq!(palette.result_count(), 0);
+    quiet(&palette);
+    crate::common::flush_after_delay(Duration::from_millis(60));
+    let evidence = palette.evidence();
+    assert_eq!(evidence.category, Some(PaletteCategory::OpenTabs));
+    assert!(evidence.category_rows > 0);
+    assert_eq!(evidence.category_rows as usize, evidence.category_total);
+    assert!(activated.borrow().is_empty());
+    palette.close();
+    window.close();
+}
+
+/// The in-situ parity rule (`ui.md`, "Realized List Rows"): inside the
+/// palette's own rows, each `LushtextRowText` measures, places its baseline
+/// and takes its CSS colour like a `GtkLabel` with the same classes and text
+/// beside it, under the light and the dark style. CSS sizes the subtitle's
+/// `.caption` font and its `line-height` from the row's ancestors, which an
+/// isolated window does not reproduce (`lighten-notes-browser-rows` stage 4;
+/// the notes browser's twin is
+/// `notes_browser::test_notes_row_text_measures_like_a_label_in_the_browser`).
+#[test]
+fn test_palette_row_text_measures_like_a_label_in_the_palette() {
+    use lushtext_core::ui::row_text::LushtextRowText;
+    struct SchemeReset;
+    impl Drop for SchemeReset {
+        fn drop(&mut self) {
+            libadwaita::StyleManager::default().set_color_scheme(libadwaita::ColorScheme::Default);
+        }
+    }
+    ensure_gtk_init();
+    let _reset = SchemeReset;
+    let palette = LushtextCommandPalette::new();
+    let window = gtk4::Window::new();
+    window.set_default_size(640, 480);
+    window.set_child(Some(&palette));
+    present_window(&window);
+    palette.set_file_index(synthetic_index(2_000));
+    palette.open();
+    enter_by_more_row(&palette, PaletteCategory::WorkspaceFiles);
+    crate::common::flush_after_delay(Duration::from_millis(100));
+    let list = palette.imp().category_view.clone();
+    let row = crate::common::mapped_list_rows(&list)
+        .next()
+        .expect("a drawn row");
+    let row_box = row
+        .first_child()
+        .and_downcast::<gtk4::Box>()
+        .expect("the row box");
+    let mut pairs = Vec::new();
+    let mut child = row_box.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(text) = widget.downcast::<LushtextRowText>() else {
+            continue;
+        };
+        if !text.is_visible() || text.text().is_empty() {
+            continue;
+        }
+        let label = gtk4::Label::new(Some(&text.text()));
+        label.set_ellipsize(text.ellipsize());
+        for class in text.css_classes() {
+            label.add_css_class(&class);
+        }
+        row_box.append(&label);
+        pairs.push((text, label));
+    }
+    assert_eq!(pairs.len(), 2, "a name and a subtitle");
+    for scheme in [
+        libadwaita::ColorScheme::ForceLight,
+        libadwaita::ColorScheme::ForceDark,
+    ] {
+        libadwaita::StyleManager::default().set_color_scheme(scheme);
+        crate::common::flush_after_delay(Duration::from_millis(100));
+        for (text, label) in &pairs {
+            let (text_min, text_nat, text_base, _) = text.measure(gtk4::Orientation::Vertical, -1);
+            let (label_min, label_nat, label_base, _) =
+                label.measure(gtk4::Orientation::Vertical, -1);
+            assert_eq!(
+                (text_min, text_nat, text_base, text.height()),
+                (label_min, label_nat, label_base, label.height()),
+                "{scheme:?} {:?} {:?}: height and baseline against a label",
+                text.css_classes(),
+                text.text()
+            );
+            assert_eq!(
+                text.color(),
+                label.color(),
+                "{scheme:?} {:?}: colour against a label",
+                text.css_classes()
+            );
+        }
+    }
+    for (_, label) in pairs {
+        row_box.remove(&label);
+    }
+    palette.close();
+    window.close();
+}
+
 /// `lighten-notes-browser-rows` task 2.4: a palette row's name and subtitle
 /// are `label`s whose accessible label is the bound text, replaced when a
 /// publish retargets the row.

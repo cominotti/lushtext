@@ -67,7 +67,8 @@ pub struct CommandPaletteEvidence {
     /// Whether the retained-byte budget cut the shown category.
     pub category_limited: bool,
     /// Whether the category model holds source snapshots (it must not once
-    /// the view is left or the palette closed).
+    /// the rows of a view left or closed are retired: `category_rows_retiring`
+    /// false).
     pub category_holds_sources: bool,
     /// Whether the left category view's rows are still being retired in
     /// slices (`lighten-notes-browser-rows` D4); the sources are released when
@@ -187,7 +188,7 @@ impl LushtextCommandPalette {
             result_count: self.result_count(),
 
             category,
-            category_rows: if category_shown {
+            category_rows: if category_shown && imp.category_rows_current() {
                 imp.category_model.full_len()
             } else {
                 0
@@ -258,7 +259,11 @@ impl LushtextCommandPalette {
     pub fn result_count(&self) -> u32 {
         let imp = self.imp();
         if imp.category.get().is_some() {
-            imp.category_model.full_len()
+            if imp.category_rows_current() {
+                imp.category_model.full_len()
+            } else {
+                0
+            }
         } else {
             imp.results_store.n_items()
         }

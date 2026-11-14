@@ -618,6 +618,9 @@ impl LushtextCommandPalette {
             let Some(selection) = self.category_selection() else {
                 return;
             };
+            if !self.category_rows_current() {
+                return;
+            }
             // A key lands where it would on the full ranking: a staged
             // first publish still growing lists the rest first (D5).
             self.finish_category_growth();
@@ -684,7 +687,9 @@ impl LushtextCommandPalette {
     }
 
     fn activate_category_at(&self, position: u32) {
-        if position >= self.category_model.len() {
+        // Rows left by a cancelled retirement belong to the category shown
+        // before; they are hidden and never activated.
+        if !self.category_rows_current() || position >= self.category_model.len() {
             return;
         }
         let Some(item) = self
@@ -756,6 +761,9 @@ impl LushtextCommandPalette {
     /// Read through `try_get`, so the evidence surface stays honest on a
     /// disposed widget.
     pub(super) fn visible_selected_position(&self) -> Option<u32> {
+        if self.category.get().is_some() && !self.category_rows_current() {
+            return None;
+        }
         let view = if self.category.get().is_some() {
             self.category_view.try_get()
         } else {
@@ -779,13 +787,20 @@ impl LushtextCommandPalette {
         let in_category = self.category.get().is_some();
         let (result_count, selected_name) = if in_category {
             // The model's length and the selection's own item: no walk.
+            // Before the view's first publish it lists no rows of its own.
+            let current = self.category_rows_current();
             let selected = self
                 .category_selection()
+                .filter(|_| current)
                 .and_then(|selection| selection.selected_item())
                 .and_downcast::<PaletteItem>()
                 .map(|item| item.display_name());
             (
-                usize::try_from(self.category_model.full_len()).unwrap_or(usize::MAX),
+                if current {
+                    usize::try_from(self.category_model.full_len()).unwrap_or(usize::MAX)
+                } else {
+                    0
+                },
                 selected,
             )
         } else {
