@@ -1,0 +1,176 @@
+Rules for every task:
+
+- Headless only. Never `make run`, never the live desktop, never the real
+  `~/.local/share/lushtext` or `~/.config`.
+- CPUs 8–23 only (`taskset -c 8-23`).
+- Heavy jobs go through `scripts/heavy.sh`, one CBMC at a time. Do not
+  override its memory admission. While it waits, the host lacks headroom.
+- Spawn no sub-agents.
+- Evidence goes in `.claude/handoffs/restore-main-ci/`. This stage left there:
+  - `spec-experiments.patch`, with the four experiment tests;
+  - `exp1.log`;
+  - `minimap-repro.sh`, a loop of N isolated runs under LOAD busy loops.
+- **Failing first** means the test is recorded red on `main` code (log in the
+  handoff directory) before the fix that turns it green is written.
+- **Starved isolated run** means the test runs alone through
+  `scripts/run-widget-tests.sh --headless -- --exact <test>`, with the process
+  and two busy loops pinned to one CPU (`taskset -c 8`), or two CPUs for a
+  two-thread case. Record the load before and after.
+
+Kani: none expected (no proven module touched). Two conditional reruns:
+
+- if 2.4 adds or edits a function in `ui/editor_page/minimap/policy.rs`,
+  rerun `core-geometry-policies` once on the final code;
+- if 4.x changes `model/list_budget.rs` or a sidebar policy item a harness
+  reads, rerun the shard `kani-shards.py oracle` and `grep -rln` name, once,
+  detached.
+
+Timing: none (no timed path's cost changes).
+
+## 1. Restored text owes a draft (data safety, D1)
+
+- [ ] 1.1 Failing first. Add these widget tests to `crates/lushtext/tests/widget/window.rs`.
+      Start from the patch's experiments, rename them, and run each red on
+      `main` code:
+      - `test_a_restore_after_the_draft_settled_owes_a_draft`: the draft
+        settled, then Restore. It fails with "still owed a draft".
+      - `test_a_pass_captured_before_a_restore_cannot_clear_its_draft_owed`:
+        a tick with the manifest delayed, then Restore. It fails the same way.
+      - `test_an_undo_restore_owes_a_draft`: the draft settled after a
+        restore, then Undo Restore. Confirm it fails.
+      - `test_a_save_formatting_mirror_back_owes_no_draft`: guards the
+        exempt rows. It passes on `main` and must keep passing.
+
+      Register them in the `window` shard if the module mapping does not cover
+      them. Then run `make check-widget-shards`.
+- [ ] 1.2 Implement the draft-owed operation once in `ui/window/drafts/`:
+      mark the tab draft-dirty, advance the generation, then schedule the
+      first-dirty autosave or mark the running pass pending.
+      - Route the buffer `changed` handler (`ui/window/documents.rs`) through
+        it.
+      - Route the draft-recovery terminal (`drafts/restore_execution.rs`)
+        through it.
+      - Call it from the Restore and Undo Restore terminals in
+        `ui/window/local_history/restore_execution.rs`, only on their
+        `Complete` arm.
+      - Follow `.agents/rules/workflow-convention.md` (role placement, no new
+        `*_for_test` seam).
+- [ ] 1.3 Change only the post-terminal assertion of
+      `test_autosave_during_a_local_history_restore_keeps_the_previous_draft`
+      to "draft-dirty, or the restored text already persisted". Keep its
+      during-restore assertion and its final write check.
+- [ ] 1.4 Prove it:
+      - the 1.1 tests and the existing test, 20 consecutive starved isolated
+        runs each;
+      - the `window` shard once, with `make test-widget-shard
+        WIDGET_SHARD=window`;
+      - `make check`.
+- [ ] 1.5 Update the docs:
+      - the drafts and local-history rows of
+        `docs/workflow-readability-matrix.md` (re-derive the measured cells if
+        an operation moved), then `make check-workflow-boundaries`;
+      - the module comment of `drafts/restore_execution.rs` and the
+        local-history facade;
+      - `docs/end-user-coverage.md` if a lane mapping changes.
+- [ ] 1.6 Commit (signed, conventional, staged by name) and push the branch.
+
+## 2. A scroll survives a passive reflow burst (D2)
+
+- [ ] 2.1 Diagnose first. Apply the two minimap experiments from the patch and
+      run them isolated. Record which one fails, and with what value.
+      - `scroll_during_content_width_growth_is_kept` must pass. It is the
+        control; if it fails, the observer contract in the design is wrong,
+        so stop and re-derive.
+      - `scroll_during_a_passive_width_reflow_is_kept` is the discriminator.
+- [ ] 2.2 Reproduce the CI failure of
+      `test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin`
+      with starved isolated runs: `minimap-repro.sh`, adapted to one CPU and
+      two loops, 20 runs. Then instrument, behind the test-utils build only:
+      - who writes `vadjustment.value` back to the lower edge (the settle snap
+        in `finish_minimap_reflow_settle`, the top-edge clamp, or a reattach
+        hold);
+      - whether the rest state was paused when the scroll happened.
+
+      Record the call site in design D2. If no starved run reproduces it,
+      record that and rely on 2.1's deterministic test.
+- [ ] 2.3 Failing first. Keep the discriminating test (renamed
+      `test_a_scroll_during_a_passive_width_reflow_survives_the_settle`) red on
+      `main` code. If the diagnosis depends on GTK adjustment ordering, add the
+      ledger axiom with a `gtk-lush-axioms` probe and sample, then run
+      `make gtk-axioms`.
+- [ ] 2.4 Fix at the diagnosed site: restore the top edge only when the value
+      has not moved since the burst began. Keep every existing minimap
+      top-anchor test green, in particular the "Minimap top content remains
+      visible after shell reflow" scenarios.
+- [ ] 2.5 Prove it:
+      - the new test and the original minimap test, 20 consecutive starved
+        isolated runs each;
+      - the `editor-page` shard once;
+      - `make visual-geometry-smoke`, or the lane covering
+        `minimap-sidebar-mid` if a different target owns it;
+      - `make check`.
+- [ ] 2.6 Update the docs: `docs/next/minimap.md`, and the `ui.md` or
+      `widget-wiring.md` paragraph on reflow rest state if its rule changed.
+      If a toolkit fact was learned, also update the gtk-testing references.
+      Commit and push.
+
+## 3. API advisory installs on OpenSSL 4 (D3)
+
+- [ ] 3.1 Verify the claim first, in the host's `fedora:45` image:
+      `flatpak-spawn --host podman run --rm --cpuset-cpus=8-23 --memory=6g`,
+      run only when memory admission allows.
+      - The current CI step, `cargo install --locked cargo-public-api
+        --version 0.52.0` with `openssl-devel`, must fail with the CI error.
+      - The candidate must install, and `cargo public-api --version` must
+        print 0.52.0.
+      - Record the lockfile diff the `--precise` update produces. It sets the
+        allow-list for 3.2.
+- [ ] 3.2 Add `scripts/install-cargo-public-api.sh`. It downloads the crate,
+      verifies its SHA-256, applies the precise `openssl-sys` update, rejects
+      any other lock change beyond the recorded list, and runs `cargo install
+      --locked --path .`.
+      - It takes `CARGO_PUBLIC_API_VERSION`, `CARGO_PUBLIC_API_SHA256` and
+        `CARGO_PUBLIC_API_OPENSSL_SYS_VERSION` from the environment.
+      - It works under `with-temp-scope.sh`, leaving no leak.
+      - Its self-test covers a tampered checksum and an unexpected lock
+        change.
+- [ ] 3.3 In `ci.yml`, add the two new pins to the top-level `env` and call the
+      script from "Install advisory API tools". Keep the job advisory, its
+      20-minute timeout and its snapshot upload.
+- [ ] 3.4 Update the docs: `.agents/rules/build.md` (the pin list and the
+      GTK Lush advisory paragraph, including the retirement condition), and
+      `README.md` if it lists the advisory tools. Then run
+      `make check-agent-docs` or the guidance validator `build.md` names.
+      Commit and push.
+- [ ] 3.5 After the push, read the branch's GTK Lush API Advisory job (do not
+      wait on other jobs). It must be green with eight non-empty snapshots.
+
+## 4. Retry-rescued widget tests (D4)
+
+Tests: each item's failing-first test is chosen by its diagnosis.
+
+- [ ] 4.1 `workspace_tree_virtualization::test_directory_retention_stays_within_its_charge`
+      - Reproduce isolated. Record `list-budget-evidence` across 20 runs,
+        locally and from the CI logs in design B4.
+      - Decide undercharge or allocator granularity (D4). Fix either
+        `SIDEBAR_ROW_FIXED_CHARGE` (rounded per `rust.md`'s
+        numeric-literal ownership) or the measurement. Keep the 5/4 bound.
+      - Prove it with 20 isolated passes, then commit and push.
+- [ ] 4.2 `window::test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode`
+      - Reproduce starved and find the timed-out predicate.
+      - Classify it, fix it failing first, prove it with 20 starved isolated
+        passes, then commit and push.
+- [ ] 4.3 `protected_view_surfaces::test_a_protected_periodic_capture_reads_the_source_not_the_buffer`
+      - The same procedure.
+      - Treat it as data-safety first: it is a local-history capture. Use the
+        data-safety skill.
+- [ ] 4.4 Add each diagnosed class and its fix pattern to the gtk-testing
+      skill's flake references, if it is new.
+
+## 5. Close
+
+- [ ] 5.1 `openspec validate restore-main-ci --strict`.
+      - Update `AGENTS.md` "Recent Changes" and `README.md` if they mention a
+        behaviour that changed: the restore draft, the reflow scroll.
+      - Update `docs/next/` records whose posture changed.
+- [ ] 5.2 Push. Open the PR in the review stage, not here.
