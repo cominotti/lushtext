@@ -30,7 +30,8 @@ CPU that does not exist on the host skips and says why (design D6).
     online CPU lies outside its `cpuset.cpus.effective`, a scope started under
     `taskset -c <all online CPUs>` has a `Cpus_allowed_list` that is a subset
     of the effective cpuset. Fails today, because the scope gets all online
-    CPUs (design probe 2).
+    CPUs (design probe 2). Also a fixture case for the re-read: a verdict
+    whose first CPU reading disagrees and whose second agrees passes.
   - the guard: `LUSHTEXT_HEAVY_SLICE=lushtext-heavy-selftest.slice` exits 2
     and names `user-lushtext-heavy`. Fails today: accepted.
   - the checker with fixtures (`--placement-verdict <six values>`, design D3):
@@ -98,6 +99,8 @@ CPU that does not exist on the host skips and says why (design D6).
   none -- ./scripts/widget-shards.py parallel <smallest shard>`. In
   `evidence/placement.md`, record:
   - the cgroup paths and the affinity;
+  - if a game runs at that moment, `cpu.idle` of the inner `user.slice` and the
+    scope's affinity, otherwise "game-time class not observed" (design D12);
   - `cpuset.cpus.effective` and `cpu.weight` of `user-lushtext.slice` and of the
     inner `user.slice`, read from `/sys/fs/cgroup` at that moment;
   - the wall time of `scripts/with-memory-cap.sh 64M true`, five runs on main and
@@ -113,8 +116,9 @@ CPU that does not exist on the host skips and says why (design D6).
 ## 3. Failing-first cases for (B), then the reference CPU set (design D8-D9)
 
 - [ ] 3.1 In `measure.sh --self-test`, first export `LUSHTEXT_REFERENCE_CPUS`
-  set to the self-test's own allowed set (`cgroup_effective_cpus`), so every
-  existing case passes on hosts without 8-23 (CI). Then add the cases below and
+  set to the self-test's own affinity (always a subset of the allowed set, and it
+  keeps a hook's or agent's `taskset` pin), so every existing case passes on
+  hosts without 8-23 (CI). Then add the cases below and
   record each red line in `evidence/red.md`:
   - `--print-reference-cpus` with the variable unset prints `8-23`;
   - with the reference set to one allowed CPU `c`, the command's
@@ -135,7 +139,15 @@ CPU that does not exist on the host skips and says why (design D6).
     exit 78, `cpus_changed=c1` and `status=0` in the `after` line, and both locks
     free afterwards;
   - order: `heavy.sh --mem none -- measure.sh -- true` with an unavailable
-    reference still exits 2, so the inside-heavy refusal comes first.
+    reference still exits 2, so the inside-heavy refusal comes first;
+  - a change during the lock wait (two allowed CPUs, otherwise skip): a
+    background holder keeps LOCK shared, `measure.sh` with reference `c1,c2`
+    waits, the test narrows its affinity with `taskset -pc c1 <pid>` and then
+    releases the holder. Expect exit 78, the command not run, and both locks
+    free;
+  - a transient disagreement: with a test hook that changes the first reading
+    only (`LUSHTEXT_MEASURE_TEST_FLIP_ONCE`, self-test only), the re-read
+    passes and the command runs.
 - [ ] 3.2 In the driver's self-test (`make check-responsiveness-lane`), add
   cases for `lane_affinity(inherited, measure_cpus, max_cpus)`:
   - unset: the first 16 CPUs;

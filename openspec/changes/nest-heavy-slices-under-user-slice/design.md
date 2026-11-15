@@ -193,6 +193,10 @@ Why each choice:
   (probe 1 printed the full path). In a private namespace the path would be
   relative, so the check would fail loudly with both values shown rather than
   pass silently.
+- CST changes the cpuset at a game's start and end, so the affinity and the
+  effective cpuset can be read on either side of a flip. Before failing on the
+  CPU half, the check reads both once more and fails only when the second
+  reading also disagrees. A spurious exit 78 on a commit hook would be a flake.
 - Nested in-place runs (`LUSHTEXT_MEMORY_CAP_KIB` set) start no scope and run
   no check. Neither do `none` caps or the CI uncapped path.
 
@@ -308,7 +312,11 @@ in `build.md` so a future oomd kill of a toolbox is traced here.
      read-back is required: `taskset` succeeds on a partial overlap.
 
   This runs before any lock is taken, so a refused measurement never drains
-  other agents' work. The command inherits the mask. The before/after
+  other agents' work. A failing step 2 or 4 reads both sets once more before
+  refusing, because a CST flip can fall between the two reads (D3). The lock
+  wait can last up to `--lock-timeout` (1800 s), so once both locks are held
+  `measure.sh` reads its affinity again before the `before` record. If the set
+  changed, it releases the locks and exits 78 without running the command. The command inherits the mask. The before/after
   `snapshot` processes run pinned too, which is harmless.
 - **The set may change during the run.** CST narrows the cpuset at game start,
   and the kernel then shrinks every task's effective mask (probe 3's rule).
@@ -393,6 +401,17 @@ during games (12-23), when `measure.sh` refuses. This is a dependency on CST,
 not a request for change. It goes to `cst-asks.md` as a note to keep 8-23
 inside `user.slice` outside games, or to tell us first. If it ever breaks,
 `measure.sh` refuses loudly. No run silently changes reference.
+
+### D12. What is measured and what rests on CST's answer
+
+Measured: the nesting (H1), the inherited cpuset (H2) and the kernel's
+intersection (H3), all on this host. Not measured: the game-time idle class
+reaching our scopes. No game ran during the spec stage, and the design rests
+on CST's answer that scopes under the inner `user.slice` get it "regardless of
+the scope's MemoryMax/CPUWeight". That follows from cgroup v2 (`cpu.idle` on
+an ancestor applies to its subtree). Task 2.6 records `cpu.idle` and the
+scope's effective cpuset if a game happens to run during implementation, and
+otherwise says it was not observed. No check asserts it (CST's answer).
 
 ## Axioms relied on
 

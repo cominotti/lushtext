@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Parallel local shards are isolated from each other
-In a parallel local run each shard SHALL have its own admitted memory scope (`scripts/with-memory-cap.sh`, in the host-wide heavy slice, capped by `WIDGET_SHARD_MEMORY_MAX`), temporary-file scope (`--session-runtime`), D-Bus session, headless compositor and `XDG_RUNTIME_DIR`. It SHALL refuse a Wayland socket path over 100 bytes, wait for admission, saying so, rather than start uncapped, and fail with `TEMP-LEAK:` on a leak or `OOM-KILL:` on any OOM kill, even after a passing retry.
+In a parallel local run each shard SHALL have its own admitted memory scope (`scripts/with-memory-cap.sh`, in the host-wide heavy slice, capped by `WIDGET_SHARD_MEMORY_MAX`), temporary-file scope (`--session-runtime`), D-Bus session, headless compositor, `XDG_RUNTIME_DIR` and Wayland socket. It SHALL refuse a Wayland socket path over 100 bytes, wait for admission, saying so, rather than start uncapped, and fail with `TEMP-LEAK:` on a leak or `OOM-KILL:` on any OOM kill, even after a passing retry.
 
 #### Scenario: Shards do not share a session
 - **WHEN** a parallel local run is in flight
