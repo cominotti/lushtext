@@ -7,9 +7,11 @@
 //! List-factory row projection: setup, bind, and unbind for recycled file-tree rows.
 //!
 //! **Deliberately not a role, so that no role move touches its two hardest
-//! contracts**: the `GtkTreeExpander` internal-gesture disable that makes
-//! double-click activate files while directories expand, and the rename-entry
-//! cleanup that must run on both bind and unbind.
+//! contracts**: the expander arrow's capture-phase release gesture that hands
+//! every arrow click to the collapse and expand entry points while the row's
+//! press-side behaviour (focus, selection, double-press activation) stays
+//! GTK's (ledger A114), and the rename-entry cleanup that must run on both
+//! bind and unbind.
 //!
 //! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
 //! stated below and in the workflow's matrix row.
@@ -165,6 +167,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
         drop_target.append(&drop_indicator);
 
         overlay.set_child(Some(&expander));
+        install_arrow_gesture(&expander);
         // Reorder DnD hover belongs to the transparent full-row shield;
         // the separate 2px indicator surface only paints the insertion line.
         overlay.add_overlay(&drop_shield);
@@ -335,27 +338,6 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
                 }
             }
 
-            // Disable the TreeExpander's internal GestureClick for file rows.
-            // GtkTreeExpander installs a BUBBLE-phase gesture that intercepts
-            // clicks for ALL rows — even non-expandable files — preventing
-            // GtkListView's built-in double-click activation from firing.
-            // Setting phase=None disables it for files while preserving
-            // expand/collapse for directories. Must run on every bind
-            // (row recycling resets state).
-            let phase = if file_item.is_dir() && !file_item.is_placeholder() {
-                gtk4::PropagationPhase::Bubble
-            } else {
-                gtk4::PropagationPhase::None
-            };
-            let controllers = expander.observe_controllers();
-            for i in 0..controllers.n_items() {
-                if let Some(obj) = controllers.item(i)
-                    && let Ok(gesture) = obj.downcast::<gtk4::GestureClick>()
-                {
-                    gesture.set_propagation_phase(phase);
-                }
-            }
-
             if let Some(section) = section_weak.upgrade() {
                 apply_file_tree_row_accessibility(FileTreeRowAccessibilityTarget {
                     overlay: &overlay,
@@ -369,6 +351,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
                     show_focus,
                 });
                 install_expanded_accessibility_hook(&overlay, &tree_row, &file_item, &section);
+                section.apply_collapse_projection(&overlay, &expander, &tree_row);
                 super::sync_file_row_state_for_overlay(&section, &overlay);
             } else {
                 accessibility::clear_row_accessibility(&overlay);
@@ -395,6 +378,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
             && let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>()
         {
             expander.set_list_row(None::<&gtk4::TreeListRow>);
+            expander.remove_css_class(super::collapse_execution::COLLAPSING_CLASS);
             if let Some(content_box) = expander.child().and_downcast::<gtk4::Box>()
                 && let Some(drag_handle) = content_box.first_child().and_downcast::<gtk4::Button>()
                 && let Some(open_indicator) =
@@ -463,6 +447,72 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
     });
 
     imp.file_tree_view.set_factory(Some(&factory));
+}
+
+/// Own the expander arrow's click (`slice-large-directory-collapse` D5).
+///
+/// GTK's click gesture lives on the expander's `expander` icon child, which
+/// GTK re-creates whenever the row's expandability changes, and its release
+/// handler toggles the row through `listitem.toggle-expand` (ledger A114).
+/// This capture-phase gesture on the expander itself lets the press through,
+/// so focus on click, selection and double-press activation stay GTK's, and
+/// claims the sequence on a release inside the current icon, before the
+/// icon's gesture sees it, so the collapse and expand entry points own the
+/// toggle whatever icon GTK has created since.
+fn install_arrow_gesture(expander: &gtk4::TreeExpander) {
+    let gesture = gtk4::GestureClick::new();
+    gesture.set_button(gtk4::gdk::BUTTON_PRIMARY);
+    gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    let expander_weak = expander.downgrade();
+    gesture.connect_released(move |gesture, _presses, x, y| {
+        let Some(expander) = expander_weak.upgrade() else {
+            return;
+        };
+        let Some(icon) = arrow_icon(&expander) else {
+            return;
+        };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Graphene points use f32 coordinates while GTK pointer events report f64 coordinates."
+        )]
+        let press = gtk4::graphene::Point::new(x as f32, y as f32);
+        let inside = expander
+            .compute_point(&icon, &press)
+            .is_some_and(|point| icon.contains(f64::from(point.x()), f64::from(point.y())));
+        if !inside {
+            return;
+        }
+        let Some(row) = expander.list_row() else {
+            return;
+        };
+        gesture.set_state(gtk4::EventSequenceState::Claimed);
+        let mut current: Option<gtk4::Widget> = expander.parent();
+        while let Some(widget) = current {
+            if let Some(section) = widget.downcast_ref::<super::LushtextWorkspaceSection>() {
+                if section.row_shows_expanded(&row) {
+                    section.collapse_directory(&row, super::CollapseOrigin::Arrow);
+                } else if section.expand_directory(&row) {
+                    let _ = expander.activate_action("listitem.scroll-to", None);
+                }
+                return;
+            }
+            current = widget.parent();
+        }
+    });
+    expander.add_controller(gesture);
+}
+
+/// The expander's current disclosure icon (CSS name `expander`), if the row
+/// is expandable.
+fn arrow_icon(expander: &gtk4::TreeExpander) -> Option<gtk4::Widget> {
+    let mut child = expander.first_child();
+    while let Some(widget) = child {
+        if widget.css_name() == "expander" {
+            return Some(widget);
+        }
+        child = widget.next_sibling();
+    }
+    None
 }
 
 fn focus_button_for_overlay(overlay: &gtk4::Overlay) -> Option<gtk4::Button> {

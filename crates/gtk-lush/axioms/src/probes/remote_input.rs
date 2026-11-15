@@ -34,7 +34,9 @@ use crate::session::settle;
 /// invalid.
 pub const SANDBOX_ENV: &str = "GTK_LUSH_AXIOMS_SANDBOX";
 
-/// The axioms whose probe drives real input through `RemoteInput`.
+/// The axioms whose probe drives real input through `RemoteInput` for its
+/// whole verdict; a probe that skips only its input half inside the sandbox
+/// (it checks [`in_sdk_sandbox`] first) is not listed.
 pub const REMOTE_INPUT_AXIOMS: &[crate::AxiomId] = &[
     crate::AxiomId::new(59),
     crate::AxiomId::new(60),
@@ -277,8 +279,11 @@ mod tests {
     use super::{REMOTE_INPUT_AXIOMS, remote_desktop_skip_line};
     use crate::AxiomId;
 
-    /// The list names exactly the probes that start a RemoteInput session, so
-    /// a new probe driving real input cannot be left out of the sandbox skip.
+    /// The list names exactly the probes that start a RemoteInput session
+    /// without guarding it themselves, so a new probe driving real input
+    /// cannot be left out of the sandbox skip. A probe that checks
+    /// `in_sdk_sandbox()` before it starts one (A114, whose other half needs
+    /// no input) skips only its input half and keeps its sandbox verdict.
     #[test]
     fn remote_input_axioms_are_exactly_the_probes_that_start_a_session() {
         let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/src/probes");
@@ -289,9 +294,9 @@ mod tests {
                 let stem = path.file_stem()?.to_str()?.strip_prefix('a')?.to_owned();
                 let number: u16 = stem.parse().ok()?;
                 let source = std::fs::read_to_string(&path).ok()?;
-                source
-                    .contains("RemoteInput::start(")
-                    .then_some(AxiomId::new(number))
+                (source.contains("RemoteInput::start(")
+                    && !source.contains("remote_input::in_sdk_sandbox()"))
+                .then_some(AxiomId::new(number))
             })
             .collect();
         users.sort();

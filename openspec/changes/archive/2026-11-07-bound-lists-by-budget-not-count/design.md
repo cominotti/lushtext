@@ -873,3 +873,26 @@ Raw evidence: `.claude/handoffs/bound-lists-by-budget-not-count/review/`, the
    (it can only cut a listing earlier, never retain past the budget), the
    test-seam ceiling 171, and the checker-derived AT-SPI anchor ids.
 
+
+## Note appended by `slice-large-directory-collapse` (2026-11-15)
+
+Appended after the archive; the decisions above are left as they were taken.
+
+- **Stage 4 decision 1 (collapse exception).** The attribution was
+  incomplete. A profile of the collapse call (`slice-large-directory-collapse`
+  design, "Measured baseline") puts 89 % of it in `GtkListView`'s item
+  manager and 10 % in the rb-tree teardown A91 describes: GTK destroys each
+  removed row widget and creates the rows entering the band anew, because a
+  released widget is reused only for the same item (axiom A113). The cost is
+  therefore the realized rows a removal touches, not a toolkit floor, and
+  rows after the directory make it larger (36.7–43.6 ms at 256 entries with 400
+  rows after, against 15.6–16.7 ms with none). That change owns every
+  LushText collapse route and empties a large subtree in paced steps of at
+  most one realized-row unit per frame; A91's ledger row is corrected.
+- **Stage 4 decision 2 (re-expansion outlier).** Attributed: the outlier is
+  the publication of the scan GTK's post-collapse `is_expandable()` probe
+  starts, landing inside the re-expansion window (the section's
+  terminal-publication counter advances in exactly that dispatch). It is
+  `slice-large-directory-collapse`'s named residual, owned by
+  `stop-expander-bind-time-child-scans`, which stops scanning the discarded
+  probe store.

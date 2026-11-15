@@ -84,7 +84,7 @@ pub(super) fn apply_file_tree_row_accessibility(target: FileTreeRowAccessibility
     accessibility::apply_row_accessibility(overlay, row_accessibility);
 
     let expanded = if file_item.is_dir() && !file_item.is_placeholder() {
-        Some(tree_row.is_expanded())
+        Some(section.row_shows_expanded(tree_row))
     } else {
         None
     };
@@ -130,10 +130,17 @@ pub(super) fn install_expanded_accessibility_hook(
             return;
         };
 
-        accessibility::set_expanded(&overlay, Some(row.is_expanded()));
-        if let Some(section) = section_weak.upgrade() {
-            let description = file_tree_row_description(&file_item, row, &section);
-            accessibility::set_description(&overlay, &description);
+        let Some(section) = section_weak.upgrade() else {
+            accessibility::set_expanded(&overlay, Some(row.is_expanded()));
+            return;
+        };
+        accessibility::set_expanded(&overlay, Some(section.row_shows_expanded(row)));
+        let description = file_tree_row_description(&file_item, row, &section);
+        accessibility::set_description(&overlay, &description);
+        // A notify other than `expanded` re-runs GTK's bind-time projection on
+        // the expander; keep a collapsing row's state (design D6).
+        if let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>() {
+            section.apply_collapse_projection(&overlay, &expander, row);
         }
     });
 
@@ -156,7 +163,7 @@ pub(super) fn clear_expanded_accessibility_hook(overlay: &gtk4::Overlay) {
     }
 }
 
-fn file_tree_row_description(
+pub(super) fn file_tree_row_description(
     file_item: &FileTreeItem,
     tree_row: &gtk4::TreeListRow,
     section: &super::LushtextWorkspaceSection,
@@ -195,7 +202,7 @@ fn file_tree_row_description(
         parts.push("Empty folder".to_string());
     } else if file_item.is_dir() {
         parts.push(
-            if tree_row.is_expanded() {
+            if section.row_shows_expanded(tree_row) {
                 "Expanded"
             } else {
                 "Collapsed"

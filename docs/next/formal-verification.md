@@ -2463,6 +2463,39 @@ harnesses), within the runner variance the re-split already records
 check keeps reporting. `MINIMAP_FIT_MEASURED_IN` in `scripts/kani-shards.py`
 names both new runs.
 
+### Sidebar collapse step (`slice-large-directory-collapse`, 2026-11-15)
+
+New shard `core-sidebar-collapse` (gate `scheduled`), three harnesses over
+`ui::sidebar::policy::next_collapse_step`, the allocation-free core that picks
+each step of a paced directory collapse (design D9): C1 every step makes
+progress inside the store it names; C2 a bound removal covers at most one
+`SIDEBAR_REALIZED_ROWS_PER_FRAME` unit and leaves the direct rows, an unbound
+removal no held position and at most one `COLLAPSE_UNBOUND_CHUNK_ROWS` chunk;
+C3 a descendant store drains before its ancestor; C4 the directory collapses
+only at most `DIRECT_COLLAPSE_ROWS` rows; C5 each removal takes what its bound
+allows (an unbound one its range's whole tail, a bound one exactly
+`min(unit, rows above the direct rows)`), so a collapse ends within the step
+count design D2 states.
+
+**Bound reduction, recorded here and in the harness module.** The first
+version gave every harness one band shape: a held run of any length up to 40
+rows, placed independently of the stores, with a held row before and after
+it (`unwind(44)`). Locally `each_step_takes_what_its_bound_allows` ran CBMC's
+symbolic execution for 966 s and then out of the 14 GiB address space, and
+`a_descendant_goes_before_its_ancestor` was still running at 24 minutes; a
+concrete run of 33 or 40 rows still ran past 11 minutes. The shapes are now
+two: **small bands** (a run of at most four held rows and the two outliers,
+`unwind(8)`) for C1–C4 and C5's unbound half, which reach every branch but the
+bound removal, and **a held store** (the deepest store exactly 33 rows, all
+held, with the outliers) for C1, C2 and C5's bound half, which asserts the
+exact step `RemoveBound { deepest, 0, 1 }`. What the reduction gives up is a
+bound removal of more than one row, up to a whole unit (a held store of 64
+rows or more); the property tests in `policy.rs` cover it over bands of up to
+the real 207 held rows. Locally: 8.2 s, 84.8 s and 156.4 s, 4.29 min and
+2.44 GiB for the shard, recorded as `PENDING DISPATCH (owed by
+slice-large-directory-collapse)` until two dispatched `kani.yml` runs measure
+it.
+
 ### Minimap marker row binning (`bin-minimap-markers-per-row`, 2026-11-07)
 
 `fit_marker_bounds`, `MarkerProjectionSpace` and their three harnesses

@@ -388,6 +388,9 @@ pub struct LushtextWorkspaceSection {
     pub refresh_runtime: RefreshRuntimeState,
     /// Materialized-scope watcher plus GTK-side poll source for automatic refresh.
     pub watch_runtime: WatchRuntimeState,
+    /// The sliced directory collapse queue and its step sources
+    /// (`collapse_execution`).
+    pub(super) collapse_runtime: super::collapse_execution::CollapseRuntimeState,
 
     /// Rename callback installed by the sidebar after construction.
     pub rename_callback: RefCell<Option<RenameCallback>>,
@@ -447,11 +450,23 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.parent_constructed();
         self.file_tree_view.add_css_class("workspace-file-tree");
         super::row_factory::setup(self);
+        // A collapse paces from frames while the list is mapped and from the
+        // low-priority fallback while it is not (`collapse_execution`).
+        for signal in ["map", "unmap"] {
+            let section = self.obj().downgrade();
+            self.file_tree_view.connect_local(signal, false, move |_| {
+                if let Some(section) = section.upgrade() {
+                    section.arm_collapse_source();
+                }
+                None
+            });
+        }
         self.obj().register_folder_reorder_section();
         super::context_menus::setup_file_context_menu(self);
         super::context_menus::setup_header_context_menu(self);
         super::context_menus::setup_header_double_click(self);
         self.obj().setup_peek();
+        self.obj().setup_disclosure_key_route();
 
         accessibility::set_role(&*self.header_box, gtk4::AccessibleRole::Group);
         accessibility::set_labelled_description(
@@ -532,6 +547,7 @@ impl ObjectImpl for LushtextWorkspaceSection {
     fn dispose(&self) {
         self.obj().unregister_folder_reorder_section();
         self.obj().stop_workspace_watch();
+        self.obj().cancel_all_collapses();
         super::scan_execution::clear_all_dir_state(&self.obj());
         // A disposed section drains nothing later: release what is retiring.
         if let Some(source) = self.child_store_retirement_source.take() {

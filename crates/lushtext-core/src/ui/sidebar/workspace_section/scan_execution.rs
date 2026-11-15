@@ -628,6 +628,8 @@ fn drain_retiring_listings(section: &LushtextWorkspaceSection) -> bool {
 
 /// Clear all cached tree-loading state before reloading the workspace folders.
 pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
+    // A model reset ends every collapse; GTK drops what is left of it.
+    section.cancel_all_collapses();
     section
         .imp()
         .child_scan_lifetime
@@ -808,7 +810,7 @@ fn child_scan_is_active(
     owns_current_flight && owns_active_payload
 }
 
-fn child_store_key(store: &gio::ListStore) -> usize {
+pub(super) fn child_store_key(store: &gio::ListStore) -> usize {
     store.as_ptr() as usize
 }
 
@@ -863,7 +865,7 @@ fn child_store_identity_matches(
         .is_some_and(|registered| registered.as_ptr() == store.as_ptr())
 }
 
-fn cancel_child_store_runtime(section: &LushtextWorkspaceSection, store_key: usize) {
+pub(super) fn cancel_child_store_runtime(section: &LushtextWorkspaceSection, store_key: usize) {
     section
         .imp()
         .child_pending_scans
@@ -963,6 +965,54 @@ fn splice_child_store(
         .reconcile_max_batch_rows
         .set(refresh.reconcile_max_batch_rows.get().max(changed_rows));
     generation
+}
+
+/// Remove `count` rows from `store` at `start` for a sliced collapse
+/// (`collapse_execution`), keeping its mirror, its generation and, while it
+/// owns its directory's path caches, those caches in step. The directory's
+/// expansion intent is already gone, so `splice_child_store`'s liveness test
+/// would skip the caches; keeping them exact lets a re-expansion in the middle
+/// of the collapse refill the same store without a full recache
+/// (`slice-large-directory-collapse` D7).
+pub(super) fn drain_child_store(
+    section: &LushtextWorkspaceSection,
+    store: &gio::ListStore,
+    start: u32,
+    count: u32,
+) {
+    store.splice(start, count, &[] as &[glib::Object]);
+    let store_key = child_store_key(store);
+    let (old_path_rows, removed_paths, path_start) = {
+        let mut mirrors = section.imp().child_row_mirrors.borrow_mut();
+        let mirror = mirrors.entry(store_key).or_default();
+        let start = (start as usize).min(mirror.len());
+        let end = start.saturating_add(count as usize).min(mirror.len());
+        let old_path_rows = mirror.iter().filter(|row| row.path.is_some()).count();
+        let removed = mirror
+            .drain(start..end)
+            .filter_map(|row| row.path)
+            .collect::<Vec<_>>();
+        (old_path_rows, removed, start.min(old_path_rows))
+    };
+    advance_child_mirror_generation(section, store_key);
+    let parent = section
+        .imp()
+        .child_store_paths
+        .borrow()
+        .get(&store_key)
+        .cloned();
+    if let Some(parent) = parent
+        && section.imp().child_cache_owners.borrow().get(&parent) == Some(&store_key)
+    {
+        section.splice_child_rows_cache(
+            store_key,
+            &parent,
+            path_start,
+            old_path_rows,
+            &removed_paths,
+            &[],
+        );
+    }
 }
 
 pub(super) fn record_child_store_insert(
@@ -1661,7 +1711,7 @@ pub(super) fn schedule_child_state_restore(section: &LushtextWorkspaceSection) {
             let expanded_paths = section.imp().expanded_paths.borrow().clone();
             for path in expanded_paths {
                 if let Some(row) = section.find_dir_row(&path) {
-                    row.set_expanded(true);
+                    section.expand_directory(&row);
                 }
             }
             let pending_selection = section.imp().pending_selection.borrow().clone();
@@ -1721,6 +1771,7 @@ impl LushtextWorkspaceSection {
                 && row.is_expanded()
                 && let Some(item) = row.item().and_downcast::<FileTreeItem>()
                 && let Some(path) = item.path()
+                && !self.path_is_collapsing(&path)
             {
                 expanded.insert(path);
             }

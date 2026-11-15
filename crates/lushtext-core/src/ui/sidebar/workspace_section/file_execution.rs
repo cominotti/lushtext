@@ -113,10 +113,10 @@ impl super::LushtextWorkspaceSection {
                 let mut was_collapsed = false;
                 if context_is_dir
                     && let Some(row) = section.find_dir_row(&context_path)
-                    && !row.is_expanded()
+                    && !section.row_shows_expanded(&row)
                 {
                     was_collapsed = true;
-                    row.set_expanded(true);
+                    section.expand_directory(&row);
                 }
 
                 let new_item = FileTreeItem::new(temp_path, is_dir, None);

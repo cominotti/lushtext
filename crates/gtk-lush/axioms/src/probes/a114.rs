@@ -20,7 +20,9 @@
 //!   expander), the focus the list gives a row (a click, `scroll_to` with
 //!   `FOCUS`, arrow keys) stays on the row widget, from which none reaches
 //!   the expander; Tab moves the focus on into the expander, from which they
-//!   fire. The probe records which bindings fired from each. A capture-phase
+//!   fire. The probe records which bindings fired from each; it does not
+//!   type `Ctrl+KP_Space`, which has no keycode in the compositor's virtual
+//!   keymap (its binding is read from the source). A capture-phase
 //!   key controller on an ancestor returning `Stop` prevents them.
 //! - **Actions.** Its class actions `listitem.expand`, `listitem.collapse` and
 //!   `listitem.toggle-expand` take no parameter (so the generic AT-SPI widget
@@ -107,7 +109,7 @@ pub const KEY_BINDINGS: [KeyBinding; 18] = [
         KeyEffect::Collapse,
     ),
     ("Ctrl+space", CTRL, 0x20, KeyEffect::Toggle),
-    ("Ctrl+KP_Space", CTRL, 0xff80, KeyEffect::Toggle),
+    ("Ctrl+KP_Space", CTRL, KP_SPACE, KeyEffect::Toggle),
 ];
 
 /// The `expander` icon child of `expander`, if GTK created one.
@@ -128,7 +130,7 @@ pub fn expander_icon(expander: &gtk4::TreeExpander) -> Option<gtk4::Widget> {
 pub const RELEASE_CLAIM_NAME: &str = "gtk-lush-axioms-release-claim";
 
 /// How many `GtkGestureClick`s `widget` itself carries, not counting the
-/// probe's own release claim ([`RELEASE_CLAIM_NAME`]).
+/// probe's own release claim (`RELEASE_CLAIM_NAME`).
 #[must_use]
 pub fn click_gestures(widget: &impl IsA<gtk4::Widget>) -> u32 {
     let controllers = widget.observe_controllers();
@@ -377,6 +379,10 @@ fn focus_within(window: &impl IsA<gtk4::Window>, widget: &impl IsA<gtk4::Widget>
         .is_some_and(|focus| focus.is_ancestor(widget) || &focus == widget.as_ref())
 }
 
+/// The X keysym of `KP_Space`, which the compositor's virtual keymap cannot
+/// type.
+const KP_SPACE: u32 = 0xff80;
+
 /// Whether `effect` changed a row from `before` to `after`.
 const fn took_effect(effect: KeyEffect, before: bool, after: bool) -> bool {
     match effect {
@@ -395,6 +401,11 @@ fn reachable_keys(
 ) -> Result<Vec<&'static str>, String> {
     let mut reached = Vec::new();
     for (name, modifiers, key, effect) in KEY_BINDINGS {
+        if key == KP_SPACE {
+            // The virtual keymap has no keycode for it: Mutter would log a
+            // warning and send nothing. It is source-read instead.
+            continue;
+        }
         let row = fixture
             .row(0)
             .ok_or_else(|| "the directory row is gone".to_owned())?;

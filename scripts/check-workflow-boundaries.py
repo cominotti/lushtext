@@ -547,6 +547,7 @@ WHOLE_PIXEL_POLICY_MODULES: dict[str, int] = {
     "ui/window/focus_mode/policy.rs": 0,
     "model/protected_fold.rs": 0,
     "ui/editor_page/protected_view/policy.rs": 0,
+    "ui/sidebar/policy.rs": 0,
 }
 # Role homes whose `policy.rs` files hold geometry decisions: any `policy.rs`
 # beneath them, present or future, is protected too, with a ceiling of 0 (so it
@@ -1859,6 +1860,38 @@ def staged_reveal_findings(root: Path) -> list[str]:
     return findings
 
 
+# Rule 12. One owner for sidebar row expansion (`slice-large-directory-collapse`
+# D5): under `ui/sidebar/`, only the collapse role calls
+# `TreeListRow::set_expanded`, so every LushText collapse is the owned, sliced
+# one and every expansion ends a collapse that is still draining.
+# `accessibility::set_expanded` is a path call, not a method call, and is not
+# matched; tree rows outside the sidebar (the search panel's) are out of scope.
+EXPANSION_SCOPE = "ui/sidebar"
+EXPANSION_OWNER = "ui/sidebar/workspace_section/collapse_execution.rs"
+EXPANSION_CALL_RE = re.compile(r"\.set_expanded\(")
+
+
+def expansion_owner_findings(root: Path) -> list[str]:
+    """Rule 12: no `.set_expanded(` under `ui/sidebar/` outside the collapse role."""
+    findings: list[str] = []
+    scope = root / CORE_SRC / EXPANSION_SCOPE
+    owner = root / CORE_SRC / EXPANSION_OWNER
+    if not scope.is_dir():
+        return findings
+    for path in sorted(scope.rglob("*.rs")):
+        if path == owner:
+            continue
+        for line_number, code in code_lines(path.read_text(encoding="utf-8")):
+            if EXPANSION_CALL_RE.search(code):
+                findings.append(
+                    f"{display_path(path.relative_to(root))}:{line_number}: calls "
+                    "`.set_expanded(` outside `workspace_section/collapse_execution.rs`; go "
+                    "through `collapse_directory` or `expand_directory` (rule 12, "
+                    "`slice-large-directory-collapse`)"
+                )
+    return findings
+
+
 def check_tree(
     root: Path,
     matrix_path: Path,
@@ -1887,6 +1920,7 @@ def check_tree(
     findings.extend(unclassified_pure_module_findings(root))
     findings.extend(kani_harness_findings(root))
     findings.extend(staged_reveal_findings(root))
+    findings.extend(expansion_owner_findings(root))
     findings.extend(whole_pixel_findings(root, real_tree=require_seam_ceiling))
     if require_seam_ceiling:
         findings.extend(whole_pixel_ledger_findings(root / CONVENTION_PATH.relative_to(REPO_ROOT)))
@@ -3510,6 +3544,27 @@ def run_self_test() -> None:
         raise AssertionError("expected the composition role home to own its reveals")
     if staged_findings("fn f() {\n    header_button.grab_focus();\n}\n"):
         raise AssertionError("expected a focus of a non-staged widget to pass")
+
+    # --- Rule 12: one owner for sidebar row expansion -------------------------
+    def expansion_findings(body: str, where: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root / CORE_SRC / where, body)
+            return expansion_owner_findings(root)
+
+    direct = "fn f(row: &TreeListRow) {\n    row.set_expanded(false);\n}\n"
+    if not expansion_findings(direct, "ui/sidebar/workspace_section/folder_execution.rs"):
+        raise AssertionError("expected a direct set_expanded under ui/sidebar to fail")
+    if expansion_findings(direct, EXPANSION_OWNER):
+        raise AssertionError("expected the collapse role to own set_expanded")
+    if expansion_findings(direct, "ui/search_panel/results.rs"):
+        raise AssertionError("expected tree rows outside the sidebar to be out of scope")
+    helper = "fn f(o: &Overlay) {\n    accessibility::set_expanded(o, Some(false));\n}\n"
+    if expansion_findings(helper, "ui/sidebar/workspace_section/row_accessibility.rs"):
+        raise AssertionError("expected accessibility::set_expanded not to match")
+    commented = "fn f() {\n    // row.set_expanded(true);\n}\n"
+    if expansion_findings(commented, "ui/sidebar/reveal_execution.rs"):
+        raise AssertionError("expected a commented-out call not to count")
 
     home_gated = home_harness_findings("#[cfg(kani)]\nmod kani_proofs;\n")
     if home_gated:

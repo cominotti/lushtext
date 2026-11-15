@@ -189,6 +189,9 @@ pub struct WorkspaceTreeEvidence {
     pub limited_directory_count: usize,
     /// Expanded directories still loading their rows in batches.
     pub loading_directory_count: usize,
+    /// Whether a sliced directory collapse still runs in any section
+    /// (`slice-large-directory-collapse` D11).
+    pub collapse_pending: bool,
     /// Reveals that ended `superseded` (by a newer reveal or by disposal).
     pub reveal_superseded_count: u64,
     /// Whether a reveal is still expanding, scanning, or settling.
@@ -257,6 +260,11 @@ impl LushtextSidebar {
         // Cells only: reading a reveal neither polls it nor touches the tree.
         let reveal = self.workspace_reveal_observation();
         // The last mirror row of each materialized directory only.
+        let collapse_pending = imp
+            .sections
+            .borrow()
+            .iter()
+            .any(LushtextWorkspaceSection::collapse_blocks_readiness);
         let (limited_directory_count, loading_directory_count) = imp
             .sections
             .borrow()
@@ -285,6 +293,7 @@ impl LushtextSidebar {
             reveal_depth: reveal.depth,
             limited_directory_count,
             loading_directory_count,
+            collapse_pending,
         }
     }
 
@@ -390,6 +399,7 @@ impl LushtextSidebar {
             reveal_depth: shared.reveal_depth,
             limited_directory_count: shared.limited_directory_count,
             loading_directory_count: shared.loading_directory_count,
+            collapse_pending: shared.collapse_pending,
             reveal_superseded_count: reveal.superseded_count,
             reveal_pending: reveal.pending,
         }
@@ -420,6 +430,9 @@ pub(crate) struct WorkspaceSnapshotEvidence {
     pub(crate) limited_directory_count: usize,
     /// Expanded directories still loading (ending in a loading row).
     pub(crate) loading_directory_count: usize,
+    /// Whether a sliced directory collapse still runs in any section
+    /// (`slice-large-directory-collapse` D11).
+    pub(crate) collapse_pending: bool,
 }
 
 /// One materialized directory listing, read from its plain store mirror.
@@ -548,6 +561,19 @@ pub struct WorkspaceSectionEvidence {
     pub open_row_paths: std::collections::HashSet<std::path::PathBuf>,
     /// Paths this section renders with the active-tab marker.
     pub active_row_paths: std::collections::HashSet<std::path::PathBuf>,
+
+    // --- the sliced directory collapse (`collapse_execution`, design D11) ---
+    /// Running collapses in request order; empty when none runs.
+    pub collapses: Vec<workspace_section::CollapseEvidence>,
+    /// Why the most recent collapse ended.
+    pub last_collapse_end: Option<workspace_section::CollapseEnd>,
+    /// Collapse steps taken.
+    pub collapse_steps_total: u64,
+    /// Collapses GTK's direct call made whole.
+    pub collapse_direct_total: u64,
+    /// Steps the low-priority fallback ran for a mapped list whose frame
+    /// clock starved, or for an unmapped list.
+    pub collapse_starved_steps_total: u64,
 }
 
 impl LushtextWorkspaceSection {
@@ -608,6 +634,14 @@ impl LushtextWorkspaceSection {
 
         let reorder_drag_hover_fallback_count = workspace_section::drag_hover_child_model_count();
 
+        let (
+            collapses,
+            last_collapse_end,
+            collapse_steps_total,
+            collapse_direct_total,
+            collapse_starved_steps_total,
+        ) = self.collapse_evidence();
+
         let (open_row_paths, active_row_paths) = {
             let snapshot = imp.file_row_state_snapshot.borrow();
             (snapshot.open_identities(), snapshot.active_identities())
@@ -649,6 +683,11 @@ impl LushtextWorkspaceSection {
             reorder_drag_hover_fallback_count,
             open_row_paths,
             active_row_paths,
+            collapses,
+            last_collapse_end,
+            collapse_steps_total,
+            collapse_direct_total,
+            collapse_starved_steps_total,
         }
     }
 

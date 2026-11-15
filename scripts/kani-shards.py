@@ -181,6 +181,15 @@ CLOSE_PROTECTED_FINAL_RAISED_IN = "; raised by runs 42281883363, 42291228680 (ma
 # which stands (raise, never lower).
 LIST_BUDGET_MINUTES = 2.8
 LIST_BUDGET_PEAK_GIB = 1.7
+# slice-large-directory-collapse task 7.5: the local `make kani` figure of the
+# new shard (2026-11-15: 4.29 min, 2.44 GiB peak), owed two dispatched kani.yml
+# runs before the change is archived.
+SIDEBAR_COLLAPSE_MINUTES = 4.3
+SIDEBAR_COLLAPSE_PEAK_GIB = 2.5
+SIDEBAR_COLLAPSE_MEASURED_IN = (
+    "PENDING DISPATCH (owed by slice-large-directory-collapse): local make kani "
+    "2026-11-15, 4.29 min / 2.44 GiB"
+)
 LIST_BUDGET_MEASURED_IN = (
     "runs 42322273437, 42331071390 (pull_request, max of the two); with the B5 "
     "rows_within harnesses by run 42372071326 (1.83 min / 1.63 GiB, inside the figures)"
@@ -459,6 +468,16 @@ SHARDS: dict[str, Shard] = {
         ci_peak_gib=LIST_BUDGET_PEAK_GIB,
         measured_in=LIST_BUDGET_MEASURED_IN,
     ),
+    # slice-large-directory-collapse D9: the sidebar's collapse step policy
+    # (C1-C5). Scheduled; its figures are local until two dispatched runs.
+    "core-sidebar-collapse": Shard(
+        "lushtext-core",
+        ("ui::sidebar::policy::kani_proofs::",),
+        gate="scheduled",
+        ci_minutes=SIDEBAR_COLLAPSE_MINUTES,
+        ci_peak_gib=SIDEBAR_COLLAPSE_PEAK_GIB,
+        measured_in=SIDEBAR_COLLAPSE_MEASURED_IN,
+    ),
     "core-document-scale": Shard(
         "lushtext-core",
         (
@@ -719,6 +738,7 @@ WATCH_READS_SECONDS = 651.83
 WATCH_STEP_SECONDS = 672.86
 WATCH_UNSOUND_SECONDS = 778.55
 _LIST_BUDGET = "model::list_budget::kani_proofs::"
+_COLLAPSE = "ui::sidebar::policy::kani_proofs::"
 _SCALE = "model::document_scale::kani_proofs::"
 _PACED = "model::buffer_replacement::kani_proofs::"
 _REANALYSIS = "model::reanalysis_pacing::kani_proofs::"
@@ -929,6 +949,15 @@ ORACLES: dict[str, Oracle] = {
             "for_each_unheld_range",
             "retirement_unit_cut",
         ),
+    ),
+    "crates/lushtext-core/src/ui/sidebar/policy.rs": Oracle(
+        _CORE,
+        (
+            _h(_COLLAPSE + "a_descendant_goes_before_its_ancestor", 8.25, "ci"),
+            _h(_COLLAPSE + "every_step_makes_bounded_progress", 84.79, "ci"),
+            _h(_COLLAPSE + "each_step_takes_what_its_bound_allows", 156.41, "local"),
+        ),
+        functions=("next_collapse_step",),
     ),
     "crates/lushtext-core/src/model/document_scale.rs": Oracle(
         _CORE,

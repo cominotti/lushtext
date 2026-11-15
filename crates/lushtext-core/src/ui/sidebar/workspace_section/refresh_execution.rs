@@ -439,6 +439,10 @@ impl LushtextWorkspaceSection {
             let Some(path) = item.path() else {
                 continue;
             };
+            // A collapsing store is being drained: nothing may refill it.
+            if self.path_is_collapsing(&path) {
+                continue;
+            }
             let Some(store) = row
                 .children()
                 .and_then(|children| children.downcast::<gtk4::gio::ListStore>().ok())

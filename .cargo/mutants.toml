@@ -166,6 +166,17 @@ exclude_re = [
     # operator in this one function: the first `||`, the `!=`, and the function's
     # return value all still mutate and are all killed.
     "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:68: replace \\|\\| with && in WorkspacePersistenceState::has_pending_work",
+    # Equivalent (`slice-large-directory-collapse` task 7.6): `next_collapse_step`
+    # cuts the held band at the deepest store's end with
+    # `partition_point(|position| *position < end)`. Turning that `<` into `<=`
+    # admits only a held position equal to `end`, and `for_each_unheld_range`
+    # turns such a position into a range starting at `end + 1`, past its `len`,
+    # so it emits nothing and keeps `end`: every step is unchanged. The `<` stays
+    # because `for_each_unheld_range` documents held positions below `len`.
+    # Scoped by column to this one operator (column 67, the `highest` line): the
+    # `lowest` cut at column 66 and the other two mutants of this `<` still
+    # mutate and are killed.
+    "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:67: replace < with <= in next_collapse_step",
     # Equivalent on LushText's Linux target: this non-Unix advisory-lock stub is
     # not compiled or called in the mutation test target.
     "crates/lushtext-core/src/services/durable_write\\.rs:131:.*FileWriteLock::acquire -> std::io::Result<Option<Self>>",

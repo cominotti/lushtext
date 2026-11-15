@@ -20,6 +20,7 @@
 //! | `scan_admission` | `admission` | the per-child-store directory-scan flight |
 //! | `scan_execution` | `execution` | the child scan worker, reconciliation, and child-store materialization |
 //! | `refresh_execution` | `execution` | targeted in-place and full refresh coalescing |
+//! | `collapse_execution` | `execution` | the directory collapse and expansion entry points and the sliced collapse |
 //! | `folder_execution` | `execution` | top-level folder rows, the empty probe, focused-folder drilldown |
 //! | `file_execution` | `execution` | file create, inline rename, delete |
 //! | `peek_execution` | `execution` | `Space` file peek |
@@ -48,6 +49,8 @@
 //! because it is stateful bookkeeping rather than a pure decision, and the workflow
 //! already owns exactly one `policy.rs` at its canonical role home.
 
+mod collapse_execution;
+pub use collapse_execution::{CollapseEnd, CollapseEvidence, CollapseOrigin};
 mod context_menus;
 mod file_execution;
 mod folder_execution;
@@ -287,10 +290,13 @@ impl LushtextWorkspaceSection {
 
     /// Store the parent-sidebar callback invoked when a file row is activated.
     pub fn connect_file_activated<F: Fn(&Path) + 'static>(&self, f: F) {
+        let section = self.downgrade();
         self.imp()
             .file_tree_view
             .connect_activate(move |list_view, position| {
-                activate_file_at(list_view, position, &f);
+                if let Some(section) = section.upgrade() {
+                    activate_file_at(&section, list_view, position, &f);
+                }
             });
     }
 
@@ -756,7 +762,12 @@ pub(super) fn file_row_overlay_path(overlay: &gtk4::Overlay) -> Option<PathBuf> 
 }
 
 /// Activate a row: open files, toggle directories, and ignore reorder drags.
-fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn(&Path)) {
+fn activate_file_at(
+    section: &LushtextWorkspaceSection,
+    list_view: &gtk4::ListView,
+    position: u32,
+    callback: &dyn Fn(&Path),
+) {
     if reorder_execution::folder_reorder_drag_is_active() {
         return;
     }
@@ -771,7 +782,12 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
             .and_then(|item| item.downcast::<FileTreeItem>().ok())
     {
         if file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) {
-            tree_row.set_expanded(!tree_row.is_expanded());
+            if section.row_shows_expanded(tree_row) {
+                section
+                    .collapse_directory(tree_row, collapse_execution::CollapseOrigin::Activation);
+            } else {
+                section.expand_directory(tree_row);
+            }
         } else if !file_item.is_dir()
             && let Some(ref path) = file_item.path()
         {

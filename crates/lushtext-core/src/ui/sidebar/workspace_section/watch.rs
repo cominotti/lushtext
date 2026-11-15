@@ -60,6 +60,9 @@ impl LushtextWorkspaceSection {
         if super::scan_execution::child_scan_blocks_readiness(self) {
             return true;
         }
+        if self.collapse_blocks_readiness() {
+            return true;
+        }
 
         #[cfg(feature = "test-utils")]
         if self.imp().watch_runtime.test_disabled.get() {

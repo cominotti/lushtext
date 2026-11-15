@@ -11,12 +11,21 @@
 //! Policy constants are pinned to concrete literals in the units a reader would
 //! sanity-check, and the tests assert against those literals rather than against
 //! the constants they came from.
+//!
+//! Every decision here is integer-only: the collapse step policy is a budget
+//! policy of the whole-pixel table (`workflow-convention.md`), and nothing else
+//! here needs a fraction.
+
+#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
+
+#[cfg(kani)]
+mod kani_proofs;
 
 use std::cmp::Ordering;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use crate::model::list_budget::grouped_thousands;
+use crate::model::list_budget::{for_each_unheld_range, grouped_thousands};
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::services::file_tree::{SidebarScanBudget, compare_directory_entries};
@@ -1028,6 +1037,576 @@ pub fn classify_missing_reveal_component(
         WorkspaceRevealMiss::BeyondEntryCap
     } else {
         WorkspaceRevealMiss::NotFound
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The owned, sliced directory collapse (`slice-large-directory-collapse` D3,
+// D4, D9). `collapse_execution.rs` reads these facts from GTK once per step
+// and applies the one removal `next_collapse_step` picks.
+// ---------------------------------------------------------------------------
+
+/// Flattened rows at or below which a directory, or a drained descendant,
+/// collapses through GTK's direct `set_expanded(false)` in one call
+/// (design D3). It is at most [`SIDEBAR_REALIZED_ROWS_PER_FRAME`], so the
+/// final collapse never replaces more row widgets than one step.
+///
+/// Kind: cap; a power of two, rounded down.
+pub const DIRECT_COLLAPSE_ROWS: u32 = 32;
+
+/// Rows bound to a row widget that one collapse step removes, and so the most
+/// row widgets one frame creates and styles in their place (design D3; ledger
+/// A113). It is named for the sidebar rather than the collapse because the
+/// load's band cap (design D10) may use it too.
+///
+/// Kind: cap; a power of two, rounded down.
+pub const SIDEBAR_REALIZED_ROWS_PER_FRAME: u32 = 32;
+
+/// Rows no widget is bound to that one removal takes: their removal destroys
+/// and creates no widget (A110, A113), and costs LushText's mirror
+/// bookkeeping plus GTK's rb-tree removal (design D3, Prototype A: 4.9–6.6 ms
+/// per 16,384 rows under load, so half fits the turn slice).
+///
+/// Kind: cap; a power of two, rounded down.
+pub const COLLAPSE_UNBOUND_CHUNK_ROWS: u32 = 8_192;
+
+/// Milliseconds a mapped list may go without a frame tick before the next
+/// collapse step runs from the low-priority fallback source (design D4): a
+/// minimized or occluded window keeps its widgets mapped and its frame clock
+/// may stop. About 15 reference frames at 120 Hz.
+///
+/// Kind: out: time; a power of two, rounded up.
+pub const COLLAPSE_FRAME_STARVATION_MS: u64 = 128;
+
+const _: () = assert!(DIRECT_COLLAPSE_ROWS <= SIDEBAR_REALIZED_ROWS_PER_FRAME);
+
+/// One expanded store of a collapsing subtree, as GTK lists it now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CollapseStore {
+    /// Depth below the collapsing directory: 0 for its own store.
+    pub depth: u32,
+    /// Flattened position of the store's first row.
+    pub first_row: u32,
+    /// Rows the store itself holds.
+    pub length: u32,
+    /// Flattened rows under the store, its expanded descendants' included.
+    pub span: u32,
+}
+
+/// What one collapse step decides from.
+#[derive(Clone, Copy, Debug)]
+pub struct CollapseFacts<'a> {
+    /// The subtree's expanded stores; `stores[0]` is the collapsing
+    /// directory's own store, and every other one lies under it.
+    pub stores: &'a [CollapseStore],
+    /// The flattened positions GTK holds a row object for (its realized band,
+    /// its focus row, the selection), strictly ascending; see
+    /// [`collapse_band`].
+    pub band: &'a [u32],
+}
+
+/// The one removal a collapse step applies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CollapseStep {
+    /// Remove `count` rows from `stores[store]`, store-relative from `start`,
+    /// none of them bound to a row widget.
+    RemoveUnbound {
+        store: usize,
+        start: u32,
+        count: u32,
+    },
+    /// Remove `count` rows from `stores[store]`, store-relative from `start`,
+    /// some of them bound: at most one frame's unit.
+    RemoveBound {
+        store: usize,
+        start: u32,
+        count: u32,
+    },
+    /// Collapse the drained descendant directory that `stores[store]` lists
+    /// through GTK's direct call.
+    CollapseDescendant(usize),
+    /// Collapse the directory itself through GTK's direct call.
+    CollapseRow,
+}
+
+impl CollapseStep {
+    /// Whether the step may replace row widgets, so it needs the window's
+    /// one-unit-per-frame token (design D4).
+    #[must_use]
+    pub const fn takes_unit(self) -> bool {
+        !matches!(self, Self::RemoveUnbound { .. })
+    }
+}
+
+/// The held positions as [`CollapseFacts::band`] takes them: sorted and
+/// without repeats. The allocation-free [`next_collapse_step`] relies on it.
+#[must_use]
+pub fn collapse_band(mut positions: Vec<u32>) -> Vec<u32> {
+    positions.sort_unstable();
+    positions.dedup();
+    positions
+}
+
+/// The next removal of a collapse (design D4, D9):
+///
+/// 1. the directory's whole remaining subtree is at most
+///    [`DIRECT_COLLAPSE_ROWS`] rows → [`CollapseStep::CollapseRow`];
+/// 2. otherwise the deepest store (the last of the deepest, so earlier stores'
+///    positions hold), which has no expanded store under it:
+///    - at most [`DIRECT_COLLAPSE_ROWS`] rows, and not the directory's own →
+///      [`CollapseStep::CollapseDescendant`];
+///    - else its last range of rows nobody holds, its tail
+///      [`COLLAPSE_UNBOUND_CHUNK_ROWS`] at most, through
+///      [`for_each_unheld_range`]
+///      → [`CollapseStep::RemoveUnbound`];
+///    - else, every row of it held, its head rows down to
+///      [`DIRECT_COLLAPSE_ROWS`] left, [`SIDEBAR_REALIZED_ROWS_PER_FRAME`] at
+///      most → [`CollapseStep::RemoveBound`].
+///
+/// Allocation-free and integer-only, so Kani proves it directly (C1–C5,
+/// `policy/kani_proofs.rs`). With no store it collapses the row.
+#[must_use]
+pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
+    let Some(root) = facts.stores.first() else {
+        return CollapseStep::CollapseRow;
+    };
+    if root.span <= DIRECT_COLLAPSE_ROWS {
+        return CollapseStep::CollapseRow;
+    }
+    let mut chosen = 0;
+    for (index, store) in facts.stores.iter().enumerate() {
+        if store.depth >= facts.stores[chosen].depth {
+            chosen = index;
+        }
+    }
+    let store = facts.stores[chosen];
+    if chosen != 0 && store.length <= DIRECT_COLLAPSE_ROWS {
+        return CollapseStep::CollapseDescendant(chosen);
+    }
+    let first = store.first_row;
+    let end = first.saturating_add(store.length);
+    let lowest = facts.band.partition_point(|position| *position < first);
+    let highest = facts.band.partition_point(|position| *position < end);
+    let held = &facts.band[lowest..highest];
+    let mut last_unheld: Option<(u32, u32)> = None;
+    for_each_unheld_range(end, held, |start, count| {
+        let clipped_start = start.max(first);
+        let clipped_end = start + count;
+        if last_unheld.is_none() && clipped_start < clipped_end {
+            last_unheld = Some((clipped_start, clipped_end - clipped_start));
+        }
+    });
+    if let Some((start, count)) = last_unheld {
+        let chunk = count.min(COLLAPSE_UNBOUND_CHUNK_ROWS);
+        return CollapseStep::RemoveUnbound {
+            store: chosen,
+            start: start + count - chunk - first,
+            count: chunk,
+        };
+    }
+    let surplus = store.length.saturating_sub(DIRECT_COLLAPSE_ROWS);
+    if surplus == 0 {
+        // The directory's own store, all held and small, under a span that
+        // nothing above collapsed: only reachable with inconsistent facts
+        // (a span larger than the stores account for). Collapse it.
+        return CollapseStep::CollapseRow;
+    }
+    CollapseStep::RemoveBound {
+        store: chosen,
+        start: 0,
+        count: surplus.min(SIDEBAR_REALIZED_ROWS_PER_FRAME),
+    }
+}
+
+/// `next_collapse_step` (`slice-large-directory-collapse` task 3.1): the
+/// reference cases, and a property test driving the policy against a model of
+/// GTK's realized band (ledger A113) until the directory collapses.
+#[cfg(test)]
+mod collapse_tests {
+    use proptest::prelude::*;
+
+    use super::{
+        COLLAPSE_UNBOUND_CHUNK_ROWS, CollapseFacts, CollapseStep, CollapseStore,
+        DIRECT_COLLAPSE_ROWS, SIDEBAR_REALIZED_ROWS_PER_FRAME, collapse_band, next_collapse_step,
+    };
+
+    /// A directory at flattened position 10 whose own store lists `length`
+    /// rows and nothing expanded under it.
+    fn flat(length: u32) -> [CollapseStore; 1] {
+        [CollapseStore {
+            depth: 0,
+            first_row: 11,
+            length,
+            span: length,
+        }]
+    }
+
+    fn step(stores: &[CollapseStore], band: &[u32]) -> CollapseStep {
+        next_collapse_step(&CollapseFacts { stores, band })
+    }
+
+    #[test]
+    fn the_constants_are_the_measured_values() {
+        assert_eq!(DIRECT_COLLAPSE_ROWS, 32);
+        assert_eq!(SIDEBAR_REALIZED_ROWS_PER_FRAME, 32);
+        assert_eq!(COLLAPSE_UNBOUND_CHUNK_ROWS, 8_192);
+        assert_eq!(super::COLLAPSE_FRAME_STARVATION_MS, 128);
+    }
+
+    #[test]
+    fn a_small_subtree_collapses_directly() {
+        assert_eq!(step(&flat(32), &[]), CollapseStep::CollapseRow);
+        assert_eq!(step(&flat(0), &[10, 11]), CollapseStep::CollapseRow);
+        assert_eq!(step(&[], &[]), CollapseStep::CollapseRow);
+        assert_ne!(step(&flat(33), &[]), CollapseStep::CollapseRow);
+    }
+
+    #[test]
+    fn an_empty_band_removes_the_tail_chunk_first() {
+        assert_eq!(
+            step(&flat(20_000), &[]),
+            CollapseStep::RemoveUnbound {
+                store: 0,
+                start: 20_000 - 8_192,
+                count: 8_192,
+            }
+        );
+        assert_eq!(
+            step(&flat(100), &[]),
+            CollapseStep::RemoveUnbound {
+                store: 0,
+                start: 0,
+                count: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn a_band_at_the_head_removes_the_rows_after_it_first() {
+        // The band holds the directory row and its first 50 children.
+        let band: Vec<u32> = (10..61).collect();
+        assert_eq!(
+            step(&flat(300), &band),
+            CollapseStep::RemoveUnbound {
+                store: 0,
+                start: 50,
+                count: 250,
+            }
+        );
+    }
+
+    #[test]
+    fn a_band_in_the_middle_removes_after_it_then_before_it() {
+        // Children 1,000..1,207 held (flattened 1,011..1,218).
+        let band: Vec<u32> = (1_011..1_218).collect();
+        let stores = flat(5_000);
+        assert_eq!(
+            step(&stores, &band),
+            CollapseStep::RemoveUnbound {
+                store: 0,
+                start: 1_207,
+                count: 3_793,
+            }
+        );
+        let after = [CollapseStore {
+            length: 1_207,
+            span: 1_207,
+            ..stores[0]
+        }];
+        assert_eq!(
+            step(&after, &band),
+            CollapseStep::RemoveUnbound {
+                store: 0,
+                start: 0,
+                count: 1_000,
+            }
+        );
+    }
+
+    #[test]
+    fn a_band_past_the_end_removes_every_child_unbound() {
+        let band: Vec<u32> = (400..607).collect();
+        assert_eq!(
+            step(&flat(200), &band),
+            CollapseStep::RemoveUnbound {
+                store: 0,
+                start: 0,
+                count: 200,
+            }
+        );
+    }
+
+    #[test]
+    fn a_held_store_removes_one_unit_from_its_head_down_to_the_direct_rows() {
+        let band: Vec<u32> = (10..300).collect();
+        assert_eq!(
+            step(&flat(200), &band),
+            CollapseStep::RemoveBound {
+                store: 0,
+                start: 0,
+                count: 32,
+            }
+        );
+        // Fewer than a unit above the direct rows: only the surplus.
+        assert_eq!(
+            step(&flat(40), &band),
+            CollapseStep::RemoveBound {
+                store: 0,
+                start: 0,
+                count: 8,
+            }
+        );
+        // Exactly the direct rows left: the directory collapses.
+        assert_eq!(step(&flat(32), &band), CollapseStep::CollapseRow);
+    }
+
+    #[test]
+    fn a_nested_store_is_drained_and_collapsed_before_its_parent() {
+        // `outer/` at 10 lists 100 rows; its row 3 (flattened 14) is `inner/`
+        // with 5,000 rows from 15.
+        let stores = [
+            CollapseStore {
+                depth: 0,
+                first_row: 11,
+                length: 100,
+                span: 5_100,
+            },
+            CollapseStore {
+                depth: 1,
+                first_row: 15,
+                length: 5_000,
+                span: 5_000,
+            },
+        ];
+        let band: Vec<u32> = (10..217).collect();
+        assert_eq!(
+            step(&stores, &band),
+            CollapseStep::RemoveUnbound {
+                store: 1,
+                start: 202,
+                count: 4_798,
+            }
+        );
+        let drained = [
+            CollapseStore {
+                span: 132,
+                ..stores[0]
+            },
+            CollapseStore {
+                length: 32,
+                span: 32,
+                ..stores[1]
+            },
+        ];
+        assert_eq!(step(&drained, &band), CollapseStep::CollapseDescendant(1));
+    }
+
+    #[test]
+    fn a_store_shorter_than_one_unit_collapses_as_a_descendant() {
+        let stores = [
+            CollapseStore {
+                depth: 0,
+                first_row: 11,
+                length: 100,
+                span: 110,
+            },
+            CollapseStore {
+                depth: 1,
+                first_row: 12,
+                length: 10,
+                span: 10,
+            },
+        ];
+        assert_eq!(step(&stores, &[]), CollapseStep::CollapseDescendant(1));
+    }
+
+    #[test]
+    fn the_band_wrapper_sorts_and_drops_repeats() {
+        assert_eq!(collapse_band(vec![5, 1, 5, 3, 1]), vec![1, 3, 5]);
+        assert!(collapse_band(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn only_removing_unbound_rows_takes_no_unit() {
+        assert!(
+            !CollapseStep::RemoveUnbound {
+                store: 0,
+                start: 0,
+                count: 1,
+            }
+            .takes_unit()
+        );
+        assert!(
+            CollapseStep::RemoveBound {
+                store: 0,
+                start: 0,
+                count: 1,
+            }
+            .takes_unit()
+        );
+        assert!(CollapseStep::CollapseDescendant(1).takes_unit());
+        assert!(CollapseStep::CollapseRow.takes_unit());
+    }
+
+    /// GTK's realized band as A113 pins it, on a flattened list of `total`
+    /// rows: `band` rows from `top`, kept on the same row across a removal
+    /// before it and moved to the removal's start when its row goes, and kept
+    /// full at the end of the list.
+    #[derive(Clone, Copy, Debug)]
+    struct BandModel {
+        top: u32,
+        band: u32,
+        total: u32,
+    }
+
+    impl BandModel {
+        fn positions(self, directory: u32) -> Vec<u32> {
+            let end = self.top.saturating_add(self.band).min(self.total);
+            // The selection and focus sit on the directory row (design D7).
+            let mut held: Vec<u32> = (self.top..end).collect();
+            held.push(directory);
+            collapse_band(held)
+        }
+
+        fn remove(&mut self, start: u32, count: u32) {
+            if start + count <= self.top {
+                self.top -= count;
+            } else if start <= self.top {
+                self.top = start;
+            }
+            self.total -= count;
+            self.top = self.top.min(self.total.saturating_sub(self.band));
+        }
+    }
+
+    /// The subtree as the policy sees it: the directory's own store and at
+    /// most one expanded child store, listed as its row `child_at`.
+    #[derive(Clone, Copy, Debug)]
+    struct Subtree {
+        directory: u32,
+        length: u32,
+        child: Option<(u32, u32)>,
+    }
+
+    impl Subtree {
+        fn stores(self) -> Vec<CollapseStore> {
+            let child_rows = self.child.map_or(0, |(_, rows)| rows);
+            let mut stores = vec![CollapseStore {
+                depth: 0,
+                first_row: self.directory + 1,
+                length: self.length,
+                span: self.length + child_rows,
+            }];
+            if let Some((at, rows)) = self.child {
+                stores.push(CollapseStore {
+                    depth: 1,
+                    first_row: self.directory + 1 + at + 1,
+                    length: rows,
+                    span: rows,
+                });
+            }
+            stores
+        }
+    }
+
+    proptest! {
+        /// Driven to the end, every step removes rows from the subtree only,
+        /// never more bound rows than a unit, none for an unbound removal,
+        /// the descendant before its parent, and the directory only once at
+        /// most `DIRECT_COLLAPSE_ROWS` rows are left; the number of steps
+        /// stays within design D2's bound.
+        #[test]
+        fn a_collapse_driven_against_the_band_model_keeps_every_bound(
+            above in 0u32..300,
+            length in 0u32..40_000,
+            child in prop::option::of((0u32..400, 0u32..20_000)),
+            after in 0u32..600,
+            top_fraction in 0u32..=100,
+            band in 1u32..260,
+        ) {
+            let child = child.map(|(at, rows)| (at.min(length.saturating_sub(1)), rows))
+                .filter(|_| length > 0);
+            let mut subtree = Subtree { directory: above, length, child };
+            let child_rows = child.map_or(0, |(_, rows)| rows);
+            let total = above + 1 + length + child_rows + after;
+            let mut model = BandModel {
+                top: (u64::from(total) * u64::from(top_fraction) / 100)
+                    .try_into()
+                    .expect("within the list"),
+                band,
+                total,
+            };
+            model.top = model.top.min(total.saturating_sub(band));
+            let initial_subtree = length + child_rows;
+            let stores_count = 1 + u32::from(child.is_some());
+            let unit_cap = stores_count
+                * ((band + 1).div_ceil(SIDEBAR_REALIZED_ROWS_PER_FRAME) + 2);
+            let unbound_cap = stores_count
+                * (3 + initial_subtree.div_ceil(COLLAPSE_UNBOUND_CHUNK_ROWS));
+            let (mut unit_steps, mut unbound_steps) = (0u32, 0u32);
+            loop {
+                let stores = subtree.stores();
+                let held = model.positions(subtree.directory);
+                let next = step(&stores, &held);
+                let bound_in = |start: u32, count: u32| -> u32 {
+                    u32::try_from(
+                        held.iter().filter(|p| **p >= start && **p < start + count).count(),
+                    )
+                    .expect("few held rows")
+                };
+                match next {
+                    CollapseStep::CollapseRow => {
+                        prop_assert!(stores[0].span <= DIRECT_COLLAPSE_ROWS);
+                        break;
+                    }
+                    CollapseStep::CollapseDescendant(index) => {
+                        prop_assert_eq!(index, 1);
+                        let store = stores[1];
+                        prop_assert!(store.span <= DIRECT_COLLAPSE_ROWS);
+                        model.remove(store.first_row, store.length);
+                        subtree.child = None;
+                        unit_steps += 1;
+                    }
+                    CollapseStep::RemoveUnbound { store, start, count }
+                    | CollapseStep::RemoveBound { store, start, count } => {
+                        prop_assert!(count > 0);
+                        let facts = stores[store];
+                        prop_assert!(start + count <= facts.length);
+                        // A store is drained only when nothing deeper is expanded.
+                        prop_assert!(store == 1 || subtree.child.is_none());
+                        let flat_start = facts.first_row + start;
+                        let bound = bound_in(flat_start, count);
+                        if matches!(next, CollapseStep::RemoveUnbound { .. }) {
+                            prop_assert_eq!(bound, 0);
+                            prop_assert!(count <= COLLAPSE_UNBOUND_CHUNK_ROWS);
+                            unbound_steps += 1;
+                        } else {
+                            prop_assert!(count <= SIDEBAR_REALIZED_ROWS_PER_FRAME);
+                            prop_assert!(facts.length - count >= DIRECT_COLLAPSE_ROWS);
+                            unit_steps += 1;
+                        }
+                        model.remove(flat_start, count);
+                        if store == 1 {
+                            let (at, rows) = subtree.child.expect("the child store");
+                            subtree.child = Some((at, rows - count));
+                        } else {
+                            subtree.length -= count;
+                            if let Some((at, rows)) = subtree.child {
+                                // Rows removed before the expanded row shift it.
+                                prop_assert!(start + count <= at || start > at);
+                                let at = if start + count <= at { at - count } else { at };
+                                subtree.child = Some((at, rows));
+                            }
+                        }
+                    }
+                }
+                prop_assert!(unit_steps <= unit_cap, "unit steps {unit_steps} over {unit_cap}");
+                prop_assert!(
+                    unbound_steps <= unbound_cap,
+                    "unbound steps {unbound_steps} over {unbound_cap}"
+                );
+            }
+        }
     }
 }
 

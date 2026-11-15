@@ -20,7 +20,9 @@ use crate::common::{
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
-use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
+use lushtext_core::model::workspace::{
+    WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspacesFile,
+};
 use lushtext_core::services::{json_store, workspace_manager};
 use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::sidebar::LushtextSidebar;
@@ -2428,9 +2430,13 @@ fn test_directory_expansion_dispatches_fit_the_settle_budget() {
         }
         // Collapse and expand again: the new store takes the directory's
         // path caches over from the old one, forgetting its rows in slices.
-        // The collapse is GTK's synchronous `set_expanded(false)`, whose cost
-        // follows the rows it removes (ledger A91); printed, not enforced
-        // (the recorded toolkit-floor exception in the design).
+        // The collapse is GTK's synchronous `set_expanded(false)`, called
+        // directly: the route the residual collapses (a refresh splice, an
+        // AT-SPI `DoAction`) still take, printed, not enforced. LushText's
+        // own routes pace the collapse, and
+        // `test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets`
+        // measures their dispatches (`slice-large-directory-collapse`, which
+        // re-attributed BL's toolkit-floor exception).
         let collapsing = row_for_path(&tree.section, &nested).expect("directory row");
         let started = std::time::Instant::now();
         collapsing.set_expanded(false);
@@ -2551,6 +2557,11 @@ fn shown_store(tree: &LargeTree, directory: &Path) -> glib::WeakRef<gtk4::gio::L
 /// dispatch (a quarter of a 131,072-entry collapse). The section holds the
 /// store an expanded directory shows, so the collapse only unlinks it, and
 /// retires the listing in time-sliced turns afterwards, releasing it.
+///
+/// It calls `TreeListRow::set_expanded(false)` directly, so it tests GTK's
+/// direct collapse, which the residual routes (a refresh splice, an AT-SPI
+/// `DoAction`) still take; LushText's own routes pace the collapse
+/// (`slice-large-directory-collapse`).
 #[test]
 fn test_collapsing_a_large_directory_retires_its_listing_after_the_collapse() {
     let count = 16 * 1024 + 1;
@@ -2578,6 +2589,11 @@ fn test_collapsing_a_large_directory_retires_its_listing_after_the_collapse() {
 /// Collapsing an ancestor unlinks its expanded descendants' listings too:
 /// the section retires and releases them, so holding a shown store never
 /// keeps a collapsed subtree alive.
+///
+/// It calls `TreeListRow::set_expanded(false)` directly, so it tests GTK's
+/// direct collapse, which the residual routes (a refresh splice, an AT-SPI
+/// `DoAction`) still take; LushText's own routes pace the collapse
+/// (`slice-large-directory-collapse`).
 #[test]
 fn test_collapsing_an_ancestor_releases_its_descendants_listings() {
     let tree = large_tree(&[("outer/inner", 300)], 800);
@@ -2606,6 +2622,11 @@ fn test_collapsing_an_ancestor_releases_its_descendants_listings() {
 
 /// A listing someone else still holds when its row collapses is only let
 /// go, never emptied: retirement drains a store only the section holds.
+///
+/// It calls `TreeListRow::set_expanded(false)` directly, so it tests GTK's
+/// direct collapse, which the residual routes (a refresh splice, an AT-SPI
+/// `DoAction`) still take; LushText's own routes pace the collapse
+/// (`slice-large-directory-collapse`).
 #[test]
 fn test_a_collapsed_listing_held_elsewhere_is_released_not_emptied() {
     let tree = large_tree(&[("nested", 300)], 800);
@@ -2620,4 +2641,1466 @@ fn test_a_collapsed_listing_held_elsewhere_is_released_not_emptied() {
     flush_after_delay(Duration::from_millis(300));
     assert_eq!(held.n_items(), 300, "a shared listing keeps every item");
     drop(tree.window);
+}
+
+// ---------------------------------------------------------------------------
+// The owned, sliced directory collapse (`slice-large-directory-collapse`).
+// ---------------------------------------------------------------------------
+
+/// The most row widgets one collapse step may make GTK create (design D3).
+const COLLAPSE_UNIT: usize =
+    lushtext_core::ui::sidebar::policy::SIDEBAR_REALIZED_ROWS_PER_FRAME as usize;
+
+/// CSS class `collapse_execution` puts on a collapsing row's expander.
+const COLLAPSING_CLASS: &str = "lushtext-collapsing";
+
+/// Activate the row at `path` as Enter or a double click does.
+fn activate_tree_row(section: &LushtextWorkspaceSection, path: &Path) {
+    let position = tree_index_for_path(section, path).expect("the row is listed");
+    section
+        .imp()
+        .file_tree_view
+        .emit_by_name::<()>("activate", &[&position]);
+}
+
+/// The realized expander showing `path`'s row, if any.
+fn expander_for(section: &LushtextWorkspaceSection, path: &Path) -> Option<gtk4::TreeExpander> {
+    let row = row_for_path(section, path)?;
+    let mut child = section.imp().file_tree_view.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let expander = find_descendant(&widget, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+            .and_downcast::<gtk4::TreeExpander>();
+        if let Some(expander) = expander
+            && expander.list_row().as_ref() == Some(&row)
+        {
+            return Some(expander);
+        }
+    }
+    None
+}
+
+/// Whether `path`'s row is listed, GTK-collapsed, and the section settled.
+fn collapse_settled(section: &LushtextWorkspaceSection, path: &Path) -> bool {
+    row_for_path(section, path).is_some_and(|row| !row.is_expanded())
+        && !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+}
+
+/// Each top-level row's path and GTK expanded state, and the list's length.
+fn top_level_rows(section: &LushtextWorkspaceSection) -> (u32, Vec<(Option<PathBuf>, bool)>) {
+    let Some(model) = section.imp().tree_model.borrow().as_ref().cloned() else {
+        return (0, Vec::new());
+    };
+    let rows = (0..model.n_items())
+        .filter_map(|index| model.item(index).and_downcast::<gtk4::TreeListRow>())
+        .filter(|row| row.depth() == 0)
+        .map(|row| {
+            (
+                row.item()
+                    .and_downcast::<FileTreeItem>()
+                    .and_then(|item| item.path()),
+                row.is_expanded(),
+            )
+        })
+        .collect();
+    (model.n_items(), rows)
+}
+
+/// The collapse evidence, for a failure message.
+fn collapse_state(section: &LushtextWorkspaceSection) -> String {
+    let evidence = section.workspace_section_evidence();
+    let roots = top_level_rows(section);
+    format!(
+        "roots={roots:?} collapses={:?} last_end={:?} steps={} direct={} starved={} blocks_readiness={} pressure={:?}",
+        evidence.collapses,
+        evidence.last_collapse_end,
+        evidence.collapse_steps_total,
+        evidence.collapse_direct_total,
+        evidence.collapse_starved_steps_total,
+        evidence.refresh_blocks_readiness,
+        evidence.scan_pressure,
+    )
+}
+
+/// The tree row each realized row content widget shows, keyed by the
+/// widget's address.
+type BoundRows = std::collections::HashMap<usize, usize>;
+
+/// Record which tree row every realized row content widget (the overlay the
+/// factory's `setup` creates) shows now; return how many widgets are new or
+/// show another row than at the last call (`shown`), and how many were
+/// destroyed (`destroyed`). GTK 4.24 may reuse a removed
+/// row's list item for an item entering the band, so a replaced row costs a
+/// rebind as well as, or instead of, a new widget (A113); both count.
+fn mark_new_row_widgets(section: &LushtextWorkspaceSection, seen: &mut BoundRows) -> RowChange {
+    use glib::translate::ToGlibPtr;
+    let mut changed = 0;
+    let mut now = BoundRows::new();
+    let mut child = section.imp().file_tree_view.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Some(content) = widget.first_child() else {
+            continue;
+        };
+        let row = find_descendant(&content, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+            .and_downcast::<gtk4::TreeExpander>()
+            .and_then(|expander| expander.list_row());
+        let key: *mut glib::gobject_ffi::GObject =
+            content.upcast_ref::<glib::Object>().to_glib_none().0;
+        let value = row.as_ref().map_or(0, |row| {
+            let pointer: *mut glib::gobject_ffi::GObject =
+                row.upcast_ref::<glib::Object>().to_glib_none().0;
+            pointer as usize
+        });
+        let key = key as usize;
+        if seen.get(&key) != Some(&value) {
+            changed += 1;
+        }
+        now.insert(key, value);
+    }
+    let destroyed = seen.keys().filter(|key| !now.contains_key(key)).count();
+    *seen = now;
+    RowChange {
+        shown: changed,
+        destroyed,
+    }
+}
+
+/// Row widgets one dispatch changed: shown anew or for another row, and
+/// destroyed.
+#[derive(Clone, Copy, Debug, Default)]
+struct RowChange {
+    shown: usize,
+    destroyed: usize,
+}
+
+impl RowChange {
+    /// The larger of the two, which one collapse step bounds by the unit.
+    fn worst(changes: &[Self]) -> usize {
+        changes
+            .iter()
+            .map(|change| change.shown.max(change.destroyed))
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Run `start` (the input dispatch), then the main loop one dispatch at a
+/// time until `done` holds (or 120 s pass), returning the row widgets GTK
+/// showed anew or destroyed in the input dispatch and in each later one.
+fn row_widgets_changed_per_dispatch(
+    section: &LushtextWorkspaceSection,
+    start: impl FnOnce(),
+    mut done: impl FnMut() -> bool,
+) -> Vec<RowChange> {
+    let context = glib::MainContext::default();
+    let started = std::time::Instant::now();
+    let mut created = Vec::new();
+    let mut seen = BoundRows::new();
+    mark_new_row_widgets(section, &mut seen);
+    start();
+    created.push(mark_new_row_widgets(section, &mut seen));
+    while !done() {
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "the collapse settles within two minutes: {}",
+            collapse_state(section)
+        );
+        if context.iteration(false) {
+            created.push(mark_new_row_widgets(section, &mut seen));
+        } else {
+            std::thread::sleep(Duration::from_micros(500));
+        }
+    }
+    created
+}
+
+/// A presented tree whose `nested/` (with `count` entries, `siblings` files
+/// after it) is expanded and fully listed.
+fn expanded_nested(count: usize, siblings: usize) -> (LargeTree, PathBuf) {
+    let (dir, root) = seed_workspace(&[("nested", count)]);
+    for index in 0..siblings {
+        fixture::write_text(&root.join(format!("zz-{index:04}.txt")), "x");
+    }
+    let tree = present_single_folder(dir, root, "virtualized", 800);
+    tree.section.expand_folders();
+    let nested = tree.root.join("nested");
+    expand_and_load(&tree, &nested, count);
+    flush_after_delay(Duration::from_millis(300));
+    (tree, nested)
+}
+
+/// Set the collapse pacing for one test, and restore production pacing even
+/// when an assertion fails.
+struct Pacing;
+
+impl Pacing {
+    fn set(pacing: lushtext_core::ui::sidebar::CollapsePacingForTest) -> Self {
+        lushtext_core::ui::sidebar::set_sidebar_collapse_pacing_for_test(pacing);
+        Self
+    }
+}
+
+impl Drop for Pacing {
+    fn drop(&mut self) {
+        lushtext_core::ui::sidebar::set_sidebar_collapse_pacing_for_test(
+            lushtext_core::ui::sidebar::CollapsePacingForTest::FrameClock,
+        );
+    }
+}
+
+use lushtext_core::ui::sidebar::CollapsePacingForTest as CollapsePacing;
+
+/// Design D6: the input dispatch shows the collapse (arrow class, the row's
+/// and the expander's accessible state) and removes no row; the class goes
+/// once the directory is collapsed. Fails on `main`: no class exists.
+#[test]
+fn test_collapse_shows_in_the_first_frame() {
+    let (tree, nested) = expanded_nested(4096, 400);
+    let store = shown_store(&tree, &nested);
+    let expander = expander_for(&tree.section, &nested).expect("the row is realized");
+    assert!(
+        crate::common::accessible_expanded_is(&expander, true),
+        "the expander reads expanded before the input (the check can fail)"
+    );
+    activate_tree_row(&tree.section, &nested);
+    let row = row_for_path(&tree.section, &nested).expect("directory row");
+    assert!(
+        row.is_expanded(),
+        "GTK still lists the children after the input"
+    );
+    assert_eq!(
+        store.upgrade().expect("the store").n_items(),
+        4096,
+        "the input dispatch removes no row"
+    );
+    let expander = expander_for(&tree.section, &nested).expect("the row is realized");
+    assert!(expander.has_css_class(COLLAPSING_CLASS));
+    assert!(crate::common::accessible_expanded_is(&expander, false));
+    let overlay = expander.parent().expect("the row overlay");
+    assert!(crate::common::accessible_expanded_is(&overlay, false));
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    let expander = expander_for(&tree.section, &nested).expect("the row is realized");
+    assert!(!expander.has_css_class(COLLAPSING_CLASS));
+    drop(tree.window);
+}
+
+/// Design D2/D4: with 400 rows after a 256-entry directory, no dispatch of
+/// the collapse makes GTK create more than one unit of row widgets. Fails on
+/// `main`: the one collapse call replaces about 207.
+#[test]
+fn test_collapsing_a_directory_with_rows_after_it_bounds_each_step() {
+    let (tree, nested) = expanded_nested(256, 400);
+    let created = row_widgets_changed_per_dispatch(
+        &tree.section,
+        || activate_tree_row(&tree.section, &nested),
+        || collapse_settled(&tree.section, &nested),
+    );
+    let worst = RowChange::worst(&created);
+    assert!(
+        worst <= COLLAPSE_UNIT,
+        "one dispatch changed {worst} row widgets, over the unit of {COLLAPSE_UNIT}: {created:?}"
+    );
+    let evidence = tree.section.workspace_section_evidence();
+    assert!(evidence.collapse_steps_total > 1, "the collapse was sliced");
+    assert_eq!(
+        evidence.last_collapse_end,
+        Some(lushtext_core::ui::sidebar::workspace_section::CollapseEnd::Completed)
+    );
+    drop(tree.window);
+}
+
+/// Design D7: the folder header collapses two expanded 4,096-entry roots;
+/// every dispatch replaces at most one unit across both, and both complete.
+/// Fails on `main`: one direct call per root.
+#[test]
+fn test_collapsing_several_directories_takes_one_unit_per_frame() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("two roots tempdir");
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    seed_files(&first, 4096);
+    seed_files(&second, 4096);
+    save_workspaces(vec![WorkspaceConfig::with_folders(
+        WorkspaceId::new("two-roots"),
+        "two-roots",
+        vec![
+            WorkspaceFolder::new(first.clone()),
+            WorkspaceFolder::new(second.clone()),
+        ],
+    )]);
+    let (window, sidebar) = present_sidebar_window(800);
+    let section = mapped_sections(&sidebar, 1).remove(0);
+    section.expand_folders();
+    wait_until(Duration::from_secs(60), || {
+        [&first, &second].iter().all(|root| {
+            section
+                .workspace_section_evidence()
+                .directory_listings
+                .iter()
+                .any(|listing| listing.path == **root && listing.directory_retained_entries == 4096)
+        }) && !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+    });
+    flush_after_delay(Duration::from_millis(300));
+    let created = row_widgets_changed_per_dispatch(
+        &section,
+        || section.collapse_folders(),
+        || collapse_settled(&section, &first) && collapse_settled(&section, &second),
+    );
+    let worst = RowChange::worst(&created);
+    assert!(
+        worst <= COLLAPSE_UNIT,
+        "one dispatch changed {worst} row widgets across both roots: {created:?}"
+    );
+    drop(window);
+    drop(sidebar);
+}
+
+/// Design D4: with the frame clock kept from pacing the collapse, the
+/// starvation fallback completes it and the evidence counts its steps; once
+/// ticks resume, no dispatch lays out two units.
+#[test]
+fn test_a_starved_frame_clock_still_completes_the_collapse() {
+    let (tree, nested) = expanded_nested(4096, 400);
+    let pacing = Pacing::set(CollapsePacing::NoFrameClock);
+    activate_tree_row(&tree.section, &nested);
+    wait_until(Duration::from_secs(30), || {
+        tree.section
+            .workspace_section_evidence()
+            .collapse_starved_steps_total
+            > 0
+    });
+    let created = row_widgets_changed_per_dispatch(
+        &tree.section,
+        || drop(pacing),
+        || collapse_settled(&tree.section, &nested),
+    );
+    let worst = RowChange::worst(&created);
+    assert!(
+        worst <= COLLAPSE_UNIT,
+        "a resumed tick changed {worst}: {created:?}"
+    );
+    drop(tree.window);
+}
+
+/// Design D6: a collapsing row scrolled out of the band and back keeps the
+/// overlay's and the expander's accessible `expanded` false and the class.
+#[test]
+fn test_a_rebound_collapsing_row_stays_collapsed_for_accessibility() {
+    let (tree, nested) = expanded_nested(128 * 1024, 0);
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, &nested);
+    let section = tree.section.clone();
+    let index = tree_index_for_path(&section, &nested).expect("row index");
+    section
+        .imp()
+        .file_tree_view
+        .scroll_to(index + 4000, gtk4::ListScrollFlags::NONE, None);
+    flush_after_delay(Duration::from_millis(150));
+    section
+        .imp()
+        .file_tree_view
+        .scroll_to(index, gtk4::ListScrollFlags::NONE, None);
+    flush_after_delay(Duration::from_millis(150));
+    assert!(
+        !section.workspace_section_evidence().collapses.is_empty(),
+        "the collapse is still running when the row comes back"
+    );
+    let expander = expander_for(&section, &nested).expect("the row is realized again");
+    assert!(expander.has_css_class(COLLAPSING_CLASS));
+    assert!(crate::common::accessible_expanded_is(&expander, false));
+    let overlay = expander.parent().expect("the row overlay");
+    assert!(crate::common::accessible_expanded_is(&overlay, false));
+    drop(pacing);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&section, &nested)
+    });
+    drop(tree.window);
+}
+
+/// Design D8: the directory row on screen does not move at any step, the
+/// slice bin makes no correction, and no forwarded request is left pending.
+#[test]
+fn test_collapse_keeps_the_directory_row_still() {
+    let (tree, nested) = expanded_nested(256, 400);
+    let bin = tree.section.imp().file_tree_slice.clone();
+    let corrections = bin.correction_count();
+    let before = row_placement(&tree.section, "nested").expect("the row is drawn");
+    activate_tree_row(&tree.section, &nested);
+    let context = glib::MainContext::default();
+    let started = std::time::Instant::now();
+    while !collapse_settled(&tree.section, &nested) {
+        assert!(started.elapsed() < Duration::from_secs(60));
+        if context.iteration(false) {
+            if let Some(now) = row_placement(&tree.section, "nested") {
+                assert_eq!(now, before, "the directory row moved during the collapse");
+            }
+        } else {
+            std::thread::sleep(Duration::from_micros(500));
+        }
+    }
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(row_placement(&tree.section, "nested"), Some(before));
+    assert_eq!(bin.correction_count(), corrections);
+    assert!(!bin.outer_request_pending());
+    drop(tree.window);
+}
+
+/// Design D7: selection and focus inside the subtree move to the directory
+/// row, on the sliced and on the direct path. Fails on `main`, where the
+/// selection lands on another row.
+#[test]
+fn test_collapse_moves_selection_and_focus_to_the_directory() {
+    for count in [4096usize, 8] {
+        let (tree, nested) = expanded_nested(count, 50);
+        let child = nested.join(file_name(3));
+        select_and_scroll_to(&tree.section, &child);
+        let directory = tree_index_for_path(&tree.section, &nested).expect("row index");
+        activate_tree_row(&tree.section, &nested);
+        assert_eq!(
+            selection(&tree.section).selected(),
+            directory,
+            "{count} entries: the selection moves to the directory row at once"
+        );
+        wait_until(Duration::from_secs(60), || {
+            collapse_settled(&tree.section, &nested)
+        });
+        assert_eq!(selection(&tree.section).selected(), directory);
+        drop(tree.window);
+    }
+}
+
+/// Design D7: expanding a collapsing directory again, by activation and by a
+/// reveal, ends the collapse and lists every entry, with no full recache.
+/// Passes on `main` (no collapse is ever pending there) and must stay green.
+#[test]
+fn test_expanding_again_mid_collapse_restores_every_entry() {
+    use lushtext_core::ui::sidebar::workspace_section::CollapseEnd;
+    let count = 4096;
+    let (tree, nested) = expanded_nested(count, 0);
+    let rebuilds = tree
+        .section
+        .workspace_section_evidence()
+        .cache_full_rebuilds;
+    for route in ["activation", "reveal"] {
+        let pacing = Pacing::set(CollapsePacing::NoFrameClock);
+        activate_tree_row(&tree.section, &nested);
+        wait_until(Duration::from_secs(30), || {
+            tree.section
+                .workspace_section_evidence()
+                .collapses
+                .first()
+                .is_some_and(|collapse| collapse.steps > 0)
+        });
+        // No main-loop turn since the predicate held: the collapse is pinned
+        // after its first steps, with rows already drained.
+        lushtext_core::ui::sidebar::set_sidebar_collapse_pacing_for_test(CollapsePacing::Hold);
+        assert!(
+            listing(&tree.section, &nested).directory_retained_entries < count
+                || !tree
+                    .section
+                    .workspace_section_evidence()
+                    .collapses
+                    .is_empty(),
+            "{route}: the collapse is pending"
+        );
+        if route == "activation" {
+            activate_tree_row(&tree.section, &nested);
+        } else {
+            activate_reveal_workspace_path(&tree.window, &nested.join(file_name(10)));
+        }
+        drop(pacing);
+        wait_until(Duration::from_secs(60), || {
+            row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded())
+                && listing(&tree.section, &nested).directory_retained_entries == count
+                && !tree
+                    .section
+                    .workspace_section_evidence()
+                    .refresh_blocks_readiness
+        });
+        let evidence = tree.section.workspace_section_evidence();
+        assert_eq!(
+            evidence.last_collapse_end,
+            Some(CollapseEnd::ReExpanded),
+            "{route}"
+        );
+        assert!(evidence.collapses.is_empty(), "{route}");
+        assert_eq!(
+            evidence.cache_full_rebuilds, rebuilds,
+            "{route}: no full recache"
+        );
+        let expander = expander_for(&tree.section, &nested).expect("realized");
+        assert!(!expander.has_css_class(COLLAPSING_CLASS), "{route}");
+        assert!(
+            crate::common::accessible_expanded_is(&expander, true),
+            "{route}"
+        );
+    }
+    drop(tree.window);
+}
+
+/// Design D4: a collapse completes when the sidebar is hidden mid-collapse,
+/// and when the section body is collapsed, and readiness then clears.
+#[test]
+fn test_a_collapse_nobody_draws_completes() {
+    for hide in ["sidebar", "section-body"] {
+        let (tree, nested) = expanded_nested(4096, 400);
+        let pacing = Pacing::set(CollapsePacing::Hold);
+        activate_tree_row(&tree.section, &nested);
+        if hide == "sidebar" {
+            gio::prelude::ActionGroupExt::activate_action(&tree.window, "toggle-sidebar", None);
+        } else {
+            tree.section.imp().collapse_button.emit_clicked();
+        }
+        wait_until(Duration::from_secs(10), || {
+            !tree.section.imp().file_tree_view.is_mapped()
+        });
+        assert!(
+            !tree
+                .section
+                .workspace_section_evidence()
+                .collapses
+                .is_empty(),
+            "{hide}: the collapse is still pending when the list is hidden"
+        );
+        drop(pacing);
+        wait_until(Duration::from_secs(60), || {
+            row_for_path(&tree.section, &nested).is_some_and(|row| !row.is_expanded())
+                && !tree
+                    .section
+                    .workspace_section_evidence()
+                    .refresh_blocks_readiness
+        });
+        assert!(
+            tree.section
+                .workspace_section_evidence()
+                .collapses
+                .is_empty(),
+            "{hide}"
+        );
+        if hide == "sidebar" {
+            // The sidebar's visibility is a persisted preference: show it
+            // again so the next window maps its sections.
+            gio::prelude::ActionGroupExt::activate_action(&tree.window, "toggle-sidebar", None);
+            flush_after_delay(Duration::from_millis(300));
+        }
+        drop(tree.window);
+    }
+}
+
+/// Design D4: collapsing `outer/` drains and collapses the expanded
+/// `inner/` (16,385 entries) before any of `outer/`'s own rows go.
+#[test]
+fn test_ancestor_collapse_drains_the_descendant_first() {
+    let (dir, root) = seed_workspace(&[("outer/inner", 16 * 1024 + 1)]);
+    for index in 0..100 {
+        fixture::write_text(&root.join("outer").join(format!("o-{index:03}.txt")), "x");
+    }
+    let tree = present_single_folder(dir, root, "virtualized", 800);
+    tree.section.expand_folders();
+    let outer = tree.root.join("outer");
+    let inner = outer.join("inner");
+    expand_and_load(&tree, &outer, 101);
+    expand_and_load(&tree, &inner, 16 * 1024 + 1);
+    flush_after_delay(Duration::from_millis(300));
+    let outer_store = shown_store(&tree, &outer);
+    let inner_row = row_for_path(&tree.section, &inner).expect("inner row");
+    activate_tree_row(&tree.section, &outer);
+    let context = glib::MainContext::default();
+    let started = std::time::Instant::now();
+    while !collapse_settled(&tree.section, &outer) {
+        assert!(started.elapsed() < Duration::from_secs(60));
+        if context.iteration(false)
+            && let Some(store) = outer_store.upgrade()
+            && store.n_items() < 101
+        {
+            assert!(
+                !inner_row.is_expanded(),
+                "outer/ lost rows while inner/ was still expanded"
+            );
+        }
+    }
+    drop(tree.window);
+}
+
+/// Design D7: a collapse during a load stops the load (no batch is applied
+/// afterwards), and re-expansion loads afresh. 32,768 entries keep the load
+/// running for many turns (asserted when the collapse starts) while keeping
+/// the shard's memory: at 131,072 entries a re-expansion right after the
+/// stopped load peaked at 2.4 GiB in a debug build, past the shard's 2 GiB
+/// scope.
+#[test]
+fn test_collapse_stops_loads_and_refreshes_under_it() {
+    let count = 32 * 1024;
+    let tree = large_tree(&[("nested", count)], 800);
+    let nested = tree.root.join("nested");
+    wait_until(Duration::from_secs(10), || {
+        row_for_path(&tree.section, &nested).is_some()
+    });
+    wait_for_refresh_idle(&tree.section);
+    activate_tree_row(&tree.section, &nested);
+    // One dispatch at a time, so the collapse starts at the load's first
+    // batch: `wait_until` drains every ready source, the whole load with it.
+    let context = glib::MainContext::default();
+    let started = std::time::Instant::now();
+    // The shown store, not the evidence's listings: GTK's `is_expandable()`
+    // probe gives the path a second store (A22), whose listing can be whole.
+    let shown_rows = || {
+        row_for_path(&tree.section, &nested)
+            .and_then(|row| row.children())
+            .map_or(0, |children| children.n_items())
+    };
+    while shown_rows() == 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the load lists a first batch"
+        );
+        if !context.iteration(false) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    let store = shown_store(&tree, &nested);
+    let loaded = shown_rows();
+    assert!(
+        usize::try_from(loaded).is_ok_and(|loaded| loaded < count),
+        "the collapse must start while the load runs ({loaded} of {count} rows shown)"
+    );
+    activate_tree_row(&tree.section, &nested);
+    let mut last = store.upgrade().map_or(0, |store| store.n_items());
+    let started = std::time::Instant::now();
+    while !collapse_settled(&tree.section, &nested) {
+        assert!(started.elapsed() < Duration::from_secs(60));
+        if context.iteration(false)
+            && let Some(store) = store.upgrade()
+        {
+            assert!(
+                store.n_items() <= last,
+                "a load batch was applied to a collapsing store ({last} -> {}): {}",
+                store.n_items(),
+                collapse_state(&tree.section)
+            );
+            last = store.n_items();
+        }
+    }
+    // The finished collapse retired the drained listing: no listing of the
+    // path keeps a loading row once nothing loads (the step once held the
+    // store while GTK collapsed the row, so its retirement was skipped and
+    // the drained mirror outlived it).
+    assert!(
+        tree.section
+            .workspace_section_evidence()
+            .directory_listings
+            .iter()
+            .all(|listing| listing.path != nested || listing.loading_tail_rows == 0),
+        "the collapsed listing is retired: {:?}",
+        tree.section.workspace_section_evidence().directory_listings
+    );
+    activate_tree_row(&tree.section, &nested);
+    let reloaded = crate::common::wait_until_or_false(Duration::from_secs(60), || {
+        usize::try_from(shown_rows()).is_ok_and(|shown| shown == count)
+            && !tree
+                .section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    assert!(
+        reloaded,
+        "re-expansion reloads every entry: expanded={:?} shown={} listings={:?} {}",
+        row_for_path(&tree.section, &nested).map(|row| row.is_expanded()),
+        shown_rows(),
+        tree.section
+            .workspace_section_evidence()
+            .directory_listings
+            .iter()
+            .filter(|listing| listing.path == nested)
+            .collect::<Vec<_>>(),
+        collapse_state(&tree.section)
+    );
+    drop(tree.window);
+}
+
+/// Design D5: activation, the folder header's collapse and toggle, and a
+/// failed reveal all collapse through the entry point, counted by the
+/// evidence. (The arrow is covered by
+/// `test_the_arrow_click_survives_an_icon_recreation`, and the expander's
+/// keys, which reach it once Tab focuses it (A114), by
+/// `test_expander_keys_take_the_collapse_entry_point`.)
+#[test]
+fn test_collapse_routes_reach_the_entry_point() {
+    let (tree, nested) = expanded_nested(8, 0);
+    let counted = |section: &LushtextWorkspaceSection| {
+        let evidence = section.workspace_section_evidence();
+        evidence.collapse_direct_total + evidence.collapse_steps_total
+    };
+    let before = counted(&tree.section);
+    activate_tree_row(&tree.section, &nested);
+    wait_until(Duration::from_secs(10), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    assert!(counted(&tree.section) > before, "activation");
+    let before = counted(&tree.section);
+    tree.section.collapse_folders();
+    wait_until(Duration::from_secs(10), || {
+        collapse_settled(&tree.section, &tree.root)
+    });
+    assert!(counted(&tree.section) > before, "header collapse");
+    tree.section.toggle_folders();
+    wait_until(Duration::from_secs(10), || {
+        row_for_path(&tree.section, &tree.root).is_some_and(|row| row.is_expanded())
+    });
+    wait_for_refresh_idle(&tree.section);
+    let before = counted(&tree.section);
+    tree.section.toggle_folders();
+    wait_until(Duration::from_secs(10), || {
+        collapse_settled(&tree.section, &tree.root)
+    });
+    assert!(counted(&tree.section) > before, "header toggle");
+    tree.section.expand_folders();
+    wait_for_refresh_idle(&tree.section);
+    let before = counted(&tree.section);
+    let status = reveal_and_settle(&tree.window, &tree.sidebar, &nested.join("missing.txt"));
+    assert_eq!(status, WorkspaceRevealStatus::NotFound);
+    wait_for_refresh_idle(&tree.section);
+    assert!(counted(&tree.section) > before, "reveal failure");
+    drop(tree.window);
+}
+
+/// Design D5's key route (ledger A114): a click leaves the focus on the row
+/// widget and Tab moves it onto the expander, from which its class collapse
+/// keys reach LushText's entry point (sliced, origin `Keys`); an expand key on
+/// the collapsing row ends the collapse, and an expand key on a collapsed row
+/// is GTK's own.
+#[test]
+fn test_expander_keys_take_the_collapse_entry_point() {
+    use lushtext_core::ui::sidebar::workspace_section::{CollapseEnd, CollapseOrigin};
+    const MINUS: u32 = 0x2d;
+    const PLUS: u32 = 0x2b;
+    const CONTROL_L: u32 = 0xffe3;
+    const SPACE: u32 = 0x20;
+    const TAB: u32 = 0xff09;
+    let (tree, nested) = expanded_nested(4096, 0);
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    let expander = expander_for(&tree.section, &nested).expect("the row is realized");
+    let label = expander.child().expect("the row content");
+    crate::common::activate_with_real_press(&tree.window, &label);
+    let focus_is_the_row = || {
+        gtk4::prelude::GtkWindowExt::focus(&tree.window)
+            .and_downcast::<gtk4::TreeExpander>()
+            .is_some_and(|focused| focused.list_row() == row_for_path(&tree.section, &nested))
+    };
+    let row_widget = expander
+        .parent()
+        .and_then(|overlay| overlay.parent())
+        .expect("the row widget");
+    assert!(
+        gtk4::prelude::GtkWindowExt::focus(&tree.window).as_ref() == Some(&row_widget),
+        "a click leaves the focus on the row widget, where no expander key reaches (A114)"
+    );
+    crate::common::type_with_real_keyboard(&[&[TAB]]);
+    assert!(
+        focus_is_the_row(),
+        "Tab moves the focus onto the row's expander"
+    );
+    crate::common::type_with_real_keyboard(&[&[MINUS]]);
+    let evidence = tree.section.workspace_section_evidence();
+    assert_eq!(
+        evidence.collapses.len(),
+        1,
+        "{}",
+        collapse_state(&tree.section)
+    );
+    assert_eq!(evidence.collapses[0].origin, CollapseOrigin::Keys);
+    assert!(
+        row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded()),
+        "the collapse is paced, not GTK's direct one"
+    );
+    crate::common::type_with_real_keyboard(&[&[PLUS]]);
+    let evidence = tree.section.workspace_section_evidence();
+    assert!(
+        evidence.collapses.is_empty(),
+        "{}",
+        collapse_state(&tree.section)
+    );
+    assert_eq!(evidence.last_collapse_end, Some(CollapseEnd::ReExpanded));
+    wait_for_refresh_idle(&tree.section);
+    crate::common::type_with_real_keyboard(&[&[CONTROL_L, SPACE]]);
+    let evidence = tree.section.workspace_section_evidence();
+    assert_eq!(
+        evidence.collapses.len(),
+        1,
+        "Ctrl+space collapses through the entry point"
+    );
+    assert_eq!(evidence.collapses[0].origin, CollapseOrigin::Keys);
+    drop(pacing);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    crate::common::type_with_real_keyboard(&[&[PLUS]]);
+    wait_until(Duration::from_secs(10), || {
+        row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded())
+    });
+    drop(tree.window);
+}
+
+/// Design D7/D11: readiness is blocked while a collapse runs, the evidence
+/// reports it, and reading the evidence mid-collapse changes nothing.
+#[test]
+fn test_collapse_readiness_and_evidence() {
+    use lushtext_core::ui::sidebar::workspace_section::CollapseOrigin;
+    let (tree, nested) = expanded_nested(4096, 400);
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, &nested);
+    let first = tree.section.workspace_section_evidence();
+    assert!(first.refresh_blocks_readiness);
+    assert_eq!(first.collapses.len(), 1);
+    assert_eq!(first.collapses[0].path, nested);
+    assert_eq!(first.collapses[0].origin, CollapseOrigin::Activation);
+    let second = tree.section.workspace_section_evidence();
+    assert_eq!(first.collapses, second.collapses, "reading is inert");
+    assert_eq!(first.collapse_steps_total, second.collapse_steps_total);
+    assert_eq!(
+        first.expansion_capture_scans,
+        second.expansion_capture_scans
+    );
+    assert!(
+        tree.sidebar
+            .workspace_tree_evidence()
+            .refresh_blocks_readiness
+    );
+    drop(pacing);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    assert!(
+        tree.section
+            .workspace_section_evidence()
+            .collapses
+            .is_empty()
+    );
+    drop(tree.window);
+}
+
+/// Design D7: removing the collapsing directory (deleted on disk, refreshed)
+/// ends its collapse as removed and clears readiness.
+#[test]
+fn test_removing_a_collapsing_directory_cancels_the_collapse() {
+    use lushtext_core::ui::sidebar::workspace_section::CollapseEnd;
+    let (tree, nested) = expanded_nested(4096, 0);
+    let _pacing = Pacing::set(CollapsePacing::Hold);
+    activate_tree_row(&tree.section, &nested);
+    fixture::remove_dir_all(&nested);
+    tree.section
+        .queue_auto_refresh_for_test(vec![tree.root.clone()]);
+    tree.section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(60), || {
+        row_for_path(&tree.section, &nested).is_none()
+            && !tree
+                .section
+                .workspace_section_evidence()
+                .refresh_blocks_readiness
+    });
+    let evidence = tree.section.workspace_section_evidence();
+    assert!(evidence.collapses.is_empty());
+    assert_eq!(evidence.last_collapse_end, Some(CollapseEnd::Removed));
+    drop(tree.window);
+}
+
+/// The expander's current disclosure icon (CSS name `expander`).
+fn arrow_icon(expander: &gtk4::TreeExpander) -> Option<gtk4::Widget> {
+    let mut child = expander.first_child();
+    while let Some(widget) = child {
+        if widget.css_name() == "expander" {
+            return Some(widget);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+/// Design D5 (ledger A114): a real click on the arrow reaches the collapse
+/// entry point and GTK's own toggle does nothing, also after GTK re-created
+/// the icon; a click on a collapsed arrow expands and selects the row.
+#[test]
+fn test_the_arrow_click_survives_an_icon_recreation() {
+    use crate::common::activate_with_real_press;
+    let (tree, nested) = expanded_nested(256, 0);
+    let expander = expander_for(&tree.section, &nested).expect("realized");
+    let icon = arrow_icon(&expander).expect("an expandable row has an arrow");
+    let row = row_for_path(&tree.section, &nested).expect("row");
+    let pacing = Pacing::set(CollapsePacing::Hold);
+    activate_with_real_press(&tree.window, &icon);
+    assert!(
+        row.is_expanded() && expander.has_css_class(COLLAPSING_CLASS),
+        "the click started the owned collapse and GTK's toggle did not run"
+    );
+    drop(pacing);
+    wait_until(Duration::from_secs(60), || {
+        collapse_settled(&tree.section, &nested)
+    });
+    // GTK re-creates the icon on a rebind.
+    let expander = expander_for(&tree.section, &nested).expect("realized");
+    let row = row_for_path(&tree.section, &nested).expect("row");
+    expander.set_list_row(None::<&gtk4::TreeListRow>);
+    expander.set_list_row(Some(&row));
+    flush_after_delay(Duration::from_millis(100));
+    let icon = arrow_icon(&expander).expect("the arrow again");
+    // Select another row first, so a press that moved the selection to the
+    // directory row would show.
+    selection(&tree.section).set_selected(0);
+    flush_events();
+    let selected = selection(&tree.section).selected();
+    activate_with_real_press(&tree.window, &icon);
+    wait_until(Duration::from_secs(30), || {
+        row.is_expanded() && listing(&tree.section, &nested).directory_retained_entries == 256
+    });
+    // GTK's own icon gesture claims the release too, so an arrow click
+    // leaves the selection where it was (A114 measures both alike).
+    assert_eq!(
+        selection(&tree.section).selected(),
+        selected,
+        "the arrow click leaves the selection as GTK's toggle does"
+    );
+    drop(tree.window);
+}
+
+/// Design D8: the folder header collapsing a root while the sidebar is
+/// scrolled into a 4,096-entry directory ends at the outer value and row
+/// placement GTK's direct collapse gives a twin tree.
+#[test]
+fn test_collapse_from_inside_the_children_matches_a_direct_collapse() {
+    let mut results = Vec::new();
+    for owned in [true, false] {
+        let (tree, nested) = expanded_nested(4096, 0);
+        scroll_outer_to(&tree.sidebar, 40_000.0);
+        flush_after_delay(Duration::from_millis(300));
+        if owned {
+            tree.section.collapse_folders();
+        } else {
+            row_for_path(&tree.section, &tree.root)
+                .expect("folder row")
+                .set_expanded(false);
+        }
+        wait_until(Duration::from_secs(60), || {
+            collapse_settled(&tree.section, &tree.root)
+        });
+        flush_after_delay(Duration::from_millis(500));
+        results.push((
+            outer_adjustment(&tree.sidebar).value(),
+            row_placement(&tree.section, "root"),
+        ));
+        let _ = nested;
+        drop(tree.window);
+    }
+    assert_eq!(results[0], results[1], "owned vs direct collapse end state");
+}
+
+/// Design D5: the arrow gesture keeps GTK's behaviour for what it does not
+/// own. A click on a collapsed directory's arrow expands and lists it and
+/// leaves the selection as GTK's own toggle does; a double click on a file row still activates the file (the expander's
+/// own gesture no longer runs for file rows on GTK 4.24.1, ledger A114); and
+/// a click on the arrow activates nothing.
+#[test]
+fn test_expand_routes_keep_gtk_behaviour() {
+    use crate::common::press_with_real_pointer;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let (dir, root) = seed_workspace(&[("nested", 64)]);
+    fixture::write_text(&root.join("zz-file.txt"), "x");
+    let tree = present_single_folder(dir, root, "virtualized", 800);
+    tree.section.expand_folders();
+    let nested = tree.root.join("nested");
+    let file = tree.root.join("zz-file.txt");
+    wait_until(Duration::from_secs(10), || {
+        row_for_path(&tree.section, &file).is_some()
+    });
+    wait_for_refresh_idle(&tree.section);
+    let activated: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
+    let recorder = Rc::clone(&activated);
+    tree.section
+        .connect_file_activated(move |path| recorder.borrow_mut().push(path.to_path_buf()));
+    let expander = expander_for(&tree.section, &nested).expect("realized");
+    let icon = arrow_icon(&expander).expect("a directory row has an arrow");
+    selection(&tree.section).set_selected(0);
+    flush_events();
+    let selected = selection(&tree.section).selected();
+    press_with_real_pointer(&tree.window, &icon, 1);
+    wait_until(Duration::from_secs(30), || {
+        row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded())
+            && listing(&tree.section, &nested).directory_retained_entries == 64
+    });
+    assert_eq!(
+        selection(&tree.section).selected(),
+        selected,
+        "the arrow click leaves the selection as GTK's toggle does (A114)"
+    );
+    flush_after_delay(Duration::from_millis(500));
+    assert!(
+        activated.borrow().is_empty(),
+        "an arrow click activates nothing"
+    );
+    select_and_scroll_to(&tree.section, &file);
+    flush_after_delay(Duration::from_millis(300));
+    let file_expander = expander_for(&tree.section, &file).expect("the file row is realized");
+    press_with_real_pointer(&tree.window, &file_expander, 2);
+    wait_until(Duration::from_secs(10), || !activated.borrow().is_empty());
+    assert_eq!(activated.borrow().as_slice(), std::slice::from_ref(&file));
+    drop(tree.window);
+}
+
+/// Every dispatch the main loop ran while a collapse or an expansion
+/// settled, for `test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets`.
+#[derive(Debug, Default)]
+struct DispatchTimeline {
+    /// Dispatches run, in order.
+    dispatches: Vec<TimedDispatch>,
+    /// Microseconds from the timeline's start until `done` first held.
+    done_us: Option<u64>,
+}
+
+/// One main-loop dispatch of a [`DispatchTimeline`].
+#[derive(Debug, Clone, Copy)]
+struct TimedDispatch {
+    /// Microseconds from the timeline's start.
+    start_us: u64,
+    /// The dispatch's own time.
+    took_us: u64,
+    /// A frame's layout phase, `None` for a dispatch that drew no frame.
+    layout_us: Option<u64>,
+    /// A frame's paint phase, `None` for a dispatch that drew no frame.
+    paint_us: Option<u64>,
+    /// Whether the section published a scan terminal in it (design D12's
+    /// probe publication).
+    published_terminal: bool,
+}
+
+impl DispatchTimeline {
+    fn worst(&self, frames: bool) -> u64 {
+        self.dispatches
+            .iter()
+            .filter(|dispatch| dispatch.layout_us.is_some() == frames)
+            .map(|dispatch| dispatch.took_us)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn worst_layout(&self) -> u64 {
+        self.dispatches
+            .iter()
+            .filter_map(|dispatch| dispatch.layout_us)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn worst_paint(&self) -> u64 {
+        self.dispatches
+            .iter()
+            .filter_map(|dispatch| dispatch.paint_us)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Dispatches over `limit` µs, as `[start, took, frame, terminal]`.
+    fn over(&self, limit: u64) -> String {
+        let over: Vec<String> = self
+            .dispatches
+            .iter()
+            .filter(|dispatch| dispatch.took_us > limit)
+            .map(|dispatch| {
+                format!(
+                    "[{},{},{},{}]",
+                    dispatch.start_us,
+                    dispatch.took_us,
+                    dispatch.layout_us.is_some(),
+                    dispatch.published_terminal
+                )
+            })
+            .collect();
+        format!("[{}]", over.join(","))
+    }
+}
+
+/// Run the main loop one dispatch at a time until `done` holds and then for
+/// `after` more, recording every dispatch, its frame phases, and whether the
+/// section published a scan terminal in it.
+fn dispatch_timeline(
+    section: &LushtextWorkspaceSection,
+    budget: Duration,
+    after: Duration,
+    mut done: impl FnMut() -> bool,
+) -> DispatchTimeline {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Instant;
+    let clock = section
+        .imp()
+        .file_tree_view
+        .frame_clock()
+        .expect("a realized list has a frame clock");
+    let layout_end: Rc<Cell<Option<Instant>>> = Rc::default();
+    let paint_end: Rc<Cell<Option<Instant>>> = Rc::default();
+    let layout_handler = clock.connect_layout({
+        let layout_end = Rc::clone(&layout_end);
+        move |_| layout_end.set(Some(Instant::now()))
+    });
+    let paint_handler = clock.connect_paint({
+        let paint_end = Rc::clone(&paint_end);
+        move |_| paint_end.set(Some(Instant::now()))
+    });
+    let context = glib::MainContext::default();
+    let started = Instant::now();
+    let micros = |duration: Duration| u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+    let mut timeline = DispatchTimeline::default();
+    let mut done_at: Option<Instant> = None;
+    while started.elapsed() < budget {
+        if done_at.is_none() && done() {
+            done_at = Some(Instant::now());
+            timeline.done_us = Some(micros(started.elapsed()));
+        }
+        if done_at.is_some_and(|at| at.elapsed() >= after) {
+            break;
+        }
+        let terminals = section
+            .workspace_section_evidence()
+            .scan_pressure
+            .terminal_publications;
+        layout_end.set(None);
+        paint_end.set(None);
+        let start = Instant::now();
+        if context.iteration(false) {
+            let took = start.elapsed();
+            let (layout, paint) = match (layout_end.get(), paint_end.get()) {
+                (Some(layout), Some(paint)) => (
+                    Some(micros(layout.saturating_duration_since(start))),
+                    Some(micros(paint.saturating_duration_since(layout))),
+                ),
+                (None, Some(paint)) => (
+                    Some(0),
+                    Some(micros(paint.saturating_duration_since(start))),
+                ),
+                (Some(layout), None) => (
+                    Some(micros(layout.saturating_duration_since(start))),
+                    Some(0),
+                ),
+                (None, None) => (None, None),
+            };
+            let advanced = section
+                .workspace_section_evidence()
+                .scan_pressure
+                .terminal_publications
+                > terminals;
+            timeline.dispatches.push(TimedDispatch {
+                start_us: micros(start.saturating_duration_since(started)),
+                took_us: micros(took),
+                layout_us: layout,
+                paint_us: paint,
+                published_terminal: advanced,
+            });
+        } else {
+            std::thread::sleep(Duration::from_micros(500));
+        }
+    }
+    clock.disconnect(layout_handler);
+    clock.disconnect(paint_handler);
+    timeline
+}
+
+/// Activate the row at `path` the way Enter or a double click does (the
+/// list's `activate`), returning the call's time in µs.
+fn activate_row(section: &LushtextWorkspaceSection, path: &Path) -> u64 {
+    let position = tree_index_for_path(section, path).expect("the row is listed");
+    let started = std::time::Instant::now();
+    section
+        .imp()
+        .file_tree_view
+        .emit_by_name::<()>("activate", &[&position]);
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+/// Whether `path`'s row is listed and collapsed and the section is settled.
+fn collapsed_and_settled(section: &LushtextWorkspaceSection, path: &Path) -> bool {
+    row_for_path(section, path).is_some_and(|row| !row.is_expanded())
+        && !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+}
+
+/// Whether `path` lists `count` entries and the section is settled.
+fn loaded_and_settled(section: &LushtextWorkspaceSection, path: &Path, count: usize) -> bool {
+    section
+        .workspace_section_evidence()
+        .directory_listings
+        .iter()
+        .any(|listing| listing.path == path && listing.directory_retained_entries == count)
+        && !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+}
+
+/// One case line of the collapse and expansion verdict.
+fn print_case(
+    case: &str,
+    siblings: usize,
+    entries: usize,
+    input_us: u64,
+    timeline: &DispatchTimeline,
+) {
+    use lushtext_core::model::responsiveness_budget::{B_INTERACT_US, B_SETTLE_US};
+    println!(
+        "collapse-verdict {{\"case\":\"{case}\",\"siblings\":{siblings},\"entries\":{entries},\"input_us\":{input_us},\"worst_frame_us\":{},\"worst_frame_layout_us\":{},\"worst_frame_paint_us\":{},\"worst_other_us\":{},\"done_us\":{},\"dispatches\":{},\"over_interact\":{},\"over_settle\":{}}}",
+        timeline.worst(true),
+        timeline.worst_layout(),
+        timeline.worst_paint(),
+        timeline.worst(false),
+        timeline
+            .done_us
+            .map_or_else(|| "null".to_owned(), |us| us.to_string()),
+        timeline.dispatches.len(),
+        timeline.over(B_INTERACT_US),
+        timeline.over(B_SETTLE_US),
+    );
+}
+
+/// The cases a run measures: `COLLAPSE_VERDICT_CASES` (comma-separated case
+/// names), or every case.
+fn verdict_case_enabled(case: &str) -> bool {
+    std::env::var("COLLAPSE_VERDICT_CASES").map_or(true, |cases| {
+        cases.split(',').any(|enabled| enabled == case)
+    })
+}
+
+/// A presented single-folder tree holding `nested/` with `count` entries and
+/// `siblings` files after it, its folder expanded.
+fn tree_with_siblings(count: usize, siblings: usize) -> LargeTree {
+    let (dir, root) = seed_workspace(&[("nested", count)]);
+    for index in 0..siblings {
+        fixture::write_text(&root.join(format!("zz-{index:04}.txt")), "x");
+    }
+    let tree = present_single_folder(dir, root, "virtualized", 800);
+    tree.section.expand_folders();
+    tree
+}
+
+/// `slice-large-directory-collapse` task 1.1 (design D2): collapsing a
+/// sidebar directory by a LushText-owned route (row activation, the folder
+/// header) and expanding a small one, presented: the input dispatch, every
+/// dispatch until collapsed plus 700 ms with frames split into layout and
+/// paint, the time until collapsed, and each dispatch's scan terminal
+/// publication. Printed on every build; task 7.1 enforces the pass bar on the
+/// optimized build. A debug build, which judges nothing, walks every case at
+/// small sizes only, so the shard keeps its time and memory.
+#[test]
+fn test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets() {
+    use crate::common::timing_verdicts_enforced;
+    const AFTER: Duration = Duration::from_millis(700);
+    const BUDGET: Duration = Duration::from_secs(240);
+    let full = timing_verdicts_enforced();
+    let collapse_sizes: &[usize] = if full {
+        &[64, 256, 4096, 16 * 1024 + 1, 128 * 1024]
+    } else {
+        &[64, 256]
+    };
+    let expansion_sizes: &[usize] = if full { &[64, 256, 1024] } else { &[64] };
+    let large = if full { 128 * 1024 } else { 4096 };
+    let reps: usize = std::env::var("COLLAPSE_VERDICT_REPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    for siblings in [0usize, 400] {
+        // Collapse by row activation.
+        if verdict_case_enabled("collapse") {
+            for &count in collapse_sizes {
+                let tree = tree_with_siblings(count, siblings);
+                let nested = tree.root.join("nested");
+                for _ in 0..reps {
+                    expand_and_load(&tree, &nested, count);
+                    flush_after_delay(Duration::from_millis(300));
+                    let input_us = activate_row(&tree.section, &nested);
+                    let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
+                        collapsed_and_settled(&tree.section, &nested)
+                    });
+                    print_case("collapse", siblings, count, input_us, &timeline);
+                    flush_after_delay(Duration::from_millis(300));
+                }
+                drop(tree.window);
+            }
+        }
+        // Expansion, cold and right after a collapse.
+        if verdict_case_enabled("expand") {
+            for &count in expansion_sizes {
+                for _ in 0..reps {
+                    let tree = tree_with_siblings(count, siblings);
+                    let nested = tree.root.join("nested");
+                    wait_until(Duration::from_secs(10), || {
+                        row_for_path(&tree.section, &nested).is_some()
+                    });
+                    wait_for_refresh_idle(&tree.section);
+                    flush_after_delay(Duration::from_millis(300));
+                    let input_us = activate_row(&tree.section, &nested);
+                    let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
+                        loaded_and_settled(&tree.section, &nested, count)
+                    });
+                    print_case("expand-cold", siblings, count, input_us, &timeline);
+                    activate_row(&tree.section, &nested);
+                    wait_until(Duration::from_secs(30), || {
+                        collapsed_and_settled(&tree.section, &nested)
+                    });
+                    let input_us = activate_row(&tree.section, &nested);
+                    let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
+                        loaded_and_settled(&tree.section, &nested, count)
+                    });
+                    print_case(
+                        "expand-after-collapse",
+                        siblings,
+                        count,
+                        input_us,
+                        &timeline,
+                    );
+                    drop(tree.window);
+                }
+            }
+        }
+    }
+    // The folder header collapsing two expanded 4,096-entry roots at once.
+    if verdict_case_enabled("header") {
+        for _ in 0..reps {
+            ensure_gtk_init();
+            let dir = tempfile::tempdir().expect("two roots tempdir");
+            let first = dir.path().join("first");
+            let second = dir.path().join("second");
+            seed_files(&first, 4096);
+            seed_files(&second, 4096);
+            save_workspaces(vec![WorkspaceConfig::with_folders(
+                WorkspaceId::new("two-roots"),
+                "two-roots",
+                vec![
+                    WorkspaceFolder::new(first.clone()),
+                    WorkspaceFolder::new(second.clone()),
+                ],
+            )]);
+            let (window, sidebar) = present_sidebar_window(800);
+            let section = mapped_sections(&sidebar, 1).remove(0);
+            section.expand_folders();
+            wait_until(Duration::from_secs(60), || {
+                loaded_and_settled(&section, &first, 4096)
+                    && loaded_and_settled(&section, &second, 4096)
+            });
+            flush_after_delay(Duration::from_millis(300));
+            let started = std::time::Instant::now();
+            section.collapse_folders();
+            let input_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let timeline = dispatch_timeline(&section, BUDGET, AFTER, || {
+                collapsed_and_settled(&section, &first) && collapsed_and_settled(&section, &second)
+            });
+            print_case("header-two-roots", 0, 4096, input_us, &timeline);
+            drop(window);
+        }
+    }
+    // Expanding again in the middle of a 131,072-entry collapse.
+    if verdict_case_enabled("reexpand") {
+        for _ in 0..reps {
+            let count = large;
+            let tree = tree_with_siblings(count, 0);
+            let nested = tree.root.join("nested");
+            expand_and_load(&tree, &nested, count);
+            flush_after_delay(Duration::from_millis(300));
+            activate_row(&tree.section, &nested);
+            let _ = dispatch_timeline(
+                &tree.section,
+                Duration::from_millis(30),
+                Duration::ZERO,
+                || false,
+            );
+            let input_us = activate_row(&tree.section, &nested);
+            let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
+                loaded_and_settled(&tree.section, &nested, count)
+                    && row_for_path(&tree.section, &nested).is_some_and(|row| row.is_expanded())
+            });
+            print_case("reexpand-mid-collapse", 0, count, input_us, &timeline);
+            drop(tree.window);
+        }
+    }
+    // Residual routes (design D2), printed only.
+    if verdict_case_enabled("residual") {
+        // An AT-SPI DoAction on the expander's `listitem.collapse`.
+        let tree = tree_with_siblings(256, 400);
+        let nested = tree.root.join("nested");
+        expand_and_load(&tree, &nested, 256);
+        flush_after_delay(Duration::from_millis(300));
+        let expander = rendered_row_widget(&tree.section, "nested")
+            .and_then(|row| {
+                find_descendant(&row, glib::object::ObjectExt::is::<gtk4::TreeExpander>)
+            })
+            .and_downcast::<gtk4::TreeExpander>()
+            .expect("the nested row's expander");
+        let started = std::time::Instant::now();
+        let _ = gtk4::prelude::WidgetExt::activate_action(&expander, "listitem.collapse", None);
+        let input_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
+            collapsed_and_settled(&tree.section, &nested)
+        });
+        print_case("residual-expander-action", 400, 256, input_us, &timeline);
+        // A collapse while the sidebar is hidden.
+        expand_and_load(&tree, &nested, 256);
+        flush_after_delay(Duration::from_millis(300));
+        gio::prelude::ActionGroupExt::activate_action(&tree.window, "toggle-sidebar", None);
+        wait_until(Duration::from_secs(5), || !tree.section.is_mapped());
+        flush_after_delay(Duration::from_millis(300));
+        let input_us = activate_row(&tree.section, &nested);
+        let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
+            collapsed_and_settled(&tree.section, &nested)
+        });
+        print_case("residual-hidden-sidebar", 400, 256, input_us, &timeline);
+        // The sidebar's visibility is persisted: show it again for the next
+        // window.
+        gio::prelude::ActionGroupExt::activate_action(&tree.window, "toggle-sidebar", None);
+        flush_after_delay(Duration::from_millis(300));
+        drop(tree.window);
+        // A refresh splice removing an expanded directory, and a section
+        // rebuild with one expanded.
+        for count in [256, large] {
+            let tree = tree_with_siblings(count, 0);
+            let nested = tree.root.join("nested");
+            expand_and_load(&tree, &nested, count);
+            flush_after_delay(Duration::from_millis(300));
+            fixture::remove_dir_all(&nested);
+            let started = std::time::Instant::now();
+            tree.section
+                .queue_auto_refresh_for_test(vec![tree.root.clone()]);
+            tree.section.apply_queued_refresh_for_test();
+            let input_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
+                row_for_path(&tree.section, &nested).is_none()
+                    && !tree
+                        .section
+                        .workspace_section_evidence()
+                        .refresh_blocks_readiness
+            });
+            print_case("residual-refresh-splice", 0, count, input_us, &timeline);
+            drop(tree.window);
+        }
+        let tree = tree_with_siblings(256, 0);
+        let nested = tree.root.join("nested");
+        expand_and_load(&tree, &nested, 256);
+        flush_after_delay(Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        tree.sidebar.load_workspaces();
+        let input_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let timeline = dispatch_timeline(&tree.section, BUDGET, AFTER, || {
+            let sections = tree.sidebar.imp().sections.borrow();
+            sections.len() == 1
+                && sections[0] != tree.section
+                && sections[0].is_mapped()
+                && !sections[0]
+                    .workspace_section_evidence()
+                    .refresh_blocks_readiness
+        });
+        print_case("residual-section-rebuild", 0, 256, input_us, &timeline);
+        drop(tree.window);
+    }
 }

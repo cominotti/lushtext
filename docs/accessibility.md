@@ -128,6 +128,22 @@ Expected screen-reader behavior includes:
   did not initiate it, and interrupting them for it would be worse than the
   stale affordance it replaces. The same is true in reverse for a directory
   emptied on disk.
+- Collapsing a large directory in the workspace sidebar is paced over several
+  frames (`slice-large-directory-collapse`), but its accessible state changes at
+  once: in the dispatch of the key press or click, the row and its expander
+  report `expanded` false, the arrow draws collapsed, and when selection or
+  keyboard focus was inside the directory they move to the directory row
+  itself, so a screen reader never follows a row that is about to disappear.
+  The rows then go in the background; the change is not announced, as GTK's own
+  collapse is not. Activating the directory row (`Enter`, or a double click),
+  clicking its arrow, and the tree's collapse keys with focus on the row's
+  expander, which `Tab` reaches from the row (`minus`, `slash`, their keypad
+  forms, `Shift+Left` and `Ctrl+Shift+Left`, reversed in right-to-left text,
+  and `Ctrl+space`) take the paced collapse;
+  an expand key on a collapsing row ends the collapse. The expander's AT-SPI
+  actions (`listitem.collapse`, `listitem.toggle-expand`) keep GTK's direct
+  collapse, which behaves as before and may take one long frame on a very
+  large directory.
 
 - The main window exposes the tab strip, shell buttons, workspace sidebar
   toggle, document-properties toggle, status metadata, editor region, and
