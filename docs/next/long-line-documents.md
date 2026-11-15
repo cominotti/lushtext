@@ -5126,12 +5126,12 @@ local needs it while cargo 1.98 writes layout v1.
 
 ## QH `quiet-headless-session-services` (implementation record, 2026-11-15)
 
-**Status:** implemented 2026-11-15 on branch `quiet-headless-session-services`,
-which has a pull request and is not merged yet. This is a host-hygiene change
-for every measurement lane, not a budget change. Design and decisions are in
-`openspec/changes/quiet-headless-session-services/design.md`, and the evidence
-is in that change's `evidence/` directory (`baseline.md`, `red-scan.txt`,
-`runtime-proof.md`).
+**Status:** merged 2026-11-15 as `12af80a9` (PR #110) and archived as
+`openspec/changes/archive/2026-11-15-quiet-headless-session-services/`. This
+is a host-hygiene change for every measurement lane, not a budget change.
+Design and decisions, including the stage-4 review decisions, are in that
+directory's `design.md`, and the evidence is in its `evidence/` directory
+(`baseline.md`, `red-scan.txt`, `runtime-proof.md`).
 
 **Baseline.** Before this change, every headless widget, smoke and axiom
 session shared the host's system bus. On the spec-stage day, rtkit-daemon
