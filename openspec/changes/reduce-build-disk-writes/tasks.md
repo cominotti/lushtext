@@ -179,7 +179,7 @@ Rules for every task:
   16 GiB does not pass, or the derived default exceeds 16 GiB (so it would not
   stop the recorded 15 GB runaway), adopt no limit and record the explicit
   exception in design.md D5 (D5's two exception bullets).
-- [ ] 4.3 Lane case: in a scratch probe crate (not the repository), create a
+- [x] 4.3 Lane case: in a scratch probe crate (not the repository), create a
   test that allocates past the limit only when a constant is mutated. Run it
   through `run-mutants.sh` in mirror mode against a temporary
   `LUSHTEXT_BUILD_CACHE`, and confirm that `address-space-caught.txt` lists the
