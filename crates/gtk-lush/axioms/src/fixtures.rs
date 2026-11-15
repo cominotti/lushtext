@@ -889,3 +889,14 @@ pub mod a110 {
 pub mod a111 {
     pub use crate::probes::row_lists::{BAND_MODEL_ROWS, FEW_ROWS, RowText, row_list};
 }
+
+/// The adjustment emission log and text view the A112 probe scrolls, for its
+/// sample.
+pub mod a112 {
+    pub use crate::probes::a112::{
+        DOCUMENT_LINES, Emission, EmissionLog, REWRAP_NARROWING, TARGET_LINE,
+        WRAPPED_DOCUMENT_LINES, document_view, every_move_was_carried, moved_on_its_own, rewrap,
+        scroll_to_target, wrapped_document_view,
+    };
+    pub use crate::probes::text::TextViewFixture;
+}

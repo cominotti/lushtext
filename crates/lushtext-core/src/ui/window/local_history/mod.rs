@@ -77,6 +77,11 @@
 //! 9. **Undo the restore**, installing the retained body back through the same
 //!    replacement workflow.
 //!
+//! Both terminals leave the tab modified with text its draft does not hold,
+//! while the replacement suspended the handlers that would say so: each one
+//! re-projects the modified indicator and calls the draft workflow's one
+//! draft-owed operation (`restore-main-ci` D1).
+//!
 //! ## Where control leaves, and where it comes back
 //!
 //! Sixteen deferred inversions, where the census recorded six. By stage:
@@ -114,6 +119,7 @@
 //! | `services/local_history_service.rs` | a service, shared with migrated `WFR-DOCUMENT-SAVE`, which captures a snapshot on every successful save. Behavior unchanged |
 //! | `services/recovery_metadata.rs` | a service, shared with all three durable slot-4 rows |
 //! | `resolve_notes_for_editor`, `dismiss_editor_notifications` | owned by `WFR-NOTES-BOOKMARKS` (slot 5) and the notification workflow. Called from two restore terminals, never absorbed |
+//! | `note_draft_owed`, `reproject_modified_indicator` | owned by `WFR-DRAFT-RECOVERY` and the document workflow (`ui/window/documents.rs`). Called from both restore terminals, never copied |
 //! | `migration_ledger` | cross-cutting; the rename migration records a tracked kind through it |
 
 pub mod evidence;

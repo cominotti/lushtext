@@ -96,6 +96,13 @@ if [[ -n "$flatpak_branch" ]]; then
     app_ref="$app_id//$flatpak_branch"
 fi
 
+# A development install whose origin remote lost its repository (the checkout or
+# worktree that exported it was deleted) makes GNOME Software and `flatpak
+# update` fail on every refresh, or, disabled, strands the build.
+section "Flatpak install origin"
+"$(dirname -- "${BASH_SOURCE[0]}")/flatpak-install-origin.sh" check ||
+    fail "A development install origin is broken; see the fix above."
+
 section "Flatpak metadata"
 metadata="$(flatpak info --show-metadata "$app_ref" 2>/dev/null)" ||
     fail "Flatpak app '$app_id' is not installed or its metadata cannot be read."

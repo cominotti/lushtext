@@ -60,6 +60,7 @@ impl LushtextEditorPage {
         let minimap = &self.imp().minimap;
         if !minimap.reflow_settle.pending() {
             minimap.reflow_reveal_pending.set(false);
+            self.imp().overscroll.reflow_scrolled.set(false);
             *self.imp().overscroll.reflow_pause.borrow_mut() =
                 Some(self.imp().overscroll.rest_state.pause());
         }
@@ -93,12 +94,24 @@ impl LushtextEditorPage {
 
         // The rest flag was recorded from user scrolling outside the burst, so
         // a stale GTK-preserved offset during reallocation cannot suppress the
-        // top anchor the user actually had before the reflow started.
-        if self
-            .imp()
-            .overscroll
-            .rest_state
-            .at_lower(ViewportAxis::Vertical)
+        // top anchor the user actually had before the reflow started. A scroll
+        // made during the burst is not such an offset: keep it, and record the
+        // rest state the paused burst could not, so neither the next height
+        // change's top-edge clamp nor the next burst reads a stale "at top"
+        // (`restore-main-ci` D2).
+        let overscroll = &self.imp().overscroll;
+        let scrolled = if handle_current {
+            overscroll.reflow_scrolled.replace(false)
+        } else {
+            overscroll.reflow_scrolled.get()
+        };
+        if scrolled {
+            if handle_current && let Some(adjustment) = self.source_view().vadjustment() {
+                let _ = overscroll
+                    .rest_state
+                    .record_adjustment(ViewportAxis::Vertical, &adjustment);
+            }
+        } else if overscroll.rest_state.at_lower(ViewportAxis::Vertical)
             && let Some(adjustment) = self.source_view().vadjustment()
         {
             let lower = adjustment.lower();
@@ -127,6 +140,27 @@ impl LushtextEditorPage {
             }
             editor.drop_minimap_reflow_freeze();
         });
+    }
+
+    /// Record the rest state a scroll made during a reflow burst left, when
+    /// the burst ends without its settle.
+    ///
+    /// A minimap refresh while the minimap is hidden cancels a pending settle
+    /// (`run_minimap_refresh`) and drops the burst's pause, so the settle's
+    /// own re-record of a kept scroll never runs. Without this the rest state
+    /// still said "at top" at the scrolled position, and the next width
+    /// reflow's settle snapped the view back (`restore-main-ci` design R8).
+    /// Only the record runs here, never the top-anchor repair: the burst may
+    /// still be moving, and the cancel never repaired before either.
+    pub(super) fn record_scroll_from_cancelled_reflow(&self) {
+        let overscroll = &self.imp().overscroll;
+        if overscroll.reflow_scrolled.replace(false)
+            && let Some(adjustment) = self.source_view().vadjustment()
+        {
+            let _ = overscroll
+                .rest_state
+                .record_adjustment(ViewportAxis::Vertical, &adjustment);
+        }
     }
 
     /// Gate the post-repair reveal window on an actually visible frozen cover.
