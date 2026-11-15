@@ -11,6 +11,13 @@ description = "workspace-hack package, managed by hakari"
 license = "GPL-3.0-or-later"
 publish = false
 
+# Deliberately empty and outside the hakari section, which `cargo hakari
+# generate` rewrites: this generated crate opts out of the workspace lints, and
+# saying so stops newer Cargo warning that it does not inherit them. The
+# `[lints.cargo]` half (allowing `unused_dependencies`) waits for the pin,
+# because cargo 1.98 rejects that table as an unused key.
+[lints]
+
 ### BEGIN HAKARI SECTION
 [dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
@@ -32,7 +39,6 @@ serde = { version = "1", features = ["alloc", "derive"] }
 serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "union"] }
 tracing-core = { version = "0.1" }
-zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 
 [build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
@@ -50,16 +56,28 @@ num-traits = { version = "0.2" }
 once_cell = { version = "1" }
 pango = { version = "0.22", default-features = false, features = ["v1_57"] }
 pango-sys = { version = "0.22", default-features = false, features = ["v1_57"] }
-proc-macro2 = { version = "1" }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = { version = "1" }
 serde = { version = "1", features = ["alloc", "derive"] }
 serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "union"] }
-syn = { version = "2", features = ["extra-traits", "full", "visit-mut"] }
+syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["full"] }
+syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "full", "visit-mut"] }
 toml_datetime = { version = "1" }
 toml_parser = { version = "1" }
 tracing-core = { version = "0.1" }
 winnow = { version = "1" }
-zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
+
+[target.x86_64-unknown-linux-gnu.dependencies]
+getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+
+[target.x86_64-unknown-linux-gnu.build-dependencies]
+getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+
+[target.aarch64-unknown-linux-gnu.dependencies]
+getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+
+[target.aarch64-unknown-linux-gnu.build-dependencies]
+getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 
 ### END HAKARI SECTION

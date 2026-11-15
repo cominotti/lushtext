@@ -267,6 +267,7 @@ make end-user-smoke # every host-supported end-user smoke lane (not the responsi
 make responsiveness-smoke # long-line responsiveness lane, RESPONSIVENESS_TIER=quick|full; nightly/manual
 make blueprint-generate / make check-blueprint  # regenerate and validate generated .ui templates
 make flatpak / make flatpak-install / make verify-flatpak-identity
+make update-deps-cooldown  # refresh Cargo.lock under a 7-day publish-age cooldown at the MSRV (needs Rust 1.100.0), then hakari, cargo-sources, a 1.98 check and cargo deny
 make release-bump TYPE=patch DRY_RUN=1  # preview the next release
 ```
 

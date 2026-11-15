@@ -94,7 +94,7 @@
 .PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
-       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
+       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
        test-release-helper test-flathub-manifest release release-bump \
@@ -895,6 +895,7 @@ check-terminology:
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
 	@echo "Running advisory lint discovery..."
+	./scripts/lint-advisory.py --self-test
 	./scripts/lint-advisory.py
 
 # Fetch uploaded SonarQube Cloud quality gate status and unresolved issues.
@@ -995,6 +996,31 @@ test-flatpak-identity-verifier:
 test-dev-desktop-staging:
 	@echo "Testing development desktop-entry staging..."
 	./scripts/test-dev-desktop-staging.sh
+
+# Refresh Cargo.lock under a 7-day publish-age cooldown, staying at the MSRV.
+# Cargo 1.100's `registry.global-min-publish-age` is passed as environment
+# only: cargo 1.98 (the pin) warns on the unknown key in .cargo/config.toml on
+# every command. `resolver = "2"` is not MSRV-aware, so the fallback is asked
+# for explicitly, and the 1.98 check proves the result. See build.md,
+# "Dependency cooldown", for exceptions and the duplicate-skip policy.
+UPDATE_DEPS_COOLDOWN_TOOLCHAIN ?= 1.100.0
+UPDATE_DEPS_COOLDOWN_AGE ?= 7 days
+update-deps-cooldown:
+	@cargo +$(UPDATE_DEPS_COOLDOWN_TOOLCHAIN) --version >/dev/null 2>&1 || { \
+		echo "update-deps-cooldown: needs the Rust $(UPDATE_DEPS_COOLDOWN_TOOLCHAIN) toolchain (registry.global-min-publish-age is stable from cargo 1.100); install it with: rustup toolchain install $(UPDATE_DEPS_COOLDOWN_TOOLCHAIN) --profile minimal" >&2; \
+		exit 1; }
+	@echo "1/5 cargo update under a $(UPDATE_DEPS_COOLDOWN_AGE) publish-age cooldown, MSRV fallback"
+	CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE="$(UPDATE_DEPS_COOLDOWN_AGE)" \
+		CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback \
+		cargo +$(UPDATE_DEPS_COOLDOWN_TOOLCHAIN) update
+	@echo "2/5 cargo hakari generate"
+	cargo hakari generate
+	@echo "3/5 make cargo-sources"
+	$(MAKE) cargo-sources
+	@echo "4/5 the refreshed graph builds on the pinned toolchain"
+	cargo +1.98.0 check --workspace --all-targets --all-features --locked
+	@echo "5/5 the whole dependency policy"
+	cargo deny check advisories bans sources licenses
 
 # Regenerate cargo-sources.json (requires flatpak-cargo-generator)
 cargo-sources: Cargo.lock
@@ -1213,6 +1239,7 @@ help:
 	@echo "  test-flatpak-identity-verifier Test the Flatpak identity verifier"
 	@echo "  test-dev-desktop-staging Test dev-run desktop staging behavior"
 	@echo "  cargo-sources   Regenerate cargo-sources.json"
+	@echo "  update-deps-cooldown  Refresh Cargo.lock under a 7-day publish-age cooldown at the MSRV, then hakari, cargo-sources, a 1.98 check and cargo deny"
 	@echo "  flathub-manifest Generate a Flathub-facing manifest for VERSION=vX.Y.Z"
 	@echo "  verify-flathub-manifest Verify generated Flathub manifest invariants"
 	@echo "  verify-flathub-domain Verify cominotti.dev Flathub verification endpoint"
