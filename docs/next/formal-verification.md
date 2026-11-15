@@ -168,9 +168,11 @@ The record is
   over-approximation (F1), not a defect.
 - **V2 (the unbounded journal invariant in Verus) was not completed** (it
   stopped after scoping), and V3 was not attempted.
-- **Recommendation, awaiting the maintainer's decision: keep Kani alone**
-  (design D7 option (a)), revisiting on a named trigger (option (c)) by
-  finishing the Kani inductive step first. The models stay in
+- **Decision (maintainer, 2026-11-15): keep Kani alone** (design D7 option
+  (a), as the record recommended). The evaluation is closed without V2 and
+  without a Kani follow-up (option (a′) not chosen). It is revisited only on
+  a named trigger (option (c)), by finishing the Kani inductive step first;
+  the triggers are in the deferral inventory. The models stay in
   `formal/evaluation/verus/` as disposable evidence.
 
 ## 3. Phases
@@ -2717,23 +2719,31 @@ table's length) and, at three rows, `i64` arithmetic in the run builder (now
 - `evaluate-verus-for-unbounded-proofs` (2026-11-15): the Kani one-step
   inductive harness for the journal's S1–S4 and one owning window per id, at
   the lane's two-window scope, stopped after its third round of
-  strengthening with four (action, conjunct) pairs open: ExecCleanup and
-  DeletionStep and Commit against R3d, DeletionStep against R2c, and Commit
-  against R2b and R2h (`formal-verification-verus.md` §4.1). The harness, its
-  31 conjuncts and the diagnosis harnesses are in
-  `formal/evaluation/verus/kani-step.patch` against `85758eaf`. Finishing it
-  is the first step on any trigger that needs the journal unbounded in
-  actions; carrying it into the lane is a follow-up change (design D7
-  option (a′)), whose runner cost is part of its evidence.
+  strengthening with six (action, conjunct) pairs open, across three actions
+  and four conjuncts: ExecCleanup and DeletionStep and Commit against R3d,
+  DeletionStep against R2c, and Commit against R2b and R2h
+  (`formal-verification-verus.md` §4.1). The harness, its 31 conjuncts and
+  the diagnosis harnesses are in `formal/evaluation/verus/kani-step.patch`
+  against `85758eaf`. The maintainer chose not to carry it (2026-11-15:
+  option (a), not (a′)), so no follow-up change is queued. Finishing it is
+  the first step on any of the revisit triggers below; carrying it into the
+  lane would then be its own change, whose runner cost is part of its
+  evidence.
 - The same attempt's model fix **F1**: the journal model lets `Register` run
   again while a written body awaits its commit, which production's autosave
   pass cannot do (`ui/window/drafts/autosave_execution.rs` writes each
   candidate once and commits before `finish_autosave_pipeline` frees the
   lane). With that over-approximation, ten actions after startup lose
   accepted work of an untitled id (§4.2 of the Verus record); the maintained
-  harness stops at 8 and cannot reach it. A follow-up that carries the
-  inductive step decides whether the maintained model takes F1.
+  harness stops at 8 and cannot reach it. Not carried (maintainer decision
+  2026-11-15); a later change that carries the inductive step decides
+  whether the maintained model takes F1.
 - V2 and V3 of the Verus evaluation (an unbounded journal invariant over any
-  number of ids and windows, and L1 from every reachable state) were not
-  completed; no trigger needs them. They reopen only through option (c) of
-  that record's decision.
+  number of ids and windows, and L1 from every reachable state) were closed
+  unattempted by the maintainer's decision of 2026-11-15 (close without V2);
+  no trigger needs them. They reopen only through option (c) of that
+  record's decision, on one of its **revisit triggers**: the two-window
+  journal needing more than its lane's 7 actions, a third window or a second
+  process kind, or GTK Lush publication needing a claim outside the per-bin
+  domain. On a trigger, the Kani inductive step above (with F1) is finished
+  first, and Verus is reopened with V2 only if that fails.

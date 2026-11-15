@@ -200,7 +200,8 @@ PROOF_STRENGTH_TIER ?= all
 PROOF_STRENGTH_SHARD ?=
 PROOF_STRENGTH_ARM ?= both
 
-# Quint vs TLA+ evaluation (docs/next/formal-verification-quint-vs-tlaplus.md).
+# Quint vs TLA+ evaluation (docs/next/formal-verification-quint-vs-tlaplus.md)
+# and Verus evaluation (docs/next/formal-verification-verus.md).
 # LOCAL ONLY and disposable: not a prerequisite of check, check-policy, test,
 # kani, or end-user-smoke, and no CI workflow calls it. Kani stays the single
 # maintained formal tool.

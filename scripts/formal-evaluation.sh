@@ -524,15 +524,16 @@ cmd_verus_classify() {
 }
 
 # V2 (the unbounded journal invariant) and V3 (L1 from every reachable state)
-# were not completed: the report records where V2 stopped (§5) and V3 depends
-# on it. The targets stay so a later attempt has a home: each verifies its
-# module once proofs/src/ has it, and says so plainly until then.
+# were not completed: V2 stopped after scoping (report §5) and the maintainer
+# closed both unattempted on 2026-11-15 (report §13). The targets stay so a
+# revisit on one of the report's triggers has a home: each verifies its module
+# once proofs/src/ has it, and says so plainly until then.
 verus_target_module() { # target module
   local target=$1 module=$2
   require_verus
   if [[ ! -f $VERUS_MODELS/proofs/src/$module.rs ]]; then
-    echo "formal-evaluation: $target: proofs/src/$module.rs does not exist; $target was not completed" \
-      "(docs/next/formal-verification-verus.md §5, §6). Nothing to verify." >&2
+    echo "formal-evaluation: $target: proofs/src/$module.rs does not exist; $target was closed unattempted" \
+      "(maintainer decision 2026-11-15; docs/next/formal-verification-verus.md §5, §6, §13). Nothing to verify." >&2
     return 0
   fi
   local ok=0

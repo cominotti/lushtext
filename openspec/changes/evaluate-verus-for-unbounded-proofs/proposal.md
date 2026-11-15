@@ -1,3 +1,10 @@
+> **Outcome (2026-11-15).** V1, the drift check, the in-place probe and both
+> Kani-first attempts were made; V2 stopped after scoping, and the maintainer
+> closed the evaluation without V2 (so without V3) and without a Kani
+> follow-up, accepting recommendation (a): Kani stays the only maintained
+> tool. The record is `docs/next/formal-verification-verus.md`; the plan
+> below is kept as proposed.
+
 ## Why
 
 Kani is a bounded model checker. Its proofs are complete for finite targets,

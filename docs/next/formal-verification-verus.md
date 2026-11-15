@@ -6,7 +6,9 @@ Verus, a deductive verifier for Rust, on claims Kani holds only for bounded
 scopes. The programme record
 [`formal-verification.md`](./formal-verification.md) keeps phases, results,
 axioms, and deferrals; this file keeps the evaluation and its recommendation.
-The recommendation awaits the maintainer's decision.
+**The maintainer decided on 2026-11-15** (§13): recommendation (a) is
+accepted, Kani stays the programme's only maintained tool, and the
+evaluation is closed without V2 and without a Kani follow-up.
 
 The models live in `formal/evaluation/verus/`. They are **disposable
 evaluation models, not maintained properties**: no build, test, lint, policy,
@@ -28,18 +30,20 @@ and no claim elsewhere rests on these models alone (§10, gate audit).
 - **The Kani-first inductive step** at the lane's two-window scope was not
   proved within its 3 h budget. After three rounds of strengthening
   (31 conjuncts), its base case passes and the invariant is satisfiable, but
-  three actions still break four conjuncts (§4.1).
+  three actions still break four conjuncts, in six (action, conjunct)
+  pairs (§4.1).
   On the way it found a ten-action trace beyond the 8-action bound in which
   the Kani model loses accepted work. Production cannot take that trace, so
   it is a model over-approximation, not a defect (§4.2).
 - **V2 (the unbounded journal invariant in Verus) was not completed.** It
-  stopped after scoping; no Verus model of the journal was written (§5). V3
-  depends on V2 and was not attempted.
+  stopped after scoping; no Verus model of the journal was written (§5), and
+  the maintainer closed it unattempted on 2026-11-15. V3 depends on V2 and
+  was not attempted.
 
 **Recommendation (§13): option (a), keep Kani alone,** with option (c)'s
-triggers named for a revisit. Verus is not recommended for adoption: no
-trigger needs an unbounded claim, and the one measurement that would argue
-for it (V2) does not exist. If an unbounded journal claim is ever needed, the
+triggers named for a revisit; **accepted by the maintainer on 2026-11-15.**
+Verus is not recommended for adoption: no trigger needs an unbounded claim,
+and the one measurement that would argue for it (V2) does not exist. If an unbounded journal claim is ever needed, the
 cheaper next step is to finish the Kani inductive step from the recorded
 round-3 invariant, not to port the model to Verus.
 
@@ -226,7 +230,7 @@ one run names every action that breaks every conjunct.
 | diag-r1 | per-conjunct covers | memory ceiling at the 8G cap (7,266 MiB); re-run at 16G: W0 broken by Register, Commit, DeletionStep, RestoreApply, Startup; S1 by WriteBody, Commit, DeletionStep, ExecCleanup, RestoreApply, CloseWindow, Crash; S3 by Save, Discard, RestoreApply | 103.0 s | 7,663 MiB | 12.9 / 14.8 |
 | diag-r2 | + R2 (8 per-editor conjuncts) + model fix F1 (§4.2) | W0, S3, S4 and one owner no longer break; S1 still broken by WriteBody; 11 strengthening conjuncts broken | 209.4 s | 13,606 MiB | 10.2 / 14.9 |
 | diag-act-r2 | one harness per action | Startup C9; OpenWindow C26; RestoreApply C14; DeletionStep C26; Save and Discard C21, C22; Commit C6, C7, C21, C22; WriteBody S1, C6, C17, C19, C20, C25 | 747.3 s | 5,483 MiB | 12.6 / 14.9 |
-| diag-act-r3 | + R3a–R3d, R1g and R2b relaxed, R2c exempting ids being deleted | S1 and every r2 pair but four no longer break; still broken: ExecCleanup C30; DeletionStep C26, C30; Commit C21, C22, C30 | 838.7 s | 6,391 MiB | 10.6 / 10.7 |
+| diag-act-r3 | + R3a–R3d, R1g and R2b relaxed, R2c exempting ids being deleted | S1 and every r2 pair but three (DeletionStep C26; Commit C21, C22) no longer break; six pairs still broken: ExecCleanup C30; DeletionStep C26, C30; Commit C21, C22, C30 | 838.7 s | 6,391 MiB | 10.6 / 10.7 |
 | base case (r3 invariant) | INV after the first startup | **pass** | 28.0 s | 1,744 MiB | 11.1 / 12.6 |
 | satisfiability cover (r3 invariant) | a running window, an open dirty editor, accepted content | **satisfied** | 40.5 s | 1,857 MiB | 12.9 / 12.1 |
 
@@ -251,8 +255,8 @@ in the patch. The strengthening found, in words:
 
 **Outcome: not proved within budget.** The step harness was not re-run on
 the round-3 invariant, because the per-action diagnosis already shows it
-fails: three actions still break four conjuncts. What the remaining pairs
-say:
+fails: three actions still break four conjuncts, in six pairs. What the
+remaining pairs say:
 
 - **R3d (C30) is too strong.** Removing a missing-body entry (ExecCleanup),
   a deletion's entry removal (DeletionStep), and a commit that drops an entry
@@ -332,8 +336,9 @@ Budget declared: 10 h. Target, as §4 left it: the whole claim, S1–S4 and
 one owning window per id for any number of actions, ids, and windows (§4
 removed no part of it).
 
-**Not completed: stopped after scoping.** No Verus model of the journal was
-written. What exists, and where it stopped:
+**Not completed: stopped after scoping, then closed.** No Verus model of the
+journal was written, and on 2026-11-15 the maintainer closed V2 without an
+attempt (§13). What exists, and where it stopped:
 
 - the `journal_core` copy in `proofs/src/journal_core.rs`, verified by Verus
   as executable code (every decision inside `verus!` with a generated open
@@ -373,8 +378,9 @@ is the one this evaluation could not measure.
 
 ## 6. V3: L1 from every reachable state
 
-**Not attempted: depends on V2** (design D4). Task 5.2, the E9 form under
-weak fairness, is not attempted either.
+**Not attempted: depends on V2** (design D4), which the maintainer closed
+unattempted on 2026-11-15. Task 5.2, the E9 form under weak fairness, is not
+attempted either.
 
 ## 7. In-place probe and AutoVerus
 
@@ -594,9 +600,19 @@ services::draft_service::journal_core` under Verus's toolchain
 (`RUSTUP_HOME=build/formal-evaluation/tools/verus-rustup
 RUSTUP_TOOLCHAIN=1.99.1`, with the Verus directory on `PATH`).
 
-## 13. Decision (for the maintainer)
+## 13. Decision
 
-**Recommended: (a) keep Kani alone.** Nothing here supports a second tool:
+**Maintainer decision (2026-11-15): recommendation (a) is accepted.** Kani
+stays the programme's only maintained tool. The evaluation is closed
+**without V2** (tasks 4.1–4.4 and 4.5's metrics, and V3 and task 5.2 with
+them, are closed unattempted) and **without a Kani follow-up**: option (a′)
+was not chosen, so no change carries the inductive-step harness or F1 into
+the lane. The revisit triggers below stand, and the round-3 patch, F1, and
+the open pairs are in the programme record's deferral inventory. Nothing in
+this record is a V2 or V3 result.
+
+**Recommended, and accepted: (a) keep Kani alone.** Nothing here supports a
+second tool:
 
 - **No claim qualifies for (b).** Adoption needs a claim whose two Kani
   attempts both failed **and** that a trigger needs. For the journal, the

@@ -51,7 +51,7 @@ change adopts it.
 | 7 | `add-sidebar-visual-proof-scenario` (**implemented 2026-10-10**) | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check. **Done**: `win.reveal-workspace-path`, the `workspace-path-revealed` readiness predicate, `ViewportSliceBin::outer_request_pending()`, and the `workspace-tree-reveal` scenario type with the `workspace-tree-rendered-row-anchors` invariant (programme record, §4) | — |
 | 8 | `apply-verification-altitude-redesigns` | N8, as six groups that can be applied one at a time | 1, 6 |
 | 9 | `verify-shell-conformance-against-proven-cores` | N11: the imperative shells checked against the Kani-proven cores used as oracles | 1, 3 |
-| — | `evaluate-verus-for-unbounded-proofs` (**implemented 2026-11-15**) | The Verus deductive verifier on claims Kani holds only for bounded scopes, after the two Kani-first attempts. Evaluation only. **Done**: [`formal-verification-verus.md`](./formal-verification-verus.md) recommends keeping Kani alone (awaiting the maintainer's decision); V1 reproduced its known answers, the Kani inductive step was not proved within budget, and V2 was not completed | — |
+| — | `evaluate-verus-for-unbounded-proofs` (**implemented 2026-11-15**) | The Verus deductive verifier on claims Kani holds only for bounded scopes, after the two Kani-first attempts. Evaluation only. **Done**: [`formal-verification-verus.md`](./formal-verification-verus.md) recommended keeping Kani alone, which the maintainer accepted on 2026-11-15, closing the evaluation without V2 and without a Kani follow-up; V1 reproduced its known answers, the Kani inductive step was not proved within budget, and V2 was not completed | — |
 | — | `evaluate-quint-and-tlaplus-empirically` (**implemented 2026-09-24**) | An empirical Quint vs TLA+ comparison, with open exploration. Evaluation only. **Done**: [`formal-verification-quint-vs-tlaplus.md`](./formal-verification-quint-vs-tlaplus.md) decided Kani only for maintained properties, TLA+ with TLC for the disposable N6 sketch, and no Quint; its E1 run found a set-aside defect, fixed first in change 6 | — |
 
 Only two candidates wait for a trigger, and neither has a proposal. N6
@@ -295,6 +295,8 @@ measured them on T1 (the durable write), T2 (the two-process journal), and T3
     second rustc (1.99.1 against the workspace's 1.98.0).
   - The unbounded journal invariant (V2) was not completed, so no measured
     evidence shows it carrying the claim that would justify it.
+  - Maintainer decision (2026-11-15): Kani alone; closed without V2, and
+    revisited only on the triggers the record names.
 - **Bend 2** (HigherOrderCO, September 2026): evaluated, and **not
   applicable**.
   - It verifies only Bend programs and cannot check Rust.

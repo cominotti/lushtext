@@ -5,7 +5,9 @@ only as evidence for the change `evaluate-verus-for-unbounded-proofs`, whose
 report is
 [`docs/next/formal-verification-verus.md`](../../../docs/next/formal-verification-verus.md).
 Kani stays the single maintained formal tool
-(`openspec/specs/formal-verification-kani/spec.md`). No build, test, lint,
+(`openspec/specs/formal-verification-kani/spec.md`); the maintainer closed the
+evaluation on 2026-11-15 with that recommendation, without V2 (the report's
+§13), so `verus-v2` and `verus-v3` have no module to verify. No build, test, lint,
 policy, audit, or CI gate reads this directory, and no production crate
 depends on it.
 

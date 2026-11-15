@@ -495,6 +495,26 @@ None: evaluation only. Rollback deletes `formal/evaluation/verus/`, the
   `build/formal-evaluation/`. Adopting Verus is out of scope; the evaluation
   ends in a recommendation recorded in `docs/next/formal-verification.md`.
 
+**2026-11-15, after the implementation: the evaluation is closed without V2.**
+- **Recommendation (a) is accepted: Kani stays the programme's only
+  maintained tool.** Option (a′) is not chosen: no follow-up change carries
+  the Kani inductive-step harness or F1 into the lane. Option (b) is not
+  opened.
+- **V2 is not attempted.** Tasks 4.1–4.4 and 4.5's metrics are closed
+  unattempted; V3 (task 5.1) and the E9 form (task 5.2), which depend on V2,
+  are closed with it. The report states what was established (V1, the drift
+  check, the in-place probe, both Kani-first attempts) and claims no V2 or V3
+  result.
+- **Revisit triggers** (option (c), as the report names them): the
+  two-window journal needing more than its lane's 7 actions, a third window
+  or a second process kind, or GTK Lush publication needing a claim outside
+  the per-bin domain. On any of them, the Kani inductive step is finished
+  first from `formal/evaluation/verus/kani-step.patch` (with F1), and Verus is
+  reopened with V2 only if that fails. Both, and F1, are recorded in the
+  programme record's deferral inventory.
+- `formal/evaluation/verus/` stays as disposable evidence, outside every
+  gate.
+
 ## Stage-1 refresh (2026-11-15)
 
 The change was proposed on 2026-09-25 and re-read against the code and
@@ -563,6 +583,23 @@ An independent review against the code, the rules and the shard table.
 - **Report completeness (task 7.1).** The evidence rule requires install and
   CI cost against the 30-minute cap and the bridge options; the report list
   now names them, and the newer-release re-verification has a task.
+
+## Stage-4 review (2026-11-15)
+
+An independent review against the code, the rules and the run logs under
+`build/formal-evaluation/runs/`. **Verdict: sound; the evaluation stayed
+disposable and local-only.** No gate, CI workflow or production dependency
+reads `formal/evaluation/verus/`; the root `Cargo.lock`, the hakari
+`workspace-hack` and `build-aux/cargo-sources.json` are unchanged (the
+in-place probe's eight crates exist only inside `in-place-probe.patch`); the
+only production edit is `journal_core.rs`'s `//!` L1 line; every recorded
+figure matches its `results.tsv` row and carries its load. Fixed in place:
+- The r3 diagnosis left **six** (action, conjunct) pairs open across three
+  actions and four conjuncts (ExecCleanup C30; DeletionStep C26, C30; Commit
+  C21, C22, C30, as the run's satisfied covers show), not four; the report's
+  §4.1 row and the programme record's deferral entry now say so.
+- The maintainer's close decision is recorded in this design, the report,
+  both programme records, tasks.md, and the `verus-v2`/`verus-v3` messages.
 
 ## Open Questions
 
