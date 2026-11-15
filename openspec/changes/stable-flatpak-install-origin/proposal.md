@@ -58,10 +58,18 @@ on every worktree cleanup.
   can be overridden with `LUSHTEXT_FLATPAK_INSTALL_REPO`. The builder state
   dir stays wherever `make flatpak` keeps it: per checkout today, per checkout
   in the build cache after `reduce-build-disk-writes`.
-- Before building, the target repoints and re-enables an existing
-  `lushtext-origin` to that repository, so a dangling, foreign or disabled
-  origin is repaired by the next install. This includes the one on the
-  maintainer's machine now.
+- flatpak-builder only exports; it no longer runs `--install`. A new
+  `scripts/flatpak-install-origin.sh install` wraps the export and then, in
+  order:
+  - repoints and re-enables an existing `lushtext-origin` to the shared
+    repository, so a dangling, foreign or disabled origin is repaired by the
+    next install. This includes the one on the maintainer's machine now.
+  - runs the same `flatpak install --reinstall` that flatpak-builder ran.
+
+  The repair runs only **after** a successful export. A failed build
+  therefore leaves the origin as it was. It never enables the remote at a
+  repository that does not serve the app yet, which would bring the reported
+  error straight back (stage-2 review, `evidence/prepare-order-experiment`).
 - Two runs of the target, from different worktrees, are serialized by a lock
   beside the repository.
 - After installing, the target prunes the repository to the installed head.
@@ -74,7 +82,8 @@ on every worktree cleanup.
   `summary`, and prints the one-line fix.
 - A real-`flatpak` fixture test runs in a private `FLATPAK_USER_DIR`, wired as
   `make test-flatpak-install-origin` into `make check-policy`. It is
-  failing-first against the baseline above.
+  failing-first against the baseline above. It runs under the temp-scope
+  wrapper and drives the same `install` subcommand the Makefile runs.
 - Docs: `.agents/rules/build.md` (Flatpak), `README.md`, the `flatpak-rust`
   skill, `docs/next/flatpak-packaging.md`. README and the packaging record
   still say GNOME 50; this change corrects them to 51 as a pre-existing doc

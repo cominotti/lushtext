@@ -68,6 +68,30 @@ workaround) makes every later install a silent no-op that exits 0. The
 target must re-enable the remote before installing, and it must check
 afterwards that the deployed commit is the one it built.
 
+**When to re-enable (stage-2 review).** Two more experiments, also in a
+private `FLATPAK_USER_DIR`, start from the maintainer's state: a disabled
+`lushtext-origin` whose repository was deleted.
+
+- `evidence/prepare-order-experiment.{sh,log}`, author's order. Repointing and
+  enabling the remote before the build, at a shared repository the first
+  build has not created yet, brings the exact reported error back at once:
+  `remote-ls --updates` exits 1. It stays back if the build then fails, which
+  is common in development. The first `make flatpak-install` after this
+  change would have been that case.
+- Same experiment, reordered. Export first, then repoint and enable, then run
+  `flatpak install --reinstall <repo> <ref>`. The remote keeps its name, the
+  deployed commit equals the head, `flatpak remote-info -c` serves that
+  commit, and `remote-ls --updates` exits 0.
+- `evidence/empty-repo-experiment.{sh,log}`, the rejected alternative. An
+  empty archive repository with a summary keeps `remote-ls --updates` at 0.
+  But `flatpak update --user` then warns "No such ref … in remote
+  lushtext-origin" for as long as the build runs, and indefinitely after a
+  failed build.
+
+So the invariant is: **an enabled development origin never points at a
+repository that lacks the installed ref**, during a build or after a failed
+one.
+
 ## Goals / Non-Goals
 
 **Goals:** after this change, these keep the development install's origin
@@ -75,7 +99,8 @@ valid:
 
 - installing from any checkout or worktree;
 - deleting a worktree, a checkout or a build cache;
-- disabling the remote by hand.
+- disabling the remote by hand;
+- a build that fails, at any point, including the first one after this change.
 
 The next install repairs any remote already in a bad state. Installed-state
 verification names a broken origin and prints the fix.
@@ -87,11 +112,20 @@ location, the published remote, CI workflows, uninstalling anything.
 
 ### D1. Pin the install origin with `--repo`, not with a shared `--state-dir`
 
-`flatpak-install` passes `--repo="$(FLATPAK_INSTALL_REPO)"` and leaves the
-state dir alone.
+`flatpak-install` passes `--repo=<shared repo>` and leaves the state dir
+alone. It does **not** pass `--install`: flatpak-builder only exports, and
+the install runs afterwards from `scripts/flatpak-install-origin.sh install`
+(D3), after the remote has been repaired.
 
 - `--repo` decides the export repository, and so the URL flatpak puts in the
   origin remote (lines 1095–1098 and `do_install`).
+- Dropping `--install` is what lets the repair run between the export and the
+  install. `--install` would run `do_install` straight after the export, with
+  no point in between. The script runs the same command `do_install` runs:
+  `flatpak install --user -y --noninteractive --reinstall <repo> <ref>`, with
+  the untyped ref `<id>/<arch>/<branch>`. The arch comes from
+  `flatpak --default-arch`, and the branch is `master`, because the manifest
+  sets none.
 - The state dir stays per checkout, so `make flatpak` and `make
   flatpak-install` in one checkout keep sharing their builder cache (ccache,
   Cargo, module stages).
@@ -116,15 +150,15 @@ It works for the origin URL, but:
 ### D2. The repository lives in `XDG_DATA_HOME`, outside every checkout and cache
 
 The default path is
-`FLATPAK_INSTALL_REPO = ${XDG_DATA_HOME:-$HOME/.local/share}/lushtext-flatpak-install/repo`.
+`${XDG_DATA_HOME:-$HOME/.local/share}/lushtext-flatpak-install/repo`.
 `scripts/flatpak-install-origin.sh path` computes it, and that script is the
 only place the location is computed. `LUSHTEXT_FLATPAK_INSTALL_REPO`
 overrides it for tests. `path` canonicalises the result with `realpath -m`.
 Case h shows that two spellings of one directory create two origins, and this
 host reaches the home directory as both `/home/danilo` and `/var/home/danilo`
 (Silverblue's `/home` symlink). The Makefile passes the canonical path to both
-`prepare` and `--repo`, so every run, from any shell's `$HOME` spelling, names
-the same URI.
+`install` and flatpak-builder's `--repo`, so every run, from any shell's
+`$HOME` spelling, names the same URI.
 
 - **Not `~/.cache/lushtext/`** (the task's suggestion). `make
   clear-lushtext-xdg` deletes `$XDG_CACHE_HOME/lushtext`
@@ -151,24 +185,42 @@ the same URI.
   `XDG_CACHE_HOME`/`~/.cache` on a line with a build-path word. This path
   uses `XDG_DATA_HOME`, so the audit neither fires nor needs an exception.
 
-### D3. Repoint and re-enable `lushtext-origin` before building (`prepare`)
+### D3. Export, then repoint and re-enable `lushtext-origin`, then install (`install`)
 
-`scripts/flatpak-install-origin.sh prepare` runs first in `flatpak-install`:
+`flatpak-install` hands the whole sequence to one subcommand. The export
+command comes after `--`, so the fixture test (D7) runs the same code with
+`flatpak build-export` in place of flatpak-builder:
 
-1. It creates the repository's parent directory and the lock file.
-2. It computes the URI as `file://` + the canonical repository path. The
-   path must be absolute and must contain only characters `g_file_get_uri`
-   leaves as they are. The proposed set is `[A-Za-z0-9._~/!$&'()*+,;=:@-]`;
-   it is **to be confirmed in implementation** against GLib, by comparing it
-   with `gio info`'s `uri:` line in the fixture test when `gio` is available.
-   Otherwise `prepare` refuses and asks for an `LUSHTEXT_FLATPAK_INSTALL_REPO`
-   without such characters. This keeps the URI byte-equal to the one flatpak
-   computes (case h). If the set turns out wrong, D5 still fails the install
-   instead of leaving a second origin.
-3. If a user remote `lushtext-origin` exists (with `--show-disabled`) and its
-   URL differs, or it is disabled, it runs `flatpak remote-modify --user
-   --enable --url=<uri> lushtext-origin` and prints one line naming the old
-   URL.
+```
+scripts/flatpak-install-origin.sh install <repo> <ref> -- <export command…>
+```
+
+Before the lock, `install` validates the repository path. It must be
+absolute and canonical, and contain only `[A-Za-z0-9._~/-]`, which
+`g_filename_to_uri` never escapes. Otherwise `install` refuses before
+anything is built, and asks for an `LUSHTEXT_FLATPAK_INSTALL_REPO` without
+other characters. This keeps the URI, `file://` + the path, byte-equal to the
+one flatpak computes (case h). The default path on this host,
+`/var/home/danilo/.local/share/lushtext-flatpak-install/repo`, is within the
+set. `install` then creates the repository's parent directory, which also
+holds the lock file. `build-export` creates the repository but not its parent
+(measured: `mkdirat: No such file or directory`).
+
+Then, under the lock (D4), in this order:
+
+1. Run the export command. If it fails, stop with its exit status **before
+   touching any remote**. The origin stays exactly as it was. On the
+   maintainer's machine it is disabled, so nothing new shows in GNOME
+   Software. This is the invariant from the baseline section: an enabled
+   origin never points at a repository that lacks the ref.
+2. `prepare`. If a user remote `lushtext-origin` exists (with
+   `--show-disabled`) and its URL differs from the URI, or it is disabled,
+   run `flatpak remote-modify --user --enable --url=<uri> lushtext-origin` and
+   print one line naming the old URL. The repository now serves the ref, so
+   the enabled remote is valid from this moment on.
+3. `flatpak install --user -y --noninteractive --reinstall <repo> <ref>`, the
+   command `do_install` runs (D1).
+4. Prune and check (D5).
 
 The remote name comes from the app id's last component, as
 `create_origin_remote_config` derives it. Numbered leftovers
@@ -178,6 +230,16 @@ post-install check (D5) fails if the name or URL still differs.
 
 *Rejected:*
 
+- *Repair before the build* (this design's first version). The first install
+  after this change would enable the maintainer's disabled origin at a shared
+  repository that does not exist yet. That brings the reported error back for
+  the whole build, and for good if the build fails
+  (`prepare-order-experiment`).
+- *Repair before the build, at an empty repository with a summary that
+  `prepare` creates.* This keeps `flatpak-builder --install`.
+  `remote-ls --updates` stays at 0, but `flatpak update` warns "No such ref"
+  until a build succeeds (`empty-repo-experiment`). That is a weaker version
+  of the same symptom.
 - *Rely on flatpak's own fallback* (case d). It repairs a dangling remote with
   a different URL, but the name drifts (`lushtext1-origin`). It also cannot
   fix case e: a disabled remote with a matching URL is reused and the install
@@ -188,22 +250,33 @@ post-install check (D5) fails if the name or URL still differs.
 - *Disable the origin after every install, so a vanished repository is never
   queried.* Every later install would hit case e.
 - *Use `gio info` to compute the URI.* It needs the path to exist and adds a
-  dependency (in this toolbox `gio` comes from linuxbrew). The allowed
+  dependency (in this toolbox `gio` comes from linuxbrew). The conservative
   character set is simpler, and D5 catches any mismatch.
 
 ### D4. Serialize installs with a lock beside the repository
 
-The whole `flatpak-builder --install`, prune and check sequence runs under
-`flock "$(FLATPAK_INSTALL_REPO).lock"`.
+`install` takes `flock` on `<repo>.lock` itself and holds it for the whole
+sequence of D3: export, repair, install, prune and check. The Makefile does not take the lock as well: a second `flock` on the
+same file from a child process would wait on its own parent.
 
 - Two worktrees installing at once would otherwise race on the shared
   repository's summary, and the prune of one could remove objects the other's
   export is writing.
 - The last install to finish would win nondeterministically.
 - Serializing costs a wait only when two installs actually overlap. That is
-  rare, and a wait is the right outcome then.
+  rare, and a wait is the right outcome then. The lock covers the build,
+  because the build is the export, so a second install waits for the first
+  install's whole build.
 
-`flock` (util-linux) is already a dependency of the heavy-work scripts.
+The export command must not inherit the lock's descriptor. A background
+process a build leaves running would otherwise hold the lock after
+`make flatpak-install` returns, and the next install would wait forever. So
+`install` re-executes itself under `flock --close <repo>.lock` (an internal
+`__locked` subcommand) instead of holding the lock on an inherited
+`exec {fd}>` descriptor.
+
+`flock` (util-linux, `/usr/bin/flock` in the toolbox) is already a dependency
+of the heavy-work scripts.
 
 ### D5. Prune, then check the post-condition, after every install
 
@@ -212,12 +285,18 @@ Still under the lock:
 - `flatpak build-update-repo --prune --prune-depth=0 <repo>` keeps only the
   heads (the app ref and the appstream branches), so the repository stays at
   one commit (case i).
-- `scripts/flatpak-install-origin.sh check --installed` then fails the target
-  unless all of the following hold:
-  - the installed `dev.cominotti.lushtext//master` has origin `lushtext-origin`;
+- `scripts/flatpak-install-origin.sh check --installed <repo> <ref>` then
+  fails the target unless all of the following hold:
+  - the installed ref (`dev.cominotti.lushtext/<arch>/master`) has origin
+    `lushtext-origin` (`flatpak info --user -o`);
   - that remote is enabled and its URL is the shared repository's URI;
-  - the deployed commit (`flatpak info --user -c`) equals the repository's
-    head for that ref (`ostree --repo=<repo> rev-parse`).
+  - the deployed commit (`flatpak info --user -c`) equals the commit the
+    remote serves (`flatpak remote-info --user -c lushtext-origin <ref>`).
+    That is the commit an update would fetch, so the check tests "serves the
+    deployed commit" literally, and the install path needs no `ostree` CLI
+    (measured in `prepare-order-experiment`).
+
+  The failure names the expected and the actual origin, URL and commit.
 
 This turns cases e and h from silent states into failures.
 
@@ -260,26 +339,46 @@ name match is exact.
 `scripts/test-flatpak-install-origin.sh`, run as `make
 test-flatpak-install-origin` and wired into `make check-policy`:
 
-- **Isolation.** It creates a private `FLATPAK_USER_DIR`, `XDG_DATA_HOME` and
-  `LUSHTEXT_FLATPAK_INSTALL_REPO` under its own `TMPDIR`. Before any
-  `flatpak` call it asserts that each of them lies under that directory. It
-  removes the directory on every exit.
+- **Isolation.**
+  - The target runs under `$(TEMP_SCOPE)` (`scripts/with-temp-scope.sh`), as
+    `testing.md` requires of every test lane. It therefore also fails on a
+    `TEMP-LEAK:`.
+  - Inside that scope it creates private `HOME`, `FLATPAK_USER_DIR`,
+    `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` and
+    `LUSHTEXT_FLATPAK_INSTALL_REPO`. Before any `flatpak` call it asserts that
+    each of them lies under its own `TMPDIR`.
+  - It removes that directory from an `EXIT`/`INT`/`TERM` trap.
 - **Fixture.** It uses the `org.test.lushtext` runtime fixture, with
-  `LUSHTEXT_FLATPAK_APP_ID=org.test.lushtext` and the ref kind and branch as
-  parameters of the check.
+  `LUSHTEXT_FLATPAK_APP_ID=org.test.lushtext` and the ref
+  (`runtime/org.test.lushtext/<arch>/master`) as a parameter of `install` and
+  `check --installed`.
+- **The production path.** Every install in the test goes through
+  `flatpak-install-origin.sh install <repo> <ref> -- flatpak build-export
+  --runtime <repo> <dir> master`. That is the code the Makefile runs, with only
+  the export command swapped. The test starts from the maintainer's state: a
+  disabled `lushtext-origin` whose repository was deleted.
 - **Cases.** It asserts:
   1. a dangling enabled origin: `flatpak remote-ls --user --updates` fails
      with the reported message (the baseline), and `check` fails naming the
      remote and printing `make flatpak-install`;
   2. the same remote disabled: `remote-ls` passes and `check` still fails;
-  3. `prepare` repoints and enables it. A `flatpak install --reinstall
-     <shared repo>` then keeps `lushtext-origin` as the name, and `check
-     --installed` passes with deployed == head;
-  4. case e pinned: with the remote disabled, an install without `prepare`
-     leaves a stale commit, and `check --installed` fails it;
-  5. a valid origin passes `check`.
-- **Skips.** It prints `SKIP:` and exits 0 when `flatpak` or `ostree` is
-  absent.
+  3. **failed build**: `install … -- false` exits non-zero and leaves the
+     remote's URL and disabled state unchanged; `remote-ls --updates` still
+     passes;
+  4. **repair**: `install` with a real export repoints and enables the remote.
+     It keeps the name `lushtext-origin`, the deployed commit equals the one
+     the remote serves, the repository holds one commit after the prune, and
+     `remote-ls --updates` and `check` pass;
+  5. **case e pinned**: with the remote disabled, a bare `flatpak install
+     --reinstall` from a newer export (no `install`) leaves a stale commit,
+     and `check --installed` fails it, naming both commits. A following
+     `install` deploys the new commit;
+  6. **lock**: while the test holds `flock` on `<repo>.lock`, `timeout 2
+     install … -- touch <marker>` exits 124 and the marker does not exist;
+  7. **character set**: `LUSHTEXT_FLATPAK_INSTALL_REPO` containing a space
+     makes `install` refuse before the export runs.
+- **Skips.** It prints `SKIP:` and exits 0 when `flatpak`, `ostree` (the
+  fixture's `ostree init`/`log`) or `flock` is absent.
 
 Where it runs:
 
@@ -295,7 +394,9 @@ Where it runs:
   `SKIP:` keeps it green.
 - **Time limit.** Before the wiring, the implementation measures the test's
   wall time. Above 10 s, it stays out of `check-policy` and runs from
-  `test-flatpak-identity-verifier` instead.
+  `test-flatpak-identity-verifier` instead. The stage-1 experiment, which
+  covers nine installs, ran in 0.7 s (stage-2 rerun). Case 6 adds its 2 s
+  timeout.
 
 ### D8. Coordination with `reduce-build-disk-writes`
 
@@ -306,7 +407,8 @@ Both changes edit the `flatpak-install` recipe. That change adds
 Whichever lands second merges `origin/main` and keeps both:
 
 - the state dir follows `FLATPAK_BUILDER_FLAGS`;
-- `--repo` and the lock come from this change.
+- `--repo` without `--install`, and the `install` subcommand that wraps the
+  export, come from this change.
 
 The install origin stays on the single shared path in every case. The rules
 `build.md` gains (D9) say why: a per-checkout location is what

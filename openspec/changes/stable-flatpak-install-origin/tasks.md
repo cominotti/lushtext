@@ -14,6 +14,9 @@ Rules for every task:
   - Never `pgrep -f`, never `find /`.
 - **Evidence** goes in `.claude/handoffs/stable-flatpak-install-origin/`. The
   stage-1 experiment is committed as `evidence/origin-experiment.sh` and `evidence/origin-experiment.log`.
+  The stage-2 review experiments are committed beside it, as
+  `evidence/prepare-order-experiment.{sh,log}` and
+  `evidence/empty-repo-experiment.{sh,log}`.
 - **Failing first** means the test is committed, or recorded red against
   `main`'s scripts, before the code that turns it green.
 
@@ -32,12 +35,18 @@ Scope statements:
 ## 1. Failing-first tests
 
 - [ ] 1.1 Write `scripts/test-flatpak-install-origin.sh` (design D7).
-  - Use the private `TMPDIR`, `FLATPAK_USER_DIR`, `XDG_DATA_HOME` and
-    `LUSHTEXT_FLATPAK_INSTALL_REPO`, with an isolation assertion and an
-    `EXIT`/`INT`/`TERM` cleanup trap.
+  - Use the private `TMPDIR`, `HOME`, `FLATPAK_USER_DIR`, `XDG_DATA_HOME`,
+    `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` and `LUSHTEXT_FLATPAK_INSTALL_REPO`,
+    with an isolation assertion and an `EXIT`/`INT`/`TERM` cleanup trap.
   - Use the `org.test.lushtext` runtime fixture from `origin-experiment.sh`.
-  - Print `SKIP:` and exit 0 without `flatpak` or `ostree`.
-  - Cover cases 1–5 of D7.
+    Start from the maintainer's state: a disabled `lushtext-origin` whose
+    repository was deleted.
+  - Drive every install through `flatpak-install-origin.sh install <repo>
+    <ref> -- <export command>`. The export command is `flatpak build-export`,
+    or `false` for the failed build.
+  - Print `SKIP:` and exit 0 without `flatpak`, `ostree` or `flock`.
+  - Cover cases 1–7 of D7, including the failed build (3), the lock (6) and
+    the character-set refusal (7).
   - Run it against `main` (no `scripts/flatpak-install-origin.sh`) and record
     in `runs.log` that it fails at case 1, where the guard is missing. Record
     too that case 1's `remote-ls --updates` baseline assertion already holds.
@@ -47,7 +56,8 @@ Scope statements:
   - A new case answers with a dangling `lushtext-origin` line and asserts
     that `verify-flatpak-identity.sh` fails with the guard's message.
   - Record the new case failing against `main`'s verifier.
-- [ ] 1.3 Add a standalone `make test-flatpak-install-origin` target. Do
+- [ ] 1.3 Add a standalone `make test-flatpak-install-origin` target, run
+  under `$(TEMP_SCOPE)` (`testing.md`, Temporary Files). Do
   **not** add it to `check-policy` yet: the pre-commit hook runs
   `check-policy`, and the test is red until group 2.
 - [ ] 1.4 Commit the test scripts, the standalone target and the red record
@@ -57,25 +67,36 @@ Scope statements:
 
 - [ ] 2.1 Write `scripts/flatpak-install-origin.sh` with these subcommands:
   - `path` (D2);
-  - `prepare` (D3), with its character-set refusal;
+  - `install <repo> <ref> -- <export command…>` (D3, D4):
+    - it validates the character set and creates the parent before locking;
+    - it re-executes itself under `flock --close` (the internal `__locked`
+      subcommand);
+    - it then runs the export, `prepare`, the `flatpak install --reinstall`,
+      the prune and `check --installed`;
+    - it touches no remote when the export fails.
+  - `prepare` (D3), callable on its own;
   - `check` (D6), with the warning for a valid non-shared origin;
-  - `check --installed` (D5).
+  - `check --installed <repo> <ref>` (D5), comparing the deployed commit with
+    `flatpak remote-info --user -c lushtext-origin <ref>`.
 
   Derive the app id from `LUSHTEXT_FLATPAK_APP_ID` (default
   `dev.cominotti.lushtext`) and the remote prefix by flatpak's rule. It must
   pass `shellcheck` and `bash -n`.
-- [ ] 2.2 Change `flatpak-install` in the Makefile:
-  - `prepare`;
-  - then, under `flock "$$repo.lock"`: `flatpak-builder $(FLATPAK_BUILDER_FLAGS)
-    --assumeyes --repo="$$repo" --install …`, `flatpak build-update-repo
-    --prune --prune-depth=0 "$$repo"` and `check --installed`.
+- [ ] 2.2 Change `flatpak-install` in the Makefile to one call, with
+  `repo="$$(./scripts/flatpak-install-origin.sh path)"`:
+  `./scripts/flatpak-install-origin.sh install "$$repo"
+  dev.cominotti.lushtext/$$(flatpak --default-arch)/master --
+  flatpak-builder $(FLATPAK_BUILDER_FLAGS) --repo="$$repo"
+  $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)`.
+  - There is no `--install`: the script installs after the repair (D1, D3).
+  - The Makefile takes no lock of its own (D4).
 
   `flatpak` and `flatpak-deps` stay unchanged. Add a comment saying why the
   origin is a single shared path (D1, D2, D8).
 - [ ] 2.3 Call `check` from `scripts/verify-flatpak-identity.sh` in a new
   "Flatpak install origin" section (D6).
-- [ ] 2.4 Measure the wall time of `make test-flatpak-install-origin` and
-  record it. At 10 s or less, add the target to `check-policy`. Above 10 s,
+- [ ] 2.4 Measure the wall time of `make test-flatpak-install-origin`
+  through `scripts/measure.sh` and record it. At 10 s or less, add the target to `check-policy`. Above 10 s,
   run it from `test-flatpak-identity-verifier` instead (design D7).
 - [ ] 2.5 Run `make test-flatpak-install-origin`,
   `make test-flatpak-identity-verifier`, `make check-flatpak-permissions` and
@@ -118,11 +139,12 @@ Scope statements:
 - [ ] 4.2 Run the authorised `make flatpak-install` once on the final tree,
   through `scripts/heavy.sh`. The maintainer's machine starts from the
   disabled dangling `lushtext-origin`. Record in `runs.log`:
-  - the `prepare` line repointing it;
+  - that the remote stayed disabled and unchanged while the build ran, and
+    the `prepare` line repointing it after the export;
   - `flatpak remotes --user -d --show-disabled` before and after;
   - `flatpak remote-ls --user --updates` exiting 0;
   - `flatpak info --user dev.cominotti.lushtext//master` (origin, commit)
-    against `ostree --repo=<shared repo> rev-parse`;
+    against `flatpak remote-info --user -c lushtext-origin <ref>`;
   - the repository's size (`du -sh`).
 - [ ] 4.3 Run `make verify-flatpak-identity` and record that the new "Flatpak
   install origin" section passes.
