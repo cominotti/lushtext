@@ -4024,6 +4024,28 @@ separate change, in this order:
      each measured first; `GtkAccessibleText` on the widget if a screen
      reader needs text ranges in a row; the A109 upstream report
      (`docs/upstream-reports.md`, drafted, filing needs the maintainer).
+   - `restore-main-ci` (merged 2026-11-15, PR #99, `main` `dee22056`, on
+     local evidence by maintainer decision; archived 2026-11-15,
+     `openspec/changes/archive/2026-11-15-restore-main-ci/`; specs
+     `draft-session-recovery`, `editor-minimap`,
+     `gtk-lush-internal-platform`, `widget-test-ci-sharding`). Restores
+     `main`'s CI:
+     - D1: text installed by local-history Restore, Undo Restore and a
+       set-aside draft opened in a tab now owes a draft
+       (`note_draft_owed`) and redraws the "•" title;
+     - D2: a scroll made during a passive width reflow survives the
+       settle (axiom A112), and R8 keeps it while the minimap is hidden;
+     - D3: the GTK Lush API advisory installs `cargo-public-api` from a
+       checksum-pinned crate on OpenSSL 4;
+     - D4: two retry-rescued widget tests diagnosed and fixed (directory
+       retention, protected periodic capture).
+     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (queued):
+     F1, the D2 guard
+     `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
+     fails on every CI run and passes locally, starved or not, before and
+     after the merge; task 4.2, the bookmark preview-only test, is not
+     diagnosed (it failed on CI inside the full `window` shard); and the
+     eight-branch-run proof for `editor-page`, `window` and `surfaces`.
    - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14, merged (PR #100,
      `main` `6211a9c1`) and archived 2026-11-14,
      `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/`,
