@@ -3,8 +3,9 @@
 Why agents run heavy work, measurements and waits only through
 `scripts/heavy.sh`, `scripts/measure.sh` and `scripts/wait-for.sh`. The rules
 are in [`.agents/rules/verification-runs.md`](../../.agents/rules/verification-runs.md),
-"Shared-machine agent work". How parallel changes share slots, measurements and merges is
-in [`.agents/rules/parallel-agent-work.md`](../../.agents/rules/parallel-agent-work.md).
+"Shared-machine agent work". How parallel changes share slots,
+measurements and merges is in
+[`.agents/rules/parallel-agent-work.md`](../../.agents/rules/parallel-agent-work.md).
 
 ## The two failures that shaped the protocol
 
@@ -57,9 +58,9 @@ CRITICAL gsd-housekeeping notification, which is why the scope runs with
 Ten change runs worked in parallel. One run timed builds with
 `scripts/measure.sh` at a load of 8–12, although a build timing is not a
 verdict. `measure.sh` took `INTENT` exclusively, then waited to take `LOCK`
-exclusively while a 13-minute visual smoke held it shared, and every new heavy
-command of the other runs queued behind it. Implementation stages stretched past four
-hours. The fix is in
+exclusively while a 13-minute visual smoke held it shared, and every new
+heavy command of the other runs queued behind it. Implementation stages
+stretched past four hours. The fix is in
 [`parallel-agent-work.md`](../../.agents/rules/parallel-agent-work.md): a cap
 on concurrent implementation stages, build and suite timings through
 `heavy.sh`, and a load gate that queues verdict campaigns for a quiet window.

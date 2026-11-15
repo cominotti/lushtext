@@ -20,7 +20,9 @@ windows. It removes placeholder or stale slots and locks.
 Coordination files live in the main checkout's `.claude/handoffs/`, which is
 gitignored. From any worktree:
 `H="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.claude/handoffs"`.
-`$H` holds:
+Set `H` and `C` (the change name) in the same Bash call as every command
+below that uses them: shell variables do not survive between calls. `$H`
+holds:
 - one directory per change, for its logs and evidence;
 - `PARALLEL-LEDGER.md`, with the runs and their queue order;
 - `IMPL-SLOTS/`, `MERGE-LOCK/` and `MEASURE-QUEUE.md`.
@@ -46,8 +48,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
 - Only timing verdicts pin, to the reference set (E-cores 8–23), and the pin
   belongs to `scripts/measure.sh`. On a base where `measure.sh` does not pin
   yet, `taskset -c 8-23 scripts/measure.sh …` is the one allowed `taskset`.
-- The kernel intersects a pin with the cpuset. Record `taskset -pc $$`; a run
-  on fewer than the 16 reference CPUs is not a verdict.
+- The kernel intersects a pin with the cpuset. Record the CPUs the run gets,
+  in the same call: `taskset -c 8-23 sh -c 'taskset -pc $$'`. A run on fewer
+  than the 16 reference CPUs is not a verdict.
 - Size parallelism by memory, never by `nproc`. Give each heavy command a
   `--mem` cap that fits its measured peak at its job and thread counts.
   Admission then decides how many run at once: the slice budget, and
@@ -59,17 +62,17 @@ Change worktrees live in `.claude/worktrees/<change>`.
   command, a stage acquires its slot (`C` is the change name):
 
   ```
-  mkdir -p "$H/IMPL-SLOTS"
+  mkdir -p "${H:?}/IMPL-SLOTS"
   flock -w 10 "$H/IMPL-SLOTS/.lock" sh -c '
     [ -d "$0/$1" ] && exit 0
     [ "$(find "$0" -mindepth 1 -maxdepth 1 -type d | wc -l)" -lt 5 ] || exit 1
-    mkdir "$0/$1" && date -Is >"$0/$1/since"' "$H/IMPL-SLOTS" "$C"
+    mkdir "$0/$1" && date -Is >"$0/$1/since"' "${H:?}/IMPL-SLOTS" "${C:?}"
   ```
 
   - Exit 1 means every slot is taken: repeat in the foreground ("Waiting").
     Coordinator placeholders count as taken.
   - Before the stage ends, whatever the outcome, it runs
-    `rm -rf "$H/IMPL-SLOTS/$C"`.
+    `rm -rf "${H:?}/IMPL-SLOTS/${C:?}"`.
   - Only the coordinator removes another change's slot.
 - Spec, spec-review and review stages take no slot. Their heavy commands
   still go through `heavy.sh`.
@@ -135,28 +138,35 @@ Change worktrees live in `.claude/worktrees/<change>`.
   - a pull-request Kani shard budget taken from the PR's run.
 
   It waits with `timeout 540 gh run watch <id> --exit-status` in repeated
-  foreground calls, and merges only when those runs pass.
+  foreground calls, and merges only when those runs pass. It waits before
+  step 1, never while holding `MERGE-LOCK`. If the `origin/main` merge in
+  step 2 changes files that evidence covers, it releases the lock, pushes,
+  and waits for the new runs first.
 - **Merges are serialized under `$H/MERGE-LOCK`.**
   1. Take it:
-     `timeout 540 bash -c 'until mkdir "$0/MERGE-LOCK" 2>/dev/null; do sleep 30; done' "$H"`,
-     repeated. Then write `owner.txt` with the change, PR number, run id and
-     `date -Is`.
+     `timeout 540 bash -c 'until mkdir "$0/MERGE-LOCK" 2>/dev/null; do sleep 30; done' "${H:?}"`,
+     repeated. Then write `owner.txt`, one item per line, the change name
+     first: change, PR number, run id, `date -Is`.
   2. Holding it:
      - `git fetch origin`, then `git merge origin/main`, always;
      - rerun `make check` and the tests covering files changed on either
        side, through `heavy.sh`;
-     - `git push`.
+     - `git push origin HEAD`, to the branch of the same name (never
+       `HEAD:main`).
   3. Merge with
      `gh pr merge <n> --merge --admin --match-head-commit "$(git rev-parse HEAD)"`.
      `--admin` skips required checks and reviews.
-  4. Archive the change on `main` in a fresh worktree and push that one commit
-     directly to `main`, under the same authorization.
-  5. Remove `MERGE-LOCK` once the archive is on `origin/main`, and only if
-     its `owner.txt` names your change.
+  4. Archive the change in a fresh worktree on `origin/main` after
+     `git fetch`, commit it through `heavy.sh`, and push that one commit with
+     `git push origin HEAD:main`, under the same authorization.
+  5. Once the archive is on `origin/main`, release the lock only if it is
+     yours:
+     `[ "$(head -n1 "${H:?}/MERGE-LOCK/owner.txt")" = "${C:?}" ] && rm -rf "${H:?}/MERGE-LOCK"`.
 - If GitHub or the permission prompt refuses the merge or the push, release
   `MERGE-LOCK` without archiving, then stop and report. Any other early exit
   also releases it. Never retry another way: no other flag, account or API
-  call, no ruleset edit.
+  call, no ruleset edit, and never push the change's own commits to `main`.
+  The archive commit in step 4 is the only direct push.
 - Only the coordinator breaks a lock: one whose owner's PR is merged or
   closed, or whose run the ledger shows as ended. It records the break in
   that change's handoff.
