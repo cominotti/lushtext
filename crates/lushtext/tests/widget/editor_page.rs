@@ -4,7 +4,8 @@
 
 use crate::common::{
     accessible_hidden, ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read,
-    isolated_data_dir, present_window, rect_within, short_lines, test_application, wait_until,
+    isolated_data_dir, observed_between_dispatches, present_window, rect_within, short_lines,
+    test_application, wait_until,
 };
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -2154,9 +2155,15 @@ fn test_document_sized_save_formatting_stays_inflight_until_bounded_install_fini
         done_clone.set(true);
     });
 
-    wait_until(Duration::from_secs(5), || {
-        page.buffer_replacement_evidence().in_progress
-    });
+    // `in_progress` is transient: sample it before every dispatch, because one
+    // `wait_until` drain can run the whole sliced mirror-back to its terminal
+    // when its 1 ms turns overrun on a loaded host.
+    assert!(
+        observed_between_dispatches(Duration::from_secs(5), || {
+            page.buffer_replacement_evidence().in_progress
+        }),
+        "the formatted save should mirror its text back in bounded turns"
+    );
     assert!(page.is_saving());
     assert!(!done.get());
     assert!(!page.accepts_user_edits());
@@ -5008,10 +5015,17 @@ fn test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replaceme
     let _ = page.buffer_replacement_evidence();
 
     // Stages 4/5: each scheduled turn mutates the session's phase, offset, and
-    // metrics under the same borrow.
-    wait_until(Duration::from_secs(10), || {
-        page.buffer_replacement_evidence().mutation_started
-    });
+    // metrics under the same borrow. `mutation_started` holds only while the
+    // session is in flight, and its turns are 1 ms timeouts: when a turn takes
+    // longer than that (a loaded host), each one is already due when it
+    // returns, so one `wait_until` drain runs the whole replacement to its
+    // terminal and never sees the state. Sample before every dispatch instead.
+    assert!(
+        observed_between_dispatches(Duration::from_secs(10), || {
+            page.buffer_replacement_evidence().mutation_started
+        }),
+        "the first scheduled turn should start mutating the buffer"
+    );
     let mutating = page.buffer_replacement_evidence();
     assert!(mutating.mutation_started);
     let _ = page.buffer_replacement_evidence();

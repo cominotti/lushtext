@@ -32,7 +32,7 @@ that freezes it is **paragraph length**, not file size.
 | SC | `spawn-completion-priority` (2026-11-02; queued from C2's `eviction/reselect` finding) | `gtk-lush-tasks` delivers `spawn_blocking_then` completions from one source at `GDK_PRIORITY_REDRAW + 4`, one per dispatch, above GtkTextView's validation idle (axiom A80), aging after eight completions or 16 ms (review); `ViewportSliceBin`'s pending-request evidence covers the re-slice (review, pre-existing); LushText's load and save admission drains and permit releases at the same priority; the `save/during-validation` lane case | No completion dispatch over B_settle and no input or frame delayed against `main`, interleaved; a save during a validation backlog lands promptly. `eviction/reselect` is **mostly unchanged** by design: its cause is EV, below |
 | EV | `defer-background-tab-layout` (queued 2026-11-02, coordinator decision; **next after C3**, it touches C3's install files) | The real cause of `eviction/reselect`'s 6–11 s batches, attributed in SC (perf on `main` cdfff201: 69.5 % of the application's CPU in `incremental_validate_callback`): (1) the transient load permit (`8 × 8 MiB + 1 MiB` = 65 MiB of the 256 MiB budget, so three loads at a time) is held through an installation that C6 paces below the validation idle, so the next document is not even read until every validating view has laid out its whole buffer; (2) **background tabs validate fully**: restoring many large files spends the CPU laying out tabs nobody is looking at (A80: a view on a hidden `GtkStack` page validates its whole buffer) | The selected document of a restore of ten 8 MiB documents is usable within the open budget, background documents do not delay it, and no background tab lays out its whole buffer before it is shown (or the cost is recorded against a toolkit floor). **Implemented 2026-11-03, review fixes 2026-11-04** (PR #80, not merged): a hidden tab's view shows an empty placeholder buffer (A82, A83) except while an assistive technology listens or past 2^18 lines, background installs wait one priority step below the visible tab's (aging after 256 ms), the load permit keeps the decoded body plus the residency not yet installed after the read, a dense document's reattach is revealed in paced ranges; `eviction/reselect` completes (main: 20 s cap) with every background document laid out never and installed within ~0.5 s of the visible one; see "EV" below |
 | DL | `bound-dense-long-line-editing` (queued 2026-11-05, coordinator, from CF's review; proposal not written) | Bound open, click, restyle and typing on **editable dense documents of long lines** (the full tier's dense/10000 and dense/50000: 160 lines of 10,000 or 50,000 characters). Identical on `main` `1d483b24` and CF: open 110–530 ms, click 53–262 ms, zoom step about 100 / 470–485 ms, font change 70 / 320–330 ms, typing about 1.2 s per burst, the lane failing `misdirected_typing` and `withheld_typing_frames` in 12 / 18 phases; the cost is GtkTextView validating 2000 px batches of such lines (A31), each dispatch laying out up to about a million characters | The full-tier lane passes its typing gates on these cases, and every dispatch is within the budgets or recorded against a toolkit floor (C5's per-keystroke exception covers one paragraph's re-layout, not a batch of them) |
-| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; implemented 2026-11-05, merged (PR #84, `main` `d59a1256`) and archived 2026-11-06 (`openspec/changes/archive/2026-11-06-power-of-two-thresholds/`); `bound-lists-by-budget-not-count` merged (PR #87, `main` `1af354a1`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-lists-by-budget-not-count/`); `bound-notes-browser-by-budget` merged (PR #88, `main` `4860fa2d`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-notes-browser-by-budget/`); `drill-down-palette-categories` merged (PR #89, `main` `4b567cdf`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-drill-down-palette-categories/`); `bin-minimap-markers-per-row` merged (PR #90, `main` `9b8f9102`) and archived 2026-11-09 (`openspec/changes/archive/2026-11-09-bin-minimap-markers-per-row/`; see "BM"); `adopt-gnome-51` implemented 2026-11-10, lane verdict 2026-11-11, merged (PR #91, `main` `14649be0`) and archived 2026-11-11 (`openspec/changes/archive/2026-11-11-adopt-gnome-51/`; see "AG" below); `retest-upstream-fixes-on-nightly` implemented 2026-11-11, merged (PR #92, `main` `25ab565e`) and archived 2026-11-12 (`openspec/changes/archive/2026-11-12-retest-upstream-fixes-on-nightly/`; see "RN" below); `lighten-notes-browser-rows` **next**) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard. **Proposal written 2026-11-05** (branch `power-of-two-thresholds`, `openspec/changes/power-of-two-thresholds/`): about 95 in-scope constants classified; tiers 8 MiB / 64 MiB (512 MiB after task 3's memory peak); caps down, coverage windows (`R_BATCH` 256), retention tiers and retry budgets up (nothing stored is pruned); exceptions with corpus evidence (`L_SYNTAX`, the per-language gates and `S_SYNTAX_OTHER`: rounding down unhighlights 0.1–22 % of real files; `L_PROTECT_EDIT`, `V_BATCH`, the 100,000-file index, the 64 MP image cap); `L_PROTECT`/`N_INSPECT` 512 if a `dense/512` lane case holds, else 256; `V_SLICE`, the direct-install threshold and the 250-per-turn search caps re-measured; a `make check-thresholds` inventory gate. **Implemented 2026-11-05** (branch `power-of-two-thresholds`, PR pending, not merged): see "PT" below. Measured: the open tier is 512 MiB (memory peak within 1.074 × main's at 500 MB), `L_PROTECT`/`N_INSPECT` 512, `V_SLICE` 16,384, the direct-install threshold 512 KiB, the search per-turn caps 256; task 4.5's corpus count kept `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `MAX_MARKDOWN_EVENTS` and the table-cell caps as recorded exceptions. **Amended 2026-11-05 (maintainer, PR #84 not merged):** the first version rounded every cap down and lost what `main` showed (palette 50 → 32, notes 500 → 256, Replace All 10 → 8 MiB, the 10,000 caps → 8,192, minimap markers 2,000 → 1,024, the minimap and per-edit history tier 10 MB → 8 MiB). New kind **presentation cap** (design D12): a cap on what the user sees or gets rounds **up** from its pre-PT value when its bound holds by measurement, else keeps that value as an exception; internal caps keep rounding down. **Implemented 2026-11-05 (stage 3, PR #84):** palette 64, notes 512, Replace All 16 MiB, the 10,000 caps 16,384 (the sidebar directory cap kept at 10,000 by measurement), markers 2,048, save-only history 16 MiB (the minimap tier kept at 10,000,000 bytes by measurement), `N_HEAD` and CSS back to 10,000 and 37 KiB, `N_DENSE` 256, Markdown 65,536 events and 1,024 cells, `L_SEARCH_HIGHLIGHT` 16,384 (`L_MINIMAP` kept at 22,000 by measurement, `L_INVISIBLES` at 50,000 by Protected View's invariant), the index 131,072, images 2^26 pixels; displayed sizes in IEC units (D14). Queued after PT merges, in order (D13): `bound-lists-by-budget-not-count`, `stream-replace-all`, `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then `avx2-health-scan-kernel` and DL. See "PT" below, "Amendment". | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
+| PT | `power-of-two-thresholds` (queued 2026-11-01, maintainer decision; after C2, C6 and C5 merge; implemented 2026-11-05, merged (PR #84, `main` `d59a1256`) and archived 2026-11-06 (`openspec/changes/archive/2026-11-06-power-of-two-thresholds/`); `bound-lists-by-budget-not-count` merged (PR #87, `main` `1af354a1`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-lists-by-budget-not-count/`); `bound-notes-browser-by-budget` merged (PR #88, `main` `4860fa2d`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-bound-notes-browser-by-budget/`); `drill-down-palette-categories` merged (PR #89, `main` `4b567cdf`) and archived 2026-11-07 (`openspec/changes/archive/2026-11-07-drill-down-palette-categories/`); `bin-minimap-markers-per-row` merged (PR #90, `main` `9b8f9102`) and archived 2026-11-09 (`openspec/changes/archive/2026-11-09-bin-minimap-markers-per-row/`; see "BM"); `adopt-gnome-51` implemented 2026-11-10, lane verdict 2026-11-11, merged (PR #91, `main` `14649be0`) and archived 2026-11-11 (`openspec/changes/archive/2026-11-11-adopt-gnome-51/`; see "AG" below); `retest-upstream-fixes-on-nightly` implemented 2026-11-11, merged (PR #92, `main` `25ab565e`) and archived 2026-11-12 (`openspec/changes/archive/2026-11-12-retest-upstream-fixes-on-nightly/`; see "RN" below); `lighten-notes-browser-rows` implemented 2026-11-13, merged (PR #94, `main` `b129f378`) and archived 2026-11-14 (`openspec/changes/archive/2026-11-14-lighten-notes-browser-rows/`); `stream-replace-all` **next** (queue item 2 below)) | Convert every existing threshold to the rule in `.agents/rules/rust.md` ("Thresholds are powers of two, rounded the conservative way"): inventory every byte, character, paragraph, row and count constant; classify each as cap, coverage window, policy tier, or external fact; round caps down and coverage windows up (e.g. `R_batch` 224 → 256); re-derive the constants Kani ties together and rerun the affected shards; user-visible tiers become 8 MiB / 64 MiB / 512 MiB in IEC units (512 MiB only after measuring the exclusive-load memory peak); external facts stay exact. No measurement campaign: rounding the conservative way keeps every guarantee. The exceptions are slice sizes (`V_SLICE`, the direct-install threshold), whose rounding changes total time and is re-measured, and any value whose rounding costs a visible loss (`V_BATCH`, the per-language syntax gates), which may stay exact as recorded exceptions. **Coupled pair (C2b review):** `N_INSPECT` (500, the Line Inspector's window width) is tied to `L_PROTECT` (500, the head a fold keeps) by a Kani bound (`core-protected-view`: a window never exceeds the basis `L_PROTECT` was measured on); convert both together, to the same power of two, and rerun that shard. **Proposal written 2026-11-05** (branch `power-of-two-thresholds`, `openspec/changes/power-of-two-thresholds/`): about 95 in-scope constants classified; tiers 8 MiB / 64 MiB (512 MiB after task 3's memory peak); caps down, coverage windows (`R_BATCH` 256), retention tiers and retry budgets up (nothing stored is pruned); exceptions with corpus evidence (`L_SYNTAX`, the per-language gates and `S_SYNTAX_OTHER`: rounding down unhighlights 0.1–22 % of real files; `L_PROTECT_EDIT`, `V_BATCH`, the 100,000-file index, the 64 MP image cap); `L_PROTECT`/`N_INSPECT` 512 if a `dense/512` lane case holds, else 256; `V_SLICE`, the direct-install threshold and the 250-per-turn search caps re-measured; a `make check-thresholds` inventory gate. **Implemented 2026-11-05** (branch `power-of-two-thresholds`, PR pending, not merged): see "PT" below. Measured: the open tier is 512 MiB (memory peak within 1.074 × main's at 500 MB), `L_PROTECT`/`N_INSPECT` 512, `V_SLICE` 16,384, the direct-install threshold 512 KiB, the search per-turn caps 256; task 4.5's corpus count kept `L_MINIMAP`, `L_INVISIBLES`, `L_SEARCH_HIGHLIGHT`, `MAX_MARKDOWN_EVENTS` and the table-cell caps as recorded exceptions. **Amended 2026-11-05 (maintainer, PR #84 not merged):** the first version rounded every cap down and lost what `main` showed (palette 50 → 32, notes 500 → 256, Replace All 10 → 8 MiB, the 10,000 caps → 8,192, minimap markers 2,000 → 1,024, the minimap and per-edit history tier 10 MB → 8 MiB). New kind **presentation cap** (design D12): a cap on what the user sees or gets rounds **up** from its pre-PT value when its bound holds by measurement, else keeps that value as an exception; internal caps keep rounding down. **Implemented 2026-11-05 (stage 3, PR #84):** palette 64, notes 512, Replace All 16 MiB, the 10,000 caps 16,384 (the sidebar directory cap kept at 10,000 by measurement), markers 2,048, save-only history 16 MiB (the minimap tier kept at 10,000,000 bytes by measurement), `N_HEAD` and CSS back to 10,000 and 37 KiB, `N_DENSE` 256, Markdown 65,536 events and 1,024 cells, `L_SEARCH_HIGHLIGHT` 16,384 (`L_MINIMAP` kept at 22,000 by measurement, `L_INVISIBLES` at 50,000 by Protected View's invariant), the index 131,072, images 2^26 pixels; displayed sizes in IEC units (D14). Queued after PT merges, in order (D13): `bound-lists-by-budget-not-count`, `stream-replace-all`, `scale-file-index`, slicing the 59–60 ms largest-file open dispatch, then `avx2-health-scan-kernel` and DL. See "PT" below, "Amendment". | Every threshold is a power of two or a recorded exception with its measurement; the affected Kani shards and the lane pass. |
 
 C1–C4 are drafted; none may be **implemented** before this record holds the
 values they use (`responsiveness-measurement` spec).
@@ -3948,7 +3948,9 @@ separate change, in this order:
      for html / markdown / json (GtkSourceView !465), under `B_SETTLE_US`;
      A29 fixture-invalid on the nightly (no cut-off within its 60 s budget);
      A102 and A103 drafted, A107 dropped as already reported (pango#763);
-   - `lighten-notes-browser-rows` (**implemented 2026-11-13, PR open**, after `retest-upstream-fixes-on-nightly`'s archive; queued 2026-11-07 from BN's stage 4
+   - `lighten-notes-browser-rows` (**done**, implemented 2026-11-13; merged as PR #94,
+     `main` `b129f378`, and archived 2026-11-14,
+     `openspec/changes/archive/2026-11-14-lighten-notes-browser-rows/`; after `retest-upstream-fixes-on-nightly`'s archive; queued 2026-11-07 from BN's stage 4
      review, coordinator decision, user experience first): first measure
      whether the about 205 realized rows (A1) or each row's widgets cause
      BN's recorded fixed costs E1–E3 (dialog first frames 47–76 ms, the
@@ -3960,7 +3962,7 @@ separate change, in this order:
      and minimap still scale with the document or workspace.
 
      **Spec written 2026-11-12** (branch `lighten-notes-browser-rows`,
-     `openspec/changes/lighten-notes-browser-rows/`). Measured on `main`
+     `openspec/changes/archive/2026-11-14-lighten-notes-browser-rows/`). Measured on `main`
      (`23518e53`, GTK 4.24.1, libadwaita 1.10.0) first.
 
      - **The realized rows cause the row-dependent part, and text
@@ -3989,7 +3991,7 @@ separate change, in this order:
      deferred clear and grouped publish too. Evidence:
      `.claude/handoffs/lighten-notes-browser-rows/`.
 
-     **Implemented 2026-11-13** (PR on branch `lighten-notes-browser-rows`;
+     **Implemented 2026-11-13** (PR #94, merged as `main` `b129f378`;
      design "Implementation record"). 4 interleaved GL rounds against
      `main`, load 0.3–1.3:
      - E1 closed: the first frame's layout 36.6–37.8 → 5.0–5.4 ms, the
@@ -4022,6 +4024,81 @@ separate change, in this order:
      each measured first; `GtkAccessibleText` on the widget if a screen
      reader needs text ranges in a row; the A109 upstream report
      (`docs/upstream-reports.md`, drafted, filing needs the maintainer).
+   - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14, merged (PR #100,
+     `main` `6211a9c1`) and archived 2026-11-14,
+     `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/`,
+     spec `openspec/specs/flatpak-ci-build/`; a `restore-main-ci`
+     follow-up under the pre-existing-blockers rule). PR #98's `Flatpak
+     Build` failed twice and passed on a rerun (run `43642169956`): the CI
+     image's system installation sits on overlayfs, and when Flathub has
+     newer GNOME 51 refs, flatpak's update renames lower-layer deployment
+     directories, which an overlay without `redirect_dir` refuses (`Invalid
+     cross-device link`, then a flatpak-builder segfault). CI Flatpak builds
+     now go through `.github/actions/flatpak-build`: diagnostics and a
+     `rename(2)` probe, then `scripts/ci-flatpak-installation.py relocate`
+     (`cp -a` to `$RUNNER_TEMP`, a `mount(2)` bind over `/var/lib/flatpak`,
+     a re-probe that must return `ok`). `make check-flatpak-ci-builds` (in
+     `check-policy`) keeps every job on it. A `release.yml` dispatch now
+     builds the dispatched commit, a dry run works for an untagged version
+     from any branch (a pre-existing blocker: it could not pass `Release
+     Metadata` with any version), and a non-dry dispatch is refused off
+     `main`. Kani: none (no proven module touched). Timing: none (no timed
+     path touched). Axioms: none.
+     - **Local evidence (the merge gate, design D8),** in the real image
+       `sha256:78d969b1…` on this host (overlay `redirect_dir` N):
+       - L1, as shipped: `rename-probe: EXDEV`, and `flatpak-builder
+         --install-deps-only` fails every update with the CI text, then
+         exits 139;
+       - L2, relocated, each step a separate `docker exec`: the mount
+         persists, `rename-probe: ok`, the same command updates the SDK,
+         Platform, GL, codecs and locales, and a full build with CI's
+         arguments from a `git archive` of the branch succeeds;
+       - L3: a destination inside the checkout is refused before any copy,
+         and a forced post-relocation probe failure stops the step naming
+         the probe, the result and the filesystem.
+       Details: `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/evidence/`.
+     - **The relocation's local cost** (non-verdict, host under other
+       agents' load): 3.8 GiB copied with hardlinks kept, 12.2–21.0 s of
+       wall time (6.8 s in the stage 2 reproduction), against the 90 s
+       acceptance budget of design D2.
+     - **Open, owed by the programme's final CI sweep** (design D8): C1, a
+       green `flatpak.yml` run on `main` logging the diagnostics, the
+       relocation within 90 s and `rename-probe: ok`; C2, one `release.yml`
+       dry-run dispatch from `main` with an untagged version (for example
+       `v0.8.4-dryrun.1`), the publish jobs skipped and no new tag or
+       release afterwards; C3, if either fails or the relocation exceeds
+       90 s, fix it (the D2 fallback is an empty system installation
+       filled from Flathub). C1 is also the first execution of three
+       things no local run can show (stage 4 review): the composite
+       action's nested `flatpak-builder@v6` node action inside a container
+       job (fallback: run the two helper steps in each job before a
+       direct `flatpak-builder@v6` step, and make `check-flatpak-ci-builds`
+       require those steps instead of the composite action),
+       `mount(2)` on a hosted runner (fallback: `FLATPAK_SYSTEM_DIR`
+       through `$GITHUB_ENV`, design D1), and the extra 3.8 GiB on runner
+       disk (fallback: D2's empty installation).
+     - **Upstream report candidates** (design D10; filing needs the
+       maintainer, outside the `upstream-gtk-reports` skill's projects):
+       `flatpak/flatpak-builder` segfaulting after `Error: Failed to update
+       org.gnome.Sdk`; `flathub-infra/flatpak-github-actions` shipping an
+       image whose system installation cannot be updated on overlay without
+       `redirect_dir` (and lagging Flathub since 2026-09-22).
+     - **Pre-existing flake fixed:** the final-tree `make test` caught
+       `editor_page::test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replacement_mutation`
+       passing only on retry. A buffer replacement's 1 ms slice turns chain
+       inside one `wait_until` drain when they overrun on a loaded host, so
+       the in-flight `mutation_started` was never sampled (reproduced 2 of 6
+       isolated runs under CPU saturation). It and the save-formatting test
+       with the same transient wait now use `observed_between_dispatches`
+       (16 of 16 clean under the same load); test-only.
+     - **Observed, follow-up:** the Flatpak build (locally and so in CI)
+       prints cargo's ``warning: `…/cargo/config` is deprecated in favor of
+       `config.toml` `` twice. The file is the `inline` vendoring source
+       `flatpak-cargo-generator` writes into `build-aux/cargo-sources.json`
+       (`"dest-filename": "config"`), which this change does not touch
+       (design D9). Fix by having `make cargo-sources` and the Flathub
+       generator emit `config.toml`, or report it upstream to
+       `flatpak/flatpak-builder-tools`.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
@@ -4153,7 +4230,8 @@ review"). Evidence: `.claude/handoffs/bound-notes-browser-by-budget/`.
   the list's 18 px lower start (a `:first-child` header rule would change
   row heights while the list recycles), and the `WordChar` metadata wrap.
 - **Follow-ups recorded:**
-  - `lighten-notes-browser-rows`, queued right after
+  - `lighten-notes-browser-rows` (done: merged as PR #94, `main` `b129f378`,
+    and archived 2026-11-14), queued right after
     `bin-minimap-markers-per-row` and, since 2026-11-09, after
     `adopt-gnome-51` (see the PT queue). It first measures
     whether the realized-row count or the row's widgets dominate E1–E3,
@@ -4612,7 +4690,7 @@ merged as PR #92 (rebase merge, `main` `25ab565e`) and archived 2026-11-12.
 Design and decisions:
 `openspec/changes/archive/2026-11-12-retest-upstream-fixes-on-nightly/design.md`; evidence in
 `.claude/handoffs/retest-upstream-fixes-on-nightly/`. `lighten-notes-browser-rows`
-is next.
+followed: merged as PR #94 (`main` `b129f378`) and archived 2026-11-14.
 
 Measured on the GNOME nightly SDK build `469c3f9d` (2026-11-11 16:43 UTC:
 GTK 4.25.1, Pango 1.59.0, GtkSourceView 5.23.0), four rounds interleaved with

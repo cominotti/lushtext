@@ -1,6 +1,6 @@
 ---
 name: gtk-perf-rust-optimize
-description: Explicit deep-dive checklist for Rust hot-path correctness, idioms, and established acceleration patterns in LushText. Use when explicitly invoked or when assigned as the Rust hot-path leaf by gtk-perf-review; do not auto-invoke alongside the umbrella performance skill. Applies to byte decoding, search scoring, indexing, file processing, error models, and benchmark-sensitive Rust. Leaf reviewers must return findings directly and must not delegate.
+description: "Leaf checklist of gtk-perf-review for Rust hot paths: decoding, scanning, search scoring, indexing, typed errors, unsafe code and benchmarks. Use only when gtk-perf-review assigns it or it is invoked by name; a leaf returns findings and never delegates."
 ---
 
 # Rust Hot-Path Deep Dive

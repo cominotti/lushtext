@@ -1,6 +1,6 @@
 ---
 name: gtk-responsiveness
-description: Explicit deep-dive checklist for GTK4/Libadwaita responsiveness in LushText, covering main-thread work, bounded worker dispatch, async freshness, signals, timers, list factories, and widget lifetime. Use when explicitly invoked or when assigned as the responsiveness leaf by gtk-perf-review; do not auto-invoke alongside the umbrella performance skill. Leaf reviewers must return findings directly and must not delegate.
+description: "Leaf checklist of gtk-perf-review for GTK main-loop responsiveness: main-thread work, worker dispatch, async freshness, signals, timers, list factories and widget lifetime. Use only when gtk-perf-review assigns it or it is invoked by name; a leaf returns findings and never delegates."
 ---
 
 # GTK Responsiveness Deep Dive

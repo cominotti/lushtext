@@ -22,9 +22,9 @@ Use the `GObject`, `Gio`, and `GLib` pages only when GTK or Libadwaita docs poin
 
 ## Allowed Source Code
 
-- Official source tarballs from `https://download.gnome.org/sources/gtk/4.22/`
-- Official source tarballs from `https://download.gnome.org/sources/libadwaita/1.9/`
-- Official source tarballs from `https://download.gnome.org/sources/gtksourceview/5.20/`
+- Official source tarballs from `https://download.gnome.org/sources/gtk/4.22/` and `.../gtk/4.24/`
+- Official source tarballs from `https://download.gnome.org/sources/libadwaita/1.9/` and `.../libadwaita/1.10/`
+- Official source tarballs from `https://download.gnome.org/sources/gtksourceview/5.20/` and `.../gtksourceview/5.22/`
 - Official upstream project pages on `https://gitlab.gnome.org/GNOME/gtk/`
 - Official upstream project pages on `https://gitlab.gnome.org/GNOME/libadwaita/`
 - Official upstream project pages on `https://gitlab.gnome.org/GNOME/gtksourceview/`
@@ -35,9 +35,10 @@ Prefer tarballs when you need reliable local search. GitLab pages can be useful 
 
 - Rust crate `gtk4 = 0.11` with feature `gnome_50` means GTK API guidance must stay inside the GTK 4.22 family.
 - Rust crate `libadwaita = 0.9` with feature `v1_9` means Libadwaita guidance must stay inside the 1.9 family.
-- Rust crate `sourceview5 = 0.11` with feature `v5_18` is used on the GNOME 50 runtime. GtkSourceView guidance should stay inside the 5.20 runtime family while still checking the Rust binding feature gate for APIs that were introduced after 5.18.
+- Rust crate `sourceview5 = 0.11` with feature `v5_18`: GtkSourceView API guidance stays inside the 5.20 family while still checking the Rust binding feature gate for APIs that were introduced after 5.18.
+- LushText ships on the GNOME 51 runtime (GTK 4.24, Libadwaita 1.10, GtkSourceView 5.22) and keeps GNOME 50 (GTK 4.22, Libadwaita 1.9, GtkSourceView 5.20) as the floor. Read the floor's source for API questions and both families' source for behaviour, which must hold on both.
 - Docs pages may advertise a newer library version in the header. Use `since` markers and ignore APIs newer than GTK 4.22 or Libadwaita 1.9.
-- Source tarballs can be any stable micro release inside the target family, such as `gtk-4.22.3`, `libadwaita-1.9.0`, or `gtksourceview-5.20.0`.
+- Source tarballs can be any stable micro release inside the target family, such as `gtk-4.22.3`, `libadwaita-1.9.0`, or `gtksourceview-5.20.0` for the floor and `gtk-4.24.1`, `libadwaita-1.10.0`, or `gtksourceview-5.22.0` for the shipped runtime.
 
 ## Repeatable Source Lookup Workflow
 
@@ -52,6 +53,10 @@ curl -L -O https://download.gnome.org/sources/gtksourceview/5.20/gtksourceview-5
 tar -xf gtk-4.22.3.tar.xz
 tar -xf libadwaita-1.9.0.tar.xz
 tar -xf gtksourceview-5.20.0.tar.xz
+# Behaviour on the shipped runtime:
+curl -L -O https://download.gnome.org/sources/gtk/4.24/gtk-4.24.1.tar.xz
+curl -L -O https://download.gnome.org/sources/libadwaita/1.10/libadwaita-1.10.0.tar.xz
+curl -L -O https://download.gnome.org/sources/gtksourceview/5.22/gtksourceview-5.22.0.tar.xz
 ```
 
 Search for a warning string:

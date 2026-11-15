@@ -63,18 +63,17 @@ pub trait WorkspaceStore {
     fn save(&self, data: &WorkspacesFile) -> Result<()>;
 }
 
-// services/workspace_manager.rs
-pub fn ensure_active(store: &impl WorkspaceStore) -> Result<WorkspaceConfig> {
+// Illustrative: LushText's workspace_manager is a concrete module with no
+// store trait. `WorkspacesFile` holds `current_scope` and `workspaces`.
+pub fn ensure_one_workspace(store: &impl WorkspaceStore) -> Result<WorkspaceConfig> {
     let mut data = store.load()?;
-    if data.active_workspace.is_none() {
-        let default = WorkspaceConfig::default();
-        data.active_workspace = Some(default.id.clone());
-        data.workspaces.push(default.clone());
-        store.save(&data)?;
-        Ok(default)
-    } else {
-        // ...
+    if let Some(first) = data.workspaces.first() {
+        return Ok(first.clone());
     }
+    let default = WorkspaceConfig::default();
+    data.workspaces.push(default.clone());
+    store.save(&data)?;
+    Ok(default)
 }
 ```
 
@@ -113,11 +112,14 @@ impl SessionManager {
         Self { store }
     }
 
-    pub fn restore(&self, workspace_id: &WorkspaceId) -> Result<SessionData> {
-        self.store.load(workspace_id)
+    pub fn restore(&self) -> Result<SessionData> {
+        self.store.load()
     }
 }
 ```
+
+Illustrative: LushText's session is one global `session.json` behind the
+concrete `services::session_service`, not a per-workspace store.
 
 This pattern is relatively rare in a desktop app with a single persistence backend. It becomes valuable when:
 - Supporting multiple storage backends (e.g., local JSON + cloud sync)

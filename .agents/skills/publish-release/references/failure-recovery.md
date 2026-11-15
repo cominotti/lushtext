@@ -45,13 +45,13 @@ If `main` pushed but the tag did not:
 If the tag pushed but the release workflow failed:
 
 - Rerun the workflow if the tagged source is correct and the failure was transient or infrastructure-related.
-- If the fix is in release tooling or workflow scripts after the public tag, keep the tag immutable and rerun from the workflow recovery ref while still resolving the released source from the public tag and commit.
+- If the fix is in release tooling or workflow scripts after the public tag, keep the tag immutable, merge the fix to `main`, and dispatch the repaired workflow from `main` (a `release.yml` dispatch that is not a dry run is refused from any other ref) while still resolving the released source from the public tag and commit.
 - If source code or release metadata is wrong, publish a new patch release rather than moving the public tag.
 - Only delete or replace a pushed tag with explicit maintainer approval and a clear downstream-impact note.
 
 ## GitHub Actions Problems
 
-Any GitHub Actions run for the release commit, release tag, or recovery commit with conclusion other than `success` is a release blocker. This includes `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, and required workflow runs that are skipped or expected but missing.
+Any non-success run for the release commit, release tag, or recovery commit is a release blocker under the skill's green standard (Non-Negotiables).
 
 Recovery:
 
@@ -59,6 +59,8 @@ Recovery:
 - Fix the underlying cause, not only the symptom.
 - Do not raise any job timeout above 30 minutes. If a job times out, reduce scope, fix the benchmark or workflow harness, split the work into bounded jobs, or dispatch a bounded replacement workflow.
 - If the public tag is already pushed and the fix belongs to release tooling or workflow configuration, keep the tag immutable, commit the workflow/tooling fix on `main`, and dispatch the repaired workflow with the public tag as input when the workflow supports it.
+- A `release.yml` dispatch builds the commit it was dispatched from, in every job. A recovery dispatch that is not a dry run is refused unless it comes from `main`; the Flathub artifact still resolves the public tag's commit.
+- A Flatpak job that logs `Invalid cross-device link` while updating `org.gnome.Sdk` (and then a flatpak-builder segfault, exit 139) means the image's system installation was updated on overlayfs. Every Flatpak job must build through `.github/actions/flatpak-build`, which relocates it; read that action's `Flatpak installation diagnostics` and relocation log groups (`rename-probe`, filesystem, wall time) before rerunning anything (`.agents/rules/build.md`, `flatpak.yml`).
 - If the tagged source or release metadata itself is wrong, publish a new patch release rather than moving the public tag.
 - Repeat the exact-SHA and tag-branch workflow sweep until every current workflow responsibility completes with conclusion `success` or has a successful replacement run for the same responsibility. If recovery succeeds through a replacement run, report the failed or cancelled run ID together with the replacement run ID; if recovery is blocked, report that the release is not fully green and name the external blocker.
 
@@ -106,25 +108,10 @@ If a deployed Cominotti repository is broken, prefer publishing a new fixed rele
 
 ## Flathub Is Not Planned
 
-**Decided 2026-09-16: LushText is not published to Flathub, and there is no
-plan or intention to start.** The Cominotti remote is the only Flatpak channel.
-
-The release workflow still carries a Flathub PR step. It always skips, and that
-skip is the expected result of this decision rather than a failure to recover
-from. There is nothing to diagnose here: do not check whether `FLATHUB_TOKEN`
-and `FLATHUB_REPOSITORY` are configured, do not rerun a workflow to produce a
-PR, do not create one manually from the artifact, and do not report the skip as
-an outstanding action. The manifest generator, verifier, and domain check are
-retained and still tested so the tooling does not rot, but they are dormant.
-
-Reviving Flathub publication requires an explicit decision reversing this one,
-at which point the removed recovery guidance can be restored from this file's
-history. See `openspec/specs/flathub-publication/spec.md`.
-
-Note the distinction: none of this concerns the Flathub **remote** as the source
-of the GNOME runtime and SDK. A Flatpak build that fails to fetch
-`org.gnome.Platform` from Flathub is an ordinary build failure, handled like any
-other.
+The skipped Flathub PR step is not a failure to recover from: do not rerun a
+workflow or create a PR to produce one (see the skill). A Flatpak build that
+fails to fetch `org.gnome.Platform` from the Flathub **remote** is an ordinary
+build failure, handled like any other.
 
 
 ## Transport And Signing

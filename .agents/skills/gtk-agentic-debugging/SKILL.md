@@ -1,6 +1,6 @@
 ---
 name: gtk-agentic-debugging
-description: "Run and observe GTK4 and Libadwaita applications the way a human does: launch real GUI sessions, keep a PTY open for stdout and stderr, capture user-session journal output, watch D-Bus traffic, request screenshots through desktop capture paths, and summarize runtime artifacts. Trigger when the user asks to reproduce a live GTK bug, inspect warnings from `make run`, watch terminal logs, follow D-Bus or portal behavior, capture what is on screen, or debug visual, focus, sizing, animation, compositor, or session-specific issues that only appear while the app is actually running. Pair with `gtk4-libadwaita-internals` when the captured symptom is really a GTK or Adwaita contract question."
+description: "Reproduce and observe a running LushText: headless-Mutter captures, live sessions kept in a PTY, journal and D-Bus logs, AT-SPI input and portal screenshots. Use for bugs that only appear while the app runs (live warnings from make run, visual, focus, sizing, animation, portal or compositor issues); hand toolkit-contract questions to gtk4-libadwaita-internals."
 ---
 
 # GTK Agentic Debugging
@@ -41,15 +41,9 @@ For repeatable agent-owned inspection, make headless Mutter the first path:
   --output /tmp/lushtext-mutter.png
 ```
 
-This launches LushText on a private `mutter --headless` Wayland monitor, isolates XDG data/config/cache plus keyfile GSettings, sets in-document search through the exported `win.set-search-query` D-Bus action, waits through Automation1 readiness predicates, saves `automation-snapshot.json`, and captures the monitor through Mutter's `RecordMonitor("Meta-0")` screencast stream. Prefer this before touching the human's live GNOME session or falling back to Xvfb.
+This launches LushText on a private `mutter --headless` Wayland monitor, isolates XDG data/config/cache plus keyfile GSettings, sets in-document search through the exported `win.set-search-query` D-Bus action, waits through Automation1 readiness predicates, saves `automation-snapshot.json`, and captures the monitor through Mutter's `RecordMonitor("Meta-0")` screencast stream. Prefer this before touching the human's live GNOME session or falling back to Xvfb. For renamed or relocated builds, pass its identity overrides (see [references/helper-scripts.md](references/helper-scripts.md)); never patch product identities into the helper for a one-off fixture.
 
-The helper discovers its repository through Git and resolves bundled AT-SPI helpers relative to
-its own script directory. For renamed or relocated builds, pass `--repo-root`, `--binary`,
-`--app-id`, `--app-object-path`, `--automation-interface`, `--gsettings-schema`, and
-`--gsettings-schema-dir`, or use the matching `LUSHTEXT_DEBUG_*` environment variables. Never
-patch product identities into the helper for a one-off fixture.
-
-Prefer a capture session over ad hoc commands. Run the helper through `functions.exec_command` with `tty: true`, then keep polling with `write_stdin` while the human interacts with the app window.
+For the human's live session, record a capture session instead of ad hoc commands. Run the helper in a PTY-backed session the runner keeps open (for example Codex's `functions.exec_command` with `tty: true`, polled with `write_stdin`) while the human interacts with the app window.
 
 ```bash
 .agents/skills/gtk-agentic-debugging/scripts/run-gtk-debug-session.sh \
@@ -71,21 +65,7 @@ Before interacting with the window or taking a screenshot, prove the app is aliv
 
 Add the exact tool you are about to use to the same check, for example `--require-tool ydotool` before input injection or `--require-tool gnome-screenshot --require-tool python3` before snapshot capture. If this check fails because LushText is not running, the PID is not proven to belong to the debug launch, or a required tool is missing, pause and ask the human to install the tool, run `make dev-tools`, relaunch the debug session, or provide different instructions.
 
-For agent-driven input, `ydotool` is only ready when both the binary and daemon are usable. The default socket is `${XDG_RUNTIME_DIR}/.ydotool_socket` unless `YDOTOOL_SOCKET` is set. If the command runner reaps background processes after each shell command, keep `ydotoold` running in its own PTY-backed session instead of starting it as a short-lived background child.
-
-Before using `ydotool type` or `ydotool key`, ask the human to focus the specific LushText debug window you launched. Then rerun `check-lushtext-live.sh --session ... --require-launched-instance --require-tool ydotool` immediately before injection. `ydotool` targets the compositor's focused surface, so process liveness alone does not prove the keystrokes will go to LushText.
-
-Prefer D-Bus for interactions whenever LushText exports the needed behavior as a `org.gtk.Actions` action on the application or window object. For ordinary inspection, use `scripts/lushtext-automation.py catalog`, `snapshot`, `wait`, and `action` so the action catalog, typed parameters, statuses, and result envelope stay consistent with docs. For lower-level tracing, inspect `/dev/cominotti/lushtext/Automation` with `dev.cominotti.lushtext.Automation1.GetActionCatalog`, then drive the documented app/window action and use `WaitForReady` with the narrowest named predicate plus `GetSnapshot` for bounded assertions. Fall back to broad `WaitForIdle` only when no narrower predicate matches the workflow. For text entry into visible GTK widgets that is not covered by a target-state action, prefer AT-SPI D-Bus editable-text automation before `ydotool`. Screenshot capture may also use D-Bus through the desktop portal or GNOME Shell, but those APIs are permission-gated and can return `AccessDenied` or wait for human approval.
-
-Prefer non-interactive portal screenshots before opening the GNOME Shell screenshot UI. On the Fedora Wayland host, `capture-screenshot.py --portal-only --non-interactive` can save a PNG without a visible prompt, while `gnome-screenshot -f` may hang after falling back to X11. If an interactive portal UI appears, do not try to approve it with coordinate clicks; only use AT-SPI actions when the accessible exposes a real invokable action.
-
-Do not use coordinate clicks to focus LushText or any other application window. GNOME Shell can report broad or full-screen frame extents through AT-SPI, and clicking near the top of a maximized frame can activate Shell UI such as Overview or quick settings instead of the app. If D-Bus/AT-SPI activation does not focus the target window, ask the human to focus it.
-
-If headless Mutter is unavailable, use `scripts/capture-lushtext-xvfb.sh --file PATH --search TEXT --enable-minimap --output /tmp/shot.png` as the fallback isolated display. It launches the debug binary on a private Xvfb display, uses temporary XDG data/config/cache home plus keyfile GSettings, invokes `win.begin-search` through `org.gtk.Actions`, types only inside that isolated display with `xdotool`, and captures the root window with `xwd` + ImageMagick. This path is lower compositor fidelity than `mutter --headless`.
-The Xvfb helper accepts the same repository, binary, app-ID, object-path, and GSettings overrides
-where those identities affect its lower-fidelity D-Bus flow.
-
-After the reproduction, inspect the generated `summary.md`, then open the raw `app.typescript`, `dbus.log`, and `journal.log` files only as needed.
+If headless Mutter is unavailable, `scripts/capture-lushtext-xvfb.sh` is the lower-fidelity isolated fallback. After the reproduction, inspect the generated `summary.md`, then open the raw `app.typescript`, `dbus.log`, and `journal.log` files only as needed.
 
 ## Choose the Right Mode
 
@@ -96,7 +76,7 @@ After the reproduction, inspect the generated `summary.md`, then open the raw `a
 
 ## Workflow
 
-1. Read [references/runtime-debugging-playbook.md](references/runtime-debugging-playbook.md) for the live-session workflow and tool limits.
+1. Read [references/runtime-debugging-playbook.md](references/runtime-debugging-playbook.md) for the live-session workflow and tool limits; its "Preferred Live Debug Loop" (human reproduces, watch live warnings, add one narrow trace, relaunch, pointer-match the real widgets, then fix) is the default investigation loop.
 2. Choose an exact `--pid-pattern` for the target executable before launching the helper. Prefer anchored executable matches over app IDs or loose substrings.
 3. Start `scripts/run-gtk-debug-session.sh` in a PTY-backed session.
 4. Before any D-Bus action, input injection, screenshot, or request for the human to type into the window, run `scripts/check-lushtext-live.sh` with `--session`, `--require-launched-instance`, and every `--require-tool` needed for the next action.
@@ -115,161 +95,45 @@ After the reproduction, inspect the generated `summary.md`, then open the raw `a
 10. Use [references/log-patterns.md](references/log-patterns.md) to map the signature to likely GTK, GLib, Adwaita, or D-Bus causes.
 11. If step 10 points to a toolkit invariant rather than an app-specific state bug, hand the interpretation to `gtk4-libadwaita-internals` before proposing a fix.
 
-## Preferred Investigation Loop
-
-Prefer this loop for real GTK bugs that only show up in a live desktop session:
-
-1. Launch a real fresh app instance with the helper and keep the PTY open.
-2. Let the human reproduce the bug in the actual window instead of starting with synthetic action calls.
-3. Watch the terminal output live and capture the first repeated warning burst or visible symptom.
-4. Add the smallest possible targeted tracing to answer the next unknown.
-   Good examples:
-   - widget pointer dumps
-   - minimum-width or allocation logs for the specific paned or revealer path
-   - snapshot or wrapper identity checks
-5. Relaunch the real app, reproduce again, and compare the new traces with the warning timestamps.
-6. Match warned widget pointers to the real widget tree before deciding which widget is actually wrong.
-7. Only then make a narrow fix, rerun the same real-app loop, and verify both correctness and UX.
-8. Once the manual repro is proven, prefer driving the exact exported `org.gtk.Actions` window action for restart-to-restart verification, then call automation `WaitForReady` with the narrowest named predicate and `GetSnapshot`. This keeps the reproduction on the real application path without guessing at lower-level input injection.
-
-This is the preferred workflow over broad speculative code changes. For geometry bugs especially, "launch real app -> human reproduces -> inspect live warnings -> add narrow tracing -> pointer-match the real widgets -> rerun" is usually faster and more trustworthy than static reasoning alone.
-
 ## Required Habits
 
-- Prefer `tty: true` for the live runner. PTY-backed sessions are the most reliable way to preserve stdout and stderr ordering.
+Session and evidence:
+
 - For automated visual inspection, prefer the headless Mutter helper before live-desktop portal screenshots and before Xvfb. Mutter matches the CI compositor path and avoids stealing the human's focus.
 - Keep headless Mutter/PipeWire runtime directories short, directly under
   `/tmp` or `$XDG_RUNTIME_DIR`, instead of nesting them under long artifact
   roots. PipeWire and Wayland sockets hit Unix socket path limits before the
   app launches, so a deep case directory can invalidate an otherwise-good
   visual proof run.
-- For pixel invariants, prefer `make visual-geometry-smoke` or
-  `scripts/visual-geometry-smoke.py --case-filter ...` so before/after
-  screenshots come from the same process, wait on `visual-geometry-settled` plus
-  any scenario-specific final allocation predicate, compare protected regions
-  exactly, verify declared pixel anchors and relative anchor deltas, and preserve
-  bounded geometry snapshots beside the PNGs. If the user can reproduce a
-  geometry bug in a live window, first run `scripts/lushtext-automation.py
-  visual-geometry-capture ...` with explicit overrides for unknown theme,
-  word-wrap, fixture, direction, or viewport fields, then replay the generated
-  scenario in headless visual geometry. If a rendered effect is the subject of
-  the bug, make sure the artifact summary lists the relevant
-  `pixel_verified_invariant_ids`, per-case pixel evidence, and final-frame
-  rendered-anchor stability instead of relying on a rectangle-only comparison
-  or a name-only invariant pass. If the symptom happens during an animation,
-  require stream-frame evidence with mapped intermediate frames; a final quiet
-  screenshot can miss the bug entirely.
-- For visual UI work, inspect the state matrix through actual screenshots when
-  widget assertions cannot prove legibility: empty/no-context, representative
-  populated, dense/many-item, and constrained-size states. Open the PNG and
-  verify the human-visible result: text readable, controls reachable, intended
-  region scrolls, empty status pages do not show gratuitous scrollbars, and
-  dense lists do not push chrome off-screen. A screenshot file existing is not
-  evidence by itself.
-- Tell the human before starting a fresh capture if an existing app instance may need to be closed. `make run` is now a fresh-run path that asks the existing LushText instance to quit and refuses to activate stale code; use an existing-instance watch instead when the human has unsaved work.
-- Before interacting with LushText or capturing a visual snapshot, run `scripts/check-lushtext-live.sh`. For fresh debug sessions, include `--session` and `--require-launched-instance` so you do not accidentally drive a pre-existing LushText window.
+- Tell the human before starting a fresh capture if an existing app instance may need to be closed. `make run` is a fresh-run path that asks the existing LushText instance to quit and refuses to activate stale code (mechanics: `docs/runbooks/dev-desktop-staging.md`); use an existing-instance watch instead when the human has unsaved work.
 - If a required interaction or screenshot tool is missing, stop the live-debug flow and ask the human to install it, run `make dev-tools`, or give alternate instructions. Do not silently fall back to a weaker interaction path after discovering a missing tool.
-- Before `ydotool` keyboard input, ask the human to focus the LushText debug window. The liveness helper proves the process, not keyboard focus.
-- Prefer exported `org.gtk.Actions` over `ydotool` for app interactions. Use `scripts/lushtext-automation.py action ...` when the reusable client can express the cataloged action; otherwise use the automation action catalog to confirm parameter and state signatures, then wait with `dev.cominotti.lushtext.Automation1.WaitForReady` using the narrowest named predicate and assert with `GetSnapshot`. Fall back to `WaitForIdle` only for broad all-workflow settling, and fall back to `ydotool` only for missing operations such as arbitrary text entry into a focused widget.
-- Prefer `scripts/atspi-set-text.py` over `ydotool type` for visible editable GTK widgets. It uses the accessibility D-Bus bus and avoids depending on compositor keyboard focus. In restored or deeply nested window layouts, use the script's default deep scan; earlier shallow scans can miss a visible search entry.
-- For in-document search setup, prefer the exported `win.set-search-query` string action when the app build includes it. Use AT-SPI editable text only when intentionally testing the visible entry itself or an older build that lacks the target-state action.
-- Before screenshot capture, tell the human a GNOME/portal prompt may appear as a blank or white dialog for a few seconds and ask them to approve it if it appears. Treat a timeout after that as a capture permission failure, not as proof of app behavior.
-- Before screenshot capture, present the debug-owned LushText instance through D-Bus when possible, then ask the human to keep that window focused. A portal prompt can flash or miss AT-SPI discovery when another window owns focus.
-- If the human wants the agent to approve a visible portal prompt, treat that as UI automation, not D-Bus permission bypass. Prefer AT-SPI button invocation only when the visible control exposes a real accessibility action.
-- Never use mouse-coordinate fallback for focus, portal approval, screenshot controls, or Shell UI. During this LushText minimap session, GNOME Shell exposed a `Take Screenshot` button through AT-SPI, but synthetic coordinate clicks on that exact accessible still activated the wrong Shell surface.
-- Treat `pid-pattern` choice as part of the evidence chain. A bad pattern can make a single-instance handoff look like a fresh launch, or can make the helper appear to be the target process.
-- Validate the helper's process snapshots before trusting the launch note. If `process-before.txt` or `process-after.txt` contains `run-gtk-debug-session.sh` or `pgrep`, the PID heuristic is not trustworthy yet.
-- For unique GTK apps, distinguish "launcher command ran" from "new instance exists". `cargo run` may still hand off to an existing owner; `make run` should either relaunch the fresh debug binary or fail if the existing owner refuses to close.
+- Treat `pid-pattern` choice as part of the evidence chain. A bad pattern can make a single-instance handoff look like a fresh launch, or can make the helper appear to be the target process; process snapshots listing the helper or `pgrep` void the heuristic (Workflow step 5).
 - Prefer human-driven reproduction over synthetic action triggering when the user can reproduce the issue reliably. Synthetic actions are useful for narrowing once the live symptom is already understood, not as the default first proof.
-- After the first confirmed repro, check whether the app exports `org.gtk.Actions` on a `/.../window/N` object. If it does, use `gdbus call ... org.gtk.Actions.SetState` or `Activate` to replay the exact window action path across fresh launches.
-- For geometry warnings during paned animations, do not assume the widget named in the warning is the true root cause. A snapshot wrapper that replaced the opposite pane can under-report the live child's minimum width and make GTK complain while measuring the other side.
-- Also allow for the opposite outcome: the warned widget may be the actual `GtkPaned` child host, such as a `GtkStack` used to swap live vs frozen children. In that case, preserving the descendant's width floor is not enough; the host itself must advertise the legal minimum width.
-- For installed-Flatpak animation smoothness bugs, separate package freshness from frame-budget churn. First confirm the running/installed Flatpak commit when relevant; then inspect live logs and the allocation hot path. A low-refresh visual effect can come from per-frame `size_allocate()` work such as split-view synchronization, GSettings writes from notify handlers, or repeated `AdwBreakpoint` condition parsing even when no warning or blocking file I/O appears.
 - Add tracing surgically and remove it after the question it answered is settled. Good traces expose widget pointers, measured minima, allocation widths, or wrapper identity without turning the whole session into noise.
 - Treat D-Bus output as correlation data, not proof by itself. Use it to align focus changes, window churn, portal prompts, and lifecycle events with the terminal warnings.
-- Summarize the logs before broad code changes. Repeated signatures are usually more valuable than single noisy lines.
-- For GTK and Adwaita warnings, prefer official GNOME docs and official GTK or Libadwaita source for the final explanation. Use this skill to capture evidence, not to guess at toolkit contracts from log text alone.
+- Summarize the logs before broad code changes (Workflow step 9); repeated signatures matter more than single noisy lines, and the final explanation of a toolkit warning comes from official sources (Boundary section).
 - Keep artifact directories outside the repo unless the human explicitly wants them checked in.
 
-## Helper Scripts
+Input and focus:
 
-- `scripts/run-gtk-debug-session.sh`
-  - Records a live session into a timestamped artifact directory.
-  - Captures PTY output, user journal output, and optional D-Bus traffic.
-  - Detects when the launcher exits but a matching app process is still running, which is common with unique GTK applications.
-  - Warns when `--pid-pattern` is broad enough to match the helper script or the probe itself, because that invalidates the fresh-launch heuristic.
-- `scripts/check-lushtext-live.sh`
-  - Checks that LushText is running before live interaction.
-  - Verifies required tools before D-Bus actions, input injection, or screenshots.
-  - Use `--require-tool pyatspi` before AT-SPI portal-dialog automation.
-  - With `--session` and `--require-launched-instance`, refuses to proceed unless the current matching PID was not present before the debug launch.
-- `scripts/atspi-click-button.py`
-  - Uses system Python AT-SPI bindings to find and invoke a visible button by accessible name.
-  - Useful for human-approved portal dialogs where the button is visible but D-Bus cannot bypass the permission prompt.
-  - Does not perform coordinate fallback. `--fallback-mouse` is kept only as a disabled compatibility flag because GNOME Shell can route exact-looking coordinates to Overview or top-bar controls.
-- `scripts/atspi-accessible-action.py`
-  - Finds one visible accessible by application, name, and role regex, then
-    focuses it, invokes its exported action, sends a requested key, or performs
-    an explicit AT-SPI context click.
-  - Prefer `focus` or `activate`; use `context-click` only on an isolated or
-    human-approved surface because it synthesizes pointer input from reported
-    accessible extents.
-- `scripts/atspi-dump-tree.py`
-  - Writes a bounded accessibility-tree dump and a separate focused-node report
-    for one application regex.
-  - Use it to prove roles, names, visibility, actions, text state, and focus
-    before choosing an AT-SPI interaction. Keep bounds finite on large trees.
-- `scripts/atspi-set-text.py`
-  - Uses system Python AT-SPI bindings to set text on visible editable widgets, scoped by application, role, and optional accessible-name regex.
-  - Preferred over `ydotool type` for entries such as LushText's in-tab search field because it does not require keyboard focus to move.
-- `scripts/capture-lushtext-mutter.py`
-  - First-priority automated visual inspection path.
-  - Launches LushText inside an isolated `dbus-run-session` plus `mutter --headless` Wayland monitor with temporary XDG state and keyfile GSettings.
-  - Starts PipeWire and WirePlumber in the same session, captures Mutter's existing virtual monitor with `org.gnome.Mutter.ScreenCast.Session.RecordMonitor("Meta-0")`, and saves one PNG through `gst-launch-1.0 pipewiresrc`.
-  - For search repros, drives the exported `win.set-search-query` action, waits for `search-complete`, optionally waits for `--expected-search-matches`, and records the Automation1 snapshot before screenshot capture.
-  - Use repeated `--wait-predicate` flags when a scenario needs an extra Automation1 readiness gate such as `workspace-refresh-complete`.
-  - Use repeated `--window-string-action ACTION=TEXT` flags when a visible workflow exposes a string-parameter action, such as filtering Browse Notes through `set-notes-browser-query=Visual note`.
-  - Use repeated `--wait-window-action` flags when a dialog action must become enabled before AT-SPI tree capture, such as `set-notes-browser-query`.
-  - Use repeated `--wait-atspi-text` flags when the best readiness proof is visible dialog text, such as `No notes yet`.
-  - AT-SPI text waits keep one fixed readiness deadline (`ATSPI_TEXT_WAIT_SECONDS`). Each tree probe stops at the first node containing the text and is bounded only by the time left before that deadline, never by a shorter per-probe cap: a walk is several synchronous AT-SPI calls per node, so under load it can outlast any small cap, and a killed probe would discard its work on every retry. A probe that completes without the text is retried; `automation-waits.txt` records `probe_ms=` per probe, and the probe's stdout records `walk_ms=` and `call_failures=` (swallowed AT-SPI call failures, which mean the dumped tree may be incomplete).
-  - Use repeated `--step KIND:VALUE` flags when a scenario needs interleaved
-    action/readiness/action ordering, such as workspace Replace All preview
-    followed by confirmation and undo proof.
-- `scripts/visual-geometry-smoke.py`
-  - Runs same-session visual invariant scenarios under isolated headless Mutter.
-  - Captures before/after screenshots and bounded Automation1
-    `visual_geometry` snapshots from one process, waits for
-    `visual-geometry-settled` plus scenario-specific final geometry predicates,
-    compares protected regions with explicit masks, and verifies declared pixel
-    anchors for rendered code, CSS, or native toolkit effects.
-  - Writes per-case manifests, comparison reports, warning scans, and a root
-    summary under the requested artifact directory. Keep generated artifacts
-    under ignored `build/` paths unless the human explicitly asks to check them
-    in.
-- `scripts/lushtext-automation.py visual-geometry-capture`
-  - Captures the current live Automation1 visual-geometry state into bounded
-    artifacts, writes a generated replay scenario, and records the exact
-    `scripts/visual-geometry-smoke.py --scenario-dir ...` command. Treat any
-    portal screenshot as context-only; proof comes from the generated headless
-    replay and screenshot-derived pixel anchors.
-- `scripts/capture-lushtext-xvfb.sh`
-  - Fallback isolated display when headless Mutter or PipeWire capture is unavailable.
-  - Launches a debug-owned LushText process in an isolated `dbus-run-session` + Xvfb display with temporary XDG state.
-  - Uses D-Bus window actions for exported app behavior, then confines any `xdotool` typing to that private display.
-  - Captures screenshots with `xwd` and ImageMagick, avoiding live GNOME focus and portal permission races.
-- `scripts/capture-screenshot.py`
-  - Tries the best available screenshot path.
-  - Applies the requested timeout to both direct `gnome-screenshot` and portal capture paths.
-  - Supports `--portal-only --non-interactive` for sessions where direct `gnome-screenshot` hangs or the interactive Shell UI is unsafe to automate.
-  - Uses the desktop portal before failing and subscribes to the portal `Response` signal before sending the request to avoid missing fast responses.
-  - Returns a clear error when the desktop blocks or times out the request.
-- `scripts/summarize-runtime-logs.py`
-  - Groups repeated warnings and criticals.
-  - Extracts high-signal D-Bus bursts.
-  - Emits a short markdown report for fast triage.
+- Prefer exported `org.gtk.Actions` (through `scripts/lushtext-automation.py action`, then `WaitForReady` with the narrowest predicate and `GetSnapshot`) over AT-SPI, and AT-SPI over `ydotool`, which is only for operations neither can express (playbook, "Capture Strategy" step 6).
+- Prefer `scripts/atspi-set-text.py` over `ydotool type` for visible editable GTK widgets. It uses the accessibility D-Bus bus and avoids depending on compositor keyboard focus. In restored or deeply nested window layouts, use the script's default deep scan; a shallow scan can miss a visible search entry.
+- For in-document search setup, prefer the exported `win.set-search-query` string action. Use AT-SPI editable text only when intentionally testing the visible entry itself or an older build that lacks the target-state action.
+- `ydotool` is ready only when both the binary and the daemon are usable (socket `${XDG_RUNTIME_DIR}/.ydotool_socket` unless `YDOTOOL_SOCKET` is set); if the runner reaps background processes, keep `ydotoold` in its own PTY-backed session. Before `ydotool` keyboard input, ask the human to focus the LushText debug window and rerun the liveness check: `ydotool` targets the compositor's focused surface, and the liveness helper proves the process, not keyboard focus.
+- Never use mouse-coordinate fallback for focus, portal approval, screenshot controls, or Shell UI. GNOME Shell can report broad or full-screen frame extents through AT-SPI, and a coordinate click near a maximized frame's top or on an action-less accessible such as Shell's `Take Screenshot` button reaches a different Shell surface (Overview, quick settings). If D-Bus/AT-SPI activation does not focus the target window, ask the human to focus it.
+
+Screenshots:
+
+- Before screenshot capture, tell the human a GNOME/portal prompt may appear as a blank or white dialog for a few seconds and ask them to approve it if it appears. Treat a timeout after that as a capture permission failure, not as proof of app behavior.
+- Before screenshot capture, present the debug-owned instance over D-Bus and ask the human to keep it focused: a portal prompt can flash or miss AT-SPI discovery when another window owns focus. Agent approval of a portal prompt is UI automation, never a D-Bus permission bypass (playbook, "Screenshot Strategy").
+- When the symptom happens during an animation, require stream-frame evidence with mapped intermediate frames; a final settled screenshot can miss it.
+- A screenshot file existing is not evidence by itself: open the PNG and check the human-visible result. Pixel invariants, the state matrix and live-size capture follow `.agents/rules/testing.md`, "Proof Obligations of a Change" (visual proof), `widget-wiring.md`, "State-extreme coverage", and `ui.md`, "State Extremes And Visibility Matrix" (prefer `make visual-geometry-smoke`, and `scripts/lushtext-automation.py visual-geometry-capture` for a live-only geometry bug).
+- For installed-Flatpak animation smoothness bugs, separate package freshness from frame-budget churn: first confirm the running/installed Flatpak commit, then inspect live logs and the allocation hot path (`widget-wiring.md`, "Size-Dependent Constraints"); a low-refresh effect can come from per-frame allocation work with no warning at all.
+- For geometry warnings, pointer-match the warned widget against the live tree before deciding which widget is wrong; the warned widget is often only where GTK noticed the invalid width (geometry reference, "Snapshot Surfaces Used As Paned Children").
 
 ## References
 
 - [references/runtime-debugging-playbook.md](references/runtime-debugging-playbook.md): live capture workflow, PTY guidance, session safety, and D-Bus strategy
+- [references/helper-scripts.md](references/helper-scripts.md): what each helper script does, its safety limits, and where its flags are documented
 - [references/log-patterns.md](references/log-patterns.md): common GTK, GLib, Adwaita, and D-Bus signatures, including geometry warnings like `Trying to measure GtkBox ... needs at least ...`
 - [../gtk4-libadwaita-internals/references/warnings-and-criticals.md](../gtk4-libadwaita-internals/references/warnings-and-criticals.md): authoritative GTK and Adwaita warning atlas with upstream source paths

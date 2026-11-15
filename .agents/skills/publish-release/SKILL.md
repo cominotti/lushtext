@@ -1,20 +1,17 @@
 ---
 name: publish-release
-description: Publish a LushText release to GitHub and the Cominotti Flatpak repository. Use when preparing, validating, tagging, pushing, monitoring, repairing, rolling back, or writing release notes for a new LushText version. Covers semantic diff analysis since the last release, warm user-facing release notes with required sections and non-repeated poem stanzas, GitHub Release publication, Cominotti Flatpak repository publication, AppStream metadata, release CI, all release-related GitHub Actions workflows, and recovery from release or packaging failures.
+description: "LushText release procedure: semantic diff since the last tag, release notes with the poem stanza, make release, GitHub Release and Cominotti Flatpak publication, every release workflow to green, and recovery. Use when preparing, tagging, publishing, monitoring, repairing or rolling back a release."
 ---
 
 # Publish Release
 
 Use this skill for the public LushText release lane. Treat every release as a stateful operation across Git history, GitHub Releases, AppStream metadata, GitHub Actions, and the Cominotti Flatpak repository.
 
-**Flathub publication is not planned (decided 2026-09-16).** The Cominotti
-remote is the only Flatpak channel. The release workflow still carries a
-dormant Flathub PR step that always skips; that skip is expected output and is
-**not** a release blocker, an outstanding action, or a configuration gap. Do not
-report it, do not chase `FLATHUB_TOKEN` / `FLATHUB_REPOSITORY`, and do not
-propose work to enable it. See `openspec/specs/flathub-publication/spec.md`.
-This says nothing about the Flathub *remote* as the source of the GNOME runtime
-and SDK, which the Flatpak build still needs.
+**Flathub publication is not planned** (`.agents/rules/build.md`, "Flatpak
+Release Automation"; `openspec/specs/flathub-publication/spec.md`): the
+Cominotti remote is the only Flatpak channel, and the release workflow's dormant
+Flathub PR step always skips, which is expected output, not a blocker or a gap:
+do not report it or chase `FLATHUB_TOKEN` / `FLATHUB_REPOSITORY`. The Flathub *remote* stays the source of the GNOME runtime and SDK.
 
 ## Load First
 
@@ -31,7 +28,7 @@ and SDK, which the Flatpak build still needs.
 - Use subagents when available for non-trivial releases: one semantic diff pass and one release/packaging failure-mode pass. Keep their tasks read-only unless the user explicitly asks them to edit.
 - Draft release notes in a warm, collaborative tone that explains user-visible changes plainly.
 - Include exactly these release-note sections: `Poetic Opening`, `What's Changed`, `Manual Actions Needed`, `Warnings and Deprecations`, and `Bug Fixes`.
-- The `Poetic Opening` stanza or verse must come from Rimbaud, Oscar Wilde, Baudelaire, Edgar Allan Poe, Shakespeare, or Florbela Espanca. Use a complete source-checked stanza or verse, never a fragment or a few opening lines. For non-English originals, include both the full original stanza or verse and a full English rendering. Never repeat a stanza across releases; double-check local history and GitHub Release bodies before using it.
+- The `Poetic Opening` follows [release-notes.md](references/release-notes.md#poetic-opening): one complete, source-checked stanza or verse from its six poets, never a fragment, with the full original and an English rendering for non-English poems, and never one used before (check local history and GitHub Release bodies).
 - Keep the release notes file outside the repo, such as `/tmp/lushtext-release-vX.Y.Z.md`, unless the user intentionally provides a clean tracked file. A new untracked notes file inside the repo makes the real release helper fail its clean-tree gate.
 - Stage only intended release files. Never use `git add .` or `git add -A` during release recovery.
 - Do not rewrite public release tags, delete public releases, or force-push release branches unless the user explicitly approves that exact operation. Do not revive Flathub publication, which is a standing decision to reverse rather than a gap to close.
@@ -47,7 +44,7 @@ and SDK, which the Flatpak build still needs.
 - `scripts/release.sh` updates version surfaces, inserts AppStream release notes, validates metadata, builds Flatpak, creates the release commit, creates a signed tag, and pushes `main` plus the tag.
 - Run `scripts/agent-topology.py release-workflows` to resolve the required `publication` and `benchmark-report` workflow responsibilities from semantic markers. The publication owner validates `v*` tags, builds the Flatpak, publishes GitHub/Cominotti artifacts when configured, and enforces Pages limits. The benchmark-report owner generates the bounded release-safe report. Treat a cancelled, timed-out, failed, duplicate, or missing required role as an incomplete release regardless of workflow filename or display-name changes.
 - `scripts/generate-cominotti-flatpak-repo.sh`, `scripts/verify-cominotti-flatpak-repo.sh`, `scripts/verify-cominotti-pages-limits.sh`, and `scripts/test-cominotti-flatpak-repo.sh` generate, verify, Pages-preflight, and regression-test the Cominotti-hosted Flatpak repository descriptors and release manifest.
-- `scripts/generate-flathub-manifest.sh` and `scripts/verify-flathub-manifest.sh` are retained and still tested, but are dormant: Flathub publication is not planned. Do not run them as part of a release.
+- `scripts/generate-flathub-manifest.sh` and `scripts/verify-flathub-manifest.sh` are dormant; do not run them as part of a release.
 
 ## Completion Standard
 

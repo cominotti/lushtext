@@ -1,6 +1,6 @@
 ---
 name: lushtext-workflow
-description: "Add or change a LushText workflow under the workflow readability convention. Use when creating a new user-initiated operation with ordered stages, restructuring an existing one, adding or moving a `policy.rs`, naming a coordination module, adding or extending an `evidence.rs` surface, classifying a called presentation surface, or updating a `WFR-*` row in `docs/workflow-readability-matrix.md`. Trigger on workflow facade, role home, seam value object, policy purity, evidence surface, `*_for_test` retirement, `make check-workflow-boundaries`, or any change under `crates/lushtext-core/src/ui/**` that adds or moves a module."
+description: "Procedure for adding or restructuring a LushText workflow under the readability convention: the WFR-* matrix row, role home, policy.rs, seam value objects, coordination names, evidence.rs and its proofs, and the gate order. Use when a change under crates/lushtext-core/src/ui/** adds or moves a module, changes a workflow's policy, evidence surface or matrix row, or when make check-workflow-boundaries fails."
 ---
 
 The convention is normative in `.agents/rules/workflow-convention.md`. This skill
@@ -27,17 +27,10 @@ You are adding to or amending a settled convention, not migrating a backlog.
 
 ### 2. Choose the role home and record it
 
-Three shapes, all permitted; the row says which was chosen.
-
-- **flat** — role files in the shared directory, when no sibling workflow there
-  owns `policy.rs` or `evidence.rs`.
-- **per-workflow subdirectory** — `mod.rs` is the facade, role files keep the
-  unqualified names (`ui/editor_page/save/`). Required when a sibling already
-  owns the fixed names. Never `save_policy.rs`: that leaves the
-  `ui/**/policy.rs` mutation scope.
-- **nested** — one directory is the canonical home (facade + the single
-  `policy.rs` + the single `evidence.rs`); modules in the widget subdirectory
-  take bounded coordination names or are declared presentation surfaces.
+Choose a role-home shape from `workflow-convention.md`, "Role homes" —
+**flat**, **per-workflow subdirectory** (needed when a sibling already owns
+`policy.rs` or `evidence.rs`; never a prefixed `save_policy.rs`), or **nested** —
+and record the choice in the row.
 
 ### 3. Write `policy.rs` first, and prove the scope reaches it
 
@@ -61,20 +54,19 @@ limit or copy part of a shared module to manufacture a local one.
 
 ### 4. Reify the seams
 
-A field bundle crossing **two or more** function boundaries, or reconstructed at
-two or more call sites, becomes a named value object built once at the entry
-point. Reuse `*Ticket` + `*Facts` + `*_is_current`, or let an existing
-coordinator's generation identity be the seam. A bundle used by exactly one
-private helper does not qualify. `#[expect(clippy::too_many_arguments)]` on a
-cross-module boundary means you have an unreified seam.
+Apply `workflow-convention.md`, "Seam value objects": a bundle crossing two or
+more boundaries becomes one value object built at the entry point, reusing
+`*Ticket` + `*Facts` + `*_is_current` or a coordinator's generation identity. An
+`#[expect(clippy::too_many_arguments)]` on a cross-module boundary is an
+unreified seam to fix.
 
 ### 5. Name coordination for the job
 
-`admission`, `execution`, `retirement`, `watch`, `journal` — one module per job,
-more than one allowed. Qualify with the stage order only when **one** workflow
-owns several orders needing the same-shaped role (`replace_execution.rs`). Never
-`runtime.rs`. A job none of the five describes means amending
-`openspec/specs/gtk-adapter-module-boundaries/spec.md`, not overloading a name.
+Use the bounded names in `workflow-convention.md`, "Roles" (`admission`,
+`execution`, `retirement`, `watch`, `journal`, stage-qualified only when one
+workflow owns several orders; never `runtime.rs`). A job none of the five
+describes means amending `openspec/specs/gtk-adapter-module-boundaries/spec.md`,
+not overloading a name.
 
 ### 6. Declare the presentation surfaces
 
@@ -101,9 +93,9 @@ idle callback, or worker completion, the point where control resumes. Keep timer
 budgets, generation counters, and widget mutation out of it. Stay inside the 370
 physical-line budget. Use the `rust-comments` skill for the doc-comment pass.
 
-Public module docs must not intra-doc-link private items — that is a
-`private_intra_doc_links` error the local gates do not catch. Drop the link, keep
-the name in backticks; never widen visibility to satisfy documentation.
+Public module docs must not intra-doc-link private items; run the rustdoc gate
+(`.agents/rules/testing.md`, "Proof Obligations of a Change"), which the local
+gates do not include.
 
 ### 9. Re-derive the row's measured cells
 
@@ -116,8 +108,9 @@ population an old cell pooled. A correction may move a figure **either** way.
 
 See [references/gate-order.md](references/gate-order.md). Two hazards worth
 knowing before you start: untracked files are invisible to every diff-aware gate,
-and any edit under `crates/lushtext-core/src/ui/` or `crates/lushtext/tests/widget/`
-voids the accessibility, visual, and visual-geometry summaries.
+and any edit under `crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/`,
+`resources/ui/` or `resources/style/` voids the accessibility, visual, and
+visual-geometry summaries.
 
 ## What not to do
 

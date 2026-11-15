@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: flatpak-${{ github.event.pull_request.number || github.ref }}
@@ -24,7 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+      # Moves the image's system installation off overlayfs before
+      # flatpak-builder updates it (see the action's header).
+      - uses: ./.github/actions/flatpak-build
         with:
           manifest-path: build-aux/dev.cominotti.lushtext.Flatpak.json
           bundle: lushtext.flatpak
