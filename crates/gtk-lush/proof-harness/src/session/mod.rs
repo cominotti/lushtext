@@ -101,6 +101,18 @@ const SYSTEM_BUS_CONFIG: &str = include_str!("system-bus.conf");
 const FRAGMENT_FILE_NAME: &str = "50-gtk-lush-session-quiet.conf";
 const HELPER_DIR_NAME: &str = "gtk-lush-session";
 const SYSTEM_BUS_SOCKET: &str = "system-bus";
+/// Longest socket path `dbus-daemon` will listen on: its portable
+/// `_DBUS_MAX_SUN_PATH_LENGTH` (`dbus/dbus-sysdeps-unix.c`), shorter than the
+/// kernel's 107 usable `sun_path` bytes. Measured on dbus 1.16: a 99-byte
+/// path binds, a 100-byte one fails with "Socket name too long". The private
+/// system bus socket is the session's longest, so this bounds them all.
+///
+/// Kind: external fact; kept exact.
+const DBUS_SOCKET_PATH_MAX: usize = 99;
+/// Short base for an owned runtime directory when the system temp dir would
+/// make the session's socket paths too long (a nested session inside a test
+/// child whose `TMPDIR` is several levels deep).
+const SHORT_RUNTIME_BASE: &str = "/tmp";
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -303,6 +315,23 @@ fn check_tools(options: &SessionOptions, json: bool) -> ExitCode {
     if json {
         let mut out = String::from("{\n");
         let _ = writeln!(out, "  \"profile\": {},", json_string(options.profile.name));
+        // Which command plays which part, so a caller reads a version (the
+        // compositor's, for a manifest) without naming the command itself.
+        let roles = [
+            ("session_bus", DBUS_RUN_SESSION_COMMAND),
+            ("compositor", MUTTER_COMMAND),
+            ("media", PIPEWIRE_COMMAND),
+            ("session_manager", WIREPLUMBER_COMMAND),
+        ];
+        out.push_str("  \"roles\": {");
+        out.push_str(
+            &roles
+                .iter()
+                .map(|(role, command)| format!("{}: {}", json_string(role), json_string(command)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        out.push_str("},\n");
         out.push_str("  \"commands\": {\n");
         for (index, command) in commands.iter().enumerate() {
             let resolved = find_in_path(command, &path);
@@ -535,6 +564,114 @@ fn parse_portals(value: &str) -> Result<Portals, String> {
 // ---------------------------------------------------------------------------
 // Outer stage: environment, runtime directory, `dbus-run-session`
 
+/// Why an outer stage could not be built: the status to exit with and the
+/// line to print (a `SESSION-HYGIENE:` line for a `config` violation).
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SessionLaunchError {
+    /// Exit status a launcher reports for this failure.
+    pub code: u8,
+    /// One line naming the failure.
+    pub message: String,
+}
+
+impl SessionLaunchError {
+    fn new(code: u8, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn failure(message: impl Into<String>) -> Self {
+        Self::new(TEST_FAILURE_EXIT_CODE, message)
+    }
+}
+
+impl std::fmt::Display for SessionLaunchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SessionLaunchError {}
+
+/// Where an outer stage keeps its runtime directory.
+enum RuntimeChoice<'a> {
+    /// A fresh directory the launcher owns and releases.
+    Owned,
+    /// The caller's private directory (never the user's real one).
+    Caller(&'a Path),
+}
+
+/// The outer stage of a session (`Stage::Session`) as a [`Command`] the
+/// caller spawns and supervises itself, for a lane with its own log capture
+/// and timeout (`cargo-gtk-proof`).
+///
+/// The command starts the session bus in `runtime_dir`, a private directory
+/// the caller owns (refused when it is the user's real `XDG_RUNTIME_DIR`),
+/// and re-executes the **current executable** as the inner stage, which then
+/// runs `command`. The caller's `main` must therefore call
+/// [`run_inner_stage_if_requested`] first. `extra_env` is set before the bus
+/// starts and is visible to the profile checks (a caller's `GSK_RENDERER`,
+/// `GTK_A11Y=none`). The exit status follows the `session` stage's contract,
+/// [`SESSION_HYGIENE_EXIT_CODE`] included.
+///
+/// # Errors
+///
+/// A missing session command (`code` is the unsupported-host status), an
+/// invalid option set or runtime directory, or a `config` violation of
+/// `extra_env` (`code` is [`SESSION_HYGIENE_EXIT_CODE`]).
+pub fn session_command(
+    options: &SessionOptions,
+    runtime_dir: &Path,
+    command: &[OsString],
+    extra_env: &[(&str, &str)],
+) -> Result<Command, SessionLaunchError> {
+    let runtime_dir = private_runtime_dir(runtime_dir).map_err(SessionLaunchError::failure)?;
+    build_outer(
+        options,
+        Stage::Session,
+        command,
+        extra_env,
+        &[],
+        false,
+        &RuntimeChoice::Caller(&runtime_dir),
+    )
+}
+
+/// The compositor stage (`mutter --headless`, one virtual monitor per
+/// `WxH` entry) around `command`, as a [`Command`] the caller spawns.
+///
+/// Valid only inside a helper session: the session exports
+/// `SESSION_ACTIVE_ENV`, and the compositor must share its bus, its
+/// private system bus and its quiet media.
+///
+/// # Errors
+///
+/// When called outside a helper session, or with no command.
+pub fn compositor_command(
+    monitors: &[String],
+    command: &[OsString],
+) -> Result<Command, SessionLaunchError> {
+    if std::env::var_os(SESSION_ACTIVE_ENV).is_none() {
+        return Err(SessionLaunchError::failure(
+            "gtk-lush-session: compositor runs only inside a helper session (start one with `session`)",
+        ));
+    }
+    if command.is_empty() {
+        return Err(SessionLaunchError::failure(
+            "gtk-lush-session: no command given",
+        ));
+    }
+    let mut mutter = Command::new(MUTTER_COMMAND);
+    mutter.args(["--headless", "--wayland", "--no-x11"]);
+    for monitor in monitors {
+        mutter.args(["--virtual-monitor", monitor]);
+    }
+    mutter.arg("--").args(command);
+    Ok(mutter)
+}
+
 fn start_outer(
     options: &SessionOptions,
     stage: Stage,
@@ -543,29 +680,127 @@ fn start_outer(
     remove_env: &[&str],
     export_bin: bool,
 ) -> ExitCode {
-    if let Err(error) = options.validate() {
-        eprintln!("gtk-lush-session: {error}");
-        return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+    // The runtime directory is the session's own unless the caller manages a
+    // short private one (smoke lanes) and asks to keep it.
+    let mut owned_runtime = None;
+    let inherited;
+    let runtime = if options.inherit_runtime_dir {
+        match inherited_runtime_dir() {
+            Ok(dir) => {
+                inherited = dir;
+                RuntimeChoice::Caller(&inherited)
+            }
+            Err(error) => {
+                eprintln!("gtk-lush-session: {error}");
+                return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+            }
+        }
+    } else {
+        RuntimeChoice::Owned
+    };
+    let mut session = match build_outer(
+        options, stage, command, extra_env, remove_env, export_bin, &runtime,
+    ) {
+        Ok(session) => session,
+        Err(error) => {
+            eprintln!("{}", error.message);
+            return ExitCode::from(error.code);
+        }
+    };
+    if matches!(runtime, RuntimeChoice::Owned) {
+        let prefix = format!("{}{}-", scratch::RUNTIME_DIR_PREFIX, std::process::id());
+        let base = owned_runtime_base(&std::env::temp_dir(), &prefix);
+        let Ok(runtime_dir) = tempfile::Builder::new().prefix(&prefix).tempdir_in(&base) else {
+            eprintln!("gtk-lush-session: failed to create a private runtime directory");
+            return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+        };
+        if let Some(owner) = scratch::owner_uid(runtime_dir.path()) {
+            scratch::sweep_stale_scratch(
+                &base,
+                scratch::RUNTIME_DIR_PREFIX,
+                scratch::PidlessEntries::ReclaimWhenIdle,
+                owner,
+            );
+        }
+        set_runtime_dir(&mut session, options, runtime_dir.path());
+        owned_runtime = Some(runtime_dir);
     }
+
+    let status = session.status();
+    if let Some(runtime_dir) = owned_runtime {
+        scratch::release_session_runtime_dir(runtime_dir);
+    }
+    match status {
+        Ok(status) => exit_code_of(status),
+        Err(error) => {
+            eprintln!("gtk-lush-session: failed to start the private session bus: {error}");
+            ExitCode::from(UNSUPPORTED_HOST_EXIT_CODE)
+        }
+    }
+}
+
+/// Where an owned runtime directory goes: `temp_dir`, unless the private
+/// system bus socket inside it (the longest socket path a session binds)
+/// would not fit a unix socket address, then [`SHORT_RUNTIME_BASE`].
+fn owned_runtime_base(temp_dir: &Path, prefix: &str) -> PathBuf {
+    // `tempfile` appends six random characters to the prefix.
+    if runtime_dir_fits_sockets(&temp_dir.join(format!("{prefix}XXXXXX"))) {
+        temp_dir.to_path_buf()
+    } else {
+        PathBuf::from(SHORT_RUNTIME_BASE)
+    }
+}
+
+/// Whether a session in runtime directory `dir` can bind its sockets: the
+/// private system bus socket (`gtk-lush-session/system-bus`, longer than
+/// `wayland-0` and PipeWire's `pipewire-0-manager`) must fit a unix socket
+/// address. Pass the canonical path: the session canonicalizes a caller's
+/// directory, and `/home` may resolve to the longer `/var/home`.
+#[must_use]
+pub fn runtime_dir_fits_sockets(dir: &Path) -> bool {
+    dir.join(HELPER_DIR_NAME)
+        .join(SYSTEM_BUS_SOCKET)
+        .as_os_str()
+        .len()
+        <= DBUS_SOCKET_PATH_MAX
+}
+
+/// Build the bus launcher with the profile environment and the inner plan.
+/// With `RuntimeChoice::Owned` the caller sets the runtime directory after
+/// creating it (`set_runtime_dir`).
+fn build_outer(
+    options: &SessionOptions,
+    stage: Stage,
+    command: &[OsString],
+    extra_env: &[(&str, &str)],
+    remove_env: &[&str],
+    export_bin: bool,
+    runtime: &RuntimeChoice<'_>,
+) -> Result<Command, SessionLaunchError> {
+    options
+        .validate()
+        .map_err(|error| SessionLaunchError::failure(format!("gtk-lush-session: {error}")))?;
     let missing = missing_commands(&required_commands(options, stage == Stage::Run));
     if !missing.is_empty() {
-        eprintln!(
-            "UNSUPPORTED-HOST: missing {}; install the session tools to run private headless GTK sessions",
-            missing.join(", ")
-        );
-        return ExitCode::from(UNSUPPORTED_HOST_EXIT_CODE);
+        return Err(SessionLaunchError::new(
+            UNSUPPORTED_HOST_EXIT_CODE,
+            format!(
+                "UNSUPPORTED-HOST: missing {}; install the session tools to run private headless GTK sessions",
+                missing.join(", ")
+            ),
+        ));
     }
-    let Some(command) = command
+    let command = command
         .iter()
         .map(|arg| arg.to_str().map(str::to_string))
         .collect::<Option<Vec<_>>>()
-    else {
-        eprintln!("gtk-lush-session: the command must be valid UTF-8");
-        return ExitCode::from(TEST_FAILURE_EXIT_CODE);
-    };
+        .ok_or_else(|| {
+            SessionLaunchError::failure("gtk-lush-session: the command must be valid UTF-8")
+        })?;
     if command.is_empty() {
-        eprintln!("gtk-lush-session: no command given");
-        return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+        return Err(SessionLaunchError::failure(
+            "gtk-lush-session: no command given",
+        ));
     }
 
     let mut session = Command::new(DBUS_RUN_SESSION_COMMAND);
@@ -575,65 +810,16 @@ fn start_outer(
     for (key, value) in extra_env {
         session.env(key, value);
     }
-    if let Err(violation) = apply_profile_environment(&mut session, options, extra_env) {
-        eprintln!("{}", violation.line());
-        return ExitCode::from(SESSION_HYGIENE_EXIT_CODE);
+    apply_profile_environment(&mut session, options, extra_env).map_err(|violation| {
+        SessionLaunchError::new(SESSION_HYGIENE_EXIT_CODE, violation.line())
+    })?;
+    if let RuntimeChoice::Caller(dir) = runtime {
+        set_runtime_dir(&mut session, options, dir);
     }
 
-    // The runtime directory is the session's own unless the caller manages a
-    // short private one (smoke lanes) and asks to keep it.
-    let mut owned_runtime = None;
-    if options.inherit_runtime_dir {
-        match inherited_runtime_dir() {
-            Ok(dir) => {
-                session.env("XDG_RUNTIME_DIR", dir);
-            }
-            Err(error) => {
-                eprintln!("gtk-lush-session: {error}");
-                return ExitCode::from(TEST_FAILURE_EXIT_CODE);
-            }
-        }
-    } else {
-        let Ok(runtime_dir) = tempfile::Builder::new()
-            .prefix(&format!(
-                "{}{}-",
-                scratch::RUNTIME_DIR_PREFIX,
-                std::process::id()
-            ))
-            .tempdir()
-        else {
-            eprintln!("gtk-lush-session: failed to create a private runtime directory");
-            return ExitCode::from(TEST_FAILURE_EXIT_CODE);
-        };
-        if let Some(owner) = scratch::owner_uid(runtime_dir.path()) {
-            scratch::sweep_stale_scratch(
-                &std::env::temp_dir(),
-                scratch::RUNTIME_DIR_PREFIX,
-                scratch::PidlessEntries::ReclaimWhenIdle,
-                owner,
-            );
-        }
-        session.env("XDG_RUNTIME_DIR", runtime_dir.path());
-        owned_runtime = Some(runtime_dir);
-    }
-
-    // The private system bus's address is fixed by the runtime directory, so
-    // it is exported before the session bus starts: services the session bus
-    // activates later (the portal frontend is a system-bus client) take their
-    // environment from it, not from the inner stage.
-    if options.system_bus == SystemBus::Private {
-        let runtime = session
-            .get_envs()
-            .find(|(key, _)| *key == "XDG_RUNTIME_DIR")
-            .and_then(|(_, value)| value.map(PathBuf::from))
-            .unwrap_or_default();
-        session.env("DBUS_SYSTEM_BUS_ADDRESS", system_bus_address(&runtime));
-    }
-
-    let Ok(current_exe) = std::env::current_exe() else {
-        eprintln!("gtk-lush-session: cannot find the current executable");
-        return ExitCode::from(TEST_FAILURE_EXIT_CODE);
-    };
+    let current_exe = std::env::current_exe().map_err(|_| {
+        SessionLaunchError::failure("gtk-lush-session: cannot find the current executable")
+    })?;
     let plan = Plan {
         stage,
         profile: options.profile.name,
@@ -651,17 +837,18 @@ fn start_outer(
         .arg("--")
         .arg(&current_exe)
         .env(PLAN_ENV, plan.encode());
+    Ok(session)
+}
 
-    let status = session.status();
-    if let Some(runtime_dir) = owned_runtime {
-        scratch::release_session_runtime_dir(runtime_dir);
-    }
-    match status {
-        Ok(status) => exit_code_of(status),
-        Err(error) => {
-            eprintln!("gtk-lush-session: failed to start the private session bus: {error}");
-            ExitCode::from(UNSUPPORTED_HOST_EXIT_CODE)
-        }
+/// Point the session at `runtime_dir`. The private system bus's address is
+/// fixed by the runtime directory, so it is exported before the session bus
+/// starts: services the session bus activates later (the portal frontend is
+/// a system-bus client) take their environment from it, not from the inner
+/// stage.
+fn set_runtime_dir(session: &mut Command, options: &SessionOptions, runtime_dir: &Path) {
+    session.env("XDG_RUNTIME_DIR", runtime_dir);
+    if options.system_bus == SystemBus::Private {
+        session.env("DBUS_SYSTEM_BUS_ADDRESS", system_bus_address(runtime_dir));
     }
 }
 
@@ -676,10 +863,15 @@ fn system_bus_address(runtime_dir: &Path) -> String {
 }
 
 fn inherited_runtime_dir() -> Result<PathBuf, String> {
-    use std::os::unix::fs::MetadataExt;
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .ok_or("--inherit-runtime-dir needs XDG_RUNTIME_DIR")?;
+    private_runtime_dir(&dir)
+}
+
+/// `dir`, canonical, unless it is the user's real `XDG_RUNTIME_DIR`.
+fn private_runtime_dir(dir: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt;
     let uid = std::fs::metadata("/proc/self")
         .map(|m| m.uid())
         .map_err(|e| e.to_string())?;
@@ -689,6 +881,14 @@ fn inherited_runtime_dir() -> Result<PathBuf, String> {
         .map_err(|e| format!("{}: {e}", dir.display()))?;
     if canonical == user_dir || user_dir.canonicalize().is_ok_and(|user| user == canonical) {
         return Err("--inherit-runtime-dir refuses the user's real XDG_RUNTIME_DIR".to_string());
+    }
+    if !runtime_dir_fits_sockets(&canonical) {
+        return Err(format!(
+            "the runtime directory {} is too long for the session's sockets \
+             ({HELPER_DIR_NAME}/{SYSTEM_BUS_SOCKET} must fit {DBUS_SOCKET_PATH_MAX} bytes); \
+             use a shorter private directory",
+            canonical.display()
+        ));
     }
     Ok(canonical)
 }
@@ -1650,18 +1850,13 @@ fn parse_cli(args: &[OsString]) -> Result<Cli, String> {
 /// Exec `mutter --headless` for `command`, so the caller's handle is mutter.
 fn compositor(monitors: &[String], command: &[OsString]) -> ExitCode {
     use std::os::unix::process::CommandExt;
-    if std::env::var_os(SESSION_ACTIVE_ENV).is_none() {
-        eprintln!(
-            "gtk-lush-session: compositor runs only inside a helper session (start one with `session`)"
-        );
-        return ExitCode::from(TEST_FAILURE_EXIT_CODE);
-    }
-    let mut mutter = Command::new(MUTTER_COMMAND);
-    mutter.args(["--headless", "--wayland", "--no-x11"]);
-    for monitor in monitors {
-        mutter.args(["--virtual-monitor", monitor]);
-    }
-    mutter.arg("--").args(command);
+    let mut mutter = match compositor_command(monitors, command) {
+        Ok(mutter) => mutter,
+        Err(error) => {
+            eprintln!("{}", error.message);
+            return ExitCode::from(error.code);
+        }
+    };
     let error = mutter.exec();
     eprintln!("gtk-lush-session: cannot exec the compositor: {error}");
     ExitCode::from(UNSUPPORTED_HOST_EXIT_CODE)
@@ -1673,6 +1868,56 @@ mod tests {
 
     fn os(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn an_owned_runtime_dir_keeps_its_sockets_bindable() {
+        let prefix = "gtk-lush-proof-runtime-4242-";
+        assert_eq!(
+            owned_runtime_base(Path::new("/tmp/scope"), prefix),
+            Path::new("/tmp/scope")
+        );
+        let deep = Path::new("/tmp")
+            .join("lushtext-temp-scope-abcdef/lushtext-test-4242-abcdef/child-17-attempt-1");
+        assert_eq!(
+            owned_runtime_base(&deep, prefix),
+            Path::new(SHORT_RUNTIME_BASE)
+        );
+        assert!(runtime_dir_fits_sockets(
+            &Path::new(SHORT_RUNTIME_BASE).join(format!("{prefix}XXXXXX"))
+        ));
+        // A nested session under `with-temp-scope.sh`'s TMPDIR: its system
+        // bus socket (101 bytes) fits the kernel's 107 but not dbus's 99.
+        let scope = Path::new("/tmp/lt-scope-3891546-axioms-DAEBkW");
+        let prefix = "gtk-lush-proof-runtime-3891773-";
+        assert_eq!(
+            owned_runtime_base(scope, prefix),
+            Path::new(SHORT_RUNTIME_BASE)
+        );
+        assert!(runtime_dir_fits_sockets(
+            &Path::new(SHORT_RUNTIME_BASE).join(format!("{prefix}XXXXXX"))
+        ));
+        assert!(runtime_dir_fits_sockets(Path::new(&"r".repeat(
+            DBUS_SOCKET_PATH_MAX - format!("/{HELPER_DIR_NAME}/{SYSTEM_BUS_SOCKET}").len()
+        ))));
+        assert!(!runtime_dir_fits_sockets(Path::new(&"r".repeat(
+            DBUS_SOCKET_PATH_MAX + 1 - format!("/{HELPER_DIR_NAME}/{SYSTEM_BUS_SOCKET}").len()
+        ))));
+    }
+
+    #[test]
+    fn a_caller_runtime_dir_too_long_for_the_sockets_is_refused() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let deep = root.path().join("x".repeat(120));
+        std::fs::create_dir(&deep).expect("deep dir");
+        let error = private_runtime_dir(&deep).expect_err("too long for a socket");
+        assert!(
+            error.contains("too long for the session's sockets"),
+            "{error}"
+        );
+        let short = root.path().join("rt");
+        std::fs::create_dir(&short).expect("short dir");
+        assert!(private_runtime_dir(&short).is_ok());
     }
 
     #[test]

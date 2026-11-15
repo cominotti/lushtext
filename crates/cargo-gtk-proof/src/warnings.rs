@@ -10,6 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use gtk_lush_proof_harness::session::PIPEWIRE_COMMAND;
 use serde::Serialize;
 
 use crate::{artifacts, model};
@@ -35,8 +36,9 @@ fn scan_logs(case_dir: &Path) -> Result<WarningScanReport, String> {
         "mutter-child.log",
         "lushtext.stdout",
         "lushtext.stderr",
-        "pipewire.log",
-        "wireplumber.log",
+        // The quiet media daemons the session helper started (`--log-dir`).
+        "session-hygiene/pipewire.log",
+        "session-hygiene/wireplumber.log",
     ] {
         let path = case_dir.join(name);
         if !path.is_file() {
@@ -105,10 +107,10 @@ fn known_headless_warning(line: &str) -> bool {
         "at-spi: could not obtain desktop path or name",
         "atk-bridge: getregisteredevents returned message with unknown signature",
         "atk-bridge: get_device_events_reply: unknown signature",
-        "pipewire remote error",
     ]
     .iter()
     .any(|needle| line.contains(needle))
+        || line.contains(&format!("{PIPEWIRE_COMMAND} remote error"))
 }
 
 fn bounded(line: &str) -> String {
@@ -190,6 +192,53 @@ mod tests {
 
         assert_eq!(report.status, "passed");
         assert_eq!(report.warning_count, 0);
+    }
+
+    /// The shared "headless session services" family of
+    /// `scripts/smoke_warning_classifiers.py` needs no copy here: the lines
+    /// the helper's private system bus makes mutter and the portal frontend
+    /// print name no toolkit source (the portal's is also a `portal` line), so
+    /// the toolkit-warning predicate never matches them, as in the Python
+    /// scanner. This guards that against a broadened predicate. The last line
+    /// does name a toolkit source and is exempt only by the PipeWire
+    /// remote-error needle.
+    #[test]
+    fn private_system_bus_session_service_lines_are_not_toolkit_warnings() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("mutter-child.log"),
+            [
+                "(mutter:3709): mutter-WARNING **: 23:40:12.502: Failed to retrieve locale properties: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.locale1 was not provided by any .service files",
+                "(mutter:3709): libmutter-WARNING **: 23:40:12.498: There is no colord server available",
+                "(/usr/libexec/xdg-desktop-portal:3742): xdg-desktop-portal-WARNING **: 23:40:13.010: Failed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.RealtimeKit1 was not provided by any .service files",
+                "(lushtext:4242): Gdk-WARNING **: 23:40:13.500: pipewire remote error: connection closed",
+            ]
+            .join("\n"),
+        )
+        .expect("write log");
+
+        let report = scan_logs(tempdir.path()).expect("scan");
+
+        assert_eq!(report.status, "passed", "{:?}", report.matches);
+    }
+
+    #[test]
+    fn quiet_media_daemon_logs_are_scanned_in_the_session_log_dir() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(tempdir.path().join("session-hygiene")).expect("log dir");
+        fs::write(
+            tempdir.path().join("session-hygiene/wireplumber.log"),
+            "Gtk-CRITICAL **: a toolkit warning in a media log\n",
+        )
+        .expect("write log");
+
+        let report = scan_logs(tempdir.path()).expect("scan");
+
+        assert_eq!(report.status, "failed");
+        assert_eq!(
+            report.matches[0].artifact,
+            "session-hygiene/wireplumber.log"
+        );
     }
 
     #[test]

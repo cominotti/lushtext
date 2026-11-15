@@ -112,10 +112,12 @@ if [[ -n "${RESPONSIVENESS_CASES:-}" ]]; then
     CASES+=("${extra_cases[@]}")
 fi
 
-smoke_require_command dbus-run-session
-smoke_require_command mutter
 smoke_require_command gdbus
 [[ -x "$PYTHON" ]] || smoke_skip "/usr/bin/python3 is not available."
+# The session helper's profile: `accessibility` when the AT variant is
+# selected, `plain` otherwise, always without media (design D2).
+SESSION_PROFILE="$("$PYTHON" "$DRIVER" session-profile)"
+smoke_require_session "$SESSION_PROFILE" --media off
 "$PYTHON" -c 'import gi; gi.require_version("Gio", "2.0")' 2>/dev/null || smoke_skip "PyGObject is not available."
 [[ -x "$BINARY" ]] || smoke_fail "measurement binary is missing: $BINARY (make responsiveness-build builds it)"
 
@@ -147,7 +149,9 @@ smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
     echo "taskset=${TASKSET[*]:-none}"
     echo "monitor=${RESPONSIVENESS_MONITOR:-1280x800@120}"
     echo "pango_version=$(pkg-config --modversion pango 2>/dev/null || true)"
-    echo "mutter=$(mutter --version 2>/dev/null | head -n1 || true)"
+    echo "session_profile=$SESSION_PROFILE"
+    echo "mutter=$("$REPO_ROOT/scripts/headless-session" check-tools --profile "$SESSION_PROFILE" --media off --json 2>/dev/null |
+        "$PYTHON" -c 'import json, sys; r = json.load(sys.stdin); print(r["commands"][r["roles"]["compositor"]]["version"])' 2>/dev/null || true)"
     echo "cpu_model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //' || true)"
     echo "mem_available_kib=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)"
 } >>"$ARTIFACT_DIR/environment.txt"
@@ -159,7 +163,8 @@ done
 
 set +e
 "${TASKSET[@]}" "$REPO_ROOT/scripts/with-temp-scope.sh" --session-runtime responsiveness -- \
-    dbus-run-session -- "$PYTHON" "$DRIVER" session \
+    "$REPO_ROOT/scripts/headless-session" session --profile "$SESSION_PROFILE" --media off \
+    --inherit-runtime-dir --log-dir "$ARTIFACT_DIR/logs/session-hygiene" -- "$PYTHON" "$DRIVER" session \
     --artifact-dir "$ARTIFACT_DIR" --binary "$BINARY" --tier "$TIER" "${CASE_ARGS[@]}" \
     2>&1 | tee "$ARTIFACT_DIR/logs/lane.log"
 status="${PIPESTATUS[0]}"
@@ -172,6 +177,11 @@ fi
 report_status=0
 "$PYTHON" "$DRIVER" "${REPORT_ARGS[@]}" || report_status=$?
 
+if [[ "$status" -eq 93 ]]; then
+    # gtk_lush_proof_harness::session::SESSION_HYGIENE_EXIT_CODE: the
+    # session touched the host; its SESSION-HYGIENE: lines are in lane.log.
+    smoke_fail "responsiveness smoke failed: the private session touched the host (SESSION-HYGIENE lines in $ARTIFACT_DIR/logs/lane.log)"
+fi
 if [[ "$status" -ne 0 || "$report_status" -ne 0 ]]; then
     smoke_fail "responsiveness smoke failed (session $status, report $report_status). Artifacts: $ARTIFACT_DIR"
 fi

@@ -253,6 +253,7 @@ make run         # debug build + a fresh launch with temporary GNOME desktop sta
 make fmt         # rustfmt everywhere, including widget tests cargo fmt cannot reach
 make check       # fmt + all-feature Clippy + fast policy audits (= make pre-commit)
 make check-policy # the fast policy audits alone
+make check-session-hygiene # every private headless session starts through scripts/headless-session (in check-policy)
 make check-agent-docs # agent rules, skills, and the filesystem-boundary guidance
 make test        # all tests; widget shards run in parallel, each in its own capped headless session (start it unwrapped)
 make test-unit / make test-int / make test-prop
@@ -275,7 +276,7 @@ The `flathub-*` targets are dormant: Flathub publication is not planned, and the
 ## Testing
 
 - Unit tests: `#[cfg(test)]` modules across models, services, and GTK-free UI helpers; integration tests: `crates/lushtext/tests/integration.rs` (`#[path]` split binary); property tests: `make test-prop`.
-- Widget tests: `crates/lushtext/tests/widget.rs` is a custom single-threaded harness that keeps GTK on one thread and self-supervises into a private `mutter --headless` session before GTK initializes. **Widget tests never run against the developer's live desktop session.** CI splits the suite into the shards of `scripts/widget-shards.py` (a new widget module file must be assigned to one); locally `make test` runs those shards in parallel. A `FLAKY`, `FLAKY-SHARD:` or `OOM-KILL:` line is a blocker. Presented widget tests do not reliably advance `AdwTimedAnimation` frame clocks, so animation-dependent assertions use end-state checks or a narrow `LUSHTEXT_WIDGET_CHILD` immediate-completion path.
+- Widget tests: `crates/lushtext/tests/widget.rs` is a custom single-threaded harness that keeps GTK on one thread and self-supervises into a private headless session (the session helper's `widget` profile: a private, monitored system bus, no AT-SPI bus, no portals) before GTK initializes; the launcher sets the recommended environment, including `GTK_A11Y=test` (accessible state stays queryable, no `org.a11y.Bus`) and `ADW_DISABLE_PORTAL=1`, and the per-test child only checks it. **Widget tests never run against the developer's live desktop session.** CI splits the suite into the shards of `scripts/widget-shards.py` (a new widget module file must be assigned to one); locally `make test` runs those shards in parallel. A `FLAKY`, `FLAKY-SHARD:`, `OOM-KILL:` or `SESSION-HYGIENE:` line is a blocker. Presented widget tests do not reliably advance `AdwTimedAnimation` frame clocks, so animation-dependent assertions use end-state checks or a narrow `LUSHTEXT_WIDGET_CHILD` immediate-completion path.
 - `TestContext`: an isolated tempdir with simulated XDG directories; unit and integration tests pass its explicit directories instead of resolving the global data dir.
 - Test isolation and temporary files are properties of the test process and of every lane: see `.agents/rules/testing.md`, "Test Isolation From Real App Data" and "Temporary Files".
 - End-user smoke lanes: `docs/end-user-coverage.md` maps which behavior belongs to which lane; those scripts preserve artifacts and skip explicitly when host support is unavailable.

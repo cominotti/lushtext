@@ -164,6 +164,7 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/gtk-lush/proof-harness/src/session/mod.rs` | `SESSION_HYGIENE_EXIT_CODE` | 93 | out: code | exit code, errno or hash constant (D1) |
+| `crates/gtk-lush/proof-harness/src/session/mod.rs` | `DBUS_SOCKET_PATH_MAX` | 99 | external fact | exact, cited from its source |
 
 ### `crates/gtk-lush/proof-harness/src/session/verdict.rs`
 

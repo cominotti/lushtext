@@ -250,6 +250,10 @@ jobs:
             git \
             mutter \
             dbus-daemon \
+            dbus-tools \
+            at-spi2-core \
+            xdg-desktop-portal \
+            xdg-desktop-portal-gtk \
             python3 \
             adwaita-mono-fonts
 
@@ -260,6 +264,9 @@ jobs:
         with:
           shared-key: fedora-45
 
+      # dbus-tools: the session helper monitors the private buses with
+      # dbus-monitor. at-spi2-core and the portals: the A115/A116 probes'
+      # control runs activate them (weak dependencies are off here).
       # adwaita-mono-fonts: the text probes (A70, A72) read columns and line
       # widths from character counts, so "Monospace" must resolve to a
       # fixed-pitch face as in every GNOME runtime; without it the container's
@@ -295,6 +302,10 @@ jobs:
             git \
             mutter \
             dbus-daemon \
+            dbus-tools \
+            at-spi2-core \
+            xdg-desktop-portal \
+            xdg-desktop-portal-gtk \
             python3 \
             adwaita-mono-fonts
 
@@ -305,6 +316,9 @@ jobs:
         with:
           shared-key: fedora-44
 
+      # dbus-tools: the session helper monitors the private buses with
+      # dbus-monitor. at-spi2-core and the portals: the A115/A116 probes'
+      # control runs activate them (weak dependencies are off here).
       # adwaita-mono-fonts: the text probes (A70, A72) read columns and line
       # widths from character counts, so "Monospace" must resolve to a
       # fixed-pitch face as in every GNOME runtime; without it the container's
@@ -430,6 +444,7 @@ jobs:
             git \
             mutter \
             dbus-daemon \
+            dbus-tools \
             python3
 
       - name: Install Rust toolchain

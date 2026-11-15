@@ -69,6 +69,12 @@ starts `xdg-desktop-portal`, its GTK backend and the document portal despite
 `GDK_DEBUG=no-portals`. `test`, not `none`: `none` creates no AT context, so
 `gtk4::test_accessible_has_property` and `has_state` return false.
 
+`test` has one hazard every consumer must handle: `GtkTestATContext`
+implements no `announce`, so `gtk_accessible_announce` on a realized widget
+kills the test process by SIGSEGV (GTK axiom ledger A117). Announce through one
+helper that skips a `GtkTestATContext` (nothing listens through it), and do
+not ask for the context under `GTK_A11Y=none`.
+
 `apply_headless_child_environment()` applies the outer relaunch side of the
 contract before Mutter starts: `GDK_BACKEND=wayland`, the caller-owned headless
 marker, and removal of inherited live `DISPLAY` and `WAYLAND_DISPLAY`.
@@ -130,11 +136,27 @@ options, the names acquired and the verdict.
 `compositor` itself), `compositor --monitor WxH -- CMD` (execs
 `mutter --headless`, so the caller's handle is mutter; refused outside a
 session), `run` (both), and `check-tools [--profile P] [--json]` (missing
-commands, and with `--json` each command's path and `--version` line). It
+commands, and with `--json` each command's path and `--version` line, plus a
+`roles` map naming which command is the session bus, the compositor and the
+media daemons, so a caller can record the compositor's version without naming
+it). It
 exports its own path as `GTK_LUSH_SESSION_BIN` inside the session, so code
 there can start a nested, fully private session without depending on this
 crate. `--expect-dirty` reruns the previous bare media configuration and
 succeeds only when the guard catches it, for by-hand proof.
+
+**Library stages for supervising callers.** A tool that runs the session with
+its own log capture and timeout (LushText's `cargo-gtk-proof`) builds the
+stages as `std::process::Command`s instead of running them:
+`session::session_command(&options, runtime_dir, &command, &extra_env)` is the
+`session` stage in the caller's private runtime directory (refused when it is
+the user's real `XDG_RUNTIME_DIR`), and re-executes the current executable as
+the inner stage, so that executable's `main` must call
+`session::run_inner_stage_if_requested()` first;
+`session::compositor_command(&monitors, &command)` is the `compositor` stage,
+valid only inside a session. Both return `SessionLaunchError` (the status to
+exit with and the line to print) instead of starting anything when the host
+lacks a tool or an option is invalid.
 
 **Static gate.** LushText's `make check-session-hygiene` fails on any tracked
 code outside this module that names a session command, and on drift of the

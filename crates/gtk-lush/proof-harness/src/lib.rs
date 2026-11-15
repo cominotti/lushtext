@@ -239,6 +239,14 @@ pub struct RecommendedEnvironment {
 /// would then return false). `ADW_DISABLE_PORTAL=1` makes Libadwaita read
 /// GSettings instead of the settings portal.
 ///
+/// **A consumer must not announce through the test context.**
+/// `GtkTestATContext` implements no `announce`, so `gtk_accessible_announce`
+/// on a realized widget kills the test process by SIGSEGV (GTK ledger A117,
+/// GTK 4.24.1 and `main`). Route announcements through one helper that skips
+/// the call when the widget's AT context is a `GtkTestATContext` (LushText's
+/// `ui::accessibility::announce`), and do not ask for the context under
+/// `GTK_A11Y=none`, where GTK creates none.
+///
 /// # Why `GTK_IM_MODULE` is on this list
 ///
 /// Mutter's headless session advertises `zwp_text_input_manager_v3`, so GTK

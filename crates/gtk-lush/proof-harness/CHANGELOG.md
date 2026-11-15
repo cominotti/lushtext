@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `recommended_pre_gtk_environment()` now selects `GTK_A11Y=test`, and its
+  documentation states the hazard that comes with it: announcing through a
+  `GtkTestATContext` kills the process (GTK ledger A117), so consumers
+  announce through a helper that skips that context.
+- The session's sockets are bounded by `dbus-daemon`'s 99-byte socket path
+  limit, not the kernel's 107: an owned runtime directory that would not fit
+  falls back to `/tmp`, and an inherited one is refused.
 - New `session` module and `gtk-lush-session` binary: the one implementation
   of the private headless session (`quiet-headless-session-services`).
   Profiles `widget`, `plain`, `screencast` and `accessibility`; a private,
@@ -12,6 +19,11 @@
   hardware-device, module-rt, accessibility-bus, portal or config violation.
   The harness's headless relaunch now goes through it (`widget` profile)
   instead of its own `dbus-run-session` command line.
+- `session::session_command()` and `session::compositor_command()` build the
+  `session` and `compositor` stages as `Command`s for a caller that supervises
+  the processes itself; they return `SessionLaunchError` instead of starting
+  anything on a host without the tools. `check-tools --json` also reports a
+  `roles` map (session bus, compositor, media, session manager).
 - **Breaking (array length):** `recommended_pre_gtk_environment()` returns
   **seven** settings, adding `GTK_A11Y=test` and `ADW_DISABLE_PORTAL=1`. The
   launcher applies them before the session bus starts, and a per-test child now

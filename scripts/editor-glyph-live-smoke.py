@@ -20,9 +20,14 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from smoke_session import HEADLESS_SESSION, check_tools  # noqa: E402
+
+# An X11 (Xvfb) lane with no screenshots through PipeWire: no media, no
+# AT-SPI; the session helper gives it the private buses and the guard.
+SESSION_PROFILE = "plain"
 APP_ID = "dev.cominotti.lushtext"
 REQUIRED_COMMANDS = (
-    "dbus-run-session",
     "gsettings",
     "magick",
     "xdotool",
@@ -107,6 +112,9 @@ def require_tooling(binary: Path) -> list[str]:
         for command in REQUIRED_COMMANDS
         if shutil.which(command) is None
     ]
+    session_unavailable = check_tools(SESSION_PROFILE)
+    if session_unavailable is not None:
+        missing.append(session_unavailable)
     if not binary.is_file() or not os.access(binary, os.X_OK):
         missing.append(f"LushText debug binary is missing or not executable: {binary}")
     return missing
@@ -153,7 +161,10 @@ def outer_run(args: argparse.Namespace) -> int:
         "-a",
         "-s",
         f"-screen 0 {WINDOW_SIZE}x24 -nolisten tcp",
-        "dbus-run-session",
+        str(HEADLESS_SESSION),
+        "session",
+        "--profile",
+        SESSION_PROFILE,
         "--",
         sys.executable,
         str(Path(__file__).resolve()),

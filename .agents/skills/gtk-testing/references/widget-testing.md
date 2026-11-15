@@ -75,12 +75,40 @@ emit Mesa/EGL GPU-probe warnings just because no render device is available.
 Override `GSK_RENDERER` explicitly only when the test run is meant to chase a
 renderer-specific GTK bug.
 
-`gtk_lush_proof_harness::recommended_pre_gtk_environment()` sets five variables,
-and the principle behind all five is the same: **the private compositor
-advertises desktop services it cannot provide, so do not start the client half
-against it.** `NO_AT_BRIDGE=1` (no accessibility bus), `GDK_DEBUG=no-portals` and
-`GTK_USE_PORTAL=0` (no portal service), `GSK_RENDERER=cairo` (no GPU), and
-`GTK_IM_MODULE=gtk-im-context-simple` (no input method).
+`gtk_lush_proof_harness::recommended_pre_gtk_environment()` names seven
+variables, and the principle behind all seven is the same: **the private
+compositor advertises desktop services it cannot provide, so do not start the
+client half against it.** `NO_AT_BRIDGE=1` and `GTK_A11Y=test` (no accessibility
+bus), `GDK_DEBUG=no-portals`, `GTK_USE_PORTAL=0` and `ADW_DISABLE_PORTAL=1` (no
+portal service), `GSK_RENDERER=cairo` (no GPU), and
+`GTK_IM_MODULE=gtk-im-context-simple` (no input method). The session helper's
+`widget` profile sets them on the session bus launcher, before the bus starts,
+so the services the bus activates inherit them; the per-test child only checks
+them and fails before GTK starts, naming the variable, when one is missing. A
+hand-run `cargo test --test widget` still relaunches itself through the
+session library and is unaffected; only a per-test child launched by hand
+(the `LUSHTEXT_WIDGET_CHILD` path without the session) fails fast that way.
+
+**Use `GTK_A11Y=test`, never `none`, for a widget-test child.** GTK 4 ignores
+`NO_AT_BRIDGE` and starts `org.a11y.Bus` from every client under the default
+`atspi` backend; `test` gives each widget a `GtkTestATContext` that keeps its
+accessible properties, states and relations queryable through
+`gtk_test_accessible_*` (and `AccessibleAudit`) and talks to no bus. `none`
+creates no AT context at all, so `gtk_test_accessible_has_property` returns
+false and accessibility assertions silently stop meaning anything (ledger
+A115). Code that asks whether AT-SPI listens (`at_listeners`) sees no AT-SPI
+under `test`; its test-utils simulation hook answers for the test instead.
+`ADW_DISABLE_PORTAL=1` is needed because `GDK_DEBUG=no-portals` does not stop
+Libadwaita from activating the settings portal (A116).
+
+**Under `test`, a raw `announce` is a segfault.** `GtkTestATContext` has no
+`announce` vfunc, so `gtk_accessible_announce` on a realized widget kills the
+child with no panic and no output: the harness prints only `FAILED` (A117).
+`ui::accessibility::announce` skips a test context, so app code must announce
+only through it, and a test must never call `Accessible::announce` directly.
+A widget test that fails with no panic text is worth checking for this first:
+run its child under `gdb` inside `scripts/headless-session run --profile
+widget`.
 
 **The input-method one is the least obvious and it is a crash, not noise.**
 Headless Mutter advertises `zwp_text_input_manager_v3`, so GTK selects its

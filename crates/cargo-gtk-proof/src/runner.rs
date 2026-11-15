@@ -28,6 +28,9 @@ use crate::{
 
 /// Theme and font metrics can place the 600px source cap a few pixels around
 /// its nominal value while preserving the GNOME Text Editor row contract.
+/// Failure status of a case whose orchestration or artifacts went missing.
+const WORKFLOW_FAILURE: &str = "workflow-failure";
+
 const OPEN_POPOVER_LIST_CAP_TOLERANCE: i64 = 12;
 /// GtkPopover snapshots include a small rendered shadow beyond the content box.
 const OPEN_POPOVER_VIEWPORT_SHADOW_TOLERANCE: i64 = 8;
@@ -292,25 +295,42 @@ fn write_live_case_summaries(
             })
             .cloned()
             .unwrap_or_else(|| json!({"status": "not-run"}));
-        let row = if live_result.get("status").and_then(Value::as_str) == Some("launched") {
+        let live_status = live_result.get("status").and_then(Value::as_str);
+        let row = if live_status == Some("launched") {
             aggregate_launched_case(case, &case_dir, &live_result).unwrap_or_else(|error| {
-                workflow_failed_case_summary(case, &case_dir, &live_result, &error).unwrap_or_else(
-                    |fallback| {
-                        json!({
-                            "schema_version": model::SUPPORTED_SCHEMA_VERSION,
-                            "case_id": case.case_id,
-                            "status": "failed",
-                            "failure_status": "workflow-failure",
-                            "failure_reason": fallback,
-                        })
-                    },
+                workflow_failed_case_summary(
+                    case,
+                    &case_dir,
+                    &live_result,
+                    WORKFLOW_FAILURE,
+                    &error,
                 )
+                .unwrap_or_else(|fallback| {
+                    json!({
+                        "schema_version": model::SUPPORTED_SCHEMA_VERSION,
+                        "case_id": case.case_id,
+                        "status": "failed",
+                        "failure_status": "workflow-failure",
+                        "failure_reason": fallback,
+                    })
+                })
             })
+        } else if live_status == Some(live::SESSION_HYGIENE_STATUS) {
+            // The case's private session touched the host: the case fails and
+            // verifies no invariant, whatever its captures show.
+            workflow_failed_case_summary(
+                case,
+                &case_dir,
+                &live_result,
+                live::SESSION_HYGIENE_STATUS,
+                "the private session touched the host (SESSION-HYGIENE lines in session.log)",
+            )?
         } else {
             workflow_failed_case_summary(
                 case,
                 &case_dir,
                 &live_result,
+                WORKFLOW_FAILURE,
                 "Rust live process did not complete successfully",
             )?
         };
@@ -537,6 +557,7 @@ fn workflow_failed_case_summary(
     overview: &model::ExpandedCaseOverview,
     case_dir: &Path,
     live_result: &Value,
+    failure_status: &str,
     failure_reason: &str,
 ) -> Result<Value, String> {
     let row = json!({
@@ -544,7 +565,7 @@ fn workflow_failed_case_summary(
         "case_id": overview.case_id,
         "scenario_id": overview.case_id,
         "status": "failed",
-        "failure_status": "workflow-failure",
+        "failure_status": failure_status,
         "failure_reason": failure_reason,
         "artifact_dir": overview.case_id,
         "manifest": "scenario-manifest.json",
@@ -573,7 +594,7 @@ fn workflow_failed_case_summary(
             "artifact": artifacts::safe_display_path(&case_dir.join("same-session-captures.json")),
         },
         "status": "failed",
-        "failure_status": "workflow-failure",
+        "failure_status": failure_status,
         "failure_reason": row.get("failure_reason"),
         "skip_reason": Value::Null,
         "process_report": artifacts::safe_display_path(&case_dir.join("process-report.json")),
@@ -1960,13 +1981,7 @@ fn run_live_process_sessions(
     for case in cases {
         let case_json = artifact_dir.join(&case.case_id).join("case.json");
         let result = live::run_case_session(&case_json, Duration::from_secs(180))?;
-        let status = if result.timed_out {
-            "timed-out"
-        } else if result.exit_code == Some(0) {
-            "launched"
-        } else {
-            "failed"
-        };
+        let status = live::session_status(result.exit_code, result.timed_out);
         results.push(json!({
             "case_id": case.case_id,
             "status": status,
@@ -1987,9 +2002,11 @@ fn run_internal_session(case_json: &Path) -> Result<RunOutcome, String> {
 }
 
 fn run_mutter_child(case_json: &Path) -> Result<RunOutcome, String> {
-    run_hidden_live_child("mutter child completed", "mutter child failed", || {
-        live::run_mutter_child(case_json)
-    })
+    run_hidden_live_child(
+        "compositor child completed",
+        "compositor child failed",
+        || live::run_mutter_child(case_json),
+    )
 }
 
 fn run_hidden_live_child<F>(
@@ -2509,7 +2526,7 @@ mod tests {
     #[test]
     fn run_parse_requires_case_json_for_hidden_modes() {
         let error = RunConfig::parse(&["--mutter-child".to_string()])
-            .expect_err("mutter child without case json should fail");
+            .expect_err("compositor child without case json should fail");
 
         assert!(error.contains("--mutter-child requires --case-json"));
     }
@@ -2561,6 +2578,69 @@ mod tests {
                 .expect("animation invariant ids")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_session_hygiene_case_fails_and_verifies_nothing() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let case = model::ExpandedCaseOverview {
+            schema_version: model::SUPPORTED_SCHEMA_VERSION,
+            case_id: "hygiene-case".to_string(),
+            manifest: serde_json::json!({"scenario_type": "minimap-sidebar"}),
+            size: serde_json::json!({"width": 800, "height": 600}),
+            color_scheme: "force-light".to_string(),
+            artifact_dir: "hygiene-case".to_string(),
+            word_wrap: Some(true),
+            direction: Some("hide".to_string()),
+            viewport_position: Some("top".to_string()),
+            fixture_kind: Some("plain-lines".to_string()),
+        };
+        let case_dir = tempdir.path().join("hygiene-case");
+        std::fs::create_dir_all(&case_dir).expect("case dir");
+
+        let rows = write_live_case_summaries(
+            tempdir.path(),
+            std::slice::from_ref(&case),
+            &[serde_json::json!({
+                "case_id": "hygiene-case",
+                "status": live::SESSION_HYGIENE_STATUS,
+                "exit_code": 93,
+                "timed_out": false,
+            })],
+        )
+        .expect("case summaries");
+
+        assert_eq!(rows[0]["status"], "failed");
+        assert_eq!(rows[0]["failure_status"], "session-hygiene");
+        for field in [
+            "verified_invariant_ids",
+            "pixel_verified_invariant_ids",
+            "animation_verified_invariant_ids",
+        ] {
+            assert!(
+                rows[0][field].as_array().expect(field).is_empty(),
+                "{field} must stay empty"
+            );
+        }
+        for artifact in ["case-summary.json", "scenario-manifest.json"] {
+            let value: Value = serde_json::from_str(
+                &std::fs::read_to_string(case_dir.join(artifact)).expect(artifact),
+            )
+            .expect("json");
+            assert_eq!(value["failure_status"], "session-hygiene", "{artifact}");
+        }
+        // The row is the root summary's case entry; the manifest embeds the
+        // expanded case, which this test does not write.
+        model::validate_document(&serde_json::json!({
+            "schema_version": model::SUPPORTED_SCHEMA_VERSION,
+            "status": "failed",
+            "case_count": 1,
+            "passed": 0,
+            "failed": 1,
+            "skipped": 0,
+            "cases": rows,
+        }))
+        .expect("schema-valid summary with a session-hygiene case");
     }
 
     #[test]

@@ -187,6 +187,7 @@ dependencies = [
  "flate2",
  "gio",
  "glib",
+ "gtk-lush-proof-harness",
  "gtk-lush-proof-spine",
  "serde",
  "serde_json",

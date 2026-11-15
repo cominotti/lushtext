@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- A117 probe and sample (`quiet-headless-session-services`): with
+  `GTK_A11Y=test`, `gtk_accessible_announce` kills the process by SIGSEGV
+  (`GtkTestATContext` has no `announce` vfunc); with `GTK_A11Y=none` it
+  returns. The crashing call runs in a child of the probe (the same
+  executable with `GTK_LUSH_AXIOMS_CONTROL=A117`, core dumps off), exported
+  as `announce_in_child` and `AnnounceOutcome` for the sample. It needs no
+  session bus.
+- A115 and A116 probes and samples (`quiet-headless-session-services`):
+  `GTK_A11Y=test` keeps a `GtkTestATContext` with queryable accessible
+  properties and activates no `org.a11y.Bus`; `ADW_DISABLE_PORTAL=1` stops
+  Libadwaita activating `org.freedesktop.portal.Desktop`, which
+  `GDK_DEBUG=no-portals` alone does not. Each control runs in a nested
+  private session through the helper binary named by `SESSION_BIN_ENV`
+  (`GTK_LUSH_SESSION_BIN`), re-running the same executable as a control
+  child (`CONTROL_ENV`, `run_control_child_if_requested`, which samples and
+  the probe runner call first). New `SESSION_BUS_AXIOMS`,
+  `session_bus_skip_line` (`skipped (needs a session bus): <id>` in an SDK
+  sandbox), `session_bus_has_name`, `A11Y_BUS_NAME` and
+  `PORTAL_DESKTOP_NAME`.
 - A108, A109, A110 and A111 probes and samples (`lighten-notes-browser-rows`):
   a label list's frame after a retext is mostly layout and grows with the
   realized rows, where a text-independent measure does not; a
