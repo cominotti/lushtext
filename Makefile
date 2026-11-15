@@ -891,7 +891,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-temp-scope check-agent-helpers check-settings-writes check-font-zoom-registration check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
+check-policy: check-filesystem-boundary check-temp-scope check-agent-helpers check-settings-writes check-font-zoom-registration check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
 
 # Workspace folder-set terminology guard.
 # Runs in the local gate as well as CI because it scans resources, docs, and
