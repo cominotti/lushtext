@@ -13072,6 +13072,17 @@ impl HistoryRestoreDraftFixture {
         self.editor.draft_dirty() || self.persisted().as_deref() == Some(text)
     }
 
+    /// The draft state [`Self::owes_or_wrote`] reads, for a failure message.
+    fn draft_state(&self, text: &str) -> String {
+        let persisted = self.persisted();
+        format!(
+            "draft_dirty={}, persisted {} bytes, persisted is the expected text {}",
+            self.editor.draft_dirty(),
+            persisted.as_ref().map_or(0, String::len),
+            persisted.as_deref() == Some(text)
+        )
+    }
+
     /// Wait until the buffer holds `text` and no replacement owns it.
     fn wait_for_installed(&self, text: &str) {
         let chars = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
@@ -13123,7 +13134,8 @@ fn test_a_restore_after_the_draft_settled_owes_a_draft() {
     fixture.wait_for_installed(&restore_target);
     assert!(
         fixture.owes_or_wrote(&restore_target),
-        "the restored text is still owed a draft"
+        "the restored text is still owed a draft: {}",
+        fixture.draft_state(&restore_target)
     );
     fixture.settle_draft(&restore_target);
 }
@@ -13169,7 +13181,8 @@ fn test_a_pass_captured_before_a_restore_cannot_clear_its_draft_owed() {
     // have written the restored text: owed, or written, never neither.
     assert!(
         fixture.owes_or_wrote(&restore_target),
-        "the restored text is still owed a draft"
+        "the restored text is still owed a draft: {}",
+        fixture.draft_state(&restore_target)
     );
     lushtext_core::ui::window::set_draft_mutation_delays_for_test(0, 0, 0);
     fixture.settle_draft(&restore_target);
@@ -13202,7 +13215,8 @@ fn test_a_small_restore_after_the_draft_settled_owes_a_draft() {
     fixture.wait_for_installed(&restore_target);
     assert!(
         fixture.owes_or_wrote(&restore_target),
-        "the restored text is still owed a draft"
+        "the restored text is still owed a draft: {}",
+        fixture.draft_state(&restore_target)
     );
     fixture.settle_draft(&restore_target);
 }
@@ -13244,7 +13258,8 @@ fn test_an_undo_restore_owes_a_draft() {
     fixture.wait_for_installed(&working_copy);
     assert!(
         fixture.owes_or_wrote(&working_copy),
-        "the text Undo Restore put back is still owed a draft"
+        "the text Undo Restore put back is still owed a draft: {}",
+        fixture.draft_state(&working_copy)
     );
     fixture.settle_draft(&working_copy);
 }
@@ -13272,7 +13287,8 @@ fn test_a_restore_into_a_clean_tab_owes_a_draft() {
     let title = fixture.tab_title();
     assert!(
         owed && title.starts_with("• "),
-        "a restore into a clean tab: owed or written={owed}, title={title:?}"
+        "a restore into a clean tab: {}, title={title:?}",
+        fixture.draft_state(&restore_target)
     );
     fixture.settle_draft(&restore_target);
 }
