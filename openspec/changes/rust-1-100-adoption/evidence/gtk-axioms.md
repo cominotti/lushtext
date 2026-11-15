@@ -16,11 +16,12 @@ agents' builds, mutation runs and widget shards.
 | 1, before the probe hardening, beside this change's own `lint-advisory` and rustdoc builds | 11–13 | exit 0, probe binary passed, 100 sample checks hold | A70 (violated), A76 (fixture-invalid), A79 (violated) |
 | 2, after a first A76 attempt (rounds), since reverted | 13–17 | exit 1 | A76 failed every attempt: rounds of the 8 MiB run are not independent (design finding 9); A29's 60 s budget stopped the doubling under load (fixture-invalid, both attempts); A85, A91, A98 held on retry |
 | 3, the final probes | 13 → 4.5 | exit 0, probe binary passed, 100 sample checks hold | A86 (violated: "a per-widget class swap does not grow with the unrelated widgets") |
+| 4, after merging `origin/main` (`a5ddb117`, which adds A112) | 9–16 | exit 0, probe binary passed, 101 sample checks hold | A110 (held on retry) |
 
 In isolation (`cargo test -p gtk-lush-adoption-lab --test axiom_probes --
 a70_ a76_ a79_`, three rounds, load 11–15), A70, A76 and A79 held 9 of 9
 before the hardening; in run 3 all three held at the first attempt.
 
-A29, A85, A86, A91 and A98 are timing probes that this change does not touch:
+A29, A85, A86, A91, A98 and A110 are timing probes that this change does not touch:
 each failed one first attempt once, under load, and held on retry. They are
 recorded, not fixed here (see the PR's open decisions).

@@ -4827,7 +4827,12 @@ first window's fastest sample, because preemption only adds time. A70's after-pa
 each recorded, because a preempted main loop lets the next frame run before
 the validation idle. `make lint-advisory` had drifted on `main`: three sites
 were fixed in code, and the rest got scoped rules in
-`scripts/lint-advisory-policy.toml`.
+`scripts/lint-advisory-policy.toml`. After merging `main`, the Protected View
+whole-line copy test failed once because Mutter's clipboard manager read the
+lazy provider before the test did; the test now requires its own read to add
+a whole read's worth of chunks. Six other timing probes (A29, A85, A86, A91,
+A98, A110) each held only on retry once under load; that lane-wide fragility
+is an open decision for the maintainer.
 
 **Recorded exception, with an expiry.** sourceview5 0.11.3 was taken with
 `--precise` outside the cooldown. Until **2026-11-21 08:57 UTC** the cooldown
