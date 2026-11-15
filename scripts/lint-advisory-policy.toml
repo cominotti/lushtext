@@ -412,8 +412,8 @@ rationale = "`ShellReconciliation::compact_surface` is `Option<Option<SecondaryS
 code = "clippy::format_collect"
 classification = "accepted_advisory"
 path_globs = ["crates/gtk-lush/axioms/src/probes/*.rs"]
-max_count = 3
-rationale = "GTK axiom probes build small synthetic text fixtures once per probe, where iterator string assembly is clearer than a formatter type."
+max_count = 5
+rationale = "GTK axiom probes build small synthetic text fixtures once per probe, where iterator string assembly is clearer than a formatter type (a31, a32, a34, a59, a72; raised from 3 by rust-1-100-adoption after a59 and a72 landed unclassified)."
 
 [[rules]]
 code = "clippy::float_cmp"
@@ -432,3 +432,45 @@ code = "clippy::while_float"
 classification = "generated_code_noise"
 path_globs = ["<generated>/**"]
 rationale = "Widget registry code is generated and normalized separately from hand-written lint policy."
+
+# rust-1-100-adoption (2026-11-14): categories later changes added without a
+# classification, found when that change ran `make lint-advisory` (task 4.3).
+# `manual_assert_eq` (widget test), `match_wild_err_arm` (content-search test)
+# and `missing_fields_in_debug` (`FoldedTextSurface`, `NoteBody`:
+# `finish_non_exhaustive`) were fixed in code instead. The sites below are in
+# Kani-read or toolkit-probe modules, where an edit would cost a proof rerun
+# or a probe change for no behaviour.
+
+[[rules]]
+code = "clippy::doc_link_code"
+classification = "accepted_advisory"
+path_globs = ["crates/lushtext-core/src/model/protected_install.rs"]
+max_count = 1
+rationale = "One rustdoc range written as two intra-doc links around a code `..=`; it renders correctly, and the module is read by the Kani shard of `settle_budget_derivation_fits_and_never_overflows`, so a wording edit is left to the next change that touches it."
+
+[[rules]]
+code = "clippy::option_option"
+classification = "accepted_advisory"
+path_globs = ["crates/lushtext-core/src/ui/editor_page/load/admission.rs"]
+max_count = 1
+rationale = "`PlanningJoin::language_guess` is `Option<Option<String>>` on purpose: the outer `None` means the language catalog was not ready, the inner `None` that the catalog guesses no language. The field doc states it; flattening would make an unready catalog read as plain text."
+
+[[rules]]
+code = "clippy::tuple_array_conversions"
+classification = "accepted_advisory"
+path_globs = [
+  "crates/gtk-lush/axioms/src/probes/a72.rs",
+  "crates/lushtext-core/src/ui/editor_page/minimap/policy.rs",
+]
+max_count = 2
+rationale = "A probe that extends its measurement vector with a destructured `(h, v)` pair, and a minimap-policy unit test that passes `split_at`'s `(head, tail)` as a two-slice input; naming the halves is the point. `minimap/policy.rs` is read by the pull-request-gated `core-minimap-fit` Kani shard."
+
+[[rules]]
+code = "clippy::used_underscore_binding"
+classification = "accepted_advisory"
+path_globs = [
+  "crates/gtk-lush/axioms/src/probes/a107.rs",
+  "crates/gtk-lush/axioms/src/probes/a44.rs",
+]
+max_count = 3
+rationale = "Each `_…_shown` binding is a presented-window guard the probe keeps alive across a measurement and then drops explicitly, so the measurement provably ran while it was shown."
