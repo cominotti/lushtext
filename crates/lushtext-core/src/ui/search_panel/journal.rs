@@ -584,12 +584,11 @@ impl LushtextSearchPanel {
                 ) {
                     return Ok(());
                 }
-                // Shrink rather than delete-then-rebuild: the only production
+                // Shrink, never rebuild (design D3a): the only production
                 // caller is a partial undo, whose unrestored files still hold
-                // Replace All output. `save`'s rebuild window would leave them
-                // with no durable rollback copy at all. `shrink_journal_to`
-                // falls back to a full rewrite when the on-disk journal is not a
-                // superset, so this is correct for every journal state.
+                // Replace All output. Descriptors carry no file bytes, so a
+                // journal that no longer holds every retained entry is reported
+                // and left as it is rather than rewritten.
                 search_backup::shrink_journal_to(&data_dir, &backup)
             },
             move |panel, result| {

@@ -136,12 +136,23 @@ pub(crate) fn build_plan_with_registry(
             FormatMetadataKind::Session | FormatMetadataKind::DraftManifest
         ) && matches!(action_for_item(item), FormatPlanAction::StartFreshOnly)
     });
+    // Likewise, an undo journal whose manifest or entries move aside takes
+    // its bodies with it: a body is the only copy of a file's original bytes.
+    let preserve_undo_bodies = inventory.items.iter().any(|item| {
+        matches!(
+            item.kind,
+            FormatMetadataKind::ReplaceUndoManifest
+                | FormatMetadataKind::ReplaceUndoEntry
+                | FormatMetadataKind::ReplaceUndoStreamEntry
+        ) && matches!(action_for_item(item), FormatPlanAction::StartFreshOnly)
+    });
     for item in &inventory.items {
         // If session or draft-manifest metadata must move aside, preserve
         // current draft bodies with it so unsaved text is not stranded behind
         // fresh startup defaults.
-        let action = if preserve_draft_bodies
-            && item.kind == FormatMetadataKind::DraftBody
+        let preserved_body = (preserve_draft_bodies && item.kind == FormatMetadataKind::DraftBody)
+            || (preserve_undo_bodies && item.kind == FormatMetadataKind::ReplaceUndoBody);
+        let action = if preserved_body
             && matches!(item.classification, FormatClassification::Current { .. })
         {
             FormatPlanAction::StartFreshOnly
@@ -200,6 +211,8 @@ fn group_kind(kind: FormatMetadataKind) -> FormatPlanGroupKind {
         | FormatMetadataKind::DraftBody
         | FormatMetadataKind::ReplaceUndoManifest
         | FormatMetadataKind::ReplaceUndoEntry
+        | FormatMetadataKind::ReplaceUndoStreamEntry
+        | FormatMetadataKind::ReplaceUndoBody
         | FormatMetadataKind::ReplaceUndoCleanupMarker => FormatPlanGroupKind::Guarded,
         _ => FormatPlanGroupKind::Independent,
     }
@@ -330,6 +343,8 @@ mod tests {
             FormatMetadataKind::DraftBody,
             FormatMetadataKind::ReplaceUndoManifest,
             FormatMetadataKind::ReplaceUndoEntry,
+            FormatMetadataKind::ReplaceUndoStreamEntry,
+            FormatMetadataKind::ReplaceUndoBody,
             FormatMetadataKind::ReplaceUndoCleanupMarker,
         ] {
             assert_eq!(group_kind(kind), FormatPlanGroupKind::Guarded);

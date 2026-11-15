@@ -463,6 +463,15 @@ only the undo affordance, which the downgrade loses anyway. The target files
 hold the replaced content the user asked for. Task 7.6 verifies this with a
 fixture and records it.
 
+*Verified (task 7.6).* `main_loader_exposes_no_undo_for_a_streamed_journal`
+(`crates/lushtext-core/tests/persistent_json_format.rs`) vendors `main`'s
+entry and manifest shapes and feeds them a journal this branch writes:
+`main` parses the manifest (serde ignores `pid` and `launch_nonce`), rejects
+every streamed entry with `UnsupportedFormat` (wrong kind), which its loader
+quarantines as malformed, so the journal is inactive and no Undo is offered,
+and the bodies sit in `bodies/` as non-`.json` files its non-recursive entry
+scan skips. Nothing in `main` writes a target from such a journal.
+
 ### D7. A typed skip report, the Skipped Files dialog and "Open and replace in editor"
 
 **The model.** `model/content_search.rs` holds the model:

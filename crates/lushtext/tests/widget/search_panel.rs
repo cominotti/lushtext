@@ -3,17 +3,18 @@
 //! Tests for the workspace search panel and its components.
 
 use crate::common::{
-    accessible_hidden, ensure_gtk_init, fixture, flush_after_delay, flush_events,
+    accessible_hidden, activate_action, ensure_gtk_init, fixture, flush_after_delay, flush_events,
     isolated_data_dir, present_window, wait_until,
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use libadwaita::prelude::*;
 use lushtext_core::model::content_search::{
     BoundedDiagnosticSample, ContentSearchOptions, ReplaceResult, Replacement, SavedSearch,
     SearchEvent, SearchHistoryEntry, SearchMatch, SearchMatchId, SearchQuerySpec,
     generate_replacement_preview,
 };
-use lushtext_core::services::content_search::{ReplaceUndoBackup, ReplaceUndoEntry};
+use lushtext_core::services::content_search::ReplaceUndoBackup;
 use lushtext_core::services::notifications::{
     NotificationBus, NotificationOwner, NotificationPayload, NotificationSeverity,
     NotificationSurface, StatusMessage,
@@ -35,10 +36,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-
-fn replace_undo_entry(original: &[u8], replaced: &[u8]) -> ReplaceUndoEntry {
-    ReplaceUndoEntry::new(original.to_vec(), replaced.to_vec())
-}
 
 fn make_history_entry(
     query: &str,
@@ -71,13 +68,31 @@ fn search_spec(query: &str) -> SearchQuerySpec {
     SearchQuerySpec::new(query.to_string(), ContentSearchOptions::default())
 }
 
+/// A one-file streamed undo journal, written to the isolated data directory
+/// as a Replace All run of this launch writes it, and its descriptors.
 fn sample_replace_backup(path: &str) -> ReplaceUndoBackup {
-    let mut backup = ReplaceUndoBackup::new();
-    backup.insert(
-        std::path::PathBuf::from(path),
-        replace_undo_entry(b"original content", b"replaced content"),
-    );
-    backup
+    search_backup::fixture::write_stream_journal(
+        &json_store::data_dir(),
+        &[(
+            std::path::Path::new(path),
+            b"original content",
+            b"replaced content",
+        )],
+    )
+    .expect("write sample undo journal")
+}
+
+/// The descriptors of [`sample_replace_backup`], without writing a journal:
+/// a run's result before that run committed it.
+fn sample_replace_descriptors(path: &str) -> ReplaceUndoBackup {
+    search_backup::fixture::stream_descriptors(
+        &json_store::data_dir(),
+        &[(
+            std::path::Path::new(path),
+            b"original content",
+            b"replaced content",
+        )],
+    )
 }
 
 /// Wait until the panel's undo-journal disk work has drained.
@@ -538,6 +553,8 @@ fn test_search_panel_accessibility_tracks_busy_error_and_result_visibility() {
 fn test_search_panel_accessibility_tracks_replace_preview_and_undo_state() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Let the startup journal load finish before the run's journal exists.
+    wait_for_journal_disk_idle(&panel);
     let imp = panel.imp();
 
     imp.preview.preview_pending.set(true);
@@ -1927,6 +1944,8 @@ fn test_large_and_empty_replacement_previews_remain_accessible() {
 fn test_clear_results_preserves_undo_backup() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Let the startup journal load finish before the run's journal exists.
+    wait_for_journal_disk_idle(&panel);
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
 
@@ -1964,12 +1983,15 @@ fn test_search_panel_restores_active_persisted_undo_backup_on_construction() {
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
 
-    let mut backup = ReplaceUndoBackup::new();
-    backup.insert(
-        std::path::PathBuf::from("/persisted.rs"),
-        replace_undo_entry(b"persisted content", b"persisted replacement"),
-    );
-    search_backup::save(&data_dir, &backup).expect("expected operation to succeed");
+    let backup = search_backup::fixture::write_stream_journal(
+        &data_dir,
+        &[(
+            std::path::Path::new("/persisted.rs"),
+            b"persisted content",
+            b"persisted replacement",
+        )],
+    )
+    .expect("expected operation to succeed");
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     wait_until(Duration::from_secs(2), || {
@@ -1989,8 +2011,8 @@ fn test_clearing_persisted_undo_cancels_capacity_retry_before_it_can_reload() {
     ensure_gtk_init();
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
-    let backup = sample_replace_backup("/persisted-capacity.rs");
-    search_backup::save(&data_dir, &backup).expect("save persisted undo fixture");
+    // The persisted journal the panel finds at construction.
+    sample_replace_backup("/persisted-capacity.rs");
     let capacity_hold = hold_disposal_capacity_for_test();
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
@@ -2020,7 +2042,6 @@ fn test_persisted_undo_load_resumes_after_disposal_capacity_clears() {
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
     let backup = sample_replace_backup("/persisted-capacity-resume.rs");
-    search_backup::save(&data_dir, &backup).expect("save persisted undo fixture");
     let capacity_hold = hold_disposal_capacity_for_test();
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
@@ -2042,6 +2063,8 @@ fn test_persisted_undo_load_resumes_after_disposal_capacity_clears() {
 fn test_search_panel_close_preserves_durable_undo_backup() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Let the startup journal load finish before the run's journal exists.
+    wait_for_journal_disk_idle(&panel);
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
 
@@ -2089,9 +2112,12 @@ fn test_search_panel_close_cancels_active_search() {
 fn test_set_undo_backup_updates_ui_before_delayed_disk_save() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
-    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // The panel's startup journal load runs on the disk lane; let it finish
+    // before the run's journal exists, as a run always starts after it.
+    wait_for_journal_disk_idle(&panel);
     let backup = sample_replace_backup("/delayed-save.rs");
 
     SearchPanelTestPolicy::current()
@@ -2102,10 +2128,9 @@ fn test_set_undo_backup_updates_ui_before_delayed_disk_save() {
 
     assert!(panel.imp().preview.undo_backup.borrow().is_some());
     assert!(panel.imp().undo_button.property::<bool>("visible"));
-    assert!(
-        search_backup::load(&data_dir)
-            .expect("expected operation to succeed")
-            .is_empty(),
+    assert_eq!(
+        panel.evidence().journal_disk_jobs_in_flight,
+        1,
         "disk persistence should still be sleeping while UI undo state is visible",
     );
     wait_for_journal_disk_idle(&panel);
@@ -2121,9 +2146,12 @@ fn test_set_undo_backup_updates_ui_before_delayed_disk_save() {
 fn test_clear_undo_backup_updates_ui_before_delayed_disk_delete() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
-    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // The panel's startup journal load runs on the disk lane; let it finish
+    // before the run's journal exists, as a run always starts after it.
+    wait_for_journal_disk_idle(&panel);
     let backup = sample_replace_backup("/delayed-delete.rs");
 
     panel.set_undo_backup(backup.clone());
@@ -2159,6 +2187,8 @@ fn test_clear_after_delayed_undo_backup_save_keeps_disk_empty() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Let the startup journal load finish before the run's journal exists.
+    wait_for_journal_disk_idle(&panel);
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
     let backup = sample_replace_backup("/clear-after-save.rs");
@@ -2183,10 +2213,12 @@ fn test_save_after_delayed_undo_backup_clear_keeps_newer_disk_backup() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Let the startup journal load finish before the run's journal exists.
+    wait_for_journal_disk_idle(&panel);
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
     let old_backup = sample_replace_backup("/old-backup.rs");
-    let new_backup = sample_replace_backup("/new-backup.rs");
+    let new_backup = sample_replace_descriptors("/new-backup.rs");
 
     panel.set_undo_backup(old_backup.clone());
     wait_for_journal_disk_idle(&panel);
@@ -2199,6 +2231,8 @@ fn test_save_after_delayed_undo_backup_clear_keeps_newer_disk_backup() {
         .with_undo_backup_disk_delay(Duration::from_millis(250))
         .install();
     panel.clear_undo_backup_for_test();
+    // A newer Replace All commits its own journal before the panel shows it.
+    sample_replace_backup("/new-backup.rs");
     panel.set_undo_backup(new_backup.clone());
 
     wait_for_journal_disk_idle(&panel);
@@ -2213,10 +2247,12 @@ fn test_reserved_replace_generation_blocks_stale_delete_after_service_commit() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Let the startup journal load finish before the run's journal exists.
+    wait_for_journal_disk_idle(&panel);
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
     let old_backup = sample_replace_backup("/old-committed.rs");
-    let new_backup = sample_replace_backup("/new-committed.rs");
+    let new_backup = sample_replace_descriptors("/new-committed.rs");
 
     panel.set_undo_backup(old_backup.clone());
     wait_for_journal_disk_idle(&panel);
@@ -2230,7 +2266,7 @@ fn test_reserved_replace_generation_blocks_stale_delete_after_service_commit() {
         .install();
     panel.clear_undo_backup_for_test();
     let reserved = panel.reserve_undo_backup_generation_for_test();
-    search_backup::save(&data_dir, &new_backup).expect("simulate committed Replace All journal");
+    sample_replace_backup("/new-committed.rs");
     assert!(panel.set_persisted_undo_backup_for_generation_for_test(new_backup.clone(), reserved));
 
     flush_after_delay(Duration::from_millis(400));
@@ -2245,6 +2281,8 @@ fn test_reserved_replace_generation_blocks_stale_delete_after_service_commit() {
 fn test_replace_transaction_blocks_second_apply_and_prior_undo_activation() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Let the startup journal load finish before the run's journal exists.
+    wait_for_journal_disk_idle(&panel);
     let backup = sample_replace_backup("/prior-undo.rs");
     panel.set_undo_backup(backup);
     panel.show_undo_button();
@@ -3089,21 +3127,55 @@ fn replace_all_over(
     expected_matches: u32,
     replacement: &str,
 ) -> lushtext_core::ui::search_panel::LushtextSearchPanel {
+    replace_all_over_with(
+        window,
+        dir,
+        ReplaceAllFixture {
+            search_matches: expected_matches,
+            preview_rows: expected_matches,
+            budget: Duration::from_secs(20),
+        },
+        replacement,
+        || {},
+    )
+}
+
+/// The counts one fixture's search and preview reach, and how long its run
+/// may take.
+#[derive(Clone, Copy)]
+struct ReplaceAllFixture {
+    search_matches: u32,
+    preview_rows: u32,
+    budget: Duration,
+}
+
+/// [`replace_all_over`] with `before_confirm` run between the preview and the
+/// confirmation: a fixture the search and preview must see as valid UTF-8
+/// becomes invalid only there, because the content search reads UTF-8 lines
+/// and reports no match in a file that is not.
+fn replace_all_over_with(
+    window: &LushtextWindow,
+    dir: &std::path::Path,
+    plan: ReplaceAllFixture,
+    replacement: &str,
+    before_confirm: impl FnOnce(),
+) -> lushtext_core::ui::search_panel::LushtextSearchPanel {
     let panel = window.imp().search_panel.get();
     panel.set_workspace_folders(vec![dir.to_path_buf()]);
     panel.start_search(&search_spec("needle"));
-    wait_until(Duration::from_secs(15), || {
+    wait_until(plan.budget, || {
         !panel.imp().runtime.searching.get()
-            && panel.imp().runtime.total_matches.get() == expected_matches
+            && panel.imp().runtime.total_matches.get() == plan.search_matches
     });
 
     panel.enter_preview_mode(replacement);
-    wait_until(Duration::from_secs(15), || {
+    wait_until(plan.budget, || {
         let evidence = panel.evidence();
-        evidence.replace_preview_count == expected_matches && !evidence.replace_preview_pending
+        evidence.replace_preview_count == plan.preview_rows && !evidence.replace_preview_pending
     });
+    before_confirm();
     panel.activate_confirm_replacements();
-    wait_until(Duration::from_secs(20), || {
+    wait_until(plan.budget, || {
         panel.evidence().last_apply_counts.is_some() && !panel.evidence().replace_preview_pending
     });
     panel
@@ -3433,6 +3505,8 @@ fn test_evidence_reads_stay_side_effect_free_across_journal_mutation() {
     ensure_gtk_init();
     let _data = isolated_data_dir();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    // Let the startup journal load finish before the run's journal exists.
+    wait_for_journal_disk_idle(&panel);
     let backup = sample_replace_backup("/evidence-reentrancy.rs");
 
     // Read at every point the workflow mutates journal state, including
@@ -4047,4 +4121,549 @@ fn test_search_retention_stays_within_its_charge() {
         "16,400 matches grew the resident set by {growth} bytes, over 5/4 of the {charged} bytes charged"
     );
     drop(window);
+}
+
+// ---------------------------------------------------------------------------
+// stream-replace-all: skip report, Skipped Files dialog and cancellation
+// ---------------------------------------------------------------------------
+
+/// The count of `reason` in the panel's last skip report.
+fn skipped_for(
+    panel: &LushtextSearchPanel,
+    reason: lushtext_core::model::content_search::ReplaceSkipReason,
+) -> usize {
+    panel.evidence().replace_skip_counts[reason.index()]
+}
+
+/// The list view of the presented Skipped Files dialog.
+fn skipped_files_list(window: &LushtextWindow) -> gtk4::ListView {
+    let dialog = window
+        .visible_dialog()
+        .expect("the Skipped Files dialog is presented");
+    crate::common::find_descendant(
+        dialog.upcast_ref(),
+        glib::prelude::ObjectExt::is::<gtk4::ListView>,
+    )
+    .and_downcast::<gtk4::ListView>()
+    .expect("the Skipped Files dialog lists its files")
+}
+
+/// stream-replace-all 5.5: a run that skips a file ends with "· N skipped",
+/// offers Show Skipped Files, and the dialog opens the file from its row.
+/// Keyboard path: the button takes focus, the dialog's list takes it when it
+/// opens, a row activation opens the file, and closing returns focus.
+#[test]
+fn test_replace_all_with_a_skipped_file_offers_show_skipped_files() {
+    use lushtext_core::model::content_search::ReplaceSkipReason;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    // The panel is shown, as it is when a user runs Replace All, so its
+    // controls can take focus.
+    gtk4::gio::prelude::ActionGroupExt::activate_action(
+        &window,
+        "set-search-panel-visible",
+        Some(&true.to_variant()),
+    );
+    wait_until(Duration::from_secs(5), || {
+        window.imp().search_panel.get().is_visible()
+    });
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let good = dir.path().join("a-good.txt");
+    let latin1 = dir.path().join("b-latin1.txt");
+    fixture::write_text(&good, "needle\n");
+    fixture::write_text(&latin1, "needle\nplain\n");
+
+    let panel = replace_all_over_with(
+        &window,
+        dir.path(),
+        ReplaceAllFixture {
+            search_matches: 2,
+            preview_rows: 2,
+            budget: Duration::from_secs(20),
+        },
+        "thread",
+        || fixture::write_bytes(&latin1, b"needle\ncaf\xe9\n"),
+    );
+    wait_until(Duration::from_secs(10), || {
+        panel.evidence().skipped_files_offered
+    });
+
+    fixture::assert_text(&good, "thread\n");
+    assert_eq!(fixture::read_bytes(&latin1), b"needle\ncaf\xe9\n");
+    let evidence = panel.evidence();
+    assert!(!evidence.replace_in_flight);
+    assert_eq!(skipped_for(&panel, ReplaceSkipReason::NotUtf8), 1);
+    let button = panel.imp().skipped_files_button.get();
+    assert!(button.property::<bool>("visible"));
+    assert_eq!(
+        panel.imp().replace_all_button.label().as_deref(),
+        Some("Replace All")
+    );
+
+    button.grab_focus();
+    flush_events();
+    button.emit_clicked();
+    flush_events();
+    let list = skipped_files_list(&window);
+    wait_until(Duration::from_secs(5), || {
+        gtk4::prelude::RootExt::focus(&window).is_some_and(|focus| {
+            focus.as_ptr() == list.upcast_ref::<gtk4::Widget>().as_ptr() || focus.is_ancestor(&list)
+        })
+    });
+    let requests = panel
+        .evidence()
+        .skipped_files_item_requests
+        .expect("the dialog's model is alive while it is shown");
+    assert!(requests >= 1, "the realized row was built");
+
+    let dialog = window.visible_dialog().expect("dialog");
+    dialog.close();
+    flush_after_delay(Duration::from_millis(100));
+    assert!(window.visible_dialog().is_none());
+    assert!(
+        gtk4::prelude::RootExt::focus(&window)
+            .is_some_and(|focus| focus.as_ptr() == button.upcast_ref::<gtk4::Widget>().as_ptr()),
+        "closing the dialog returns focus to Show Skipped Files"
+    );
+
+    // Opening it again and activating the row opens the skipped file.
+    activate_action(&window, "show-search-panel-skipped-files");
+    let list = skipped_files_list(&window);
+    list.emit_by_name::<()>("activate", &[&0u32]);
+    wait_until(Duration::from_secs(10), || {
+        window.visible_dialog().is_none()
+            && window
+                .imp()
+                .tab_view
+                .selected_page()
+                .and_then(|page| {
+                    page.child()
+                        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                        .ok()
+                })
+                .and_then(|editor| editor.file_path())
+                .is_some_and(|path| path == latin1)
+    });
+}
+
+/// stream-replace-all 5.5: the dialog's model is lazy. At 16,384 skipped
+/// files it builds only the rows GTK realizes.
+#[test]
+fn test_skipped_files_dialog_builds_only_realized_rows() {
+    use lushtext_core::model::content_search::ReplaceSkipReason;
+    const FILES: usize = 16 * 1024;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let files: Vec<_> = (0..FILES)
+        .map(|index| dir.path().join(format!("f{index:05}.txt")))
+        .collect();
+    for file in &files {
+        fixture::write_text(file, "needle\nplain\n");
+    }
+    let panel = replace_all_over_with(
+        &window,
+        dir.path(),
+        ReplaceAllFixture {
+            search_matches: u32::try_from(FILES).expect("FILES fits u32"),
+            preview_rows: u32::try_from(FILES).expect("FILES fits u32"),
+            budget: Duration::from_secs(180),
+        },
+        "thread",
+        || {
+            for file in &files {
+                fixture::write_bytes(file, b"needle\ncaf\xe9\n");
+            }
+        },
+    );
+    wait_until(Duration::from_secs(60), || {
+        panel.evidence().skipped_files_offered
+    });
+    assert_eq!(skipped_for(&panel, ReplaceSkipReason::NotUtf8), FILES);
+
+    activate_action(&window, "show-search-panel-skipped-files");
+    flush_after_delay(Duration::from_millis(200));
+    let requests = panel
+        .evidence()
+        .skipped_files_item_requests
+        .expect("the dialog's model is alive while it is shown");
+    assert!(requests >= 1, "the visible rows were built");
+    assert!(
+        requests < 1024,
+        "a lazy model builds the realized band, not {FILES} rows; it built {requests}",
+    );
+    window.visible_dialog().expect("dialog").close();
+    flush_events();
+}
+
+/// stream-replace-all 5.5a: when every file is open with unsaved changes,
+/// nothing runs, and the report lists each file as `UnsavedChanges`.
+#[test]
+fn test_replace_all_with_every_file_unsaved_reports_each_file() {
+    use lushtext_core::model::content_search::ReplaceSkipReason;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let file = dir.path().join("open.txt");
+    fixture::write_text(&file, "needle\n");
+    window.open_document(&file);
+    wait_until(Duration::from_secs(10), || {
+        let editor = crate::common::active_editor(&window);
+        editor.load_state() == lushtext_core::ui::editor_page::EditorLoadState::Loaded
+            && editor.accepts_user_edits()
+    });
+    let editor = crate::common::active_editor(&window);
+    let buffer = editor.buffer();
+    buffer.insert(&mut buffer.end_iter(), "edit\n");
+    wait_until(Duration::from_secs(5), || editor.is_modified());
+
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 1
+    });
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 1 && !evidence.replace_preview_pending
+    });
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().skipped_files_offered
+    });
+
+    fixture::assert_text(&file, "needle\n");
+    assert!(editor.is_modified(), "the unsaved edit is kept");
+    let evidence = panel.evidence();
+    assert_eq!(skipped_for(&panel, ReplaceSkipReason::UnsavedChanges), 1);
+    assert!(!evidence.has_undo_backup);
+    assert!(!evidence.replace_in_flight);
+}
+
+/// stream-replace-all 5.5b: a file with a match on a short line and one on a
+/// 10 KiB line is replaced where the preview could show it, and is reported
+/// as partly replaced with the long line left.
+#[test]
+fn test_replace_all_reports_a_partly_replaced_file() {
+    use lushtext_core::model::content_search::ReplaceSkipReason;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let file = dir.path().join("mixed.txt");
+    let long_line = format!("{}needle\n", "x".repeat(10 * 1024));
+    fixture::write_text(&file, &format!("needle short\n{long_line}"));
+
+    // The 10 KiB line is past the preview's truncation limit, so the
+    // preview shows one row for the file's two matches.
+    let panel = replace_all_over_with(
+        &window,
+        dir.path(),
+        ReplaceAllFixture {
+            search_matches: 2,
+            preview_rows: 1,
+            budget: Duration::from_secs(20),
+        },
+        "thread",
+        || {},
+    );
+    wait_until(Duration::from_secs(10), || {
+        panel.evidence().skipped_files_offered
+    });
+
+    fixture::assert_text(&file, &format!("thread short\n{long_line}"));
+    let evidence = panel.evidence();
+    // A partly replaced file is replaced, so no reason counts it as skipped;
+    // its row names the reason its long line was left.
+    assert_eq!(skipped_for(&panel, ReplaceSkipReason::LineTooLong), 0);
+    assert_eq!(evidence.replace_skip_partly_replaced, 1);
+    let report = panel.last_skip_report().expect("the run's skip report");
+    let row = report
+        .files()
+        .first()
+        .expect("the partly replaced file is listed");
+    assert_eq!(row.reason, ReplaceSkipReason::LineTooLong);
+    assert_eq!(row.matches_left, Some(1));
+    assert_eq!(row.first_line, Some(2));
+}
+
+/// stream-replace-all 6.2: Cancel during the third of five files restores the
+/// first two, never writes the third, and leaves no journal and no Undo.
+#[test]
+fn test_cancel_replace_all_mid_run_restores_every_file() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let files: Vec<_> = (0..5)
+        .map(|index| {
+            let path = dir.path().join(format!("file_{index}.txt"));
+            fixture::write_text(&path, "needle\n");
+            path
+        })
+        .collect();
+    // Hold the worker after the third file's undo body, so Cancel lands before
+    // its pass B starts. The walk orders files by path.
+    lushtext_core::services::content_search::register_after_pass_a_hook_for_test(
+        files[2].clone(),
+        |_| std::thread::sleep(Duration::from_millis(1_500)),
+    );
+
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 5
+    });
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 5 && !evidence.replace_preview_pending
+    });
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        panel
+            .evidence()
+            .replace_progress
+            .is_some_and(|progress| progress.files_done == 2)
+    });
+    assert_eq!(
+        panel.imp().replace_all_button.label().as_deref(),
+        Some("Cancel Replace All")
+    );
+    assert!(panel.imp().replace_all_button.is_sensitive());
+    activate_action(&window, "cancel-search-panel-replacements");
+    assert!(panel.evidence().replace_cancel_requested);
+
+    wait_until(Duration::from_secs(30), || {
+        let evidence = panel.evidence();
+        !evidence.replace_in_flight && !evidence.replace_transaction_pending
+    });
+    for path in &files {
+        fixture::assert_text(path, "needle\n");
+    }
+    assert!(!panel.evidence().has_undo_backup);
+    wait_for_journal_disk_idle(&panel);
+    assert!(
+        search_backup::load(&data_dir)
+            .expect("load journal")
+            .is_empty(),
+        "a fully rolled-back run leaves no active journal",
+    );
+    assert_eq!(
+        panel.imp().replace_all_button.label().as_deref(),
+        Some("Replace All")
+    );
+}
+
+/// Start a three-file Replace All whose worker holds after the second file's
+/// undo body, and return once the run is in flight.
+fn replace_all_held_at_second_file(
+    window: &LushtextWindow,
+    dir: &std::path::Path,
+) -> (LushtextSearchPanel, Vec<PathBuf>) {
+    let files: Vec<_> = (0..3)
+        .map(|index| {
+            let path = dir.join(format!("file_{index}.txt"));
+            fixture::write_text(&path, "needle\n");
+            path
+        })
+        .collect();
+    lushtext_core::services::content_search::register_after_pass_a_hook_for_test(
+        files[1].clone(),
+        |_| std::thread::sleep(Duration::from_millis(1_500)),
+    );
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 3
+    });
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 3 && !evidence.replace_preview_pending
+    });
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().replace_in_flight
+    });
+    (panel, files)
+}
+
+/// Close the window during the run and return the dialog it asks with.
+fn close_during_run(window: &LushtextWindow) -> libadwaita::AlertDialog {
+    window.close();
+    wait_until(Duration::from_secs(5), || {
+        window
+            .visible_dialog()
+            .and_then(|dialog| dialog.downcast::<libadwaita::AlertDialog>().ok())
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading == "Replace All Is Still Running")
+    });
+    window
+        .visible_dialog()
+        .and_downcast::<libadwaita::AlertDialog>()
+        .expect("the close-during-run dialog")
+}
+
+/// stream-replace-all 6.3: Keep Running closes nothing and the run completes.
+#[test]
+fn test_close_during_replace_all_keep_running_closes_nothing() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (panel, files) = replace_all_held_at_second_file(&window, dir.path());
+
+    let dialog = close_during_run(&window);
+    dialog.emit_by_name::<()>("response", &[&"keep-running"]);
+    dialog.force_close();
+    wait_until(Duration::from_secs(30), || {
+        !panel.evidence().replace_in_flight && !panel.evidence().replace_transaction_pending
+    });
+    flush_after_delay(Duration::from_millis(100));
+    assert!(window.is_visible(), "Keep Running leaves the window open");
+    for path in &files {
+        fixture::assert_text(path, "thread\n");
+    }
+    assert!(panel.evidence().has_undo_backup);
+}
+
+/// stream-replace-all 6.3: Close When Finished completes the run, keeps its
+/// journal active, and then closes.
+#[test]
+fn test_close_during_replace_all_close_when_finished_keeps_the_journal() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (_panel, files) = replace_all_held_at_second_file(&window, dir.path());
+
+    let dialog = close_during_run(&window);
+    dialog.emit_by_name::<()>("response", &[&"close-when-finished"]);
+    dialog.force_close();
+    wait_until(Duration::from_secs(30), || !window.is_visible());
+    for path in &files {
+        fixture::assert_text(path, "thread\n");
+    }
+    assert_eq!(
+        search_backup::load(&data_dir).expect("load journal").len(),
+        3,
+        "the finished run's journal stays active for Undo after the close",
+    );
+}
+
+/// stream-replace-all 6.3: Stop and Close rolls back, then closes.
+#[test]
+fn test_close_during_replace_all_stop_and_close_restores_every_file() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+    crate::common::wait_for_startup_data_flow(&window);
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let (_panel, files) = replace_all_held_at_second_file(&window, dir.path());
+
+    let dialog = close_during_run(&window);
+    dialog.emit_by_name::<()>("response", &[&"stop-and-close"]);
+    dialog.force_close();
+    wait_until(Duration::from_secs(30), || !window.is_visible());
+    for path in &files {
+        fixture::assert_text(path, "needle\n");
+    }
+    assert!(
+        search_backup::load(&data_dir)
+            .expect("load journal")
+            .is_empty(),
+        "a rolled-back run leaves no active journal",
+    );
+}
+
+/// stream-replace-all 6.4: the undo owner on GTK holds descriptors, never file
+/// bytes. After a Replace All over four 1 MiB files, and after loading a
+/// legacy journal whose originals are 1 MiB each, the installed journal's
+/// disposal weight is paths and digests: a few hundred bytes per file.
+#[test]
+fn test_undo_owner_on_gtk_holds_descriptors_not_file_bytes() {
+    const FILE_BYTES: usize = 1024 * 1024;
+    const FILES: usize = 4;
+    /// Far above a descriptor (a path, an entry file name, digests and node
+    /// overhead), far below one file's bytes.
+    const DESCRIPTOR_CEILING: u64 = 4 * 1024;
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let filler = "x".repeat(FILE_BYTES);
+    for index in 0..FILES {
+        fixture::write_text(
+            &dir.path().join(format!("f{index}.txt")),
+            &format!("needle\n{filler}\n"),
+        );
+    }
+    let panel = replace_all_over(
+        &window,
+        dir.path(),
+        u32::try_from(FILES).expect("FILES fits u32"),
+        "thread",
+    );
+    wait_until(Duration::from_secs(10), || panel.has_undo_backup());
+    let evidence = panel.evidence();
+    assert_eq!(evidence.undo_backup_entry_count, FILES);
+    assert!(
+        evidence.undo_backup_retained_bytes <= DESCRIPTOR_CEILING * FILES as u64,
+        "a streamed journal's GTK owner retains {} bytes for {FILES} files of {FILE_BYTES} bytes",
+        evidence.undo_backup_retained_bytes,
+    );
+    drop(window);
+
+    // A legacy journal keeps its originals inline in its entry files; the
+    // loader leaves them on disk.
+    let data_dir = json_store::data_dir();
+    let original = format!("needle\n{filler}\n");
+    let replaced = format!("thread\n{filler}\n");
+    let paths: Vec<_> = (0..FILES)
+        .map(|index| std::path::PathBuf::from(format!("/legacy-{index}.txt")))
+        .collect();
+    let files: Vec<_> = paths
+        .iter()
+        .map(|path| (path.as_path(), original.as_bytes(), replaced.as_bytes()))
+        .collect();
+    search_backup::fixture::write_legacy_journal(&data_dir, &files, false)
+        .expect("write legacy journal");
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    wait_until(Duration::from_secs(10), || panel.has_undo_backup());
+    let evidence = panel.evidence();
+    assert_eq!(evidence.undo_backup_entry_count, FILES);
+    assert!(
+        evidence.undo_backup_retained_bytes <= DESCRIPTOR_CEILING * FILES as u64,
+        "a legacy journal's GTK owner retains {} bytes for {FILES} files of {FILE_BYTES} bytes",
+        evidence.undo_backup_retained_bytes,
+    );
+    let _ = search_backup::delete(&data_dir);
 }

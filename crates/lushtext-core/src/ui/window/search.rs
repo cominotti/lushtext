@@ -37,7 +37,6 @@ use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use gtk4::{self, gio, glib};
 use std::collections::HashSet;
-use std::sync::atomic::AtomicBool;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -49,8 +48,13 @@ enum GuardedReplaceApplyResult {
     Applied {
         result: Box<crate::model::content_search::ReplaceResult>,
         backup: Option<crate::ui::search_panel::GuardedReplaceUndoBackup>,
+        skip_report: Box<crate::model::content_search::ReplaceSkipReport>,
+        /// Cancelled, with files the rollback could not restore.
+        cancelled: bool,
     },
     Superseded,
+    /// Cancelled, and every file it wrote was restored.
+    Cancelled,
     Failed(anyhow::Error),
 }
 
@@ -243,18 +247,29 @@ pub fn setup_search_panel(window: &LushtextWindow) {
 
             let total_replacements = replacements.len();
             if !replacements
+                .replacements
                 .iter()
                 .any(|replacement| !skip_paths.contains(&replacement.path))
             {
-                window.publish_status_message(
-                    "No replacements to apply (all files have unsaved changes or active saves)",
-                    MessageKind::Warning,
+                // Every file is open with unsaved changes or an active save:
+                // nothing runs, and the report says which files and why (5.5a).
+                let report = crate::model::content_search::ReplaceSkipReport::unsaved_only(
+                    &replacements.replacements,
                 );
+                let mut message = String::from(
+                    "No replacements to apply (all files have unsaved changes or active saves)",
+                );
+                if let Some(clause) =
+                    crate::ui::search_panel::policy::skip_completion_clause(&report)
+                {
+                    message.push_str(&clause);
+                }
+                window.publish_status_message(&message, MessageKind::Warning);
+                imp.search_panel.finish_replace_run(Some(report));
                 imp.search_panel.finish_replace_transaction();
                 return;
             }
 
-            let cancel = AtomicBool::new(false);
             let data_dir = json_store::data_dir();
             let Some(undo_reservation) = imp
                 .search_panel
@@ -269,48 +284,63 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             };
             imp.search_panel.supersede_prior_undo_for_replace();
             let undo_generation = freshness.expected();
+            let control = imp.search_panel.begin_replace_run();
+            window.start_replace_progress_tracking();
+            let cancel = std::sync::Arc::clone(&control.cancel);
+            let progress = std::sync::Arc::clone(&control.progress);
             spawn_blocking_then(
                 window.clone(),
                 move || {
-                    let replacements = replacements.into_inner_on_worker();
-                    match content_search::apply_replacements_if_current(
-                        &replacements,
-                        &skip_paths,
-                        &open_canonical_identities,
-                        &cancel,
-                        &data_dir,
+                    let run = replacements.into_inner_on_worker();
+                    match content_search::apply_request_if_current(
+                        content_search::ReplaceRunRequest {
+                            replacements: &run.replacements,
+                            skip_paths: &skip_paths,
+                            open_canonical_identities: &open_canonical_identities,
+                            ineligible: &run.ineligible,
+                            cancel: &cancel,
+                            progress: Some(&progress),
+                            journal_data_dir: &data_dir,
+                        },
                         &freshness,
                     ) {
-                        Ok(Some(outcome)) => {
+                        Ok(Some(mut outcome)) => {
+                            let skip_report = std::mem::take(&mut outcome.skip_report);
+                            let cancelled = outcome.cancelled;
                             let (result, backup) = outcome.into_parts();
-                            if backup.is_empty() {
+                            let backup = if backup.is_empty() {
                                 drop(undo_reservation);
-                                GuardedReplaceApplyResult::Applied {
-                                    result: Box::new(result),
-                                    backup: None,
-                                }
+                                None
                             } else {
-                                GuardedReplaceApplyResult::Applied {
-                                    result: Box::new(result),
-                                    backup: Some(
-                                        crate::ui::search_panel::own_undo_journal_payload(
-                                            undo_reservation,
-                                            backup,
-                                        ),
-                                    ),
-                                }
+                                Some(crate::ui::search_panel::own_undo_journal_payload(
+                                    undo_reservation,
+                                    backup,
+                                ))
+                            };
+                            GuardedReplaceApplyResult::Applied {
+                                result: Box::new(result),
+                                backup,
+                                skip_report: Box::new(skip_report),
+                                cancelled,
                             }
                         }
                         Ok(None) => GuardedReplaceApplyResult::Superseded,
+                        Err(error) if cancel.load(std::sync::atomic::Ordering::Acquire) => {
+                            drop(error);
+                            GuardedReplaceApplyResult::Cancelled
+                        }
                         Err(error) => GuardedReplaceApplyResult::Failed(error),
                     }
                 },
                 move |window, result| {
                     let imp = window.imp();
+                    window.stop_replace_progress_tracking();
                     match result {
                         GuardedReplaceApplyResult::Applied {
                             result: replace_result,
                             backup,
+                            skip_report,
+                            cancelled,
                         } => {
                             let replace_result = *replace_result;
                             imp.search_panel.record_replace_apply_counts(
@@ -323,22 +353,30 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                                         .unwrap_or(u32::MAX),
                                 },
                             );
-                            let mut msg = format!(
-                                "Replaced {} of {} matches in {} files",
-                                replace_result.replaced_count,
-                                total_replacements,
-                                replace_result.files_affected,
-                            );
-                            if replace_result.skipped_count > 0 {
-                                msg.push_str(&format!(
-                                    " ({} files skipped)",
-                                    replace_result.skipped_count
-                                ));
+                            let mut msg = if cancelled {
+                                format!(
+                                    "Replace All cancelled; {} files could not be restored",
+                                    replace_result.files_affected,
+                                )
+                            } else {
+                                format!(
+                                    "Replaced {} of {} matches in {} files",
+                                    replace_result.replaced_count,
+                                    total_replacements,
+                                    replace_result.files_affected,
+                                )
+                            };
+                            if let Some(clause) =
+                                crate::ui::search_panel::policy::skip_completion_clause(
+                                    &skip_report,
+                                )
+                            {
+                                msg.push_str(&clause);
                             }
                             if replace_result.error_count > 0 {
                                 msg.push_str(&format!(" ({} errors)", replace_result.error_count));
                             }
-                            let kind = if replace_result.error_count == 0 {
+                            let kind = if replace_result.error_count == 0 && !cancelled {
                                 MessageKind::Info
                             } else {
                                 MessageKind::Warning
@@ -351,6 +389,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                                     &msg,
                                 );
                             }
+                            imp.search_panel.finish_replace_run(Some(*skip_report));
 
                             if let Some(backup) = backup {
                                 if imp
@@ -376,12 +415,28 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                             reload_affected_tabs(&window, &affected_paths);
                         }
                         GuardedReplaceApplyResult::Superseded => {
+                            imp.search_panel.finish_replace_run(None);
                             window.publish_status_message(
                                 "Replace All was superseded before any files changed",
                                 MessageKind::Warning,
                             );
                         }
+                        GuardedReplaceApplyResult::Cancelled => {
+                            imp.search_panel.finish_replace_run(None);
+                            imp.search_panel
+                                .clear_undo_backup_for_generation(undo_generation);
+                            window.publish_status_message(
+                                "Replace All cancelled; every file was restored",
+                                MessageKind::Info,
+                            );
+                            window.announce_workflow_update(
+                                AnnouncementLane::StatusUpdate,
+                                "replace-all-cancelled",
+                                "Replace All cancelled; every file was restored",
+                            );
+                        }
                         GuardedReplaceApplyResult::Failed(e) => {
+                            imp.search_panel.finish_replace_run(None);
                             window.publish_status_message(
                                 &format!("Replace failed: {e}"),
                                 MessageKind::Error,
@@ -389,6 +444,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         }
                     }
                     imp.search_panel.finish_replace_transaction();
+                    window.close_if_requested_after_replace_run();
                 },
             );
         });

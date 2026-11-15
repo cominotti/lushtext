@@ -92,6 +92,15 @@ smoke tests.
 
 Expected screen-reader behavior includes:
 
+- A Replace All run turns the confirm button into `Cancel Replace All`
+  (`Cancelling…` once asked) and announces its progress once, never per
+  heartbeat; completion and cancellation are announced once. A run that
+  skipped files ends with `· N skipped` and shows `Show Skipped Files`, whose
+  dialog (`Skipped Files`) lists each file by name and folder/line under its
+  reason heading in a list named `Skipped files`; `Escape` returns focus to
+  the button. Closing the window during a run asks first (`Replace All Is
+  Still Running`), each option explained by a grouped row. No file content is
+  exposed.
 - The hidden-files view mode is one check item in the main menu, one switch in
   `Preferences > Workspace`, and one per-search `Hidden files` toggle in the
   workspace search panel; all report pressed/checked state. The excluded-names

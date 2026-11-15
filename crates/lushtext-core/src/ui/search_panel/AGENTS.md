@@ -35,6 +35,17 @@ This folder owns the workspace-wide content search panel adapter.
   and the affected/restored intersection of paths that were open at worker
   submission. Undo ingestion stays bounded inside the read so growth races
   preserve retryable backup state without an unsafe write.
+- The GTK side of Replace All owns **descriptors only**: the undo journal's
+  original bytes live in raw body files on disk, so the undo owner that crosses
+  to GTK is paths and digests, never file content. A run in flight is a
+  `ReplaceRunControl` (cancel flag plus `ReplaceProgress` atomics) the window's
+  progress poll reads; Cancel only sets the flag, and the worker rolls back
+  before its completion runs, so the transaction stays claimed (and
+  `search-complete` pending) through the rollback.
+- The skip report is plain data (`ReplaceSkipReport`); `skipped_files.rs` is a
+  called presentation surface over a lazy `GListModel` + `GtkSectionModel` that
+  builds a row object only when GTK asks for it. Its pure decisions stay in
+  `policy.rs` and its observable state in `evidence.rs`.
 - Preserve match-navigation and progress-callback contracts with the window shell.
 
 ## Editing Rules

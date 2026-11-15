@@ -112,8 +112,11 @@ local history, and careful recovery behavior.
 - **Workspace search** with streaming results, literal or regex modes,
   whole-word matching, `.gitignore` support, glob filters, saved searches,
   search history (the last 32 searches), match navigation, and previewable
-  multi-file Replace All (files up to 16 MiB) with undo during the active
-  safety window. A search has no match limit: it keeps results within a
+  multi-file Replace All with undo during the active safety window. Replace
+  All streams each file, so it rewrites files up to 512 MiB without holding
+  them in memory, reports its progress, can be cancelled (every file it
+  already rewrote is restored), and lists any file it skipped, with the
+  reason, behind Show Skipped Files. A search has no match limit: it keeps results within a
   memory budget (256 MiB, far above what the old 16,384-match cap kept), and
   past it says how many matches are shown and how many more were found.
 

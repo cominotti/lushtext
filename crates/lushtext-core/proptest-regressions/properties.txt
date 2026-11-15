@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 5178b5e533ffd28622a85b0bafb0fa48c3b53b860bde3cd537ea15ea796acb32 # shrinks to state = OrphanEntry, entries = [("", "")]
+cc 9568af58f40f185f5a4595077aa6a335d71a9809d2f465cfaf99a1e5974a3c7d # shrinks to state = CorruptEntry, entries = [("", ""), ("", "")], legacy = false

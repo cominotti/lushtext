@@ -218,6 +218,14 @@ pub struct SearchPreviewState {
     pub journal_disk_jobs_in_flight: Cell<usize>,
     /// Counts published by the most recent durable Replace All apply.
     pub last_apply_counts: Cell<Option<super::policy::ReplaceApplyCounts>>,
+    /// Cancel flag and progress counters of the Replace All run in flight.
+    pub(super) replace_run: RefCell<Option<super::replace_execution::ReplaceRunControl>>,
+    /// Files the last Replace All run skipped or partly replaced (design D7).
+    pub(super) last_skip_report:
+        RefCell<Option<Arc<crate::model::content_search::ReplaceSkipReport>>>,
+    /// The open Skipped Files dialog's model, weakly, for evidence.
+    pub(super) skipped_files_model:
+        RefCell<Option<glib::WeakRef<super::skipped_files::SkippedFilesModel>>>,
 }
 
 /// Match-navigation state used by F4 / Shift+F4.
@@ -310,6 +318,8 @@ pub struct LushtextSearchPanel {
     /// Button that starts the checked Replace All operation.
     #[template_child]
     pub replace_all_button: TemplateChild<gtk4::Button>,
+    #[template_child]
+    pub skipped_files_button: TemplateChild<gtk4::Button>,
     /// Button that restores the latest Replace All undo backup.
     #[template_child]
     pub undo_button: TemplateChild<gtk4::Button>,
@@ -384,6 +394,7 @@ impl Default for LushtextSearchPanel {
             glob_entry: TemplateChild::default(),
             replace_entry: TemplateChild::default(),
             replace_all_button: TemplateChild::default(),
+            skipped_files_button: TemplateChild::default(),
             undo_button: TemplateChild::default(),
             save_button: TemplateChild::default(),
             close_button: TemplateChild::default(),
@@ -620,11 +631,22 @@ impl LushtextSearchPanel {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };
-            if panel.imp().preview.preview_mode.get() {
+            if panel.replace_run_in_flight() {
+                panel.request_replace_cancel();
+            } else if panel.imp().preview.preview_mode.get() {
                 panel.activate_confirm_replacements();
             } else {
                 panel.activate_replace_preview();
             }
+        });
+
+        // 5a. Show Skipped Files.
+        let panel_weak = self.obj().downgrade();
+        self.skipped_files_button.connect_clicked(move |_| {
+            let Some(panel) = panel_weak.upgrade() else {
+                return;
+            };
+            panel.show_skipped_files();
         });
 
         // 6. Undo button.

@@ -184,6 +184,10 @@ write_labels! {
     DRAFT = "draft";
     /// Replace All write label.
     REPLACE = "replace";
+    /// Replace All undo body label: the raw original bytes of one replaced
+    /// file, kept apart from `REPLACE` so the journal-owned sweep and a kill
+    /// point narrowed to `@replace` match only target writes.
+    REPLACE_UNDO_BODY = "replace-undo-body";
     /// Recovery quarantine copy label.
     ///
     /// Quarantine writes preserve broken app-owned metadata before any caller is

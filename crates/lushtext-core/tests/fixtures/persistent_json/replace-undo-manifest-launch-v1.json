@@ -1,0 +1,10 @@
+{
+  "kind": "dev.cominotti.lushtext.replace-all-undo-manifest",
+  "version": 1,
+  "data": {
+    "incremental": true,
+    "entries": [],
+    "pid": 4242,
+    "launch_nonce": 7
+  }
+}

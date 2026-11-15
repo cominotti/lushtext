@@ -128,6 +128,10 @@ pub struct SearchProgressState {
     pub visibility_timer: SupersedingTimer,
     /// Whether search progress is allowed to render after the initial delay.
     pub visible: Cell<bool>,
+    /// Poll of the Replace All run in flight (design D8).
+    pub replace_poll_source_id: RefCell<Option<glib::SourceId>>,
+    /// A close waits for the Replace All run in flight (design D8).
+    pub close_after_replace_run: Cell<bool>,
 }
 
 /// Session-persistence state for the main window shell.
@@ -1330,6 +1334,10 @@ impl WindowImpl for LushtextWindow {
         window.clear_close_discard_drafts();
         if window.has_saving_editors() {
             window.publish_save_in_progress_warning();
+            return glib::Propagation::Stop;
+        }
+        if self.search_panel.replace_run_in_flight() {
+            window.request_close_during_replace_run();
             return glib::Propagation::Stop;
         }
         // Held typed text is settled into its document (or a new tab) before

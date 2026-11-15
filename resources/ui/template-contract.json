@@ -4674,6 +4674,11 @@
         },
         {
           "internal-child": "",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/5:child",
+          "type": ""
+        },
+        {
+          "internal-child": "",
           "path": "0:template:LushtextSearchPanel/6:child",
           "type": ""
         },
@@ -4816,6 +4821,11 @@
           "class": "GtkButton",
           "id": "undo_button",
           "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button"
+        },
+        {
+          "class": "GtkButton",
+          "id": "skipped_files_button",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/5:child/0:object:GtkButton#skipped_files_button"
         },
         {
           "class": "GtkRevealer",
@@ -5235,6 +5245,27 @@
         },
         {
           "context": "",
+          "name": "label",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/5:child/0:object:GtkButton#skipped_files_button/0:property",
+          "translatable": "yes",
+          "value": "Show Skipped Files"
+        },
+        {
+          "context": "",
+          "name": "visible",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/5:child/0:object:GtkButton#skipped_files_button/1:property",
+          "translatable": "",
+          "value": "false"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/5:child/0:object:GtkButton#skipped_files_button/2:property",
+          "translatable": "yes",
+          "value": "List the files Replace All did not replace"
+        },
+        {
+          "context": "",
           "name": "transition-type",
           "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/0:property",
           "translatable": "",
@@ -5499,6 +5530,18 @@
           "name": "label",
           "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button/0:property",
           "value": "Undo replacements"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/5:child/0:object:GtkButton#skipped_files_button/0:property",
+          "value": "Show Skipped Files"
+        },
+        {
+          "context": "",
+          "name": "tooltip-text",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/5:child/0:object:GtkButton#skipped_files_button/2:property",
+          "value": "List the files Replace All did not replace"
         }
       ]
     },

@@ -203,7 +203,19 @@ they are not default PR gates:
   `stale-preserved-before-retire` protocol windows, using a separate binary built
   with the smoke-only `crash-kill-points` feature (`LUSHTEXT_KILL_AT`), and requires
   no lost work after each relaunch. Release, Meson, Flatpak, and Snap builds never
-  enable that feature and contain no kill-point code.
+  enable that feature and contain no kill-point code. `LUSHTEXT_KILL_AT` takes
+  `name[@label][#n]`: the window name, optionally the durable-write label it
+  must be reached under, and optionally a one-based occurrence ordinal counted
+  over the reaches that match the name and label, so a Replace All run can be
+  killed on its third file rather than its first. Replace All adds four
+  windows: `replace-body-before-entry` (an undo body is durable, its journal
+  entry is not), `replace-entry-before-target-rename` (the entry is durable and
+  the target's temp file holds its new bytes), `replace-target-renamed-before-finish`
+  (the target is renamed, the run has not finished), and
+  `replace-undo-before-target-rename` (an Undo's restore temp holds the
+  original bytes). A Replace All crash-recovery case driving those windows is
+  not yet part of the lane (stream-replace-all task 7.3); the windows and the
+  ordinal are unit-tested in `services/kill_point.rs`.
 - `make portal-sandbox-smoke` records available Flatpak/Snap runtime state,
   writes `permission-posture.txt`, preserves portal bus-name diagnostics, and
   runs supported confined smoke checks while skipping clearly when runtimes are

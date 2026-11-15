@@ -92,7 +92,10 @@ proptest! {
 
         let expected_files = originals.len();
         let cancel = AtomicBool::new(false);
-        let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
+        let journal = tempfile::tempdir()
+            .map_err(|error| TestCaseError::fail(format!("journal tempdir failed: {error}")))?;
+        let (result, backup) =
+            apply_replacements(&replacements, &HashSet::new(), &cancel, journal.path())
             .map_err(|error| TestCaseError::fail(format!("replace failed: {error}")))?
             .into_parts();
 

@@ -139,6 +139,12 @@ template $LushtextSearchPanel: Box {
           label: _("Undo replacements");
           visible: false;
         }
+
+        Button skipped_files_button {
+          label: _("Show Skipped Files");
+          visible: false;
+          tooltip-text: _("List the files Replace All did not replace");
+        }
       }
     };
   }

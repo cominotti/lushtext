@@ -264,6 +264,14 @@ impl LushtextWindow {
             gio::ActionEntry::builder("undo-search-panel-replacements")
                 .activate(|window: &Self, _, _| window.undo_search_panel_replacements())
                 .build(),
+            gio::ActionEntry::builder("cancel-search-panel-replacements")
+                .activate(|window: &Self, _, _| {
+                    window.imp().search_panel.request_replace_cancel();
+                })
+                .build(),
+            gio::ActionEntry::builder("show-search-panel-skipped-files")
+                .activate(|window: &Self, _, _| window.imp().search_panel.show_skipped_files())
+                .build(),
             gio::ActionEntry::builder("search-next-match")
                 .activate(|window: &Self, _, _| {
                     window.imp().search_panel.navigate_next_match();

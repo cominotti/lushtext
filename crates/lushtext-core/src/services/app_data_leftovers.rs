@@ -56,6 +56,7 @@ pub fn sweep_startup_leftovers(data_dir: &Path) -> LeftoverSweepReport {
         folder_note_service::folder_notes_dir(data_dir),
         data_dir.join(recovery_metadata::QUARANTINE_DIR),
         search_backup::journal_dir(data_dir),
+        search_backup::bodies_dir(data_dir),
         json_store::style_schemes_dir(data_dir),
         draft_service::set_aside_dir(data_dir),
         format_backups.clone(),
@@ -212,6 +213,30 @@ mod tests {
         }
         assert_eq!(report.removed, 4);
         fixture::assert_text(&kept_backup, "{}");
+    }
+
+    #[test]
+    fn startup_sweep_reaches_the_replace_journal_entries_and_bodies() {
+        // stream-replace-all task 7.5: an undo body is written in the
+        // journal's `bodies/` directory, so its durable-write temp lands there.
+        let data = TempDir::new().expect("temp dir");
+        let foreign_pid = std::process::id().wrapping_add(1);
+        let journal = search_backup::journal_dir(data.path());
+        let in_entries = stale_leftover(
+            &journal,
+            &format!(".0123abcd.json.json.{foreign_pid}.1.tmp"),
+        );
+        let in_bodies = stale_leftover(
+            &search_backup::bodies_dir(data.path()),
+            &format!(".0123abcd.body.replace-undo-body.{foreign_pid}.2.tmp"),
+        );
+
+        let report = sweep_startup_leftovers(data.path());
+
+        for path in [&in_entries, &in_bodies] {
+            assert!(!metadata::exists(path), "{} must be swept", path.display());
+        }
+        assert_eq!(report.removed, 2);
     }
 
     #[test]

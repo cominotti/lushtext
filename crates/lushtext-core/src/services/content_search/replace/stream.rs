@@ -1,21 +1,104 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The Replace All text engine: one source-order pass over sorted edits.
+//!
+//! [`ReplaceStream`] is fed the source file in chunks and writes the
+//! replaced bytes to any [`Write`] sink, so neither the source nor the output
+//! is ever held whole (design D2). It keeps the edit semantics of the former
+//! in-memory builder, which survives as [`build_replaced_text_reference`] for
+//! the equivalence tests:
+//!
+//! - lines end at `\n`; a `\r` directly before it belongs to the terminator,
+//!   and a lone `\r` is ordinary line content, so a CRLF split across two
+//!   chunks needs no special case: only a targeted line is buffered, up to its
+//!   `\n`, and the `\r` is removed from it then;
+//! - an edit applies only when its whole line still equals the line the search
+//!   recorded, and any mismatch fails the file as [`ReplacementTextOutcome::StaleLine`];
+//! - UTF-8 is validated incrementally: an incomplete sequence at the end of a
+//!   chunk (at most three bytes) is carried into the next one.
+//!
+//! The engine is I/O-free apart from its [`Write`] sink. It is generic over the
+//! digest of its source and output, so production feeds SHA-256 and the Kani
+//! harness a recording sink (design D11).
 
-use super::{MAX_REPLACE_FILE_BYTES, ReplaceConstructionMetrics};
+use std::io::Write;
+
+use super::ReplaceConstructionMetrics;
 use crate::model::content_search::{MAX_REPLACE_PREVIEW_ROWS, Replacement};
 
-/// Pure result of applying one file's replacement preview data to text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Bytes read from a file per chunk by both Replace All passes and by Undo.
+///
+/// Kind: cap; a power of two. Retained memory is two of these buffers
+/// at most (the producer's read buffer and the durable writer's), independent
+/// of the file's size (design D2; chosen by stream-replace-all task 2.4).
+pub const REPLACE_STREAM_CHUNK_BYTES: usize = 1024 * 1024;
+
+/// Incremental digest of one byte stream.
+pub(crate) trait DigestSink {
+    /// Absorb the next bytes of the stream.
+    fn update(&mut self, bytes: &[u8]);
+}
+
+/// The production digest: SHA-256, with SHA-NI detected at run time by `sha2`.
+#[derive(Clone, Default)]
+pub(crate) struct Sha256Sink(sha2::Sha256);
+
+impl Sha256Sink {
+    /// The digest of every byte absorbed so far.
+    #[must_use]
+    pub(crate) fn finish(self) -> [u8; 32] {
+        use sha2::Digest as _;
+        self.0.finalize().into()
+    }
+}
+
+impl DigestSink for Sha256Sink {
+    fn update(&mut self, bytes: &[u8]) {
+        use sha2::Digest as _;
+        self.0.update(bytes);
+    }
+}
+
+/// A digest that keeps the bytes themselves, for the Kani harness and the
+/// equivalence tests, where SHA-256 is out of reach or beside the point.
+#[cfg(any(test, kani))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RecordingSink(pub(crate) Vec<u8>);
+
+#[cfg(any(test, kani))]
+impl DigestSink for RecordingSink {
+    fn update(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+}
+
+/// A digest that discards its input, for a stream whose digest is not needed.
+#[cfg(any(test, kani))]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct NoDigest;
+
+#[cfg(any(test, kani))]
+impl DigestSink for NoDigest {
+    fn update(&mut self, _bytes: &[u8]) {}
+}
+
+/// Hash the SHA-256 of a whole byte slice.
+#[must_use]
+pub(crate) fn sha256_of(bytes: &[u8]) -> [u8; 32] {
+    let mut sink = Sha256Sink::default();
+    sink.update(bytes);
+    sink.finish()
+}
+
+/// Pure result of applying one file's replacement preview data to its text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReplacementTextOutcome {
     /// At least one bounded replacement changed the file text.
     Replaced {
-        /// Full file text after replacements are applied.
-        new_content: String,
         /// Number of individual replacement previews consumed.
         replacement_count: usize,
     },
-    /// No generated replacement targeted an existing line or valid range.
+    /// No replacement targets the file.
     Unchanged,
     /// The line text no longer matches the preview captured during search.
     StaleLine {
@@ -27,129 +110,49 @@ pub(super) enum ReplacementTextOutcome {
         /// Content-free invariant description suitable for diagnostics.
         reason: &'static str,
     },
-    /// Constructed output would exceed the remaining durable undo allowance.
+    /// The output would exceed the caller's output limit. The stream stops at
+    /// the limit: no byte past it reaches the sink.
     OutputLimitExceeded,
+    /// The source is not valid UTF-8.
+    NotUtf8,
     /// The owning Replace All operation was cancelled during construction.
     Cancelled,
 }
 
-#[derive(Debug)]
-pub(super) struct ReplacementTextBuild {
-    pub(super) outcome: ReplacementTextOutcome,
-    pub(super) metrics: ReplaceConstructionMetrics,
-}
-
-#[derive(Debug)]
-pub(super) struct PendingEdit<'a> {
+/// One validated edit, clipped to character boundaries of its recorded line.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct StreamEdit<'a> {
+    /// One-based line number the edit targets.
+    pub(super) line_number: u64,
+    /// The whole line the search recorded; the edit applies only to it.
+    pub(super) original_line: &'a str,
+    /// Byte range within `original_line` the edit replaces.
     pub(super) start: usize,
+    /// End of the replaced range within `original_line`.
     pub(super) end: usize,
+    /// Text written in place of the range.
     pub(super) replacement: &'a str,
 }
 
-/// Monotonic source-line cursor that never retains a whole-file line index.
-pub(super) struct StreamingLineCursor<'a> {
-    bytes: &'a [u8],
-    next_line_start: usize,
-    next_line_number: u64,
-    current_line_number: Option<u64>,
-    current_span: Option<std::ops::Range<usize>>,
-    source_lines: u64,
-}
-
-impl<'a> StreamingLineCursor<'a> {
-    fn new(text: &'a str) -> Self {
-        Self {
-            bytes: text.as_bytes(),
-            next_line_start: 0,
-            next_line_number: 1,
-            current_line_number: None,
-            current_span: None,
-            source_lines: 0,
-        }
-    }
-
-    fn advance_to(
-        &mut self,
-        target_line: u64,
-        is_cancelled: &mut impl FnMut() -> bool,
-    ) -> Result<Option<std::ops::Range<usize>>, ()> {
-        if self.current_line_number == Some(target_line) {
-            return Ok(self.current_span.clone());
-        }
-        if self
-            .current_line_number
-            .is_some_and(|line| target_line < line)
-        {
-            return Ok(None);
-        }
-
-        while self.next_line_start < self.bytes.len() {
-            if self.source_lines.is_multiple_of(1_024) && is_cancelled() {
-                return Err(());
-            }
-            let line_start = self.next_line_start;
-            let newline = memchr::memchr(b'\n', &self.bytes[line_start..])
-                .map(|relative| line_start + relative);
-            let line_end = match newline {
-                Some(index) if index > line_start && self.bytes[index - 1] == b'\r' => index - 1,
-                Some(index) => index,
-                None => self.bytes.len(),
-            };
-            self.next_line_start = newline.map_or(self.bytes.len(), |index| index + 1);
-            let line_number = self.next_line_number;
-            self.next_line_number = self.next_line_number.saturating_add(1);
-            self.current_line_number = Some(line_number);
-            self.current_span = Some(line_start..line_end);
-            self.source_lines = self.source_lines.saturating_add(1);
-
-            if line_number == target_line {
-                return Ok(self.current_span.clone());
-            }
-            if line_number > target_line {
-                return Ok(None);
-            }
-        }
-
-        Ok(None)
-    }
-}
-
-/// Apply one file's replacement previews to already-loaded text.
+/// Sort one file's replacements and check the invariants preview generation
+/// guarantees, before any byte of the file is read.
 ///
-/// The helper owns deterministic range clipping and source-order construction
-/// used by the I/O command above, making that behavior property-testable
-/// without opening files or touching undo journals.
-pub(super) fn build_replaced_text(
-    original_text: &str,
-    file_replacements: &mut [&Replacement],
-    max_output_bytes: usize,
+/// Returns the edits in source order, or the outcome that ends the file
+/// without reading it: [`ReplacementTextOutcome::Unchanged`] for no edits,
+/// [`ReplacementTextOutcome::InvalidPreview`] for a broken invariant and
+/// [`ReplacementTextOutcome::Cancelled`].
+pub(super) fn plan_edits<'a>(
+    file_replacements: &mut [&'a Replacement],
     mut is_cancelled: impl FnMut() -> bool,
-) -> ReplacementTextBuild {
-    let mut metrics = ReplaceConstructionMetrics::default();
-    let file_byte_limit = usize::try_from(MAX_REPLACE_FILE_BYTES).unwrap_or(usize::MAX);
-    if original_text.len() > file_byte_limit {
-        return ReplacementTextBuild {
-            outcome: ReplacementTextOutcome::InvalidPreview {
-                reason: "source bytes exceed the per-file limit",
-            },
-            metrics,
-        };
-    }
+) -> Result<Vec<StreamEdit<'a>>, ReplacementTextOutcome> {
     if file_replacements.len() > MAX_REPLACE_PREVIEW_ROWS {
-        return ReplacementTextBuild {
-            outcome: ReplacementTextOutcome::InvalidPreview {
-                reason: "replacement count exceeds the preview limit",
-            },
-            metrics,
-        };
+        return Err(ReplacementTextOutcome::InvalidPreview {
+            reason: "replacement count exceeds the preview limit",
+        });
     }
     if file_replacements.is_empty() {
-        return ReplacementTextBuild {
-            outcome: ReplacementTextOutcome::Unchanged,
-            metrics,
-        };
+        return Err(ReplacementTextOutcome::Unchanged);
     }
-
     file_replacements.sort_by(|a, b| {
         a.line_number
             .cmp(&b.line_number)
@@ -157,137 +160,473 @@ pub(super) fn build_replaced_text(
             .then(a.match_range.end.cmp(&b.match_range.end))
     });
 
-    // Preview generation guarantees positive line numbers plus ordered,
-    // non-overlapping clipped ranges. Recheck those invariants before line
-    // discovery or output allocation because this command is a data-mutation
-    // boundary and may also be called by non-UI clients.
+    let mut edits = Vec::with_capacity(file_replacements.len());
     let mut previous_line = None;
     let mut previous_end = 0usize;
     for (index, replacement) in file_replacements.iter().enumerate() {
         if index.is_multiple_of(1_024) && is_cancelled() {
-            return ReplacementTextBuild {
-                outcome: ReplacementTextOutcome::Cancelled,
-                metrics,
-            };
+            return Err(ReplacementTextOutcome::Cancelled);
         }
         if replacement.line_number == 0 {
-            return ReplacementTextBuild {
-                outcome: ReplacementTextOutcome::InvalidPreview {
-                    reason: "line numbers must be one-based",
-                },
-                metrics,
-            };
+            return Err(ReplacementTextOutcome::InvalidPreview {
+                reason: "line numbers must be one-based",
+            });
         }
         if replacement.match_range.start > replacement.match_range.end {
-            return ReplacementTextBuild {
-                outcome: ReplacementTextOutcome::InvalidPreview {
-                    reason: "replacement range endpoints are reversed",
-                },
-                metrics,
-            };
+            return Err(ReplacementTextOutcome::InvalidPreview {
+                reason: "replacement range endpoints are reversed",
+            });
         }
-        let snapshot = replacement.original_line.as_ref();
-        let start = snapshot.floor_char_boundary(replacement.match_range.start.min(snapshot.len()));
-        let end = snapshot.ceil_char_boundary(replacement.match_range.end.min(snapshot.len()));
+        let line = replacement.original_line.as_ref();
+        let start = line.floor_char_boundary(replacement.match_range.start.min(line.len()));
+        let end = line.ceil_char_boundary(replacement.match_range.end.min(line.len()));
         if previous_line == Some(replacement.line_number) && start < previous_end {
-            return ReplacementTextBuild {
-                outcome: ReplacementTextOutcome::InvalidPreview {
-                    reason: "replacement ranges overlap",
-                },
-                metrics,
-            };
+            return Err(ReplacementTextOutcome::InvalidPreview {
+                reason: "replacement ranges overlap",
+            });
         }
         previous_line = Some(replacement.line_number);
         previous_end = end;
-    }
-
-    let mut edits = Vec::with_capacity(file_replacements.len());
-    metrics.retained_edit_records = edits.capacity();
-    metrics.retained_edit_bytes = edits
-        .capacity()
-        .saturating_mul(std::mem::size_of::<PendingEdit<'static>>());
-    let mut line_cursor = StreamingLineCursor::new(original_text);
-
-    // Validate against the original line snapshot before mutating anything so
-    // stale search results skip the whole file instead of partially applying.
-    for replacement in file_replacements.iter() {
-        let line_span = match line_cursor.advance_to(replacement.line_number, &mut is_cancelled) {
-            Ok(Some(span)) => span,
-            Ok(None) => {
-                metrics.source_lines = line_cursor.source_lines;
-                return ReplacementTextBuild {
-                    outcome: ReplacementTextOutcome::StaleLine {
-                        line_number: replacement.line_number,
-                    },
-                    metrics,
-                };
-            }
-            Err(()) => {
-                metrics.source_lines = line_cursor.source_lines;
-                return ReplacementTextBuild {
-                    outcome: ReplacementTextOutcome::Cancelled,
-                    metrics,
-                };
-            }
-        };
-        let line = &original_text[line_span.clone()];
-        if line != replacement.original_line.as_ref() {
-            metrics.source_lines = line_cursor.source_lines;
-            return ReplacementTextBuild {
-                outcome: ReplacementTextOutcome::StaleLine {
-                    line_number: replacement.line_number,
-                },
-                metrics,
-            };
-        }
-        let start = line.floor_char_boundary(replacement.match_range.start.min(line.len()));
-        let end = line.ceil_char_boundary(replacement.match_range.end.min(line.len()));
-        edits.push(PendingEdit {
-            start: line_span.start + start,
-            end: line_span.start + end,
+        edits.push(StreamEdit {
+            line_number: replacement.line_number,
+            original_line: line,
+            start,
+            end,
             replacement: replacement.replacement.as_ref(),
         });
     }
-    metrics.source_lines = line_cursor.source_lines;
+    Ok(edits)
+}
 
-    if edits.is_empty() {
-        return ReplacementTextBuild {
-            outcome: ReplacementTextOutcome::Unchanged,
-            metrics,
-        };
-    }
+/// Why a stream stopped before its end.
+#[derive(Debug)]
+pub(super) enum StreamStop {
+    /// The file ends with this outcome; the stream must not be fed again.
+    Outcome(ReplacementTextOutcome),
+    /// The output sink failed.
+    Io(std::io::Error),
+}
 
-    let output_len = replaced_capacity(original_text.len(), &edits);
-    if output_len > max_output_bytes {
-        return ReplacementTextBuild {
-            outcome: ReplacementTextOutcome::OutputLimitExceeded,
-            metrics,
-        };
-    }
+/// Lengths, digests and outcome of a completed stream.
+#[derive(Debug)]
+pub(super) struct StreamSummary<S, O> {
+    /// [`ReplacementTextOutcome::Replaced`] or a reason the file failed.
+    pub(super) outcome: ReplacementTextOutcome,
+    /// Bytes fed to the engine.
+    pub(super) source_len: u64,
+    /// Bytes the engine wrote to its sink.
+    pub(super) output_len: u64,
+    /// Digest of the source bytes.
+    pub(super) source_digest: S,
+    /// Digest of the output bytes.
+    pub(super) output_digest: O,
+    /// Construction evidence for this file.
+    pub(super) metrics: ReplaceConstructionMetrics,
+}
 
-    let mut new_content = String::with_capacity(output_len);
-    let mut cursor = 0usize;
-    for (index, edit) in edits.iter().enumerate() {
-        if index.is_multiple_of(1_024) && is_cancelled() {
-            return ReplacementTextBuild {
-                outcome: ReplacementTextOutcome::Cancelled,
-                metrics,
-            };
+/// Incremental UTF-8 validation that carries an incomplete trailing sequence.
+#[derive(Debug, Default)]
+struct Utf8Carry {
+    pending: [u8; 4],
+    len: usize,
+}
+
+impl Utf8Carry {
+    /// Validate the next chunk; `Err` means the stream is not UTF-8.
+    fn feed(&mut self, mut chunk: &[u8]) -> Result<(), ()> {
+        if self.len > 0 {
+            let expected = utf8_sequence_len(self.pending[0]);
+            let take = (expected - self.len).min(chunk.len());
+            self.pending[self.len..self.len + take].copy_from_slice(&chunk[..take]);
+            self.len += take;
+            chunk = &chunk[take..];
+            if self.len < expected {
+                return Ok(());
+            }
+            validate_utf8(&self.pending[..expected]).map_err(|_| ())?;
+            self.len = 0;
         }
-        new_content.push_str(&original_text[cursor..edit.start]);
-        new_content.push_str(edit.replacement);
-        cursor = edit.end;
+        match validate_utf8(chunk) {
+            Ok(()) => Ok(()),
+            Err((valid_up_to, true)) => {
+                let tail = &chunk[valid_up_to..];
+                self.pending[..tail.len()].copy_from_slice(tail);
+                self.len = tail.len();
+                Ok(())
+            }
+            Err((_, false)) => Err(()),
+        }
     }
-    new_content.push_str(&original_text[cursor..]);
-    metrics.accepted_replacements = edits.len();
-    metrics.output_bytes = u64::try_from(new_content.len()).unwrap_or(u64::MAX);
 
-    ReplacementTextBuild {
-        outcome: ReplacementTextOutcome::Replaced {
-            new_content,
-            replacement_count: edits.len(),
-        },
-        metrics,
+    /// The stream ended; an unfinished sequence is invalid.
+    fn finish(&self) -> Result<(), ()> {
+        if self.len == 0 { Ok(()) } else { Err(()) }
+    }
+}
+
+/// Length of the sequence a valid UTF-8 lead byte starts.
+fn utf8_sequence_len(lead: u8) -> usize {
+    match lead {
+        0xF0..=0xF7 => 4,
+        0xE0..=0xEF => 3,
+        0xC0..=0xDF => 2,
+        _ => 1,
+    }
+}
+
+/// `Ok`, or the valid prefix length and whether the error is only an
+/// incomplete sequence at the end of the input.
+#[cfg(not(kani))]
+fn validate_utf8(bytes: &[u8]) -> Result<(), (usize, bool)> {
+    simdutf8::compat::from_utf8(bytes)
+        .map(|_| ())
+        .map_err(|error| (error.valid_up_to(), error.error_len().is_none()))
+}
+
+/// The byte-loop path for the Kani harness: `simdutf8`'s runtime-detected SIMD
+/// is out of CBMC's reach (design D2).
+#[cfg(kani)]
+fn validate_utf8(bytes: &[u8]) -> Result<(), (usize, bool)> {
+    core::str::from_utf8(bytes)
+        .map(|_| ())
+        .map_err(|error| (error.valid_up_to(), error.error_len().is_none()))
+}
+
+/// Offset of the first `\n` in `bytes`.
+#[cfg(not(kani))]
+fn find_newline(bytes: &[u8]) -> Option<usize> {
+    memchr::memchr(b'\n', bytes)
+}
+
+/// The byte-loop path for the Kani harness: `memchr`'s runtime-detected SIMD
+/// is out of CBMC's reach, as `simdutf8`'s is (design D2).
+#[cfg(kani)]
+fn find_newline(bytes: &[u8]) -> Option<usize> {
+    bytes.iter().position(|&byte| byte == b'\n')
+}
+
+/// The chunked streaming engine (design D2).
+///
+/// Its result does not depend on how the source is chunked: whether a file is
+/// replaced, and a replaced file's output, count, lengths and digests, are
+/// the same at every chunk size, and on valid UTF-8 so is the outcome. Kani
+/// proves this (`stream/kani_proofs.rs`, shard `core-replace-stream`) for
+/// sources of at most 8 bytes, chunk sizes 1 to 4 against the whole source,
+/// at most two edits and output limits up to 16 bytes; the property test
+/// `streaming_engine_matches_the_reference_at_every_chunk_size` samples
+/// larger inputs against the reference builder.
+pub(super) struct ReplaceStream<'e, W, S, O> {
+    edits: &'e [StreamEdit<'e>],
+    next_edit: usize,
+    /// One-based number of the line the cursor is in.
+    line_number: u64,
+    /// The cursor is at the first byte of `line_number`.
+    at_line_start: bool,
+    /// The current line is targeted and its bytes go to `line`.
+    collecting: bool,
+    /// Bytes of the targeted line seen so far, at most `line_cap`.
+    line: Vec<u8>,
+    /// Whether any byte of the collected line was seen.
+    line_seen: bool,
+    /// The longest a targeted line can be and still match.
+    line_cap: usize,
+    utf8: Utf8Carry,
+    out: W,
+    output_digest: O,
+    output_len: u64,
+    output_limit: u64,
+    source_digest: S,
+    source_len: u64,
+    applied: usize,
+    metrics: ReplaceConstructionMetrics,
+    /// The outcome a stop already decided; `finish` reports it.
+    stopped: Option<ReplacementTextOutcome>,
+}
+
+impl<'e, W: Write, S: DigestSink, O: DigestSink> ReplaceStream<'e, W, S, O> {
+    /// A stream that applies `edits` (from [`plan_edits`]) and writes at most
+    /// `output_limit` bytes to `out`.
+    pub(super) fn new(
+        edits: &'e [StreamEdit<'e>],
+        output_limit: u64,
+        out: W,
+        source_digest: S,
+        output_digest: O,
+    ) -> Self {
+        let metrics = ReplaceConstructionMetrics {
+            retained_edit_records: edits.len(),
+            retained_edit_bytes: std::mem::size_of_val(edits),
+            ..ReplaceConstructionMetrics::default()
+        };
+        let mut stream = Self {
+            edits,
+            next_edit: 0,
+            line_number: 1,
+            at_line_start: true,
+            collecting: false,
+            line: Vec::new(),
+            line_seen: false,
+            line_cap: 0,
+            utf8: Utf8Carry::default(),
+            out,
+            output_digest,
+            output_len: 0,
+            output_limit,
+            source_digest,
+            source_len: 0,
+            applied: 0,
+            metrics,
+            stopped: None,
+        };
+        stream.enter_line();
+        stream
+    }
+
+    /// Feed the next chunk of the source.
+    ///
+    /// # Errors
+    ///
+    /// [`StreamStop::Outcome`] once the file's outcome is decided before its
+    /// end (a stale line, invalid UTF-8, the output limit), and
+    /// [`StreamStop::Io`] when the sink fails.
+    pub(super) fn feed(&mut self, chunk: &[u8]) -> Result<(), StreamStop> {
+        if let Some(outcome) = self.stopped {
+            return Err(StreamStop::Outcome(outcome));
+        }
+        let result = self.feed_chunk(chunk);
+        if let Err(StreamStop::Outcome(outcome)) = &result {
+            self.stopped = Some(*outcome);
+        }
+        result
+    }
+
+    fn feed_chunk(&mut self, chunk: &[u8]) -> Result<(), StreamStop> {
+        self.source_digest.update(chunk);
+        self.source_len = self
+            .source_len
+            .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        if self.utf8.feed(chunk).is_err() {
+            return Err(StreamStop::Outcome(ReplacementTextOutcome::NotUtf8));
+        }
+        let mut rest = chunk;
+        while !rest.is_empty() {
+            if self.collecting {
+                if let Some(newline) = find_newline(rest) {
+                    self.collect(&rest[..newline])?;
+                    rest = &rest[newline + 1..];
+                    self.complete_line(true)?;
+                } else {
+                    self.collect(rest)?;
+                    rest = &[];
+                }
+            } else if self.next_edit == self.edits.len() {
+                self.emit(rest)?;
+                rest = &[];
+            } else {
+                if let Some(newline) = find_newline(rest) {
+                    self.emit(&rest[..=newline])?;
+                    rest = &rest[newline + 1..];
+                    self.advance_line();
+                } else {
+                    self.emit(rest)?;
+                    self.at_line_start = false;
+                    rest = &[];
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// End the stream at the end of the source.
+    ///
+    /// # Errors
+    ///
+    /// [`StreamStop::Io`] when the sink fails; every other end is the summary's
+    /// outcome.
+    pub(super) fn finish(mut self) -> Result<(StreamSummary<S, O>, W), StreamStop> {
+        let outcome = match self.finish_outcome() {
+            Ok(outcome) | Err(StreamStop::Outcome(outcome)) => outcome,
+            Err(StreamStop::Io(error)) => return Err(StreamStop::Io(error)),
+        };
+        self.metrics.accepted_replacements = self.applied;
+        self.metrics.output_bytes = self.output_len;
+        Ok((
+            StreamSummary {
+                outcome,
+                source_len: self.source_len,
+                output_len: self.output_len,
+                source_digest: self.source_digest,
+                output_digest: self.output_digest,
+                metrics: self.metrics,
+            },
+            self.out,
+        ))
+    }
+
+    fn finish_outcome(&mut self) -> Result<ReplacementTextOutcome, StreamStop> {
+        if let Some(outcome) = self.stopped {
+            return Ok(outcome);
+        }
+        if self.utf8.finish().is_err() {
+            return Ok(ReplacementTextOutcome::NotUtf8);
+        }
+        if self.collecting && self.line_seen {
+            // The final line has no terminator; its bytes, a trailing `\r`
+            // included, are the line.
+            self.complete_line(false)?;
+        }
+        if let Some(edit) = self.edits.get(self.next_edit) {
+            return Ok(ReplacementTextOutcome::StaleLine {
+                line_number: edit.line_number,
+            });
+        }
+        Ok(ReplacementTextOutcome::Replaced {
+            replacement_count: self.applied,
+        })
+    }
+
+    /// Move to the line after a `\n` the cursor just passed.
+    fn advance_line(&mut self) {
+        self.line_number = self.line_number.saturating_add(1);
+        self.metrics.source_lines = self.metrics.source_lines.saturating_add(1);
+        self.at_line_start = true;
+        self.enter_line();
+    }
+
+    /// Start collecting when the line the cursor starts is targeted.
+    fn enter_line(&mut self) {
+        let Some(edit) = self.edits.get(self.next_edit) else {
+            return;
+        };
+        if self.at_line_start && edit.line_number == self.line_number {
+            self.collecting = true;
+            self.line.clear();
+            self.line_seen = false;
+            // A matching line is its recorded text plus, before a `\n`, one
+            // `\r`; anything longer cannot match.
+            self.line_cap = self.edits[self.next_edit..]
+                .iter()
+                .take_while(|candidate| candidate.line_number == self.line_number)
+                .map(|candidate| candidate.original_line.len())
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+        }
+    }
+
+    fn collect(&mut self, bytes: &[u8]) -> Result<(), StreamStop> {
+        if !bytes.is_empty() {
+            self.line_seen = true;
+        }
+        if self.line.len().saturating_add(bytes.len()) > self.line_cap {
+            return Err(self.stale());
+        }
+        self.line.extend_from_slice(bytes);
+        self.metrics.retained_line_bytes =
+            self.metrics.retained_line_bytes.max(self.line.capacity());
+        Ok(())
+    }
+
+    fn stale(&self) -> StreamStop {
+        StreamStop::Outcome(ReplacementTextOutcome::StaleLine {
+            line_number: self.line_number,
+        })
+    }
+
+    /// Apply every edit of the collected line, then move past it.
+    fn complete_line(&mut self, terminated: bool) -> Result<(), StreamStop> {
+        self.line_seen = true;
+        let mut content_len = self.line.len();
+        let carriage_return = terminated && self.line.last() == Some(&b'\r');
+        if carriage_return {
+            content_len -= 1;
+        }
+        let line = std::mem::take(&mut self.line);
+        let content = &line[..content_len];
+        let first = self.next_edit;
+        let mut last = first;
+        while self
+            .edits
+            .get(last)
+            .is_some_and(|edit| edit.line_number == self.line_number)
+        {
+            if self.edits[last].original_line.as_bytes() != content {
+                return Err(self.stale());
+            }
+            last += 1;
+        }
+        let mut cursor = 0usize;
+        for index in first..last {
+            let edit = self.edits[index];
+            self.emit(&content[cursor..edit.start])?;
+            self.emit(edit.replacement.as_bytes())?;
+            cursor = edit.end;
+        }
+        self.emit(&content[cursor..])?;
+        if carriage_return {
+            self.emit(b"\r")?;
+        }
+        if terminated {
+            self.emit(b"\n")?;
+        }
+        self.applied += last - first;
+        self.next_edit = last;
+        self.line = line;
+        self.line.clear();
+        self.collecting = false;
+        if terminated {
+            self.advance_line();
+        } else {
+            self.at_line_start = false;
+        }
+        Ok(())
+    }
+
+    fn emit(&mut self, bytes: &[u8]) -> Result<(), StreamStop> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if self.output_len.saturating_add(len) > self.output_limit {
+            return Err(StreamStop::Outcome(
+                ReplacementTextOutcome::OutputLimitExceeded,
+            ));
+        }
+        self.out.write_all(bytes).map_err(StreamStop::Io)?;
+        self.output_digest.update(bytes);
+        self.output_len += len;
+        Ok(())
+    }
+}
+
+/// Run the engine over a whole in-memory source, in chunks of `chunk_len`.
+///
+/// For tests, the property target and the Kani harness: production always
+/// feeds a file through a producer.
+#[cfg(any(test, kani, feature = "property-tests"))]
+pub(super) fn stream_whole<S: DigestSink, O: DigestSink>(
+    source: &[u8],
+    edits: &[StreamEdit<'_>],
+    chunk_len: usize,
+    output_limit: u64,
+    source_digest: S,
+    output_digest: O,
+) -> (StreamSummary<S, O>, Vec<u8>) {
+    let mut stream = ReplaceStream::new(
+        edits,
+        output_limit,
+        Vec::new(),
+        source_digest,
+        output_digest,
+    );
+    for chunk in source.chunks(chunk_len.max(1)) {
+        if stream.feed(chunk).is_err() {
+            break;
+        }
+    }
+    match stream.finish() {
+        Ok(done) => done,
+        Err(_) => unreachable!("a Vec sink cannot fail"),
     }
 }
 
@@ -314,39 +653,137 @@ pub(super) fn line_spans_reference(text: &str) -> Vec<std::ops::Range<usize>> {
     spans
 }
 
-/// Estimate final output capacity from the exact replacement ranges.
-pub(super) fn replaced_capacity(original_len: usize, edits: &[PendingEdit<'_>]) -> usize {
-    let mut capacity = original_len;
-    for edit in edits {
-        capacity = capacity
-            .saturating_sub(edit.end.saturating_sub(edit.start))
-            .saturating_add(edit.replacement.len());
+/// The former whole-buffer algorithm: an independent implementation the
+/// streaming engine is checked against at every chunk split.
+///
+/// Returns the replaced text and the replacement count, or the outcome that
+/// ended the file.
+#[cfg(any(test, feature = "property-tests"))]
+pub(super) fn build_replaced_text_reference(
+    original_text: &str,
+    file_replacements: &mut [&Replacement],
+) -> Result<(String, usize), ReplacementTextOutcome> {
+    file_replacements.sort_by(|a, b| {
+        a.line_number
+            .cmp(&b.line_number)
+            .then(a.match_range.start.cmp(&b.match_range.start))
+            .then(a.match_range.end.cmp(&b.match_range.end))
+    });
+
+    let line_spans = line_spans_reference(original_text);
+    let mut edits: Vec<(usize, usize, &str)> = Vec::with_capacity(file_replacements.len());
+    for replacement in file_replacements.iter() {
+        let Some(line_index) = replacement.line_number.checked_sub(1) else {
+            return Err(ReplacementTextOutcome::InvalidPreview {
+                reason: "line numbers must be one-based",
+            });
+        };
+        let Ok(line_index) = usize::try_from(line_index) else {
+            return Err(ReplacementTextOutcome::StaleLine {
+                line_number: replacement.line_number,
+            });
+        };
+        let Some(line_span) = line_spans.get(line_index).cloned() else {
+            return Err(ReplacementTextOutcome::StaleLine {
+                line_number: replacement.line_number,
+            });
+        };
+        let line = &original_text[line_span.clone()];
+        if line != replacement.original_line.as_ref() {
+            return Err(ReplacementTextOutcome::StaleLine {
+                line_number: replacement.line_number,
+            });
+        }
+        let start = line.floor_char_boundary(replacement.match_range.start.min(line.len()));
+        let end = line.ceil_char_boundary(replacement.match_range.end.min(line.len()));
+        edits.push((
+            line_span.start + start,
+            line_span.start + end,
+            replacement.replacement.as_ref(),
+        ));
     }
-    capacity
+
+    if edits.is_empty() {
+        return Err(ReplacementTextOutcome::Unchanged);
+    }
+
+    let mut new_content = String::with_capacity(original_text.len());
+    let mut cursor = 0usize;
+    for (start, end, replacement) in &edits {
+        new_content.push_str(&original_text[cursor..*start]);
+        new_content.push_str(replacement);
+        cursor = *end;
+    }
+    new_content.push_str(&original_text[cursor..]);
+    Ok((new_content, edits.len()))
 }
 
-/// Apply replacement preview data to text through the production pure helper.
+/// Run the production streaming engine over whole text in one chunk.
 ///
 /// This feature-only hook lets the property target exercise clipping and
-/// ordering without touching files, locks, or undo-backup persistence.
+/// ordering without touching files, locks, or the undo journal.
 #[cfg(feature = "property-tests")]
 #[must_use]
 pub fn apply_replacements_to_text_for_property_test(
     original_text: &str,
     replacements: &[Replacement],
 ) -> Option<(String, usize)> {
+    apply_replacements_to_text_in_chunks_for_property_test(
+        original_text,
+        replacements,
+        original_text.len().max(1),
+    )
+    .ok()
+    .map(|(text, count, _, _)| (text, count))
+}
+
+/// Run the streaming engine over `original_text` in chunks of `chunk_len` and
+/// return the output, the replacement count and the SHA-256 digests of the
+/// source and the output, or the debug form of the outcome that ended the file.
+///
+/// # Errors
+///
+/// The outcome, as `format!("{outcome:?}")`, when the file is not replaced.
+#[cfg(feature = "property-tests")]
+pub fn apply_replacements_to_text_in_chunks_for_property_test(
+    original_text: &str,
+    replacements: &[Replacement],
+    chunk_len: usize,
+) -> Result<(String, usize, [u8; 32], [u8; 32]), String> {
     let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
-    match build_replaced_text(original_text, &mut file_replacements, usize::MAX, || false).outcome {
-        ReplacementTextOutcome::Replaced {
-            new_content,
+    let edits = plan_edits(&mut file_replacements, || false).map_err(|o| format!("{o:?}"))?;
+    let (summary, out) = stream_whole(
+        original_text.as_bytes(),
+        &edits,
+        chunk_len,
+        u64::MAX,
+        Sha256Sink::default(),
+        Sha256Sink::default(),
+    );
+    match summary.outcome {
+        ReplacementTextOutcome::Replaced { replacement_count } => Ok((
+            String::from_utf8(out).map_err(|_| "output is not UTF-8".to_string())?,
             replacement_count,
-        } => Some((new_content, replacement_count)),
-        ReplacementTextOutcome::Unchanged
-        | ReplacementTextOutcome::StaleLine { .. }
-        | ReplacementTextOutcome::InvalidPreview { .. }
-        | ReplacementTextOutcome::OutputLimitExceeded
-        | ReplacementTextOutcome::Cancelled => None,
+            summary.source_digest.finish(),
+            summary.output_digest.finish(),
+        )),
+        outcome => Err(format!("{outcome:?}")),
     }
+}
+
+/// The reference builder's text and count, or the debug form of its outcome.
+///
+/// # Errors
+///
+/// The outcome, as `format!("{outcome:?}")`, when the file is not replaced.
+#[cfg(feature = "property-tests")]
+pub fn apply_replacements_to_text_reference_outcome_for_property_test(
+    original_text: &str,
+    replacements: &[Replacement],
+) -> Result<(String, usize), String> {
+    let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
+    build_replaced_text_reference(original_text, &mut file_replacements)
+        .map_err(|outcome| format!("{outcome:?}"))
 }
 
 /// Apply preview data through the former whole-file line-index algorithm.
@@ -361,80 +798,8 @@ pub fn apply_replacements_to_text_reference_for_property_test(
     replacements: &[Replacement],
 ) -> Option<(String, usize)> {
     let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
-    match build_replaced_text_reference(original_text, &mut file_replacements) {
-        ReplacementTextOutcome::Replaced {
-            new_content,
-            replacement_count,
-        } => Some((new_content, replacement_count)),
-        ReplacementTextOutcome::Unchanged
-        | ReplacementTextOutcome::StaleLine { .. }
-        | ReplacementTextOutcome::InvalidPreview { .. }
-        | ReplacementTextOutcome::OutputLimitExceeded
-        | ReplacementTextOutcome::Cancelled => None,
-    }
+    build_replaced_text_reference(original_text, &mut file_replacements).ok()
 }
 
-#[cfg(any(test, feature = "property-tests"))]
-pub(super) fn build_replaced_text_reference(
-    original_text: &str,
-    file_replacements: &mut [&Replacement],
-) -> ReplacementTextOutcome {
-    file_replacements.sort_by(|a, b| {
-        a.line_number
-            .cmp(&b.line_number)
-            .then(a.match_range.start.cmp(&b.match_range.start))
-            .then(a.match_range.end.cmp(&b.match_range.end))
-    });
-
-    let line_spans = line_spans_reference(original_text);
-    let mut edits = Vec::with_capacity(file_replacements.len());
-    for replacement in file_replacements.iter() {
-        let Some(line_index) = replacement.line_number.checked_sub(1) else {
-            return ReplacementTextOutcome::InvalidPreview {
-                reason: "line numbers must be one-based",
-            };
-        };
-        let Ok(line_index) = usize::try_from(line_index) else {
-            return ReplacementTextOutcome::StaleLine {
-                line_number: replacement.line_number,
-            };
-        };
-        let Some(line_span) = line_spans.get(line_index).cloned() else {
-            return ReplacementTextOutcome::StaleLine {
-                line_number: replacement.line_number,
-            };
-        };
-        let line = &original_text[line_span.clone()];
-        if line != replacement.original_line.as_ref() {
-            return ReplacementTextOutcome::StaleLine {
-                line_number: replacement.line_number,
-            };
-        }
-        let start = line.floor_char_boundary(replacement.match_range.start.min(line.len()));
-        let end = line.ceil_char_boundary(replacement.match_range.end.min(line.len()));
-        if start <= end {
-            edits.push(PendingEdit {
-                start: line_span.start + start,
-                end: line_span.start + end,
-                replacement: replacement.replacement.as_ref(),
-            });
-        }
-    }
-
-    if edits.is_empty() {
-        return ReplacementTextOutcome::Unchanged;
-    }
-
-    let mut new_content = String::with_capacity(replaced_capacity(original_text.len(), &edits));
-    let mut cursor = 0usize;
-    for edit in &edits {
-        new_content.push_str(&original_text[cursor..edit.start]);
-        new_content.push_str(edit.replacement);
-        cursor = edit.end;
-    }
-    new_content.push_str(&original_text[cursor..]);
-    ReplacementTextOutcome::Replaced {
-        new_content,
-        replacement_count: edits.len(),
-    }
-}
+#[cfg(kani)]
+mod kani_proofs;
