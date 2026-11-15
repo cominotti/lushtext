@@ -7,6 +7,10 @@ Before `flatpak-builder` runs against the system Flatpak installation of a `flat
 - **WHEN** Flathub publishes a newer `org.gnome.Sdk` than the container image carries, and the Flatpak build job runs on a runner whose overlay mounts cannot rename lower-layer directories
 - **THEN** the job updates the SDK and its related refs without `Invalid cross-device link` and completes the build on its first attempt
 
+#### Scenario: The relocation survives into the build step
+- **WHEN** the preparation step has bind-mounted the copy over `/var/lib/flatpak`, and a later step of the same job runs `flatpak-builder`
+- **THEN** that step sees the copy, not the overlay, under `/var/lib/flatpak`
+
 #### Scenario: An installation already off overlayfs is left in place
 - **WHEN** `/var/lib/flatpak` is not on overlayfs
 - **THEN** the job skips relocation and logs why
@@ -22,8 +26,8 @@ The installation preparation SHALL verify, with a directory `rename(2)` probe in
 - **WHEN** the rename probe fails after relocation
 - **THEN** the job fails before `flatpak-builder` starts, and its log names the probe, the result and the filesystem under `/var/lib/flatpak`
 
-### Requirement: Relocation stays within its budget
-Relocating the installation SHALL cost at most 90 s per job, judged from the logged wall time in the change's evidence runs rather than enforced by a runtime timeout, and every Flatpak job SHALL keep its 30-minute ceiling.
+### Requirement: Relocation reports its cost without gating on it
+Relocating the installation SHALL log its wall time and the free disk space before and after, and SHALL NOT fail the job because the copy was slow. Every Flatpak job SHALL keep its 30-minute ceiling. The acceptance budget for the copy is recorded in the change's design, not enforced at runtime.
 
 #### Scenario: Relocation time is logged against the budget
 - **WHEN** the installation is relocated
