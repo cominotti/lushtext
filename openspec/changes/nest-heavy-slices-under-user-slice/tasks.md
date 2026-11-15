@@ -124,7 +124,7 @@ other's scopes.
   78; legacy accounting and why legacy slices are never touched; H1-H3. Update
   `heavy.sh`'s header, step 4: "the CPU affinity this process inherited,
   intersected with the slice's cpuset".
-- [ ] 2.6 Real placement. Run `scripts/heavy.sh -- sh -c 'cat /proc/self/cgroup;
+- [ ] 2.6 (Placement recorded; shim cost: measurement queued (coordinator).) Real placement. Run `scripts/heavy.sh -- sh -c 'cat /proc/self/cgroup;
   grep Cpus_allowed_list /proc/self/status; nproc'`. For the widget-shard
   scope, make the call `widget-shards.py parallel` makes for each shard (its
   `parallel` mode ignores a shard argument and would run the whole suite):
@@ -234,7 +234,7 @@ other's scopes.
   `scripts/heavy.sh --mem none -- make check-responsiveness-lane` and
   `scripts/heavy.sh --mem none -- make check-policy`. All must pass. Rerun
   `scripts/measure.sh --self-test` once more in isolation.
-- [ ] 3.6 Lane evidence, not a verdict (design "Timing"). Build the measurement
+- [ ] 3.6 (Measurement queued (coordinator).) Lane evidence, not a verdict (design "Timing"). Build the measurement
   binary with `scripts/heavy.sh -- make responsiveness-build`. Measure with the
   script, not `make responsiveness-smoke`, which would rebuild inside the
   exclusive lock. Take the exact baseline case name from
@@ -255,7 +255,7 @@ other's scopes.
   and do not retry it. Also record one refused run, if a game happens to narrow
   the cpuset during the stage, with its exit 78 message. Otherwise record the
   self-test's refusal case.
-- [ ] 3.7 Commit (`feat(build): pin measurements to an explicit reference CPU
+- [x] 3.7 Commit (`feat(build): pin measurements to an explicit reference CPU
   set`) and push.
 
 ## 4. Documentation (documentation.md)
@@ -317,14 +317,14 @@ other's scopes.
 
 ## 5. Final gates and handoff
 
-- [ ] 5.1 Merge `origin/main` again (never rebase). Resolve conflicts with
+- [x] 5.1 Merge `origin/main` again (never rebase). Resolve conflicts with
   `reduce-build-disk-writes` in `admitted_kib` and the `systemd-run` line: keep
   their `--unit=` and per-scope body, and this change's loop and
   `--exec-in-scope` launch. Also resolve conflicts with
   `quiet-headless-session-services` (session helpers, its ADDED requirement in
   `widget-test-ci-sharding`; no overlap with this MODIFIED one). Rerun tasks
   2.7 and 3.5, and the placement run of 2.6.
-- [ ] 5.2 `openspec validate nest-heavy-slices-under-user-slice --strict`.
+- [x] 5.2 `openspec validate nest-heavy-slices-under-user-slice --strict`.
 - [ ] 5.3 State in the stage conclusion, for the maintainer, the question of
   design D13 item 1: CST advises that agents stop pinning their sessions with
   `taskset -c 8-23` and inherit the toolbox cpuset; keeping the pin is the
