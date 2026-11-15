@@ -192,8 +192,11 @@ Both changes are worth doing as described.
 ## Impact
 
 - Code: `scripts/with-memory-cap.sh` (slice names and guard, legacy-aware
-  `admitted_kib`, the in-scope placement check, `--print-slice`, self-test),
-  `scripts/heavy.sh` (self-test CPU pick and slice name, header),
+  `admitted_kib`, the in-scope placement check, `--print-slice`, self-test on
+  per-run slices cleaned up from an `EXIT` trap), `scripts/heavy.sh` (self-test
+  CPU pick and slice name, its own affinity exported as the reference for the
+  measurements it runs, header), the `check-agent-helpers` Makefile target
+  (shellcheck list, an unusable reference handed to `heavy.sh --self-test`),
   `scripts/measure.sh` (reference set, pin and read-back, records, export,
   self-test), `scripts/run-responsiveness-smoke.sh` and
   `scripts/responsiveness-smoke-driver.py` (lane affinity from the exported

@@ -239,8 +239,13 @@ keep starting scopes in `lushtext-heavy.slice` for a while.
   (`reduce-build-disk-writes` adds one at a 3G budget) would then read 75. The
   self-test therefore uses a per-run slice, `user-lushtext-heavy-selftest-<pid>.slice`.
   It still nests under the real heavy slice. Its legacy slice is
-  `lushtext-heavy-selftest-<pid>.slice`. It stops both private slices when it
-  ends; no other process can be using them. The rule that legacy slices are
+  `lushtext-heavy-selftest-<pid>.slice`. An `EXIT` trap, so on every exit
+  path including each early `return 1`, runs `systemctl --user stop` and then
+  `systemctl --user revert` on both private slices; no other process can be
+  using them. Both steps are needed (probed in the spec review, 2026-11-15): a
+  stopped slice keeps its runtime drop-in directory in
+  `$XDG_RUNTIME_DIR/systemd/user.control/` until it is reverted, which would
+  leave one directory per commit until logout; after both, the unit unloads. The rule that legacy slices are
   never stopped applies to the real `lushtext-heavy.slice` and to the shared
   `lushtext-heavy-selftest.slice`.
 - The wrapper never stops, reverts or resizes the legacy slices:
@@ -289,8 +294,13 @@ the first online CPU that `cpuset.cpus.effective` lacks. When every online CPU
 is in the cpuset, they skip and print why. No test names a CPU number. A
 caller pinned to such a CPU cannot be made inside the toolbox (the kernel
 refuses a disjoint mask, H3), so the case that needs one starts its caller in a
-transient scope in `app.slice` (cpuset 0-23 here), as probe 3 did, and runs the
-wrapper from there.
+transient scope in `app.slice` (cpuset 0-23 here), and runs the wrapper from
+there. Probed in the spec review (2026-11-15): from such a scope pinned to
+CPU 1, a scope in a `user-lushtext-heavy-selftest-*` slice got 0,2-6,8-23, and
+`taskset -c 1` inside it was refused. The outer scope needs an explicit
+`--unit=` name: `taskset` and the wrapper exec, so the wrapper's `systemd-run`
+keeps the outer scope's PID, and the default name `run-p<pid>-i<id>.scope`
+collided with it ("already loaded").
 
 ### D7. Risk: systemd-oomd candidate set (recorded, no change)
 
@@ -398,7 +408,8 @@ Rejected alternatives:
   16-CPU cap; the lane never trims a reference"). The lane fails before any
   case runs (`smoke_fail`). With the default 8-23 the cap is inert: 16 CPUs.
 - unset: today's rule, the first `MAX_CPUS` CPUs of the inherited affinity
-  (the core-cap scenario, unchanged).
+  (the core-cap scenario, MODIFIED only to say it applies outside
+  `measure.sh`; its rule is unchanged).
 
 Recording:
 
@@ -529,8 +540,9 @@ partial-overlap case). H2 is covered by the placement case's affinity check.
   on the caller's pinning.
 - The placement shim's cost (D3): `with-memory-cap.sh 64M true`, main's copy
   (`git show origin/main:scripts/with-memory-cap.sh`) against the branch's,
-  five runs each per round, two rounds per side interleaved main → branch →
-  main → branch, every round through `scripts/measure.sh`. Non-verdict
+  interleaved main → branch → main → branch, five runs per round, all inside
+  one `scripts/measure.sh` call, so the exclusive lock drains other agents
+  once. Non-verdict
   figures, recorded with their 1-minute load. They are not compared with a
   budget, because no timed path runs a capped scope.
 - Self-test cases that need a caller outside the cpuset run only `/proc` reads

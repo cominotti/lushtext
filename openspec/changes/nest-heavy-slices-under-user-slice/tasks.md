@@ -13,8 +13,8 @@ number: CPUs inside or outside the cpuset are computed at run time from
 `/sys/fs/cgroup` and `/sys/devices/system/cpu/online`, and a case that needs a
 CPU that does not exist on the host skips and says why (design D6). The
 wrapper self-test runs in a per-run slice, `user-lushtext-heavy-selftest-$$.slice`,
-whose legacy slice is `lushtext-heavy-selftest-$$.slice`, and stops both at the
-end (design D4), so concurrent self-tests in other worktrees never count each
+whose legacy slice is `lushtext-heavy-selftest-$$.slice`, and stops and then
+reverts both from an `EXIT` trap, on every exit path (design D4), so concurrent self-tests in other worktrees never count each
 other's scopes.
 
 ## 1. Failing-first self-test cases for (A) (no behaviour change yet)
@@ -37,8 +37,10 @@ other's scopes.
     CPUs (design probe 2). Also a fixture case for the re-read: a verdict
     whose first CPU reading disagrees and whose second agrees passes.
   - disjoint caller (needs an online CPU `o` outside the effective cpuset,
-    otherwise skip): from `systemd-run --user --scope --slice=app.slice -p
-    MemoryMax=64M taskset -c o <wrapper> 64M sh -c '…'`, the inner command's
+    otherwise skip): from `systemd-run --user --scope --unit=<unique name>
+    --slice=app.slice -p MemoryMax=64M taskset -c o <wrapper> 64M sh -c '…'`
+    (the explicit `--unit=` avoids the PID-derived name collision of design
+    D6), the inner command's
     `Cpus_allowed_list` equals the inner `user.slice`'s effective cpuset as
     sets, and `taskset -c o true` inside the scope fails. Fails today: the
     command keeps `o`, and the inner `taskset` succeeds (design probe 3).
@@ -92,8 +94,12 @@ other's scopes.
 ## 2. The rename, the check and the transition (design D1-D7)
 
 - [ ] 2.1 `HEAVY_SLICE` defaults to `user-lushtext-heavy.slice`, the self-test
-  slice is the per-run `user-lushtext-heavy-selftest-$$.slice` (stopped with its
-  legacy slice when the self-test ends), and the guard follows D5.
+  slice is the per-run `user-lushtext-heavy-selftest-$$.slice`, and the guard
+  follows D5. An `EXIT` trap stops and then reverts it and its legacy slice on
+  every exit path. Add a self-test assertion, run from the caller after the
+  self-test returns (the Makefile line or the second isolated run of 2.7), that
+  no `*selftest-<that pid>.slice.d` directory remains in
+  `$XDG_RUNTIME_DIR/systemd/user.control/`.
   `ADMISSION_LOCK` keeps its file name. Add `--print-slice`, which prints
   `$HEAVY_SLICE`.
 - [ ] 2.2 Add `scripts/cpu-lists.sh`, sourced by the wrapper and later by
@@ -137,11 +143,12 @@ other's scopes.
     would run in place and start no scope, so this goes through
     `scripts/measure.sh` instead. Save main's copy with `git show
     origin/main:scripts/with-memory-cap.sh > <evidence>/main-with-memory-cap.sh`.
-    Then run four rounds, main → branch → main → branch, each `scripts/measure.sh
-    --label shim-<side> --log <evidence>/shim.log -- sh -c 'for i in 1 2 3 4 5;
-    do /usr/bin/time -f %e bash <copy> 64M true; done'`. Record the wall times
-    with each round's 1-minute load. They are non-verdict figures: label a
-    round at load ≥ 4 and do not retry it.
+    Then make ONE `scripts/measure.sh --label shim --log <evidence>/shim.log --
+    sh -c '…'` call whose script runs four rounds, main → branch → main →
+    branch, each five `/usr/bin/time -f %e bash <copy> 64M true` runs, and
+    prints the side with each time. Record the wall times with the call's
+    1-minute load. They are non-verdict figures: label the call if its load is
+    ≥ 4 and do not retry it.
 - [ ] 2.7 Run `scripts/heavy.sh --mem none -- make check-agent-helpers`
   (self-tests plus shellcheck, from the toolbox cgroup) and `scripts/heavy.sh
   -- make check-policy` (default cap, so the self-tests also run inside a real
@@ -318,9 +325,12 @@ other's scopes.
   `widget-test-ci-sharding`; no overlap with this MODIFIED one). Rerun tasks
   2.7 and 3.5, and the placement run of 2.6.
 - [ ] 5.2 `openspec validate nest-heavy-slices-under-user-slice --strict`.
-- [ ] 5.3 After merge, write
+- [ ] 5.3 State in the stage conclusion, for the maintainer, the question of
+  design D13 item 1: CST advises that agents stop pinning their sessions with
+  `taskset -c 8-23` and inherit the toolbox cpuset; keeping the pin is the
+  maintainer's call, and this change works either way. After merge, write
   `.claude/handoffs/nest-heavy-slices-under-user-slice/for-cst.md` with the
-  merge SHA and how to verify:
+  merge SHA, the same note, and how to verify:
   - `systemd-cgls --user-unit user.slice`, or `systemd-cgls
     /user.slice/user-1000.slice/user@1000.service/user.slice`;
   - the path of a running capped scope;
