@@ -20,7 +20,10 @@
 #    each other, never during a measurement. If memory became short meanwhile,
 #    release LOCK and go back to step 1.
 # 4. Run the command as a child, with CARGO_BUILD_JOBS=4 and the CPU affinity
-#    this process inherited, inside `scripts/with-memory-cap.sh <cap>`.
+#    this process inherited, intersected with the slice's cpuset, inside
+#    `scripts/with-memory-cap.sh <cap>` (its scope nests under the user
+#    manager's user.slice and inherits its cpuset; a self-imposed mask only
+#    narrows it).
 #
 # Take it per command, never around a multi-hour script: a pending measurement
 # then runs between steps.
@@ -43,6 +46,8 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/agent-locks.sh
 source "$here/agent-locks.sh"
+# shellcheck source=scripts/cpu-lists.sh
+source "$here/cpu-lists.sh"
 
 usage() {
     echo "usage: $0 [--mem <cap|none>] -- <command> [args...]" >&2
@@ -149,26 +154,43 @@ self_test() {
     [ "$status" -eq 0 ] || fail "measure.sh --self-test failed inside heavy.sh (status $status)" || return
 
     # The default path: a real capped scope (64M skips admission). Arguments
-    # pass byte for byte, the command runs inside the heavy slice on exactly
-    # the one CPU it was given, LOCK is held across `systemd-run --scope`, and
-    # fd 9 (the wrapper's admission lock) is not a lock of the protocol.
+    # pass byte for byte, the command runs inside the heavy slice (named by
+    # with-memory-cap.sh --print-slice, its one source) on exactly the one CPU
+    # it was given, LOCK is held across `systemd-run --scope`, and fd 9 (the
+    # wrapper's admission lock) is not a lock of the protocol. The CPU is one
+    # that this process's affinity and the inner user.slice's effective cpuset
+    # share (the slice inherits that cpuset); when they share none, the scope
+    # gets the slice's whole set (the kernel falls back to the cpuset).
     local scope=skipped
     if command -v systemd-run >/dev/null 2>&1 \
         && systemd-run --user --scope --quiet -p MemoryMax=1M true >/dev/null 2>&1; then
-        local cpu
-        cpu=$(taskset -pc $$ | sed 's/.*: //; s/[-,].*//')
+        local cpu slice slice_cg user_cg allowed shared expected_cpus
+        slice=$("$here/with-memory-cap.sh" --print-slice) || fail "with-memory-cap.sh --print-slice failed" || return
+        slice_cg=$(systemctl --user show -p ControlGroup --value "$slice" 2>/dev/null || true)
+        user_cg=$(systemctl --user show -p ControlGroup --value user.slice 2>/dev/null || true)
+        allowed=$(cat "/sys/fs/cgroup$user_cg/cpuset.cpus.effective" 2>/dev/null || cpu_online)
+        shared=$(cpu_lines_minus "$(cpu_list_expand "$(cpu_own_affinity)")" \
+            "$(cpu_lines_minus "$(cpu_list_expand "$(cpu_online)")" "$(cpu_list_expand "$allowed")")" | head -n 1)
+        if [ -n "$shared" ]; then
+            cpu=$shared
+            expected_cpus=$shared
+        else
+            cpu=$(cpu_own_affinity | sed 's/[-,].*//')
+            expected_cpus=$(cpu_list_canonical "$allowed")
+        fi
         # shellcheck disable=SC2016 # expanded by the inner shell; literal dollars are the point
         out=$(taskset -c "$cpu" "$me" --mem 64M -- sh -c '
             printf "%s|" "$1" "$2" "$3"
-            grep -c "/lushtext-heavy.slice/" /proc/self/cgroup | tr "\n" "|"
+            c=$(sed -n "s/^0:://p" /proc/self/cgroup)
+            case $c in "$4"/*) printf "in|" ;; *) printf "out:%s|" "$c" ;; esac
             sed -n "s/^Cpus_allowed_list:[[:space:]]*//p" /proc/self/status | tr "\n" "|"
             flock -n -x "$0" true && printf free || printf held
             [ /proc/self/fd/9 -ef "$0" ] && printf "|fd9"
-            true' "$lock" 'a$$b' '$0' '${HOME}' 2>/dev/null)
+            true' "$lock" 'a$$b' '$0' '${HOME}' "${slice_cg:-unset}" 2>/dev/null)
         # shellcheck disable=SC2016 # literal dollars are the point
-        [ "$out" = "a\$\$b|\$0|\${HOME}|1|$cpu|held" ] \
-            || fail "capped run reported '$out', expected 'a\$\$b|\$0|\${HOME}|1|$cpu|held'" || return
-        scope="args unexpanded, heavy slice, CPU $cpu kept, LOCK held across the scope"
+        [ -n "$slice_cg" ] && [ "$out" = "a\$\$b|\$0|\${HOME}|in|$expected_cpus|held" ] \
+            || fail "capped run reported '$out', expected 'a\$\$b|\$0|\${HOME}|in|$expected_cpus|held' (slice $slice at '$slice_cg')" || return
+        scope="args unexpanded, inside $slice, CPU $cpu given and $expected_cpus kept, LOCK held across the scope"
     fi
 
     echo "heavy self-test: ok (exit status and SIGTERM propagate; CARGO_BUILD_JOBS=4; LOCK held shared by the helper, not the command; a pending measurement blocks new starts; nested calls run in place; stale markers do not; a leftover daemon does not hold LOCK; measure.sh self-test passes inside heavy.sh; capped scope: $scope)"

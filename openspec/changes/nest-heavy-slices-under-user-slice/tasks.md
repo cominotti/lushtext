@@ -19,11 +19,11 @@ other's scopes.
 
 ## 1. Failing-first self-test cases for (A) (no behaviour change yet)
 
-- [ ] 1.1 Merge `origin/main` into the branch. If `reduce-build-disk-writes` has
+- [x] 1.1 Merge `origin/main` into the branch. If `reduce-build-disk-writes` has
   landed, its `admitted_kib` body (live-PID rule, `lushtext-cap-<pid>-<ns>`
   units) is the per-scope body that group 2 wraps. Resolve any conflict in that
   function by keeping their body inside this change's slice loop.
-- [ ] 1.2 In `with-memory-cap.sh --self-test`, add the cases below. Each must
+- [x] 1.2 In `with-memory-cap.sh --self-test`, add the cases below. Each must
   fail on the current wrapper. Record the failure lines in
   `openspec/changes/nest-heavy-slices-under-user-slice/evidence/red.md`:
   - placement: a 64M scope's `/proc/self/cgroup` starts with the ControlGroup
@@ -82,18 +82,18 @@ other's scopes.
   - legacy left alone: the private legacy slice's `MemoryMax` and drop-in
     list (`systemctl --user show -p MemoryMax -p DropInPaths`) are the same
     before and after a current-slice admission.
-- [ ] 1.3 In `heavy.sh --self-test`, change the "capped scope" case as design D6
+- [x] 1.3 In `heavy.sh --self-test`, change the "capped scope" case as design D6
   describes: the intersection CPU pick, the empty-intersection expectation, and
   the cgroup prefix from `with-memory-cap.sh --print-slice`. Record today's
   failure in `evidence/red.md`: `--print-slice` is unknown.
-- [ ] 1.4 Run both self-tests on this state and record each red line in
+- [x] 1.4 Run both self-tests on this state and record each red line in
   `evidence/red.md`. Do not commit a red tree: the pre-commit hook runs
   `check-agent-helpers`, and `--no-verify` is forbidden. Groups 1 and 2 land as
   one commit (task 2.7).
 
 ## 2. The rename, the check and the transition (design D1-D7)
 
-- [ ] 2.1 `HEAVY_SLICE` defaults to `user-lushtext-heavy.slice`, the self-test
+- [x] 2.1 `HEAVY_SLICE` defaults to `user-lushtext-heavy.slice`, the self-test
   slice is the per-run `user-lushtext-heavy-selftest-$$.slice`, and the guard
   follows D5. An `EXIT` trap stops and then reverts it and its legacy slice on
   every exit path. Add a self-test assertion, run from the caller after the
@@ -102,7 +102,7 @@ other's scopes.
   `$XDG_RUNTIME_DIR/systemd/user.control/`.
   `ADMISSION_LOCK` keeps its file name. Add `--print-slice`, which prints
   `$HEAVY_SLICE`.
-- [ ] 2.2 Add `scripts/cpu-lists.sh`, sourced by the wrapper and later by
+- [x] 2.2 Add `scripts/cpu-lists.sh`, sourced by the wrapper and later by
   `measure.sh`. It holds `cpu_list_expand` (a CPU list to one CPU per line,
   exit 2 on a malformed list), `cpu_list_compress`, `cpu_list_subset` and
   `cpu_list_equal`, plus `cgroup_effective_cpus` (nearest
@@ -110,16 +110,16 @@ other's scopes.
   online CPUs) and `cpu_outside_cpuset` (the first online CPU the effective
   set lacks, or nothing). Add `shellcheck -x scripts/cpu-lists.sh` to
   `check-agent-helpers`.
-- [ ] 2.3 Add `placement_verdict` (pure; the six inputs from design D3),
+- [x] 2.3 Add `placement_verdict` (pure; the six inputs from design D3),
   `--placement-verdict` (fixtures entry, self-test only) and
   `--exec-in-scope <slice> <as-kib|-> <command…>`, which replaces
   `--exec-with-address-space`. Every scope launches through it. A failure exits
   78 with one `with-memory-cap: scope placement: expected …, got …` line.
-- [ ] 2.4 Add `legacy_slice_of`. Wrap the existing per-scope body of
+- [x] 2.4 Add `legacy_slice_of`. Wrap the existing per-scope body of
   `admitted_kib` in a loop over the current and legacy slices (D4), leaving the
   body itself unchanged. Run the self-test before the loop exists and see the
   legacy case fail, then add the loop. Record both runs in `evidence/red.md`.
-- [ ] 2.5 Update the wrapper header: the slice family and why it nests under
+- [x] 2.5 Update the wrapper header: the slice family and why it nests under
   the inner `user.slice`; no CPU properties (CST); the placement check and exit
   78; legacy accounting and why legacy slices are never touched; H1-H3. Update
   `heavy.sh`'s header, step 4: "the CPU affinity this process inherited,
@@ -149,7 +149,7 @@ other's scopes.
     prints the side with each time. Record the wall times with the call's
     1-minute load. They are non-verdict figures: label the call if its load is
     ≥ 4 and do not retry it.
-- [ ] 2.7 Run `scripts/heavy.sh --mem none -- make check-agent-helpers`
+- [x] 2.7 Run `scripts/heavy.sh --mem none -- make check-agent-helpers`
   (self-tests plus shellcheck, from the toolbox cgroup) and `scripts/heavy.sh
   -- make check-policy` (default cap, so the self-tests also run inside a real
   heavy scope, as in the commit hook). Both must pass. Run the two self-tests once more in isolation
