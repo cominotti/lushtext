@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A widget failure seen only on CI is reproduced in the CI image first
-Before a widget test failure that passes in the toolbox is treated as CI-only, it SHALL be run in the CI widget job's own image (read from `.github/workflows/ci.yml`, with that job's packages) under the runner's CPU budget, through a tracked repository script that runs one test or one shard N times under the shared heavy-work lock. A failure that reproduces there SHALL be diagnosed and fixed against that reproduction, failing first, and proved by 20 consecutive green runs in it.
+Before a widget test failure that passes in the toolbox is treated as CI-only, it SHALL be run in the CI widget job's own image (read from `.github/workflows/ci.yml`, with that job's packages) under the runner's CPU budget, through a tracked script that runs one test or one shard N times, each shard run in its own hold of the shared heavy-work lock. A failure reproduced there SHALL be fixed against that reproduction, failing first, and proved by 20 consecutive green runs in it.
 
 #### Scenario: Failure reproduced under the CPU limit
 - **WHEN** a widget test fails on every CI run and passes in the toolbox
@@ -12,6 +12,11 @@ Before a widget test failure that passes in the toolbox is treated as CI-only, i
 #### Scenario: Failure seen only inside a full shard
 - **WHEN** a test failed on CI inside its full shard and passes isolated
 - **THEN** the whole shard is run in the CI image under the CPU limit at least five times before the test is declared not reproducible
+
+#### Scenario: Inherited CI-only failures
+- **WHEN** a test's regression proof is still owed as CI runs because no local run reproduced it
+- **THEN** it is first run isolated in the CI image under the CPU limit at least five times
+- **AND** a reproduction there moves it to the reproduced path
 
 #### Scenario: Lane self-test
 - **WHEN** `make check-agent-helpers` runs

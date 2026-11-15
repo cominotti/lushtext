@@ -69,8 +69,12 @@ named and the production question is answered.
   normal diagnose-and-fix path. If not, take `restore-main-ci` D4's
   "not reproducible" branch: CI-log diagnosis, a deterministic mechanism
   test, and eight branch CI runs.
-- The eight-branch-run proof for `editor-page`, `window` and `surfaces` on
-  this branch's final code, with every run id and attempt recorded.
+- The inherited watched tests of the three shards (design B5) run in the
+  lane first. A test proved there needs no CI runs. A test still not
+  reproduced owes eight branch CI runs of its shard on this branch's final
+  code, with every run id and attempt recorded, or, if the stage brief does
+  not allow the CI-evidence exception, is recorded as owed to the
+  programme-end CI check (design D5).
 - Docs: the gtk-testing flake reference gets the "CI image + CPU count"
   class and the container lane, `docs/next/long-line-documents.md` the
   follow-up's outcome, `docs/end-user-coverage.md` or `build.md` the new
@@ -102,8 +106,12 @@ None.
   test-only.
 - Scripts: `scripts/ci-image-widget-test.sh` with `--self-test`, wired into
   `make check-agent-helpers` or `check-policy`.
-- CI: no workflow change expected. The proof runs are this branch's
-  `pull_request` runs and reruns of its widget jobs, under the CI-evidence
-  exception of `.agents/rules/parallel-agent-work.md`.
+- CI: no workflow change expected. Any proof runs are this branch's
+  `pull_request` run and its reruns, under the CI-evidence exception of
+  `.agents/rules/parallel-agent-work.md`, and only for proofs that exist
+  only in CI.
+- Smokes: `editor_page.rs` is under a UI prefix, so the test edits owe
+  `visual-geometry-smoke`, `accessibility-smoke` and `visual-smoke`
+  whatever the diagnosis (`.agents/rules/testing.md`).
 - Kani: none expected (no proven module touched). Conditional rerun in design.
 - Timing: none expected.
