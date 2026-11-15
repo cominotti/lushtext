@@ -4038,6 +4038,18 @@ separate change, in this order:
 3. `scale-file-index`: an interned path arena and a byte budget instead of
    the 131,072-file count, targeting at least 1,000,000 files, with a
    Criterion benchmark and a measurement on a real monorepo.
+   **Proposal written 2026-11-14** (branch `scale-file-index`,
+   `openspec/changes/scale-file-index/`), judged worth doing and refined by
+   measurement on `main` `2c91ccf2`: 363 B/file installed and 557 B/file at
+   the construction peak (131,072 files), so an arena alone does not reach
+   2^20 within the unchanged 64 MiB / 128 MiB ledgers; construction also
+   derives canonical identity for non-symlink entries (no per-file
+   `realpath`, no canonical-path set), the index keeps a sorted canonical-key
+   table (the open-tab exclusion and the empty-query count DP left here), the
+   limits become 2^20 files and directories (the count stays as the query
+   latency bound), and the category view gains a 131,072-row cap (A95). No
+   public monorepo checkout is on disk, so the measurement uses a synthetic
+   monorepo-shaped tree.
 4. Profile and slice the 59–60 ms largest-file open dispatch (the open-tier
    runs above).
 5. Then DL `bound-dense-long-line-editing`. (`avx2-health-scan-kernel`, once
