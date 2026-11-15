@@ -45,7 +45,7 @@ If `main` pushed but the tag did not:
 If the tag pushed but the release workflow failed:
 
 - Rerun the workflow if the tagged source is correct and the failure was transient or infrastructure-related.
-- If the fix is in release tooling or workflow scripts after the public tag, keep the tag immutable and rerun from the workflow recovery ref while still resolving the released source from the public tag and commit.
+- If the fix is in release tooling or workflow scripts after the public tag, keep the tag immutable, merge the fix to `main`, and dispatch the repaired workflow from `main` (a `release.yml` dispatch that is not a dry run is refused from any other ref) while still resolving the released source from the public tag and commit.
 - If source code or release metadata is wrong, publish a new patch release rather than moving the public tag.
 - Only delete or replace a pushed tag with explicit maintainer approval and a clear downstream-impact note.
 

@@ -4066,7 +4066,15 @@ separate change, in this order:
        `v0.8.4-dryrun.1`), the publish jobs skipped and no new tag or
        release afterwards; C3, if either fails or the relocation exceeds
        90 s, fix it (the D2 fallback is an empty system installation
-       filled from Flathub).
+       filled from Flathub). C1 is also the first execution of three
+       things no local run can show (stage 4 review): the composite
+       action's nested `flatpak-builder@v6` node action inside a container
+       job (fallback: run the two helper steps in each job before a
+       direct `flatpak-builder@v6` step, and make `check-flatpak-ci-builds`
+       require those steps instead of the composite action),
+       `mount(2)` on a hosted runner (fallback: `FLATPAK_SYSTEM_DIR`
+       through `$GITHUB_ENV`, design D1), and the extra 3.8 GiB on runner
+       disk (fallback: D2's empty installation).
      - **Upstream report candidates** (design D10; filing needs the
        maintainer, outside the `upstream-gtk-reports` skill's projects):
        `flatpak/flatpak-builder` segfaulting after `Error: Failed to update

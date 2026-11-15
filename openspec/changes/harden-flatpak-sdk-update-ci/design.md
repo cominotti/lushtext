@@ -224,6 +224,17 @@ Decisions made while implementing, beyond D1–D10:
 
 Evidence: `evidence/policy-baseline.md`, `evidence/local-runs.md`.
 
+## Review record (stage 4, 2026-11-14)
+
+An independent review of `origin/main..HEAD` (code, workflows, evidence and docs, not only the stage 3 report) found no must-fix and no should-fix in the code. Data safety, GTK lifecycle and accessibility do not apply: no production code changed, and the one test edit only changes how two widget tests sample a transient state. Kani: none (no proven module touched). Final-tree evidence was checked, not taken on trust: the widget shard logs (22:34–22:43) and the visual-geometry, accessibility and visual smoke artifacts (22:40–23:07) all postdate the last test edit (22:20).
+
+Decisions and dispositions:
+
+- **Doc wording, fixed.** `publish-release/references/failure-recovery.md` still told a recovery to "rerun from the workflow recovery ref"; it now says to dispatch from `main`, since D6 refuses a non-dry dispatch from any other ref. The `flathub-publication` spec's recovery scenario (repair on `main`, dispatch, resolve the public tag as the release source) still holds, so no spec delta is needed.
+- **Nit, kept: `relocate` fails when there is nothing to probe.** An overlay installation with no deployed runtime, or a `$RUNNER_TEMP` that is itself on overlay, makes the post-relocation probe return `not run` or `EXDEV`, and the step fails although an empty installation would need no rename. Neither happens with today's image (it preinstalls the SDK and Platform) or runners (`$RUNNER_TEMP` is a host bind mount), and the failure names the probe result and the filesystem. Failing loudly on an image that changed underneath us is preferred to a silent skip.
+- **Kept as designed: a real dispatch builds `main`, not the tag.** A non-dry recovery dispatch's `Release Flatpak Build` builds the dispatched `main` commit, as before this change (the Flathub artifact and the Cominotti repository still resolve the tag). Checking out the tag instead would break recovery of every tag older than this change, which has no `.github/actions/flatpak-build`, and would mix one commit's workflow with another's action.
+- **C1 is a first execution, recorded.** Three things no local run can show are first exercised by C1: the nested `flatpak-builder@v6` node action inside a composite action in a container job, `mount(2)` on a hosted runner, and 3.8 GiB more on runner disk. The fallbacks are named in the programme record (the helper steps in each job before a direct `flatpak-builder@v6` step, `FLATPAK_SYSTEM_DIR`, D2's empty installation).
+
 ## Open Questions
 
 None. Why the one runner image succeeded is recorded as unknown, and it does not affect the decision.
