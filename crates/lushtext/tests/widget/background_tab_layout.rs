@@ -206,6 +206,129 @@ fn test_a_hidden_tab_seen_laying_out_is_detached_and_keeps_its_top_line() {
     );
 }
 
+/// Wait until `editor`'s view has laid its document out: its vertical
+/// adjustment's `upper` held still for 300 ms.
+fn wait_laid_out(editor: &LushtextEditorPage) {
+    let adjustment = editor.source_view().vadjustment().expect("vadjustment");
+    let started = Instant::now();
+    let mut upper = adjustment.upper();
+    while started.elapsed() < Duration::from_secs(30) {
+        flush_after_delay(Duration::from_millis(300));
+        let now = adjustment.upper();
+        if (now - upper).abs() < 0.5 && now > adjustment.page_size() {
+            break;
+        }
+        upper = now;
+    }
+}
+
+/// A background tab resting at its first line comes back resting at the top
+/// (`lower`, the top margin shown), so its top-anchor repair stays armed.
+/// Scrolling the reattached view to its kept line through GTK
+/// (`scroll_to_mark`/`scroll_to_iter`, aligned at 0) put the first line's
+/// character box at the top edge instead: the value rested at the top margin
+/// plus that box's offset, 6 px here and 8 px with CI's fallback font, and
+/// the move was animated, so a width-reflow settle read it as a scroll
+/// (ledger A113, `diagnose-ci-only-reflow-guard-failure`).
+#[test]
+fn test_a_detached_tab_at_its_first_line_reattaches_at_the_top() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let big = dir.path().join("big.txt");
+    let small = dir.path().join("small.txt");
+    dense_document(&big, 'd');
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&big);
+    let big = editor_at(&window, 0);
+    wait_loaded(&big);
+    wait_laid_out(&big);
+    let adjustment = big.source_view().vadjustment().expect("vadjustment");
+    assert!(
+        (adjustment.value() - adjustment.lower()).abs() <= 0.5,
+        "precondition: the opened document rests at the top (value {}, lower {})",
+        adjustment.value(),
+        adjustment.lower()
+    );
+
+    window.open_document(&small);
+    let small = editor_at(&window, 1);
+    wait_loaded(&small);
+    // Re-layout every line of the hidden view (as a font, zoom or spacing
+    // change does), so it is seen laying out and detached (A83).
+    big.source_view().set_pixels_above_lines(4);
+    wait_until(Duration::from_secs(10), || !big.view_shows_document());
+    assert!(
+        !big.view_shows_document(),
+        "precondition: the hidden view was detached"
+    );
+
+    window
+        .imp()
+        .tab_view
+        .set_selected_page(&window.imp().tab_view.nth_page(0));
+    wait_until(Duration::from_secs(5), || big.view_shows_document());
+    wait_laid_out(&big);
+    let adjustment = big.source_view().vadjustment().expect("vadjustment");
+    assert!(
+        (adjustment.value() - adjustment.lower()).abs() <= 0.5,
+        "the reattached tab rests at the top: value {}, lower {}, top margin {}",
+        adjustment.value(),
+        adjustment.lower(),
+        big.source_view().top_margin()
+    );
+    assert_eq!(
+        big.visible_top_line(),
+        0,
+        "line one is the first line shown"
+    );
+}
+
+/// A file opened from disk into a window the way a user opens it rests at
+/// the top once it has settled: 2,000 unwrapped lines with the minimap shown,
+/// and no test code writing the editor's adjustments
+/// (`diagnose-ci-only-reflow-guard-failure` D3).
+#[test]
+fn test_a_file_opened_in_a_window_rests_at_the_top() {
+    ensure_gtk_init();
+    let settings = lushtext_core::ui::settings_writes::shared();
+    settings
+        .set_boolean(lushtext_core::config::keys::SHOW_MINIMAP, true)
+        .expect("show the minimap");
+    settings
+        .set_boolean(lushtext_core::config::keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("lines.txt");
+    let text: String = (0..2_000).map(|line| format!("line {line:03}\n")).collect();
+    fixture::write_text(&path, &text);
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    wait_laid_out(&editor);
+    wait_until(Duration::from_secs(10), || {
+        editor.is_minimap_visible() && !editor.minimap_evidence().reflow_settle_pending
+    });
+    flush_after_delay(Duration::from_millis(300));
+    let adjustment = editor.source_view().vadjustment().expect("vadjustment");
+    assert!(
+        editor.is_minimap_visible(),
+        "precondition: the minimap is shown"
+    );
+    assert!(
+        (adjustment.value() - adjustment.lower()).abs() <= 0.5,
+        "an opened file rests at the top: value {}, lower {}, attachments {:?}",
+        adjustment.value(),
+        adjustment.lower(),
+        editor.view_attachment_counts()
+    );
+}
+
 /// A Protected View document takes GTK's primary-selection provider off its
 /// buffer while its view is realized; detaching that view (hidden, seen laying
 /// out) and attaching it again must keep that bookkeeping true, or GTK's

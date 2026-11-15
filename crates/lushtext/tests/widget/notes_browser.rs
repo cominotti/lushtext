@@ -41,11 +41,48 @@ impl Drop for TextBudgetReset {
     }
 }
 
+/// The absolute length, in bytes, of the folder [`seed_workspace_of_fixed_length`]
+/// creates: longer than any test scope's temporary root.
+const FIXED_FOLDER_PATH_BYTES: usize = 112;
+
 /// One workspace folder, returned with the tempdir that owns it.
 fn seed_workspace() -> (tempfile::TempDir, PathBuf) {
     ensure_gtk_init();
     let folders = tempfile::tempdir().expect("workspace tempdir");
     let folder = folders.path().join("w");
+    seed_workspace_folder(folders, folder)
+}
+
+/// One workspace folder whose absolute path is [`FIXED_FOLDER_PATH_BYTES`]
+/// long, whatever the temporary root.
+///
+/// A bookmark row retains its document's path several times, so the rows that
+/// fit the retained ceiling, and with them the construction room left for
+/// counting the rest, follow the length of the temporary root, which holds
+/// process ids. With the root's own length, the 131,072-row case found every
+/// row on a host whose process ids have seven digits and stopped counting at
+/// 103,424 rows in a container whose ids have two
+/// (`diagnose-ci-only-reflow-guard-failure`).
+fn seed_workspace_of_fixed_length() -> (tempfile::TempDir, PathBuf) {
+    ensure_gtk_init();
+    let folders = tempfile::tempdir().expect("workspace tempdir");
+    let root = folders.path().as_os_str().len();
+    assert!(
+        root + 2 < FIXED_FOLDER_PATH_BYTES,
+        "the temporary root {} is {root} bytes, too long for a {FIXED_FOLDER_PATH_BYTES}-byte folder",
+        folders.path().display()
+    );
+    let name = format!("w{}", "x".repeat(FIXED_FOLDER_PATH_BYTES - root - 2));
+    let folder = folders.path().join(name);
+    assert_eq!(folder.as_os_str().len(), FIXED_FOLDER_PATH_BYTES);
+    seed_workspace_folder(folders, folder)
+}
+
+/// Create `folder` and save it as the one workspace's folder.
+fn seed_workspace_folder(
+    folders: tempfile::TempDir,
+    folder: PathBuf,
+) -> (tempfile::TempDir, PathBuf) {
     fixture::create_dir_all(&folder);
     let workspaces = WorkspacesFile {
         current_scope: WorkspaceScope::All,
@@ -206,10 +243,12 @@ fn test_every_note_and_bookmark_is_listed_and_the_last_is_drawn() {
 }
 
 /// D2: realized row widgets at 131,072 rows stay within the A1 cap, and the
-/// byte budgets, not a count, bound the source.
+/// byte budgets, not a count, bound the source. The rows' size is fixed
+/// ([`seed_workspace_of_fixed_length`]), so the room left for counting does
+/// not follow the host.
 #[test]
 fn test_the_list_stays_virtualized_at_131072_rows() {
-    let (_folders, folder) = seed_workspace();
+    let (_folders, folder) = seed_workspace_of_fixed_length();
     seed_closed_bookmarks(&folder, 128, 1_024);
     let window = new_window();
     activate_action(&window, "show-notes");
@@ -228,7 +267,16 @@ fn test_the_list_stays_virtualized_at_131072_rows() {
         "the byte budgets retain most of the source, got {}",
         snapshot.source_rows
     );
-    assert_eq!(snapshot.rows_found, 128 * 1024);
+    assert_eq!(
+        snapshot.rows_found,
+        128 * 1024,
+        "every row is found: found {} (lower bound {}), source {} rows, truncated {}, source {:?}",
+        snapshot.rows_found,
+        snapshot.found_is_lower_bound,
+        snapshot.source_rows,
+        snapshot.source_truncated,
+        snapshot.source,
+    );
     assert_eq!(snapshot.limited, snapshot.source_rows < snapshot.rows_found);
     assert!(
         snapshot.realized_row_widgets <= 256,
