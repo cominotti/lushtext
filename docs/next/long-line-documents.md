@@ -4778,10 +4778,11 @@ not restated; each holds on the Fedora 45 host and in the GNOME 51 and GNOME
 
 ## RA `rust-1-100-adoption` (implementation record, 2026-11-14)
 
-**Status:** implemented 2026-11-14 on branch `rust-1-100-adoption`. Design and
-decisions: `openspec/changes/rust-1-100-adoption/design.md` (its
-"Implementation findings and decisions" section); evidence in
-`openspec/changes/rust-1-100-adoption/evidence/` and
+**Status:** implemented 2026-11-14 on branch `rust-1-100-adoption`; merged
+2026-11-15 (PR #105, `main` `9df24739`) and archived 2026-11-15
+(`openspec/changes/archive/2026-11-15-rust-1-100-adoption/`). Design and
+decisions: the archived `design.md` (its "Implementation findings and
+decisions" section); evidence in the archived `evidence/` and
 `.claude/handoffs/rust-1-100-adoption/`. It lands first among the parallel
 programme runs, because its Clippy sweep and regenerated files
 (`Cargo.lock`, `workspace-hack`, `build-aux/cargo-sources.json`) cannot be
