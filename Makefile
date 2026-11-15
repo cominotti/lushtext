@@ -748,6 +748,7 @@ check-workflow-timeouts:
 # harden-flatpak-sdk-update-ci). The self-tests run first.
 check-flatpak-ci-builds:
 	@echo "Checking CI Flatpak builds use the shared composite action..."
+	./scripts/ci-flatpak-installation.py --self-test
 	./scripts/check-flatpak-ci-builds.py --self-test
 
 # Enforce the explicit-SIMD policy (.agents/rules/rust.md, "Explicit SIMD"):

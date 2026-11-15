@@ -18,7 +18,7 @@
 
 ## 2. Helper script, failing-first in the real image (L1)
 
-- [ ] 2.1 Write `scripts/ci-flatpak-installation.py` with the subcommands `diagnose`, `probe`, `relocate` and `--self-test` (design D1, D3 and D4).
+- [x] 2.1 Write `scripts/ci-flatpak-installation.py` with the subcommands `diagnose`, `probe`, `relocate` and `--self-test` (design D1, D3 and D4).
   - Read paths only from the environment variables `RUNNER_TEMP` and `GITHUB_WORKSPACE`.
   - Print one `::group::`/`::endgroup::` per subcommand.
   - The probe renames the deployed commit directory of the installation's first runtime to `<commit>.rename-probe` and back with `os.rename`, and prints the target and `rename-probe: ok` or `rename-probe: <errno name>`. If the rename back fails, fail immediately.
@@ -30,12 +30,12 @@
     - prints its wall time and `df -h` before and after.
   - A missing tool (`findmnt`, `cp`) fails `diagnose` with its name.
   - `--self-test` covers the cases D4 lists, using `tempfile.TemporaryDirectory`.
-- [ ] 2.2 Make `make check-flatpak-ci-builds` also run `scripts/ci-flatpak-installation.py --self-test`.
-- [ ] 2.3 **L1 (must fail, design D8).** Pull `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` and record its image id. In a container, run `diagnose` from a read-only bind of the checkout (`-v "$PWD":/__w/lushtext/lushtext:ro`, `GITHUB_WORKSPACE` and `RUNNER_TEMP` set to the container paths). It must report `overlay` and `rename-probe: EXDEV`.
+- [x] 2.2 Make `make check-flatpak-ci-builds` also run `scripts/ci-flatpak-installation.py --self-test`.
+- [x] 2.3 **L1 (must fail, design D8).** Pull `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` and record its image id. In a container, run `diagnose` from a read-only bind of the checkout (`-v "$PWD":/__w/lushtext/lushtext:ro`, `GITHUB_WORKSPACE` and `RUNNER_TEMP` set to the container paths). It must report `overlay` and `rename-probe: EXDEV`.
   - Then run `flatpak-builder --install-deps-only --install-deps-from=flathub --disable-rofiles-fuse --state-dir "$RUNNER_TEMP/state" "$RUNNER_TEMP/build" <manifest>`. It must fail with `Invalid cross-device link`.
   - If the image no longer lags Flathub, record that, and fall back to the probe plus the `codecs-extra` update of `evidence/local-reproduction.md`.
   - Record the output in `evidence/local-runs.md`.
-- [ ] 2.4 Commit and push.
+- [x] 2.4 Commit and push.
 
 ## 3. Shared mechanism and the fix (L2, L3)
 
