@@ -43,11 +43,13 @@ directory, Chromium-like directory names such as
 | --- | --- | --- | --- |
 | B1 | `retained_index_bytes` | 47,644,732 (363 B/file) | same (deterministic) |
 | B2 | `peak_build_bytes` | 73,045,157 (557 B/file) | same |
-| B3 | build wall time | 1,738–1,861 ms | 911–916 ms |
-| B4 | `FileIndex::clone` (the incremental worker's base copy) | 36.6–52.0 ms | 26.6–27.5 ms |
-| B5 | drop of that clone | 22.0–26.0 ms | 15.8–16.3 ms |
-| B6 | `search("lbf", 64)` | 11.6–15.7 ms | 7.4–7.7 ms |
+| B3 | build wall time | 1,738–1,861 ms | 911–956 ms |
+| B4 | `FileIndex::clone` (the incremental worker's base copy) | 36.6–52.0 ms | 26.6–30.1 ms |
+| B5 | drop of that clone | 22.0–26.0 ms | 15.8–16.5 ms |
+| B6 | `search("lbf", 64)` | 11.6–15.7 ms | 6.5–7.7 ms |
 
+The release ranges span all three runs of the log (run 0 gave 956.2, 30.1, 16.5
+and 6.5 ms; stage 2 widened the ranges, which first quoted runs 1–2 only).
 B3–B6 are **non-verdict**: the 1-minute load was 10–20 (other agents
 building), and tmpfs flatters `realpath` against btrfs. B1 and B2 are exact.
 Truncation at this size: none; 64 MiB / 363 B ≈ 184,000 files is where this
@@ -111,6 +113,24 @@ PathBuf`, `relative_display() -> String`, `identity() ->
 PaletteFileIdentity` (owned, reconstructed) and `workspace_folder()`;
 `files()` becomes an iterator of views.
 
+**Search results carry the ordinal, not the view.** `SearchResultItem::File`
+carries a `FileOrdinal(u32)`, and the consumer, which already holds the
+`FileIndex` it searched (grouped rows, the category model, benches), builds the
+view with `index.file(ordinal)`. Stage 2 measured the alternative on the
+pinned toolchain: an enum whose `File` variant holds the 16-byte view is
+24 bytes (four dataful variants leave no niche for the tag), which makes
+`RetainedCandidate` 40 bytes and `PALETTE_CATEGORY_CANDIDATE_BYTES` 44 instead
+of 36. With a `u32` payload the enum stays 16 bytes, so the existing layout
+assertion, the 36-byte charge, the `core-list-budget` Kani harnesses and the
+threshold rows stay as they are.
+
+Non-UTF-8 names: `raw_names` holds the exact bytes of every directory **and**
+file name that is not valid UTF-8, keyed by record kind and id. Path
+reconstruction uses the exact bytes, so such a file opens at its real path.
+Every name comparison the build and the mutations make (D2, D5) also uses the
+exact bytes, never the lossy name, because two different non-UTF-8 names can
+share one lossy string.
+
 *Rationale:* the name is the only field the hot loop reads; it becomes a
 contiguous slice, which is also the cache-friendliest layout for the query
 scan. Paths are needed for at most the shown rows. 12-byte records plus names
@@ -165,6 +185,15 @@ So ordinals, winners and identities equal `main`'s, which D6's reference model
 checks with symlinks in both orders. The visit set and the symlink set key by a
 64-bit hash with an exact comparison on collision (paths reconstructed from the
 arena or held by the symlink entry), charged to the build ledger per entry.
+
+**One intended divergence from `main`, in races only.** On `main`, a file
+that disappears between `readdir` and its `realpath` is still indexed, with
+`PaletteFileIdentity::Unavailable(NotFound)`, and counted in
+`identity_failures`. With derivation it is indexed with its derived canonical
+path. Either way the index lists a file that is gone, and opening it fails the
+same way. No open tab can hold it, so the exclusion cannot differ. On a static
+tree both give the same identity, which is what D6 compares.
+`identity_failures` then counts only symlink resolutions that fail.
 
 *Rationale:* B3's build is dominated by the per-file `realpath`, and B2's peak
 by the per-file canonical clone in `canonical_files`. The derivation is exact
@@ -238,6 +267,13 @@ recording a last-owned index of at least that length, so the tests keep their
 131,072-file fixtures and keep proving the same property: a large index never
 dies on the GTK thread. Kind: test evidence, not a presentation cap.
 
+New named constants, each with a `Kind:` line and a `docs/thresholds.md` row
+(task 3.7): `LARGE_INDEX_RETIREMENT_FILES` (test evidence, below);
+`INDEX_INCREMENTAL_GROWTH_DIVISOR = 16` (the growth step above, a power of
+two); `MAX_QUERY_CHUNKS = 4` (D7); `MAX_CATEGORY_VIEW_ROWS` (D8). The
+threshold rows of the moved constants change their path column to the new
+module (`services/palette/index/…`).
+
 *Alternatives rejected:* 2^21 files (no tree on disk to justify it; doubles
 query cost); raising the installed budget to 128 MiB (the reservation would
 take the whole ordinary disposal lane during a replacement).
@@ -269,17 +305,59 @@ still pays the full walk on every index or tab change.
 - **Add:** dedup by display path and by canonical key: the directory is found
   by walking the path's components from its workspace folder through a
   batch-scoped `(parent, name) → dir` lookup built once per batch (on the
-  worker), the file by binary search of its canonical key; the canonical path
-  of the added file is resolved with one `realpath`, as today. New records are
-  appended (today's order).
+  worker), the file by binary search of its canonical key. A component with
+  no directory record yet (a folder created after the build) gets one,
+  charged to the mutation ledger. The added file's canonical path is resolved
+  with one `realpath`, as today. If it equals the derived path (directory
+  canonical plus name), the record is ordinary; otherwise it is a symlink and
+  its identity goes to `symlink_identities`. New records are appended
+  (today's order). The key table is merged once, after the batch, so adds
+  inside one batch also check a batch-local set of the keys added so far;
+  that keeps `main`'s sequential rule that a second add of the same path or
+  identity in one batch is refused.
 - **Remove:** a directory subtree's ids are marked, then one `retain` pass
   over the 12-byte records (O(n) integer work, today O(n) path comparisons);
   key table compacted in the same pass.
 - **Rename:** a directory rename rewrites one `DirRecord` (parent, name,
   canonical rule) and leaves its descendants' records untouched (today it
-  rebuilds and re-canonicalizes every descendant); a file rename rewrites one
-  record; both re-key the affected canonical hashes, and a rename onto an
-  existing identity is deduplicated exactly as today.
+  rebuilds and re-canonicalizes every descendant). A file rename rewrites one
+  record. Both re-key the affected canonical hashes: O(descendants) hashing of
+  reconstructed paths, with no filesystem call beyond the one `realpath` of
+  the renamed entry. A rename onto an existing identity is deduplicated
+  exactly as today (`deduplicate_files` keeps the first ordinal). The cases
+  `main` handles implicitly, each made explicit:
+  - *New parent not interned:* its missing directory records are created as
+    for an add, charged first.
+  - *Old path is a workspace folder root:* its folder record keeps its
+    display path and its directory record takes the new path as a
+    `Resolved` path. On `main` the files keep their `workspace_folder`, and
+    `relative_display` falls back to the full path because the new path is
+    not under the folder. Reconstruction gives the same strings.
+  - *New path outside every workspace folder:* the same representation. A
+    directory record may hold an owned absolute path (`Resolved`, charged to
+    the ledger), so descendants reconstruct `new_path/suffix` and display it
+    in full, as `main` does. The existing ledger test renames a folder to a
+    256 KiB `/renamed/…` prefix this way.
+  - *Ledger refusal:* `main` drops each descendant whose replacement does not
+    fit (path cleared, then `retain`). The arena does the same for the
+    subtree whose new record does not fit: its records are removed in the
+    batch's `retain` pass, and the ledger is released.
+  - *Identity of renamed descendants:* `main` re-resolves each descendant,
+    so a path missing on disk gets `Unavailable`. The arena derives it from
+    the renamed directory's new canonical path. This is intended, as in D2
+    (a rename reaches the worker after the rename succeeded on disk, so the
+    descendants exist).
+- **Reclaiming dead storage:** removes and renames leave unreferenced bytes
+  in `names` and directory records nothing references. Because capacity is
+  charged, a long session could otherwise refuse adds on a small live index.
+  A batch therefore compacts the arena, with one pass that rewrites `names`,
+  `dirs`, the record spans and `raw_names` and then shrinks to length, when
+  dead bytes exceed a quarter of the charged weight. That is the same 3/4
+  rule `should_compact_after_removal` applies today. The pass is O(n) on the
+  worker. It holds the compacted vectors, at the live length, beside the old
+  ones only for the pass, which is the same transient copy `shrink_to_fit`
+  makes on `main`. The ledger then records the compacted weight, so the
+  `retained_byte_weight` agreement holds.
 
 Generation arbitration (`FileIndexMutationTicket`), the replay of a rejected
 batch, the queue overflow to a worker-only rebuild, and the
@@ -298,8 +376,23 @@ generated trees (nested directories, overlapping workspace folders, a
 symlinked directory and file, a non-UTF-8 name where the platform allows it)
 and generated mutation sequences, and asserts equal file lists (display path,
 relative display, name, identity, folder), equal query results and order for
-generated queries, equal empty-query counts with generated open-tab sets, and
-equal truncation reasons under scaled-down limits.
+generated queries, and equal empty-query counts with generated open-tab sets.
+The reference keeps its own owned row type (`ReferenceIndexedFile`, today's
+fields), because `IndexedFile` becomes the view.
+
+- **Mutations are applied on disk first.** Each generated create, remove and
+  rename is first performed on the temp tree, then fed to both
+  implementations, as the application feeds the worker after a sidebar
+  operation succeeded. On a mutation the disk never saw, `main` re-resolves
+  the path to `Unavailable` and the arena derives it (D2, D5), which is the
+  recorded divergence and not a parity failure.
+- **Truncation parity is by count only.** Under scaled file and directory
+  limits both report the same `FileLimit` / `DirectoryRetentionLimit` at the
+  same file. The byte ledgers cannot agree, because the arena charges far
+  fewer bytes. Under scaled byte limits, the property instead asserts that
+  the arena's list is a prefix of the reference's **untruncated** list in
+  the same order (both stop at their first refusal), that it reports a byte
+  reason, and that its weights respect its own caps.
 
 ### D7. Query cost at 2^20
 
@@ -314,11 +407,33 @@ four contiguous chunks scored on scoped threads inside the same worker, each
 with its own bounded top-N heap and cancellation checks, merged by score then
 ordinal (deterministic, equal to the single-pass reference by D6). Task 4.2
 measures the single pass first, because the contiguous name slices may be
-faster than B6's per-file `String`s; the split is skipped only if that verdict
-is within the bar, recorded in this design. Four threads, not more: the palette
-worker already holds one of `gtk_lush_tasks`' eight slots, and four keeps the
-query inside the 16-CPU affinity alongside a running build. The GTK-thread publish cost
-does not depend on the index size (at most 64 rows per group).
+faster than B6's per-file `String`s. The split is skipped only if that
+verdict is within the bar, and the result is recorded in this design.
+
+Split mechanics and bounds:
+
+- The chunk count is `min(MAX_QUERY_CHUNKS = 4, available_parallelism())`,
+  and a source below 2^17 files is never split. Each chunk owns its own
+  nucleo `Matcher` and scratch buffer, because `FuzzyQuery` reuses one per
+  query.
+- The chunks are `std::thread::scope` threads joined before the palette
+  worker returns. They run **beside** the `gtk_lush_tasks` slot the worker
+  holds, not in new slots: at most three extra CPU-only threads, living one
+  query and touching no GTK object. That is a recorded exception to "all
+  background work goes through `spawn_blocking_then`", with the same shape
+  as `services/editor_io/text_scans/health_avx2.rs`.
+- **Retention:** each chunk keeps at most the group's 64 rows, so a split
+  grouped query holds at most 256 candidates before the merge (the MODIFIED
+  "retains only bounded top results" requirement).
+- **The category view's ranking is not split.** Four heaps of up to 131,072
+  candidates would hold about 18 MiB against its 8 MiB budget. It stays one
+  pass, which task 4.2 measures at 2^20. If it is over the 50 ms bar, the
+  figure and the reason are recorded here as a measured exception: entering
+  a category, or typing inside one, over a 2^20-file index then takes that
+  long on the worker, and the GTK thread is not affected.
+
+The GTK-thread publish cost does not depend on the index size (at most 64
+rows per group).
 
 ### D8. The category view's row cap
 
@@ -333,8 +448,34 @@ is derived from the row cap instead of `MAX_INDEXED_FILES`, and its two
 `const` assertions keep holding (131,072 × 36 = 4.5 MiB ≤ 8 MiB < 9 MiB). A
 category with more matches lists its best 131,072 and says "Showing X of Y
 results" (the existing budget-cut message). `SearchResultItem::File` carries
-the borrowed view (D1) and stays 16 bytes, pinned by the existing layout
-assertion, so `PALETTE_CATEGORY_CANDIDATE_BYTES` stays 36.
+the `u32` ordinal (D1) and stays 16 bytes, pinned by the existing layout
+assertion, so `PALETTE_CATEGORY_CANDIDATE_BYTES` stays 36. With 36-byte rows
+the row cap (131,072, 4.5 MiB) binds before the 8 MiB budget (233,016 rows),
+so in production the budget no longer cuts a category. It stays the memory
+bound, and the "budget cuts a category" scenario keeps its test-override
+proof.
+
+**What the cap is measured against.** The A95 probe (a bare `GtkListView` of
+sectioned rows) gives 10.4 ms at 131,071 rows, above `B_INTERACT_US`. DP's
+application measurement at 131,072 rows gave 2.2–6.9 ms worst, inside it.
+The **gating** figure is the application's: lane case D10 "End in the
+category view" at 131,072 rows, verdict run, ≤ `B_INTERACT_US`. The widget
+test (task 2.8) bounds the same dispatch at 2 × `B_INTERACT_US`, the
+widget-harness convention, and is a regression guard, not the verdict. If
+that verdict misses the bar, task 1.3/4.4 lowers the cap to the largest power
+of two whose verdict fits, never below 65,536 (2^16). Below that, the cap
+stays at 2^16 and the figure is recorded as a measured exception.
+
+**The cap applies to every category, and that is the one loss.**
+`category_row_limit()` is shared by all categories. On `main` it is the
+budget's 233,016 rows, so a note or bookmark category of 131,073–233,016
+matches is listed whole there. It is now cut at 131,072 and says "Showing
+131,072 of N results". Decision: keep one cap for every category, user
+experience first. The far select-and-scroll cost is a property of the list,
+not of the row kind (A95): at 233,016 rows it extrapolates to about 18 ms in
+the probe, over `B_INTERACT_US`, and on `main` that cost is already paid
+today. The rows stay reachable by narrowing the query. The loss is stated in
+the proposal's "User-visible impact".
 
 *Alternatives rejected:* raising the budget to list 2^20 rows (36 MiB of
 ranking peak on the worker and a far scroll of tens of milliseconds); a fixed
@@ -352,6 +493,12 @@ plus a published Chromium-scale shape (about 10 files per directory, depth
 6–10), with one symlinked directory and one symlinked file. Sizes 2^17 and
 2^20.
 
+This deviates from the programme item's "a measurement on a real monorepo".
+No public monorepo checkout is on disk, and cloning one is not in this
+change's scope, so the synthetic tree is calibrated on the three real trees
+above. The deviation is recorded in the programme record (task 6.4), and a
+real-tree measurement remains a follow-up.
+
 ### D10. Responsiveness lane cases
 
 A new lane group `workspace-index` (headless, the existing driver) opens a
@@ -361,14 +508,28 @@ the workspace "More" row, Page Down and End in the category view. Pass bar:
 every GTK dispatch ≤ `B_INTERACT_US` for input and ≤ `B_SETTLE_US` for publish,
 as on `main` at 2^17; the worker query per D7.
 
+Tiers and comparison:
+
+- The 2^17 cases run in both tiers. The 2^20 cases run in the `full` tier
+  only, because generating and indexing a million files takes minutes. The
+  `command-palette-index` wait has a timeout scaled to the size.
+- `main` has no `workspace-index` group, so the `main` side of the
+  interleaved 2^17 comparison runs **this branch's** driver against a `main`
+  build, as earlier programme changes did.
+- `docs/runbooks/responsiveness-lane.md` documents the group, and the
+  driver's self-test covers the new cases.
+
 ## Ledger axioms relied on
 
 - A1 (realized-row cap), A90, A93, A96: grouped and category lists cost what
   they realize, not what the model holds; unchanged by this change at 2^17
   rows.
 - A95: the far select-and-scroll grows with rows; the basis of D8. Re-probed
-  at 2^18 and 2^20 (task 1.3); no new axiom unless the re-probe shows a
-  behaviour A95 does not state.
+  at 2^18 and 2^20 (task 1.3). Those two sizes run as a separate
+  measurement, marked `slow`. The probe's existing 16,384 / 131,072 pair stays
+  fast and stays in the pull-request `GTK Axioms` lane, because the notes
+  browser's and the category view's designs rely on it. No new axiom unless
+  the re-probe shows a behaviour A95 does not state.
 
 ## Timing
 
@@ -401,3 +562,62 @@ case at 2^17 slower than `main` by more than its own min–max spread.
 
 None blocking. The D7 parallel split and the D8 cap are decided by the stage-3
 measurements under the pass bars above.
+
+## Review (stage 2)
+
+Independent review on 2026-11-14 against `main` `2c91ccf2`. The approach
+holds: the arena, derived identity, the key table, 2^20 limits under
+unchanged ledgers, and a category row cap. These are the issues found and
+how each was decided (user experience first):
+
+1. **The search-result layout was wrong.** A 16-byte view in
+   `SearchResultItem::File` makes the enum 24 bytes and the candidate charge
+   44, which a `rustc` layout check showed. Decision (D1): carry the `u32`
+   ordinal, keeping 16 bytes, the 36-byte charge, the `core-list-budget` Kani
+   harnesses and "Kani: none".
+2. **The MODIFIED requirement bodies dropped clauses** that archiving would
+   have deleted from the main spec: the category view's rank definition, "no
+   per-row text", the list-budget policy; the byte ledger's 2× relation; the
+   traversal's direct metrics; the note-source clauses. Decision: each body
+   rebuilt from the baseline text with only this change's edits. No scenario
+   was renamed.
+3. **The split's retention contradicted "retains only bounded top results",**
+   and four category heaps would exceed the 8 MiB budget. Decision (D7): the
+   requirement now admits ≤ 4 chunk heaps for grouped queries, the category
+   ranking stays one pass, and its 2^20 figure is measured and, if over
+   50 ms, recorded as an exception. The split's chunk count follows
+   `available_parallelism()`, and its scoped threads are a recorded
+   exception to the `spawn_blocking_then` rule.
+4. **The row cap cuts note categories that `main` lists whole** (131,073–
+   233,016 rows), so "loss: none" was false. Decision (D8): one cap for
+   every category, the loss stated in the proposal.
+5. **The `B_INTERACT_US` basis of the cap was ambiguous** (probe 10.4 ms,
+   application 2.2–6.9 ms), and task 2.8 named two bounds. Decision (D8): the
+   lane verdict at 131,072 rows gates; the widget test guards at 2 ×; the cap
+   can be lowered, never below 2^16.
+6. **D5 was incomplete:** in-batch duplicates, new directories, a renamed
+   folder root, a rename outside every folder (which an existing test
+   performs), ledger refusal, and dead arena bytes after removes and renames
+   (which would refuse adds on a small live index). Decision: each case
+   specified, plus compaction at the existing 3/4 rule.
+7. **Parity was overclaimed.** Byte truncation cannot agree between
+   representations, and the rename re-resolution and race identities
+   diverge. Decision (D2, D6): count-limit parity, a prefix property under
+   byte limits, mutations applied on disk first, and the divergences
+   recorded.
+8. **The 2^20 construction peak had no asserting task.** Task 2.3's 128 B/file
+   at 2^17 left zero headroom at 2^20. Decision: task 2.3 at ≤ 96 B/file, and
+   task 4.1 asserts no truncation, peak ≤ 128 MiB and installed ≤ 64 MiB on a
+   real 2^20 traversal.
+9. **Failing-first versus the commit hook:** tests naming symbols that do not
+   exist yet would fail all-targets Clippy. Decision (task 2.9): each test
+   lands assertion-red against a minimal stub that compiles, or recorded-red
+   in the handoff, and says which.
+10. **Smaller fixes:** the baseline ranges now include run 0. A95's
+    2^18/2^20 re-probe is a separate slow measurement, so the PR lane keeps
+    the fast pair. The rapid-query scenario at 2^20 gets a bench, and the
+    lane's 2^20 cases are full-tier and use the branch driver for `main`. The
+    widget shard budget is re-checked. Non-UTF-8 comparisons use exact bytes.
+    The synthetic-tree deviation from "a real monorepo" is recorded. The new
+    constants get threshold rows.
+

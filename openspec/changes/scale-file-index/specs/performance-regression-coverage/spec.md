@@ -19,5 +19,6 @@ The project SHALL prove bounded top-result selection and one-active/one-latest e
 - **AND** captured diagnostics contain none of the private source or replacement sentinel text
 
 #### Scenario: The index arena agrees with the per-file reference
-- **WHEN** generated trees, symlinks in both traversal orders and mutation sequences run through the arena index and the per-file reference
-- **THEN** both list the same files, identities and order, and return the same rows, counts and truncation reasons
+- **WHEN** generated trees, symlinks in both traversal orders and mutation sequences (each applied to the filesystem first) run through the arena index and the per-file reference
+- **THEN** both list the same files, identities and order, and return the same rows and counts
+- **AND** they report the same file-limit and directory-limit truncations, and under a byte limit the arena's files are a prefix of the reference's untruncated list

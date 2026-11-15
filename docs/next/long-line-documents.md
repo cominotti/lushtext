@@ -4049,7 +4049,16 @@ separate change, in this order:
    limits become 2^20 files and directories (the count stays as the query
    latency bound), and the category view gains a 131,072-row cap (A95). No
    public monorepo checkout is on disk, so the measurement uses a synthetic
-   monorepo-shaped tree.
+   monorepo-shaped tree (a recorded deviation from "a real monorepo"; a
+   real-tree measurement stays a follow-up). **Spec review (stage 2,
+   2026-11-14)**, design "Review (stage 2)": the approach holds. Search
+   results carry a `u32` file ordinal, so the 36-byte category candidate and
+   the `core-list-budget` proofs are unchanged. The row cap applies to every
+   category, so a note category above 131,072 rows, which `main` lists whole up
+   to 233,016, is cut: the one recorded loss. The cap is gated on the lane's
+   application dispatch, not on the probe. The query split is for grouped
+   queries only, and the category ranking stays one pass. Mutations gained
+   their unspecified cases and dead-byte compaction.
 4. Profile and slice the 59–60 ms largest-file open dispatch (the open-tier
    runs above).
 5. Then DL `bound-dense-long-line-editing`. (`avx2-health-scan-kernel`, once

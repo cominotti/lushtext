@@ -68,6 +68,10 @@ its own row cap instead of "the whole index".
   a far select-and-scroll); a larger category says "Showing X of Y results", as
   the budget rule already specifies. The grouped view is unchanged (64 rows per
   category, exact "N more…" counts at any index size).
+- **Search results carry a file ordinal.** `SearchResultItem::File` holds a
+  `u32` ordinal into the index, and consumers build the borrowed view from the
+  index they searched. That keeps the item at 16 bytes and the category
+  view's 36-byte candidate charge (design D1).
 - **Benchmarks and measurements:** Criterion groups at 2^17 and 2^20 for build,
   query, empty-query count, mutations and clone; a lane measurement on a
   synthetic monorepo-shaped tree of 2^20 files in the run's temp scope (no
@@ -92,10 +96,15 @@ its own row cap instead of "the whole index".
 - The index's memory falls about sevenfold for the same files (an estimate:
   363 B/file measured against about 50 B/file estimated), and opening the palette in a large workspace is ready sooner
   (no per-file `realpath`).
-- Loss compared with `main`: none at today's sizes. A category view of a query
-  matching more than 131,072 files lists its best 131,072 and says "Showing
-  131,072 of N results"; on `main` such a category could not exist, because the
-  index itself stopped at 131,072 files.
+- Loss compared with `main`, one, recorded (design D8): the category view's
+  row cap applies to every category. A **note or bookmark** category of
+  131,073–233,016 matches, which `main` lists whole (its byte budget holds
+  233,016 rows), now lists its best 131,072 and says "Showing 131,072 of N
+  results". The far select-and-scroll over a list that long already exceeds
+  `B_INTERACT_US` (ledger A95), and narrowing the query reaches the rest. A
+  workspace-file category over 131,072 is cut the same way, but on `main` such
+  a category could not exist, because the index itself stopped at 131,072
+  files.
 
 ## Capabilities
 
@@ -107,8 +116,8 @@ None.
 
 - `command-palette-source-groups`: the file-index bounds (files, directories,
   byte ledgers), the arena representation and its identity rule, mutation and
-  query cost at 2^20 files, the open-tab count through the index, and the
-  category view's row cap.
+  query cost at 2^20 files, the open-tab count through the index, the bounded
+  retention of a chunked grouped query, and the category view's row cap.
 - `performance-regression-coverage`: the maximum indexed-file corpus becomes
   1,048,576 files, and the arena's parity with the per-file reference is
   covered.

@@ -23,10 +23,11 @@ The file index SHALL store each directory once and each file as a fixed record o
 
 #### Scenario: Parity with the per-file representation
 - **WHEN** generated trees, overlapping workspace folders and mutation sequences are applied to both representations
-- **THEN** both list the same files in the same order with the same identities, return the same results for every query, and report the same truncation reasons
+- **THEN** both list the same files in the same order with the same identities, return the same results and counts for every query, and report the same file-limit and directory-limit truncations
+- **AND** under a byte limit the arena's files are a prefix of the reference's untruncated list, in the same order
 
 ### Requirement: File-index mutations scale with the change, not the index
-An incremental mutation batch SHALL copy the installed index without a per-file allocation, SHALL deduplicate an added path by its directory and canonical identity without comparing it with every indexed path, and SHALL rename a directory without rewriting or re-resolving its descendants. Generation arbitration, replay and the overflow rebuild SHALL be unchanged.
+An incremental mutation batch SHALL copy the installed index without a per-file allocation, SHALL deduplicate an added path by its directory and canonical identity without comparing it with every indexed path, and SHALL rename a directory by rewriting that directory's record only, re-keying its descendants' canonical identities without a filesystem call. Generation arbitration, replay and the overflow rebuild SHALL be unchanged.
 
 #### Scenario: A file is added to a 1,048,576-file index
 - **WHEN** one created file reaches the mutation worker
@@ -39,6 +40,13 @@ An incremental mutation batch SHALL copy the installed index without a per-file 
 #### Scenario: A mutation batch loses its generation race
 - **WHEN** a full rebuild is installed while a batch runs
 - **THEN** the batch's index is rejected and its updates replay on the new index, as before
+
+### Requirement: File-index storage left by mutations is reclaimed
+Name bytes and directory records that removals and renames leave unreferenced SHALL be reclaimed on the mutation worker before they can cause a later addition to be refused, so the installed index's charged weight follows its live files.
+
+#### Scenario: Many removals and renames on a long-lived index
+- **WHEN** a long session removes and renames many files and directories and then adds new ones
+- **THEN** every addition the live files' size admits is accepted, whatever the removed and renamed entries once occupied
 
 ### Requirement: The workspace group finds open tabs through the index
 The workspace file group SHALL exclude open tabs and count the empty query's remaining files by looking each open canonical path up in the index, not by reading every indexed file's canonical path. The counts SHALL stay exact.
@@ -61,7 +69,7 @@ A non-empty query over a 1,048,576-file index SHALL complete on the worker withi
 ## MODIFIED Requirements
 
 ### Requirement: Palette source inventories are bounded and superseding
-The system SHALL bound palette sources before scoring. The file index SHALL retain at most 1,048,576 canonical files within its byte ledgers, never materialize a whole flat directory, and cancel superseded traversal. The note source SHALL be bounded by its byte ceilings alone, skip and count refused rows, and report found rows. File-index and note-source coordinators SHALL each own one active and one latest compact request.
+The system SHALL keep palette source construction bounded before query scoring begins. File-index construction MUST retain at most 1,048,576 canonical files (a presentation cap and the query-latency bound; memory is bounded by the file-index byte ledgers), MUST avoid materializing an unbounded flat directory, and MUST cooperatively cancel superseded traversal. Note-source construction MUST be bounded by its byte ceilings alone (64 MiB of aggregate searchable UTF-8 note text, a 64 MiB retained graph, 8 MiB of sidecar paths and 96 MiB of construction scratch) with no row or sidecar count, MUST capture open editors' bookmarks in sliced main-loop turns bounded by the 4 MiB open-editor snapshot budget with no row count, counting the rows that budget cannot retain, MUST skip and count a row a byte ceiling refuses while admitting later rows that fit, MUST therefore retain every note the former count-and-prefix rule retained, MUST report deterministic truncation diagnostics with the number of rows found, and MUST NOT retain bodies beyond those limits. File-index and note-source coordinators SHALL each own at most one active request plus one compact latest request.
 
 #### Scenario: Huge flat directory exceeds remaining index capacity
 - **WHEN** one workspace directory contains more visible entries than the remaining 1,048,576-file index capacity
@@ -74,9 +82,8 @@ The system SHALL bound palette sources before scoring. The file index SHALL reta
 - **AND** the coordinator retains only the latest compact scope request rather than queueing full indexes
 
 #### Scenario: Note corpus exceeds aggregate bounds
-- **WHEN** eligible note sidecars exceed one of the note source's byte ceilings (64 MiB of searchable UTF-8 note text, a 64 MiB retained graph, 8 MiB of sidecar paths, 96 MiB of construction scratch)
+- **WHEN** eligible note sidecars exceed one of the note source's byte ceilings
 - **THEN** source construction skips and counts each refused row, admits later rows that fit, and retains no body beyond the ceilings
-- **AND** it retains every note the former count-and-prefix rule retained, with no row or sidecar count
 - **AND** the palette remains usable with a visible bounded-truncation diagnostic that states the rows found
 
 #### Scenario: Many open-editor bookmarks
@@ -88,8 +95,28 @@ The system SHALL bound palette sources before scoring. The file index SHALL reta
 - **THEN** only one latest compact refresh request remains pending
 - **AND** stale workers release loaded bodies without replacing the current source
 
+### Requirement: Command palette retains only bounded top results while scoring
+For each command-palette source, the system SHALL retain at most the configured result limit while scoring candidates: 64 rows per group in the grouped view, and the rows the category view's row cap and retained-byte budget hold in a category view. A grouped query MAY score its source in at most four contiguous chunks in parallel, each retaining at most the group's limit, merged into the group's limit before publication; a category view's ranking SHALL retain at most its own limit in all. Results MUST be ordered by descending fuzzy score with source ordinal as the deterministic equal-score tie-break, and grouped output MUST preserve existing source priority and canonical-file deduplication. Every source MUST report how many candidates it matched, so a group can state what it does not show.
+
+#### Scenario: Many candidates match one source
+- **WHEN** a query matches more source items than the configured result limit
+- **THEN** scoring retains only a bounded top-result structure
+- **AND** the final rows equal the highest-ranked results under the defined score and tie order
+- **AND** the source reports the number of candidates that matched
+
+#### Scenario: Equal-score candidates are repeated
+- **WHEN** several candidates receive the same fuzzy score
+- **THEN** their relative order follows source ordinal deterministically
+- **AND** repeated identical queries return the same rows and order
+
+#### Scenario: Empty query uses source order
+- **WHEN** the query is empty
+- **THEN** each source returns its first bounded items in source order
+- **AND** no full-source result collection is materialized
+- **AND** the source counts its remaining included items without retaining or scoring them
+
 ### Requirement: Palette traversal bounds directory work independently from file admission
-File-index construction SHALL examine and retain at most 1,048,576 distinct canonical directory identities per build, independently from the 1,048,576-file limit. A directory SHALL consume budget before it is retained or its descendants scheduled, an alias SHALL consume it once, and exhaustion SHALL return the typed directory-retention reason with a usable partial index. Cancellation SHALL be observed between directory batches.
+File-index construction SHALL examine and retain at most 1,048,576 distinct canonical directory identities per build, independently from the 1,048,576-file admission limit. A directory MUST consume directory budget before its identity is retained or descendants are scheduled, canonical aliases MUST consume the budget only once, and exhaustion MUST return the typed directory-retention truncation reason with a usable bounded partial index and direct retained-state metrics. Cooperative cancellation MUST remain observable before additional directory batches are admitted.
 
 #### Scenario: Directory-only forest reaches its budget
 - **WHEN** a workspace tree contains more than 1,048,576 distinct directories but few or no indexable files
@@ -113,7 +140,7 @@ File-index construction SHALL examine and retain at most 1,048,576 distinct cano
 - **AND** only the latest compact build request remains pending
 
 ### Requirement: File-index construction enforces its working-set byte budget
-File indexing SHALL charge an O(1) byte ledger before each retained allocation: index records, name storage, canonical keys, symlink identities, directory records, visit-set entries, pending directories and scan pages. Construction SHALL stay within 128 MiB and the installed index within 64 MiB, releasing scratch when its ownership ends and stopping with `BuildByteLimit` or `RetainedByteLimit` before either cap is crossed.
+Command-palette file indexing SHALL enforce a conservative O(1) byte ledger before retaining each allocation: index record vectors, name storage, canonical-key entries, symlink identities, directory records, visited-directory identities, hash-table buckets, pending directories, scan-page entries, and owned workspace-folder paths. Peak construction ownership MUST stay within MAX_FILE_INDEX_BUILD_RETAINED_BYTES, defined as twice the 64 MiB installed-result budget, while completed output MUST remain within MAX_FILE_INDEX_RETAINED_BYTES. The ledger MUST release temporary charges when ownership ends and MUST stop with a typed `RetainedByteLimit` (installed cap) or `BuildByteLimit` (construction cap) outcome before either applicable cap is exceeded.
 
 #### Scenario: Long paths dominate a large traversal
 - **WHEN** indexing encounters many long or deeply nested paths before reaching the item-count limit
@@ -141,7 +168,7 @@ File indexing SHALL charge an O(1) byte ledger before each retained allocation: 
 - **AND** the cancelled generation cannot publish its partial index as current
 
 ### Requirement: A palette category view lists every ranked result of one category
-A "More" row SHALL open its category's view: that category only, ranked exactly as the grouped view ranks it, so its first rows are the grouped rows. The view SHALL name the category and its count, list rows in a virtualized list that builds row objects only on request, and open each row as the grouped view does. It SHALL list at most 131,072 rows and what its byte budget holds; a cut category SHALL say "Showing X of Y results".
+Activating a "More" row SHALL show that category's view: only that category, every result it matches up to the view's row cap, ranked exactly as the grouped view ranks them (descending score, then source ordinal; source order for the empty query), so the view's first rows are the rows the grouped view showed. The view SHALL name its category and its result count, SHALL list its rows in a virtualized list whose model creates row objects only for rows the toolkit requests, and SHALL keep no per-row text for rows that are not shown. The ranked rows SHALL be bounded by a row cap of 131,072 (the size at which a far select-and-scroll still fits `B_INTERACT_US` in the application, ledger A95) and by a retained-byte budget through the shared list-budget policy, chosen so that the row cap fits it whole; if the cap or the budget cuts a category, the view SHALL say "Showing X of Y results". Activating a row in the view SHALL open the file, open the note or run the command exactly as the same row does in the grouped view.
 
 #### Scenario: Opening the workspace category
 - **WHEN** the user selects the workspace group's More row and presses Enter
