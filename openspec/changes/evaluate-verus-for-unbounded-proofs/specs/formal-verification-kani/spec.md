@@ -68,10 +68,13 @@ A recorded maintainer decision MAY authorise a time-boxed, disposable
 evaluation that measures another tool on an unbounded claim before the claim
 is needed. The evaluation SHALL record both Kani attempts for each claim it
 targets, next to the other tool's result: the attempts already on record, or
-new ones made during the evaluation. It SHALL NOT target a claim that either
-Kani attempt already verified. Its result SHALL NOT lead to adoption for a
-claim unless both Kani attempts for that claim failed and the claim is
-needed.
+new ones made during the evaluation, made before the other tool's attempt. It
+SHALL NOT target a claim that either Kani attempt already verified; where a
+Kani attempt verifies part of a claim (for example any number of actions at a
+fixed number of ids and windows), the evaluation SHALL target only the part
+that remains. Its result SHALL be a recommendation recorded in the programme
+record, and SHALL NOT lead to adoption for a claim unless both Kani attempts
+for that claim failed and the claim is needed.
 
 #### Scenario: A claim needs to be unbounded
 - **WHEN** a contributor needs an unbounded version of a bounded Kani result
@@ -90,3 +93,8 @@ needed.
 - **THEN** its report records both Kani attempts for that claim next to the other tool's result
 - **AND** it does not target a claim that a Kani attempt already verified, such as the slice loop within its per-bin domain
 - **AND** its decision adopts nothing for that claim unless both Kani attempts failed and the claim is needed
+
+#### Scenario: A Kani attempt verifies part of an evaluated claim
+- **WHEN** an authorised evaluation's Kani inductive-step attempt proves a journal invariant for any number of actions at the lane's id and window scope
+- **THEN** the report records that bound as removed in Kani, with the harness text and its time and memory
+- **AND** the other tool targets only the remaining generality, such as any number of ids and windows
