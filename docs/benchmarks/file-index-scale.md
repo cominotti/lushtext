@@ -4,8 +4,8 @@
 record and canonical path per file) with an interned path arena, and raised
 `MAX_INDEXED_FILES` and `MAX_INDEXED_DIRECTORIES` to 2^20 inside the unchanged
 64 MiB installed and 128 MiB construction ledgers. The design, decisions and
-verdicts are in `openspec/changes/scale-file-index/design.md` (archived with
-the change).
+verdicts are in
+`openspec/changes/archive/2026-11-15-scale-file-index/design.md`.
 
 ## Fixture
 
