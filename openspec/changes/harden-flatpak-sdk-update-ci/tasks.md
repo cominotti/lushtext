@@ -2,7 +2,7 @@
 >
 > Tests: the two helper scripts' `--self-test`s and the local container runs L1–L3. Kani: none (no proven module touched). Timing: none (no timed path touched). The relocation's wall time is a logged CI cost figure, not a responsiveness measurement. No Rust code, Cargo.lock, `cargo-sources.json`, GTK axiom or lane work belongs in this change (design D9).
 >
-> Run every container command as `taskset -c 8-23 scripts/heavy.sh -- docker run --privileged …` (one command per call). Give each container its own named Docker volume as the `$RUNNER_TEMP` stand-in, and remove the container and the volume afterwards. Never bind-mount a host directory, because the copy leaves root-owned files behind. Never write into the checkout.
+> Run every container command through `scripts/heavy.sh -- docker run --privileged --cpuset-cpus=8-23 --memory=16g --memory-swap=16g …`, one command per call. `taskset` and `heavy.sh` constrain only the docker client: the container's processes belong to the daemon, so the limits go on `docker run`. Give each container its own named Docker volume as the `$RUNNER_TEMP` stand-in, and remove the container and the volume afterwards. The checkout reaches the container only as a **read-only** bind (`-v "$PWD":/__w/lushtext/lushtext:ro`, with `GITHUB_WORKSPACE=/__w/lushtext/lushtext` and `RUNNER_TEMP=/__w/_temp` set). Never add a writable host bind: the copy leaves root-owned files behind. Never write into the checkout.
 
 ## 1. Failing-first policy check (no workflow change yet)
 
@@ -52,14 +52,15 @@
   - The Flathub-artifact step gains `DRY_RUN` in its `env`, and in a dry run with no tag it uses `HEAD`.
 
   Check the dry-run path locally: `make release VERSION=v0.8.4-dryrun.1 DRY_RUN=1` passes, and the step's new shell body, run in a scratch clone of the branch with `VERSION=v0.8.4-dryrun.1 DRY_RUN=true`, generates and verifies the Flathub manifest from `HEAD`. Confirm that `git status` is clean afterwards.
-- [ ] 3.4 **L2 (must pass).** Start a fresh container from the same image, with `docker run -d … sleep`. Then run, as separate `docker exec` calls:
+- [ ] 3.4 **L2 (must pass).** Start a fresh container from the same image, with `docker run -d … sleep`, the read-only checkout bind and its own volume, as in the header. Then run, as separate `docker exec` calls:
   1. `diagnose`;
   2. `relocate`, which must log its wall time, `df -h` before and after, a non-overlay filesystem and `rename-probe: ok`;
   3. `findmnt -T /var/lib/flatpak`, which must show the copy;
-  4. the same `flatpak-builder --install-deps-only` as 2.3, which must succeed and log the `org.gnome.Sdk` update. If the image no longer lags, fall back to `codecs-extra`.
+  4. the same `flatpak-builder --install-deps-only` as 2.3, which must succeed and log the `org.gnome.Sdk` update. If the image no longer lags, fall back to `codecs-extra`;
+  5. a full build with CI's arguments (design D8 L2): export the committed tree into `$RUNNER_TEMP/src` (`git -c safe.directory='*' -C /__w/lushtext/lushtext archive HEAD | tar -x -C "$RUNNER_TEMP/src"`, so no `target/` or untracked file enters, like CI's clean checkout) and run `flatpak-builder --disable-rofiles-fuse --install-deps-from=flathub --force-clean --ccache --state-dir "$RUNNER_TEMP/state" "$RUNNER_TEMP/app" "$RUNNER_TEMP/src/build-aux/dev.cominotti.lushtext.Flatpak.json"`. It must succeed.
 
   Record the run in `evidence/local-runs.md`, with the relocation time labelled non-verdict.
-- [ ] 3.5 **L3 (must refuse).** Show two refusals:
+- [ ] 3.5 **L3 (must refuse).** In a fresh container set up as in 3.4, show two refusals:
   - `relocate` with `RUNNER_TEMP` inside `GITHUB_WORKSPACE` is refused before any copy.
   - A forced probe failure fails with the probe, the result and the filesystem named. For example, point the post-relocation probe at a read-only bind, or pass a self-test hook.
 

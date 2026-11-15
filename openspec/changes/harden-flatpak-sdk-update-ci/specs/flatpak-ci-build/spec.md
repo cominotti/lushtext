@@ -27,7 +27,7 @@ The installation preparation SHALL verify, with a directory `rename(2)` probe in
 - **THEN** the job fails before `flatpak-builder` starts, and its log names the probe, the result and the filesystem under `/var/lib/flatpak`
 
 ### Requirement: Relocation reports its cost without gating on it
-Relocating the installation SHALL log its wall time and the free disk space before and after, and SHALL NOT fail the job because the copy was slow. Every Flatpak job SHALL keep its 30-minute ceiling. The acceptance budget for the copy is recorded in the change's design, not enforced at runtime.
+Relocating the installation SHALL log its wall time and the free disk space before and after, and SHALL NOT fail the job because the copy was slow. Every Flatpak job SHALL keep its 30-minute ceiling.
 
 #### Scenario: Relocation time is logged against the budget
 - **WHEN** the installation is relocated
