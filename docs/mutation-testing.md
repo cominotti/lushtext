@@ -116,7 +116,7 @@ nothing deleted.
   free it exits **75** and names each holder's PID and checkout. Retry later,
   or with `MUTANTS_LOCAL_JOBS=1`. Runs from different checkouts in one slot
   simply resync. A slot whose `build/` plus `target/` grew past
-  `MUTANTS_SLOT_MAX_GIB` (default 12) is emptied first.
+  `MUTANTS_SLOT_MAX_GIB` (default 24) is emptied first.
 - **Sharding, not jobs.** cargo-mutants refuses `--in-place` together with
   `--jobs`, so N slots run `--shard 0/N` … `--shard N-1/N` side by side, and
   their reports are merged into the checkout's `mutants.out` (previous report

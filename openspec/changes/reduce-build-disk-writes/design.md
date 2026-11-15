@@ -212,8 +212,10 @@ this design first assumed.
 - **Growth bound.** Cargo never deletes stale units from a build dir, so a slot
   used by branches with different dependency sets keeps every one of them. At
   acquisition, a slot whose `build/` plus `target/` exceeds
-  `MUTANTS_SLOT_MAX_GIB` (default 12, about twice a cold
-  `CARGO_INCREMENTAL=0` test build plus its uplifted artifacts) is emptied
+  `MUTANTS_SLOT_MAX_GIB` (default 24, about twice a warm slot: once D3 kept
+  incremental, a slot held 10.4-11.1 GiB after a focused run, 4.9 GiB of it
+  incremental cache, so the first default of 12, twice a cold
+  `CARGO_INCREMENTAL=0` build, would have emptied warm slots) is emptied
   before the sync, and the run says so. That costs one cold build and keeps
   the pool's disk bounded.
 - **Static shards can finish unevenly**, unlike `--jobs`, which hands out

@@ -20,7 +20,9 @@ MUTANTS_EXCLUDE_RE="${MUTANTS_EXCLUDE_RE:-}"
 MUTANTS_MIRROR="${MUTANTS_MIRROR:-0}"
 MUTANTS_LOCAL_JOBS="${MUTANTS_LOCAL_JOBS:-1}"
 MUTANTS_POOL_SIZE="${MUTANTS_POOL_SIZE:-3}"
-MUTANTS_SLOT_MAX_GIB="${MUTANTS_SLOT_MAX_GIB:-12}"
+# About twice a warm slot with incremental kept: 10.4-11.1 GiB after a
+# focused run, 4.9 GiB of it incremental cache (2026-11-15).
+MUTANTS_SLOT_MAX_GIB="${MUTANTS_SLOT_MAX_GIB:-24}"
 # Design D3's measured decision for the mirror slots: "" leaves
 # CARGO_INCREMENTAL as the caller set it (incremental, Cargo's default), "0"
 # builds without it. Without it a mutant's build took 2.2x as long (25.5 s
@@ -77,7 +79,7 @@ Environment:
                         and full in place in mirror slots of the build cache root.
   MUTANTS_LOCAL_JOBS    Mirror mode: how many slots to run side by side (default: 1).
   MUTANTS_POOL_SIZE     Mirror mode: slots in the host-wide pool (default: 3).
-  MUTANTS_SLOT_MAX_GIB  Mirror mode: empty a slot whose build + target exceed this (default: 12).
+  MUTANTS_SLOT_MAX_GIB  Mirror mode: empty a slot whose build + target exceed this (default: 24).
   LUSHTEXT_TEST_ADDRESS_SPACE  Mirror mode: per-test address-space limit (K/M/G/T or none).
 
 Mirror mode (design D2 of openspec/changes/reduce-build-disk-writes): the

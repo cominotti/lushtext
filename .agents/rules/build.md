@@ -556,7 +556,8 @@ mode used to cold-build one tree per job (5.2 GB each) into a new
   `scripts/rustc-passthrough.sh` at one stable path, because Cargo hashes the
   wrapper's path into every member), so mutated crates never enter the shared
   sccache; dependencies still use it. A slot whose `build/` plus `target/`
-  exceeds `MUTANTS_SLOT_MAX_GIB` (default 12) is emptied before use.
+  exceeds `MUTANTS_SLOT_MAX_GIB` (default 24, about twice a warm slot) is
+  emptied before use.
 - **A runaway test is stopped alone.** Every test process runs under
   `RLIMIT_AS` through a Cargo target runner
   (`scripts/test-address-space-runner.sh`, `LUSHTEXT_TEST_ADDRESS_SPACE`,

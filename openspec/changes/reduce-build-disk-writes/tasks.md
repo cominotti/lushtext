@@ -157,7 +157,7 @@ Rules for every task:
   `MUTANTS_MIRROR=1`, keep `MUTANTS_LOCAL_JOBS=3` as the slot count, and keep
   the 36G scope. Update the comment block above `MUTANTS_LOCAL_JOBS` with the
   new mechanics and the baseline figures.
-- [ ] 3.5 Lane case: run `make mutants-smoke` twice in a row on warm slots and
+- [x] 3.5 Lane case: run `make mutants-smoke` twice in a row on warm slots and
   confirm from the second run's cargo output that no dependency crate was
   compiled (the warm-slot scenario).
 - [ ] 3.6 Lane case: confirm the slot healing scenario end to end. Interrupt a
@@ -198,7 +198,7 @@ Rules for every task:
   D4 and D5. Resolve the default worktree with
   `build-cache.sh checkout-path` and create it only in `ensure_worktree`. Make
   task 1.5 pass.
-- [ ] 5.3 Lane case: run `make proof-strength` once for the cheapest oracle
+- [x] 5.3 Lane case: run `make proof-strength` once for the cheapest oracle
   module (`make proof-strength-list`; `PROOF_STRENGTH_TIER=ci`), detached
   (`setsid nohup scripts/heavy.sh --mem none -- make proof-strength ...`).
   Confirm that:
@@ -231,7 +231,7 @@ Rules for every task:
   D7). Update `scripts/test-cominotti-flatpak-repo.sh` to run under a
   temporary `LUSHTEXT_BUILD_CACHE` and to assert that the stub received that
   `--state-dir`, and run it.
-- [ ] 7.2 Lane case: run `make flatpak` once through `heavy.sh`. Confirm that no
+- [x] 7.2 Lane case: run `make flatpak` once through `heavy.sh`. Confirm that no
   `.flatpak-builder` directory is created or grown in the checkout (compare the
   existing one's size before and after), that the build succeeds, and that the
   log has no `Invalid cross-device link` / `EXDEV`. Then run
@@ -254,7 +254,9 @@ Rules for every task:
 
 ## 9. Measurements (D9)
 
-- [ ] 9.1 Mutation lane, four rounds interleaved main → branch → main →
+- [ ] 9.1 **Measurement queued** (wall-time verdict only; the byte figures,
+  build-dir and per-mutant records are in `evidence/after.md`, from four
+  rounds through `heavy.sh`). Mutation lane, four rounds interleaved main → branch → main →
   branch, through `measure.sh`, on the fixed focused scope (diff saved under
   `evidence/`). Record:
   - wall time;
@@ -271,7 +273,9 @@ Rules for every task:
   leaked build dirs afterwards (list them first) and record what was deleted.
   This round also verifies the "about 15 GB per local run" figure, which
   stage 1 derived from one cold build times three jobs rather than measured.
-- [ ] 9.2 D3 per lane. Run slots with and without `CARGO_INCREMENTAL=0` under
+- [ ] 9.2 **Measurement queued** (the proof-strength Kani arm's three
+  remaining rounds; the slots, the tests arm and the Kani lane are decided in
+  design D3). D3 per lane. Run slots with and without `CARGO_INCREMENTAL=0` under
   separate `LUSHTEXT_BUILD_CACHE` roots, two interleaved rounds per mode. Then
   one package compile of the cheapest Kani shard with and without, each with its
   own `CARGO_BUILD_BUILD_DIR`, two rounds; the first records where
@@ -281,7 +285,7 @@ Rules for every task:
   bar, record the decision for each lane in design.md D3 with the figures
   (the tests arm follows the slots and says so), and adjust tasks 3.3, 5.2 and
   6.1 if a lane keeps incremental.
-- [ ] 9.3 Write `evidence/after.md` with the before/after table. Put the host
+- [x] 9.3 Write `evidence/after.md` with the before/after table. Put the host
   IO "after" request (`btrfs-stall-report` over one representative
   `make mutants-diff`, branch versus main, in a quiet window) in
   `.claude/handoffs/reduce-build-disk-writes/` for the coordinator, unless a
@@ -321,7 +325,7 @@ Rules for every task:
 
 - [ ] 11.1 `scripts/heavy.sh -- make check`. Include `make check-policy` with
   the new targets, and `shellcheck` clean.
-- [ ] 11.2 `openspec validate reduce-build-disk-writes --strict`.
+- [x] 11.2 `openspec validate reduce-build-disk-writes --strict`.
 - [ ] 11.3 Lane cases 3.5, 3.6, 4.3, 5.3, 7.2 and 8.3 recorded. Then run
   `make mutants-smoke` once end to end in slots, with the checkout clean
   before and after, no new `~/.cache/cargo-build` entry, and a `mutants.out`
