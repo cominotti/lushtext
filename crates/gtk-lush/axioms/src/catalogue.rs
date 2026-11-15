@@ -1824,8 +1824,62 @@ const CATALOGUE: &[Axiom] = &[
         version_bound: None,
         probe: Some(probes::probe_a111),
     },
+    Axiom {
+        id: AxiomId::new(112),
+        name: "a112_removing_bound_rows_replaces_their_row_widgets",
+        statement: "On a mapped GtkListView over a GtkTreeListModel, removing rows a list item is \
+                    bound to destroys those list items inside the removal's items-changed and \
+                    creates fresh ones for the rows entering the band in the same call, never \
+                    reusing a removed one; removing the unbound rows after or before the band \
+                    destroys and creates none and leaves the band on the same items",
+        dependent_designs: &[
+            "slice-large-directory-collapse D1/D4: a sidebar collapse costs the row widgets GTK \
+             replaces, so the owned collapse removes the unbound rows first, in chunks, then \
+             the bound rows in units of SIDEBAR_REALIZED_ROWS_PER_FRAME, one per frame",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a112),
+    },
+    Axiom {
+        id: AxiomId::new(113),
+        name: "a113_a_tree_expander_disclosure_routes_can_be_owned",
+        statement: "GtkTreeExpander's toggle GestureClick lives on its re-created expander icon, \
+                    not on the expander, and a capture-phase gesture on the expander claiming \
+                    the release inside the icon denies it without changing the press; its class \
+                    key bindings fire only for keys reaching the expander, which the focus the \
+                    list gives a row whose child is an overlay does not but Tab from that row \
+                    (onto the expander) does, and an ancestor's capture-phase Stop prevents \
+                    them; its three \
+                    parameterless class actions resolve before an inserted listitem group and \
+                    collapse at once; it sets the expander's accessible expanded state at bind \
+                    and only the icon's on notify::expanded",
+        dependent_designs: &[
+            "slice-large-directory-collapse D5/D6: the sidebar owns the click by a release \
+             claim and the expander's class key bindings by a capture-phase key controller \
+             on the list view (collapse keys, and expand keys on a collapsing row), keeps the expander's accessible state in step with \
+             its collapse, and leaves the class actions (AT-SPI DoAction) as GTK's direct \
+             collapse",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a113),
+    },
+    Axiom {
+        id: AxiomId::new(114),
+        name: "a114_a_class_rule_draws_a_checked_expander_collapsed",
+        statement: "An application CSS rule on a class of GtkTreeExpander draws the arrow of its \
+                    expander:checked icon exactly as the collapsed arrow, in LTR and RTL, under \
+                    the shipped style, while the row stays expanded and the icon checked",
+        dependent_designs: &[
+            "slice-large-directory-collapse D6: a sliced collapse shows its intent in the \
+             input's first frame through the lushtext-collapsing class",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a114),
+    },
 ];
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -889,3 +889,25 @@ pub mod a110 {
 pub mod a111 {
     pub use crate::probes::row_lists::{BAND_MODEL_ROWS, FEW_ROWS, RowText, row_list};
 }
+
+/// The tree list the A112 probe removes rows from, for its sample.
+pub mod a112 {
+    pub use crate::probes::a112::{
+        AFTER_ROWS, HEAD_REMOVALS, LARGE_CHILDREN, SMALL_CHILDREN, TreeFixture, tree_fixture,
+    };
+}
+
+/// The disclosure fixture and release claim the A113 probe drives, for its
+/// sample.
+pub mod a113 {
+    pub use crate::probes::a113::{
+        CLASS_ACTIONS, DisclosureFixture, KEY_BINDINGS, click_gestures, disclosure_fixture,
+        expander_icon,
+    };
+}
+
+/// The collapsing-arrow rule the A114 probe renders, for its sample.
+pub mod a114 {
+    pub use crate::probes::a112::tree_fixture;
+    pub use crate::probes::a114::{COLLAPSING_CLASS, COLLAPSING_CSS};
+}
