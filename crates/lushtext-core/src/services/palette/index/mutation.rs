@@ -81,6 +81,10 @@ struct Batch {
     hashers: DirHashers,
     last_dir: Option<(PathBuf, u32)>,
     canonical_cache: Option<(u32, Option<PathBuf>)>,
+    /// Records not marked dead, counted once and kept current by the
+    /// batch's adds; a kill forgets it. A full index refuses each add in
+    /// O(1) instead of counting every record (stage-4 review).
+    live_files: Option<usize>,
 }
 
 /// Directories by `(parent, name hash)`, and the root directories (folder
@@ -243,8 +247,11 @@ impl FileIndex {
         !record.is_dead() && !Self::dir_dead(record.dir, ledger)
     }
 
-    fn live_len(&self) -> usize {
-        self.files.iter().filter(|record| !record.is_dead()).count()
+    fn live_len(&self, ledger: &mut FileIndexMutationLedger) -> usize {
+        *ledger
+            .batch
+            .live_files
+            .get_or_insert_with(|| self.files.iter().filter(|record| !record.is_dead()).count())
     }
 
     fn ensure_children(&self, ledger: &mut FileIndexMutationLedger) {
@@ -722,7 +729,7 @@ impl FileIndex {
         let (Some(name), Some(parent)) = (path.file_name(), path.parent()) else {
             return false;
         };
-        if self.files.len() >= MAX_INDEXED_FILES && self.live_len() >= MAX_INDEXED_FILES {
+        if self.files.len() >= MAX_INDEXED_FILES && self.live_len(ledger) >= MAX_INDEXED_FILES {
             return false;
         }
         if self.find_file(path, None, ledger).is_some() {
@@ -739,6 +746,9 @@ impl FileIndex {
         let Some(ordinal) = self.push_file(dir, name, identity, ledger) else {
             return false;
         };
+        if let Some(live) = &mut ledger.batch.live_files {
+            *live += 1;
+        }
         self.touch(ordinal, ledger);
         true
     }
@@ -859,6 +869,7 @@ impl FileIndex {
         record.flags |= DEAD;
         self.dead_bytes = self.dead_bytes.saturating_add(u64::from(record.name_len));
         ledger.batch.any_dead = true;
+        ledger.batch.live_files = None;
     }
 
     /// The directories whose display path is `path` and the roots below it.

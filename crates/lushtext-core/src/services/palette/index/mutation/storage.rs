@@ -5,8 +5,8 @@
 //! the storage mutations leave behind.
 
 use super::super::arena::{
-    DEAD, DirCanonical, DirDisplay, IdentityKind, NO_DIR, NameSpan, PathHasher, REKEYED, key,
-    key_ordinal, vec_bytes,
+    DEAD, DirCanonical, DirDisplay, IdentityKind, NO_DIR, NameSpan, REKEYED, key, key_ordinal,
+    vec_bytes,
 };
 use super::super::paths::DirHashers;
 use super::super::traversal::BuildLedger;
@@ -140,6 +140,7 @@ impl FileIndex {
                 record.flags |= DEAD;
             }
         }
+        ledger.batch.live_files = None;
         let keep = vec![true; self.dirs.len()];
         self.rewrite_names(&keep);
         self.dead_bytes = 0;
@@ -282,14 +283,17 @@ impl FileIndex {
     // --- Keys --------------------------------------------------------------
 
     /// Build both key tables from scratch (construction), charging the
-    /// directory hashers as scratch and the tables as installed bytes.
+    /// directory hashers as scratch (less the `prepaid` bytes the caller
+    /// already holds for them, which this releases) and the tables as
+    /// installed bytes.
     pub(in super::super) fn rebuild_keys(
         &mut self,
         ledger: &mut BuildLedger,
+        prepaid: u64,
     ) -> Result<(), FileIndexTruncationReason> {
-        let hashers_charge = vec_bytes::<Option<Option<PathHasher>>>(self.dirs.len())
-            .saturating_add(vec_bytes::<Option<PathHasher>>(self.dirs.len()));
-        if !ledger.try_charge_scratch(hashers_charge) {
+        let hashers_charge = DirHashers::charge(self.dirs.len()).max(prepaid);
+        if !ledger.try_charge_scratch(hashers_charge - prepaid) {
+            ledger.release_scratch(prepaid);
             return Err(FileIndexTruncationReason::BuildByteLimit);
         }
         let mut hashers = DirHashers::default();

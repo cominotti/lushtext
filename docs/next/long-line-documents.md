@@ -4168,14 +4168,21 @@ separate change, in this order:
    flat on GTK 4.24.1 up to 2^20 rows, but the category cap stays 131,072
    because the probe grew on the GNOME 50 source floor (GTK 4.22.5); the
    note-category loss above 131,072 rows stands as recorded. These are non-verdict figures:
-   the interleaved verdict rounds are queued on the shared machine, and the
-   lane group `workspace-index` is not built (the palette has no `End`
-   binding, so D8's lane case needs a revision; open decision). Follow-ups:
-   a measurement on a real monorepo checkout (the synthetic tree is the
-   recorded deviation); the lane group; raising the category cap to the
-   budget's rows once the source floor is GNOME 51; the cost of an add
-   refused at the 2^20 cap (about 0.35 ms each, worker-side; cause not
-   investigated).
+   the interleaved verdict rounds are queued on the shared machine.
+   **Reviewed 2026-11-15** (stage 4, design "Review (stage 4)"): a build that
+   stopped on a byte limit, and a sparse 2^20-file tree (about 500,000
+   directories), published an empty index because the finish's key table and
+   hashers were not reserved during the traversal; fixed (keys charged per
+   file, a one-`u64` component hasher paid from the visit set's scratch) with
+   a budget-sweep test against the per-file reference. A refused add at the
+   2^20 cap no longer counts every record (the 0.35 ms stage-3 follow-up). D8
+   gates on the optimized widget test's far select-and-scroll through
+   `measure.sh` (queued), because the palette has no `End` binding and no
+   row-selection action for a lane case to drive. Follow-ups: a measurement
+   on a real monorepo checkout (the synthetic tree is the recorded
+   deviation); the `workspace-index` lane group (design D10), with a palette
+   row-selection action and its automation documentation; raising the
+   category cap to the budget's rows once the source floor is GNOME 51.
 4. Profile and slice the 59–60 ms largest-file open dispatch (the open-tier
    runs above).
 5. Then DL `bound-dense-long-line-editing`. (`avx2-health-scan-kernel`, once

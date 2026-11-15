@@ -206,51 +206,53 @@ pub(super) fn finish_hash(hash: u64) -> u64 {
     hash
 }
 
-/// A streaming path hasher: the hash of `dir.join(name)` computed from a
-/// clone of the state after `dir`, without building the joined path.
-#[derive(Clone)]
+/// A compositional path hasher: the hash of a path is folded over its
+/// components, one SipHash of the previous state and the component's bytes
+/// each, so `dir.join(name)` hashes from `dir`'s state and `name` alone,
+/// without building the joined path.
+///
+/// The state is one `u64`, so the per-directory memo the key tables are
+/// built with costs 32 bytes a directory (`DirHashers`), not a cloned SipHash
+/// state of about 80 (stage-4 review of `scale-file-index`). Folding over
+/// [`Path::components`] makes the hash agree with `Path`'s own equality
+/// (a trailing or doubled separator does not change either), which is the
+/// exact comparison every hash hit is confirmed by.
+#[derive(Clone, Copy, Debug)]
 pub(super) struct PathHasher {
-    state: DefaultHasher,
-    ends_with_separator: bool,
+    state: u64,
+}
+
+/// One fold step: the state after appending the component `bytes`.
+fn fold_component(state: u64, bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u64(state);
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 impl PathHasher {
     pub(super) fn new(path: &Path) -> Self {
-        let bytes = path.as_os_str().as_encoded_bytes();
-        let mut state = DefaultHasher::new();
-        state.write(bytes);
-        Self {
-            state,
-            ends_with_separator: bytes.last() == Some(&b'/'),
-        }
+        let state = path.components().fold(0, |state, component| {
+            fold_component(state, component.as_os_str().as_encoded_bytes())
+        });
+        Self { state }
     }
 
     /// The hash of the full path this hasher was built from.
-    pub(super) fn finish(&self) -> u64 {
-        finish_hash(self.state.finish())
+    pub(super) fn finish(self) -> u64 {
+        finish_hash(self.state)
     }
 
-    /// The hasher of this path joined with `name`.
-    pub(super) fn child_hasher(&self, name: &[u8]) -> Self {
-        let mut state = self.state.clone();
-        if !self.ends_with_separator {
-            state.write(b"/");
-        }
-        state.write(name);
+    /// The hasher of this path joined with `name` (one normal component).
+    pub(super) fn child_hasher(self, name: &[u8]) -> Self {
         Self {
-            state,
-            ends_with_separator: name.last() == Some(&b'/'),
+            state: fold_component(self.state, name),
         }
     }
 
     /// The hash of this path joined with `name`.
-    pub(super) fn child(&self, name: &[u8]) -> u64 {
-        let mut state = self.state.clone();
-        if !self.ends_with_separator {
-            state.write(b"/");
-        }
-        state.write(name);
-        finish_hash(state.finish())
+    pub(super) fn child(self, name: &[u8]) -> u64 {
+        self.child_hasher(name).finish()
     }
 }
 

@@ -37,6 +37,7 @@ use super::arena::{
     NameSpan, PathHasher, RAW_NAME, failure_of, folder_bytes, path_bytes, retained, split_name,
     vec_bytes,
 };
+use super::paths::DirHashers;
 use super::{
     FileIndex, FileIndexBuildMetrics, FileIndexBuildOutcome, FileIndexTruncationReason,
     MAX_SCAN_DEPTH, PaletteSearchCancellation, is_ignored_index_dir,
@@ -58,6 +59,9 @@ pub(super) struct BuildLimits {
 /// Kind: external fact; a `(u64, u32)` hash-map entry at its 7/8 load factor
 /// plus a `(u32, u32)` range, rounded up to whole words.
 const VISIT_ENTRY_BYTES: u64 = 40;
+// The visit set's per-directory charge covers the finish's hashers.
+const _: () = assert!(DirHashers::charge(1) <= VISIT_ENTRY_BYTES);
+
 /// Scratch charged per symlinked file in the alias set, beyond its path.
 ///
 /// Kind: external fact; a `(u64, u32)` hash-map entry plus its path's
@@ -771,6 +775,12 @@ impl Traversal<'_> {
         let (span, raw) = self.push_name(name)?;
         let name_len =
             u16::try_from(span.len).map_err(|_| FileIndexTruncationReason::RetainedByteLimit)?;
+        // The keys this file gets at the finish (`rebuild_keys`: a symlinked
+        // file has a canonical and a display key, every other file one),
+        // charged now so the key table always fits what the traversal
+        // admitted (stage-4 review).
+        let keys = if kind == IdentityKind::Explicit { 2 } else { 1 };
+        self.ledger.try_charge_installed(vec_bytes::<u64>(keys))?;
         let mut flags = kind.bits();
         if explicit.is_some() || raw.is_some() {
             if raw.is_some() {
@@ -798,7 +808,12 @@ impl Traversal<'_> {
     }
 
     fn finish(mut self) -> FileIndexBuildOutcome {
-        self.ledger.release_scratch(self.scratch);
+        // The visit set's scratch (`VISIT_ENTRY_BYTES` a directory) pays for
+        // the per-directory hashers the key table is built with, which are
+        // smaller, so the finish never needs budget the traversal did not
+        // already hold (stage-4 review).
+        let hashers = DirHashers::charge(self.index.dirs.len()).min(self.scratch);
+        self.ledger.release_scratch(self.scratch - hashers);
         self.scratch = 0;
         drop(std::mem::take(&mut self.visited));
         drop(std::mem::take(&mut self.symlinks));
@@ -812,9 +827,11 @@ impl Traversal<'_> {
         self.index.shrink_arena();
         self.ledger
             .settle_installed(self.index.retained_byte_weight());
-        if let Err(reason) = self.index.rebuild_keys(&mut self.ledger) {
-            // The key table did not fit: publish nothing rather than an index
-            // whose lookups would miss files.
+        if let Err(reason) = self.index.rebuild_keys(&mut self.ledger, hashers) {
+            // Unreachable: every key was charged with its file and the
+            // hashers from the visit set. Were it reached, an index whose
+            // lookups miss files is worse than none.
+            debug_assert!(false, "the key table did not fit: {reason:?}");
             self.metrics.truncation = Some(reason);
             self.index = FileIndex {
                 visibility: self.index.visibility.clone(),

@@ -122,7 +122,7 @@ Rules for every task:
       Then `make check-widget-shards`: if the `surfaces` shard's measured time
       grows past its margin, move the test or split the shard as
       `scripts/widget-shards.py` prescribes.
-- [ ] 2.9 Commit and push the red tests. The hook runs all-targets Clippy, so
+- [x] 2.9 Commit and push the red tests. The hook runs all-targets Clippy, so
       no test may name a symbol that does not exist. For each test, choose
       and record in the handoff one of two forms:
       - **Assertion-red:** add the minimal compiling stub first, with the
@@ -134,6 +134,13 @@ Rules for every task:
       - **Recorded-red:** for the property test 2.6, which needs the arena's
         API. Its red run is recorded against a local branch, and it is
         committed in 3.8 with the arena.
+
+      Done with a process deviation (stage 4 records it; history is not
+      rewritten): no red commit was made. Every test took the recorded-red
+      form against a local build of the tests on `main`'s code, in
+      `.claude/handoffs/scale-file-index/stage3-red-record.txt` (and
+      `stage3-red-run.log`), and the tests were committed with the arena
+      (design, "Implementation decisions (stage 3)", item 10).
 
 ## 3. The arena and its identity rule
 
@@ -228,7 +235,7 @@ Rules for every task:
 
 ## 5. Lane, verdicts and smoke
 
-- [ ] 5.1 Responsiveness lane group `workspace-index` (design D10) in
+- [x] 5.1 Responsiveness lane group `workspace-index` (design D10) in
       `scripts/responsiveness-smoke-driver.py`: cases at 2^17 and 2^20 from the
       1.1 generator, the palette open, a typed query's publish, the empty
       query, Enter on the More row, Page Down and End in the category view.
@@ -236,11 +243,20 @@ Rules for every task:
       `command-palette-index` timeout. `make check-responsiveness-lane`
       self-tests the new cases, and `docs/runbooks/responsiveness-lane.md`
       documents the group (design D10).
-- [ ] 5.2 Verdict run of the lane cases and the Criterion groups, `main`
-      against the branch at 2^17 (four interleaved rounds; the `main` side runs
-      this branch's driver against a `main` build) and the branch at 2^20.
-      Gate on "End in the category view" at 131,072 rows ≤ `B_INTERACT_US`
-      (design D8). Pass bars: design "Timing". Record figures, loads and
+
+      Revised in stage 4 (design, "Review (stage 4)", item 3): not built.
+      The palette has no `End` binding and the automation surface no
+      row-selection action, so the gating case cannot be driven; D8 gates on
+      the task 2.8 widget test's optimized build through `measure.sh`
+      (queued as `sfi-branch-d8-widget-r1..r3`) and D7 on the queued
+      Criterion groups. The lane group is deferred, with a palette
+      row-selection action, to a follow-up change recorded in
+      `docs/next/long-line-documents.md`.
+- [ ] 5.2 Verdict run of the harness rounds and the Criterion groups, `main`
+      against the branch at 2^17 (four interleaved rounds) and the branch at
+      2^20, plus the D8 widget rounds (5.1's revision replaces the lane
+      cases). Gate on the far select-and-scroll at 131,072 rows of a 2^20-file
+      index ≤ `B_INTERACT_US` (design D8). Pass bars: design "Timing". Record figures, loads and
       `btrfs-stall-report` for each window in the design's "Measured verdicts".
 - [x] 5.3 Widget tests of the palette shards (`make test-widget-shard` for the
       shards holding `command_palette*.rs`), then the full `make test`;
@@ -279,11 +295,12 @@ Rules for every task:
 
 Open boxes and why (design, "Implementation decisions (stage 3)"):
 
-- 2.9: committed with the arena, not as a separate red commit
-  (decision 10); the red runs are recorded in the handoff.
+- 2.9: checked in stage 4 with the deviation recorded in the task: committed
+  with the arena, not as a separate red commit (decision 10); the red runs
+  are in `stage3-red-record.txt`.
 - 4.2 / 4.3 / 5.2: the timing verdicts are queued by the shared-machine
   coordinator (decision 13). Non-verdict figures: one query at 2^20 is
   31–35 ms (D7 bar 50 ms), so 4.3 is not expected to trigger (decision 11).
-- 5.1: not built; the palette has no `End` binding, so D8's lane case needs
-  a revision first (decision 12, an open decision for the review).
+- 5.1: decided in stage 4 (design, "Review (stage 4)", item 3): D8 gates on
+  the widget rounds, the lane group is deferred to a follow-up.
 

@@ -173,7 +173,8 @@ impl FileIndex {
 /// Memoized per-directory path hashers: the canonical one (`None` when the
 /// directory's canonical chain ends in a failure) and the display one, each
 /// computed from its parent's, so a key costs one name write however long
-/// the path (a 256 KiB detached prefix is hashed once).
+/// the path (a 256 KiB detached prefix is hashed once). A hasher is one
+/// `u64`, so the memo costs 32 bytes a directory ([`Self::charge`]).
 #[derive(Default)]
 pub(super) struct DirHashers {
     canonical: Vec<Option<Option<PathHasher>>>,
@@ -181,6 +182,13 @@ pub(super) struct DirHashers {
 }
 
 impl DirHashers {
+    /// Bytes the memo holds for `dirs` directories (32 a directory).
+    pub(super) const fn charge(dirs: usize) -> u64 {
+        let per_dir = std::mem::size_of::<Option<Option<PathHasher>>>()
+            + std::mem::size_of::<Option<PathHasher>>();
+        dirs.saturating_mul(per_dir) as u64
+    }
+
     pub(super) fn clear(&mut self) {
         self.canonical.clear();
         self.display.clear();
@@ -199,7 +207,7 @@ impl DirHashers {
         let mut current = dir;
         let mut base = loop {
             if let Some(known) = &self.canonical[current as usize] {
-                break known.clone();
+                break *known;
             }
             let record = index.dirs[current as usize];
             match record.canonical {
@@ -209,7 +217,7 @@ impl DirHashers {
                 }
                 DirCanonical::Resolved(owned) => {
                     let hasher = Some(PathHasher::new(&index.owned_paths[owned as usize]));
-                    self.canonical[current as usize] = Some(hasher.clone());
+                    self.canonical[current as usize] = Some(hasher);
                     break hasher;
                 }
                 DirCanonical::Unavailable(_) => {
@@ -220,7 +228,7 @@ impl DirHashers {
         };
         for id in chain.into_iter().rev() {
             base = base.map(|parent| parent.child_hasher(index.dir_name(id).as_encoded_bytes()));
-            self.canonical[id as usize] = Some(base.clone());
+            self.canonical[id as usize] = Some(base);
         }
         base
     }
@@ -231,7 +239,7 @@ impl DirHashers {
         let mut current = dir;
         let mut base = loop {
             if let Some(known) = &self.display[current as usize] {
-                break known.clone();
+                break *known;
             }
             let record = index.dirs[current as usize];
             if record.display == DirDisplay::Child {
@@ -239,13 +247,13 @@ impl DirHashers {
                 current = record.parent;
             } else {
                 let hasher = PathHasher::new(index.display_origin(current));
-                self.display[current as usize] = Some(hasher.clone());
+                self.display[current as usize] = Some(hasher);
                 break hasher;
             }
         };
         for id in chain.into_iter().rev() {
             base = base.child_hasher(index.dir_name(id).as_encoded_bytes());
-            self.display[id as usize] = Some(base.clone());
+            self.display[id as usize] = Some(base);
         }
         base
     }

@@ -502,10 +502,13 @@ proof.
 **What the cap is measured against.** The A95 probe (a bare `GtkListView` of
 sectioned rows) gives 10.4 ms at 131,071 rows, above `B_INTERACT_US`. DP's
 application measurement at 131,072 rows gave 2.2–6.9 ms worst, inside it.
-The **gating** figure is the application's: lane case D10 "End in the
-category view" at 131,072 rows, verdict run, ≤ `B_INTERACT_US`. The widget
-test (task 2.8) bounds the same dispatch at 2 × `B_INTERACT_US`, the
-widget-harness convention, and is a regression guard, not the verdict. If
+The **gating** figure is the application's: the far select-and-scroll at
+131,072 rows of a 2^20-file index, in the optimized widget build of the
+task 2.8 test, verdict runs through `scripts/measure.sh`, ≤ `B_INTERACT_US`
+(revised in stage 4, see "Review (stage 4)": the lane case "End in the
+category view" that first held this gate is not an input the palette
+accepts). The same test in the debug widget lane bounds the dispatch at
+2 × `B_INTERACT_US`, the widget-harness convention, as a regression guard. If
 that verdict misses the bar, task 1.3/4.4 lowers the cap to the largest power
 of two whose verdict fits, never below 65,536 (2^16). Below that, the cap
 stays at 2^16 and the figure is recorded as a measured exception.
@@ -544,6 +547,10 @@ above. The deviation is recorded in the programme record (task 6.4), and a
 real-tree measurement remains a follow-up.
 
 ### D10. Responsiveness lane cases
+
+*Deferred in stage 4 (see "Review (stage 4)", item 3): no `workspace-index`
+lane group is built by this change; the text below is the plan a follow-up
+change takes up together with a palette row-selection action.*
 
 A new lane group `workspace-index` (headless, the existing driver) opens a
 workspace of 2^17 and 2^20 files, waits for `command-palette-index`, then
@@ -584,9 +591,10 @@ through `scripts/measure.sh`, a run valid only with a recorded 1-minute load
 below 4, otherwise labelled non-verdict and retried; `main` and the branch
 interleaved, four rounds on the affected cases (Criterion: `file_index_rebuild`,
 `file_index_search`, `file_index_incremental`, `palette_categories` at 2^17 on
-both, 2^20 on the branch only since `main` cannot index it; lane: the D10
-cases). Pass bars: D7 (≤ 50 ms grouped query at 2^20; the category ranking
-measured and, if over, recorded as D7's exception), D10 (dispatch budgets), and no
+both, 2^20 on the branch only since `main` cannot index it; the D8 widget
+rounds at 2^20; the D10 lane cases are deferred, stage 4). Pass bars: D7 (≤ 50 ms grouped query at 2^20; the category ranking
+measured and, if over, recorded as D7's exception), D8 (the far select-and-scroll
+≤ `B_INTERACT_US`), and no
 case at 2^17 slower than `main` by more than its own min–max spread.
 
 ## Risks / Trade-offs
@@ -794,5 +802,78 @@ at a 1-minute load of 5–15 (other agents' builds): not verdicts.
 
 The 2^20 adds are refused because the index is full. A refused add costs
 about 0.35 ms each in a 1,024-add batch, worker-side and far under `main`'s
-admitted cost; the cause is not investigated. Recorded as a follow-up, not a
-blocker.
+admitted cost; the cause was the O(n) live count, fixed in stage 4 ("Review
+(stage 4)", item 2).
+
+## Review (stage 4, 2026-11-15)
+
+Independent review of the implementation (`c7d4d424`) against the design,
+the rules and `main`. The arena, the derived identity with `main`'s
+first-path-wins symlink rule, the key table, the 2^20 limits under the
+unchanged ledgers, the growth by `max(capacity / 16, need)` with
+compaction, the 131,072-row category cap with its "Showing X of Y" notice
+(announced and reported through `category_limited`), the reference-model
+property test, and the mutation worker's ticket, replay, overflow rebuild
+and readiness all hold. D7's chunked query was not built (stage 3,
+decision 11), so the branch spawns no thread outside `spawn_blocking_then`;
+the recorded exception has nothing to cover. Findings and decisions:
+
+1. **Must fix: a byte-truncated build published an empty index.**
+   `Traversal::finish` built the key table and the per-directory hashers
+   after the traversal, charging the keys (8 B a file, 16 for a symlink) to
+   the installed ledger and the hashers (two cloned SipHash states, about
+   160 B a directory) to the build ledger, neither reserved while files were
+   admitted. When either did not fit, the finish discarded every file. That
+   is reachable at production limits: a sparse tree of 2^20 files with about
+   2 files per directory (the lushtext checkout's shape) has about 500,000
+   directories, so the hashers alone take about 80 MiB beside a 50 MiB
+   arena, over 128 MiB, and the palette would have indexed nothing where
+   `main` indexes a truncated prefix. Every build that stopped on a byte
+   limit hit it too. Fixed:
+   - `PathHasher` folds a SipHash over the path's components and is one
+     `u64`, so the memo costs 32 B a directory; hashing by components also
+     agrees with `Path` equality, which confirms every hit.
+   - The traversal charges each file's keys to the installed ledger when it
+     admits the file, and the visit set's scratch (40 B a directory, more
+     than the hashers' 32, a `const` assertion) is carried over to pay for
+     the hashers. The finish therefore needs nothing the traversal did not
+     hold, and its failure branch is unreachable (a `debug_assert!`).
+   - Test: `a_byte_truncated_build_publishes_its_prefix_under_every_budget`
+     sweeps the build and installed budgets over a sparse tree: a larger
+     budget never publishes fewer files, and under every build budget the
+     arena publishes at least what the per-file reference publishes. Red
+     runs: `.claude/handoffs/scale-file-index/stage4-review-red.txt`.
+2. **Fixed: a refused add on a full index counted every record.**
+   `add_resolved` called `live_len()`, an O(n) count, for each add once the
+   index held 2^20 records: the 0.35 ms a refused add cost (the stage-3
+   follow-up). The batch now keeps the count, counted once, advanced by its
+   adds and forgotten by a kill.
+3. **D8's gate and D10's lane group (task 5.1).** The palette has no `End`
+   binding and the automation surface no row-selection action
+   (`docs/automation-reference.md`: `win.set-command-palette-category`
+   enters a category, nothing selects a row), so "End in the category view"
+   is neither an input a user gives nor one the lane can drive, and "Page
+   Down" over 131,072 rows is 8,192 dispatches of the 16-row step whose
+   cost A95 says does not grow with the list. The dispatch the cap bounds is
+   the far select-and-scroll, which the task 2.8 widget test drives through
+   the category view's own selection path. Decision: D8 gates on that
+   test's optimized build, three verdict runs through `measure.sh` (queued
+   with the coordinator, `sfi-branch-d8-widget-r1..r3`), ≤ `B_INTERACT_US`;
+   D7 gates on the queued Criterion groups (`sfi-branch-d7-criterion`). The
+   `workspace-index` lane group is deferred to a follow-up change that adds
+   a palette row-selection action (with its automation documentation), and
+   is recorded in the programme record. No spec text names the lane group,
+   so the spec delta is unchanged.
+4. **Recommendations, not fixed here.** The mutation batch's transient
+   scratch is not charged to the mutation ledger (the `(parent, name)` map,
+   the hashers memo, the merged key tables), as `main`'s transient clone was
+   not; with item 1's 32-B hashers the worst case at 2^20 directories is
+   about 100 MiB on the worker for one batch, and a batch is a few
+   app-initiated operations. A directory removal walks every directory once
+   (`subtree`), O(directories) per removal, against `main`'s O(files).
+5. **Verdict binaries.** The queued harness, Criterion and widget binaries
+   were built from the stage-3 code. Item 1 changes the build's finish and
+   the key hashing, not the query D7 times nor the selection D8 times; the
+   2^17 build and mutation rounds were rebuilt from this review's commit
+   before the queue ran (see the queue entry).
+

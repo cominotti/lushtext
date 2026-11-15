@@ -146,6 +146,113 @@ fn a_symlink_free_tree_resolves_only_its_folder_within_its_byte_bars() {
     }
 }
 
+/// Build `folders` under explicit byte limits, returning the files published.
+fn files_published(folders: &[PathBuf], build_bytes: u64, installed_bytes: u64) -> usize {
+    match FileIndex::rebuild_cancellable_with_limits(
+        folders,
+        MAX_INDEXED_FILES,
+        MAX_INDEXED_DIRECTORIES,
+        build_bytes,
+        installed_bytes,
+        &PaletteSearchCancellation::default(),
+    ) {
+        FileIndexBuildOutcome::Complete { index, metrics } => {
+            assert_eq!(metrics.retained_files, index.len());
+            index.len()
+        }
+        FileIndexBuildOutcome::Cancelled { .. } => panic!("a fresh token cannot cancel"),
+    }
+}
+
+/// Files the per-file reference publishes under a build budget.
+fn reference_files_published(folders: &[PathBuf], build_bytes: u64) -> usize {
+    match reference::ReferenceFileIndex::rebuild_cancellable_with_limits(
+        folders,
+        0,
+        MAX_INDEXED_FILES,
+        MAX_INDEXED_DIRECTORIES,
+        build_bytes,
+        &PaletteSearchCancellation::default(),
+        &WorkspaceEntryVisibility::default(),
+    ) {
+        reference::ReferenceBuildOutcome::Complete { index, .. } => index.len(),
+        reference::ReferenceBuildOutcome::Cancelled { .. } => {
+            panic!("a fresh token cannot cancel")
+        }
+    }
+}
+
+/// Stage-4 review: a byte-truncated build publishes the prefix it admitted.
+/// The key table and the per-directory hashers the finish builds are paid
+/// for while the traversal admits files, so the finish never discards a
+/// prefix: a larger budget never publishes fewer files, and under every build
+/// budget the arena publishes at least what the per-file reference does (which
+/// always kept a usable prefix). A sparse tree, one file per directory and
+/// three empty directories beside it, is where the finish's per-directory
+/// scratch is largest beside the arena.
+#[test]
+fn a_byte_truncated_build_publishes_its_prefix_under_every_budget() {
+    let dir = TempDir::new().expect("temp directory");
+    let root = dir.path().join("sparse");
+    for n in 0..1024 {
+        let directory = root.join(format!("d{:02}/e{n:04}", n % 32));
+        for empty in ["x", "y", "z"] {
+            fixture::create_dir_all(&directory.join(empty));
+        }
+        fixture::write_text(&directory.join("f.rs"), "");
+    }
+    let folders = std::slice::from_ref(&root);
+    let (_, full) = build(folders);
+    assert_eq!(full.truncation, None);
+    let installed = full.retained_index_bytes;
+
+    let mut previous = 0;
+    for step in 1..=64 {
+        let budget = full.peak_build_bytes * step / 32;
+        let published = files_published(folders, budget, MAX_FILE_INDEX_RETAINED_BYTES);
+        let reference = reference_files_published(folders, budget);
+        assert!(
+            published >= previous,
+            "a {budget} B build budget published {published} files, a smaller one {previous}"
+        );
+        assert!(
+            published >= reference.min(1024),
+            "a {budget} B build budget published {published} files, the reference {reference}"
+        );
+        previous = published;
+    }
+    assert_eq!(previous, 1024, "twice the measured peak admits every file");
+    assert!(
+        files_published(
+            folders,
+            full.peak_build_bytes / 2,
+            MAX_FILE_INDEX_RETAINED_BYTES
+        ) > 0,
+        "half the measured peak publishes a prefix"
+    );
+
+    let mut previous = 0;
+    for step in 1..=64 {
+        let budget = installed * step / 32;
+        let published = files_published(folders, MAX_FILE_INDEX_BUILD_RETAINED_BYTES, budget);
+        assert!(
+            published >= previous,
+            "a {budget} B installed budget published {published} files, a smaller one {previous}"
+        );
+        previous = published;
+    }
+    // The traversal holds growth slack the finish shrinks away, as the
+    // per-file representation's capacity charges did.
+    assert_eq!(
+        previous, 1024,
+        "twice the measured weight admits every file"
+    );
+    assert!(
+        files_published(folders, MAX_FILE_INDEX_BUILD_RETAINED_BYTES, installed / 2) > 0,
+        "half the measured weight publishes a prefix"
+    );
+}
+
 /// Task 2.2: symlinked files reached before and after their target, and a
 /// symlinked directory, keep the per-file representation's winners, order and
 /// identities, and are the only entries resolved one by one.
