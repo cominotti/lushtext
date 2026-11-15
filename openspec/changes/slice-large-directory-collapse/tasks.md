@@ -17,6 +17,18 @@ printed by the same test's `residual` cases), the design-tables commit (1.6),
 and the enforcement of the pass bar (7.1). The constants stay at their
 design candidates (32, 32, 8,192, 128 ms) until then.
 
+**Stage 4 status (2026-11-15): verdict failed, back to implementation.** The
+coordinator ran the four rounds quiet (`impl/campaign2/`, no round
+contaminated). Design "Measured baseline" holds the tables and design
+"Stage 4 verdict" the reading: at unit 32 every collapse with rows after the
+directory and the folder header's two-root collapse put frames of 16.8–29.9
+ms over `B_SETTLE_US`; expansion is over budget on `main` and the branch
+alike (D10 is live). Checked from it: 1.2 (cairo only; GL moves to 7.2), 1.5
+and 1.6. Still owed: 1.3 (units 8 and 16, the expansion and two-root
+profiles), 1.4 (the probe store's identity, and `main`'s unflagged
+re-expansion frames), 6.1 or 6.2, 7.1 (it needs a step-time instrument
+first) and 7.2 on the final code. Not merged.
+
 ## 1. Quiet baseline and attribution on `main` (before any fix)
 
 - [x] 1.1 Port the stage 1 scratch code (`.claude/handoffs/slice-large-directory-collapse/scratch-measure.patch`) into one verdict test in `crates/lushtext/tests/widget/workspace_tree_virtualization.rs`, `test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets`. It covers the D2 cases (collapse: 0 and 400 rows after the directory × N = 64, 256, 4,096, 16,385, 131,072; the folder header collapsing two 4,096-entry roots; re-expansion in the middle of a 131,072-entry collapse; expansion: 0 and 400 × N = 64, 256, 1,024, cold and right after a collapse) and prints, per case:
@@ -26,15 +38,15 @@ design candidates (32, 32, 8,192, 128 ms) until then.
   - the scan terminal-publication counter around each dispatch.
 
   It enforces nothing yet (`timing_verdicts_enforced()` gates the assertions added in 7.1). Keep the measurement code identical between `main` and the branch: keep it as a patch saved in the handoff directory and apply it to both worktrees. It is not committed before task 7.7 (design D16).
-- [ ] 1.2 Run it on `main` and on the branch, four rounds interleaved, through `scripts/measure.sh`, at a recorded load below 4. Record cairo and GL (steady state) frame figures. Write the tables into design "Measured baseline" as the verdict baseline, replacing the non-verdict stage 1 figures but keeping them as history.
+- [x] 1.2 Run it on `main` and on the branch, four rounds interleaved, through `scripts/measure.sh`, at a recorded load below 4. Record cairo and GL (steady state) frame figures. Write the tables into design "Measured baseline" as the verdict baseline, replacing the non-verdict stage 1 figures but keeping them as history. (2026-11-15, stage 4: rounds `slc-v2-r1`–`r4`, 1-minute load 2.2–3.3 at both ends of every round, cairo only. GL was not run; the failing frames are layout-phase time, so the renderer cannot change them, and the GL figures move to task 7.2.)
 - [ ] 1.3 Attribute every expansion dispatch over `B_SETTLE_US` with a `perf` profile (run under `scripts/measure.sh`, which uses no systemd scope; pass `--call-graph=fp --user-callchains`), then choose D10's fix, or no fix, from the attribution. Decide the constants of design D3 from the figures (`DIRECT_COLLAPSE_ROWS`, `SIDEBAR_REALIZED_ROWS_PER_FRAME` with 8, 16 and 32 measured, `COLLAPSE_UNBOUND_CHUNK_ROWS`, each a power of two rounded down; `COLLAPSE_FRAME_STARVATION_MS`, rounded up). If 8 still misses `B_INTERACT_US`, record the toolkit-floor exception of design D2 with its A113 figures. Record both in design "Implementation decisions".
 - [ ] 1.4 Confirm D12's attribution:
   - in the verdict test's re-expansion right after a 131,072-entry collapse, show by counter that every dispatch over `B_SETTLE_US` coincides with a scan's terminal publication;
   - record the store that scan published to: it must belong to the collapsed directory's path and be shown by no row, i.e. the `is_expandable()` probe's store.
 
   If a dispatch does not match, attribute it before going on.
-- [ ] 1.5 Measure the residual routes of design D2 once on `main` and record them: a refresh splice removing an expanded 256-entry and an expanded 131,072-entry directory, a section rebuild with one expanded, a direct collapse while the sidebar is hidden, and an AT-SPI-equivalent activation of the expander's `listitem.collapse` on a 256-entry directory.
-- [ ] 1.6 Commit the design tables only (signed, conventional, staged by name) and push. The hook's visual-proof policy reads the whole working tree, so first reverse-apply the measurement patch (`git apply -R`) and reapply it after the commit; stash is not used (design D16).
+- [x] 1.5 Measure the residual routes of design D2 once on `main` and record them: a refresh splice removing an expanded 256-entry and an expanded 131,072-entry directory, a section rebuild with one expanded, a direct collapse while the sidebar is hidden, and an AT-SPI-equivalent activation of the expander's `listitem.collapse` on a 256-entry directory. (2026-11-15: measured on both sides in the same campaign; design "Measured baseline", "Reading", last item.)
+- [x] 1.6 Commit the design tables only (signed, conventional, staged by name) and push. The hook's visual-proof policy reads the whole working tree, so first reverse-apply the measurement patch (`git apply -R`) and reapply it after the commit; stash is not used (design D16). (2026-11-15, stage 4: the verdict test is committed since task 7.7, so the tables commit touches only `openspec/` and `docs/next/`.)
 
 ## 2. GTK axioms first (design D13)
 

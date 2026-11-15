@@ -4237,11 +4237,23 @@ review", "Implementation decisions"); evidence in
     re-expansion right after a collapse of 131,072 entries peaked at 1.1–2.4 GiB
     in a debug widget test, against 1.2 GiB for BL's expand, collapse and
     re-expand of the same directory.
-  - *Status.* Implemented; the interleaved verdict campaign (tasks 1.2 and
-    7.2, a recorded 1-minute load below 4) is queued with the coordinator's
-    quiet-window runner (`impl/campaign2/` in the handoff directory), so the
-    constants stay at their design candidates (32, 32, 8,192, 128 ms) until
-    it reports and the pass bar is not yet enforced (task 7.1).
+  - *Status (stage 4, 2026-11-15): verdict failed, not merged.* The quiet
+    interleaved campaign (four rounds, 1-minute load 2.2–3.3, cairo; design
+    "Measured baseline") passes every collapse with nothing after the
+    directory (input 0.1–0.4 ms against `main`'s 14.8–28.3 ms; every frame
+    within 12.1 ms) and the re-expansion in the middle of a 131,072-entry
+    collapse (every frame within 1.2 ms against `main`'s 75–95 ms). It fails
+    at the candidate unit of 32 rows: with rows after the directory each
+    unit's frame takes 16.8–24.3 ms, four to seven of them a collapse (where
+    `main` has one 56–73 ms frame after a 37–56 ms input), and the folder
+    header's two-root collapse takes five frames of 20.0–29.9 ms. Expansion
+    is over budget on `main` and the branch alike (256 entries: a
+    20.6–30.2 ms load terminal, then a 41–62 ms frame), so design D10's cap
+    is in scope. Owed before a new verdict: units 8 and 16 measured, the
+    expansion and two-root profiles, a step-time instrument for the
+    `B_INTERACT_US` half of the pass bar, the probe store's identity
+    (task 1.4), and the final-code campaign with GL figures (design "Stage 4
+    verdict").
   - *Follow-ups recorded:* lighter sidebar rows (each realized row costs
     about 375 µs to replace and style); an upstream-report candidate for
     `gtk_list_item_change_finish` destroying unclaimed row widgets instead

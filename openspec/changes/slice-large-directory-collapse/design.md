@@ -61,6 +61,165 @@ GTK facts used below were read in the GTK 4.24.1 sources, saved in
 
 ## Measured baseline
 
+### Verdict campaign (stage 4, 2026-11-15; tasks 1.2 and 1.5)
+
+**Protocol.**
+
+- The verdict test of task 1.1
+  (`test_directory_collapse_and_small_expansion_dispatches_fit_the_budgets`),
+  identical on both sides: the `main` copy is the task 1.1 patch applied to
+  `main` `72c039ef` (`.claude/handoffs/slice-large-directory-collapse/main-tree`),
+  and it differs from the committed branch copy only in formatting, a named
+  `TimedDispatch` instead of a tuple, and the debug-build size cut, which an
+  optimized build does not take. The branch is `e2427b2f`, which merged
+  `main` `14332d69`; the `main` side is therefore older than the `main` the
+  branch merged, by changes that touch no sidebar code.
+- Optimized widget build (`CARGO_PROFILE_DEV_OPT_LEVEL=2
+  CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false`), `COLLAPSE_VERDICT_REPS=3`,
+  CPUs 8–23, headless Mutter, harness renderer **cairo only**.
+- Four rounds interleaved `main` → branch → `main` → branch through
+  `scripts/measure.sh`, run by the coordinator's quiet-gated runner (labels
+  `slc-v2-r<round>-<side>-c1`; logs and `measure.log` in
+  `.claude/handoffs/slice-large-directory-collapse/impl/campaign2/`).
+  Constants at their design candidates (32, 32, 8,192, 128 ms).
+- Load (1 / 5 / 15 minutes) before → after each round:
+  r1 `main` 3.29 / 2.52 / 2.68 → 3.02 / 2.44 / 2.55;
+  r2 branch 3.09 / 2.71 / 2.65 → 2.54 / 3.22 / 2.99;
+  r3 `main` 2.64 / 2.90 / 2.90 → 2.24 / 2.16 / 2.37;
+  r4 branch 3.28 / 4.55 / 6.91 → 3.08 / 3.63 / 6.03.
+  Round 4's 15-minute figure is the decaying tail of earlier load (its
+  1-minute load met the protocol at both ends; `localsearch-3` ran at nice 19
+  at its start). **No round is contaminated**: round 4 agrees with round 2
+  in every case. Only the two fastest cases ran slower (0:64 and 0:256,
+  worst frame 8.8–10.5 against 5.3–5.9 ms), both still within
+  `B_SETTLE_US`, and every case that fails fails in both branch rounds.
+- **Not measured:** GL frame figures (D2 asks for them beside cairo), and a
+  step's own time apart from the frame that carries it (the timeline records
+  whole dispatches, so a frame-paced step is inside its frame's figure). The
+  failing frames below are layout-phase time (paint 0.5–1.4 ms everywhere),
+  so the renderer cannot change those verdicts; GL is owed by task 7.2's
+  final-code campaign, and the step's own time by task 7.1's instrument.
+
+**Figures** (ms; each cell spans the six repetitions of a side, three per
+round, over its two rounds; "frames over 16 ms" counts a repetition's frame
+dispatches over `B_SETTLE_US`; the last column but one lists non-frame
+dispatches over `B_SETTLE_US` and whether the section published a scan
+terminal in them; "until settled" is the timeline's `done`: collapsed, or
+loaded, and `refresh_blocks_readiness` false).
+
+| case | rows after | N | side | input dispatch | worst frame (layout) | frames over 16 ms per rep | other dispatches over 16 ms (terminal publication) | until settled |
+|---|---|---|---|---|---|---|---|---|
+| collapse | 0 | 64 | main | 4.7–10.8 | 0.6 (0.2) | 0 | none | 0.7 |
+| collapse | 0 | 64 | branch | 0.1–0.3 | 3.8–9.4 (3.2–8.7) | 0 | none | 8.2–14.2 |
+| collapse | 0 | 256 | main | 15.4–21.9 | 0.9 (0.5) | 0 | none | 1.2 |
+| collapse | 0 | 256 | branch | 0.2–0.4 | 5.3–10.5 (4.7–9.9) | 0 | none | 94.5–105.7 |
+| collapse | 0 | 4,096 | main | 14.8–20.8 | 0.9–1.4 (0.5–0.6) | 0 | none | 27.2–28.1 |
+| collapse | 0 | 4,096 | branch | 0.2–0.4 | 6.3–8.4 (5.9–7.8) | 0 | none | 137.2–159.3 |
+| collapse | 0 | 16,385 | main | 15.7–17.9 | 1.0–1.1 (0.5–0.6) | 0 | none | 47.7–51.4 |
+| collapse | 0 | 16,385 | branch | 0.2–0.4 | 7.9–12.1 (7.5–11.3) | 0 | none | 185.5–202.5 |
+| collapse | 0 | 131,072 | main | 23.7–28.3 | 1.2–2.0 (0.6–0.7) | 0 | 32.8–44.6 (yes) | 438.5–502.8 |
+| collapse | 0 | 131,072 | branch | 0.2–0.4 | 9.3–10.2 (8.9–9.8) | 0 | 33.7–47.9 (yes) | 839.0–1114.6 |
+| expand-cold | 0 | 64 | main | 0.1–0.3 | 11.3–16.3 (10.8–15.5) | 0–1 | none | 27.0–31.2 |
+| expand-cold | 0 | 64 | branch | 0.1–0.3 | 11.7–13.0 (11.1–12.5) | 0 | none | 26.4–28.5 |
+| expand-after-collapse | 0 | 64 | main | 0.1–0.4 | 11.4–13.4 (10.8–12.7) | 0 | none | 7.3–14.0 |
+| expand-after-collapse | 0 | 64 | branch | 0.1–0.3 | 11.9–14.5 (11.3–13.7) | 0 | none | 7.7–26.8 |
+| expand-cold | 0 | 256 | main | 0.1–0.3 | 41.4–45.8 (40.3–44.8) | 1 | 20.6–25.1 (yes) | 64.3–70.8 |
+| expand-cold | 0 | 256 | branch | 0.1–0.3 | 42.1–46.3 (41.1–45.2) | 1 | 21.0–24.9 (yes) | 67.0–72.4 |
+| expand-after-collapse | 0 | 256 | main | 0.1–0.4 | 41.4–45.3 (40.7–44.6) | 1 | 20.8–26.4 (yes) | 21.4–28.0 |
+| expand-after-collapse | 0 | 256 | branch | 0.2–0.4 | 41.2–61.6 (40.6–60.4) | 1 | 22.2–30.2 (yes) | 23.2–31.9 |
+| expand-cold | 0 | 1,024 | main | 0.1–0.3 | 15.9–42.6 (15.7–42.4) | 0–2 | none | 89.2–95.4 |
+| expand-cold | 0 | 1,024 | branch | 0.1–0.3 | 16.1–44.1 (15.9–43.9) | 1–2 | none | 86.9–135.2 |
+| expand-after-collapse | 0 | 1,024 | main | 0.1–0.4 | 15.2–42.8 (15.0–42.5) | 0–2 | none | 87.9–95.1 |
+| expand-after-collapse | 0 | 1,024 | branch | 0.1–0.2 | 15.6–40.1 (15.5–39.9) | 0–2 | none | 87.0–93.1 |
+| collapse | 400 | 64 | main | 11.5–18.8 | 18.0–20.2 (17.4–19.5) | 1 | none | 18.3–20.6 |
+| collapse | 400 | 64 | branch | 0.2–0.3 | 16.8–22.6 (16.2–22.0) | 1–2 | none | 35.1–40.6 |
+| collapse | 400 | 256 | main | 36.7–55.7 | 56.1–72.6 (55.5–71.6) | 1 | none | 56.7–73.4 |
+| collapse | 400 | 256 | branch | 0.2–0.4 | 18.6–24.3 (17.9–23.7) | 4–6 | none | 122.7–135.3 |
+| collapse | 400 | 4,096 | main | 35.9–43.8 | 57.7–65.8 (57.0–64.8) | 1 | none | 84.6–96.9 |
+| collapse | 400 | 4,096 | branch | 0.2–0.4 | 18.6–22.9 (18.0–22.2) | 6 | none | 172.2–184.9 |
+| collapse | 400 | 16,385 | main | 38.2–45.0 | 59.9–61.1 (59.3–60.4) | 1 | none | 95.4–96.2 |
+| collapse | 400 | 16,385 | branch | 0.2–0.4 | 17.9–18.5 (17.3–17.9) | 6–7 | none | 199.3–211.3 |
+| collapse | 400 | 131,072 | main | 48.2–56.0 | 62.7–65.0 (61.9–63.3) | 1 | 34.0–43.1 (yes) | 449.6–474.7 |
+| collapse | 400 | 131,072 | branch | 0.2–0.4 | 18.7–22.0 (18.2–21.4) | 6 | 33.5–43.7 (yes) | 831.0–888.2 |
+| expand-cold | 400 | 64 | main | 0.1–0.3 | 16.3–22.8 (15.6–21.9) | 1 | none | 30.9–36.6 |
+| expand-cold | 400 | 64 | branch | 0.2–0.3 | 16.0–17.4 (15.3–16.8) | 0–1 | none | 33.9–36.4 |
+| expand-after-collapse | 400 | 64 | main | 0.1 | 16.2–17.5 (15.6–16.8) | 1 | none | 4.1–6.1 |
+| expand-after-collapse | 400 | 64 | branch | 0.2–0.4 | 16.0–16.9 (15.4–16.3) | 1 | none | 6.6–9.3 |
+| expand-cold | 400 | 256 | main | 0.1–0.3 | 47.1–50.8 (46.4–50.1) | 1 | none | 64.2–70.9 |
+| expand-cold | 400 | 256 | branch | 0.1–0.3 | 48.0–62.4 (47.3–61.6) | 1 | none | 65.6–76.7 |
+| expand-after-collapse | 400 | 256 | main | 0.1–0.3 | 34.8–45.5 (34.2–44.5) | 1 | none | 9.8–16.6 |
+| expand-after-collapse | 400 | 256 | branch | 0.2–0.4 | 49.7–57.4 (49.0–56.5) | 1 | none | 9.6–16.5 |
+| expand-cold | 400 | 1,024 | main | 0.1–0.3 | 25.5–27.6 (25.2–27.4) | 2–3 | none | 85.9–116.9 |
+| expand-cold | 400 | 1,024 | branch | 0.1–0.3 | 26.9–31.9 (26.7–31.7) | 2–3 | none | 86.0–112.2 |
+| expand-after-collapse | 400 | 1,024 | main | 0.1–0.2 | 46.2–49.7 (46.0–49.4) | 1 | none | 36.8–40.0 |
+| expand-after-collapse | 400 | 1,024 | branch | 0.1–0.2 | 47.3–49.6 (47.0–49.4) | 1 | none | 35.5–37.7 |
+| header-two-roots | 0 | 4,096 | main | 50.3–55.1 | 26.7–28.1 (26.5–27.9) | 3 | none | not reached in 240 s |
+| header-two-roots | 0 | 4,096 | branch | 2.1–4.9 | 24.3–29.9 (23.7–29.2) | 5 | none | 272.7–297.2 |
+| reexpand-mid-collapse | 0 | 131,072 | main | 0.2–0.4 | 75.1–94.9 (74.8–94.2) | 1–2 | 39.8–66.7 (yes) | 996.0–1121.0 |
+| reexpand-mid-collapse | 0 | 131,072 | branch | 4.0–6.7 | 1.0–1.2 (0.7–0.8) | 0 | none | 295.3–339.7 |
+| residual-expander-action | 400 | 256 | main | 44.1–47.8 | 97.4–97.6 (96.7–96.9) | 1 | none | 98.2–98.3 |
+| residual-expander-action | 400 | 256 | branch | 42.5–44.3 | 99.9–100.2 (99.1–99.5) | 1 | none | 100.5–101.0 |
+| residual-hidden-sidebar | 400 | 256 | main | 42.3–46.0 | 98.9–99.1 (98.8–99.0) | 1 | none | 99.7–99.9 |
+| residual-hidden-sidebar | 400 | 256 | branch | 0.2 | 19.8–35.8 (19.7–35.7) | 5–6 | none | 175.5–179.0 |
+| residual-refresh-splice | 0 | 256 | main | 22.0–24.1 | 1.7–1.8 (1.5–1.5) | 0 | none | 2.4–5.9 |
+| residual-refresh-splice | 0 | 256 | branch | 19.2–20.3 | 1.7–1.8 (1.5–1.5) | 0 | none | 6.0–7.1 |
+| residual-refresh-splice | 0 | 131,072 | main | 179.8–180.0 | 4.1–5.2 (1.5) | 0 | none | 121.3–121.5 |
+| residual-refresh-splice | 0 | 131,072 | branch | 181.6–187.4 | 2.2–4.9 (1.6–1.7) | 0 | none | 121.3–121.5 |
+| residual-section-rebuild | 0 | 256 | main | 0.1–0.2 | 2.1 (1.6) | 0 | 21.8 (no) | 41.1–48.4 |
+| residual-section-rebuild | 0 | 256 | branch | 0.1–0.2 | 2.1–2.2 (1.6–1.7) | 0 | 17.4–20.8 (no) | 43.9–46.7 |
+
+**Reading.**
+
+- **Collapse with nothing after the directory: passes on the branch** at
+  every size (input 0.1–0.4 ms; every frame 3.8–12.1 ms), against `main`'s
+  14.8–28.3 ms input dispatch from 256 entries up. Time until settled grows
+  from 1.2 to 95–106 ms at 256 entries, and from 0.44–0.50 to 0.84–1.11 s at
+  131,072.
+- **Collapse with 400 rows after the directory: fails on the branch.** The
+  input dispatch is gone (36.7–56.0 ms on `main` → 0.2–0.4 ms), and `main`'s
+  one 56–73 ms frame becomes four to seven frames of 16.8–24.3 ms (layout
+  16.2–23.7 ms). Each such frame carries one 32-row bound unit: 32 widgets
+  destroyed and 32 created and styled for the rows entering the band (A113),
+  where the same unit with nothing after the directory, which brings no row
+  into the band, costs 5–12 ms. At unit 32 the pass bar is missed in every
+  repetition of both rounds; D2's exception covers only unit 8 against
+  `B_INTERACT_US` and does not apply.
+- **The folder header's two-root collapse fails on the branch**: five frames
+  of 20.0–29.9 ms per repetition (input 2.1–4.9 ms, against `main`'s
+  50.3–55.1 ms). Not attributed; the frames run 2–5 ms above the
+  single-directory unit frames, consistent with the second root's unbound
+  chunks sharing a frame with the first root's bound unit. On `main` the
+  case never reached `done` within its 240 s budget (about 3,000 dispatches
+  a repetition, three frames over 16 ms); not attributed.
+- **Re-expansion in the middle of a 131,072-entry collapse passes on the
+  branch** (input 4.0–6.7 ms, every frame 1.0–1.2 ms, refilled in
+  0.30–0.34 s). On `main`, where no collapse is pending, the same input
+  re-expands after a direct collapse: a 39.8–66.7 ms dispatch with a scan
+  terminal publication (D12), a 16.0–17.0 ms frame and a 75.1–94.9 ms frame
+  without one.
+- **D12's probe publication** shows in every 131,072-entry collapse on both
+  sides: one 33.5–47.9 ms non-frame dispatch, flagged with a terminal
+  publication, 0.40–0.45 s after the input, 12 of 12 repetitions on each
+  side. It stays the named residual. The flag in the expansion rows is a
+  different publication: the expanded directory's own load.
+- **Expansion is over budget on `main` and on the branch alike** (D10's
+  hypothesis confirmed): at 256 entries a 20.6–30.2 ms non-frame dispatch
+  (the directory's load terminal) and then one 41–62 ms frame; at 1,024
+  entries one to three frames of 16–50 ms; at 64 entries with 400 rows after,
+  frames of 16.0–22.8 ms. The branch changes nothing here. D10's cap is
+  therefore in scope (tasks 1.3 and 6.1), and its attribution is owed first.
+- **Residual routes** (task 1.5; recorded, not judged). AT-SPI-equivalent
+  `listitem.collapse` on 256 entries with 400 after: 42.5–47.8 ms input and
+  one 97–100 ms frame on both sides. Collapse while the sidebar is hidden
+  (256 + 400): `main` 42.3–46.0 ms input and one 99 ms frame; the branch
+  paces it through the fallback source in five or six dispatches of
+  19.8–35.8 ms, settled in 176–179 ms. Refresh splice removing an expanded
+  directory: input 19.2–24.1 ms at 256 entries and 179.8–187.4 ms at
+  131,072, on both sides. Section rebuild with a 256-entry directory
+  expanded: one 17.4–21.8 ms non-frame dispatch on both sides.
+
+### Stage 1 figures (history, non-verdict)
+
 **Protocol (stage 1, non-verdict).**
 
 - Toolkit: GTK 4.24.1 / libadwaita 1.10.0, toolbox `hypatia-f45`, `main`
@@ -883,11 +1042,50 @@ Recorded at stage 3 (implementation), each with its evidence.
     (4,096 for the large cases) unless `timing_verdicts_enforced()`, which
     the campaign's optimized build is.
 
+## Stage 4 verdict (2026-11-15): pass bar not met, back to implementation
+
+The quiet campaign ("Measured baseline", "Verdict campaign") judges the
+branch at the candidate constants. Not merged. What it settles and what it
+leaves owed:
+
+1. **Passes:** every collapse with nothing after the directory, at every
+   size; the re-expansion in the middle of a 131,072-entry collapse; the
+   input dispatch of every owned route (0.1–0.4 ms; 2.1–4.9 ms for the
+   two-root folder header; 4.0–6.7 ms for the mid-collapse re-expansion).
+2. **Fails at `SIDEBAR_REALIZED_ROWS_PER_FRAME` = 32:** every collapse with
+   rows after the directory (four to seven frames of 16.8–24.3 ms per
+   collapse from 256 entries up, one or two from 64), and the folder
+   header's two-root collapse (five frames of 20.0–29.9 ms). A unit that
+   brings rows into the band costs about twice one that does not.
+3. **Owed by task 1.3:** units 8 and 16 measured on the same cases (the
+   linear reading of the 32-row frames predicts about 9–12 ms at 16, which
+   is a prediction, not a measurement), the constant chosen from them, and
+   a profile of the two-root frames before deciding whether a frame that
+   takes a bound unit may also take unbound chunks of another collapse.
+4. **Owed by task 7.1:** the step's own time against `B_INTERACT_US`. The
+   verdict test records whole dispatches, so a frame-paced step is not
+   separable from its frame; the test needs a step-time instrument (for
+   example a timestamp pair around `run_collapse_step` read through the
+   evidence) before the pass bar can be enforced.
+5. **Owed by tasks 1.3 and 6.1 (D10):** expansion is over budget on quiet
+   `main` and unchanged on the branch (256 entries: a 20.6–30.2 ms load
+   terminal and a 41–62 ms frame). The profile comes first; the cap, if the
+   profile puts the cost in row creation and styling, follows it with a
+   failing-first test.
+6. **Owed by task 1.4:** the store the probe scan publishes to is not
+   printed, and `main`'s re-expansion after a direct 131,072-entry collapse
+   has two over-budget frames (16.0–17.0 and 75.1–94.9 ms) without a
+   terminal publication, which the task says to attribute before going on.
+7. **Owed by task 7.2:** the final-code campaign, four rounds interleaved,
+   with GL figures beside cairo.
+
 ## Risks / Trade-offs
 
-- **The collapse finishes later than `main`'s frozen one** (D2): about 130 ms
-  at 256 entries with rows after the directory, and about 220 ms at 131,072,
-  against about 80 ms frozen. Mitigation: the intent shows in the first frame
+- **The collapse finishes later than `main`'s frozen one** (D2): stage 1
+  estimated about 130 ms at 256 entries with rows after the directory and
+  about 220 ms at 131,072; the quiet campaign measured 123–135 ms (`main`
+  57–73 ms) and 0.83–1.11 s (`main` 0.44–0.50 s), the latter mostly the
+  unbound chunks and BL's listing retirement. Mitigation: the intent shows in the first frame
   (D6), input is handled throughout, and the constants are measured, so the
   per-frame unit grows if a later lighter-rows change lowers the per-row cost.
 - **Owning the expander's click and keys.** If a future GTK adds a disclosure
