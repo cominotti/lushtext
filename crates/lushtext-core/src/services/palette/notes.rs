@@ -78,9 +78,16 @@ pub const MAX_PALETTE_NOTE_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES: u64 = 8 * 1024 * 1024;
 /// Maximum concurrently retained final rows plus construction-only scratch.
 ///
-/// This preserves the 64 MiB final source while leaving room for one maximum
-/// 16 MiB recovery-metadata input and bounded path, diagnostic, and category
-/// construction ownership.
+/// It holds the [`MAX_PALETTE_NOTE_RETAINED_BYTES`] final source, the
+/// category vectors' overlap of two row shells per retained row
+/// (`admit_by_bytes`), the sidecar paths and diagnostics, and one sidecar
+/// parse reservation, which a maximum 16 MiB recovery-metadata input needs in
+/// full. The overlap follows the number of retained rows, not their bytes, so
+/// small rows leave less room to parse: rows of about 900 bytes leave about
+/// 8 MiB, and rows of about 650 bytes (bookmarks on 70-byte paths) leave less
+/// than one 1 MiB sidecar's reservation. The rows past the retained ceiling
+/// are then no longer counted, and the count is a lower bound
+/// (`found_is_lower_bound`; measured by `diagnose-ci-only-reflow-guard-failure`).
 ///
 /// Kind: derived; computed from the constants it names, not rounded.
 pub const MAX_PALETTE_NOTE_CONSTRUCTION_BYTES: u64 = 96 * 1024 * 1024;

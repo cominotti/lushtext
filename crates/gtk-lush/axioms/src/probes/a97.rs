@@ -70,8 +70,7 @@ pub fn entry_fixture() -> EntryFixture {
         controller.connect_key_pressed(move |_, key, _, _| {
             let text = entry_weak
                 .upgrade()
-                .map(|entry| entry.text().to_string())
-                .unwrap_or_default();
+                .map_or_default(|entry| entry.text().to_string());
             seen.borrow_mut().push(Seen::Press(key, text));
             glib::Propagation::Proceed
         });

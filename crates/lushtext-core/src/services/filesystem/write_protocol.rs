@@ -29,6 +29,15 @@
 //! destination, then sync the parent directory. Any failure before the rename
 //! removes the temp file and reports `BeforeRename`; a failed directory sync
 //! after it reports `AfterRename`.
+//!
+//! A durable rename ends in a [`RenameClass`], the same three phases for a
+//! namespace change rather than for a file's bytes. It is a sibling of
+//! [`WriteClass`] rather than that type reused, because what each variant
+//! promises differs: a write's `BeforeRename` keeps the previous **bytes**, a
+//! rename's keeps the previous **name**. Callers that must not mistake a
+//! completed rename for a refused one (the no-replace fallback, which once read
+//! an `Unsupported` directory `fsync` as a missing `RENAME_NOREPLACE`) branch
+//! on this class instead of on the error's kind.
 
 /// Bounded fresh names tried when a temp name already exists.
 ///
@@ -208,6 +217,19 @@ impl MoveProtocol {
     }
 }
 
+/// How a durable rename ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenameClass {
+    /// The entry has its new name, and every directory the rename mutated was
+    /// synced.
+    Success,
+    /// The rename step itself failed: the entry still has its old name.
+    BeforeRename,
+    /// The entry has its new name, but a directory sync that makes the rename
+    /// durable did not complete.
+    AfterRename,
+}
+
 /// The next operation of a durable rename ([`RenameProtocol`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenameAction {
@@ -217,8 +239,8 @@ pub enum RenameAction {
     SyncSourceDir,
     /// Sync the destination's parent directory (a different directory).
     SyncDestinationDir,
-    /// The rename is over; `true` when it completed.
-    Finish(bool),
+    /// The rename is over, in this class.
+    Finish(RenameClass),
 }
 
 /// A durable rename: rename, then sync every parent directory it mutated.
@@ -251,12 +273,13 @@ impl RenameProtocol {
                 RenameAction::SyncDestinationDir
             }
             RenameAction::SyncSourceDir | RenameAction::SyncDestinationDir if succeeded => {
-                RenameAction::Finish(true)
+                RenameAction::Finish(RenameClass::Success)
             }
-            RenameAction::Rename
-            | RenameAction::SyncSourceDir
-            | RenameAction::SyncDestinationDir => RenameAction::Finish(false),
-            RenameAction::Finish(done) => RenameAction::Finish(done),
+            RenameAction::Rename => RenameAction::Finish(RenameClass::BeforeRename),
+            RenameAction::SyncSourceDir | RenameAction::SyncDestinationDir => {
+                RenameAction::Finish(RenameClass::AfterRename)
+            }
+            RenameAction::Finish(class) => RenameAction::Finish(class),
         };
         (
             Self {
@@ -387,15 +410,52 @@ mod tests {
         let (same, _) = RenameProtocol::start(false);
         let (same, next) = same.step(true);
         assert_eq!(next, RenameAction::SyncSourceDir);
-        assert_eq!(same.step(true).1, RenameAction::Finish(true));
+        assert_eq!(
+            same.step(true).1,
+            RenameAction::Finish(RenameClass::Success)
+        );
         let (cross, _) = RenameProtocol::start(true);
         let (cross, _) = cross.step(true);
         let (cross, next) = cross.step(true);
         assert_eq!(next, RenameAction::SyncDestinationDir);
-        assert_eq!(cross.step(true).1, RenameAction::Finish(true));
         assert_eq!(
-            RenameProtocol::start(true).0.step(false).1,
-            RenameAction::Finish(false)
+            cross.step(true).1,
+            RenameAction::Finish(RenameClass::Success)
+        );
+    }
+
+    #[test]
+    fn a_failed_rename_step_is_before_rename() {
+        for cross_directory in [false, true] {
+            assert_eq!(
+                RenameProtocol::start(cross_directory).0.step(false).1,
+                RenameAction::Finish(RenameClass::BeforeRename)
+            );
+        }
+    }
+
+    /// `rust-1-100-adoption` A8: once the rename step succeeded, any failed
+    /// directory sync is after-rename, never a reason to retry the rename.
+    #[test]
+    fn a_failed_directory_sync_after_a_rename_is_after_rename() {
+        let (same, _) = RenameProtocol::start(false);
+        let (same, _) = same.step(true);
+        assert_eq!(
+            same.step(false).1,
+            RenameAction::Finish(RenameClass::AfterRename)
+        );
+        let (cross, _) = RenameProtocol::start(true);
+        let (cross, _) = cross.step(true);
+        assert_eq!(
+            cross.step(false).1,
+            RenameAction::Finish(RenameClass::AfterRename)
+        );
+        let (cross, _) = RenameProtocol::start(true);
+        let (cross, _) = cross.step(true);
+        let (cross, _) = cross.step(true);
+        assert_eq!(
+            cross.step(false).1,
+            RenameAction::Finish(RenameClass::AfterRename)
         );
     }
 }

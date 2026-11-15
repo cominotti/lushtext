@@ -230,8 +230,7 @@ impl LushtextSidebar {
             .workspaces
             .iter()
             .find(|workspace| workspace.id == *workspace_id)
-            .map(|workspace| workspace.name.clone())
-            .unwrap_or_default()
+            .map_or_default(|workspace| workspace.name.clone())
     }
 
     /// Handle drill-down focus on a folder: auto-collapse others and scroll into view.

@@ -194,6 +194,11 @@ the vendored Cargo sources with:
 make cargo-sources
 ```
 
+To refresh the lockfile itself, use `make update-deps-cooldown`: it updates
+under a 7-day publish-age cooldown at the 1.98.0 MSRV (it needs the Rust
+1.100.0 toolchain for that), then regenerates `workspace-hack` and the vendored
+sources, checks the workspace with Rust 1.98.0, and runs `cargo deny`.
+
 Release, Cominotti repository, and Cloudflare Pages hosting details live in
 [`docs/next/flatpak-packaging.md`](docs/next/flatpak-packaging.md) and
 [`docs/next/cominotti-flatpak-hosting.md`](docs/next/cominotti-flatpak-hosting.md).
@@ -771,7 +776,10 @@ and `make test-widget-shard WIDGET_SHARD=<shard>` reproduces one. Locally,
 `make test` and `make test-widget` run those shards in parallel, each in its
 own memory-capped headless session (needs a systemd user manager), and end
 with a per-shard summary; `WIDGET_PARALLEL=0` runs the whole suite in one
-serial session instead. For host-sensitive
+serial session instead. A widget failure seen only on CI is reproduced first
+with `scripts/ci-image-widget-test.sh`, which runs the widget binary built
+here in the CI widget job's own image under a CPU limit (Docker;
+`.agents/rules/build.md`, "CI image lane"). For host-sensitive
 risks that the widget harness cannot honestly prove, use the smoke lanes in
 [`docs/end-user-coverage.md`](docs/end-user-coverage.md), including visual,
 automation, crash-recovery, portal/sandbox, accessibility, and performance

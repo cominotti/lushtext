@@ -36,8 +36,7 @@ fn build(ui: &support::SampleUi) {
     ui.set_readout(move || {
         let tags = last_start
             .get()
-            .map(|start| fixture.tags_from(start).join(", "))
-            .unwrap_or_default();
+            .map_or_default(|start| fixture.tags_from(start).join(", "));
         format!(
             "handler clears the language: {}   inserted {INSERTED_CHARS} chars, tags: [{tags}]",
             fixture.clear_on_insert.get()

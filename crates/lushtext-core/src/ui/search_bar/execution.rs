@@ -161,49 +161,29 @@ pub(super) fn replace_selected_match(bar: &LushtextSearchBar) {
 }
 
 /// Replace every match in the buffer.
+///
+/// sourceview5 0.11.3's `SearchContext::replace_all` returns how many matches it
+/// replaced, and a zero count with no error is success: a Replace All that
+/// matched nothing is a no-op. (0.11.0–0.11.2 asserted that a zero return
+/// carried an error, so that case panicked, found by `defer-background-tab-layout`'s
+/// review round 2 tests; LushText reported it upstream as sourceview5-rs#19, fixed
+/// in 0.11.3, and called the C function directly until then.) The binding passes
+/// `replace.len() as i32`; that cannot overflow, because `replace_entry` is a
+/// `GtkEntry`, whose buffer holds at most 65,535 characters (at most 262,140
+/// bytes of UTF-8), and `entry_paste_cap` caps each insertion at 16 KiB on top.
+///
+/// A `GError` (an invalid replacement escape with regular expressions on) is
+/// logged and never unwrapped, and the counter is refreshed in every case.
 pub(super) fn replace_all_matches(bar: &LushtextSearchBar) {
     let Some(context) = bar.search_context() else {
         return;
     };
     reveal_hidden_document_text(bar);
     let replace_text = bar.replace_entry().text();
-    if let Err(error) = replace_all_occurrences(&context, replace_text.as_str()) {
+    if let Err(error) = context.replace_all(replace_text.as_str()) {
         tracing::error!("Replace all failed: {error}");
     }
     report_match_state(bar);
-}
-
-/// `gtk_source_search_context_replace_all`, which returns how many matches it
-/// replaced. sourceview5 0.11's `SearchContext::replace_all` asserts that a
-/// zero return carries an error, so a Replace All that matched nothing
-/// panicked (found by `defer-background-tab-layout`'s review round 2 tests;
-/// the button is enabled whatever the count). Returns the number replaced.
-fn replace_all_occurrences(
-    context: &sourceview5::SearchContext,
-    replace: &str,
-) -> Result<u32, glib::Error> {
-    use glib::translate::{FromGlibPtrFull, ToGlibPtr};
-    let length = i32::try_from(replace.len()).unwrap_or(i32::MAX);
-    let mut error = std::ptr::null_mut();
-    // SAFETY: `context` is a live GtkSourceSearchContext for the call; the
-    // replacement is a NUL-terminated copy owned by the stash for the call,
-    // and `length` is its byte length (clamped, never past its end); `error`
-    // is a null out-pointer GtkSourceView fills, or leaves null, and whose
-    // ownership is taken once below.
-    let replaced = unsafe {
-        sourceview5::ffi::gtk_source_search_context_replace_all(
-            context.to_glib_none().0,
-            replace.to_glib_none().0,
-            length,
-            &mut error,
-        )
-    };
-    if error.is_null() {
-        Ok(replaced)
-    } else {
-        // SAFETY: GtkSourceView set `error` to a newly allocated GError.
-        Err(unsafe { glib::Error::from_glib_full(error) })
-    }
 }
 
 /// Write the match counter label and its accessible value text.

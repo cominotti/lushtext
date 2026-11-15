@@ -349,7 +349,7 @@ fn test_large_text_breakpoint_never_flips_the_pane_to_the_sheet() {
     layout_view.connect_notify_local(Some("layout-name"), move |view, _| {
         recorder
             .borrow_mut()
-            .push(view.layout_name().map(String::from).unwrap_or_default());
+            .push(view.layout_name().map_or_default(String::from));
     });
 
     present_window(&window);

@@ -114,9 +114,10 @@ is in [`parallel-agent-work.md`](./parallel-agent-work.md).
 
 **The helpers are THE way agents run heavy work, measurements, and waits.**
 Each has a `--self-test`; `make check-agent-helpers` (in `make check-policy`)
-runs them and `scripts/with-memory-cap.sh`'s plus `shellcheck`, against
-temporary locks and private slices only. Their headers
-document the mechanics.
+runs those three, `scripts/with-memory-cap.sh`'s, the CI image lane's
+(`scripts/ci-image-widget-test.sh`, [`build.md`](./build.md), "CI image
+lane") and `shellcheck`, against temporary locks and private slices only.
+Their headers document the mechanics.
 
 ```
 scripts/heavy.sh [--mem <cap|none>] -- <command> [args...]       # every heavy non-measurement command

@@ -288,7 +288,10 @@ pub fn apply_headless_child_environment(command: &mut Command, config: &HarnessC
 /// configured runner environment variable is already present. Inside the
 /// headless session, the parent process lists or filters tests, then spawns a
 /// fresh child process for each selected test.
-#[must_use]
+// A message, not a bare `#[must_use]`: `ExitCode` is itself `#[must_use]` on
+// newer std (Clippy's `double_must_use`), but not on every toolchain this crate
+// supports, and the message says what the caller owes.
+#[must_use = "return the exit code from `main`, or the harness result is lost"]
 pub fn run_registered_tests(
     tests: &[RegisteredTest],
     config: &HarnessConfig,
