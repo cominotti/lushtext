@@ -2497,6 +2497,20 @@ the real 207 held rows. Locally: 8.2 s, 84.8 s and 156.4 s, 4.29 min and
 slice-large-directory-collapse)` until two dispatched `kani.yml` runs measure
 it.
 
+**Proof strength** (`make proof-strength
+PROOF_STRENGTH_MODULE=crates/lushtext-core/src/ui/sidebar/policy.rs`, revision
+`fdcea738`, Kani 0.68.0, cargo-mutants 27.0.0): the oracle scope is
+`next_collapse_step`, 26 mutants (floor 48, 144 outside the scope). Both arms
+kill all 25 viable mutants; the one unviable mutant is the `Default::default()`
+body, which does not build. That leaves 0 Kani survivors, 0 timeouts and 0
+vacuous runs. The cheap harnesses kill 22 of them (`a_descendant_goes_before_its_ancestor`
+11, `every_step_makes_bounded_progress` 11). The held-store harness
+`each_step_takes_what_its_bound_allows` kills three, and those three need it:
+the `&&` and `<` of the unbound-range filter and the `surplus == 0` guard,
+which took 227 s, 390 s and 265 s. The `<` to `<=` mutant of the band's upper
+cut is excluded as equivalent in `.cargo/mutants.toml`, so neither arm sees
+it.
+
 ### Minimap marker row binning (`bin-minimap-markers-per-row`, 2026-11-07)
 
 `fit_marker_bounds`, `MarkerProjectionSpace` and their three harnesses
