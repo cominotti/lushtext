@@ -432,14 +432,13 @@ impl LushtextEditorPage {
 fn every_editor() -> Vec<LushtextEditorPage> {
     gtk4::gio::Application::default()
         .and_then(|app| app.downcast::<gtk4::Application>().ok())
-        .map(|app| {
+        .map_or_default(|app| {
             app.windows()
                 .into_iter()
                 .filter_map(|window| window.downcast::<crate::ui::window::LushtextWindow>().ok())
                 .flat_map(|window| window.open_editors())
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// Apply a display-wide `.monospace` change (zoom, font) with every dense

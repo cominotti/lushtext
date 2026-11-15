@@ -40,8 +40,7 @@ fn tree_view(fixture: &LazyTree) -> gtk4::ListView {
         let text = row
             .as_ref()
             .and_then(|row| row.item().and_downcast::<gtk4::StringObject>())
-            .map(|object| object.string().to_string())
-            .unwrap_or_default();
+            .map_or_default(|object| object.string().to_string());
         expander.set_list_row(row.as_ref());
         if let Some(label) = expander.child().and_downcast::<gtk4::Label>() {
             label.set_text(&text);

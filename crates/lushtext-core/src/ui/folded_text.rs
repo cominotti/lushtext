@@ -307,7 +307,7 @@ impl std::fmt::Debug for FoldedTextSurface {
         formatter
             .debug_struct("FoldedTextSurface")
             .field("folded", &self.folded.borrow().is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

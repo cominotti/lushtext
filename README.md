@@ -194,6 +194,11 @@ the vendored Cargo sources with:
 make cargo-sources
 ```
 
+To refresh the lockfile itself, use `make update-deps-cooldown`: it updates
+under a 7-day publish-age cooldown at the 1.98.0 MSRV (it needs the Rust
+1.100.0 toolchain for that), then regenerates `workspace-hack` and the vendored
+sources, checks the workspace with Rust 1.98.0, and runs `cargo deny`.
+
 Release, Cominotti repository, and Cloudflare Pages hosting details live in
 [`docs/next/flatpak-packaging.md`](docs/next/flatpak-packaging.md) and
 [`docs/next/cominotti-flatpak-hosting.md`](docs/next/cominotti-flatpak-hosting.md).
