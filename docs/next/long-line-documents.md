@@ -4033,6 +4033,23 @@ separate change, in this order:
 2. `stream-replace-all`: chunked replace with an on-disk undo journal, so the
    per-file limit reaches the open tier with constant memory; skipped files
    listed with their reason and an "Open and replace in editor" action.
+   **Proposal written 2026-11-14** (branch `stream-replace-all`,
+   `openspec/changes/stream-replace-all/`): judged viable as described,
+   because the cap cannot be raised without it. PT's M9 shows `main` growing
+   about 2.1 times the file size (33.9 MiB at 16 MiB). Without streaming, a
+   512 MiB file would need about 1.1 GiB of worker memory and a disposal
+   reservation above 1 GiB, which GTK would hold for the whole undo window.
+   The design:
+   - each file streams in two passes, the target into a raw undo body, then
+     the body into the target, with no change to the write-protocol core;
+   - undo compares SHA-256 digests;
+   - undo data is admitted against free disk space with a 1 GiB reserve,
+     waived for exactly the files `main` would have replaced;
+   - a typed skip report, a Skipped Files dialog and an editor action that
+     prefills the in-tab replace bar;
+   - progress, Cancel, and a close that waits for the run;
+   - three new kill windows, and Kani shards `core-replace-protocol` and
+     `core-replace-stream`.
 3. `scale-file-index`: an interned path arena and a byte budget instead of
    the 131,072-file count, targeting at least 1,000,000 files, with a
    Criterion benchmark and a measurement on a real monorepo.
