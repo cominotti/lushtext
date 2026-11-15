@@ -235,6 +235,25 @@ missing published baseline may produce advisory output, but missing tools,
 command rot, or missing/empty public API snapshots are infrastructure failures,
 and the lane must leave inspectable public API snapshots. Once a crate
 publishes, its semver/public-API job must become blocking for that crate.
+
+CI installs `cargo-public-api` through `scripts/install-cargo-public-api.sh`,
+not `cargo install --locked cargo-public-api`: 0.52.0 (the newest release)
+locks `openssl-sys` 0.9.88, which refuses the Fedora 45 image's OpenSSL 4. The
+script downloads the crate, checks it against `CARGO_PUBLIC_API_SHA256`, raises
+exactly one lockfile entry, `openssl-sys`, to
+`CARGO_PUBLIC_API_OPENSSL_SYS_VERSION`, refuses any other lock change, and
+installs with `--locked` from the crate. The job also installs
+`libcurl-devel`, so `curl-sys` links the image's libcurl: its bundled curl
+8.10.1 does not compile against OpenSSL 4, and either half alone fails.
+**Retirement:** drop the override (and `libcurl-devel`, if nothing else needs
+it) once a release locks `openssl-sys >= 0.9.114` and a `curl-sys` that builds
+there. The script enforces it: it fails when the crate's own lock already pins
+`openssl-sys` at or above the override, so the first such version bump is red
+until the override is removed. `make check-cargo-public-api-install` (in
+`make check-policy`, and a step of the advisory job itself, since CI runs no
+`check-policy`) self-tests the script offline, with a fake crate and a fake
+`cargo`. To reproduce the CI install, run the script in a `fedora:45`
+container with the three variables from `ci.yml`.
 Governance and publication gates are in `crates/gtk-lush/GOVERNANCE.md`.
 
 ## Property Testing
@@ -718,8 +737,10 @@ the widget suite on its platform first.
 Rust validation helpers installed in CI are version-pinned in workflow `env`
 blocks: `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
 `CARGO_FUZZ_VERSION=0.13.1`, `CARGO_MUTANTS_VERSION=27.0.0`,
-`CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`,
-`GTK_LUSH_MSRV=1.98.0`, and `GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`;
+`CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`
+(with `CARGO_PUBLIC_API_SHA256=80f55cea…7511`, the crate's checksum, and
+`CARGO_PUBLIC_API_OPENSSL_SYS_VERSION=0.9.118`, its one lockfile override; see
+the GTK Lush Family Foundation section), `GTK_LUSH_MSRV=1.98.0`, and `GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`;
 `KANI_VERSION` comes from the Makefile. Update the pin and rerun the affected
 local validation command when intentionally refreshing a tool.
 

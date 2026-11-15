@@ -136,6 +136,10 @@ impl LushtextWindow {
                     return;
                 }
                 editor.finish_local_history_buffer_replacement();
+                // The replacement suspended the handlers that would project
+                // this: the bullet, and the draft the undone text is owed.
+                window.reproject_modified_indicator(&editor);
+                window.note_draft_owed(&editor);
                 if let Some(path) = editor.file_path() {
                     window.resolve_notes_for_editor(&editor, &path);
                 }
@@ -299,6 +303,11 @@ impl LushtextWindow {
                                 }
                                 editor.set_local_history_restore_undo_text(Some(undo_text));
                                 editor.finish_local_history_buffer_replacement();
+                                // The replacement suspended the handlers that
+                                // would project this: the bullet, and the
+                                // draft the restored text is owed.
+                                browser.window.reproject_modified_indicator(&editor);
+                                browser.window.note_draft_owed(&editor);
                                 browser.window.dismiss_editor_notifications(&editor);
                                 browser
                                     .window

@@ -672,29 +672,18 @@ impl LushtextWindow {
         let page_weak = page.downgrade();
         let window_weak = self.downgrade();
         let handler_id = buffer.connect_modified_changed(move |buf| {
-            if let Some(page) = page_weak.upgrade()
-                && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
-            {
-                if editor.load_projection_suspended() {
-                    return;
-                }
-                let name = editor.title();
-                if buf.is_modified() {
-                    let was_draft_dirty = editor.draft_dirty();
-                    page.set_title(&format!("• {name}"));
-                    editor.set_draft_dirty(true);
-                    if !was_draft_dirty && let Some(window) = window_weak.upgrade() {
-                        window.schedule_first_dirty_draft_autosave();
-                    }
-                } else {
-                    page.set_title(&name);
-                }
+            let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade()) else {
+                return;
+            };
+            let Some(editor) = page.child().downcast::<LushtextEditorPage>().ok() else {
+                return;
+            };
+            if editor.load_projection_suspended() {
+                return;
             }
-            if let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade())
-                && window.imp().tab_view.selected_page().as_ref() == Some(&page)
-            {
-                window.refresh_header_bar();
-                window.update_discard_action();
+            window.project_modified_indicator(&page, &editor);
+            if buf.is_modified() {
+                window.note_draft_owed(&editor);
             }
         });
         editor
@@ -705,33 +694,57 @@ impl LushtextWindow {
         let window_weak = self.downgrade();
         let page_weak = page.downgrade();
         let changed_handler_id = buffer.connect_changed(move |_| {
-            let mut became_draft_dirty = false;
-            if let Some(page) = page_weak.upgrade()
-                && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
-            {
-                if editor.load_projection_suspended() {
-                    return;
-                }
-                became_draft_dirty = !editor.draft_dirty();
-                editor.set_draft_dirty(true);
+            let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade()) else {
+                return;
+            };
+            let Some(editor) = page.child().downcast::<LushtextEditorPage>().ok() else {
+                return;
+            };
+            if editor.load_projection_suspended() {
+                return;
             }
-            if let Some(window) = window_weak.upgrade() {
-                if became_draft_dirty {
-                    window.schedule_first_dirty_draft_autosave();
-                } else {
-                    window.mark_draft_autosave_pending_if_inflight();
-                }
-                if let Some(page) = page_weak.upgrade()
-                    && window.imp().tab_view.selected_page().as_ref() == Some(&page)
-                {
-                    window.refresh_preview_debounced();
-                }
+            window.note_draft_owed(&editor);
+            if window.imp().tab_view.selected_page().as_ref() == Some(&page) {
+                window.refresh_preview_debounced();
             }
         });
         editor
             .imp()
             .document_buffer_signals
             .track(&buffer, changed_handler_id);
+    }
+
+    /// Project an editor's modified flag onto its tab: the "•" title and, for
+    /// the selected tab, the header bar and the discard action.
+    ///
+    /// The buffer's `modified-changed` handler runs it. A whole-buffer
+    /// replacement suspends that handler, and GTK sets the flag on the
+    /// replacement's first delete or insert, so the terminal's own
+    /// `set_modified(true)` emits nothing: a replacement into a clean tab
+    /// calls [`Self::reproject_modified_indicator`] instead.
+    fn project_modified_indicator(&self, page: &libadwaita::TabPage, editor: &LushtextEditorPage) {
+        let name = editor.title();
+        if editor.is_modified() {
+            page.set_title(&format!("• {name}"));
+        } else {
+            page.set_title(&name);
+        }
+        if self.imp().tab_view.selected_page().as_ref() == Some(page) {
+            self.refresh_header_bar();
+            self.update_discard_action();
+        }
+    }
+
+    /// Re-project the modified indicator of `editor`'s tab after a
+    /// whole-buffer replacement terminal, through the handler's own code.
+    pub(in crate::ui::window) fn reproject_modified_indicator(&self, editor: &LushtextEditorPage) {
+        let tab_view = &self.imp().tab_view;
+        let page = (0..tab_view.n_pages())
+            .map(|index| tab_view.nth_page(index))
+            .find(|page| page.child() == *editor.upcast_ref::<gtk4::Widget>());
+        if let Some(page) = page {
+            self.project_modified_indicator(&page, editor);
+        }
     }
 
     /// Refresh the Markdown preview when this tab republishes its content.

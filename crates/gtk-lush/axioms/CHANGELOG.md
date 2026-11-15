@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A112 probe and sample (`restore-main-ci`): `gtk_adjustment_configure` sets
+  the value before `changed`, then emits `value-changed`; `set_value` emits
+  `value-changed` alone; a `GtkTextView` scrolling to a mark moves its value
+  with no `changed`; a word-wrapped `GtkTextView` whose width changes moves
+  its value only through `configure` (the rewrap half, at the top and
+  mid-document). Fixture `fixtures::a112` (`EmissionLog`, `Emission`,
+  `moved_on_its_own`, `every_move_was_carried`, `document_view`,
+  `wrapped_document_view`, `scroll_to_target`, `rewrap`).
 - A108, A109, A110 and A111 probes and samples (`lighten-notes-browser-rows`):
   a label list's frame after a retext is mostly layout and grows with the
   realized rows, where a text-independent measure does not; a
