@@ -267,7 +267,8 @@ make visual-geometry-smoke / make accessibility-smoke / make visual-smoke  # pro
 make end-user-smoke # every host-supported end-user smoke lane (not the responsiveness lane)
 make responsiveness-smoke # long-line responsiveness lane, RESPONSIVENESS_TIER=quick|full; nightly/manual
 make blueprint-generate / make check-blueprint  # regenerate and validate generated .ui templates
-make flatpak / make flatpak-install / make verify-flatpak-identity
+make flatpak / make flatpak-install / make verify-flatpak-identity  # one shared install origin for every checkout
+make test-flatpak-install-origin # the install-origin guard against real flatpak in a private installation
 make release-bump TYPE=patch DRY_RUN=1  # preview the next release
 ```
 
