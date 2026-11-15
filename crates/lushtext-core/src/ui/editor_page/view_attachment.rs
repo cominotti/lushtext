@@ -405,19 +405,64 @@ impl LushtextEditorPage {
         if let Some(mark) = kept
             && !mark.is_deleted()
         {
-            view.scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
+            self.scroll_view_to_kept_line(&document, &mark, false);
             // The kept line is where this view rests, not the top its first
             // tiny allocation reported: without this, a reflow settle or a
             // top-edge clamp after the reattach read "at the top" and sent the
             // tab back to line 0 (`bound-notes-browser-by-budget`, a flaky
-            // widget test traced to both).
+            // widget test traced to both). "At the top" is the document's
+            // start, the one position `scroll_view_to_kept_line` rests at
+            // `lower`: a kept display line inside a wrapped line one is not,
+            // and a resize whose burst outlives the hold would otherwise read
+            // the stale record (`diagnose-ci-only-reflow-guard-failure`).
             self.imp().overscroll.rest_state.set_at_lower(
                 gtk_lush_viewport::ViewportAxis::Vertical,
-                document.iter_at_mark(&mark).line() == 0,
+                document.iter_at_mark(&mark).is_start(),
             );
             self.hold_top_line_while_laying_out(mark);
         }
         self.schedule_minimap_refresh();
+    }
+
+    /// Put the kept top line `mark` of `document` at the top of the view.
+    ///
+    /// The **first line rests at `lower`**, its top margin shown, as a view
+    /// that was never detached rests there: GTK's aligned scroll to a line
+    /// (`scroll_to_mark`/`scroll_to_iter`, aligned at 0) puts the line's
+    /// first character box at the top edge, so for line one the value came
+    /// to rest at the top margin plus that box's offset (6 to 12 px), never at
+    /// `lower`, and got there through an animation a width-reflow settle
+    /// reads as a scroll (ledger A113). The tab then reopened with its top
+    /// margin gone (line one clipped with a fallback font) and its top-anchor
+    /// repair disarmed (`diagnose-ci-only-reflow-guard-failure`). Only the
+    /// document's start rests at `lower`: under word wrap the kept position
+    /// is the start of the display line shown at the top
+    /// (`visible_top_iter`), which can be inside line one. Any other
+    /// position still takes GTK's scroll: at once when `now` and the view is
+    /// mapped, else queued for the first allocation (a window still
+    /// composing).
+    fn scroll_view_to_kept_line(
+        &self,
+        document: &sourceview5::Buffer,
+        mark: &gtk4::TextMark,
+        now: bool,
+    ) {
+        let view = self.source_view();
+        if document.iter_at_mark(mark).is_start() {
+            if let Some(adjustment) = view.vadjustment() {
+                let lower = adjustment.lower();
+                if (adjustment.value() - lower).abs() > 0.5 {
+                    adjustment.set_value(lower);
+                }
+            }
+            return;
+        }
+        if now && view.is_mapped() {
+            let mut target = document.iter_at_mark(mark);
+            view.scroll_to_iter(&mut target, 0.0, true, 0.0, 0.0);
+        } else {
+            view.scroll_to_mark(mark, 0.0, true, 0.0, 0.0);
+        }
     }
 
     /// Keep a reattached view at `mark` while it lays the document out again:
@@ -481,17 +526,9 @@ impl LushtextEditorPage {
             self.stop_holding_top_line();
             return;
         }
-        let view = self.source_view();
         let now = glib::monotonic_time();
         crate::ui::responsiveness_probe::record_span("view_hold_scroll", now, now);
-        if view.is_mapped() {
-            let mut target = self.buffer().iter_at_mark(&mark);
-            view.scroll_to_iter(&mut target, 0.0, true, 0.0, 0.0);
-        } else {
-            // Not allocated yet (a window still composing): queue it for the
-            // first allocation instead.
-            view.scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
-        }
+        self.scroll_view_to_kept_line(&self.buffer(), &mark, true);
         if laid_out && self.restyle_evidence().pending {
             // A paced reveal (a dense document's reattach) still adds the
             // paragraphs above and below: keep holding until it is done.

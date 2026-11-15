@@ -87,11 +87,19 @@ Kani runs no real threads. That does not matter here, because interleavings
 are modelled as nondeterministic choice in a sequential model.
 
 **Lean is dormant.** An unbounded claim is first attempted inside Kani, twice:
-with Kani's loop contracts, and with a compositional argument (small harnesses
-plus a written proof note that extends a bounded proof to any size). Lean, or
-any other tool, is re-discussed only if **both** attempts fail **and** an
+with Kani's loop contracts or the equivalent one-step inductive harness (an
+arbitrary state assumed to satisfy the invariant, one step, the invariant
+asserted after it, with a base case and a cover that the assumed invariant is
+satisfiable), and with a compositional argument (small harnesses plus a
+written proof note that extends a bounded proof to any size). Lean, or any
+other tool, is re-discussed only if **both** attempts fail **and** an
 unbounded claim is actually needed (for example "any number of bins" as
 evidence for publishing GTK Lush), and only by a recorded maintainer decision.
+A recorded maintainer decision may authorise a time-boxed, disposable
+evaluation of another tool before the claim is needed; it records both Kani
+attempts next to the other tool's result, never targets a claim a Kani
+attempt already verified, and adopts nothing unless both attempts failed and
+the claim is needed.
 `extend-closed-loop-geometry-verification` made both attempts for the slice
 loop (phase 3): loop contracts failed on resources, and the compositional
 argument carried the claim within stated per-bin bounds, so no other tool is
@@ -131,6 +139,42 @@ record is
 - **A narrow exception to the Kani-only rule** lets the disposable evaluation
   models stay in `formal/evaluation/`. They sit outside every gate, and no
   claim here rests on them (maintainer decision D7, option A).
+
+**Measured on 2026-11-15: Verus.** The OpenSpec change
+`evaluate-verus-for-unbounded-proofs` (merged as `11769e02`, PR #107, and
+archived 2026-11-15) measured the Verus deductive verifier
+(release `0.2026.11.02.8bf68ee`, rustc 1.99.1, Z3 4.16.0; re-verified on the
+rolling `0.2026.11.05.31e44e6`) on claims Kani holds only for bounded scopes.
+The record is
+[`formal-verification-verus.md`](./formal-verification-verus.md).
+
+- **V1 (calibration) reproduced every known answer** of
+  `clamped_preview_width` in about 1 s, including a proved witness against
+  the known-false one-third form and a Kani-rejected mutant caught on the
+  named postcondition.
+- **The copy-plus-drift bridge works**: the copy's 9,036-line decision table
+  matches production at the copy commit and at `origin/main` `cfee0c48`, and
+  two deliberate one-line changes fail it.
+- **In place, Verus verified the real `journal_core` decisions** (37
+  functions, 15.7 s) after a small rewrite, at the cost of a `vstd`
+  dependency tied to each weekly Verus release and a second rustc.
+- **Kani-first:** the one-step inductive harness for S1–S4 and one owning
+  window per id, at the lane's two-window scope, was **not proved within its
+  3 h budget**. After three rounds of strengthening (31 conjuncts), its base
+  case passes and the invariant is satisfiable, but three actions still
+  break four conjuncts. No compositional argument applies, because the ids
+  and windows share the lane, the manifest and cleanup. Its counterexamples
+  found a 10-action trace beyond the 8-action bound in which the model loses
+  accepted work. Production cannot take it, so it is a model
+  over-approximation (F1), not a defect.
+- **V2 (the unbounded journal invariant in Verus) was not completed** (it
+  stopped after scoping), and V3 was not attempted.
+- **Decision (maintainer, 2026-11-15): keep Kani alone** (design D7 option
+  (a), as the record recommended). The evaluation is closed without V2 and
+  without a Kani follow-up (option (a′) not chosen). It is revisited only on
+  a named trigger (option (c)), by finishing the Kani inductive step first;
+  the triggers are in the deferral inventory. The models stay in
+  `formal/evaluation/verus/` as disposable evidence.
 
 ## 3. Phases
 
@@ -2674,3 +2718,34 @@ table's length) and, at three rows, `i64` arithmetic in the run builder (now
   checks of ruleset `23911547`; runs `43105455931` and `43144457562` (10.03 and
   10.93 min) measured it inside its figure, which stands (2026-11-12, "`core-minimap-fit`
   as a required check").
+- `evaluate-verus-for-unbounded-proofs` (2026-11-15): the Kani one-step
+  inductive harness for the journal's S1–S4 and one owning window per id, at
+  the lane's two-window scope, stopped after its third round of
+  strengthening with six (action, conjunct) pairs open, across three actions
+  and four conjuncts: ExecCleanup and DeletionStep and Commit against R3d,
+  DeletionStep against R2c, and Commit against R2b and R2h
+  (`formal-verification-verus.md` §4.1). The harness, its 31 conjuncts and
+  the diagnosis harnesses are in `formal/evaluation/verus/kani-step.patch`
+  against `85758eaf`. The maintainer chose not to carry it (2026-11-15:
+  option (a), not (a′)), so no follow-up change is queued. Finishing it is
+  the first step on any of the revisit triggers below; carrying it into the
+  lane would then be its own change, whose runner cost is part of its
+  evidence.
+- The same attempt's model fix **F1**: the journal model lets `Register` run
+  again while a written body awaits its commit, which production's autosave
+  pass cannot do (`ui/window/drafts/autosave_execution.rs` writes each
+  candidate once and commits before `finish_autosave_pipeline` frees the
+  lane). With that over-approximation, ten actions after startup lose
+  accepted work of an untitled id (§4.2 of the Verus record); the maintained
+  harness stops at 8 and cannot reach it. Not carried (maintainer decision
+  2026-11-15); a later change that carries the inductive step decides
+  whether the maintained model takes F1.
+- V2 and V3 of the Verus evaluation (an unbounded journal invariant over any
+  number of ids and windows, and L1 from every reachable state) were closed
+  unattempted by the maintainer's decision of 2026-11-15 (close without V2);
+  no trigger needs them. They reopen only through option (c) of that
+  record's decision, on one of its **revisit triggers**: the two-window
+  journal needing more than its lane's 7 actions, a third window or a second
+  process kind, or GTK Lush publication needing a claim outside the per-bin
+  domain. On a trigger, the Kani inductive step above (with F1) is finished
+  first, and Verus is reopened with V2 only if that fails.

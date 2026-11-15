@@ -14,6 +14,8 @@ mod grouped;
 mod index;
 mod notes;
 mod runtime;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod workspace_index_fixture;
 
 pub use category::{
     CategoryRanking, CategorySearchInput, PALETTE_CATEGORY_CANDIDATE_BYTES, category_search,
@@ -34,9 +36,11 @@ pub(crate) use index::FileIndexMutationLedger;
 pub use index::{
     FileIndex, FileIndexBuildCoordinator, FileIndexBuildCoordinatorSnapshot, FileIndexBuildMetrics,
     FileIndexBuildOutcome, FileIndexBuildRequest, FileIndexBuildStart, FileIndexTruncationReason,
-    MAX_FILE_INDEX_BUILD_RETAINED_BYTES, MAX_FILE_INDEX_RETAINED_BYTES, MAX_INDEXED_DIRECTORIES,
-    MAX_INDEXED_FILES, OpenTabExclusion,
+    INDEX_INCREMENTAL_GROWTH_DIVISOR, IndexedFile, MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
+    MAX_FILE_INDEX_RETAINED_BYTES, MAX_INDEXED_DIRECTORIES, MAX_INDEXED_FILES, OpenTabExclusion,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use index::{OwnedIndexedFile, reference};
 #[cfg(test)]
 pub use notes::load_note_entries_for_scope;
 pub use notes::{
@@ -62,5 +66,7 @@ pub use runtime::{
     PaletteSearchMetrics, PaletteSearchOutcome, PaletteSearchStart,
 };
 
+#[cfg(test)]
+mod index_scale_tests;
 #[cfg(test)]
 mod tests;

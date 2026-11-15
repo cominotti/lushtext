@@ -88,7 +88,7 @@ smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
 cat >"$ARTIFACT_DIR/fixtures.txt" <<'EOF'
 file_index_search: generated command-palette indexes at representative file counts
 palette_pipeline_hardening_100000: generated 100,000-file indexes with varied hit rates, Unicode names, repeated equal-score names, bounded/reference limits, cancellation, and rapid latest-query replacement
-file_index_rebuild: generated common 10k-file workspace, 1k missing roots, 1k/10k directory-only forests, and a 10k long-path tree that approaches both file-index byte policies with direct build/installed high water
+file_index_rebuild: generated common 10k-file workspace, 1k missing roots, 1k/10k directory-only forests, a 10k long-path tree whose directory chain the arena interns once (within both byte policies), the D9 monorepo-shaped tree at 2^17, and direct build/installed high water
 end_to_end_boundedness: generated one flat 10,000-entry directory, file/note source budget and cancellation fixtures, active/latest coordinator pressure, canonical top-one exclusion, a 2,048-row cleanup page, a 10,000-row middle reconciliation, and large replacement policy input
 content_search_smoke: generated 200-file trees plus one 10k-line file
 search_interactive_policies: generated 1,000-query latest-wins ownership, 10,000-result retirement counters, and a 266-event mixed non-match turn-budget proof
@@ -287,7 +287,7 @@ case " $FILTERS " in
         : >"$widget_log"
         echo "Running headless quality-gap responsiveness and ownership proofs..."
         for widget_filter in \
-            window::test_notes_browser_caps_large_result_sets_with_refine_notice \
+            window::test_notes_browser_lists_every_match_without_a_refine_notice \
             window::test_local_history_preview_supersedes_reads_and_unicode_install_slices \
             window::test_bounded_session_restore_preserves_order_selection_and_one_terminal_projection \
             window::test_session_restore_cancellation_clears_pending_permits_source_and_projection_deferral \

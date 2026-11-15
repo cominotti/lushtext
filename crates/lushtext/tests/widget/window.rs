@@ -40,7 +40,7 @@ use lushtext_core::model::encoding::{
 };
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
-use lushtext_core::model::palette::{IndexedFile, PaletteFileIdentity};
+use lushtext_core::model::palette::PaletteFileIdentity;
 use lushtext_core::model::recent_document::RecentDocumentEntry;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
@@ -4423,11 +4423,13 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     window
         .imp()
         .command_palette
-        .set_file_index(FileIndex::from(vec![IndexedFile::new(
-            palette_file.clone(),
-            PaletteFileIdentity::canonical(palette_file),
-            Arc::clone(&palette_folder),
-        )]));
+        .set_file_index(FileIndex::from(vec![
+            lushtext_core::services::palette::OwnedIndexedFile::new(
+                palette_file.clone(),
+                PaletteFileIdentity::canonical(palette_file),
+                Arc::clone(&palette_folder),
+            ),
+        ]));
     window
         .imp()
         .command_palette
@@ -8462,8 +8464,16 @@ fn test_edits_during_a_pending_restore_never_overwrite_the_recovery_body() {
     assert_eq!(window.draft_evidence().restore_held_draft_ids, 1);
     let set_aside =
         draft_service::set_aside_dir(&data_dir).join(format!("{draft_id}.1700000777.draft"));
-    wait_until(Duration::from_secs(10), || fixture::exists(&set_aside));
-    assert_eq!(window.draft_evidence().restore_held_draft_ids, 0);
+    // The copy is written on a worker and the hold is released by its
+    // completion, after the write returns: the file can be on disk while the
+    // hold is still held, so wait for the release and check the copy then.
+    wait_until(Duration::from_secs(10), || {
+        window.draft_evidence().restore_held_draft_ids == 0
+    });
+    assert!(
+        fixture::exists(&set_aside),
+        "the hold is released only once the copy exists"
+    );
     fixture::assert_text(&set_aside, "recovery not yet restored");
     assert_eq!(
         editor_buffer_text(&editor),

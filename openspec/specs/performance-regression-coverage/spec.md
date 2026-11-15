@@ -3,7 +3,9 @@
 ## Purpose
 Define LushText's user-facing performance coverage so lightweight smoke checks,
 large-file behavior, and deeper benchmark paths remain explicit.
+
 ## Requirements
+
 ### Requirement: User-facing performance budgets are documented and runnable
 The project SHALL provide documented performance smoke coverage for workflows
 whose regressions would be visible to users.
@@ -335,7 +337,7 @@ The project SHALL test and benchmark palette source construction independently f
 - **AND** the distinct file fills the bounded workspace result slot
 
 ### Requirement: Bounded palette search has equivalence and scale coverage
-The project SHALL prove bounded top-result selection and one-active/one-latest execution against a full-sort reference on representative and generated corpora. Coverage MUST include Unicode normalization, equal scores, empty queries, source deduplication, cancellation, rapid input, and the maximum indexed-file corpus.
+The project SHALL prove bounded top-result selection and one-active/one-latest execution against a full-sort reference on representative and generated corpora. Coverage MUST include Unicode normalization, equal scores, empty queries, source deduplication, cancellation, rapid input, and the maximum indexed-file corpus (1,048,576 files).
 
 #### Scenario: Bounded selector is compared with a reference
 - **WHEN** generated candidate/query/result-limit combinations run through bounded and full-sort implementations
@@ -343,7 +345,7 @@ The project SHALL prove bounded top-result selection and one-active/one-latest e
 - **AND** the bounded implementation retains no more than the configured result count per source
 
 #### Scenario: Maximum index receives rapid queries
-- **WHEN** the 100,000-file fixture receives more queries than workers can complete
+- **WHEN** the 1,048,576-file fixture receives more queries than workers can complete
 - **THEN** measurements report one active search, at most one pending query, cancellation progress, and final-query latency
 - **AND** obsolete full-index jobs do not accumulate in the generic worker FIFO
 
@@ -351,6 +353,11 @@ The project SHALL prove bounded top-result selection and one-active/one-latest e
 - **WHEN** an invalid Replace Preview range is generated under captured tracing output
 - **THEN** typed invalid counts remain correct
 - **AND** captured diagnostics contain none of the private source or replacement sentinel text
+
+#### Scenario: The index arena agrees with the per-file reference
+- **WHEN** generated trees, symlinks in both traversal orders and mutation sequences (each applied to the filesystem first) run through the arena index and the per-file reference
+- **THEN** both list the same files, identities and order, and return the same rows and counts
+- **AND** they report the same file-limit and directory-limit truncations, and under a byte limit the arena's files are a prefix of the reference's untruncated list
 
 ### Requirement: Buffer replacement responsiveness has layered evidence
 The project SHALL cover bounded clear and replacement sessions with plain policy tests, GTK widget tests, current-generation cancellation tests, and calibrated large-Unicode diagnostics. Coverage MUST include eviction, draft recovery, local-history restore and undo, save-time formatting rewrite, disposal, stale generation, projection suppression, exact terminal cleanup, and final text equivalence.
@@ -706,4 +713,3 @@ The user's own files SHALL NOT be used or committed as fixtures.
 #### Scenario: A precondition regresses on a pull request
 - **WHEN** a change makes a hidden-tail slice exceed its budget, leaves a boundary behind, or alters the installed bytes
 - **THEN** a pull-request-gated widget test fails naming the violated precondition
-

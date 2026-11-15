@@ -11,16 +11,26 @@
 //! LushText's notes browser restores the selection and reaches the last row
 //! (`End`, `win.select-notes-browser-row`) this way at any row count
 //! (`bound-notes-browser-by-budget` D2); its widget test bounds that dispatch.
+//! The command palette's category view caps its rows from the same cost
+//! (`scale-file-index` D8).
+//!
+//! [`SLOW_SIZES`] (262,144 and 1,048,576 rows) are measured as well when slow
+//! probes are included ([`crate::include_slow_probes`]): building a million
+//! rows takes seconds, so the pull-request `GTK Axioms` job, which skips slow
+//! work, keeps only the fast [`SIZES`] pair. The axiom's verdict is the same
+//! bounded `get_item` count at every size.
 
 use std::time::{Duration, Instant};
 
 use super::lazy_sections::{CountingSectionModel, sectioned_list};
 use crate::observation::Recorder;
 use crate::session::{Presented, flush_events};
-use crate::{AxiomId, Observation};
+use crate::{AxiomId, Observation, include_slow_probes};
 
 /// The row counts; the target is each one's last row.
 pub const SIZES: [u32; 2] = [16 * 1024, 128 * 1024];
+/// The larger row counts measured only when slow probes are included.
+pub const SLOW_SIZES: [u32; 2] = [256 * 1024, 1024 * 1024];
 /// The most `get_item` calls one select-and-scroll may make.
 pub const ITEM_CALL_CEILING: u64 = 1_024;
 
@@ -53,12 +63,25 @@ pub fn probe_a95() -> Observation {
         recorder.measure("far_item_calls", far_items);
         let growth = far_cost.as_secs_f64() / near_cost.as_secs_f64().max(1e-9);
         recorder.measure("growth", format!("{growth:.2}"));
+        let mut slow_items_bounded = true;
+        if include_slow_probes() {
+            let keys = [
+                ("rows_262144_us", "rows_262144_item_calls"),
+                ("rows_1048576_us", "rows_1048576_item_calls"),
+            ];
+            for (rows, (time_key, calls_key)) in SLOW_SIZES.into_iter().zip(keys) {
+                let (cost, items) = time_select_far(rows);
+                recorder.measure(time_key, cost.as_micros());
+                recorder.measure(calls_key, items);
+                slow_items_bounded &= items <= ITEM_CALL_CEILING;
+            }
+        }
         recorder.control(
             near_items > 0,
             "control: the list realized rows at the target",
         )?;
         recorder.axiom(
-            near_items <= ITEM_CALL_CEILING && far_items <= ITEM_CALL_CEILING,
+            near_items <= ITEM_CALL_CEILING && far_items <= ITEM_CALL_CEILING && slow_items_bounded,
             "A95: selecting and scrolling to a far row realizes only around it",
         )
     })

@@ -238,7 +238,7 @@ cargo-mutants is serial by default — one mutant builds and tests at a time.
 The local Makefile targets (`mutants-smoke`, `mutants-diff`, `mutants-full`)
 run the whole pass inside one memory-capped scope (`MUTANTS_MEMORY_MAX`,
 default `36G`, no swap, through `scripts/with-memory-cap.sh`, admitted into the
-host-wide `lushtext-heavy.slice`), so memory, not the core count, sets their
+host-wide `user-lushtext-heavy.slice` under the user manager's `user.slice`), so memory, not the core count, sets their
 parallelism. Each cargo-mutants job is a full cargo build plus its own nextest
 processes, so the defaults are:
 

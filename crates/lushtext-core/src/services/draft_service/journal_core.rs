@@ -47,7 +47,8 @@
 //! - **S4 trust** — a trusted manifest implies the last reconciliation was
 //!   complete.
 //! - **L1 bounded liveness** — without I/O faults, a dirty open editor becomes
-//!   clean within six journal steps.
+//!   clean within seven journal steps (`LIVENESS_STEPS` in `kani_proofs.rs`;
+//!   `a_dirty_editor_may_need_seven_steps` shows six are not always enough).
 
 use crate::model::draft::{
     DraftManifestAuthority, DraftManifestCompleteness, FileDraftRestoreSkip,

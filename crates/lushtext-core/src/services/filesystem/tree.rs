@@ -42,6 +42,7 @@ pub fn scan_directory(
             path: entry.path,
             file_name: entry.file_name,
             kind: entry.kind,
+            is_symlink: entry.is_symlink,
         });
         true
     })?;
@@ -109,6 +110,7 @@ where
                 path: entry.path,
                 file_name,
                 kind: entry.kind,
+                is_symlink: entry.is_symlink,
             },
         );
         if retained.len() > policy.max_entries {
@@ -181,6 +183,7 @@ where
             path: entry.path,
             file_name: entry.file_name.to_string_lossy().into_owned(),
             kind: entry.kind,
+            is_symlink: entry.is_symlink,
         });
         metrics.entries_delivered = metrics.entries_delivered.saturating_add(1);
         if page.len() < page_entries {
@@ -280,6 +283,7 @@ where
             path: entry.path,
             file_name: entry.file_name.to_string_lossy().into_owned(),
             kind: entry.kind,
+            is_symlink: entry.is_symlink,
         })
     })
 }

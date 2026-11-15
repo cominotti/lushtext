@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Workspace file indexing for the command palette.
-//!
-//! This slice owns directory traversal, folder interning, and incremental path
-//! updates. It remains GTK-free and returns only domain types.
+//! The per-file index the arena replaced, kept as the behavioural reference
+//! (`scale-file-index` design D6): one owned row per file, `realpath` per
+//! file and directory, linear deduplication. Test builds only; the property
+//! target drives it beside [`super::FileIndex`] and compares the two.
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -11,87 +11,36 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::model::palette::{
-    IndexedFile, PaletteFileIdentity, PaletteFileIdentityFailure, ScoredResult, SearchResultItem,
+    FileOrdinal, PaletteFileIdentity, PaletteFileIdentityFailure, ScoredResult, SearchResultItem,
 };
 use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::services::file_tree;
 use crate::services::filesystem::metadata as fs_metadata;
-use crate::services::single_flight::{
-    SingleFlightCoordinator, SingleFlightSnapshot, SingleFlightStart,
+
+use super::super::fuzzy::{
+    CountedSelection, RestCount, search_items_cancellable, search_items_cancellable_counting,
+};
+use super::super::runtime::{PaletteSearchCancellation, PaletteSearchOutcome};
+use super::{
+    FileIndexBuildMetrics, FileIndexTruncationReason, IGNORED_INDEX_DIRS,
+    MAX_FILE_INDEX_BUILD_RETAINED_BYTES, MAX_FILE_INDEX_RETAINED_BYTES, MAX_INDEXED_DIRECTORIES,
+    MAX_INDEXED_FILES, MAX_SCAN_DEPTH, OwnedIndexedFile,
 };
 
-use super::fuzzy::{
-    CountedSelection, RestCount, SearchProgressPolicy, search_items, search_items_cancellable,
-    search_items_cancellable_counting, search_items_cancellable_with_progress,
-    search_items_full_sort_reference,
-};
-use super::runtime::{PaletteSearchCancellation, PaletteSearchOutcome};
-
-/// Maximum recursion depth to prevent runaway scanning in deeply nested trees.
-///
-/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
-const MAX_SCAN_DEPTH: u32 = 64;
-/// Maximum number of files to index. Beyond this, linear scan per query
-/// starts to exceed the palette's latency budget on one CPU core.
-///
-/// Kind: presentation cap; 100,000 rounded up to a power of two
-/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M15).
-/// The 64 MiB installed and 128 MiB construction ledgers (unchanged) bound
-/// its memory.
-pub const MAX_INDEXED_FILES: usize = 128 * 1024;
-/// Maximum number of distinct canonical directories retained by one index build.
-///
-/// This is independent from the file limit because sparse directory forests can
-/// otherwise consume unbounded traversal state while admitting almost no files.
-///
-/// Kind: presentation cap; 100,000 rounded up to a power of two
-/// (`power-of-two-thresholds` D12; its bound measured in task 9.5 M15).
-/// The 64 MiB installed and 128 MiB construction ledgers (unchanged) bound
-/// its memory.
-pub const MAX_INDEXED_DIRECTORIES: usize = 128 * 1024;
-/// Maximum heap ownership retained by one installed file index.
-///
-/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
-pub const MAX_FILE_INDEX_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
-/// Maximum installed output plus traversal/deduplication ownership during build.
-///
-/// Kind: presentation cap; a power of two, never rounded down (`power-of-two-thresholds` D12).
-pub const MAX_FILE_INDEX_BUILD_RETAINED_BYTES: u64 = 128 * 1024 * 1024;
-/// Directory names to skip during file-index scanning.
-pub(super) const IGNORED_INDEX_DIRS: &[&str] =
-    &["node_modules", "target", "__pycache__", "venv", "vendor"];
-
-/// Reason a completed index intentionally represents only a bounded prefix.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileIndexTruncationReason {
-    FileLimit,
-    DirectoryRetentionLimit,
-    RetainedByteLimit,
-    BuildByteLimit,
+/// Typed terminal result of a reference build.
+#[derive(Debug)]
+pub enum ReferenceBuildOutcome {
+    Complete {
+        index: ReferenceFileIndex,
+        metrics: FileIndexBuildMetrics,
+    },
+    Cancelled {
+        metrics: FileIndexBuildMetrics,
+    },
 }
 
-/// Retained-state and traversal evidence for one file-index build.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FileIndexBuildMetrics {
-    pub examined_directory_entries: usize,
-    pub scanned_directories: usize,
-    pub peak_retained_directories: usize,
-    pub retained_files: usize,
-    /// Peak scan batch plus pending directory work retained at the same time.
-    pub peak_retained_directory_entries: usize,
-    pub identity_failures: usize,
-    /// Current conservatively charged construction bytes at terminal publication.
-    pub current_build_bytes: u64,
-    /// Peak conservatively charged construction bytes across output and scratch.
-    pub peak_build_bytes: u64,
-    /// Complete installed index graph retained by the terminal result.
-    pub retained_index_bytes: u64,
-    pub truncation: Option<FileIndexTruncationReason>,
-}
-
-/// O(1) build/output byte accounting used before every retained insertion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileIndexBuildLedger {
+#[derive(Clone, Copy)]
+struct ReferenceBuildLedger {
     current_build_bytes: u64,
     peak_build_bytes: u64,
     installed_bytes: u64,
@@ -99,14 +48,15 @@ struct FileIndexBuildLedger {
 }
 
 /// O(1) installed-graph accounting shared across one incremental mutation batch.
-pub(crate) struct FileIndexMutationLedger {
+#[doc(hidden)]
+pub struct ReferenceMutationLedger {
     retained_bytes: u64,
     peak_retained_bytes: u64,
     truncated: bool,
 }
 
-impl FileIndexMutationLedger {
-    fn from_index(index: &FileIndex) -> Self {
+impl ReferenceMutationLedger {
+    fn from_index(index: &ReferenceFileIndex) -> Self {
         let retained_bytes = index.retained_byte_weight();
         debug_assert!(retained_bytes <= MAX_FILE_INDEX_RETAINED_BYTES);
         Self {
@@ -149,27 +99,29 @@ impl FileIndexMutationLedger {
         self.retained_bytes = self.retained_bytes.saturating_sub(bytes);
     }
 
-    fn sync_after_nonincreasing(&mut self, index: &FileIndex) {
+    fn sync_after_nonincreasing(&mut self, index: &ReferenceFileIndex) {
         let actual = index.retained_byte_weight();
         debug_assert!(actual <= self.retained_bytes);
         self.retained_bytes = actual;
     }
 
-    pub(crate) const fn retained_bytes(&self) -> u64 {
+    #[must_use]
+    pub const fn retained_bytes(&self) -> u64 {
         self.retained_bytes
     }
 
-    pub(crate) const fn peak_retained_bytes(&self) -> u64 {
+    #[must_use]
+    pub const fn peak_retained_bytes(&self) -> u64 {
         self.peak_retained_bytes
     }
 
-    #[cfg(test)]
-    pub(crate) const fn truncated(&self) -> bool {
+    #[must_use]
+    pub const fn truncated(&self) -> bool {
         self.truncated
     }
 }
 
-impl FileIndexBuildLedger {
+impl ReferenceBuildLedger {
     const fn with_build_limit(build_limit: u64) -> Self {
         Self {
             current_build_bytes: 0,
@@ -244,56 +196,15 @@ impl FileIndexBuildLedger {
     }
 }
 
-/// Typed terminal result from cancellable file-index construction.
-#[derive(Debug)]
-pub enum FileIndexBuildOutcome {
-    Complete {
-        index: FileIndex,
-        metrics: FileIndexBuildMetrics,
-    },
-    Cancelled {
-        metrics: FileIndexBuildMetrics,
-    },
-}
-
-/// Compact request retained by the file-index rebuild coordinator.
-#[derive(Clone, Debug)]
-pub struct FileIndexBuildRequest {
-    pub workspace_folders: Arc<[PathBuf]>,
-    pub capacity_hint: usize,
-    /// Visibility rule captured when the request was built.
-    pub visibility: WorkspaceEntryVisibility,
-}
-
-/// One request admitted as the sole active file-index build.
-pub type FileIndexBuildStart = SingleFlightStart<FileIndexBuildRequest>;
-
-/// Scalar ownership evidence for file-index rebuild tests and readiness.
-///
-/// This is the shared single-flight snapshot, which additionally carries the
-/// active/pending high-water marks the palette's own snapshot did not track.
-pub type FileIndexBuildCoordinatorSnapshot = SingleFlightSnapshot;
-
-/// Retain at most one active file-index build and one latest compact request.
-///
-/// A palette-named alias over the shared one-active/one-latest coordinator, the
-/// way `services::palette::runtime` already aliases `PaletteSearchCoordinator`.
-/// The hand-rolled duplicate this replaced had identical submit, finish,
-/// invalidate, `is_current`, and `has_work` semantics; the shared type adds
-/// `clear_pending()`, `active_generation()`, and the two high-water fields.
-pub type FileIndexBuildCoordinator = SingleFlightCoordinator<FileIndexBuildRequest>;
-
 /// In-memory index of all files across workspace folders.
 #[derive(Debug, Default, Clone)]
-pub struct FileIndex {
-    files: Vec<IndexedFile>,
+pub struct ReferenceFileIndex {
+    files: Vec<OwnedIndexedFile>,
     /// Deduplicated workspace folders for O(k) prefix lookups (k is usually small).
     workspace_folders: Vec<Arc<PathBuf>>,
-    /// Visibility rule this index was built under; worker-only rebuilds reuse it.
-    visibility: WorkspaceEntryVisibility,
 }
 
-impl FileIndex {
+impl ReferenceFileIndex {
     /// Build a file index by recursively scanning all workspace folders.
     #[must_use]
     pub fn rebuild(workspace_folders: &[PathBuf]) -> Self {
@@ -307,7 +218,7 @@ impl FileIndex {
         visibility: &WorkspaceEntryVisibility,
     ) -> Self {
         let cancellation = PaletteSearchCancellation::default();
-        let FileIndexBuildOutcome::Complete { index, .. } = Self::rebuild_cancellable_with_hint(
+        let ReferenceBuildOutcome::Complete { index, .. } = Self::rebuild_cancellable_with_hint(
             workspace_folders,
             10_000,
             &cancellation,
@@ -318,24 +229,11 @@ impl FileIndex {
         index
     }
 
-    /// Re-scan the folder identities already owned by this installed index.
-    ///
-    /// Incremental queue overflow uses this worker-only path so a compact scalar
-    /// rebuild request can replace an otherwise unbounded mutation backlog.
-    pub(crate) fn rebuild_current_workspace_folders(&self) -> Self {
-        let folders = self
-            .workspace_folders
-            .iter()
-            .map(|folder| folder.as_ref().clone())
-            .collect::<Vec<_>>();
-        Self::rebuild_with_visibility(&folders, &self.visibility)
-    }
-
     /// Like [`Self::rebuild`], but uses `capacity_hint` for the initial `Vec` allocation.
     #[must_use]
     pub fn rebuild_with_hint(workspace_folders: &[PathBuf], capacity_hint: usize) -> Self {
         let cancellation = PaletteSearchCancellation::default();
-        let FileIndexBuildOutcome::Complete { index, .. } = Self::rebuild_cancellable_with_hint(
+        let ReferenceBuildOutcome::Complete { index, .. } = Self::rebuild_cancellable_with_hint(
             workspace_folders,
             capacity_hint,
             &cancellation,
@@ -353,7 +251,7 @@ impl FileIndex {
         capacity_hint: usize,
         cancellation: &PaletteSearchCancellation,
         visibility: &WorkspaceEntryVisibility,
-    ) -> FileIndexBuildOutcome {
+    ) -> ReferenceBuildOutcome {
         Self::rebuild_cancellable_with_limits(
             workspace_folders,
             capacity_hint,
@@ -365,7 +263,8 @@ impl FileIndex {
         )
     }
 
-    fn rebuild_cancellable_with_limits(
+    /// Build under explicit (scaled) limits.
+    pub fn rebuild_cancellable_with_limits(
         workspace_folders: &[PathBuf],
         capacity_hint: usize,
         file_limit: usize,
@@ -373,14 +272,14 @@ impl FileIndex {
         build_byte_limit: u64,
         cancellation: &PaletteSearchCancellation,
         visibility: &WorkspaceEntryVisibility,
-    ) -> FileIndexBuildOutcome {
-        let mut ledger = FileIndexBuildLedger::with_build_limit(build_byte_limit);
+    ) -> ReferenceBuildOutcome {
+        let mut ledger = ReferenceBuildLedger::with_build_limit(build_byte_limit);
         let maximum_file_capacity = usize::try_from(MAX_FILE_INDEX_RETAINED_BYTES)
             .unwrap_or(usize::MAX)
-            .checked_div(std::mem::size_of::<IndexedFile>().max(1))
+            .checked_div(std::mem::size_of::<OwnedIndexedFile>().max(1))
             .unwrap_or(0);
         let file_capacity = capacity_hint.min(file_limit).min(maximum_file_capacity);
-        let file_shell_charge = vector_shell_bytes::<IndexedFile>(file_capacity);
+        let file_shell_charge = vector_shell_bytes::<OwnedIndexedFile>(file_capacity);
         if ledger.try_charge_installed(file_shell_charge).is_err() {
             unreachable!("an empty file-index vector must fit its installed budget");
         }
@@ -401,7 +300,7 @@ impl FileIndex {
                 metrics.retained_files = files.len();
                 ledger.release_scratch(visited_charge.saturating_add(canonical_files_charge));
                 ledger.publish(&mut metrics, 0);
-                return FileIndexBuildOutcome::Cancelled { metrics };
+                return ReferenceBuildOutcome::Cancelled { metrics };
             }
             if files.len() >= file_limit {
                 metrics.truncation = Some(FileIndexTruncationReason::FileLimit);
@@ -423,7 +322,7 @@ impl FileIndex {
                 break;
             }
             let completed = {
-                let mut traversal = FileIndexTraversal {
+                let mut traversal = ReferenceTraversal {
                     out: &mut files,
                     visited_directories: &mut visited_directories,
                     canonical_files: &mut canonical_files,
@@ -444,7 +343,7 @@ impl FileIndex {
                 metrics.retained_files = files.len();
                 ledger.release_scratch(visited_charge.saturating_add(canonical_files_charge));
                 ledger.publish(&mut metrics, 0);
-                return FileIndexBuildOutcome::Cancelled { metrics };
+                return ReferenceBuildOutcome::Cancelled { metrics };
             }
             folder_arcs.push(folder_arc);
             if metrics.truncation.is_some_and(is_file_index_byte_limit) {
@@ -467,7 +366,6 @@ impl FileIndex {
         let index = Self {
             files,
             workspace_folders: folder_arcs,
-            visibility: visibility.clone(),
         };
         metrics.retained_files = index.files.len();
         let retained_index_bytes = ledger.installed_bytes();
@@ -479,65 +377,11 @@ impl FileIndex {
         ledger.publish(&mut metrics, retained_index_bytes);
         debug_assert!(metrics.peak_build_bytes <= MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
         debug_assert!(retained_index_bytes <= MAX_FILE_INDEX_RETAINED_BYTES);
-        FileIndexBuildOutcome::Complete { index, metrics }
-    }
-
-    #[cfg(test)]
-    pub(super) fn rebuild_cancellable_for_test(
-        workspace_folders: &[PathBuf],
-        file_limit: usize,
-        cancellation: &PaletteSearchCancellation,
-    ) -> FileIndexBuildOutcome {
-        Self::rebuild_cancellable_with_limits(
-            workspace_folders,
-            file_limit,
-            file_limit,
-            MAX_INDEXED_DIRECTORIES,
-            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
-            cancellation,
-            &WorkspaceEntryVisibility::default(),
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn rebuild_cancellable_with_limits_for_test(
-        workspace_folders: &[PathBuf],
-        file_limit: usize,
-        directory_limit: usize,
-        cancellation: &PaletteSearchCancellation,
-    ) -> FileIndexBuildOutcome {
-        Self::rebuild_cancellable_with_limits(
-            workspace_folders,
-            file_limit,
-            file_limit,
-            directory_limit,
-            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
-            cancellation,
-            &WorkspaceEntryVisibility::default(),
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn rebuild_cancellable_with_build_limit_for_test(
-        workspace_folders: &[PathBuf],
-        file_limit: usize,
-        directory_limit: usize,
-        build_byte_limit: u64,
-        cancellation: &PaletteSearchCancellation,
-    ) -> FileIndexBuildOutcome {
-        Self::rebuild_cancellable_with_limits(
-            workspace_folders,
-            0,
-            file_limit,
-            directory_limit,
-            build_byte_limit,
-            cancellation,
-            &WorkspaceEntryVisibility::default(),
-        )
+        ReferenceBuildOutcome::Complete { index, metrics }
     }
 
     #[must_use]
-    pub fn files(&self) -> &[IndexedFile] {
+    pub fn files(&self) -> &[OwnedIndexedFile] {
         &self.files
     }
 
@@ -557,7 +401,7 @@ impl FileIndex {
         let file_shells = retained_bytes(
             self.files
                 .capacity()
-                .saturating_mul(std::mem::size_of::<IndexedFile>()),
+                .saturating_mul(std::mem::size_of::<OwnedIndexedFile>()),
         );
         let folder_shells = retained_bytes(
             self.workspace_folders
@@ -621,7 +465,7 @@ impl FileIndex {
                     retained_files
                         .len()
                         .saturating_add(1)
-                        .saturating_mul(std::mem::size_of::<IndexedFile>()),
+                        .saturating_mul(std::mem::size_of::<OwnedIndexedFile>()),
                 ));
             if next_graph > MAX_FILE_INDEX_RETAINED_BYTES {
                 continue;
@@ -637,19 +481,20 @@ impl FileIndex {
     }
 
     /// Add a single file to the index. Used for incremental sidebar updates.
-    pub fn add_file(&mut self, file: IndexedFile) {
+    pub fn add_file(&mut self, file: OwnedIndexedFile) {
         let mut ledger = self.incremental_mutation_ledger();
         self.add_file_for_bounded_batch(file, &mut ledger);
     }
 
-    pub(crate) fn incremental_mutation_ledger(&self) -> FileIndexMutationLedger {
-        FileIndexMutationLedger::from_index(self)
+    #[must_use]
+    pub fn incremental_mutation_ledger(&self) -> ReferenceMutationLedger {
+        ReferenceMutationLedger::from_index(self)
     }
 
-    pub(crate) fn add_file_for_bounded_batch(
+    pub fn add_file_for_bounded_batch(
         &mut self,
-        file: IndexedFile,
-        ledger: &mut FileIndexMutationLedger,
+        file: OwnedIndexedFile,
+        ledger: &mut ReferenceMutationLedger,
     ) -> bool {
         if self.files.len() >= MAX_INDEXED_FILES
             || self.files.iter().any(|existing| {
@@ -698,11 +543,11 @@ impl FileIndex {
         self.add_file(indexed_file_from_path(path, workspace_folder));
     }
 
-    pub(crate) fn add_path_for_bounded_batch(
+    pub fn add_path_for_bounded_batch(
         &mut self,
         path: PathBuf,
         workspace_folder: Arc<PathBuf>,
-        ledger: &mut FileIndexMutationLedger,
+        ledger: &mut ReferenceMutationLedger,
     ) -> bool {
         self.add_file_for_bounded_batch(indexed_file_from_path(path, workspace_folder), ledger)
     }
@@ -713,10 +558,10 @@ impl FileIndex {
         self.remove_path_for_bounded_batch(path, &mut ledger);
     }
 
-    pub(crate) fn remove_path_for_bounded_batch(
+    pub fn remove_path_for_bounded_batch(
         &mut self,
         path: &Path,
-        ledger: &mut FileIndexMutationLedger,
+        ledger: &mut ReferenceMutationLedger,
     ) {
         let before = self.files.len();
         self.files
@@ -738,11 +583,11 @@ impl FileIndex {
         self.rename_path_for_bounded_batch(old_path, new_path, &mut ledger);
     }
 
-    pub(crate) fn rename_path_for_bounded_batch(
+    pub fn rename_path_for_bounded_batch(
         &mut self,
         old_path: &Path,
         new_path: &Path,
-        ledger: &mut FileIndexMutationLedger,
+        ledger: &mut ReferenceMutationLedger,
     ) {
         for file in &mut self.files {
             let replacement_path = if file.path == old_path {
@@ -782,18 +627,12 @@ impl FileIndex {
             .map(Arc::clone)
     }
 
-    /// Search the file index with a fuzzy query, returning up to `max` scored results.
-    pub fn search(&self, query: &str, max: usize) -> Vec<ScoredResult<'_>> {
-        search_items(
-            self.files.iter(),
-            |file| &file.name,
-            SearchResultItem::File,
-            query,
-            max,
-        )
+    fn ordinals(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
+        0..u32::try_from(self.files.len()).unwrap_or(u32::MAX)
     }
 
-    /// Search with cooperative cancellation and bounded retention evidence.
+    /// Search with cooperative cancellation, as the arena's search does.
+    #[must_use]
     pub fn search_cancellable(
         &self,
         query: &str,
@@ -801,17 +640,20 @@ impl FileIndex {
         cancellation: &PaletteSearchCancellation,
     ) -> PaletteSearchOutcome<Vec<ScoredResult<'_>>> {
         search_items_cancellable(
-            self.files.iter(),
+            self.ordinals(),
             |_| true,
-            |file, fuzzy_query| fuzzy_query.score(&file.name),
-            SearchResultItem::File,
+            |ordinal, fuzzy_query| fuzzy_query.score(&self.files[*ordinal as usize].name),
+            |ordinal| SearchResultItem::File(FileOrdinal(ordinal)),
             query,
             max,
             cancellation,
         )
     }
 
-    /// Search while excluding canonical identities before bounded retention.
+    /// Search while excluding canonical identities, counting the empty
+    /// query's rest by walking every file (the arena counts it from its key
+    /// table).
+    #[must_use]
     pub fn search_cancellable_excluding(
         &self,
         query: &str,
@@ -819,18 +661,19 @@ impl FileIndex {
         excluded_canonical_paths: &HashSet<PathBuf>,
         cancellation: &PaletteSearchCancellation,
     ) -> PaletteSearchOutcome<Vec<ScoredResult<'_>>> {
-        let exclusion = OpenTabExclusion::new(excluded_canonical_paths);
-        let mut prefiltered = |file: &IndexedFile| exclusion.admits_prefiltered(file);
+        let exclusion = ReferenceExclusion::new(excluded_canonical_paths);
+        let mut prefiltered =
+            |ordinal: &u32| exclusion.admits_prefiltered(&self.files[*ordinal as usize]);
         let rest = if excluded_canonical_paths.is_empty() {
             RestCount::Length
         } else {
             RestCount::WalkWith(&mut prefiltered)
         };
         search_items_cancellable_counting(
-            self.files.iter(),
-            |file| exclusion.admits(file),
-            |file, fuzzy_query| fuzzy_query.score(&file.name),
-            SearchResultItem::File,
+            self.ordinals(),
+            |ordinal| exclusion.admits(&self.files[*ordinal as usize]),
+            |ordinal, fuzzy_query| fuzzy_query.score(&self.files[*ordinal as usize].name),
+            |ordinal| SearchResultItem::File(FileOrdinal(ordinal)),
             query,
             CountedSelection {
                 max,
@@ -839,50 +682,14 @@ impl FileIndex {
             },
         )
     }
-
-    /// Search with a deterministic checkpoint hook for tests and benchmarks.
-    #[doc(hidden)]
-    pub fn search_cancellable_with_progress(
-        &self,
-        query: &str,
-        max: usize,
-        cancellation: &PaletteSearchCancellation,
-        progress: &dyn Fn(usize),
-    ) -> PaletteSearchOutcome<Vec<ScoredResult<'_>>> {
-        search_items_cancellable_with_progress(
-            self.files.iter(),
-            |_| true,
-            |file, fuzzy_query| fuzzy_query.score(&file.name),
-            SearchResultItem::File,
-            query,
-            SearchProgressPolicy {
-                max,
-                cancellation,
-                progress,
-            },
-        )
-    }
-
-    /// Full-sort reference used only by equivalence tests and Criterion comparison.
-    #[doc(hidden)]
-    pub fn search_full_sort_reference(&self, query: &str, max: usize) -> Vec<ScoredResult<'_>> {
-        search_items_full_sort_reference(
-            self.files.iter(),
-            |_| true,
-            |file, fuzzy_query| fuzzy_query.score(&file.name),
-            SearchResultItem::File,
-            query,
-            max,
-        )
-    }
 }
 
 /// The workspace group's exclusion of files open in tabs, by canonical path
 /// (`drill-down-palette-categories` D1).
 ///
-/// [`OpenTabExclusion::admits`] hashes every file's canonical path against
+/// [`ReferenceExclusion::admits`] hashes every file's canonical path against
 /// the open set; the empty query's count continuation uses
-/// [`OpenTabExclusion::admits_prefiltered`], which first looks the canonical
+/// [`ReferenceExclusion::admits_prefiltered`], which first looks the canonical
 /// path's **length and last eight bytes** up among the open paths' (a binary
 /// search over at most the open tabs) and hashes the whole path only on a
 /// match. Both admit exactly the same files: an excluded path's key is always
@@ -890,7 +697,7 @@ impl FileIndex {
 /// display name, so a symlinked alias cannot slip through. (A first version
 /// prefiltered by the canonical file name, `Path::file_name` plus an `OsStr`
 /// hash: 5.4–5.6 ms over 131,072 files with 32 or 256 open tabs.)
-pub struct OpenTabExclusion<'a> {
+struct ReferenceExclusion<'a> {
     paths: &'a HashSet<PathBuf>,
     keys: Vec<(usize, u64)>,
 }
@@ -905,7 +712,7 @@ fn exclusion_key(path: &Path) -> (usize, u64) {
     (bytes.len(), u64::from_le_bytes(word))
 }
 
-impl<'a> OpenTabExclusion<'a> {
+impl<'a> ReferenceExclusion<'a> {
     /// The exclusion of `paths`.
     #[must_use]
     pub fn new(paths: &'a HashSet<PathBuf>) -> Self {
@@ -917,7 +724,7 @@ impl<'a> OpenTabExclusion<'a> {
 
     /// Whether `file` stays in the workspace group (full-path test).
     #[must_use]
-    pub fn admits(&self, file: &IndexedFile) -> bool {
+    pub fn admits(&self, file: &OwnedIndexedFile) -> bool {
         file.identity
             .canonical_path()
             .is_none_or(|path| !self.paths.contains(path))
@@ -926,7 +733,7 @@ impl<'a> OpenTabExclusion<'a> {
     /// The same decision as [`Self::admits`], hashing the path only when its
     /// length and last eight bytes are an open tab's.
     #[must_use]
-    pub fn admits_prefiltered(&self, file: &IndexedFile) -> bool {
+    pub fn admits_prefiltered(&self, file: &OwnedIndexedFile) -> bool {
         let Some(path) = file.identity.canonical_path() else {
             return true;
         };
@@ -938,7 +745,7 @@ impl<'a> OpenTabExclusion<'a> {
 ///
 /// The limit is parameterized so unit tests can exercise the threshold without
 /// constructing a six-figure temporary directory tree.
-pub(super) fn truncate_to_index_limit(files: &mut Vec<IndexedFile>, limit: usize) {
+fn truncate_to_index_limit(files: &mut Vec<OwnedIndexedFile>, limit: usize) {
     if files.len() > limit {
         tracing::warn!(
             "File index truncated: {} files exceeds {} limit",
@@ -953,12 +760,12 @@ pub(super) fn truncate_to_index_limit(files: &mut Vec<IndexedFile>, limit: usize
 ///
 /// Folder compaction scans the remaining files, so it is reserved for larger
 /// removals; small deletions keep the folder cache intact for cheap lookups.
-pub(super) fn should_compact_after_removal(before: usize, after: usize) -> bool {
+fn should_compact_after_removal(before: usize, after: usize) -> bool {
     after < before * 3 / 4
 }
 
-impl From<Vec<IndexedFile>> for FileIndex {
-    fn from(files: Vec<IndexedFile>) -> Self {
+impl From<Vec<OwnedIndexedFile>> for ReferenceFileIndex {
+    fn from(files: Vec<OwnedIndexedFile>) -> Self {
         let mut retained = Vec::with_capacity(files.len().min(MAX_INDEXED_FILES));
         let mut workspace_folders = Vec::new();
         let mut raw_paths = HashSet::with_capacity(retained.capacity());
@@ -980,7 +787,6 @@ impl From<Vec<IndexedFile>> for FileIndex {
         let mut index = Self {
             files: retained,
             workspace_folders,
-            visibility: WorkspaceEntryVisibility::default(),
         };
         index.enforce_retained_byte_limit();
         index
@@ -1036,7 +842,7 @@ fn path_capacity(path: &PathBuf) -> usize {
     path.capacity()
 }
 
-fn indexed_file_graph_weight(file: &IndexedFile) -> u64 {
+fn indexed_file_graph_weight(file: &OwnedIndexedFile) -> u64 {
     let canonical_capacity = match &file.identity {
         PaletteFileIdentity::Canonical(path) => path_capacity(path),
         PaletteFileIdentity::Unavailable(_) => 0,
@@ -1071,8 +877,8 @@ fn is_ignored_index_dir(dir: &Path) -> bool {
         .is_some_and(|name| IGNORED_INDEX_DIRS.contains(&name))
 }
 
-struct FileIndexTraversal<'a> {
-    out: &'a mut Vec<IndexedFile>,
+struct ReferenceTraversal<'a> {
+    out: &'a mut Vec<OwnedIndexedFile>,
     visited_directories: &'a mut HashSet<PathBuf>,
     canonical_files: &'a mut HashSet<PathBuf>,
     canonical_folder: &'a Path,
@@ -1080,7 +886,7 @@ struct FileIndexTraversal<'a> {
     directory_limit: usize,
     cancellation: &'a PaletteSearchCancellation,
     metrics: &'a mut FileIndexBuildMetrics,
-    ledger: &'a mut FileIndexBuildLedger,
+    ledger: &'a mut ReferenceBuildLedger,
     visited_charge: &'a mut u64,
     canonical_files_charge: &'a mut u64,
     visibility: &'a WorkspaceEntryVisibility,
@@ -1089,7 +895,7 @@ struct FileIndexTraversal<'a> {
 fn collect_files_bounded(
     dir: &Path,
     workspace_folder: &Arc<PathBuf>,
-    traversal: &mut FileIndexTraversal<'_>,
+    traversal: &mut ReferenceTraversal<'_>,
 ) -> bool {
     let Ok(canonical_directory) = fs_metadata::canonical_path(dir) else {
         return true;
@@ -1145,7 +951,7 @@ fn collect_files_bounded(
 fn collect_pending_directories(
     root: &Path,
     workspace_folder: &Arc<PathBuf>,
-    traversal: &mut FileIndexTraversal<'_>,
+    traversal: &mut ReferenceTraversal<'_>,
     pending: &mut Vec<(PathBuf, u32)>,
     pending_shell_charge: &mut u64,
     pending_graph_charge: &mut u64,
@@ -1335,7 +1141,7 @@ fn collect_pending_directories(
 
 fn ensure_scratch_vec_slot<T>(
     values: &mut Vec<T>,
-    ledger: &mut FileIndexBuildLedger,
+    ledger: &mut ReferenceBuildLedger,
     charged_shell_bytes: &mut u64,
 ) -> bool {
     if values.len() < values.capacity() {
@@ -1354,7 +1160,7 @@ fn ensure_scratch_vec_slot<T>(
 
 fn ensure_installed_vec_slot<T>(
     values: &mut Vec<T>,
-    ledger: &mut FileIndexBuildLedger,
+    ledger: &mut ReferenceBuildLedger,
 ) -> Result<(), FileIndexTruncationReason> {
     if values.len() < values.capacity() {
         return Ok(());
@@ -1374,14 +1180,14 @@ fn is_file_index_byte_limit(reason: FileIndexTruncationReason) -> bool {
     )
 }
 
-fn indexed_file_from_path(path: PathBuf, workspace_folder: Arc<PathBuf>) -> IndexedFile {
+fn indexed_file_from_path(path: PathBuf, workspace_folder: Arc<PathBuf>) -> OwnedIndexedFile {
     let identity = match fs_metadata::canonical_path(&path) {
         Ok(canonical) => PaletteFileIdentity::canonical(canonical),
         Err(error) => {
             PaletteFileIdentity::Unavailable(PaletteFileIdentityFailure::from(error.kind()))
         }
     };
-    IndexedFile::new(path, identity, workspace_folder)
+    OwnedIndexedFile::new(path, identity, workspace_folder)
 }
 
 fn canonical_identities_match(left: &PaletteFileIdentity, right: &PaletteFileIdentity) -> bool {
@@ -1391,7 +1197,7 @@ fn canonical_identities_match(left: &PaletteFileIdentity, right: &PaletteFileIde
     )
 }
 
-fn deduplicate_files(files: &mut Vec<IndexedFile>) {
+fn deduplicate_files(files: &mut Vec<OwnedIndexedFile>) {
     let mut raw_paths = HashSet::new();
     let mut canonical_paths = HashSet::new();
     files.retain(|file| {
@@ -1401,242 +1207,4 @@ fn deduplicate_files(files: &mut Vec<IndexedFile>) {
                 .canonical_path()
                 .is_none_or(|path| canonical_paths.insert(path.to_path_buf()))
     });
-}
-
-#[cfg(test)]
-mod build_ledger_tests {
-
-    use super::*;
-
-    #[test]
-    fn build_ledger_accepts_exact_limits_and_rejects_one_byte_over() {
-        let mut build = FileIndexBuildLedger::with_build_limit(MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
-        assert!(build.try_charge_scratch(MAX_FILE_INDEX_BUILD_RETAINED_BYTES));
-        assert!(!build.try_charge_scratch(1));
-        build.release_scratch(MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
-
-        let mut installed =
-            FileIndexBuildLedger::with_build_limit(MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
-        assert_eq!(
-            installed.try_charge_installed(MAX_FILE_INDEX_RETAINED_BYTES),
-            Ok(())
-        );
-        assert_eq!(
-            installed.try_charge_installed(1),
-            Err(FileIndexTruncationReason::RetainedByteLimit)
-        );
-        assert_eq!(installed.installed_bytes, MAX_FILE_INDEX_RETAINED_BYTES);
-        assert_eq!(installed.peak_build_bytes, MAX_FILE_INDEX_RETAINED_BYTES);
-
-        let mut build_limited =
-            FileIndexBuildLedger::with_build_limit(MAX_FILE_INDEX_RETAINED_BYTES - 1);
-        assert_eq!(
-            build_limited.try_charge_installed(MAX_FILE_INDEX_RETAINED_BYTES),
-            Err(FileIndexTruncationReason::BuildByteLimit)
-        );
-        assert_eq!(build_limited.installed_bytes, 0);
-    }
-
-    #[test]
-    fn incremental_long_path_batch_never_crosses_the_installed_policy() {
-        let folder = Arc::new(PathBuf::from("/synthetic/incremental-byte-policy"));
-        let mut index = FileIndex::default();
-        let mut ledger = index.incremental_mutation_ledger();
-
-        for item in 0..512 {
-            let mut path = folder.join(format!("file-{item:05}.rs"));
-            path.reserve(256 * 1024);
-            let file = IndexedFile::new(
-                path,
-                PaletteFileIdentity::Unavailable(PaletteFileIdentityFailure::NotFound),
-                Arc::clone(&folder),
-            );
-            index.add_file_for_bounded_batch(file, &mut ledger);
-            assert!(ledger.retained_bytes() <= MAX_FILE_INDEX_RETAINED_BYTES);
-            assert!(ledger.peak_retained_bytes() <= MAX_FILE_INDEX_RETAINED_BYTES);
-        }
-
-        assert!(ledger.truncated());
-        assert_eq!(ledger.retained_bytes(), index.retained_byte_weight());
-        assert!(index.retained_byte_weight() <= MAX_FILE_INDEX_RETAINED_BYTES);
-
-        let long_prefix = PathBuf::from(format!("/renamed/{}", "y".repeat(256 * 1024)));
-        index.rename_path_for_bounded_batch(folder.as_path(), &long_prefix, &mut ledger);
-        assert_eq!(ledger.retained_bytes(), index.retained_byte_weight());
-        assert!(ledger.peak_retained_bytes() <= MAX_FILE_INDEX_RETAINED_BYTES);
-        assert!(index.retained_byte_weight() <= MAX_FILE_INDEX_RETAINED_BYTES);
-    }
-
-    /// Drive the traversal on a real fixture and return the ledger plus the
-    /// scratch the *caller* (not the traversal) still owns after it returns.
-    fn run_traversal(
-        root: &Path,
-        build_byte_limit: u64,
-        file_limit: usize,
-        cancellation: &PaletteSearchCancellation,
-    ) -> (bool, FileIndexBuildLedger, Vec<IndexedFile>, u64, u64) {
-        let mut ledger = FileIndexBuildLedger::with_build_limit(build_byte_limit);
-        // Pre-size `out` so `ensure_installed_vec_slot` never charges an
-        // incremental installed shell, keeping the leak assertion exact.
-        let mut files = Vec::with_capacity(1024);
-        let mut visited_directories = HashSet::new();
-        let mut canonical_files = HashSet::new();
-        let mut metrics = FileIndexBuildMetrics::default();
-        let mut visited_charge = 0u64;
-        let mut canonical_files_charge = 0u64;
-        let canonical_folder = fs_metadata::canonical_path(root).expect("canonical root");
-        let folder_arc = Arc::new(root.to_path_buf());
-        let completed = {
-            let mut traversal = FileIndexTraversal {
-                out: &mut files,
-                visited_directories: &mut visited_directories,
-                canonical_files: &mut canonical_files,
-                canonical_folder: &canonical_folder,
-                file_limit,
-                directory_limit: MAX_INDEXED_DIRECTORIES,
-                cancellation,
-                metrics: &mut metrics,
-                ledger: &mut ledger,
-                visited_charge: &mut visited_charge,
-                canonical_files_charge: &mut canonical_files_charge,
-                visibility: &WorkspaceEntryVisibility::default(),
-            };
-            collect_files_bounded(root, &folder_arc, &mut traversal)
-        };
-        (
-            completed,
-            ledger,
-            files,
-            visited_charge,
-            canonical_files_charge,
-        )
-    }
-
-    /// After the traversal returns for any reason, releasing the caller-owned
-    /// scratch (`visited`/`canonical`) and the installed graph weight of every
-    /// admitted file must bring the build ledger back to zero. Any residual
-    /// means pending-stack or scan scratch leaked on that exit path.
-    fn assert_scratch_fully_released(
-        mut ledger: FileIndexBuildLedger,
-        files: &[IndexedFile],
-        visited_charge: u64,
-        canonical_files_charge: u64,
-    ) {
-        ledger.release_scratch(visited_charge.saturating_add(canonical_files_charge));
-        let installed: u64 = files.iter().map(indexed_file_graph_weight).sum();
-        ledger.release_installed(installed);
-        assert_eq!(
-            ledger.current_build_bytes, 0,
-            "pending-stack or scan scratch leaked on the traversal's exit path"
-        );
-    }
-
-    #[test]
-    fn traversal_normal_completion_releases_all_scratch_and_skips_ignored_dirs() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        crate::services::filesystem::fixture::write_text(&dir.path().join("a.rs"), "fn a() {}");
-        crate::services::filesystem::fixture::write_text(&dir.path().join("b.md"), "# b");
-        crate::services::filesystem::fixture::create_dir_all(&dir.path().join("nested"));
-        crate::services::filesystem::fixture::write_text(
-            &dir.path().join("nested/c.toml"),
-            "k = 1",
-        );
-        // A filtered batch: an ignored directory whose contents must be skipped.
-        crate::services::filesystem::fixture::create_dir_all(&dir.path().join(".git"));
-        crate::services::filesystem::fixture::write_text(&dir.path().join(".git/config"), "x");
-
-        let cancellation = PaletteSearchCancellation::default();
-        let (completed, ledger, files, visited, canonical) = run_traversal(
-            dir.path(),
-            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
-            MAX_INDEXED_FILES,
-            &cancellation,
-        );
-
-        assert!(completed, "an uncancelled traversal reports completion");
-        assert!(
-            files.iter().all(|file| !file
-                .path
-                .components()
-                .any(|component| component.as_os_str() == ".git")),
-            "ignored directory contents must not be indexed"
-        );
-        assert_eq!(files.len(), 3, "three non-ignored files are indexed");
-        assert_scratch_fully_released(ledger, &files, visited, canonical);
-    }
-
-    #[test]
-    fn traversal_budget_rejection_releases_all_scratch() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        for index in 0..8 {
-            crate::services::filesystem::fixture::write_text(
-                &dir.path().join(format!("file-{index}.rs")),
-                "fn placeholder() {}",
-            );
-        }
-
-        // A build-byte limit large enough to admit the root scratch but small
-        // enough to reject partway through the scan, exercising a mid-loop
-        // BuildByteLimit exit.
-        let cancellation = PaletteSearchCancellation::default();
-        let (_completed, ledger, files, visited, canonical) =
-            run_traversal(dir.path(), 512, MAX_INDEXED_FILES, &cancellation);
-
-        assert_scratch_fully_released(ledger, &files, visited, canonical);
-    }
-
-    #[test]
-    fn traversal_cancellation_releases_all_scratch() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        crate::services::filesystem::fixture::write_text(&dir.path().join("a.rs"), "fn a() {}");
-        crate::services::filesystem::fixture::create_dir_all(&dir.path().join("nested"));
-        crate::services::filesystem::fixture::write_text(
-            &dir.path().join("nested/b.rs"),
-            "fn b() {}",
-        );
-
-        // Supersession/cancellation: a pre-cancelled token exits the loop the
-        // first time it is observed.
-        let cancellation = PaletteSearchCancellation::default();
-        let _ = cancellation.cancel();
-        let (completed, ledger, files, visited, canonical) = run_traversal(
-            dir.path(),
-            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
-            MAX_INDEXED_FILES,
-            &cancellation,
-        );
-
-        assert!(!completed, "a cancelled traversal reports non-completion");
-        assert_scratch_fully_released(ledger, &files, visited, canonical);
-    }
-
-    #[cfg(feature = "property-tests")]
-    proptest::proptest! {
-        #[test]
-        fn build_ledger_never_crosses_its_ceiling(
-            operations in proptest::collection::vec((proptest::prelude::any::<bool>(), 0u64..=4 * 1024 * 1024), 0..256),
-        ) {
-            let mut ledger = FileIndexBuildLedger::with_build_limit(
-                MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
-            );
-            let mut scratch = 0u64;
-            for (charge, bytes) in operations {
-                if charge {
-                    if ledger.try_charge_scratch(bytes) {
-                        scratch = scratch.saturating_add(bytes);
-                    }
-                } else {
-                    let released = scratch.min(bytes);
-                    scratch -= released;
-                    ledger.release_scratch(released);
-                }
-                proptest::prop_assert!(
-                    ledger.current_build_bytes <= MAX_FILE_INDEX_BUILD_RETAINED_BYTES
-                );
-                proptest::prop_assert!(
-                    ledger.peak_build_bytes <= MAX_FILE_INDEX_BUILD_RETAINED_BYTES
-                );
-            }
-        }
-    }
 }

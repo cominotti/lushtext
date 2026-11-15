@@ -1,0 +1,6 @@
+# Verus 0.2026.11.02.8bf68ee pins this rustc (its version.json). The
+# evaluation script never relies on this file: it sets RUSTUP_TOOLCHAIN and a
+# private RUSTUP_HOME under build/formal-evaluation/tools/ explicitly.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"

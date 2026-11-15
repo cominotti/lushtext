@@ -353,7 +353,7 @@ where
 {
     search_items_cancellable(
         all_commands().iter(),
-        predicate,
+        |command: &&CommandDef| predicate(command),
         |command, fuzzy_query| fuzzy_query.score(command.label),
         SearchResultItem::Command,
         query,
