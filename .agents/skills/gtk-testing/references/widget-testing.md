@@ -139,6 +139,16 @@ loop one `iteration(false)` at a time and samples between dispatches (GLib
 dispatches one priority level per iteration), to assert such a state was ever
 true; then `wait_until` for it to clear.
 
+The same holds for **any in-flight state of a workflow that reschedules itself
+on a short timeout**, such as a buffer replacement's `in_progress` or
+`mutation_started` (1 ms slice turns). When a turn takes longer than its
+timeout, as on a loaded host, the next turn is already due when it returns, so
+one `wait_until` drain chains every turn to the terminal and the in-flight state
+is never sampled: a test that passes on an idle machine and fails under load
+(reproduced 2 of 6 runs with CPUs saturated; `harden-flatpak-sdk-update-ci`).
+Assert in-flight states with `observed_between_dispatches`; keep `wait_until`
+for terminal states, which persist.
+
 **`window.destroy()` does not dispose a window a test still holds** (ledger
 A21). A teardown test that needs the widget tree torn down must drop every
 strong handle to the window (and to children it keeps, such as a section)

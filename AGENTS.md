@@ -311,8 +311,12 @@ Cominotti remote at `https://flatpak.cominotti.dev/`; public install docs never
 use `--no-gpg-verify`. **Flathub publication is not planned**: a skipped
 Flathub PR is expected output, absent `FLATHUB_TOKEN` / `FLATHUB_REPOSITORY`
 is not a gap, and the Flathub *remote* remains the source of the GNOME runtime
-and SDK (`openspec/specs/flathub-publication/spec.md`). Packaging, release and
-CI workflows: `.agents/rules/build.md`.
+and SDK (`openspec/specs/flathub-publication/spec.md`). CI builds the Flatpak
+only through `.github/actions/flatpak-build`, which moves the image's system
+installation off overlayfs before flatpak-builder updates it
+(`make check-flatpak-ci-builds`); a `release.yml` dispatch builds the dispatched
+commit, a dry run may come from a branch, a real one only from `main`.
+Packaging, release and CI workflows: `.agents/rules/build.md`.
 
 ## Async I/O Pattern
 

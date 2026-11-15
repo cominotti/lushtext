@@ -80,6 +80,7 @@ Flathub publication is not planned (`build.md`, "Flatpak Release Automation").
 - Manifest sources are offline-complete and generated sources match `Cargo.lock`.
 - Full host access remains explicit, tested, and accurately described as a deliberate sandbox tradeoff.
 - AppStream release metadata and screenshots are current files/URLs, not placeholders.
+- CI Flatpak builds go through `.github/actions/flatpak-build` after checkout, never `flatpak-builder@` directly, so the image's system installation is relocated off overlayfs before a dependency update (`make check-flatpak-ci-builds`; `build.md`, `flatpak.yml`).
 - Local-source manifests are not confused with immutable publication manifests.
 - The install origin stays on the single shared path (`flatpak-install-origin.sh path`): `flatpak-install` exports with `--repo` to it and never with `--install` or a per-checkout, cache or state-dir repository, which leaves `lushtext-origin` dangling once that checkout or cache is deleted (`build.md`, "Flatpak").
 - Tests report exact commands and failures; unsupported host capabilities are not presented as passes.
