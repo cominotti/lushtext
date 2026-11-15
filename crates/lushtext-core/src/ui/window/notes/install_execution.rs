@@ -199,7 +199,7 @@ impl std::fmt::Debug for NoteBody {
             .debug_struct("NoteBody")
             .field("installing", &self.installing.get())
             .field("folded", &self.folded.borrow().is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

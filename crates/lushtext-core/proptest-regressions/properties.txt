@@ -6,3 +6,6 @@
 # everyone who runs the test benefits from these saved cases.
 cc 5178b5e533ffd28622a85b0bafb0fa48c3b53b860bde3cd537ea15ea796acb32 # shrinks to state = OrphanEntry, entries = [("", "")]
 cc 9568af58f40f185f5a4595077aa6a335d71a9809d2f465cfaf99a1e5974a3c7d # shrinks to state = CorruptEntry, entries = [("", ""), ("", "")], legacy = false
+cc 48f8702f97cb30aae1ca0d8a888b5b9dc9ae7fb3577cba33a45b7d9221696cc3 # shrinks to spec = TreeSpec { dirs: [], files: [(0, 0)], file_link: Some((0, false)), dir_link: None, non_utf8: false, overlap: None, mutations: [] }
+cc adbbcb77b8dac5fe0fb8fbe8310359d7baaa03581c4f513e3bfa275e85029f6a # shrinks to spec = TreeSpec { dirs: [], files: [], file_link: None, dir_link: None, non_utf8: false, overlap: None, mutations: [Create { dir: 0, name: 0 }] }, files = 1, directories = 2, build_bytes = 256
+cc 5f269069b0fa21dc6c8ee28d5cd384a3eab550d0b010460d58fa2b5332083abf # shrinks to spec = TreeSpec { dirs: [[0]], files: [(0, 0), (1, 0)], file_link: None, dir_link: None, non_utf8: false, overlap: Some((0, true)), mutations: [RenameDir { dir: 0, name: 0 }, RenameFile { file: 1, dir: 0, name: 0 }] }

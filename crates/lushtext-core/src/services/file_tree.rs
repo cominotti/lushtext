@@ -34,6 +34,10 @@ pub struct DirectoryEntry {
     /// and `None` means emptiness was not checked (files, or directories past
     /// the scan's lookahead budget).
     pub is_empty: Option<bool>,
+    /// The entry itself is a symbolic link (`is_dir` follows it), from the
+    /// directory entry's type: the file index resolves only these
+    /// (`scale-file-index` D2).
+    pub is_symlink: bool,
 }
 
 impl Ord for DirectoryEntry {
@@ -382,6 +386,7 @@ where
                 is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             selector.consider(DirectoryEntry {
+                is_symlink: entry.is_symlink,
                 path: entry.path,
                 is_dir,
                 is_empty,
@@ -503,6 +508,7 @@ where
                 is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             entries.push(DirectoryEntry {
+                is_symlink: entry.is_symlink,
                 path: entry.path,
                 is_dir,
                 is_empty,
@@ -573,6 +579,7 @@ where
                 is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             selector.consider(DirectoryEntry {
+                is_symlink: entry.is_symlink,
                 path: entry.path,
                 is_dir,
                 is_empty,
@@ -654,6 +661,7 @@ where
                 is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             let candidate = DirectoryEntry {
+                is_symlink: entry.is_symlink,
                 path: entry.path,
                 is_dir,
                 is_empty,
@@ -855,14 +863,8 @@ pub fn compare_directory_entries(
     (path_b, is_dir_b): (&Path, bool),
 ) -> Ordering {
     is_dir_b.cmp(&is_dir_a).then_with(|| {
-        let a = path_a
-            .file_name()
-            .map(OsStr::to_string_lossy)
-            .unwrap_or_default();
-        let b = path_b
-            .file_name()
-            .map(OsStr::to_string_lossy)
-            .unwrap_or_default();
+        let a = path_a.file_name().map_or_default(OsStr::to_string_lossy);
+        let b = path_b.file_name().map_or_default(OsStr::to_string_lossy);
         UniCase::new(a)
             .cmp(&UniCase::new(b))
             .then_with(|| path_a.cmp(path_b))
@@ -1278,6 +1280,7 @@ mod tests {
                 path: PathBuf::from(name),
                 is_dir: false,
                 is_empty: None,
+                is_symlink: false,
             })
             .collect::<Vec<_>>();
         let maximum_graph = entries

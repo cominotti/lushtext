@@ -161,11 +161,7 @@ fn clipboard_bytes(page: &LushtextEditorPage) -> Vec<u8> {
             slot.replace(Some(text.ok().flatten().map(|text| text.to_string())));
         });
     wait_until(Duration::from_secs(60), || result.borrow().is_some());
-    result
-        .take()
-        .flatten()
-        .map(String::into_bytes)
-        .unwrap_or_default()
+    result.take().flatten().map_or_default(String::into_bytes)
 }
 
 #[test]
@@ -185,11 +181,16 @@ fn test_copy_whole_line_writes_the_exact_paragraph_in_bounded_chunks() {
         .and_downcast::<WholeLineProvider>()
         .expect("the lazy whole-line provider is on the clipboard");
     assert_eq!(provider.byte_len(), giant.len());
-    assert_eq!(
-        provider.chunks_written(),
-        0,
-        "nothing is written until read"
-    );
+    let chunk = lushtext_core::ui::editor_page::WHOLE_LINE_CHUNK_BYTES;
+    let one_read = u64::try_from(giant.len().div_ceil(chunk)).expect("fits");
+    // The provider writes only to answer a read. The compositor may read it
+    // too: Mutter's clipboard manager copies a new text selection so it
+    // outlives its owner, and under load its read can finish while
+    // `whole_line_copies` is awaited (5 chunks, the whole paragraph, were
+    // seen written before this test's own read). So the writes before that
+    // read are none or the compositor's, and the read below must add a whole
+    // read's worth of bounded chunks.
+    let before = provider.chunks_written();
 
     let copied = clipboard_bytes(&page);
     assert_eq!(copied.len(), giant.len(), "every byte of the line");
@@ -197,10 +198,10 @@ fn test_copy_whole_line_writes_the_exact_paragraph_in_bounded_chunks() {
         copied == giant.as_bytes(),
         "byte-identical to the paragraph"
     );
-    let chunk = lushtext_core::ui::editor_page::WHOLE_LINE_CHUNK_BYTES;
     assert!(
-        provider.chunks_written() >= u64::try_from(giant.len().div_ceil(chunk)).expect("fits"),
-        "written one bounded chunk per dispatch"
+        provider.chunks_written() - before >= one_read,
+        "the read was answered with one bounded chunk per dispatch \
+         ({before} chunks were written before it)"
     );
     assert_eq!(editor_text(&page), body);
 }
@@ -658,10 +659,7 @@ fn read_clipboard(clipboard: &gtk4::gdk::Clipboard) -> String {
     let slot = std::rc::Rc::clone(&result);
     clipboard.read_text_async(None::<&gio::Cancellable>, move |text| {
         slot.replace(Some(
-            text.ok()
-                .flatten()
-                .map(|text| text.to_string())
-                .unwrap_or_default(),
+            text.ok().flatten().map_or_default(|text| text.to_string()),
         ));
     });
     wait_until(Duration::from_secs(60), || result.borrow().is_some());

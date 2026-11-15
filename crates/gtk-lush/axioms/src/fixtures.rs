@@ -579,8 +579,7 @@ fn numbered_list(rows: u32) -> gtk4::ListView {
         let text = item
             .item()
             .and_downcast::<gtk4::StringObject>()
-            .map(|object| object.string().to_string())
-            .unwrap_or_default();
+            .map_or_default(|object| object.string().to_string());
         if let Some(label) = item.child().and_downcast::<gtk4::Label>() {
             label.set_text(&text);
         }
@@ -785,7 +784,7 @@ pub mod a94 {
 
 /// The fixture and values the A95 probe drives, for its sample.
 pub mod a95 {
-    pub use crate::probes::a95::{SIZES, time_select_far};
+    pub use crate::probes::a95::{SIZES, SLOW_SIZES, time_select_far};
 }
 
 /// The fixture and values the A96 probe drives, for its sample.
@@ -897,6 +896,14 @@ pub mod a112 {
         DOCUMENT_LINES, Emission, EmissionLog, REWRAP_NARROWING, TARGET_LINE,
         WRAPPED_DOCUMENT_LINES, document_view, every_move_was_carried, moved_on_its_own, rewrap,
         scroll_to_target, wrapped_document_view,
+    };
+    pub use crate::probes::text::TextViewFixture;
+}
+
+/// The text view the A113 probe scrolls to its first line, for its sample.
+pub mod a113 {
+    pub use crate::probes::a113::{
+        DOCUMENT_LINES, TOP_MARGIN, document_view, scroll_to_first_line,
     };
     pub use crate::probes::text::TextViewFixture;
 }

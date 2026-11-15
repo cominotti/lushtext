@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A95 (`scale-file-index`): `SLOW_SIZES` (262,144 and 1,048,576 rows) are
+  measured as well when slow probes are included
+  (`fixtures::a95::SLOW_SIZES`), each held to the same `get_item` ceiling;
+  the pull-request lane keeps the fast 16,384 / 131,072 pair.
+- A113 probe and sample (`diagnose-ci-only-reflow-guard-failure`): a
+  `GtkTextView`'s aligned scroll to its first line (`scroll_to_iter` or
+  `scroll_to_mark`, aligned at 0) rests the vertical value at the top margin
+  plus the first character's location, never at `lower`. Fixture
+  `fixtures::a113` (`document_view`, `scroll_to_first_line`, `DOCUMENT_LINES`,
+  `TOP_MARGIN`).
 - A112 probe and sample (`restore-main-ci`): `gtk_adjustment_configure` sets
   the value before `changed`, then emits `value-changed`; `set_value` emits
   `value-changed` alone; a `GtkTextView` scrolling to a mark moves its value

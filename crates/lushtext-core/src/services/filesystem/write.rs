@@ -154,9 +154,12 @@ pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
 ///
 /// # Errors
 ///
-/// [`std::io::ErrorKind::AlreadyExists`] when the destination exists;
-/// [`std::io::ErrorKind::Unsupported`] when the platform lacks the flag.
-pub fn rename_durable_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+/// [`DurableWriteError::BeforeRename`] when nothing moved, carrying
+/// [`std::io::ErrorKind::AlreadyExists`] when the destination exists and
+/// [`std::io::ErrorKind::Unsupported`] when the platform lacks the flag;
+/// [`DurableWriteError::AfterRename`] when the rename took effect but a
+/// directory sync failed (whatever that error's kind).
+pub fn rename_durable_no_replace(from: &Path, to: &Path) -> Result<(), DurableWriteError> {
     durable_write::rename_durable_no_replace(from, to)
 }
 
@@ -165,19 +168,33 @@ pub fn rename_durable_no_replace(from: &Path, to: &Path) -> std::io::Result<()> 
 ///
 /// The fallback is two syscalls, so it is only best-effort against another
 /// process creating the destination in between; callers serialize LushText's
-/// own writers with [`TargetWriteGuard`].
+/// own writers with [`TargetWriteGuard`]. It runs **only** when the rename step
+/// itself reported `Unsupported` (a [`DurableWriteError::BeforeRename`]): a
+/// directory `fsync` that fails with `EOPNOTSUPP` after a completed rename is
+/// `Unsupported` too, and reading it as a missing flag made the fallback find
+/// the just-moved file and report a name collision for a rename that happened.
 ///
 /// # Errors
 ///
-/// [`std::io::ErrorKind::AlreadyExists`] when the destination exists, by
-/// either route; otherwise the rename or directory-sync error.
-pub fn rename_durable_no_replace_or_checked(from: &Path, to: &Path) -> std::io::Result<()> {
+/// [`DurableWriteError::BeforeRename`] with [`std::io::ErrorKind::AlreadyExists`]
+/// when the destination exists, by either route, or with the rename's own
+/// error; [`DurableWriteError::AfterRename`] when either route's rename took
+/// effect and a directory sync failed. Callers treat the latter as a completed
+/// rename whose durability is unconfirmed.
+pub fn rename_durable_no_replace_or_checked(
+    from: &Path,
+    to: &Path,
+) -> Result<(), DurableWriteError> {
     match rename_durable_no_replace(from, to) {
-        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+        Err(DurableWriteError::BeforeRename(error))
+            if error.kind() == std::io::ErrorKind::Unsupported =>
+        {
             if super::metadata::exists(to) {
-                return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+                return Err(DurableWriteError::BeforeRename(std::io::Error::from(
+                    std::io::ErrorKind::AlreadyExists,
+                )));
             }
-            rename_durable(from, to)
+            durable_write::rename_durable_classified(from, to)
         }
         other => other,
     }
@@ -228,10 +245,10 @@ pub fn create_new_empty_file_durable(path: &Path) -> std::io::Result<()> {
     sync_parent_dir(path)
 }
 
-/// Inject one post-rename parent-sync failure through the filesystem boundary.
+/// Inject one post-rename parent-sync failure of `kind` through the filesystem boundary.
 #[cfg(test)]
-pub(crate) fn fail_next_parent_sync_for_test() {
-    durable_write::fail_next_parent_sync_for_test();
+pub(crate) fn fail_next_parent_sync_for_test(kind: std::io::ErrorKind) {
+    durable_write::fail_next_parent_sync_for_test(kind);
 }
 
 /// Inject one cross-device (`EXDEV`) durable-rename failure through the filesystem boundary.
@@ -283,5 +300,96 @@ impl EvidenceAppendLog {
     /// Returns the write error.
     pub fn append(&mut self, record: &[u8]) -> std::io::Result<()> {
         self.file.write_all(record)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::filesystem::fixture;
+    use std::io::ErrorKind;
+
+    fn renamed_pair() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        fixture::write_text(&from, "body");
+        (dir, from, to)
+    }
+
+    /// `rust-1-100-adoption` A8: an `EOPNOTSUPP`/`ENOSYS` directory `fsync`
+    /// after a completed rename is `Unsupported` too; it must not be read as
+    /// "the kernel lacks `RENAME_NOREPLACE`", whose fallback then finds the
+    /// just-moved file at the destination and reports a name collision.
+    #[test]
+    fn an_unsupported_sync_after_the_rename_is_not_a_name_collision() {
+        let (_dir, from, to) = renamed_pair();
+        fail_next_parent_sync_for_test(ErrorKind::Unsupported);
+
+        let error = rename_durable_no_replace_or_checked(&from, &to)
+            .expect_err("the directory sync failed");
+
+        assert!(
+            matches!(&error, DurableWriteError::AfterRename(e) if e.kind() == ErrorKind::Unsupported),
+            "{error:?}"
+        );
+        assert!(!fixture::exists(&from), "the rename took effect");
+        fixture::assert_text(&to, "body");
+    }
+
+    #[test]
+    fn any_sync_failure_after_the_rename_reports_the_moved_file() {
+        let (_dir, from, to) = renamed_pair();
+        fail_next_parent_sync_for_test(ErrorKind::Other);
+
+        let error = rename_durable_no_replace_or_checked(&from, &to)
+            .expect_err("the directory sync failed");
+
+        assert!(
+            matches!(&error, DurableWriteError::AfterRename(e) if e.kind() == ErrorKind::Other),
+            "{error:?}"
+        );
+        assert!(!fixture::exists(&from), "the rename took effect");
+        fixture::assert_text(&to, "body");
+    }
+
+    #[test]
+    fn the_fallback_rename_classifies_its_sync_failure() {
+        let (_dir, from, to) = renamed_pair();
+        durable_write::next_no_replace_unsupported_for_test();
+        fail_next_parent_sync_for_test(ErrorKind::Unsupported);
+
+        let error = rename_durable_no_replace_or_checked(&from, &to)
+            .expect_err("the fallback's directory sync failed");
+
+        assert!(
+            matches!(&error, DurableWriteError::AfterRename(e) if e.kind() == ErrorKind::Unsupported),
+            "{error:?}"
+        );
+        assert!(!fixture::exists(&from), "the fallback rename took effect");
+        fixture::assert_text(&to, "body");
+    }
+
+    /// Regression: both routes still refuse an existing destination and
+    /// leave it untouched.
+    #[test]
+    fn an_existing_destination_is_refused_by_either_route() {
+        for unsupported in [false, true] {
+            let (_dir, from, to) = renamed_pair();
+            fixture::write_text(&to, "kept");
+            if unsupported {
+                durable_write::next_no_replace_unsupported_for_test();
+            }
+
+            let error = rename_durable_no_replace_or_checked(&from, &to)
+                .expect_err("the destination exists");
+
+            assert!(
+                matches!(&error, DurableWriteError::BeforeRename(e) if e.kind() == ErrorKind::AlreadyExists),
+                "{error:?}"
+            );
+            fixture::assert_text(&from, "body");
+            fixture::assert_text(&to, "kept");
+        }
     }
 }

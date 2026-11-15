@@ -1452,14 +1452,13 @@ fn animation_config(case: &Value) -> Result<Option<AnimationConfig>, String> {
     let required_anchors = config
         .get("required_anchors")
         .and_then(Value::as_array)
-        .map(|anchors| {
+        .map_or_default(|anchors| {
             anchors
                 .iter()
                 .filter_map(Value::as_str)
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        });
     let anchor_specs = animation_anchor_specs(case, &required_anchors)?;
     Ok(Some(AnimationConfig {
         invariant_id: config
@@ -1844,7 +1843,7 @@ fn summarize_animation_failures(failures: &[Value]) -> Vec<Value> {
             let anchors = failure
                 .get("anchors")
                 .and_then(Value::as_array)
-                .map(|anchors| {
+                .map_or_default(|anchors| {
                     anchors
                         .iter()
                         .filter(|anchor| anchor.get("status").and_then(Value::as_str) != Some("passed"))
@@ -1859,19 +1858,17 @@ fn summarize_animation_failures(failures: &[Value]) -> Vec<Value> {
                             })
                         })
                         .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+                });
             let relationships = failure
                 .get("relationships")
                 .and_then(Value::as_array)
-                .map(|relationships| {
+                .map_or_default(|relationships| {
                     relationships
                         .iter()
                         .filter(|row| row.get("status").and_then(Value::as_str) != Some("passed"))
                         .cloned()
                         .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+                });
             serde_json::json!({
                 "frame_index": failure.get("frame_index"),
                 "elapsed_ms": failure.get("elapsed_ms"),

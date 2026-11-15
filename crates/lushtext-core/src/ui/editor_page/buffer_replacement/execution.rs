@@ -1213,11 +1213,10 @@ fn finish_session(
     let outcome = match cancellation {
         None => {
             let body = body
-                .map(|body| match &editor {
+                .map_or_default(|body| match &editor {
                     Some(editor) => body.retain_for_protected_view(editor),
                     None => body,
                 })
-                .unwrap_or_default()
                 .into_completed_body();
             #[cfg(not(feature = "test-utils"))]
             drop(body);

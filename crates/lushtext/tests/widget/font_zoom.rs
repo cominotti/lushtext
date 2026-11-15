@@ -71,8 +71,7 @@ fn pango_description(widget: &impl IsA<gtk4::Widget>) -> String {
     widget
         .pango_context()
         .font_description()
-        .map(|description| description.to_string())
-        .unwrap_or_default()
+        .map_or_default(|description| description.to_string())
 }
 
 /// The desktop monospace font the theme reads with the system font.

@@ -216,13 +216,13 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/model/content_search.rs` | `BEYOND_BUDGET_REPORT_INTERVAL_MS` | 250 | out: time | cadence of the running found count (`bound-lists-by-budget-not-count` D4) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_SEARCH_MATCH_LINE_BYTES` | 4,096 | presentation cap | up from 4,096: past it a match line is cut (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_PREVIEW_ROWS` | 16,384 | presentation cap | up from 10,000: M3, preview worst dispatch 27.8-29.2 ms vs main 26.0-28.6 ms, 64 MiB budget unchanged (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_PREVIEW_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it Replace Preview omits rows (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_ENTRIES` | 32 | presentation cap | up from 32: diagnostics a user reads after Replace All (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_DIAGNOSTIC_BYTES` | 32,768 | presentation cap | up from 32,768: diagnostic text a user reads (D12) |
 | `crates/lushtext-core/src/model/content_search.rs` | `MAX_REPLACE_SKIP_LIST_BYTES` | 4,194,304 | presentation cap | up from 4,194,304: new; path bytes the skip list keeps, which lists every file of a 16,384-file run at typical path lengths and counts the rest (`stream-replace-all` D7) |
+| `crates/lushtext-core/src/model/content_search.rs` | `BEYOND_BUDGET_REPORT_INTERVAL_MS` | 250 | out: time | cadence of the running found count (`bound-lists-by-budget-not-count` D4) |
 
 ### `crates/lushtext-core/src/model/cursor_step.rs`
 
@@ -320,11 +320,11 @@ marking new ones `UNCLASSIFIED`; review the diff).
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
+| `crates/lushtext-core/src/model/list_budget.rs` | `LIST_TURN_SLICE_US` | 4,000 | out: time | time unit; `B_INTERACT_US / 2`, half the interaction budget per list turn (`bound-lists-by-budget-not-count` D2) |
+| `crates/lushtext-core/src/model/list_budget.rs` | `LIST_RETIREMENT_UNIT_ROWS` | 16 | cap | power of two; rows one sliced-retirement unit removes, sized so `LIST_TURN_SLICE_US` plus one unit's teardown fits `B_INTERACT_US` (`lighten-notes-browser-rows` D4, task 1.4) |
 | `crates/lushtext-core/src/model/list_budget.rs` | `LIST_FIRST_ROWS` | 32 | coverage window | power of two, rounded up; covers the tallest viewport the notes browser (700 sp) and palette (400 px) show, about 20 rows at the smallest row height (`lighten-notes-browser-rows` D5) |
 | `crates/lushtext-core/src/model/list_budget.rs` | `LIST_GROWTH_STEP_ROWS` | 32 | cap | power of two, rounded down; rows a growth frame realizes, about 5 ms of layout (64 measured 10.3–10.6 ms, task 6) |
 | `crates/lushtext-core/src/model/list_budget.rs` | `LIST_GROWTH_BAND_ROWS` | 256 | coverage window | power of two, rounded up over GTK's about 205 realized rows (A1); past it the rest is listed at once |
-| `crates/lushtext-core/src/model/list_budget.rs` | `LIST_RETIREMENT_UNIT_ROWS` | 16 | cap | power of two; rows one sliced-retirement unit removes, sized so `LIST_TURN_SLICE_US` plus one unit's teardown fits `B_INTERACT_US` (`lighten-notes-browser-rows` D4, task 1.4) |
-| `crates/lushtext-core/src/model/list_budget.rs` | `LIST_TURN_SLICE_US` | 4,000 | out: time | time unit; `B_INTERACT_US / 2`, half the interaction budget per list turn (`bound-lists-by-budget-not-count` D2) |
 
 ### `crates/lushtext-core/src/model/paragraph_boundary.rs`
 
@@ -601,15 +601,40 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/palette/fuzzy.rs` | `PALETTE_CANCEL_CHECK_INTERVAL` | 256 | cap | power of two |
 | `crates/lushtext-core/src/services/palette/fuzzy.rs` | `PALETTE_CATEGORY_CANDIDATE_BYTES` | 36 | external fact | the pinned layout of one ranked row's peak (a 32-byte retained candidate plus its `u32` ordinal), checked by a `const` assertion on 64-bit targets (`drill-down-palette-categories` D3) |
 
-### `crates/lushtext-core/src/services/palette/index.rs`
+### `crates/lushtext-core/src/services/palette/index/arena.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/services/palette/index.rs` | `MAX_SCAN_DEPTH` | 64 | presentation cap | up from 64: deeper files are not indexed (D12) |
-| `crates/lushtext-core/src/services/palette/index.rs` | `MAX_INDEXED_FILES` | 131,072 | presentation cap | up from 100,000: M15, 83.4-84.1 MiB vs main 68.3-68.5 (growth ratio 1.375), 546-555 ms vs 404-419 ms (D12) |
-| `crates/lushtext-core/src/services/palette/index.rs` | `MAX_INDEXED_DIRECTORIES` | 131,072 | presentation cap | up from 100,000: with MAX_INDEXED_FILES (M15, D12) |
-| `crates/lushtext-core/src/services/palette/index.rs` | `MAX_FILE_INDEX_RETAINED_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it the index is truncated (D12) |
-| `crates/lushtext-core/src/services/palette/index.rs` | `MAX_FILE_INDEX_BUILD_RETAINED_BYTES` | 134,217,728 | presentation cap | up from 134,217,728: past it the index is truncated (D12) |
+| `crates/lushtext-core/src/services/palette/index/arena.rs` | `NO_DIR` | 4,294,967,295 | out: identifier | format version, discriminant or sentinel (D1) |
+| `crates/lushtext-core/src/services/palette/index/arena.rs` | `IDENTITY_MASK` | `expr: 0b0000_0111` | out: identifier | a record flag mask (`scale-file-index` D1) |
+| `crates/lushtext-core/src/services/palette/index/arena.rs` | `RAW_NAME` | `expr: 0b0000_1000` | out: identifier | a record flag bit (`scale-file-index` D1) |
+| `crates/lushtext-core/src/services/palette/index/arena.rs` | `REKEYED` | `expr: 0b0100_0000` | out: identifier | a record flag bit (`scale-file-index` D5) |
+| `crates/lushtext-core/src/services/palette/index/arena.rs` | `DEAD` | `expr: 0b1000_0000` | out: identifier | a record flag bit (`scale-file-index` D5) |
+
+### `crates/lushtext-core/src/services/palette/index/mod.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/services/palette/index/mod.rs` | `MAX_SCAN_DEPTH` | 64 | presentation cap | up from 64: deeper files are not indexed (D12) |
+| `crates/lushtext-core/src/services/palette/index/mod.rs` | `MAX_INDEXED_FILES` | 1,048,576 | presentation cap | up from 1,000,000: the programme's million-file target, the query-latency bound (`scale-file-index` D3; the arena keeps 2^20 files within the unchanged 64 MiB installed ledger, task 4.1) |
+| `crates/lushtext-core/src/services/palette/index/mod.rs` | `MAX_INDEXED_DIRECTORIES` | 1,048,576 | presentation cap | up from 1,000,000: with MAX_INDEXED_FILES (`scale-file-index` D3) |
+| `crates/lushtext-core/src/services/palette/index/mod.rs` | `MAX_FILE_INDEX_RETAINED_BYTES` | 67,108,864 | presentation cap | up from 67,108,864: past it the index is truncated (D12) |
+| `crates/lushtext-core/src/services/palette/index/mod.rs` | `MAX_FILE_INDEX_BUILD_RETAINED_BYTES` | 134,217,728 | presentation cap | up from 134,217,728: past it the index is truncated (D12) |
+
+### `crates/lushtext-core/src/services/palette/index/mutation.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/services/palette/index/mutation.rs` | `INDEX_INCREMENTAL_GROWTH_DIVISOR` | 16 | out: factor | a mutation's growth step, `capacity / 16` (`scale-file-index` D3) |
+| `crates/lushtext-core/src/services/palette/index/mutation.rs` | `KEY_CHARGE` | `expr: 2 * std::mem::size_of::<u64>() as u64` | derived | two `u64` keys per added or moved file (`scale-file-index` D4) |
+
+### `crates/lushtext-core/src/services/palette/index/traversal.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/services/palette/index/traversal.rs` | `VISIT_ENTRY_BYTES` | 40 | external fact | a `(u64, u32)` hash-map entry at its load factor plus a `(u32, u32)` file range (`scale-file-index` D3) |
+| `crates/lushtext-core/src/services/palette/index/traversal.rs` | `SYMLINK_ENTRY_BYTES` | 32 | external fact | a `(u64, u32)` hash-map entry plus a `PathBuf` header (`scale-file-index` D3) |
+| `crates/lushtext-core/src/services/palette/index/traversal.rs` | `HINTED_NAME_BYTES` | 16 | out: structural | a capacity hint: the D9 shape's mean name (`scale-file-index` D3) |
 
 ### `crates/lushtext-core/src/services/palette/notes.rs`
 
@@ -625,6 +650,18 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/services/palette/notes.rs` | `NOTE_SIDECAR_MODEL_EXPANSION_MULTIPLIER` | 4 | out: factor | factor, divisor or unit (D1) |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES` | 65,536 | cap | power of two |
 | `crates/lushtext-core/src/services/palette/notes.rs` | `MAX_PALETTE_NOTE_DIAGNOSTICS` | 1,024 | presentation cap | up from 1,024: diagnostics the user is shown (D12) |
+
+### `crates/lushtext-core/src/services/palette/workspace_index_fixture.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/services/palette/workspace_index_fixture.rs` | `DEFAULT_SEED` | 24,865,861,918 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-core/src/services/palette/workspace_index_fixture.rs` | `SHAPE_DIGEST_4096` | 12,162,807,875,576,447,736 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-core/src/services/palette/workspace_index_fixture.rs` | `MAX_DEPTH` | 10 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-core/src/services/palette/workspace_index_fixture.rs` | `MIN_TARGET_DEPTH` | 6 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-core/src/services/palette/workspace_index_fixture.rs` | `FILES_PER_DIRECTORY_SPAN` | 20 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-core/src/services/palette/workspace_index_fixture.rs` | `BRANCH_ROLL` | 256 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
+| `crates/lushtext-core/src/services/palette/workspace_index_fixture.rs` | `SECOND_LEVEL_ROLLS` | 8 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
 
 ### `crates/lushtext-core/src/services/read_fault.rs`
 
@@ -725,11 +762,13 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `SEARCH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_RESULTS_PER_SOURCE` | 64 | presentation cap | up from 50: M1, settle worst 6.4-7.9 ms within B_interact (main 5.0-5.7 ms) (D12) |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `RESULT_PAGE_ROWS` | 16 | out: presentation | presentation shape: rows Page Up and Page Down move (`drill-down-palette-categories` D6) |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_FLOOR_RETENTION` | 4,718,592 | derived | the ranking peak of a full index, `MAX_INDEXED_FILES * PALETTE_CATEGORY_CANDIDATE_BYTES` (`drill-down-palette-categories` D3) |
-| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_RETAINED_BYTES` | 8,388,608 | presentation cap | up from PALETTE_CATEGORY_FLOOR_RETENTION: a category view's retained-byte budget, so a full index is listed whole (`drill-down-palette-categories` D3) |
+| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_RETAINED_BYTES` | 8,388,608 | presentation cap | up from PALETTE_CATEGORY_FLOOR_RETENTION: a category view's retained-byte budget, the power of two at or above the ranking peak of the row cap (`drill-down-palette-categories` D3, `scale-file-index` D8) |
+| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_CATEGORY_VIEW_ROWS` | 131,072 | presentation cap, exception | up from 131,072: the rows a workspace category listed at most before the index cap moved; a far select-and-scroll grows with the rows (A95), 2.2-6.9 ms at 131,072 in the application (`drill-down-palette-categories`), so a 2^20-row category would exceed `B_INTERACT_US`; note categories of 131,073-233,016 rows are cut, the recorded loss (`scale-file-index` D8) |
+| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PALETTE_CATEGORY_FLOOR_RETENTION` | 4,718,592 | derived | the ranking peak of the row cap, `MAX_CATEGORY_VIEW_ROWS * PALETTE_CATEGORY_CANDIDATE_BYTES` (`drill-down-palette-categories` D3, `scale-file-index` D8) |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_PENDING_INDEX_UPDATES` | 1,024 | cap | power of two |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `MAX_PENDING_INDEX_UPDATE_BYTES` | 4,194,304 | cap | power of two |
 | `crates/lushtext-core/src/ui/command_palette/policy.rs` | `PENDING_QUEUE_MIN_CAPACITY` | 4 | cap | power of two |
+| `crates/lushtext-core/src/ui/command_palette/policy.rs` | `LARGE_INDEX_RETIREMENT_FILES` | 131,072 | out: tool | test evidence: the size at which a released index's retirement is recorded (`scale-file-index` D3) |
 
 ### `crates/lushtext-core/src/ui/editor_page/accessibility.rs`
 
@@ -783,22 +822,10 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET` | 2,097,152 | presentation cap | up from 2,097,152: past it markers follow the unwrapped projection (D12) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET` | 8,192 | presentation cap | up from 8,000: M7 (D12) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_ANALYSIS_CHARS_PER_SLICE` | 32,768 | cap | power of two |
-| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_INTERIM_SEARCH_CHARS` | 32,768 | cap | power of two, rounded down: the band's own text searched for interim search markers while the scan runs; past it the search lane waits for the scan (`bin-minimap-markers-per-row` D5) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MARKER_MIN_HEIGHT` | 2 | out: geometry | UI geometry in whole strip rows; an `i32` since `bin-minimap-markers-per-row` D3 (was `f64` 2.0) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_MODIFIED_TAG_RETIRE_TOGGLES` | 4,096 | cap | power of two, rounded down: 16,384 toggles measured 6.9–9.1 ms per slice in a presented editor (over `B_INTERACT_US`); 4,096 is about a quarter of that (`bin-minimap-markers-per-row` D4; measured in its design, "Measured verdicts") |
+| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_INTERIM_SEARCH_CHARS` | 32,768 | cap | power of two, rounded down: the band's own text searched for interim search markers while the scan runs; past it the search lane waits for the scan (`bin-minimap-markers-per-row` D5) |
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` | `MINIMAP_VIEWPORT_HORIZONTAL_OUTSET` | 13 | out: geometry | UI geometry in sp or px (D1) |
-
-The minimap's three marker caps (`MINIMAP_SEARCH_MATCH_CAP`,
-`MINIMAP_MODIFIED_LINE_MARK_CAP`, `MINIMAP_LONG_LINE_MARK_CAP`, 2,048 each)
-were removed by `bin-minimap-markers-per-row`: markers are binned per strip
-pixel row, so the marker work is bounded by the strip height, not a count.
-The retained long-line list is bounded **by construction** rather than by a
-constant: at most one `u32` per analysed line longer than
-`MINIMAP_LONG_LINE_WARNING_THRESHOLD`, so at most 4 bytes per 122 bytes of
-analysed text, about 3.3 % of the **live** buffer (the document scale turns the
-minimap off from loaded or saved bytes, so a paste can grow the live buffer past
-`S_MINIMAP` with the minimap on until the next save); at `S_MINIMAP` that is
-82,645 entries, about 323 KiB (design D6).
 
 ### `crates/lushtext-core/src/ui/editor_page/overscroll.rs`
 
@@ -996,12 +1023,12 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 | `crates/lushtext-core/src/ui/responsiveness_probe.rs` | `measurement::RECENT_LATE_FLOOR_US` | 1,000 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/responsiveness_probe.rs` | `measurement::RECENT_LATE_CAPACITY` | 1,024 | cap | power of two |
 
-
 ### `crates/lushtext-core/src/ui/row_text/imp.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/row_text/imp.rs` | `FONT_METRICS_CACHE_ENTRIES` | 64 | cap | power of two; distinct primary fonts and class sets whose line metrics, CSS text attributes and measuring layout one thread keeps (`lighten-notes-browser-rows` D2) |
+
 ### `crates/lushtext-core/src/ui/search_panel/execution.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
@@ -1033,13 +1060,13 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
+| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `PREVIEW_ROW_RETAINED_BYTES` | `expr: std::mem::size_of::<Replacement>() .saturating_add(std::mem::size_of::<Option<usize>>()) .saturating_add(std::mem::size_of::<SearchMatchId>())` | derived | computed from named inputs; not rounded (D2) |
 | `crates/lushtext-core/src/ui/search_panel/policy.rs` | `SEARCH_MATCH_FIXED_CHARGE` | 2,048 | coverage window | per-match retention measured and rounded up to a power of two (`bound-lists-by-budget-not-count` task 2.4) |
 | `crates/lushtext-core/src/ui/search_panel/policy.rs` | `MAIN_SEARCH_WORST_RETENTION` | 234,881,024 | derived | 16,384 x (4,096-byte line + 2 x 4,096-byte path + fixed charge): main's worst case under RESULT_CAP (D3) |
 | `crates/lushtext-core/src/ui/search_panel/policy.rs` | `MAIN_SEARCH_CAP_MATCHES` | 16,384 | external fact | the retired RESULT_CAP the budget must not lose against (D3) |
 | `crates/lushtext-core/src/ui/search_panel/policy.rs` | `LINUX_PATH_MAX_BYTES` | 4,096 | external fact | Linux PATH_MAX (`<linux/limits.h>`) |
 | `crates/lushtext-core/src/ui/search_panel/policy.rs` | `SEARCH_RESULTS_RETAINED_BYTES` | 268,435,456 | presentation cap | up from MAIN_SEARCH_WORST_RETENTION: the search's retained-byte budget, replacing RESULT_CAP (D3) |
 | `crates/lushtext-core/src/ui/search_panel/policy.rs` | `REVEAL_TURN_MAX_EVENTS` | 32 | cap | power of two; the reveal turn and those after it until 256 matches carry small batches (D4 b) |
-| `crates/lushtext-core/src/ui/search_panel/policy.rs` | `PREVIEW_ROW_RETAINED_BYTES` | `expr: std::mem::size_of::<Replacement>() .saturating_add(std::mem::size_of::<Option<usize>>()) .saturating_add(std::mem::size_of::<SearchMatchId>())` | derived | computed from named inputs; not rounded (D2) |
 
 ### `crates/lushtext-core/src/ui/search_panel/retirement.rs`
 
@@ -1065,6 +1092,7 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAX_UNIQUE_NAME_ATTEMPTS` | 1,024 | retry budget | rounded up (D6) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_ROW_PATH_COPIES` | 8 | coverage window | path copies a row retains, rounded up (`bound-lists-by-budget-not-count` D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_ROW_FIXED_CHARGE` | 1,024 | coverage window | per-row retention measured and rounded up to a power of two (task 2.4) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_PATH_GRAPH_OVERHEAD` | 16 | external fact | two `usize` words, the scanner's per-path graph overhead |
@@ -1072,7 +1100,6 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAIN_SIDEBAR_WORST_RETENTION` | 339,200,000 | derived | 10,000 rows of PATH_MAX paths (D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_TYPICAL_FLOOR_RETENTION` | 454,033,408 | derived | 131,072 rows of 32-byte names under a 256-byte parent (D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_DIRECTORY_RETAINED_BYTES` | 536,870,912 | presentation cap | up from SIDEBAR_TYPICAL_FLOOR_RETENTION, the larger floor: a directory's retained-byte budget, replacing MAX_DIR_ENTRIES (D3) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAX_UNIQUE_NAME_ATTEMPTS` | 1,024 | retry budget | rounded up (D6) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `PERSIST_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `REVEAL_SETTLE_FRAME_BUDGET` | 64 | coverage window | rounded up (D5) |
 
@@ -1080,8 +1107,8 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
-| `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs` | `REVEAL_NEIGHBOURS_PER_SIDE` | 4 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
 | `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs` | `REVEAL_RESCROLL_BUDGET` | 2 | retry budget | power of two; re-issued scrolls once a clipped target row is realized (`bound-lists-by-budget-not-count`) |
+| `crates/lushtext-core/src/ui/sidebar/reveal_execution.rs` | `REVEAL_NEIGHBOURS_PER_SIDE` | 4 | out: presentation | presentation shape: rows or lines a surface shows (D1) |
 
 ### `crates/lushtext-core/src/ui/sidebar/workspace_section/peek_execution.rs`
 
@@ -1110,9 +1137,9 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 | File | Constant | Value | Kind | Rounding or reason |
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_APPEND_BATCH_SIZE` | 256 | cap | power of two |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `FIRST_BATCH_ROWS` | 32 | cap | power of two; the first rows of an empty directory, while the list creates its row widgets (`bound-lists-by-budget-not-count`) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `STALE_CACHE_ROWS_PER_UNIT` | 4,096 | cap | power of two; a superseded store's cached rows forgotten per unit of a load (`bound-lists-by-budget-not-count`) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `RETIRED_LISTING_ROWS_PER_UNIT` | 4,096 | cap | power of two; a collapsed directory's retired store items or mirror rows dropped per unit of a low-priority retirement turn (`bound-lists-by-budget-not-count`, stage 4 review) |
+| `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `FIRST_BATCH_ROWS` | 32 | cap | power of two; the first rows of an empty directory, while the list creates its row widgets (`bound-lists-by-budget-not-count`) |
 | `crates/lushtext-core/src/ui/sidebar/workspace_section/scan_execution.rs` | `CHILD_RECONCILE_DIRECT_ROWS` | 256 | cap | power of two |
 
 ### `crates/lushtext-core/src/ui/sidebar/workspace_section/watch.rs`
@@ -1203,12 +1230,12 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 |---|---|---|---|---|
 | `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_RAW_PREVIEW_TEXT_MARGIN_HORIZONTAL_SP` | 12 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_WIDTH_SP` | 980 | out: geometry | UI geometry in sp or px (D1) |
-| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_HEIGHT_SP` | 700 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_ROW_SPACING_SP` | 12 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_ROW_MARGIN_VERTICAL_SP` | 3 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_ROW_MARGIN_START_SP` | 6 | out: geometry | UI geometry in sp or px (D1) |
 | `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_HEADER_MARGIN_START_SP` | 10 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_WIDTH_SP` | 980 | out: geometry | UI geometry in sp or px (D1) |
+| `crates/lushtext-core/src/ui/window/notes/browser.rs` | `NOTES_BROWSER_HEIGHT_SP` | 700 | out: geometry | UI geometry in sp or px (D1) |
 
 ### `crates/lushtext-core/src/ui/window/notes/editor_execution.rs`
 
@@ -1226,13 +1253,18 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SOURCE_TEXT_LIMIT` | 67,108,864 | presentation cap | up from 67,108,864: past it the browser source is truncated (D12); the browser's only text bound, no row count (`bound-notes-browser-by-budget` D3) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_DIAGNOSTIC_LIMIT` | 1,024 | presentation cap | up from 1,024: diagnostics the user is shown (D12) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT` | 4,194,304 | presentation cap | up from 4,194,304: past it open-editor notes are dropped (D12); admitted by `RetainedBudget` in sliced turns, no count (`bound-notes-browser-by-budget` D4) |
-| `crates/lushtext-core/src/ui/window/notes/row_model.rs` | `LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`bound-notes-browser-by-budget`, Implementation decisions) |
-| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `OPEN_EDITOR_SNAPSHOT_SLICE_ROWS` | 256 | cap | bookmark records per capture unit before the turn clock is read; a 20,000-bookmark capture took 2.0–4.9 ms in one dispatch on `main` (0.10–0.25 µs per bookmark), so 256 is far inside the 4 ms slice (`bound-notes-browser-by-budget` D4, D10) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_SAVE_DEBOUNCE_MS` | 200 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `MAX_BOOKMARK_SAVE_ATTEMPTS` | 4 | retry budget | rounded up (D6) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS` | 80 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/window/notes/policy.rs` | `NOTES_BROWSER_SEARCH_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
+| `crates/lushtext-core/src/ui/window/notes/policy.rs` | `OPEN_EDITOR_SNAPSHOT_SLICE_ROWS` | 256 | cap | bookmark records per capture unit before the turn clock is read; a 20,000-bookmark capture took 2.0–4.9 ms in one dispatch on `main` (0.10–0.25 µs per bookmark), so 256 is far inside the 4 ms slice (`bound-notes-browser-by-budget` D4, D10) |
+
+### `crates/lushtext-core/src/ui/window/notes/row_model.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/lushtext-core/src/ui/window/notes/row_model.rs` | `LIVE_ROW_PRUNE_AT` | 1,024 | cap | map entries of handed-out row objects before dead ones are pruned; GTK holds about 205 rows (A1) plus the selection (`bound-notes-browser-by-budget`, Implementation decisions) |
 
 ### `crates/lushtext-core/src/ui/window/preview.rs`
 

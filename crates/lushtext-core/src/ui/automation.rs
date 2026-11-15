@@ -989,8 +989,7 @@ fn tab_snapshot(index: u32, active: bool, page: &libadwaita::TabPage) -> Automat
     // The Protected View workflow's fields project from its evidence surface.
     let protected_evidence = editor
         .as_ref()
-        .map(LushtextEditorPage::protected_view_evidence)
-        .unwrap_or_default();
+        .map_or_default(LushtextEditorPage::protected_view_evidence);
     AutomationTabSnapshot {
         index,
         active,

@@ -26,7 +26,8 @@ use crate::services::filesystem::{
 use crate::services::notifications::NotificationSeverity;
 use crate::ui::accessibility;
 use crate::ui::sidebar::policy::{
-    self, MAX_UNIQUE_NAME_ATTEMPTS, RenameIntent, WorkspaceRenameRefusal,
+    self, MAX_UNIQUE_NAME_ATTEMPTS, RENAME_DURABILITY_WARNING_SEVERITY, RenameDurability,
+    RenameIntent, WorkspaceRenameRefusal, rename_durability_warning,
 };
 use crate::ui::sidebar::seams::{FileOperationFacts, FileOperationTargetKind, FileOperationTicket};
 use glib::prelude::*;
@@ -176,8 +177,7 @@ impl super::LushtextWorkspaceSection {
 
         let name = path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
 
         let entry = gtk4::Entry::new();
         crate::ui::entry_paste_cap::cap_single_line_inserts(&entry);
@@ -344,7 +344,11 @@ impl super::LushtextWorkspaceSection {
                 let imp = section.imp();
                 let old_path = ticket.path().to_path_buf();
                 match outcome {
-                    Ok(()) => {
+                    // One arm for both durabilities: a rename whose directory
+                    // sync failed has still happened, so it is projected exactly
+                    // like a confirmed one (row, cache, watch, callbacks), and
+                    // only then warned about.
+                    Ok(durability) => {
                         let facts = FileOperationFacts::new(
                             row.as_ref()
                                 .and_then(gtk4::TreeListRow::item)
@@ -409,6 +413,20 @@ impl super::LushtextWorkspaceSection {
                                 imp.rename_callback.borrow_mut().get_or_insert(cb);
                             }
                         }
+
+                        if let RenameDurability::Unconfirmed(error) = &durability {
+                            tracing::warn!(
+                                "Renamed {} to {}, but its durability is unconfirmed: {}",
+                                old_path.display(),
+                                new_path.display(),
+                                error
+                            );
+                        }
+                        if let Some(warning) =
+                            rename_durability_warning(&durability, &new_name_owned)
+                        {
+                            section.emit_message(&warning, RENAME_DURABILITY_WARNING_SEVERITY);
+                        }
                     }
                     Err(RenameFailure::Refused(refusal)) => {
                         // Refusing is the whole point: the platform rename
@@ -424,6 +442,8 @@ impl super::LushtextWorkspaceSection {
                             let _ = section.remove_from_model(&old_path);
                         }
                     }
+                    // Reached only when nothing moved: identity resolution or a
+                    // before-rename failure of the rename step itself.
                     Err(RenameFailure::Io(error)) => {
                         tracing::error!("Failed to rename {}: {}", old_path.display(), error);
                         if ticket.is_new() {
@@ -634,10 +654,13 @@ impl super::LushtextWorkspaceSection {
 }
 
 /// Why a guarded workspace rename did not happen.
+///
+/// A rename that took effect is never one of these, even when a directory sync
+/// after it failed: that is `Ok(RenameDurability::Unconfirmed(_))`.
 enum RenameFailure {
     /// The workflow refused the rename; the user is told why.
     Refused(WorkspaceRenameRefusal),
-    /// The platform rename failed.
+    /// Resolving the targets, or the rename step itself, failed; nothing moved.
     Io(std::io::Error),
 }
 
@@ -666,7 +689,10 @@ enum RenameFailure {
 ///    to the same key, and the second acquire would block on the first forever,
 ///    holding a worker slot until the process exits. Both are avoided by
 ///    resolving first, deduplicating, and acquiring in **resolved** order.
-fn rename_target_guarded(old_path: &Path, new_path: &Path) -> Result<(), RenameFailure> {
+fn rename_target_guarded(
+    old_path: &Path,
+    new_path: &Path,
+) -> Result<RenameDurability, RenameFailure> {
     let source = fs_write::resolve_target_identity(old_path).map_err(RenameFailure::Io)?;
     let destination = fs_write::resolve_target_identity(new_path).map_err(RenameFailure::Io)?;
 
@@ -675,8 +701,7 @@ fn rename_target_guarded(old_path: &Path, new_path: &Path) -> Result<(), RenameF
             WorkspaceRenameRefusal::DestinationExists {
                 name: new_path
                     .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                    .map_or_default(|name| name.to_string_lossy().into_owned()),
             },
         ))
     };
@@ -704,12 +729,20 @@ fn rename_target_guarded(old_path: &Path, new_path: &Path) -> Result<(), RenameF
     // but not against a concurrent `mv`.
     // Older kernels and filesystems without the flag fall back to the
     // best-effort check, which still closes the in-app window.
+    // The class decides before the kind: only a before-rename `AlreadyExists`
+    // is a collision. A directory sync that failed after the rename (with any
+    // kind, `Unsupported` included) is a completed rename.
     match fs_write::rename_durable_no_replace_or_checked(old_path, new_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+        Ok(()) => Ok(RenameDurability::Confirmed),
+        Err(fs_write::DurableWriteError::AfterRename(error)) => {
+            Ok(RenameDurability::Unconfirmed(error))
+        }
+        Err(fs_write::DurableWriteError::BeforeRename(error))
+            if error.kind() == std::io::ErrorKind::AlreadyExists =>
+        {
             refuse_existing_destination()
         }
-        Err(error) => Err(RenameFailure::Io(error)),
+        Err(fs_write::DurableWriteError::BeforeRename(error)) => Err(RenameFailure::Io(error)),
     }
 }
 
@@ -797,4 +830,49 @@ pub(super) fn cancel_rename(entry: &gtk4::Entry, label: &gtk4::Label, content_bo
     }
     content_box.remove(entry);
     label.set_visible(true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::filesystem::fixture;
+
+    /// `rust-1-100-adoption` A8: a rename whose directory sync fails after it
+    /// took effect is a completed rename, whatever the sync's error kind; an
+    /// `Unsupported` sync once came back as "a file named … already exists".
+    #[test]
+    fn a_rename_whose_directory_sync_fails_is_a_completed_rename() {
+        let mut wrong = Vec::new();
+        for kind in [std::io::ErrorKind::Unsupported, std::io::ErrorKind::Other] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let old_path = dir.path().join("old.txt");
+            let new_path = dir.path().join("new.txt");
+            fixture::write_text(&old_path, "body");
+            fs_write::fail_next_parent_sync_for_test(kind);
+
+            match rename_target_guarded(&old_path, &new_path) {
+                Ok(RenameDurability::Unconfirmed(error)) => {
+                    assert_eq!(error.kind(), kind, "the sync's own error is kept");
+                }
+                Ok(RenameDurability::Confirmed) => {
+                    wrong.push(format!("{kind:?}: a failed sync was reported as durable"));
+                }
+                Err(RenameFailure::Refused(refusal)) => {
+                    wrong.push(format!("{kind:?}: refused: {}", refusal.message()));
+                }
+                Err(RenameFailure::Io(error)) => {
+                    wrong.push(format!("{kind:?}: reported as failed: {error}"));
+                }
+            }
+            fixture::assert_text(&new_path, "body");
+            assert!(
+                !fixture::exists(&old_path),
+                "{kind:?}: the rename took effect"
+            );
+        }
+        assert!(
+            wrong.is_empty(),
+            "completed renames misreported: {wrong:#?}"
+        );
+    }
 }

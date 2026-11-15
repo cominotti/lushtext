@@ -30,6 +30,8 @@ pub(in crate::services) struct RawDirectoryEntry {
     pub path: PathBuf,
     pub file_name: OsString,
     pub kind: FileKind,
+    /// The entry itself is a symbolic link (`kind` is its target's).
+    pub is_symlink: bool,
 }
 
 pub(in crate::services) fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -191,6 +193,11 @@ pub(in crate::services) fn cross_device_error_for_test() -> io::Error {
 /// rather than refusing every rename. Linux added `RENAME_NOREPLACE` in 3.15 and
 /// not every filesystem implements it; `EINVAL`, `ENOSYS`, and `EOPNOTSUPP` all
 /// mean "not available here".
+///
+/// That meaning holds for **this** call only. The durable wrapper syncs the
+/// parent directories afterwards, and a directory `fsync` can fail with
+/// `EOPNOTSUPP` as well, after the rename took effect; the wrapper reports that
+/// as `DurableWriteError::AfterRename`, so callers branch on the class first.
 #[cfg(unix)]
 pub(in crate::services) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     match rustix::fs::renameat_with(
@@ -431,10 +438,26 @@ where
             continue;
         };
         let kind = kind_from_rustix_file_type(rustix::fs::FileType::from_raw_mode(stat.st_mode));
+        // The entry's own type comes from `readdir` (`d_type`); only a
+        // filesystem that reports no type pays an `lstat`
+        // (`scale-file-index` D2).
+        let is_symlink = match entry.file_type() {
+            rustix::fs::FileType::Symlink => true,
+            rustix::fs::FileType::Unknown => rustix::fs::statat(
+                dir_fd,
+                entry.file_name(),
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .is_ok_and(|own| {
+                rustix::fs::FileType::from_raw_mode(own.st_mode) == rustix::fs::FileType::Symlink
+            }),
+            _ => false,
+        };
         if !visit(RawDirectoryEntry {
             path: child_path,
             file_name,
             kind,
+            is_symlink,
         }) {
             break;
         }
@@ -453,10 +476,14 @@ where
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
+        let is_symlink = entry
+            .file_type()
+            .is_ok_and(|file_type| file_type.is_symlink());
         if !visit(RawDirectoryEntry {
             path: entry.path(),
             file_name: entry.file_name(),
             kind: kind_from_std_metadata(&metadata),
+            is_symlink,
         }) {
             break;
         }

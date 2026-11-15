@@ -1,0 +1,663 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 0ff3a7f4..73f2a826 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -68,7 +68,7 @@ version = "1.1.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
+ dependencies = [
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -79,7 +79,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
+ dependencies = [
+  "anstyle",
+  "once_cell_polyfill",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -299,6 +299,12 @@ version = "1.0.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
+ 
++[[package]]
++name = "convert_case"
++version = "0.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
++
+ [[package]]
+ name = "cpufeatures"
+ version = "0.2.17"
+@@ -436,7 +442,7 @@ dependencies = [
+  "libc",
+  "option-ext",
+  "redox_users",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -485,7 +491,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+ dependencies = [
+  "libc",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -749,7 +755,7 @@ dependencies = [
+  "gobject-sys",
+  "libc",
+  "system-deps",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -1331,6 +1337,7 @@ dependencies = [
+  "thiserror",
+  "tracing",
+  "unicase",
++ "vstd",
+  "workspace-hack",
+ ]
+ 
+@@ -1441,7 +1448,7 @@ version = "0.50.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+ dependencies = [
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -1792,7 +1799,7 @@ dependencies = [
+  "errno",
+  "libc",
+  "linux-raw-sys",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -1982,6 +1989,17 @@ dependencies = [
+  "unicode-ident",
+ ]
+ 
++[[package]]
++name = "synstructure"
++version = "0.13.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn",
++]
++
+ [[package]]
+ name = "system-deps"
+ version = "7.0.8"
+@@ -2011,7 +2029,7 @@ dependencies = [
+  "getrandom 0.4.3",
+  "once_cell",
+  "rustix",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -2225,6 +2243,71 @@ version = "0.9.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+ 
++[[package]]
++name = "verus_builtin"
++version = "0.0.0-2026-11-01-0251"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b5cecde3e49b95f670dee0000707b0fe24d3894ffec56d9e6c49f404878b30e9"
++
++[[package]]
++name = "verus_builtin_macros"
++version = "0.0.0-2026-11-01-0251"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "94dbd5043818524d73436d4dd20a8f67f8f8c13dc00d2662d643ce994ff2dbb5"
++dependencies = [
++ "convert_case",
++ "proc-macro2",
++ "quote",
++ "syn",
++ "synstructure",
++ "verus_prettyplease",
++ "verus_syn",
++]
++
++[[package]]
++name = "verus_prettyplease"
++version = "0.0.0-2026-11-01-0251"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2b2cf0618d8d5ed0cde78122effaf56f5be0a0d0e0f9066735fa9f17d6ba6a4a"
++dependencies = [
++ "proc-macro2",
++ "verus_syn",
++]
++
++[[package]]
++name = "verus_state_machines_macros"
++version = "0.0.0-2026-11-01-0251"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "36b7a87f62a49719385cad07ad58ad9d17af29642dd331a5cdc25eba2423b716"
++dependencies = [
++ "indexmap",
++ "proc-macro2",
++ "quote",
++ "verus_syn",
++]
++
++[[package]]
++name = "verus_syn"
++version = "0.0.0-2026-11-01-0251"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "461620a5ec0fb547ba398e42fb25a017bd8764798a32099eed73c77dd979ac39"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "unicode-ident",
++]
++
++[[package]]
++name = "vstd"
++version = "0.0.0-2026-11-01-0251"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7cfcc2fc379ffbcda31111f1a7da2a34d00bd984407cfa85d1edcf64da38dbd2"
++dependencies = [
++ "verus_builtin",
++ "verus_builtin_macros",
++ "verus_state_machines_macros",
++]
++
+ [[package]]
+ name = "wait-timeout"
+ version = "0.2.1"
+@@ -2336,7 +2419,7 @@ version = "0.1.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+ dependencies = [
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+diff --git a/crates/lushtext-core/Cargo.toml b/crates/lushtext-core/Cargo.toml
+index 2ed0646d..f0f745ec 100644
+--- a/crates/lushtext-core/Cargo.toml
++++ b/crates/lushtext-core/Cargo.toml
+@@ -6,6 +6,9 @@ rust-version.workspace = true
+ license = "GPL-3.0-or-later"
+ publish = false
+ 
++[package.metadata.verus]
++verify = true
++
+ [package.metadata.lushtext-agent]
+ performance-roots = ["src/ui", "src/services", "src/model", "benches"]
+ release-ui-roots = ["src/ui"]
+@@ -41,6 +44,8 @@ property-tests = ["test-utils"]
+ test-utils = []
+ 
+ [dependencies]
++# In-place Verus probe (evaluate-verus-for-unbounded-proofs, task 6.1): scratch only.
++vstd = "=0.0.0-2026-11-01-0251"
+ gtk-lush-settle = { workspace = true }
+ gtk-lush-signals = { workspace = true }
+ gtk-lush-tasks = { workspace = true }
+diff --git a/crates/lushtext-core/src/model/draft.rs b/crates/lushtext-core/src/model/draft.rs
+index 237b8101..1858730a 100644
+--- a/crates/lushtext-core/src/model/draft.rs
++++ b/crates/lushtext-core/src/model/draft.rs
+@@ -8,9 +8,11 @@
+ 
+ use super::paragraph_boundary::DocumentProfile;
+ use serde::{Deserialize, Serialize};
++use vstd::prelude::*;
+ use std::path::PathBuf;
+ 
+ /// Whether a manifest inventory was proven complete during the current workflow.
++#[verus_verify]
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum DraftManifestCompleteness {
+     /// Every directory page reached a trusted terminal inventory.
+@@ -22,6 +24,7 @@ pub enum DraftManifestCompleteness {
+ }
+ 
+ /// Whether the current manifest state may replace persisted recovery metadata.
++#[verus_verify]
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum DraftManifestReplacementEligibility {
+     /// The complete inventory was durably accepted or no manifest write was needed.
+@@ -34,6 +37,7 @@ pub enum DraftManifestReplacementEligibility {
+ ///
+ /// Completeness and replacement eligibility are separate because a complete
+ /// in-memory inventory is still not authoritative after a failed durable write.
++#[verus_verify]
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct DraftManifestAuthority {
+     /// Completeness established by the latest accepted reconciliation.
+@@ -44,6 +48,7 @@ pub struct DraftManifestAuthority {
+ 
+ impl DraftManifestAuthority {
+     /// Authority for a complete, durably accepted manifest inventory.
++    #[verus_verify]
+     pub const TRUSTED: Self = Self {
+         completeness: DraftManifestCompleteness::Complete,
+         replacement: DraftManifestReplacementEligibility::Eligible,
+@@ -51,6 +56,8 @@ impl DraftManifestAuthority {
+ 
+     /// Build an untrusted authority value while preserving why completeness failed.
+     #[must_use]
++    #[verus_verify(dual_spec, open)]
++    #[verus_spec(r => returns Self::untrusted(completeness))]
+     pub const fn untrusted(completeness: DraftManifestCompleteness) -> Self {
+         Self {
+             completeness,
+@@ -60,6 +67,8 @@ impl DraftManifestAuthority {
+ 
+     /// Return whether manifest replacement and orphan cleanup are safe.
+     #[must_use]
++    #[verus_verify(dual_spec, open)]
++    #[verus_spec(r => returns Self::is_trusted(self))]
+     pub const fn is_trusted(self) -> bool {
+         matches!(
+             self,
+diff --git a/crates/lushtext-core/src/services/draft_service/cleanup_types.rs b/crates/lushtext-core/src/services/draft_service/cleanup_types.rs
+index b6331ea4..6d78e244 100644
+--- a/crates/lushtext-core/src/services/draft_service/cleanup_types.rs
++++ b/crates/lushtext-core/src/services/draft_service/cleanup_types.rs
+@@ -58,6 +58,7 @@ pub struct DraftOrphanBodyCandidate {
+ }
+ 
+ /// Why cleanup deliberately preserved one artifact for a later trusted pass.
++#[vstd::prelude::verus_verify]
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub enum DraftOrphanCleanupRetentionReason {
+     /// A non-manifest file did not use the supported draft-body name.
+diff --git a/crates/lushtext-core/src/services/draft_service/journal_core.rs b/crates/lushtext-core/src/services/draft_service/journal_core.rs
+index 8816e75f..9b9dc2de 100644
+--- a/crates/lushtext-core/src/services/draft_service/journal_core.rs
++++ b/crates/lushtext-core/src/services/draft_service/journal_core.rs
+@@ -49,6 +49,8 @@
+ //! - **L1 bounded liveness** — without I/O faults, a dirty open editor becomes
+ //!   clean within six journal steps.
+ 
++use vstd::prelude::*;
++
+ use crate::model::draft::{
+     DraftManifestAuthority, DraftManifestCompleteness, FileDraftRestoreSkip,
+ };
+@@ -58,6 +60,7 @@ use crate::services::draft_service::DraftOrphanCleanupRetentionReason;
+ 
+ /// What the persisted manifest says about one draft id, relative to the body
+ /// write or deletion being decided.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub enum EntryState {
+@@ -73,6 +76,7 @@ pub enum EntryState {
+ }
+ 
+ /// Observable facts about one draft id's body.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub struct BodyFacts {
+@@ -93,6 +97,8 @@ impl BodyFacts {
+     /// restore hold: a body may exist whenever an entry is registered or a
+     /// restore is pending, and the window never knows the backing is stale.
+     #[must_use]
++    #[verus_verify(dual_spec, open)]
++    #[verus_spec(r => returns Self::from_window_view(registered, restore_pending))]
+     pub const fn from_window_view(registered: bool, restore_pending: bool) -> Self {
+         Self {
+             body_present: restore_pending || registered,
+@@ -108,6 +114,7 @@ impl BodyFacts {
+ }
+ 
+ /// Who the bytes of one draft body belong to.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum BodyOwner {
+     /// There is no body to protect.
+@@ -131,6 +138,8 @@ pub enum BodyOwner {
+ /// Precedence is the safety order: work the user has not seen outranks a
+ /// version conflict, which outranks registration state.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns ownership(facts))]
+ pub const fn ownership(facts: BodyFacts) -> BodyOwner {
+     if !facts.body_present {
+         BodyOwner::Nothing
+@@ -148,6 +157,8 @@ pub const fn ownership(facts: BodyFacts) -> BodyOwner {
+ /// Whether a body's bytes must be preserved before anything replaces or
+ /// removes them.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns must_preserve_before_replacing(owner))]
+ pub const fn must_preserve_before_replacing(owner: BodyOwner) -> bool {
+     matches!(owner, BodyOwner::Unseen | BodyOwner::OtherVersion)
+ }
+@@ -164,6 +175,8 @@ pub const fn must_preserve_before_replacing(owner: BodyOwner) -> bool {
+ /// not match disk, so every file-backed candidate is registered; registration
+ /// only ever inserts an absent entry, so doing it for a known id is harmless.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns registration_required(file_backed, registered_in_known_manifest, known_manifest_trusted))]
+ pub const fn registration_required(
+     file_backed: bool,
+     registered_in_known_manifest: bool,
+@@ -175,6 +188,8 @@ pub const fn registration_required(
+ /// Whether a candidate may proceed to its body write after the pass's
+ /// registration step: only when no registration was needed or it committed.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns may_write_after_registration(required_registration, registration_committed))]
+ pub const fn may_write_after_registration(
+     required_registration: bool,
+     registration_committed: bool,
+@@ -183,6 +198,7 @@ pub const fn may_write_after_registration(
+ }
+ 
+ /// What an autosave or close pass does with one candidate's body write.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum BodyWriteDecision {
+     /// The body holds unseen work: do not write, retry after the restore.
+@@ -197,6 +213,8 @@ pub enum BodyWriteDecision {
+ 
+ /// Decide one body write from its owner and registration need.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns body_write_decision(owner, registration_needed))]
+ pub const fn body_write_decision(owner: BodyOwner, registration_needed: bool) -> BodyWriteDecision {
+     match owner {
+         BodyOwner::Unseen => BodyWriteDecision::Hold,
+@@ -210,6 +228,7 @@ pub const fn body_write_decision(owner: BodyOwner, registration_needed: bool) ->
+ 
+ /// How an insert-only commit (write-ahead registration) proceeds when the
+ /// complete reconciliation it attempted first could not prove completeness.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum UntrustedCommitDisposition {
+     /// Add the absent entries to the persisted manifest as-is, keeping the
+@@ -222,6 +241,8 @@ pub enum UntrustedCommitDisposition {
+ 
+ /// Decide an insert-only commit after an incomplete reconciliation.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns untrusted_commit_disposition(insert_only, replacement_allowed))]
+ pub const fn untrusted_commit_disposition(
+     insert_only: bool,
+     replacement_allowed: bool,
+@@ -236,6 +257,7 @@ pub const fn untrusted_commit_disposition(
+ // --- 3. body-then-entry deletion --------------------------------------------
+ 
+ /// The next thing a serialized draft deletion does.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub enum DeletionStep {
+@@ -254,6 +276,8 @@ pub enum DeletionStep {
+ 
+ /// Where a deletion of a body with this owner starts.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns deletion_start(owner))]
+ pub const fn deletion_start(owner: BodyOwner) -> DeletionStep {
+     if must_preserve_before_replacing(owner) {
+         DeletionStep::Preserve
+@@ -269,6 +293,8 @@ pub const fn deletion_start(owner: BodyOwner) -> DeletionStep {
+ /// gone, and a failure at any point leaves a fully recoverable pre-delete state
+ /// across unrelated manifest updates and restart.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns next_deletion_step(step, succeeded))]
+ pub const fn next_deletion_step(step: DeletionStep, succeeded: bool) -> DeletionStep {
+     match step {
+         DeletionStep::Preserve if succeeded => DeletionStep::DeleteBody,
+@@ -306,6 +332,8 @@ pub fn run_deletion(
+ ///
+ /// Retiring rewrites the manifest, which only a trusted journal may do.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns startup_may_retire_stale(manifest_trusted))]
+ pub const fn startup_may_retire_stale(manifest_trusted: bool) -> bool {
+     manifest_trusted
+ }
+@@ -313,6 +341,7 @@ pub const fn startup_may_retire_stale(manifest_trusted: bool) -> bool {
+ // --- 4. unapplied restores ---------------------------------------------------
+ 
+ /// How one restore attempt ended, from the journal's point of view.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub enum RestoreEnding {
+@@ -336,6 +365,7 @@ pub enum RestoreEnding {
+ }
+ 
+ /// What happens to a body after its restore attempt.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum RestoreDisposition {
+     /// Nothing: the body was applied, is already gone, or stays for a retry.
+@@ -370,6 +400,8 @@ impl From<FileDraftRestoreSkip> for RestoreEnding {
+ /// saw. The Kani journal harness found it (S1); see
+ /// `test_an_unavailable_restore_keeps_the_unshown_draft_before_autosave_replaces_it`.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns unapplied_restore_disposition(ending))]
+ pub const fn unapplied_restore_disposition(ending: RestoreEnding) -> RestoreDisposition {
+     match ending {
+         RestoreEnding::Stale => RestoreDisposition::PreserveThenRetire,
+@@ -386,6 +418,7 @@ pub const fn unapplied_restore_disposition(ending: RestoreEnding) -> RestoreDisp
+ 
+ /// What the latest persisted manifest, reloaded under the write lock, says
+ /// about an orphan-cleanup candidate.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub enum CleanupEntryState {
+@@ -396,6 +429,7 @@ pub enum CleanupEntryState {
+ }
+ 
+ /// What the candidate's path holds when re-checked under its target guard.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub enum CleanupBodyIdentity {
+@@ -412,6 +446,7 @@ pub enum CleanupBodyIdentity {
+ }
+ 
+ /// Facts that decide one orphan-body deletion.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub struct CleanupFacts {
+@@ -429,6 +464,7 @@ pub struct CleanupFacts {
+ }
+ 
+ /// What orphan cleanup does with one candidate body.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum OrphanBodyDecision {
+     /// Delete the body.
+@@ -441,32 +477,34 @@ pub enum OrphanBodyDecision {
+ 
+ /// Decide one orphan-body deletion (S2).
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns orphan_body_decision(facts))]
+ pub const fn orphan_body_decision(facts: CleanupFacts) -> OrphanBodyDecision {
++    // Production returns early from each guard; a `dual_spec` body is a pure
++    // expression, so the guards are one `if` chain here (same order).
+     if !facts.manifest_trusted {
+-        return OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::StatusUncertain);
+-    }
+-    if !facts.path_matches {
+-        return OrphanBodyDecision::Retain(
++        OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::StatusUncertain)
++    } else if !facts.path_matches {
++        OrphanBodyDecision::Retain(
+             DraftOrphanCleanupRetentionReason::CandidatePathMismatch,
+-        );
+-    }
+-    if matches!(facts.entry, CleanupEntryState::Referenced) {
+-        return OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::ManifestEntryPresent);
+-    }
+-    if !facts.write_guard_held {
+-        return OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::StatusUncertain);
+-    }
+-    match facts.identity {
+-        CleanupBodyIdentity::Missing => OrphanBodyDecision::AlreadyAbsent,
+-        CleanupBodyIdentity::Inspected => OrphanBodyDecision::Delete,
+-        CleanupBodyIdentity::Changed => {
+-            OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::BodyGenerationChanged)
+-        }
+-        CleanupBodyIdentity::NotRegularFile => {
+-            OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::BodyNotRegularFile)
+-        }
+-        CleanupBodyIdentity::Uncertain => {
+-            OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::StatusUncertain)
++        )
++    } else if matches!(facts.entry, CleanupEntryState::Referenced) {
++        OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::ManifestEntryPresent)
++    } else if !facts.write_guard_held {
++        OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::StatusUncertain)
++    } else {
++        match facts.identity {
++            CleanupBodyIdentity::Missing => OrphanBodyDecision::AlreadyAbsent,
++            CleanupBodyIdentity::Inspected => OrphanBodyDecision::Delete,
++            CleanupBodyIdentity::Changed => {
++                OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::BodyGenerationChanged)
++            }
++            CleanupBodyIdentity::NotRegularFile => {
++                OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::BodyNotRegularFile)
++            }
++            CleanupBodyIdentity::Uncertain => {
++                OrphanBodyDecision::Retain(DraftOrphanCleanupRetentionReason::StatusUncertain)
++            }
+         }
+     }
+ }
+@@ -479,6 +517,8 @@ pub const fn orphan_body_decision(facts: CleanupFacts) -> OrphanBodyDecision {
+ /// durably written; a complete in-memory inventory that failed to persist is
+ /// still not authoritative.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns commit_authority(completeness, durably_written))]
+ pub const fn commit_authority(
+     completeness: DraftManifestCompleteness,
+     durably_written: bool,
+@@ -494,6 +534,7 @@ pub const fn commit_authority(
+ 
+ /// What one candidate set-aside name (`{id}.{stamp}[-n].draft`) holds when a
+ /// body is about to be kept there.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub enum SetAsideSlot {
+@@ -506,6 +547,7 @@ pub enum SetAsideSlot {
+ }
+ 
+ /// What keeping a body does with one candidate set-aside name.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum SetAsideNameStep {
+     /// Place the body under this name.
+@@ -525,6 +567,8 @@ pub enum SetAsideNameStep {
+ /// finding of the formal-methods evaluation), and the restore hold was then
+ /// released over the only copy.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns set_aside_name_step(slot))]
+ pub const fn set_aside_name_step(slot: SetAsideSlot) -> SetAsideNameStep {
+     match slot {
+         SetAsideSlot::Free => SetAsideNameStep::Place,
+@@ -541,6 +585,7 @@ pub const fn set_aside_name_step(slot: SetAsideSlot) -> SetAsideNameStep {
+ /// cleanup pass of **every** window of the process: the manifest write lock and
+ /// the target guard serialize single I/O steps, but only the lane keeps one
+ /// window's cleanup out of another window's register → write → commit pass.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub enum JournalLaneHolder {
+@@ -553,6 +598,7 @@ pub enum JournalLaneHolder {
+ }
+ 
+ /// What journal work does when it asks for the lane.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum JournalLaneAdmission {
+     /// Take the lane and start.
+@@ -564,6 +610,8 @@ pub enum JournalLaneAdmission {
+ 
+ /// Admit journal work only on a free lane, whichever window holds it.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns journal_lane_admission(holder))]
+ pub const fn journal_lane_admission(holder: JournalLaneHolder) -> JournalLaneAdmission {
+     match holder {
+         JournalLaneHolder::Nobody => JournalLaneAdmission::Admit,
+@@ -574,6 +622,7 @@ pub const fn journal_lane_admission(holder: JournalLaneHolder) -> JournalLaneAdm
+ }
+ 
+ /// Which window of the process owns one draft id.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(kani, derive(kani::Arbitrary))]
+ pub enum DraftClaim {
+@@ -586,6 +635,7 @@ pub enum DraftClaim {
+ }
+ 
+ /// What opening a document does with the draft id its path derives.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum DraftOpenDecision {
+     /// Open it here; this window now owns the id.
+@@ -597,6 +647,8 @@ pub enum DraftOpenDecision {
+ 
+ /// Decide an open from the id's claim.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns draft_open_decision(claim))]
+ pub const fn draft_open_decision(claim: DraftClaim) -> DraftOpenDecision {
+     match claim {
+         DraftClaim::Unclaimed | DraftClaim::ThisWindow => DraftOpenDecision::OpenHere,
+@@ -610,11 +662,14 @@ pub const fn draft_open_decision(claim: DraftClaim) -> DraftOpenDecision {
+ /// id another window owns (reached by a path the open redirect does not see)
+ /// holds, rather than writing over or deleting the owner's accepted body.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns window_may_journal_draft(claim))]
+ pub const fn window_may_journal_draft(claim: DraftClaim) -> bool {
+     !matches!(claim, DraftClaim::OtherWindow)
+ }
+ 
+ /// What a window's startup data flow does with the session and its drafts.
++#[verus_verify]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum StartupRestore {
+     /// Restore the session's tabs and drafts, and own orphan-cleanup
+@@ -629,6 +684,8 @@ pub enum StartupRestore {
+ /// Restore once per process: only the first window to reach its startup data
+ /// flow does.
+ #[must_use]
++#[verus_verify(dual_spec, open)]
++#[verus_spec(r => returns startup_restore(process_already_restored))]
+ pub const fn startup_restore(process_already_restored: bool) -> StartupRestore {
+     if process_already_restored {
+         StartupRestore::StartEmpty

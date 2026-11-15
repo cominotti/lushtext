@@ -575,8 +575,7 @@ impl VisualScenarioManifest {
     /// Expand cases just far enough to report their stable identifiers.
     fn expanded_case_ids(&self) -> Vec<String> {
         self.expanded_cases(&Value::Null)
-            .map(|cases| cases.into_iter().map(|case| case.case_id).collect())
-            .unwrap_or_default()
+            .map_or_default(|cases| cases.into_iter().map(|case| case.case_id).collect())
     }
 
     /// Dispatch matrix expansion based on the scenario contract.

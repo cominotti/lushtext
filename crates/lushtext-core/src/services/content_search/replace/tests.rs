@@ -264,7 +264,9 @@ fn post_rename_durability_failure_keeps_changed_bytes_and_undo_evidence() {
     let _free = fs_metadata::fake_free_space_for_test(AMPLE_FREE);
     // Fail the parent sync of the target's own write, after its rename.
     super::register_before_target_write_hook_for_test(&file, || {
-        crate::services::filesystem::write::fail_next_parent_sync_for_test();
+        crate::services::filesystem::write::fail_next_parent_sync_for_test(
+            std::io::ErrorKind::Other,
+        );
     });
     let outcome = apply_replacements(
         &replacements,
