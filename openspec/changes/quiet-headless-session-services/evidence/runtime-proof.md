@@ -246,6 +246,57 @@ with its reason.
     `test_announcing_through_a_realized_test_context_is_skipped_not_fatal`
     was shown to fail (child killed, guard forced off) before passing. The
     upstream report is drafted only (`docs/upstream-reports.md`).
+14. **The Protected View edit-entry capture cancels itself on a text
+    change.** The first full widget run after merging `main` (`cfee0c48`)
+    failed
+    `editor_page::test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replacement_mutation`
+    in both attempts. The output was `Invalid text buffer iterator`,
+    `gtk_text_buffer_get_text: assertion … failed`, then an abort in
+    `capture_execution::begin_protected_source_capture`'s dispatch. The
+    test sets a 600,000-character paragraph, which is edit-entered into
+    Protected View and starts the source capture, and then runs a
+    test-workflow replacement. That replacement has no profile, so it never
+    calls `begin_protected_install`, which is what cancels a capture. The
+    capture's kept iterator was invalidated by the replacement's deletions.
+    It reproduced alone, twice, and under `GTK_A11Y=none` as well as `test`,
+    so the AT backend is not the cause. The capture now watches
+    `insert-text` and `delete-range` with after-handlers, which do not run
+    for an edit the edit lock stopped, and cancels at its next dispatch.
+    The test then passed, with no iterator warning. All 56 `protected_view`
+    widget tests pass, including
+    `test_an_edit_entered_session_finds_and_copies_its_hidden_tail`, which
+    needs the captured source after an edit entry. No production
+    replacement reaches the gap: draft and local-history restores carry a
+    profile, eviction never takes a modified page, and save formatting never
+    runs on a protected buffer.
+15. **The Python drivers' runtime root falls back to `/tmp` when the scope's
+    `TMPDIR` is too deep.** The crash-recovery lane failed on the final tree:
+    its runtime root is created in the `with-temp-scope.sh` scope, whose name
+    carries the scope's PID and label, and with a seven-digit PID the private
+    system bus socket
+    (`/tmp/lt-scope-2366576-crash-recovery-mg9Kpb/lt-crash-rt-…/runtime/gtk-lush-session/system-bus`)
+    came to 100 bytes, one over `dbus-daemon`'s limit, so the helper refused
+    the inherited directory. The helper was right to refuse; the driver chose
+    the directory. `smoke_runtime_dir.create_runtime_root` now applies the
+    helper's rule (`runtime_dir_fits_sockets`, 99 bytes) per run and falls
+    back to `/tmp`, as the helper does for a directory it owns. The drivers
+    already remove the root on every exit path, so it needs the scope's leak
+    check no more than before. `smoke_runtime_dir.py --self-test` (in
+    `make check-session-hygiene`) pins the boundary and the crash lane's path;
+    the old function produced the 100-byte path (red), the new one `/tmp`.
+    `with-temp-scope.sh --session-runtime` checked `wayland-0` against 100
+    bytes, which let through a scope the helper then refused; it now checks
+    the system bus socket against 99.
+16. **The builder lane treats an unknown `GtkLush` type in standalone
+    validation as the tool's limit.** The builder-diagnostics lane reported
+    one actionable finding: `gtk4-builder-tool validate` of
+    `workspace-section.ui` does not know `GtkLushViewportSliceBin`. That
+    predates this change (the template has used it since 2026-09-15). The
+    standalone tool cannot load any type the app registers, and the
+    classifier already said so for `Adw` and `Lushtext` types, so `GtkLush`
+    joins them. The runtime probes, which instantiate the template under
+    the app, still treat the same line as actionable; the classifier was
+    shown red (`actionable`) before and green after on that line.
 
 ## 4.5 The `cargo-gtk-proof` warning scanner needs no copy of the family
 
@@ -334,3 +385,97 @@ How the branch's share was attributed:
 The spec-stage baseline (`evidence/baseline.md`) put an unmigrated case at
 15 endpoints and 1 nice plus 3 RT grants. On the same 99 cases that is
 about 1,485 endpoints and 396 grants, against 0 for the branch.
+
+## 7.4 Sonar scope review
+
+`sonar-project.properties` needs no change. `sonar.sources` already lists
+`crates` and `scripts`, so it covers the helper binary
+(`crates/gtk-lush/proof-harness/src/bin/gtk-lush-session.rs`), the session
+module, the new axiom probes and samples, `scripts/headless-session`,
+`scripts/smoke_session.py` and `scripts/check-session-hygiene.py`.
+`sonar.exclusions` names none of them. Nothing was suppressed, so no
+first-scan triage is owed for a suppression.
+
+## 6.2 Full widget runs
+
+| Run | Tree | Result |
+| --- | --- | --- |
+| 1 | groups 3+4 before A117 | 21 failures, all through the Save Changes dialog (17 `window`, 4 `editor-page`): a SIGSEGV in `gtk_accessible_announce`, which led to A117 and the announcement guard (decision 13) |
+| 2 | after A117, merged with `main` `cfee0c48` | 1 failure: the Protected View capture abort (decision 14). 1 FLAKY: `markdown_preview::test_root_and_nested_code_blocks_repair_after_resize_at_constrained_width` |
+| 3 | final tree, merged with `main` `14332d69` | 1690 tests in all three shards, 0 failures, 0 `OOM-KILL:`, 0 `SESSION-HYGIENE:`. 1 FLAKY: `workspace_section::test_large_reconciliation_is_batched_supersedable_and_preserves_state` |
+
+**Both FLAKY lines are open, not explained.** Each is a GLib-loop wait that
+timed out on the first attempt and passed on the retry. Neither reproduced
+afterwards:
+
+- **The markdown preview test (10 s wait after a window resize):**
+  - 6 solo runs and 8 runs side by side all passed.
+  - Three single-session runs of the whole `markdown_preview` module
+    (125 tests each) gave 0 FLAKY.
+  - The shard's load at the time was 6 to 8, so CPU starvation does not
+    explain it.
+  - The wait now reports the window width, the text view width, its margins,
+    and each block's `width_request` against the expected value. The next
+    recurrence will tell a window that never shrank from a stale repair.
+- **The workspace reconciliation test (30 s wait):** three solo runs
+  passed, at a load of 15 to 18.
+
+Both tests are older than this change, and neither depends on the session's
+buses. They are listed as open decisions for the maintainer, and 6.2 stays
+unchecked.
+
+The run-3 `editor-page` shard peaked at 2,011 MiB, inside its 2 GiB memory
+scope. Its run-2 peak, on the tree merged with `cfee0c48`, was 386 MiB.
+Between the two runs the tree gained `main` `14332d69`
+(`rust-1-100-adoption`), the capture fix and the test instrumentation. The
+cause is not attributed. The one test whose behaviour changed, the
+replacement test that run 2 aborted early, peaks at 116 MiB alone. The peak
+is close enough to the cap to OOM under a different test order, so it is
+recorded as an open decision too.
+
+The `editor-page` shard alone afterwards, on the same tree under a 3 GiB
+scope (`make test-widget-shard WIDGET_SHARD=editor-page`): 408 tests, all
+passed, 0 FLAKY, peak **401 MiB**, 0 OOM kills. So the 2,011 MiB peak is not
+a property of the shard's tests. It came from the parallel run, where
+`memory.peak` also counts page cache charged to the scope; which pages is
+not attributed, so it stays open.
+
+## 6.3 GTK axioms on the final tree
+
+- `make gtk-axioms` on the final tree (merged with `main` `14332d69`): the
+  probe binary passed and 104 sample checks held, 0 slow skipped. The load
+  was 3 to 7 (an earlier run at load 25 saw the timing probes A70 and A79
+  violate; both held alone and hold here).
+- `make check-gtk-axioms`: passed.
+- `make gtk-axioms-runtimes`, once:
+  - `org.gnome.Sdk//50` (GTK 4.22.2, Adw 1.9.0): 96 holds, 5 skipped (needs
+    RemoteDesktop), 2 skipped (needs a session bus: A115 and A116, because
+    the lane runs every sandbox with `--no-session-bus`), 1 skipped (slow).
+    A117 holds on the floor, so its ledger row now records the floor.
+  - `org.gnome.Sdk//51` (GTK 4.24.1, Adw 1.10.0): the same counts.
+  - `org.gnome.Sdk//master` (GTK 4.25.1, Adw 1.11.alpha): 6 violated (A4,
+    A70, A83, A85, A86, A112) and 1 fixture-invalid (A29). None of them is an
+    axiom this change adds or relies on, and A115 to A117 do not fail there.
+    A nightly verdict is a preview of the next adoption, never a ledger
+    restatement (`build.md`), so the ledger is unchanged for them. The lane
+    exits 1 because of the nightly SDK alone.
+- A115 and A116 therefore have no floor verdict from this host. CI's
+  `GTK Axioms (GNOME 50 floor)` job runs their probes on `fedora:44`.
+
+## 6.4 Lanes on the final tree
+
+Each lane ran once, headless, through `scripts/heavy.sh` (lane logs in the
+handoff directory, `lanes/`). No lane log has a `SESSION-HYGIENE:` line.
+
+| Lane | Result |
+| --- | --- |
+| `make crash-recovery-smoke` | first run **failed**: the helper refused the driver's runtime directory, one byte over the system bus socket limit (decision 15). After the fix: passed (both draft markers restored) |
+| `make automation-smoke` | passed (103 catalogue entries, 12 action-state checks) |
+| `make command-palette-notes-smoke` | passed |
+| `make portal-sandbox-smoke` | passed (the Flatpak launch cases skip as in 4.3, which predates this change) |
+| `make builder-diagnostics-smoke` | first run **failed** on one actionable line, `Invalid object type 'GtkLushViewportSliceBin'` from standalone validation (decision 16). After the fix: passed, 9/9 runtime probes, 0 actionable |
+| `make editor-glyph-live-smoke` | passed |
+| `cargo gtk-proof run --case-filter open-popover` | 32/32 cases passed, but the first run exited 143: `with-temp-scope.sh` records a SIGTERM it received as 143. Nothing in the run sends one (every signal the runner and the helper send goes to a child's own PID), and the rerun of the same 32 cases exited 0, as did a 2-case `command-palette-overlay` run. The TERM came from outside the run and is not attributed |
+| `make accessibility-smoke` | passed (run right before the commit) |
+| `make visual-smoke` | passed (run right before the commit) |
+| `make visual-geometry-smoke` | passed (run right before the commit) |

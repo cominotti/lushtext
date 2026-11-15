@@ -30,8 +30,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
 use crate::services::filesystem::write_protocol::{
-    MoveAction, MoveProtocol, RenameAction, RenameProtocol, StepOutcome, WriteAction, WriteClass,
-    WriteProtocol,
+    MoveAction, MoveProtocol, RenameAction, RenameClass, RenameProtocol, StepOutcome, WriteAction,
+    WriteClass, WriteProtocol,
 };
 use crate::services::filesystem::{sys, temp_name};
 
@@ -522,12 +522,23 @@ fn write_target_locks() -> &'static TargetWriteLocks {
 /// # Errors
 ///
 /// Returns an error if the rename fails or either affected parent directory
-/// cannot be synced.
+/// cannot be synced. The error does not say which: a caller that must tell a
+/// rename that did not happen from one that did but is not yet durable uses
+/// [`rename_durable_no_replace`], whose error is classified.
 pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
     #[cfg(test)]
     if FAIL_NEXT_RENAME_CROSS_DEVICE.with(|fail| fail.replace(false)) {
         return Err(sys::cross_device_error_for_test());
     }
+    run_rename_protocol(from, to, sys::rename).map_err(DurableWriteError::into_io_error)
+}
+
+/// [`rename_durable`] with its failure classified, for the no-replace
+/// fallback, which must not retry a rename that already took effect.
+pub(in crate::services) fn rename_durable_classified(
+    from: &Path,
+    to: &Path,
+) -> Result<(), DurableWriteError> {
     run_rename_protocol(from, to, sys::rename)
 }
 
@@ -541,21 +552,32 @@ pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`std::io::ErrorKind::AlreadyExists`] when the destination exists, and
+/// [`DurableWriteError::BeforeRename`] when nothing moved: its error is
+/// [`std::io::ErrorKind::AlreadyExists`] when the destination exists, and
 /// [`std::io::ErrorKind::Unsupported`] when the kernel or filesystem does not
 /// implement the flag — callers fall back to a best-effort check rather than
-/// refusing every rename.
-pub fn rename_durable_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+/// refusing every rename. [`DurableWriteError::AfterRename`] when the rename
+/// took effect but a parent-directory sync failed; its error may be
+/// `Unsupported` too (an `EOPNOTSUPP` directory `fsync`), which is why callers
+/// branch on the class before the kind.
+pub fn rename_durable_no_replace(from: &Path, to: &Path) -> Result<(), DurableWriteError> {
+    #[cfg(test)]
+    if NEXT_NO_REPLACE_UNSUPPORTED.with(|unsupported| unsupported.replace(false)) {
+        return run_rename_protocol(from, to, |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+        });
+    }
     run_rename_protocol(from, to, sys::rename_no_replace)
 }
 
 /// The shell of [`RenameProtocol`]: rename with `rename`, then sync whichever
-/// parent directories the rename mutated, one backend call per action.
+/// parent directories the rename mutated, one backend call per action. The
+/// core's [`RenameClass`] and the last error map one-to-one to the result.
 fn run_rename_protocol(
     from: &Path,
     to: &Path,
     rename: fn(&Path, &Path) -> std::io::Result<()>,
-) -> std::io::Result<()> {
+) -> Result<(), DurableWriteError> {
     let (mut protocol, mut action) =
         RenameProtocol::start(parent_or_current(from) != parent_or_current(to));
     let mut last_error = None;
@@ -564,9 +586,13 @@ fn run_rename_protocol(
             RenameAction::Rename => rename(from, to),
             RenameAction::SyncSourceDir => sync_parent_dir(from),
             RenameAction::SyncDestinationDir => sync_parent_dir(to),
-            RenameAction::Finish(true) => return Ok(()),
-            RenameAction::Finish(false) => {
-                return Err(last_error.unwrap_or_else(|| std::io::Error::other("rename failed")));
+            RenameAction::Finish(class) => {
+                let error = || last_error.unwrap_or_else(|| std::io::Error::other("rename failed"));
+                return match class {
+                    RenameClass::Success => Ok(()),
+                    RenameClass::BeforeRename => Err(DurableWriteError::BeforeRename(error())),
+                    RenameClass::AfterRename => Err(DurableWriteError::AfterRename(error())),
+                };
             }
         };
         let succeeded = result.is_ok();
@@ -771,10 +797,20 @@ static TEMP_AFTER_CONTENT_OBSERVER: OnceLock<Mutex<Option<TempObserver>>> = Once
 thread_local! {
     /// Test hook for failures that happen after metadata is applied but before rename.
     static FAIL_FINAL_TEMP_SYNC_AFTER_METADATA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Test hook for the post-rename parent-directory sync failure path.
-    static FAIL_NEXT_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook for the post-rename parent-directory sync failure path: the
+    /// error kind the next parent-directory sync fails with, if any.
+    static FAIL_NEXT_PARENT_SYNC: std::cell::Cell<Option<std::io::ErrorKind>> = const { std::cell::Cell::new(None) };
     /// Test hook for a rename refused because source and target are on different filesystems.
     static FAIL_NEXT_RENAME_CROSS_DEVICE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook for a platform without `RENAME_NOREPLACE`.
+    static NEXT_NO_REPLACE_UNSUPPORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make the next no-replace rename on this test thread report that the
+/// platform lacks `RENAME_NOREPLACE`, before it touches the filesystem.
+#[cfg(test)]
+pub(in crate::services) fn next_no_replace_unsupported_for_test() {
+    NEXT_NO_REPLACE_UNSUPPORTED.with(|unsupported| unsupported.set(true));
 }
 
 /// Make the next durable rename on this test thread fail with `EXDEV`, before it runs.
@@ -783,10 +819,15 @@ pub(in crate::services) fn fail_next_rename_cross_device_for_test() {
     FAIL_NEXT_RENAME_CROSS_DEVICE.with(|fail| fail.set(true));
 }
 
-/// Make the next parent-directory sync on this test thread fail after rename.
+/// Make the next parent-directory sync on this test thread fail after rename,
+/// with an error of `kind`.
+///
+/// The kind matters to callers that branch on it: an `EOPNOTSUPP`/`ENOSYS`
+/// directory `fsync` reaches them as [`std::io::ErrorKind::Unsupported`], the
+/// same kind `RENAME_NOREPLACE`'s absence has.
 #[cfg(test)]
-pub(crate) fn fail_next_parent_sync_for_test() {
-    FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(true));
+pub(crate) fn fail_next_parent_sync_for_test(kind: std::io::ErrorKind) {
+    FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(Some(kind)));
 }
 
 /// Create a directory tree and sync each directory entry that was newly created.
@@ -821,8 +862,9 @@ pub fn create_dir_all_durable(path: &Path) -> std::io::Result<()> {
 /// Returns an error if the parent directory cannot be opened or synced.
 pub fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(test)]
-    if FAIL_NEXT_PARENT_SYNC.with(|fail| fail.replace(false)) {
-        return Err(std::io::Error::other(
+    if let Some(kind) = FAIL_NEXT_PARENT_SYNC.with(|fail| fail.replace(None)) {
+        return Err(std::io::Error::new(
+            kind,
             "injected parent directory sync failure",
         ));
     }
@@ -1065,7 +1107,7 @@ mod tests {
         let to = dir.path().join("to.txt");
         fixture::write_text(&from, "snapshot");
 
-        fail_next_parent_sync_for_test();
+        fail_next_parent_sync_for_test(std::io::ErrorKind::Other);
         move_durable(&from, &to, "copy").expect_err("the destination sync failed");
 
         fixture::assert_text(&from, "snapshot");
@@ -1477,7 +1519,7 @@ mod tests {
         let path = dir.path().join("data.txt");
         fixture::write_bytes(&path, b"old");
 
-        FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(true));
+        fail_next_parent_sync_for_test(std::io::ErrorKind::Other);
         let error = atomic_write_bytes_classified(&path, "test", b"new")
             .expect_err("injected parent sync failure should fail");
 

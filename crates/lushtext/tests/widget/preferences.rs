@@ -761,10 +761,7 @@ fn test_data_page_lists_preserved_drafts_newest_first_and_deletes_one() {
         .collect();
     assert_eq!(titles, vec!["Untitled document", "Unknown file"]);
     for row in &set_aside_rows(&prefs) {
-        let subtitle = row
-            .subtitle()
-            .map(|text| text.to_string())
-            .unwrap_or_default();
+        let subtitle = row.subtitle().map_or_default(|text| text.to_string());
         assert!(
             subtitle.starts_with("Kept "),
             "row subtitle names when: {subtitle}"
@@ -854,6 +851,13 @@ fn test_data_page_opens_a_preserved_draft_in_a_new_untitled_tab_and_keeps_it() {
         editor.draft_dirty(),
         "the opened draft must be offered to autosave"
     );
+    // GTK set the modified flag on the install's first insert, while the
+    // handler that draws the bullet was suspended (`restore-main-ci` D1).
+    let title = window.imp().tab_view.nth_page(pages - 1).title();
+    assert!(
+        title.starts_with("• "),
+        "the opened draft's tab shows it is modified: {title:?}"
+    );
     let draft_id = editor.draft_id().expect("the new tab has a draft id");
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(10), || {
@@ -879,9 +883,7 @@ fn set_aside_summary(prefs: &LushtextPreferences) -> Option<(String, String)> {
         let row = &imp.data_set_aside_summary;
         (
             row.title().to_string(),
-            row.subtitle()
-                .map(|text| text.to_string())
-                .unwrap_or_default(),
+            row.subtitle().map_or_default(|text| text.to_string()),
         )
     })
 }
@@ -978,8 +980,7 @@ fn test_data_page_states_when_only_the_newest_preserved_drafts_are_listed() {
     );
     let newest = set_aside_rows(&prefs)[0]
         .subtitle()
-        .map(|text| text.to_string())
-        .unwrap_or_default();
+        .map_or_default(|text| text.to_string());
     assert!(newest.starts_with("Kept "), "{newest}");
     let stamps = imp.data_set_aside_listing.borrow().as_ref().map(|listing| {
         (

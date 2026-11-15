@@ -104,11 +104,31 @@ impl LushtextEditorPage {
                     // During settle this is a no-op; during reveal warmup it
                     // drops the cover before recording the new rest state.
                     editor.reveal_minimap_reflow_freeze_for_user_scroll();
+                    editor.note_scroll_during_reflow(change.axis(), change.adjustment());
                     editor.record_viewport_rest_state(change.axis(), change.adjustment());
                 }
             },
         );
         *overscroll.observer.borrow_mut() = Some(observer);
+
+        // Every vertical bounds change, not only page-size ones: the value it
+        // carries is the one a reallocation set (ledger A112).
+        overscroll
+            .vertical_value_at_bounds_change
+            .set(vadjustment.value());
+        let editor_weak = self.downgrade();
+        let handler_id = vadjustment.connect_changed(move |adjustment| {
+            if let Some(editor) = editor_weak.upgrade() {
+                editor
+                    .imp()
+                    .overscroll
+                    .vertical_value_at_bounds_change
+                    .set(adjustment.value());
+            }
+        });
+        overscroll
+            .scroll_source_signals
+            .track(&vadjustment, handler_id);
     }
 
     /// Track whether the user-visible scroll position rests at the start edge.
@@ -123,6 +143,26 @@ impl LushtextEditorPage {
             .overscroll
             .rest_state
             .record_adjustment(axis, adjustment);
+    }
+
+    /// Remember that the view scrolled vertically during a pending reflow
+    /// burst.
+    ///
+    /// The burst pauses the rest state, so the settle cannot learn about the
+    /// scroll from it. The test is decided at the adjustment, so it covers
+    /// every scroll source alike (the user, the application, GTK's own
+    /// `scroll_to_mark` and keyboard navigation): a reallocation moves the
+    /// value only together with a bounds change, whose `changed` emission
+    /// already carries the new value (ledger A112); a value that differs from
+    /// it moved on its own.
+    fn note_scroll_during_reflow(&self, axis: ViewportAxis, adjustment: &gtk4::Adjustment) {
+        let overscroll = &self.imp().overscroll;
+        if axis == ViewportAxis::Vertical
+            && overscroll.rest_state.is_paused()
+            && (adjustment.value() - overscroll.vertical_value_at_bounds_change.get()).abs() > 0.5
+        {
+            overscroll.reflow_scrolled.set(true);
+        }
     }
 
     /// React to a viewport size change reported by a scroll adjustment.

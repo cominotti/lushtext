@@ -321,8 +321,7 @@ impl RecoveryDiagnostic {
         let quarantine = self
             .preservation
             .quarantine_path()
-            .map(|path| format!(" quarantine={}", path.display()))
-            .unwrap_or_default();
+            .map_or_default(|path| format!(" quarantine={}", path.display()));
         format!(
             "{} recovery {} at {}{}",
             self.class.label(),

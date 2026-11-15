@@ -180,15 +180,24 @@ make flatpak-install
 flatpak run dev.cominotti.lushtext
 ```
 
-The Flatpak uses `org.gnome.Platform` 50 and the matching GNOME SDK.
+The Flatpak uses `org.gnome.Platform` 51 and the matching GNOME SDK.
 `make flatpak-install` adds the user Flathub remote when needed and installs
 missing runtime, SDK, and Rust SDK-extension dependencies before building.
+Every checkout and worktree installs through one shared local repository,
+`~/.local/share/lushtext-flatpak-install/repo`, so deleting a checkout never
+leaves GNOME Software reporting "server has no summary file" for the
+development build's `lushtext-origin` remote.
 Use `make flatpak` for a build-only check. After dependency changes, refresh
 the vendored Cargo sources with:
 
 ```sh
 make cargo-sources
 ```
+
+To refresh the lockfile itself, use `make update-deps-cooldown`: it updates
+under a 7-day publish-age cooldown at the 1.98.0 MSRV (it needs the Rust
+1.100.0 toolchain for that), then regenerates `workspace-hack` and the vendored
+sources, checks the workspace with Rust 1.98.0, and runs `cargo deny`.
 
 Release, Cominotti repository, and Cloudflare Pages hosting details live in
 [`docs/next/flatpak-packaging.md`](docs/next/flatpak-packaging.md) and

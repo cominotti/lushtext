@@ -4,7 +4,7 @@
 
 use crate::common::{
     ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_metadata, present_window,
-    test_application, wait_until,
+    test_application, wait_until, wait_until_or_false,
 };
 use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
@@ -3178,12 +3178,33 @@ fn test_root_and_nested_code_blocks_repair_after_resize_at_constrained_width() {
     wait_for_code_block_layout(&preview);
 
     window.set_default_size(320, 420);
-    wait_until(Duration::from_secs(10), || {
+    let repaired = wait_until_or_false(Duration::from_secs(10), || {
         preview.text_view().width() < 500
             && code_block_containers(&preview)
                 .iter()
                 .all(|block| block.width_request() == expected_code_block_width(&preview, block))
     });
+    // A rare timeout in a long shard session left no values to tell the
+    // window that never shrank from a repair left stale: report both.
+    assert!(
+        repaired,
+        "code blocks did not repair after the resize: window {}x{}, text view {} \
+         (margins {} + {}), blocks (width_request, expected, width, margin_start) {:?}",
+        window.width(),
+        window.height(),
+        preview.text_view().width(),
+        preview.text_view().left_margin(),
+        preview.text_view().right_margin(),
+        code_block_containers(&preview)
+            .iter()
+            .map(|block| (
+                block.width_request(),
+                expected_code_block_width(&preview, block),
+                block.width(),
+                block.margin_start()
+            ))
+            .collect::<Vec<_>>()
+    );
     let blocks = code_block_containers(&preview);
     assert!(blocks.iter().any(|block| block.margin_start() == 0));
     assert!(blocks.iter().any(|block| block.margin_start() > 0));

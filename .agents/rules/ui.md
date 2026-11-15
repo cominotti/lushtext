@@ -322,6 +322,7 @@ accessible names and focus-restoration proof.
 - Inline rename: dynamically append a `GtkEntry` to the row's content box, hide the label. Guard against double-fire from focus-out after confirm/cancel using `entry.parent().is_none()`.
 - `connect_bind` cleanup: remove any lingering rename `GtkEntry` from row recycling and restore label visibility.
 - Window integration via callback pattern: `connect_file_renamed(Fn(&Path, &Path))` and `connect_file_deleted(Fn(&Path))`, consistent with `connect_file_activated`.
+- Rename completion: only a before-rename `AlreadyExists` is a refused rename. An after-rename result (`DurableWriteError::AfterRename`: the file moved, a directory sync then failed) is a **completed** rename: the one completion path runs (row, cache, watch, rename/create callbacks), then `policy::rename_durability_warning` adds the "not yet confirmed on disk" warning. Never project it as a failed rename, which leaves tabs on a path the file has left.
 - Directory operations must use `Path::starts_with` prefix matching for tab path updates and closures (not just exact equality).
 
 ## Workspace Header Context Menu (per WorkspaceSection)

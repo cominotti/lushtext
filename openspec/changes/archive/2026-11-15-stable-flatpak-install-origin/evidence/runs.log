@@ -1,0 +1,115 @@
+# runs.log: stable-flatpak-install-origin (stage 3, implementation)
+# Host: sophia toolbox, flatpak 1.18.4, flatpak-builder 1.4.12, flock util-linux 2.42.2; CPUs 8-23.
+
+## 2026-11-14T23:15:42-03:00 task 1.1/1.2 red against main's scripts (main has no scripts/flatpak-install-origin.sh; verifier unchanged)
+$ make test-flatpak-install-origin   # guard script absent
+  Testing the Flatpak install-origin guard...
+  ./scripts/with-temp-scope.sh flatpak-install-origin -- ./scripts/test-flatpak-install-origin.sh
+  ok   [1 dangling enabled origin] baseline: remote-ls --updates reports the missing summary
+  FAIL [1 dangling enabled origin]: scripts/flatpak-install-origin.sh is missing (the install-origin guard)
+  make: *** [Makefile:999: test-flatpak-install-origin] Error 1
+  rc=2
+  => fails at case 1, where the guard is missing; case 1's remote-ls --updates baseline assertion already holds.
+$ make test-flatpak-identity-verifier   # main's verify-flatpak-identity.sh
+  Testing Flatpak identity verifier...
+  ./scripts/with-temp-scope.sh flatpak-identity-verifier -- ./scripts/test-flatpak-identity-verifier.sh
+  expected verifier to fail for a dangling lushtext-origin (no-enumerate,no-gpg-verify)
+  make: *** [Makefile:993: test-flatpak-identity-verifier] Error 1
+  rc=2
+  => the new dangling-origin case fails against main's verifier (it has no install-origin section).
+
+## 2026-11-14T23:48:54-03:00 task 2.4: wall time of make test-flatpak-install-origin (scripts/measure.sh, handoff measure.log)
+  2026-11-14T23:39:52-03:00 before label=test-flatpak-install-origin  loadavg=6.48 10.74 12.63
+  2026-11-14T23:39:56-03:00 after label=test-flatpak-install-origin status=0 seconds=3.128 loadavg=6.48 10.74 12.63
+  => 3.128 s, recorded 1-min load 6.48 (>= 4): NON-VERDICT. A retry (label -r2, --lock-timeout 500) exited 75: the
+     exclusive lock did not drain within 500 s on the shared machine (other worktrees' mutants/kani/widget runs).
+     Decision without a verdict run: load only inflates wall time, and 3.1 s is a third of the 10 s limit, so the
+     target is wired into check-policy (design D7). No main counterpart exists to interleave (new test).
+
+## 2026-11-14T23:48:54-03:00 task 2.5 (green)
+  make test-flatpak-install-origin: all cases ok (1, 2, path, 3, 4, 5, 5b, 6, 7, 8) -> 'flatpak install-origin fixture tests passed'
+  make test-flatpak-identity-verifier: 'flatpak identity verifier tests passed' (dangling enabled and disabled cases fail the verifier)
+  make check-flatpak-permissions: passed; shellcheck + bash -n on the four scripts: clean
+  make check-agent-docs: passed
+
+## 2026-11-14T23:48:55-03:00 read-only: the new guard against the real installation (before the install, task 4.2)
+  error: the Flatpak remote 'lushtext-origin' (disabled) points at file:///var/home/danilo/Workspace/github/cominotti/lushtext/.claude/worktrees/adopt-gnome-51/.flatpak-builder/cache, which is not an OSTree repository with a summary (no config or summary file there).
+    It is disabled, so refreshes stay quiet, but the development build installed from it can no longer be updated.
+    Fix: run 'make flatpak-install' from any LushText checkout (it points lushtext-origin at file:///var/home/danilo/.local/share/lushtext-flatpak-install/repo),
+    or 'flatpak uninstall --user dev.cominotti.lushtext//master' to drop the development build; flatpak then removes the remote.
+  rc=1 (expected: the maintainer's disabled dangling lushtext-origin)
+
+## task 4.1 merge of origin/main (4591f5da)
+  Conflicts: Makefile check-policy (kept main's check-flatpak-ci-builds, added test-flatpak-install-origin) and
+  docs/next/flatpak-packaging.md runtime list (main had already corrected it to 51). reduce-build-disk-writes has
+  not landed (no scripts/build-cache.sh), so no build-cache audit. 2.5 rerun on the merged tree: all passed.
+  The merge brought crates/lushtext/tests/widget/editor_page.rs from main, so the merge commit's hook required
+  the three proof smokes on the merged tree: visual-geometry-smoke exit 0, accessibility-smoke exit 0,
+  visual-smoke exit 0 (handoff merge-*-smoke.log).
+
+## 2026-11-15T00:34:33-03:00 task 4.2 before: real user installation
+$ flatpak remotes --user -d --show-disabled (lushtext rows)
+  lushtext-origin	Local repo	file:///var/home/danilo/Workspace/github/cominotti/lushtext/.claude/worktrees/adopt-gnome-51/.flatpak-builder/cache	-	-	-	0	disabled,no-enumerate,no-gpg-verify	-	-	-	-
+$ flatpak info --user dev.cominotti.lushtext//master (origin, commit)
+  Origin: lushtext-origin
+  Commit: a565c68b37a690fb50aa2ee929edf8310e5b83012f4ccaf27e2d64957c308ec3
+$ ls ~/.local/share/lushtext-flatpak-install: ls: cannot access '/var/home/danilo/.local/share/lushtext-flatpak-install': No such file or directory
+$ scripts/heavy.sh --mem 24G -- make flatpak-install   (full log: handoff flatpak-install.log, 755 lines)
+  1:start 2026-11-15T00:34:38-03:00 load=12.12
+  23:flatpak-install-origin: exporting to /var/home/danilo/.local/share/lushtext-flatpak-install/repo
+  746:Commit: a7f1faeaa5a88d6edea03c3feabd1af811bdb4b8d289c4ba241414c1a7a0638c
+  753:flatpak-install-origin: repointed lushtext-origin from file:///var/home/danilo/Workspace/github/cominotti/lushtext/.claude/worktrees/adopt-gnome-51/.flatpak-builder/cache (disabled) to file:///var/home/danilo/.local/share/lushtext-flatpak-install/repo (enabled).
+  760:flatpak-install-origin: dev.cominotti.lushtext/x86_64/master deployed from lushtext-origin (file:///var/home/danilo/.local/share/lushtext-flatpak-install/repo) at commit a7f1faeaa5a88d6edea03c3feabd1af811bdb4b8d289c4ba241414c1a7a0638c.
+  761:exit=0 end 2026-11-15T00:46:11-03:00
+  => line 23 starts the export with lushtext-origin untouched; the repair line (753), printed after the export's
+     commit (746), names the remote's state as read then: still the deleted adopt-gnome-51 cache URL, disabled.
+     So the remote stayed disabled and unchanged while the build ran, and was repointed only after the export.
+
+## task 4.2 after the install
+$ flatpak remotes --user -d --show-disabled (lushtext rows)
+  lushtext-origin	Local repo	file:///var/home/danilo/.local/share/lushtext-flatpak-install/repo	-	-	-	0	no-enumerate,no-gpg-verify	-	-	-	-
+$ flatpak remote-ls --user --updates; echo rc
+  rc=0 stderr: 
+$ flatpak info --user dev.cominotti.lushtext/x86_64/master (origin, commit)
+  Origin: lushtext-origin
+  Commit: a7f1faeaa5a88d6edea03c3feabd1af811bdb4b8d289c4ba241414c1a7a0638c
+$ flatpak remote-info --user -c lushtext-origin dev.cominotti.lushtext/x86_64/master
+  a7f1faeaa5a88d6edea03c3feabd1af811bdb4b8d289c4ba241414c1a7a0638c
+$ du -sh ~/.local/share/lushtext-flatpak-install/repo
+  4.7M	/var/home/danilo/.local/share/lushtext-flatpak-install/repo
+$ ./scripts/flatpak-install-origin.sh check
+  Install origin: lushtext-origin (enabled) at file:///var/home/danilo/.local/share/lushtext-flatpak-install/repo
+  => name kept (lushtext-origin), enabled, shared repository; remote-ls --updates exits 0; deployed commit =
+     remote-info commit = a7f1faea...; repository 4.7M after the prune.
+
+## task 4.3 make verify-flatpak-identity: rc=0
+  
+  == Flatpak install origin ==
+  Install origin: lushtext-origin (enabled) at file:///var/home/danilo/.local/share/lushtext-flatpak-install/repo
+  Flatpak desktop identity is usable for dev.cominotti.lushtext.desktop.
+
+## task 4.4 final gates (tree 4591f5da + this commit's test/evidence edits)
+  scripts/heavy.sh -- make check: rc=0 (handoff make-check.log)
+  openspec validate stable-flatpak-install-origin --strict: valid
+  scripts/heavy.sh --mem none -- make test: exit=0 (2026-11-15T00:53:38-03:00 load=17.53, end 2026-11-15T01:04:20-03:00)
+  nextest: Summary [  47.863s] 2462 tests run: 2462 passed (1 slow), 12 skipped
+    Shard        Status  Attempts  Selected/expected  Minutes  Peak MiB  Failed  FLAKY
+    window       ok      1         419/419            5.7      431       -       -
+    editor-page  ok      1         402/402            4.2      391       -       -
+    surfaces     ok      1         855/855            8.4      1253      -       -
+  0 FLAKY, 0 FLAKY-SHARD:, 0 OOM-KILL:, 0 TEMP-LEAK:
+  make check-agent-docs on the merged tree: passed
+  Added case 5c (steady-state reinstall) after make test; make test-flatpak-install-origin: all 12 checks ok.
+  Timing retry r3 (--lock-timeout 180) waited on another agent's measurement and was stopped: 2.4 stays the recorded
+  non-verdict 3.128 s at load 6.48.
+  Kani: none (no proven module touched). GTK axioms: none. rustdoc: not run (no doc comments changed).
+
+## 2026-11-15T01:30:49-03:00 stage 4 review (independent)
+  remote_line: awk no longer exits early under pipefail (latent SIGPIPE abort; no behaviour change).
+  make test-flatpak-install-origin: 12/12 ok after the fix (wall 3.12 s, non-verdict: 1-min load ~8, not retried through measure.sh)
+  make test-flatpak-identity-verifier: passed; shellcheck + bash -n scripts/flatpak-install-origin.sh: clean
+  XDG_RUNTIME_DIR isolation: $XDG_RUNTIME_DIR/{.flatpak,.flatpak-cache,.flatpak-helper} listing identical before/after a fixture run
+  read-only, real installation (toolbox): flatpak-install-origin.sh check --installed <shared repo> dev.cominotti.lushtext/x86_64/master
+    -> deployed from lushtext-origin (file:///var/home/danilo/.local/share/lushtext-flatpak-install/repo) at a7f1faea...; rc=0
+  read-only, HOST (where GNOME Software runs): flatpak-spawn --host flatpak remote-ls --user --updates rc=0;
+    lushtext-origin enabled at the shared repository; repo/summary present (1003 bytes, 2026-11-15 00:46)

@@ -37,8 +37,7 @@ pub fn observe_headers() -> (usize, usize, String, Option<String>) {
         .count();
     let role = headers
         .first()
-        .map(|header| format!("{:?}", header.accessible_role()))
-        .unwrap_or_default();
+        .map_or_default(|header| format!("{:?}", header.accessible_role()));
     list.scroll_to(SECTION_LEN - 1, gtk4::ListScrollFlags::FOCUS, None);
     flush_events();
     let _ = list.child_focus(gtk4::DirectionType::Down);
@@ -58,8 +57,7 @@ pub fn observe_headers() -> (usize, usize, String, Option<String>) {
             let label = widget
                 .first_child()
                 .and_downcast::<gtk4::Label>()
-                .map(|label| label.text().to_string())
-                .unwrap_or_default();
+                .map_or_default(|label| label.text().to_string());
             format!("{}:{label}", widget.css_name())
         });
     (headers.len(), focusable, role, focused)

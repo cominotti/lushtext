@@ -24,6 +24,14 @@ skip-tree = [
     { crate = "bitflags", reason = "Foundational GTK, notify, rustix, and proptest transitive crate that currently spans 1.x and 2.x through upstream dependency graphs" },
     { crate = "windows-sys", reason = "Target-specific foundational crate that can legitimately appear multiple times across transitive dependencies" },
 ]
+# Version-scoped duplicate majors that are upstream-structural: no LushText
+# manifest can unify them, and a `--precise` hold on the newer side would be
+# undone by the next `make update-deps-cooldown` and keep upstream fixes out.
+# Each entry names the lagging crates and is removed when they move.
+skip = [
+    { crate = "syn@2", reason = "clap_derive >= 4.6.4 moved to syn 3 while tracing-attributes, zerocopy-derive and the generated workspace-hack stay on syn 2; remove when tracing-attributes and zerocopy-derive use syn 3 (rust-1-100-adoption, 2026-11-14)" },
+    { crate = "system-deps@7", reason = "gtk-rs-core *-sys 0.22.9 moved to system-deps 9 while libadwaita-sys 0.9.2 and sourceview5-sys 0.11.3 stay on 7; remove when libadwaita-sys and sourceview5-sys use system-deps 9 (rust-1-100-adoption, 2026-11-14)" },
+]
 
 [bans.workspace-dependencies]
 # Internal path crates and the generated cargo-hakari crate intentionally flow

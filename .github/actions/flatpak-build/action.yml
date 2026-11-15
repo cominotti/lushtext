@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The one way CI builds the LushText Flatpak (enforced by
+# `make check-flatpak-ci-builds`). Use it after `actions/checkout`, in a job
+# whose container is `ghcr.io/flathub-infra/flatpak-github-actions` with
+# `options: --privileged`.
+#
+# The image keeps its preinstalled GNOME SDK and Platform in the system
+# installation /var/lib/flatpak, on overlayfs. When Flathub has a newer ref,
+# flatpak-builder's dependency update renames deployment directories, which an
+# overlay mount without redirect_dir refuses for lower-layer directories
+# (EXDEV, "Invalid cross-device link"), and flatpak-builder 1.4.9 then
+# segfaults. The two helper steps print the storage facts and a rename probe,
+# then copy the installation to $RUNNER_TEMP (a host bind mount outside the
+# checkout) and bind-mount the copy over /var/lib/flatpak. The mount persists
+# into the flatpak-builder step.
+#
+# Shell steps read $GITHUB_WORKSPACE and $RUNNER_TEMP from the environment,
+# never the `${{ github.workspace }}` / `${{ runner.temp }}` contexts, so they
+# get the container's paths.
+name: Flatpak build
+description: Move the image's system Flatpak installation off overlayfs, then run flatpak-builder.
+inputs:
+  manifest-path:
+    description: Path of the Flatpak manifest, relative to the checkout.
+    required: true
+  bundle:
+    description: File name of the Flatpak bundle the build uploads.
+    required: true
+  cache-key:
+    description: Cache key for the flatpak-builder state directory.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Diagnose the Flatpak installation
+      shell: bash
+      run: python3 "$GITHUB_WORKSPACE/scripts/ci-flatpak-installation.py" diagnose
+
+    - name: Relocate the Flatpak installation off overlayfs
+      shell: bash
+      run: python3 "$GITHUB_WORKSPACE/scripts/ci-flatpak-installation.py" relocate
+
+    - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+      with:
+        manifest-path: ${{ inputs.manifest-path }}
+        bundle: ${{ inputs.bundle }}
+        cache-key: ${{ inputs.cache-key }}

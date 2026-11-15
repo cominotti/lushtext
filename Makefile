@@ -54,6 +54,7 @@
 #   make check-flatpak-permissions - Ensure Flatpak keeps full filesystem access
 #   make check-end-user-smoke-workflow - Ensure scheduled smoke lanes match docs
 #   make check-workflow-timeouts - Enforce the 30-minute GitHub Actions job budget
+#   make check-flatpak-ci-builds - Keep every CI Flatpak build on the shared composite action
 #   make check-workflow-boundaries - Enforce workflow policy purity, mutation reach, and matrix roles
 #   make check-accessibility-policy - Enforce accessibility helper, matrix, and current-tree guardrails
 #   make check-visual-proof-policy - Require visual geometry proof for local visual-sensitive changes
@@ -80,6 +81,7 @@
 #   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
 #   make flatpak-install - Build and install Flatpak into the user installation
 #   make verify-flatpak-identity - Verify Flatpak desktop identity and MIME registration
+#   make test-flatpak-install-origin - Test the Flatpak install-origin guard against real flatpak in a private installation
 #   make cominotti-flatpak-repo - Build signed Cominotti Flatpak repository artifacts
 #   make verify-cominotti-pages-limits - Verify generated artifacts fit Cloudflare Pages
 #   make verify-flathub-domain - Verify cominotti.dev is ready for Flathub app verification
@@ -92,9 +94,9 @@
 #   make help        - Show available targets
 
 .PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-cargo-public-api-install check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
-       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
+       meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
        cominotti-flatpak-repo verify-cominotti-flatpak-repo verify-cominotti-pages-limits cominotti-flatpak-smoke test-cominotti-flatpak-repo \
        test-release-helper test-flathub-manifest release release-bump \
@@ -408,6 +410,7 @@ check-session-hygiene:
 	@echo "Checking that headless sessions start only through the session helper..."
 	./scripts/check-session-hygiene.py --self-test
 	./scripts/check-session-hygiene.py
+	python3 -I ./scripts/smoke_runtime_dir.py --self-test
 
 # Every LushText GSettings write and the one application settings instance
 # live in ui/settings_writes.rs (bound-window-construction-dispatch).
@@ -448,6 +451,18 @@ check-agent-helpers:
 	./scripts/heavy.sh --self-test
 	LUSHTEXT_AGENT_LOCK_HELD=shared:$$$$ LUSHTEXT_MEMORY_CAP_KIB=1 LUSHTEXT_ADMISSION_NOWAIT=1 ./scripts/measure.sh --self-test
 	LUSHTEXT_AGENT_LOCK_HELD=exclusive:$$$$ ./scripts/wait-for.sh --self-test
+
+# The GTK Lush API advisory's cargo-public-api install (restore-main-ci D3):
+# checksum, the one reviewed lockfile override, and the override's retirement.
+# Offline, against a fake crate and a fake cargo.
+check-cargo-public-api-install:
+	@echo "Checking the cargo-public-api install script..."
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x scripts/install-cargo-public-api.sh; \
+	else \
+		echo "shellcheck not installed; skipping the lint half"; \
+	fi
+	$(TEMP_SCOPE) install-api -- ./scripts/install-cargo-public-api.sh --self-test
 
 check-widget-shards:
 	@echo "Checking the widget shard table..."
@@ -753,6 +768,15 @@ check-workflow-timeouts:
 	@echo "Checking GitHub Actions job timeouts..."
 	./scripts/check-workflow-timeouts.py --self-test
 
+# Every CI Flatpak build in a flatpak-github-actions container goes through
+# .github/actions/flatpak-build, which moves the image's system installation
+# off overlayfs before flatpak-builder updates it (design of
+# harden-flatpak-sdk-update-ci). The self-tests run first.
+check-flatpak-ci-builds:
+	@echo "Checking CI Flatpak builds use the shared composite action..."
+	./scripts/ci-flatpak-installation.py --self-test
+	./scripts/check-flatpak-ci-builds.py --self-test
+
 # Enforce the explicit-SIMD policy (.agents/rules/rust.md, "Explicit SIMD"):
 # no target_feature / std::arch / feature detection outside the allowlist, no
 # build-time CPU flags, no unlisted SIMD-dispatch crate, memchr keeps `std`.
@@ -893,7 +917,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-temp-scope check-agent-helpers check-session-hygiene check-settings-writes check-font-zoom-registration check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
+check-policy: check-filesystem-boundary check-temp-scope test-flatpak-install-origin check-agent-helpers check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
 
 # Workspace folder-set terminology guard.
 # Runs in the local gate as well as CI because it scans resources, docs, and
@@ -907,6 +931,7 @@ check-terminology:
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
 	@echo "Running advisory lint discovery..."
+	./scripts/lint-advisory.py --self-test
 	./scripts/lint-advisory.py
 
 # Fetch uploaded SonarQube Cloud quality gate status and unresolved issues.
@@ -988,10 +1013,25 @@ flatpak: flatpak-deps
 	@echo "Building Flatpak..."
 	flatpak-builder $(FLATPAK_BUILDER_FLAGS) $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
 
-# Flatpak build and install into the user installation
+# Flatpak build and install into the user installation.
+#
+# The installed ref's origin remote (lushtext-origin) takes the export
+# repository's file:// URL. Exporting into a checkout's own build cache (what
+# `flatpak-builder --install` does) leaves that remote dangling once the
+# checkout or worktree is deleted, and GNOME Software then reports "server has
+# no summary file" on every refresh. So every checkout exports to ONE shared
+# repository outside every checkout and cache, computed only by
+# `flatpak-install-origin.sh path` ($XDG_DATA_HOME, not ~/.cache, which
+# clear-lushtext-xdg, build-cache prunes and routine cache cleaning delete).
+# flatpak-builder only exports (no --install); the script then, under a lock
+# beside the repository, repoints and re-enables lushtext-origin, installs,
+# prunes, and fails unless the deployed commit is the one the origin serves.
+# A failed build touches no remote.
 flatpak-install: flatpak-deps
 	@echo "Building and installing Flatpak..."
-	flatpak-builder $(FLATPAK_BUILDER_FLAGS) --assumeyes --install $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
+	repo="$$(./scripts/flatpak-install-origin.sh path)" && \
+	./scripts/flatpak-install-origin.sh install "$$repo" "dev.cominotti.lushtext/$$(flatpak --default-arch)/master" -- \
+		flatpak-builder $(FLATPAK_BUILDER_FLAGS) --repo="$$repo" $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
 
 # Verify the installed Flatpak export is the active production desktop identity
 verify-flatpak-identity:
@@ -1001,12 +1041,43 @@ verify-flatpak-identity:
 # Unit-style shell checks for the Flatpak identity verifier
 test-flatpak-identity-verifier:
 	@echo "Testing Flatpak identity verifier..."
-	./scripts/test-flatpak-identity-verifier.sh
+	$(TEMP_SCOPE) flatpak-identity-verifier -- ./scripts/test-flatpak-identity-verifier.sh
+
+# The install-origin guard of flatpak-install, against real flatpak in a
+# private FLATPAK_USER_DIR (prints SKIP: without flatpak, ostree or flock)
+test-flatpak-install-origin:
+	@echo "Testing the Flatpak install-origin guard..."
+	$(TEMP_SCOPE) flatpak-install-origin -- ./scripts/test-flatpak-install-origin.sh
 
 # Unit-style shell checks for development desktop-entry staging
 test-dev-desktop-staging:
 	@echo "Testing development desktop-entry staging..."
 	./scripts/test-dev-desktop-staging.sh
+
+# Refresh Cargo.lock under a 7-day publish-age cooldown, staying at the MSRV.
+# Cargo 1.100's `registry.global-min-publish-age` is passed as environment
+# only: cargo 1.98 (the pin) warns on the unknown key in .cargo/config.toml on
+# every command. `resolver = "2"` is not MSRV-aware, so the fallback is asked
+# for explicitly, and the 1.98 check proves the result. See build.md,
+# "Dependency cooldown", for exceptions and the duplicate-skip policy.
+UPDATE_DEPS_COOLDOWN_TOOLCHAIN ?= 1.100.0
+UPDATE_DEPS_COOLDOWN_AGE ?= 7 days
+update-deps-cooldown:
+	@cargo +$(UPDATE_DEPS_COOLDOWN_TOOLCHAIN) --version >/dev/null 2>&1 || { \
+		echo "update-deps-cooldown: needs the Rust $(UPDATE_DEPS_COOLDOWN_TOOLCHAIN) toolchain (registry.global-min-publish-age is stable from cargo 1.100); install it with: rustup toolchain install $(UPDATE_DEPS_COOLDOWN_TOOLCHAIN) --profile minimal" >&2; \
+		exit 1; }
+	@echo "1/5 cargo update under a $(UPDATE_DEPS_COOLDOWN_AGE) publish-age cooldown, MSRV fallback"
+	CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE="$(UPDATE_DEPS_COOLDOWN_AGE)" \
+		CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback \
+		cargo +$(UPDATE_DEPS_COOLDOWN_TOOLCHAIN) update
+	@echo "2/5 cargo hakari generate"
+	cargo hakari generate
+	@echo "3/5 make cargo-sources"
+	$(MAKE) cargo-sources
+	@echo "4/5 the refreshed graph builds on the pinned toolchain"
+	cargo +1.98.0 check --workspace --all-targets --all-features --locked
+	@echo "5/5 the whole dependency policy"
+	cargo deny check advisories bans sources licenses
 
 # Regenerate cargo-sources.json (requires flatpak-cargo-generator)
 cargo-sources: Cargo.lock
@@ -1144,6 +1215,7 @@ help:
 	@echo "  command-palette-notes-smoke Focused Notes palette smoke with all note kinds"
 	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
 	@echo "  check-workflow-timeouts Enforce the 30-minute GitHub Actions job budget"
+	@echo "  check-flatpak-ci-builds Keep every CI Flatpak build on the shared composite action"
 	@echo "  check-explicit-simd Enforce the explicit-SIMD policy (allowlist, no CPU flags, memchr std)"
 	@echo "  check-workflow-boundaries Enforce workflow policy purity, mutation reach, and matrix roles"
 	@echo "  check-accessibility-policy Enforce accessibility helper, matrix, and current-tree guardrails"
@@ -1224,8 +1296,10 @@ help:
 	@echo "  flatpak-install Build and install Flatpak into the user installation"
 	@echo "  verify-flatpak-identity Verify Flatpak desktop identity and MIME registration"
 	@echo "  test-flatpak-identity-verifier Test the Flatpak identity verifier"
+	@echo "  test-flatpak-install-origin Test the Flatpak install-origin guard (private installation)"
 	@echo "  test-dev-desktop-staging Test dev-run desktop staging behavior"
 	@echo "  cargo-sources   Regenerate cargo-sources.json"
+	@echo "  update-deps-cooldown  Refresh Cargo.lock under a 7-day publish-age cooldown at the MSRV, then hakari, cargo-sources, a 1.98 check and cargo deny"
 	@echo "  flathub-manifest Generate a Flathub-facing manifest for VERSION=vX.Y.Z"
 	@echo "  verify-flathub-manifest Verify generated Flathub manifest invariants"
 	@echo "  verify-flathub-domain Verify cominotti.dev Flathub verification endpoint"

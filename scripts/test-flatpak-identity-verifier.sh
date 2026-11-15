@@ -21,6 +21,15 @@ cat > "$tmpdir/bin/flatpak" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+# User remotes, as scripts/flatpak-install-origin.sh check lists them; the
+# cases set STUB_FLATPAK_REMOTES (name<TAB>url<TAB>options lines).
+if [[ "$*" == "remotes --user --show-disabled --columns=name,url,options" ]]; then
+    if [[ -n "${STUB_FLATPAK_REMOTES:-}" ]]; then
+        printf '%s\n' "$STUB_FLATPAK_REMOTES"
+    fi
+    exit 0
+fi
+
 if [[ "$1" == "info" && "$2" == "--show-metadata" && ( "$3" == "dev.cominotti.lushtext" || "$3" == "dev.cominotti.lushtext//master" ) ]]; then
     cat <<'META'
 [Application]
@@ -134,5 +143,19 @@ X-Flatpak=dev.cominotti.lushtext
 EOF
 "$repo_root/scripts/verify-flatpak-identity.sh" > "$tmpdir/branch.log"
 grep -q "Flatpak app: dev.cominotti.lushtext//master" "$tmpdir/branch.log"
+
+# A dangling development install origin (the checkout or worktree whose build
+# cache it pointed at was deleted) fails verification, enabled or disabled.
+for options in no-enumerate,no-gpg-verify disabled,no-enumerate,no-gpg-verify; do
+    export STUB_FLATPAK_REMOTES="lushtext-origin"$'\t'"file://$tmpdir/deleted-worktree/.flatpak-builder/cache"$'\t'"$options"
+    if "$repo_root/scripts/verify-flatpak-identity.sh" > "$tmpdir/origin.log" 2>&1; then
+        echo "expected verifier to fail for a dangling lushtext-origin ($options)" >&2
+        exit 1
+    fi
+    grep -q "the Flatpak remote 'lushtext-origin'" "$tmpdir/origin.log"
+    grep -Fq "file://$tmpdir/deleted-worktree/.flatpak-builder/cache" "$tmpdir/origin.log"
+    grep -q "make flatpak-install" "$tmpdir/origin.log"
+done
+unset STUB_FLATPAK_REMOTES
 
 echo "flatpak identity verifier tests passed"

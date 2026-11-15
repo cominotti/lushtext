@@ -64,8 +64,13 @@ ACTIONABLE_PATTERNS = [
 KNOWN_STANDALONE_LIMIT_PATTERNS = [
     re.compile(r"Invalid object type 'Adw", re.IGNORECASE),
     re.compile(r"Invalid object type 'Lushtext", re.IGNORECASE),
+    # GTK Lush widgets (`GtkLushClipBin`, `GtkLushViewportSliceBin`, ...) are
+    # registered by the app like LushText's own, so `gtk4-builder-tool`
+    # cannot know them either.
+    re.compile(r"Invalid object type 'GtkLush", re.IGNORECASE),
     re.compile(r"Failed to lookup template parent type Adw", re.IGNORECASE),
     re.compile(r"Failed to lookup template parent type Lushtext", re.IGNORECASE),
+    re.compile(r"Failed to lookup template parent type GtkLush", re.IGNORECASE),
     re.compile(r"template class .* not found", re.IGNORECASE),
     re.compile(r"Could not find object type", re.IGNORECASE),
     re.compile(r"Could not initialize windowing system", re.IGNORECASE),

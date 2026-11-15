@@ -220,8 +220,7 @@ fn tooltip_texts(root: &impl IsA<gtk4::Widget>) -> Vec<String> {
     let mut tooltips = root
         .as_ref()
         .tooltip_text()
-        .map(|text| vec![text.to_string()])
-        .unwrap_or_default();
+        .map_or_default(|text| vec![text.to_string()]);
     tooltips.extend(
         descendants(root)
             .into_iter()

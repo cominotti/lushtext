@@ -37,7 +37,7 @@ All gtk-rs crates must be from the same release series. Current versions:
 - `libadwaita = 0.9`
 - `glib = 0.22`, `gio = 0.22`, `pango = 0.22`
 - `glib-build-tools = 0.22`
-- Platform feature floor: GNOME 50 (`gtk4` `gnome_50` / GTK 4.22, Libadwaita 1.9, GLib/GIO 2.88, GtkSourceView feature `v5_18`). The shipped runtime is GNOME 51 (GTK 4.24, Libadwaita 1.10, GtkSourceView 5.22); do not enable `v4_24` / `v1_10` / `v5_22` features while the floor is supported.
+- Platform feature floor: GNOME 50 (`gtk4` `gnome_50` / GTK 4.22, Libadwaita 1.9, GLib/GIO 2.88, GtkSourceView feature `v5_18`, plus the binding's `gtk_v4_18`, without which sourceview5 ≥ 0.11.2 does not implement `gtk::Accessible` on `View`). The shipped runtime is GNOME 51 (GTK 4.24, Libadwaita 1.10, GtkSourceView 5.22); do not enable `v4_24` / `v1_10` / `v5_22` features while the floor is supported.
 
 Mixing versions (e.g. glib 0.21 with gtk4 0.11) causes "multiple versions of crate glib" errors.
 

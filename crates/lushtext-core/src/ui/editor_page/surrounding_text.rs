@@ -171,8 +171,7 @@ impl LushtextEditorPage {
             };
             let held = editor_weak
                 .upgrade()
-                .map(|editor| editor.held_text_snapshot())
-                .unwrap_or_default();
+                .map_or_default(|editor| editor.held_text_snapshot());
             let (text, cursor, anchor) = bounded_surrounding(&view.buffer(), &held);
             im.set_surrounding_with_selection(&text, cursor, anchor);
             true

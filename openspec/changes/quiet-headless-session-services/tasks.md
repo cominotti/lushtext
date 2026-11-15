@@ -91,9 +91,9 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
 
 ## 6. Verification on the final tree
 
-- [ ] 6.1 Run `make test-unit`, `make test-int`, and `cargo test -p gtk-lush-proof-harness -p cargo-gtk-proof`.
+- [x] 6.1 Run `make test-unit`, `make test-int`, and `cargo test -p gtk-lush-proof-harness -p cargo-gtk-proof`.
 - [ ] 6.2 Run the full widget suite once (`make test-widget`): the environment changes for every widget test. Any `FLAKY:`, `FLAKY-SHARD:`, `OOM-KILL:` or `SESSION-HYGIENE:` is a blocker (`preexisting-blockers.md`). Rerun a failed test in isolation before classifying it. Do not touch the two tests that PR #99 fixes.
-- [ ] 6.3 Run `make gtk-axioms` and `make check-gtk-axioms`. Run `make gtk-axioms-runtimes` once as well (local only: `flatpak run` of an SDK inside the migrated `run-gtk-axioms.sh` session), deciding as in 4.3 whether `flatpak run` needs the host system bus, or record the host skip and its reason in `evidence/runtime-proof.md`.
+- [x] 6.3 Run `make gtk-axioms` and `make check-gtk-axioms`. Run `make gtk-axioms-runtimes` once as well (local only: `flatpak run` of an SDK inside the migrated `run-gtk-axioms.sh` session), deciding as in 4.3 whether `flatpak run` needs the host system bus, or record the host skip and its reason in `evidence/runtime-proof.md`.
 - [ ] 6.4 Run every migrated lane once, headless:
   - `make visual-geometry-smoke`, `make visual-smoke`, `make accessibility-smoke`;
   - `make crash-recovery-smoke`, `make automation-smoke`, `make command-palette-notes-smoke`, `make portal-sandbox-smoke`;
@@ -106,10 +106,10 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
 
 ## 7. Documentation (documentation.md)
 
-- [ ] 7.1 `.agents/rules/build.md`: in "End-User Smoke Lanes", state that every session starts through `scripts/headless-session` or the harness library, list the profiles, and describe `SESSION-HYGIENE:`. In the policy-gate list, add `make check-session-hygiene` and what it keys on.
-- [ ] 7.2 `.agents/rules/testing.md`: add the gate to "Gate Order Before a Commit" among the cheap gates, and add `scripts/check-session-hygiene.py` to the existing "Path-keyed gates" list (its helper and self exemptions are path-keyed and fail-closed, and it fails on zero sanctioned spawns).
-- [ ] 7.3 `.agents/rules/build.md` "GTK Axioms and Toolkit Updates": on a PipeWire or WirePlumber update, re-read the module lists the WirePlumber fragment repeats (design D3), and expect the runtime guard to catch changed defaults.
-- [ ] 7.4 Update:
+- [x] 7.1 `.agents/rules/build.md`: in "End-User Smoke Lanes", state that every session starts through `scripts/headless-session` or the harness library, list the profiles, and describe `SESSION-HYGIENE:`. In the policy-gate list, add `make check-session-hygiene` and what it keys on.
+- [x] 7.2 `.agents/rules/testing.md`: add the gate to "Gate Order Before a Commit" among the cheap gates, and add `scripts/check-session-hygiene.py` to the existing "Path-keyed gates" list (its helper and self exemptions are path-keyed and fail-closed, and it fails on zero sanctioned spawns).
+- [x] 7.3 `.agents/rules/build.md` "GTK Axioms and Toolkit Updates": on a PipeWire or WirePlumber update, re-read the module lists the WirePlumber fragment repeats (design D3), and expect the runtime guard to catch changed defaults.
+- [x] 7.4 Update:
   - `AGENTS.md` (Testing: widget environment set by the launcher, `GTK_A11Y=test`, `ADW_DISABLE_PORTAL=1`; Build Commands: `make check-session-hygiene`);
   - `README.md` if it lists test commands;
   - (`docs/end-user-coverage.md` moved to 4.7: it is fingerprinted, and no fingerprinted file changes in this group);
@@ -118,7 +118,7 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
   - `docs/next/gtk-lush.md` (the harness gained a binary and the session module).
 
   Review `sonar-project.properties` for the new script and bin.
-- [ ] 7.5 Record the outcome in the programme record `docs/next/long-line-documents.md`: a short host-hygiene entry with the baseline, the decisions, the deferrals (screenshot-lane portals and the session cap, with reasons) and the proof.
+- [x] 7.5 Record the outcome in the programme record `docs/next/long-line-documents.md`: a short host-hygiene entry with the baseline, the decisions, the deferrals (screenshot-lane portals and the session cap, with reasons) and the proof.
 - [ ] 7.6 Run `openspec validate quiet-headless-session-services --strict` and `make check-agent-docs`. Commit and push.
 
 ## 8. Merge handoff

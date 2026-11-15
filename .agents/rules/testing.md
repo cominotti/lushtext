@@ -47,12 +47,14 @@ directory ([why](../../docs/memorials/2026-10-20-test-data-incidents.md)).
 - **Keep runtime dirs short.** Portal and headless smoke scripts keep their
   temporary runtime directories directly under `$XDG_RUNTIME_DIR` or `/tmp`,
   never under long artifact paths: Mutter/Wayland socket paths are
-  length-limited, and `with-temp-scope.sh --session-runtime` refuses a scope
-  whose `wayland-0` socket path would exceed 100 bytes. The session helper's
-  private system bus socket is the longest, and `dbus-daemon` binds at most
-  99 bytes (`DBUS_SOCKET_PATH_MAX`, below the kernel's 107): the helper puts
-  an owned runtime directory that would not fit under `/tmp` and refuses an
-  inherited one.
+  length-limited. The session helper's private system bus socket
+  (`gtk-lush-session/system-bus`) is the deepest, and `dbus-daemon` binds at
+  most 99 bytes (`DBUS_SOCKET_PATH_MAX`, below the kernel's 107). The helper
+  puts an owned runtime directory that would not fit under `/tmp` and refuses
+  an inherited one; `with-temp-scope.sh --session-runtime` refuses such a
+  scope; and the Python drivers' `smoke_runtime_dir.create_runtime_root`
+  falls back to `/tmp` when the scope's `TMPDIR` is too deep, which a
+  seven-digit PID can make it.
 - **PID-bearing names and a conservative sweep.** Names carry the owning PID
   after an exact prefix so the next run can reclaim what a SIGKILLed run left:
   only real directories owned by the current user, whose PID is gone and which
