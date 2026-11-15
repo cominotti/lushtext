@@ -24,6 +24,7 @@ Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh`
 - `build.md` — build, dependencies, validation gates, CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation, benchmarks, end-user smoke
 - `documentation.md` — which documentation a change must update, including the accessibility and workflow matrices, `docs/next/` records, runbooks and memorials
 - `git.md` — git workflow and commit conventions
+- `parallel-agent-work.md` — how parallel agents share the workstation and reach `main`: host ownership, CPU and memory sizing, implementation slots, ordering, foreground waits, measurement queueing, serialized merges on local evidence, durability
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, filesystem boundary, error and literal ownership, power-of-two threshold rounding and the `make check-thresholds` inventory, explicit SIMD, module splitting, and state grouping
 - `testing.md` — what every Rust, script or fuzz edit needs: temporary-file ownership, test isolation from real app data, test-only code never shipping, proof obligations and gate order before a commit, Kani harness and GTK axiom probe authoring, runtime warnings
@@ -267,7 +268,8 @@ make visual-geometry-smoke / make accessibility-smoke / make visual-smoke  # pro
 make end-user-smoke # every host-supported end-user smoke lane (not the responsiveness lane)
 make responsiveness-smoke # long-line responsiveness lane, RESPONSIVENESS_TIER=quick|full; nightly/manual
 make blueprint-generate / make check-blueprint  # regenerate and validate generated .ui templates
-make flatpak / make flatpak-install / make verify-flatpak-identity
+make flatpak / make flatpak-install / make verify-flatpak-identity  # one shared install origin for every checkout
+make test-flatpak-install-origin # the install-origin guard against real flatpak in a private installation
 make release-bump TYPE=patch DRY_RUN=1  # preview the next release
 ```
 

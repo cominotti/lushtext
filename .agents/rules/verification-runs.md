@@ -74,9 +74,11 @@ memory budget, and run it detached.
 
 ## Timing campaigns
 
-- Every timed run goes through `scripts/measure.sh`, which takes the
+- Every timing verdict goes through `scripts/measure.sh`, which takes the
   measurement lock and records the load and top processes before and after
   (the lock protocol below).
+- Under load, queue the campaign instead of starting it
+  (`parallel-agent-work.md`, "Measurements").
 - An optimisation change measures the cases it affects: four rounds
   interleaved `main` → branch → `main` → branch. An environment change
   (toolkit or runtime) measures the full quick tier the same way.
@@ -107,6 +109,8 @@ directory before redoing anything.
 Several agents and terminals share one workstation, its CPUs, memory and
 disk, across every worktree of this repository
 ([why these rules exist](../../docs/memorials/shared-machine-lock-incidents.md)).
+How parallel changes take implementation slots, queue measurements and merge
+is in [`parallel-agent-work.md`](./parallel-agent-work.md).
 
 **The helpers are THE way agents run heavy work, measurements, and waits.**
 Each has a `--self-test`; `make check-agent-helpers` (in `make check-policy`)
