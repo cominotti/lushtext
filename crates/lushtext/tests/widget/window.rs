@@ -6977,9 +6977,9 @@ fn test_close_session_snapshot_preserves_not_yet_mounted_restore_descriptors() {
         saved.tabs[2].path.as_deref(),
         Some(dir.path().join("close-pending-2.txt").as_path())
     );
-    for ordinal in 3..10 {
+    for (ordinal, tab) in saved.tabs.iter().enumerate().take(10).skip(3) {
         assert_eq!(
-            saved.tabs[ordinal].draft_id.as_deref(),
+            tab.draft_id.as_deref(),
             Some(format!("untitled-bounded-{ordinal}").as_str())
         );
     }
@@ -8464,8 +8464,16 @@ fn test_edits_during_a_pending_restore_never_overwrite_the_recovery_body() {
     assert_eq!(window.draft_evidence().restore_held_draft_ids, 1);
     let set_aside =
         draft_service::set_aside_dir(&data_dir).join(format!("{draft_id}.1700000777.draft"));
-    wait_until(Duration::from_secs(10), || fixture::exists(&set_aside));
-    assert_eq!(window.draft_evidence().restore_held_draft_ids, 0);
+    // The copy is written on a worker and the hold is released by its
+    // completion, after the write returns: the file can be on disk while the
+    // hold is still held, so wait for the release and check the copy then.
+    wait_until(Duration::from_secs(10), || {
+        window.draft_evidence().restore_held_draft_ids == 0
+    });
+    assert!(
+        fixture::exists(&set_aside),
+        "the hold is released only once the copy exists"
+    );
     fixture::assert_text(&set_aside, "recovery not yet restored");
     assert_eq!(
         editor_buffer_text(&editor),

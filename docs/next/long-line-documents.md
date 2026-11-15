@@ -76,7 +76,9 @@ documented deviation; every part's run id, load and co-running processes are in
 the table below). Headless `mutter 50.4 --virtual-monitor 1280x800@120`,
 `GSK_RENDERER=cairo`, caret blink off, GTK 4.22.5, Libadwaita 1.9.3, Pango
 1.57.1, GtkSourceView 5.20.0, GLib 2.88.3, kernel 7.2.9-200.fc44, Intel Core
-Ultra 9 285K, affinity CPUs 8–23 (16 E-cores, inherited, never widened).
+Ultra 9 285K, affinity CPUs 8–23 (16 E-cores, inherited, never widened; the
+reference CPU set, named explicitly by `scripts/measure.sh
+--print-reference-cpus` since `nest-heavy-slices-under-user-slice`).
 Watchdog tick 2 ms, idle slack ε 928 µs. 1,499 fixture-integrity checks, 0
 violations; 2 of the bisection rows were storage-contaminated and excluded by
 the lane. Axiom observations: a fresh `make gtk-axioms` on the same tree (A31:
@@ -253,7 +255,11 @@ then a follow-up for the flipped points (`--prior` the re-confirmation,
 idle-gated final parts (`final-dense` 18:59, `final-dense120` 19:11,
 `final-minimap` 19:16; each waited for 30 s of load < 4 with no process at
 ≥ 80 % CPU). Total measurement time 44 minutes. Same toolkit, kernel, headless
-lane and affinity (E-cores 8–23, inherited) as the reference run; watchdog tick
+lane and affinity (E-cores 8–23, inherited; from
+`nest-heavy-slices-under-user-slice` on, the reference CPU set is explicit,
+`scripts/measure.sh --print-reference-cpus`, and every earlier verdict ran on
+8-23, so they stay comparable; a record on 12-23 is a game-time run, not a
+reference run) as the reference run; watchdog tick
 2 ms, idle slack ε 295 µs; a fresh `make gtk-axioms` (A31: 112 rows per
 batch); 0 integrity violations. The machine was shared with another session's
 bursty `java` jobs (up to 1,355 % CPU on the same E-cores) during the
@@ -4039,13 +4045,77 @@ separate change, in this order:
        checksum-pinned crate on OpenSSL 4;
      - D4: two retry-rescued widget tests diagnosed and fixed (directory
        retention, protected periodic capture).
-     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (queued):
-     F1, the D2 guard
-     `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
-     fails on every CI run and passes locally, starved or not, before and
-     after the merge; task 4.2, the bookmark preview-only test, is not
-     diagnosed (it failed on CI inside the full `window` shard); and the
-     eight-branch-run proof for `editor-page`, `window` and `surfaces`.
+     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (implemented
+     2026-11-15, merged (PR #111, `main` `da80e312`) on local evidence and
+     archived 2026-11-15,
+     `openspec/changes/archive/2026-11-15-diagnose-ci-only-reflow-guard-failure/`;
+     specs `editor-minimap`, `widget-test-ci-sharding`). It reproduces CI-only widget
+     failures in the widget job's image (`scripts/ci-image-widget-test.sh`,
+     `build.md` "CI image lane": CI's own step with `cargo` shimmed to a
+     prebuilt binary).
+     - F1, the D2 guard
+       `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
+       was a **product defect**. It reproduced in the lane at `--cpus=4`
+       and unlimited, 5 of 5 each, with CI's message (value 8), so the CPU
+       count was not the condition.
+       - The writer is the reattach of a detached view to its kept top
+         line (`ui/editor_page/view_attachment.rs`): for line 0, GTK's
+         aligned scroll rests at the top margin plus the first glyph's y,
+         never at `lower` (new axiom A113, sample on GNOME 50, 51 and
+         master). The animated move then reads as a scroll (A112), and the
+         settle disarms the top-anchor repair.
+       - The image's property is session timing. Its accessibility
+         registry answers "no listener" while the never-shown page is
+         still unmapped, so the page is detached and reattached; in the
+         toolbox the answer comes later.
+       - In production, a session-restored or background tab at line 0 came
+         back 6–12 px down, with the top margin gone and line one clipped.
+         It now rests at `lower`. Any other kept position (a deeper line,
+         or a display line inside a wrapped line one) still uses GTK's
+         aligned scroll.
+       - Red on `main` code: the lane failed the four D2 tests' new exact
+         precondition (value 8) and the new reattach test (value 12); the
+         toolbox failed the reattach test. Green with the fix: 20 of 20 lane
+         runs of the six-test proof set at `--cpus=4`; 5 of 5 of the guard
+         at `--cpus=1` and at `--cpus=2`; 20 of 20 toolbox runs of the
+         guard; the whole `editor-page` shard once in the lane. On the final
+         merged binary: the proof set plus a wrapped-first-paragraph test
+         5 of 5, and `editor-page` and `window` once each, green.
+     - Task 4.2, the bookmark preview-only test, did not reproduce: 5 of 5
+       isolated and green in all eleven complete lane runs of the
+       `window` shard.
+     - The lane found two `window`-shard tests fragile, and both are fixed:
+       - `notes_browser::test_the_list_stays_virtualized_at_131072_rows`:
+         its rows retained the temporary path, whose process ids have two
+         digits in the lane, so 103,244 rows fit the retained ceiling, and
+         their shell overlap left no room to count the rest (found 103,424
+         of 131,072). The fixture now fixes the folder path at 112 bytes:
+         73,908 rows on both hosts, peak construction 91.95 MB of
+         100.66 MB. Measured product limitation, not changed: with rows of
+         about 650 bytes, the notes source stops counting past the retained
+         ceiling and reports a lower bound (`MAX_PALETTE_NOTE_CONSTRUCTION_BYTES`'s
+         doc comment).
+       - `window::test_edits_during_a_pending_restore_never_overwrite_the_recovery_body`
+         waited for the set-aside file, which the worker writes before its
+         completion releases the restore hold. It now waits for the release
+         and then checks the file (four lane `window`-shard runs had failed
+         it).
+     - **Owed to the programme-end CI check** (the stage brief forbids
+       waiting for or rerunning CI, so `restore-main-ci` D5's eight-run
+       proof was not run): `editor-page` for the minimap slider test and
+       the protected periodic capture (green 5 of 5 in the lane, never
+       reproduced), `window` for the bookmark preview-only test (4.2, not
+       reproduced), and `surfaces` for directory retention (its CI figure
+       needs the runner). Each shard's first CI run on `main` after the
+       merge is read for those tests and for F1.
+     - Stage-4 review: the reattach's rest record now uses the same
+       document-start predicate as its scroll (it said "line 0", stale for
+       a display line inside a wrapped line one while a width burst outlives
+       the hold). It is a consistency correction, with no failing-first test:
+       two resize variants were green on the unfixed code, and the trace is
+       in the design's review record. Decided: the notes construction ceiling
+       stays at 96 MiB. A count past the retained ceiling is reported as a
+       lower bound rather than raising every user's peak memory.
    - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14, merged (PR #100,
      `main` `6211a9c1`) and archived 2026-11-14,
      `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/`,
@@ -4121,6 +4191,73 @@ separate change, in this order:
        (design D9). Fix by having `make cargo-sources` and the Flathub
        generator emit `config.toml`, or report it upstream to
        `flatpak/flatpak-builder-tools`.
+   - `nest-heavy-slices-under-user-slice` (merged 2026-11-15 as `719e2825`,
+     PR #104, archived as
+     `openspec/changes/archive/2026-11-15-nest-heavy-slices-under-user-slice/`;
+     infrastructure, no app change).
+     Two problems with where agents' work ran. (A) Capped heavy work ran in
+     `lushtext-heavy.slice`, which systemd places under the user manager
+     itself, beside `app.slice`: `cpu.weight` 100 on CPUs 0-23 (68.8k
+     CPU-seconds by 00:20 that day), so builds competed with a game at the
+     game's weight and escaped CST's toolbox policy (the inner `user.slice`:
+     weight 30, cpuset 0,2-6,8-23, idle class on 12-23 during a game). The
+     slices are now `user-lushtext.slice` / `user-lushtext-heavy.slice`, which
+     systemd nests under that inner slice; no CPU property is set on our
+     units (CST's answer); every scope checks its own placement (path under
+     both slices, affinity within the inner slice's effective cpuset) and
+     exits 78 otherwise; admission also counts the legacy slice, which it
+     never touches. (B) The timing reference CPU set was implicit (every
+     verdict ran on 8-23 only because agents were pinned there).
+     `scripts/measure.sh` now pins itself to one explicit reference set
+     before any lock (default 8-23, `LUSHTEXT_REFERENCE_CPUS` override,
+     `--print-reference-cpus`), reads it back, refuses (78) when it is not
+     available or changes, never measures on the intersection, records
+     `cpus=`/`reference=`/`source=` and exports `LUSHTEXT_MEASURE_CPUS`; the
+     lane runs on that set, fails before any case on a mismatch or a set over
+     its 16-CPU cap, records it in `environment.txt`, `run.json`
+     (`reference_run`) and `report.md`, and merges parts on different sets as
+     `mixed`. Decisions: design D1-D13 of the change (CST's second answer:
+     refuse instead of measuring on 8-23 ∩ allowed; memory-sized parallelism
+     and the agents' session `taskset` pin deferred). Kani: none (no proven
+     module touched). Axioms: none (host behaviour H1-H3 restated in the
+     wrapper's and `measure.sh`'s headers and re-probed by their self-tests).
+     Timing: evidence, not a verdict:
+     one lane case (`baseline/small`, plain) through `measure.sh` from a shell
+     pinned to 16-23 records the reference set, and one
+     `LUSHTEXT_REFERENCE_CPUS=12-23` run the override label; the placement
+     shim's cost is main's wrapper against the branch's, interleaved in one
+     `measure.sh` call. The coordinator ran these three `measure.sh` calls
+     after stage 3 had queued them. The change's `evidence/reference-cpus.md`
+     records both lane runs: `affinity=8-23`, `measure_cpus_source=default`,
+     `reference_run: true`; and `12-23`, `override`, `false`, with the
+     override label; loads 1.9-2.4. It also records two real 78 refusals, of
+     an unavailable reference and of a partly available one. The change's
+     `evidence/shim.md` records the shim's cost: about +20 ms per scope start
+     (median 0.03 s against 0.01 s, ten runs a side, load 2.0-2.2), at the
+     10 ms timer resolution.
+     - **Deferred:** remove the legacy-slice accounting (`legacy_slice_of`,
+       the `admitted_kib` loop, the two legacy self-test cases and the private
+       legacy self-test slice) once no worktree branched before the merge SHA
+       `719e2825` remains.
+     - **Deferred (CST's second answer, design D13):** memory-sized
+       parallelism, raising `CARGO_BUILD_JOBS` from 4 in measured steps with
+       the per-job peak and `btrfs-stall-report` memory lines as evidence, in
+       its own change. The other half of D13, whether agents keep their
+       session `taskset -c 8-23` pin, was decided by the maintainer on
+       2026-11-15: agents inherit the toolbox cpuset and never pin, and only
+       `measure.sh` pins (`.agents/rules/parallel-agent-work.md`, "CPU and
+       memory").
+     - **Observed, pre-existing, deferred:** `heavy.sh` can wait for memory
+       while holding LOCK shared. Its step 3 re-check passes, then another
+       copy admits a scope before the wrapper's own blocking admission, which
+       then waits under LOCK and delays a pending measurement (seen
+       2026-11-15 01:37: "48 GiB of 48 GiB admitted", a 36G scope of a
+       `--mem none` mutants run beside a 12G one, about eight shared holders
+       in front of another change's `measure.sh`). Legacy accounting does not
+       widen the window (probe and admission count the same slices). It needs
+       its own design, because `--mem none` callers admit under LOCK by
+       design. Details:
+       `.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md`.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
@@ -4844,3 +4981,80 @@ not restated; each holds on the Fedora 45 host and in the GNOME 51 and GNOME
   leaves a pending worker (no `highlight-updated` follows).
 - A86: a reload with unchanged text no longer grows with the unrelated
   widgets.
+
+## RA `rust-1-100-adoption` (implementation record, 2026-11-14)
+
+**Status:** implemented 2026-11-14 on branch `rust-1-100-adoption`; merged
+2026-11-15 (PR #105, `main` `9df24739`) and archived 2026-11-15
+(`openspec/changes/archive/2026-11-15-rust-1-100-adoption/`). Design and
+decisions: the archived `design.md` (its "Implementation findings and
+decisions" section); evidence in the archived `evidence/` and
+`.claude/handoffs/rust-1-100-adoption/`. It lands first among the parallel
+programme runs, because its Clippy sweep and regenerated files
+(`Cargo.lock`, `workspace-hack`, `build-aux/cargo-sources.json`) cannot be
+text-merged.
+
+**The pin and the MSRV stay at 1.98.0.** The shipped Flatpak builds with
+`org.freedesktop.Sdk.Extension.rust-stable//26.08`, still 1.98.0, and
+`.agents/rules/build.md` item 5 requires the tested binary to be built by the
+shipped compiler.
+
+What landed:
+
+- **A8, durable rename classification** (a data-integrity defect independent
+  of the toolchain). `RenameProtocol` now ends in `Finish(RenameClass)`
+  (success, before-rename, after-rename), the shell maps it to
+  `DurableWriteError`, and the no-replace fallback runs only on a
+  before-rename `Unsupported`. An `Unsupported` parent-directory sync after a
+  completed rename no longer reads as `AlreadyExists`. The sidebar treats any
+  after-rename result as a completed rename and warns that the change is not
+  yet confirmed on disk; draft set-aside treats it as placed. Kani harness
+  `every_rename_classification_describes_the_namespace` (shard
+  `core-journal-and-write`) proves the classification.
+- **Clippy 1.100 sweep:** 62 sites workspace-wide: 59 `map_or_default`
+  rewrites (stable since 1.98), one `needless_bool`, one `needless_range_loop`
+  and one `double_must_use`. Clean under 1.100 `-D warnings` and under
+  `make check` on 1.98.0.
+- **sourceview5 0.11.3** (sourceview5-rs#19): the safe `replace_all` binding
+  replaced the one `unsafe` FFI block in `ui/search_bar/execution.rs`.
+- **Guards for the next bump:** the version policy (never 1.99.0, 1.99.1 is
+  the floor of any 1.99 pin, 1.98.0 lacks the 1.98.1 vtable fix), the weekly
+  advisory `next-stable.yml` lane, nextest 0.9.151 in CI, the layout-v2
+  generated-path regex in `lint-advisory.py`, and an empty `[lints]` table in
+  `workspace-hack`.
+- **`make update-deps-cooldown`:** a 7-day publish-age cooldown with the
+  MSRV-aware fallback, run once end to end (129 packages), with version-scoped
+  `deny.toml` skips for `syn@2` and `system-deps@7`.
+
+**Pre-existing blockers fixed on the way.** `make gtk-axioms` passed only
+on retry for A70, A76 and A79 under shared-host load, so their measurement
+was hardened and their statements left unchanged. A79 keeps the fastest of
+three lookup rounds per size, and A76's growth control compares against the
+first window's fastest sample, because preemption only adds time. A70's after-paint pacing takes up to three fresh-fixture rounds,
+each recorded, because a preempted main loop lets the next frame run before
+the validation idle. `make lint-advisory` had drifted on `main`: three sites
+were fixed in code, and the rest got scoped rules in
+`scripts/lint-advisory-policy.toml`. After merging `main`, the Protected View
+whole-line copy test failed once because Mutter's clipboard manager read the
+lazy provider before the test did; the test now requires its own read to add
+a whole read's worth of chunks. Six other timing probes (A29, A85, A86, A91,
+A98, A110) each held only on retry once under load; that lane-wide fragility
+is an open decision for the maintainer.
+
+**Recorded exception, with an expiry.** sourceview5 0.11.3 was taken with
+`--precise` outside the cooldown. Until **2026-11-21 08:57 UTC** the cooldown
+refuses that release, so `make update-deps-cooldown` fails loudly on the
+`0.11.3` floor; after that it runs unchanged.
+
+**Deferred until the pin can rise** (gated on the Flathub `rust-stable`
+extension shipping ≥ the version, and, for 1.100 APIs in `lushtext-core` or
+`gtk-lush-widgets`, on a Kani release newer than 0.68.0): B1 the 1.100 pin
+itself, B2 `[lints.cargo]` `unused_dependencies` (cargo 1.98 rejects the key),
+B3 the cooldown in `.cargo/config.toml`, B4 `clippy::assert_is_empty`, B5–B8
+the post-1.98 std APIs, and B9 Cargo's layout v2. The investigation's table in
+`.claude/handoffs/rust-1-100-adoption/proposal.md` §3 is the list.
+
+**End-of-programme step for the maintainer:** upgrade the host-wide nextest to
+the CI pin, `cargo install --locked cargo-nextest --version 0.9.151`. It was
+left alone here because parallel runs were using the one binary and nothing
+local needs it while cargo 1.98 writes layout v1.

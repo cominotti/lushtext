@@ -12,7 +12,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_DENY_VERSION: "0.19.8"
-  CARGO_NEXTEST_VERSION: "0.9.137"
+  CARGO_NEXTEST_VERSION: "0.9.151"
   CARGO_PUBLIC_API_VERSION: "0.52.0"
   # The .crate's SHA-256 (its crates.io sparse-index cksum) and the one
   # lockfile override scripts/install-cargo-public-api.sh applies: 0.52.0

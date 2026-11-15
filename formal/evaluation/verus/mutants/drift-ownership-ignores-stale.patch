@@ -1,0 +1,13 @@
+# Drift failing-first: drop `facts.backing_stale ||` from the copy of `ownership`.
+# verus-drift must report table lines that differ (VERUS_DRIFT_MUTANT=drift-ownership-ignores-stale).
+--- a/src/journal_core.rs
++++ b/src/journal_core.rs
+@@ -282,7 +282,7 @@
+         BodyOwner::Nothing
+     } else if facts.restore_pending {
+         BodyOwner::Unseen
+-    } else if facts.backing_stale || matches!(facts.entry, EntryState::Superseded) {
++    } else if matches!(facts.entry, EntryState::Superseded) {
+         BodyOwner::OtherVersion
+     } else if matches!(facts.entry, EntryState::Absent) {
+         BodyOwner::Unregistered

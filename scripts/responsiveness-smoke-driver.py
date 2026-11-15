@@ -23,8 +23,11 @@ them in order; nothing here runs against a live desktop):
 ``merge-runs`` join several runs' artifacts for one report; ``--from
              LABEL=DIR`` labels a run's rows with a side (``baseline``,
              ``branch``) for the C6 interleaved verdict.
-``affinity-list`` the first N CPUs of the inherited affinity, as a
-             ``taskset -c`` list (the wrapper's CPU cap).
+``lane-affinity`` the lane's CPU list (the wrapper's CPU cap): under
+             ``scripts/measure.sh`` (``LUSHTEXT_MEASURE_CPUS`` set) the
+             reference set, which the inherited affinity must equal and which
+             must fit the cap (never trimmed); otherwise the first N CPUs of
+             the inherited affinity.
 ``self-test`` exercise the parsing, classification, noise, contamination,
              derivation and data-integrity logic on synthetic records, without
              GTK or a compositor.
@@ -5406,10 +5409,18 @@ def merge_runs(out: Path, sources: list, quiet: bool = False) -> int:
                     link.unlink()
                 link.symlink_to(rep_dir)
     merged = dict(runs[0])
+    # Parts on different CPU sets (affinity, measure.sh reference or its
+    # source) are not comparable: the merge says so instead of copying the
+    # first part's set. A part written before these fields counts as unset.
+    cpu_sets = [(r.get("affinity"), r.get("measure_cpus"), r.get("measure_cpus_source")) for r in runs]
+    if len(set(cpu_sets)) > 1:
+        merged.update({"affinity": "mixed", "measure_cpus": None, "measure_cpus_source": None, "reference_run": False})
+    else:
+        merged["reference_run"] = bool(runs[0].get("reference_run"))
     merged.update(
         {
             "run_id": "+".join(r.get("run_id", "?") for r in runs),
-            "merged_from": [{"run_id": r.get("run_id"), "side": side, "artifact_dir": str(src), "wall_start": r.get("wall_start"), "wall_end": r.get("wall_end"), "repetitions": r.get("repetitions"), "bisection": r.get("bisection")} for r, src, side in zip(runs, sources, sides)],
+            "merged_from": [{"run_id": r.get("run_id"), "side": side, "artifact_dir": str(src), "wall_start": r.get("wall_start"), "wall_end": r.get("wall_end"), "repetitions": r.get("repetitions"), "bisection": r.get("bisection"), "affinity": r.get("affinity"), "measure_cpus": r.get("measure_cpus"), "measure_cpus_source": r.get("measure_cpus_source")} for r, src, side in zip(runs, sources, sides)],
             "wall_start": min(r.get("wall_start") or math.inf for r in runs),
             "wall_end": max(r.get("wall_end") or 0 for r in runs),
             "remote_desktop": {"available": all(r.get("remote_desktop", {}).get("available") for r in runs), "error": next((r["remote_desktop"].get("error") for r in runs if r.get("remote_desktop", {}).get("error")), None)},
@@ -5579,7 +5590,7 @@ def render_markdown(report: dict) -> str:
         "",
         f"- Tier: `{run.get('tier')}`; renderer requested `{run.get('renderer')}`, got {run.get('renderer_actual')}; monitor: `{run.get('monitor')}`",
         f"- Toolkit: {run.get('toolkit')}",
-        f"- Kernel: `{run.get('kernel')}`; CPU: `{run.get('cpu_model')}`; affinity: `{run.get('affinity')}`",
+        f"- Kernel: `{run.get('kernel')}`; CPU: `{run.get('cpu_model')}`; {affinity_label(run)}",
         f"- RemoteDesktop input: {run.get('remote_desktop')}",
         f"- Budgets ({report['budgets'].get('source')}): B_interact {report['budgets']['B_INTERACT_US']} us, B_settle {report['budgets']['B_SETTLE_US']} us, reference frame {report['budgets']['REFERENCE_FRAME_US']} us, input-to-frame {report['budgets']['INPUT_TO_FRAME_FRAMES']} frames, scroll p95 gap {report['budgets']['SCROLL_P95_FRAME_GAP_US']} us",
         f"- Watchdog slack eps: {report['calibration'].get('slack_us')} us; event clock monotonic: {report['calibration'].get('event_clock_monotonic')}",
@@ -5790,6 +5801,7 @@ def environment_info(tier: str, renderer: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
     affinity = sorted(os.sched_getaffinity(0))
+    cpu_fields = cpu_set_fields(affinity, os.environ.get("LUSHTEXT_MEASURE_CPUS"), os.environ.get("LUSHTEXT_MEASURE_CPUS_SOURCE"))
     return {
         "run_id": f"rr-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{socket.gethostname().split('.')[0]}-{os.getpid()}",
         "tier": tier,
@@ -5799,13 +5811,78 @@ def environment_info(tier: str, renderer: str) -> dict[str, Any]:
         "toolkit": {"gtk4": pkg("gtk4"), "libadwaita": pkg("libadwaita-1"), "pango": pkg("pango"), "gtksourceview": pkg("gtksourceview-5"), "glib": pkg("glib-2.0"), "mutter": mutter},
         "kernel": " ".join(platform.uname()[i] for i in (0, 2, 4)),
         "cpu_model": cpu_model,
-        "affinity": compress_cpus(affinity),
+        **cpu_fields,
         "cpu_count": len(affinity),
         "python": platform.python_version(),
         "host": socket.gethostname(),
         "ci": bool(os.environ.get("CI")),
         "at_unavailable": os.environ.get("RESPONSIVENESS_AT_UNAVAILABLE"),
     }
+
+
+def parse_cpu_list(text: str) -> list[int]:
+    """The CPUs of a kernel CPU list (``8-11,16``), ascending; ValueError when malformed."""
+    cpus: set[int] = set()
+    text = text.strip()
+    if not text:
+        return []
+    if not re.fullmatch(r"\d+(-\d+)?(,\d+(-\d+)?)*", text):
+        raise ValueError(f"not a CPU list: {text!r}")
+    for part in text.split(","):
+        first, _, last = part.partition("-")
+        low, high = int(first), int(last or first)
+        if low > high:
+            raise ValueError(f"not a CPU list: {text!r}")
+        cpus.update(range(low, high + 1))
+    return sorted(cpus)
+
+
+def lane_affinity(inherited: Iterable[int], measure_cpus: str | None, max_cpus: int) -> str:
+    """The CPU list the lane runs on (design D9 of nest-heavy-slices-under-user-slice).
+
+    Outside ``scripts/measure.sh`` (``measure_cpus`` unset): the first
+    ``max_cpus`` CPUs of the inherited affinity, never widened. Under it: the
+    reference set, which the inherited affinity must equal and which must fit
+    ``max_cpus``; a reference is never trimmed. ValueError names the reason.
+    """
+    inherited = sorted(set(inherited))
+    if not measure_cpus:
+        return compress_cpus(inherited[:max_cpus])
+    reference = parse_cpu_list(measure_cpus)
+    if inherited != reference:
+        raise ValueError(f"inherited affinity {compress_cpus(inherited)} is not measure.sh's reference {compress_cpus(reference)}")
+    if len(reference) > max_cpus:
+        raise ValueError(f"reference {compress_cpus(reference)} has {len(reference)} CPUs, over the lane's {max_cpus}-CPU cap; the lane never trims a reference")
+    return compress_cpus(reference)
+
+
+def cpu_set_fields(affinity: Iterable[int], measure_cpus: str | None, measure_cpus_source: str | None) -> dict[str, Any]:
+    """run.json's CPU-set fields: the affinity, the measure.sh reference and whether this is a reference run.
+
+    A reference run ran under ``scripts/measure.sh`` on its default reference
+    set (not an override) with the affinity equal to it.
+    """
+    aff = compress_cpus(sorted(set(affinity)))
+    measure = compress_cpus(parse_cpu_list(measure_cpus)) if measure_cpus else None
+    source = measure_cpus_source or None
+    return {
+        "affinity": aff,
+        "measure_cpus": measure,
+        "measure_cpus_source": source if measure else None,
+        "reference_run": bool(measure) and source == "default" and aff == measure,
+    }
+
+
+def affinity_label(run: dict) -> str:
+    """The report's affinity text: the CPU set, and whether it is comparable with reference runs."""
+    affinity = run.get("affinity")
+    if affinity == "mixed":
+        return "affinity: mixed (parts ran on different CPU sets: not comparable)"
+    if run.get("reference_run"):
+        return f"affinity: `{affinity}` (the reference CPU set, pinned by scripts/measure.sh)"
+    if run.get("measure_cpus") and run.get("measure_cpus_source") == "override":
+        return f"affinity: `{affinity}` (override of the reference CPU set: not comparable with reference runs)"
+    return f"affinity: `{affinity}` (not pinned to the reference CPU set: trend evidence, not a verdict)"
 
 
 def compress_cpus(cpus: list[int]) -> str:
@@ -6437,6 +6514,55 @@ def self_test() -> int:
         merged_run = json.loads((root / "merged/run.json").read_text(encoding="utf-8"))
         expect(merged_run["run_id"] == "rr-0+rr-1" and merged_run["wall_start"] == 10 and merged_run["wall_end"] == 21, "merged run id and window")
         expect((root / "merged/cases/part01/g/p1/plain/rep0").is_symlink(), "case directories are linked into the merged set, one directory per part")
+
+    # The lane's CPU set (nest-heavy-slices-under-user-slice D9): the
+    # reference under measure.sh, the inherited cap outside it.
+    expect(lane_affinity(range(24), None, 16) == "0-15", "unset: the first 16 CPUs of the inherited affinity")
+    expect(lane_affinity(range(8, 24), "8-23", 16) == "8-23", "equal: the reference unchanged")
+    for inherited, measure, needles, label in (
+        (range(8, 24), "12-23", ("8-23", "12-23"), "mismatch: an error naming both sets"),
+        (range(24), "0-23", ("0-23", "16"), "over the cap: an error naming the set and the cap"),
+    ):
+        try:
+            lane_affinity(inherited, measure, 16)
+            expect(False, label)
+        except ValueError as exc:
+            expect(all(n in str(exc) for n in needles), f"{label} ({exc})")
+    expect(cpu_set_fields(range(8, 24), "8-23", "default") == {"affinity": "8-23", "measure_cpus": "8-23", "measure_cpus_source": "default", "reference_run": True}, "a default measure.sh run is a reference run")
+    expect(cpu_set_fields(range(12, 24), "12-23", "override")["reference_run"] is False and cpu_set_fields(range(12, 24), "12-23", "override")["measure_cpus_source"] == "override", "an override is not a reference run")
+    expect(cpu_set_fields(range(16), None, None) == {"affinity": "0-15", "measure_cpus": None, "measure_cpus_source": None, "reference_run": False}, "an unpinned run records no reference")
+    expect("the reference CPU set, pinned by scripts/measure.sh" in affinity_label(cpu_set_fields(range(8, 24), "8-23", "default")), "report label: reference run")
+    expect("override of the reference CPU set: not comparable with reference runs" in affinity_label(cpu_set_fields(range(12, 24), "12-23", "override")), "report label: override")
+    expect("not pinned to the reference CPU set: trend evidence, not a verdict" in affinity_label(cpu_set_fields(range(16), None, None)), "report label: unpinned")
+    expect("mixed (parts ran on different CPU sets: not comparable)" in affinity_label({"affinity": "mixed"}), "report label: mixed merge")
+    with tempfile.TemporaryDirectory(prefix="lt-resp-cpus-") as raw:
+        root = Path(raw)
+
+        def cpu_part(name: str, run_fields: dict) -> Path:
+            src = root / name
+            (src / "cases").mkdir(parents=True)
+            (src / "run.json").write_text(json.dumps({"run_id": name, "wall_start": 1, "wall_end": 2, **run_fields}), encoding="utf-8")
+            (src / "results.jsonl").write_text("", encoding="utf-8")
+            return src
+
+        pinned = cpu_part("pinned", cpu_set_fields(range(8, 24), "8-23", "default"))
+        override = cpu_part("override", cpu_set_fields(range(12, 24), "12-23", "override"))
+        unpinned = cpu_part("unpinned", cpu_set_fields(range(8, 24), None, None))
+        legacy = cpu_part("legacy", {"affinity": "8-23", "cpu_count": 16})
+
+        def merged_run(*parts: Path) -> dict:
+            out = root / ("m-" + "-".join(p.name for p in parts))
+            merge_runs(out, list(parts), quiet=True)
+            return json.loads((out / "run.json").read_text(encoding="utf-8"))
+
+        mixed = merged_run(pinned, override)
+        expect(mixed["affinity"] == "mixed" and mixed["reference_run"] is False and [m["affinity"] for m in mixed["merged_from"]] == ["8-23", "12-23"] and [m["measure_cpus_source"] for m in mixed["merged_from"]] == ["default", "override"], f"parts on different CPU sets merge as mixed, each part's set kept ({mixed})")
+        same = merged_run(pinned, pinned)
+        expect(same["affinity"] == "8-23" and same["reference_run"] is True, f"two reference parts merge as a reference run ({same})")
+        old_unpinned = merged_run(legacy, unpinned)
+        expect(old_unpinned["affinity"] == "8-23" and old_unpinned["reference_run"] is False, f"a part without the fields equals an unpinned part ({old_unpinned})")
+        old_pinned = merged_run(legacy, pinned)
+        expect(old_pinned["affinity"] == "mixed" and old_pinned["reference_run"] is False, f"a part without the fields is mixed with a pinned part ({old_pinned})")
 
     # Key guard: no Control+letter chord can be injected.
     class FakeRd(RemoteDesktop):
@@ -7134,7 +7260,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     listing.add_argument("--tier", choices=("quick", "full"), default="quick")
     listing.add_argument("--case", action="append")
     sub.add_parser("self-test")
-    affinity = sub.add_parser("affinity-list", help="the first N CPUs of this process's affinity, as a taskset list")
+    affinity = sub.add_parser("lane-affinity", help="the lane's CPU list: measure.sh's reference (LUSHTEXT_MEASURE_CPUS), checked against this process's affinity and the cap, else the first N CPUs of the affinity")
     affinity.add_argument("max_cpus", type=int)
     listener = sub.add_parser("atspi-listener")
     listener.add_argument("--output", type=Path, required=True)
@@ -7149,8 +7275,12 @@ def main(argv: list[str] | None = None) -> int:
         for case in select_cases(build_cases(args.tier), args.case or []):
             print(case.id)
         return 0
-    if args.command == "affinity-list":
-        print(compress_cpus(sorted(os.sched_getaffinity(0))[: args.max_cpus]))
+    if args.command == "lane-affinity":
+        try:
+            print(lane_affinity(os.sched_getaffinity(0), os.environ.get("LUSHTEXT_MEASURE_CPUS"), args.max_cpus))
+        except ValueError as exc:
+            print(f"lane-affinity: {exc}", file=sys.stderr)
+            return 1
         return 0
     if args.command == "atspi-listener":
         return atspi_listener_main(args.output)

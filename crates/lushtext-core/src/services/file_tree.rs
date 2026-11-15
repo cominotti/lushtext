@@ -863,14 +863,8 @@ pub fn compare_directory_entries(
     (path_b, is_dir_b): (&Path, bool),
 ) -> Ordering {
     is_dir_b.cmp(&is_dir_a).then_with(|| {
-        let a = path_a
-            .file_name()
-            .map(OsStr::to_string_lossy)
-            .unwrap_or_default();
-        let b = path_b
-            .file_name()
-            .map(OsStr::to_string_lossy)
-            .unwrap_or_default();
+        let a = path_a.file_name().map_or_default(OsStr::to_string_lossy);
+        let b = path_b.file_name().map_or_default(OsStr::to_string_lossy);
         UniCase::new(a)
             .cmp(&UniCase::new(b))
             .then_with(|| path_a.cmp(path_b))

@@ -123,9 +123,14 @@ smoke_require_command gdbus
 # private session this script creates, with these variables cleared.
 unset WAYLAND_DISPLAY DISPLAY WAYLAND_SOCKET
 
-# At most 16 CPUs, taken from the inherited affinity mask (never widened).
+# The lane's CPUs. Under scripts/measure.sh (LUSHTEXT_MEASURE_CPUS set) the
+# reference CPU set measure.sh pinned, which the inherited affinity must
+# equal and which must fit the cap: a mismatch or an oversized reference
+# fails here, before any case, and a reference is never trimmed. Otherwise at
+# most 16 CPUs, taken from the inherited affinity mask (never widened).
 INHERITED_AFFINITY="$("$PYTHON" -c 'import os; print(len(os.sched_getaffinity(0)))')"
-AFFINITY="$("$PYTHON" "$DRIVER" affinity-list "$MAX_CPUS")"
+AFFINITY="$("$PYTHON" "$DRIVER" lane-affinity "$MAX_CPUS")" \
+    || smoke_fail "the lane's CPU set is not usable (above); run it through scripts/measure.sh on its reference, or without LUSHTEXT_MEASURE_CPUS"
 TASKSET=()
 if [[ "$INHERITED_AFFINITY" -gt "$MAX_CPUS" ]]; then
     command -v taskset >/dev/null 2>&1 || smoke_fail "taskset is required to cap the lane at $MAX_CPUS CPUs"
@@ -144,6 +149,8 @@ smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
     echo "binary=$BINARY"
     echo "inherited_cpus=$INHERITED_AFFINITY"
     echo "affinity=$AFFINITY"
+    echo "measure_cpus=${LUSHTEXT_MEASURE_CPUS:-}"
+    echo "measure_cpus_source=${LUSHTEXT_MEASURE_CPUS_SOURCE:-}"
     echo "taskset=${TASKSET[*]:-none}"
     echo "monitor=${RESPONSIVENESS_MONITOR:-1280x800@120}"
     echo "pango_version=$(pkg-config --modversion pango 2>/dev/null || true)"

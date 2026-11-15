@@ -535,7 +535,7 @@ fn test_palette_category_completions_publish_only_into_their_view() {
     quiet(&palette);
     assert_eq!(palette.evidence().category_rows, 0);
     assert!(!palette.evidence().category_holds_sources);
-    assert!(palette.evidence().more_rows.len() == 1);
+    assert_eq!(palette.evidence().more_rows.len(), 1);
 
     // A grouped completion arriving after entering publishes nothing.
     let grouped_before = palette.imp().results_store.n_items();

@@ -16,7 +16,8 @@ instead of restating it.
 | [profiling.md](profiling.md) | `perf` and `gdb` on the maintainer's workstation |
 
 Mechanics documented by the scripts themselves: `scripts/with-memory-cap.sh`
-(memory-capped scopes and admission), `scripts/widget-shards.py` (parallel
-widget shards, logs, summary, retries), `scripts/heavy.sh`,
-`scripts/measure.sh` and `scripts/wait-for.sh` (the lock protocol), and
+(memory-capped scopes, their slice and placement check, and admission),
+`scripts/widget-shards.py` (parallel widget shards, logs, summary, retries),
+`scripts/heavy.sh`, `scripts/measure.sh` and `scripts/wait-for.sh` (the lock
+protocol; `measure.sh` also the reference CPU set), and
 `scripts/responsiveness-smoke-driver.py` (the lane's subcommands).

@@ -970,7 +970,7 @@ mod tests {
             match rx.recv() {
                 Ok(SearchEvent::BudgetReached { .. }) => break,
                 Ok(_) => {}
-                Err(_) => panic!("the search ended before reaching the budget"),
+                Err(error) => panic!("the search ended before reaching the budget: {error}"),
             }
         }
         cancel.store(true, Ordering::Release);
@@ -1587,8 +1587,7 @@ mod tests {
                 search_match
                     .path
                     .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default()
+                    .map_or_default(|name| name.to_string_lossy().into_owned())
             })
             .collect::<HashSet<_>>()
             .into_iter()

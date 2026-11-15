@@ -18,7 +18,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_POLICY = REPO_ROOT / "scripts" / "lint-advisory-policy.toml"
-GENERATED_OUT_DIR = re.compile(r"/build/[^/]+-[0-9a-f]{16}/out/")
+# Build-script output directories under either Cargo build-directory layout:
+# v1 `build/<pkg>-<hash>/out/` and v2 `build/<pkg>/<hash>/out/` (which a cargo
+# newer than the 1.98 pin writes).
+GENERATED_OUT_DIR = re.compile(r"/build/[^/]+(?:-|/)[0-9a-f]{16}/out/")
 
 
 @dataclass(frozen=True)
@@ -57,7 +60,8 @@ def normalize_path(path: str) -> str:
     if not path:
         return "<unknown>"
     path = path.replace("\\", "/")
-    # Build-script output: `<build dir>/<profile>/build/<pkg>-<hash>/out/...`.
+    # Build-script output: `<build dir>/<profile>/build/<pkg>-<hash>/out/...`
+    # (layout v1) or `.../build/<pkg>/<hash>/out/...` (layout v2).
     # The build dir is `target/` by default, but a cargo `build.build-dir`
     # setting (for example `~/.cache/cargo-build/{workspace-path-hash}`) moves
     # it outside the checkout, so key on cargo's own layout, not on `target/`.
@@ -300,10 +304,37 @@ def classify_finding(finding: Finding, rules: list[Rule]) -> Rule | None:
     return matches[0]
 
 
+def self_test() -> int:
+    """Pin the generated-path classification for both build-directory layouts."""
+    cases = {
+        "/home/u/.cache/cargo-build/3a/8e04/debug/build/lushtext-0123456789abcdef/out/widget_mod_x.rs": True,
+        "/home/u/.cache/cargo-build/3a/8e04/debug/build/lushtext/0123456789abcdef/out/widget_mod_x.rs": True,
+        "/home/u/src/lushtext/crates/lushtext/build.rs": False,
+    }
+    failures = [
+        path
+        for path, generated in cases.items()
+        if normalize_path(path).startswith("<generated>/") != generated
+    ]
+    for path in failures:
+        print(f"lint-advisory self-test: misclassified {path}", file=sys.stderr)
+    if failures:
+        return 1
+    print("lint-advisory self-test passed: layout v1 and v2 build-script paths are generated")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="check the generated-path classification and exit",
+    )
     args = parser.parse_args()
+    if args.self_test:
+        return self_test()
 
     rules = load_policy(args.policy)
     all_findings: set[Finding] = set()

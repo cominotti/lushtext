@@ -30,7 +30,7 @@ proptest! {
         loaded in prop::option::of(note_text()),
         current in note_text(),
     ) {
-        let loaded_normalized = loaded.as_deref().map(normalize_note_text).unwrap_or_default();
+        let loaded_normalized = loaded.as_deref().map_or_default(normalize_note_text);
         let current_normalized = normalize_note_text(&current);
         let presentation = NoteEditorPresentation::from_loaded_text(loaded.as_deref());
         let expected = !current_normalized.is_empty() && current_normalized != loaded_normalized;
