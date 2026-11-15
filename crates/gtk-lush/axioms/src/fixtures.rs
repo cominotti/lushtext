@@ -784,7 +784,7 @@ pub mod a94 {
 
 /// The fixture and values the A95 probe drives, for its sample.
 pub mod a95 {
-    pub use crate::probes::a95::{SIZES, time_select_far};
+    pub use crate::probes::a95::{SIZES, SLOW_SIZES, time_select_far};
 }
 
 /// The fixture and values the A96 probe drives, for its sample.

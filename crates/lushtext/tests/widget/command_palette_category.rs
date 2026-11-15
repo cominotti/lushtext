@@ -13,12 +13,13 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::bookmark::BookmarkRecord;
 use lushtext_core::model::palette::{
-    IndexedFile, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
+    FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
     PaletteNoteEntry, PaletteNoteTarget, SearchMode,
 };
 use lushtext_core::model::responsiveness_budget::B_SETTLE_US;
 use lushtext_core::services::palette::{FileIndex, MAX_INDEXED_FILES};
 use lushtext_core::ui::command_palette::item::PaletteItem;
+use lushtext_core::ui::command_palette::policy::MAX_CATEGORY_VIEW_ROWS;
 use lushtext_core::ui::command_palette::{CommandPaletteTestPolicy, LushtextCommandPalette};
 use lushtext_core::ui::editor_page::LushtextEditorPage;
 use lushtext_core::ui::window::LushtextWindow;
@@ -43,29 +44,36 @@ impl Drop for PolicyReset {
 
 fn synthetic_index(count: usize) -> FileIndex {
     let root = Arc::new(PathBuf::from("/synthetic/category"));
-    FileIndex::from(
-        (0..count)
-            .map(|index| {
-                let path = root.join(format!("d{}/f-{index:06}.rs", index % 13));
-                IndexedFile::new(
-                    path.clone(),
-                    PaletteFileIdentity::canonical(path),
-                    Arc::clone(&root),
-                )
-            })
-            .collect::<Vec<_>>(),
-    )
+    // Streamed: a 2^20-file fixture never holds its files as owned rows.
+    FileIndex::from_paths((0..count).map(|index| {
+        let path = root.join(format!("d{}/f-{index:06}.rs", index % 13));
+        (
+            path.clone(),
+            PaletteFileIdentity::canonical(path),
+            Arc::clone(&root),
+        )
+    }))
+}
+
+fn file_path(index: &FileIndex, position: usize) -> PathBuf {
+    index
+        .file(FileOrdinal(
+            u32::try_from(position).expect("an index position"),
+        ))
+        .expect("a file at the position")
+        .path()
 }
 
 fn open_tabs_for(index: &FileIndex, count: usize) -> Vec<PaletteFileEntry> {
-    index.files()[..count]
-        .iter()
+    index
+        .files()
+        .take(count)
         .map(|file| {
             PaletteFileEntry::new(
-                file.name.clone(),
+                file.name().to_string(),
                 file.relative_display(),
-                file.path.clone(),
-                file.identity.clone(),
+                file.path(),
+                file.identity(),
             )
         })
         .collect()
@@ -197,11 +205,79 @@ fn quiet(palette: &LushtextCommandPalette) {
     flush_events();
 }
 
+/// `scale-file-index` task 2.8, design D8: a 2^20-file index whose query
+/// matches every file lists the category view's row cap, the best 131,072,
+/// and says so. A far select-and-scroll to the last row and back to the
+/// first each stays within twice `B_INTERACT_US` on the optimized widget
+/// build: the harness guard DP's tests use; the verdict at `B_INTERACT_US` is
+/// lane case "End in the category view" (design D10).
 #[test]
-fn test_palette_category_no_visible_loss_at_the_index_ceiling() {
+fn test_palette_category_of_a_million_files_is_cut_at_the_row_cap() {
+    use lushtext_core::model::responsiveness_budget::B_INTERACT_US;
     ensure_gtk_init();
-    let index = synthetic_index(MAX_INDEXED_FILES);
-    let last_path = index.files()[MAX_INDEXED_FILES - 1].path.clone();
+    let palette = LushtextCommandPalette::new();
+    let window = gtk4::Window::new();
+    window.set_default_size(900, 700);
+    window.set_child(Some(&palette));
+    present_window(&window);
+    palette.set_file_index(synthetic_index(MAX_INDEXED_FILES));
+    palette.open();
+    palette.set_search_mode(SearchMode::Files);
+    palette.set_query("f");
+    quiet(&palette);
+    assert_eq!(
+        more_hidden(&palette, PaletteCategory::WorkspaceFiles),
+        Some(MAX_INDEXED_FILES - 64),
+        "the grouped view counts every match"
+    );
+    enter_by_more_row(&palette, PaletteCategory::WorkspaceFiles);
+    quiet(&palette);
+    let evidence = palette.evidence();
+    assert_eq!(evidence.category_rows as usize, MAX_CATEGORY_VIEW_ROWS);
+    assert!(evidence.category_limited);
+    assert_eq!(
+        evidence.category_notice.as_deref(),
+        Some("Showing 131,072 of 1,048,576 results")
+    );
+
+    let len = evidence.category_rows;
+    let view = palette.imp().category_view.clone();
+    let flags = gtk4::ListScrollFlags::SELECT | gtk4::ListScrollFlags::FOCUS;
+    let start = std::time::Instant::now();
+    view.scroll_to(len - 1, flags, None);
+    let to_last = start.elapsed();
+    flush_events();
+    assert_eq!(palette.evidence().selected_position, Some(len - 1));
+    let start = std::time::Instant::now();
+    view.scroll_to(0, flags, None);
+    let to_first = start.elapsed();
+    flush_events();
+    assert_eq!(palette.evidence().selected_position, Some(0));
+    println!(
+        "palette-category-million to_last_us={} to_first_us={}",
+        to_last.as_micros(),
+        to_first.as_micros()
+    );
+    if crate::common::timing_verdicts_enforced() {
+        let bound = Duration::from_micros(2 * B_INTERACT_US);
+        assert!(
+            to_last <= bound,
+            "far select-and-scroll to the last row: {to_last:?}"
+        );
+        assert!(
+            to_first <= bound,
+            "far select-and-scroll to the first row: {to_first:?}"
+        );
+    }
+    palette.close();
+    window.close();
+}
+
+#[test]
+fn test_palette_category_no_visible_loss_at_the_row_cap() {
+    ensure_gtk_init();
+    let index = synthetic_index(MAX_CATEGORY_VIEW_ROWS);
+    let last_path = file_path(&index, MAX_CATEGORY_VIEW_ROWS - 1);
     for open in [0usize, 32] {
         let palette = LushtextCommandPalette::new();
         let opened = Rc::new(RefCell::new(None));
@@ -209,7 +285,7 @@ fn test_palette_category_no_visible_loss_at_the_index_ceiling() {
         palette.connect_item_activated(move |item| {
             opened_clone.replace(item.file_path());
         });
-        palette.set_file_index(synthetic_index(MAX_INDEXED_FILES));
+        palette.set_file_index(synthetic_index(MAX_CATEGORY_VIEW_ROWS));
         palette.set_open_tabs(open_tabs_for(&index, open));
         palette.open();
         wait_until(Duration::from_secs(20), || {
@@ -217,13 +293,13 @@ fn test_palette_category_no_visible_loss_at_the_index_ceiling() {
         });
         assert_eq!(
             more_hidden(&palette, PaletteCategory::WorkspaceFiles),
-            Some(MAX_INDEXED_FILES - open - 64),
+            Some(MAX_CATEGORY_VIEW_ROWS - open - 64),
             "the empty query states the exact hidden count with {open} open tabs"
         );
 
         enter_by_more_row(&palette, PaletteCategory::WorkspaceFiles);
         let len = palette.evidence().category_rows;
-        assert_eq!(len as usize, MAX_INDEXED_FILES - open);
+        assert_eq!(len as usize, MAX_CATEGORY_VIEW_ROWS - open);
         assert!(!palette.evidence().category_limited);
 
         // Page Down reaches the last file and Enter opens it.
@@ -241,7 +317,7 @@ fn test_palette_category_no_visible_loss_at_the_index_ceiling() {
             .emit_by_name::<()>("activate", &[&(len - 2)]);
         assert_eq!(
             opened.borrow().as_ref(),
-            Some(&index.files()[MAX_INDEXED_FILES - 2].path)
+            Some(&file_path(&index, MAX_CATEGORY_VIEW_ROWS - 2))
         );
         palette.close();
     }
@@ -492,7 +568,7 @@ fn test_palette_category_view_creates_rows_only_around_the_realized_ones() {
     window.set_default_size(640, 480);
     window.set_child(Some(&palette));
     present_window(&window);
-    palette.set_file_index(synthetic_index(MAX_INDEXED_FILES));
+    palette.set_file_index(synthetic_index(MAX_CATEGORY_VIEW_ROWS));
     palette.open();
     enter_by_more_row(&palette, PaletteCategory::WorkspaceFiles);
     palette.set_query("f");
@@ -504,7 +580,7 @@ fn test_palette_category_view_creates_rows_only_around_the_realized_ones() {
     palette.refresh_accessibility_state_for_test();
     flush_events();
     let evidence = palette.evidence();
-    assert_eq!(evidence.category_rows as usize, MAX_INDEXED_FILES);
+    assert_eq!(evidence.category_rows as usize, MAX_CATEGORY_VIEW_ROWS);
     assert!(
         evidence.category_item_requests <= 4 * REALIZED_ROWS,
         "{} row objects for {} rows",
@@ -751,7 +827,7 @@ fn test_palette_category_dispatches_stay_within_their_budgets() {
     window.set_default_size(900, 700);
     window.set_child(Some(&palette));
     present_window(&window);
-    palette.set_file_index(synthetic_index(MAX_INDEXED_FILES));
+    palette.set_file_index(synthetic_index(MAX_CATEGORY_VIEW_ROWS));
     palette.open();
     palette.set_search_mode(SearchMode::Files);
     wait_until(Duration::from_secs(30), || {

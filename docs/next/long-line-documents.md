@@ -4272,6 +4272,75 @@ separate change, in this order:
 3. `scale-file-index`: an interned path arena and a byte budget instead of
    the 131,072-file count, targeting at least 1,000,000 files, with a
    Criterion benchmark and a measurement on a real monorepo.
+   **Proposal written 2026-11-14** (branch `scale-file-index`,
+   `openspec/changes/scale-file-index/`), judged worth doing and refined by
+   measurement on `main` `2c91ccf2`: 363 B/file installed and 557 B/file at
+   the construction peak (131,072 files), so an arena alone does not reach
+   2^20 within the unchanged 64 MiB / 128 MiB ledgers; construction also
+   derives canonical identity for non-symlink entries (no per-file
+   `realpath`, no canonical-path set), the index keeps a sorted canonical-key
+   table (the open-tab exclusion and the empty-query count DP left here), the
+   limits become 2^20 files and directories (the count stays as the query
+   latency bound), and the category view gains a 131,072-row cap (A95). No
+   public monorepo checkout is on disk, so the measurement uses a synthetic
+   monorepo-shaped tree (a recorded deviation from "a real monorepo"; a
+   real-tree measurement stays a follow-up). **Spec review (stage 2,
+   2026-11-14)**, design "Review (stage 2)": the approach holds. Search
+   results carry a `u32` file ordinal, so the 36-byte category candidate and
+   the `core-list-budget` proofs are unchanged. The row cap applies to every
+   category, so a note category above 131,072 rows, which `main` lists whole up
+   to 233,016, is cut: the one recorded loss. The cap is gated on the lane's
+   application dispatch, not on the probe. The query split is for grouped
+   queries only, and the category ranking stays one pass. Mutations gained
+   their unspecified cases and dead-byte compaction.
+   **Implemented 2026-11-15** (stage 3, branch `scale-file-index`, PR
+   pending): the arena (`services/palette/index/`) indexes 1,048,576 files
+   of the synthetic monorepo-shaped tree with no truncation, at 41 B/file
+   installed and 58 B/file at the construction peak (`main`: 563 / 831 at
+   2^17, where it truncates at 119,157 files); one worker query at 2^20 is
+   31–35 ms, so the chunked query split was not built; the empty-query count
+   reads the key table (under 1 ms with 256 open tabs; closes the DP
+   "accepted items" entry for the empty-query count); a 1,024-file add batch
+   at 2^17 drops from 31.7 s to 15.5 ms. A95 re-probed with slow probes is
+   flat on GTK 4.24.1 up to 2^20 rows, but the category cap stays 131,072
+   because the probe grew on the GNOME 50 source floor (GTK 4.22.5); the
+   note-category loss above 131,072 rows stands as recorded. These are non-verdict figures:
+   the interleaved verdict rounds are queued on the shared machine.
+   **Reviewed 2026-11-15** (stage 4, design "Review (stage 4)"): a build that
+   stopped on a byte limit, and a sparse 2^20-file tree (about 500,000
+   directories), published an empty index because the finish's key table and
+   hashers were not reserved during the traversal; fixed (keys charged per
+   file, a one-`u64` component hasher paid from the visit set's scratch) with
+   a budget-sweep test against the per-file reference. A refused add at the
+   2^20 cap no longer counts every record (the 0.35 ms stage-3 follow-up). D8
+   gates on the optimized widget test's far select-and-scroll through
+   `measure.sh` (queued), because the palette has no `End` binding and no
+   row-selection action for a lane case to drive. Follow-ups: a measurement
+   on a real monorepo checkout (the synthetic tree is the recorded
+   deviation); the `workspace-index` lane group (design D10), with a palette
+   row-selection action and its automation documentation; raising the
+   category cap to the budget's rows once the source floor is GNOME 51.
+   **Verdicts 2026-11-15** (design "Measured verdicts"; every round through
+   `measure.sh` at a 1-minute load below 4, no storage stall in any window).
+   No 2^17 case is slower than `main`:
+   - one query: 3.8–4.0 ms, against `main`'s 8.9–34.6 ms;
+   - a 1,024-add batch: 14–16 ms, against 31.1–31.3 s;
+   - the build: 409–412 ms, against 1,759–1,796 ms.
+
+   At 2^20 the build indexes every file in 41 / 60 B per file. D7's grouped
+   query passes at 42.9 ms (43.3 ms with 32 open tabs, bar 50 ms), so the
+   chunked split was not built. D8's far select-and-scroll at the
+   131,072-row cap takes 2.0–3.8 ms, inside `B_INTERACT_US`.
+   **Measured exception (D7):** ranking a whole category at the row cap over
+   2^20 files takes 50.75 ms [49.36–52.45] on the worker, so a category view
+   publishes about 51 ms after Enter on a More row. Typing inside it lands
+   about 1 ms past the 200 ms the grouped scenario allows; the GTK thread is
+   not affected. It stays as recorded. A partial selection
+   (`select_nth_unstable` over every match, or a 2 × cap buffer) does not fit
+   the 8 MiB ranking budget, and the scoring pass dominates.
+   **Follow-up:** a chunked category ranking whose chunks share one bound
+   (one worst-score threshold, retention still within 8 MiB), preceded by a
+   measured breakdown of scoring against selection.
 4. Profile and slice the 59–60 ms largest-file open dispatch (the open-tier
    runs above).
 5. Then DL `bound-dense-long-line-editing`. (`avx2-health-scan-kernel`, once

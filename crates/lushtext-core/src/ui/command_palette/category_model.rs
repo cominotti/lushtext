@@ -47,7 +47,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use crate::model::palette::{PaletteCategory, PaletteFileEntry, PaletteNoteEntry};
+use crate::model::palette::{FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteNoteEntry};
 use crate::services::palette::{FileIndex, all_commands};
 use crate::ui::plain_disposal::DisposalOwned;
 
@@ -96,9 +96,11 @@ impl CategoryProjection {
                     entry.path.clone(),
                 )
             }
-            PaletteCategory::WorkspaceFiles => {
-                PaletteItem::from_indexed_file(sources.index.files().get(ordinal)?)
-            }
+            PaletteCategory::WorkspaceFiles => PaletteItem::from_indexed_file(
+                sources
+                    .index
+                    .file(FileOrdinal(u32::try_from(ordinal).ok()?))?,
+            ),
             PaletteCategory::Note(_) => {
                 let entry = sources.note_entries.get(ordinal)?;
                 PaletteItem::new_note_raw(

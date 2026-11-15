@@ -15,7 +15,7 @@
 //!   seam's freshness identity, validated as one unit by
 //!   [`FileIndexMutationTicket::is_current`], with the replay-on-loss decision
 //!   expressed by [`FileIndexMutationTicket::arbitrate`].
-//! * [`classify_index_retirement`] — the last-owned-at-cap retirement predicate
+//! * [`classify_index_retirement`] — the last-owned large-index retirement predicate
 //!   the three retirement call sites share.
 //! * [`first_activatable`] and [`next_activatable`] — header-skipping result
 //!   navigation over an activatable-flag sequence.
@@ -23,8 +23,8 @@
 //!   [`accessible_value_text`] — the palette's presentation decisions.
 //! * The category view (`drill-down-palette-categories`): the "More" row's
 //!   wording ([`more_row_text`], [`more_row_accessible_name`]), the category
-//!   view's row limit ([`category_row_limit`] over
-//!   [`PALETTE_CATEGORY_RETAINED_BYTES`]), its navigation without a walk
+//!   view's row limit ([`category_row_limit`]: [`MAX_CATEGORY_VIEW_ROWS`]
+//!   within [`PALETTE_CATEGORY_RETAINED_BYTES`]), its navigation without a walk
 //!   ([`next_category_row`], [`page_activatable`]), the selection on leaving
 //!   ([`leave_selection`]), when Backspace leaves
 //!   ([`backspace_leaves_category`]), and its title, notices and
@@ -73,26 +73,45 @@ pub const RESULT_PAGE_ROWS: u32 = 16;
 /// power of two at or above it.
 pub const PALETTE_CATEGORY_RETAINED_BYTES: u64 = 8 * 1024 * 1024;
 
-/// The ranking peak of the file index's largest admitted size, so the
-/// workspace category view of a full index is never cut.
+/// Rows a category view lists at most (`scale-file-index` D8).
 ///
-/// Kind: derived; `MAX_INDEXED_FILES * PALETTE_CATEGORY_CANDIDATE_BYTES`.
-pub const PALETTE_CATEGORY_FLOOR_RETENTION: u64 =
-    MAX_INDEXED_FILES as u64 * PALETTE_CATEGORY_CANDIDATE_BYTES;
+/// A far select-and-scroll in a `GtkListView` costs time that grows with its
+/// rows (ledger A95), so a category of a 2^20-file index is cut to its best
+/// rows and says "Showing X of Y results"; the index itself holds
+/// [`MAX_INDEXED_FILES`].
+///
+/// Kind: presentation cap; recorded exception. It keeps 131,072, the most
+/// rows the workspace category listed before the index cap moved, because a
+/// far select-and-scroll grows with the list's rows (A95: 10.4 ms at 131,071
+/// rows in the probe; the application measured 2.2–6.9 ms at 131,072 in
+/// `drill-down-palette-categories`), so 2^18 rows and more exceed
+/// `B_INTERACT_US` (`scale-file-index` D8).
+pub const MAX_CATEGORY_VIEW_ROWS: usize = 128 * 1024;
 
-// No loss at today's ceiling: the whole index fits the budget.
+// The cap never exceeds what the index can hold.
+const _: () = assert!(MAX_CATEGORY_VIEW_ROWS <= MAX_INDEXED_FILES);
+
+/// The ranking peak of the row cap, so a category view is cut by its row cap,
+/// never by its byte budget.
+///
+/// Kind: derived; `MAX_CATEGORY_VIEW_ROWS * PALETTE_CATEGORY_CANDIDATE_BYTES`.
+pub const PALETTE_CATEGORY_FLOOR_RETENTION: u64 =
+    MAX_CATEGORY_VIEW_ROWS as u64 * PALETTE_CATEGORY_CANDIDATE_BYTES;
+
+// The whole row cap fits the budget.
 const _: () = assert!(PALETTE_CATEGORY_FLOOR_RETENTION <= PALETTE_CATEGORY_RETAINED_BYTES);
 // And the budget is the power of two at or above the floor, not more: a change
 // of the candidate's size that leaves it further above (or below) fails here.
 const _: () = assert!(PALETTE_CATEGORY_RETAINED_BYTES / 2 < PALETTE_CATEGORY_FLOOR_RETENTION);
 
-/// Rows a category view lists at most: the budget's equal-charge prefix.
+/// Rows a category view lists at most: the row cap, or the budget's
+/// equal-charge prefix when that is smaller.
 #[must_use]
 pub fn category_row_limit() -> usize {
-    rows_within(
+    MAX_CATEGORY_VIEW_ROWS.min(rows_within(
         PALETTE_CATEGORY_RETAINED_BYTES,
         PALETTE_CATEGORY_CANDIDATE_BYTES,
-    )
+    ))
 }
 
 /// The "More" row's visible text: `"{N} more…"`, N grouped in thousands.
@@ -373,11 +392,7 @@ impl FileIndexUpdate {
                 path,
                 workspace_folder,
             } => {
-                index.add_path_for_bounded_batch(
-                    path.clone(),
-                    Arc::clone(workspace_folder),
-                    ledger,
-                );
+                index.add_path_for_bounded_batch(path, workspace_folder, ledger);
             }
             Self::Delete(path) => index.remove_path_for_bounded_batch(path, ledger),
             Self::Rename { old_path, new_path } => {
@@ -585,11 +600,21 @@ pub enum FileIndexRetirementKind {
     RejectedIncremental,
 }
 
-/// Whether one released index reached the bounded worker lane at the policy cap.
+/// The length from which a released index counts as large for retirement
+/// evidence (`scale-file-index` D3): the widget tests prove at this size that
+/// a large index is never destroyed on the GTK thread, without building a
+/// 2^20-file index for each case.
 ///
-/// Only a *last-owned* index at [`MAX_INDEXED_FILES`] is worth recording: a
-/// shared index is still alive, and an index below the cap is small enough that
-/// the lane is not what a test is proving. Returning the kind rather than a bool
+/// Kind: out: tool; test evidence (2^17, the size those tests built before
+/// the index cap moved to 2^20).
+pub const LARGE_INDEX_RETIREMENT_FILES: usize = 128 * 1024;
+
+/// Whether one released index of at least the evidence size reached the
+/// bounded worker lane.
+///
+/// Only a *last-owned* index of at least [`LARGE_INDEX_RETIREMENT_FILES`] is
+/// worth recording: a shared index is still alive, and a smaller index is not
+/// what a test is proving. Returning the kind rather than a bool
 /// keeps the three call sites from re-deriving the conjunction.
 #[must_use]
 pub const fn classify_index_retirement(
@@ -597,7 +622,7 @@ pub const fn classify_index_retirement(
     last_owned: bool,
     released_len: usize,
 ) -> Option<FileIndexRetirementKind> {
-    if last_owned && released_len == MAX_INDEXED_FILES {
+    if last_owned && released_len >= LARGE_INDEX_RETIREMENT_FILES {
         Some(kind)
     } else {
         None
@@ -705,18 +730,17 @@ mod tests {
     /// matching files and the palette caps each category at
     /// [`MAX_RESULTS_PER_SOURCE`].
     fn file_rows_shown(count: usize) -> usize {
-        use crate::model::palette::{
-            IndexedFile, PaletteFileIdentity, PaletteSearchRow, SearchMode,
-        };
+        use crate::model::palette::{PaletteFileIdentity, PaletteSearchRow, SearchMode};
         use crate::services::palette::{
-            GroupedSearchInput, PaletteSearchCancellation, PaletteSearchOutcome, grouped_search,
+            GroupedSearchInput, OwnedIndexedFile, PaletteSearchCancellation, PaletteSearchOutcome,
+            grouped_search,
         };
         let folder = Arc::new(PathBuf::from("/workspace"));
         let index = FileIndex::from(
             (0..count)
                 .map(|n| {
                     let path = folder.join(format!("match_{n:05}.rs"));
-                    IndexedFile::new(
+                    OwnedIndexedFile::new(
                         path.clone(),
                         PaletteFileIdentity::canonical(path),
                         Arc::clone(&folder),
@@ -782,12 +806,13 @@ mod tests {
 
     #[test]
     fn each_update_kind_actually_mutates_the_index() {
-        use crate::model::palette::{IndexedFile, PaletteFileIdentity};
+        use crate::model::palette::PaletteFileIdentity;
+        use crate::services::palette::OwnedIndexedFile;
 
         let folder = Arc::new(PathBuf::from("/workspace"));
         let indexed = |name: &str| {
             let path = folder.join(name);
-            IndexedFile::new(
+            OwnedIndexedFile::new(
                 path.clone(),
                 PaletteFileIdentity::canonical(path),
                 Arc::clone(&folder),
@@ -802,11 +827,13 @@ mod tests {
             workspace_folder: Arc::clone(&folder),
         }
         .apply(&mut created, &mut ledger);
+        created.finish_mutation_batch(&mut ledger);
         assert_eq!(created.len(), 3, "Create must add a file");
 
         let mut deleted = base.clone();
         let mut ledger = deleted.incremental_mutation_ledger();
         FileIndexUpdate::Delete(folder.join("one.rs")).apply(&mut deleted, &mut ledger);
+        deleted.finish_mutation_batch(&mut ledger);
         assert_eq!(deleted.len(), 1, "Delete must remove a file");
 
         let mut renamed = base;
@@ -816,19 +843,18 @@ mod tests {
             new_path: folder.join("renamed.rs"),
         }
         .apply(&mut renamed, &mut ledger);
+        renamed.finish_mutation_batch(&mut ledger);
         assert_eq!(renamed.len(), 2, "Rename keeps the count");
         assert!(
             renamed
                 .files()
-                .iter()
-                .any(|file| file.path == folder.join("renamed.rs")),
+                .any(|file| file.path() == folder.join("renamed.rs")),
             "Rename must move the path"
         );
         assert!(
             !renamed
                 .files()
-                .iter()
-                .any(|file| file.path == folder.join("one.rs")),
+                .any(|file| file.path() == folder.join("one.rs")),
             "Rename must retire the old path"
         );
     }
@@ -1038,26 +1064,26 @@ mod tests {
     }
 
     #[test]
-    fn retirement_classification_needs_last_owned_and_the_cap() {
+    fn retirement_classification_needs_last_owned_and_the_threshold() {
         let kind = FileIndexRetirementKind::AcceptedIncremental;
         assert_eq!(
-            classify_index_retirement(kind, true, MAX_INDEXED_FILES),
+            classify_index_retirement(kind, true, LARGE_INDEX_RETIREMENT_FILES),
             Some(kind)
         );
         assert_eq!(
-            classify_index_retirement(kind, false, MAX_INDEXED_FILES),
+            classify_index_retirement(kind, false, LARGE_INDEX_RETIREMENT_FILES),
             None,
             "a shared index is still alive"
         );
         assert_eq!(
-            classify_index_retirement(kind, true, MAX_INDEXED_FILES - 1),
+            classify_index_retirement(kind, true, LARGE_INDEX_RETIREMENT_FILES - 1),
             None,
-            "below the cap is not the lane under test"
+            "below the threshold is not the lane under test"
         );
         assert_eq!(
-            classify_index_retirement(kind, true, MAX_INDEXED_FILES + 1),
-            None,
-            "the predicate is equality, not a threshold"
+            classify_index_retirement(kind, true, MAX_INDEXED_FILES),
+            Some(kind),
+            "the predicate is a threshold: a full index counts too"
         );
         assert_eq!(classify_index_retirement(kind, false, 0), None);
     }
@@ -1070,7 +1096,7 @@ mod tests {
             FileIndexRetirementKind::RejectedIncremental,
         ] {
             assert_eq!(
-                classify_index_retirement(kind, true, MAX_INDEXED_FILES),
+                classify_index_retirement(kind, true, LARGE_INDEX_RETIREMENT_FILES),
                 Some(kind)
             );
         }
@@ -1236,17 +1262,75 @@ mod tests {
     }
 
     #[test]
-    fn the_category_budget_holds_the_whole_index() {
+    fn the_category_view_is_cut_by_its_row_cap() {
         assert_eq!(PALETTE_CATEGORY_RETAINED_BYTES, 0x0080_0000, "8 MiB");
+        assert_eq!(MAX_CATEGORY_VIEW_ROWS, 0x0002_0000, "131,072 rows");
+        assert_eq!(MAX_INDEXED_FILES, 0x0010_0000, "1,048,576 files");
+        assert_eq!(
+            PALETTE_CATEGORY_FLOOR_RETENTION,
+            MAX_CATEGORY_VIEW_ROWS as u64 * PALETTE_CATEGORY_CANDIDATE_BYTES,
+            "the floor derives from the row cap"
+        );
         #[cfg(target_arch = "x86_64")]
         assert_eq!(
             PALETTE_CATEGORY_FLOOR_RETENTION, 4_718_592,
             "4.5 MiB at 36 bytes"
         );
-        assert!(category_row_limit() >= MAX_INDEXED_FILES);
+        assert_eq!(category_row_limit(), MAX_CATEGORY_VIEW_ROWS);
         #[cfg(target_arch = "x86_64")]
-        assert_eq!(category_row_limit(), 233_016);
+        assert!(
+            rows_within(
+                PALETTE_CATEGORY_RETAINED_BYTES,
+                PALETTE_CATEGORY_CANDIDATE_BYTES
+            ) > MAX_CATEGORY_VIEW_ROWS,
+            "the budget's 233,016 rows no longer bind"
+        );
         assert_eq!(RESULT_PAGE_ROWS, 16);
+    }
+
+    /// `scale-file-index` D8's one recorded loss: the row cap is shared by
+    /// every category, so a note category one row above it, which `main`
+    /// listed whole (up to the budget's 233,016 rows), is cut and counted.
+    #[test]
+    fn a_note_category_above_the_row_cap_is_cut_and_counted() {
+        use crate::model::palette::{
+            PaletteCategory, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget,
+        };
+        use crate::services::palette::{
+            CategorySearchInput, FileIndex, PaletteSearchCancellation, PaletteSearchOutcome,
+            category_search,
+        };
+
+        let notes: Vec<PaletteNoteEntry> = (0..=MAX_CATEGORY_VIEW_ROWS)
+            .map(|n| PaletteNoteEntry {
+                category: PaletteNoteCategory::Bookmarks,
+                title: format!("note {n}"),
+                subtitle: String::new(),
+                detail: None,
+                note_text: None,
+                target: PaletteNoteTarget::FolderNote {
+                    workspace_name: "w".into(),
+                    folder: std::path::PathBuf::from("/workspace"),
+                },
+            })
+            .collect();
+        let index = FileIndex::default();
+        let PaletteSearchOutcome::Complete { value, .. } = category_search(
+            CategorySearchInput {
+                index: &index,
+                open_tabs: &[],
+                note_entries: &notes,
+                category: PaletteCategory::Note(PaletteNoteCategory::Bookmarks),
+                query: "",
+                row_limit: category_row_limit(),
+            },
+            &PaletteSearchCancellation::default(),
+        ) else {
+            panic!("a fresh category search completes");
+        };
+        assert_eq!(value.ordinals.len(), MAX_CATEGORY_VIEW_ROWS);
+        assert_eq!(value.matching, MAX_CATEGORY_VIEW_ROWS + 1);
+        assert!(value.limited, "the cut is reported, never silent");
     }
 
     #[test]

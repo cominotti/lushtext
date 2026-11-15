@@ -3,7 +3,6 @@
 //! Command palette domain types — pure Rust, no GTK dependencies.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use super::bookmark::BookmarkRecord;
 
@@ -58,51 +57,13 @@ impl From<std::io::ErrorKind> for PaletteFileIdentityFailure {
     }
 }
 
-/// A file entry in the palette's search index.
-#[derive(Debug, Clone)]
-pub struct IndexedFile {
-    /// Absolute path to the file on disk.
-    pub path: PathBuf,
-    /// Canonical identity captured during background index construction.
-    pub identity: PaletteFileIdentity,
-    /// File name component (pre-extracted for fast matching).
-    pub name: String,
-    /// The workspace folder that contains this file.
-    /// Shared via `Arc` to avoid cloning the full path per file —
-    /// a workspace with 50k files saves ~2.4MB (50k × 48 bytes/PathBuf).
-    pub workspace_folder: Arc<PathBuf>,
-}
-
-impl IndexedFile {
-    /// Create an indexed file, deriving the name from the path's last component.
-    #[must_use]
-    pub fn new(
-        path: PathBuf,
-        identity: PaletteFileIdentity,
-        workspace_folder: Arc<PathBuf>,
-    ) -> Self {
-        let name = path
-            .file_name()
-            .map_or_default(|n| n.to_string_lossy().into_owned());
-        Self {
-            path,
-            identity,
-            name,
-            workspace_folder,
-        }
-    }
-
-    /// Path relative to the workspace folder, for display purposes.
-    #[must_use]
-    pub fn relative_display(&self) -> String {
-        self.path
-            .strip_prefix(self.workspace_folder.as_path())
-            .map_or_else(
-                |_| self.path.display().to_string(),
-                |p| p.display().to_string(),
-            )
-    }
-}
+/// A file's position in the workspace file index's source order.
+///
+/// Search results carry it instead of a borrowed file, which keeps
+/// [`SearchResultItem`] 16 bytes (`scale-file-index` D1); the consumer, which
+/// holds the index it searched, builds the file's view from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FileOrdinal(pub u32);
 
 /// File-like palette entry that is not necessarily part of the workspace index.
 ///
@@ -321,8 +282,9 @@ pub struct ScoredResult<'a> {
 pub enum SearchResultItem<'a> {
     /// File-backed tab already open in the editor.
     OpenFile(&'a PaletteFileEntry),
-    /// File discovered through the current workspace file index.
-    File(&'a IndexedFile),
+    /// File discovered through the current workspace file index, by its
+    /// position in the index's source order.
+    File(FileOrdinal),
     /// Static command registry entry.
     Command(&'a CommandDef),
     /// Cached bookmark or note record.
@@ -675,28 +637,6 @@ mod tests {
     }
 
     #[test]
-    fn test_indexed_file_relative_display() {
-        let file = IndexedFile {
-            path: "/home/user/project/src/main.rs".into(),
-            identity: PaletteFileIdentity::canonical("/home/user/project/src/main.rs".into()),
-            name: "main.rs".to_string(),
-            workspace_folder: Arc::new("/home/user/project".into()),
-        };
-        assert_eq!(file.relative_display(), "src/main.rs");
-    }
-
-    #[test]
-    fn test_indexed_file_relative_display_fallback() {
-        let file = IndexedFile {
-            path: "/other/path/file.rs".into(),
-            identity: PaletteFileIdentity::canonical("/other/path/file.rs".into()),
-            name: "file.rs".to_string(),
-            workspace_folder: Arc::new("/home/user/project".into()),
-        };
-        assert_eq!(file.relative_display(), "/other/path/file.rs");
-    }
-
-    #[test]
     fn test_command_category_labels() {
         assert_eq!(CommandCategory::File.label(), "File");
         assert_eq!(CommandCategory::Edit.label(), "Edit");
@@ -875,16 +815,5 @@ mod tests {
         assert_eq!(document_note.note_text(), "Remember the split adapter");
         assert_eq!(bookmark.display_subtitle(), "src/main.rs:8");
         assert_eq!(bookmark.note_text(), "");
-    }
-
-    #[test]
-    fn test_indexed_file_at_workspace_folder_top_level() {
-        let file = IndexedFile {
-            path: "/home/user/project/Cargo.toml".into(),
-            identity: PaletteFileIdentity::canonical("/home/user/project/Cargo.toml".into()),
-            name: "Cargo.toml".to_string(),
-            workspace_folder: Arc::new("/home/user/project".into()),
-        };
-        assert_eq!(file.relative_display(), "Cargo.toml");
     }
 }
