@@ -6,15 +6,15 @@
 
 ## 1. Failing-first policy check (no workflow change yet)
 
-- [ ] 1.1 Write `scripts/check-flatpak-ci-builds.py` as design D5 specifies. Model it on `scripts/check-workflow-timeouts.py`: line-oriented job and step parsing, an exemption table with the verified reason, and one finding per job listing every broken rule. Give it a `--self-test` over synthetic workflows covering these cases:
+- [x] 1.1 Write `scripts/check-flatpak-ci-builds.py` as design D5 specifies. Model it on `scripts/check-workflow-timeouts.py`: line-oriented job and step parsing, an exemption table with the verified reason, and one finding per job listing every broken rule. Give it a `--self-test` over synthetic workflows covering these cases:
   - a direct `flatpak-builder@` use;
   - a container job without the action;
   - the action placed before checkout;
   - an exempt job whose script loses `--user`;
   - a clean pass.
-- [ ] 1.2 Add the `check-flatpak-ci-builds` Makefile target (self-test, then the real check). Add it to `check-policy` and `.PHONY`, and give it a help line.
-- [ ] 1.3 Run the target on the unchanged workflows. It must fail with two findings: `flatpak.yml` `flatpak` and `release.yml` `flatpak`, each breaking rules 1 and 2. Record the output in `openspec/changes/harden-flatpak-sdk-update-ci/evidence/policy-baseline.md`.
-- [ ] 1.4 Commit (signed, through `scripts/heavy.sh`, `-F` message file) and push.
+- [x] 1.2 Add the `check-flatpak-ci-builds` Makefile target (self-test, then the real check). Add it to `check-policy` and `.PHONY`, and give it a help line. *(Stage 3: `.PHONY` and help here; it joins `check-policy` and CI's `Lint` job in 3.6, because `.githooks/pre-commit` runs `check-policy` and a failing-first member would block the group 1 and 2 commits. Recorded in `evidence/policy-baseline.md`.)*
+- [x] 1.3 Run the target on the unchanged workflows. It must fail with two findings: `flatpak.yml` `flatpak` and `release.yml` `flatpak`, each breaking rules 1 and 2. Record the output in `openspec/changes/harden-flatpak-sdk-update-ci/evidence/policy-baseline.md`.
+- [x] 1.4 Commit (signed, through `scripts/heavy.sh`, `-F` message file) and push.
 
 ## 2. Helper script, failing-first in the real image (L1)
 
