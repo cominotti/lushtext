@@ -141,7 +141,8 @@ record is
   claim here rests on them (maintainer decision D7, option A).
 
 **Measured on 2026-11-15: Verus.** The OpenSpec change
-`evaluate-verus-for-unbounded-proofs` measured the Verus deductive verifier
+`evaluate-verus-for-unbounded-proofs` (merged as `11769e02`, PR #107, and
+archived 2026-11-15) measured the Verus deductive verifier
 (release `0.2026.11.02.8bf68ee`, rustc 1.99.1, Z3 4.16.0; re-verified on the
 rolling `0.2026.11.05.31e44e6`) on claims Kani holds only for bounded scopes.
 The record is

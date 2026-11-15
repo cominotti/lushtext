@@ -158,7 +158,7 @@ input to presented frame, measured on the maintainer's desktop.
 
 - Formal verification: `apply-verification-altitude-redesigns`,
   `verify-shell-conformance-against-proven-cores`.
-  `evaluate-verus-for-unbounded-proofs` is implemented (2026-11-15,
+  `evaluate-verus-for-unbounded-proofs` is merged and archived (2026-11-15,
   [`formal-verification-verus.md`](./formal-verification-verus.md)).
 - `stop-expander-bind-time-child-scans` (the sidebar scans every visible,
   never-expanded directory; found through axiom A22).
