@@ -46,12 +46,15 @@ is in [`evidence/baseline.md`](./evidence/baseline.md).
   all, and any attempt is recorded.
 - **No accessibility bus or portals unless asked for.** Sessions that are not
   for AT set `GTK_A11Y=test`, `NO_AT_BRIDGE=1` and `ADW_DISABLE_PORTAL=1`
-  before the bus starts. `test` keeps the accessible state that 12 widget
-  modules assert, which `none` would drop. The accessibility profile keeps
+  before the bus starts. `test` keeps the accessible state that twelve test
+  files assert, which `none` would drop. The accessibility profile keeps
   AT-SPI. Screenshot lanes keep their portals.
 - **Runtime guard.** At teardown the helper fails the run with
   `SESSION-HYGIENE:` and a distinct exit status if any of these happened:
-  - a message to RealtimeKit1 or bluez;
+  - a `MakeThread*` request to RealtimeKit1, or any other RealtimeKit1
+    message except the portal frontend's startup property read (measured at
+    spec review; it grants nothing);
+  - any message to bluez;
   - an ALSA, v4l2, libcamera or bluez5 device;
   - `org.a11y.Bus` in a session that is not for AT;
   - a portal in a no-portal session.
@@ -60,8 +63,11 @@ is in [`evidence/baseline.md`](./evidence/baseline.md).
   the lane manifests report it as a named failure class.
 - **Static guard.** `make check-session-hygiene` joins `make check-policy`. It
   fails when any tracked script, Makefile recipe, workflow step or Rust or
-  Python source names one of the session commands outside the helper. It keys
-  on command names, not paths. It also fails when the helper's profile or no-RT
+  Python source, or container build file, names one of the session commands
+  outside the helper, in any position except a few explicit benign contexts
+  (package installs and inventories, `case` labels, comments, messages). It
+  keys on command names, not paths, and it also fails when a runner regrows a
+  copy of the shared session-warning family. It also fails when the helper's profile or no-RT
   configuration drifts. It is self-tested failing-first.
 - **Two GTK axioms:**
   - `GTK_A11Y=test` keeps accessible state and never calls `org.a11y.Bus`;
@@ -69,8 +75,9 @@ is in [`evidence/baseline.md`](./evidence/baseline.md).
 - **Docs:**
   - `build.md` and `testing.md` (gate order);
   - the proof-harness README and CHANGELOG;
-  - the smoke warning classifiers (two new mutter warnings under the private
-    system bus, kept in one shared family);
+  - the smoke warning classifiers (two new mutter warnings and one portal
+    warning under the private system bus, added to the existing shared
+    session-service family);
   - the programme record;
   - a handoff for the `cst` session once the change merges.
 
@@ -101,7 +108,8 @@ Users of the app see nothing. On the developer's desktop:
 
 Compared with `main`, the visual, accessibility, crash-recovery and
 `cargo-gtk-proof` lanes need the small `gtk-lush-session` binary built, which
-the shim does on first use. Their mutter logs gain two expected warnings.
+the shim does on first use. Their mutter logs gain two expected warnings, and portal-on sessions one
+expected portal warning (three times).
 
 ## Capabilities
 
@@ -141,6 +149,11 @@ the shim does on first use. Their mutter logs gain two expected warnings.
   - `scripts/smoke_warning_classifiers.py` and the widget and axiom
     benign-noise patterns.
 - Makefile (`check-session-hygiene`, `check-policy`),
-  `.github/workflows/ci.yml` and `end-user-smoke.yml` (`dbus-tools` for
-  `dbus-monitor`, and the bin), and `scripts/setup-dev-tools.sh`.
-- Timing: none on the app (no timed path touched).
+  `.github/workflows/ci.yml`, `end-user-smoke.yml` and
+  `responsiveness-smoke.yml` (`dbus-tools` for `dbus-monitor`, the bin, and
+  for both axiom jobs the control prerequisites `at-spi2-core` and
+  `xdg-desktop-portal`), `build-aux/builder-diagnostics/Containerfile`, and
+  `scripts/setup-dev-tools.sh`.
+- Timing: none on the app (no app code or budgeted path touched). The
+  responsiveness lane's session gains a private system bus, so it gets one
+  interleaved main-vs-branch quick-tier check (design, "Measurement").

@@ -16,3 +16,10 @@ The ledger SHALL gain two entries with new stable ids. First, with `GTK_A11Y=tes
 #### Scenario: A toolkit update changes either behaviour
 - **WHEN** either probe fails after a GTK or Libadwaita update
 - **THEN** the helper's environment (design D5 and D6) and the runtime guard are revisited before the failure is resolved
+
+### Requirement: The new axioms' controls run through the helper binary
+Because `gtk-lush-axioms` stays a leaf crate, each of the two probes SHALL run its control through the helper binary that the enclosing session exports as `GTK_LUSH_SESSION_BIN`, and SHALL return `FixtureInvalid`, never `Holds`, when that binary or a control prerequisite is missing.
+
+#### Scenario: A control cannot run
+- **WHEN** either probe runs with `GTK_LUSH_SESSION_BIN` unset, or on a host without `at-spi-bus-launcher` or `xdg-desktop-portal`
+- **THEN** the probe's verdict is `FixtureInvalid` with a bounded diagnostic naming what is missing, and the runner fails as for any other control-step failure

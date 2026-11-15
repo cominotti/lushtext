@@ -11,8 +11,22 @@ Here is how each spawner starts its private headless session today.
 
 Every screenshot lane starts a bare `wireplumber`, which is the `main` profile.
 No lane gives WirePlumber a private state home. Each site sets its own
-environment, and no site sets it before `dbus-run-session`, which is when the
-D-Bus-activated services take their environment.
+environment. Some set part of it before `dbus-run-session`, which is when the
+D-Bus-activated services take their environment: `run-widget-tests.sh` exports
+`NO_AT_BRIDGE`, `GDK_DEBUG` and `GTK_USE_PORTAL`, and the widget and axiom
+binaries' `main` sets the recommended values before the library relaunch. None
+sets `GTK_A11Y=test` or, for widget sessions, `ADW_DISABLE_PORTAL=1` there,
+and that is the gap D5 and D6 close.
+
+The table is the author's grep. The red scan of task 1.3 is the authoritative
+list, and it also finds non-spawn mentions that D8 must resolve: version
+queries (`responsiveness-smoke-driver.py`'s `["mutter", "--version"]` and its
+`"mutter"` toolkit-report key, `run-responsiveness-smoke.sh`'s
+`mutter --version`), capability and report data (`cargo-gtk-proof`
+`artifacts.rs` test data, `lushtext-automation.py`'s `session_bus` value), the
+harness's own tooling check and its tests in `proof-harness/src/lib.rs`, the
+`for command_name in dbus-run-session mutter` loops of
+`run-portal-sandbox-smoke.sh`, and `setup-dev-tools.sh`'s `required_commands`.
 
 ## Goals / Non-Goals
 
@@ -87,6 +101,11 @@ Two subcommands share one option set. The library mirrors them with a builder.
     tears down in reverse order.
   - Exits with CMD's status. If the check failed, it exits with the hygiene
     status instead and prints `SESSION-HYGIENE: <class>: <detail>`.
+  - The binary exports its own path as `GTK_LUSH_SESSION_BIN` into the
+    session, so code inside it that needs a *nested* session (the new axioms'
+    control runs, below) can start one without a Cargo dependency on the
+    harness. A `session` started inside another is allowed and fully private:
+    its own bus, system bus, runtime directory and guard.
 - `gtk-lush-session compositor --monitor WxH [--monitor WxH…] -- CMD…`
   - Refuses to run outside a `session`.
   - Execs `mutter --headless --wayland --no-x11 --virtual-monitor …`, so a
@@ -96,8 +115,13 @@ Two subcommands share one option set. The library mirrors them with a builder.
     stage.
 - `run` = `session` + `compositor` for the common case: the widget harness, the
   axioms, and simple lanes.
-- `check-tools --profile …` prints the missing commands. Lanes call it instead
-  of naming the commands in their own require checks.
+- `check-tools --profile … [--json]` prints the missing commands and, with
+  `--json`, each session command's resolved path and `--version` line. Lanes
+  call it instead of naming the commands in their own require checks, and
+  lanes that record toolkit versions (the responsiveness manifest's
+  `toolkit.mutter`, `run-responsiveness-smoke.sh`'s `mutter=` line) copy them
+  from its JSON, so the static gate (D8) needs no exception for version
+  queries.
 
 Profiles are named option bundles, so a lane says what it is:
 
@@ -112,7 +136,17 @@ The responsiveness lane runs every variant in one session and sets each
 app's environment per variant: `GTK_A11Y=none` and `NO_AT_BRIDGE=1` except
 for the `at` variant, and always `ADW_DISABLE_PORTAL=1`. So it uses the
 `accessibility` profile whenever the `at` variant is selected, which is the
-default, and `plain` otherwise. Its app-side environment does not change.
+default, and `plain` otherwise, **always with `--media off`**: the lane starts
+no PipeWire or WirePlumber today, and a timing lane must not gain two daemons
+(decided at spec review). Its app-side environment does not change.
+
+Explicit options override a profile's values, and the session's artifacts
+record the effective values, not only the profile name.
+
+In a profile with a11y off, `GTK_A11Y` defaults to `test`. A caller may pass
+`none` instead (the responsiveness lane's non-AT app processes do, per
+process). Any other value, or an unset variable after the helper applied its
+environment, is refused at start with a `config` verdict.
 
 Every profile uses a private system bus. The one exception is the
 portal-sandbox lane, which may need the host bus for `flatpak run`. If it
@@ -183,15 +217,30 @@ mutter asks for ColorManager, locale1, login1 and UPower, gets
 - `Failed to retrieve locale properties: …ServiceUnknown…`;
 - `There is no colord server available`.
 
-They become one shared benign family in `scripts/smoke_warning_classifiers.py`,
-defined there once as exact texts. The widget and axiom runners stop keeping
-their own copies of the mutter system-bus lines and read the family from the
-module (a `--print-regex <family>` entry point), as the
+In portal-on sessions the `xdg-desktop-portal` frontend adds a third (spec
+review spike, `evidence/baseline.md`), three times per session:
+
+- `Failed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.RealtimeKit1 was not provided by any .service files`.
+
+These exact texts join the **existing** shared family "Headless container
+session services" in `scripts/smoke_warning_classifiers.py`, which already
+holds the no-system-bus "Could not connect" variants of the same services
+(locale1, colord, the portal's RealtimeKit proxy) that CI produces. No
+parallel family is added. Any further text the task 2.5 portal-on run shows is
+added the same way, by exact text and with a sample line in the module's
+self-test, and nothing broader.
+
+The widget and axiom runners stop keeping their own copies of the mutter
+system-bus lines and read the family from the module, as the
 `smoke-warning-classification` requirement asks of a pattern shared by more
-than one lane. The existing "Could not connect" variants, which CI produces
-because it has no system bus, move into the same family. The
+than one lane. The module's patterns use Python syntax (`(?:…)`), and the
+runners feed `grep -E`, so the new `--print-regex <family>` entry point emits a
+POSIX ERE rendering of the family, and the module's self-test runs `grep -E`
+with that output over its benign and defect samples to prove the dialect. The
 `cargo-gtk-proof` Rust scanner keeps its own copy under its existing
-Python-oracle parity test.
+Python-oracle parity test. Copies are caught mechanically: the static gate
+(D8) fails when a tracked file other than the module and that parity-tested
+scanner contains one of the family's distinctive message texts.
 
 *Rejected:*
 
@@ -215,14 +264,26 @@ The fix sets `GTK_A11Y=test` and `NO_AT_BRIDGE=1` in the environment the
 helper gives `dbus-run-session`, so every process sees them, activated
 services included. `test` was chosen over `none` by measurement: `none`
 creates no AT context, and `gtk4::test_accessible_has_property` and
-`has_state` then return false, which breaks the 12 widget modules that assert
-accessible state. `test` keeps a `GtkTestATContext` with full state and
+`has_state` then return false, which breaks the twelve files that assert
+accessible state (`evidence/baseline.md`). `test` keeps a `GtkTestATContext` with full state and
 contacts no bus.
 
 The proof harness's `recommended_pre_gtk_environment()` gains `GTK_A11Y=test`
-and `ADW_DISABLE_PORTAL=1`. The widget harness stops setting variables only in
-its child (`configure_widget_test_environment`) and relies on the launcher.
-Inside the child it now asserts the values instead of setting them.
+and `ADW_DISABLE_PORTAL=1` (its fixed-size array return type changes, which
+the API snapshot records). Today the widget and axiom binaries set the
+recommended values in `main`, which covers the library relaunch but not
+`run-widget-tests.sh`, whose `dbus-run-session` gets only three of them. After
+the change the launcher (library or binary) applies them before the bus starts,
+and the binaries stop setting them. The **per-test child** (the process that
+runs one test or probe, `LUSHTEXT_WIDGET_CHILD` /
+`GTK_LUSH_AXIOMS_PROBE_CHILD` set) verifies them before GTK initializes; list
+mode and the relaunching parent do not, because they are outside the session
+by design. A caller-set `GSK_RENDERER` still wins, and `GTK_A11Y=none` is
+accepted as an a11y-off value (D2).
+
+Mutter 51 owns `org.freedesktop.a11y.Manager` on the session bus (spike). That
+is mutter's own interface, not the AT-SPI bus, so the guard keys on the exact
+name `org.a11y.Bus`, never on an `a11y` substring.
 
 *Rejected:*
 
@@ -249,14 +310,45 @@ activated names, and the decision is recorded in the deferral list.
 At teardown, while every service is still alive, the helper evaluates a pure
 verdict function over bounded observations:
 
-- monitor-log lines naming `org.freedesktop.RealtimeKit1` or `org.bluez`;
+- system-bus monitor records naming `org.freedesktop.RealtimeKit1` or
+  `org.bluez`, each with its sender's executable, resolved while the sender is
+  still connected (`GetConnectionUnixProcessID` on the private system bus,
+  then `/proc/<pid>/exe`);
 - with media on, `pw-dump` objects whose `device.api` is `alsa`, `v4l2`,
   `libcamera` or `bluez5`, and any `libpipewire-module-rt` load in the
   daemons' logs, read at a pinned `mod.rt` log topic;
-- session `ListNames` containing `org.a11y.Bus` when a11y is `off`;
-- `org.freedesktop.portal.Desktop` or `.Documents` when portals are `off`;
+- every name acquired on the session bus during the session (a
+  `NameOwnerChanged` match started with the session), not only those still
+  owned at teardown, so a service that exits early is still seen:
+  `org.a11y.Bus` when a11y is `off`, and `org.freedesktop.portal.Desktop` or
+  `.Documents` when portals are `off`;
 - a configuration self-check made at start: the profile is `policy`, the
-  fragments are present, and the homes are private.
+  fragments are present, the homes are private, and `GTK_A11Y` has an
+  accepted value (D2).
+
+**The `rtkit` and `bluez` classes (decided at spec review).** The
+`xdg-desktop-portal` frontend reads rtkit's three properties at startup in
+every portal-on session (`evidence/baseline.md`, review-stage spike: 18
+messages, 3 of them `Properties.Get` to `org.freedesktop.RealtimeKit1`, no
+`MakeThread*` call). Failing on any message that names rtkit would fail every
+`plain`, `screencast` and `accessibility` session, so the classes are:
+
+- `rtkit` fires on any `MakeThreadRealtime`, `MakeThreadRealtimeWithPID`,
+  `MakeThreadHighPriority` or `MakeThreadHighPriorityWithPID` call, from any
+  sender. These are the calls that consume the host's burst limit.
+- `rtkit` also fires on any other message naming
+  `org.freedesktop.RealtimeKit1` (a call to it, or an `AddMatch`,
+  `GetNameOwner` or `StartServiceByName` naming it) unless its sender resolves
+  to the `xdg-desktop-portal` executable and the profile has portals on. That
+  one exception is recorded with its reason: on the host it is a property
+  read that grants nothing and counts toward no limit, and portal-off profiles
+  never start the frontend. A regressed PipeWire module-rt under the private
+  bus never reaches a `MakeThread*` call (its property reads fail first), and
+  this clause is what catches it.
+- A sender that cannot be resolved, because it disconnected, gets no
+  exception (fail closed).
+- `bluez` fires on any message naming `org.bluez`, from any sender, with no
+  exception.
 
 The check keys on `device.api`, not on a text search for `bluez`, because
 restored metadata can name bluez devices. That happened in the spike that ran
@@ -275,7 +367,10 @@ These consumers report it as a named class:
 - every lane manifest (`failure_status: session-hygiene`).
 
 The verdict function is GTK-free and I/O-free, and unit tests cover every
-class plus the clean case. The failing-first proof is runtime: before the
+class plus the clean case, the portal-frontend exception, and the cases that
+must still fire next to it: the same lookup from another executable, a
+`MakeThread*` call from the frontend, an unresolved sender, and a portal-off
+profile. The failing-first proof is runtime: before the
 configuration lands, the new helper is run once with the bare configuration
 and must fail with all four classes (task 2.6). An opt-in `--expect-dirty`
 mode of the binary keeps that proof re-runnable by hand.
@@ -293,23 +388,51 @@ names are `dbus-run-session`, `dbus-daemon`, `dbus-launch`, `mutter`,
   - Makefile recipe lines;
   - workflow `run:` blocks;
   - Python (`ast`);
-  - Rust (string literals, after stripping comments).
+  - Rust (string literals, after stripping comments);
+  - `Containerfile`/`Dockerfile` `RUN`, `CMD` and `ENTRYPOINT` instructions, as
+    shell.
 
-  Only `*.md`, `openspec/**`, the helper module and its data files, and the
-  gate's own fixtures are excluded. A new lane under a new path is scanned the
-  day it is added.
-- **Shell rule:** a forbidden name, or a path ending in `/name`, in
-  **command position**. That is the first word of a simple command, after
-  `VAR=value` assignments and the wrappers `exec`, `env`, `nohup`, `setsid`,
-  `timeout N`, `taskset …`, `stdbuf`, `nice`, `ionice`, `command`,
-  `flatpak-spawn --host`, `systemd-run …` and `with-memory-cap.sh` /
-  `with-temp-scope.sh … --`. Package lists (`dnf install … pipewire`), `case`
-  labels, arguments and comments pass.
-- **Python and Rust rule:** any string literal equal to a forbidden name or
-  ending in `/name`. Docstrings and comments are excluded. Lanes do not name
-  these commands at all after migration: their prerequisite checks call
-  `check-tools`, and report strings name the helper. Literals such as
+  Only `*.md`, `openspec/**`, the helper module and its data files, the gate
+  script itself (`scripts/check-session-hygiene.py`, whose forbidden-name list
+  is a set of equal literals) and the gate's own temp-scope fixtures are
+  excluded. A new lane under a new path is scanned the day it is added.
+- **Shell rule (fail-closed, decided at spec review):** a word equal to a
+  forbidden name, or a path ending in `/name`, **in any position**, fails. A
+  command-position rule with a wrapper list was rejected: it is fail-open
+  (every omitted wrapper, such as `scripts/heavy.sh … --`, `measure.sh`,
+  `if`/`!`/`&&`, or a function like `require_command mutter`, would escape),
+  and a line-based parser cannot tell a multi-line array element from a
+  command. The exempt contexts are explicit and few:
+  - comments;
+  - a package-manager install command (`dnf`, `microdnf`, `yum`, `apt`,
+    `apt-get`, `zypper`, `pacman` with `install`/`-S`) and its backslash
+    continuation lines;
+  - the elements of an array assigned to a variable whose name ends in
+    `packages` (any case), the package-inventory convention
+    `setup-dev-tools.sh` already follows;
+  - a `case` pattern label;
+  - text inside a quoted string, except a string passed to `sh -c`,
+    `bash -c` or `eval`, whose words are scanned as shell.
+
+  So `taskset -c 0 pipewire`, `scripts/heavy.sh -- mutter`,
+  `require_command mutter`, `for c in dbus-run-session mutter; do` and
+  `sh -c 'wireplumber &'` fail, and `echo "running under mutter --headless"`
+  passes.
+- **Python and Rust rule:** a string literal fails when it equals a forbidden
+  name, ends in `/name`, or has as its first whitespace-separated word such a
+  name or path (`"mutter --headless"` for `shell=True`). Docstrings and
+  comments are excluded. Messages such as `"missing required command: mutter"`
+  pass. Lanes do not name these commands as data either: prerequisite checks
+  and version records come from `check-tools` (D2), the `session_bus` report
+  value names the helper, and test data that needs a command name (the
+  `cargo-gtk-proof` missing-capability tests) takes it from the helper's
+  exported constant or uses a name outside the list. Literals such as
   `pipewiresrc`, `pipewire.log` and `pipewire-gstreamer` pass.
+- **Classifier copies:** any tracked file other than
+  `scripts/smoke_warning_classifiers.py` and the parity-tested
+  `cargo-gtk-proof` warning scanner that contains a distinctive message text
+  of the shared session-service family (D4) fails, so a runner cannot regrow
+  its own copy.
 - **Drift rules:** these must hold in the helper's sources and data files:
   - the WirePlumber profile constant is `policy`;
   - the WirePlumber fragment contains no `libpipewire-module-rt` and contains
@@ -318,20 +441,26 @@ names are `dbus-run-session`, `dbus-daemon`, `dbus-launch`, `mutter`,
   - the daemons' state, config and data homes are helper-private;
   - every profile uses a private system bus unless it is marked
     `host-system-bus` with a reason.
-- **Helper exemption:** keyed on the helper's path. This is fail-closed: if
-  the helper is renamed without updating the gate, the helper becomes a
-  violator and the gate turns red rather than silently passing. The gate also
-  fails if it finds **zero** sanctioned spawns in the helper, so a gate that
-  matches nothing cannot pass, as `testing.md`, "Path-keyed gates", requires.
+- **Helper and gate exemptions:** keyed on their paths. This is fail-closed:
+  if the helper or the gate is renamed without updating the gate, the renamed
+  file becomes a violator and the gate turns red rather than silently passing.
+  The gate also fails if it finds **zero** sanctioned spawns in the helper, so
+  a gate that matches nothing cannot pass, as `testing.md`, "Path-keyed
+  gates", requires; the gate joins that rule's list of path-keyed gates.
 - **Self-test, failing-first:** each fixture is a small file written to the
   run's temp scope:
-  - wrapped shell spawns;
+  - shell spawns, wrapped and unwrapped, and argument forms (a require-check
+    function, a `for … in` list, `heavy.sh --`, `sh -c '…'`);
   - a Makefile recipe;
   - a workflow `run:` step;
-  - a Python list literal;
+  - a `Containerfile` `RUN` line;
+  - a Python list literal and a multi-word `shell=True` string;
   - a Rust `Command::new`;
+  - a runner that regrows a copy of a family text;
   - a fixture at a never-listed new path, which must fail;
-  - every benign form above, which must pass;
+  - every benign form above, which must pass, including a **multi-line**
+    install list (a name alone on a backslash continuation line, as
+    `ci.yml` has it) and a multi-line `packages=(…)` array;
   - each drift mutation of a copy of the real data files, which must fail.
 
   The self-test is written and run red against the unmigrated tree before any
@@ -362,7 +491,24 @@ construction, so a cap would limit nothing harmful.
 
 Both get probes in `gtk-lush-axioms` that read the session bus's `ListNames`
 from inside the probe, plus catalogue entries and samples. The ids are the
-next free ones at apply time; the ledger is at A111 today. PipeWire and
+next free ones at apply time; the ledger is at A111 today.
+
+*Control runs (decided at spec review).* Each probe also needs a control that
+shows the name **does** appear without the variable, or it could pass
+vacuously, and that control must not dirty the axioms session's own guard.
+`gtk-lush-axioms` is a leaf family crate (`check-gtk-lush-policy` forbids a
+`gtk-lush-*` dependency) and the static gate forbids it to spawn a session,
+so the probe runs its control through the helper binary that the enclosing
+session exports as `GTK_LUSH_SESSION_BIN` (D2): a nested `run` with a11y on, or
+with portals on, around a small control child. When the variable is unset (the
+axiom runner started by `cargo test` directly, through the library) or a
+control prerequisite is missing (`at-spi-bus-launcher`, `xdg-desktop-portal`),
+the probe returns `FixtureInvalid`, which fails the lane, never `Holds`. `make
+gtk-axioms` starts its session through the shim, so the variable is set. Both
+axiom CI jobs install with weak dependencies off, so `at-spi2-core`,
+`xdg-desktop-portal`, `xdg-desktop-portal-gtk` and `dbus-tools` are added to
+their package lists (task 4.6). In an SDK sandbox (`make gtk-axioms-runtimes`)
+the samples report the existing no-session-bus skip form. PipeWire and
 WirePlumber facts (D3) are not GTK-family behaviour. The D7 runtime guard pins
 them on every run, and the static gate pins their configuration.
 
@@ -380,22 +526,35 @@ them on every run, and the static gate pins their configuration.
   it should.
 - **The WirePlumber fragment repeats module lists** (D3). This is an accepted
   maintenance point.
-- **Proof fingerprints.** The visual and accessibility proofs fingerprint
-  lane scripts, so those smokes run last, right before the commit (gate order
-  in `testing.md`).
+- **Proof fingerprints.** The accessibility proof fingerprints the capture
+  and atspi skill scripts, `run-accessibility-smoke.sh`, `run-visual-smoke.sh`,
+  `smoke_warning_classifiers.py`, `docs/automation*.md`,
+  `docs/end-user-coverage.md`, `crates/lushtext-core/src/ui/` and the widget
+  tests, and `check-accessibility-policy` demands a fresh smoke for every
+  commit that leaves one of them changed. So every such edit lands in group 4,
+  whose commit is preceded by both smokes, and groups 5–8 touch none of them
+  (tasks.md).
+- **The axiom runner moves from `GTK_A11Y=none` to `test`.** Every probe was
+  verified under `none`. A test context per widget is a small, uniform cost,
+  but a cost-ratio probe could move. Task 6.3 runs every probe, slow ones
+  included; a probe whose verdict changes is investigated, not loosened, and if
+  its cause is the test context the runner keeps `none` for that probe's child
+  (D2 accepts it) with the reason recorded in the ledger row.
 
 ## Measurement
 
-Timing: none (no timed path touched). App code is unchanged, and the
-responsiveness lane's per-variant app environment is unchanged (D2). The
-lanes' per-case wall time is not a budgeted path. One residual: under the
-private system bus, an app-side system-bus lookup on a timed path would fail
-fast instead of succeeding. Task 6.4 checks the responsiveness lane's app
-stderr and the probe logs for any system-bus access. If one exists on a timed
-path, that lane gets an interleaved main-vs-branch run through
-`scripts/measure.sh` before merge (`verification-runs.md`), and this section
-is amended. The host-load evidence is
-before/after counts from the read-only system journal during one lane run
+Timing: no app code and no budgeted path changes, and the responsiveness
+lane's per-variant app environment is unchanged (D2). The lanes' per-case wall
+time is not a budgeted path. The responsiveness lane's *session* does change:
+a private system bus with its monitor (media stay off, as today), so an
+app-side system-bus lookup on a timed path would fail fast instead of
+succeeding. Because that is the measurement lane, the check is unconditional
+(decided at spec review): task 6.4 runs an interleaved main-vs-branch quick-tier
+measurement of the affected cases through `scripts/measure.sh`
+(`verification-runs.md`; a verdict run needs a 1-minute load under 4), and
+also checks the app stderr and probe logs for system-bus access. Any budget
+shift is a blocker, investigated before merge, and this section records the
+result. The host-load evidence is before/after counts from the read-only system journal during one lane run
 (task 6.5), not timings.
 
 Kani: none (no proven module touched). The verdict function is set membership

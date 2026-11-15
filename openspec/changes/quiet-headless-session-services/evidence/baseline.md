@@ -92,8 +92,10 @@ before `dbus-run-session`. Headless mutter activates neither.
 | `test` | `GtkTestATContext` | true | true |
 | `none` | none | false | false |
 
-Twelve widget-test modules assert accessible state with
-`gtk4::test_accessible_has_*`, so `none` would break them; `test` keeps them.
+Twelve files assert accessible state with
+`gtk4::test_accessible_has_*` (ten widget-test modules, the widget `common.rs`
+helper and `lushtext-core`'s `ui/accessibility.rs`), so `none` would break them;
+`test` keeps them.
 
 ## Mutter and rtkit
 
@@ -104,3 +106,31 @@ stayed SCHED_OTHER or SCHED_BATCH. Under the private system bus it asks for
 `org.freedesktop.login1` and `org.freedesktop.UPower`, and logs two new warnings:
 `mutter-WARNING **: Failed to retrieve locale properties: …ServiceUnknown…`
 and `libmutter-WARNING **: There is no colord server available`.
+
+## Review-stage spike: the portal frontend under the private system bus
+
+Spec review, 2026-11-14, same host and versions. One throwaway
+`dbus-run-session` with private XDG homes and a runtime directory under
+`/run/user/1000/qhsrv.*` (removed afterwards, its document-portal FUSE mount
+unmounted first), a private system `dbus-daemon` on an abstract socket watched
+by `dbus-monitor`, and `mutter --headless` presenting a virtual monitor. Inside
+it, `gdbus call` read `org.freedesktop.portal.Settings` `version` (reply
+`(<uint32 2>,)`), which activated `xdg-desktop-portal`,
+`xdg-desktop-portal-gtk`, the permission store and the document portal. No
+PipeWire, no WirePlumber, no GTK client.
+
+| Measurement | Value |
+| --- | --- |
+| System-bus messages naming `org.freedesktop.RealtimeKit1` | 18, all from one sender, the `xdg-desktop-portal` frontend |
+| Of those, calls whose destination is `org.freedesktop.RealtimeKit1` | 3: `Properties.Get` of `MaxRealtimePriority`, `MinNiceLevel`, `RTTimeUSecMax` |
+| The rest | `AddMatch` (arg0 / sender `org.freedesktop.RealtimeKit1`), `GetNameOwner`, `StartServiceByName` naming it |
+| `MakeThreadRealtime*` / `MakeThreadHighPriority*` calls | 0 |
+| New warnings | 3 × `xdg-desktop-portal-WARNING **: Failed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.RealtimeKit1 was not provided by any .service files`, plus mutter's two lines above |
+| Other system-bus destinations | `org.freedesktop.locale1` (mutter, 1 call) |
+| Session-bus names at the end | the portals above and `org.freedesktop.a11y.Manager` (mutter's own a11y manager, not `org.a11y.Bus`) |
+
+So the portal frontend reads rtkit's properties at startup in every
+portal-on session. On the host bus that is a property read that grants
+nothing and counts toward no burst limit, but a guard that fails on *any*
+message naming RealtimeKit1 would fail every `plain`, `screencast` and
+`accessibility` session. Design D7 keys the `rtkit` class accordingly.
