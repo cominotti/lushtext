@@ -59,12 +59,22 @@ computed:
 - `checkout [<path>]` prints `<root>/checkouts/<basename>-<sha256(realpath)[:16]>`.
   It creates the directory with a `CACHEDIR.TAG` and a `checkout-path` file
   holding the realpath.
+- `checkout-path [<path>]` prints the same directory without creating
+  anything. Callers that resolve the location at load time (the Makefile's
+  variables, `proof-strength.py`'s module-level `WORKTREE`) use it, so a
+  target or import that never writes there creates no directory. The writer
+  calls `checkout` once before its first write.
 - `prune [--dry-run]` removes checkout directories whose recorded path is no
-  longer a directory, and never touches anything else.
+  longer a directory, and never touches anything else. A proof-strength
+  worktree inside a pruned directory leaves a stale entry in the repository's
+  `git worktree list`; `prune` prints the `git worktree prune` hint, and the
+  next proof-strength run already runs it (`remove_worktree`).
 - `make build-cache-prune` runs it.
 
 The Makefile, `run-mutants.sh` and `proof-strength.py` all call this helper;
-none computes the path itself.
+none computes the path itself. The Cominotti repository generator is the one
+exception for Flatpak state, because its app dir follows its caller's output
+dir (D7).
 
 - **Why not reuse cargo's `{workspace-path-hash}` build dir?** It exists only
   on CST hosts, its location is CST's to change, and the repository cannot
@@ -93,7 +103,13 @@ set it. The CI modes (`ci-pr`, `ci-full`) and `list` are unchanged.
   which can starve a pending measurement.
 - If some slots are free, it runs on those and prints how many. If none are
   free, it exits 75 and names each holder: the PID and the checkout recorded in
-  the slot's `owner` file.
+  the slot's `owner` file. A holder is named only while its lock is really
+  held; an `owner` file left by a killed run is reported as stale, not as a
+  holder.
+- The slot lock's file descriptor is close-on-exec, or held by a wrapper
+  process that does not pass it on, so no child keeps a slot. `heavy.sh`'s
+  header gives the reason: a daemon a build leaves behind (an sccache server)
+  would otherwise hold the slot after the run exits.
 
 **Sync (`scripts/mutants-mirror.py sync <checkout> <slot-src>`, with
 `--self-test`).**
@@ -104,6 +120,13 @@ set it. The CI modes (`ci-pr`, `ci-full`) and `list` are unchanged.
 - A file whose bytes differ is rewritten, which gives it a new mtime so Cargo
   sees it as changed. Identical files are left untouched, so their mtimes and
   Cargo's freshness survive.
+- The executable bit is mirrored (98 tracked files carry it), and a mode-only
+  difference is applied without rewriting the bytes.
+- A tracked symlink is mirrored as a symlink with the same target, never
+  followed: the tree tracks 10, including the directory links `.claude/rules`
+  and `.claude/skills`. A symlink whose target resolves outside the slot is
+  refused, so an in-place mutant can never write through a link into the
+  checkout.
 - Files not in the set are deleted, as are directories left empty.
 - An interrupted in-place run can leave a mutated file in a slot. The next sync
   finds its bytes differ and restores it, so a slot heals itself.
@@ -117,24 +140,53 @@ set it. The CI modes (`ci-pr`, `ci-full`) and `list` are unchanged.
   - `CARGO_TARGET_DIR=<slot>/target` and `CARGO_BUILD_BUILD_DIR=<slot>/build`,
     explicit and independent of CST;
   - the D3, D4 and D5 environment;
-  - the existing jobs, test-thread and timeout knobs.
+  - the existing test-thread, build-jobs and timeout knobs.
+- Mirror mode never passes `--jobs`, and it unsets `CARGO_MUTANTS_JOBS`:
+  cargo-mutants 27 refuses `--in-place` with either, even `--jobs 1` (probed).
+  The Makefile still exports `MUTANTS_JOBS=$(MUTANTS_LOCAL_JOBS)`, which
+  `mutants_args` appends today, so mirror mode reads `MUTANTS_LOCAL_JOBS` as
+  the slot count and drops `MUTANTS_JOBS` from the cargo-mutants arguments.
+- `RUSTC_WORKSPACE_WRAPPER` (D4) names a slot-stable path, a copy of
+  `rustc-passthrough.sh` at `<root>/mutants/rustc-passthrough.sh`, not the
+  checkout's copy. Cargo takes the workspace wrapper into workspace members'
+  unit hash (it is what keeps Clippy's and `cargo check`'s artifacts apart),
+  so a path that changed with each checkout could rebuild every member when
+  runs from different checkouts alternate in a slot. Task 3.3 confirms this
+  with one probe and keeps the stable path either way.
 - With N slots, the i-th slot taken (i = 0..N-1) also gets `--shard i/N`.
   cargo-mutants shards are 0-based. A user `MUTANTS_SHARD` combined with N > 1 is refused, because the
   two would compose ambiguously.
 - `diff` mode writes `git.diff` in the checkout, as today, and passes it by
   absolute path.
 
-**Output.**
+**Output.** `--output D` makes cargo-mutants create `D/mutants.out` (probed).
 
-- Each slot writes `--output <checkout>/mutants.out.slots/slot-<k>`.
+- Each slot runs with `--output <checkout>/mutants.out.slots/slot-<k>`, so its
+  report is `<checkout>/mutants.out.slots/slot-<k>/mutants.out`. The
+  `/mutants.out*/` `.gitignore` entry already covers that directory.
 - `mutants-mirror.py merge` then rotates the checkout's `mutants.out` to
   `mutants.out.old`, as cargo-mutants does. It writes a `mutants.out` with the
-  same files a single run produces: the `*.txt` outcome lists concatenated, the
-  `log/` and `diff/` entries unioned (names are unique per mutant), and
-  `outcomes.json` with its outcome list concatenated and its counters summed.
-  The implementation pins this format against cargo-mutants 27.0.0's real
-  output.
-- With N = 1 the slot writes `<checkout>/mutants.out` directly.
+  files a single run produces. These facts come from a cargo-mutants 27.0.0
+  probe with two shards:
+  - **Names collide across shards.** Every shard has its own `Baseline`
+    outcome and `log/baseline.log`. The `_001`, `_002` suffix that separates
+    mutants at one source location is a per-run counter, so two shards can
+    write the same `log/` or `diff/` name for different mutants. Merge
+    therefore namespaces every entry per slot (`log/slot-<k>/…`,
+    `diff/slot-<k>/…`) and rewrites the `log_path` and diff references in
+    `outcomes.json` to match.
+  - **`outcomes.json`:** the outcome lists are concatenated, keeping one
+    `Baseline` entry per slot. The counters `total_mutants`, `missed`,
+    `caught`, `timeout`, `unviable` and `success` are summed. `start_time` is
+    the earliest and `end_time` the latest; `cargo_mutants_version` must be the
+    same in every slot.
+  - **`mutants.json`** (the mutant list) is concatenated. `*.txt` lists are
+    concatenated. `debug.log` is concatenated with a header per slot, and
+    `lock.json` is dropped, since it describes a finished run.
+  - **An empty shard** exits 0 and writes no `outcomes.json` and no baseline.
+    Merge accepts that and counts nothing for it.
+- With N = 1 the slot runs with `--output <checkout>`, so cargo-mutants writes
+  and rotates `<checkout>/mutants.out` itself.
 
 **Exit status.** A slot exit outside {0, 2, 3} wins (the first such). Otherwise
 the merged status is 2 if any slot missed mutants, else 3 if any timed out, else
@@ -150,7 +202,17 @@ the merged status is 2 if any slot missed mutants, else 3 if any timed out, else
   3 × 3-5 GB. Per-checkout slots, given the 15 checkouts already on the host,
   would not be bounded.
 - Two runs from different checkouts in one slot simply resync. Only the
-  workspace members that differ rebuild, and the dependencies stay warm.
+  workspace members that differ rebuild, and the dependencies stay warm,
+  unless `Cargo.lock` or the feature set differs.
+- **Growth bound.** Cargo never deletes stale units from a build dir, so a slot
+  used by branches with different dependency sets keeps every one of them. At
+  acquisition, a slot whose `build/` plus `target/` exceeds
+  `MUTANTS_SLOT_MAX_GIB` (default 12, about twice a cold
+  `CARGO_INCREMENTAL=0` test build plus its uplifted artifacts) is emptied
+  before the sync, and the run says so. That costs one cold build and keeps
+  the pool's disk bounded.
+- **Static shards can finish unevenly**, unlike `--jobs`, which hands out
+  mutants as jobs free up. Task 9.1 records each slot's wall time.
 
 **Rejected alternatives.**
 
@@ -164,14 +226,26 @@ the merged status is 2 if any slot missed mutants, else 3 if any timed out, else
   measured 27 s rebuild plus the test phase, a 50-mutant `mutants-diff` takes
   roughly 3x longer.
 
-### D3. `CARGO_INCREMENTAL=0` only in lanes that own their build dir, behind a pass bar
+### D3. `CARGO_INCREMENTAL=0` only in lanes with a build tree of their own, behind a pass bar
 
 The mutation slots (D2), both proof-strength arms (D6) and the Kani lane set
-`CARGO_INCREMENTAL=0`.
+`CARGO_INCREMENTAL=0`. Each builds in a tree that no ordinary build uses:
 
-- Kani builds in the build dir's `x86_64-unknown-linux-gnu/` tree, which
-  ordinary builds never use. Its 320 MB `incremental/` there is pure write cost
-  for a lane that runs once per final code.
+- the slots and the proof-strength worktree in their own pinned build dirs;
+- Kani in the target-triple tree (`x86_64-unknown-linux-gnu/`) of the
+  checkout's build dir. Kani compiles with `kani-compiler` and
+  `--target`, so its units never coincide with those of `make test`, Clippy or
+  the dev builds, and toggling incremental there cannot recompile theirs.
+
+Kani's part is **conditional**. The stage-1 baseline recorded a 0.9G Kani
+triple tree in one worktree's build dir, but no build dir on the host holds a
+Kani tree now, so the size of its `incremental/` is unverified. Task 9.2 first
+runs one package compile under `cargo kani` and records where `incremental/`
+lands and how large it is. If none is written, or it lands in a tree ordinary
+builds use, `make kani` is left unchanged and the decision is recorded here.
+
+- Nothing exports `CARGO_INCREMENTAL=1`. A lane that keeps incremental leaves
+  the variable unset.
 - Nothing exports `CARGO_INCREMENTAL=1`. A lane that keeps incremental leaves
   the variable unset.
 - The widget build is excluded: it shares the checkout's build dir with
@@ -180,9 +254,17 @@ The mutation slots (D2), both proof-strength arms (D6) and the Kani lane set
 
 **Pass bar, fixed before measuring.** A lane keeps `CARGO_INCREMENTAL=0` unless
 its median per-unit wall time regresses by more than 25% against incremental in
-the D9 protocol. The unit is the build phase plus test phase of one mutant,
-from `outcomes.json`, for mutation runs. It is one package compile under
-`cargo kani` for Kani.
+the D9 protocol. The units:
+
+- **mutation slots:** the build phase plus test phase of one mutant, from
+  `outcomes.json`;
+- **proof-strength tests arm:** the same unit and the same in-place
+  build-then-nextest shape, so it follows the slots' decision, which is
+  recorded for both;
+- **proof-strength Kani arm:** one mutant's rebuild under `cargo kani` in the
+  worktree's pinned build dir, after one applied mutant. This is where
+  incremental could help most, since every mutant edits the package;
+- **Kani lane:** one package compile under `cargo kani`.
 
 - On a regression, that lane keeps incremental, still in its own dir. It may
   then still write less than `main`, because no cold builds are left.
@@ -198,8 +280,8 @@ sccache. A mutated crate is a guaranteed miss and is then stored (28.5 MB per
 mutant), pushing useful dependency entries out of the shared 25G cache.
 
 The mutation slots and the proof-strength tests arm therefore set
-`RUSTC_WORKSPACE_WRAPPER=scripts/rustc-passthrough.sh` (a one-line
-`exec "$@"`). Cargo then calls `rustc-wrapper rustc-passthrough.sh rustc ...`
+`RUSTC_WORKSPACE_WRAPPER` to `scripts/rustc-passthrough.sh` (a one-line
+`exec "$@"`; the slots use the slot-stable copy of D2). Cargo then calls `rustc-wrapper rustc-passthrough.sh rustc ...`
 for workspace members. CST's wrapper documents that it executes directly
 whenever its first argument is not `rustc`. Dependencies keep sccache, which
 matters for a slot's first, cold build.
@@ -230,12 +312,25 @@ and checked against the `property-tests` baseline of the proof-strength tests
 arm, which may need more. A baseline failure under the limit aborts the run
 visibly; cargo-mutants already stops on a failing baseline.
 
+- The search stops at 16 GiB. If the baseline does not pass there, no limit is
+  adopted and that is recorded here as an explicit exception.
+- The limit exists to stop the recorded 15 GB `list_budget` runaway alone. If
+  the derived default exceeds 16 GiB (a baseline needing more than 8 GiB), it
+  would not stop that runaway. The implementation then records an explicit
+  exception here with the figures, instead of presenting a limit that protects
+  nothing as a fix.
+
 **Reporting.**
 
-- After a run, `mutants-mirror.py merge` (or a one-slot pass) lists every
-  mutant whose log contains Rust's allocation-failure message,
-  `memory allocation of N bytes failed`, in
-  `mutants.out/address-space-caught.txt`, and prints the count.
+- After a run, `mutants-mirror.py merge` (or a one-slot pass) lists in
+  `mutants.out/address-space-caught.txt` every caught mutant whose log shows an
+  allocation failure, and prints the count. The patterns are pinned in the
+  self-test:
+  - Rust's `memory allocation of N bytes failed`;
+  - GLib's `failed to allocate N bytes`;
+  - `failed to spawn thread` and `Cannot allocate memory` / `ENOMEM`
+    (`os error 12`), which an address-space limit produces when a thread stack
+    or an `mmap` is refused.
 - Such mutants are still caught. The unmutated code passes under the same
   limit, so unbounded memory growth is a behaviour change the tests detected.
 - They are listed separately so triage can confirm each one, the way
@@ -263,9 +358,21 @@ visibly; cargo-mutants already stops on a failing baseline.
   unchanged.
 - **A relative `PROOF_STRENGTH_WORKTREE` still resolves against the current
   directory.**
+- **The default location is resolved without creating it.** `WORKTREE` is a
+  module-level constant computed at import, and the self-test imports the
+  module, so the driver uses `build-cache.sh checkout-path` (D1) and creates
+  the directory only in `ensure_worktree`. The self-test runs under a temporary
+  `LUSHTEXT_BUILD_CACHE`, so it never touches the real cache.
 - **The tests arm runs `cargo mutants --in-place` inside the clean worktree.**
   The worktree is disposable and at `--rev`, so the existing "Developer runs a
   local in-place mutation command" scenario still holds.
+  - It drops `--jobs` (today `--jobs 1`, `TESTS_JOBS`): cargo-mutants 27
+    refuses `--in-place` with any `--jobs`, `1` included, and with
+    `CARGO_MUTANTS_JOBS` (probed). The arm is already serial, so nothing is
+    lost. The recorded `meta.command` changes accordingly; it is metadata and
+    does not invalidate results.
+  - An interrupted in-place mutant is discarded by `ensure_worktree`'s
+    `git checkout --force` at the next run, as for the Kani arm today.
   - It uses `CARGO_BUILD_BUILD_DIR=wt/target/tests-build` and
     `CARGO_TARGET_DIR=wt/target/tests`.
   - It gets D3's `CARGO_INCREMENTAL=0`, D4's passthrough and D5's runner.
@@ -281,11 +388,27 @@ visibly; cargo-mutants already stops on a failing baseline.
   - `FLATPAK_BUILD_DIR ?= <checkout-cache>/flatpak-app`.
 - **`scripts/release.sh`** defaults its build dir to
   `<checkout-cache>/flatpak-release-app` and passes the same state dir.
-- **`scripts/generate-cominotti-flatpak-repo.sh`** passes the state dir. Its
-  output directory stays the caller's.
-- **The two dirs are on one subvolume.** `flatpak-builder` checks its cache out
-  into the app dir with hardlinks, and a cross-subvolume hardlink fails with
-  `EXDEV`.
+- **`scripts/generate-cominotti-flatpak-repo.sh`** passes
+  `--state-dir="$out_dir/flatpak-builder"`, beside its existing app dir
+  `$out_dir/build-dir`. Its output directory stays the caller's.
+  - It does not use the cache root, because its app dir follows the caller's
+    output dir. `release.yml` runs it in a container with that output dir under
+    `$RUNNER_TEMP` (`/__w/_temp`), while `$HOME` (`/github/home`) is a
+    separate bind mount. A state dir in the cache root would put the state and
+    the app dir on different mounts.
+  - Its default output dir, `build-aux/cominotti-flatpak`, stays in the
+    checkout, as its state does today (`.flatpak-builder` in the working
+    directory). This is a recorded exception: the deploy and verify scripts
+    and `docs/next/flatpak-packaging.md` name that path, the generator runs
+    once per release, and moving it is left to a separate change.
+  - `scripts/test-cominotti-flatpak-repo.sh` runs with a temporary
+    `LUSHTEXT_BUILD_CACHE` and asserts that the stub `flatpak-builder` received
+    `--state-dir` under its temporary output dir.
+- **Each state dir is on the same mount as its app dir.** `flatpak-builder`
+  checks its cache out into the app dir, using hardlinks where it can, and a
+  hardlink across mounts or subvolumes fails with `EXDEV`. The Makefile and
+  `release.sh` keep both under the checkout's cache dir; the generator keeps
+  both under its output dir.
 - **Nothing deletes the existing `.flatpak-builder/`.** It is user state.
   `build.md` names it as safe to remove once the new location is in use.
 - **Rationale.** The state dir holds the whole release Cargo build. It once
@@ -311,14 +434,28 @@ visibly; cargo-mutants already stops on a failing baseline.
 In every other case it exits 1, and so does any git error. An empty commit runs
 the full gate.
 
-**`check-includes`** fails when a Rust source or `build.rs` under `crates/`,
-`fuzz/` or `workspace-hack/` names an allowlisted path. That means an
-`include_str!`, `include_bytes!` or `include!` argument, or a `build.rs` string
-naming `docs/`, `openspec/`, `.claude/`, `.agents/` or a root `*.md`. Without
-this audit, a future `#![doc = include_str!("../../../README.md")]` would
-silently make a docs edit a Clippy input; doc lints such as
-`doc_lazy_continuation` warn by default. It runs as
-`make check-precommit-scope` inside `make check-policy`.
+**`check-includes`** fails when a compile-time input of a Rust source under
+`crates/`, `fuzz/` or `workspace-hack/` resolves to an allowlisted path. The
+compile-time inputs are:
+
+- the argument of `include_str!`, `include_bytes!` and `include!`, resolved
+  relative to the source file, as rustc resolves it;
+- a `#[path = "..."]` module attribute, resolved the same way;
+- in a `build.rs`, any string literal naming `docs/`, `openspec/`, `.claude/`,
+  `.agents/` or a root `*.md`, which covers `cargo:rerun-if-changed` and
+  files the build script reads.
+
+An include argument that cannot be resolved statically (built with `concat!`
+or `env!`) fails closed when any literal in it names one of those locations.
+
+Runtime reads and plain string literals are not compile-time inputs and stay
+allowed. Four sources contain `docs/` literals today: `cargo-gtk-proof`'s
+`policy.rs` and the terminology test read documentation at run time, and two
+`lushtext-core` unit tests use a temporary `docs/` fixture directory. A docs
+edit cannot change what Clippy reports for any of them. Without this audit, a future
+`#![doc = include_str!("../../../README.md")]` would silently make a docs edit
+a Clippy input; doc lints such as `doc_lazy_continuation` warn by default. It
+runs as `make check-precommit-scope` inside `make check-policy`.
 
 **The hook:**
 
@@ -358,16 +495,32 @@ valid.
    `document_scale.rs` smoke file, about 10 mutants, written to an evidence
    diff. Four rounds interleaved: main (copy mode, `--jobs 3`), branch (slots,
    3), main, branch. Branch slots warmed by one unmeasured run.
-   - Recorded: wall time, `write_bytes`, new `~/.cache/cargo-build` entries
-     (must be 0 on the branch), `<root>` growth, sccache growth (must be about
-     0 on the branch), and per-mutant build and test durations from
-     `outcomes.json`.
+   - Recorded: wall time, `write_bytes`, new `~/.cache/cargo-build` entries,
+     `<root>` growth, sccache growth, per-slot wall time, and per-mutant build
+     and test durations from `outcomes.json`.
+   - **Pass bars, fixed before measuring:**
+     - zero new `~/.cache/cargo-build` entries on the branch;
+     - sccache growth on the branch below 1 MB per measured run (mutants never
+       reach it; dependencies are warm);
+     - branch process-tree `write_bytes` per run below main's in every round
+       pair;
+     - branch median wall time no more than 25% above main's. A larger
+       regression is recorded here as an explicit exception with the figures
+       and the reason, and the maintainer is told; it does not silently pass.
 2. **D3 per lane.** Branch slots, with and without `CARGO_INCREMENTAL=0`, each
    under its own `LUSHTEXT_BUILD_CACHE` root so neither toggles the other's
    build dir. Two interleaved rounds per mode.
    - Kani: one package compile of the cheapest shard
      (`scripts/kani-shards.py list`), each mode with its own
-     `CARGO_BUILD_BUILD_DIR`. Two interleaved rounds.
+     `CARGO_BUILD_BUILD_DIR`. Two interleaved rounds. The first round also
+     records where `incremental/` lands and its size, which decides whether
+     D3 applies to Kani at all.
+   - Proof-strength Kani arm: in the relocated worktree, one applied mutant of
+     the cheapest oracle module, then its `cargo kani` rebuild, with and
+     without `CARGO_INCREMENTAL=0`, each mode in its own pinned build dir. Two
+     interleaved rounds.
+   - Proof-strength tests arm: no separate run; it follows the slots'
+     decision (D3), and the record says so.
 3. **Pre-commit.** A docs-only commit in a fresh worktree, hook timing and
    build-dir growth. Non-verdict by nature, since it is cold once.
 4. **Host IO.** If a quiet window is not available, the system-level
@@ -390,19 +543,22 @@ Timing: build-lane wall time only. No application timed path is touched, so
 - **A slot's first use is a cold build.** It costs about one copy-mode copy,
   once per slot, not once per run.
 - **A slot shared across checkouts rebuilds the members that differ.** That is
-  bounded by the workspace members; dependencies stay warm.
+  bounded by the workspace members; dependencies stay warm unless `Cargo.lock`
+  or the features differ, and D2's growth bound empties a slot that has
+  accumulated too many dependency sets.
 - **Interrupted in-place runs.** The mutated file sits in a slot, never in the
   checkout, and the next sync restores it. A test asserts this.
-- **Every pool slot busy.** The run exits 75 with the holders named, and
-  `MUTANTS_LOCAL_JOBS=1` uses whatever single slot frees up first. This is a
-  deliberate UX trade against starving measurements.
+- **Every pool slot busy.** The run exits 75 with the holders named, and a
+  retry later (or with `MUTANTS_LOCAL_JOBS=1`, which needs only one free slot)
+  goes ahead. Nothing waits. This is a deliberate UX trade against starving
+  measurements.
 - **The CST wrapper's "first argument is not `rustc`" behaviour (D4)** is CST
   API. It is asked to be kept stable, or replaced by a knob.
 - **`RLIMIT_AS` false positives.** A test that reserves large address space
   without using it (thread arenas, mmap) would fail its baseline. The baseline
   must pass, so this is caught before any mutant runs, and the D5 limit has a
   2x margin.
-- **CI.** Kani's `CARGO_INCREMENTAL=0` applies in CI too and changes no
+- **CI.** If adopted (D3), Kani's `CARGO_INCREMENTAL=0` applies in CI too and changes no
   verdict. Shard budgets are re-read at the programme's final CI sweep. The CI
   mutation modes do not change.
 

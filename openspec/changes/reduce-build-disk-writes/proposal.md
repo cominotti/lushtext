@@ -21,7 +21,8 @@ problems that remain are narrower and different:
    nothing deletes it. A probe run with `-j 2` left two. In LushText a cold test
    build of the workspace writes 5.2 GB. A local `make mutants-*` run
    (`MUTANTS_LOCAL_JOBS=3`) therefore writes and leaves behind about 15 GB
-   before it tests its first mutant, every time.
+   before it tests its first mutant, every time. That figure is derived (one
+   measured cold build times three copies); task 9.1 measures it.
 2. **Each mutant writes 1.55 GB with incremental compilation**, against
    0.61 GB without. Turning incremental off alone would store every mutated
    workspace crate in the shared 25G sccache (28.5 MB per mutant measured, never
@@ -66,8 +67,10 @@ problems that remain are narrower and different:
   - CI modes (`ci-pr`, `ci-full`) are unchanged.
 - **Incremental compilation off, and sccache bypassed, only in lanes that own
   their build dir.**
-  - The mutation slots, both proof-strength arms and the Kani lane set
-    `CARGO_INCREMENTAL=0`.
+  - The mutation slots and both proof-strength arms set
+    `CARGO_INCREMENTAL=0`. The Kani lane does too if the implementation's
+    first Kani compile shows it writing an incremental cache in its own
+    target-triple tree (design D3).
   - The mutation slots and the proof-strength tests arm also pass workspace
     crates straight to rustc (`RUSTC_WORKSPACE_WRAPPER` pass-through), so
     mutants never reach sccache. Dependencies still use sccache.
@@ -87,8 +90,10 @@ problems that remain are narrower and different:
   that clean disposable worktree, with pinned build dirs, so it no longer leaks
   a build dir per run.
 - **The Flatpak state and app dirs move to the cache root** (`--state-dir`).
-  This covers `make flatpak`, `flatpak-install` and the release and Cominotti
-  repository scripts.
+  This covers `make flatpak`, `flatpak-deps`, `flatpak-install` and the release
+  validation build. The Cominotti repository generator gets an explicit state
+  dir beside its app dir, under its caller's output dir, because in CI that
+  dir is on a different mount from `$HOME` (design D7).
 - **The pre-commit hook skips Clippy on docs-only commits, failing closed.**
   - A commit counts as docs-only only when every staged path is on a fixed
     allowlist of documentation locations and the commit is not a merge.
@@ -111,7 +116,7 @@ problems that remain are narrower and different:
   docs-only commits** (1.52 GB, 105 s together). They read documentation and
   must run. The cost is recorded as a deferred candidate in design.md.
 - **CI behaviour.** CI's mutation modes, Clippy command and Kani shards keep
-  their semantics. Kani's `CARGO_INCREMENTAL=0` applies in CI too. It changes
+  their semantics. If adopted, Kani's `CARGO_INCREMENTAL=0` applies in CI too. It changes
   no verdict, and the shard budgets are re-read at the programme's final CI
   sweep.
 
@@ -163,7 +168,7 @@ For the maintainer:
   - changed: `scripts/run-mutants.sh`, `scripts/proof-strength.py` (and its
     self-test assertions), `scripts/kani-shards.py` (only if its self-test pins
     paths), `scripts/release.sh`, `scripts/generate-cominotti-flatpak-repo.sh`,
-    `.githooks/pre-commit`.
+    `scripts/test-cominotti-flatpak-repo.sh`, `.githooks/pre-commit`.
 - **Makefile:** the mutants, kani, proof-strength and flatpak targets, a new
   `build-cache-prune` target, and a new `check-precommit-scope` target in
   `check-policy`.
