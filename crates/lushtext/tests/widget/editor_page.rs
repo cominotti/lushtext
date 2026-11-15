@@ -4,7 +4,8 @@
 
 use crate::common::{
     accessible_hidden, ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read,
-    isolated_data_dir, present_window, rect_within, short_lines, test_application, wait_until,
+    isolated_data_dir, observed_between_dispatches, present_window, rect_within, short_lines,
+    test_application, wait_until,
 };
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -2154,9 +2155,15 @@ fn test_document_sized_save_formatting_stays_inflight_until_bounded_install_fini
         done_clone.set(true);
     });
 
-    wait_until(Duration::from_secs(5), || {
-        page.buffer_replacement_evidence().in_progress
-    });
+    // `in_progress` is transient: sample it before every dispatch, because one
+    // `wait_until` drain can run the whole sliced mirror-back to its terminal
+    // when its 1 ms turns overrun on a loaded host.
+    assert!(
+        observed_between_dispatches(Duration::from_secs(5), || {
+            page.buffer_replacement_evidence().in_progress
+        }),
+        "the formatted save should mirror its text back in bounded turns"
+    );
     assert!(page.is_saving());
     assert!(!done.get());
     assert!(!page.accepts_user_edits());
@@ -3353,6 +3360,418 @@ fn test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin(
         minimap_source_map(&page).top_margin(),
         minimap_source_map(&page).bottom_margin(),
         page.source_view().visible_rect(),
+    );
+}
+
+/// Present a 2,000-line unwrapped document at the top, minimap shown, every
+/// first-layout reflow settled.
+fn present_settled_minimap_document() -> (LushtextEditorPage, gtk4::ApplicationWindow, gio::Settings)
+{
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&minimap_test_document(2_000, &[], &[]));
+    let window = present_editor_page_with_size(&page, 1000, 700);
+    wait_for_minimap_ready(&page);
+    flush_after_delay(Duration::from_millis(800));
+    // The first layout's own width bursts must be over: a test that acts
+    // while one is still pending shares its pause and its scroll flag, so on
+    // a loaded host its action could land in a burst the test did not open.
+    wait_until(Duration::from_secs(10), || {
+        !page.minimap_evidence().reflow_settle_pending
+    });
+    assert!(
+        page.source_view().visible_rect().y() < 10,
+        "precondition: at the top"
+    );
+    (page, window, settings)
+}
+
+/// Hide (or show) the minimap and wait until the editor's width changed. The
+/// burst it opened may already have settled on a slow host: a test that must
+/// act inside the burst uses [`act_during_minimap_width_reflow`].
+fn open_minimap_width_reflow(page: &LushtextEditorPage, settings: &gio::Settings, show: bool) {
+    let width_before = page.source_view().visible_rect().width();
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, show)
+        .expect("toggle the minimap");
+    wait_until(Duration::from_secs(5), || {
+        page.source_view().visible_rect().width() != width_before
+    });
+}
+
+/// Hide the minimap and wait until the width reflow burst that opened has
+/// settled, so the next test step opens its own burst by showing it.
+///
+/// The D2 tests open their burst by *showing* the minimap: while it is hidden,
+/// every minimap refresh cancels a pending reflow settle
+/// (`run_minimap_refresh` clears it before syncing the retired map), and on a
+/// starved host the hide's own deferred refresh landed after the width change
+/// and cancelled the burst the test was acting in (`restore-main-ci` stage 4;
+/// the trace showed no settle at all).
+fn hide_minimap_and_settle(page: &LushtextEditorPage, settings: &gio::Settings) {
+    open_minimap_width_reflow(page, settings, false);
+    flush_after_delay(Duration::from_millis(300));
+    wait_until(Duration::from_secs(10), || {
+        !page.minimap_evidence().reflow_settle_pending
+    });
+}
+
+/// Wait until the passive width reflow burst has settled (its settle ran, or
+/// a refresh cancelled it), then drain what the settle queued. A fixed 600 ms
+/// was the earlier wait; CI's runners are slow enough that a burst can still
+/// be pending after it.
+fn settle_width_reflow(page: &LushtextEditorPage) {
+    wait_until(Duration::from_secs(10), || {
+        !page.minimap_evidence().reflow_settle_pending
+    });
+    flush_after_delay(Duration::from_millis(100));
+}
+
+/// Record every vertical `changed` and `value-changed` from now on, marking a
+/// `value-changed` to a value no `changed` carried (the scroll signature,
+/// ledger A112), for a failure message.
+fn record_vertical_emissions(page: &LushtextEditorPage) -> Rc<RefCell<Vec<String>>> {
+    let adjustment = page.source_view().vadjustment().expect("vadjustment");
+    let log: Rc<RefCell<Vec<String>>> = Rc::default();
+    let carried = Rc::new(Cell::new(adjustment.value()));
+    adjustment.connect_changed({
+        let log = Rc::clone(&log);
+        let carried = Rc::clone(&carried);
+        move |adjustment| {
+            carried.set(adjustment.value());
+            log.borrow_mut().push(format!(
+                "C({:.0},u{:.0},p{:.0})",
+                adjustment.value(),
+                adjustment.upper(),
+                adjustment.page_size()
+            ));
+        }
+    });
+    adjustment.connect_value_changed({
+        let log = Rc::clone(&log);
+        move |adjustment| {
+            let bare = (adjustment.value() - carried.get()).abs() > 0.5;
+            log.borrow_mut().push(format!(
+                "V({:.0}{})",
+                adjustment.value(),
+                if bare { ",bare" } else { "" }
+            ));
+        }
+    });
+    log
+}
+
+/// Narrow (or widen back) the editor by `delta` px through its scrolled
+/// window's end margin, a passive width reflow with the minimap left shown.
+fn shift_editor_width(page: &LushtextEditorPage, delta: i32) {
+    let width_before = page.source_view().visible_rect().width();
+    let scroller = page
+        .source_view()
+        .parent()
+        .and_downcast::<gtk4::ScrolledWindow>()
+        .expect("the editor view scrolls in a GtkScrolledWindow");
+    scroller.set_margin_end(scroller.margin_end() + delta);
+    wait_until(Duration::from_secs(5), || {
+        page.source_view().visible_rect().width() != width_before
+    });
+}
+
+/// A one-shot test step run against the editor page.
+type PageAction = Box<dyn FnOnce(&LushtextEditorPage)>;
+
+/// Hide (or show) the minimap and run `action` right after the passive width
+/// reflow burst the toggle opens (none may be pending before it): from a
+/// high-priority idle queued by the first horizontal page-size change, which
+/// the editor's own `changed` handler (connected first) has already turned
+/// into a pending settle. Waiting for the width change and acting afterwards
+/// let a slow runner's main-loop drain run the 150 ms settle before the test
+/// acted, so the CI run of the configure guard saw no burst at all
+/// (`restore-main-ci` stage 4). Returns once `action` ran, asserting the burst
+/// was still pending then.
+fn act_during_minimap_width_reflow(
+    page: &LushtextEditorPage,
+    settings: &gio::Settings,
+    show: bool,
+    action: impl FnOnce(&LushtextEditorPage) + 'static,
+) {
+    act_during_width_reflow(
+        page,
+        || {
+            settings
+                .set_boolean(keys::SHOW_MINIMAP, show)
+                .expect("toggle the minimap");
+        },
+        action,
+    );
+}
+
+/// Run `open`, which must change the editor's width, and run `action` right
+/// after the passive width reflow burst it opens, as
+/// [`act_during_minimap_width_reflow`] does for a minimap toggle.
+fn act_during_width_reflow(
+    page: &LushtextEditorPage,
+    open: impl FnOnce(),
+    action: impl FnOnce(&LushtextEditorPage) + 'static,
+) {
+    let hadjustment = page.source_view().hadjustment().expect("hadjustment");
+    let page_size_before = hadjustment.page_size();
+    let pending_at_action: Rc<Cell<Option<bool>>> = Rc::default();
+    let action: Rc<RefCell<Option<PageAction>>> = Rc::new(RefCell::new(Some(Box::new(action))));
+    let handler_id = hadjustment.connect_changed({
+        let page_weak = page.downgrade();
+        let pending_at_action = Rc::clone(&pending_at_action);
+        move |adjustment| {
+            if (adjustment.page_size() - page_size_before).abs() <= 0.5 {
+                return;
+            }
+            let Some(action) = action.borrow_mut().take() else {
+                return;
+            };
+            let page_weak = page_weak.clone();
+            let pending_at_action = Rc::clone(&pending_at_action);
+            let mut action = Some(action);
+            glib::idle_add_local_full(glib::Priority::HIGH, move || {
+                if let (Some(page), Some(action)) = (page_weak.upgrade(), action.take()) {
+                    pending_at_action.set(Some(page.minimap_evidence().reflow_settle_pending));
+                    action(&page);
+                }
+                glib::ControlFlow::Break
+            });
+        }
+    });
+    assert!(
+        !page.minimap_evidence().reflow_settle_pending,
+        "precondition: no width reflow burst is pending before the test opens one"
+    );
+    open();
+    wait_until(Duration::from_secs(5), || pending_at_action.get().is_some());
+    hadjustment.disconnect(handler_id);
+    assert_eq!(
+        pending_at_action.get(),
+        Some(true),
+        "precondition: the action ran while the width reflow burst was pending"
+    );
+}
+
+/// `restore-main-ci` D2, the CI flake of
+/// `test_minimap_native_slider_covers_the_visible_text_with_an_overscroll_margin`:
+/// a scroll made while a passive width reflow burst is pending must survive
+/// the burst's settle. The settle's top-anchor repair moved the view back to
+/// the top (`y = -6`), because the rest state still said "at top": it was
+/// paused for the whole burst, so it never saw the scroll.
+#[test]
+fn test_a_scroll_during_a_passive_width_reflow_survives_the_settle() {
+    ensure_gtk_init();
+    let (page, _window, settings) = present_settled_minimap_document();
+    // Whether the burst was still pending when the mark scroll landed (it
+    // lands in the view's next allocation, a frame after the request).
+    let pending_at_landing: Rc<Cell<Option<bool>>> = Rc::default();
+    let vadjustment = page.source_view().vadjustment().expect("vadjustment");
+    let landing_handler = vadjustment.connect_value_changed({
+        let page_weak = page.downgrade();
+        let pending_at_landing = Rc::clone(&pending_at_landing);
+        move |adjustment| {
+            if pending_at_landing.get().is_none()
+                && adjustment.value() - adjustment.lower() > 10_000.0
+                && let Some(page) = page_weak.upgrade()
+            {
+                pending_at_landing.set(Some(page.minimap_evidence().reflow_settle_pending));
+            }
+        }
+    });
+    hide_minimap_and_settle(&page, &settings);
+    act_during_minimap_width_reflow(&page, &settings, true, |page| {
+        let buffer = page.buffer();
+        buffer.place_cursor(&buffer.iter_at_line(1_000).expect("mid-document line"));
+        page.source_view()
+            .scroll_to_mark(&buffer.get_insert(), 0.0, true, 0.0, 0.5);
+    });
+    wait_until(Duration::from_secs(10), || {
+        pending_at_landing.get().is_some()
+    });
+    vadjustment.disconnect(landing_handler);
+    assert_eq!(
+        pending_at_landing.get(),
+        Some(true),
+        "precondition: the scroll landed while the width reflow burst was pending"
+    );
+    settle_width_reflow(&page);
+    let rect = page.source_view().visible_rect();
+    assert!(
+        rect.y() > 10_000,
+        "a scroll made during a passive width reflow was undone ({rect:?})"
+    );
+}
+
+/// A scroll kept through one settle stays kept: the settle re-records the
+/// rest state, so neither the next width reflow's top-anchor repair nor the
+/// next height-only change's top-edge clamp reads the stale "at top" the
+/// paused burst left behind (`restore-main-ci` D2, "A kept scroll survives
+/// later reflows").
+///
+/// The scroll here is one `set_value` during the burst (a scrollbar drag or
+/// an application scroll), not `scroll_to_mark`: the mark scroll keeps
+/// refining its value after the burst settles, and that later `value-changed`
+/// would record the rest state by itself, hiding a missing re-record.
+#[test]
+fn test_a_kept_reflow_scroll_survives_later_reflows() {
+    ensure_gtk_init();
+    let (page, _window, settings) = present_settled_minimap_document();
+    hide_minimap_and_settle(&page, &settings);
+    act_during_minimap_width_reflow(&page, &settings, true, |page| {
+        let adjustment = page.source_view().vadjustment().expect("vadjustment");
+        adjustment.set_value(adjustment.lower() + 20_000.0);
+    });
+    settle_width_reflow(&page);
+    assert!(
+        page.source_view().visible_rect().y() > 10_000,
+        "precondition: the scroll survived its own burst ({:?})",
+        page.source_view().visible_rect()
+    );
+
+    // A later width reflow, with no scroll in it (the minimap stays shown,
+    // so no refresh cancels its settle).
+    shift_editor_width(&page, 120);
+    settle_width_reflow(&page);
+    let rect = page.source_view().visible_rect();
+    shift_editor_width(&page, -120);
+    flush_after_delay(Duration::from_millis(300));
+    assert!(
+        rect.y() > 10_000,
+        "a later width reflow undid the kept scroll ({rect:?})"
+    );
+
+    // A later height-only change: the view loses 120 px of height.
+    let height_before = page.source_view().visible_rect().height();
+    let scroller = page
+        .source_view()
+        .parent()
+        .and_downcast::<gtk4::ScrolledWindow>()
+        .expect("the editor view scrolls in a GtkScrolledWindow");
+    scroller.set_margin_bottom(scroller.margin_bottom() + 120);
+    wait_until(Duration::from_secs(5), || {
+        page.source_view().visible_rect().height() != height_before
+    });
+    settle_width_reflow(&page);
+    let rect = page.source_view().visible_rect();
+    scroller.set_margin_bottom(scroller.margin_bottom() - 120);
+    assert!(
+        rect.y() > 10_000,
+        "a later height-only change undid the kept scroll ({rect:?})"
+    );
+}
+
+/// A kept scroll survives later reflows with the minimap hidden too. While
+/// it is hidden, a minimap refresh (here closing the search bar, which runs
+/// one synchronously) used to cancel the pending reflow settle and drop its
+/// pause, so the settle that re-records the rest state after a scroll made
+/// during the burst never ran: the rest state still said "at top", and the
+/// next width reflow's settle snapped the view back (`restore-main-ci`
+/// stage 4, design R8).
+#[test]
+fn test_a_kept_reflow_scroll_survives_a_minimap_refresh_while_hidden() {
+    ensure_gtk_init();
+    let (page, _window, settings) = present_settled_minimap_document();
+    hide_minimap_and_settle(&page, &settings);
+    let scroller = page
+        .source_view()
+        .parent()
+        .and_downcast::<gtk4::ScrolledWindow>()
+        .expect("the editor view scrolls in a GtkScrolledWindow");
+    act_during_width_reflow(
+        &page,
+        || scroller.set_margin_end(scroller.margin_end() + 120),
+        |page| {
+            let adjustment = page.source_view().vadjustment().expect("vadjustment");
+            adjustment.set_value(adjustment.lower() + 20_000.0);
+            page.hide_search();
+        },
+    );
+    settle_width_reflow(&page);
+    assert!(
+        page.source_view().visible_rect().y() > 10_000,
+        "precondition: the scroll survived its own burst ({:?})",
+        page.source_view().visible_rect()
+    );
+
+    // A later width reflow, with no scroll in it.
+    shift_editor_width(&page, -120);
+    settle_width_reflow(&page);
+    let rect = page.source_view().visible_rect();
+    assert!(
+        rect.y() > 10_000,
+        "a later width reflow undid the kept scroll ({rect:?})"
+    );
+
+    // A later height-only change.
+    let height_before = page.source_view().visible_rect().height();
+    scroller.set_margin_bottom(scroller.margin_bottom() + 120);
+    wait_until(Duration::from_secs(5), || {
+        page.source_view().visible_rect().height() != height_before
+    });
+    settle_width_reflow(&page);
+    let rect = page.source_view().visible_rect();
+    scroller.set_margin_bottom(scroller.margin_bottom() - 120);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("restore minimap");
+    assert!(
+        rect.y() > 10_000,
+        "a later height-only change undid the kept scroll ({rect:?})"
+    );
+}
+
+/// The top-anchor repair a kept scroll must not disable: at the top, a
+/// reallocation during a width reflow burst that leaves a preserved offset is
+/// still undone at the settle. GTK delivers that offset through
+/// `gtk_adjustment_configure` together with the bounds the rewrap changed
+/// (`changed` already carrying the value, then `value-changed`, ledger A112),
+/// which is what the test does: on GTK 4.24 no
+/// editor-page test or minimap visual case reached this repair, so it is
+/// emulated (`restore-main-ci` 2.1b).
+#[test]
+fn test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow() {
+    ensure_gtk_init();
+    let (page, _window, settings) = present_settled_minimap_document();
+    hide_minimap_and_settle(&page, &settings);
+    // Read where the offset left the view inside the action: on a starved
+    // host the settle can already have repaired it by the time the helper
+    // returns, which is the behaviour under test, not a broken precondition.
+    let offset_y = Rc::new(Cell::new(0));
+    let emissions = record_vertical_emissions(&page);
+    act_during_minimap_width_reflow(&page, &settings, true, {
+        let offset_y = Rc::clone(&offset_y);
+        move |page| {
+            let adjustment = page.source_view().vadjustment().expect("vadjustment");
+            // A rewrap reconfigures the bounds and the value together.
+            adjustment.configure(
+                adjustment.lower() + 120.0,
+                adjustment.lower(),
+                adjustment.upper() + 240.0,
+                adjustment.step_increment(),
+                adjustment.page_increment(),
+                adjustment.page_size(),
+            );
+            offset_y.set(page.source_view().visible_rect().y());
+        }
+    });
+    assert!(
+        offset_y.get() > 100,
+        "precondition: the reallocation left an offset ({} px)",
+        offset_y.get()
+    );
+    settle_width_reflow(&page);
+    let rect = page.source_view().visible_rect();
+    assert!(
+        rect.y() < 10,
+        "the settle must restore the top a reallocation offset moved ({rect:?}); \
+         settle pending {}, vertical emissions {}",
+        page.minimap_evidence().reflow_settle_pending,
+        emissions.borrow().join(" ")
     );
 }
 
@@ -4596,10 +5015,17 @@ fn test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replaceme
     let _ = page.buffer_replacement_evidence();
 
     // Stages 4/5: each scheduled turn mutates the session's phase, offset, and
-    // metrics under the same borrow.
-    wait_until(Duration::from_secs(10), || {
-        page.buffer_replacement_evidence().mutation_started
-    });
+    // metrics under the same borrow. `mutation_started` holds only while the
+    // session is in flight, and its turns are 1 ms timeouts: when a turn takes
+    // longer than that (a loaded host), each one is already due when it
+    // returns, so one `wait_until` drain runs the whole replacement to its
+    // terminal and never sees the state. Sample before every dispatch instead.
+    assert!(
+        observed_between_dispatches(Duration::from_secs(10), || {
+            page.buffer_replacement_evidence().mutation_started
+        }),
+        "the first scheduled turn should start mutating the buffer"
+    );
     let mutating = page.buffer_replacement_evidence();
     assert!(mutating.mutation_started);
     let _ = page.buffer_replacement_evidence();

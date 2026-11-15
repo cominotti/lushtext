@@ -12967,14 +12967,442 @@ fn test_autosave_during_a_local_history_restore_keeps_the_previous_draft() {
         !editor.buffer_replacement_evidence().in_progress
     });
     assert_eq!(editor_text(&editor), restore_target);
+    // The window's own 5 s tick may already have written the restored text
+    // between the terminal and here: that is the invariant holding, not a
+    // failure (`restore-main-ci` D1).
     assert!(
-        editor.draft_dirty(),
+        editor.draft_dirty() || persisted().as_deref() == Some(restore_target.as_str()),
         "the restored text is still owed a draft"
     );
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(10), || {
         journal_idle(&window) && persisted().as_deref() == Some(restore_target.as_str())
     });
+}
+
+/// One file-backed tab whose file has a local-history snapshot, for the
+/// "restored text owes a draft" tests (`restore-main-ci` design D1). The
+/// bounded replacement suspends the buffer handlers that mark a tab
+/// draft-dirty, so each test checks that the owing terminal marks it instead.
+struct HistoryRestoreDraftFixture {
+    window: LushtextWindow,
+    editor: LushtextEditorPage,
+    draft_id: String,
+    _dir: tempfile::TempDir,
+}
+
+impl HistoryRestoreDraftFixture {
+    /// Open `file_text` in a fresh window, with `snapshot` as the newest
+    /// local-history entry of that file.
+    fn open(file_text: &str, snapshot: &str) -> Self {
+        let window = test_window_with_restored_size(1400, 900);
+        present_window(&window);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("history-restore-owes-draft.txt");
+        fixture::write_text(&path, file_text);
+        local_history_service::capture_snapshot_for_path(
+            &json_store::data_dir(),
+            &path,
+            snapshot,
+            LocalHistorySnapshotOrigin::Save,
+            local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+        )
+        .expect("seed restore target");
+        window.open_document(&path);
+        wait_until(Duration::from_secs(10), || {
+            active_editor(&window).file_size().is_some()
+        });
+        let editor = active_editor(&window);
+        // No automatic capture: the tests count only the restore's own
+        // snapshots and the draft.
+        editor.set_local_history_availability_for_test(
+            local_history_service::LocalHistoryAvailability::SaveOnly,
+        );
+        let draft_id = editor.draft_id().expect("a file-backed draft id");
+        Self {
+            window,
+            editor,
+            draft_id,
+            _dir: dir,
+        }
+    }
+
+    fn journal_idle(&self) -> bool {
+        let evidence = self.window.draft_evidence();
+        !evidence.autosave_inflight && !evidence.mutation_inflight
+    }
+
+    fn persisted(&self) -> Option<String> {
+        draft_service::read_draft(&json_store::data_dir(), &self.draft_id).expect("read draft body")
+    }
+
+    /// Run one autosave pass and wait until the draft holds `expected`.
+    fn settle_draft(&self, expected: &str) {
+        self.window.autosave_tick_for_test();
+        wait_until(Duration::from_secs(10), || {
+            self.journal_idle() && self.persisted().as_deref() == Some(expected)
+        });
+    }
+
+    /// Open the local-history browser on `snapshot` and return its Restore
+    /// button once it can be pressed.
+    fn open_restore(&self, snapshot: &str) -> gtk4::Button {
+        activate_action(&self.window, "show-local-history");
+        wait_until(Duration::from_secs(5), || {
+            visible_sheet_dialog(&self.window).is_some()
+        });
+        let dialog = visible_sheet_dialog(&self.window).expect("local-history dialog visible");
+        let child = dialog.child().expect("dialog child");
+        wait_for_local_history_preview_text(&child, snapshot);
+        let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+        wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
+        restore_button
+    }
+
+    /// Open the local-history browser and press Restore on `snapshot`.
+    fn click_restore(&self, snapshot: &str) {
+        self.open_restore(snapshot).emit_clicked();
+    }
+
+    /// The tab still owes `text` a draft, or a pass already wrote it.
+    ///
+    /// The window's own autosave tick keeps running, so it may write the
+    /// owed text between the terminal and this check: that is the invariant
+    /// holding. Before `restore-main-ci` D1 neither held (the tab was not
+    /// draft-dirty and the draft kept the pre-restore text).
+    fn owes_or_wrote(&self, text: &str) -> bool {
+        self.editor.draft_dirty() || self.persisted().as_deref() == Some(text)
+    }
+
+    /// The draft state [`Self::owes_or_wrote`] reads, for a failure message.
+    fn draft_state(&self, text: &str) -> String {
+        let persisted = self.persisted();
+        format!(
+            "draft_dirty={}, persisted {} bytes, persisted is the expected text {}",
+            self.editor.draft_dirty(),
+            persisted.as_ref().map_or(0, String::len),
+            persisted.as_deref() == Some(text)
+        )
+    }
+
+    /// Wait until the buffer holds `text` and no replacement owns it.
+    fn wait_for_installed(&self, text: &str) {
+        let chars = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+        wait_until(Duration::from_secs(60), || {
+            !self.editor.buffer_replacement_evidence().in_progress
+                && self.editor.buffer().char_count() == chars
+        });
+        assert_eq!(editor_text(&self.editor), text);
+    }
+
+    fn tab_title(&self) -> String {
+        self.window
+            .imp()
+            .tab_view
+            .page(&self.editor)
+            .title()
+            .to_string()
+    }
+}
+
+/// Above the direct-replacement threshold, so a restore takes many turns, and
+/// below the chunked-snapshot threshold, so a capture is one synchronous read.
+fn large_history_restore_bodies() -> (String, String) {
+    let restore_target = format!("restored {}\n", "r".repeat(40)).repeat(40_000);
+    let working_copy = format!("working {}\n", "w".repeat(40)).repeat(40_000);
+    assert!(restore_target.len() > 1024 * 1024);
+    (restore_target, working_copy)
+}
+
+/// The draft had settled (written, not draft-dirty) before a local-history
+/// restore: the restored text is still owed a draft, or a crash recovers the
+/// text from before the restore, not what was on screen (`restore-main-ci`
+/// D1). The replacement suspends the `changed` handler that would mark it.
+#[test]
+fn test_a_restore_after_the_draft_settled_owes_a_draft() {
+    ensure_gtk_init();
+    let _policy = DraftPipelinePolicyReset;
+    let _first_dirty = FirstDirtyAutosaveDelayReset;
+    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    let (restore_target, working_copy) = large_history_restore_bodies();
+    let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
+    let editor = &fixture.editor;
+    editor.buffer().set_text(&working_copy);
+    editor.buffer().set_modified(true);
+    fixture.settle_draft(&working_copy);
+    assert!(!editor.draft_dirty(), "precondition: the draft settled");
+
+    fixture.click_restore(&restore_target);
+    fixture.wait_for_installed(&restore_target);
+    assert!(
+        fixture.owes_or_wrote(&restore_target),
+        "the restored text is still owed a draft: {}",
+        fixture.draft_state(&restore_target)
+    );
+    fixture.settle_draft(&restore_target);
+}
+
+/// An autosave pass captured before a restore commits after the replacement
+/// started: its completion must not clear the flag the restore owes, so the
+/// restore advances the dirty generation the completion compares against.
+#[test]
+fn test_a_pass_captured_before_a_restore_cannot_clear_its_draft_owed() {
+    ensure_gtk_init();
+    let _policy = DraftPipelinePolicyReset;
+    let _first_dirty = FirstDirtyAutosaveDelayReset;
+    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    let (restore_target, working_copy) = large_history_restore_bodies();
+    let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
+    let editor = &fixture.editor;
+    editor.buffer().set_text(&working_copy);
+    editor.buffer().set_modified(true);
+    fixture.settle_draft(&working_copy);
+
+    // Open the browser first, so the pass below is still in flight when the
+    // replacement starts however long the preview takes to load.
+    let restore_button = fixture.open_restore(&restore_target);
+    // Edits newer than the draft, as the pass below captures them.
+    editor.set_draft_dirty(true);
+    lushtext_core::ui::window::set_draft_mutation_delays_for_test(0, 1_500, 0);
+    fixture.window.autosave_tick_for_test();
+    assert!(
+        fixture.window.draft_evidence().autosave_inflight,
+        "precondition: a pass in flight"
+    );
+    restore_button.emit_clicked();
+    wait_until(Duration::from_secs(10), || {
+        editor.buffer_replacement_evidence().in_progress
+    });
+    assert!(
+        fixture.window.draft_evidence().autosave_inflight,
+        "precondition: the pass is still in flight when the replacement starts"
+    );
+    fixture.wait_for_installed(&restore_target);
+    wait_until(Duration::from_secs(10), || fixture.journal_idle());
+    // The pass that was in flight marked a follow-up pass, which may already
+    // have written the restored text: owed, or written, never neither.
+    assert!(
+        fixture.owes_or_wrote(&restore_target),
+        "the restored text is still owed a draft: {}",
+        fixture.draft_state(&restore_target)
+    );
+    lushtext_core::ui::window::set_draft_mutation_delays_for_test(0, 0, 0);
+    fixture.settle_draft(&restore_target);
+}
+
+/// The same owed draft for a restore small enough to install in one turn:
+/// the direct replacement suspends the buffer handlers too.
+#[test]
+fn test_a_small_restore_after_the_draft_settled_owes_a_draft() {
+    use lushtext_core::model::buffer_replacement::{BufferReplacementMode, BufferReplacementPlan};
+    ensure_gtk_init();
+    let _policy = DraftPipelinePolicyReset;
+    let _first_dirty = FirstDirtyAutosaveDelayReset;
+    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    let restore_target = "restored small\n".repeat(64);
+    let working_copy = "working small\n".repeat(64);
+    let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
+    let editor = &fixture.editor;
+    editor.buffer().set_text(&working_copy);
+    editor.buffer().set_modified(true);
+    assert_eq!(
+        BufferReplacementPlan::for_sizes(editor.buffer().char_count(), restore_target.len()).mode,
+        BufferReplacementMode::Direct,
+        "precondition: a direct replacement"
+    );
+    fixture.settle_draft(&working_copy);
+    assert!(!editor.draft_dirty(), "precondition: the draft settled");
+
+    fixture.click_restore(&restore_target);
+    fixture.wait_for_installed(&restore_target);
+    assert!(
+        fixture.owes_or_wrote(&restore_target),
+        "the restored text is still owed a draft: {}",
+        fixture.draft_state(&restore_target)
+    );
+    fixture.settle_draft(&restore_target);
+}
+
+/// Undo Restore puts the pre-restore text back through the same bounded
+/// replacement, so it owes the draft that text too.
+#[test]
+fn test_an_undo_restore_owes_a_draft() {
+    ensure_gtk_init();
+    let _policy = DraftPipelinePolicyReset;
+    let _first_dirty = FirstDirtyAutosaveDelayReset;
+    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    let (restore_target, working_copy) = large_history_restore_bodies();
+    let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
+    let editor = &fixture.editor;
+    editor.buffer().set_text(&working_copy);
+    editor.buffer().set_modified(true);
+    fixture.settle_draft(&working_copy);
+    fixture.click_restore(&restore_target);
+    fixture.wait_for_installed(&restore_target);
+    // The draft settles on the restored text before the undo.
+    editor.set_draft_dirty(true);
+    fixture.settle_draft(&restore_target);
+    assert!(!editor.draft_dirty(), "precondition: the draft settled");
+
+    wait_until(Duration::from_secs(5), || {
+        find_button_by_label(
+            editor.info_bar().upcast_ref::<gtk4::Widget>(),
+            "Undo Restore",
+        )
+        .is_some()
+    });
+    find_button_by_label(
+        editor.info_bar().upcast_ref::<gtk4::Widget>(),
+        "Undo Restore",
+    )
+    .expect("undo restore button")
+    .emit_clicked();
+    fixture.wait_for_installed(&working_copy);
+    assert!(
+        fixture.owes_or_wrote(&working_copy),
+        "the text Undo Restore put back is still owed a draft: {}",
+        fixture.draft_state(&working_copy)
+    );
+    fixture.settle_draft(&working_copy);
+}
+
+/// A restore into an unmodified tab: GTK sets the buffer's modified flag on
+/// the replacement's first delete, while the handlers are suspended, so the
+/// restore terminal's own `set_modified(true)` emits nothing. The tab must
+/// still owe a draft and show the modified bullet.
+#[test]
+fn test_a_restore_into_a_clean_tab_owes_a_draft() {
+    ensure_gtk_init();
+    let _policy = DraftPipelinePolicyReset;
+    let _first_dirty = FirstDirtyAutosaveDelayReset;
+    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    let restore_target = "restored into a clean tab\n".repeat(64);
+    let fixture = HistoryRestoreDraftFixture::open("current\n", &restore_target);
+    let editor = &fixture.editor;
+    assert!(!editor.is_modified(), "precondition: a clean tab");
+    assert!(!editor.draft_dirty(), "precondition: owes no draft");
+
+    fixture.click_restore(&restore_target);
+    fixture.wait_for_installed(&restore_target);
+    assert!(editor.is_modified());
+    let owed = fixture.owes_or_wrote(&restore_target);
+    let title = fixture.tab_title();
+    assert!(
+        owed && title.starts_with("• "),
+        "a restore into a clean tab: {}, title={title:?}",
+        fixture.draft_state(&restore_target)
+    );
+    fixture.settle_draft(&restore_target);
+}
+
+/// The save-formatting mirror-back installs the bytes just saved, so it owes
+/// no draft: the tab ends clean, and nothing marks it draft-dirty.
+#[test]
+fn test_a_save_formatting_mirror_back_owes_no_draft() {
+    ensure_gtk_init();
+    let _policy = DraftPipelinePolicyReset;
+    let _first_dirty = FirstDirtyAutosaveDelayReset;
+    lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(60_000);
+    let fixture = HistoryRestoreDraftFixture::open("current\n", "unused snapshot\n");
+    let editor = &fixture.editor;
+    editor.apply_editorconfig_overrides(
+        lushtext_core::model::formatting_overrides::FormattingOverrides {
+            trim_trailing_whitespace: Some(true),
+            ..Default::default()
+        },
+    );
+    let source = "line with trailing spaces   \n".repeat(64);
+    let expected = "line with trailing spaces\n".repeat(64);
+    editor.buffer().set_text(&source);
+    editor.buffer().set_modified(true);
+    fixture.settle_draft(&source);
+
+    activate_action(&fixture.window, "save");
+    wait_until(Duration::from_secs(10), || {
+        !editor.is_saving()
+            && !editor.is_modified()
+            && !editor.buffer_replacement_evidence().in_progress
+    });
+    assert_eq!(editor_text(editor), expected);
+    assert_eq!(
+        editor
+            .buffer_replacement_evidence()
+            .last_terminal
+            .expect("mirror-back terminal")
+            .ticket
+            .workflow,
+        BufferReplacementWorkflow::SaveFormatting
+    );
+    assert!(
+        !editor.draft_dirty(),
+        "the mirrored-back saved text owes no draft"
+    );
+}
+
+/// Startup draft recovery installs the draft's own body, so the tab owes no
+/// draft until the user edits: marking it would rewrite every restored draft
+/// on the first tick for nothing.
+#[test]
+fn test_a_recovered_draft_is_not_rewritten_before_an_edit() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("recovered.txt");
+    fixture::write_text(&file_path, "disk content");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    draft_service::fixture::write_body(&data_dir, &draft_id, "draft content").expect("seed draft");
+    let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id,
+                original_path: Some(file_path.clone()),
+                original_mtime_secs: Some(current_mtime),
+                saved_at_secs: 1,
+            }],
+            cleanup_continuation: None,
+        },
+    )
+    .expect("save manifest");
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(file_path),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save session");
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(10), || {
+        window.imp().tab_view.n_pages() == 1 && {
+            let editor = active_editor(&window);
+            editor_text(&editor) == "draft content"
+                && editor.is_draft_restored()
+                && !editor.buffer_replacement_evidence().in_progress
+        }
+    });
+    let editor = active_editor(&window);
+    assert!(editor.is_modified());
+    assert!(
+        !editor.draft_dirty(),
+        "a recovered draft already holds the installed body"
+    );
+    // Modified, so its tab shows the bullet like any edited tab.
+    let title = window.imp().tab_view.page(&editor).title();
+    assert!(
+        title.starts_with("• "),
+        "the recovered draft's tab shows it is modified: {title:?}"
+    );
 }
 
 /// Selecting another snapshot empties the preview of the previous one in
@@ -21387,13 +21815,25 @@ fn test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode() {
     let shown = crate::common::wait_until_or_false(Duration::from_secs(10), || {
         bookmarked.view_shows_document() && bookmarked.visible_top_line().abs_diff(300) <= 40
     });
+    // `restore-main-ci` D4: CI run 43614093974 failed this once (top line 69,
+    // cursor 300, document shown) and 20 starved local runs did not. The
+    // message carries the attach/detach counts and the adjustment, so the next
+    // failure names the mechanism.
+    let vadjustment = bookmarked.source_view().vadjustment();
     assert!(
         shown,
-        "shows document {}, top line {}, cursor {:?}, active is bookmarked {}",
+        "shows document {}, top line {}, cursor {:?}, active is bookmarked {}, \
+         (attaches, detaches) {:?}, vadjustment value/upper/page {:?}",
         bookmarked.view_shows_document(),
         bookmarked.visible_top_line(),
         bookmarked.cursor_position(),
-        active_editor(&window) == bookmarked
+        active_editor(&window) == bookmarked,
+        bookmarked.view_attachment_counts(),
+        vadjustment.as_ref().map(|adjustment| (
+            adjustment.value(),
+            adjustment.upper(),
+            adjustment.page_size()
+        )),
     );
 }
 

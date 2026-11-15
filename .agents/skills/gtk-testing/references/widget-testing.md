@@ -122,6 +122,36 @@ Why shared, not local: a private copy is missed when the shared helper is fixed.
 
 If a widget test fails then passes (or the harness prints `FLAKY:`), that is a blocker, not noise: read the real panic, classify the wait, fix the cause, and rerun to confirm. See the skill's Flake Discipline section.
 
+**Wait for the admission the action needs, not only for its precondition.**
+Some app operations share one process-wide admission and **reschedule** rather
+than queue when it is taken: a local-history periodic capture that finds the
+automatic-capture permit held (by the baseline capture the test's own edit
+started) tries again a whole interval later, five minutes. A test that calls
+such an operation right after the edit times out whenever a loaded runner has
+not finished the earlier capture (`protected_view_surfaces`, CI run
+43627976239). Wait for the admission to be free first
+(`local_history_evidence().automatic_capture_inflight`), and prove the fix with
+a test that slows the competing work deterministically
+(`set_local_history_baseline_delay_for_test`) rather than with load.
+
+**A scroll made while a reflow pauses the rest state is still a scroll.** The
+`editor_page` minimap flake (`y = -6`) was a settle repair undoing a
+`scroll_to_mark` made during a passive width burst. To test inside such a
+burst, act *from* the event that opens it, never after waiting for its effect:
+connect the horizontal adjustment's `changed` (after the editor's own
+observer), and on the first page-size change queue a `G_PRIORITY_HIGH` idle
+that records `minimap_evidence().reflow_settle_pending` and then acts
+(`editor_page::act_during_width_reflow`). Waiting for the width change and then
+acting let CI's main-loop drain run the 150 ms settle first: the top-anchor
+guard failed on both PR runs and the scroll tests passed vacuously
+(`restore-main-ci` R6). Also wait until no burst is pending before opening
+one, and open it with the minimap *shown* (show it, or change the scroller's
+end margin): while the minimap is hidden every minimap refresh cancels a
+pending settle. Read anything the settle will change inside the action, not
+after the helper returns. Test a later reflow with a single `set_value`,
+because a `scroll_to_mark` keeps refining its value after the settle and that
+later `value-changed` can hide a missing rest-state record.
+
 Use predicates tied to visible behavior:
 
 - tab count changed
@@ -138,6 +168,16 @@ applies it. Use `common::observed_between_dispatches`, which runs the main
 loop one `iteration(false)` at a time and samples between dispatches (GLib
 dispatches one priority level per iteration), to assert such a state was ever
 true; then `wait_until` for it to clear.
+
+The same holds for **any in-flight state of a workflow that reschedules itself
+on a short timeout**, such as a buffer replacement's `in_progress` or
+`mutation_started` (1 ms slice turns). When a turn takes longer than its
+timeout, as on a loaded host, the next turn is already due when it returns, so
+one `wait_until` drain chains every turn to the terminal and the in-flight state
+is never sampled: a test that passes on an idle machine and fails under load
+(reproduced 2 of 6 runs with CPUs saturated; `harden-flatpak-sdk-update-ci`).
+Assert in-flight states with `observed_between_dispatches`; keep `wait_until`
+for terminal states, which persist.
 
 **`window.destroy()` does not dispose a window a test still holds** (ledger
 A21). A teardown test that needs the widget tree torn down must drop every

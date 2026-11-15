@@ -59,7 +59,9 @@ pre-commit hook, CI, and contributor docs:
   narrower command is documented as a non-blocking smoke shortcut;
 - the fast policy audits, `make check-policy` (filesystem boundary, Blueprint
   drift and template contract, workflow boundaries, accessibility and visual
-  proof policy, terminology, automation docs, and more);
+  proof policy, terminology, automation docs, the CI job timeouts
+  (`check-workflow-timeouts`), the CI Flatpak build mechanism
+  (`check-flatpak-ci-builds`), and more);
 - the rustdoc lint gate (run by hand; [`testing.md`](./testing.md));
 - `cargo deny check advisories bans sources licenses`;
 - `openspec validate --all --strict` for OpenSpec changes and specs.
@@ -231,6 +233,25 @@ missing published baseline may produce advisory output, but missing tools,
 command rot, or missing/empty public API snapshots are infrastructure failures,
 and the lane must leave inspectable public API snapshots. Once a crate
 publishes, its semver/public-API job must become blocking for that crate.
+
+CI installs `cargo-public-api` through `scripts/install-cargo-public-api.sh`,
+not `cargo install --locked cargo-public-api`: 0.52.0 (the newest release)
+locks `openssl-sys` 0.9.88, which refuses the Fedora 45 image's OpenSSL 4. The
+script downloads the crate, checks it against `CARGO_PUBLIC_API_SHA256`, raises
+exactly one lockfile entry, `openssl-sys`, to
+`CARGO_PUBLIC_API_OPENSSL_SYS_VERSION`, refuses any other lock change, and
+installs with `--locked` from the crate. The job also installs
+`libcurl-devel`, so `curl-sys` links the image's libcurl: its bundled curl
+8.10.1 does not compile against OpenSSL 4, and either half alone fails.
+**Retirement:** drop the override (and `libcurl-devel`, if nothing else needs
+it) once a release locks `openssl-sys >= 0.9.114` and a `curl-sys` that builds
+there. The script enforces it: it fails when the crate's own lock already pins
+`openssl-sys` at or above the override, so the first such version bump is red
+until the override is removed. `make check-cargo-public-api-install` (in
+`make check-policy`, and a step of the advisory job itself, since CI runs no
+`check-policy`) self-tests the script offline, with a fake crate and a fake
+`cargo`. To reproduce the CI install, run the script in a `fedora:45`
+container with the three variables from `ci.yml`.
 Governance and publication gates are in `crates/gtk-lush/GOVERNANCE.md`.
 
 ## Property Testing
@@ -663,13 +684,47 @@ the widget suite on its platform first.
   `pipewire-gstreamer` and `gstreamer1-plugins-good`. Keep it outside required
   PR checks unless a lane is proven cheap and stable.
 - `.github/workflows/flatpak.yml` — Flatpak build in the
-  `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` container, with cache
-  keys tied to the Flatpak build inputs.
+  `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` container
+  (`--privileged`), with cache keys tied to the Flatpak build inputs; also
+  `workflow_dispatch`. It builds through the composite action
+  `.github/actions/flatpak-build`, the **only** place that names
+  `flatpak/flatpak-github-actions/flatpak-builder@`. The image keeps its GNOME
+  SDK and Platform in the system installation `/var/lib/flatpak` on overlayfs;
+  when Flathub has newer refs, flatpak's update renames deployment directories,
+  an overlay without `redirect_dir` refuses that for lower-layer directories
+  (`Invalid cross-device link`, then a flatpak-builder segfault, exit 139).
+  Which runners fail varies (PR #98, run `43642169956`: two attempts failed,
+  a rerun on another runner image passed); the passing runner's cause
+  (`redirect_dir` on, or another snapshotter) is unverified, and the fix does
+  not depend on it. So the action
+  first runs `scripts/ci-flatpak-installation.py diagnose` (one log group:
+  kernel, `redirect_dir`, overlay mounts, `findmnt`/`df` of the installation and
+  `$RUNNER_TEMP`, and a `rename(2)` probe of the first runtime's deployed commit
+  directory), then `relocate`: `cp -a` of the installation to
+  `$RUNNER_TEMP/flatpak-system` and a `mount(2)` bind over `/var/lib/flatpak`
+  (the image has no `mount` binary), refused inside the checkout, failing unless
+  the re-probe returns `ok`, and logging its wall time and `df -h` (budget 90 s,
+  judged from CI logs, never enforced). Shell steps read `$RUNNER_TEMP` and
+  `$GITHUB_WORKSPACE` from the environment, never the `${{ }}` contexts.
+  `make check-flatpak-ci-builds` (in `make check-policy` and CI's `Lint` job)
+  fails when a workflow names `flatpak-builder@`, when a job in a
+  `flatpak-github-actions` container lacks `uses: ./.github/actions/flatpak-build`
+  after its checkout, or when the one exemption (`release.yml`
+  `cominotti-flatpak`, which installs with `--user` into the host-bound
+  `$HOME`) no longer passes `--user`.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation
   check (release helper, Flathub manifest and Cominotti repository tests, a
   no-mutation preview, metadata validation).
 - `.github/workflows/release.yml` — `v*` tag release validation and manual
-  dry run; its Flathub PR step stays skipped.
+  dry run; its Flathub PR step stays skipped. A tag push builds the tag. A
+  dispatch builds the dispatched commit (`checkout-ref` is `$GITHUB_SHA`) in
+  every job; a dispatch that is not a dry run is refused unless it came from
+  `refs/heads/main`. A dry run (the default) validates an **untagged** version
+  (`make release DRY_RUN=1` refuses an existing tag, so use one such as
+  `v0.8.4-dryrun.1`), generates the Flathub artifact from `HEAD`, and runs the
+  `Release Flatpak Build` job through `.github/actions/flatpak-build`, so a dry
+  run dispatched from a branch proves a release-workflow change before merge;
+  the Cominotti repository, deploy and publish jobs stay skipped.
 - `.github/workflows/release-benchmark.yml` — release-safe benchmark report on
   `v*` tags or recovery dispatches, `fedora:45`.
 - `.github/workflows/snap.yml` — `validate` runs `snapcraft expand-extensions`;
@@ -679,11 +734,15 @@ the widget suite on its platform first.
 Rust validation helpers installed in CI are version-pinned in workflow `env`
 blocks: `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
 `CARGO_FUZZ_VERSION=0.13.1`, `CARGO_MUTANTS_VERSION=27.0.0`,
-`CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`,
-`GTK_LUSH_MSRV=1.98.0`, and `GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`;
+`CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`
+(with `CARGO_PUBLIC_API_SHA256=80f55cea…7511`, the crate's checksum, and
+`CARGO_PUBLIC_API_OPENSSL_SYS_VERSION=0.9.118`, its one lockfile override; see
+the GTK Lush Family Foundation section), `GTK_LUSH_MSRV=1.98.0`, and `GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`;
 `KANI_VERSION` comes from the Makefile. Update the pin and rerun the affected
 local validation command when intentionally refreshing a tool.
 
 **When bumping gtk-rs:** update the Fedora version in `ci.yml` and
-`release-benchmark.yml`, and the GNOME tag in `flatpak.yml` and the Flatpak
-manifest, to match the new minimum GTK requirement.
+`release-benchmark.yml`, and the GNOME tag of every
+`flatpak-github-actions` image use (`flatpak.yml`, and both container jobs of
+`release.yml`: `flatpak` and `cominotti-flatpak`) and of the Flatpak manifest,
+to match the new minimum GTK requirement.
