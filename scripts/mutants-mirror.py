@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Mirror slots for local in-place mutation runs, and the merge of their reports.
 
-Design D2 and D5 of openspec/changes/reduce-build-disk-writes; the caller is
+Design D2 and D5 of openspec/changes/archive/2026-11-15-reduce-build-disk-writes; the caller is
 `scripts/run-mutants.sh` in mirror mode (`MUTANTS_MIRROR=1`).
 
 Usage:

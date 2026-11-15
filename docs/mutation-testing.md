@@ -261,7 +261,7 @@ it reaches the scope cap. Every test process runs through a Cargo target runner,
 `scripts/test-address-space-runner.sh`, which sets `RLIMIT_AS` to
 `LUSHTEXT_TEST_ADDRESS_SPACE` (`4G` by default, set in the Makefile from
 the measurement in
-`openspec/changes/reduce-build-disk-writes/evidence/address-space.md`: twice
+`openspec/changes/archive/2026-11-15-reduce-build-disk-writes/evidence/address-space.md`: twice
 the smallest power-of-two GiB at which the unmutated baselines pass) and execs
 the test. rustc, the linker, build scripts, nextest and cargo-mutants are not
 limited; the proof-strength tests arm uses the same runner. The unmutated

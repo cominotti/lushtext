@@ -4258,7 +4258,10 @@ separate change, in this order:
        its own design, because `--mem none` callers admit under LOCK by
        design. Details:
        `.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md`.
-   - `reduce-build-disk-writes` (PR #108; infrastructure, no app change).
+   - `reduce-build-disk-writes` (merged 2026-11-15 as `fb727d4a`, PR #108,
+     archived as
+     `openspec/changes/archive/2026-11-15-reduce-build-disk-writes/`;
+     infrastructure, no app change).
      The build lanes wrote and left too much on the btrfs RAID1 home, which
      is snapshotted.
      - **Before:** a local `make mutants-*` ran copy mode, `--jobs 3`. It

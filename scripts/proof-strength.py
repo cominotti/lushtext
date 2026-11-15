@@ -24,7 +24,7 @@ Isolation: every Kani run happens in a disposable detached worktree at `--rev`
 nor checked. The worktree lives in the build cache root, outside the
 snapshotted checkout: `<checkout-cache>/proof-strength/wt`, where
 `<checkout-cache>` is `scripts/build-cache.sh checkout-path` (design D6 of
-openspec/changes/reduce-build-disk-writes). The tests arm runs cargo-mutants
+openspec/changes/archive/2026-11-15-reduce-build-disk-writes). The tests arm runs cargo-mutants
 `--in-place` inside that clean worktree, with its build and target directories
 pinned there, so it copies nothing and leaves no build directory behind; an
 interrupted mutant is discarded by the next run's `git checkout --force`.

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # RUSTC_WORKSPACE_WRAPPER for the mutation lanes (design D4 of
-# openspec/changes/reduce-build-disk-writes): run rustc directly for workspace
+# openspec/changes/archive/2026-11-15-reduce-build-disk-writes): run rustc directly for workspace
 # members. Cargo then starts `<rustc-wrapper> rustc-passthrough.sh rustc ...`,
 # and a sccache-based rustc-wrapper (CST's) executes a command whose first
 # argument is not `rustc` directly, so a mutated workspace crate, a guaranteed

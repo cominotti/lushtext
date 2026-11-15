@@ -689,7 +689,7 @@ mode used to cold-build one tree per job (5.2 GB each) into a new
   `RLIMIT_AS` through a Cargo target runner
   (`scripts/test-address-space-runner.sh`, `LUSHTEXT_TEST_ADDRESS_SPACE`,
   default `4G`, derived from the unmutated baselines in
-  `openspec/changes/reduce-build-disk-writes/evidence/address-space.md`); rustc,
+  `openspec/changes/archive/2026-11-15-reduce-build-disk-writes/evidence/address-space.md`); rustc,
   the linker, build scripts, nextest and cargo-mutants are not limited. A
   caught mutant whose log shows an allocation failure is listed in
   `mutants.out/address-space-caught.txt` and counted in the summary: it is

@@ -82,7 +82,7 @@ Environment:
   MUTANTS_SLOT_MAX_GIB  Mirror mode: empty a slot whose build + target exceed this (default: 24).
   LUSHTEXT_TEST_ADDRESS_SPACE  Mirror mode: per-test address-space limit (K/M/G/T or none).
 
-Mirror mode (design D2 of openspec/changes/reduce-build-disk-writes): the
+Mirror mode (design D2 of openspec/changes/archive/2026-11-15-reduce-build-disk-writes): the
 checkout's tracked and untracked, non-ignored files, uncommitted edits
 included, are synced into slots under `scripts/build-cache.sh root`/mutants,
 and each slot runs `cargo mutants --in-place` with its own fixed target and

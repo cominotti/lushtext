@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Cargo target runner for local mutation runs (design D5 of
-# openspec/changes/reduce-build-disk-writes): run ONE test binary under an
+# openspec/changes/archive/2026-11-15-reduce-build-disk-writes): run ONE test binary under an
 # address-space limit, so a runaway mutant fails its own test process instead
 # of taking the host's memory or the whole run's scope.
 #

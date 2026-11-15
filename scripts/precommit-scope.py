@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Decide whether a commit may skip the pre-commit hook's Clippy step.
 
-Design D8 of openspec/changes/reduce-build-disk-writes.
+Design D8 of openspec/changes/archive/2026-11-15-reduce-build-disk-writes.
 
 Usage:
   scripts/precommit-scope.py docs-only        # exit 0 only for a docs-only commit

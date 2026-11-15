@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The repository's build cache root, and the ONLY place its location is
-# computed (design D1 of openspec/changes/reduce-build-disk-writes; the
+# computed (design D1 of openspec/changes/archive/2026-11-15-reduce-build-disk-writes; the
 # "Build Cache Root" section of .agents/rules/build.md):
 #
 #   scripts/build-cache.sh root
