@@ -42,7 +42,13 @@ lushtext-core = { path = "crates/lushtext-core" }
 # GTK / GNOME stack
 gtk4        = { version = "0.11", features = ["gnome_50"] }
 libadwaita  = { version = "0.9",  features = ["v1_9", "gtk_v4_22"] }
-sourceview5 = { version = "0.11", features = ["v5_18"] }
+# `gtk_v4_18`: from sourceview5 0.11.2, `View` implements `gtk::Accessible`
+# only under a `gtk_v4_*` feature (0.11.0 implemented it unconditionally), so
+# without it every accessibility call on the editor view fails to compile.
+# 4.18 is the highest GTK feature the binding offers, below the GNOME 50 floor.
+# 0.11.3: the floor of `SearchContext::replace_all` returning its count
+# (`Result<u32, glib::Error>`), which retired the search bar's FFI call.
+sourceview5 = { version = "0.11.3", features = ["v5_18", "gtk_v4_18"] }
 gio         = { version = "0.22", features = ["v2_88"] }
 glib        = { version = "0.22", features = ["v2_88"] }
 gdk4        = { version = "0.11", features = ["v4_22"] }

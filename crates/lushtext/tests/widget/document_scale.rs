@@ -106,7 +106,7 @@ fn has_context_tags(page: &LushtextEditorPage) -> bool {
     let buffer = page.buffer();
     let mut found = false;
     buffer.tag_table().foreach(|tag| {
-        let name = tag.name().map(|name| name.to_string()).unwrap_or_default();
+        let name = tag.name().map_or_default(|name| name.to_string());
         let is_context_tag = name.contains("context-classes") || name.contains(':');
         if is_context_tag {
             let mut iter = buffer.start_iter();
@@ -1236,8 +1236,7 @@ fn features_row(window: &LushtextWindow) -> String {
         .imp()
         .features_row
         .subtitle()
-        .map(|subtitle| subtitle.to_string())
-        .unwrap_or_default()
+        .map_or_default(|subtitle| subtitle.to_string())
 }
 
 fn short_document(dir: &tempfile::TempDir) -> std::path::PathBuf {

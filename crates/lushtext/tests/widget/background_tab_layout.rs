@@ -206,6 +206,204 @@ fn test_a_hidden_tab_seen_laying_out_is_detached_and_keeps_its_top_line() {
     );
 }
 
+/// Wait until `editor`'s view has laid its document out: its vertical
+/// adjustment's `upper` held still for 300 ms.
+fn wait_laid_out(editor: &LushtextEditorPage) {
+    let adjustment = editor.source_view().vadjustment().expect("vadjustment");
+    let started = Instant::now();
+    let mut upper = adjustment.upper();
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the view never laid its document out: upper {}, page {}",
+            adjustment.upper(),
+            adjustment.page_size()
+        );
+        flush_after_delay(Duration::from_millis(300));
+        let now = adjustment.upper();
+        if (now - upper).abs() < 0.5 && now > adjustment.page_size() {
+            break;
+        }
+        upper = now;
+    }
+}
+
+/// A background tab resting at its first line comes back resting at the top
+/// (`lower`, the top margin shown), so its top-anchor repair stays armed.
+/// Scrolling the reattached view to its kept line through GTK
+/// (`scroll_to_mark`/`scroll_to_iter`, aligned at 0) put the first line's
+/// character box at the top edge instead: the value rested at the top margin
+/// plus that box's offset, 6 px here and 8 px with CI's fallback font, and
+/// the move was animated, so a width-reflow settle read it as a scroll
+/// (ledger A113, `diagnose-ci-only-reflow-guard-failure`).
+#[test]
+fn test_a_detached_tab_at_its_first_line_reattaches_at_the_top() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let big = dir.path().join("big.txt");
+    let small = dir.path().join("small.txt");
+    dense_document(&big, 'd');
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&big);
+    let big = editor_at(&window, 0);
+    wait_loaded(&big);
+    wait_laid_out(&big);
+    let adjustment = big.source_view().vadjustment().expect("vadjustment");
+    assert!(
+        (adjustment.value() - adjustment.lower()).abs() <= 0.5,
+        "precondition: the opened document rests at the top (value {}, lower {})",
+        adjustment.value(),
+        adjustment.lower()
+    );
+
+    window.open_document(&small);
+    let small = editor_at(&window, 1);
+    wait_loaded(&small);
+    // Re-layout every line of the hidden view (as a font, zoom or spacing
+    // change does), so it is seen laying out and detached (A83).
+    big.source_view().set_pixels_above_lines(4);
+    wait_until(Duration::from_secs(10), || !big.view_shows_document());
+    assert!(
+        !big.view_shows_document(),
+        "precondition: the hidden view was detached"
+    );
+
+    window
+        .imp()
+        .tab_view
+        .set_selected_page(&window.imp().tab_view.nth_page(0));
+    wait_until(Duration::from_secs(5), || big.view_shows_document());
+    wait_laid_out(&big);
+    let adjustment = big.source_view().vadjustment().expect("vadjustment");
+    assert!(
+        (adjustment.value() - adjustment.lower()).abs() <= 0.5,
+        "the reattached tab rests at the top: value {}, lower {}, top margin {}",
+        adjustment.value(),
+        adjustment.lower(),
+        big.source_view().top_margin()
+    );
+    assert_eq!(
+        big.visible_top_line(),
+        0,
+        "line one is the first line shown"
+    );
+}
+
+/// A background tab scrolled inside a wrapped first paragraph comes back at
+/// the display line it showed, not at the top: the kept position is the
+/// start of the display line at the top of the view, which is on line 0 but
+/// not the document's start, so only the document's start rests at `lower`
+/// (`diagnose-ci-only-reflow-guard-failure`).
+#[test]
+fn test_a_detached_tab_inside_its_wrapped_first_paragraph_reattaches_there() {
+    ensure_gtk_init();
+    lushtext_core::ui::settings_writes::shared()
+        .set_boolean(lushtext_core::config::keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let big = dir.path().join("wrapped.txt");
+    let small = dir.path().join("small.txt");
+    let mut text = "word ".repeat(1_500);
+    text.push('\n');
+    text.extend((0..2_000).map(|line| format!("line {line:04}\n")));
+    fixture::write_text(&big, &text);
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&big);
+    let big = editor_at(&window, 0);
+    wait_loaded(&big);
+    wait_laid_out(&big);
+    let view = big.source_view();
+    let adjustment = view.vadjustment().expect("vadjustment");
+    let first_paragraph_end = view.iter_location(&big.buffer().iter_at_line(1).expect("line 1"));
+    assert!(
+        f64::from(first_paragraph_end.y()) > adjustment.page_size() + 200.0,
+        "precondition: the first paragraph wraps past the page (ends at {}, page {})",
+        first_paragraph_end.y(),
+        adjustment.page_size()
+    );
+    adjustment.set_value(adjustment.lower() + 300.0);
+    flush_after_delay(Duration::from_millis(300));
+    let before = adjustment.value();
+    assert!(
+        before > adjustment.lower() + 200.0 && big.visible_top_line() == 0,
+        "precondition: scrolled inside the first paragraph (value {before}, top line {})",
+        big.visible_top_line()
+    );
+
+    window.open_document(&small);
+    let small = editor_at(&window, 1);
+    wait_loaded(&small);
+    big.source_view().set_pixels_above_lines(4);
+    wait_until(Duration::from_secs(10), || !big.view_shows_document());
+    assert!(
+        !big.view_shows_document(),
+        "precondition: the hidden view was detached"
+    );
+
+    window
+        .imp()
+        .tab_view
+        .set_selected_page(&window.imp().tab_view.nth_page(0));
+    wait_until(Duration::from_secs(5), || big.view_shows_document());
+    wait_laid_out(&big);
+    let adjustment = big.source_view().vadjustment().expect("vadjustment");
+    assert!(
+        adjustment.value() > adjustment.lower() + 200.0,
+        "the reattached tab stays inside its first paragraph: value {} (was {before}), lower {}",
+        adjustment.value(),
+        adjustment.lower()
+    );
+}
+
+/// A file opened from disk into a window the way a user opens it rests at
+/// the top once it has settled: 2,000 unwrapped lines with the minimap shown,
+/// and no test code writing the editor's adjustments
+/// (`diagnose-ci-only-reflow-guard-failure` D3).
+#[test]
+fn test_a_file_opened_in_a_window_rests_at_the_top() {
+    ensure_gtk_init();
+    let settings = lushtext_core::ui::settings_writes::shared();
+    settings
+        .set_boolean(lushtext_core::config::keys::SHOW_MINIMAP, true)
+        .expect("show the minimap");
+    settings
+        .set_boolean(lushtext_core::config::keys::WORD_WRAP, false)
+        .expect("disable word wrap");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("lines.txt");
+    let text: String = (0..2_000).map(|line| format!("line {line:03}\n")).collect();
+    fixture::write_text(&path, &text);
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    wait_laid_out(&editor);
+    wait_until(Duration::from_secs(10), || {
+        editor.is_minimap_visible() && !editor.minimap_evidence().reflow_settle_pending
+    });
+    flush_after_delay(Duration::from_millis(300));
+    let adjustment = editor.source_view().vadjustment().expect("vadjustment");
+    assert!(
+        editor.is_minimap_visible(),
+        "precondition: the minimap is shown"
+    );
+    assert!(
+        (adjustment.value() - adjustment.lower()).abs() <= 0.5,
+        "an opened file rests at the top: value {}, lower {}, attachments {:?}",
+        adjustment.value(),
+        adjustment.lower(),
+        editor.view_attachment_counts()
+    );
+}
+
 /// A Protected View document takes GTK's primary-selection provider off its
 /// buffer while its view is realized; detaching that view (hidden, seen laying
 /// out) and attaching it again must keep that bookkeeping true, or GTK's
@@ -796,11 +994,18 @@ fn test_replace_all_with_no_match_is_a_no_op() {
     wait_loaded(&editor);
     editor.show_replace();
     let bar = editor.search_bar();
-    bar.search_context()
-        .expect("a search context")
-        .settings()
-        .set_search_text(Some("absent"));
+    // Typed into the entry, as a user would: the "no match" styling reads the
+    // entry's text, not the search settings.
+    bar.search_entry().set_text("absent");
+    let context = bar.search_context().expect("a search context");
+    wait_until(Duration::from_secs(10), || {
+        flush_events();
+        context.settings().search_text().as_deref() == Some("absent")
+    });
     bar.replace_entry().set_text("x");
+    // A sentinel the counter cannot show for this document, so the assertion
+    // below proves Replace All refreshed it.
+    bar.set_match_count(7, 9);
     bar.replace_all();
     flush_events();
     assert!(!editor.is_modified());
@@ -810,6 +1015,67 @@ fn test_replace_all_with_no_match_is_a_no_op() {
             .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .as_str(),
         "nothing to find here\n"
+    );
+    // `rust-1-100-adoption` (search-replace-safety): the safe binding's zero
+    // count is success, and the counter reports zero matches.
+    wait_until(Duration::from_secs(10), || {
+        flush_events();
+        context.occurrences_count() == 0
+    });
+    assert_eq!(bar.imp().match_label.label().as_str(), "");
+    assert!(
+        bar.search_entry().has_css_class("error"),
+        "a finished scan with no match styles the query as having none"
+    );
+}
+
+/// `rust-1-100-adoption` (search-replace-safety): GtkSourceView rejects an
+/// invalid replacement template with regular expressions on (a trailing `\`)
+/// with a `GError`. Replace All logs it, never unwraps it, leaves the document
+/// unchanged, and still refreshes the counter.
+#[test]
+fn test_replace_all_with_an_invalid_regex_replacement_is_refused() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("plain.txt");
+    fixture::write_text(&path, "find me, find me\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    let editor = editor_at(&window, 0);
+    wait_loaded(&editor);
+    editor.show_replace();
+    let bar = editor.search_bar();
+    let context = bar.search_context().expect("a search context");
+    context.settings().set_regex_enabled(true);
+    context.settings().set_search_text(Some("find"));
+    wait_until(Duration::from_secs(10), || {
+        flush_events();
+        context.occurrences_count() == 2
+    });
+    // The binding itself reports the refusal: this is the `GError` the bar's
+    // `Err` arm logs.
+    assert!(
+        context.replace_all("bad\\").is_err(),
+        "GtkSourceView refuses a replacement ending in a lone backslash"
+    );
+    bar.replace_entry().set_text("bad\\");
+    bar.set_match_count(7, 9);
+    bar.replace_all();
+    flush_events();
+    assert!(!editor.is_modified());
+    let buffer = editor.buffer();
+    assert_eq!(
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .as_str(),
+        "find me, find me\n"
+    );
+    assert_eq!(context.occurrences_count(), 2);
+    assert_ne!(
+        bar.imp().match_label.label().as_str(),
+        "7 of 9",
+        "the counter is refreshed after a refused Replace All"
     );
 }
 

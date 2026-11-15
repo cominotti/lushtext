@@ -1472,6 +1472,7 @@ A5), and a crash may land before any step. Results, Kani 0.68.0 / CBMC 6.11.0:
 | `skipping_the_temp_sync_tears_the_destination` | the same with a shell that answers `SyncTemp` without syncing | `should_panic`: torn-destination counterexample | 2.11 s |
 | `a_move_removes_its_source_only_after_the_copy_is_durable` | move safety | PROVED | 0.06 s |
 | `a_completed_rename_synced_every_directory_it_mutated` | `rename_durable` syncs both parents across directories | PROVED | 0.06 s |
+| `every_rename_classification_describes_the_namespace` (`rust-1-100-adoption`, 2026-11-14) | the rename terminal's class: `BeforeRename` ⇒ nothing moved, `AfterRename` ⇒ the rename took effect and a directory sync failed, success ⇒ moved with every mutated parent synced; the no-replace fallback keys on it | PROVED | 0.18 s |
 
 `kani::cover!` checks confirm the proved branches are reachable (a successful
 write, a failed directory sync, a failed temp removal, a post-crash new

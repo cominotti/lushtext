@@ -31,6 +31,12 @@ use super::LAYOUT_SETTLE;
 /// Hidden sizes of the last line, in MiB.
 pub const HIDDEN_MIB: [usize; 3] = [1, 2, 4];
 const MIB: usize = 1024 * 1024;
+/// Rounds over [`HIDDEN_MIB`]; each size keeps its fastest lookup. A lookup
+/// is one sample, so a preemption on a shared host inflated one size's cost
+/// enough to break the growth check (`rust-1-100-adoption`, 2026-11-14:
+/// `[155077, 113729, 287920]` µs, against about `[50000, 100000, 200000]` in
+/// isolation). Preemption only adds time, so the minimum is the cost.
+const ROUNDS: usize = 3;
 
 /// The microseconds of one lookup of a point 2000 px below the text.
 #[must_use]
@@ -67,18 +73,33 @@ pub fn probe_a79() -> Observation {
             "control: the text view was presented",
         )?;
         let tag = invisible_tag(&fixture.buffer);
-        let mut last = Vec::new();
-        let mut delimited = Vec::new();
-        for mib in HIDDEN_MIB {
-            install(&fixture, &tag, mib, false);
-            last.push(below_layout_lookup_us(&fixture));
-            install(&fixture, &tag, mib, true);
-            delimited.push(below_layout_lookup_us(&fixture));
+        let mut last = [u128::MAX; HIDDEN_MIB.len()];
+        let mut delimited = [u128::MAX; HIDDEN_MIB.len()];
+        let mut rounds = Vec::with_capacity(ROUNDS);
+        for _ in 0..ROUNDS {
+            let mut round = Vec::with_capacity(HIDDEN_MIB.len());
+            for (index, mib) in HIDDEN_MIB.into_iter().enumerate() {
+                install(&fixture, &tag, mib, false);
+                let undelimited = below_layout_lookup_us(&fixture);
+                install(&fixture, &tag, mib, true);
+                let with_delimiter = below_layout_lookup_us(&fixture);
+                last[index] = last[index].min(undelimited);
+                delimited[index] = delimited[index].min(with_delimiter);
+                round.push((undelimited, with_delimiter));
+            }
+            rounds.push(round);
         }
         fixture.buffer.set_text("");
         recorder.measure(
             "below_layout_lookup_us",
-            format!("hidden {HIDDEN_MIB:?} MiB: last line {last:?}, delimited {delimited:?}"),
+            format!(
+                "hidden {HIDDEN_MIB:?} MiB, fastest of {ROUNDS} rounds: last line {last:?}, \
+                 delimited {delimited:?}"
+            ),
+        );
+        recorder.measure(
+            "rounds_us",
+            format!("(last line, delimited) per size and round: {rounds:?}"),
         );
         let grows = last[2] >= 3 * last[0].max(1) && last[2] >= 1_000;
         let flat = delimited.iter().all(|us| *us < 1_000);

@@ -74,6 +74,18 @@ pub const DERIVATION_CAP_LINES: usize = 256;
 pub const PACED_INSERTS: usize = 6;
 /// Lines per insert in the pacing comparison.
 pub const PACED_LINES: usize = 8;
+/// Fresh-fixture rounds the `after-paint` pacing run may take; the probe
+/// stops at the first round whose validation dispatches hold one insert each
+/// and records every round. The claim's precondition is that the validation
+/// idle gets the CPU before the next frame is due: when a shared host
+/// preempts the main loop past a frame interval, the frame clock (at
+/// `GDK_PRIORITY_REDRAW`, above the validation idle) runs first and its
+/// `after-paint` adds the next insert to the same invalid region. One
+/// `make gtk-axioms` round under load read five widenings for six inserts
+/// (`rust-1-100-adoption`, 2026-11-14); every isolated run reads six. A
+/// toolkit that merged paced inserts would merge them in every round, and
+/// still fail.
+pub const PACED_ROUNDS: usize = 3;
 /// Characters each paced insert's lines grow by over the previous insert's.
 pub const WIDTH_STEP_CHARS: usize = 6;
 /// Seed of the probe documents.
@@ -485,9 +497,21 @@ pub fn probe_a70() -> Observation {
         );
         let after_batch = unwrapped.dense.uppers().0;
         drop(unwrapped);
-        let fresh = ValidationFixture::new(recorder, gtk4::WrapMode::None)?;
-        let paced = pacing_run(&fresh, Pacing::AfterPaint);
-        drop(fresh);
+        let mut paced = PacingRun::default();
+        let mut paced_rounds = Vec::with_capacity(PACED_ROUNDS);
+        let mut paced_warnings = 0;
+        let mut paced_complete = true;
+        for _ in 0..PACED_ROUNDS {
+            let fresh = ValidationFixture::new(recorder, gtk4::WrapMode::None)?;
+            paced = pacing_run(&fresh, Pacing::AfterPaint);
+            drop(fresh);
+            paced_rounds.push((paced.widenings.len(), paced.elapsed_ms));
+            paced_warnings += paced.snapshot_warnings;
+            paced_complete &= paced.inserts == PACED_INSERTS;
+            if paced.widenings.len() == PACED_INSERTS {
+                break;
+            }
+        }
         let idle_fixture = ValidationFixture::new(recorder, gtk4::WrapMode::None)?;
         let idle = pacing_run(&idle_fixture, Pacing::IdleBelowValidate);
         recorder.measure(
@@ -506,9 +530,15 @@ pub fn probe_a70() -> Observation {
         recorder.measure(
             "snapshot_warnings",
             format!(
-                "after-paint {}, idle below validate {}",
-                paced.snapshot_warnings, idle.snapshot_warnings
+                "after-paint {paced_warnings} (every round), idle below validate {}",
+                idle.snapshot_warnings
             ),
+        );
+        recorder.measure(
+            "paced_rounds",
+            super::join_entries(paced_rounds.iter().map(|(widenings, elapsed_ms)| {
+                format!("{widenings} widenings for {PACED_INSERTS} inserts in {elapsed_ms} ms")
+            })),
         );
         recorder.measure(
             "paced_widenings",
@@ -518,7 +548,7 @@ pub fn probe_a70() -> Observation {
         );
         recorder.control(
             batched.inserts == PACED_INSERTS
-                && paced.inserts == PACED_INSERTS
+                && paced_complete
                 && idle.inserts == PACED_INSERTS
                 && (idle_fixture.dense.uppers().0 - after_batch).abs() < 1.0,
             "control: both runs made every insert and reached the same width",
@@ -539,7 +569,7 @@ pub fn probe_a70() -> Observation {
              lines",
         )?;
         recorder.axiom(
-            paced.snapshot_warnings == 0 && idle.snapshot_warnings == 0,
+            paced_warnings == 0 && idle.snapshot_warnings == 0,
             "neither pacing logs the A37 snapshot-allocation warning for inserts below the \
              viewport",
         )

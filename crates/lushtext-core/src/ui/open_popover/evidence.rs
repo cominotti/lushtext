@@ -286,8 +286,7 @@ pub fn open_popover_evidence(popover: &LushtextOpenPopover) -> OpenPopoverEviden
         empty_title: imp
             .empty_title
             .try_get()
-            .map(|label| label.label().into())
-            .unwrap_or_default(),
+            .map_or_default(|label| label.label().into()),
         scroller: scroller_geometry(popover),
         // `list_view` is a `TemplateChild`. GTK4 clears template children in
         // `dispose()`, before Rust's `Drop`, and the panicking `Deref` accessor
@@ -303,8 +302,7 @@ pub fn open_popover_evidence(popover: &LushtextOpenPopover) -> OpenPopoverEviden
         query: imp
             .search_entry
             .try_get()
-            .map(|entry| entry.text().to_string())
-            .unwrap_or_default(),
+            .map_or_default(|entry| entry.text().to_string()),
     }
 }
 

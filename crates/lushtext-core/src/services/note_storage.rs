@@ -96,8 +96,7 @@ pub fn rebase_display_and_canonical_paths(
         let suffix = display_path
             .strip_prefix(old_path)
             .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
+            .map_or_default(PathBuf::from);
         let display_path = if suffix.as_os_str().is_empty() {
             new_path.to_path_buf()
         } else {
@@ -112,8 +111,7 @@ pub fn rebase_display_and_canonical_paths(
         let suffix = canonical_path
             .strip_prefix(old_path)
             .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
+            .map_or_default(PathBuf::from);
         let display_path = if suffix.as_os_str().is_empty() {
             new_path.to_path_buf()
         } else {

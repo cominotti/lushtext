@@ -21,7 +21,7 @@ Subagents can and MUST ALWAYS be used whenever a skill or command asks for them.
 
 Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh` checks it). Update it in the same change that adds a rule file or materially changes one. Each file's frontmatter states when it loads.
 
-- `build.md` — build, dependencies, validation gates, CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation, benchmarks, end-user smoke
+- `build.md` — build, dependencies, validation gates, CI, packaging (Meson, Flatpak, release, Snap), SonarQube scope, and how each lane runs: Kani, GTK axioms, property, fuzz, mutation, benchmarks, end-user smoke, and the CI image widget lane
 - `documentation.md` — which documentation a change must update, including the accessibility and workflow matrices, `docs/next/` records, runbooks and memorials
 - `git.md` — git workflow and commit conventions
 - `parallel-agent-work.md` — how parallel agents share the workstation and reach `main`: host ownership, CPU and memory sizing, implementation slots, ordering, foreground waits, measurement queueing, serialized merges on local evidence, durability
@@ -270,6 +270,7 @@ make responsiveness-smoke # long-line responsiveness lane, RESPONSIVENESS_TIER=q
 make blueprint-generate / make check-blueprint  # regenerate and validate generated .ui templates
 make flatpak / make flatpak-install / make verify-flatpak-identity  # one shared install origin for every checkout
 make test-flatpak-install-origin # the install-origin guard against real flatpak in a private installation
+make update-deps-cooldown  # refresh Cargo.lock under a 7-day publish-age cooldown at the MSRV (needs Rust 1.100.0), then hakari, cargo-sources, a 1.98 check and cargo deny
 make release-bump TYPE=patch DRY_RUN=1  # preview the next release
 ```
 

@@ -18,7 +18,7 @@ Use this skill when the real question is "what contract is GTK, Libadwaita, or G
 
 ## Version Discipline
 
-- This repo targets `gtk4 = 0.11` with feature `gnome_50`, `libadwaita = 0.9` with features `v1_9` and `gtk_v4_22`, and `sourceview5 = 0.11` with feature `v5_18`.
+- This repo targets `gtk4 = 0.11` with feature `gnome_50`, `libadwaita = 0.9` with features `v1_9` and `gtk_v4_22`, and `sourceview5 = 0.11.3` with features `v5_18` and `gtk_v4_18` (from 0.11.2 the binding implements `gtk::Accessible` on `View` only under a `gtk_v4_*` feature).
 - LushText ships on GTK 4.24.x, Libadwaita 1.10.x and GtkSourceView 5.22.x (the GNOME 51 runtime) and keeps GTK 4.22.x, Libadwaita 1.9.x and GtkSourceView 5.20.x (GNOME 50) as the source floor: behaviour must hold on both (the GTK axiom ledger version-qualifies an axiom whose verdict differs), and the API floor stays at the GNOME 50 families.
 - The docs sites may render newer library versions. Honor `since` markers and do not recommend APIs added after GTK 4.22, Libadwaita 1.9, or the enabled GtkSourceView binding feature floor unless the user explicitly asks for forward-looking guidance.
 - Micro releases inside the same stable family are acceptable for source lookup because the invariants and warning paths are the same class of behavior this skill is documenting.

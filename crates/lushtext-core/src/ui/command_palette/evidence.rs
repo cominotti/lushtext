@@ -243,8 +243,7 @@ impl LushtextCommandPalette {
         self.imp()
             .search_entry
             .try_get()
-            .map(|entry| entry.text().to_string())
-            .unwrap_or_default()
+            .map_or_default(|entry| entry.text().to_string())
     }
 
     /// The current search mode.

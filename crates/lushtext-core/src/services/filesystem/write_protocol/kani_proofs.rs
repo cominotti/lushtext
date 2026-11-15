@@ -19,8 +19,8 @@
 //! explores every outcome sequence completely.
 
 use super::{
-    MAX_TEMP_NAME_ATTEMPTS, MoveAction, MoveProtocol, RenameAction, RenameProtocol, StepOutcome,
-    WriteAction, WriteClass, WriteProtocol,
+    MAX_TEMP_NAME_ATTEMPTS, MoveAction, MoveProtocol, RenameAction, RenameClass, RenameProtocol,
+    StepOutcome, WriteAction, WriteClass, WriteProtocol,
 };
 
 /// The longest atomic write: a probe, every temp-name attempt, content,
@@ -396,7 +396,8 @@ fn a_completed_rename_synced_every_directory_it_mutated() {
             RenameAction::Rename => renamed = succeeded,
             RenameAction::SyncSourceDir => source_synced = succeeded && renamed,
             RenameAction::SyncDestinationDir => destination_synced = succeeded && renamed,
-            RenameAction::Finish(done) => {
+            RenameAction::Finish(class) => {
+                let done = class == RenameClass::Success;
                 kani::cover!(
                     done && cross_directory,
                     "a cross-directory rename completes"
@@ -413,6 +414,67 @@ fn a_completed_rename_synced_every_directory_it_mutated() {
             }
         }
         every_step_succeeded &= succeeded;
+        (protocol, action) = protocol.step(succeeded);
+    }
+    panic!("the rename did not finish");
+}
+
+/// Rename classification soundness (`rust-1-100-adoption` A8): `BeforeRename`
+/// means the entry kept its old name, `AfterRename` that it has the new name
+/// and some directory sync failed, and `Success` that it has the new name and
+/// every directory the rename mutated was synced. The no-replace fallback
+/// relies on the first: it may retry by another route only when nothing moved.
+#[kani::proof]
+#[kani::unwind(5)]
+fn every_rename_classification_describes_the_namespace() {
+    let cross_directory: bool = kani::any();
+    let (mut protocol, mut action) = RenameProtocol::start(cross_directory);
+    let mut renamed = false;
+    let mut source_synced = false;
+    let mut destination_synced = false;
+    let mut a_sync_failed = false;
+    for _ in 0..TRANSFER_STEPS {
+        let succeeded: bool = kani::any();
+        match action {
+            RenameAction::Rename => renamed = succeeded,
+            RenameAction::SyncSourceDir => {
+                assert!(renamed, "a directory was synced for a rename that failed");
+                source_synced = succeeded;
+                a_sync_failed |= !succeeded;
+            }
+            RenameAction::SyncDestinationDir => {
+                assert!(renamed, "a directory was synced for a rename that failed");
+                assert!(cross_directory, "a same-directory rename synced twice");
+                destination_synced = succeeded;
+                a_sync_failed |= !succeeded;
+            }
+            RenameAction::Finish(class) => {
+                kani::cover!(class == RenameClass::Success, "a rename succeeds");
+                kani::cover!(class == RenameClass::BeforeRename, "the rename step fails");
+                kani::cover!(
+                    class == RenameClass::AfterRename,
+                    "a directory sync fails after the rename"
+                );
+                kani::cover!(
+                    class == RenameClass::AfterRename && cross_directory && source_synced,
+                    "the destination directory sync fails"
+                );
+                match class {
+                    RenameClass::BeforeRename => {
+                        assert!(!renamed, "a before-rename class after a rename");
+                    }
+                    RenameClass::AfterRename => {
+                        assert!(renamed, "an after-rename class without a rename");
+                        assert!(a_sync_failed, "an after-rename class with no failed sync");
+                    }
+                    RenameClass::Success => {
+                        assert!(renamed && source_synced && !a_sync_failed);
+                        assert!(!cross_directory || destination_synced);
+                    }
+                }
+                return;
+            }
+        }
         (protocol, action) = protocol.step(succeeded);
     }
     panic!("the rename did not finish");

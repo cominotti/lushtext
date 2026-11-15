@@ -1805,7 +1805,9 @@ mod tests {
         fixture::write_text(&file, "needle\n");
         let replacements = vec![make_replacement(&file, 1, "needle", "thread", 0..6)];
         let cancel = AtomicBool::new(false);
-        crate::services::filesystem::write::fail_next_parent_sync_for_test();
+        crate::services::filesystem::write::fail_next_parent_sync_for_test(
+            std::io::ErrorKind::Other,
+        );
 
         let outcome = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
             .expect("post-rename durability ambiguity still changed the target");

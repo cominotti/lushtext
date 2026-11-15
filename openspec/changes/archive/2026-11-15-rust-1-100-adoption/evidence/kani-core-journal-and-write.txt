@@ -1,0 +1,42 @@
+# Kani shard core-journal-and-write (task 7.4), final A8 code
+# Command: setsid nohup scripts/heavy.sh -- make kani KANI_SHARD=core-journal-and-write KANI_MEASURE=<json> (CPUs 8-23)
+# Kani 0.68.0, CBMC 6.11.0
+
+Complete - 14 successfully verified harnesses, 0 failures, 14 total.
+Kani shard core-journal-and-write: 7.38 min, peak RSS 2.54 GiB, 14 harnesses
+
+## Per harness (seconds, from the KANI_MEASURE JSON)
+SUCCESSFUL       0.35  services::draft_service::kani_proofs::journal_decisions_follow_their_documented_rules
+SUCCESSFUL       4.35  services::draft_service::kani_proofs::journal_set_aside_stamp_only_naming_loses_a_newer_body
+SUCCESSFUL       4.68  services::draft_service::kani_proofs::journal_set_aside_keeps_every_body_it_reports_kept
+SUCCESSFUL     325.15  services::draft_service::kani_proofs::journal_invariants_hold_under_crashes
+SUCCESSFUL       1.36  services::draft_service::set_aside_retention::kani_proofs::set_aside_retention_deleting_every_body_breaks_r2
+SUCCESSFUL       4.89  services::draft_service::set_aside_retention::kani_proofs::set_aside_retention_notice_follows_the_bound_and_its_rate_limit
+SUCCESSFUL       0.19  services::draft_service::set_aside_retention::kani_proofs::set_aside_retention_bound_and_notice_never_plan_a_deletion
+SUCCESSFUL       7.40  services::draft_service::set_aside_retention::kani_proofs::set_aside_retention_deletes_only_confirmed_bodies
+SUCCESSFUL       0.18  services::filesystem::write_protocol::kani_proofs::every_rename_classification_describes_the_namespace
+SUCCESSFUL       0.09  services::filesystem::write_protocol::kani_proofs::a_completed_rename_synced_every_directory_it_mutated
+SUCCESSFUL       0.07  services::filesystem::write_protocol::kani_proofs::a_move_removes_its_source_only_after_the_copy_is_durable
+SUCCESSFUL       3.86  services::filesystem::write_protocol::kani_proofs::skipping_the_temp_sync_tears_the_destination
+SUCCESSFUL       6.29  services::filesystem::write_protocol::kani_proofs::every_classification_describes_the_destination
+SUCCESSFUL       4.06  services::filesystem::write_protocol::kani_proofs::a_crash_never_tears_the_destination
+
+## New harness: every_rename_classification_describes_the_namespace
+Check 2: services::filesystem::write_protocol::kani_proofs::every_rename_classification_describes_the_namespace.cover.1
+	 - Status: SATISFIED
+	 - Description: "a rename succeeds"
+Check 3: services::filesystem::write_protocol::kani_proofs::every_rename_classification_describes_the_namespace.cover.2
+	 - Status: SATISFIED
+	 - Description: "the rename step fails"
+Check 4: services::filesystem::write_protocol::kani_proofs::every_rename_classification_describes_the_namespace.cover.3
+	 - Status: SATISFIED
+	 - Description: "a directory sync fails after the rename"
+Check 5: services::filesystem::write_protocol::kani_proofs::every_rename_classification_describes_the_namespace.cover.4
+	 - Status: SATISFIED
+	 - Description: "the destination directory sync fails"
+ ** 0 of 61 failed (1 unreachable)
+ ** 4 of 4 cover properties satisfied
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.17907532s
+
+The one UNREACHABLE check is std::fmt::Arguments::from_str's shift assertion in core, not a property of the harness.
