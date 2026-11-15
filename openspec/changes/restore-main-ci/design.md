@@ -630,6 +630,8 @@ Independent review of `origin/main..HEAD` at `7da3d54c`. Evidence is in
   enriched assertion names the mechanism and it is fixed failing first, or
   the maintainer accepts eight clean branch runs of the `window` shard as the
   regression proof with the diagnosis carried as a recorded follow-up.
+  **Moved (2026-11-15):** the maintainer merged on local evidence; 4.2 is
+  carried by the follow-up change `diagnose-ci-only-reflow-guard-failure`.
 - **R6. The D2 tests depended on when the test acted (must-fix, fixed).**
   The PR's first CI run (`7da3d54c`) failed
   `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow` on
@@ -672,6 +674,9 @@ Independent review of `origin/main..HEAD` at `7da3d54c`. Evidence is in
   `value-changed` no `changed` carried. The next CI run either passes or says
   which of "still pending", "scroll detected" or "settled without repairing"
   happened. This keeps the guard, and so the PR, blocked until CI shows it.
+  **Moved (2026-11-15):** the CI-only failure (F1) is carried by the
+  follow-up change `diagnose-ci-only-reflow-guard-failure`; it no longer
+  blocks the merge.
 - **R8. A hidden minimap's refresh lost a kept scroll (production race,
   fixed failing first).** R6 found that while the minimap is hidden every
   minimap refresh cancels a pending reflow settle and drops its pause. That

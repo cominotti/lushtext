@@ -226,7 +226,9 @@ Tests: each item's failing-first test is chosen by its diagnosis.
         measures.
       - Keep the 5/4 bound.
       - Prove it with 20 isolated passes, then commit and push.
-- [ ] 4.2 `window::test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode`
+- [x] 4.2 **Moved to `diagnose-ci-only-reflow-guard-failure`** (maintainer decision
+      2026-11-15: merge on local evidence; seven branches depend on these fixes).
+      `window::test_a_bookmark_opens_in_a_never_shown_tab_in_preview_only_mode`
       - Reproduce starved and find the timed-out predicate.
       - Classify it, fix it failing first, prove it with 20 starved isolated
         passes, then commit and push.
@@ -321,3 +323,20 @@ in `.claude/handoffs/restore-main-ci/stage4/`.
   `FLAKY` on any; `7da3d54c` failed on R7), `editor-page` 0 counted (all
   three runs failed on the R6 guard; no minimap `FLAKY` line on any). Local: the `editor-page`
   and `window` shards passed on the final tests with no `FLAKY`.
+
+## Merge record (2026-11-15)
+
+Maintainer decision: merge on local evidence and check CI once at the end of
+the programme, because seven parallel branches depend on these fixes.
+
+- [x] F1 **Moved to `diagnose-ci-only-reflow-guard-failure`**: the D2 guard
+      `editor_page::test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`
+      fails on every CI run (design R6, "Not yet green on CI") and passes
+      locally, starved or not, before and after the merge of `origin/main`.
+- [x] 4.2 **Moved to `diagnose-ci-only-reflow-guard-failure`** (above).
+- [x] The eight-branch-run proof (`editor-page`, `window`, `surfaces`) moves
+      with them.
+- [x] Merge of `origin/main` (one Makefile conflict, both targets kept):
+      `make check`, `accessibility-smoke`, `visual-smoke`,
+      `visual-geometry-smoke`, and the `editor-page` and `window` shards green
+      locally with no `FLAKY` (`.claude/handoffs/restore-main-ci/merge/`).
