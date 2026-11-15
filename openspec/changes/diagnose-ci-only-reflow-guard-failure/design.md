@@ -315,11 +315,16 @@ hidden and reattached at line 0 (a session-restored or background tab).
 Such a tab came back 6–12 px down, the 6 px top margin gone, line one
 clipped, and its top-anchor repair disarmed.
 
-- **Fix:** for kept line 0 the reattach sets the value to `lower` itself
-  (only when it is more than 0.5 px away, so an unmoved view emits nothing),
-  and a deeper kept line keeps GTK's aligned scroll; `reassert_top_line`
-  scrolls by iterator when the view is mapped
-  (`scroll_view_to_kept_line`).
+- **Fix** (`scroll_view_to_kept_line`): when the kept position is the
+  document's start, the reattach sets the value to `lower` itself (only when
+  it is more than 0.5 px away, so an unmoved view emits nothing). Any other
+  kept position keeps GTK's aligned scroll, unchanged (by iterator once
+  mapped, as before). The test is the document's start, not line 0: under
+  word wrap the kept position is the start of the display line at the top
+  (`visible_top_iter`), which can be inside line one. A tab scrolled inside
+  a wrapped first paragraph comes back there
+  (`test_a_detached_tab_inside_its_wrapped_first_paragraph_reattaches_there`,
+  red against a `line() == 0` predicate, green with the fix).
 - **Discriminator 3.1** (`test_a_file_opened_in_a_window_rests_at_the_top`)
   is green on `main` in the lane with both font sets: a file opened through
   `open_document` in a real window is never detached, so it does not decide
@@ -335,7 +340,12 @@ clipped, and its top-anchor repair disarmed.
   D2 tests, 3.1 and the reattach test; 5 of 5 of the guard at `--cpus=1`
   and at `--cpus=2`; 20 of 20 toolbox runs of the guard; the whole
   `editor-page` shard once in the lane, green, no `FLAKY` line
-  (`final-editor-page/`).
+  (`final-editor-page/`). Those ran on the pre-merge `line() == 0` fix.
+  On the final, merged binary (`widget-fix5`, with the document-start
+  predicate): the proof set plus the wrap test 5 of 5, the `editor-page`
+  shard once, the `window` shard once at `--cpus=4` and once at
+  `--cpus=2`, all green with no `FLAKY` line (`fix5-*`); the wrap test
+  red against `line() == 0` in the lane and the toolbox (value 0, was 300).
 
 ### D4. 4.2 runs the full shard in the lane first
 
@@ -359,8 +369,13 @@ clipped, and its top-anchor repair disarmed.
 isolated, and in all eleven complete lane runs of the `window` shard (five
 on `main` code through the first, bare-binary lane, one on the F1 fix, five
 on the final binary). It takes the "does not reproduce"
-branch, and its eight CI runs are owed to the programme-end check (D5). The
-F1 writer does not explain it: its page is shown, and it never failed.
+branch, and its eight CI runs are owed to the programme-end check (D5).
+Its tab is never shown before the bookmark opens, so its first show runs the
+kept-line attach too, but for line 300, which the fix does not change. The
+failing CI run's log (43614093974, `ci-logs/43614093974-failed.log`) says
+only that the wait timed out with the document shown at top line 69, cursor
+300; that build predates the attach counts the message now carries, so it
+names no mechanism to test deterministically.
 
 ### D5. The eight-run proof is this branch's final code on CI
 
@@ -458,8 +473,9 @@ runs found two fragile tests, both fixed in this change:
   lower bound) and is not changed; the constant's doc comment, which
   promised room for a 16 MiB parse, now states it.
 - `window::test_edits_during_a_pending_restore_never_overwrite_the_recovery_body`
-  failed its first attempt in five lane `window`-shard runs (hold 1, not 0)
-  and passed on the retry. It waited for the set-aside file and then
+  failed in four lane `window`-shard runs and an interrupted fifth (hold 1,
+  not 0): three on the first, bare-binary lane, which has no retry, and one
+  rescued by CI's retry. It waited for the set-aside file and then
   asserted the restore hold released, but the worker writes the file before
   the `spawn_blocking_then` completion releases the hold. It now waits for
   the release and then checks the file, which also asserts the production

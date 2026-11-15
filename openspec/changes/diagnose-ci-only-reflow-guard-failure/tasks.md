@@ -66,7 +66,9 @@ on its final contents.
       **Done:** the writer is the reattach to the kept top line
       (`view_attachment.rs`, `attach_view` and `reassert_top_line`): GTK's
       aligned scroll to line 0, animated, value 0 → 3.37 → 4.71 → … → 8
-      (gdb backtraces `gdb-scroll-cpus4-*.log`). B1 refined: the first
+      (gdb backtraces `gdb-scroll-cpus4-*.log`). The trace diff that
+      named it was lane against toolbox, since the lane was red unlimited
+      too (1.3). B1 refined: the first
       settle saw `at_lower` true and `reflow_scrolled` true (the animated
       move read as a scroll, A112) and kept it; later settles saw
       `at_lower` false (design D2, "Diagnosed").
@@ -99,6 +101,7 @@ on its final contents.
       sample, catalogue entry, ledger row, CHANGELOG. Sample green on the
       toolbox and on SDK 50 (4.22.2), 51 and master (`a113-toolbox.log`,
       `a113-runtimes.log`); `make check-gtk-axioms` passes.
+
 ## 3. F1: product or fixture, then fix (design D3)
 
 Tests: the editor-minimap scenarios "Presented at the top on a four-CPU host",
@@ -142,10 +145,14 @@ rest".
 
       Never `set_value(lower)` in the test, never a looser precondition, never
       a longer wait without a named cause.
-      **Done (product):** for kept line 0 the reattach sets the value to
-      `lower` itself (only when more than 0.5 px away); a deeper line keeps
-      GTK's aligned scroll; `reassert_top_line` scrolls by iterator once
-      mapped (`scroll_view_to_kept_line`).
+      **Done (product):** when the kept position is the document's start,
+      the reattach sets the value to `lower` itself (only when more than
+      0.5 px away); any other position keeps GTK's aligned scroll,
+      unchanged (`scroll_view_to_kept_line`). The predicate is the
+      document's start, not line 0: under word wrap a kept display line can
+      be inside line one
+      (`test_a_detached_tab_inside_its_wrapped_first_paragraph_reattaches_there`,
+      red against `line() == 0`, green with the fix).
 - [x] 3.4 Prove it: 20 consecutive lane runs at `--cpus=4` of the guard, the
       three other D2 tests and 3.1, in calls of at most about 15 minutes.
       Five lane runs each at `--cpus=1` and `--cpus=2` of the guard (B3 was
@@ -166,6 +173,7 @@ rest".
       **Done:** the trace was reverted first; the three smokes ran on the
       final contents of every UI-prefix edit right before their one commit.
       The fix touches neither `minimap/` nor `overscroll.rs`.
+
 ## 4. 4.2: bookmark in preview-only mode (design D4)
 
 - [x] 4.1 Run the full `window` shard in the lane at `--cpus=4`, five times,
@@ -189,23 +197,44 @@ rest".
 - [x] 4.3 Not reproduced: `restore-main-ci` D4's branch. CI-log diagnosis, a
       deterministic mechanism test red before its fix, then eight branch CI
       runs of `window` without its `FLAKY` line (task 6).
-      **Done as far as the brief allows:** not reproduced in the lane, and
-      the F1 writer cannot explain it (its tab is shown). The CI log in
-      hand (run 43678642280, `ci-logs/`) has it passing; no failing log
-      names a mechanism to test deterministically, so no mechanism test is
-      written. Its eight `window` runs
+      **CI-log diagnosis done; no mechanism test possible yet.** The
+      failing run's log (43614093974, `ci-logs/43614093974-failed.log`):
+      the 10 s wait timed out with the document shown at top line 69,
+      cursor 300. That build predates the attach counts and adjustment the
+      message now carries, so it names no mechanism, and none can be tested
+      deterministically. Its tab is never shown, so its first show runs the
+      kept-line attach, for line 300, which the fix does not change. One
+      bounded reproduction attempt: a starved lane run of the `window` shard
+      at `--cpus=2` on the final binary, green (`fix5-window-cpus2/`). The
+      next failure's message names the mechanism; its eight `window` runs
       are owed to the programme-end CI check (6.0).
+
 ## 5. Gates
 
-- [ ] 5.1 `make check` and `make check-agent-docs` (via `heavy.sh`).
-- [ ] 5.2 `make test-widget-shard WIDGET_SHARD=editor-page`, `…=window` and
+- [x] 5.1 `make check` and `make check-agent-docs` (via `heavy.sh`).
+      **Done** on the final tree (after the `origin/main` merge, 14332d69,
+      and the document-start predicate): both pass (`final2-check.log`,
+      `final2-agentdocs.log`).
+- [x] 5.2 `make test-widget-shard WIDGET_SHARD=editor-page`, `…=window` and
       `…=surfaces` locally, with no `FLAKY` line.
-- [ ] 5.3 The three smokes are current for every committed UI-prefix edit
+      **Done** on the final tree: `editor-page` 411 tests in 4.33 min,
+      `window` 426 in 5.62 min, `surfaces` 855 in 8.26 min, all green, no
+      `FLAKY` line (`final2-shard-*.log`).
+- [x] 5.3 The three smokes are current for every committed UI-prefix edit
       (3.5); rerun them only if a later edit, or the `origin/main` merge,
       changed a file under a UI prefix.
-- [ ] 5.4 Kani: none, unless the fix touches a proven module (design Kani).
+      **Done:** the merge and the document-start predicate changed
+      UI-prefix files, so the three smokes ran again on the final tree, all
+      green (`final2-smoke-*.log`), as did `cargo check -p lushtext --bins
+      --locked` and the rustdoc gate. `make gtk-axioms` ran on the merged
+      tree (102 sample checks held; no axiom changed after it).
+- [x] 5.4 Kani: none, unless the fix touches a proven module (design Kani).
       Then the named shard runs once on the final code.
-- [ ] 5.5 `openspec validate diagnose-ci-only-reflow-guard-failure --strict`.
+      **Done: Kani: none (no proven module touched).** `view_attachment`
+      and `services/palette/notes.rs` are no harness's oracle, and no
+      `kani_proofs.rs` names them.
+- [x] 5.5 `openspec validate diagnose-ci-only-reflow-guard-failure --strict`.
+      **Done:** valid.
 
 ## 6. CI proof (design D5; the CI-evidence exception)
 
@@ -252,9 +281,11 @@ rest".
         in every final shard run; 73,908 rows retained on both hosts, peak
         construction 91.95 MB of 100.66 MB (`notesdiag3-*`);
       - `window::test_edits_during_a_pending_restore_never_overwrite_the_recovery_body`:
-        first attempt red in five lane shard runs (hold 1 after the file
-        appeared); it now waits for the hold's release, then checks the
+        red in four lane shard runs and an interrupted fifth (hold 1 after
+        the file appeared; three on the bare-binary lane without a retry,
+        one rescued by CI's retry); it now waits for the hold's release, then checks the
         file. Green 5/5 alone and in every final shard run.
+
 ## 7. Docs
 
 - [x] 7.1 gtk-testing `references/widget-testing.md`: the "CI image + CPU

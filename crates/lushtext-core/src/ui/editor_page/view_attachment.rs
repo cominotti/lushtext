@@ -430,8 +430,11 @@ impl LushtextEditorPage {
     /// `lower`, and got there through an animation a width-reflow settle
     /// reads as a scroll (ledger A113). The tab then reopened with its top
     /// margin gone (line one clipped with a fallback font) and its top-anchor
-    /// repair disarmed (`diagnose-ci-only-reflow-guard-failure`). Any other
-    /// line still takes GTK's scroll: at once when `now` and the view is
+    /// repair disarmed (`diagnose-ci-only-reflow-guard-failure`). Only the
+    /// document's start rests at `lower`: under word wrap the kept position
+    /// is the start of the display line shown at the top
+    /// (`visible_top_iter`), which can be inside line one. Any other
+    /// position still takes GTK's scroll: at once when `now` and the view is
     /// mapped, else queued for the first allocation (a window still
     /// composing).
     fn scroll_view_to_kept_line(
@@ -441,7 +444,7 @@ impl LushtextEditorPage {
         now: bool,
     ) {
         let view = self.source_view();
-        if document.iter_at_mark(mark).line() == 0 {
+        if document.iter_at_mark(mark).is_start() {
             if let Some(adjustment) = view.vadjustment() {
                 let lower = adjustment.lower();
                 if (adjustment.value() - lower).abs() > 0.5 {

@@ -286,6 +286,75 @@ fn test_a_detached_tab_at_its_first_line_reattaches_at_the_top() {
     );
 }
 
+/// A background tab scrolled inside a wrapped first paragraph comes back at
+/// the display line it showed, not at the top: the kept position is the
+/// start of the display line at the top of the view, which is on line 0 but
+/// not the document's start, so only the document's start rests at `lower`
+/// (`diagnose-ci-only-reflow-guard-failure`).
+#[test]
+fn test_a_detached_tab_inside_its_wrapped_first_paragraph_reattaches_there() {
+    ensure_gtk_init();
+    lushtext_core::ui::settings_writes::shared()
+        .set_boolean(lushtext_core::config::keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let big = dir.path().join("wrapped.txt");
+    let small = dir.path().join("small.txt");
+    let mut text = "word ".repeat(1_500);
+    text.push('\n');
+    text.extend((0..2_000).map(|line| format!("line {line:04}\n")));
+    fixture::write_text(&big, &text);
+    fixture::write_text(&small, "small\n");
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&big);
+    let big = editor_at(&window, 0);
+    wait_loaded(&big);
+    wait_laid_out(&big);
+    let view = big.source_view();
+    let adjustment = view.vadjustment().expect("vadjustment");
+    let first_paragraph_end = view.iter_location(&big.buffer().iter_at_line(1).expect("line 1"));
+    assert!(
+        f64::from(first_paragraph_end.y()) > adjustment.page_size() + 200.0,
+        "precondition: the first paragraph wraps past the page (ends at {}, page {})",
+        first_paragraph_end.y(),
+        adjustment.page_size()
+    );
+    adjustment.set_value(adjustment.lower() + 300.0);
+    flush_after_delay(Duration::from_millis(300));
+    let before = adjustment.value();
+    assert!(
+        before > adjustment.lower() + 200.0 && big.visible_top_line() == 0,
+        "precondition: scrolled inside the first paragraph (value {before}, top line {})",
+        big.visible_top_line()
+    );
+
+    window.open_document(&small);
+    let small = editor_at(&window, 1);
+    wait_loaded(&small);
+    big.source_view().set_pixels_above_lines(4);
+    wait_until(Duration::from_secs(10), || !big.view_shows_document());
+    assert!(
+        !big.view_shows_document(),
+        "precondition: the hidden view was detached"
+    );
+
+    window
+        .imp()
+        .tab_view
+        .set_selected_page(&window.imp().tab_view.nth_page(0));
+    wait_until(Duration::from_secs(5), || big.view_shows_document());
+    wait_laid_out(&big);
+    let adjustment = big.source_view().vadjustment().expect("vadjustment");
+    assert!(
+        adjustment.value() > adjustment.lower() + 200.0,
+        "the reattached tab stays inside its first paragraph: value {} (was {before}), lower {}",
+        adjustment.value(),
+        adjustment.lower()
+    );
+}
+
 /// A file opened from disk into a window the way a user opens it rests at
 /// the top once it has settled: 2,000 unwrapped lines with the minimap shown,
 /// and no test code writing the editor's adjustments

@@ -4061,14 +4061,17 @@ separate change, in this order:
          toolbox the answer comes later.
        - In production, a session-restored or background tab at line 0 came
          back 6–12 px down, with the top margin gone and line one clipped.
-         It now rests at `lower`. A deeper kept line still uses GTK's
+         It now rests at `lower`. Any other kept position (a deeper line,
+         or a display line inside a wrapped line one) still uses GTK's
          aligned scroll.
        - Red on `main` code: the lane failed the four D2 tests' new exact
          precondition (value 8) and the new reattach test (value 12); the
          toolbox failed the reattach test. Green with the fix: 20 of 20 lane
          runs of the six-test proof set at `--cpus=4`; 5 of 5 of the guard
          at `--cpus=1` and at `--cpus=2`; 20 of 20 toolbox runs of the
-         guard; the whole `editor-page` shard once in the lane.
+         guard; the whole `editor-page` shard once in the lane. On the final
+         merged binary: the proof set plus a wrapped-first-paragraph test
+         5 of 5, and `editor-page` and `window` once each, green.
      - Task 4.2, the bookmark preview-only test, did not reproduce: 5 of 5
        isolated and green in all eleven complete lane runs of the
        `window` shard.
@@ -4086,8 +4089,8 @@ separate change, in this order:
        - `window::test_edits_during_a_pending_restore_never_overwrite_the_recovery_body`
          waited for the set-aside file, which the worker writes before its
          completion releases the restore hold. It now waits for the release
-         and then checks the file (5 lane `window`-shard runs had failed
-         it, rescued by the retry).
+         and then checks the file (four lane `window`-shard runs had failed
+         it).
      - **Owed to the programme-end CI check** (the stage brief forbids
        waiting for or rerunning CI, so `restore-main-ci` D5's eight-run
        proof was not run): `editor-page` for the minimap slider test and
