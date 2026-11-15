@@ -5,7 +5,7 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
 
 ## 1. Static gate, failing-first (design D8)
 
-- [ ] 1.1 Write `scripts/check-session-hygiene.py`:
+- [x] 1.1 Write `scripts/check-session-hygiene.py`:
   - the forbidden names;
   - file-kind classification of `git ls-files`: a `.sh` file or a `sh`/`bash` shebang, `.githooks/*`, Makefile recipe lines, workflow `run:` blocks, `Containerfile`/`Dockerfile` `RUN`/`CMD`/`ENTRYPOINT`, Python through `ast` (docstrings excluded), and Rust string literals after comment stripping;
   - the fail-closed shell word rule with the D8 exempt contexts (comments, package-manager installs and their continuation lines, `*packages` arrays, `case` labels, quoted text except `sh -c`/`bash -c`/`eval` strings, heredoc bodies except those fed to a shell);
@@ -13,7 +13,7 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
   - the classifier-copy rule over the shared session-service family's message texts (D4);
   - the path exemptions for the helper and for the gate script itself (both fail-closed) and the zero-sanctioned-spawn check;
   - the drift rules over the helper's data files.
-- [ ] 1.2 Write `--self-test` before the scan logic is complete. Fixtures go in the run's temp scope, never in the repo:
+- [x] 1.2 Write `--self-test` before the scan logic is complete. Fixtures go in the run's temp scope, never in the repo:
   - every spawn form fails: wrapped `exec env A=1 timeout 5 wireplumber &`, `taskset -c 0 pipewire`, `scripts/heavy.sh -- mutter --headless`, `if ! dbus-run-session -- x; then`, `sh -c 'wireplumber &'`, `$(dbus-run-session -- x)`, a Makefile recipe, a workflow `run:` step, a `Containerfile` `RUN mutter …`, Python `["mutter", "--headless"]`, `"/usr/bin/pipewire"` and `"mutter --headless"`, and Rust `Command::new("dbus-run-session")` and `"wireplumber".to_string()`;
   - every argument form fails: `require_command mutter`, `smoke_require_command wireplumber`, `for c in dbus-run-session mutter; do`, `command -v pipewire`, and a `required_commands=(…)` array naming one;
   - a runner fixture holding a copy of a family text (`There is no colord server available`) fails;
@@ -23,8 +23,8 @@ Fingerprinted files (design, "Risks"): the accessibility proof covers the captur
   - an empty helper (zero sanctioned spawns) fails, and so does a renamed copy of the gate script (its exemption is path-keyed).
 
   Confirm each fixture fails for the stated reason before the rule that catches it exists.
-- [ ] 1.3 Run the real scan on the unmigrated tree. It must be red. Save its finding list to `openspec/changes/quiet-headless-session-services/evidence/red-scan.txt`: it is the migration worklist for group 4 and must include the Context table of design.md, both `gtk-agentic-debugging` scripts, and the non-spawn mentions the Context section lists (version queries, report and capability data, `required_commands`, the `for` loops, the harness's tooling check). Classify each finding as spawn, prerequisite, version or data, and name its resolution (D2, D8); none may be an allowlist entry.
-- [ ] 1.4 Add `make check-session-hygiene`. For now, wire only its `--self-test` into `make check-policy`; the real scan joins in 5.1, because the pre-commit hook would refuse every commit before the migration. Commit and push.
+- [x] 1.3 Run the real scan on the unmigrated tree. It must be red. Save its finding list to `openspec/changes/quiet-headless-session-services/evidence/red-scan.txt`: it is the migration worklist for group 4 and must include the Context table of design.md, both `gtk-agentic-debugging` scripts, and the non-spawn mentions the Context section lists (version queries, report and capability data, `required_commands`, the `for` loops, the harness's tooling check). Classify each finding as spawn, prerequisite, version or data, and name its resolution (D2, D8); none may be an allowlist entry.
+- [x] 1.4 Add `make check-session-hygiene`. For now, wire only its `--self-test` into `make check-policy`; the real scan joins in 5.1, because the pre-commit hook would refuse every commit before the migration. Commit and push.
 
 ## 2. The helper in `gtk-lush-proof-harness` (design D1–D4, D7)
 
