@@ -336,8 +336,11 @@ For each step, the policy (D9) picks one removal:
      axiom says otherwise, so the step source does not rely on ticks alone.
      If no tick arrives within `COLLAPSE_FRAME_STARVATION_MS` of the last
      step, the next step runs from the `G_PRIORITY_LOW` source. The constant
-     is a timeout, rounded up; candidate 128, about 8 reference frames. The
-     next tick returns pacing to the frame clock.
+     is a timeout, rounded up; candidate 128, about 15 reference frames at
+     120 Hz and 8 at 60 Hz. The next tick returns pacing to the frame clock,
+     but takes no bound unit itself: a starved step's unit and that tick's
+     would otherwise share one layout, breaking one unit per frame. The tick
+     after it does.
    - The source switches on `map` and `unmap`, and on starvation. A collapse
      therefore always finishes, and `workspace-refresh-complete` cannot stay
      blocked behind a list nobody draws.
@@ -380,7 +383,7 @@ rule enforces both. Routes:
 
 | route | today | after |
 |---|---|---|
-| expander click | The `GestureClick` is **not on the expander**. `update_for_list_row` creates it on the expander's `expander` icon child (a `GtkBuiltinIcon`, `gtktreeexpander.c:193-210`), and destroys and re-creates the icon whenever expandability changes. Its `released` handler (`:150-165`) activates `listitem.toggle-expand` and claims the sequence. The expander's only own controller is the drop-motion controller (`:753`). LushText's bind-time loop over `expander.observe_controllers()` (`row_factory.rs:338-357`) therefore finds no `GestureClick` on 4.24.1. It is inert, and its comment describes an older toolkit | LushText adds one capture-phase `GestureClick` to the expander at setup. A press inside the current `expander` icon's bounds is claimed in capture, so the icon's own bubble gesture never sees it, whatever icon GTK has created since. On release inside the icon: expanding activates `listitem.scroll-to` and calls the expand entry point; collapsing calls the collapse entry point. A press elsewhere is left alone. A113 pins where the gesture lives and that a capture claim on the expander denies it. The inert loop is removed, or re-aimed if A113 shows a toolkit where it acts |
+| expander click | The `GestureClick` is **not on the expander**. `update_for_list_row` creates it on the expander's `expander` icon child (a `GtkBuiltinIcon`, `gtktreeexpander.c:193-210`), and destroys and re-creates the icon whenever expandability changes. Its `released` handler (`:150-165`) activates `listitem.toggle-expand` and claims the sequence. The expander's only own controller is the drop-motion controller (`:753`). LushText's bind-time loop over `expander.observe_controllers()` (`row_factory.rs:338-357`) therefore finds no `GestureClick` on 4.24.1. It is inert, and its comment describes an older toolkit | LushText adds one capture-phase `GestureClick` to the expander at setup. It lets the press through, as GTK's own gesture does, so the row's press-side behaviour (focus on click, selection, double-press activation) is `main`'s. On a release inside the current `expander` icon's bounds it claims the sequence in the capture phase, before the icon's bubble gesture sees the release, so GTK's `released` handler never runs, whatever icon GTK has created since. That is the moment and the area GTK claims, by construction. Then expanding activates `listitem.scroll-to` and calls the expand entry point, and collapsing calls the collapse entry point. A release elsewhere is left alone. A113 pins where the gesture lives, that the release claim denies it, and that the row's press-side behaviour is unchanged. The inert loop is removed, or re-aimed if A113 shows a toolkit where it acts |
 | expander keys | `listitem.expand`: `plus`, `KP_Add`, `asterisk`, `KP_Multiply`. `listitem.collapse`: `minus`, `KP_Subtract`, `slash`, `KP_Divide`. By text direction: `Shift+Right`, `Shift+KP_Right`, `Ctrl+Shift+Right` and `Ctrl+Shift+KP_Right` expand in LTR and collapse in RTL; the `Left` and `KP_Left` four do the opposite. `listitem.toggle-expand`: `Ctrl+space`, `Ctrl+KP_Space` (`:654-690`). Class bindings fire only for key events that reach the expander, i.e. with focus on it or inside it. `GtkTreeExpander` is focusable (`:746`), but LushText leaves `GtkListItem:focusable` at its default `TRUE`, which the expander's own documentation (`:49-50`) says puts keyboard focus on the row instead. A row is the expander's ancestor, so a key with focus on the row never reaches it. These keys may therefore be unreachable today except with focus on a focusable descendant such as the Focus Folder button. That is open question 4, settled by A113 | the capture-phase key controller handles exactly the keys A113 shows GTK honours for the focus it sees, no more, so it adds no keyboard behaviour: collapse keys call the collapse entry point; expand keys on a collapsing row call the expand entry point; everything else propagates. If A113 shows none is reachable, no controller is installed and the row is recorded as "no key route" |
 | expand callers | the reveal's `advance_expansion` (`reveal_execution.rs:344`), the new-item flow (`file_execution.rs:119`), the restore (`scan_execution.rs:1664`), folder expand / toggle / load-time auto-expand (`folder_execution.rs:399, 409, 636`) | each calls the expand entry point, so none acts on a draining store |
 | row activation | `activate_file_at` toggles | collapse calls the entry point |
@@ -672,8 +675,10 @@ field, so `docs/automation.md` and `docs/automation-reference.md` are updated.
   - its click `GestureClick` lives on the `expander` icon child, not on the
     expander, and is re-created with the icon. It activates
     `listitem.toggle-expand` on release inside the icon. A capture-phase
-    `GestureClick` on the expander that claims a press inside the icon
-    denies it, so the click toggles nothing, across an icon re-creation. The
+    `GestureClick` on the expander that claims the sequence on a release
+    inside the icon denies it, so the click toggles nothing, also across an
+    icon re-creation. The row's press-side behaviour (focus on click,
+    selection, double-press activation) is the same with and without it. The
     probe also records that `observe_controllers()` on the expander lists no
     `GestureClick`, the fact behind `row_factory.rs`'s inert loop;
   - its key bindings (the full list in D5) fire only for key events that

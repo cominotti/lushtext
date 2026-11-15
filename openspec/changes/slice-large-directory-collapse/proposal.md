@@ -71,8 +71,9 @@ expansion side in under the pre-existing-blockers rule, measurement first.
   directory goes through one section entry point:
   - the expander click, which LushText takes over from `GtkTreeExpander`'s
     own gesture. That gesture lives on the expander's arrow icon, not on the
-    expander (`gtktreeexpander.c:193-210`), so LushText claims the press in
-    the capture phase. LushText's existing bind-time loop that sets the
+    expander (`gtktreeexpander.c:193-210`), so LushText claims the sequence
+    in the capture phase on a release inside the icon, where and when GTK
+    claims it. LushText's existing bind-time loop that sets the
     "expander's" gesture phase finds no gesture on 4.24.1 and is corrected;
   - the expander's collapse keys, as far as they are reachable from
     LushText's rows today (A113);
@@ -210,6 +211,8 @@ None.
   loads and refreshes, accessibility and readiness.
 - `gtk-axiom-ledger`: adds the requirement that the list view's row-widget
   churn and the tree expander's disclosure routes are ledger axioms.
+- `dbus-automation-spine`: adds the requirement that the automation snapshot
+  reports `collapse_pending` beside `refresh_blocks_readiness`.
 
 ## Impact
 

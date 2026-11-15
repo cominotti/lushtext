@@ -22,14 +22,14 @@ Lane: none. The responsiveness lane drives editor documents and the restyle of a
 
   If a dispatch does not match, attribute it before going on.
 - [ ] 1.5 Measure the residual routes of design D2 once on `main` and record them: a refresh splice removing an expanded 256-entry and an expanded 131,072-entry directory, a section rebuild with one expanded, a direct collapse while the sidebar is hidden, and an AT-SPI-equivalent activation of the expander's `listitem.collapse` on a 256-entry directory.
-- [ ] 1.6 Commit the design tables only (signed, conventional, staged by name; no visual-sensitive file changed in the tree, design D16) and push.
+- [ ] 1.6 Commit the design tables only (signed, conventional, staged by name) and push. The hook's visual-proof policy reads the whole working tree, so first reverse-apply the measurement patch (`git apply -R`) and reapply it after the commit; stash is not used (design D16).
 
 ## 2. GTK axioms first (design D13)
 
 - [ ] 2.1 Add the next free ids (provisionally A112–A114) to `crates/gtk-lush/axioms/src/catalogue.rs` with probes `src/probes/aNNN.rs`, following the existing `control`/`axiom`/`measure` discipline:
   - A112: a mapped presented `GtkListView` over a `GtkTreeListModel` with a counting `SignalListItemFactory`. Remove 16 / 64 / 256 bound rows, with 0 and 400 rows after them, then remove unbound rows after and before the band (the list scrolled into the children) and record that the band does not move. Repeat the head removal with 400 rows after it on an unmapped list. Record setups, teardowns and timings, and that no removed widget is rebound to another item.
   - A113, in a row built like LushText's (`GtkListItem:focusable` `TRUE`, a focusable button inside the expander's child):
-    - where the click `GestureClick` lives (on the `expander` icon, not the expander; `observe_controllers()` on the expander lists none), and that a capture-phase `GestureClick` on the expander claiming presses inside the icon stops the toggle, also after the icon is re-created;
+    - where the click `GestureClick` lives (on the `expander` icon, not the expander; `observe_controllers()` on the expander lists none), and that a capture-phase `GestureClick` on the expander claiming the sequence on a release inside the icon stops the toggle, also after the icon is re-created, while the row's focus-on-click, selection and double-press activation are unchanged;
     - which of the full key-binding list (design D5) reaches the expander from the row's focus and from the button's, and that a capture-phase key controller on an ancestor returning `Stop` prevents them;
     - that the class actions resolve before an inserted `listitem` action group;
     - the AT-SPI action table through the generic widget vtable, and that `DoAction` on `listitem.collapse` collapses directly;
@@ -49,9 +49,9 @@ Lane: none. The responsiveness lane drives editor documents and the restyle of a
   They must fail to compile (the policy does not exist) before group 4.
 - [ ] 3.2 Widget tests in `workspace_tree_virtualization.rs`, presented, each failing on `main` where stated:
   - `test_collapsing_several_directories_takes_one_unit_per_frame`: the folder header collapses two expanded 4,096-entry roots; every frame removes at most one unit across both; both complete. Fails on `main`: one call per root.
-  - `test_a_starved_frame_clock_still_completes_the_collapse`: a test policy suppresses the frame-paced source; the starvation fallback completes the collapse and the evidence counts its steps.
+  - `test_a_starved_frame_clock_still_completes_the_collapse`: a test policy suppresses the frame-paced source; the starvation fallback completes the collapse and the evidence counts its steps. Then ticks resume: the first tick takes no bound unit, so no frame lays out two units.
   - `test_a_rebound_collapsing_row_stays_collapsed_for_accessibility`: scroll the collapsing row out of the band and back; the overlay's and the expander's accessible `expanded` stay false and the arrow class stays.
-  - `test_the_arrow_click_survives_an_icon_recreation`: change the row's expandability so GTK re-creates the icon, then click the arrow; LushText's gesture handles it and GTK's toggles nothing.
+  - `test_the_arrow_click_survives_an_icon_recreation`: change the row's expandability so GTK re-creates the icon, then click the arrow; LushText's gesture handles it on release and GTK's toggles nothing.
   - `test_collapsing_a_directory_with_rows_after_it_bounds_each_step`: 256 entries plus 400 rows after; no collapse step removes more than the unit, and the list view's child count changes by at most the unit per step. Fails on `main`: one call destroys 207 widgets.
   - `test_collapse_shows_in_the_first_frame`: arrow class and accessible `expanded` false after the input dispatch, before any row is removed. Fails on `main`: the class does not exist.
   - `test_collapse_keeps_the_directory_row_still`: rendered top constant at every step, no slice bin correction, `outer_request_pending()` false at the end.
@@ -62,7 +62,7 @@ Lane: none. The responsiveness lane drives editor documents and the restyle of a
   - `test_ancestor_collapse_drains_the_descendant_first`: `outer/inner` with 16,385 entries.
   - `test_collapse_stops_loads_and_refreshes_under_it`: collapse during a 131,072-entry load; no batch is applied afterwards, and re-expansion loads afresh.
   - `test_collapse_routes_reach_the_entry_point`: click, each collapse key A113 shows reachable (written once task 2.4 records them), activation, header collapse and toggle, reveal failure, reorder hover. Counted through the evidence's `collapse_direct_total` and `collapse_steps_total`.
-  - `test_expand_routes_keep_gtk_behaviour`: click and expand keys expand and scroll as `main` does.
+  - `test_expand_routes_keep_gtk_behaviour`: a click and each expand key A113 shows reachable expand and scroll as `main` does, and a click keeps the row's focus and selection behaviour.
   - `test_collapse_readiness_and_evidence`: `refresh_blocks_readiness` is true while collapsing; the evidence inertness proof covers the new fields.
   - `test_removing_a_collapsing_directory_cancels_the_collapse`.
 - [ ] 3.3 Run them on the branch before group 4 and save the failures in `.claude/handoffs/slice-large-directory-collapse/impl/failing-first.log`. Grep every widget test and smoke scenario that collapses through a route this change takes over (`collapse_folders`, `toggle_folders`, row activation, the reveal, the expander) and then reads `is_expanded()` or the row count synchronously. Record each one in the log as direct (at most `DIRECT_COLLAPSE_ROWS`, unchanged) or sliced (to wait on `refresh_blocks_readiness`). BL's collapse tests (`test_collapsing_a_large_directory_retires_its_listing_after_the_collapse`, `test_collapsing_an_ancestor_releases_its_descendants_listings`, `test_a_collapsed_listing_held_elsewhere_is_released_not_emptied`) call `set_expanded(false)` directly. They keep testing the direct path, which the residual routes still take, and stay green unchanged; say so in their doc comments.
@@ -70,7 +70,7 @@ Lane: none. The responsiveness lane drives editor documents and the restyle of a
 
 ## 4. Pure step policy and its proofs (design D9)
 
-- [ ] 4.1 Add `CollapseFacts`, `CollapseStep`, `next_collapse_step` and the three constants (D3, documented with their kind and measured basis per `.agents/rules/rust.md`) to `ui/sidebar/policy.rs`. Integer-only, `#![forbid(clippy::float_arithmetic)]` on the policy module, no GTK imports. Add the constants to the threshold inventory (`make check-thresholds`).
+- [ ] 4.1 Add `CollapseFacts`, `CollapseStep`, `next_collapse_step` and the four constants (D3, documented with their kind and measured basis per `.agents/rules/rust.md`) to `ui/sidebar/policy.rs`. Integer-only, `#![forbid(clippy::float_arithmetic)]` on the policy module, no GTK imports. Add the constants to the threshold inventory (`make check-thresholds`).
 - [ ] 4.2 Add `ui/sidebar/policy/kani_proofs.rs` with harnesses C1–C5 over the allocation-free core (design D9). Add the shard `core-sidebar-collapse` (gate `scheduled`, `measured_in` `PENDING DISPATCH (owed by slice-large-directory-collapse)` until task 7.5) and the `ORACLES` entry for `crates/lushtext-core/src/ui/sidebar/policy.rs`, scoped by `functions=` to the collapse core, to `scripts/kani-shards.py`. Run `make check-kani-shards`.
 - [ ] 4.3 Task 3.1's tests pass.
 - [ ] 4.4 No commit (design D16).
@@ -93,8 +93,8 @@ Lane: none. The responsiveness lane drives editor documents and the restyle of a
   - selection and focus moved to the directory row.
 - [ ] 5.3 Cancellation paths (D7): re-expansion (refill through `populate_child_store`), an ancestor taking over, a refresh splice, a section rebuild, a model reset, and dispose. Each ends the collapse exactly once, with its reason in the evidence.
 - [ ] 5.4 Routes (D5):
-  - `row_factory.rs` installs, at setup, one capture-phase `GestureClick` on the expander that claims presses inside its current `expander` icon (design D5). Expanding activates `listitem.scroll-to` and calls the expand entry point; collapsing calls the collapse entry point. Remove the bind-time `observe_controllers()` loop and its comment, which A113 shows inert on 4.24.1, or re-aim it if A113 shows a toolkit where it acts. Confirm file-row double-click activation is unchanged (an existing test, or a new one).
-  - Add the capture-phase key controller for the collapse bindings on the list view.
+  - `row_factory.rs` installs, at setup, one capture-phase `GestureClick` on the expander that lets the press through and claims the sequence on a release inside its current `expander` icon (design D5). Expanding activates `listitem.scroll-to` and calls the expand entry point; collapsing calls the collapse entry point. Remove the bind-time `observe_controllers()` loop and its comment, which A113 shows inert on 4.24.1, or re-aim it if A113 shows a toolkit where it acts. Confirm file-row double-click activation is unchanged (an existing test, or a new one).
+  - Add the capture-phase key controller on the list view for exactly the bindings task 2.4 recorded as reachable, or none if A113 found none reachable (design D5).
   - Route `activate_file_at`, `folder_execution.rs`, `reveal_execution.rs` and `reorder_execution.rs` through the collapse entry point.
   - Route every `set_expanded(true)` caller through the expand entry point: `reveal_execution.rs` (`advance_expansion`), `file_execution.rs` (new-item flow), `scan_execution.rs` (restore), and `folder_execution.rs` (expand, toggle, load-time auto-expand).
 - [ ] 5.5 Add a `make check-workflow-boundaries` rule: under `ui/sidebar/**`, no `.set_expanded(` method call on a `TreeListRow` outside `collapse_execution.rs`. `accessibility::set_expanded` is not matched, and the search panel's tree rows elsewhere are out of scope. Audit every `is_expanded()` reader and every `set_expanded(true)` caller in `ui/sidebar/**` for intent-versus-GTK-state during a collapse, including `row_accessibility.rs`'s bind projection and notify hook, `collapsed_non_empty_folder_rows` and `toggleable_folder_rows`. Record the audit in `impl/expansion-audit.md`.

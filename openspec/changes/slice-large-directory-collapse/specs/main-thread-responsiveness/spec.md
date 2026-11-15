@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Collapsing a sidebar directory fits the interaction budgets
-Collapsing a sidebar directory by a route LushText owns SHALL keep the input dispatch and every step within `B_INTERACT_US`, and every dispatch until the listing is retired within `B_SETTLE_US`, at every size. The first frame after the input SHALL show the collapse. No frame SHALL bring more than `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band.
+Collapsing a sidebar directory by a route LushText owns SHALL keep the input dispatch and every step within `B_INTERACT_US`, and every dispatch until the listing is retired within `B_SETTLE_US`, at every size. The first frame after the input SHALL show the collapse. No frame SHALL bring more than `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows into the realized band. A toolkit cost that cannot fit SHALL be a recorded toolkit-floor exception.
 
 #### Scenario: How the budgets are measured
 - **WHEN** the verdict test measures a collapse
@@ -36,6 +36,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 #### Scenario: A small directory
 - **WHEN** the directory's subtree holds at most `DIRECT_COLLAPSE_ROWS` flattened rows
 - **THEN** it collapses in the input dispatch, as on `main`, within `B_INTERACT_US`
+- **AND** when one input collapses several such directories (the folder header), the input dispatch collapses them directly only until `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows are removed in total, and the rest are paced like a sliced collapse
 
 #### Scenario: The collapse shows in the first frame
 - **WHEN** a sliced collapse starts

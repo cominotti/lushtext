@@ -10,8 +10,8 @@ The ledger SHALL record, each with a probe, a catalogue entry and a sample verif
 - **AND** it records the same head removal with 400 rows after it on an unmapped list
 
 #### Scenario: Owning the expander's routes
-- **WHEN** the probe adds a capture-phase click gesture to the expander that claims presses on its arrow icon, adds a capture-phase key controller on an ancestor, inserts a `listitem` action group, and reads the expander's AT-SPI action table
-- **THEN** it records that the expander's own click gesture is on its arrow icon and not on the expander, that the claimed click toggles nothing even after the icon is re-created, which of the expander's key bindings reach it with focus on a focusable list row and on a button inside it, that the controller stops those bindings, and that the class actions still resolve first
+- **WHEN** the probe adds a capture-phase click gesture to the expander that claims the sequence on a release inside its arrow icon, adds a capture-phase key controller on an ancestor, inserts a `listitem` action group, and reads the expander's AT-SPI action table
+- **THEN** it records that the expander's own click gesture is on its arrow icon and not on the expander, that the claimed click toggles nothing even after the icon is re-created while the row's focus-on-click, selection and double-press activation are unchanged, which of the expander's key bindings reach it with focus on a focusable list row and on a button inside it, that the controller stops those bindings, and that the class actions still resolve first
 - **AND** it records the AT-SPI actions the expander exposes, that `DoAction` on its collapse action collapses the row directly, and which accessible `expanded` state GTK keeps on the expander and on its icon
 
 #### Scenario: Overriding the checked arrow
