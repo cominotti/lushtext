@@ -12,6 +12,12 @@
 //! publishes, not only when the worker returns: the bounded buffer replacement
 //! that installs the body spans main-loop turns, and a tab that was reopened,
 //! renamed, or edited in between must not receive a stale recovery body.
+//!
+//! The replacement suspends the buffer handlers that draw the "•" title and
+//! mark the tab draft-dirty, so both terminals re-project the modified
+//! indicator. Only the set-aside open owes a draft (`note_draft_owed`): a
+//! startup-recovered body is the draft itself, and marking it would rewrite
+//! every recovered draft on the first tick (`restore-main-ci` D1).
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -260,13 +266,15 @@ impl LushtextWindow {
                 {
                     editor.buffer().set_modified(true);
                     // The bounded install suspends the buffer handlers that
-                    // would mark the tab draft-dirty, and autosave writes only
-                    // draft-dirty tabs. Mark it here, so the text reaches its
-                    // own draft even if the user deletes the set-aside copy
-                    // before typing anything.
-                    editor.set_draft_dirty(true);
+                    // draw the bullet and mark the tab draft-dirty, and
+                    // autosave writes only draft-dirty tabs. Project both here,
+                    // so the text reaches its own draft even if the user
+                    // deletes the set-aside copy before typing anything.
                     if let Some(window) = window_weak.upgrade() {
-                        window.schedule_first_dirty_draft_autosave();
+                        window.reproject_modified_indicator(&editor);
+                        window.note_draft_owed(&editor);
+                    } else {
+                        editor.set_draft_dirty(true);
                     }
                 }
             },
@@ -322,6 +330,9 @@ impl LushtextWindow {
                     && let Some(body) = accepted_body_for_terminal.borrow_mut().take()
                 {
                     Self::finish_applied_draft(&editor, body);
+                    // The bullet only: the draft already holds this body, so
+                    // the tab owes it nothing until the user edits.
+                    window.reproject_modified_indicator(&editor);
                 } else if matches!(outcome, BufferReplacementOutcome::Cancelled { .. })
                     && window.draft_manifest_entry_is_current(&terminal_ticket.entry)
                 {

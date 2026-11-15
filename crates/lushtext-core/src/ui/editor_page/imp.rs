@@ -76,6 +76,21 @@ pub struct OverscrollState {
     pub rest_state: RestState,
     /// Active pause that excludes transient adjustment values during reflow repair.
     pub reflow_pause: RefCell<Option<RestPause>>,
+    /// The vertical value the adjustment held at its last `changed` emission.
+    ///
+    /// A reallocation reconfigures the adjustment, and GTK sets the new value
+    /// before it emits `changed` and then `value-changed` (ledger A112), so a
+    /// `value-changed` to this value came with a bounds change. Any other value
+    /// moved on its own: a scroll, whoever made it.
+    pub vertical_value_at_bounds_change: Cell<f64>,
+    /// Whether the view scrolled vertically while the pending reflow burst
+    /// paused the rest state, so the settle keeps the scroll instead of
+    /// restoring the top anchor (`restore-main-ci` D2).
+    pub reflow_scrolled: Cell<bool>,
+    /// The raw vertical `changed` handler that records
+    /// `vertical_value_at_bounds_change` (the viewport observer reports
+    /// page-size changes only).
+    pub scroll_source_signals: SignalBag,
 }
 
 /// Signal handlers connected to application-global preference/theme objects.
@@ -857,6 +872,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.document_scale.signals.clear();
         self.overscroll.observer.borrow_mut().take();
         self.overscroll.reflow_pause.borrow_mut().take();
+        self.overscroll.scroll_source_signals.clear();
         self.minimap.source_map.borrow_mut().take();
         self.minimap.marker_strip.borrow_mut().take();
         self.minimap.render_hold.borrow_mut().take();
