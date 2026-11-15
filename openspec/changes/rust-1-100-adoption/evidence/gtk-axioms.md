@@ -25,3 +25,31 @@ before the hardening; in run 3 all three held at the first attempt.
 A29, A85, A86, A91, A98 and A110 are timing probes that this change does not touch:
 each failed one first attempt once, under load, and held on retry. They are
 recorded, not fixed here (see the PR's open decisions).
+
+## Stage 4 review: branch against `main`
+
+The six probes that held only on retry (A29, A85, A86, A91, A98, A110) were run
+in isolation, interleaved branch → `main` (detached `origin/main` `cfee0c48`,
+whose only difference from the branch is this change), each round
+`scripts/heavy.sh --mem 6G -- cargo test -p gtk-lush-adoption-lab --test
+axiom_probes -- a29_ a85_ a86_ a91_ a98_ a110_` with
+`GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`:
+
+| Round | Branch: load (1 min) before → after, first-attempt failures | `main`: load before → after, first-attempt failures |
+| --- | --- | --- |
+| 1 | 18.20 → 12.50, none | 11.05 → 7.65, none |
+| 2 | 7.65 → 5.11, none | 5.11 → 6.39, none |
+| 3 | 6.39 → 6.34, none | 6.34 → 4.54, none |
+| 4 | 4.58 → 4.88, none | 4.88 → 6.56, none |
+| 5 | 6.68 → 5.91, none | 5.91 → 5.69, none |
+
+Neither side failed a first attempt (0 FLAKY lines in 10 rounds), so the
+binding refresh is not shown to change these probes. A fifth full lane on the
+review head (`scripts/heavy.sh --mem none -- make gtk-axioms`, load 5.7 → 6.2)
+exited 0 with 0 FLAKY lines: the probe binary passed and 101 sample checks
+held. The lane cannot exit 0 with a probe that never passed: run 2's A29 and
+A76, which failed both attempts, made it exit 1 (`test result: FAILED. 2
+failed`). The rounds and the lane ran at load 5–12, below runs 1–4's 9–17, so
+load sensitivity of these timing probes on a busier host is not excluded by
+this evidence; sibling branches on `main`'s lockfile ran the lane at similar
+load with no FLAKY line.
