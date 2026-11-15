@@ -157,8 +157,9 @@ input to presented frame, measured on the maintainer's desktop.
 ## 4. Outside the long-line stream, but still queued
 
 - Formal verification: `apply-verification-altitude-redesigns`,
-  `verify-shell-conformance-against-proven-cores`,
-  `evaluate-verus-for-unbounded-proofs`.
+  `verify-shell-conformance-against-proven-cores`.
+  `evaluate-verus-for-unbounded-proofs` is implemented (2026-11-15,
+  [`formal-verification-verus.md`](./formal-verification-verus.md)).
 - `stop-expander-bind-time-child-scans` (the sidebar scans every visible,
   never-expanded directory; found through axiom A22).
 - Host: during the final quick run, `btrfs-stall-report` flagged

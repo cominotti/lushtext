@@ -280,9 +280,14 @@ are in [`testing.md`](./testing.md). This section covers the lane.
 - **Tool.** Kani is the programme's **only** formal tool
   (`docs/next/formal-verification.md` §2). Do not add a second specification
   language without a recorded maintainer decision. The disposable Quint vs
-  TLA+ evaluation models in `formal/evaluation/` run only through the
-  local-only `make formal-evaluation`, which is never a prerequisite of
-  `check`, `check-policy`, `test`, `kani`, or `end-user-smoke`.
+  TLA+ and Verus evaluation models in `formal/evaluation/` run only through
+  the local-only `make formal-evaluation` (`FORMAL_EVAL_TARGET=verus-*` for
+  Verus, run directly, never inside one `heavy.sh`: the script wraps each
+  check in its own `heavy.sh` call), which is never a prerequisite of `check`, `check-policy`,
+  `test`, `kani`, or `end-user-smoke`. `formal/evaluation/verus/proofs` and
+  `formal/evaluation/verus/drift` are standalone packages in the root
+  `Cargo.toml` `exclude`, built with Verus's pinned rustc and with the
+  workspace toolchain respectively.
 - **Pin.** `KANI_VERSION` in the Makefile, currently `0.68.0` (CBMC 6.11.0), is
   the only copy: `.github/workflows/kani.yml`'s `shards` job derives it from
   the Makefile. Kani pins its own nightly, independent of

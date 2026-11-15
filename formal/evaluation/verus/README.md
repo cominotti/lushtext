@@ -44,9 +44,9 @@ compares against it by default and against any other commit with
 
 ## Running it
 
-Local only, never a gate. Run the targets under `taskset -c 8-23` only: the
-script wraps every check and every cargo build in its own `scripts/heavy.sh`
-call.
+Local only, never a gate. Run the targets directly, never inside one
+`scripts/heavy.sh` call: the script wraps every check and every cargo build in
+its own `heavy.sh` call.
 
 ```
 make formal-evaluation FORMAL_EVAL_TARGET=verus-install   # Verus, z3, Verus's rustc

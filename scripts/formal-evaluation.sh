@@ -10,12 +10,13 @@
 # properties; Kani stays the single maintained formal tool.
 #
 # Usage: scripts/formal-evaluation.sh {install|t1|t2|t3|all|report-data|versions}
-#        scripts/formal-evaluation.sh {verus-install|verus-versions|verus-v1|verus-v2|verus-v3|verus-drift|verus-all}
+#        scripts/formal-evaluation.sh {verus-install|verus-versions|verus-v1|verus-v2|verus-v3|verus-drift|verus-classify|verus-all}
 #        scripts/formal-evaluation.sh measure NAME pass|violation -- CMD...
 #        scripts/formal-evaluation.sh verus-measure NAME pass|violation -- CMD...
 #
-# The verus-* targets run several checks each. Run them under `taskset -c 8-23`
-# only, never inside one scripts/heavy.sh call: the script wraps every check,
+# The verus-* targets run several checks each. Run them directly, in the
+# inherited cpuset (no taskset pin), and never inside one scripts/heavy.sh
+# call: the script wraps every check,
 # and every cargo build a target needs, in its own `scripts/heavy.sh --mem 16G`
 # call (.agents/rules/verification-runs.md, "Shared-machine agent work").
 #
@@ -509,21 +510,27 @@ cmd_verus_classify() {
   return $ok
 }
 
-cmd_verus_v2() {
+# V2 (the unbounded journal invariant) and V3 (L1 from every reachable state)
+# were not completed: the report records where V2 stopped (§5) and V3 depends
+# on it. The targets stay so a later attempt has a home: each verifies its
+# module once proofs/src/ has it, and says so plainly until then.
+verus_target_module() { # target module
+  local target=$1 module=$2
   require_verus
+  if [[ ! -f $VERUS_MODELS/proofs/src/$module.rs ]]; then
+    echo "formal-evaluation: $target: proofs/src/$module.rs does not exist; $target was not completed" \
+      "(docs/next/formal-verification-verus.md §5, §6). Nothing to verify." >&2
+    return 0
+  fi
   local ok=0
-  verus_check "verus-$VERUS_RELEASE-v2" pass "$VERUS_MODELS/proofs" --verify-module journal_model || ok=1
-  verus_mutants v2- || ok=1
+  verus_check "verus-$VERUS_RELEASE-$target" pass "$VERUS_MODELS/proofs" --verify-module "$module" || ok=1
+  verus_mutants "$target-" || ok=1
   return $ok
 }
 
-cmd_verus_v3() {
-  require_verus
-  local ok=0
-  verus_check "verus-$VERUS_RELEASE-v3" pass "$VERUS_MODELS/proofs" --verify-module journal_liveness || ok=1
-  verus_mutants v3- || ok=1
-  return $ok
-}
+cmd_verus_v2() { verus_target_module v2 journal_model; }
+
+cmd_verus_v3() { verus_target_module v3 journal_liveness; }
 
 # Print FUNCTION's text from FILE at REV: the item from its signature line to
 # the first line that is exactly `}`. Fails unless the signature occurs once.
@@ -669,7 +676,7 @@ case ${1:-} in
     ;;
   *)
     echo "usage: $0 {install|versions|t1|t2|t3|all|report-data}" >&2
-    echo "       $0 {verus-install|verus-versions|verus-v1|verus-v2|verus-v3|verus-drift|verus-all}" >&2
+    echo "       $0 {verus-install|verus-versions|verus-v1|verus-v2|verus-v3|verus-drift|verus-classify|verus-all}" >&2
     echo "       $0 measure NAME pass|violation -- CMD..." >&2
     echo "       $0 verus-measure NAME pass|violation -- CMD..." >&2
     exit 64

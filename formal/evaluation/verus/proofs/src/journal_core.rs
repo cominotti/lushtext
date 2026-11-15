@@ -12,9 +12,10 @@
 //!
 //! Each decision keeps its production body. Its attribute
 //! `#[verus_verify(dual_spec, open)]` makes Verus generate an open spec
-//! function from that same body, so the model in `journal_model.rs` reasons
-//! about the decision itself, never a restated copy of it: a mutant of the
-//! body changes what the invariant proof sees.
+//! function from that same body, so a V2 model would reason about the
+//! decision itself, never a restated copy of it: a mutant of the body would
+//! change what the invariant proof sees. V2 was not completed (the report,
+//! `docs/next/formal-verification-verus.md` §5), so no model exists yet.
 //!
 //! Rewrite footprint against production (the report lists it):
 //! - the `#[cfg_attr(kani, derive(kani::Arbitrary))]` attributes are dropped
