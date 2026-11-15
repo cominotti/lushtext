@@ -1,0 +1,10 @@
+-- author order: prepare (repoint+enable to not-yet-existing shared repo), then the build fails
+   remote-ls --updates: FAIL: error: Unable to load summary from remote lushtext-origin: Remote listing for lushtext-origin not available; server has no summary file. Check the URL passed to remote-add was valid.
+   lushtext-origin	file://$S/shared/repo	no-enumerate,no-gpg-verify
+-- reordered: export first, then prepare, then install
+   install rc=0
+   lushtext-origin	file://$S/shared/repo	no-enumerate,no-gpg-verify
+   deployed == head
+   origin: lushtext-origin
+   remote-info commit == head: yes
+   remote-ls --updates: OK
