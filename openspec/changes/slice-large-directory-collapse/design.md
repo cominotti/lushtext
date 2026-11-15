@@ -185,7 +185,7 @@ loaded, and `refresh_blocks_readiness` false).
   input dispatch is gone (36.7–56.0 ms on `main` → 0.2–0.4 ms), and `main`'s
   one 56–73 ms frame becomes four to seven frames of 16.8–24.3 ms (layout
   16.2–23.7 ms). Each such frame carries one 32-row bound unit. The
-  hypothesis, from A113 and not yet profiled, is that the unit destroys 32
+  hypothesis, from A118 and not yet profiled, is that the unit destroys 32
   widgets and creates and styles 32 for the rows entering the band, where
   the same unit with nothing after the directory, which brings no row into
   the band, costs 5–12 ms. At unit 32 the pass bar is missed in every
@@ -376,7 +376,7 @@ see D4.
   recorded, not judged.
 - Exception: if the smallest measured unit (8) still cannot keep a step within
   `B_INTERACT_US` because of the toolkit's per-widget cost, that dispatch is
-  recorded as a measured toolkit-floor exception citing A113. This is the
+  recorded as a measured toolkit-floor exception citing A118. This is the
   existing clause of "Workspace list dispatches fit the settle budget". The
   unit then stays at 8. Nothing over budget is left unexplained.
 - The first frame after the input shows the collapse: the arrow and the
@@ -471,7 +471,7 @@ For each step, the policy (D9) picks one removal:
    - first every row no widget is bound to, in chunks, one range at a time:
      the rows after the band, then the rows between the directory row and
      the band. The latter exist only when the user scrolled into the
-     children. Per A110 and A113, this destroys and creates no widget. The
+     children. Per A110 and A118, this destroys and creates no widget. The
      ranges come from `model::list_budget::for_each_unheld_range` (D9),
      which already yields them last first, so earlier starts stay valid;
    - then the bound rows, from the band's first child, in units. Each unit
@@ -483,7 +483,7 @@ For each step, the policy (D9) picks one removal:
      a tick callback, as `ui/list_growth.rs` paces a staged publish. The
      callback runs in the frame's update phase, before its layout. The
      widgets a unit creates are therefore styled in that same frame, and two
-     units never share a frame. Unbound chunks create no widget (A113), so a
+     units never share a frame. Unbound chunks create no widget (A118), so a
      step that takes only chunks needs no frame of its own. They still run
      on ticks, which keeps one source.
    - **One unit per frame clock, not per section.** The sections of a window
@@ -496,7 +496,7 @@ For each step, the policy (D9) picks one removal:
      A110 measured removal from the end of what is left, with nothing after
      it. It also recorded that the wrong order realizes 512 rows on an
      unmapped list. So the unmapped path keeps the same unit bound, and
-     A113's probe records the unmapped head removal with rows after it.
+     A118's probe records the unmapped head removal with rows after it.
    - **A mapped list whose frame clock is starved** (a minimized or occluded
      window keeps its widgets mapped, and its frame clock may not tick): no
      axiom says otherwise, so the step source does not rely on ticks alone.
@@ -518,8 +518,8 @@ unbound first, on both sides of the band, leaves only the band, whose
 replacements are siblings that stay. That is also `ui/list_retirement.rs`'s
 first turn. Removing the band while unbound subtree rows precede it lets GTK
 realize those earlier rows instead (A110's last clause, on unmapped lists).
-The rows before the band therefore go before any unit, not after. A113 pins
-the mapped case. *Fallback*, if A113 shows that a mapped list moves its band
+The rows before the band therefore go before any unit, not after. A118 pins
+the mapped case. *Fallback*, if A118 shows that a mapped list moves its band
 or realizes rows when rows before the band are removed: those rows go last,
 as in this design's first draft, and the probe records why.
 
@@ -549,8 +549,8 @@ rule enforces both. Routes:
 
 | route | today | after |
 |---|---|---|
-| expander click | The `GestureClick` is **not on the expander**. `update_for_list_row` creates it on the expander's `expander` icon child (a `GtkBuiltinIcon`, `gtktreeexpander.c:193-210`), and destroys and re-creates the icon whenever expandability changes. Its `released` handler (`:150-165`) activates `listitem.toggle-expand` and claims the sequence. The expander's only own controller is the drop-motion controller (`:753`). LushText's bind-time loop over `expander.observe_controllers()` (`row_factory.rs:338-357`) therefore finds no `GestureClick` on 4.24.1. It is inert, and its comment describes an older toolkit | LushText adds one capture-phase `GestureClick` to the expander at setup. It lets the press through, as GTK's own gesture does, so the row's press-side behaviour (focus on click, selection, double-press activation) is `main`'s. On a release inside the current `expander` icon's bounds it claims the sequence in the capture phase, before the icon's bubble gesture sees the release, so GTK's `released` handler never runs, whatever icon GTK has created since. That is the moment and the area GTK claims, by construction. Then expanding activates `listitem.scroll-to` and calls the expand entry point, and collapsing calls the collapse entry point. A release elsewhere is left alone. A114 pins where the gesture lives, that the release claim denies it, and that the row's press-side behaviour is unchanged. The inert loop is removed, or re-aimed if A114 shows a toolkit where it acts |
-| expander keys | `listitem.expand`: `plus`, `KP_Add`, `asterisk`, `KP_Multiply`. `listitem.collapse`: `minus`, `KP_Subtract`, `slash`, `KP_Divide`. By text direction: `Shift+Right`, `Shift+KP_Right`, `Ctrl+Shift+Right` and `Ctrl+Shift+KP_Right` expand in LTR and collapse in RTL; the `Left` and `KP_Left` four do the opposite. `listitem.toggle-expand`: `Ctrl+space`, `Ctrl+KP_Space` (`:654-690`). Class bindings fire only for key events that reach the expander, i.e. with focus on it or inside it. `GtkTreeExpander` is focusable (`:746`), but LushText leaves `GtkListItem:focusable` at its default `TRUE`, which the expander's own documentation (`:49-50`) says puts keyboard focus on the row instead. A row is the expander's ancestor, so a key with focus on the row never reaches it. These keys may therefore be unreachable today except with focus on a focusable descendant such as the Focus Folder button. That is open question 4, settled by A114 | the capture-phase key controller handles exactly the keys A114 shows GTK honours for the focus it sees, no more, so it adds no keyboard behaviour: collapse keys call the collapse entry point; expand keys on a collapsing row call the expand entry point; everything else propagates. If A114 shows none is reachable, no controller is installed and the row is recorded as "no key route" |
+| expander click | The `GestureClick` is **not on the expander**. `update_for_list_row` creates it on the expander's `expander` icon child (a `GtkBuiltinIcon`, `gtktreeexpander.c:193-210`), and destroys and re-creates the icon whenever expandability changes. Its `released` handler (`:150-165`) activates `listitem.toggle-expand` and claims the sequence. The expander's only own controller is the drop-motion controller (`:753`). LushText's bind-time loop over `expander.observe_controllers()` (`row_factory.rs:338-357`) therefore finds no `GestureClick` on 4.24.1. It is inert, and its comment describes an older toolkit | LushText adds one capture-phase `GestureClick` to the expander at setup. It lets the press through, as GTK's own gesture does, so the row's press-side behaviour (focus on click, selection, double-press activation) is `main`'s. On a release inside the current `expander` icon's bounds it claims the sequence in the capture phase, before the icon's bubble gesture sees the release, so GTK's `released` handler never runs, whatever icon GTK has created since. That is the moment and the area GTK claims, by construction. Then expanding activates `listitem.scroll-to` and calls the expand entry point, and collapsing calls the collapse entry point. A release elsewhere is left alone. A119 pins where the gesture lives, that the release claim denies it, and that the row's press-side behaviour is unchanged. The inert loop is removed, or re-aimed if A119 shows a toolkit where it acts |
+| expander keys | `listitem.expand`: `plus`, `KP_Add`, `asterisk`, `KP_Multiply`. `listitem.collapse`: `minus`, `KP_Subtract`, `slash`, `KP_Divide`. By text direction: `Shift+Right`, `Shift+KP_Right`, `Ctrl+Shift+Right` and `Ctrl+Shift+KP_Right` expand in LTR and collapse in RTL; the `Left` and `KP_Left` four do the opposite. `listitem.toggle-expand`: `Ctrl+space`, `Ctrl+KP_Space` (`:654-690`). Class bindings fire only for key events that reach the expander, i.e. with focus on it or inside it. `GtkTreeExpander` is focusable (`:746`), but LushText leaves `GtkListItem:focusable` at its default `TRUE`, which the expander's own documentation (`:49-50`) says puts keyboard focus on the row instead. A row is the expander's ancestor, so a key with focus on the row never reaches it. These keys may therefore be unreachable today except with focus on a focusable descendant such as the Focus Folder button. That is open question 4, settled by A119 | the capture-phase key controller handles exactly the keys A119 shows GTK honours for the focus it sees, no more, so it adds no keyboard behaviour: collapse keys call the collapse entry point; expand keys on a collapsing row call the expand entry point; everything else propagates. If A119 shows none is reachable, no controller is installed and the row is recorded as "no key route" |
 | expand callers | the reveal's `advance_expansion` (`reveal_execution.rs:344`), the new-item flow (`file_execution.rs:119`), the restore (`scan_execution.rs:1664`), folder expand / toggle / load-time auto-expand (`folder_execution.rs:399, 409, 636`) | each calls the expand entry point, so none acts on a draining store |
 | row activation | `activate_file_at` toggles | collapse calls the entry point |
 | folder header collapse / toggle | `folder_execution.rs` `set_expanded(false)` per root | the entry point per root |
@@ -559,7 +559,7 @@ rule enforces both. Routes:
 
 Class actions on `GtkTreeExpander` cannot be overridden by an inserted action
 group, and the type is final, which is why the gesture and the keys are taken
-over rather than the actions. A114 pins this. Not owned, and measured as
+over rather than the actions. A119 pins this. Not owned, and measured as
 residuals:
 - a refresh splice removing an expanded directory, a section rebuild or a
   model reset;
@@ -575,7 +575,7 @@ residuals:
   They are not owned, because disabling a class action
   (`gtk_widget_action_set_enabled`) would also disable its key bindings, and
   a class action cannot be shadowed. Such a collapse behaves as on `main`.
-  A114 records the action table on both toolkits, and D2 measures the route
+  A119 records the action table on both toolkits, and D2 measures the route
   once as a residual. Assistive-technology and keyboard users reach the
   owned path through row activation (`Enter`), which toggles a directory
   (`activate_file_at`). Task 8.3 states both routes in
@@ -591,7 +591,7 @@ residuals:
 
 The input dispatch does no row work. It:
 - adds `lushtext-collapsing` to the row's `GtkTreeExpander`, whose CSS shows
-  the collapsed arrow over `expander:checked`, both text directions (A115);
+  the collapsed arrow over `expander:checked`, both text directions (A120);
 - sets the row overlay's accessible `expanded` state to false;
 - sets the `GtkTreeExpander`'s own accessible `expanded` state (role
   button) to false. GTK sets that state only in `update_for_list_row`, at
@@ -614,7 +614,7 @@ and the `lushtext-collapsing` class from the collapse state. The authoritative
 `expanded_paths` drops the subtree at once, as a collapse does today. The
 evidence surface reports `collapsing`.
 
-*Fallback*, if A115 is refuted on either toolkit: the first step removes a
+*Fallback*, if A120 is refuted on either toolkit: the first step removes a
 bound unit in the frame after the input, so the first visible change is
 still in the first frame (Prototype B: 13.9–17.2 ms at 400:256 under load),
 and only the arrow lags.
@@ -730,7 +730,7 @@ the collapse functions (`functions=`), with its harnesses. The properties:
 - **C5** the sequence terminates within the bound D2 states.
 
 Unit tests cover the reference cases, and a property test drives the policy
-against a model of GTK's band (A113) to the end.
+against a model of GTK's band (A118) to the end.
 
 ### D10. Expansion, measurement first
 
@@ -820,10 +820,15 @@ field, so `docs/automation.md` and `docs/automation-reference.md` are updated.
 - A110: unmapped-list retirement.
 
 **New**, provisional ids (final = next free at apply time). They were
-written as A112–A114 and became **A113–A115** at apply time, because `main`
-took A112 (`restore-main-ci`) first:
+written as A112–A114, became A113–A115 at apply time, because `main` took
+A112 (`restore-main-ci`) first, and became **A118–A120** at the post-stage-4
+design revision: `main` took A113 (`diagnose-ci-only-reflow-guard-failure`,
+PR #111), and the open branch `quiet-headless-session-services` holds
+A115–A117, so A118 is the first id from which three in a row are free on
+`main` and on every pushed branch (2026-11-15). A114 stays free for whoever
+allocates next. Ids are never reused:
 
-- **A113**: on a mapped, presented `GtkListView` over a `GtkTreeListModel`,
+- **A118**: on a mapped, presented `GtkListView` over a `GtkTreeListModel`,
   a removal destroys, inside its `items-changed`, the row widgets bound to
   removed items. It creates fresh widgets (factory setup and bind) for the
   rows that enter the band, and never reuses a removed widget for another
@@ -838,7 +843,7 @@ took A112 (`restore-main-ci`) first:
     same head removal with 400 rows after on an **unmapped** list. That last
     case settles what A110 did not measure (D4).
   - Sample: an interactive list with live counters, plus `--check`.
-- **A114**: `GtkTreeExpander`'s disclosure routes and their ownership, on
+- **A119**: `GtkTreeExpander`'s disclosure routes and their ownership, on
   both toolkits:
   - its click `GestureClick` lives on the `expander` icon child, not on the
     expander, and is re-created with the icon. It activates
@@ -863,12 +868,12 @@ took A112 (`restore-main-ci`) first:
     `set_expanded(false)`;
   - which accessible `expanded` state GTK maintains on the expander and which
     on its icon, at bind and on `notify::expanded` (D6).
-- **A115**: a CSS rule on a class of `GtkTreeExpander` overrides the arrow
+- **A120**: a CSS rule on a class of `GtkTreeExpander` overrides the arrow
   icon its `expander:checked` node shows, in both directions, without
   changing the row's expanded state or the node's `:checked` state, on
   Adwaita 1.10 and on the GNOME 50 floor.
 
-All three run on GNOME 51 and the GNOME 50 floor. A113's sample includes the
+All three run on GNOME 51 and the GNOME 50 floor. A118's sample includes the
 timed figures and is marked slow if it exceeds the slow threshold.
 
 ### D14. Workflow placement (`WFR-WORKSPACE-TREE`)
@@ -895,7 +900,7 @@ timed figures and is marked slow if it exceeds the slow threshold.
 ### D15. Records to correct
 
 - The ledger's A91 row: its dependent-design text now says its share is the
-  node teardown, about 10 % of a collapse. It points to A113 for the row
+  node teardown, about 10 % of a collapse. It points to A118 for the row
   widgets and to this change for the sliced collapse.
 - `docs/next/long-line-documents.md`, BL record: the exception is
   re-attributed, the follow-ups resolved (D12), and a status line for this
@@ -939,13 +944,13 @@ Therefore:
 
 Recorded at stage 3 (implementation), each with its evidence.
 
-1. **D4's order is kept (A113 holds).** Removing unbound rows after the band
+1. **D4's order is kept (A118 holds).** Removing unbound rows after the band
    or between the directory row and the band destroys and creates no widget
    and leaves the band in place on a mapped list (2.1 ms each for 8,000 rows,
    the rb-tree work), so unbound chunks go first and the bound units after.
    On an unmapped list the head removal still replaces its 64 widgets in the
    call, which is why the fallback source keeps the per-unit bound.
-2. **D5's click route (A114 holds).** On 4.24.1 and 4.22.2 the expander
+2. **D5's click route (A119 holds).** On 4.24.1 and 4.22.2 the expander
    carries no `GestureClick`; the toggle gesture is on the re-created
    `expander` icon. The bind-time `observe_controllers()` loop was inert and
    is removed (memorial appendix in `docs/memorials/tree-expander-activation.md`).
@@ -972,13 +977,13 @@ Recorded at stage 3 (implementation), each with its evidence.
    key are `main`'s. Widget test
    `test_expander_keys_take_the_collapse_entry_point` drives it with real key
    input through the compositor.
-4. **D6's primary path (A115 holds).** The first candidate, a
+4. **D6's primary path (A120 holds).** The first candidate, a
    `-gtk-icon-transform` rule, did not draw the collapsed arrow: Adwaita
    swaps the icon source on `expander:checked`. The shipped rule sets
    `-gtk-icon-source` back to `pan-end-symbolic` (`pan-end-symbolic-rtl`
    under `:dir(rtl)`), pixel-identical to the collapsed arrow in both
    directions on both toolkits.
-5. **The accessible half of A114 is source-read.** Under `GTK_A11Y=none`,
+5. **The accessible half of A119 is source-read.** Under `GTK_A11Y=none`,
    which the axiom lane and the widget harness set, GTK records no accessible
    state, so the probe skips that half there and says so;
    `gtktreeexpander.c:220-228` and `:278-301` are the evidence, and the
@@ -1016,11 +1021,11 @@ Recorded at stage 3 (implementation), each with its evidence.
     broken. On the bin, the list view's parent, capture still reaches the
     route first, and the list view keeps the peek as its first key
     controller.
-13. **The A114 probe does not type `Ctrl+KP_Space`.** The compositor's
+13. **The A119 probe does not type `Ctrl+KP_Space`.** The compositor's
     virtual keymap has no keycode for it, and Mutter's warning failed the
     axiom lane; the binding is read from the source like the keypad
     direction keys.
-14. **A114 stays off the sandbox skip list** (`REMOTE_INPUT_AXIOMS`): its
+14. **A119 stays off the sandbox skip list** (`REMOTE_INPUT_AXIOMS`): its
     probe checks `in_sdk_sandbox()` itself and skips only the input half, so
     the GNOME 50 SDK run keeps its gesture, accessible-state and class-action
     verdict. The list's unit test now names exactly the probes that start a
@@ -1168,7 +1173,7 @@ verdict" edits the same files. Each needs a failing-first test.
   per-frame unit grows if a later lighter-rows change lowers the per-row cost.
 - **Owning the expander's click and keys.** If a future GTK adds a disclosure
   route, LushText would collapse directly through it, no worse than today.
-  A114's probe fails on a toolkit that changes the routes, which is how a
+  A119's probe fails on a toolkit that changes the routes, which is how a
   toolkit bump finds out (`make gtk-axioms` first).
 - **Slice-bin interaction when rows above the viewport go** (D8). This class
   has regressed before. Mitigation: the rendered-placement tests and the
@@ -1196,22 +1201,22 @@ snapshot field is added (D11).
 1. The values of the four constants (task 1, D3).
 2. Whether small-directory expansion is over budget on quiet `main`, and so
    whether D10's cap is applied (task 1).
-3. Whether A115 holds on both toolkits, or D6's fallback is used (task 2).
+3. Whether A120 holds on both toolkits, or D6's fallback is used (task 2).
 4. Whether the expander's key bindings are reachable from LushText's rows
-   today (A114, task 2). The capture controller mirrors exactly what is
+   today (A119, task 2). The capture controller mirrors exactly what is
    reachable, so the answer changes its key list, not the keyboard
    behaviour.
-5. Whether A113 confirms that removing the unbound rows before the band
+5. Whether A118 confirms that removing the unbound rows before the band
    leaves a mapped list's band in place, or D4's fallback order is used
    (task 2).
 
 **Answers (stage 3).**
 
-3. A115 holds on GTK 4.24.1 / Adw 1.10.0 and on GTK 4.22.2 / Adw 1.9.0, with
+3. A120 holds on GTK 4.24.1 / Adw 1.10.0 and on GTK 4.22.2 / Adw 1.9.0, with
    the icon-source rule (implementation decision 4); D6's primary path is
    used.
 4. Not from the focus the list gives a row (the row widget keeps it), yes
-   once Tab moves the focus onto the expander (A114, implementation decision
+   once Tab moves the focus onto the expander (A119, implementation decision
    3); the key route is installed for the 18 class bindings.
-5. A113 confirms it on both toolkits: the band stays in place; D4's order is
+5. A118 confirms it on both toolkits: the band stays in place; D4's order is
    used (implementation decision 1).

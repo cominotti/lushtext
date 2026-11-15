@@ -282,7 +282,7 @@ mod tests {
     /// The list names exactly the probes that start a RemoteInput session
     /// without guarding it themselves, so a new probe driving real input
     /// cannot be left out of the sandbox skip. A probe that checks
-    /// `in_sdk_sandbox()` before it starts one (A114, whose other half needs
+    /// `in_sdk_sandbox()` before it starts one (A119, whose other half needs
     /// no input) skips only its input half and keeps its sandbox verdict.
     #[test]
     fn remote_input_axioms_are_exactly_the_probes_that_start_a_session() {

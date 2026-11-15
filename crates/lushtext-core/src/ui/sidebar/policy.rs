@@ -1089,14 +1089,14 @@ pub const DIRECT_COLLAPSE_ROWS: u32 = 32;
 
 /// Rows bound to a row widget that one collapse step removes, and so the most
 /// row widgets one frame creates and styles in their place (design D3; ledger
-/// A113). It is named for the sidebar rather than the collapse because the
+/// A118). It is named for the sidebar rather than the collapse because the
 /// load's band cap (design D10) may use it too.
 ///
 /// Kind: cap; a power of two, rounded down.
 pub const SIDEBAR_REALIZED_ROWS_PER_FRAME: u32 = 32;
 
 /// Rows no widget is bound to that one removal takes: their removal destroys
-/// and creates no widget (A110, A113), and costs LushText's mirror
+/// and creates no widget (A110, A118), and costs LushText's mirror
 /// bookkeeping plus GTK's rb-tree removal (design D3, Prototype A: 4.9–6.6 ms
 /// per 16,384 rows under load, so half fits the turn slice).
 ///
@@ -1253,7 +1253,7 @@ pub fn next_collapse_step(facts: &CollapseFacts<'_>) -> CollapseStep {
 
 /// `next_collapse_step` (`slice-large-directory-collapse` task 3.1): the
 /// reference cases, and a property test driving the policy against a model of
-/// GTK's realized band (ledger A113) until the directory collapses.
+/// GTK's realized band (ledger A118) until the directory collapses.
 #[cfg(test)]
 mod collapse_tests {
     use proptest::prelude::*;
@@ -1481,7 +1481,7 @@ mod collapse_tests {
         assert!(CollapseStep::CollapseRow.takes_unit());
     }
 
-    /// GTK's realized band as A113 pins it, on a flattened list of `total`
+    /// GTK's realized band as A118 pins it, on a flattened list of `total`
     /// rows: `band` rows from `top`, kept on the same row across a removal
     /// before it and moved to the removal's start when its row goes, and kept
     /// full at the end of the list.

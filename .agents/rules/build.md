@@ -386,9 +386,14 @@ are in [`testing.md`](./testing.md). This section covers the lane.
 - **Tool.** Kani is the programme's **only** formal tool
   (`docs/next/formal-verification.md` §2). Do not add a second specification
   language without a recorded maintainer decision. The disposable Quint vs
-  TLA+ evaluation models in `formal/evaluation/` run only through the
-  local-only `make formal-evaluation`, which is never a prerequisite of
-  `check`, `check-policy`, `test`, `kani`, or `end-user-smoke`.
+  TLA+ and Verus evaluation models in `formal/evaluation/` run only through
+  the local-only `make formal-evaluation` (`FORMAL_EVAL_TARGET=verus-*` for
+  Verus, run directly, never inside one `heavy.sh`: the script wraps each
+  check in its own `heavy.sh` call), which is never a prerequisite of `check`, `check-policy`,
+  `test`, `kani`, or `end-user-smoke`. `formal/evaluation/verus/proofs` and
+  `formal/evaluation/verus/drift` are standalone packages in the root
+  `Cargo.toml` `exclude`, built with Verus's pinned rustc and with the
+  workspace toolchain respectively.
 - **Pin.** `KANI_VERSION` in the Makefile, currently `0.68.0` (CBMC 6.11.0), is
   the only copy: `.github/workflows/kani.yml`'s `shards` job derives it from
   the Makefile. Kani pins its own nightly, independent of
@@ -405,8 +410,22 @@ are in [`testing.md`](./testing.md). This section covers the lane.
 - **Memory.** The run executes inside a memory-capped systemd user scope
   (`scripts/with-memory-cap.sh`, `KANI_MEMORY_MAX`, default `16G`, no swap,
   each process held to 7/8 of the cap in address space), admitted into the
-  host-wide `lushtext-heavy.slice`; the wrapper's header documents admission,
-  the desktop reserve, nested in-place runs and the scope settings. Any command
+  host-wide `user-lushtext-heavy.slice`; the wrapper's header documents
+  admission, the desktop reserve, nested in-place runs and the scope settings.
+  The `user-` prefix nests that slice under the user manager's `user.slice`
+  (`user.slice/user-lushtext.slice/user-lushtext-heavy.slice`), so heavy work
+  inherits the toolboxes' CPU policy from the host's CPU tooling (CST: its
+  cpuset, `CPUWeight=30`, and the idle class on CPUs 12-23 during a game); the
+  wrapper sets no CPU property. Every scope checks its own placement before its
+  command runs (under both slices, affinity within the inner `user.slice`'s
+  effective cpuset) and exits 78 otherwise. Admission also counts the legacy
+  `lushtext-heavy.slice`, where copies of the wrapper from before the rename
+  still start scopes, and never touches it. One risk is recorded, not changed:
+  systemd-oomd's per-slice pressure kill (80% for 20 s) on the inner
+  `user.slice` now sees our scopes' pressure, and its candidates include the
+  toolbox containers; a thrashing heavy scope is normally the one killed, and
+  each scope's no-swap cap makes the kernel kill inside it first, so an oomd
+  kill of a toolbox is traced to here. Any command
   run under the wrapper sizes its own parallelism to fit the cap (`cargo -j 4`,
   at most 4 test threads), one capped heavy run per agent at a time. A run that
   hit the cap is discarded, and hitting it is a finding to fix by the fit
@@ -645,7 +664,11 @@ and skip messages; `make end-user-smoke` runs the host-supported lanes together.
   It generates synthetic fixtures only (`scripts/generate-long-line-fixtures.py`,
   seeded, written into the run's temp scope), runs with an affinity of at most
   16 CPUs taken from the inherited mask (never widened), never writes a
-  fixture, and fails on any fixture digest change. Budget overruns are results,
+  fixture, and fails on any fixture digest change. Under `scripts/measure.sh`
+  it runs on the reference CPU set measure.sh pinned and fails before any case
+  when its inherited affinity differs from it or it exceeds the cap (never
+  trimmed); it records the set and its source, and labels unpinned runs,
+  overrides and mixed merges as not comparable with reference runs. Budget overruns are results,
   not failures. The nightly `quick` tier is trend evidence only; verdicts come
   from a `full` run on the reference machine under the reference
   precondition, through `scripts/measure.sh`, recorded in
@@ -749,6 +772,29 @@ the widget suite on its platform first.
   margin, move a module or one slow test by name; never raise
   `timeout-minutes` (`scripts/check-workflow-timeouts.py` enforces the hard
   ceiling) and never shrink a threshold-sized test.
+- **CI image lane.** A widget failure seen only on CI is run in the CI widget
+  job's own image under the runner's CPU budget before it is treated as
+  CI-only: `scripts/ci-image-widget-test.sh` reads the `widget-tests` job's
+  image and `dnf` line from `ci.yml`, refuses to run when the image's toolkit
+  differs from the host's, and runs the binary already built here (build it
+  first, `scripts/heavy.sh -- cargo test -p lushtext --test widget --no-run`)
+  in a fresh container per run, N times (`--runs`), limited by `--cpus N` (a
+  quota; never `taskset`). Each run is CI's own step, with `cargo` shimmed to
+  that binary: `scripts/run-widget-tests.sh --headless --retries 1 -- <test
+  args>`, or `scripts/widget-shards.py run NAME` for `--shard NAME`, one shard
+  per call (`--runs 1`). So the temp scope, the warning scan and both retries
+  are CI's; the kernel, cgroup driver and virtualisation are not. Run each
+  call as `scripts/heavy.sh --mem none -- scripts/ci-image-widget-test.sh ...`
+  and keep single-test batches under about 15 minutes, so a call holds the
+  heavy-work lock once. A run is green only with exit 0, no `FLAKY:` or
+  `FLAKY-SHARD:` line and, for a shard, exactly the shard's tests selected. A
+  failure reproduced there is fixed failing-first against it and proved by 20
+  consecutive green lane runs; one seen only inside a full shard runs the
+  whole shard there at least five times first. A test run alone in the lane
+  sees two-digit process ids in its temporary paths (seven on a busy host), so
+  a test whose verdict follows path length shows up there first. Its
+  `--self-test` runs in `make check-agent-helpers`; it exits 77 without
+  Docker.
 - **Retries make flakes loud, not acceptable.** The harness retries a **test**
   once in a fresh process and reports `ok (FLAKY: passed on attempt N)` plus a
   stderr `FLAKY:` line; `--retries 1` reruns a failed **shard** in a new

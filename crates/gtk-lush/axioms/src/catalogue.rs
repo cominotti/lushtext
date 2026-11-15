@@ -1844,7 +1844,24 @@ const CATALOGUE: &[Axiom] = &[
     },
     Axiom {
         id: AxiomId::new(113),
-        name: "a113_removing_bound_rows_replaces_their_row_widgets",
+        name: "a113_an_aligned_scroll_to_the_first_line_rests_at_the_top_margin",
+        statement: "A GtkTextView's aligned scroll to its first line (scroll_to_iter or \
+                    scroll_to_mark, use_align with yalign 0) puts that line's first character \
+                    box at the top edge, so the vertical value rests at the top margin plus the \
+                    box's location, never at lower; GTK moves there through \
+                    gtk_adjustment_animate_to_value",
+        dependent_designs: &[
+            "diagnose-ci-only-reflow-guard-failure D3: a reattached editor view whose kept \
+             position is the document's start sets its vertical value to lower itself instead \
+             of asking GTK for the aligned scroll (ui/editor_page/view_attachment.rs)",
+        ],
+        slow: false,
+        version_bound: None,
+        probe: Some(probes::probe_a113),
+    },
+    Axiom {
+        id: AxiomId::new(118),
+        name: "a118_removing_bound_rows_replaces_their_row_widgets",
         statement: "On a mapped GtkListView over a GtkTreeListModel, removing rows a list item is \
                     bound to destroys those list items inside the removal's items-changed and \
                     creates fresh ones for the rows entering the band in the same call, never \
@@ -1857,11 +1874,11 @@ const CATALOGUE: &[Axiom] = &[
         ],
         slow: false,
         version_bound: None,
-        probe: Some(probes::probe_a113),
+        probe: Some(probes::probe_a118),
     },
     Axiom {
-        id: AxiomId::new(114),
-        name: "a114_a_tree_expander_disclosure_routes_can_be_owned",
+        id: AxiomId::new(119),
+        name: "a119_a_tree_expander_disclosure_routes_can_be_owned",
         statement: "GtkTreeExpander's toggle GestureClick lives on its re-created expander icon, \
                     not on the expander, and a capture-phase gesture on the expander claiming \
                     the release inside the icon denies it without changing the press; its class \
@@ -1881,11 +1898,11 @@ const CATALOGUE: &[Axiom] = &[
         ],
         slow: false,
         version_bound: None,
-        probe: Some(probes::probe_a114),
+        probe: Some(probes::probe_a119),
     },
     Axiom {
-        id: AxiomId::new(115),
-        name: "a115_a_class_rule_draws_a_checked_expander_collapsed",
+        id: AxiomId::new(120),
+        name: "a120_a_class_rule_draws_a_checked_expander_collapsed",
         statement: "An application CSS rule on a class of GtkTreeExpander draws the arrow of its \
                     expander:checked icon exactly as the collapsed arrow, in LTR and RTL, under \
                     the shipped style, while the row stays expanded and the icon checked",
@@ -1895,9 +1912,10 @@ const CATALOGUE: &[Axiom] = &[
         ],
         slow: false,
         version_bound: None,
-        probe: Some(probes::probe_a115),
+        probe: Some(probes::probe_a120),
     },
 ];
+
 #[cfg(test)]
 mod tests {
     use super::*;

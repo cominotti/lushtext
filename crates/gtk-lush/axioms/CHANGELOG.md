@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A113 probe and sample (`diagnose-ci-only-reflow-guard-failure`): a
+  `GtkTextView`'s aligned scroll to its first line (`scroll_to_iter` or
+  `scroll_to_mark`, aligned at 0) rests the vertical value at the top margin
+  plus the first character's location, never at `lower`. Fixture
+  `fixtures::a113` (`document_view`, `scroll_to_first_line`, `DOCUMENT_LINES`,
+  `TOP_MARGIN`).
 - A112 probe and sample (`restore-main-ci`): `gtk_adjustment_configure` sets
   the value before `changed`, then emits `value-changed`; `set_value` emits
   `value-changed` alone; a `GtkTextView` scrolling to a mark moves its value
@@ -10,7 +16,7 @@
   mid-document). Fixture `fixtures::a112` (`EmissionLog`, `Emission`,
   `moved_on_its_own`, `every_move_was_carried`, `document_view`,
   `wrapped_document_view`, `scroll_to_target`, `rewrap`).
-- A113, A114 and A115 probes and samples (`slice-large-directory-collapse`):
+- A118, A119 and A120 probes and samples (`slice-large-directory-collapse`):
   on a mapped tree list, removing bound rows replaces their row widgets
   inside `items-changed` and never reuses one, while removing unbound rows
   after or before the band changes none and leaves the band in place;
@@ -21,9 +27,9 @@
   ancestor's capture-phase `Stop` prevents them, its parameterless class actions
   resolve before an inserted group, and it keeps the expander's accessible
   `expanded` state only at bind; a class rule draws a checked arrow as the
-  collapsed one in both directions. Inside an SDK sandbox A114 checks its
+  collapsed one in both directions. Inside an SDK sandbox A119 checks its
   input-free half and skips only its input half. New
-  fixtures `fixtures::a113` to `fixtures::a115`.
+  fixtures `fixtures::a118` to `fixtures::a120`.
 - A108, A109, A110 and A111 probes and samples (`lighten-notes-browser-rows`):
   a label list's frame after a retext is mostly layout and grows with the
   realized rows, where a text-independent measure does not; a

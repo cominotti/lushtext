@@ -14,7 +14,7 @@ The sidebar file-activation code was correctly wired (`connect_activate` → `op
 The bind-time loop outlived the toolkit behaviour it answered. On GTK 4.24.1
 `GtkTreeExpander` creates its toggle `GtkGestureClick` on the `expander` icon
 child (`update_for_list_row`), re-creates it with the icon, and carries none
-itself: the A114 probe counts zero click gestures on the expander and one on
+itself: the A119 probe counts zero click gestures on the expander and one on
 the icon. The loop therefore matched nothing, and file rows never have an icon,
 so their double-click activation reaches `GtkListView` without it (the widget
 test `test_expand_routes_keep_gtk_behaviour` drives a real double press). The

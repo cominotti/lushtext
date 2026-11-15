@@ -883,7 +883,7 @@ Appended after the archive; the decisions above are left as they were taken.
   design, "Measured baseline") puts 89 % of it in `GtkListView`'s item
   manager and 10 % in the rb-tree teardown A91 describes: GTK destroys each
   removed row widget and creates the rows entering the band anew, because a
-  released widget is reused only for the same item (axiom A113). The cost is
+  released widget is reused only for the same item (axiom A118). The cost is
   therefore the realized rows a removal touches, not a toolkit floor, and
   rows after the directory make it larger (36.7–43.6 ms at 256 entries with 400
   rows after, against 15.6–16.7 ms with none). That change owns every

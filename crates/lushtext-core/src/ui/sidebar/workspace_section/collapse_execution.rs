@@ -16,7 +16,7 @@
 //!
 //! GTK's `set_expanded(false)` removes every child row in one call, and in that
 //! call destroys the row widgets bound to removed rows and creates fresh ones
-//! for the rows that enter the realized band (ledger A113): about 40 ms with
+//! for the rows that enter the realized band (ledger A118): about 40 ms with
 //! 400 rows after a 256-entry directory, plus as much again to style the new
 //! rows in the next frame. A directory whose subtree lists more than
 //! `DIRECT_COLLAPSE_ROWS` rows is therefore drained first, one step per frame,
@@ -25,7 +25,7 @@
 //! # Stage order
 //!
 //! 1. **Intent** (the input dispatch, no row work, design D6): the expander
-//!    gets [`COLLAPSING_CLASS`] (the arrow shows collapsed, A115), the row and
+//!    gets [`COLLAPSING_CLASS`] (the arrow shows collapsed, A120), the row and
 //!    its expander report `expanded = false`, the subtree's expansion intent
 //!    is pruned, its scans and loads and queued refresh targets are cancelled,
 //!    and selection and focus inside the subtree move to the directory row.
@@ -76,7 +76,7 @@ use crate::ui::sidebar::policy::{
 };
 
 /// The expander class whose application CSS draws the checked arrow as
-/// collapsed while the row is still GTK-expanded (ledger A115).
+/// collapsed while the row is still GTK-expanded (ledger A120).
 pub(crate) const COLLAPSING_CLASS: &str = "lushtext-collapsing";
 
 /// How often the low-priority fallback source checks for an unmapped list or
@@ -92,7 +92,7 @@ pub enum CollapseOrigin {
     /// The expander arrow, clicked.
     Arrow,
     /// One of the expander's class key bindings, with focus on the expander
-    /// (ledger A114).
+    /// (ledger A119).
     Keys,
     /// Row activation (Enter, double click).
     Activation,
@@ -921,7 +921,7 @@ impl LushtextWorkspaceSection {
 }
 
 /// What one of `GtkTreeExpander`'s class key bindings asks for
-/// (`gtktreeexpander.c:654-690`, ledger A114).
+/// (`gtktreeexpander.c:654-690`, ledger A119).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DisclosureKey {
     Expand,
@@ -969,7 +969,7 @@ impl LushtextWorkspaceSection {
     /// propagates, so GTK's expansion and every other key are `main`'s. The
     /// bindings reach the expander only once Tab has moved the focus from the
     /// row onto it; the focus the list gives a row stays on the row widget,
-    /// because the row's child is an overlay (ledger A114). The controller
+    /// because the row's child is an overlay (ledger A119). The controller
     /// sits on the bin, the list view's parent, so capture reaches it before
     /// the list view's own key controllers and the list view keeps the
     /// sidebar's Space peek as its first key controller.

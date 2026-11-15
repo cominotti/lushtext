@@ -1059,7 +1059,7 @@ minimap off from loaded or saved bytes, so a paste can grow the live buffer past
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `MAX_UNIQUE_NAME_ATTEMPTS` | 1,024 | retry budget | rounded up (D6) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `PERSIST_DEBOUNCE_MS` | 150 | out: time | time unit; time budgets follow the rule already (D1 non-goal) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `DIRECT_COLLAPSE_ROWS` | 32 | cap | power of two, rounded down; rows at or below which a collapse is GTK's direct `set_expanded(false)`, at most one unit (`slice-large-directory-collapse` D3) |
-| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_REALIZED_ROWS_PER_FRAME` | 32 | cap | power of two, rounded down; bound rows one collapse step removes, so the row widgets a frame creates (A113; `slice-large-directory-collapse` D3) |
+| `crates/lushtext-core/src/ui/sidebar/policy.rs` | `SIDEBAR_REALIZED_ROWS_PER_FRAME` | 32 | cap | power of two, rounded down; bound rows one collapse step removes, so the row widgets a frame creates (A118; `slice-large-directory-collapse` D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `COLLAPSE_UNBOUND_CHUNK_ROWS` | 8,192 | cap | power of two, rounded down; unbound rows one removal takes, half of the 16,384 that fit the turn slice (`slice-large-directory-collapse` D3) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `COLLAPSE_FRAME_STARVATION_MS` | 128 | out: time | time unit; how long a mapped list may go without a frame tick before the fallback steps (`slice-large-directory-collapse` D4) |
 | `crates/lushtext-core/src/ui/sidebar/policy.rs` | `REVEAL_SETTLE_FRAME_BUDGET` | 64 | coverage window | rounded up (D5) |

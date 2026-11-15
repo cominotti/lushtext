@@ -10,7 +10,7 @@
 //! contracts**: the expander arrow's capture-phase release gesture that hands
 //! every arrow click to the collapse and expand entry points while the row's
 //! press-side behaviour (focus, selection, double-press activation) stays
-//! GTK's (ledger A114), and the rename-entry cleanup that must run on both
+//! GTK's (ledger A119), and the rename-entry cleanup that must run on both
 //! bind and unbind.
 //!
 //! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
@@ -453,7 +453,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
 ///
 /// GTK's click gesture lives on the expander's `expander` icon child, which
 /// GTK re-creates whenever the row's expandability changes, and its release
-/// handler toggles the row through `listitem.toggle-expand` (ledger A114).
+/// handler toggles the row through `listitem.toggle-expand` (ledger A119).
 /// This capture-phase gesture on the expander itself lets the press through,
 /// so focus on click, selection and double-press activation stay GTK's, and
 /// claims the sequence on a release inside the current icon, before the

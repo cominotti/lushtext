@@ -2750,7 +2750,7 @@ type BoundRows = std::collections::HashMap<usize, usize>;
 /// show another row than at the last call (`shown`), and how many were
 /// destroyed (`destroyed`). GTK 4.24 may reuse a removed
 /// row's list item for an item entering the band, so a replaced row costs a
-/// rebind as well as, or instead of, a new widget (A113); both count.
+/// rebind as well as, or instead of, a new widget (A118); both count.
 fn mark_new_row_widgets(section: &LushtextWorkspaceSection, seen: &mut BoundRows) -> RowChange {
     use glib::translate::ToGlibPtr;
     let mut changed = 0;
@@ -3346,7 +3346,7 @@ fn test_collapse_stops_loads_and_refreshes_under_it() {
 /// failed reveal all collapse through the entry point, counted by the
 /// evidence. (The arrow is covered by
 /// `test_the_arrow_click_survives_an_icon_recreation`, and the expander's
-/// keys, which reach it once Tab focuses it (A114), by
+/// keys, which reach it once Tab focuses it (A119), by
 /// `test_expander_keys_take_the_collapse_entry_point`.)
 #[test]
 fn test_collapse_routes_reach_the_entry_point() {
@@ -3388,7 +3388,7 @@ fn test_collapse_routes_reach_the_entry_point() {
     drop(tree.window);
 }
 
-/// Design D5's key route (ledger A114): a click leaves the focus on the row
+/// Design D5's key route (ledger A119): a click leaves the focus on the row
 /// widget and Tab moves it onto the expander, from which its class collapse
 /// keys reach LushText's entry point (sliced, origin `Keys`); an expand key on
 /// the collapsing row ends the collapse, and an expand key on a collapsed row
@@ -3417,7 +3417,7 @@ fn test_expander_keys_take_the_collapse_entry_point() {
         .expect("the row widget");
     assert!(
         gtk4::prelude::GtkWindowExt::focus(&tree.window).as_ref() == Some(&row_widget),
-        "a click leaves the focus on the row widget, where no expander key reaches (A114)"
+        "a click leaves the focus on the row widget, where no expander key reaches (A119)"
     );
     crate::common::type_with_real_keyboard(&[&[TAB]]);
     assert!(
@@ -3540,7 +3540,7 @@ fn arrow_icon(expander: &gtk4::TreeExpander) -> Option<gtk4::Widget> {
     None
 }
 
-/// Design D5 (ledger A114): a real click on the arrow reaches the collapse
+/// Design D5 (ledger A119): a real click on the arrow reaches the collapse
 /// entry point and GTK's own toggle does nothing, also after GTK re-created
 /// the icon; a click on a collapsed arrow expands and selects the row.
 #[test]
@@ -3577,7 +3577,7 @@ fn test_the_arrow_click_survives_an_icon_recreation() {
         row.is_expanded() && listing(&tree.section, &nested).directory_retained_entries == 256
     });
     // GTK's own icon gesture claims the release too, so an arrow click
-    // leaves the selection where it was (A114 measures both alike).
+    // leaves the selection where it was (A119 measures both alike).
     assert_eq!(
         selection(&tree.section).selected(),
         selected,
@@ -3620,7 +3620,7 @@ fn test_collapse_from_inside_the_children_matches_a_direct_collapse() {
 /// Design D5: the arrow gesture keeps GTK's behaviour for what it does not
 /// own. A click on a collapsed directory's arrow expands and lists it and
 /// leaves the selection as GTK's own toggle does; a double click on a file row still activates the file (the expander's
-/// own gesture no longer runs for file rows on GTK 4.24.1, ledger A114); and
+/// own gesture no longer runs for file rows on GTK 4.24.1, ledger A119); and
 /// a click on the arrow activates nothing.
 #[test]
 fn test_expand_routes_keep_gtk_behaviour() {
@@ -3654,7 +3654,7 @@ fn test_expand_routes_keep_gtk_behaviour() {
     assert_eq!(
         selection(&tree.section).selected(),
         selected,
-        "the arrow click leaves the selection as GTK's toggle does (A114)"
+        "the arrow click leaves the selection as GTK's toggle does (A119)"
     );
     flush_after_delay(Duration::from_millis(500));
     assert!(

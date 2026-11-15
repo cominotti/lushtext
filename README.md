@@ -726,11 +726,13 @@ need no Kani install. CI runs every shard of the lane weekly and on dispatch,
 and the fast shards gated `pull-request` (among them `widgets-geometry` and
 `core-geometry-policies`) on every pull request, within per-shard wall-time and
 memory budgets measured on the CI runner and recorded in
-`scripts/kani-shards.py`. A measured, local-only
-comparison of Quint and TLA+ on the same protocols
-([`docs/next/formal-verification-quint-vs-tlaplus.md`](docs/next/formal-verification-quint-vs-tlaplus.md),
-`make formal-evaluation`) kept Kani as the only maintained tool; its disposable
-models live in `formal/evaluation/`.
+`scripts/kani-shards.py`. Two measured, local-only evaluations kept Kani as
+the only maintained tool: a comparison of Quint and TLA+ on the same protocols
+([`docs/next/formal-verification-quint-vs-tlaplus.md`](docs/next/formal-verification-quint-vs-tlaplus.md))
+and an evaluation of the Verus deductive verifier on unbounded claims
+([`docs/next/formal-verification-verus.md`](docs/next/formal-verification-verus.md)).
+Both rerun through `make formal-evaluation`, and their disposable models live
+in `formal/evaluation/`.
 
 `make proof-strength` measures how much of each Kani-checked module the
 proofs actually pin: it runs cargo-mutants' mutants of the module against its
@@ -781,7 +783,10 @@ and `make test-widget-shard WIDGET_SHARD=<shard>` reproduces one. Locally,
 `make test` and `make test-widget` run those shards in parallel, each in its
 own memory-capped headless session (needs a systemd user manager), and end
 with a per-shard summary; `WIDGET_PARALLEL=0` runs the whole suite in one
-serial session instead. For host-sensitive
+serial session instead. A widget failure seen only on CI is reproduced first
+with `scripts/ci-image-widget-test.sh`, which runs the widget binary built
+here in the CI widget job's own image under a CPU limit (Docker;
+`.agents/rules/build.md`, "CI image lane"). For host-sensitive
 risks that the widget harness cannot honestly prove, use the smoke lanes in
 [`docs/end-user-coverage.md`](docs/end-user-coverage.md), including visual,
 automation, crash-recovery, portal/sandbox, accessibility, and performance

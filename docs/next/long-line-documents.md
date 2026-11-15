@@ -76,7 +76,9 @@ documented deviation; every part's run id, load and co-running processes are in
 the table below). Headless `mutter 50.4 --virtual-monitor 1280x800@120`,
 `GSK_RENDERER=cairo`, caret blink off, GTK 4.22.5, Libadwaita 1.9.3, Pango
 1.57.1, GtkSourceView 5.20.0, GLib 2.88.3, kernel 7.2.9-200.fc44, Intel Core
-Ultra 9 285K, affinity CPUs 8–23 (16 E-cores, inherited, never widened).
+Ultra 9 285K, affinity CPUs 8–23 (16 E-cores, inherited, never widened; the
+reference CPU set, named explicitly by `scripts/measure.sh
+--print-reference-cpus` since `nest-heavy-slices-under-user-slice`).
 Watchdog tick 2 ms, idle slack ε 928 µs. 1,499 fixture-integrity checks, 0
 violations; 2 of the bisection rows were storage-contaminated and excluded by
 the lane. Axiom observations: a fresh `make gtk-axioms` on the same tree (A31:
@@ -253,7 +255,11 @@ then a follow-up for the flipped points (`--prior` the re-confirmation,
 idle-gated final parts (`final-dense` 18:59, `final-dense120` 19:11,
 `final-minimap` 19:16; each waited for 30 s of load < 4 with no process at
 ≥ 80 % CPU). Total measurement time 44 minutes. Same toolkit, kernel, headless
-lane and affinity (E-cores 8–23, inherited) as the reference run; watchdog tick
+lane and affinity (E-cores 8–23, inherited; from
+`nest-heavy-slices-under-user-slice` on, the reference CPU set is explicit,
+`scripts/measure.sh --print-reference-cpus`, and every earlier verdict ran on
+8-23, so they stay comparable; a record on 12-23 is a game-time run, not a
+reference run) as the reference run; watchdog tick
 2 ms, idle slack ε 295 µs; a fresh `make gtk-axioms` (A31: 112 rows per
 batch); 0 integrity violations. The machine was shared with another session's
 bursty `java` jobs (up to 1,355 % CPU on the same E-cores) during the
@@ -4039,13 +4045,77 @@ separate change, in this order:
        checksum-pinned crate on OpenSSL 4;
      - D4: two retry-rescued widget tests diagnosed and fixed (directory
        retention, protected periodic capture).
-     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (queued):
-     F1, the D2 guard
-     `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
-     fails on every CI run and passes locally, starved or not, before and
-     after the merge; task 4.2, the bookmark preview-only test, is not
-     diagnosed (it failed on CI inside the full `window` shard); and the
-     eight-branch-run proof for `editor-page`, `window` and `surfaces`.
+     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (implemented
+     2026-11-15, merged (PR #111, `main` `da80e312`) on local evidence and
+     archived 2026-11-15,
+     `openspec/changes/archive/2026-11-15-diagnose-ci-only-reflow-guard-failure/`;
+     specs `editor-minimap`, `widget-test-ci-sharding`). It reproduces CI-only widget
+     failures in the widget job's image (`scripts/ci-image-widget-test.sh`,
+     `build.md` "CI image lane": CI's own step with `cargo` shimmed to a
+     prebuilt binary).
+     - F1, the D2 guard
+       `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
+       was a **product defect**. It reproduced in the lane at `--cpus=4`
+       and unlimited, 5 of 5 each, with CI's message (value 8), so the CPU
+       count was not the condition.
+       - The writer is the reattach of a detached view to its kept top
+         line (`ui/editor_page/view_attachment.rs`): for line 0, GTK's
+         aligned scroll rests at the top margin plus the first glyph's y,
+         never at `lower` (new axiom A113, sample on GNOME 50, 51 and
+         master). The animated move then reads as a scroll (A112), and the
+         settle disarms the top-anchor repair.
+       - The image's property is session timing. Its accessibility
+         registry answers "no listener" while the never-shown page is
+         still unmapped, so the page is detached and reattached; in the
+         toolbox the answer comes later.
+       - In production, a session-restored or background tab at line 0 came
+         back 6–12 px down, with the top margin gone and line one clipped.
+         It now rests at `lower`. Any other kept position (a deeper line,
+         or a display line inside a wrapped line one) still uses GTK's
+         aligned scroll.
+       - Red on `main` code: the lane failed the four D2 tests' new exact
+         precondition (value 8) and the new reattach test (value 12); the
+         toolbox failed the reattach test. Green with the fix: 20 of 20 lane
+         runs of the six-test proof set at `--cpus=4`; 5 of 5 of the guard
+         at `--cpus=1` and at `--cpus=2`; 20 of 20 toolbox runs of the
+         guard; the whole `editor-page` shard once in the lane. On the final
+         merged binary: the proof set plus a wrapped-first-paragraph test
+         5 of 5, and `editor-page` and `window` once each, green.
+     - Task 4.2, the bookmark preview-only test, did not reproduce: 5 of 5
+       isolated and green in all eleven complete lane runs of the
+       `window` shard.
+     - The lane found two `window`-shard tests fragile, and both are fixed:
+       - `notes_browser::test_the_list_stays_virtualized_at_131072_rows`:
+         its rows retained the temporary path, whose process ids have two
+         digits in the lane, so 103,244 rows fit the retained ceiling, and
+         their shell overlap left no room to count the rest (found 103,424
+         of 131,072). The fixture now fixes the folder path at 112 bytes:
+         73,908 rows on both hosts, peak construction 91.95 MB of
+         100.66 MB. Measured product limitation, not changed: with rows of
+         about 650 bytes, the notes source stops counting past the retained
+         ceiling and reports a lower bound (`MAX_PALETTE_NOTE_CONSTRUCTION_BYTES`'s
+         doc comment).
+       - `window::test_edits_during_a_pending_restore_never_overwrite_the_recovery_body`
+         waited for the set-aside file, which the worker writes before its
+         completion releases the restore hold. It now waits for the release
+         and then checks the file (four lane `window`-shard runs had failed
+         it).
+     - **Owed to the programme-end CI check** (the stage brief forbids
+       waiting for or rerunning CI, so `restore-main-ci` D5's eight-run
+       proof was not run): `editor-page` for the minimap slider test and
+       the protected periodic capture (green 5 of 5 in the lane, never
+       reproduced), `window` for the bookmark preview-only test (4.2, not
+       reproduced), and `surfaces` for directory retention (its CI figure
+       needs the runner). Each shard's first CI run on `main` after the
+       merge is read for those tests and for F1.
+     - Stage-4 review: the reattach's rest record now uses the same
+       document-start predicate as its scroll (it said "line 0", stale for
+       a display line inside a wrapped line one while a width burst outlives
+       the hold). It is a consistency correction, with no failing-first test:
+       two resize variants were green on the unfixed code, and the trace is
+       in the design's review record. Decided: the notes construction ceiling
+       stays at 96 MiB. A count past the retained ceiling is reported as a
+       lower bound rather than raising every user's peak memory.
    - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14, merged (PR #100,
      `main` `6211a9c1`) and archived 2026-11-14,
      `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/`,
@@ -4121,6 +4191,73 @@ separate change, in this order:
        (design D9). Fix by having `make cargo-sources` and the Flathub
        generator emit `config.toml`, or report it upstream to
        `flatpak/flatpak-builder-tools`.
+   - `nest-heavy-slices-under-user-slice` (merged 2026-11-15 as `719e2825`,
+     PR #104, archived as
+     `openspec/changes/archive/2026-11-15-nest-heavy-slices-under-user-slice/`;
+     infrastructure, no app change).
+     Two problems with where agents' work ran. (A) Capped heavy work ran in
+     `lushtext-heavy.slice`, which systemd places under the user manager
+     itself, beside `app.slice`: `cpu.weight` 100 on CPUs 0-23 (68.8k
+     CPU-seconds by 00:20 that day), so builds competed with a game at the
+     game's weight and escaped CST's toolbox policy (the inner `user.slice`:
+     weight 30, cpuset 0,2-6,8-23, idle class on 12-23 during a game). The
+     slices are now `user-lushtext.slice` / `user-lushtext-heavy.slice`, which
+     systemd nests under that inner slice; no CPU property is set on our
+     units (CST's answer); every scope checks its own placement (path under
+     both slices, affinity within the inner slice's effective cpuset) and
+     exits 78 otherwise; admission also counts the legacy slice, which it
+     never touches. (B) The timing reference CPU set was implicit (every
+     verdict ran on 8-23 only because agents were pinned there).
+     `scripts/measure.sh` now pins itself to one explicit reference set
+     before any lock (default 8-23, `LUSHTEXT_REFERENCE_CPUS` override,
+     `--print-reference-cpus`), reads it back, refuses (78) when it is not
+     available or changes, never measures on the intersection, records
+     `cpus=`/`reference=`/`source=` and exports `LUSHTEXT_MEASURE_CPUS`; the
+     lane runs on that set, fails before any case on a mismatch or a set over
+     its 16-CPU cap, records it in `environment.txt`, `run.json`
+     (`reference_run`) and `report.md`, and merges parts on different sets as
+     `mixed`. Decisions: design D1-D13 of the change (CST's second answer:
+     refuse instead of measuring on 8-23 ∩ allowed; memory-sized parallelism
+     and the agents' session `taskset` pin deferred). Kani: none (no proven
+     module touched). Axioms: none (host behaviour H1-H3 restated in the
+     wrapper's and `measure.sh`'s headers and re-probed by their self-tests).
+     Timing: evidence, not a verdict:
+     one lane case (`baseline/small`, plain) through `measure.sh` from a shell
+     pinned to 16-23 records the reference set, and one
+     `LUSHTEXT_REFERENCE_CPUS=12-23` run the override label; the placement
+     shim's cost is main's wrapper against the branch's, interleaved in one
+     `measure.sh` call. The coordinator ran these three `measure.sh` calls
+     after stage 3 had queued them. The change's `evidence/reference-cpus.md`
+     records both lane runs: `affinity=8-23`, `measure_cpus_source=default`,
+     `reference_run: true`; and `12-23`, `override`, `false`, with the
+     override label; loads 1.9-2.4. It also records two real 78 refusals, of
+     an unavailable reference and of a partly available one. The change's
+     `evidence/shim.md` records the shim's cost: about +20 ms per scope start
+     (median 0.03 s against 0.01 s, ten runs a side, load 2.0-2.2), at the
+     10 ms timer resolution.
+     - **Deferred:** remove the legacy-slice accounting (`legacy_slice_of`,
+       the `admitted_kib` loop, the two legacy self-test cases and the private
+       legacy self-test slice) once no worktree branched before the merge SHA
+       `719e2825` remains.
+     - **Deferred (CST's second answer, design D13):** memory-sized
+       parallelism, raising `CARGO_BUILD_JOBS` from 4 in measured steps with
+       the per-job peak and `btrfs-stall-report` memory lines as evidence, in
+       its own change. The other half of D13, whether agents keep their
+       session `taskset -c 8-23` pin, was decided by the maintainer on
+       2026-11-15: agents inherit the toolbox cpuset and never pin, and only
+       `measure.sh` pins (`.agents/rules/parallel-agent-work.md`, "CPU and
+       memory").
+     - **Observed, pre-existing, deferred:** `heavy.sh` can wait for memory
+       while holding LOCK shared. Its step 3 re-check passes, then another
+       copy admits a scope before the wrapper's own blocking admission, which
+       then waits under LOCK and delays a pending measurement (seen
+       2026-11-15 01:37: "48 GiB of 48 GiB admitted", a 36G scope of a
+       `--mem none` mutants run beside a 12G one, about eight shared holders
+       in front of another change's `measure.sh`). Legacy accounting does not
+       widen the window (probe and admission count the same slices). It needs
+       its own design, because `--mem none` callers admit under LOCK by
+       design. Details:
+       `.claude/handoffs/nest-heavy-slices-under-user-slice/stage3-notes.md`.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):
@@ -4209,16 +4346,16 @@ review", "Implementation decisions"); evidence in
     collapse call in `GtkListView`'s item manager, not in A91's rb-tree
     teardown (10 %): GTK destroys every removed row widget and creates the
     rows entering the band anew, because a released widget is reused only
-    for the same item (new axiom **A113**, both toolkits). The
+    for the same item (new axiom **A118**, both toolkits). The
     toolkit-floor exception above is therefore not a floor: the cost scales
     with the realized rows a removal touches, at about 190 µs to replace a
     sidebar row plus about 185 µs to style it.
   - *What it does.* `collapse_directory` (`ui/sidebar/workspace_section/collapse_execution.rs`)
     owns every LushText collapse route (the arrow through a release claim,
-    A114; row activation; the folder header; the reveal; the reorder hover;
+    A119; row activation; the folder header; the reveal; the reorder hover;
     the expander's class keys once Tab focuses it). A subtree above
     `DIRECT_COLLAPSE_ROWS` shows collapsed in the input dispatch (the arrow
-    through an `expander:checked` class rule, A115, and the accessible
+    through an `expander:checked` class rule, A120, and the accessible
     state), then empties in paced steps from a tick callback: unbound rows
     in chunks first, then at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` bound
     rows per frame, then GTK's direct collapse of what is left. The step is
@@ -4492,7 +4629,7 @@ handoff's `runs.log` every run).
 | DP `drill-down-palette-categories` | A1 (realized-row cap), A87, A90 (revealing a list costs its realized rows), A93 (remove-then-add, and BN's retarget publish), A95 (far select-and-scroll); added by DP: A96 (a natural-height lazy list measures, allocates and publishes around its realized rows: 206 / 205 `get_item` calls at 512 and 131,072 items), A97 (`stop-search` on Escape with or without text, text kept; a capture controller sees Backspace before the entry, on an empty entry, and its release; a held key arrives as presses without releases) |
 | BM `bin-minimap-markers-per-row` | A33 (`visible-only`), A42 (paragraph lines), A45 (map retirement), A1-style band-only projection unchanged; added by BM: A98 (a property-less tag is bookkeeping only; text inserted strictly inside a tagged range carries it), A99 (`line_at_y` on a map is monotone, skips hidden lines, flat cost), A100 (`forward` is 3 µs inside a completed scan, 74.5 ms before it; `occurrences-count` reads -1 after an edit and notifies on rescan), A101 (an overlay sibling of the map is not redrawn when the map scrolls), A102 (`forward_async` never blocks a dispatch, but a pending request superseded by a query change never returns and GIO logs a CRITICAL) |
 | CF `scope-font-zoom-restyle` | A47 (hidden widgets take a class without a restyle until shown), A72 (why the font stays CSS, not a tag); added by CF: A86 (a display provider reload revalidates every widget even with unchanged text and grows with the window; an unmatched load changes no font; a per-widget class swap applies the new size and does not grow with unrelated widgets) |
-| SL `slice-large-directory-collapse` | A1 (realized-row cap), A22 (synchronous expansion; the `is_expandable()` probe store), A87, A91 (corrected: the rb-tree teardown is about a tenth of a collapse's cost); added by SL: A113 (removing bound rows replaces their row widgets inside `items-changed` and never reuses one for another item), A114 (the expander's disclosure routes: the click gesture on its icon, denied by a release claim; the class keys only after Tab; parameterless class actions), A115 (an `expander:checked` class rule draws the collapsed arrow) |
+| SL `slice-large-directory-collapse` | A1 (realized-row cap), A22 (synchronous expansion; the `is_expandable()` probe store), A87, A91 (corrected: the rb-tree teardown is about a tenth of a collapse's cost); added by SL: A118 (removing bound rows replaces their row widgets inside `items-changed` and never reuses one for another item), A119 (the expander's disclosure routes: the click gesture on its icon, denied by a release claim; the class keys only after Tab; parameterless class actions), A120 (an `expander:checked` class rule draws the collapsed arrow) |
 | C0 itself (the scrollbar-warning fix below) | A37 |
 
 Two probes corrected the designs that cite them, and C1/C2 must read the

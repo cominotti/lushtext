@@ -900,24 +900,32 @@ pub mod a112 {
     pub use crate::probes::text::TextViewFixture;
 }
 
-/// The tree list the A113 probe removes rows from, for its sample.
+/// The text view the A113 probe scrolls to its first line, for its sample.
 pub mod a113 {
     pub use crate::probes::a113::{
+        DOCUMENT_LINES, TOP_MARGIN, document_view, scroll_to_first_line,
+    };
+    pub use crate::probes::text::TextViewFixture;
+}
+
+/// The tree list the A118 probe removes rows from, for its sample.
+pub mod a118 {
+    pub use crate::probes::a118::{
         AFTER_ROWS, HEAD_REMOVALS, LARGE_CHILDREN, SMALL_CHILDREN, TreeFixture, tree_fixture,
     };
 }
 
-/// The disclosure fixture and release claim the A114 probe drives, for its
+/// The disclosure fixture and release claim the A119 probe drives, for its
 /// sample.
-pub mod a114 {
-    pub use crate::probes::a114::{
+pub mod a119 {
+    pub use crate::probes::a119::{
         CLASS_ACTIONS, DisclosureFixture, KEY_BINDINGS, click_gestures, disclosure_fixture,
         expander_icon,
     };
 }
 
-/// The collapsing-arrow rule the A115 probe renders, for its sample.
-pub mod a115 {
-    pub use crate::probes::a113::tree_fixture;
-    pub use crate::probes::a115::{COLLAPSING_CLASS, COLLAPSING_CSS};
+/// The collapsing-arrow rule the A120 probe renders, for its sample.
+pub mod a120 {
+    pub use crate::probes::a118::tree_fixture;
+    pub use crate::probes::a120::{COLLAPSING_CLASS, COLLAPSING_CSS};
 }

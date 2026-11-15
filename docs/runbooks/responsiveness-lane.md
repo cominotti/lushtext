@@ -12,9 +12,19 @@ precondition) are in [`.agents/rules/build.md`](../../.agents/rules/build.md),
 ## Session and input
 
 The lane runs under a private `dbus-run-session` and
-`mutter --headless --virtual-monitor 1280x800@120` with an affinity of at most
-16 CPUs taken from the inherited mask (never widened), and drives input through
-Mutter's RemoteDesktop API. It clicks inside the text area first: keys are not
+`mutter --headless --virtual-monitor 1280x800@120` and drives input through
+Mutter's RemoteDesktop API. Its CPUs come from the driver's `lane-affinity`
+subcommand. Under `scripts/measure.sh` (which exports `LUSHTEXT_MEASURE_CPUS`
+and `LUSHTEXT_MEASURE_CPUS_SOURCE`) the lane runs on the reference CPU set
+`measure.sh` pinned (`scripts/measure.sh --print-reference-cpus`); it fails
+before any case when its inherited affinity differs from that set or the set
+exceeds 16 CPUs, and never trims it. Outside `measure.sh` it takes at most 16
+CPUs from the inherited mask (never widened). `environment.txt` records
+`affinity=`, `measure_cpus=` and `measure_cpus_source=`; `run.json` adds
+`reference_run` (true only for a default reference run on exactly that set);
+and `report.md`'s environment line says which of three cases the run is: the
+reference CPU set, an override of it (not comparable with reference runs), or
+not pinned to it (trend evidence, not a verdict). It clicks inside the text area first: keys are not
 delivered before. Every editor click aims at an uncovered point of the
 snapshot's `visual_geometry` `source-view` rectangle, corrects the pointer by
 the probe's `motion` records (a requested screen point does not always arrive
@@ -77,7 +87,11 @@ scripts/responsiveness-smoke-driver.py merge-runs --artifact-dir <out> --from <p
 scripts/responsiveness-smoke-driver.py report --artifact-dir <out> [--axiom-observations <make gtk-axioms log>]
 ```
 
-Repetitions of a case measured by several parts accumulate. A side-labelled
+Repetitions of a case measured by several parts accumulate. Parts whose
+`affinity`, `measure_cpus` or `measure_cpus_source` differ merge as
+`affinity: "mixed"` with `reference_run: false` and each part's set in
+`merged_from`, and the report says the parts are not comparable; a part
+written before those fields existed counts as unpinned. A side-labelled
 verdict (`merge-runs --from baseline=DIR --from branch=DIR`) is computed by
 `report`, with toolkit-floor exceptions passed as
 `--toolkit-floor ATTR=AXIOM[:REPORT]`; input-to-frame is printed beside the

@@ -76,7 +76,7 @@ expansion side in under the pre-existing-blockers rule, measurement first.
     claims it. LushText's existing bind-time loop that sets the
     "expander's" gesture phase finds no gesture on 4.24.1 and is corrected;
   - the expander's collapse keys, as far as they are reachable from
-    LushText's rows today (A114);
+    LushText's rows today (A119);
   - activating a directory row;
   - the folder-header collapse and toggle;
   - the reveal's failure terminal;
@@ -124,17 +124,17 @@ expansion side in under the pre-existing-blockers rule, measurement first.
   (`refresh_blocks_readiness`) stays blocked while a sliced collapse runs. The
   sidebar evidence surface reports the collapse's state, steps and rows left.
 - **GTK axioms**, each with a probe, a sample and a ledger row. Provisional
-  ids are A113–A115; the final ids are the next free ones at apply time.
-  - A113: on a mapped `GtkListView`, a removal destroys the row widgets bound
+  ids are A118–A120; the final ids are the next free ones at apply time.
+  - A118: on a mapped `GtkListView`, a removal destroys the row widgets bound
     to the removed items inside `items-changed`, and creates fresh widgets for
     the rows that enter the band. Unclaimed widgets are never reused for other
     items. The next frame computes the new widgets' styles. Removing rows no
     widget is bound to destroys and creates none.
-  - A114: the `GtkTreeExpander` disclosure routes and how an application can
+  - A119: the `GtkTreeExpander` disclosure routes and how an application can
     own them. That covers where its click gesture lives, which key bindings
     reach it from a focusable list row, and its AT-SPI action table (the
     generic widget vtable exposes its three class actions).
-  - A115: a CSS rule on a class of the expander overrides the `:checked`
+  - A120: a CSS rule on a class of the expander overrides the `:checked`
     arrow without changing the row's state.
 - **Records corrected.** A91's row stops claiming the collapse's cost and
   keeps the node-teardown share it measured. BL's exception text in
