@@ -59,7 +59,9 @@ pre-commit hook, CI, and contributor docs:
   narrower command is documented as a non-blocking smoke shortcut;
 - the fast policy audits, `make check-policy` (filesystem boundary, Blueprint
   drift and template contract, workflow boundaries, accessibility and visual
-  proof policy, terminology, automation docs, and more);
+  proof policy, terminology, automation docs, the CI job timeouts
+  (`check-workflow-timeouts`), the CI Flatpak build mechanism
+  (`check-flatpak-ci-builds`), and more);
 - the rustdoc lint gate (run by hand; [`testing.md`](./testing.md));
 - `cargo deny check advisories bans sources licenses`;
 - `openspec validate --all --strict` for OpenSpec changes and specs.
@@ -663,13 +665,44 @@ the widget suite on its platform first.
   `pipewire-gstreamer` and `gstreamer1-plugins-good`. Keep it outside required
   PR checks unless a lane is proven cheap and stable.
 - `.github/workflows/flatpak.yml` — Flatpak build in the
-  `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` container, with cache
-  keys tied to the Flatpak build inputs.
+  `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51` container
+  (`--privileged`), with cache keys tied to the Flatpak build inputs; also
+  `workflow_dispatch`. It builds through the composite action
+  `.github/actions/flatpak-build`, the **only** place that names
+  `flatpak/flatpak-github-actions/flatpak-builder@`. The image keeps its GNOME
+  SDK and Platform in the system installation `/var/lib/flatpak` on overlayfs;
+  when Flathub has newer refs, flatpak's update renames deployment directories,
+  an overlay without `redirect_dir` refuses that for lower-layer directories
+  (`Invalid cross-device link`, then a flatpak-builder segfault, exit 139), and
+  whether a runner has it on varies (PR #98, run `43642169956`). So the action
+  first runs `scripts/ci-flatpak-installation.py diagnose` (one log group:
+  kernel, `redirect_dir`, overlay mounts, `findmnt`/`df` of the installation and
+  `$RUNNER_TEMP`, and a `rename(2)` probe of the first runtime's deployed commit
+  directory), then `relocate`: `cp -a` of the installation to
+  `$RUNNER_TEMP/flatpak-system` and a `mount(2)` bind over `/var/lib/flatpak`
+  (the image has no `mount` binary), refused inside the checkout, failing unless
+  the re-probe returns `ok`, and logging its wall time and `df -h` (budget 90 s,
+  judged from CI logs, never enforced). Shell steps read `$RUNNER_TEMP` and
+  `$GITHUB_WORKSPACE` from the environment, never the `${{ }}` contexts.
+  `make check-flatpak-ci-builds` (in `make check-policy` and CI's `Lint` job)
+  fails when a workflow names `flatpak-builder@`, when a job in a
+  `flatpak-github-actions` container lacks `uses: ./.github/actions/flatpak-build`
+  after its checkout, or when the one exemption (`release.yml`
+  `cominotti-flatpak`, which installs with `--user` into the host-bound
+  `$HOME`) no longer passes `--user`.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation
   check (release helper, Flathub manifest and Cominotti repository tests, a
   no-mutation preview, metadata validation).
 - `.github/workflows/release.yml` — `v*` tag release validation and manual
-  dry run; its Flathub PR step stays skipped.
+  dry run; its Flathub PR step stays skipped. A tag push builds the tag. A
+  dispatch builds the dispatched commit (`checkout-ref` is `$GITHUB_SHA`) in
+  every job; a dispatch that is not a dry run is refused unless it came from
+  `refs/heads/main`. A dry run (the default) validates an **untagged** version
+  (`make release DRY_RUN=1` refuses an existing tag, so use one such as
+  `v0.8.4-dryrun.1`), generates the Flathub artifact from `HEAD`, and runs the
+  `Release Flatpak Build` job through `.github/actions/flatpak-build`, so a dry
+  run dispatched from a branch proves a release-workflow change before merge;
+  the Cominotti repository, deploy and publish jobs stay skipped.
 - `.github/workflows/release-benchmark.yml` — release-safe benchmark report on
   `v*` tags or recovery dispatches, `fedora:45`.
 - `.github/workflows/snap.yml` — `validate` runs `snapcraft expand-extensions`;
@@ -685,5 +718,7 @@ blocks: `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
 local validation command when intentionally refreshing a tool.
 
 **When bumping gtk-rs:** update the Fedora version in `ci.yml` and
-`release-benchmark.yml`, and the GNOME tag in `flatpak.yml` and the Flatpak
-manifest, to match the new minimum GTK requirement.
+`release-benchmark.yml`, and the GNOME tag of every
+`flatpak-github-actions` image use (`flatpak.yml`, and both container jobs of
+`release.yml`: `flatpak` and `cominotti-flatpak`) and of the Flatpak manifest,
+to match the new minimum GTK requirement.

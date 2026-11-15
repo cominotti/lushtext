@@ -4024,6 +4024,63 @@ separate change, in this order:
      each measured first; `GtkAccessibleText` on the widget if a screen
      reader needs text ranges in a row; the A109 upstream report
      (`docs/upstream-reports.md`, drafted, filing needs the maintainer).
+   - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14 on branch `harden-flatpak-sdk-update-ci`;
+     `openspec/changes/harden-flatpak-sdk-update-ci/`; a `restore-main-ci`
+     follow-up under the pre-existing-blockers rule). PR #98's `Flatpak
+     Build` failed twice and passed on a rerun (run `43642169956`): the CI
+     image's system installation sits on overlayfs, and when Flathub has
+     newer GNOME 51 refs, flatpak's update renames lower-layer deployment
+     directories, which an overlay without `redirect_dir` refuses (`Invalid
+     cross-device link`, then a flatpak-builder segfault). CI Flatpak builds
+     now go through `.github/actions/flatpak-build`: diagnostics and a
+     `rename(2)` probe, then `scripts/ci-flatpak-installation.py relocate`
+     (`cp -a` to `$RUNNER_TEMP`, a `mount(2)` bind over `/var/lib/flatpak`,
+     a re-probe that must return `ok`). `make check-flatpak-ci-builds` (in
+     `check-policy`) keeps every job on it. A `release.yml` dispatch now
+     builds the dispatched commit, a dry run works for an untagged version
+     from any branch (a pre-existing blocker: it could not pass `Release
+     Metadata` with any version), and a non-dry dispatch is refused off
+     `main`. Kani: none (no proven module touched). Timing: none (no timed
+     path touched). Axioms: none.
+     - **Local evidence (the merge gate, design D8),** in the real image
+       `sha256:78d969b1…` on this host (overlay `redirect_dir` N):
+       - L1, as shipped: `rename-probe: EXDEV`, and `flatpak-builder
+         --install-deps-only` fails every update with the CI text, then
+         exits 139;
+       - L2, relocated, each step a separate `docker exec`: the mount
+         persists, `rename-probe: ok`, the same command updates the SDK,
+         Platform, GL, codecs and locales, and a full build with CI's
+         arguments from a `git archive` of the branch succeeds;
+       - L3: a destination inside the checkout is refused before any copy,
+         and a forced post-relocation probe failure stops the step naming
+         the probe, the result and the filesystem.
+       Details: `openspec/changes/harden-flatpak-sdk-update-ci/evidence/`.
+     - **The relocation's local cost** (non-verdict, host under other
+       agents' load): 3.8 GiB copied with hardlinks kept, 12.2–21.0 s of
+       wall time (6.8 s in the stage 2 reproduction), against the 90 s
+       acceptance budget of design D2.
+     - **Open, owed by the programme's final CI sweep** (design D8): C1, a
+       green `flatpak.yml` run on `main` logging the diagnostics, the
+       relocation within 90 s and `rename-probe: ok`; C2, one `release.yml`
+       dry-run dispatch from `main` with an untagged version (for example
+       `v0.8.4-dryrun.1`), the publish jobs skipped and no new tag or
+       release afterwards; C3, if either fails or the relocation exceeds
+       90 s, fix it (the D2 fallback is an empty system installation
+       filled from Flathub).
+     - **Upstream report candidates** (design D10; filing needs the
+       maintainer, outside the `upstream-gtk-reports` skill's projects):
+       `flatpak/flatpak-builder` segfaulting after `Error: Failed to update
+       org.gnome.Sdk`; `flathub-infra/flatpak-github-actions` shipping an
+       image whose system installation cannot be updated on overlay without
+       `redirect_dir` (and lagging Flathub since 2026-09-22).
+     - **Observed, follow-up:** the Flatpak build (locally and so in CI)
+       prints cargo's ``warning: `…/cargo/config` is deprecated in favor of
+       `config.toml` `` twice. The file is the `inline` vendoring source
+       `flatpak-cargo-generator` writes into `build-aux/cargo-sources.json`
+       (`"dest-filename": "config"`), which this change does not touch
+       (design D9). Fix by having `make cargo-sources` and the Flathub
+       generator emit `config.toml`, or report it upstream to
+       `flatpak/flatpak-builder-tools`.
    Also recorded: a process-wide retained-byte ledger for many expanded
    huge sidebar directories (the budget, like the count before it, is per
    directory). From BN (besides `lighten-notes-browser-rows`, queued above):

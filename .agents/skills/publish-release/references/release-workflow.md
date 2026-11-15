@@ -115,6 +115,8 @@ RELEASE_NOTES_FILE="$NOTES" make release-bump TYPE=patch DRY_RUN=1
 
 The dry run does not prove the worktree is clean, because the real release checks that later. Verify cleanliness separately before the real run.
 
+To prove a change to `release.yml` itself before merge, dispatch it from the branch with `dry_run` true and an **untagged** version (for example `v0.8.4-dryrun.1`; `make release DRY_RUN=1` refuses an existing tag). The dispatch builds the dispatched commit: release metadata validates, the Flathub artifact is generated from `HEAD`, and `Release Flatpak Build` runs, while the Cominotti repository, deploy and publish jobs stay skipped. Confirm afterwards that no tag or release appeared. A dispatch with `dry_run` false is refused unless it comes from `main`.
+
 ## Real Release
 
 Real releases must run from clean `main`. Use `YES=1` only after the user has clearly asked to proceed or confirmed the release.

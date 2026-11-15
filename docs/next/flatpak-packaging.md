@@ -7,9 +7,11 @@ LushText has an active Flatpak packaging path built with Meson and
 
 ## Runtime/SDK
 
-- Runtime: `org.gnome.Platform` 50
-- SDK: `org.gnome.Sdk` 50
-- Rust SDK extension: `org.freedesktop.Sdk.Extension.rust-stable`
+- Runtime: `org.gnome.Platform` 51 (GTK 4.24, Libadwaita 1.10; `adopt-gnome-51`)
+- SDK: `org.gnome.Sdk` 51
+- Rust SDK extension: `org.freedesktop.Sdk.Extension.rust-stable` (the SDK's
+  `26.08` branch, Rust 1.98.0)
+- CI image: `ghcr.io/flathub-infra/flatpak-github-actions:gnome-51`
 - Manifest: `build-aux/dev.cominotti.lushtext.Flatpak.json`
 - Local install command: `make flatpak-install`
 
@@ -162,6 +164,28 @@ instead of claiming publication is complete.
 
 See `docs/next/cominotti-flatpak-hosting.md` for the step-by-step Cloudflare
 Pages, FastMail DNS, GitHub secrets, verification, and fallback manual.
+
+### CI Flatpak builds (`harden-flatpak-sdk-update-ci`, 2026-11-14)
+
+The CI image ships the GNOME SDK and Platform preinstalled in its system
+installation `/var/lib/flatpak`, on overlayfs. When Flathub publishes newer
+refs, flatpak-builder's dependency update renames deployment directories, an
+overlay mount without `redirect_dir` refuses that for lower-layer directories,
+and every update fails with `Invalid cross-device link` before flatpak-builder
+segfaults (PR #98, run `43642169956`; reproduced locally with the same image).
+Every Flatpak job therefore builds through `.github/actions/flatpak-build`: it
+logs the installation's storage facts and a rename probe, copies the
+installation to `$RUNNER_TEMP` (hardlinks kept, outside the checkout) and
+bind-mounts the copy over `/var/lib/flatpak`, and fails before flatpak-builder
+unless the re-probe succeeds. `make check-flatpak-ci-builds` keeps every job on
+it; the Cominotti repository job is exempt while it installs with `--user`.
+
+Release dry runs: a `release.yml` dispatch builds the dispatched commit. With
+`dry_run` true and an untagged version (for example `v0.8.4-dryrun.1`), it
+validates metadata, generates the Flathub artifact from `HEAD`, and runs the
+release Flatpak build, from any branch; nothing is tagged, released or
+deployed. A dispatch with `dry_run` false is refused unless it comes from
+`main`.
 
 ## Optional Flathub Verification
 

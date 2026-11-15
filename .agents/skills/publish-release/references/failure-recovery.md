@@ -59,6 +59,8 @@ Recovery:
 - Fix the underlying cause, not only the symptom.
 - Do not raise any job timeout above 30 minutes. If a job times out, reduce scope, fix the benchmark or workflow harness, split the work into bounded jobs, or dispatch a bounded replacement workflow.
 - If the public tag is already pushed and the fix belongs to release tooling or workflow configuration, keep the tag immutable, commit the workflow/tooling fix on `main`, and dispatch the repaired workflow with the public tag as input when the workflow supports it.
+- A `release.yml` dispatch builds the commit it was dispatched from, in every job. A recovery dispatch that is not a dry run is refused unless it comes from `main`; the Flathub artifact still resolves the public tag's commit.
+- A Flatpak job that logs `Invalid cross-device link` while updating `org.gnome.Sdk` (and then a flatpak-builder segfault, exit 139) means the image's system installation was updated on overlayfs. Every Flatpak job must build through `.github/actions/flatpak-build`, which relocates it; read that action's `Flatpak installation diagnostics` and relocation log groups (`rename-probe`, filesystem, wall time) before rerunning anything (`.agents/rules/build.md`, `flatpak.yml`).
 - If the tagged source or release metadata itself is wrong, publish a new patch release rather than moving the public tag.
 - Repeat the exact-SHA and tag-branch workflow sweep until every current workflow responsibility completes with conclusion `success` or has a successful replacement run for the same responsibility. If recovery succeeds through a replacement run, report the failed or cancelled run ID together with the replacement run ID; if recovery is blocked, report that the release is not fully green and name the external blocker.
 

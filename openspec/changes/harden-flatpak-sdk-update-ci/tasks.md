@@ -39,57 +39,57 @@
 
 ## 3. Shared mechanism and the fix (L2, L3)
 
-- [ ] 3.1 Write `.github/actions/flatpak-build/action.yml` (composite). Its inputs are `manifest-path`, `bundle` and `cache-key`. Its steps are:
+- [x] 3.1 Write `.github/actions/flatpak-build/action.yml` (composite). Its inputs are `manifest-path`, `bundle` and `cache-key`. Its steps are:
   1. `python3 "$GITHUB_WORKSPACE/scripts/ci-flatpak-installation.py" diagnose`;
   2. the same script's `relocate`;
   3. `flatpak/flatpak-github-actions/flatpak-builder@v6` with the three inputs.
 
   The shell steps use environment variables, never the `${{ runner.temp }}` or `${{ github.workspace }}` contexts (design D1).
-- [ ] 3.2 Switch `flatpak.yml` and `release.yml`'s `flatpak` job to `uses: ./.github/actions/flatpak-build` after checkout. Keep each job's existing bundle name and cache key byte for byte. Add `workflow_dispatch:` to `flatpak.yml`.
-- [ ] 3.3 Fix the release dispatch as design D6 and D7 specify:
+- [x] 3.2 Switch `flatpak.yml` and `release.yml`'s `flatpak` job to `uses: ./.github/actions/flatpak-build` after checkout. Keep each job's existing bundle name and cache key byte for byte. Add `workflow_dispatch:` to `flatpak.yml`.
+- [x] 3.3 Fix the release dispatch as design D6 and D7 specify:
   - A dispatch sets `checkout_ref="$GITHUB_SHA"`.
   - A dispatch with `dry_run != true` is refused unless `GITHUB_REF == refs/heads/main`, with an `::error::` naming the ref.
   - The Flathub-artifact step gains `DRY_RUN` in its `env`, and in a dry run with no tag it uses `HEAD`.
 
   Check the dry-run path locally: `make release VERSION=v0.8.4-dryrun.1 DRY_RUN=1` passes, and the step's new shell body, run in a scratch clone of the branch with `VERSION=v0.8.4-dryrun.1 DRY_RUN=true`, generates and verifies the Flathub manifest from `HEAD`. Confirm that `git status` is clean afterwards.
-- [ ] 3.4 **L2 (must pass).** Start a fresh container from the same image, with `docker run -d … sleep`, the read-only checkout bind and its own volume, as in the header. Then run, as separate `docker exec` calls:
+- [x] 3.4 **L2 (must pass).** Start a fresh container from the same image, with `docker run -d … sleep`, the read-only checkout bind and its own volume, as in the header. Then run, as separate `docker exec` calls:
   1. `diagnose`;
   2. `relocate`, which must log its wall time, `df -h` before and after, a non-overlay filesystem and `rename-probe: ok`;
   3. `findmnt -T /var/lib/flatpak`, which must show the copy;
   4. the same `flatpak-builder --install-deps-only` as 2.3, which must succeed and log the `org.gnome.Sdk` update. If the image no longer lags, fall back to `codecs-extra`;
   5. a full build with CI's arguments (design D8 L2): export the committed tree into `$RUNNER_TEMP/src` (`git -c safe.directory='*' -C /__w/lushtext/lushtext archive HEAD | tar -x -C "$RUNNER_TEMP/src"`, so no `target/` or untracked file enters, like CI's clean checkout) and run `flatpak-builder --disable-rofiles-fuse --install-deps-from=flathub --force-clean --ccache --state-dir "$RUNNER_TEMP/state" "$RUNNER_TEMP/app" "$RUNNER_TEMP/src/build-aux/dev.cominotti.lushtext.Flatpak.json"`. It must succeed.
 
-  Record the run in `evidence/local-runs.md`, with the relocation time labelled non-verdict.
-- [ ] 3.5 **L3 (must refuse).** In a fresh container set up as in 3.4, show two refusals:
+  Record the run in `evidence/local-runs.md`, with the relocation time labelled non-verdict. *(Stage 3: the source tar was made by `git archive HEAD` on the host and bound read-only into the container, because the checkout is a git worktree whose `.git` points at a host path the container cannot see. It carries the same committed tree. Recorded in `evidence/local-runs.md`.)*
+- [x] 3.5 **L3 (must refuse).** In a fresh container set up as in 3.4, show two refusals:
   - `relocate` with `RUNNER_TEMP` inside `GITHUB_WORKSPACE` is refused before any copy.
   - A forced probe failure fails with the probe, the result and the filesystem named. For example, point the post-relocation probe at a read-only bind, or pass a self-test hook.
 
   Record both in `evidence/local-runs.md`.
-- [ ] 3.6 Run `make check-flatpak-ci-builds` (it must pass now) and `make check-workflow-timeouts`. Then run task 5.3's re-read. Commit and push.
+- [x] 3.6 Run `make check-flatpak-ci-builds` (it must pass now) and `make check-workflow-timeouts`. Then run task 5.3's re-read. Commit and push.
 
 ## 4. Docs and records
 
-- [ ] 4.1 `.agents/rules/build.md` CI section:
+- [x] 4.1 `.agents/rules/build.md` CI section:
   - Update the `flatpak.yml` and `release.yml` bullets to cover the shared composite action, the relocation and its reason, the diagnostics group, `workflow_dispatch`, the dispatch checkout and the dry-run rules.
   - Add `check-flatpak-ci-builds` wherever `check-policy`'s members are listed.
   - Make the "When bumping gtk-rs" sentence name every `gnome-51` image use (`flatpak.yml` and both container jobs of `release.yml`).
-- [ ] 4.2 `AGENTS.md`: update the **CI** bullet in Meson / Flatpak Build (`flatpak.yml` / `release.yml`). `.claude/CLAUDE.md` resolves to it.
-- [ ] 4.3 `.agents/skills/publish-release/` and `.agents/skills/flatpak-rust/`: update any statement about dispatching `release.yml` (it builds the dispatched commit, a dry run works from a branch, a non-dry dispatch only from `main`) or about the Flatpak CI job.
-- [ ] 4.4 `docs/next/flatpak-packaging.md`:
+- [x] 4.2 `AGENTS.md`: update the **CI** bullet in Meson / Flatpak Build (`flatpak.yml` / `release.yml`). `.claude/CLAUDE.md` resolves to it. *(Stage 3: `AGENTS.md` no longer has that bullet; its "Packaging and CI" paragraph points at `build.md`, so one sentence there names the composite action, the policy check and the dispatch rules.)*
+- [x] 4.3 `.agents/skills/publish-release/` and `.agents/skills/flatpak-rust/`: update any statement about dispatching `release.yml` (it builds the dispatched commit, a dry run works from a branch, a non-dry dispatch only from `main`) or about the Flatpak CI job.
+- [x] 4.4 `docs/next/flatpak-packaging.md`:
   - Correct the stale "Runtime/SDK" section (it says 50; the manifest says 51).
   - Add a short CI note under "Release Automation": the relocation, its cause and the dry-run rules.
-- [ ] 4.5 `README.md`: update it only if it documents the release dispatch or the policy targets. Check, and record "no change" otherwise.
-- [ ] 4.6 Programme record `docs/next/long-line-documents.md`: add this change's queue entry, with:
+- [x] 4.5 `README.md`: update it only if it documents the release dispatch or the policy targets. Check, and record "no change" otherwise. *(Stage 3: no change. README documents neither the `release.yml` dispatch nor `check-policy`'s members or `check-workflow-timeouts`.)*
+- [x] 4.6 Programme record `docs/next/long-line-documents.md`: add this change's queue entry, with:
   - the outcome and the local evidence (L1–L3);
   - the relocation's local cost;
   - the CI confirmation owed by the final sweep (design D8 C1–C3), as an open item;
   - the two upstream report candidates (design D10).
-- [ ] 4.7 Update `.claude/handoffs/flatpak-ci-exdev/notes.md` with the verdict and the change name, and keep this change's handoff in `.claude/handoffs/harden-flatpak-sdk-update-ci/`.
-- [ ] 4.8 Commit and push.
+- [x] 4.7 Update `.claude/handoffs/flatpak-ci-exdev/notes.md` with the verdict and the change name, and keep this change's handoff in `.claude/handoffs/harden-flatpak-sdk-update-ci/`.
+- [x] 4.8 Commit and push.
 
 ## 5. Verification
 
-- [ ] 5.1 `make check-policy` (through `scripts/heavy.sh`). It must pass, including the new target.
-- [ ] 5.2 `openspec validate harden-flatpak-sdk-update-ci --strict`.
-- [ ] 5.3 Re-read every changed workflow. Confirm that the cache keys, bundle names, `timeout-minutes` and permissions are unchanged, and that no file outside `.github/actions/flatpak-build/` names `flatpak-builder@`.
-- [ ] 5.4 Confirm that no container or volume from L1–L3 is left (`docker ps -a`, `docker volume ls`) and that the checkout is clean apart from this change's files.
+- [x] 5.1 `make check-policy` (through `scripts/heavy.sh`). It must pass, including the new target.
+- [x] 5.2 `openspec validate harden-flatpak-sdk-update-ci --strict`.
+- [x] 5.3 Re-read every changed workflow. Confirm that the cache keys, bundle names, `timeout-minutes` and permissions are unchanged, and that no file outside `.github/actions/flatpak-build/` names `flatpak-builder@`.
+- [x] 5.4 Confirm that no container or volume from L1–L3 is left (`docker ps -a`, `docker volume ls`) and that the checkout is clean apart from this change's files.

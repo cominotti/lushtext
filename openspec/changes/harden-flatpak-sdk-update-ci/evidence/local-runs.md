@@ -164,6 +164,45 @@ org.gnome.Sdk/x86_64/51	f0bca3a94eda
    Every ref L1 failed on updates; `codecs-extra` moves `1ac8ac60` →
    `2b9f95bc`, `org.gnome.Sdk` `9c771940` → `f0bca3a9`.
 
+5. The full build with CI's arguments (separate exec): the tar extracted into
+   `$RUNNER_TEMP/src`, then `flatpak-builder --disable-rofiles-fuse
+   --install-deps-from=flathub --force-clean --ccache --state-dir
+   "$RUNNER_TEMP/state" "$RUNNER_TEMP/app"
+   "$RUNNER_TEMP/src/build-aux/dev.cominotti.lushtext.Flatpak.json"`. It
+   succeeded against the relocated, updated SDK (log tail):
+
+```
+Exporting share/icons/hicolor/32x32/apps/dev.cominotti.lushtext.png
+Exporting share/icons/hicolor/64x64/apps/dev.cominotti.lushtext.png
+Exporting share/icons/hicolor/128x128/apps/dev.cominotti.lushtext.png
+Not exporting share/icons/hicolor/icon-theme.cache, wrong extension
+Exporting share/metainfo/dev.cominotti.lushtext.metainfo.xml
+Please review the exported files and the metadata
+Committing stage finish to cache
+Pruning cache
+flatpak-builder exit=0 after 236 s
+btrfs /dev/dm-1[/var/lib/docker/volumes/hfsu-l2-temp/_data/flatpak-system]
+lushtext
+exec exit=0
+```
+
+   `$RUNNER_TEMP/app/files/bin/lushtext` exists (10,414,880 bytes, the
+   `build-lushtext`, `cleanup` and `finish` stages committed, `appstreamcli
+   compose` "Success!"). The 236 s is non-verdict (shared host, cold ccache).
+
+   Observed, outside this change (design D9 excludes `cargo-sources.json`):
+   cargo prints ``warning: `/run/build/lushtext/cargo/config` is deprecated in
+   favor of `config.toml` `` twice. The file is the `inline` source that
+   `flatpak-cargo-generator` emits (`"dest": "cargo", "dest-filename":
+   "config"` in `build-aux/cargo-sources.json`), so CI's build prints it too.
+   It is a deprecation notice from the vendoring tool's output, not a build or
+   runtime failure; it is recorded in the programme record as a follow-up
+   (regenerate with `config.toml`, or report it to `flatpak-builder-tools`).
+
+L2 holds: the copy is outside the checkout and not build input (the build read
+only the archived tree), the mount survives into later execs, the probe
+returns `ok`, every dependency update succeeds, and the build completes.
+
 ## L3: refusals (must refuse)
 
 Fresh container `hfsu-l3`, same image and setup, helper sha256 `53c01659…`.
