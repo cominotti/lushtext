@@ -721,11 +721,13 @@ need no Kani install. CI runs every shard of the lane weekly and on dispatch,
 and the fast shards gated `pull-request` (among them `widgets-geometry` and
 `core-geometry-policies`) on every pull request, within per-shard wall-time and
 memory budgets measured on the CI runner and recorded in
-`scripts/kani-shards.py`. A measured, local-only
-comparison of Quint and TLA+ on the same protocols
-([`docs/next/formal-verification-quint-vs-tlaplus.md`](docs/next/formal-verification-quint-vs-tlaplus.md),
-`make formal-evaluation`) kept Kani as the only maintained tool; its disposable
-models live in `formal/evaluation/`.
+`scripts/kani-shards.py`. Two measured, local-only evaluations kept Kani as
+the only maintained tool: a comparison of Quint and TLA+ on the same protocols
+([`docs/next/formal-verification-quint-vs-tlaplus.md`](docs/next/formal-verification-quint-vs-tlaplus.md))
+and an evaluation of the Verus deductive verifier on unbounded claims
+([`docs/next/formal-verification-verus.md`](docs/next/formal-verification-verus.md)).
+Both rerun through `make formal-evaluation`, and their disposable models live
+in `formal/evaluation/`.
 
 `make proof-strength` measures how much of each Kani-checked module the
 proofs actually pin: it runs cargo-mutants' mutants of the module against its

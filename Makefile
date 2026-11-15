@@ -22,7 +22,7 @@
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
 #   make kani        - Run every Kani proof harness (requires the pinned Kani; capped at KANI_MEMORY_MAX)
 #   make proof-strength - Kani mutation oracle vs the tests arm (local, resumable)
-#   make formal-evaluation - LOCAL ONLY: rerun the Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
+#   make formal-evaluation - LOCAL ONLY: rerun the Quint vs TLA+ and Verus evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data|verus-install|verus-versions|verus-v1|verus-v2|verus-v3|verus-drift|verus-classify|verus-all)
 #   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make test-widget-shard WIDGET_SHARD=<shard> - One CI widget shard, exactly as CI runs it
@@ -200,7 +200,8 @@ PROOF_STRENGTH_TIER ?= all
 PROOF_STRENGTH_SHARD ?=
 PROOF_STRENGTH_ARM ?= both
 
-# Quint vs TLA+ evaluation (docs/next/formal-verification-quint-vs-tlaplus.md).
+# Quint vs TLA+ evaluation (docs/next/formal-verification-quint-vs-tlaplus.md)
+# and Verus evaluation (docs/next/formal-verification-verus.md).
 # LOCAL ONLY and disposable: not a prerequisite of check, check-policy, test,
 # kani, or end-user-smoke, and no CI workflow calls it. Kani stays the single
 # maintained formal tool.
@@ -378,9 +379,12 @@ proof-strength:
 proof-strength-list:
 	./scripts/proof-strength.py list --module "$(PROOF_STRENGTH_MODULE)" --tier "$(PROOF_STRENGTH_TIER)"
 
-# LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models under
-# formal/evaluation/ with the tool versions the report records. Tools install
-# into the gitignored build/formal-evaluation/tools/ (FORMAL_EVAL_TARGET=install).
+# LOCAL ONLY: rerun the disposable Quint vs TLA+ and Verus evaluation models
+# under formal/evaluation/ with the tool versions the reports record. Tools
+# install into the gitignored build/formal-evaluation/tools/
+# (FORMAL_EVAL_TARGET=install, or verus-install for the verus-* targets). Run
+# the verus-* targets directly, never inside one heavy.sh call: the script
+# wraps each of their checks and builds in its own heavy.sh call.
 formal-evaluation:
 	./scripts/formal-evaluation.sh $(FORMAL_EVAL_TARGET)
 
@@ -1253,6 +1257,7 @@ help:
 	@echo "  proof-strength Kani harnesses as a mutation oracle beside the tests arm (PROOF_STRENGTH_MODULE/TIER/SHARD/ARM)"
 	@echo "  proof-strength-list List the proof-strength mutant population without verifying"
 	@echo "  formal-evaluation LOCAL ONLY: rerun the Quint vs TLA+ evaluation (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)"
+	@echo "                    or the Verus evaluation (FORMAL_EVAL_TARGET=verus-install|verus-versions|verus-v1|verus-v2|verus-v3|verus-drift|verus-classify|verus-all)"
 	@echo ""
 	@echo "Mutation targets:"
 	@echo "  mutants-smoke Small cargo-mutants smoke run"

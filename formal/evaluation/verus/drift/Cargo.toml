@@ -1,0 +1,16 @@
+# Production side of the `verus-drift` table exchange
+# (`evaluate-verus-for-unbounded-proofs`, design D1). Built with the
+# workspace's own toolchain, never Verus's. Standalone: its own empty
+# workspace table and Cargo.lock, excluded from the root workspace.
+[package]
+name = "lushtext-verus-drift"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+lushtext-core = { path = "../../../../crates/lushtext-core" }

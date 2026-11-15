@@ -1,0 +1,13 @@
+# Drift failing-first: reorder the clamp in the copy (behaviour unchanged, since the
+# bound is at least the floor). Only the text comparison can see it.
+--- a/src/preview_width.rs
++++ b/src/preview_width.rs
+@@ -52,7 +52,7 @@
+ )]
+ pub fn clamped_preview_width(preferred_width: i32, available_width: i32) -> i32 {
+     let max_width = (available_width.max(1) / PREVIEW_MAX_WIDTH_DIVISOR).max(PREVIEW_MIN_WIDTH_SP);
+-    preferred_width.max(PREVIEW_MIN_WIDTH_SP).min(max_width)
++    preferred_width.min(max_width).max(PREVIEW_MIN_WIDTH_SP)
+ }
+ 
+ verus! {
