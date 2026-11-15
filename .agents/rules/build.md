@@ -68,7 +68,21 @@ pre-commit hook, CI, and contributor docs:
 modules), all-feature Clippy and `make check-policy`; `make pre-commit` is the
 same gate. The repo-managed Git hooks live under `.githooks/`; install them
 with `make install-git-hooks`, which sets `core.hooksPath` for this checkout.
-The pre-commit hook runs `make pre-commit`.
+The pre-commit hook runs `make pre-commit`, except for a **docs-only commit**:
+when `scripts/precommit-scope.py docs-only` finds that the commit is not a merge
+and every staged path (both sides of a rename, and deletions) is under `docs/`,
+`openspec/`, `.claude/` or `.agents/`, or is a `*.md` at the repository root, the
+hook runs `make pre-commit-docs` (rustfmt and `make check-policy`) and skips
+Clippy, which no such path can affect. Anything else, including an empty commit,
+a merge, `*.md` under `crates/`, and any git error, runs the full gate, so the
+skip fails closed. `make check-precommit-scope` (in `make check-policy`) keeps
+the allowlist honest: it fails when a compile-time input of a Rust source
+resolves to an allowlisted path (an `include_str!`/`include_bytes!`/`include!`
+argument or a `#[path]` attribute, resolved against its file, or a path a
+`build.rs` names; an include it cannot resolve fails when it names one). Runtime
+reads of documentation stay allowed. `make pre-commit` and `make check` always
+include Clippy. A docs-only commit still runs `check-policy`, which builds two
+crates cold in a fresh worktree, so commit through `scripts/heavy.sh` either way.
 
 `make check-agent-docs` verifies the `services::filesystem` guidance in rules
 and skills, runs the raw filesystem no-leftovers audit, self-tests rename-safe
@@ -150,6 +164,26 @@ dotfile edits, and no automatic rpm-ostree host layering (that requires
 - After icon asset changes, run `make refresh-dock-icon`, which regenerates the
   fixed-size PNG fallbacks from the canonical SVG and replaces the running dev
   instance.
+
+### Build Cache Root
+
+Lanes that own their build state keep it outside the snapshotted checkout, in
+the repository's **build cache root**, which only `scripts/build-cache.sh`
+computes: `${LUSHTEXT_BUILD_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/lushtext-build}`.
+Each checkout gets `checkouts/<basename>-<sha256(realpath)[:16]>` there (with
+a `CACHEDIR.TAG` and a record of its real path; `checkout-path` resolves it
+without creating it, for the Makefile's `BUILD_CACHE_CHECKOUT` and
+`proof-strength.py`'s import), and the mutation slots live in `mutants/`.
+`make build-cache-prune` removes the directories of checkouts that no longer
+exist and nothing else. `make check-build-cache-helpers` (in
+`make check-policy`) self-tests the helpers and audits the Makefile, `scripts/`
+and `.githooks/`: nothing exports `CARGO_INCREMENTAL=1`, the widget, test,
+Clippy and dev-build targets (and `run-widget-tests.sh`, `widget-shards.py`)
+never set `CARGO_INCREMENTAL` (they share the checkout's build dir, where a
+toggle recompiles every member), and no other script names a build path under
+the home cache. Ordinary builds keep CST's per-checkout
+`build.build-dir` and `target/` as they are; their final artifacts are reflinks
+of build-dir extents.
 
 ## Compilation Speed
 
@@ -340,8 +374,15 @@ are in [`testing.md`](./testing.md). This section covers the lane.
   or a harness file imports from a module that is neither, so a new harness is
   added to both tables. `make proof-strength` (`scripts/proof-strength.py`,
   `docs/mutation-testing.md`; `PROOF_STRENGTH_MEMORY_MAX`, default `16G`) runs
-  the module's mutants against those harnesses in a disposable worktree. It is
-  a measurement lane, not a gate. A survivor is triaged in the programme
+  the module's mutants against those harnesses in a disposable worktree,
+  `<checkout-cache>/proof-strength/wt` in the build cache root (results stay in
+  `target/proof-strength/results`). The Kani arm pins its build dir inside the
+  worktree with `CARGO_INCREMENTAL=0`; the tests arm runs `cargo mutants
+  --in-place` in the same clean worktree, without `--jobs`, with its own pinned
+  build and target dirs, workspace crates out of sccache and the per-test
+  address-space limit. A `target/proof-strength/wt` left by an earlier version
+  is safe to delete (`./scripts/proof-strength.py clean` only removes the
+  current default). It is a measurement lane, not a gate. A survivor is triaged in the programme
   record: a real defect is fixed failing-first; a missing property gets an
   assertion or a harness in the owning shard, re-measured against the shard's
   budget.
@@ -470,18 +511,70 @@ widened. When pure policy relocates, mutation-coverage parity is required
 evidence: record the generated and killed counts before and after the move via
 `make mutants-diff`.
 
-Default mutation runs omit `lushtext-core/property-tests`. `MUTANTS_IN_PLACE=1`
-refuses dirty worktrees outside CI, because cargo-mutants rewrites source
-files; use a clean checkout, a disposable worktree, or the default copy-based
-mode. For survivor triage `scripts/run-mutants.sh` accepts `MUTANTS_RE`,
-`MUTANTS_EXCLUDE` and `MUTANTS_EXCLUDE_RE`. Keep `MUTANTS_JOBS=1` and small per-job thread caps when the user has asked to keep Rust build pressure low.
+Default mutation runs omit `lushtext-core/property-tests`. For survivor
+triage `scripts/run-mutants.sh` accepts `MUTANTS_RE`, `MUTANTS_EXCLUDE` and
+`MUTANTS_EXCLUDE_RE`. Keep `MUTANTS_LOCAL_JOBS=1` and small per-job thread caps
+when the user has asked to keep Rust build pressure low.
 
-Locally the targets run inside one `MUTANTS_MEMORY_MAX` scope (default `36G`)
-with `MUTANTS_LOCAL_JOBS=3`, `MUTANTS_LOCAL_BUILD_JOBS=4` and
-`MUTANTS_LOCAL_TEST_THREADS=4`. A mutant whose test was OOM-killed reads as
-caught, so a run that hit its cap is discarded, and raising a knob beyond these
-defaults is a measured decision for one run. If the CI mutation lane is
-re-enabled, it leaves all three unset and fans out through `MUTANTS_SHARD`.
+**Local runs go in place in mirror slots** (`MUTANTS_MIRROR=1`, which the
+`mutants-smoke|diff|full` targets set). The run syncs the checkout's tracked and
+untracked, non-ignored files, uncommitted edits included and `.git` never, into
+`MUTANTS_LOCAL_JOBS` (default 3) slots of a host-wide pool
+(`<build-cache root>/mutants/slot-<k>`, `MUTANTS_POOL_SIZE`, default 3), and
+each slot runs `cargo mutants --in-place` from its `src/` with its own fixed
+`target/` and `build/`. Only bytes that differ are rewritten, so a warm slot
+rebuilds only the members that changed; symlinks and the executable bit are
+mirrored, and a symlink resolving outside the slot is refused. The checkout is
+never mutated, and an interrupted mutant heals at the slot's next sync. Copy
+mode used to cold-build one tree per job (5.2 GB each) into a new
+`~/.cache/cargo-build/<hash>` that nothing deleted.
+
+- **Slots are taken without waiting.** A slot is held by a non-inheritable
+  `flock` on its `lock`, with an `owner` record; a stale record whose lock is
+  free is replaced and reported. If no slot is free the run **exits 75** and
+  names every holder; retry later, or with `MUTANTS_LOCAL_JOBS=1` once one
+  slot is free. Waiting would hold `heavy.sh`'s shared lock and starve a
+  pending measurement.
+- **Parallelism is sharding.** cargo-mutants refuses `--in-place` together
+  with any `--jobs` or `CARGO_MUTANTS_JOBS`, so N slots run `--shard i/N` side
+  by side and mirror mode never passes a jobs count. A user `MUTANTS_SHARD`
+  with more than one slot is refused. Static shards can finish unevenly.
+- **One report.** The slots' reports are merged into the checkout's
+  `mutants.out` (the previous one rotated to `mutants.out.old`): every slot's
+  logs and diffs under `log/slot-<k>/` and `diff/slot-<k>/` (each shard
+  restarts the `_001` suffixes and writes its own baseline), counters summed,
+  and the exit status as cargo-mutants computes it (a failure status first,
+  then 3 for timeouts, then 2 for missed mutants). One slot writes
+  `mutants.out` directly.
+- **Build state.** Each slot builds with `CARGO_INCREMENTAL=0` and passes
+  workspace crates straight to rustc (`RUSTC_WORKSPACE_WRAPPER`, a copy of
+  `scripts/rustc-passthrough.sh` at one stable path, because Cargo hashes the
+  wrapper's path into every member), so mutated crates never enter the shared
+  sccache; dependencies still use it. A slot whose `build/` plus `target/`
+  exceeds `MUTANTS_SLOT_MAX_GIB` (default 12) is emptied before use.
+- **A runaway test is stopped alone.** Every test process runs under
+  `RLIMIT_AS` through a Cargo target runner
+  (`scripts/test-address-space-runner.sh`, `LUSHTEXT_TEST_ADDRESS_SPACE`,
+  default `4G`, derived from the unmutated baselines in
+  `openspec/changes/reduce-build-disk-writes/evidence/address-space.md`); rustc,
+  the linker, build scripts, nextest and cargo-mutants are not limited. A
+  caught mutant whose log shows an allocation failure is listed in
+  `mutants.out/address-space-caught.txt` and counted in the summary: it is
+  still caught (the unmutated code passes under the same limit), but triage
+  confirms each one the way it confirms any non-assertion kill. Such a run is
+  **not** discarded. The whole-run `MUTANTS_MEMORY_MAX` scope (default `36G`,
+  with `MUTANTS_LOCAL_BUILD_JOBS=4` and `MUTANTS_LOCAL_TEST_THREADS=4` per slot)
+  stays, for builds; a run whose scope was OOM-killed is still discarded,
+  because an OOM-killed test reads as caught.
+- **Disk.** The pool is bounded by its size (about 3 x 3-5 GB), not by the
+  number of worktrees. `make build-cache-prune` never touches the slots.
+
+`MUTANTS_IN_PLACE=1` without mirror mode (calling `scripts/run-mutants.sh`
+directly) mutates the checkout itself and keeps refusing a dirty worktree
+outside CI. The CI modes (`ci-pr`, `ci-full`) and `list` are unchanged: they
+run in copy or in-place mode exactly as before and never use slots. If the CI
+mutation lane is re-enabled, it leaves the local knobs unset and fans out
+through `MUTANTS_SHARD`.
 
 Treat survivors in order: decide whether the mutant is a real missed behavior,
 then add or tighten deterministic tests, then consider small refactors that
@@ -568,6 +661,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Runtime: `org.gnome.Platform` 51 (GTK 4.24, GtkSourceView 5.22, Libadwaita 1.10), SDK extension `org.freedesktop.Sdk.Extension.rust-stable` (the SDK's `26.08` branch, Rust 1.98.0). The gtk-rs feature set stays at the GNOME 50 source floor, so compiling on 4.24 proves no newer API is used.
 - The Rust stable extension must satisfy the workspace MSRV. If a local user installation is stale after an MSRV bump, update it with `flatpak update --user org.freedesktop.Sdk.Extension.rust-stable//26.08` before treating a Flatpak build failure as an application regression.
 - `make flatpak` builds without installing; it first ensures the user Flathub remote and manifest runtime/SDK dependencies are available
+- `flatpak-builder`'s state dir (it holds the whole release Cargo build) and the app dir live in the checkout's build-cache directory, side by side on one mount because flatpak-builder hardlinks between them: `FLATPAK_STATE_DIR` (`<checkout-cache>/flatpak-builder`, passed as `--state-dir`) and `FLATPAK_BUILD_DIR` (`<checkout-cache>/flatpak-app`). The release validation build uses `<checkout-cache>/flatpak-release-builder` and `flatpak-release-app`; the Cominotti repository generator keeps its state dir beside its app dir under its output dir (`$out_dir/flatpak-builder`), because in CI that dir is on another mount than `$HOME`. A `.flatpak-builder/` or `build-flatpak/` left in the checkout by an earlier version is no longer used and is safe to delete.
 - `make flatpak-install` builds and installs the checkout into the user Flatpak installation; idempotent
 - `make check-flatpak-permissions` after automation, portal/sandbox, or packaging changes proves the manifest still declares the intentional `--filesystem=host` permission
 - `make verify-flatpak-identity` after install/export changes catches stale same-ID dev launchers and verifies `X-Flatpak`, permissions, and MIME registration

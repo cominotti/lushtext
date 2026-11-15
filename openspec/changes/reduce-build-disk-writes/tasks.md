@@ -170,7 +170,7 @@ Rules for every task:
 - [x] 4.1 Implement `scripts/test-address-space-runner.sh` and make task 1.3
   pass. Wire `CARGO_TARGET_<HOST>_RUNNER` (host triple from `rustc -vV`) into
   the slot environment and the proof-strength tests arm.
-- [ ] 4.2 Derive the limit. Run the unmutated baseline of the default mutation
+- [x] 4.2 Derive the limit. Run the unmutated baseline of the default mutation
   scope (`cargo nextest run --workspace` in a slot, through the runner) at 2,
   4, 8 and 16 GiB until it passes. Then do the same for the proof-strength tests
   arm's `property-tests` baseline. Set `LUSHTEXT_TEST_ADDRESS_SPACE` to twice
