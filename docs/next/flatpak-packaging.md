@@ -34,7 +34,9 @@ made every later install a silent no-op: flatpak reuses a disabled origin whose
 URL matches and skips the update with exit status 0.
 
 So `make flatpak-install` (change `stable-flatpak-install-origin`, implemented
-2026-11-14, PR #101):
+2026-11-14, merged (PR #101, `main` `a5ddb117`) and archived 2026-11-15,
+`openspec/changes/archive/2026-11-15-stable-flatpak-install-origin/`, spec
+`openspec/specs/flatpak-sandbox-identity/`):
 
 - exports with `flatpak-builder --repo=<shared repo>`, without `--install`, to
   one repository shared by every checkout,
