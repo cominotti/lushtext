@@ -4040,7 +4040,10 @@ separate change, in this order:
      - D4: two retry-rescued widget tests diagnosed and fixed (directory
        retention, protected periodic capture).
      **Follow-up `diagnose-ci-only-reflow-guard-failure`** (implemented
-     2026-11-15, PR pending, not merged). It reproduces CI-only widget
+     2026-11-15, merged (PR #111, `main` `da80e312`) on local evidence and
+     archived 2026-11-15,
+     `openspec/changes/archive/2026-11-15-diagnose-ci-only-reflow-guard-failure/`;
+     specs `editor-minimap`, `widget-test-ci-sharding`). It reproduces CI-only widget
      failures in the widget job's image (`scripts/ci-image-widget-test.sh`,
      `build.md` "CI image lane": CI's own step with `cargo` shimmed to a
      prebuilt binary).
