@@ -203,9 +203,13 @@ this design first assumed.
   per-run cold builds, and the leak, both go away. Only a slot's first use is
   cold.
 - Shards keep the parallelism today's `--jobs 3` gives.
-- A host-wide pool bounds disk by pool size, not worktree count: about
-  3 × 3-5 GB. Per-checkout slots, given the 15 checkouts already on the host,
-  would not be bounded.
+- A host-wide pool bounds disk by pool size, not worktree count: at most
+  3 × `MUTANTS_SLOT_MAX_GIB` (24 GiB). Measured: 10.4-11.1 GiB a slot warm
+  with one dependency set, 19.4-20.2 GiB after one `Cargo.lock` refresh (two
+  sets, 67 GB for the whole cache root at the stage-4 review, 2026-11-15), so
+  the next refresh will empty the slots and build them cold once. Per-checkout
+  slots, given the 15 checkouts already on the host, would not be bounded,
+  and copy mode left about 22 GB behind per run, without bound.
 - Two runs from different checkouts in one slot simply resync. Only the
   workspace members that differ rebuild, and the dependencies stay warm,
   unless `Cargo.lock` or the feature set differs.
@@ -284,8 +288,11 @@ the D9 protocol. The units:
 `scripts/measure.sh` (`runs.log` in the handoff dir). The 1-min load at the
 start of every round was 6.7-8.6 (other agents' unmanaged work, a game), so
 by D9 every wall time below is **non-verdict**; the decisions rest on effects
-far larger than the load spread, and are recorded as such. A confirming
-verdict pair for the slots is queued in `.claude/handoffs/MEASURE-QUEUE.md`.
+far larger than the load spread, and are recorded as such. The optional
+confirming pair for the slots queued in `.claude/handoffs/MEASURE-QUEUE.md`
+was not run. The Kani rounds were rerun in a quiet window, under "Measured
+verdicts" below. The slot decision therefore still rests on non-verdict rounds,
+where the effect was 2.2x.
 
 - **Mutation slots: keep incremental** (`MUTANTS_SLOT_INCREMENTAL=""`). One
   slot, the six mutants of `MUTANTS_RE=chunked_threshold_with` on the
@@ -311,7 +318,8 @@ verdict pair for the slots is queued in `.claude/handoffs/MEASURE-QUEUE.md`.
 - **Proof-strength tests arm: follows the slots** (the same in-place
   build-then-nextest unit, not measured separately): incremental kept,
   `CARGO_INCREMENTAL` left as the caller set it.
-- **Kani lane: `CARGO_INCREMENTAL=0`** (`make kani`, task 6.1). The first
+- **Kani lane: `CARGO_INCREMENTAL=0`** (`make kani`, task 6.1; confirmed by
+  quiet rounds under "Measured verdicts", +0.9%). The first
   `cargo kani -p gtk-lush-widgets --only-codegen` with incremental on wrote
   its cache into the build dir's own triple tree,
   `<build-dir>/x86_64-unknown-linux-gnu/debug/incremental` (11 MB cold, 22 MB
@@ -330,9 +338,9 @@ verdict pair for the slots is queued in `.claude/handoffs/MEASURE-QUEUE.md`.
   Median 19.7 s against 17.6 s, +12%: inside the bar, so the lane drops the
   cache. Only inc1 r1 started below load 4; the rest are non-verdict, and the
   difference is small in either direction.
-- **Proof-strength Kani arm: measurement queued; `CARGO_INCREMENTAL=0` kept
-  provisionally** (`KANI_ARM_INCREMENTAL = "0"`, the design's default unless a
-  regression is shown). One round ran (`lushtext-core` rebuild after the
+- **Proof-strength Kani arm: `CARGO_INCREMENTAL=0`, final** (the verdict is
+  under "Measured verdicts" below; `KANI_ARM_INCREMENTAL = "0"`). The record
+  that follows is the stage-3 state. One round ran (`lushtext-core` rebuild after the
   `MAX_MARKDOWN_EVENTS / 4` → `* 4` mutant of `ui/markdown_preview/policy.rs`:
   35.7 s without incremental, start load 4.9) before the coordinator stopped
   the chain, whose exclusive locks were blocking other agents at load 14, and
@@ -711,3 +719,183 @@ dirs.
 
 None blocking. CST-side items are in
 `.claude/handoffs/reduce-build-disk-writes/cst-asks.md`.
+
+## Measured verdicts (2026-11-15)
+
+The coordinator ran the queued rounds (`.claude/handoffs/MEASURE-QUEUE.md`,
+the two `reduce-build-disk-writes` entries) through `scripts/measure.sh`.
+`runs.log` in the handoff dir has each round's load and top five processes
+before and after. By D9 a round is a verdict only when its recorded 1-minute
+load at the start was below 4. The end loads are higher because the measured
+work itself loads the host.
+
+### D3: Kani compile rounds (task 9.2)
+
+Unit: one `cargo kani --only-codegen` rebuild after one edit, each mode in its
+own build dir (`kani-round.sh`). Every round first builds the pristine tree,
+unmeasured.
+
+| lane | mode | verdict rounds (start load): seconds | non-verdict (start load) |
+| --- | --- | --- | --- |
+| proof-strength Kani arm (`lushtext-core`, one mutant) | inc0 | k-c-inc0-r2 (2.24): 38.0; k-c-inc0-r1q (3.49): 38.4 | k-c-inc0-r1 (4.87): 35.7 |
+| | inc1 | k-c-inc1-r1 (2.18): 40.9; k-c-inc1-r2 (3.34): 30.5 | none |
+| Kani lane (`gtk-lush-widgets`, one edit) | inc0 | k-w-inc0-r1q (3.58): 18.0; k-w-inc0-r2q (3.18): 17.3 | k-w-inc0-r1 (6.21), k-w-inc0-r2 (7.05) |
+| | inc1 | k-w-inc1-r1 (3.44): 17.1; k-w-inc1-r1q (2.64): 17.5; k-w-inc1-r2q (2.45): 18.4 | k-w-inc1-r2 (11.51) |
+
+k-w-inc1-r1q's first attempt exited 75. That is `measure.sh`'s designed
+back-off: a `git commit` held `LOCK` for over 60 s. The retry is the round
+above.
+
+- **Kani lane: `CARGO_INCREMENTAL=0` confirmed.** The medians are 17.65 s
+  without incremental and 17.5 s with it, +0.9%, inside the 25% bar. This
+  replaces stage 3's non-verdict +12%.
+- **Proof-strength Kani arm: `CARGO_INCREMENTAL=0`, final.** The medians over
+  the verdict rounds are 38.2 s against 35.7 s, +7%, inside the bar, so the
+  arm keeps `KANI_ARM_INCREMENTAL = "0"`.
+
+  The two inc1 rounds differ more than the bar does:
+  - In k-c-inc1-r1 and k-c-inc0-r1q, the unmeasured pristine build also
+    recompiled `gtk-lush-widgets`, whose `lib.rs` the widgets rounds had
+    edited and restored. The timed cargo step then took 21.6 s with
+    incremental against 17.8 s without.
+  - In the r2 pair, nothing but the mutated package rebuilt, which is the
+    state every later mutant of an arm run sees. There, inc0 is +24.6%
+    (38.0 s against 30.5 s). The pooled inc0 median against that one inc1
+    round is +25.2%.
+
+  So the steady state sits at the bar on one sample. The decision applies the
+  bar as written: the median over the verdict rounds. A change that finds the
+  arm's rebuilds slow should take more steady-state pairs before switching.
+
+### D9 step 1: mutation lane (task 9.1)
+
+Fixed focused scope: `MUTANTS_RE='chunked_threshold_with|markdown_chunked_cap'`
+over `document_scale.rs`, 13 mutants. Every round found 6 caught, 6 missed and
+1 unviable, and exited 2, cargo-mutants' missed-mutant status, on every arm.
+Main is copy mode with `--jobs 3`; the branch is three mirror slots. The rounds
+were interleaved.
+
+| round (start load) | wall | `write_bytes` | new `~/.cache/cargo-build` dirs | cache root | sccache | per-mutant build+test, median (build / test) | slot wall times |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| main-q1 (2.87) | 302.6 s | 32.06 GB | 3, 21.9 GB | +0 | +30.6 MB | 61.6 s (12.9 / 4.4) | — |
+| branch-q1 (2.94), cold | 487.9 s | 33.76 GB | 0 | +23.96 GB | +494 MB | 50.9 s (8.8 / 3.3) | 315, 486, 253 s |
+| main-q2 (3.34) | 300.4 s | 32.14 GB | 3, 22.1 GB | +0 | +30.6 MB | 58.2 s (12.2 / 4.0) | — |
+| branch-q2 (2.77), warm | 333.4 s | 21.43 GB | 0 | +1.81 GB | +0 | 15.0 s (7.6 / 3.9) | 167, 331, 94 s |
+
+**Why branch-q1 was cold.** The slots were not empty: the root held 45.9 GB.
+The last stage-3 merge of `origin/main` (`28d387ea`) brought main's dependency
+refresh (`4da4bf2f`: 761 changed lines of `Cargo.lock`, `sourceview5` 0.11.3
+with `gtk_v4_18`). The slots' first run after it rebuilt the dependency graph,
+115-117 s of baseline build against 6 s warm, beside the old set, and the root
+grew to 69.9 GB. So this is not a one-time first fill. It is the cost of every
+`Cargo.lock` or feature change, paid once per slot set. D9 called for slots
+warmed by one unmeasured run, and this round was that warm-up, measured.
+
+**Against the D9 bars, per pair:**
+
+| bar | pair 1 (branch cold) | pair 2 (branch warm) |
+| --- | --- | --- |
+| zero new `~/.cache/cargo-build` entries on the branch | 0: pass | 0: pass |
+| sccache growth on the branch below 1 MB | +494 MB: **fail** | +0: pass |
+| branch `write_bytes` below main's | 33.76 against 32.06 GB (+5%): **fail** | 21.43 against 32.14 GB (−33%): pass |
+| branch wall time at most 125% of main's | 487.9 against 302.6 s (+61%): **fail** | 333.4 against 300.4 s (+11%): pass |
+
+The two-round branch median is 410.7 s against main's 301.5 s, +36%. That
+misses the wall-time bar, so it is recorded here as D9's **explicit
+exception**, and the maintainer is told in the stage-4 report:
+
+- The steady state passes every bar.
+- The refill after a dependency change fails three bars. It costs about
+  3 min and 1.7 GB more than one copy-mode run, and its +494 MB of sccache is
+  the dependency compiles it stores.
+- A slot that already holds two dependency sets (19.4-20.2 GiB now) passes
+  the 24 GiB growth bound at the next refill, so that run empties the slot and
+  builds it cold.
+
+No further round was run. Main's two rounds are 0.7% apart. The warm verdict
+rests on one pair, but its wall time is one slot's shard (331 of 333 s), and
+the bytes are independent of load: the stage-3 rounds measured 21.48 and
+21.38 GB against 31.77 and 31.73 GB.
+
+**Slot-2 is a static-shard artifact, not IO.** In both branch rounds, shard
+1/3 drew 5 of the 6 missed mutants, all of `markdown_chunked_cap`. A missed
+mutant runs the whole test phase (43-50 s), while a caught one stops at its
+first failure, so slot-2 ran 486 and 331 s against 94-315 s for the others.
+The branch-q1 window has one storage episode of 16 s (task 9.3 below).
+Balanced, the warm round would take about 200 s, a third of the three slot
+times. The mutants are classified below, and that changes this workload.
+
+The six `~/.cache/cargo-build` dirs the main rounds leaked, 44.0 GB, were
+deleted afterwards. Each one's dep-info names only a
+`/tmp/cargo-mutants-reduce-build-disk-writes-*` copy (`leaked-deleted.txt` in
+the handoff dir). Copy mode leaves 21.9-22.1 GB behind per run, confirming
+`evidence/after.md`'s correction of the "about 15 GB" estimate.
+
+### D9 step 4: host IO (task 9.3)
+
+`btrfs-stall-report --json` over each 9.1 round, from 1 min before its start
+to 15 s after its end. All four windows have complete coverage and no gaps.
+The writes are dm-crypt bytes per btrfs member: RAID1 writes the same bytes
+to both, and they are counted after `zstd:1`.
+
+| window | verdict | writes | longest commit | most D tasks | worst episode |
+| --- | --- | --- | --- | --- | --- |
+| main-q1, 14:08:08-14:14:28 | WBT (100% of D samples); "btrfs disks NOT saturated", dm-crypt write await 4.7 ms | 23.42 GB | 429 ms | 3 | 14:11:09-14:11:19, commit 347 ms |
+| branch-q1 (cold), 14:16:25-14:25:49 | other 63% (`open_last_lookups` in the run's scope), commit 20%, writeback 17%; "btrfs disks look SATURATED", dm-crypt write await 5.6 ms | 25.03 GB | 433 ms | 25 | 14:20:59-14:21:15 (16 s), commit 433 ms |
+| main-q2, 14:49:44-14:56:01 | "Storage was NOT a bottleneck: IO pressure 1.0%, at most 1 task(s) waiting on storage, longest btrfs commit 366 ms (written 21.0 GiB)" | 22.52 GB | 366 ms | 1 | none |
+| branch-q2 (warm), 15:00:58-15:07:48 | "Slow btrfs commits: longest 1.0 s at 15:07:26"; commit 60%, metadata-read 30%, other 10%; "btrfs disks look SATURATED", dm-crypt write await 7.0 ms, NVMe write await 40 ms | 19.73 GB | 1,024 ms | 5 | 15:04:35-15:04:45, commit 952 ms; gnome-shell threads in `wait_current_trans` |
+
+How to read it:
+
+- **Device writes.** The warm branch round wrote 12-16% fewer device bytes
+  than main (19.73 against 22.52-23.42 GB). The process-tree figure is −33%.
+  Each window also holds 6.5-7.4 GB from an unrelated background writer
+  (`jetbrains-toolbox`, `below`'s top writers), not subtracted. `below`'s
+  per-process figures are not additive, so they are not used for totals.
+  Main's source copies sit on tmpfs `/tmp` and never reach the disks: main
+  swapped out 0.18 and 1.24 GB instead.
+- **The stall verdicts do not favour the branch.** Main-q2 is the only "NOT a
+  bottleneck" window. Both branch windows read "SATURATED", and the warm one
+  had 1.0 s commits with desktop threads waiting on one.
+- **The limits are wide.** There is one window per arm, the windows differ in
+  length, background writers were present, and the scope is the focused
+  `mutants-smoke` used in 9.1, not the `mutants-diff` of the original
+  request. This is the host-level "after" record, not a verdict, and it does
+  not support a claim that the branch stalls the desktop less.
+
+### Mutants the focused scope left missed (pre-existing, fixed here)
+
+All six are on `main` and in every round. They were classified under
+`.agents/rules/preexisting-blockers.md`:
+
+- **`document_scale.rs:220:5` (`None`, `Some(0)`, `Some(1)`) and `:221:12`
+  (`==` → `!=`) are a real test gap.** These are the `test-utils` arm of
+  `markdown_chunked_cap`, which every runtime caller of the `_with` scale
+  functions passes. Only widget tests drove it, and the mutation lane does not
+  run them. The new integration test
+  `document_scale::the_runtime_markdown_cap_is_the_model_cap_only_while_the_override_is_held`
+  asserts `None` by default, `Some(MODEL_MARKDOWN_CAP)` under the override
+  guard, and `None` after the guard drops. It lives in the `lushtext`
+  integration binary, which always builds `lushtext-core` with `test-utils`,
+  so the Kani oracle module is untouched.
+  - Failing first: these rounds, where all four are missed.
+  - After the fix, the same focused scope, run on one slot, catches all four:
+    13 mutants, 10 caught, 2 missed (the `:229` pair below), 1 unviable
+    (`evidence/failing-first.md`).
+- **`document_scale.rs:229:5` (`Some(0)`, `Some(1)`) cannot be killed by this
+  lane, so they are excluded.** They are the `cfg(not(feature = "test-utils"))`
+  arm. Unlike the cfg-disabled stubs excluded beside them, this is the arm
+  that ships. But the lane's only test build is the workspace build, where the
+  `lushtext` dev-dependency enables `test-utils`, so a mutant there compiles
+  unchanged code. They are excluded in `.cargo/mutants.toml` by exact location
+  and reason.
+  - `cargo mutants --list --workspace` with the config drops exactly these
+    two from the file. Without the config, the file still lists all nine of
+    its `markdown_chunked_cap` matches.
+  - `make mutants-smoke` passes `--no-config` by design, so it still runs
+    the pair and reports it missed. `docs/mutation-testing.md` now says so.
+
+**Later readers:** the four `:220`/`:221` mutants are now caught. The focused
+smoke scope still generates 13 mutants, but now misses 2 where these rounds
+missed 6. A config-driven lane generates 2 fewer. So the MISSED counts, and
+slot-2's imbalance, cannot be compared with any later run of the same scope.

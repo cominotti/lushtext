@@ -254,9 +254,13 @@ Rules for every task:
 
 ## 9. Measurements (D9)
 
-- [ ] 9.1 **Measurement queued** (wall-time verdict only; the byte figures,
-  build-dir and per-mutant records are in `evidence/after.md`, from four
-  rounds through `heavy.sh`). Mutation lane, four rounds interleaved main → branch → main →
+- [x] 9.1 **Done** (stage 4, 2026-11-15: the coordinator's four quiet rounds
+  through `measure.sh`; verdicts in design.md "Measured verdicts". The warm
+  pair passes every bar. The cold round, a slot refill after a `Cargo.lock`
+  change, fails the sccache, bytes and wall-time bars, and the two-round
+  median wall time is +36%. Recorded as D9's explicit exception. The six
+  leaked dirs, 44.0 GB, were deleted. The stage-3 byte rounds through
+  `heavy.sh` are in `evidence/after.md`). Mutation lane, four rounds interleaved main → branch → main →
   branch, through `measure.sh`, on the fixed focused scope (diff saved under
   `evidence/`). Record:
   - wall time;
@@ -273,9 +277,10 @@ Rules for every task:
   leaked build dirs afterwards (list them first) and record what was deleted.
   This round also verifies the "about 15 GB per local run" figure, which
   stage 1 derived from one cold build times three jobs rather than measured.
-- [ ] 9.2 **Measurement queued** (the proof-strength Kani arm's three
-  remaining rounds; the slots, the tests arm and the Kani lane are decided in
-  design D3). D3 per lane. Run slots with and without `CARGO_INCREMENTAL=0` under
+- [x] 9.2 **Done** (stage 4, 2026-11-15: quiet reruns of the Kani rounds.
+  The Kani lane is +0.9% and the proof-strength Kani arm +7%, so both keep
+  `CARGO_INCREMENTAL=0`. The arm's steady-state pair alone is +24.6%, at the
+  bar; see design.md "Measured verdicts"). D3 per lane. Run slots with and without `CARGO_INCREMENTAL=0` under
   separate `LUSHTEXT_BUILD_CACHE` roots, two interleaved rounds per mode. Then
   one package compile of the cheapest Kani shard with and without, each with its
   own `CARGO_BUILD_BUILD_DIR`, two rounds; the first records where
@@ -290,6 +295,10 @@ Rules for every task:
   `make mutants-diff`, branch versus main, in a quiet window) in
   `.claude/handoffs/reduce-build-disk-writes/` for the coordinator, unless a
   quiet window was available and the figure was taken here.
+  Stage 4 (2026-11-15): the host-IO "after" figure was taken over the four
+  9.1 windows (design.md "Measured verdicts", D9 step 4). The warm branch
+  wrote 12-16% fewer device bytes than main. Its stall verdict is no better:
+  both branch windows read SATURATED, and main-q2 read not a bottleneck.
 
 ## 10. Documentation (`.agents/rules/documentation.md`)
 

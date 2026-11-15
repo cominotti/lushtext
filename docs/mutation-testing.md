@@ -133,7 +133,11 @@ nothing deleted.
   turns it off for a run.
 
 `mutants-smoke` is the fast sanity check for tool installation, config parsing,
-and timeout behavior. `mutants-diff` creates a diff against `origin/main` when
+and timeout behavior. It runs its one file with `--no-config`, so the
+`exclude_re` entries do not apply. On its default file it therefore reports
+the two `markdown_chunked_cap` mutants in the `cfg(not(test-utils))` arm as
+missed: the workspace test build never compiles that arm, and every
+config-driven lane excludes the pair. `mutants-diff` creates a diff against `origin/main` when
 no diff file is supplied and filters mutants to changed hunks. `mutants-full`
 runs the configured deterministic scope and can be sharded with `MUTANTS_SHARD`.
 `mutants-list` prints the configured candidates without running tests.

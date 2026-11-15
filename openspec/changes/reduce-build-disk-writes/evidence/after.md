@@ -77,8 +77,9 @@ build-script outputs name only a vanished `/tmp/cargo-mutants-*` copy).
 
 ## Owed
 
-- The quiet-window wall-time verdicts: task 9.1's four rounds, task 9.2's
-  three remaining proof-strength Kani rounds, and an optional pair confirming
-  D3's slot decision (`MEASURE-QUEUE.md`).
-- The system-level `btrfs-stall-report` figure for one `make mutants-diff`,
-  main against branch (`host-io-request.md` in the handoff dir).
+Nothing. Stage 4 (2026-11-15) recorded the quiet-window verdicts for tasks
+9.1 and 9.2 and the host-level `btrfs-stall-report` figure (task 9.3) in
+design.md, "Measured verdicts". The wall-time line above ("non-verdict,
+queued") is superseded there: the warm pair is +11%, and the two-round median
+is +36%, recorded as D9's explicit exception. The optional pair confirming
+D3's slot decision was not run.

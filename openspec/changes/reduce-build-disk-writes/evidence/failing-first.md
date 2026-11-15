@@ -140,3 +140,30 @@ self-test: a daemon left in a finished command's scope kept its cap admitted (st
 With the named scopes and the PID check it passes, and the companion case (a
 command that still runs keeps its cap admitted, so the second admission exits
 75) passes too.
+
+## Stage 4: `markdown_chunked_cap` survivors (pre-existing)
+
+Red: every quiet 9.1 round (main and branch; `rounds/m91-*` in the handoff
+dir) ran the focused scope
+`MUTANTS_RE='chunked_threshold_with|markdown_chunked_cap'` over
+`document_scale.rs` and missed six mutants. The four killable ones were
+`:220:5` (`None`, `Some(0)`, `Some(1)`) and `:221:12` (`==` → `!=`).
+
+Green: the integration test
+`document_scale::the_runtime_markdown_cap_is_the_model_cap_only_while_the_override_is_held`
+was added, and the same scope ran on one slot
+(`MUTANTS_RE=… scripts/heavy.sh --mem none -- make mutants-smoke MUTANTS_LOCAL_JOBS=1 MUTANTS_MEMORY_MAX=10G`,
+2026-11-15 15:44-15:50, load 8-21):
+
+```
+[slot-1] ok       Unmutated baseline in 16s build + 34s test
+[slot-1] MISSED   crates/lushtext-core/src/model/document_scale.rs:229:5: replace markdown_chunked_cap -> Option<u64> with Some(0) in 6s build + 37s test
+[slot-1] MISSED   crates/lushtext-core/src/model/document_scale.rs:229:5: replace markdown_chunked_cap -> Option<u64> with Some(1) in 6s build + 41s test
+[slot-1] 13 mutants tested in 4m: 2 missed, 10 caught, 1 unviable
+```
+
+The two `:229` mutants are the excluded, cfg-unreachable pair. Smoke runs with
+`--no-config`, which is why it still runs them. With the config,
+`cargo mutants --list --workspace --file crates/lushtext-core/src/model/document_scale.rs --re markdown_chunked_cap`
+no longer lists them. With `--no-config` it lists them beside the `:220` and
+`:221` mutants.
