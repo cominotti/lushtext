@@ -877,3 +877,161 @@ the recorded exception has nothing to cover. Findings and decisions:
    2^17 build and mutation rounds were rebuilt from this review's commit
    before the queue ran (see the queue entry).
 
+
+## Measured verdicts (2026-11-15)
+
+The coordinator ran the queued campaign (`MEASURE-QUEUE.md`, entry
+"scale-file-index — stage 3 interleaved rounds") in a quiet window. Every
+round went through `scripts/measure.sh` (`runs.log` has each round's load and
+top processes before and after) and was pinned with `taskset -c 8-23`.
+The CPU set the kernel granted was not recorded per round. A round is a
+verdict only if it completed and its recorded 1-minute load at the start was
+below 4. All nine rounds below meet that.
+The first `sfi-main-r5` attempt (02:28, load 4.79, exit 143, stopped by the
+convoy breaker) and every figure in "Measured baseline" and "Branch figures,
+non-verdict" outside the r1–r2 baseline rounds stay non-verdict.
+Binaries:
+
+- the release harness from `main` `72c039ef` and from the review fix
+  `1bc819b6` (visibility-only copies);
+- the Criterion and optimized widget (`opt-level 2`) binaries, rebuilt at
+  `1bc819b6` at about 13:58 as a heavy job, not measured
+  (`rebuild-bench.json`, `rebuild-widget.json`).
+
+Logs: `stage3-interleaved.log`, `stage3-d7-criterion.log`,
+`stage3-d8-widget.log`.
+
+**Harness rounds at 2^17, D9 tree on btrfs** (medians of 5 runs per case;
+order `main` r5 13:31:58 → branch r1 13:35:51 → `main` r6 13:37:37 → branch
+r2 13:55:35; start loads 3.43, 3.91, 3.60, 3.07; end loads 3.25, 3.91, 3.30,
+2.99). `main` indexes 119,157 files (`RetainedByteLimit`), the branch all
+131,072.
+
+| Case | `main` r5 / r6 | branch r1 / r2 | Bar (no slower than `main` beyond its spread) |
+| --- | --- | --- | --- |
+| build | 1,759 / 1,796 ms | 412 / 409 ms | pass |
+| `retained_index_bytes`, B/file | 563 | 41 | pass (task 2.3: ≤ 60) |
+| `peak_build_bytes`, B/file | 831 | 60 | pass (task 2.3: ≤ 96) |
+| clone / drop | 32.5–34.1 / 24.5–25.1 ms | 0.19–0.24 / 0.000 ms | pass |
+| query, 0 open tabs | 8.9 / 9.1 ms | 3.88 / 3.83 ms | pass |
+| query, 32 open tabs | 34.0 / 34.6 ms | 4.00 / 4.01 ms | pass |
+| empty query, 32 / 256 open tabs | 5.8–7.4 / 10.7–13.3 ms | 0.042 / 0.25 ms | pass |
+| batch of 1 add (clone excluded) | 30.0 / 30.5 ms | 2.06 / 2.08 ms | pass |
+| batch of 64 adds | 1,895 / 1,910 ms | 2.71 / 2.67 ms | pass |
+| batch of 1,024 adds | 31.29 / 31.11 s | 15.8 / 14.4 ms | pass |
+| directory rename, 9,872 descendants | 293 / 283 ms | 5.08 / 4.82 ms | pass |
+
+**Harness round at 2^20, branch only** (`sfi-branch-w20`, 13:56:30–13:57:06,
+start load 2.81, end 3.15): 1,048,576 files, no truncation;
+`retained_index_bytes` 44,002,118 (41 B/file, under 64 MiB) and
+`peak_build_bytes` 63,134,538 (60 B/file, under 128 MiB); build 3,496 ms
+(3,417–3,709); clone 3.66 ms, drop 0.001 ms; query 31.4 ms with 0 open tabs
+and 31.8 ms with 32; empty query 0.048 ms with 32 open tabs and 0.36 ms with
+256; a directory rename of 9,872 descendants 31.6 ms. Batches of 1, 64 and
+1,024 adds are all refused at the 2^20 cap, at 6.1, 6.5 and 19.4 ms: the
+stage-4 fix (item 2) took the 1,024-add batch from 354–369 ms to 19.4 ms.
+
+**D7, Criterion at 2^20, branch** (`sfi-branch-d7-criterion`,
+14:05:38–14:06:54, start load 2.18, end 2.98; 10 samples each, Criterion's
+median and interval). The single pass is within the bar, so task 4.3 (the
+chunked split) is **not applicable**, and the branch spawns no scoped
+threads.
+
+| Case | Median [interval] | Bar | Verdict |
+| --- | --- | --- | --- |
+| `query_match` (64 rows) | 42.9 ms [41.7–45.3] | ≤ 50 ms | pass |
+| `query_open32` | 43.3 ms [42.3–45.0] | ≤ 50 ms | pass |
+| `no_match` | 15.3 ms [15.1–15.8] | none | recorded |
+| `empty_query` | 0.99 ms [0.97–1.02] | none | recorded |
+| `empty_query_open32` | 14.5 µs [14.1–15.0] | none | recorded |
+| `category_ranking_row_cap` | **50.75 ms [49.36–52.45]** | measured, 50 ms if not an exception | **over; the measured exception** |
+
+The `query_match` figure is higher than the harness's 31 ms because the two
+measure different things. Criterion's synthetic index matches the query
+`file_42` against far more names (`file_N.ext`) than the D9 tree does. The
+grouped-query bar holds on both.
+
+**The category ranking's measured exception (D7).** Ranking the workspace
+category whole takes 50.75 ms on the worker. The case is the 131,072-row
+cap, over the bench's 1,047,534-file synthetic index, for the query `file`.
+Every `file_N.ext` name matches that query, so far more than 131,072 match.
+That is not a pass, and its interval straddles the bar. It is recorded as
+the exception D7 names. What the user sees:
+
+- After Enter on a More row, the category view publishes about 51 ms later,
+  and the activation is not debounced.
+- Typing inside the category at that size puts the publish about 1 ms past
+  the 200 ms the grouped view's scenario allows (150 ms debounce plus about
+  51 ms).
+- No GTK dispatch is affected: the D8 rounds below put the category view's
+  dispatches at 2.0–3.8 ms.
+
+Below 2^20 files the time falls with the number of files scored. A query
+with fewer matches also does less selection work.
+
+The ranking is already a bounded heap, not a full sort. It costs more than
+the grouped query because of the 131,072 heap insertions and the final sort
+of 131,072 rows. The two cases score different queries (`file` and
+`file_42`), so their difference, about 8 ms, only estimates the selection
+share; that share was not measured on its own. The scoring pass is the rest,
+the same pass the grouped query pays. The partial-selection alternatives
+were weighed and not taken:
+
+- `select_nth_unstable` over every match would retain about 1,000,000
+  32-byte candidates (32 MiB) against the 8 MiB ranking budget.
+- A 2 × cap selection buffer would need about 9 MiB at the row cap, over the
+  8 MiB budget. The second floor-retention `const` assertion
+  (`PALETTE_CATEGORY_RETAINED_BYTES / 2 < PALETTE_CATEGORY_FLOOR_RETENTION`)
+  says exactly that two cap-sized retentions do not fit.
+
+Neither stays inside this change's memory bound. They could recover at most
+the estimated 8 ms selection share, and the scoring pass that dominates
+would remain.
+Splitting the category's scoring was already rejected (four heaps of 131,072
+candidates, about 18 MiB). The follow-up is recorded in
+`docs/next/long-line-documents.md`: a chunked category ranking whose chunks
+share one bound, and a breakdown of scoring against selection measured
+first.
+
+**D8, optimized widget build, branch** (task 2.8's
+`test_palette_category_of_a_million_files_is_cut_at_the_row_cap`, the far
+select-and-scroll at the 131,072-row cap of a 2^20-file index; three runs
+14:07:26, 14:08:00, 14:08:34, start loads 2.73, 3.49, 3.16, end loads 2.67,
+3.45, 3.15).
+
+| Dispatch | r1 | r2 | r3 | Bar | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| select and scroll to the last row | 2,220 µs | 2,985 µs | 2,020 µs | ≤ `B_INTERACT_US` (8,000 µs) | pass |
+| back to the first row | 2,354 µs | 3,788 µs | 2,264 µs | ≤ `B_INTERACT_US` | pass |
+
+The row cap stays 131,072. Each run logs one
+`Gtk-CRITICAL … Unable to register the application … org.a11y.atspi.Registry: unit failed`.
+It comes from the headless session's missing systemd user bus
+(`org.freedesktop.systemd1` fails to activate under the private
+`dbus-daemon`). It is not this change's warning: the pending change
+`quiet-headless-session-services` (PR #110) removes it.
+
+**Storage** (`btrfs-stall-report --no-below`), one report per window:
+
+- 13:31–13:41: "Storage was NOT a bottleneck: IO pressure 0.7%, at most 1
+  task(s) waiting on storage, longest btrfs commit 313 ms (written 3,499
+  MiB)"; 0 episodes.
+- 13:55–13:58: "Storage was NOT a bottleneck: IO pressure 0.9%, at most 0
+  task(s) waiting on storage, longest btrfs commit 250 ms (written 2,078
+  MiB)"; 0 episodes.
+- 14:05–14:09: "Storage was NOT a bottleneck: IO pressure 0.8%, at most 1
+  task(s) waiting on storage, longest btrfs commit 253 ms (written 1,220
+  MiB)"; 0 episodes.
+
+No alert or `!` event was recorded in any window.
+
+**Result.** The verdicts pass:
+
+- D7's grouped query at 2^20;
+- D8's far select-and-scroll at the row cap;
+- every 2^17 case against `main`;
+- the 2^20 byte ledgers.
+
+The category ranking at 2^20 is the one measured exception: 50.75 ms
+[49.36–52.45] on the worker, recorded above with its follow-up. Task 4.3 is
+not applicable.

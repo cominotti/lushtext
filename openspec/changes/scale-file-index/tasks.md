@@ -208,13 +208,22 @@ Rules for every task:
         groups; the 2^20 groups run in `make bench` only, so the smoke stays
         lightweight. Update `scripts/run-performance-smoke.sh`'s labels if
         IDs change (task 3.7a).
-- [ ] 4.2 Verdict measurement of D7: the worker query p50 at 2^20 (release,
+- [x] 4.2 Verdict measurement of D7: the worker query p50 at 2^20 (release,
       four interleaved rounds against the branch's own single-pass build if
       4.3 is needed). Pass bar: ≤ 50 ms. Also measure the category view's
       single-pass ranking at 2^20 (Enter on the More row of a query matching
       more than 131,072 files). If it is over 50 ms, record it in the design
       as the measured exception D7 names.
-- [ ] 4.3 Only if 4.2 misses the bar: chunked scoring for grouped queries over
+
+      Done 2026-11-15 (design, "Measured verdicts"): Criterion at 2^20,
+      `sfi-branch-d7-criterion`, start load 2.18. `query_match` 42.9 ms and
+      `query_open32` 43.3 ms pass. `category_ranking_row_cap` is 50.75 ms
+      [49.36–52.45], over the bar, and is recorded as D7's measured
+      exception. No partial selection fits the 8 MiB ranking budget; the
+      follow-up is in `docs/next/long-line-documents.md`.
+- [x] 4.3 Not applicable: 4.2's single pass is within the bar (42.9 ms and
+      43.3 ms medians at 2^20), so the split was not built and the branch
+      spawns no scoped threads. Only if 4.2 misses the bar: chunked scoring for grouped queries over
       `min(MAX_QUERY_CHUNKS, available_parallelism())` scoped threads (no
       split below 2^17 files), per-chunk matcher and heap of at most the
       group's limit, the shared cancellation, merged by score then ordinal.
@@ -252,12 +261,20 @@ Rules for every task:
       Criterion groups. The lane group is deferred, with a palette
       row-selection action, to a follow-up change recorded in
       `docs/next/long-line-documents.md`.
-- [ ] 5.2 Verdict run of the harness rounds and the Criterion groups, `main`
+- [x] 5.2 Verdict run of the harness rounds and the Criterion groups, `main`
       against the branch at 2^17 (four interleaved rounds) and the branch at
       2^20, plus the D8 widget rounds (5.1's revision replaces the lane
       cases). Gate on the far select-and-scroll at 131,072 rows of a 2^20-file
       index ≤ `B_INTERACT_US` (design D8). Pass bars: design "Timing". Record figures, loads and
       `btrfs-stall-report` for each window in the design's "Measured verdicts".
+
+      Done 2026-11-15 (design, "Measured verdicts"). The coordinator ran four
+      interleaved 2^17 rounds (`main` r5, branch r1, `main` r6, branch r2)
+      and the branch at 2^20, each started below a 1-minute load of 4. No
+      2^17 case is slower than `main`. D8's far select-and-scroll took
+      2,020–2,985 µs, and the return to the first row 2,264–3,788 µs, against
+      8,000 µs: pass. `btrfs-stall-report` says "Storage was NOT a
+      bottleneck" in all three windows.
 - [x] 5.3 Widget tests of the palette shards (`make test-widget-shard` for the
       shards holding `command_palette*.rs`), then the full `make test`;
       `make visual-geometry-smoke`, `make accessibility-smoke` and
@@ -298,9 +315,9 @@ Open boxes and why (design, "Implementation decisions (stage 3)"):
 - 2.9: checked in stage 4 with the deviation recorded in the task: committed
   with the arena, not as a separate red commit (decision 10); the red runs
   are in `stage3-red-record.txt`.
-- 4.2 / 4.3 / 5.2: the timing verdicts are queued by the shared-machine
-  coordinator (decision 13). Non-verdict figures: one query at 2^20 is
-  31–35 ms (D7 bar 50 ms), so 4.3 is not expected to trigger (decision 11).
+- 4.2 / 4.3 / 5.2: closed 2026-11-15 by the coordinator's verdict
+  campaign (design, "Measured verdicts"). 4.3 is not applicable. The
+  category ranking at 2^20 is D7's recorded exception.
 - 5.1: decided in stage 4 (design, "Review (stage 4)", item 3): D8 gates on
   the widget rounds, the lane group is deferred to a follow-up.
 

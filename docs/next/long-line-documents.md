@@ -4183,6 +4183,27 @@ separate change, in this order:
    deviation); the `workspace-index` lane group (design D10), with a palette
    row-selection action and its automation documentation; raising the
    category cap to the budget's rows once the source floor is GNOME 51.
+   **Verdicts 2026-11-15** (design "Measured verdicts"; every round through
+   `measure.sh` at a 1-minute load below 4, no storage stall in any window).
+   No 2^17 case is slower than `main`:
+   - one query: 3.8–4.0 ms, against `main`'s 8.9–34.6 ms;
+   - a 1,024-add batch: 14–16 ms, against 31.1–31.3 s;
+   - the build: 409–412 ms, against 1,759–1,796 ms.
+
+   At 2^20 the build indexes every file in 41 / 60 B per file. D7's grouped
+   query passes at 42.9 ms (43.3 ms with 32 open tabs, bar 50 ms), so the
+   chunked split was not built. D8's far select-and-scroll at the
+   131,072-row cap takes 2.0–3.8 ms, inside `B_INTERACT_US`.
+   **Measured exception (D7):** ranking a whole category at the row cap over
+   2^20 files takes 50.75 ms [49.36–52.45] on the worker, so a category view
+   publishes about 51 ms after Enter on a More row. Typing inside it lands
+   about 1 ms past the 200 ms the grouped scenario allows; the GTK thread is
+   not affected. It stays as recorded. A partial selection
+   (`select_nth_unstable` over every match, or a 2 × cap buffer) does not fit
+   the 8 MiB ranking budget, and the scoring pass dominates.
+   **Follow-up:** a chunked category ranking whose chunks share one bound
+   (one worst-score threshold, retention still within 8 MiB), preceded by a
+   measured breakdown of scoring against selection.
 4. Profile and slice the 59–60 ms largest-file open dispatch (the open-tier
    runs above).
 5. Then DL `bound-dense-long-line-editing`. (`avx2-health-scan-kernel`, once
