@@ -233,6 +233,41 @@ existing recorder is connected, so no log holds it yet.
 - a CI matrix change or a longer wait. No wait is involved: the value is
   wrong at rest.
 
+**Diagnosed (stage 3, 2026-11-15).** Evidence in the handoff directory:
+`trace-2.2-lane-cpus4/`, `trace-2.3-lane/`, `trace-2.3-toolbox.log`,
+`gdb-scroll-cpus4-*.log`, `red3-*/`, `proof-3.4-*/`.
+
+- **Writer.** The reattach of a detached view to its kept top line
+  (`view_attachment.rs`, `attach_view`, then `reassert_top_line` on each
+  `upper` notify). For line 0 it asked GTK for an aligned scroll
+  (`scroll_to_mark`, `yalign` 0), which rests at the top margin plus the
+  first glyph box's y, never at `lower`, and moves there through
+  `gtk_adjustment_animate_to_value` (gdb backtraces of each value move;
+  axiom A113). The trace shows the value climbing 0 → 3.37 → 4.71 → … → 8
+  over frames after `attach_view kept=Some(0)`.
+- **B1's link, refined.** The first settle saw `at_lower` true and
+  `reflow_scrolled` true: the animated move read as a scroll (A112), so the
+  settle kept it and recorded a rest state off the top. Later settles saw
+  `at_lower` false, and the repair stayed disarmed.
+- **Property of the image.** Session timing, not CPUs or fonts. In the
+  lane, `ui/at_listeners.rs` hears the registry answer "no listener" while
+  the never-shown fixture page is still unmapped, so `watch_hidden_validation`
+  starts, sees the page laying out, and detaches it. The reattach at map
+  then writes the value. In the toolbox the answer comes later, the page is
+  never detached, and the writer never runs (`trace-2.3-toolbox.log` has no
+  `watch_hidden_validation` line). Mutter runs surfaceless without a GPU in
+  the lane and on gbm in the toolbox; GTK is on cairo in both.
+- **Task 2.3's 2×2 was replaced** by this listener and attachment trace:
+  once the trace named the writer and its trigger, the font and CPU cells
+  could no longer decide anything. The fonts were still checked where they
+  could matter: the red tests are red with the image's fonts and with
+  Adwaita Mono installed (`red3-lane-cifonts/`, `red3-lane-adwaita/`), the
+  same values, so the font is not the factor.
+- **Tried and rejected:** simulating the registry's answer in the bare page
+  fixture (`simulate_registry_answer` in `present_editor_page_with_size`).
+  It took another path (detach at construction, nothing kept) and passed on
+  `main` in the toolbox, so it proved nothing about the writer.
+
 ### D3. Product defect or fixture artefact is a measured decision
 
 - Stage 3 runs a real window in the lane at `--cpus=4` and checks whether
@@ -274,6 +309,34 @@ existing recorder is connected, so no log holds it yet.
   left the view at 8 would pass. The failure message keeps the burst state
   and the emissions.
 
+**Decided (stage 3): product defect.** The bare page and the background tab
+both reach the writer; a user reaches it through any tab detached while
+hidden and reattached at line 0 (a session-restored or background tab).
+Such a tab came back 6–12 px down, the 6 px top margin gone, line one
+clipped, and its top-anchor repair disarmed.
+
+- **Fix:** for kept line 0 the reattach sets the value to `lower` itself
+  (only when it is more than 0.5 px away, so an unmoved view emits nothing),
+  and a deeper kept line keeps GTK's aligned scroll; `reassert_top_line`
+  scrolls by iterator when the view is mapped
+  (`scroll_view_to_kept_line`).
+- **Discriminator 3.1** (`test_a_file_opened_in_a_window_rests_at_the_top`)
+  is green on `main` in the lane with both font sets: a file opened through
+  `open_document` in a real window is never detached, so it does not decide
+  the classification. The new
+  `test_a_detached_tab_at_its_first_line_reattaches_at_the_top` does: red
+  on `main` in the lane and in the toolbox (value 12), green with the fix.
+- **3.2 inventory** (`grep -n 'y() < 10\|at the top'`): the four D2 tests
+  through `present_settled_minimap_document`, which now ends with
+  `assert_rests_at_lower`, and the guard's final assertion, now
+  `value - lower <= 0.5`. No other editor-page test relied on resting at
+  the top with a loose bound.
+- **Proof:** 20 of 20 lane runs at `--cpus=4` of the guard, the three other
+  D2 tests, 3.1 and the reattach test; 5 of 5 of the guard at `--cpus=1`
+  and at `--cpus=2`; 20 of 20 toolbox runs of the guard; the whole
+  `editor-page` shard once in the lane, green, no `FLAKY` line
+  (`final-editor-page/`).
+
 ### D4. 4.2 runs the full shard in the lane first
 
 - Run the whole `window` shard in the lane at `--cpus=4`, five times. This
@@ -291,6 +354,13 @@ existing recorder is connected, so no log holds it yet.
 - **If it does not reproduce:** `restore-main-ci` D4's branch. CI-log
   diagnosis, a deterministic test of the diagnosed mechanism red before the
   fix, and eight branch runs of the `window` shard without its `FLAKY` line.
+
+**Outcome (stage 3).** The bookmark test did not reproduce: green 5 of 5
+isolated, and in all eleven complete lane runs of the `window` shard (five
+on `main` code through the first, bare-binary lane, one on the F1 fix, five
+on the final binary). It takes the "does not reproduce"
+branch, and its eight CI runs are owed to the programme-end check (D5). The
+F1 writer does not explain it: its page is shown, and it never failed.
 
 ### D5. The eight-run proof is this branch's final code on CI
 
@@ -355,15 +425,54 @@ existing recorder is connected, so no log holds it yet.
   `surfaces` shards passed in them at the final code, first attempt, with
   no `FLAKY` line.
 
+**Outcome (stage 3, task 6.0).** This stage's brief says never to wait
+for, poll or rerun GitHub CI and names no exception, so tasks 6.1–6.2 did
+not run. The eight-run proofs are owed to the programme-end CI check:
+`editor-page` (the minimap slider test and the protected periodic capture,
+both green 5 of 5 isolated in the lane and in the shard run, never
+reproduced), `window` (the bookmark test) and `surfaces` (directory
+retention, whose figure only the runner gives). F1 is proved in the lane;
+its CI result is read at the same check.
+
 ### D6. Scope
 
 - In: F1, 4.2, the proof, the lane, and any further failure the lane or the
   proof runs reveal in these three shards (`preexisting-blockers.md`).
 - Out: other `ci.yml` jobs, which the programme's final CI sweep owns.
 
+**Lane-revealed failures (stage 3, task 6.3).** The lane's `window`-shard
+runs found two fragile tests, both fixed in this change:
+
+- `notes_browser::test_the_list_stays_virtualized_at_131072_rows` failed
+  whenever it ran alone in the lane (found 103,424 of 131,072, lower bound)
+  and passed inside the shard and in the toolbox. Its rows retained the
+  temporary path, which holds process ids: two digits in a fresh container,
+  four in the lane's shard run, seven in the toolbox. Shorter rows let
+  103,244 rows fit the 64 MiB retained ceiling against 94,519, and each
+  retained row charges two 160-byte shells of overlap to the 96 MiB
+  construction ceiling, so 485 KB were left for the next 1.16 MB sidecar
+  parse reservation and counting stopped (`notesdiag2-*`). The fixture now
+  fixes the folder path's length (112 bytes): 73,908 rows retained and every
+  row counted on both hosts, peak construction 91.95 MB of 100.66 MB
+  (`notesdiag3-*`). The product behaviour is honest (the count is flagged a
+  lower bound) and is not changed; the constant's doc comment, which
+  promised room for a 16 MiB parse, now states it.
+- `window::test_edits_during_a_pending_restore_never_overwrite_the_recovery_body`
+  failed its first attempt in five lane `window`-shard runs (hold 1, not 0)
+  and passed on the retry. It waited for the set-aside file and then
+  asserted the restore hold released, but the worker writes the file before
+  the `spawn_blocking_then` completion releases the hold. It now waits for
+  the release and then checks the file, which also asserts the production
+  order (no release before the copy exists).
+
 ## Axioms
 
-- None decided yet. If the writer (D2) is a toolkit behaviour the fix relies
+- **Added: A113** (stage 3). An aligned scroll to a `GtkTextView`'s first
+  line rests at the top margin plus the first glyph's y, never at `lower`,
+  and is animated. The fix relies on it (it avoids the call for line 0).
+  Sample green on the toolbox and on SDK 50 (GTK 4.22.2), 51 and master
+  (`a113-toolbox.log`, `a113-runtimes.log`). It needs no small-CPU condition.
+- The plan was: if the writer (D2) is a toolkit behaviour the fix relies
   on, it gets the next ledger entry (**A113**) in
   `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`,
   with a `gtk-lush-axioms` probe and sample. Its sample runs on the shipped

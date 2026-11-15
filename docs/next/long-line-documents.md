@@ -4039,13 +4039,63 @@ separate change, in this order:
        checksum-pinned crate on OpenSSL 4;
      - D4: two retry-rescued widget tests diagnosed and fixed (directory
        retention, protected periodic capture).
-     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (queued):
-     F1, the D2 guard
-     `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
-     fails on every CI run and passes locally, starved or not, before and
-     after the merge; task 4.2, the bookmark preview-only test, is not
-     diagnosed (it failed on CI inside the full `window` shard); and the
-     eight-branch-run proof for `editor-page`, `window` and `surfaces`.
+     **Follow-up `diagnose-ci-only-reflow-guard-failure`** (implemented
+     2026-11-15, PR pending, not merged). It reproduces CI-only widget
+     failures in the widget job's image (`scripts/ci-image-widget-test.sh`,
+     `build.md` "CI image lane": CI's own step with `cargo` shimmed to a
+     prebuilt binary).
+     - F1, the D2 guard
+       `test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow`,
+       was a **product defect**. It reproduced in the lane at `--cpus=4`
+       and unlimited, 5 of 5 each, with CI's message (value 8), so the CPU
+       count was not the condition.
+       - The writer is the reattach of a detached view to its kept top
+         line (`ui/editor_page/view_attachment.rs`): for line 0, GTK's
+         aligned scroll rests at the top margin plus the first glyph's y,
+         never at `lower` (new axiom A113, sample on GNOME 50, 51 and
+         master). The animated move then reads as a scroll (A112), and the
+         settle disarms the top-anchor repair.
+       - The image's property is session timing. Its accessibility
+         registry answers "no listener" while the never-shown page is
+         still unmapped, so the page is detached and reattached; in the
+         toolbox the answer comes later.
+       - In production, a session-restored or background tab at line 0 came
+         back 6–12 px down, with the top margin gone and line one clipped.
+         It now rests at `lower`. A deeper kept line still uses GTK's
+         aligned scroll.
+       - Red on `main` code: the lane failed the four D2 tests' new exact
+         precondition (value 8) and the new reattach test (value 12); the
+         toolbox failed the reattach test. Green with the fix: 20 of 20 lane
+         runs of the six-test proof set at `--cpus=4`; 5 of 5 of the guard
+         at `--cpus=1` and at `--cpus=2`; 20 of 20 toolbox runs of the
+         guard; the whole `editor-page` shard once in the lane.
+     - Task 4.2, the bookmark preview-only test, did not reproduce: 5 of 5
+       isolated and green in all eleven complete lane runs of the
+       `window` shard.
+     - The lane found two `window`-shard tests fragile, and both are fixed:
+       - `notes_browser::test_the_list_stays_virtualized_at_131072_rows`:
+         its rows retained the temporary path, whose process ids have two
+         digits in the lane, so 103,244 rows fit the retained ceiling, and
+         their shell overlap left no room to count the rest (found 103,424
+         of 131,072). The fixture now fixes the folder path at 112 bytes:
+         73,908 rows on both hosts, peak construction 91.95 MB of
+         100.66 MB. Measured product limitation, not changed: with rows of
+         about 650 bytes, the notes source stops counting past the retained
+         ceiling and reports a lower bound (`MAX_PALETTE_NOTE_CONSTRUCTION_BYTES`'s
+         doc comment).
+       - `window::test_edits_during_a_pending_restore_never_overwrite_the_recovery_body`
+         waited for the set-aside file, which the worker writes before its
+         completion releases the restore hold. It now waits for the release
+         and then checks the file (5 lane `window`-shard runs had failed
+         it, rescued by the retry).
+     - **Owed to the programme-end CI check** (the stage brief forbids
+       waiting for or rerunning CI, so `restore-main-ci` D5's eight-run
+       proof was not run): `editor-page` for the minimap slider test and
+       the protected periodic capture (green 5 of 5 in the lane, never
+       reproduced), `window` for the bookmark preview-only test (4.2, not
+       reproduced), and `surfaces` for directory retention (its CI figure
+       needs the runner). Each shard's first CI run on `main` after the
+       merge is read for those tests and for F1.
    - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14, merged (PR #100,
      `main` `6211a9c1`) and archived 2026-11-14,
      `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/`,

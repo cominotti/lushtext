@@ -27,13 +27,16 @@
 #   - bind-mounts the worktree and the cargo target and build directories
 #     read-only at their own paths (SELinux labels disabled for this container only, so
 #     nothing on the host is relabelled) and DIR read-write;
-#   - runs `<widget binary> --exact <names>` N times, each in a fresh
-#     container; the binary self-supervises into `dbus-run-session` and
-#     `mutter --headless` with CI's monitor and pre-GTK environment;
+#   - runs CI's own widget step N times, each in a fresh container:
+#     `scripts/widget-shards.py run <shard>` for `--shard` (after
+#     `run-widget-tests.sh --self-test`, as CI does), else
+#     `scripts/run-widget-tests.sh --headless --retries 1 -- <args>`, with
+#     `cargo` shimmed to the prebuilt binary (the image has no Rust
+#     toolchain), so the temp scope, the private session, the warning scan
+#     and the retries are the runner's own;
 #   - keeps each run's log in DIR and prints one verdict per run.
 #
-# `--shard NAME` takes the names from `scripts/widget-shards.py list` and
-# only one run per call (`--runs 1`): a shard run takes about 11 minutes, and
+# `--shard NAME` runs one shard, one run per call (`--runs 1`): a shard run takes about 11 minutes, and
 # one call holds the shared heavy-work lock once (`verification-runs.md`,
 # "One lock per command"). Run it as
 #   scripts/heavy.sh --mem none -- scripts/ci-image-widget-test.sh ...
@@ -43,20 +46,19 @@
 # is for a diagnostic that needs a cpuset; choose the list inside the CPUs
 # this toolbox inherits. Never wrap the lane in `taskset`.
 #
-# Fidelity: CI runs `widget-shards.py run <shard>`, i.e.
-# `run-widget-tests.sh --headless --retries 1`, which always ends in
-# `cargo test`; the image has no Rust toolchain, so the lane runs the binary
-# directly and lacks that runner's temp scope (leak check), its warning scan
-# and its outer retry. A "not reproduced" verdict carries that difference.
-# The binary's own in-process retry (`FLAKY:` lines) is still there.
+# Fidelity: the step is CI's; what differs is the machine (kernel, cgroup
+# driver, virtualisation, load). Running the bare binary instead (its own
+# headless self-supervision, no temp scope) failed two window tests that pass
+# on CI and in the toolbox (`diagnose-ci-only-reflow-guard-failure` 4.1), so
+# the lane never does that.
 #
 # `--image` replaces the base image for a diagnostic (the `dnf` line is still
 # ci.yml's); `--extra-packages` adds packages (for example
 # `adwaita-mono-fonts`); `--env` passes a variable to the binary.
 #
-# A run is green only when the binary exits 0 with no `FLAKY:` line (the
-# harness exits 0 on a retry-rescued pass) and, for a shard, selects exactly
-# the shard's tests. Exits 0 when every run was green, 1 when any run was not
+# A run is green only when the step exits 0 with no `FLAKY:` or
+# `FLAKY-SHARD:` line (both exit 0 on a retry-rescued pass) and, for a shard,
+# the harness selected exactly the shard's tests. Exits 0 when every run was green, 1 when any run was not
 # (or a check refused the run), 2 on a usage error, and 77 (the widget
 # runner's unsupported-host code) when Docker is not available.
 
@@ -135,6 +137,24 @@ run_verdict() {
     fi
 }
 
+# Write the `cargo` shim into directory `$1` (see the call site).
+write_cargo_shim() {
+    mkdir -p "$1"
+    cat >"$1/cargo" <<'EOF_SHIM'
+#!/bin/sh
+# ci-image-widget-test shim: `cargo test ... -- ARGS` runs the prebuilt widget
+# binary with ARGS; any other cargo use is a lane defect.
+case " $* " in
+    *" test "*" --test widget "*) ;;
+    *) echo "ci-image-widget-test: unexpected cargo call: $*" >&2; exit 2 ;;
+esac
+while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ "$#" -gt 0 ] && shift
+exec "$LANE_WIDGET_BINARY" "$@"
+EOF_SHIM
+    chmod +x "$1/cargo"
+}
+
 self_test() {
     local dir status out
     dir="$(mktemp -d "${TMPDIR:-/tmp}/ci-image-widget-test-self-test.XXXXXX")"
@@ -210,6 +230,19 @@ EOF
     [[ "$(run_verdict 0 0 426 426)" == green ]] || fail "a complete shard is not green"
     [[ "$(run_verdict 0 0 425 426)" == "RED (selected 425 of 426)" ]] || fail "a short shard is not red"
     [[ "$(run_verdict 0 0 '' 426)" == "RED (selected none of 426)" ]] || fail "a shard with no count is not red"
+
+    # The cargo shim runs the binary with the arguments after `--`, for both
+    # of CI's cargo calls, and refuses anything else.
+    write_cargo_shim "$dir/shim"
+    printf '#!/bin/sh\necho "args:$*"\n' >"$dir/fake-widget"
+    chmod +x "$dir/fake-widget"
+    out="$(LANE_WIDGET_BINARY="$dir/fake-widget" "$dir/shim/cargo" test -p lushtext --test widget -- --exact a::b)"
+    [[ "$out" == "args:--exact a::b" ]] || fail "shim ran '$out'"
+    out="$(LANE_WIDGET_BINARY="$dir/fake-widget" "$dir/shim/cargo" test -p lushtext --test widget -- --list --format terse)"
+    [[ "$out" == "args:--list --format terse" ]] || fail "shim listed '$out'"
+    status=0
+    LANE_WIDGET_BINARY="$dir/fake-widget" "$dir/shim/cargo" build -p lushtext >/dev/null 2>&1 || status=$?
+    [[ "$status" -eq 2 ]] || fail "shim accepted a cargo build (exit $status)"
 
     # Argument errors, all refused before Docker is touched.
     expect_usage() {
@@ -351,10 +384,21 @@ elif [[ -n "$CPUSET" ]]; then
     LIMIT_ARGS=(--cpuset-cpus "$CPUSET")
     LIMIT_LABEL="--cpuset=$CPUSET"
 fi
-CONTAINER_ENV=(
-    -e GDK_BACKEND=wayland -e NO_AT_BRIDGE=1 -e GDK_DEBUG=no-portals -e GTK_USE_PORTAL=0
-)
+# CI's step runs `cargo test -p lushtext --test widget -- <args>` through
+# run-widget-tests.sh (and `-- --list` through widget-shards.py); the image
+# has no Rust toolchain, so this shim runs the prebuilt binary with the
+# arguments after `--` instead, and both scripts run unchanged.
+SHIM_DIR="$OUT_DIR/.lane-bin"
+write_cargo_shim "$SHIM_DIR"
+CONTAINER_ENV=(-e "LANE_WIDGET_BINARY=$BINARY" -e "PATH=$SHIM_DIR:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin")
 for setting in "${ENV_VARS[@]}"; do CONTAINER_ENV+=(-e "$setting"); done
+if [[ -n "$SHARD" ]]; then
+    # CI's widget step, verbatim but for the measurement file.
+    # shellcheck disable=SC2016 # expanded by the container's shell
+    LANE_STEP=(bash -c 'scripts/run-widget-tests.sh --self-test >/dev/null && exec python3 scripts/widget-shards.py run "$0"' "$SHARD")
+else
+    LANE_STEP=(scripts/run-widget-tests.sh --headless --retries 1 -- "${TEST_ARGS[@]}")
+fi
 
 CONTAINER=""
 cleanup() { [[ -n "$CONTAINER" ]] && docker rm -f "$CONTAINER" >/dev/null 2>&1; true; }
@@ -364,7 +408,7 @@ trap 'cleanup; exit 130' INT TERM
 echo "ci-image-widget-test: image $LANE_IMAGE ($BASE_IMAGE${EXTRA_PACKAGES:+ + $EXTRA_PACKAGES}), $LIMIT_LABEL, memory $MEMORY, $RUNS run(s)"
 echo "ci-image-widget-test: binary $BINARY ($(date -r "$BINARY" -Is))"
 echo "ci-image-widget-test: ${#TEST_ARGS[@]} binary argument(s)${SHARD:+, shard $SHARD (${#SHARD_NAMES[@]} tests)}; logs in $OUT_DIR"
-echo "ci-image-widget-test: lacks against CI's run-widget-tests.sh path: the temp scope (leak check), the warning scan and the outer retry"
+echo "ci-image-widget-test: runs CI's step (run-widget-tests.sh --headless --retries 1, or widget-shards.py run) with cargo shimmed to the binary; it differs from the runner in kernel, cgroup driver and virtualisation"
 
 failed_runs=0
 for run in $(seq 1 "$RUNS"); do
@@ -380,10 +424,10 @@ for run in $(seq 1 "$RUNS"); do
             -v "$OUT_DIR:$OUT_DIR" \
             -w "$REPO_ROOT" "${CONTAINER_ENV[@]}" "$LANE_IMAGE" \
             bash -c 'echo "nproc=$(nproc) fc-match monospace: $(fc-match monospace)"; ls /dev/dri 2>&1 | head -n1; exec timeout "$0" "$@"' \
-            "$TIMEOUT_S" "$BINARY" "${TEST_ARGS[@]}"
+            "$TIMEOUT_S" "${LANE_STEP[@]}"
     } >"$log" 2>&1 || status=$?
     CONTAINER=""
-    flaky="$(grep -c '^ *FLAKY: ' "$log" || true)"
+    flaky="$(grep -cE '^ *FLAKY(-SHARD)?: ' "$log" || true)"
     result="$(grep -m1 '^test result:' "$log" || echo "no test result (exit $status)")"
     selected="$(sed -n 's/^running \([0-9][0-9]*\) tests$/\1/p' "$log" | head -n1)"
     verdict="$(run_verdict "$status" "$flaky" "$selected" "${SHARD:+${#SHARD_NAMES[@]}}")"
