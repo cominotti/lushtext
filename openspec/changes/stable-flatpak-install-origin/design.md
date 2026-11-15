@@ -502,3 +502,33 @@ Decisions taken while implementing, each measured in the fixture test:
   lock, before it waits.
 - **Temp scope.** `make test-flatpak-identity-verifier` now runs under
   `$(TEMP_SCOPE)` as well, as `testing.md` requires of every test lane.
+
+## Stage 4 review notes (2026-11-15)
+
+Independent review of `origin/main..HEAD`. No must-fix. Decisions and checks:
+
+- **`remote_line` and `pipefail` (nit, fixed).** `awk '… { print; exit }'`
+  closed the pipe after the first match. Under `pipefail` a `flatpak remotes`
+  still writing would then exit with SIGPIPE (141), and `set -e` would abort
+  `install` right after the build. The output is a few hundred bytes written
+  at once, so the race was latent, not observed; awk now reads to the end and
+  prints the first match. No behaviour change, so no failing-first test; the
+  fixture test stays green.
+- **The host side.** GNOME Software runs on the host, not in the toolbox. On
+  the host, `flatpak remote-ls --user --updates` exits 0, `lushtext-origin` is
+  enabled at the shared repository, and its `summary` is there. This is the
+  reported symptom gone where the user sees it.
+- **Test isolation.** The fixture test does not override `XDG_RUNTIME_DIR`. A
+  snapshot of `$XDG_RUNTIME_DIR/.flatpak`, `.flatpak-cache` and
+  `.flatpak-helper`, taken before and after a run, is identical. So every
+  write the test makes stays under its `TMPDIR`, and no override is needed.
+- **Timing (task 2.4) stays an explicit exception.** The review reran the test
+  at 3.12 s, as a second non-verdict sample at a 1-min load of about 8 (a game
+  and other agents' benches). `measure.sh` was not retried: it would have
+  stalled the other agents for another non-verdict. The decision depends only
+  on the 10 s limit, and both samples sit at a third of it.
+- **CI.** No workflow runs `check-policy` as a whole, so the fixture test runs
+  only locally (`make check`, the pre-commit hook). That is deliberate: the
+  test pins flatpak behaviour (case e, case h) that hosted Ubuntu runners'
+  older flatpak may not share. A failure on a new flatpak means flatpak
+  changed (flatpak-rust skill).

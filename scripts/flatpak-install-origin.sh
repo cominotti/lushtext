@@ -88,8 +88,10 @@ user_remotes() {
     flatpak remotes --user --show-disabled --columns=name,url,options
 }
 
+# awk reads to the end (no early `exit`): under pipefail an early exit could
+# end flatpak with SIGPIPE and abort the install after a long build.
 remote_line() {
-    user_remotes | awk -F'\t' -v n="$1" '$1 == n { print; exit }'
+    user_remotes | awk -F'\t' -v n="$1" '$1 == n && !seen++ { print }'
 }
 
 is_disabled() {

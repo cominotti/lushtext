@@ -103,3 +103,13 @@ $ ./scripts/flatpak-install-origin.sh check
   Timing retry r3 (--lock-timeout 180) waited on another agent's measurement and was stopped: 2.4 stays the recorded
   non-verdict 3.128 s at load 6.48.
   Kani: none (no proven module touched). GTK axioms: none. rustdoc: not run (no doc comments changed).
+
+## 2026-11-15T01:30:49-03:00 stage 4 review (independent)
+  remote_line: awk no longer exits early under pipefail (latent SIGPIPE abort; no behaviour change).
+  make test-flatpak-install-origin: 12/12 ok after the fix (wall 3.12 s, non-verdict: 1-min load ~8, not retried through measure.sh)
+  make test-flatpak-identity-verifier: passed; shellcheck + bash -n scripts/flatpak-install-origin.sh: clean
+  XDG_RUNTIME_DIR isolation: $XDG_RUNTIME_DIR/{.flatpak,.flatpak-cache,.flatpak-helper} listing identical before/after a fixture run
+  read-only, real installation (toolbox): flatpak-install-origin.sh check --installed <shared repo> dev.cominotti.lushtext/x86_64/master
+    -> deployed from lushtext-origin (file:///var/home/danilo/.local/share/lushtext-flatpak-install/repo) at a7f1faea...; rc=0
+  read-only, HOST (where GNOME Software runs): flatpak-spawn --host flatpak remote-ls --user --updates rc=0;
+    lushtext-origin enabled at the shared repository; repo/summary present (1003 bytes, 2026-11-15 00:46)

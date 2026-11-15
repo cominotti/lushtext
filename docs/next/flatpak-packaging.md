@@ -33,7 +33,8 @@ available; server has no summary file" on every refresh (2026-11-14, after the
 made every later install a silent no-op: flatpak reuses a disabled origin whose
 URL matches and skips the update with exit status 0.
 
-So `make flatpak-install` (change `stable-flatpak-install-origin`):
+So `make flatpak-install` (change `stable-flatpak-install-origin`, implemented
+2026-11-14, PR #101):
 
 - exports with `flatpak-builder --repo=<shared repo>`, without `--install`, to
   one repository shared by every checkout,
