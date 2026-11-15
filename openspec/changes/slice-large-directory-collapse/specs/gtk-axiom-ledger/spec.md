@@ -1,15 +1,18 @@
 ## ADDED Requirements
 
 ### Requirement: List row-widget churn and tree-expander disclosure are ledger axioms
-The ledger SHALL record, each with a probe, a catalogue entry and a sample verified on GNOME 51 and the GNOME 50 floor: how a mapped `GtkListView` destroys and creates row widgets when rows are removed; `GtkTreeExpander`'s click, key and action routes and how an application can own them; and how a CSS class overrides the expander's checked arrow.
+The ledger SHALL record, each with a probe, a catalogue entry and a sample verified on GNOME 51 and the GNOME 50 floor: how a mapped `GtkListView` destroys and creates row widgets when rows are removed; `GtkTreeExpander`'s click, key, action and AT-SPI routes and how an application can own them; and how a CSS class overrides the expander's checked arrow.
 
 #### Scenario: Removing rows from a mapped list
-- **WHEN** the probe removes 16, 64 and 256 bound rows, and separately rows no widget is bound to, from a presented `GtkListView` over a `GtkTreeListModel`
-- **THEN** it records that bound rows' widgets are destroyed inside `items-changed`, fresh widgets are created for the rows entering the band and never reused from removed items, their styles are computed in the next frame, and unbound removals destroy and create none
+- **WHEN** the probe removes 16, 64 and 256 bound rows, with 0 and 400 rows after them, and separately the rows no widget is bound to after the band and before it, from a presented `GtkListView` over a `GtkTreeListModel`
+- **THEN** it records that bound rows' widgets are destroyed inside `items-changed`, fresh widgets are created for the rows entering the band and never reused from removed items, and their styles are computed in the layout phase of the frame that follows or contains the removal
+- **AND** it records that unbound removals on either side of the band destroy and create none and leave the band where it was
+- **AND** it records the same head removal with 400 rows after it on an unmapped list
 
 #### Scenario: Owning the expander's routes
-- **WHEN** the probe disables the expander's click gesture, adds a capture-phase key controller on an ancestor, and inserts a `listitem` action group
-- **THEN** it records that the click toggles nothing, that the controller stops the collapse key bindings, that the class actions still resolve first, and that the expander has no AT-SPI action
+- **WHEN** the probe adds a capture-phase click gesture to the expander that claims presses on its arrow icon, adds a capture-phase key controller on an ancestor, inserts a `listitem` action group, and reads the expander's AT-SPI action table
+- **THEN** it records that the expander's own click gesture is on its arrow icon and not on the expander, that the claimed click toggles nothing even after the icon is re-created, which of the expander's key bindings reach it with focus on a focusable list row and on a button inside it, that the controller stops those bindings, and that the class actions still resolve first
+- **AND** it records the AT-SPI actions the expander exposes, that `DoAction` on its collapse action collapses the row directly, and which accessible `expanded` state GTK keeps on the expander and on its icon
 
 #### Scenario: Overriding the checked arrow
 - **WHEN** the probe adds a CSS class to an expanded row's `GtkTreeExpander` under the shipped style

@@ -4,13 +4,15 @@
 Every LushText route that collapses a directory row SHALL go through one section entry point. A sliced collapse SHALL end in `main`'s final state. While it runs, no load, scan or refresh SHALL add rows to its subtree, and readiness SHALL report the tree as changing. Selection and focus inside the subtree SHALL move to the directory row first.
 
 #### Scenario: Every route reaches the entry point
-- **WHEN** a directory is collapsed by an expander click, by `minus`, `KP_Subtract`, `slash`, `KP_Divide`, `Shift+Left`, `Ctrl+Shift+Left` or `Ctrl+Space` on its row (`Shift+Right` and `Ctrl+Shift+Right` in right-to-left), by activating the row, by the folder header's collapse or toggle, by a failed reveal, or by the reorder drag's defensive collapse
+- **WHEN** a directory is collapsed by a click on its expander arrow, by activating the row, by the folder header's collapse or toggle, by a failed reveal, or by the reorder drag's defensive collapse
+- **OR** by one of the expander's collapse key bindings that the ledger's expander axiom shows reachable from LushText's rows on `main`, among `minus`, `KP_Subtract`, `slash`, `KP_Divide`, `Shift+Left`, `Shift+KP_Left`, `Ctrl+Shift+Left`, `Ctrl+Shift+KP_Left`, `Ctrl+Space` and `Ctrl+KP_Space` (the `Right` and `KP_Right` four in right-to-left)
 - **THEN** the collapse runs through the section's collapse entry point, and no other LushText code calls `set_expanded(false)` on a directory row
 - **AND** every LushText caller of `set_expanded(true)` goes through the expand entry point
 - **AND** the key routes are exactly those GTK's expander honours for the focus LushText's rows have on `main`, so no key gains or loses a behaviour
+- **AND** an AT-SPI action on the expander and GTK's drag-hover expansion keep GTK's own behaviour, and are recorded as residual routes
 
 #### Scenario: Expanding keeps GTK's behaviour
-- **WHEN** a collapsed directory is expanded by a click or by `plus`, `KP_Add`, `asterisk`, `Shift+Right` or `Ctrl+Space`
+- **WHEN** a collapsed directory is expanded by a click on its arrow, or by an expand key binding the ledger's expander axiom shows reachable, among `plus`, `KP_Add`, `asterisk`, `KP_Multiply`, `Shift+Right`, `Shift+KP_Right`, `Ctrl+Shift+Right`, `Ctrl+Shift+KP_Right`, `Ctrl+Space` and `Ctrl+KP_Space` (the `Left` and `KP_Left` four in right-to-left)
 - **THEN** it expands and scrolls to the row exactly as `GtkTreeExpander` does on `main`
 
 #### Scenario: Final state matches a direct collapse
@@ -43,8 +45,8 @@ Every LushText route that collapses a directory row SHALL go through one section
 - **THEN** no further batch is applied to any store in its subtree, and a re-expansion starts a fresh load
 
 #### Scenario: Readiness and evidence
-- **WHEN** a sliced collapse is in progress
-- **THEN** `workspace-refresh-complete` is not satisfied, the automation snapshot reports `collapse_pending`, and the section evidence reports the steps taken and the rows left without making the toolkit do work
+- **WHEN** one or more sliced collapses are in progress
+- **THEN** `workspace-refresh-complete` is not satisfied, the automation snapshot reports `collapse_pending`, and the section evidence reports each queued collapse's steps taken and rows left without making the toolkit do work
 
 #### Scenario: Removal while collapsing
 - **WHEN** a refresh splice, a section rebuild or a model reset removes a collapsing directory row

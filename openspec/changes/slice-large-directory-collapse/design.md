@@ -31,11 +31,12 @@ GTK facts used below were read in the GTK 4.24.1 sources, saved in
 
 **Goals**
 
-- Every dispatch of a sidebar directory collapse fits its budget at every
-  size, with or without rows after the directory. That runs from the input
-  until the row is collapsed and its listing retired. The input dispatch and
-  every collapse step fit `B_INTERACT_US`, and every frame in between fits
-  `B_SETTLE_US`.
+- Every dispatch of a sidebar directory collapse that LushText starts (D5)
+  fits its budget at every size, with or without rows after the directory.
+  That runs from the input until the row is collapsed and its listing
+  retired. The input dispatch and every collapse step fit `B_INTERACT_US`,
+  and every frame in between fits `B_SETTLE_US`. A toolkit-floor exception is
+  allowed only as D2 defines it.
 - The user sees the collapse in the first frame after the input, within
   `INPUT_TO_FRAME_US`.
 - The collapse's final state is `main`'s. That covers rows, expansion intent,
@@ -54,8 +55,9 @@ GTK facts used below were read in the GTK 4.24.1 sources, saved in
 - Lighter sidebar rows, and reuse of removed row widgets by GTK. These are
   follow-ups; see D4.
 - Collapses LushText does not start: a refresh splice that removes an expanded
-  directory, a section rebuild, or a model reset. They keep GTK's direct
-  collapse and are measured as residuals.
+  directory, a section rebuild, a model reset, or an AT-SPI `DoAction` on the
+  expander's class actions (D5). They keep GTK's direct collapse and are
+  measured as residuals.
 
 ## Measured baseline
 
@@ -200,12 +202,22 @@ see D4.
   read against `B_INTERACT_US`, and so is every collapse step, because each
   runs while the user is waiting on the sidebar.
 - Each frame drawn during a collapse, which styles the rows a step brought
-  into the band, is read against `B_SETTLE_US`.
+  into the band, is read against `B_SETTLE_US`. A frame-paced step runs
+  inside the frame clock's dispatch (D4), so that one dispatch carries the
+  step and the styling of one unit. The step's own time is read against
+  `B_INTERACT_US`. The whole dispatch is read against `B_SETTLE_US`.
+- Scope: the routes LushText owns (D5). The residual routes are measured and
+  recorded, not judged.
+- Exception: if the smallest measured unit (8) still cannot keep a step within
+  `B_INTERACT_US` because of the toolkit's per-widget cost, that dispatch is
+  recorded as a measured toolkit-floor exception citing A112. This is the
+  existing clause of "Workspace list dispatches fit the settle budget". The
+  unit then stays at 8. Nothing over budget is left unexplained.
 - The first frame after the input shows the collapse: the arrow and the
   accessible state, D6.
 - Time until collapsed is printed and recorded, not enforced. Its expected
   ceiling is
-  `ceil(bound rows / COLLAPSE_REALIZED_ROWS_PER_FRAME) + ceil(unbound rows / (COLLAPSE_UNBOUND_CHUNK_ROWS × chunks per turn))`
+  `ceil(bound rows / SIDEBAR_REALIZED_ROWS_PER_FRAME) + ceil(unbound rows / (COLLAPSE_UNBOUND_CHUNK_ROWS × chunks per turn))`
   frames. This is the trade the change makes against `main`'s faster but
   frozen collapse, and the proposal states it as user-visible.
 - Excluded from the pass bar, as a named residual: the probe scan's
@@ -215,9 +227,16 @@ see D4.
 - Four rounds interleaved `main` → branch → `main` → branch, through
   `scripts/measure.sh`; a round counts only at a recorded 1-minute load
   below 4. Build and session as in "Measured baseline".
-- Cases: collapse with 0 and 400 rows after the directory, at N = 64, 256,
-  4,096, 16,385 and 131,072; expansion with 0 and 400 rows after it, at
-  N = 64, 256 and 1,024 (D10).
+- Cases:
+  - collapse with 0 and 400 rows after the directory, at N = 64, 256, 4,096,
+    16,385 and 131,072;
+  - the folder header's collapse of two expanded 4,096-entry roots at once
+    (D7);
+  - re-expansion in the middle of a sliced 131,072-entry collapse (the refill
+    of D7);
+  - expansion with 0 and 400 rows after the directory, at N = 64, 256 and
+    1,024, measured both cold (first expansion) and right after a collapse
+    (D10). Stage 1 measured only the second.
 - Recorded per case: the input dispatch, every dispatch until collapsed plus
   700 ms, with frames split into layout and paint phases, and
   time-to-collapsed. Frame verdicts are taken under the GL renderer in steady
@@ -227,9 +246,12 @@ see D4.
   - a refresh splice that removes an expanded 256-entry and an expanded
     131,072-entry directory (deleted on disk);
   - a section rebuild with such a directory expanded;
-  - a collapse while the sidebar is hidden (D4 pacing).
+  - a collapse while the sidebar is hidden (D4 pacing);
+  - an AT-SPI `DoAction` of the expander's `listitem.collapse` on a
+    256-entry directory (D5).
 - Pass: on the branch, the input dispatch and every step fit
-  `B_INTERACT_US`, and every dispatch fits `B_SETTLE_US`, in every round.
+  `B_INTERACT_US`, and every dispatch fits `B_SETTLE_US`, in every round, for
+  the owned routes, except a recorded exception (above).
 - Long campaigns run detached.
 
 ### D3. Constants
@@ -241,7 +263,7 @@ campaign (task 1) and then fixed.
   most this many flattened rows collapses directly. At 64 entries `main`
   measures 4.5 ms with nothing after the directory and 12.4–13.1 ms with rows
   after, so 32 replacements cost about 6 ms plus their frame.
-- `COLLAPSE_REALIZED_ROWS_PER_FRAME`: cap, rounded down. Candidates 8, 16
+- `SIDEBAR_REALIZED_ROWS_PER_FRAME`: cap, rounded down. Candidates 8, 16
   and 32. Prototype B at load 13: 16 → steps up to 14.6 ms and frames up to
   11.7 ms; 32 → 14.7 / 13.1 ms; 64 fails. The 8 ms pass bar is not yet
   supported at 32. On `main` one replacement (destroy plus create) costs about
@@ -250,7 +272,20 @@ campaign (task 1) and then fixed.
   6 + 6 ms and 16 about 3 + 3 ms. It is the most bound rows one
   step removes, and so the most widgets one frame must style. It is also
   `DIRECT_COLLAPSE_ROWS`'s upper bound, so the final collapse is never larger
-  than a step.
+  than a step. It is named for the sidebar, not for the collapse, because
+  D10's expansion cap uses it too.
+  - *Why not an existing constant?* `model::list_budget` already has two:
+    - `LIST_RETIREMENT_UNIT_ROWS` (16) sizes an unmapped retirement's
+      teardown only (about 70 µs a row);
+    - `LIST_GROWTH_STEP_ROWS` (32) sizes the rows a lazy list realizes per
+      frame (about 0.16 ms of layout a notes or palette row).
+
+    A sidebar row costs about 190 µs to replace plus about 185 µs to style
+    (stage 1, under load). That is a different measured basis on a different
+    list. Reusing either value would tie two lists' costs together that
+    change independently. The verdict may pick the same number; the
+    constant's doc then says so.
+- `COLLAPSE_FRAME_STARVATION_MS`: timeout, rounded up. Candidate 128. See D4.
 - `COLLAPSE_UNBOUND_CHUNK_ROWS`: cap, rounded down. Candidate 8,192.
   Prototype A measured 4.9–6.6 ms per 16,384 unbound rows under load, where
   the cost is LushText's mirror bookkeeping plus GTK's per-node rb-tree
@@ -267,35 +302,57 @@ For each step, the policy (D9) picks one removal:
    collapsing directory are drained before their parent, and each drained
    descendant is then collapsed directly.
 2. **Within a store:**
-   - first the rows no widget is bound to after the band, in chunks (A112:
-     no widget destroyed or created, the scrollbar only shrinks);
-   - then the bound rows, from the band's first child, in units, each
-     bringing at most a unit of new rows into the band;
-   - then the unbound rows between the directory row and the band, which
-     exist only when the user scrolled into the children, in chunks.
+   - first every row no widget is bound to, in chunks, one range at a time:
+     the rows after the band, then the rows between the directory row and
+     the band. The latter exist only when the user scrolled into the
+     children. Per A110 and A112, this destroys and creates no widget. The
+     ranges come from `model::list_budget::for_each_unheld_range` (D9),
+     which already yields them last first, so earlier starts stay valid;
+   - then the bound rows, from the band's first child, in units. Each unit
+     brings at most a unit of new rows into the band. Those are rows after
+     the subtree, which stay.
 3. **Pacing.** A step is one turn. It runs unbound chunks while
-   `turn_continues` holds, and at most one bound unit, which only a step
-   paced by the frame clock may take:
-   - While the list view is mapped, steps run from the frame clock (the
-     `after-paint` of the previous frame). The widgets a unit creates are
-     styled in the next frame, and two units never share one. Unbound chunks
-     create no widget (A112), so they need no frame of their own.
-   - While it is not mapped (the sidebar hidden, the section body collapsed,
-     the window unmapped or minimized), no frame is drawn. Steps then run from
-     a `G_PRIORITY_LOW` timeout with the same bounds. An unmapped list creates
-     no widget for the rows that enter its band (A110), so units cost only
-     their teardown.
-   - The source switches on `map` and `unmap`. A collapse therefore always
-     finishes, and `workspace-refresh-complete` cannot stay blocked behind a
-     list nobody draws.
+   `turn_continues` holds, and at most one bound unit:
+   - While the list view is mapped, steps run from its frame clock, through
+     a tick callback, as `ui/list_growth.rs` paces a staged publish. The
+     callback runs in the frame's update phase, before its layout. The
+     widgets a unit creates are therefore styled in that same frame, and two
+     units never share a frame. Unbound chunks create no widget (A112), so a
+     step that takes only chunks needs no frame of its own. They still run
+     on ticks, which keeps one source.
+   - **One unit per frame clock, not per section.** The sections of a window
+     share its frame clock. A window-wide token admits at most one bound unit
+     per frame across every section's collapse (D7).
+   - While the list is not mapped (the sidebar hidden, the section body
+     collapsed, the window unmapped), no frame is drawn. Steps then run from
+     a `G_PRIORITY_LOW` timeout with the same bounds. A110 does **not** show
+     that an unmapped list creates no widget for the rows entering its band.
+     A110 measured removal from the end of what is left, with nothing after
+     it. It also recorded that the wrong order realizes 512 rows on an
+     unmapped list. So the unmapped path keeps the same unit bound, and
+     A112's probe records the unmapped head removal with rows after it.
+   - **A mapped list whose frame clock is starved** (a minimized or occluded
+     window keeps its widgets mapped, and its frame clock may not tick): no
+     axiom says otherwise, so the step source does not rely on ticks alone.
+     If no tick arrives within `COLLAPSE_FRAME_STARVATION_MS` of the last
+     step, the next step runs from the `G_PRIORITY_LOW` source. The constant
+     is a timeout, rounded up; candidate 128, about 8 reference frames. The
+     next tick returns pacing to the frame clock.
+   - The source switches on `map` and `unmap`, and on starvation. A collapse
+     therefore always finishes, and `workspace-refresh-complete` cannot stay
+     blocked behind a list nobody draws.
 
 *Why this order.* Removing the band first, from the head, on a directory
 larger than the band keeps creating widgets for children the next step
 removes (Prototype B at 131,072 would need 4,096 units). Removing everything
-unbound first leaves only the band, whose replacements are siblings that
-stay. Removing the band from the end while unbound rows precede it makes GTK
-realize earlier rows instead (A110's last clause, on unmapped lists; A112
-pins the mapped case).
+unbound first, on both sides of the band, leaves only the band, whose
+replacements are siblings that stay. That is also `ui/list_retirement.rs`'s
+first turn. Removing the band while unbound subtree rows precede it lets GTK
+realize those earlier rows instead (A110's last clause, on unmapped lists).
+The rows before the band therefore go before any unit, not after. A112 pins
+the mapped case. *Fallback*, if A112 shows that a mapped list moves its band
+or realizes rows when rows before the band are removed: those rows go last,
+as in this design's first draft, and the probe records why.
 
 *Rejected.*
 - **Lighter rows alone.** Fewer widgets and CSS nodes per row would cut each
@@ -323,8 +380,8 @@ rule enforces both. Routes:
 
 | route | today | after |
 |---|---|---|
-| expander click | `GtkTreeExpander`'s bubble `GestureClick` activates `listitem.toggle-expand` (`gtktreeexpander.c:150-165`); LushText already sets that gesture's phase to `None` on file rows | the expander's own gesture is `None` on every row. A LushText gesture on the expander replicates GTK's: claim on release inside the widget; expanding activates `listitem.scroll-to` and calls `set_expanded(true)`; collapsing calls the entry point |
-| expander keys | `minus`, `KP_Subtract`, `slash`, `KP_Divide` → `listitem.collapse`; `Shift(+Ctrl)+Left/Right` by text direction; `Ctrl+space` / `Ctrl+KP_Space` → `listitem.toggle-expand` (`:654-690`). Class bindings fire only for key events that reach the expander, i.e. with focus on it or inside it. `GtkTreeExpander` is focusable (`:746`), but LushText leaves `GtkListItem:focusable` at its default `TRUE`, which the expander's own documentation (`:49-50`) says puts keyboard focus on the row instead. So these keys may be unreachable today except with focus on a focusable descendant such as the Focus Folder button. That is open question 4, settled by A113 | the capture-phase key controller handles exactly the keys GTK honours for the focus it sees, no more, so it adds no keyboard behaviour: collapse keys call the collapse entry point; expand keys on a collapsing row call the expand entry point; everything else propagates |
+| expander click | The `GestureClick` is **not on the expander**. `update_for_list_row` creates it on the expander's `expander` icon child (a `GtkBuiltinIcon`, `gtktreeexpander.c:193-210`), and destroys and re-creates the icon whenever expandability changes. Its `released` handler (`:150-165`) activates `listitem.toggle-expand` and claims the sequence. The expander's only own controller is the drop-motion controller (`:753`). LushText's bind-time loop over `expander.observe_controllers()` (`row_factory.rs:338-357`) therefore finds no `GestureClick` on 4.24.1. It is inert, and its comment describes an older toolkit | LushText adds one capture-phase `GestureClick` to the expander at setup. A press inside the current `expander` icon's bounds is claimed in capture, so the icon's own bubble gesture never sees it, whatever icon GTK has created since. On release inside the icon: expanding activates `listitem.scroll-to` and calls the expand entry point; collapsing calls the collapse entry point. A press elsewhere is left alone. A113 pins where the gesture lives and that a capture claim on the expander denies it. The inert loop is removed, or re-aimed if A113 shows a toolkit where it acts |
+| expander keys | `listitem.expand`: `plus`, `KP_Add`, `asterisk`, `KP_Multiply`. `listitem.collapse`: `minus`, `KP_Subtract`, `slash`, `KP_Divide`. By text direction: `Shift+Right`, `Shift+KP_Right`, `Ctrl+Shift+Right` and `Ctrl+Shift+KP_Right` expand in LTR and collapse in RTL; the `Left` and `KP_Left` four do the opposite. `listitem.toggle-expand`: `Ctrl+space`, `Ctrl+KP_Space` (`:654-690`). Class bindings fire only for key events that reach the expander, i.e. with focus on it or inside it. `GtkTreeExpander` is focusable (`:746`), but LushText leaves `GtkListItem:focusable` at its default `TRUE`, which the expander's own documentation (`:49-50`) says puts keyboard focus on the row instead. A row is the expander's ancestor, so a key with focus on the row never reaches it. These keys may therefore be unreachable today except with focus on a focusable descendant such as the Focus Folder button. That is open question 4, settled by A113 | the capture-phase key controller handles exactly the keys A113 shows GTK honours for the focus it sees, no more, so it adds no keyboard behaviour: collapse keys call the collapse entry point; expand keys on a collapsing row call the expand entry point; everything else propagates. If A113 shows none is reachable, no controller is installed and the row is recorded as "no key route" |
 | expand callers | the reveal's `advance_expansion` (`reveal_execution.rs:344`), the new-item flow (`file_execution.rs:119`), the restore (`scan_execution.rs:1664`), folder expand / toggle / load-time auto-expand (`folder_execution.rs:399, 409, 636`) | each calls the expand entry point, so none acts on a draining store |
 | row activation | `activate_file_at` toggles | collapse calls the entry point |
 | folder header collapse / toggle | `folder_execution.rs` `set_expanded(false)` per root | the entry point per root |
@@ -334,10 +391,32 @@ rule enforces both. Routes:
 Class actions on `GtkTreeExpander` cannot be overridden by an inserted action
 group, and the type is final, which is why the gesture and the keys are taken
 over rather than the actions. A113 pins this. Not owned, and measured as
-residuals: a refresh splice removing an expanded directory, a section rebuild
-or model reset, and `listitem.collapse` activated by anything else.
-`gtkatspiaction.c` gives `GtkTreeExpander` no AT-SPI action in 4.24.1, so
-there is no assistive-technology route.
+residuals:
+- a refresh splice removing an expanded directory, a section rebuild or a
+  model reset;
+- `listitem.collapse` or `listitem.toggle-expand` activated by anything
+  else;
+- **AT-SPI `DoAction`.** `GtkTreeExpander` has no dedicated action vtable,
+  but `gtk_atspi_get_action_vtable` falls through to the generic
+  `widget_action_vtable` for any `GtkWidget` (`gtkatspiaction.c:1063`). That
+  vtable lists the widget's own enabled, parameterless muxer actions. The
+  expander installs three class actions, so in 4.24.1 an assistive
+  technology can call `listitem.expand`, `listitem.collapse` and
+  `listitem.toggle-expand` on it. These run GTK's direct `set_expanded`.
+  They are not owned, because disabling a class action
+  (`gtk_widget_action_set_enabled`) would also disable its key bindings, and
+  a class action cannot be shadowed. Such a collapse behaves as on `main`.
+  A113 records the action table on both toolkits, and D2 measures the route
+  once as a residual. Assistive-technology and keyboard users reach the
+  owned path through row activation (`Enter`), which toggles a directory
+  (`activate_file_at`). Task 8.3 states both routes in
+  `docs/accessibility.md`;
+- **GTK's drag-hover expansion** (the expander's drop-motion controller,
+  `:715-731`, expands a collapsed row after 500 ms). It never fires on a
+  collapsing row, because the row is still GTK-expanded. So a drag hovering a
+  row that looks collapsed does not open it until the collapse ends. Recorded
+  as a residual; `reorder_execution.rs`'s defensive collapse already treats
+  it.
 
 ### D6. Showing the intent in the input dispatch
 
@@ -345,10 +424,24 @@ The input dispatch does no row work. It:
 - adds `lushtext-collapsing` to the row's `GtkTreeExpander`, whose CSS shows
   the collapsed arrow over `expander:checked`, both text directions (A114);
 - sets the row overlay's accessible `expanded` state to false;
+- sets the `GtkTreeExpander`'s own accessible `expanded` state (role
+  button) to false. GTK sets that state only in `update_for_list_row`, at
+  bind (`gtktreeexpander.c:220-228`). Its `notify::expanded` handler updates
+  the role-none icon instead (`:278-301`). Any other row notify calls
+  `update_for_list_row` again (`:306-309`). So nothing of GTK's overwrites
+  the state mid-collapse except a rebind or such a notify, and the bind path
+  below re-applies it. Both the overlay and the
+  expander are restored when a collapse is cancelled by re-expansion (D7);
 - marks the section's collapse state, and arms the first step.
 
 The row stays GTK-expanded until the final step. Every LushText reader of
-expansion state must read the collapse state as well. The authoritative
+expansion state must read the collapse state as well. That includes the
+row factory's bind-time projection (`row_accessibility.rs:86-91`, the
+overlay's `expanded` state and the row description) and its
+`notify::expanded` hook (`:133`). A rebind of the collapsing row, for example
+when it scrolls out of and back into the band, would otherwise report it
+expanded again. The bind path also re-applies the expander's accessible state
+and the `lushtext-collapsing` class from the collapse state. The authoritative
 `expanded_paths` drops the subtree at once, as a collapse does today. The
 evidence surface reports `collapsing`.
 
@@ -382,6 +475,19 @@ and only the arrow lags.
 - **A repeated collapse request** for a collapsing row is a no-op. A collapse
   of an ancestor of a collapsing directory takes the descendant's collapse
   over as its first part.
+- **Several collapses at once.** `collapse_folders` and `toggle_folders`
+  collapse every root of a section in one input. A user can also collapse a
+  second directory while one is still collapsing, in the same section or in
+  another one of the window. Each requested row shows its intent at once
+  (D6). The collapsing rows are kept in request order in the section's
+  collapse queue. The window-wide token of D4 admits one bound unit per
+  frame, taken from the first collapse that needs one. Unbound chunks of
+  later collapses may run in the same step while `turn_continues` holds.
+  Small subtrees (at most `DIRECT_COLLAPSE_ROWS` rows each) collapse
+  directly in the input dispatch until the rows removed directly reach
+  `SIDEBAR_REALIZED_ROWS_PER_FRAME` in total. The rest join the queue. So
+  one input never replaces more than one unit of widgets, however many roots
+  the header collapses. The evidence (D11) reports the queue.
 - **A refresh splice, section rebuild, model reset or dispose** that removes
   the collapsing row cancels the collapse: GTK removes what is left directly
   (a residual), and the drained stores go to BL's retirement as today.
@@ -396,8 +502,8 @@ and only the arrow lags.
 When the directory row is on screen, it does not move. Rows after it move up
 as the children go. Prototype B: rendered top constant at 44.0 px, zero slice
 bin corrections. When it is not on screen (folder header collapse, reveal
-failure, or the user scrolled into the children), the last part of D4's
-within-store order removes rows above the viewport. The list keeps its anchor and the slice bin forwards the
+failure, or the user scrolled into the children), D4's unbound ranges
+remove rows above the viewport, before any unit. The list keeps its anchor and the slice bin forwards the
 list's value change to the outer scroller (`classify_child_scroll`), which is
 the path BL's and later changes' rendered-placement tests protect. Tasks pin
 both with rendered-placement tests:
@@ -419,17 +525,35 @@ both with rendered-placement tests:
 `next_collapse_step(&CollapseFacts) -> CollapseStep` is pure, integer-only
 and float-free (`#![forbid(clippy::float_arithmetic)]`).
 
+- **Shared, not forked.** Its unbound ranges come from
+  `model::list_budget::for_each_unheld_range`, and its turn continuation from
+  `turn_continues`. That is the proved pure half `ui/list_retirement.rs`
+  already uses (`core-list-budget`). The workflow convention counts owning
+  workflows, and a second copy of the unheld-range rule could drift.
+- **Allocation-free core.** The step core takes borrowed slices of facts the
+  GTK caller has already sorted and deduplicated. It allocates nothing, for
+  the reason `for_each_unheld_range`'s doc gives: CBMC cannot afford the
+  standard library's sort or a growing `Vec` over symbolic input. A thin
+  wrapper does the sort and dedup, covered by the property tests.
+
 The band comes from the list view's children (at most about 207 widgets,
 each → expander → `list_row()` → `position()`), read once per step. That is
 O(band) and allocates no tree rows. Positions GTK holds outside the band (the
 selection, the focus row) count as bound.
 
-Proved by Kani in the new shard `core-sidebar-collapse` (scheduled; its
-budget recorded from two CI runs, per build.md), over bounded store counts,
-lengths and bands:
+Proved by Kani in the new shard `core-sidebar-collapse`, over bounded store
+counts, lengths and bands. The shard is scheduled. Its budget is recorded
+locally as `PENDING DISPATCH (owed by slice-large-directory-collapse)`, as
+build.md allows, because GitHub CI is checked only at the end of the
+programme (maintainer, 2026-11-14). `make check-kani-shards` fails the
+archiving commit of a change that still owes a figure. So before this change
+is archived, either two dispatched runs are recorded, or the debt is moved to
+an active programme change and recorded in the programme record.
+`ORACLES` in `scripts/kani-shards.py` gains `ui/sidebar/policy.rs`, scoped to
+the collapse functions (`functions=`), with its harnesses. The properties:
 - **C1** every step removes at least one row or collapses one;
 - **C2** a `RemoveBound` step covers at most
-  `COLLAPSE_REALIZED_ROWS_PER_FRAME` band positions, and a `RemoveUnbound`
+  `SIDEBAR_REALIZED_ROWS_PER_FRAME` band positions, and a `RemoveUnbound`
   step covers none and at most `COLLAPSE_UNBOUND_CHUNK_ROWS` rows;
 - **C3** a descendant is drained and collapsed before its ancestor;
 - **C4** `CollapseRow` is chosen only when the directory's remaining subtree
@@ -445,25 +569,39 @@ The re-expansion figures (21–33 ms at 256 entries, 17–19 ms at 1,024, both
 non-verdict) violate the existing "Workspace list dispatches fit the settle
 budget" requirement. Under `.agents/rules/preexisting-blockers.md` that is in
 scope. Task 1 measures expansion at N = 64, 256 and 1,024, with 0 and 400
-rows after the directory, on quiet `main`, and attributes any dispatch over
-budget with a profile before a fix is chosen. Applying all of a small
+rows after the directory, on quiet `main`. It measures both a cold
+expansion and a re-expansion right after a collapse, because stage 1
+measured only the latter, where BL's listing retirement and the probe
+scan's publication (D12) may share the window. It attributes any dispatch
+over budget with a profile before a fix is chosen. Applying all of a small
 directory's rows in one turn, so that about 200 row widgets are created at
 once, is the hypothesis, not a finding:
 - If every dispatch fits `B_SETTLE_US`, the figures are recorded and nothing
   changes.
-- If one does not, the load's batch application is capped so that at most
-  `COLLAPSE_REALIZED_ROWS_PER_FRAME` rows enter the band per frame. That is
+- If one does not and the profile puts it in row-widget creation and
+  styling, the load's batch application is capped so that at most
+  `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows enter the band per frame. That is
   BL's `FIRST_BATCH_ROWS` path, applied to every batch while the band is not
-  full, which the expansion verdict test then enforces.
+  full. The frame pacing follows `ui/list_growth.rs` (one step per tick)
+  unless the batch path's existing timer already gives one frame per batch.
+  The expansion verdict test then enforces it.
+- If the profile puts it elsewhere (the retirement turns, the probe scan's
+  publication, or the toolkit), the fix follows the attribution. A dispatch
+  that still cannot fit because of a toolkit cost is a measured
+  toolkit-floor exception citing an axiom with a probe and a sample, per the
+  existing requirement. The probe scan's publication stays D12's residual.
 
 The decision is recorded either way.
 
 ### D11. Evidence
 
-`WorkspaceSectionEvidence` gains `collapse`, an optional record holding the
-directory path, origin, steps taken, bound and unbound rows left, and the
-reason the collapse ended (completed, cancelled by re-expansion, cancelled by
-removal). It also gains `collapse_steps_total` and `collapse_direct_total`.
+`WorkspaceSectionEvidence` gains `collapses`, the section's collapse queue
+(D7) in order, empty when none runs. Each record holds the directory path,
+origin, steps taken, and bound and unbound rows left. `last_collapse_end`
+holds the reason the most recent collapse ended: completed, cancelled by
+re-expansion, taken over by an ancestor, or cancelled by removal. It also
+gains `collapse_steps_total`, `collapse_direct_total` and
+`collapse_starved_steps_total` (steps the starvation fallback of D4 ran).
 Reading them makes the toolkit do nothing, as the surface requires (no
 `row.children()`, no `item()`). The automation snapshot projects
 `collapse_pending` beside `refresh_blocks_readiness`. That is a snapshot
@@ -516,25 +654,42 @@ field, so `docs/automation.md` and `docs/automation-reference.md` are updated.
 
 - **A112**: on a mapped, presented `GtkListView` over a `GtkTreeListModel`,
   a removal destroys, inside its `items-changed`, the row widgets bound to
-  removed items, creates fresh widgets (factory setup and bind) for the rows
-  that enter the band, never reuses a removed widget for another item, and
-  leaves their style computation to the next frame. Removing rows no widget
-  is bound to, after or before the band, destroys and creates none.
+  removed items. It creates fresh widgets (factory setup and bind) for the
+  rows that enter the band, and never reuses a removed widget for another
+  item. Their style computation is left to the layout phase of the frame:
+  the same frame when the removal runs in a tick callback, the next one when
+  it runs outside a frame. Removing rows no widget is bound to, after the
+  band or between an ancestor row and the band, destroys and creates none,
+  and does not move the band.
   - Probe: counted factory setup and teardown, and timed calls at 16 / 64 /
-    256 removed rows, with 0 and 400 rows after.
+    256 removed rows, with 0 and 400 rows after. Also the unbound ranges
+    after and before the band (the list scrolled into the children), and the
+    same head removal with 400 rows after on an **unmapped** list. That last
+    case settles what A110 did not measure (D4).
   - Sample: an interactive list with live counters, plus `--check`.
-- **A113**: `GtkTreeExpander`'s disclosure routes in 4.24.1 and their
-  ownership:
-  - its bubble `GestureClick` activates `listitem.toggle-expand` on release
-    inside the widget, and with its phase `None` a click toggles nothing;
-  - its collapse key bindings fire only for key events that reach it (focus
-    on it or inside it). The probe records whether they are reachable in a
-    row built like LushText's (`GtkListItem:focusable` `TRUE`, a focusable
-    button inside the expander's child) from the row's focus and from the
-    button's. A capture-phase key controller on an ancestor that returns
-    `Stop` prevents them;
+- **A113**: `GtkTreeExpander`'s disclosure routes and their ownership, on
+  both toolkits:
+  - its click `GestureClick` lives on the `expander` icon child, not on the
+    expander, and is re-created with the icon. It activates
+    `listitem.toggle-expand` on release inside the icon. A capture-phase
+    `GestureClick` on the expander that claims a press inside the icon
+    denies it, so the click toggles nothing, across an icon re-creation. The
+    probe also records that `observe_controllers()` on the expander lists no
+    `GestureClick`, the fact behind `row_factory.rs`'s inert loop;
+  - its key bindings (the full list in D5) fire only for key events that
+    reach it (focus on it or inside it). The probe records which are
+    reachable in a row built like LushText's (`GtkListItem:focusable` `TRUE`,
+    a focusable button inside the expander's child), from the row's focus
+    and from the button's. A capture-phase key controller on an ancestor
+    that returns `Stop` prevents them;
   - its class actions resolve before an inserted `listitem` action group;
-  - it has no AT-SPI action.
+  - its AT-SPI action table, read through the generic widget vtable
+    (`gtkatspiaction.c:1063`): the names it lists (expected
+    `listitem.expand`, `listitem.collapse`, `listitem.toggle-expand`), and
+    that `DoAction` on `listitem.collapse` calls GTK's direct
+    `set_expanded(false)`;
+  - which accessible `expanded` state GTK maintains on the expander and which
+    on its icon, at bind and on `notify::expanded` (D6).
 - **A114**: a CSS rule on a class of `GtkTreeExpander` overrides the arrow
   icon its `expander:checked` node shows, in both directions, without
   changing the row's expanded state or the node's `:checked` state, on
@@ -554,6 +709,13 @@ timed figures and is marked slow if it exceeds the slow threshold.
   (D11).
 - `row_factory.rs` stays a called presentation surface: it installs the
   gesture, the key controller and the class, and decides nothing.
+- **Visual proof keys.** `collapse_execution.rs` removes rendered rows, so it
+  joins `WORKSPACE_TREE_ROW_ANCHOR_EXACT` in
+  `scripts/check-visual-proof-policy.py` and its mirror in
+  `crates/cargo-gtk-proof/src/policy.rs`. Both self-tests assert it.
+  `row_factory.rs`, `folder_execution.rs`, `imp.rs` and `reveal_execution.rs`
+  are already keys, so this change requires the
+  `workspace-tree-rendered-row-anchors` invariant either way.
 - The matrix row is re-derived: files, current size, seam counts and policy
   consumers, row-scoped and excluding `#[cfg(test)]`.
 
@@ -567,6 +729,38 @@ timed figures and is marked slow if it exceeds the slow threshold.
   change is added.
 - The archived BL design's stage 4 decisions 1 and 2 get an appended note.
   Archived text is not rewritten.
+
+### D16. Landing order (the commit hook and the visual proof)
+
+The pre-commit hook runs `make check-policy`. That includes
+`cargo gtk-proof policy`, which fails while any visual-sensitive file is
+changed in the working tree without a same-session visual-geometry proof of
+exactly those bytes. Untracked files count. Every path under
+`crates/lushtext-core/src/ui/` (including `ui/sidebar/AGENTS.md`),
+`crates/lushtext/tests/widget/` and `resources/style/` is visual-sensitive,
+and the hook's all-targets Clippy rejects tests that do not compile.
+Therefore:
+- The verdict test (task 1.1) and the failing-first tests (task 3) are not
+  committed on their own. The verdict test is kept as a patch in the handoff
+  directory, applied identically to the `main` worktree and to the branch.
+  The failing-first run is recorded in `impl/failing-first.log`.
+- The commits before the code touch no visual-sensitive path, and are made
+  while the tree holds none uncommitted:
+  - design tables (task 1.6);
+  - the axioms crate, the ledger, and the axioms' README and CHANGELOG (task
+    2.5).
+- Every visual-sensitive edit lands in **one commit**, after task 7.4's
+  visual-geometry and accessibility smokes ran on that exact tree. That
+  covers the policy, `collapse_execution.rs`, the routes, the CSS, the tests,
+  `ui/sidebar/AGENTS.md` and, if D10 applies, the expansion cap. The
+  scripts that must agree with it go in the same commit:
+  - `scripts/kani-shards.py`;
+  - the workflow-boundaries rule;
+  - the visual-proof keys.
+- The accessibility smoke's fingerprint covers `docs/accessibility.md`,
+  `docs/accessibility-matrix.md` and the automation docs. Task 8.3 edits
+  them before task 7.4's smoke runs, so the proof matches what lands.
+- Documentation outside those paths may follow in a later commit.
 
 ## Risks / Trade-offs
 
@@ -582,6 +776,14 @@ timed figures and is marked slow if it exceeds the slow threshold.
 - **Slice-bin interaction when rows above the viewport go** (D8). This class
   has regressed before. Mitigation: the rendered-placement tests and the
   bin's own evidence, and no change to the bin.
+- **Routes left to GTK.** An AT-SPI `DoAction` on the expander, a drag
+  hover, and the removal routes keep `main`'s direct collapse (D5). They are
+  measured once and recorded. They are no worse than today, and row
+  activation gives assistive technologies the owned path.
+- **A starved frame clock** (D4). The fallback source keeps a collapse
+  finishing on a minimized or occluded window. It cannot be driven headless
+  by minimizing, so a test policy forces the starvation path, and the
+  evidence counts its steps.
 - **A row that stays GTK-expanded while it looks collapsed.** Any reader that
   takes `row.is_expanded()` as intent would be wrong during a collapse.
   Mitigation: D6 routes intent through `expanded_paths` and the collapse
@@ -594,7 +796,7 @@ snapshot field is added (D11).
 
 ## Open questions (answered by tasks, not by the reviewer)
 
-1. The values of the three constants (task 1, D3).
+1. The values of the four constants (task 1, D3).
 2. Whether small-directory expansion is over budget on quiet `main`, and so
    whether D10's cap is applied (task 1).
 3. Whether A114 holds on both toolkits, or D6's fallback is used (task 2).
@@ -602,3 +804,6 @@ snapshot field is added (D11).
    today (A113, task 2). The capture controller mirrors exactly what is
    reachable, so the answer changes its key list, not the keyboard
    behaviour.
+5. Whether A112 confirms that removing the unbound rows before the band
+   leaves a mapped list's band in place, or D4's fallback order is used
+   (task 2).

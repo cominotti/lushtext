@@ -70,8 +70,12 @@ expansion side in under the pre-existing-blockers rule, measurement first.
 - **An owned, sliced collapse.** Every LushText route that collapses a
   directory goes through one section entry point:
   - the expander click, which LushText takes over from `GtkTreeExpander`'s
-    own gesture;
-  - the expander's collapse keys;
+    own gesture. That gesture lives on the expander's arrow icon, not on the
+    expander (`gtktreeexpander.c:193-210`), so LushText claims the press in
+    the capture phase. LushText's existing bind-time loop that sets the
+    "expander's" gesture phase finds no gesture on 4.24.1 and is corrected;
+  - the expander's collapse keys, as far as they are reachable from
+    LushText's rows today (A113);
   - activating a directory row;
   - the folder-header collapse and toggle;
   - the reveal's failure terminal;
@@ -85,29 +89,35 @@ expansion side in under the pre-existing-blockers rule, measurement first.
      the subtree move to the directory row.
   2. Later turns remove the children GTK holds no widget for, in chunks.
      They then remove the bound children in units of at most
-     `COLLAPSE_REALIZED_ROWS_PER_FRAME`, one step per frame, deepest
+     `SIDEBAR_REALIZED_ROWS_PER_FRAME`, one step per frame, deepest
      expanded descendant first.
   3. Once at most `DIRECT_COLLAPSE_ROWS` rows remain, the row is collapsed.
      BL's listing retirement takes the emptied stores.
 
-  Steps are paced by the frame clock while the list is drawn, and by a
-  `G_PRIORITY_LOW` source while it is not (sidebar hidden, section body
-  collapsed, window unmapped), so a collapse always finishes. Expanding the
+  Steps are paced by the list's frame clock (a tick callback, as
+  `ui/list_growth.rs` paces a staged publish), at most one bound unit per
+  frame across the window. A `G_PRIORITY_LOW` source takes over while the
+  list is not mapped (sidebar hidden, section body collapsed, window
+  unmapped), and while its frame clock is starved (a minimized or occluded
+  window), so a collapse always finishes. Several collapses at once, such as
+  the folder header collapsing every root, share that one unit per frame. Expanding the
   row again during a collapse, by any route, goes through an owned expand
   entry point: it cancels the collapse and refills the store through the
   existing refresh path. The row is still GTK-expanded at that point, so a
   bare `set_expanded(true)` would do nothing.
 - **One pure step policy.** The choice of the next removal comes from facts:
   the subtree's stores, their lengths, the flattened position of the
-  directory and the positions GTK holds rows for. It is a GTK-free function in
-  `ui/sidebar/policy.rs`, unit- and property-tested and proved by Kani in a new
+  directory and the positions GTK holds rows for. It is a GTK-free,
+  allocation-free function in `ui/sidebar/policy.rs`. It reuses
+  `model::list_budget`'s proved unheld-range and turn rules rather than
+  forking them. It is unit- and property-tested and proved by Kani in a new
   scheduled shard `core-sidebar-collapse`. The proofs cover termination, the
   per-step bounds, deepest-first order, and that the final collapse removes at
   most `DIRECT_COLLAPSE_ROWS` rows.
 - **Expansion bounded the same way, if measurement confirms it.**
   Re-measure small-directory expansion on quiet `main`. If any dispatch
   exceeds its budget, the batches a directory's load installs are capped so
-  that at most `COLLAPSE_REALIZED_ROWS_PER_FRAME` rows enter the realized band
+  that at most `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows enter the realized band
   per frame. Otherwise the figures are recorded and nothing changes.
 - **Readiness covers a collapse in progress.** `workspace-refresh-complete`
   (`refresh_blocks_readiness`) stays blocked while a sliced collapse runs. The
@@ -120,7 +130,9 @@ expansion side in under the pre-existing-blockers rule, measurement first.
     items. The next frame computes the new widgets' styles. Removing rows no
     widget is bound to destroys and creates none.
   - A113: the `GtkTreeExpander` disclosure routes and how an application can
-    own them.
+    own them. That covers where its click gesture lives, which key bindings
+    reach it from a focusable list row, and its AT-SPI action table (the
+    generic widget vtable exposes its three class actions).
   - A114: a CSS rule on a class of the expander overrides the `:checked`
     arrow without changing the row's state.
 - **Records corrected.** A91's row stops claiming the collapse's cost and
@@ -152,16 +164,21 @@ expansion side in under the pre-existing-blockers rule, measurement first.
   - an expanded directory removed by a refresh splice (the directory was
     deleted on disk);
   - a whole-model reset (section rebuild);
-  - `GtkTreeExpander` exposes no AT-SPI action in 4.24.1 (`gtkatspiaction.c`
-    handles `GtkExpander` only), so there is no assistive-technology route to
-    own.
+  - an AT-SPI `DoAction` on the expander. `gtkatspiaction.c`'s generic widget
+    vtable (`:1063`) exposes its enabled, parameterless class actions
+    `listitem.expand`, `listitem.collapse` and `listitem.toggle-expand`.
+    Disabling a class action would also disable its keys, and a class action
+    cannot be shadowed, so this route keeps `main`'s direct collapse. Row
+    activation (`Enter`) gives assistive technologies the owned path;
+  - GTK's drag-hover expansion, which does not open a row that is still
+    collapsing.
 
 ## User-visible impact
 
-- Collapsing a directory with more than about 64 visible children no longer
-  freezes the sidebar for 2–5 frames. The arrow flips in the first frame.
+- Collapsing a directory with more than about 64 visible children, by a
+  LushText-owned route, no longer freezes the sidebar for 2–5 frames. The arrow flips in the first frame.
   The children then disappear in bands of at most
-  `COLLAPSE_REALIZED_ROWS_PER_FRAME` rows per frame while the rows below move
+  `SIDEBAR_REALIZED_ROWS_PER_FRAME` rows per frame while the rows below move
   up. At 32 rows per frame, a 256-entry directory with rows after it is fully
   collapsed in about 8 frames (67 ms at 120 Hz, 133 ms at 60 Hz). At 16 rows
   per frame it takes about 16 frames. A 131,072-entry one takes about 8 frames
@@ -216,8 +233,12 @@ None.
     and the GNOME 50 floor, and `make check-workflow-boundaries`;
   - `make check-widget-shards`, `make check-kani-shards`, the new shard once,
     and the widget shard owning `workspace_tree_virtualization`;
-  - `make check-accessibility-policy`, `make check-visual-proof-policy` and
-    the headless visual and accessibility smokes.
+  - `make check-accessibility-policy`, `make check-visual-proof-policy`, and
+    the headless visual, visual-geometry
+    (`workspace-tree-rendered-row-anchors`) and accessibility smokes. The
+    touched sidebar files are row-anchor keys, and `collapse_execution.rs`
+    becomes one. Every visual-sensitive edit therefore lands in one commit
+    after those proofs (design D16).
 - **Data integrity:** none at risk. The collapse removes rows from in-memory
   child stores only. No file is read, written, renamed or deleted, and no
   persisted state changes.
