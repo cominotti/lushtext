@@ -3413,6 +3413,51 @@ fn hide_minimap_and_settle(page: &LushtextEditorPage, settings: &gio::Settings) 
     });
 }
 
+/// Wait until the passive width reflow burst has settled (its settle ran, or
+/// a refresh cancelled it), then drain what the settle queued. A fixed 600 ms
+/// was the earlier wait; CI's runners are slow enough that a burst can still
+/// be pending after it.
+fn settle_width_reflow(page: &LushtextEditorPage) {
+    wait_until(Duration::from_secs(10), || {
+        !page.minimap_evidence().reflow_settle_pending
+    });
+    flush_after_delay(Duration::from_millis(100));
+}
+
+/// Record every vertical `changed` and `value-changed` from now on, marking a
+/// `value-changed` to a value no `changed` carried (the scroll signature,
+/// ledger A112), for a failure message.
+fn record_vertical_emissions(page: &LushtextEditorPage) -> Rc<RefCell<Vec<String>>> {
+    let adjustment = page.source_view().vadjustment().expect("vadjustment");
+    let log: Rc<RefCell<Vec<String>>> = Rc::default();
+    let carried = Rc::new(Cell::new(adjustment.value()));
+    adjustment.connect_changed({
+        let log = Rc::clone(&log);
+        let carried = Rc::clone(&carried);
+        move |adjustment| {
+            carried.set(adjustment.value());
+            log.borrow_mut().push(format!(
+                "C({:.0},u{:.0},p{:.0})",
+                adjustment.value(),
+                adjustment.upper(),
+                adjustment.page_size()
+            ));
+        }
+    });
+    adjustment.connect_value_changed({
+        let log = Rc::clone(&log);
+        move |adjustment| {
+            let bare = (adjustment.value() - carried.get()).abs() > 0.5;
+            log.borrow_mut().push(format!(
+                "V({:.0}{})",
+                adjustment.value(),
+                if bare { ",bare" } else { "" }
+            ));
+        }
+    });
+    log
+}
+
 /// Narrow (or widen back) the editor by `delta` px through its scrolled
 /// window's end margin, a passive width reflow with the minimap left shown.
 fn shift_editor_width(page: &LushtextEditorPage, delta: i32) {
@@ -3446,6 +3491,25 @@ fn act_during_minimap_width_reflow(
     show: bool,
     action: impl FnOnce(&LushtextEditorPage) + 'static,
 ) {
+    act_during_width_reflow(
+        page,
+        || {
+            settings
+                .set_boolean(keys::SHOW_MINIMAP, show)
+                .expect("toggle the minimap");
+        },
+        action,
+    );
+}
+
+/// Run `open`, which must change the editor's width, and run `action` right
+/// after the passive width reflow burst it opens, as
+/// [`act_during_minimap_width_reflow`] does for a minimap toggle.
+fn act_during_width_reflow(
+    page: &LushtextEditorPage,
+    open: impl FnOnce(),
+    action: impl FnOnce(&LushtextEditorPage) + 'static,
+) {
     let hadjustment = page.source_view().hadjustment().expect("hadjustment");
     let page_size_before = hadjustment.page_size();
     let pending_at_action: Rc<Cell<Option<bool>>> = Rc::default();
@@ -3474,11 +3538,9 @@ fn act_during_minimap_width_reflow(
     });
     assert!(
         !page.minimap_evidence().reflow_settle_pending,
-        "precondition: no width reflow burst is pending before the toggle opens one"
+        "precondition: no width reflow burst is pending before the test opens one"
     );
-    settings
-        .set_boolean(keys::SHOW_MINIMAP, show)
-        .expect("toggle the minimap");
+    open();
     wait_until(Duration::from_secs(5), || pending_at_action.get().is_some());
     hadjustment.disconnect(handler_id);
     assert_eq!(
@@ -3530,7 +3592,7 @@ fn test_a_scroll_during_a_passive_width_reflow_survives_the_settle() {
         Some(true),
         "precondition: the scroll landed while the width reflow burst was pending"
     );
-    flush_after_delay(Duration::from_millis(600));
+    settle_width_reflow(&page);
     let rect = page.source_view().visible_rect();
     assert!(
         rect.y() > 10_000,
@@ -3557,7 +3619,7 @@ fn test_a_kept_reflow_scroll_survives_later_reflows() {
         let adjustment = page.source_view().vadjustment().expect("vadjustment");
         adjustment.set_value(adjustment.lower() + 20_000.0);
     });
-    flush_after_delay(Duration::from_millis(600));
+    settle_width_reflow(&page);
     assert!(
         page.source_view().visible_rect().y() > 10_000,
         "precondition: the scroll survived its own burst ({:?})",
@@ -3567,7 +3629,7 @@ fn test_a_kept_reflow_scroll_survives_later_reflows() {
     // A later width reflow, with no scroll in it (the minimap stays shown,
     // so no refresh cancels its settle).
     shift_editor_width(&page, 120);
-    flush_after_delay(Duration::from_millis(600));
+    settle_width_reflow(&page);
     let rect = page.source_view().visible_rect();
     shift_editor_width(&page, -120);
     flush_after_delay(Duration::from_millis(300));
@@ -3587,9 +3649,69 @@ fn test_a_kept_reflow_scroll_survives_later_reflows() {
     wait_until(Duration::from_secs(5), || {
         page.source_view().visible_rect().height() != height_before
     });
-    flush_after_delay(Duration::from_millis(600));
+    settle_width_reflow(&page);
     let rect = page.source_view().visible_rect();
     scroller.set_margin_bottom(scroller.margin_bottom() - 120);
+    assert!(
+        rect.y() > 10_000,
+        "a later height-only change undid the kept scroll ({rect:?})"
+    );
+}
+
+/// A kept scroll survives later reflows with the minimap hidden too. While
+/// it is hidden, a minimap refresh (here closing the search bar, which runs
+/// one synchronously) used to cancel the pending reflow settle and drop its
+/// pause, so the settle that re-records the rest state after a scroll made
+/// during the burst never ran: the rest state still said "at top", and the
+/// next width reflow's settle snapped the view back (`restore-main-ci`
+/// stage 4, design R8).
+#[test]
+fn test_a_kept_reflow_scroll_survives_a_minimap_refresh_while_hidden() {
+    ensure_gtk_init();
+    let (page, _window, settings) = present_settled_minimap_document();
+    hide_minimap_and_settle(&page, &settings);
+    let scroller = page
+        .source_view()
+        .parent()
+        .and_downcast::<gtk4::ScrolledWindow>()
+        .expect("the editor view scrolls in a GtkScrolledWindow");
+    act_during_width_reflow(
+        &page,
+        || scroller.set_margin_end(scroller.margin_end() + 120),
+        |page| {
+            let adjustment = page.source_view().vadjustment().expect("vadjustment");
+            adjustment.set_value(adjustment.lower() + 20_000.0);
+            page.hide_search();
+        },
+    );
+    settle_width_reflow(&page);
+    assert!(
+        page.source_view().visible_rect().y() > 10_000,
+        "precondition: the scroll survived its own burst ({:?})",
+        page.source_view().visible_rect()
+    );
+
+    // A later width reflow, with no scroll in it.
+    shift_editor_width(&page, -120);
+    settle_width_reflow(&page);
+    let rect = page.source_view().visible_rect();
+    assert!(
+        rect.y() > 10_000,
+        "a later width reflow undid the kept scroll ({rect:?})"
+    );
+
+    // A later height-only change.
+    let height_before = page.source_view().visible_rect().height();
+    scroller.set_margin_bottom(scroller.margin_bottom() + 120);
+    wait_until(Duration::from_secs(5), || {
+        page.source_view().visible_rect().height() != height_before
+    });
+    settle_width_reflow(&page);
+    let rect = page.source_view().visible_rect();
+    scroller.set_margin_bottom(scroller.margin_bottom() - 120);
+    settings
+        .set_boolean(keys::SHOW_MINIMAP, true)
+        .expect("restore minimap");
     assert!(
         rect.y() > 10_000,
         "a later height-only change undid the kept scroll ({rect:?})"
@@ -3613,6 +3735,7 @@ fn test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow() {
     // host the settle can already have repaired it by the time the helper
     // returns, which is the behaviour under test, not a broken precondition.
     let offset_y = Rc::new(Cell::new(0));
+    let emissions = record_vertical_emissions(&page);
     act_during_minimap_width_reflow(&page, &settings, true, {
         let offset_y = Rc::clone(&offset_y);
         move |page| {
@@ -3634,11 +3757,14 @@ fn test_a_reallocation_offset_at_the_top_is_still_repaired_after_a_reflow() {
         "precondition: the reallocation left an offset ({} px)",
         offset_y.get()
     );
-    flush_after_delay(Duration::from_millis(600));
+    settle_width_reflow(&page);
     let rect = page.source_view().visible_rect();
     assert!(
         rect.y() < 10,
-        "the settle must restore the top a reallocation offset moved ({rect:?})"
+        "the settle must restore the top a reallocation offset moved ({rect:?}); \
+         settle pending {}, vertical emissions {}",
+        page.minimap_evidence().reflow_settle_pending,
+        emissions.borrow().join(" ")
     );
 }
 

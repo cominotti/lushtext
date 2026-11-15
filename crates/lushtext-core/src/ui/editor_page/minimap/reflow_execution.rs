@@ -142,6 +142,27 @@ impl LushtextEditorPage {
         });
     }
 
+    /// Record the rest state a scroll made during a reflow burst left, when
+    /// the burst ends without its settle.
+    ///
+    /// A minimap refresh while the minimap is hidden cancels a pending settle
+    /// (`run_minimap_refresh`) and drops the burst's pause, so the settle's
+    /// own re-record of a kept scroll never runs. Without this the rest state
+    /// still said "at top" at the scrolled position, and the next width
+    /// reflow's settle snapped the view back (`restore-main-ci` design R8).
+    /// Only the record runs here, never the top-anchor repair: the burst may
+    /// still be moving, and the cancel never repaired before either.
+    pub(super) fn record_scroll_from_cancelled_reflow(&self) {
+        let overscroll = &self.imp().overscroll;
+        if overscroll.reflow_scrolled.replace(false)
+            && let Some(adjustment) = self.source_view().vadjustment()
+        {
+            let _ = overscroll
+                .rest_state
+                .record_adjustment(ViewportAxis::Vertical, &adjustment);
+        }
+    }
+
     /// Gate the post-repair reveal window on an actually visible frozen cover.
     ///
     /// Passive repairs skip capture; this helper keeps those repairs from

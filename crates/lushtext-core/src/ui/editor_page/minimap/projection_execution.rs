@@ -335,6 +335,8 @@ impl LushtextEditorPage {
             let _ = minimap.reflow_settle.clear();
             minimap.reflow_reveal_pending.set(false);
             self.imp().overscroll.reflow_pause.borrow_mut().take();
+            // Cancelling the settle cancels its rest-state record too.
+            self.record_scroll_from_cancelled_reflow();
             self.sync_projection_geometry();
             self.drop_minimap_reflow_freeze();
             self.imp().minimap.marker_bins.borrow_mut().take();

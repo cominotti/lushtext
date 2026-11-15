@@ -133,11 +133,21 @@ a test that slows the competing work deterministically
 
 **A scroll made while a reflow pauses the rest state is still a scroll.** The
 `editor_page` minimap flake (`y = -6`) was a settle repair undoing a
-`scroll_to_mark` made during a passive width burst. Reproduce such a class
-deterministically by opening the burst (toggle the minimap) and scrolling
-before it settles; then test a later reflow with a single `set_value`, because
-a `scroll_to_mark` keeps refining its value after the settle and that later
-`value-changed` can hide a missing rest-state record.
+`scroll_to_mark` made during a passive width burst. To test inside such a
+burst, act *from* the event that opens it, never after waiting for its effect:
+connect the horizontal adjustment's `changed` (after the editor's own
+observer), and on the first page-size change queue a `G_PRIORITY_HIGH` idle
+that records `minimap_evidence().reflow_settle_pending` and then acts
+(`editor_page::act_during_width_reflow`). Waiting for the width change and then
+acting let CI's main-loop drain run the 150 ms settle first: the top-anchor
+guard failed on both PR runs and the scroll tests passed vacuously
+(`restore-main-ci` R6). Also wait until no burst is pending before opening
+one, and open it with the minimap *shown* (show it, or change the scroller's
+end margin): while the minimap is hidden every minimap refresh cancels a
+pending settle. Read anything the settle will change inside the action, not
+after the helper returns. Test a later reflow with a single `set_value`,
+because a `scroll_to_mark` keeps refining its value after the settle and that
+later `value-changed` can hide a missing rest-state record.
 
 Use predicates tied to visible behavior:
 
