@@ -4239,9 +4239,10 @@ review", "Implementation decisions"); evidence in
     re-expand of the same directory.
   - *Status (stage 4, 2026-11-15): verdict failed, not merged.* The quiet
     interleaved campaign (four rounds, 1-minute load 2.2–3.3, cairo; design
-    "Measured baseline") passes every collapse with nothing after the
-    directory (input 0.1–0.4 ms against `main`'s 14.8–28.3 ms; every frame
-    within 12.1 ms) and the re-expansion in the middle of a 131,072-entry
+    "Measured baseline") passes the `B_SETTLE_US` half of every collapse
+    with nothing after the directory (input 0.1–0.4 ms against `main`'s
+    14.8–28.3 ms; every frame within 12.1 ms; the steps' own time against
+    `B_INTERACT_US` is not measured yet) and the re-expansion in the middle of a 131,072-entry
     collapse (every frame within 1.2 ms against `main`'s 75–95 ms). It fails
     at the candidate unit of 32 rows: with rows after the directory each
     unit's frame takes 16.8–24.3 ms, four to seven of them a collapse (where

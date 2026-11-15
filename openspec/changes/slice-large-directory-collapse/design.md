@@ -73,7 +73,10 @@ GTK facts used below were read in the GTK 4.24.1 sources, saved in
   `TimedDispatch` instead of a tuple, and the debug-build size cut, which an
   optimized build does not take. The branch is `e2427b2f`, which merged
   `main` `14332d69`; the `main` side is therefore older than the `main` the
-  branch merged, by changes that touch no sidebar code.
+  branch merged, by 64 commits. Their sidebar changes are the rename
+  durability fix `9fa727d4` (`file_execution.rs`, rename only) and lint
+  rewrites from the Rust adoption; none is on an expansion or collapse
+  path, and `rust-toolchain.toml` pins 1.98.0 on both sides.
 - Optimized widget build (`CARGO_PROFILE_DEV_OPT_LEVEL=2
   CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false`), `COLLAPSE_VERDICT_REPS=3`,
   CPUs 8–23, headless Mutter, harness renderer **cairo only**.
@@ -170,18 +173,22 @@ loaded, and `refresh_blocks_readiness` false).
 
 **Reading.**
 
-- **Collapse with nothing after the directory: passes on the branch** at
-  every size (input 0.1–0.4 ms; every frame 3.8–12.1 ms), against `main`'s
+- **Collapse with nothing after the directory: passes the `B_SETTLE_US`
+  half on the branch** at every size (input 0.1–0.4 ms; every frame
+  3.8–12.1 ms). The `B_INTERACT_US` half for the steps is open, not passed:
+  at 131,072 entries dozens of 8–10 ms frames each carry a step, and the
+  step is not timed apart from its frame. `main`'s
   14.8–28.3 ms input dispatch from 256 entries up. Time until settled grows
   from 1.2 to 95–106 ms at 256 entries, and from 0.44–0.50 to 0.84–1.11 s at
   131,072.
 - **Collapse with 400 rows after the directory: fails on the branch.** The
   input dispatch is gone (36.7–56.0 ms on `main` → 0.2–0.4 ms), and `main`'s
   one 56–73 ms frame becomes four to seven frames of 16.8–24.3 ms (layout
-  16.2–23.7 ms). Each such frame carries one 32-row bound unit: 32 widgets
-  destroyed and 32 created and styled for the rows entering the band (A113),
-  where the same unit with nothing after the directory, which brings no row
-  into the band, costs 5–12 ms. At unit 32 the pass bar is missed in every
+  16.2–23.7 ms). Each such frame carries one 32-row bound unit. The
+  hypothesis, from A113 and not yet profiled, is that the unit destroys 32
+  widgets and creates and styles 32 for the rows entering the band, where
+  the same unit with nothing after the directory, which brings no row into
+  the band, costs 5–12 ms. At unit 32 the pass bar is missed in every
   repetition of both rounds; D2's exception covers only unit 8 against
   `B_INTERACT_US` and does not apply.
 - **The folder header's two-root collapse fails on the branch**: five frames
@@ -1049,14 +1056,18 @@ branch at the candidate constants. Not merged. What it settles and what it
 leaves owed:
 
 1. **Passes:** every collapse with nothing after the directory, at every
-   size; the re-expansion in the middle of a 131,072-entry collapse; the
-   input dispatch of every owned route (0.1–0.4 ms; 2.1–4.9 ms for the
+   size, for its frames against `B_SETTLE_US` (the steps' own time against
+   `B_INTERACT_US` is not measured, item 4); the re-expansion in the middle
+   of a 131,072-entry collapse; the input dispatch of every owned route (0.1–0.4 ms; 2.1–4.9 ms for the
    two-root folder header; 4.0–6.7 ms for the mid-collapse re-expansion).
 2. **Fails at `SIDEBAR_REALIZED_ROWS_PER_FRAME` = 32:** every collapse with
    rows after the directory (four to seven frames of 16.8–24.3 ms per
    collapse from 256 entries up, one or two from 64), and the folder
    header's two-root collapse (five frames of 20.0–29.9 ms). A unit that
    brings rows into the band costs about twice one that does not.
+   `main`'s two-root case never settled within 240 s (not attributed; it
+   may be a readiness problem on `main` and needs attribution before the
+   rework relies on the comparison).
 3. **Owed by task 1.3:** units 8 and 16 measured on the same cases (the
    linear reading of the 32-row frames predicts about 9–12 ms at 16, which
    is a prediction, not a measurement), the constant chosen from them, and
@@ -1150,8 +1161,9 @@ verdict" edits the same files. Each needs a failing-first test.
 - **The collapse finishes later than `main`'s frozen one** (D2): stage 1
   estimated about 130 ms at 256 entries with rows after the directory and
   about 220 ms at 131,072; the quiet campaign measured 123–135 ms (`main`
-  57–73 ms) and 0.83–1.11 s (`main` 0.44–0.50 s), the latter mostly the
-  unbound chunks and BL's listing retirement. Mitigation: the intent shows in the first frame
+  57–73 ms) and 0.83–1.11 s (`main` 0.44–0.50 s); that the latter is
+  mostly the unbound chunks and BL's listing retirement is a hypothesis,
+  not a profile. Mitigation: the intent shows in the first frame
   (D6), input is handled throughout, and the constants are measured, so the
   per-frame unit grows if a later lighter-rows change lowers the per-row cost.
 - **Owning the expander's click and keys.** If a future GTK adds a disclosure
