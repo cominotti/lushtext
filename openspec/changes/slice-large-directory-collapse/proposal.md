@@ -67,6 +67,31 @@ expansion side in under the pre-existing-blockers rule, measurement first.
 
 ## What Changes
 
+**Revised after stage 4 (2026-11-15; design "Design revision after stage
+4").** The quiet verdict failed at a 32-row unit, and the attribution shows
+why: a unit's frame grows with its rows (0.45–0.6 ms a row replaced and
+styled, no dominant fixed cost), and a paced collapse finishes one unit per
+frame, so a smaller unit fits the frame budget only by finishing two to four
+times later than `main`. The revision therefore adds, beside what follows:
+
+- **A completion bar:** a collapse draws its collapsed rows no later than
+  `main`'s plus one frame, or within 100 ms where `main` is faster.
+- **Lighter rows:** the reorder handle, the Focus Folder button and the drop
+  surfaces are created on demand instead of in every row, cutting what every
+  collapse, expansion and scroll pays per row.
+- **Destroy-only units:** a step that brings no row into the band takes a
+  larger unit.
+- **Unbound rows removed between frames,** without LushText's per-row
+  bookkeeping and item disposal inside the chunk.
+- **Several collapses drain bottom-up,** so the folder header's later roots go
+  while unbound.
+- **The expansion cap,** now that the profile puts small-directory expansion's
+  over-budget dispatches in creating and styling about 200 rows.
+- **A fix for `main`'s folder-header collapse,** which leaves a root expanded:
+  the expansion-intent hook lived on row objects GTK discards, so the entry
+  points now record intent themselves and the hook is installed at bind (new
+  axiom, provisionally A121).
+
 - **An owned, sliced collapse.** Every LushText route that collapses a
   directory goes through one section entry point:
   - the expander click, which LushText takes over from `GtkTreeExpander`'s
@@ -153,9 +178,9 @@ expansion side in under the pre-existing-blockers rule, measurement first.
   (deferred materialization). Folding a partial fix in here would duplicate
   its design and conflict in the same files. This change measures the probe
   scan's publication and records it as a residual with that owner.
-- **Lighter sidebar rows** (fewer widgets and CSS nodes per row, or
-  `LushtextRowText`). They would lower every per-row cost, but they cannot
-  make about 200 replacements fit one dispatch. Recorded as a follow-up.
+- **`LushtextRowText` sidebar rows** (text measured without shaping). The
+  revision makes rows lighter by creating unused decorations on demand; a
+  text-widget change stays a follow-up.
 - **Asking GTK to reuse removed row widgets** for the rows that enter the band
   (`gtk_list_item_change_finish` destroys every unclaimed widget). Recorded as
   an upstream-report candidate. Nothing is filed without the maintainer's
@@ -192,6 +217,12 @@ expansion side in under the pre-existing-blockers rule, measurement first.
 - No loss compared with `main`: the same rows, the same final state and the
   same accessible names, and the expander keeps every key and click it has
   today.
+- **Revised:** the collapse finishes no later than `main`'s frozen one (plus
+  one frame), and the folder header's Collapse leaves every root collapsed,
+  which `main` does not when a large first root pushes the next one out of
+  the realized band. Expanding a small directory shows the rows in view in
+  the first frame and fills the rest of the band over the next few frames
+  instead of freezing for one 40–60 ms frame.
 
 ## Capabilities
 

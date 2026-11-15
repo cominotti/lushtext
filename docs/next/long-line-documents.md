@@ -4394,6 +4394,40 @@ review", "Implementation decisions"); evidence in
     verdict"), plus the stage 4 review's findings (design "Stage 4 review
     findings"; one blocker: the expander key route takes characters typed
     into inline rename and collapses the directory).
+  - *Design revision (2026-11-15, after stage 4; design "Design revision
+    after stage 4").* Attribution (branch-only rounds at units 8, 16 and 32,
+    load 2.9–3.6, and window-cut `perf` profiles): a unit's frame is linear
+    in its rows, 0.45–0.6 ms a row replaced and styled, with no dominant
+    fixed per-splice cost, and completion is one unit per frame, so units 8
+    and 16 fit `B_SETTLE_US` but finish 2–4× later than `main` (400:256:
+    413 / 203 ms against 93–121 ms). The revision adds a completion bar
+    (no later than `main` plus one frame, or 100 ms where `main` is faster),
+    lighter rows (decorations on demand), destroy-only units, unbound
+    removal between frames without LushText's per-row bookkeeping, a
+    bottom-up order for several collapses, and the expansion cap (the
+    expansion profile is row creation and CSS validation). `main`'s
+    never-settling folder-header collapse is a real bug, fixed here: the
+    expansion-intent hook lives on `GtkTreeListRow` objects that GTK
+    discards when no widget shows the row, so a collapse through a fresh row
+    object never prunes `expanded_paths` and `schedule_child_state_restore`
+    expands the root again (new axiom, provisionally A121). The axioms are
+    now A118–A120 (`main` took A113; A115–A117 are held by
+    `quiet-headless-session-services`). Still not merged; the final verdict
+    campaign is queued as not runnable until the implementation lands.
+  - *What `stop-expander-bind-time-child-scans` must build on.* Its proposal
+    says `row_factory.rs` is unchanged; this change makes that false. Build
+    on: `collapse_directory` and `expand_directory`
+    (`ui/sidebar/workspace_section/collapse_execution.rs`), the only
+    LushText callers of `TreeListRow::set_expanded` under `ui/sidebar/`
+    (`make check-workflow-boundaries`); `row_factory.rs`'s setup-time
+    capture-phase `GestureClick` on the expander (`install_arrow_gesture`)
+    and its bind-time `apply_collapse_projection`; the removal of the inert
+    bind-time `observe_controllers()` loop; the on-demand row decorations
+    and the bind-time expansion hook of the revision; and
+    `collapse_blocks_readiness` inside `refresh_blocks_readiness`. Its
+    probe-scan fix removes this change's named residual (D12), and the
+    unpruned intent of R4 is one more reason its deferred materialization
+    must not depend on row-object handlers.
   - *Follow-ups recorded:* lighter sidebar rows (each realized row costs
     about 375 µs to replace and style); an upstream-report candidate for
     `gtk_list_item_change_finish` destroying unclaimed row widgets instead

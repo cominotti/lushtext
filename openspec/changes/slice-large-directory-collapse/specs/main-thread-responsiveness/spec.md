@@ -6,7 +6,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 #### Scenario: How the budgets are measured
 - **WHEN** the verdict test measures a collapse
 - **THEN** it runs on the optimized widget build with the sidebar presented, at host load below 4, interleaved with `main`
-- **AND** a frame-paced step's dispatch, which also styles the rows that step brought into the band, is read against `B_SETTLE_US` as a whole, and the step itself against `B_INTERACT_US`
+- **AND** a frame-paced step's dispatch, which also styles the rows that step brought into the band, is read against `B_SETTLE_US` as a whole, and the step itself, timed apart from its frame, against `B_INTERACT_US`
 - **AND** at most one unit of bound rows is removed per frame across all the window's sections
 
 #### Scenario: A toolkit floor
@@ -32,6 +32,7 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 #### Scenario: Several directories at once
 - **WHEN** the folder header collapses two expanded roots of 4,096 entries each in one input
 - **THEN** both rows show the collapse in the first frame, every frame takes at most one unit of bound rows across both collapses, and both complete
+- **AND** the later root drains first, so the earlier root's steps bring into the band no row of a subtree that is itself being collapsed
 
 #### Scenario: A small directory
 - **WHEN** the directory's subtree holds at most `DIRECT_COLLAPSE_ROWS` flattened rows
@@ -43,14 +44,29 @@ Collapsing a sidebar directory by a route LushText owns SHALL keep the input dis
 - **THEN** the first frame after the input shows the collapsed arrow, and both the row and its expander report `expanded` false to assistive technologies, within `INPUT_TO_FRAME_US` of the input
 - **AND** they keep reporting it until the collapse ends, including after the row is rebound
 
-#### Scenario: Time to collapsed is recorded
-- **WHEN** the verdict test collapses each measured case
-- **THEN** it prints the time from the input until the row is collapsed and the frames that took, beside `main`'s collapse
-- **AND** the figure is recorded in the design, not enforced
+#### Scenario: A removal that brings no row into the band
+- **WHEN** a step removes bound rows of a subtree with nothing after it beyond the realized band
+- **THEN** it may remove up to `COLLAPSE_DESTROY_ONLY_ROWS` rows, within `B_INTERACT_US`, because no row widget is created in their place
+
+#### Scenario: Unbound rows leave between frames
+- **WHEN** a sliced collapse removes rows no widget is bound to
+- **THEN** those chunks run between frames, not one per frame tick, each turn within the list turn slice plus one chunk, and the frame ticks take bound units only
 
 #### Scenario: The probe scan's publication is a named residual
 - **WHEN** a dispatch after the collapse publishes the scan that GTK's `is_expandable()` probe started for the collapsed directory
 - **THEN** the verdict test prints it separately, it is excluded from this requirement's pass bar, and it is recorded as owned by `stop-expander-bind-time-child-scans`
+
+### Requirement: A sidebar collapse finishes no later than main's
+A sidebar directory collapse by a route LushText owns SHALL draw its collapsed rows no later than `main`'s direct collapse does, measured from the input to the frame that draws them: at most `main`'s time plus one 60 Hz frame, or 100 ms where `main` takes less.
+
+#### Scenario: A collapse finishes no later than main's
+- **WHEN** the verdict test collapses each measured case on `main` and on the branch
+- **THEN** it prints each side's completion: from the start of the input dispatch to the end of the first frame dispatch after which the directory row is collapsed
+- **AND** the branch's worst completion is at most `main`'s worst plus 16.7 ms, or at most 100 ms where that is larger
+
+#### Scenario: The folder header
+- **WHEN** the folder header collapses two expanded roots of 4,096 entries each
+- **THEN** each side's completion is taken at the first frame that draws both roots collapsed; on `main` that frame comes before its deferred restore expands the second root again
 
 ### Requirement: Small-directory expansion is measured against the settle budget
 The sidebar expansion verdict SHALL also cover directories of 64, 256 and 1,024 entries, with and without 400 rows after them, on a first expansion and right after a collapse. A dispatch that applies a directory's rows and exceeds `B_SETTLE_US` SHALL be attributed with a profile before it is fixed, and fixed as the attribution shows.
@@ -66,6 +82,10 @@ The sidebar expansion verdict SHALL also cover directories of 64, 256 and 1,024 
 #### Scenario: Another cost
 - **WHEN** the attribution puts it elsewhere
 - **THEN** it is fixed as the attribution shows, or recorded as a toolkit-floor exception under the existing settle-budget requirement
+
+#### Scenario: The rows the user sees come first
+- **WHEN** an expansion's batches are capped per frame
+- **THEN** the first frame after the expansion shows the rows in the viewport, as on `main`, and later frames add the rest of the realized band
 
 #### Scenario: Expanding a 256-entry directory
 - **WHEN** the user expands a directory of 256 entries after the decision above

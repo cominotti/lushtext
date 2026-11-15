@@ -30,6 +30,7 @@ Every LushText route that collapses a directory row SHALL go through one section
 #### Scenario: Selection inside the subtree
 - **WHEN** a child of a directory being collapsed, on the sliced or the direct path, is selected or focused
 - **THEN** selection and focus move to the directory row before any row is removed, and file peek follows only that one change
+- **AND** when the subtree's rows cannot be located (a path shown twice by overlapping folders), selection and focus stay where they are
 
 #### Scenario: Expanding again mid-collapse
 - **WHEN** the directory is expanded again before its sliced collapse ends, by a click, an expand key, a reveal, the new-item flow, a restore or a folder toggle
@@ -47,6 +48,28 @@ Every LushText route that collapses a directory row SHALL go through one section
 #### Scenario: Readiness and evidence
 - **WHEN** one or more sliced collapses are in progress
 - **THEN** `workspace-refresh-complete` is not satisfied, the automation snapshot reports `collapse_pending`, and the section evidence reports each queued collapse's steps taken and rows left without making the toolkit do work
+
+#### Scenario: The folder header collapses every root
+- **WHEN** the folder header collapses two expanded roots, the first of 4,096 entries and the second small enough to collapse directly
+- **THEN** both roots stay collapsed after every deferred restore, and `expanded_paths` holds neither
+- **AND** a LushText expansion or collapse records its intent whether or not GTK still holds the row object a widget once showed
+
+#### Scenario: Keys typed into inline rename
+- **WHEN** the user renames an expanded directory inline and types `-`, `+`, `*`, `/` or another character that is also an expander key binding
+- **THEN** the entry receives the character as on `main`, and the directory is not collapsed by the collapse entry point
+
+#### Scenario: Rows inside a collapsing subtree
+- **WHEN** a directory is collapsing and an expanded descendant of it is still in the realized band
+- **THEN** the descendant also shows collapsed and reports `expanded` false, and a click, key or activation on any row strictly inside the subtree does not expand or collapse anything
+- **AND** a GTK expansion inside the subtree (a drag hover, an assistive technology's expand action) is collapsed again directly and records no expansion intent
+
+#### Scenario: A taken-over descendant after its ancestor re-expands
+- **WHEN** the user collapses a large directory, then its ancestor, then expands the ancestor again before either collapse ends
+- **THEN** the descendant ends collapsed, as on `main`, and its arrow and accessible state agree with that
+
+#### Scenario: New File inside a collapsing subtree
+- **WHEN** New File or New Folder targets a directory inside a collapsing subtree
+- **THEN** the target directory is expanded first through the expand entry point, the new item appears in its refilled listing, and inline rename starts on it
 
 #### Scenario: Removal while collapsing
 - **WHEN** a refresh splice, a section rebuild or a model reset removes a collapsing directory row
