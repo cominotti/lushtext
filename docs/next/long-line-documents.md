@@ -4253,7 +4253,9 @@ review", "Implementation decisions"); evidence in
     expansion and two-root profiles, a step-time instrument for the
     `B_INTERACT_US` half of the pass bar, the probe store's identity
     (task 1.4), and the final-code campaign with GL figures (design "Stage 4
-    verdict").
+    verdict"), plus the stage 4 review's findings (design "Stage 4 review
+    findings"; one blocker: the expander key route takes characters typed
+    into inline rename and collapses the directory).
   - *Follow-ups recorded:* lighter sidebar rows (each realized row costs
     about 375 µs to replace and style); an upstream-report candidate for
     `gtk_list_item_change_finish` destroying unclaimed row widgets instead

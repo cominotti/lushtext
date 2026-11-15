@@ -27,7 +27,10 @@ alike (D10 is live). Checked from it: 1.2 (cairo only; GL moves to 7.2), 1.5
 and 1.6. Still owed: 1.3 (units 8 and 16, the expansion and two-root
 profiles), 1.4 (the probe store's identity, and `main`'s unflagged
 re-expansion frames), 6.1 or 6.2, 7.1 (it needs a step-time instrument
-first) and 7.2 on the final code. Not merged.
+first) and 7.2 on the final code. The stage 4 review's eleven findings
+(design "Stage 4 review findings", one blocker: the key route takes
+characters typed into inline rename) are owed by the same rework. Not
+merged.
 
 ## 1. Quiet baseline and attribution on `main` (before any fix)
 

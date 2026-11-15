@@ -1079,6 +1079,72 @@ leaves owed:
 7. **Owed by task 7.2:** the final-code campaign, four rounds interleaved,
    with GL figures beside cairo.
 
+## Stage 4 review findings (2026-11-15, owed by the rework)
+
+A read-only review of `origin/main...4e979b5b`. Findings 1 and 3 were checked
+against the code by the stage 4 agent; the others are the reviewer's, with
+the scenario it gave. None is fixed yet: every fix touches a visual-sensitive
+path, which D16 lands only after the smokes, and the rework of "Stage 4
+verdict" edits the same files. Each needs a failing-first test.
+
+1. **Blocker: the key route takes keys typed into inline rename.**
+   `focused_expander` (`collapse_execution.rs`) walks up from the focus to
+   the first `GtkTreeExpander`, and the rename `GtkEntry` sits inside the
+   expander's content box (`file_execution.rs`). Typing `-`, `+`, `*`, `/`
+   (and the keypad forms), `Shift`/`Ctrl+Shift` with Left/Right or
+   `Ctrl+space` while renaming an expanded directory collapses it and drops
+   the character (a wrong name can be committed). On `main` the entry
+   handles them first. Fix: no expander when the focus is an editable or a
+   button, as `focus_allows_peek_shortcuts` (`peek_execution.rs`) does;
+   test: type `-` into the rename box of an expanded folder.
+2. **A starved mapped collapse stalls.** With a mapped window whose frame
+   clock stops, a starved step stores `counter + 1` and the counter never
+   advances, so after one bound unit every step breaks at `!unit_allowed`;
+   the queue never empties and `workspace-refresh-complete` stays false
+   until the window draws again (against D4). `NoFrameClock` skips the
+   mapped branch entirely, so the starvation test exercises only the
+   unmapped path.
+3. **The unit token is keyed by the frame clock's address and compared with
+   `<`.** A closed window's entry (for example 50,000) survives; a new
+   clock at the same address starts at 0, so no unit is free for that many
+   frames and the tick keeps the starvation fallback from firing. Fix:
+   treat a stored value above `frame + 1` as stale, or key it by a weak
+   reference.
+4. **A taken-over descendant keeps the collapsed arrow and `expanded=false`
+   after its ancestor is re-expanded**: `finish_collapse` re-projects only
+   the record's own row. Re-project every realized row whose path left
+   `collapsing_paths`.
+5. **An expanded descendant of a collapsing directory reads collapsed to
+   LushText but shows expanded** (no class): its arrow or Enter routes to
+   `expand_directory`, which cancels the ancestor's collapse, the opposite
+   of the user's intent; on rebind the overlay and the expander disagree.
+   Project the whole subtree at intent, or make the routes a no-op there.
+6. **New File / New Folder from a file row inside a collapsing subtree**
+   appends the pending-rename item to the store being drained: a stray file
+   on disk, no inline rename, `is_new_item` stuck. Expand the target first
+   (as the `was_collapsed` branch does) or refuse.
+7. **GTK's own expansion of a collapsed descendant inside a collapsing
+   subtree** (drag hover, AT-SPI `listitem.expand`) is not in the record's
+   descendants: the step's flattened range goes wrong and `expanded_paths`
+   keeps a path under a collapsed directory, which a later restore expands.
+   End the covering collapse, or collapse the row again, from the expansion
+   hook.
+8. **Flake risk:** `test_expander_keys_take_the_collapse_entry_point` and
+   `test_the_arrow_click_survives_an_icon_recreation` read state after real
+   input with fixed delays only; wrap each check in `wait_until`.
+9. **Tests that miss their names:**
+   `test_collapse_moves_selection_and_focus_to_the_directory` asserts no
+   focus; `test_removing_a_collapsing_directory_cancels_the_collapse` runs
+   under `Hold` and reaches `Removed` only through a whole-model reload,
+   never through `step_facts` noticing the removed row.
+10. **Nit:** when the subtree span is unknown, `move_selection_and_focus_to(row,
+    u32::MAX)` moves a selection from anywhere below the directory; skip the
+    move instead.
+11. **Nit (Kani):** C5 is argued in a comment, not proved (no decreasing
+    measure; sibling stores, two nesting levels and multi-row bound removals
+    are property-tested only). Assert a measure, or restate C5 as
+    termination.
+
 ## Risks / Trade-offs
 
 - **The collapse finishes later than `main`'s frozen one** (D2): stage 1
