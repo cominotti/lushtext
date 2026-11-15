@@ -349,6 +349,14 @@ declare -A VERUS_SHA256=(
   [0.2026.11.02.8bf68ee]=f3a0119292df8855e4435da8130bee1873b0e6a60c306accf81a08ea687bba3c
   [0.2026.11.05.31e44e6]=4e0ab2a689645144d82e57a50190dad0bcd5524533e9c1f9f4062846deab3732
 )
+# The vstd each release's `cargo verus new` pins: a crates.io version for a
+# non-rolling release, a git revision for a rolling one. A vstd from another
+# release does not build ("unrecognized verifier attribute"), so verus_check
+# rewrites the copy's dependency for the selected release.
+declare -A VERUS_VSTD=(
+  [0.2026.11.02.8bf68ee]='"=0.0.0-2026-11-01-0251"'
+  [0.2026.11.05.31e44e6]='{ git = "https://github.com/verus-lang/verus.git", rev = "31e44e600408242839ff456e84550e9f849344e3" }'
+)
 declare -A VERUS_TAG=(
   [0.2026.11.02.8bf68ee]=release/0.2026.11.02.8bf68ee
   [0.2026.11.05.31e44e6]=release/rolling/0.2026.11.05.31e44e6
@@ -429,7 +437,7 @@ cmd_verus_versions() {
   echo "verus commit $(sed -n 's/.*"commit": "\(.*\)".*/\1/p' "$VERUS_HOME/version.json")"
   echo "verus rustc $(verus_env rustc --version)"
   "$VERUS_HOME/z3" --version
-  echo "vstd $(sed -n 's/^vstd = "=\(.*\)"/\1/p' "$VERUS_MODELS/proofs/Cargo.toml")"
+  echo "vstd ${VERUS_VSTD[$VERUS_RELEASE]:-unrecorded}"
   echo "workspace rustc $(workspace_env rustc --version)"
 }
 
@@ -453,6 +461,11 @@ verus_check() {
   cp -r "$dir/." "$fresh/proofs/"
   cp -r "$VERUS_MODELS/table" "$fresh/"
   printf '\n// verus check %s %s\n' "$name" "${EPOCHREALTIME/[.,]/}" >>"$fresh/proofs/src/lib.rs"
+  local vstd=${VERUS_VSTD[$VERUS_RELEASE]:-}
+  [[ -n $vstd ]] || die "no recorded vstd for verus $VERUS_RELEASE"
+  VSTD=$vstd awk '/^vstd = / {print "vstd = " ENVIRON["VSTD"]; next} {print}' \
+    "$fresh/proofs/Cargo.toml" >"$fresh/proofs/Cargo.toml.new"
+  mv "$fresh/proofs/Cargo.toml.new" "$fresh/proofs/Cargo.toml"
   dir=$fresh/proofs
   "${HEAVY[@]}" "$0" verus-measure "$name" "$expect" -- \
     env RUSTUP_HOME="$VERUS_RUSTUP_HOME" CARGO_HOME="$VERUS_CARGO_HOME" \
