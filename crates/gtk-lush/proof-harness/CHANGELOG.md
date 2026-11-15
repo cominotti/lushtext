@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- New `session` module and `gtk-lush-session` binary: the one implementation
+  of the private headless session (`quiet-headless-session-services`).
+  Profiles `widget`, `plain`, `screencast` and `accessibility`; a private,
+  monitored system bus for every session; quiet media (WirePlumber `policy`
+  profile, no module-rt in the daemons or the clients, helper-private homes);
+  and a runtime guard that prints `SESSION-HYGIENE: <class>: <detail>` and
+  exits with `SESSION_HYGIENE_EXIT_CODE` (`93`) on an rtkit, bluez,
+  hardware-device, module-rt, accessibility-bus, portal or config violation.
+  The harness's headless relaunch now goes through it (`widget` profile)
+  instead of its own `dbus-run-session` command line.
+- **Breaking (array length):** `recommended_pre_gtk_environment()` returns
+  **seven** settings, adding `GTK_A11Y=test` and `ADW_DISABLE_PORTAL=1`. The
+  launcher applies them before the session bus starts, and a per-test child now
+  only verifies them (`verify_recommended_environment()`), failing before GTK
+  initializes when one is missing. Callers that set the values themselves in
+  `main` can stop doing so.
 - `wait_until` is `#[track_caller]`: its timeout panic now names the
   waiting call site instead of the harness's own line, so a test with several
   waits reports which one timed out.

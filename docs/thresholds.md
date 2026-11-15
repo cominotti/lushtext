@@ -159,6 +159,18 @@ marking new ones `UNCLASSIFIED`; review the diff).
 | `crates/gtk-lush/proof-harness/src/lib.rs` | `UNSUPPORTED_HOST_EXIT_CODE` | 77 | out: code | exit code, errno or hash constant (D1) |
 | `crates/gtk-lush/proof-harness/src/lib.rs` | `DEFAULT_TEST_ATTEMPTS` | 2 | out: tool | proof tool, fixture, fuzz or test-helper data (D1) |
 
+### `crates/gtk-lush/proof-harness/src/session/mod.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/gtk-lush/proof-harness/src/session/mod.rs` | `SESSION_HYGIENE_EXIT_CODE` | 93 | out: code | exit code, errno or hash constant (D1) |
+
+### `crates/gtk-lush/proof-harness/src/session/verdict.rs`
+
+| File | Constant | Value | Kind | Rounding or reason |
+|---|---|---|---|---|
+| `crates/gtk-lush/proof-harness/src/session/verdict.rs` | `DETAIL_LIMIT` | 256 | presentation cap | up from 240: bytes of one `SESSION-HYGIENE:` detail line |
+
 ### `crates/gtk-lush/proof-spine/src/lib.rs`
 
 | File | Constant | Value | Kind | Rounding or reason |
