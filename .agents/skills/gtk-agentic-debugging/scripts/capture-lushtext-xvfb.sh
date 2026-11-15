@@ -248,7 +248,14 @@ activate_window_action() {
 outer_run() {
     validate_args
 
-    require_command dbus-run-session
+    # The private session bus comes from the session helper (plain profile:
+    # no AT-SPI bus, no media), never from a session launcher named here.
+    local session_report session_status=0
+    session_report="$("$repo_root/scripts/headless-session" check-tools --profile plain 2>&1)" || session_status=$?
+    if (( session_status != 0 )); then
+        echo "The private headless session is unavailable (exit $session_status): ${session_report##*$'\n'}" >&2
+        exit 1
+    fi
     require_command gdbus
     require_command gsettings
     require_command magick
@@ -277,7 +284,8 @@ outer_run() {
     export LUSHTEXT_XVFB_DISPLAY
     LUSHTEXT_XVFB_DISPLAY="$(choose_display)"
 
-    if dbus-run-session -- "$0" --internal-run >"$artifact_dir/session.log" 2>&1; then
+    if "$repo_root/scripts/headless-session" session --profile plain --log-dir "$artifact_dir/session-hygiene" -- \
+        "$0" --internal-run >"$artifact_dir/session.log" 2>&1; then
         grep -E '^(.*: PNG image data|Launched PID:|Window ID:)' "$artifact_dir/session.log" || true
         echo "Screenshot saved to $output_path"
         if [[ "$keep_artifacts" == "1" ]]; then
@@ -288,6 +296,11 @@ outer_run() {
         return 0
     else
         local status=$?
+        if (( status == 93 )); then
+            # gtk_lush_proof_harness::session::SESSION_HYGIENE_EXIT_CODE
+            echo "The private session touched the host:" >&2
+            grep '^SESSION-HYGIENE:' "$artifact_dir/session.log" >&2 || true
+        fi
         echo "Xvfb capture failed. Artifacts kept in $artifact_dir" >&2
         echo "Last session log lines:" >&2
         tail -n 80 "$artifact_dir/session.log" >&2 || true

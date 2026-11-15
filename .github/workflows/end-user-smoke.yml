@@ -94,6 +94,7 @@ jobs:
             file \
             flatpak \
             dbus-daemon \
+            dbus-tools \
             glib2 \
             mutter \
             gstreamer1 \

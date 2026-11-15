@@ -84,6 +84,8 @@ def load_visual_proof_policy_helper():
 
 
 mutter = load_capture_helper()
+# Every case captures through mutter's ScreenCast: quiet media, no AT-SPI.
+SESSION_PROFILE = "screencast"
 visual_proof_policy = load_visual_proof_policy_helper()
 
 
@@ -115,18 +117,13 @@ def now_iso() -> str:
 
 
 def require_tooling(binary: Path) -> str | None:
-    for command in (
-        "dbus-run-session",
-        "gdbus",
-        "gsettings",
-        "gst-launch-1.0",
-        "mutter",
-        "pipewire",
-        "pw-dump",
-        "wireplumber",
-    ):
+    for command in ("gdbus", "gsettings", "gst-launch-1.0"):
         if shutil.which(command) is None:
             return f"missing required command: {command}"
+    try:
+        mutter.check_session_tools(SESSION_PROFILE)
+    except RuntimeError as error:
+        return str(error)
     if not SYSTEM_PYTHON.is_file():
         return "missing /usr/bin/python3"
     if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -421,7 +418,13 @@ def run_case_outer(case_json: Path, case_dir: Path, case: dict[str, Any]) -> dic
     )
     log_path = case_dir / "session.log"
     command = [
-        "dbus-run-session",
+        mutter.headless_session(),
+        "session",
+        "--profile",
+        SESSION_PROFILE,
+        "--inherit-runtime-dir",
+        "--log-dir",
+        str(case_dir / "session-hygiene"),
         "--",
         str(SYSTEM_PYTHON),
         str(Path(__file__).resolve()),
@@ -476,6 +479,20 @@ def run_case_outer(case_json: Path, case_dir: Path, case: dict[str, Any]) -> dic
         animation_verified_invariant_ids = []
         animation_frame_evidence = None
         animation_frame_sample_count = 0
+    if completed.returncode == mutter.SESSION_HYGIENE_EXIT_CODE:
+        # The session touched the host: the case fails and verifies nothing,
+        # whatever its own manifest says.
+        status = "failed"
+        failure_status = "session-hygiene"
+        pixel_verified_invariant_ids = []
+        animation_verified_invariant_ids = []
+        write_case_manifest(
+            case_dir,
+            case,
+            "failed",
+            "session-hygiene",
+            "SESSION-HYGIENE: see session-hygiene/session-hygiene.txt",
+        )
     return {
         "case_id": case["case_id"],
         "status": status,
@@ -500,30 +517,23 @@ def internal_run(args: argparse.Namespace) -> int:
     case_dir = Path(case["artifact_dir"])
     processes: list[subprocess.Popen | None] = []
     try:
-        pipewire = mutter.start_logged(["pipewire"], case_dir / "pipewire.log")
-        processes.append(pipewire)
-        mutter.wait_for_pipewire(Path(os.environ["XDG_RUNTIME_DIR"]))
-        wireplumber = mutter.start_logged(["wireplumber"], case_dir / "wireplumber.log")
-        processes.append(wireplumber)
+        # The session helper already runs quiet PipeWire and WirePlumber.
         apply_gsettings(case)
 
         env = os.environ.copy()
         env["NO_AT_BRIDGE"] = "1"
         env.pop("AT_SPI_BUS_ADDRESS", None)
-        command = [
-            "mutter",
-            "--headless",
-            "--wayland",
-            "--no-x11",
-            "--virtual-monitor",
-            f"{case['size']['width']}x{case['size']['height']}",
-            "--",
-            str(SYSTEM_PYTHON),
-            str(Path(__file__).resolve()),
-            "--mutter-child",
-            "--case-json",
-            str(args.case_json),
-        ]
+        command = mutter.compositor_command(
+            case["size"]["width"],
+            case["size"]["height"],
+            [
+                str(SYSTEM_PYTHON),
+                str(Path(__file__).resolve()),
+                "--mutter-child",
+                "--case-json",
+                str(args.case_json),
+            ],
+        )
         with (case_dir / "mutter-child.log").open("w", encoding="utf-8") as log:
             completed = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
         print((case_dir / "mutter-child.log").read_text(encoding="utf-8", errors="replace"))

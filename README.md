@@ -782,7 +782,14 @@ make check
 ```
 
 Widget tests require a display server; the repo runner uses the private
-headless Mutter path for deterministic full-suite runs. CI splits the widget
+headless Mutter path for deterministic full-suite runs. Every private test
+session starts through one session helper (`scripts/headless-session`, the
+`gtk-lush-session` binary of `gtk-lush-proof-harness`): it gives the session a
+private, monitored system bus, so no test reaches the host's RealtimeKit or
+Bluetooth daemons, quiet media only where a screenshot needs them, and an
+AT-SPI bus only in accessibility sessions. A session that touched the host
+fails with `SESSION-HYGIENE:` lines and status 93, and `make
+check-session-hygiene` keeps every lane on the helper. CI splits the widget
 suite into the shards of `scripts/widget-shards.py`, one job each; `make
 check-widget-shards` fails when a widget test belongs to no shard or to two,
 and `make test-widget-shard WIDGET_SHARD=<shard>` reproduces one. Locally,

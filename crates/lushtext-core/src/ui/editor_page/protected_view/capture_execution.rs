@@ -16,7 +16,11 @@
 //! any mark or tag change between two dispatches (the view moves its own marks
 //! when it scrolls) is observed through the buffer's signals and answered by
 //! re-positioning by line and byte index, which pays one depth-proportional
-//! character-offset derivation for that dispatch only.
+//! character-offset derivation for that dispatch only. A text change (an
+//! insertion or deletion by any owner, such as a whole-buffer replacement
+//! that does not end the session first) invalidates every iterator and the
+//! chunks already copied, so it cancels the capture at its next dispatch
+//! instead of reading through a stale iterator.
 //!
 //! The chunks are joined and owned for off-GTK disposal on a worker, under a
 //! disposal reservation taken on GTK before the join (retried when disposal
@@ -46,6 +50,8 @@ struct SourceCapture {
     chunks: Vec<String>,
     bytes: u64,
     segments_changed: Rc<Cell<bool>>,
+    /// Set by any insertion or deletion: the capture is void.
+    text_changed: Rc<Cell<bool>>,
     handlers: Vec<glib::SignalHandlerId>,
     source: Option<glib::SourceId>,
     capacity: DisposalCapacityWakeup,
@@ -81,7 +87,8 @@ impl LushtextEditorPage {
         });
         let buffer = self.buffer();
         let segments_changed = Rc::new(Cell::new(false));
-        let handlers = watch_segment_changes(buffer.upcast_ref(), &segments_changed);
+        let text_changed = Rc::new(Cell::new(false));
+        let handlers = watch_segment_changes(buffer.upcast_ref(), &segments_changed, &text_changed);
         self.capture_state().running.replace(Some(SourceCapture {
             ticket,
             iter: buffer.start_iter(),
@@ -95,6 +102,7 @@ impl LushtextEditorPage {
                 segments_changed.set(true);
                 segments_changed
             },
+            text_changed,
             handlers,
             source: Some(start),
             capacity: DisposalCapacityWakeup::default(),
@@ -163,6 +171,11 @@ impl LushtextEditorPage {
             let Some(capture) = running.as_mut() else {
                 return false;
             };
+            if capture.text_changed.get() {
+                drop(running);
+                self.cancel_capture_from_its_dispatch();
+                return false;
+            }
             if capture.segments_changed.replace(false) {
                 let Some(iter) = buffer.iter_at_line_index(capture.line, capture.line_index) else {
                     drop(running);
@@ -244,19 +257,34 @@ impl LushtextEditorPage {
 }
 
 /// Mark `changed` on every buffer change that moves segments: a mark set,
-/// moved or deleted, or a tag applied or removed.
+/// moved or deleted, or a tag applied or removed. Mark `text_changed` on
+/// every insertion or deletion that took place, which no re-positioning can
+/// survive.
 fn watch_segment_changes(
     buffer: &gtk4::TextBuffer,
     changed: &Rc<Cell<bool>>,
+    text_changed: &Rc<Cell<bool>>,
 ) -> Vec<glib::SignalHandlerId> {
     let on_mark_set = Rc::clone(changed);
     let on_mark_deleted = Rc::clone(changed);
     let on_apply = Rc::clone(changed);
     let on_remove = Rc::clone(changed);
+    let on_insert = Rc::clone(text_changed);
+    let on_delete = Rc::clone(text_changed);
     vec![
         buffer.connect_mark_set(move |_, _, _| on_mark_set.set(true)),
         buffer.connect_mark_deleted(move |_, _| on_mark_deleted.set(true)),
         buffer.connect_apply_tag(move |_, _, _, _| on_apply.set(true)),
         buffer.connect_remove_tag(move |_, _, _, _| on_remove.set(true)),
+        // After-handlers: they run only once the default handler changed the
+        // text, never for an edit the edit lock or a refusal handler stopped.
+        buffer.connect_local("insert-text", true, move |_| {
+            on_insert.set(true);
+            None
+        }),
+        buffer.connect_local("delete-range", true, move |_| {
+            on_delete.set(true);
+            None
+        }),
     ]
 }

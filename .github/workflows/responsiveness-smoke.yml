@@ -68,6 +68,7 @@ jobs:
             glib2 \
             mutter \
             dbus-daemon \
+            dbus-tools \
             util-linux \
             pkgconf-pkg-config \
             python3 \
@@ -119,6 +120,10 @@ jobs:
             git \
             mutter \
             dbus-daemon \
+            dbus-tools \
+            at-spi2-core \
+            xdg-desktop-portal \
+            xdg-desktop-portal-gtk \
             python3 \
             adwaita-mono-fonts
 
@@ -130,7 +135,8 @@ jobs:
           shared-key: fedora-45
 
       # adwaita-mono-fonts: see the GTK Axioms job in ci.yml (A70, A72 need a
-      # fixed-pitch "Monospace").
+      # fixed-pitch "Monospace"); at-spi2-core and the portals: the A115/A116
+      # probes' control runs activate them, as in ci.yml.
       - name: Run every GTK axiom probe, slow ones included
         run: |
           mkdir -p build/smoke/gtk-axioms-slow

@@ -8,10 +8,13 @@
 //! pretending that skipped runs verified visual invariants.
 
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::OsString;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
+use gtk_lush_proof_harness::session::{self, SessionLaunchError, SessionOptions, profiles};
 use serde::Serialize;
 
 use crate::{artifacts, model};
@@ -107,7 +110,7 @@ impl RuntimeLayout {
             xdg_data_home: artifacts::safe_display_path(&self.data_dir),
             xdg_config_home: artifacts::safe_display_path(&self.config_dir),
             xdg_cache_home: artifacts::safe_display_path(&self.cache_dir),
-            session_bus: "dbus-run-session".to_string(),
+            session_bus: format!("gtk-lush-session ({} profile)", LIVE_SESSION_PROFILE.name),
             session_command: Self::session_command_report(),
             environment: self.environment_report(),
         }
@@ -163,15 +166,45 @@ impl RuntimeLayout {
         }
     }
 
-    /// Return the outer session command prefix used before compositor launch.
-    pub(crate) fn session_command(child: &[String]) -> Vec<String> {
-        let mut command = vec!["dbus-run-session".to_string(), "--".to_string()];
-        command.extend_from_slice(child);
-        command
+    /// The outer stage of a case's private session around `child`: the
+    /// session helper's [`LIVE_SESSION_PROFILE`] in this layout's runtime
+    /// directory, with the layout's environment set before the bus starts
+    /// and the session's logs and hygiene report kept in `log_dir`.
+    pub(crate) fn session_command(
+        &self,
+        child: &[String],
+        log_dir: &Path,
+    ) -> Result<Command, SessionLaunchError> {
+        let environment = self.process_environment();
+        let extra_env = environment
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        let child = child.iter().map(OsString::from).collect::<Vec<_>>();
+        session::session_command(
+            &live_session_options(log_dir),
+            &self.runtime_dir,
+            &child,
+            &extra_env,
+        )
     }
 
+    /// The outer stage as the `gtk-lush-session` command line it is
+    /// equivalent to, for the environment report.
     fn session_command_report() -> Vec<String> {
-        Self::session_command(&["cargo-gtk-proof-live-child".to_string()])
+        [
+            "gtk-lush-session",
+            "session",
+            "--profile",
+            LIVE_SESSION_PROFILE.name,
+            "--inherit-runtime-dir",
+            "--log-dir",
+            "<case>/session-hygiene",
+            "--",
+            "cargo-gtk-proof-live-child",
+        ]
+        .map(String::from)
+        .to_vec()
     }
 
     fn environment_report(&self) -> Vec<RuntimeEnvVarReport> {
@@ -185,19 +218,27 @@ impl RuntimeLayout {
     }
 }
 
+/// The session helper profile of a live case: quiet media for mutter's
+/// ScreenCast, portals on, no AT-SPI bus.
+pub(crate) const LIVE_SESSION_PROFILE: profiles::Profile = profiles::SCREENCAST;
+
+/// Options of a live case's session, keeping its logs in `log_dir`.
+fn live_session_options(log_dir: &Path) -> SessionOptions {
+    SessionOptions::from_profile(LIVE_SESSION_PROFILE).with_log_dir(log_dir)
+}
+
+/// Commands the live runner needs besides the session's own.
+const LIVE_RUNNER_COMMANDS: [&str; 2] = ["gsettings", "gst-launch-1.0"];
+
 /// Probe live-runner host capabilities without launching the app.
+///
+/// The session's own commands come from the session helper
+/// (`required_commands`, the list `check-tools` reports), so this probe
+/// never names them.
 pub(crate) fn probe_host(binary: &Path) -> HostProbeReport {
     let mut capabilities = Vec::new();
-    for command in [
-        "dbus-run-session",
-        "gdbus",
-        "gsettings",
-        "gst-launch-1.0",
-        "mutter",
-        "pipewire",
-        "pw-dump",
-        "wireplumber",
-    ] {
+    let session_commands = session::required_commands(&live_session_options(Path::new(".")), true);
+    for command in session_commands.into_iter().chain(LIVE_RUNNER_COMMANDS) {
         capabilities.push(probe_command(command));
     }
     capabilities.push(probe_file("/usr/bin/python3", "python-oracle", true));
@@ -372,7 +413,11 @@ fn restrict_runtime_dir(runtime_dir: &Path) -> Result<(), String> {
 
 fn runtime_dir_for_artifact(artifact_dir: &Path, root: &Path) -> Result<PathBuf, String> {
     let artifact_local = root.join("xdg-runtime");
-    if pipewire_manager_socket_path_len(&artifact_local) < 108 {
+    // The session helper binds its private system bus socket inside the
+    // runtime directory, the longest of the session's socket paths.
+    if pipewire_manager_socket_path_len(&artifact_local) < 108
+        && session::runtime_dir_fits_sockets(&canonical_projection(&artifact_local))
+    {
         return Ok(artifact_local);
     }
 
@@ -462,6 +507,27 @@ fn absolute_for_hash(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// `path` with its longest existing ancestor canonicalized, as the session
+/// helper will see it once the directory exists.
+fn canonical_projection(path: &Path) -> PathBuf {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else {
+            return path.to_path_buf();
+        };
+        rest.push(name.to_os_string());
+        existing = parent;
+    }
+    let mut projected = existing
+        .canonicalize()
+        .unwrap_or_else(|_| existing.to_path_buf());
+    for name in rest.iter().rev() {
+        projected.push(name);
+    }
+    projected
+}
+
 fn pipewire_manager_socket_path_len(runtime_dir: &Path) -> usize {
     runtime_dir
         .join("pipewire-0-manager")
@@ -547,6 +613,11 @@ mod tests {
         assert!(
             pipewire_manager_socket_path_len(&layout.runtime_dir) < 108,
             "PipeWire socket path must fit sockaddr_un: {}",
+            layout.runtime_dir.display()
+        );
+        assert!(
+            session::runtime_dir_fits_sockets(&canonical_projection(&layout.runtime_dir)),
+            "the session helper's system bus socket must fit sockaddr_un: {}",
             layout.runtime_dir.display()
         );
         assert!(
@@ -647,11 +718,52 @@ mod tests {
             "missing schema dir"
         );
         assert_eq!(
-            RuntimeLayout::session_command(&["child".to_string(), "--flag".to_string()]),
-            ["dbus-run-session", "--", "child", "--flag"]
-                .map(String::from)
-                .to_vec()
+            RuntimeLayout::session_command_report()[..4],
+            ["gtk-lush-session", "session", "--profile", "screencast"].map(String::from)
         );
+    }
+
+    #[test]
+    fn live_session_starts_through_the_session_helper() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let layout = RuntimeLayout::prepare(tempdir.path()).expect("runtime layout");
+        let Ok(command) = layout.session_command(
+            &["child".to_string(), "--flag".to_string()],
+            &tempdir.path().join("session-hygiene"),
+        ) else {
+            // A host without the session tools cannot build the stage; the
+            // probe reports that instead.
+            return;
+        };
+        assert_eq!(command.get_program(), session::DBUS_RUN_SESSION_COMMAND);
+        let args = command.get_args().collect::<Vec<_>>();
+        assert_eq!(args.len(), 2, "the bus re-executes this binary: {args:?}");
+        assert_eq!(args[0], "--");
+        let envs = command
+            .get_envs()
+            .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            envs.get("XDG_RUNTIME_DIR").map(PathBuf::from),
+            layout.runtime_dir.canonicalize().ok()
+        );
+        assert_eq!(envs.get("GTK_A11Y"), Some(&"test"));
+        assert_eq!(envs.get("GSETTINGS_BACKEND"), Some(&"keyfile"));
+        assert!(envs.contains_key("DBUS_SYSTEM_BUS_ADDRESS"));
+    }
+
+    #[test]
+    fn host_probe_takes_the_session_commands_from_the_helper() {
+        let probe = probe_host(Path::new("/definitely/missing/lushtext"));
+        let names = probe
+            .capabilities
+            .iter()
+            .map(|capability| capability.name.as_str())
+            .collect::<Vec<_>>();
+        for command in session::required_commands(&live_session_options(Path::new(".")), true) {
+            assert!(names.contains(&command), "probe lacks {command}");
+        }
+        assert!(names.contains(&"gst-launch-1.0"));
     }
 
     #[test]
@@ -666,7 +778,11 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(path).expect("report text")).expect("json");
 
         assert_eq!(value["status"], "unsupported-host");
-        assert_eq!(value["runtime"]["session_command"][0], "dbus-run-session");
+        assert_eq!(value["runtime"]["session_command"][0], "gtk-lush-session");
+        assert_eq!(
+            value["runtime"]["session_bus"],
+            "gtk-lush-session (screencast profile)"
+        );
         assert!(
             value["runtime"]["environment"]
                 .as_array()

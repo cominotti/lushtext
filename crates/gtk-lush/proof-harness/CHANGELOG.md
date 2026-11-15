@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **Breaking (behaviour):** a per-test child of `run_registered_tests()` exits
+  with `TEST_FAILURE_EXIT_CODE` before GTK initializes unless
+  `session::SESSION_ACTIVE_ENV` is set, which only the session helper's inner
+  stage does. A consumer that set its runner variable and started the harness
+  in a session of its own must start it through the helper (or let the
+  harness relaunch itself).
+- The session helper starts its inner stage through `/proc/<pid>/exe`, not
+  `current_exe()` (the `GTK_LUSH_SESSION_BIN` it exports keeps the file path,
+  which also works in another pid namespace). Every `cargo build` re-uplifts
+  `target/debug/gtk-lush-session`, so with several sessions starting in one
+  worktree `current_exe()` could name a replaced file (`… (deleted)`) and
+  `dbus-run-session` failed to start the inner stage (2 of 152 sessions under
+  a concurrent build loop; 0 of 441 after this and the shim's exec retry).
+- `recommended_pre_gtk_environment()` now selects `GTK_A11Y=test`, and its
+  documentation states the hazard that comes with it: announcing through a
+  `GtkTestATContext` kills the process (GTK ledger A117), so consumers
+  announce through a helper that skips that context.
+- The session's sockets are bounded by `dbus-daemon`'s 99-byte socket path
+  limit, not the kernel's 107: an owned runtime directory that would not fit
+  falls back to `/tmp`, and an inherited one is refused.
+- New `session` module and `gtk-lush-session` binary: the one implementation
+  of the private headless session (`quiet-headless-session-services`).
+  Profiles `widget`, `plain`, `screencast` and `accessibility`; a private,
+  monitored system bus for every session; quiet media (WirePlumber `policy`
+  profile, no module-rt in the daemons or the clients, helper-private homes);
+  and a runtime guard that prints `SESSION-HYGIENE: <class>: <detail>` and
+  exits with `SESSION_HYGIENE_EXIT_CODE` (`93`) on an rtkit, bluez,
+  hardware-device, module-rt, accessibility-bus, portal or config violation.
+  The harness's headless relaunch now goes through it (`widget` profile)
+  instead of its own `dbus-run-session` command line.
+- `session::session_command()` and `session::compositor_command()` build the
+  `session` and `compositor` stages as `Command`s for a caller that supervises
+  the processes itself; they return `SessionLaunchError` instead of starting
+  anything on a host without the tools. `check-tools --json` also reports a
+  `roles` map (session bus, compositor, media, session manager).
+- **Breaking (array length):** `recommended_pre_gtk_environment()` returns
+  **seven** settings, adding `GTK_A11Y=test` and `ADW_DISABLE_PORTAL=1`. The
+  launcher applies them before the session bus starts, and a per-test child now
+  only verifies them (`verify_recommended_environment()`), failing before GTK
+  initializes when one is missing. Callers that set the values themselves in
+  `main` can stop doing so.
 - `wait_until` is `#[track_caller]`: its timeout panic now names the
   waiting call site instead of the harness's own line, so a test with several
   waits reports which one timed out.

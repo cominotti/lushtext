@@ -339,11 +339,16 @@ fn notify(active: bool) {
 /// (widget tests: an unanswered mirror reads as listening, and a real answer,
 /// which a host whose session can activate at-spi2-registryd gives, would
 /// otherwise replace a simulated listener).
+///
+/// The simulation stands in for an AT-SPI backend whatever `GTK_A11Y`
+/// selects: the widget harness runs with `GTK_A11Y=test`, whose mirror is
+/// otherwise `Disabled` for good, so a simulated listener would never read as
+/// listening.
 #[cfg(feature = "test-utils")]
 pub fn simulate_registry_answer() {
     let first = STATE.with_borrow_mut(|state| !std::mem::replace(&mut state.simulated, true));
     if first {
-        update(|knowledge| apply_reply(knowledge, Vec::new()));
+        update(|knowledge| *knowledge = Knowledge::Known(BTreeSet::new()));
     }
 }
 

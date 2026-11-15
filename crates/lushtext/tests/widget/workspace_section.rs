@@ -6046,7 +6046,15 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
         "a 500-row directory must realize only visible rows, got {realized_rows}"
     );
     section.stop_workspace_watch_for_test();
-    section.set_reconciliation_batch_delay_for_test(Duration::from_millis(20));
+    // Hold the first reconciliation between two of its batches until the
+    // latest refresh supersedes it: a batch delay far beyond any wait keeps it
+    // in flight however slowly this host dispatches. With a 20 ms gap the wait
+    // below had to sample the in-flight state between two batches, and
+    // `wait_until` drains the main loop to exhaustion: on a loaded host each
+    // dispatch outlasts the gap, one drain applies every batch, and the state
+    // is never seen (a suite-level FLAKY, `quiet-headless-session-services`
+    // 6.2, reproduced with a drain that adds 25 ms per dispatch).
+    section.set_reconciliation_batch_delay_for_test(Duration::from_secs(3600));
     select_path(&section, &selected);
     let reconcile_before = section.workspace_section_evidence();
     let (terminal_before, superseded_before) = (
@@ -6074,6 +6082,8 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
                 .refresh_blocks_readiness
     });
 
+    // The latest plan applies its own batches at a 20 ms cadence.
+    section.set_reconciliation_batch_delay_for_test(Duration::from_millis(20));
     fixture::write_text(&latest, "latest");
     section.imp().refresh_button.emit_clicked();
     section.apply_queued_refresh_for_test();

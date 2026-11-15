@@ -473,6 +473,12 @@ DEFAULT_BUILD_JOBS = 4
 RERUN_MARKER = "Widget test run failed on attempt"
 FLAKY_NAME_RE = re.compile(r"^FLAKY: (\S+)$")
 MEMORY_RE = re.compile(r"^widget-memory: peak (\d+) MiB, oom_kill (\d+)$")
+# The session helper's runtime guard (gtk_lush_proof_harness::session): one
+# line per violation, then exit status 93. A shard whose session touched the
+# host (rtkit, bluez, devices, an accessibility bus, a portal) failed, and the
+# runner never retries it: a second session would touch the host again.
+SESSION_HYGIENE_RE = re.compile(r"^SESSION-HYGIENE: ([a-z][a-z-]*): ")
+SESSION_HYGIENE_EXIT_CODE = 93
 # Runner-level verdicts that fail a shard without failing a test; the summary
 # names them so a red shard with no failed test still says why.
 RUNNER_VERDICTS = ("TEMP-LEAK:", "Error: unexpected warning output")
@@ -499,6 +505,7 @@ class ShardOutcome:
     peak_mib: int | None = None
     oom_kills: int = 0
     relay_failed: bool = False
+    hygiene: list[str] = field(default_factory=list)
     verdicts: list[str] = field(default_factory=list)
     wall_seconds: float = 0.0
     _in_failures: bool = False
@@ -512,6 +519,10 @@ class ShardOutcome:
             self.attempts += 1
             self.earlier_failed += self.failed
             self.failed, self.flaky = [], []
+        elif match := SESSION_HYGIENE_RE.match(text):
+            self._in_failures = False
+            if match.group(1) not in self.hygiene:
+                self.hygiene.append(match.group(1))
         elif match := MEMORY_RE.match(text):
             # Checked before the failures section: a harness killed mid-list
             # never closes it, and the runner's report still follows.
@@ -538,7 +549,13 @@ class ShardOutcome:
             problems.append(f"exited with status {self.status}")
         if self.oom_kills:
             problems.append(f"{self.oom_kills} process(es) OOM-killed in its memory scope")
-        return problems + self.verdicts
+        if self.status == SESSION_HYGIENE_EXIT_CODE and not self.hygiene:
+            problems.append("SESSION-HYGIENE: exit status 93 with no violation line")
+        return problems + self.hygiene_lines() + self.verdicts
+
+    def hygiene_lines(self) -> list[str]:
+        """One `SESSION-HYGIENE: <shard>: <class>` line per violated class."""
+        return [f"SESSION-HYGIENE: {self.shard}: {name}" for name in self.hygiene]
 
 
 class ParallelRun:
@@ -683,6 +700,8 @@ def evaluate(outcomes: list[ShardOutcome], total: int, err=sys.stderr) -> int:
                 f"FLAKY-SHARD: {outcome.shard} needed {outcome.attempts} attempts (earlier attempts failed: {earlier})",
                 file=err,
             )
+        for line in outcome.hygiene_lines():
+            print(line, file=err)
         for problem in outcome.problems():
             print(f"widget-shards: shard {outcome.shard}: {problem}", file=err)
             failed = True
@@ -938,6 +957,26 @@ def self_test_parallel() -> None:
         leak.status = 1
         assert leak.failed == [] and any("TEMP-LEAK" in problem for problem in leak.problems()), leak.problems()
         # An OOM kill reported by the runner fails the shard even at status 0.
+        # The session guard's verdict fails the shard with its own summary
+        # line per class, and the runner did not rerun it.
+        dirty = [ShardJob("h", ["h::one"], stub(quoted(
+            "running 1 tests", "test h::one ... ok",
+            "SESSION-HYGIENE: rtkit: :1.9 (/usr/bin/pipewire) called MakeThreadRealtime",
+            "SESSION-HYGIENE: bluez: :1.9 (/usr/bin/wireplumber) called org.bluez GetManagedObjects",
+            "SESSION-HYGIENE: rtkit: :1.9 (/usr/bin/pipewire) called MakeThreadHighPriority"),
+            SESSION_HYGIENE_EXIT_CODE))]
+        hygiene_err = io.StringIO()
+        outcomes, _ = ParallelRun(dirty, 1, log_dir, io.StringIO(), io.StringIO()).run()
+        assert evaluate(outcomes, total=1, err=hygiene_err) != 0
+        assert outcomes[0].attempts == 1 and outcomes[0].hygiene == ["rtkit", "bluez"], outcomes[0]
+        lines = hygiene_err.getvalue().splitlines()
+        assert "SESSION-HYGIENE: h: rtkit" in lines and "SESSION-HYGIENE: h: bluez" in lines, lines
+        assert not any(line.startswith("FLAKY") for line in lines), lines
+        # Exit status 93 alone (a guard line lost) still fails, and says so.
+        silent = ShardOutcome("h", 1, WidgetLog(["h::one"]))
+        silent.feed("running 1 tests", 0.0)
+        silent.status = SESSION_HYGIENE_EXIT_CODE
+        assert any("no violation line" in problem for problem in silent.problems()), silent.problems()
         oom = [ShardJob("a", ["a::one"], stub(quoted(
             "running 1 tests", "test a::one ... ok", "widget-memory: peak 6100 MiB, oom_kill 1")))]
         outcomes, _ = ParallelRun(oom, 1, log_dir, io.StringIO(), io.StringIO()).run()

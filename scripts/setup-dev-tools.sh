@@ -20,8 +20,21 @@ packages=(
     gstreamer1-plugins-good
     mutter
     dbus-daemon
+    dbus-tools
     glib2
     blueprint-compiler
+)
+# The packages of the private headless session's own commands (session bus,
+# bus monitor, compositor, quiet media). They are checked by package, not by
+# command: only the session helper names those commands, and its
+# `check-tools` cannot run before the packages that build it exist.
+session_packages=(
+    dbus-daemon
+    dbus-tools
+    mutter
+    pipewire
+    pipewire-utils
+    wireplumber
 )
 runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
 socket_path="${YDOTOOL_SOCKET:-${runtime_dir}/.ydotool_socket}"
@@ -45,9 +58,6 @@ run_cmd() {
 
 package_for_command() {
     case "$1" in
-        dbus-run-session)
-            printf 'dbus-daemon'
-            ;;
         gdbus | gsettings)
             printf 'glib2'
             ;;
@@ -63,17 +73,8 @@ package_for_command() {
         magick)
             printf 'ImageMagick'
             ;;
-        mutter)
-            printf 'mutter'
-            ;;
-        pipewire)
-            printf 'pipewire'
-            ;;
         pw-dump)
             printf 'pipewire-utils'
-            ;;
-        wireplumber)
-            printf 'wireplumber'
             ;;
         Xvfb)
             printf 'xorg-x11-server-Xvfb'
@@ -115,18 +116,16 @@ append_unique_package() {
 }
 
 install_missing_packages() {
+    # The private headless session's own commands are not listed here;
+    # `session_packages` covers them below.
     local required_commands=(
-        dbus-run-session
         gdbus
         gnome-screenshot
         gst-inspect-1.0
         gst-launch-1.0
         gsettings
         magick
-        mutter
-        pipewire
         pw-dump
-        wireplumber
         Xvfb
         blueprint-compiler
         xdotool
@@ -142,6 +141,15 @@ install_missing_packages() {
             append_unique_package "$(package_for_command "$command_name")"
         fi
     done
+
+    if command -v rpm >/dev/null 2>&1; then
+        local package
+        for package in "${session_packages[@]}"; do
+            if ! rpm -q --quiet "$package"; then
+                append_unique_package "$package"
+            fi
+        done
+    fi
 
     python="$(system_python)"
     if ! "$python" -c 'import gi, pyatspi' >/dev/null 2>&1; then

@@ -158,14 +158,10 @@ selected_case_description() {
     printf '%s' "$joined"
 }
 
-smoke_require_command dbus-run-session
-smoke_require_command mutter
+smoke_require_session screencast
 smoke_require_command gdbus
 smoke_require_command gsettings
 smoke_require_command gst-launch-1.0
-smoke_require_command pipewire
-smoke_require_command pw-dump
-smoke_require_command wireplumber
 
 [[ -x /usr/bin/python3 ]] || smoke_skip "/usr/bin/python3 is not available."
 [[ -x "$BINARY" ]] || smoke_skip "LushText debug binary is missing. Run 'make build-debug' first."
@@ -389,7 +385,7 @@ manifest = {
     "finished_at": now,
     "failure_reason": failure_reason,
     "skip_reason": skip_reason,
-    "launch_mode": "dbus-run-session+headless-mutter-per-capture",
+    "launch_mode": "headless-session-screencast+compositor-per-capture",
     "helper_arguments": {
         "artifact_dir": str(artifact_root),
         "binary": str(Path(binary).resolve()),

@@ -5,6 +5,11 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // A live case's private session re-executes this binary as its inner
+    // stage (bus, private system bus, quiet media, runtime guard).
+    if let Some(code) = gtk_lush_proof_harness::session::run_inner_stage_if_requested() {
+        return code;
+    }
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     match cargo_gtk_proof::run_cli(std::env::args_os().skip(1), &mut stdout, &mut stderr) {

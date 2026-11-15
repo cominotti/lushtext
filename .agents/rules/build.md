@@ -42,13 +42,19 @@ from nextest's default filter, while widget coverage in `make test` flows
 through the shared headless `scripts/run-widget-tests.sh` path so local
 verification matches CI.
 
-Before GTK starts, the widget harness applies the **five** settings returned by
-`gtk_lush_proof_harness::recommended_pre_gtk_environment()` (including
-`NO_AT_BRIDGE=1` and `GTK_IM_MODULE=gtk-im-context-simple`): the private
-compositor advertises desktop services it cannot provide, so the client half is
-not started against it. The input-method entry is a crash guard, not a claim
-that the underlying GTK race is fixed — see
-`crates/gtk-lush/proof-harness/README.md` and
+The widget session's launcher (the `widget` profile of the session helper,
+below) sets the **seven** settings returned by
+`gtk_lush_proof_harness::recommended_pre_gtk_environment()` before the bus
+starts, so every service the bus activates inherits them; the per-test child
+only verifies them and fails, naming the variable, before GTK starts when one
+is missing. They include `GTK_A11Y=test` (a test AT context: accessible state
+stays queryable through `gtk_test_accessible_*` and no `org.a11y.Bus` starts;
+`none` would drop the context), `ADW_DISABLE_PORTAL=1` (`GDK_DEBUG=no-portals`
+alone does not stop Libadwaita's portal) and
+`GTK_IM_MODULE=gtk-im-context-simple`: the private compositor advertises
+desktop services it cannot provide, so the client half is not started against
+it. The input-method entry is a crash guard, not a claim that the underlying
+GTK race is fixed — see `crates/gtk-lush/proof-harness/README.md` and
 `docs/next/persistent-format-hardening.md` S7B-6.
 
 **Validation gates.** These must stay aligned between the Makefile, the
@@ -101,6 +107,18 @@ Required release workflows carry an `agent-release-role` marker, and
 duplicate required workflow owners, and required workflows that no longer
 trigger on `v*` tags. Do not duplicate these registries in shell or Python
 allowlists.
+
+`make check-session-hygiene` (in `make check-policy`) keeps every private
+headless session on the session helper. It scans every tracked file by kind
+(shell, Makefile recipes, workflow `run:` blocks, Containerfiles, Python
+literals, Rust literals) and fails when anything other than the helper
+(`crates/gtk-lush/proof-harness/src/session/`) names the session bus
+launcher, the bus daemon, the compositor or the media daemons, when a copy of
+the shared "headless session services" warning family appears outside
+`scripts/smoke_warning_classifiers.py` and the parity-tested `cargo-gtk-proof`
+scanner, when the helper's quiet configuration drifts, and when the helper has
+no sanctioned spawn (a gate keyed on nothing). Version and path records come
+from `check-tools --json` instead; see its docstring for the exempt contexts.
 
 `make check-workflow-boundaries` (in `make check-policy`) enforces the
 mechanical half of the workflow readability convention; the rules it checks
@@ -551,8 +569,11 @@ before GTK starts (`gtk_lush_axioms::classify_sample_args`, `support::guard`).
 **Warning scan.** `scripts/run-gtk-axioms.sh` fails the lane on **any**
 `WARNING`, `CRITICAL`, `Broken pipe`, `cannot remove`, or `MESA: error:` line
 in the probe or sample output, whatever process printed it, except the private
-session's own `dbus-daemon` / `libmutter-Message` / EGL lines and the three
-mutter warnings its `BENIGN_NOISE_REGEX` names. The runtimes lane runs every
+session's own `dbus-daemon` / `libmutter-Message` / EGL lines, mutter's
+sliced-pipeline line, and the shared "headless session services" family its
+`BENIGN_NOISE_REGEX` reads from `scripts/smoke_warning_classifiers.py
+--print-regex headless-session-services` (no copy of the family lives in a
+runner; `make check-session-hygiene` fails one). The runtimes lane runs every
 SDK sandbox with `--no-session-bus --no-a11y-bus --no-documents-portal`
 (`SANDBOX_FLAGS`). `./scripts/run-gtk-axioms.sh --self-test` (in
 `make check-gtk-axioms`) asserts the benign lines pass and each defect class
@@ -571,6 +592,16 @@ form). The steps are in
 Interleaved `GTK_AXIOMS_ONLY` re-test rounds run through `scripts/measure.sh`.
 A nightly verdict is a preview of the next adoption, never a ledger
 restatement on its own.
+
+**PipeWire and WirePlumber updates.** The session helper's WirePlumber
+fragment (`crates/gtk-lush/proof-harness/src/session/wireplumber-quiet.conf`)
+repeats module lists of the installed `/usr/share/wireplumber/wireplumber.conf`
+(the `client-context` component and the main `context.modules`) to leave
+module-rt out. On a PipeWire or WirePlumber version change, re-read those lists
+against the new defaults and update the fragment and the version in its header
+comment; then run one screencast session (`make visual-geometry-smoke`). A
+changed default that loads module-rt, a hardware monitor or reaches rtkit
+fails that run with `SESSION-HYGIENE:` lines, which is the intended signal.
 
 ## Fuzzing
 
@@ -724,6 +755,38 @@ honestly; keep its lane boundaries current when adding smoke checks. Each
 script owns its dependency checks, artifact paths (under `build/smoke/<lane>`)
 and skip messages; `make end-user-smoke` runs the host-supported lanes together.
 
+**Every private headless session starts through the session helper**:
+`scripts/headless-session` (the `gtk-lush-session` binary of
+`gtk-lush-proof-harness`, built on demand, or `GTK_LUSH_SESSION_BIN`) or the
+crate's `session` library (`run_under_compositor`, `session_command`,
+`compositor_command`). Stages: `session --profile P -- <inner>` (the bus,
+a private monitored system bus, quiet media, the runtime guard),
+`compositor --monitor WxH -- <child>` inside it, `run` (both), and
+`check-tools --profile P [--json]` for prerequisites and version lines. A lane
+never names the session bus launcher, the compositor or the media daemons
+itself (`make check-session-hygiene`). Profiles:
+
+- `widget`: no AT-SPI (`GTK_A11Y=test`), no media, no portals, plus the
+  recommended pre-GTK environment (widget tests, GTK axioms, builder
+  diagnostics);
+- `plain`: portals on, nothing else (automation, editor-glyph,
+  portal/sandbox, the Xvfb capture, responsiveness without `at`);
+- `screencast`: quiet PipeWire and WirePlumber for mutter's ScreenCast
+  (visual, visual-geometry, command-palette notes);
+- `accessibility`: AT-SPI plus quiet media (accessibility smoke, crash
+  recovery, responsiveness with `at`; `--media off` where no screenshot is
+  taken).
+
+The private system bus keeps rtkit and bluetoothd out of reach whatever a
+client's configuration, and quiet media load no module-rt and no hardware
+monitors. At teardown the runtime guard prints
+`SESSION-HYGIENE: <class>: <detail>` (`rtkit`, `bluez`, `hardware-device`,
+`module-rt`, `accessibility-bus`, `portal`, `config`) and exits **93** when
+the session touched the host. Lanes report it as its own failure class
+(`session-hygiene` in manifests and the automation client), never retry it,
+and verify no invariant from that case; the widget shard runner prints
+`SESSION-HYGIENE: <shard>: <class>`.
+
 - `make automation-smoke`: the app under isolated headless Mutter and a private
   D-Bus session, exercised through the automation object and
   `scripts/lushtext-automation.py`, with a runtime-log warning scan.
@@ -734,7 +797,8 @@ and skip messages; `make end-user-smoke` runs the host-supported lanes together.
   bounded geometry snapshots, protected regions compared exactly, with a
   visual-sensitive diff fingerprint.
 - `make visual-smoke` and `make accessibility-smoke` (AT-SPI bridge enabled;
-  the widget harness sets `NO_AT_BRIDGE=1` and cannot prove this class). Both
+  the widget harness runs `GTK_A11Y=test` with no AT-SPI bus and cannot prove
+  this class). Both
   run their failed-load captures on a second binary built with the smoke-only
   `smoke-read-faults` feature (`make smoke-read-faults-build`,
   `target/smoke-read-faults`, `LUSHTEXT_DENY_READ=<fixture>`), because a

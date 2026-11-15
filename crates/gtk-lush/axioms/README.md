@@ -138,7 +138,20 @@ browsing, drag and drop, key-binding pre-emption, a tail inserted hidden, and
 chunk-read cost by iterator positioning) followed with LushText's Protected
 View (`long-line-protected-view`); A62 has no in-crate probe (it needs an
 AT-SPI bus, like A35), and A59–A61 and A64 are the first probes driven by
-real input (below). Every later axiom
+real input (below). A115 and A116 (`GTK_A11Y=test` and
+`ADW_DISABLE_PORTAL=1`) followed with the private session helper
+(`quiet-headless-session-services`): they are the first probes whose control
+runs in a nested private session, started through the helper binary the
+enclosing session exports as `GTK_LUSH_SESSION_BIN`, so the crate stays a leaf
+and starts no session itself (`probes::session_names`; the control child is
+the same executable re-run with `GTK_LUSH_AXIOMS_CONTROL`, which every sample
+and the probe runner check first). Without that variable, or without a D-Bus
+service file for the name, the probe is fixture-invalid; in an SDK sandbox
+their samples print `skipped (needs a session bus): <id>`. A117 (announcing
+through a `GtkTestATContext` kills the process) is the first probe whose
+claim is a crash: its child, the same executable re-run with
+`GTK_LUSH_AXIOMS_CONTROL=A117` and core dumps off, makes the call, and the
+probe reads how the child died. Every later axiom
 follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.

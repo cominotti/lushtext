@@ -4,7 +4,7 @@
 
 use crate::common::{
     ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_metadata, present_window,
-    test_application, wait_until,
+    test_application, wait_until, wait_until_or_false,
 };
 use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
@@ -3176,14 +3176,45 @@ fn test_root_and_nested_code_blocks_repair_after_resize_at_constrained_width() {
         code_block_containers(&preview).len() == 2
     });
     wait_for_code_block_layout(&preview);
+    // Let the render's deferred width passes finish before the resize, so
+    // only the resize itself can repair the blocks. The repair used to come
+    // from the render's own 50 ms pass when the resize landed inside it, and
+    // a resize that landed later was never repaired (`size_allocate` on this
+    // `GtkBox` subclass is not called; the suite-level FLAKY of
+    // `quiet-headless-session-services` 6.2).
+    let render_settled = Rc::new(std::cell::Cell::new(false));
+    let render_settled_for_callback = render_settled.clone();
+    preview.queue_code_block_width_refresh_for_test(move || render_settled_for_callback.set(true));
+    wait_until(Duration::from_secs(10), || render_settled.get());
 
     window.set_default_size(320, 420);
-    wait_until(Duration::from_secs(10), || {
+    let repaired = wait_until_or_false(Duration::from_secs(10), || {
         preview.text_view().width() < 500
             && code_block_containers(&preview)
                 .iter()
                 .all(|block| block.width_request() == expected_code_block_width(&preview, block))
     });
+    // A rare timeout in a long shard session left no values to tell the
+    // window that never shrank from a repair left stale: report both.
+    assert!(
+        repaired,
+        "code blocks did not repair after the resize: window {}x{}, text view {} \
+         (margins {} + {}), blocks (width_request, expected, width, margin_start) {:?}",
+        window.width(),
+        window.height(),
+        preview.text_view().width(),
+        preview.text_view().left_margin(),
+        preview.text_view().right_margin(),
+        code_block_containers(&preview)
+            .iter()
+            .map(|block| (
+                block.width_request(),
+                expected_code_block_width(&preview, block),
+                block.width(),
+                block.margin_start()
+            ))
+            .collect::<Vec<_>>()
+    );
     let blocks = code_block_containers(&preview);
     assert!(blocks.iter().any(|block| block.margin_start() == 0));
     assert!(blocks.iter().any(|block| block.margin_start() > 0));

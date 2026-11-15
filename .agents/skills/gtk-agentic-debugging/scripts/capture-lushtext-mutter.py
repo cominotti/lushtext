@@ -281,6 +281,44 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# The session helper's exit status when the session touched the host
+# (gtk_lush_proof_harness::session::SESSION_HYGIENE_EXIT_CODE).
+SESSION_HYGIENE_EXIT_CODE = 93
+
+
+def headless_session() -> str:
+    """The one way this script starts a private headless session."""
+    return str(REPO_ROOT / "scripts" / "headless-session")
+
+
+def session_profile(args: argparse.Namespace) -> str:
+    """`accessibility` when an AT-SPI bus is needed, else `screencast`."""
+    if args.enable_atspi or args.atspi_tree_output is not None:
+        return "accessibility"
+    return "screencast"
+
+
+def check_session_tools(profile: str) -> None:
+    """Fail when the host lacks the session tools of `profile`."""
+    result = subprocess.run(
+        [headless_session(), "check-tools", "--profile", profile],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"The {profile} session is unavailable on this host (exit {result.returncode}): "
+            f"{result.stdout.strip()[-400:]}. Run make dev-tools inside the Toolbx/container."
+        )
+
+
+def compositor_command(width: int, height: int, child: list[str]) -> list[str]:
+    """The headless compositor stage of the current helper session."""
+    return [headless_session(), "compositor", "--monitor", f"{width}x{height}", "--", *child]
+
+
 def require_command(command: str) -> None:
     if shutil.which(command) is None:
         raise RuntimeError(
@@ -481,17 +519,10 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
 
 def outer_run(args: argparse.Namespace) -> int:
     validate_args(args)
-    for command in (
-        "dbus-run-session",
-        "gdbus",
-        "gsettings",
-        "gst-launch-1.0",
-        "mutter",
-        "pipewire",
-        "pw-dump",
-        "wireplumber",
-    ):
+    for command in ("gdbus", "gsettings", "gst-launch-1.0"):
         require_command(command)
+    profile = session_profile(args)
+    check_session_tools(profile)
 
     if args.enable_atspi or args.atspi_tree_output is not None:
         if not ATSPI_REGISTRYD.is_file():
@@ -539,8 +570,18 @@ def outer_run(args: argparse.Namespace) -> int:
     )
 
     log_path = artifact_dir / "session.log"
+    # The helper starts the session bus, a private system bus, quiet media
+    # (PipeWire for mutter's ScreenCast) and, for the accessibility profile,
+    # lets the AT-SPI bus start; at teardown it judges what the session
+    # touched and keeps its logs and `session-hygiene.txt` in the artifacts.
     command = [
-        "dbus-run-session",
+        headless_session(),
+        "session",
+        "--profile",
+        profile,
+        "--inherit-runtime-dir",
+        "--log-dir",
+        str(artifact_dir / "session-hygiene"),
         "--",
         str(SYSTEM_PYTHON),
         str(SCRIPT_PATH),
@@ -573,6 +614,12 @@ def outer_run(args: argparse.Namespace) -> int:
         f"path={runtime_dir}\nstatus=failed\ncleanup={cleanup_status}\n",
         encoding="utf-8",
     )
+    if result.returncode == SESSION_HYGIENE_EXIT_CODE:
+        print(
+            "SESSION-HYGIENE: the capture session touched the host; see "
+            f"{artifact_dir / 'session-hygiene' / 'session-hygiene.txt'}",
+            file=sys.stderr,
+        )
     print(f"Headless Mutter capture failed. Artifacts kept in {artifact_dir}", file=sys.stderr)
     print(
         f"Runtime directory listing kept in {artifact_dir / 'runtime-dir-listing.txt'}",
@@ -738,13 +785,7 @@ def internal_run(args: argparse.Namespace) -> int:
     atspi_address: str | None = None
 
     try:
-        pipewire = start_logged(["pipewire"], artifact_dir / "pipewire.log")
-        processes.append(pipewire)
-        wait_for_pipewire(runtime_dir)
-
-        wireplumber = start_logged(["wireplumber"], artifact_dir / "wireplumber.log")
-        processes.append(wireplumber)
-
+        # The session helper already runs PipeWire and WirePlumber (quiet).
         if args.enable_atspi or args.atspi_tree_output is not None:
             atspi_address, registry = setup_atspi(artifact_dir)
             processes.append(registry)
@@ -823,18 +864,11 @@ def internal_run(args: argparse.Namespace) -> int:
             env["NO_AT_BRIDGE"] = "1"
             env.pop("AT_SPI_BUS_ADDRESS", None)
 
-        command = [
-            "mutter",
-            "--headless",
-            "--wayland",
-            "--no-x11",
-            "--virtual-monitor",
-            f"{args.width}x{args.height}",
-            "--",
-            str(SYSTEM_PYTHON),
-            str(SCRIPT_PATH),
-            *child_cli_args(args, "mutter-child"),
-        ]
+        command = compositor_command(
+            args.width,
+            args.height,
+            [str(SYSTEM_PYTHON), str(SCRIPT_PATH), *child_cli_args(args, "mutter-child")],
+        )
         with (artifact_dir / "mutter-child.log").open("w", encoding="utf-8") as log:
             result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
         print((artifact_dir / "mutter-child.log").read_text(encoding="utf-8", errors="replace"))

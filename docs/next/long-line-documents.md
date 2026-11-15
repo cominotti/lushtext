@@ -5123,3 +5123,63 @@ the post-1.98 std APIs, and B9 Cargo's layout v2. The investigation's table in
 the CI pin, `cargo install --locked cargo-nextest --version 0.9.151`. It was
 left alone here because parallel runs were using the one binary and nothing
 local needs it while cargo 1.98 writes layout v1.
+
+## QH `quiet-headless-session-services` (implementation record, 2026-11-15)
+
+**Status:** implemented 2026-11-15 on branch `quiet-headless-session-services`,
+which has a pull request and is not merged yet. This is a host-hygiene change
+for every measurement lane, not a budget change. Design and decisions are in
+`openspec/changes/quiet-headless-session-services/design.md`, and the evidence
+is in that change's `evidence/` directory (`baseline.md`, `red-scan.txt`,
+`runtime-proof.md`).
+
+**Baseline.** Before this change, every headless widget, smoke and axiom
+session shared the host's system bus. On the spec-stage day, rtkit-daemon
+logged 6,155 thread grants and 7,544 burst-limit denials for this user, and
+bluetoothd logged 27,495 "Endpoint registered" lines. Bare WirePlumber
+instances also rewrote the real `~/.local/state/wireplumber`. One unmigrated
+screenshot case cost 15 bluez endpoints and 1 nice plus 3 RT grants.
+
+**Decisions.**
+
+- One session helper (`gtk-lush-proof-harness`'s `session` module, exposed as
+  the `gtk-lush-session` binary and the `scripts/headless-session` shim) starts
+  every session. Its profiles are `widget`, `plain`, `screencast` and
+  `accessibility`.
+- Every session gets a private, monitored system bus, quiet media only where
+  ScreenCast needs it, helper-private homes, and a runtime guard. The guard
+  prints `SESSION-HYGIENE:` lines and exits 93.
+- `make check-session-hygiene`, which is in `make check-policy`, fails any
+  other spawn.
+- Widget children run with `GTK_A11Y=test` and `ADW_DISABLE_PORTAL=1` (axioms
+  A115 and A116).
+- Under `GTK_A11Y=test`, `gtk_accessible_announce` segfaults (A117), so
+  `ui::accessibility::announce` skips a `GtkTestATContext`. No announcement
+  reaches a user through such a context.
+- The edit-entry source capture of Protected View (`capture_execution.rs`)
+  now cancels itself on any insertion or deletion. Before, a test-workflow
+  replacement of an edit-entered buffer left it reading through an
+  invalidated iterator (a `Gtk-CRITICAL`, then an abort). This and the
+  announcement guard are the change's two application-code edits.
+- Socket paths are bounded by `dbus-daemon`'s 99 bytes. The helper,
+  `with-temp-scope.sh --session-runtime` and the Python smoke drivers'
+  runtime root all check the system bus socket, the deepest one, and a
+  driver whose temp scope is too deep (a seven-digit PID did it) falls back
+  to `/tmp`.
+
+**Deferrals.**
+
+- Portals stay on in the screenshot, accessibility and portal-sandbox lanes:
+  their baselines and confinement checks may depend on them, and portals put
+  no measured load on the host.
+- There is no per-minute session cap: the guard already proves a session's
+  host cost is zero, and a cap would only slow the parallel lanes.
+
+**Proof.** During one 99-case `make visual-geometry-smoke` run, this branch's
+sessions got 0 rtkit grants, 0 bluez endpoints, 0 WirePlumber state writes
+and 0 `MakeThread*` calls. Other worktrees ran unmigrated lanes on the host at
+the same time, so each count was attributed per process (`runtime-proof.md`
+6.5). The interleaved quick-tier measurement against `main` (`baseline/*`,
+`keystroke/3500/*`, `dense/2000`, `plain` and `at`) found no budget shift:
+four verdict rounds, plus two `dense/2000` attribution pairs that cleared the
+one flagged stage, a single-rep 22 ms dispatch (design, "Measurement").

@@ -543,12 +543,10 @@ accessibility_require_command() {
     fi
 }
 
-accessibility_require_command dbus-run-session
 accessibility_require_command gdbus
-accessibility_require_command mutter
-accessibility_require_command pipewire
-accessibility_require_command pw-dump
-accessibility_require_command wireplumber
+accessibility_require_command gst-launch-1.0
+report="$("$REPO_ROOT/scripts/headless-session" check-tools --profile accessibility 2>&1)" \
+    || accessibility_skip "the private headless accessibility session is unavailable: ${report##*$'\n'}"
 
 [[ -x /usr/bin/python3 ]] || accessibility_skip "/usr/bin/python3 is not available."
 /usr/bin/python3 -c 'import gi, pyatspi' >/dev/null 2>&1 || accessibility_skip "system Python lacks gi/pyatspi."
