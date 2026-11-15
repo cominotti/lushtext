@@ -4024,8 +4024,10 @@ separate change, in this order:
      each measured first; `GtkAccessibleText` on the widget if a screen
      reader needs text ranges in a row; the A109 upstream report
      (`docs/upstream-reports.md`, drafted, filing needs the maintainer).
-   - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14 on branch `harden-flatpak-sdk-update-ci`;
-     `openspec/changes/harden-flatpak-sdk-update-ci/`; a `restore-main-ci`
+   - `harden-flatpak-sdk-update-ci` (implemented 2026-11-14, merged (PR #100,
+     `main` `6211a9c1`) and archived 2026-11-14,
+     `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/`,
+     spec `openspec/specs/flatpak-ci-build/`; a `restore-main-ci`
      follow-up under the pre-existing-blockers rule). PR #98's `Flatpak
      Build` failed twice and passed on a rerun (run `43642169956`): the CI
      image's system installation sits on overlayfs, and when Flathub has
@@ -4054,7 +4056,7 @@ separate change, in this order:
        - L3: a destination inside the checkout is refused before any copy,
          and a forced post-relocation probe failure stops the step naming
          the probe, the result and the filesystem.
-       Details: `openspec/changes/harden-flatpak-sdk-update-ci/evidence/`.
+       Details: `openspec/changes/archive/2026-11-14-harden-flatpak-sdk-update-ci/evidence/`.
      - **The relocation's local cost** (non-verdict, host under other
        agents' load): 3.8 GiB copied with hardlinks kept, 12.2–21.0 s of
        wall time (6.8 s in the stage 2 reproduction), against the 90 s
