@@ -431,13 +431,14 @@ check-font-zoom-registration:
 check-agent-helpers:
 	@echo "Checking the shared-machine agent helpers..."
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck -x scripts/agent-locks.sh scripts/heavy.sh scripts/measure.sh scripts/wait-for.sh scripts/with-memory-cap.sh; \
+		shellcheck -x scripts/agent-locks.sh scripts/heavy.sh scripts/measure.sh scripts/wait-for.sh scripts/with-memory-cap.sh scripts/ci-image-widget-test.sh; \
 	else \
 		echo "shellcheck not installed; skipping the lint half"; \
 	fi
 	./scripts/heavy.sh --self-test
 	LUSHTEXT_AGENT_LOCK_HELD=shared:$$$$ LUSHTEXT_MEMORY_CAP_KIB=1 LUSHTEXT_ADMISSION_NOWAIT=1 ./scripts/measure.sh --self-test
 	LUSHTEXT_AGENT_LOCK_HELD=exclusive:$$$$ ./scripts/wait-for.sh --self-test
+	./scripts/ci-image-widget-test.sh --self-test
 
 # The GTK Lush API advisory's cargo-public-api install (restore-main-ci D3):
 # checksum, the one reviewed lockfile override, and the override's retirement.

@@ -106,7 +106,9 @@ is in [`parallel-agent-work.md`](./parallel-agent-work.md).
 
 **The helpers are THE way agents run heavy work, measurements, and waits.**
 Each has a `--self-test`; `make check-agent-helpers` (in `make check-policy`)
-runs all three plus `shellcheck`, against temporary locks only. Their headers
+runs those three, the CI image lane's (`scripts/ci-image-widget-test.sh`,
+[`build.md`](./build.md), "CI image lane") and `shellcheck`, against
+temporary locks only. Their headers
 document the mechanics.
 
 ```

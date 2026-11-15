@@ -899,3 +899,11 @@ pub mod a112 {
     };
     pub use crate::probes::text::TextViewFixture;
 }
+
+/// The text view the A113 probe scrolls to its first line, for its sample.
+pub mod a113 {
+    pub use crate::probes::a113::{
+        DOCUMENT_LINES, TOP_MARGIN, document_view, scroll_to_first_line,
+    };
+    pub use crate::probes::text::TextViewFixture;
+}
