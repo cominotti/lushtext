@@ -223,8 +223,8 @@ BUILD_CACHE_CHECKOUT = $(shell ./scripts/build-cache.sh checkout-path)
 # The checkout's files are synced into MUTANTS_LOCAL_JOBS slots of a host-wide
 # pool (`scripts/build-cache.sh root`/mutants, MUTANTS_POOL_SIZE, default 3),
 # and each slot runs `cargo mutants --in-place --shard i/N` with its own fixed
-# target and build dirs, CARGO_INCREMENTAL=0 and workspace crates kept out of
-# sccache. Warm slots rebuild only what changed and leave nothing behind;
+# target and build dirs (incremental kept: design D3) and workspace crates
+# kept out of sccache. Warm slots rebuild only what changed and leave nothing behind;
 # copy mode cold-built one tree per job (5.2 GB written each, measured) and
 # leaked every one into ~/.cache/cargo-build. A run that finds no free slot
 # exits 75 and names the holders instead of waiting. Memory, not cores, bounds

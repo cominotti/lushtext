@@ -546,8 +546,9 @@ mode used to cold-build one tree per job (5.2 GB each) into a new
   and the exit status as cargo-mutants computes it (a failure status first,
   then 3 for timeouts, then 2 for missed mutants). One slot writes
   `mutants.out` directly.
-- **Build state.** Each slot builds with `CARGO_INCREMENTAL=0` and passes
-  workspace crates straight to rustc (`RUSTC_WORKSPACE_WRAPPER`, a copy of
+- **Build state.** Each slot keeps incremental compilation in its own build
+  dir (design D3: without it a mutant's build took 2.2x as long, past the 25%
+  bar) and passes workspace crates straight to rustc (`RUSTC_WORKSPACE_WRAPPER`, a copy of
   `scripts/rustc-passthrough.sh` at one stable path, because Cargo hashes the
   wrapper's path into every member), so mutated crates never enter the shared
   sccache; dependencies still use it. A slot whose `build/` plus `target/`

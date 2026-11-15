@@ -553,8 +553,8 @@ def host_triple() -> str:
 
 def tests_env(worktree: Path) -> dict[str, str]:
     """The tests arm's environment (designs D3-D6): build and target
-    directories pinned in the worktree, incremental compilation off there,
-    workspace crates compiled without the compiler cache (the checkout's
+    directories pinned in the worktree (incremental compilation as the caller
+    set it: the tests arm follows the mirror slots' D3 decision), workspace crates compiled without the compiler cache (the checkout's
     `rustc-passthrough.sh`, a path that stays the same across runs, since Cargo
     hashes the workspace wrapper into every member's units), and each test
     process under the per-test address-space limit. The CPU caps fit the
@@ -563,7 +563,6 @@ def tests_env(worktree: Path) -> dict[str, str]:
         **os.environ,
         "CARGO_BUILD_BUILD_DIR": str(worktree / "target/tests-build"),
         "CARGO_TARGET_DIR": str(worktree / "target/tests"),
-        "CARGO_INCREMENTAL": "0",
         "RUSTC_WORKSPACE_WRAPPER": str(REPO_ROOT / "scripts/rustc-passthrough.sh"),
         f"CARGO_TARGET_{host_triple().upper().replace('-', '_')}_RUNNER": str(REPO_ROOT / "scripts/test-address-space-runner.sh"),
         "CARGO_BUILD_JOBS": str(TESTS_BUILD_JOBS),
@@ -1079,7 +1078,7 @@ def self_test() -> None:
     env = tests_env(CACHE_STATE / "wt")
     assert env["CARGO_BUILD_BUILD_DIR"] == str(CACHE_STATE / "wt/target/tests-build")
     assert env["CARGO_TARGET_DIR"] == str(CACHE_STATE / "wt/target/tests")
-    assert env["CARGO_INCREMENTAL"] == "0" and "CARGO_MUTANTS_JOBS" not in env
+    assert env.get("CARGO_INCREMENTAL") == os.environ.get("CARGO_INCREMENTAL") and "CARGO_MUTANTS_JOBS" not in env
     assert env["RUSTC_WORKSPACE_WRAPPER"] == str(REPO_ROOT / "scripts/rustc-passthrough.sh")
     runner = [v for k, v in env.items() if k.startswith("CARGO_TARGET_") and k.endswith("_RUNNER")]
     assert runner == [str(REPO_ROOT / "scripts/test-address-space-runner.sh")], runner

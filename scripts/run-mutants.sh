@@ -21,9 +21,13 @@ MUTANTS_MIRROR="${MUTANTS_MIRROR:-0}"
 MUTANTS_LOCAL_JOBS="${MUTANTS_LOCAL_JOBS:-1}"
 MUTANTS_POOL_SIZE="${MUTANTS_POOL_SIZE:-3}"
 MUTANTS_SLOT_MAX_GIB="${MUTANTS_SLOT_MAX_GIB:-12}"
-# Design D3's measured decision for the mirror slots: "0" builds without
-# incremental compilation, "" leaves CARGO_INCREMENTAL as the caller set it.
-MUTANTS_SLOT_INCREMENTAL="${MUTANTS_SLOT_INCREMENTAL-0}"
+# Design D3's measured decision for the mirror slots: "" leaves
+# CARGO_INCREMENTAL as the caller set it (incremental, Cargo's default), "0"
+# builds without it. Without it a mutant's build took 2.2x as long (25.5 s
+# against 11.4 s median per mutant, 2026-11-15), past D3's 25% bar, though
+# it wrote 40% less; the slots' own build dirs keep that cache out of every
+# other build either way.
+MUTANTS_SLOT_INCREMENTAL="${MUTANTS_SLOT_INCREMENTAL-}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -366,12 +370,21 @@ run_slot() {
     return "${status}"
 }
 
+# Remove this run's owner records while it still holds the slots' locks.
+release_owner_records() {
+    local slot
+    for slot in "${slot_dirs[@]}"; do
+        rm -f "${slot}/owner"
+    done
+}
+
 forward_signal() {
     local pid
     for pid in "${slot_pids[@]}"; do
         kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
     done
     wait 2>/dev/null || true
+    release_owner_records
     echo "run-mutants.sh: interrupted; the slots heal on their next sync (the checkout was never mutated)" >&2
     exit 143
 }
@@ -432,6 +445,7 @@ run_mirror() {
         echo "run-mutants.sh: $(basename "${slot_dirs[k]}") finished with status ${status}"
     done
     trap - INT TERM HUP
+    release_owner_records
     if (( n == 1 )); then
         (close_slot_fds; exec python3 "${here}/mutants-mirror.py" scan "${checkout}/mutants.out") || true
         return "${statuses[0]}"
@@ -579,7 +593,11 @@ STUB
     printf 'pid=1 checkout=/gone started=then\n' >"${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/owner"
     MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 || self_test_fail "a stale owner blocked the run: $(cat "${dir}/out")"
     grep -q 'slot-1: replacing a stale owner record (pid=1 checkout=/gone' "${dir}/out" || self_test_fail "the stale owner was not reported: $(cat "${dir}/out")"
-    grep -q "pid=.* checkout=${dir}/repo" "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/owner" || self_test_fail "the owner record was not replaced"
+    # A run removes its own records when it ends, so a record found later
+    # means a run that was killed, not one that finished.
+    [[ ! -e "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/owner" ]] || self_test_fail "the run left its owner record: $(cat "${LUSHTEXT_BUILD_CACHE}/mutants/slot-1/owner")"
+    MUTANTS_MIRROR=1 MUTANTS_LOCAL_JOBS=1 "${me}" smoke >"${dir}/out" 2>&1 || self_test_fail "the second run failed: $(cat "${dir}/out")"
+    ! grep -q 'stale owner record' "${dir}/out" || self_test_fail "a finished run's record read as stale: $(cat "${dir}/out")"
 
     # The lock is not inherited: a daemon a slot run leaves behind does not keep it.
     cat >"${dir}/bin/cargo" <<'STUB'

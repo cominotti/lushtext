@@ -125,10 +125,12 @@ nothing deleted.
   only with one slot.
 - **Exit status.** A failure status of any slot wins; otherwise 3 if any mutant
   timed out, else 2 if any was missed, else 0, as cargo-mutants itself decides.
-- **No incremental cache, no sccache churn.** Slots build with
-  `CARGO_INCREMENTAL=0` and compile workspace crates without the compiler
+- **No sccache churn.** Slots compile workspace crates without the compiler
   cache (`RUSTC_WORKSPACE_WRAPPER=<root>/mutants/rustc-passthrough.sh`), so a
-  mutant writes no incremental cache and never enters the shared sccache.
+  mutant never enters the shared sccache. They keep incremental compilation,
+  in their own build dirs: without it a mutant's build took 2.2x as long
+  (design D3 of `reduce-build-disk-writes`). `MUTANTS_SLOT_INCREMENTAL=0`
+  turns it off for a run.
 
 `mutants-smoke` is the fast sanity check for tool installation, config parsing,
 and timeout behavior. `mutants-diff` creates a diff against `origin/main` when
@@ -183,8 +185,8 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
   property suites are the tests-side counterpart of the proofs), run
   `--in-place` inside the clean worktree, serially and without `--jobs`
   (cargo-mutants refuses it with `--in-place`), with
-  `target/tests-build`/`target/tests` pinned in the worktree,
-  `CARGO_INCREMENTAL=0`, workspace crates out of sccache, and each test process
+  `target/tests-build`/`target/tests` pinned in the worktree (incremental, as
+  in the slots), workspace crates out of sccache, and each test process
   under the per-test address-space limit. An interrupted mutant is discarded by
   the next run's `git checkout --force`.
   `report` joins the arms on the mutant name and refuses to join across

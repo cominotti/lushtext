@@ -135,7 +135,8 @@ Rules for every task:
     count;
   - a refusal of `MUTANTS_SHARD` together with N > 1;
   - the per-slot environment: `CARGO_TARGET_DIR`, `CARGO_BUILD_BUILD_DIR`,
-    `CARGO_INCREMENTAL=0` (unless D3's measurement says otherwise),
+    `CARGO_INCREMENTAL=0` (unless D3's measurement says otherwise; it did:
+    the slots keep incremental, `MUTANTS_SLOT_INCREMENTAL=""`, task 9.2),
     `RUSTC_WORKSPACE_WRAPPER` set to the slot-stable copy
     `<root>/mutants/rustc-passthrough.sh`, and the existing build-jobs and
     test-thread caps. Probe once, in a scratch crate, whether changing the
@@ -193,7 +194,8 @@ Rules for every task:
   `PROOF_STRENGTH_WORKTREE` semantics.
 - [x] 5.2 Switch the tests arm to `cargo mutants --in-place` inside the clean
   worktree, without `--jobs` (retire `TESTS_JOBS`), with the pinned tests
-  build/target dirs, D3, D4 and D5. Resolve the default worktree with
+  build/target dirs, D3 (incremental kept, following the slots: task 9.2),
+  D4 and D5. Resolve the default worktree with
   `build-cache.sh checkout-path` and create it only in `ensure_worktree`. Make
   task 1.5 pass.
 - [ ] 5.3 Lane case: run `make proof-strength` once for the cheapest oracle

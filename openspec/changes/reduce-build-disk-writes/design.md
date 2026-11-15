@@ -233,8 +233,10 @@ this design first assumed.
 
 ### D3. `CARGO_INCREMENTAL=0` only in lanes with a build tree of their own, behind a pass bar
 
-The mutation slots (D2), both proof-strength arms (D6) and the Kani lane set
-`CARGO_INCREMENTAL=0`. Each builds in a tree that no ordinary build uses:
+The mutation slots (D2), both proof-strength arms (D6) and the Kani lane were
+to set `CARGO_INCREMENTAL=0`, each subject to the pass bar below; the measured
+decisions close this section (the slots and the tests arm kept incremental).
+Each builds in a tree that no ordinary build uses:
 
 - the slots and the proof-strength worktree in their own pinned build dirs;
 - Kani in the target-triple tree (`x86_64-unknown-linux-gnu/`) of the
@@ -275,6 +277,37 @@ the D9 protocol. The units:
 - The 25% bound reflects the host priority: write-heavy builds stall the
   desktop for everyone (baseline: saturated NVMe members, WBT throttling), and
   the 2.5x write reduction is worth a bounded slowdown of a background lane.
+
+**Measured decisions (task 9.2, 2026-11-15).** Every round went through
+`scripts/measure.sh` (`runs.log` in the handoff dir). The 1-min load at the
+start of every round was 6.7-8.6 (other agents' unmanaged work, a game), so
+by D9 every wall time below is **non-verdict**; the decisions rest on effects
+far larger than the load spread, and are recorded as such.
+
+- **Mutation slots: keep incremental** (`MUTANTS_SLOT_INCREMENTAL=""`). One
+  slot, the six mutants of `MUTANTS_RE=chunked_threshold_with` on the
+  `document_scale.rs` smoke file, each mode in its own `LUSHTEXT_BUILD_CACHE`
+  root, interleaved inc0, inc1, inc0, inc1, inc0 (the first inc0 round's
+  baseline hit D11's flaky test and tested nothing, so a third inc0 round was
+  run):
+
+  | round | per-mutant build+test, median | round wall | `write_bytes` |
+  | --- | --- | --- | --- |
+  | inc1 r1 | 11.6 s (build 8.9) | 125 s | 10.20 GB |
+  | inc1 r2 | 11.2 s (build 8.7) | 118 s | 10.12 GB |
+  | inc0 r2 | 24.1 s (build 21.8) | 219 s | 6.03 GB |
+  | inc0 r3 | 26.9 s (build 24.1) | 223 s | 6.03 GB |
+
+  Without incremental the median unit is 25.5 s against 11.4 s, +124%, five
+  times the 25% bar, in both pairs. It writes 40% less per run. These mutants'
+  tests take 3 s; a missed mutant's full test run (about 50 s) dilutes the
+  build share, which the warm-up's missed mutants put at +42% (81 s against
+  57 s), still past the bar. The slots keep incremental in their own build
+  dirs, where it touches no other build; the cold builds and leaked dirs,
+  the larger write, are gone either way (task 9.1).
+- **Proof-strength tests arm: follows the slots** (the same in-place
+  build-then-nextest unit, not measured separately): incremental kept,
+  `CARGO_INCREMENTAL` left as the caller set it.
 
 ### D4. Workspace crates bypass sccache in the mutation lanes
 
@@ -570,6 +603,26 @@ waited. The server never idles out on a busy host.
 - The self-test proves both directions, failing first: a leftover daemon does
   not keep its 2G cap admitted against a 3G budget, and a command that still
   runs does.
+
+### D11. A flaky watchdog unit test (apply-time blocker)
+
+The first measured slot round's unmutated baseline failed
+`ui::responsiveness_probe::watchdog::tests::a_blocking_dispatch_is_recorded_between_its_bounds`
+(`lateness 756 µs below the lower bound 38000 µs`) at a 1-min load of 8-12,
+so cargo-mutants tested no mutant (exit 4). The test is on `main` and
+untouched by this change; it was fixed under the pre-existing-blockers rule.
+
+- Cause: the test iterated its context for a fixed 70 ms window. While every
+  iteration took longer than the 2 ms tick, the `G_PRIORITY_HIGH` watchdog was
+  ready at every prepare and starved the `G_PRIORITY_DEFAULT` idle that
+  stalls. The idle could then run in the window's last iteration, after which
+  no watchdog dispatch recorded the stall.
+- Fix: iterate until the watchdog has dispatched once after the stall (a 10 s
+  deadline), so the dispatch that records the stall always happens. The
+  bounds are unchanged. Not the address-space limit: no allocation failed.
+- Proved by the two watchdog tests passing alone (`cargo nextest run -p
+  lushtext-core --lib -E 'test(responsiveness_probe::watchdog)'`) and by every
+  later slot baseline, all at loads of 8-12.
 
 ## Ledger axioms, Kani, GTK
 
