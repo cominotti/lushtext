@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Cancelling Replace All rolls back already-applied file writes
-The system SHALL attempt to restore already-written files to their original content when cancellation interrupts a Replace All run. The user SHALL be able to cancel a run in flight: while a run is in flight, the Replace Preview confirm control SHALL become a Cancel Replace All control, and `win.cancel-search-panel-replacements` SHALL request the same cancellation. Cancellation SHALL be observed at the next chunk boundary. The file in progress MUST be left untouched (its durable write fails before rename). Files already written MUST be restored by streaming their original bytes from their journal bodies, with the same digest and identity checks as Undo. If rollback cannot restore every file, the journal MUST stay active and Undo MUST be offered for the remaining files. Closing the window or quitting the application during a run SHALL ask whether to Keep Running, Close When Finished, or Stop and Close (cancel and roll back). Any close SHALL wait for the run's terminal.
+The system SHALL attempt to restore already-written files to their original content when cancellation interrupts a Replace All run. The user SHALL be able to cancel a run in flight: while a run is in flight, the Replace Preview confirm control SHALL become a Cancel Replace All control, and `win.cancel-search-panel-replacements` SHALL request the same cancellation. Cancellation SHALL be observed at the next chunk boundary. The file in progress MUST be left untouched (its durable write fails before rename). Files already written MUST be restored by streaming their original bytes from their journal bodies, with the same digest and identity checks as Undo, and MUST NOT require the disk reserve. If rollback cannot restore every file, the journal MUST be shrunk to the remaining files, stay active, and offer Undo for them. A run whose worker is still waiting for the journal guard MUST observe cancellation there and end without touching a file. Closing the window or quitting the application during a run SHALL ask whether to Keep Running, Close When Finished, or Stop and Close (cancel and roll back). Any close SHALL wait for the run's terminal.
 
 #### Scenario: Cancellation restores earlier files
 - **WHEN** Replace All is cancelled after one or more files were already updated
@@ -29,8 +29,8 @@ The system SHALL attempt to restore already-written files to their original cont
 ### Requirement: Replace All enforces file and undo memory caps
 The system SHALL bound Replace All resources with explicit service-level limits.
 
-- **Per-file limit.** A single target file larger than `MAX_REPLACE_FILE_BYTES` MUST be skipped and reported with the reason `LargerThanOpenTier`, and the report MUST name the limit in IEC units. `MAX_REPLACE_FILE_BYTES` is `DocumentScale::REFUSE_TO_OPEN`, 512 MiB, the largest file LushText opens; it is referenced, not copied.
-- **Undo data.** Undo data is no longer held in memory. A file's undo body and its rewritten output MUST each be admitted against the free space of their filesystems plus `REPLACE_DISK_RESERVE_BYTES` (1 GiB), except for a file that `main`'s admission rule would have admitted. Files that are not admitted MUST be skipped and reported with the reason `NotEnoughDiskSpace` before they are modified.
+- **Per-file limit.** A target file larger than `MAX_REPLACE_FILE_BYTES`, or one whose replacement output would be larger, MUST be skipped and reported with the reason `LargerThanOpenTier`, and the report MUST name the limit in IEC units. `MAX_REPLACE_FILE_BYTES` is `DocumentScale::REFUSE_TO_OPEN`, 512 MiB, the largest file LushText opens; it is referenced, not copied.
+- **Undo data.** Undo data is no longer held in memory. A file's undo body and its rewritten output MUST each be admitted against the free space of their filesystems plus `REPLACE_DISK_RESERVE_BYTES` (1 GiB), except for a file that `main`'s admission rule would have admitted. Files that are not admitted MUST be skipped and reported with the reason `NotEnoughDiskSpace` before they are modified. Undo and cancellation rollback MUST need only the free space their writes take, never the reserve.
 - **GTK-side owner.** The undo descriptor owner that crosses to GTK MUST stay within `MAX_REPLACE_UNDO_RETAINED_BYTES`.
 
 #### Scenario: Oversized replace target is skipped
@@ -47,6 +47,14 @@ The system SHALL bound Replace All resources with explicit service-level limits.
 - **WHEN** Replace All includes a 400 MiB UTF-8 file with ample free disk space
 - **THEN** the file is replaced and is undoable
 - **AND** the worker's memory peak does not grow with the file's size
+
+#### Scenario: Replacement output above the open tier
+- **WHEN** a file within the per-file limit would grow past it after its replacements
+- **THEN** the file is skipped without modification and listed as larger than 512 MiB, the largest file LushText opens
+
+#### Scenario: Undo with little free space
+- **WHEN** the user runs Undo with less free space than the reserve but enough for the restored files' writes
+- **THEN** every file is restored, as on `main`
 
 ### Requirement: Replace All builds changed text without full line-vector amplification
 The system SHALL avoid constructing a full per-line collection of owned strings, byte ranges, or equivalent metadata during Replace All. It SHALL also avoid holding a whole file, or the whole replacement output, in memory.
@@ -78,11 +86,11 @@ The system SHALL avoid constructing a full per-line collection of owned strings,
 ### Requirement: Replace All undo journal is incremental and durable per file
 The system SHALL persist Replace All undo state as incremental per-file durable entries rather than rewriting the entire growing backup after each file. Before a file is modified, the following MUST all be durable:
 
-- a raw body file holding that file's original bytes;
+- a raw body file holding that file's original bytes, in the journal's `bodies/` subdirectory;
 - an entry of kind `replace-all-undo-stream-entry` recording the body file name, the length and SHA-256 digest of both the original and the replaced bytes, and the target's identity facts;
 - the armed incremental manifest.
 
-The replaced bytes MUST NOT be persisted or retained. Entries MUST be removed before their bodies, so no entry references a missing body. Cleanup on undo, search-panel close, and startup MUST remove the journal directory, its bodies, and any stale legacy backup file.
+The replaced bytes MUST NOT be persisted or retained. The journal MUST be prepared, removing any previous run's journal, before the run writes its first body. Entries MUST be removed before their bodies, so no entry references a missing body. A body without an entry MUST NOT deactivate the journal; cleanup removes it. A journal holding only descriptors MUST only ever be shrunk, never rebuilt from memory. Cleanup on undo, search-panel close, and startup MUST remove the journal directory, its bodies, and any stale legacy backup file.
 
 #### Scenario: Per-file entry is durable before replacement
 - **WHEN** Replace All is about to rewrite a target file
@@ -102,6 +110,10 @@ The replaced bytes MUST NOT be persisted or retained. Entries MUST be removed be
 #### Scenario: The journal stores the original once
 - **WHEN** Replace All rewrites a 100 MiB file
 - **THEN** the journal holds one body of 100 MiB and a small entry, and no copy of the replaced bytes
+
+#### Scenario: A crash before an entry keeps earlier files undoable
+- **WHEN** LushText is killed after the fourth file's body is written but before its entry, and relaunched
+- **THEN** Undo is offered for the three files already replaced, and the fourth body is removed by cleanup
 
 #### Scenario: Rewriting reads the body it saved
 - **WHEN** Replace All writes a target's new bytes
@@ -182,7 +194,7 @@ Only affected paths required to reconcile currently open tabs MAY cross to GTK a
 Replace All SHALL process each file with a working set independent of its size: chunk buffers, at most one targeted line, digest states, and edit records proportional to accepted replacements. Pass A SHALL stream the target into its undo body while dry-running the replacement into a digest. Pass B SHALL stream the body through the replacement into the target's durable write. The durable-write protocol core SHALL NOT change.
 
 #### Scenario: Memory is flat across file sizes
-- **WHEN** Replace All rewrites one 16 MiB file and, separately, one 512 MiB file
+- **WHEN** Replace All rewrites one 16 MiB file and, separately, one 512 MiB file, with the same replacements
 - **THEN** the worker's peak memory growth for the 512 MiB file is within the growth for the 16 MiB file times 1.05 plus 1 MiB
 
 ### Requirement: GTK retains only undo descriptors
@@ -200,22 +212,33 @@ Replace All SHALL record a target's identity facts (size, modification time in n
 - **THEN** no rename happens, the file keeps the other program's bytes, and it is listed as changed while replacing
 
 ### Requirement: Replace All loses no file that main replaced
-Disk admission SHALL waive the reserve for exactly the files `main` would have replaced. A pure ledger replays `main`'s rule: `MAIN_REPLACE_FILE_BYTES` files first, then up to `MAIN_MAX_REPLACE_FILE_BYTES`, each charging source plus output against `MAIN_REPLACE_UNDO_BYTES` in path order. Processing SHALL keep those two passes, the second extended to the per-file limit. A waived file needs only the free space its writes take.
+Disk admission SHALL waive the reserve for every file `main` would have replaced. A pure ledger SHALL replay `main`'s rule: two passes in path order, at `MAIN_REPLACE_FILE_BYTES` then `MAIN_MAX_REPLACE_FILE_BYTES` for source and output; each admitted file charges source plus output against `MAIN_REPLACE_UNDO_BYTES` and its entry weight against `MAX_REPLACE_UNDO_RETAINED_BYTES`; a pre-rename failure reclaims both. Processing SHALL keep the two passes, the second up to the per-file limit.
 
 #### Scenario: Little free space
 - **WHEN** a Replace All run that `main` replaced in full runs with less free space than the reserve, but enough for its writes
 - **THEN** every file is replaced, as on `main`
+
+#### Scenario: A small file whose output grows past 10 MiB
+- **WHEN** a 9 MiB file's replacements make it 11 MiB, and it sorts before 10 MiB files that `main` replaced within the 64 MiB undo payload
+- **THEN** it is processed in the second pass, as on `main`, and every file `main` replaced is replaced
 
 #### Scenario: A large file early in path order
 - **WHEN** a 300 MiB file sorts before small files that `main` replaced, and the disk cannot hold the 300 MiB file's body plus the reserve
 - **THEN** the 300 MiB file is listed as skipped for disk space and every small file is replaced
 
 ### Requirement: Every skipped file carries one typed reason
-Every file a Replace All run does not replace SHALL carry exactly one `ReplaceSkipReason`: `UnsavedChanges`, `ChangedSinceSearch`, `ChangedDuringReplace`, `NotUtf8`, `LineTooLong`, `InvalidPreview`, `LargerThanOpenTier`, `NotEnoughDiskSpace`, `Unreadable`, `WriteFailed` or `UndoJournalFailed`. Counts per reason SHALL be exact.
+Every file a Replace All run does not replace SHALL carry exactly one `ReplaceSkipReason`: `UnsavedChanges`, `ChangedSinceSearch`, `ChangedDuringReplace`, `NotUtf8`, `LineTooLong`, `InvalidPreview`, `LargerThanOpenTier`, `NotEnoughDiskSpace`, `Unreadable`, `WriteFailed` or `UndoJournalFailed`. Counts per reason SHALL be exact, and partly replaced files SHALL be counted apart from skipped ones.
 
 #### Scenario: A file skipped at preview time
 - **WHEN** a file's only matches are on lines longer than the search excerpt
 - **THEN** the run reports that file once, with the reason `LineTooLong`
+
+### Requirement: A file with two skip reasons carries the first
+A file that qualifies for two skip reasons SHALL carry the first that applies in this order: `UnsavedChanges`; then `LineTooLong` and `InvalidPreview`, for a file none of whose matches was eligible; then the worker's reasons in the order it checks them.
+
+#### Scenario: An unsaved file with only long-line matches
+- **WHEN** a file open with unsaved changes has only matches on lines longer than the search excerpt
+- **THEN** the run reports it once, with the reason `UnsavedChanges`
 
 ### Requirement: The skip report includes partly replaced files and all-unsaved runs
 A replaced file whose matches on long lines were not replaced SHALL be listed as partly replaced, with the count of matches left. A run whose files are all open with unsaved changes SHALL still produce the report, without starting a worker.
@@ -241,11 +264,15 @@ When a run skips files, the panel's completion state SHALL show the skipped coun
 - **THEN** the dialog lists every file whose path fits the skip-list bound, the counts per reason are exact, and opening the dialog stays within `B_settle`
 
 ### Requirement: Open and replace in editor finishes a skipped file without writing it
-A Skipped Files row SHALL offer Open and Replace in Editor when the pure availability policy allows it. `win.replace-in-editor(s)` SHALL open the file through the normal open path, or select its tab, and place the cursor at the first skipped match. It SHALL then reveal the in-tab replace bar, prefilled with the query, the options and the replacement. It SHALL NOT replace or save anything by itself.
+A Skipped Files row SHALL offer Open and Replace in Editor when the pure availability policy allows it. `win.replace-in-editor(s)` SHALL open the file through the normal open path, or select its tab, and place the cursor at the first skipped match. It SHALL then reveal the in-tab replace bar, prefilled with the run's query, options and replacement, not the panel's current fields. It SHALL NOT replace or save anything by itself.
 
 #### Scenario: Unsaved open file
 - **WHEN** the user activates Open and Replace in Editor on a row skipped for unsaved changes
 - **THEN** that file's tab is selected, the replace bar shows the query and the replacement, and the document is unchanged until the user applies the replacement
+
+#### Scenario: The panel was edited after the run
+- **WHEN** the user changes the workspace query after a run and then activates Open and Replace in Editor on one of its rows
+- **THEN** the replace bar is prefilled with the run's query and replacement, not the edited ones
 
 ### Requirement: The editor action is offered only where the editor can replace
 The policy SHALL never offer the action for `LargerThanOpenTier` or `Unreadable`. It SHALL NOT offer it for `LineTooLong` when the source line exceeds `4 × L_PROTECT_EDIT` bytes, because that document opens in Protected View, where in-tab Replace is unavailable. It SHALL offer the action for every other reason.
@@ -259,11 +286,15 @@ The policy SHALL never offer the action for `LargerThanOpenTier` or `Unreadable`
 - **THEN** the row offers no editor action and says the document opens view-only
 
 ### Requirement: Regex replacements are translated for the in-tab bar
-In regex mode the prefilled pattern SHALL be the workspace pattern. The replacement SHALL be translated from Rust `regex` syntax to GtkSourceView syntax: `$N` and `${N}` become `\N`, `${name}` becomes `\g<name>`, `$$` becomes `$`, and a literal backslash is escaped. A template that cannot be translated SHALL leave the replacement empty, with an explanation in the bar.
+In regex mode the prefilled pattern SHALL be the workspace pattern, and the replacement SHALL be translated from Rust `regex` syntax to GtkSourceView syntax. Each reference, read as Rust `regex` reads it (`$name` or `${name}`, where a name of digits is a group number), SHALL become `\g<N>` or `\g<name>`; `$$` SHALL become `$`, and a literal backslash SHALL be escaped. A template naming a group the pattern does not have SHALL leave the replacement empty, with an explanation in the bar.
 
 #### Scenario: Regex replacement with captures
 - **WHEN** the workspace query is the regex `(\w+)@example` with replacement `$1@example.org`
-- **THEN** the in-tab bar is prefilled with the same pattern, regex mode on, and the replacement `\1@example.org`
+- **THEN** the in-tab bar is prefilled with the same pattern, regex mode on, and the replacement `\g<1>@example.org`
+
+#### Scenario: A group number followed by a digit
+- **WHEN** the replacement is `${1}0`
+- **THEN** the prefilled replacement is `\g<1>0`, which GtkSourceView expands to group 1 followed by `0`
 
 ### Requirement: Replace All reports progress for long runs
 While a Replace All run is in flight for longer than the search-progress delay (500 ms), the status bar SHALL show its progress: files done of the total, and MiB done of the total. A heartbeat renews the progress lease. The progress SHALL be announced once when it first appears, and the terminal message SHALL replace it.
@@ -273,16 +304,38 @@ While a Replace All run is in flight for longer than the search-progress delay (
 - **THEN** the status bar shows the MiB processed, rising, until the completion message replaces it
 
 ### Requirement: Legacy inline journal entries remain undoable
-A journal of the previous entry kind (`replace-all-undo-entry`, with inline original and replaced strings) SHALL still load and undo, bounded by the legacy payload limit of 64 MiB. New runs SHALL write only `replace-all-undo-stream-entry` entries. A manifest that mixes the two kinds SHALL be treated as malformed: it is preserved and offers no undo.
+A journal of the previous entry kind (`replace-all-undo-entry`, with inline original and replaced strings) SHALL still load and undo, bounded by the legacy payload limit of 64 MiB (`MAIN_REPLACE_UNDO_BYTES`). Its descriptors SHALL hold no file content: Undo SHALL re-read one legacy entry at a time on a worker. New runs SHALL write only `replace-all-undo-stream-entry` entries. A manifest that mixes the two kinds SHALL be treated as malformed: it is preserved and offers no undo.
 
 #### Scenario: Crash before an upgrade
 - **WHEN** LushText is upgraded after a crash that left an active legacy journal
 - **THEN** the relaunched build offers Undo, and Undo restores the original bytes
 
 ### Requirement: Recovery removes the crashed run's temp files
-The journal manifest SHALL record the run's process id and launch nonce. On startup recovery, Undo and discard, the system SHALL remove the temp files beside each journaled target whose names match the exact pattern, the Replace All tag and the recorded process id and nonce, when that process id is not the current process. Only the journaled targets' own directories SHALL be read. Every other sweep keeps the 24-hour age rule.
+The journal manifest SHALL record the process id and launch nonce of the launch that last wrote targets through it. On startup recovery, Undo and discard, the system SHALL remove the temp files beside each journaled target whose names match the exact pattern, the Replace All tag and the recorded (process id, launch nonce) pair, when that pair is not the current launch's. Only the journaled targets' own directories SHALL be read, each once. Every other sweep keeps the 24-hour age rule.
 
 #### Scenario: Killed while writing a 512 MiB file
 - **WHEN** LushText is killed during pass B of a 512 MiB file and relaunched
 - **THEN** the half-written temp beside the target is removed and the target keeps its original bytes
 - **AND** the run's Undo, offered for the files it did replace, counts that file as already restored and writes nothing to it
+
+### Requirement: An Undo in a later launch owns its temp files
+Before its first restore write, an Undo that runs in a later launch than the one the manifest records SHALL sweep the recorded pair's temp files and then re-arm the manifest with its own pair. A process id alone SHALL NOT identify a launch, because a relaunch inside a pid namespace can reuse it.
+
+#### Scenario: Killed during an Undo's restore
+- **WHEN** LushText is killed while an Undo in a later launch restores a 512 MiB file, and relaunched
+- **THEN** that Undo's half-written temp is removed, and Undo is offered again for the files it had not restored
+
+#### Scenario: The relaunch reuses the crashed process's pid
+- **WHEN** the relaunched process has the same pid as the launch that crashed
+- **THEN** the crashed launch's temp files are still removed, and the current launch's are kept
+
+### Requirement: One Replace All undo journal per application
+The undo journal SHALL belong to the application, not to a window. Starting a Replace All in any window SHALL retire the undo affordance in every window, and a window that loses one SHALL say so once. While a Replace All, its rollback or an Undo is in flight in any window, an apply or Undo in another window SHALL be refused with a status message rather than queued.
+
+#### Scenario: Another window runs Replace All
+- **WHEN** window A offers Undo for a Replace All and the user runs a Replace All in window B
+- **THEN** window A no longer offers Undo and shows one status message saying the earlier Undo is no longer available
+
+#### Scenario: Apply while another window's run is in flight
+- **WHEN** a Replace All is running in window B and the user confirms one in window A
+- **THEN** window A's run is refused with a status message, and no file is touched by it

@@ -20,7 +20,8 @@ search-budget edits):
 |---|---|---|
 | one 10 MiB file | 21.6 MiB | 2.16× |
 | one 16 MiB file | 33.9 MiB | 2.12× |
-| six 16 MiB files (64 MiB undo cap) | about 73 MiB, peak 94–100 MiB | the aggregate cap binds |
+| six 10 MiB files (64 MiB undo cap) | about 73 MiB, peak 99.9–100.3 MiB | the aggregate cap binds: 3 of 6 replaced |
+| six 16 MiB files (64 MiB undo cap) | about 67 MiB, peak 94.0–94.4 MiB | the aggregate cap binds: 1 of 6 replaced |
 
 At the open tier this scales to roughly 1.1 GiB of worker memory for one file.
 The undo backup also stays on the GTK side for the whole undo window: original
@@ -48,7 +49,9 @@ files with their reasons and an "Open and replace in editor" action.
     than a chunk.
   - Worker memory no longer grows with file size.
 - **An on-disk undo body instead of in-memory snapshots.** Each replaced file
-  gets one durable raw **body** file holding its original bytes. A new journal
+  gets one durable raw **body** file holding its original bytes, in the
+  journal's `bodies/` subdirectory, so the journal's bounded scans keep their
+  coverage. A new journal
   entry kind (`replace-all-undo-stream-entry`) records the body file name and
   the length and SHA-256 digest of both the original and the replaced bytes.
   - The replaced bytes are never retained, in memory or on disk.
@@ -67,13 +70,18 @@ files with their reasons and an "Open and replace in editor" action.
   - `services/filesystem/write_protocol.rs` is not modified. A new I/O-free
     per-file journal protocol (`ReplaceFileProtocol`) orders body, entry, arm,
     rewrite and cleanup, and is Kani-proved crash-safe.
+- **One journal per application.** The journal directory was always shared
+  by every window. A run now retires Undo in every window, and an apply or
+  Undo while another window's run is in flight is refused rather than queued.
 - **Disk admission instead of the 64 MiB memory aggregate.** A file's body and
   output are admitted against measured free space (`statvfs`, through the
   filesystem boundary) plus a reserve, `REPLACE_DISK_RESERVE_BYTES`, 1 GiB.
-  The reserve is waived for exactly the files `main` would have replaced. A
+  The reserve is waived for every file `main` would have replaced. A
   no-loss ledger replays `main`'s admission (10 MiB first pass, 16 MiB per-file
-  limit, 64 MiB before-and-after payload), so no run replaces a file that
-  `main` replaced any later than `main` did.
+  limit, 64 MiB before-and-after payload, including its output-based
+  deferral and its retained-weight charge), so every file `main` replaced is
+  still replaced. Undo and rollback need only their raw writes, never the
+  reserve, as on `main`.
 - **External modification is detected.** Pass B refuses to rename when the
   target's size, modification time or inode changed since pass A. The file is
   skipped as "changed while replacing".
@@ -87,8 +95,9 @@ files with their reasons and an "Open and replace in editor" action.
     policy allows it, **Open and replace in editor**.
   - That action opens the file (or selects its tab) at the first skipped match
     and reveals the in-tab replace bar, prefilled with the query, the options
-    and the replacement. In regex mode the replacement is translated to
-    GtkSourceView's syntax. The action never applies anything by itself.
+    and the replacement of the run that skipped it. In regex mode the
+    replacement is translated to GtkSourceView's syntax (`\g<N>`,
+    `\g<name>`). The action never applies anything by itself.
 - **Long runs are visible, cancellable and close-safe.**
   - Replace All publishes progress through the notification bus (files and MiB
     done), with the same 500 ms delay and 1 s heartbeat as search progress.
@@ -99,13 +108,18 @@ files with their reasons and an "Open and replace in editor" action.
     worker's terminal.
 - **Crash recovery covers the new windows.** There are new kill points:
   - body durable, entry not yet written;
-  - entry armed, target not yet renamed;
-  - target renamed, entry not yet finalized.
+  - entry armed, target temp written, not yet renamed;
+  - target renamed, next file not yet started;
+  - an Undo's restore temp written, not yet renamed.
+
+  The kill points gain an occurrence ordinal, so a kill lands on a later
+  file.
 
   A crash-recovery smoke case exercises them. Recovery removes the crashed
-  run's target-side temp files, which it identifies by the pid and launch
-  nonce recorded in the manifest, so a 512 MiB temp is never left in the
-  workspace.
+  run's target-side temp files, which it identifies by the (pid, launch nonce)
+  pair recorded in the manifest, so a 512 MiB temp is never left in the
+  workspace. A later launch's Undo re-records the pair as its own before it
+  writes.
 - **Legacy journals stay undoable.** A v1 `replace-all-undo-entry`, with its
   inline JSON strings bounded by the old 64 MiB cap, still loads and undoes
   after an upgrade. New runs write only body entries.
@@ -123,6 +137,7 @@ None.
   - on-disk bodies and digest undo;
   - disk admission with the no-loss ledger;
   - external-modification refusal;
+  - one journal per application;
   - the typed skip report and the Skipped Files list;
   - the editor action;
   - cancellation and close;
@@ -168,8 +183,9 @@ None.
 - **App data.** There is a new journal entry kind and raw body files under
   `replace-backup-journal/`. The format-upgrade inventory, the orphan
   detection and the cleanup learn about the body files. An older build reading
-  the new journal must never expose undo and never delete a body; this is
-  verified with a fixture.
+  the new journal must never expose undo, write a target or read a body; its
+  ordinary cleanup may remove the bodies, which loses only the undo
+  affordance. This is verified with a fixture.
 - **Docs.**
   - `README.md`, `AGENTS.md`, `ui/search_panel/AGENTS.md`;
   - `docs/thresholds.md`;

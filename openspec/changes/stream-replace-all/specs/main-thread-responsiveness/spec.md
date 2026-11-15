@@ -8,5 +8,6 @@ The Replace All completion terminal, opening the Skipped Files dialog with 16,38
 - **THEN** its completion dispatch and the dispatch that opens the Skipped Files dialog each stay within `B_SETTLE_US`
 
 #### Scenario: Saving a file while Replace All rewrites it
-- **WHEN** the user saves an unrelated file while Replace All streams a 512 MiB file
-- **THEN** typing and the save's GTK dispatches stay within their budgets, and only a save of the file being rewritten waits, on its worker, for that file's guard
+- **WHEN** the user saves an unrelated file, and then the file being rewritten, while Replace All streams a 512 MiB file
+- **THEN** typing and both saves' GTK dispatches stay within their budgets
+- **AND** the unrelated save completes at once, and only the save of the file being rewritten waits, on its worker, for that file's guard

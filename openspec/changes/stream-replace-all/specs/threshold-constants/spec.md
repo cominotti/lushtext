@@ -104,8 +104,8 @@ of it.
 
 #### Scenario: Replace All processes every file main processed
 - **WHEN** a Replace All run touches files of up to 16 MiB each whose total undo payload is within 64 MiB
-- **THEN** every file is replaced, including those between 10 MiB and 16 MiB that `main` skipped, and files up to the open tier (512 MiB, `MAX_REPLACE_FILE_BYTES` derived from `REFUSE_TO_OPEN`) are processed too, in constant memory
-- **AND** the no-loss ledger (`MAIN_REPLACE_FILE_BYTES` 10 MiB, `MAIN_MAX_REPLACE_FILE_BYTES` 16 MiB, `MAIN_REPLACE_UNDO_BYTES` 64 MiB, recorded presentation-cap exceptions equal to `main`'s values) waives the disk reserve for exactly the files `main` would have replaced, so no larger file displaces one
+- **THEN** every file is replaced, including those between 10 MiB and 16 MiB that the release before `power-of-two-thresholds` skipped, and files up to the open tier (512 MiB, `MAX_REPLACE_FILE_BYTES` derived from `REFUSE_TO_OPEN`) are processed too, in constant memory
+- **AND** the no-loss ledger (`MAIN_REPLACE_FILE_BYTES` 10 MiB, `MAIN_MAX_REPLACE_FILE_BYTES` 16 MiB, `MAIN_REPLACE_UNDO_BYTES` 64 MiB, recorded presentation-cap exceptions equal to `main`'s values) waives the disk reserve for every file `main` would have replaced, so no larger file displaces one
 
 #### Scenario: A raised retention tier still loads in full
 - **WHEN** the recent-documents file holds 256 entries whose path and canonical path are each 4,096 bytes long

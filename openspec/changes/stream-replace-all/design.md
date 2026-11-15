@@ -45,16 +45,22 @@ never set: Replace All cannot be cancelled.
 
 From PT task 9.5 M9: a release lib test, one process per measured call, VmHWM
 reset first, three interleaved repetitions at load below 4
-(`.claude/handoffs/power-of-two-thresholds/runs.log` line 382). The replace
-code has not changed since, apart from d704a908's search-budget edits.
+(`.claude/handoffs/power-of-two-thresholds/runs.log` line 382). In that run
+the 10 MiB rows were measured on the `main` of the day (before PT) and the
+16 MiB rows on the PT branch, which is now `main`. Both are paths `main` runs
+today: a file of at most 10 MiB still takes the first pass unchanged. The
+replace code has not changed since, apart from d704a908's search-budget edits
+(comments in `search_backup.rs` and the preview's row rebinding).
 
 | Case | `main` peak | Growth over the 27 MiB process baseline | Wall |
 |---|---|---|---|
 | one 10 MiB file | 49.0–49.3 MiB | 21.6 MiB (2.16×) | 9–11 ms |
 | one 16 MiB file | 61.2–61.4 MiB | 33.9 MiB (2.12×) | 15–18 ms |
-| six 16 MiB files (64 MiB undo cap binds) | 94.0–100.3 MiB | about 70 MiB | — |
+| six 10 MiB files (64 MiB undo cap binds: 3 replaced, 3 skipped) | 99.9–100.3 MiB | about 73 MiB | — |
+| six 16 MiB files (64 MiB undo cap binds: 1 replaced, 5 skipped) | 94.0–94.4 MiB | about 67 MiB | — |
 
-Growth is linear at about 2.1 times the file size. Taking the per-file cap to
+The last row is a visible loss on `main` today: five of six 16 MiB files are
+skipped for undo budget. Growth is linear at about 2.1 times the file size. Taking the per-file cap to
 512 MiB without streaming would cost about 1.1 GiB of worker memory per file.
 The aggregate cap would also have to exceed 1 GiB, and the GTK process would
 retain that for the whole undo window. That disposal reservation is the same
@@ -109,6 +115,13 @@ the editor can offer as a fallback: past it, no "Open and replace in editor"
 exists, so the reason says the file is larger than the largest file LushText
 opens.
 
+**The output is bounded too.** A file whose replacement output would exceed
+`MAX_REPLACE_FILE_BYTES` is skipped as `LargerThanOpenTier` ("the replacement
+would make it larger than 512 MiB"): pass A's dry run stops at the limit
+(`OutputLimitExceeded`, kept). Without this bound Undo could never restore the
+file, because its divergence check streams the current file under the same
+limit (D6), and LushText could not open the result either.
+
 *Alternative rejected:* no per-file limit at all. Streaming makes memory
 constant at any size, but time and disk are not. A file the user cannot open
 in LushText would have no fallback and no way to inspect the result, and it
@@ -137,8 +150,14 @@ an internal cap, a power of two; tasks 2.4 and 9.3 measure 256 KiB against
   including the final unterminated line, empty lines and CRLF.
 
 The engine reports the source length and digest, the output length and
-digest, the edit count and a `ReplacementTextOutcome`. That outcome gains no
-variant except `NotUtf8`.
+digest, the edit count and a `ReplacementTextOutcome`. That outcome keeps its
+variants, `OutputLimitExceeded` included (D1, D4), and gains only `NotUtf8`.
+
+The engine is generic over its digest sink, and its UTF-8 validation has a
+byte-loop path under `cfg(kani)`, as `model/paragraph_boundary.rs` has for its
+SIMD search. Production feeds a SHA-256 sink and `simdutf8`; the Kani shard
+(D11) feeds a sink that records the bytes, because CBMC cannot run SHA-256 at
+these sizes or `simdutf8`'s runtime-detected SIMD paths.
 
 **Bound.** Retained memory is two chunk buffers, the line buffer, the SHA-256
 states and the edit records (proportional to accepted replacements, as today).
@@ -165,12 +184,31 @@ undo needs only their length and digest to recognize them. Per replaced file,
 the journal holds the file's size once, where today it holds about twice the
 size plus JSON escaping.
 
+Bodies live in a subdirectory, `replace-backup-journal/bodies/`, and are
+written with a new label, `WriteLabel::REPLACE_UNDO_BODY`.
+
+- **The subdirectory.** Every journal scan is bounded by
+  `JOURNAL_SCAN_MAX_ENTRIES` (16,384, asserted at least
+  `MAX_REPLACE_PREVIEW_ROWS` and equal to `format_upgrade`'s
+  `REPLACE_JOURNAL_SCAN_MAX_ENTRIES`), and the incremental loader counts every
+  directory entry, not only `*.json`. A body beside each entry would double a
+  full run's directory past that bound and deactivate its Undo. In their own
+  directory the bodies get their own scan under the same bound, and every
+  existing scan keeps its coverage proof.
+- **The label.** It keeps body temps apart from target temps. The
+  journal-owned sweep (D9) matches only `WriteLabel::REPLACE`, and a kill point
+  narrowed to `@replace` hits the target's write, not the body's.
+
 The per-file order for apply:
 
 - **P0.** Acquire the `TargetWriteGuard` and take the target's facts `F0`
   (size, mtime in ns, dev, ino, canonical path).
-- **P1.** Admit the body on the journal's filesystem (D4).
-- **P2.** Run **pass A**: `atomic_replace_stream(journal/<hash>.body)`. Its
+- **P1.** Admit the body on the journal's filesystem (D4). Before the run's
+  first body, prepare the incremental journal (`begin_incremental_journal`,
+  which deletes any previous run's journal), so that no body is ever written
+  into a previous run's journal (D3a).
+- **P2.** Run **pass A**:
+  `atomic_replace_stream(journal/bodies/<hash>.body, REPLACE_UNDO_BODY)`. Its
   producer reads the target in chunks, writes each chunk to the body, hashes
   it as the source, and feeds it to the engine with a **hashing sink** as the
   output: a dry run, so no output is written. At EOF the producer re-reads the
@@ -178,12 +216,15 @@ The per-file order for apply:
   and the body temp is removed (`BeforeRename`). A stale line, invalid UTF-8,
   an invalid preview or cancellation also fail the producer, so the body is
   discarded before any entry exists. If there are no edits (`Unchanged`), the
-  body is discarded and the file is not counted.
+  body is discarded and the file is not counted. In the first pass the dry
+  run's output is limited to `MAIN_REPLACE_FILE_BYTES`, as `main`'s is: a file
+  whose output exceeds it fails the producer as deferred, its body temp is
+  removed, and it is processed again in the second pass (D4).
 - **P3.** Admit the output on the target's filesystem (D4). The output size is
   now known.
-- **P4.** Write the entry JSON durably. Before the first file, prepare the
-  incremental journal, and arm the manifest once (as today). The manifest now
-  also records the run's `pid` and `launch_nonce` (D9).
+- **P4.** Write the entry JSON durably, then arm the manifest once, after the
+  run's first entry (as today). The manifest now also records the run's `pid`
+  and `launch_nonce` (D9).
 - **P5.** Run **pass B**: `atomic_replace_workspace_file_stream(resolved target,
   WriteLabel::REPLACE)`. This is a new shell-level wrapper in
   `filesystem/write.rs`. Like today's `atomic_write` it writes the resolved
@@ -224,6 +265,51 @@ in the same `step(outcome) -> action` style. Kani proves it (D11).
 - (d) BLAKE3: faster, but a new dependency. `sha2` 0.10 detects SHA-NI at run
   time and is already vendored.
 
+### D3a. One journal per application
+
+The journal directory is shared by every window, but each window's search
+panel owns its own undo (`supersede_prior_undo_for_replace` retires only the
+panel that starts a run). On `main` a run in window B deletes window A's
+journal on disk, and A's Undo keeps working for the session from the bytes A
+holds. With descriptors, A would hold nothing to restore from. So:
+
+- **Supersession is application-wide.** Starting a run retires the undo
+  affordance in every window of the application, not only in the panel that
+  started it. A window that loses one says so once in its status bar ("Undo
+  for the earlier Replace All is no longer available"). The on-disk journal
+  already kept only the latest run; this makes the windows agree with it.
+- **Refuse, don't queue.** While a Replace All, its rollback or an Undo is in
+  flight in any window, an apply or Undo in another window is refused with a
+  status message. The panel's transaction gate already refuses a second one in
+  the same window. So no worker waits minutes on the journal guard, and Cancel
+  never has to reach a worker that has not started.
+- **A cancellable wait for the brief holders.** The other holders of the
+  journal guard are startup recovery and the journal disk jobs. A run's worker
+  waits for them in a `try_lock` loop that polls the cancel flag, so Cancel
+  and Stop and Close are seen there too. A journal disk job checks its
+  generation before it waits for the guard as well as after, so a superseded
+  one returns at once instead of holding a worker slot.
+- **Prepare before the first body.** The run prepares the journal, deleting
+  any previous run, before its first body. Today it does so only after its
+  first file's edits are confirmed. So a run that ends up replacing nothing now
+  leaves no previous journal on disk. `main` left that journal in place, no
+  window offered it, and a restart could bring it back. The UI had already
+  retired that undo when the run started. Test:
+  `a_run_that_replaces_nothing_removes_the_superseded_journal`.
+- **Shrink only.** A descriptor journal cannot be rebuilt from memory. For
+  both kinds, three paths retire: `search_backup::save`'s delete-then-rebuild,
+  the non-superset fallback of `shrink_journal_to`, and cancellation's
+  `persist_undo_backup`. A partial undo or rollback writes the smaller active
+  manifest, then removes the entries and bodies it no longer lists. An entry
+  whose JSON or body is already missing on disk is dropped from the undo owner
+  and reported, never rebuilt.
+
+*Alternative rejected:* one journal per run (`replace-backup-journal/<run>/`),
+so window A keeps its Undo. Recovery, the format-upgrade inventory and the
+cleanup would all have to handle several active runs, for a case (two windows
+each with a pending Replace All Undo) that `main` already fails to preserve
+across a restart.
+
 ### D4. Disk admission with a reserve, and a no-loss ledger instead of the memory aggregate
 
 The 64 MiB `UndoPayloadLedger` and the two-pass memory rationale retire.
@@ -244,17 +330,42 @@ length plus the reserve free on the target's filesystem. The reserve is
 it, an undo journal could fill a user's disk, and other programs would start
 to fail.
 
-**No-loss waiver.** The reserve is waived for a file exactly when `main` would
-have admitted it. A pure `MainAdmissionLedger` replays `main`'s rule:
+**No-loss waiver.** The reserve is waived for every file `main` would have
+admitted. Here `main` is `main` at `2c91ccf2`, whose first pass still uses the
+pre-PT 10 MiB limit. A pure `MainAdmissionLedger` replays `main`'s rule
+(`apply_replacements_inner`):
 
-- files of at most 10 MiB in a first pass, then files of 10–16 MiB;
-- each charged its source plus output length against 64 MiB, in path order;
-- files above 16 MiB never charge it.
+- a first pass, in path order, over the files whose source and output are
+  both at most `MAIN_REPLACE_FILE_BYTES` (10 MiB); a file whose source or
+  output is larger is deferred;
+- a second pass, in path order, over the deferred files whose source and
+  output are both at most `MAIN_MAX_REPLACE_FILE_BYTES` (16 MiB);
+- each admitted file charges its source plus output length against
+  `MAIN_REPLACE_UNDO_BYTES` (64 MiB), and its retained entry weight
+  (`replace_undo_entry_retained_byte_weight`: both payloads plus the path)
+  against `MAX_REPLACE_UNDO_RETAINED_BYTES`; a file that does not fit both is
+  not admitted;
+- a file that fails before rename reclaims both charges, as `main` does;
+- a file whose source or output is above 16 MiB never charges.
 
 The processing order keeps `main`'s two passes, with the second pass extended
-to 512 MiB, so the ledger's decisions are `main`'s decisions exactly. For a
-waived file only the raw need applies, which `main` also needed (it wrote both
-snapshots as JSON). `MAIN_REPLACE_FILE_BYTES` (10 MiB),
+to 512 MiB. A first-pass file whose output turns out larger than 10 MiB is
+deferred at the end of pass A (D3), exactly where `main` deferred it. So the
+ledger admits every file `main` would have admitted. It can admit more only
+after a pre-rename failure that `main` would not have had
+(`ChangedDuringReplace`), whose charge `main` would have kept, and that never
+costs a file `main` replaced. For a waived file only the raw need applies,
+which `main` also needed (it wrote both snapshots as JSON).
+
+**Why the reserve protects the waived files.** After any file that is not
+waived, at least the reserve stays free on both filesystems: it was admitted
+with its write plus the reserve, and a completed rewrite frees the old blocks.
+The waived files of a run need at most `MAIN_REPLACE_UNDO_BYTES` of bodies,
+plus one output at a time of at most `MAIN_MAX_REPLACE_FILE_BYTES`. So the
+1 GiB reserve leaves room for all of them, unless another program fills the
+disk, and then a write fails before rename, as on `main`. A compile-time
+assertion pins `REPLACE_DISK_RESERVE_BYTES >= MAIN_REPLACE_UNDO_BYTES +
+MAIN_MAX_REPLACE_FILE_BYTES`. `MAIN_REPLACE_FILE_BYTES` (10 MiB),
 `MAIN_MAX_REPLACE_FILE_BYTES` (16 MiB) and `MAIN_REPLACE_UNDO_BYTES` (64 MiB)
 stay as recorded presentation-cap exceptions. They are defined as `main`'s
 values.
@@ -303,12 +414,22 @@ The undo order for each entry:
   and digest equal the original's. It needs restoring if they equal the
   replaced length and digest. Anything else is `Diverged`: the file is skipped
   and stays retryable.
-- **U2.** Admit the restore output on the target's filesystem (D4; an undo is
-  never waived, because `main`'s undo held both snapshots in memory and had no
-  disk need, so the reserve applies). Then run the same
-  `atomic_replace_workspace_file_stream` wrapper as P5. Its producer copies the body while hashing
-  it, and at EOF requires the body digest to equal the original's and the
-  target facts to equal U0's. Otherwise nothing is renamed.
+- **U2.** Admit the restore output on the target's filesystem with its raw
+  need only, never the reserve. `main`'s undo also wrote a temp of the
+  original's size beside the target, with no reserve. Requiring 1 GiB free
+  would refuse an Undo, or a cancellation's rollback, that `main` performed.
+  A file without its raw need free is skipped and stays retryable, and an
+  `ENOSPC` during the write is a `BeforeRename` failure, which also stays
+  retryable. Then run the same `atomic_replace_workspace_file_stream` wrapper
+  as P5. Its producer copies the body while hashing it, and at EOF requires
+  the body digest to equal the original's and the target facts to equal U0's.
+  Otherwise nothing is renamed.
+
+  Before the first restore write of an Undo that runs in a later launch than
+  the one the manifest records, the leftover sweep (D9) runs for the recorded
+  pair. The manifest is then durably re-armed with the current launch's pid
+  and nonce. A kill during that Undo's 512 MiB restore then leaves a temp that
+  the next recovery owns.
 - **U3.** Shrink the journal: delete the entry, then the body.
 
 Cancellation rollback (D8) runs the same steps over the files this run wrote.
@@ -322,16 +443,25 @@ keep their names.
 **Legacy.** A v1 `replace-all-undo-entry`, with inline strings, can be the
 active journal across an upgrade: a crash before the upgrade, then a relaunch
 on the new build. The loader keeps reading it under its existing 64 MiB
-payload bound (`payload_budget_exceeded`). It turns each entry into a
-descriptor whose original is `UndoOriginal::Inline(Arc<[u8]>)` and whose
-digests are computed at load. Undo streams from the inline bytes. New runs
-never write the legacy kind. Mixed journals, with legacy and stream entries
+payload bound (`payload_budget_exceeded`), which becomes
+`MAIN_REPLACE_UNDO_BYTES`, referenced; `MAX_REPLACE_UNDO_BYTES` retires as a
+name. It turns each entry into a descriptor whose original is
+`UndoOriginal::LegacyEntry { entry_file }`, with the lengths and digests
+computed at load. The inline strings are dropped on the loading worker. Undo
+re-reads that one entry on its worker, under the same bound, and streams the
+original from it. So GTK holds only descriptors for a legacy journal too, and
+at most one legacy entry's bytes (at most 64 MiB) are in memory, on a worker.
+New runs never write the legacy kind. Mixed journals, with legacy and stream entries
 in one manifest, are rejected as malformed: one run writes one kind.
 
 **Downgrade.** An older build sees an entry of an unknown kind and treats it
-as malformed. It must not expose undo, and it must not delete the bodies its
-orphan scan does not know. The target files hold the replaced content the user
-asked for. Task 7.6 verifies this behaviour with a fixture and records it.
+as malformed. It must not expose undo, write a target or read a body. Its
+incremental loader reads only `*.json` files, so the new entries are malformed
+to it and `bodies/` is never opened. Its ordinary cleanup (`delete`, a
+recursive removal of the journal directory) may remove the bodies. That loses
+only the undo affordance, which the downgrade loses anyway. The target files
+hold the replaced content the user asked for. Task 7.6 verifies this with a
+fixture and records it.
 
 ### D7. A typed skip report, the Skipped Files dialog and "Open and replace in editor"
 
@@ -346,13 +476,26 @@ asked for. Task 7.6 verifies this behaviour with a fixture and records it.
   `MAX_REPLACE_SKIP_LIST_BYTES` (4 MiB of charged path bytes, a presentation
   cap and a power of two), and a `not_listed` count.
 
+**One reason per file.** A file that qualifies for two gets the first in this
+order:
+
+1. `UnsavedChanges`, decided on GTK before any worker runs;
+2. the preview reasons, `LineTooLong` then `InvalidPreview`, for a file none
+   of whose matches was eligible;
+3. the worker's reasons, in the order it checks them: `Unreadable`,
+   `LargerThanOpenTier`, `NotUtf8`, `ChangedSinceSearch`,
+   `NotEnoughDiskSpace`, `UndoJournalFailed`, `ChangedDuringReplace`,
+   `WriteFailed`.
+
 `LineTooLong` and `InvalidPreview` come from the preview's ineligible matches,
 grouped by file. A file can be **partly replaced**: its eligible matches are
 replaced and some matches on long lines are not. It is listed too, with
 `partial: true` and the count of matches left. Its row says "Replaced; N
 matches on long lines were not", and offers the editor action. The user
 still has matches that were not replaced, and a list of files that "were not
-replaced" would hide exactly the files that need finishing.
+replaced" would hide exactly the files that need finishing. The report counts
+partly replaced files separately from skipped ones, so the per-reason skip
+counts stay exact and a partly replaced file is counted as replaced.
 
 **Every unsaved file.** When every file of a run is open with unsaved
 changes, `ui/window/search.rs` today returns early with "No replacements to
@@ -387,8 +530,15 @@ Protected View notice.
 - When a run has skips, the panel's completion row shows **Show Skipped
   Files** ("Replaced 40 of 52 matches in 9 files · 3 skipped").
 - The button opens an `AdwDialog` (`ui/search_panel/skipped_files.rs`, a
-  called presentation surface) with a `GtkListView` over a plain list model,
-  so it is virtualized for 16,384 rows.
+  called presentation surface). Its `GtkListView` reads a lazy `GListModel`
+  plus `GtkSectionModel`, built like the notes browser's
+  (`ui/window/notes/row_model.rs`, ledger A93–A95). Rows are created only when
+  GTK asks for them, and the reason headings come from a header factory, so
+  opening the dialog costs the same at 3 rows as at 16,384. A `GListStore` of
+  row objects would create one GObject per row on GTK.
+- The report crosses to GTK as a plain-disposal-owned payload (at most
+  `MAX_REPLACE_SKIP_LIST_BYTES` of paths). It is retired off GTK when the next
+  run replaces it.
 - Each row shows the file name, the folder (dim), the reason sentence and an
   **Open and Replace in Editor** button when the action is offered.
 - Rows are grouped by reason with exact counts.
@@ -403,19 +553,36 @@ automation parity, and its catalog entry is checked.
 4. It prefills the in-tab bar through a new
    `LushtextSearchBar::prefill_replace(query, replacement, options)`.
 
+The query, the options and the template come from the run's request. They are
+captured when the run starts and kept with its skip report, never read from
+the panel's live fields, which the user may have edited since.
+
 In literal mode both fields are prefilled. In regex mode the pattern is
 prefilled unchanged, and the template goes through the pure
-`rust_replacement_to_gtksourceview(template) -> Option<String>`: `$N` and
-`${N}` become `\N`, `${name}` becomes `\g<name>`, `$$` becomes `$`, and a
-literal backslash is escaped. When it returns `None` the replacement field is
-left empty and the bar says why. Case and whole-word settings carry over. The
-user reviews and applies in the editor, which is undoable and nothing is
-written until save. So the action is data-safe by construction.
+`rust_replacement_to_gtksourceview(template, capture_names) -> Option<String>`,
+which takes the compiled pattern's capture names:
+
+- A reference follows Rust `regex`'s rule (`Captures::expand`): `$` followed
+  by the longest run of `[_0-9A-Za-z]`, or `${…}`. A run of digits names a
+  group by number and anything else names it by name, so `$1a` names a group
+  called `1a`.
+- Every reference becomes `\g<N>` or `\g<name>`, never `\N`: `${1}0`
+  becomes `\g<1>0`, where `\10` would name group 10.
+- `$$` becomes `$`, and a `$` that starts no reference stays a literal `$`.
+- A literal backslash becomes `\\`.
+- A reference to a group the pattern does not have returns `None`. Rust
+  expands it to nothing, and GtkSourceView would fail it.
+
+When it returns `None`, the replacement field is left empty and the bar says
+why. Case and whole-word settings carry over. The user reviews and applies in
+the editor, and nothing is written until the user saves, so the action is
+data-safe by construction. In-tab Undo also covers it, but only below the
+editor's undo tier; above that tier the save is still the only write.
 
 Two toolkit facts are pinned as GTK axioms with probes and samples (task 1.3):
 
-- GtkSourceView's regex replacement syntax: `\N` and `\g<name>` expand, and
-  `$1` is literal.
+- GtkSourceView's regex replacement syntax: `\g<N>`, `\N` and `\g<name>`
+  expand, `\g<1>0` is group 1 followed by `0`, and `$1` is literal.
 - `set_at_word_boundaries` matches the same ASCII-identifier occurrences as
   workspace search's whole-word mode.
 
@@ -437,7 +604,10 @@ contracts.
   the next chunk boundary (a cancelled producer means `BeforeRename`, so the
   current file is untouched) and rolls back the files it already wrote (D6
   rollback). Clean rollback clears the journal, as today. Failed rollback
-  keeps the journal active and offers Undo for the remaining files.
+  shrinks the journal to the files it could not restore, keeps it active, and
+  offers Undo for them (D3a). A worker still waiting for the journal guard
+  sees the flag in its cancellable wait (D3a) and ends without touching a
+  file.
 - **Close.** Today nothing checks for a run, and closing the last window
   can end the process while the worker writes. The journal makes that
   recoverable, but it looks like a crash.
@@ -463,16 +633,24 @@ contracts.
 ### D9. Recovery and cleanup know bodies and journal-owned temp files
 
 - **Entries and bodies.** Startup recovery loads descriptors only. It stats
-  each body, and a body whose size differs from its `original.len` is a
-  malformed entry (preserved and excluded, as today). Orphan detection and
-  `delete` include `*.body`. An orphan body (one with no entry, from a crash
-  between P2 and P4) is removed by cleanup.
-- **Temp files.** The manifest records the run's `pid` and `launch_nonce`.
+  each entry's body.
+  - A missing body, or one whose size differs from `original.len`, makes its
+    entry malformed. As for any malformed entry today, the whole journal is
+    then preserved as evidence and offers no Undo (`journal_is_active`).
+  - An orphan body, one with no entry, is benign and is not a diagnostic.
+    A crash between P2 and P4 leaves one, and so does a crash between an
+    entry's removal and its body's. It must not cost Undo for the files
+    written before it.
+  - Cleanup, `delete` and `shrink_journal_to` remove orphan bodies, scanning
+    `bodies/` under the same bound as the entries.
+- **Temp files.** The manifest records the `pid` and `launch_nonce` of the
+  apply run, or of a later launch's Undo once that Undo re-arms it (D6).
   Both can be read back from a temp name: `temp_name::parse` returns the pid,
   and `DurableTempName::launch_nonce` returns the high 32 bits of the
   sequence. On recovery, after undo, and after a discard, for each journaled
   target the cleanup removes the leftovers in the target's own directory that
-  satisfy the new `leftovers::is_journal_owned_leftover`:
+  satisfy the new `leftovers::is_journal_owned_leftover`, scanning each
+  distinct parent directory once:
   - the exact builder pattern;
   - the tag `WriteLabel::REPLACE`;
   - the (pid, nonce) pair equal to the manifest's;
@@ -490,13 +668,22 @@ contracts.
   is still never traversed: only the journaled targets' parent directories are
   read, one bounded scan each.
 - **Kill windows.** New `KillWindow`s:
-  - `replace-body-before-entry`;
-  - `replace-entry-before-target-rename`;
-  - `replace-target-renamed-before-finish`.
+  - `replace-body-before-entry`: the body is renamed into `bodies/`, and its
+    entry is not written yet;
+  - `replace-entry-before-target-rename`: inside pass B's producer at EOF,
+    after the last chunk of the target temp is written and before the producer
+    returns, so the temp exists and the rename has not happened;
+  - `replace-target-renamed-before-finish`: after the target's durable write
+    returned, before the next file;
+  - `replace-undo-before-target-rename`: the same point as the second one, in
+    an Undo's restore.
 
-  The crash-recovery smoke drives Replace All through automation, kills at
-  each window, relaunches, and asserts the outcome: the journal state, the
-  undo affordance, the target bytes, and no leftover temp.
+  `LUSHTEXT_KILL_AT` gains an occurrence ordinal: `name@label#n` fires at the
+  n-th reach. So the smoke can kill on the third file of five, after the first
+  two were replaced. Kill points terminate the process with `abort()`, as the
+  existing ones do. The crash-recovery smoke drives Replace All through
+  automation, kills at each window, relaunches, and asserts the outcome: the
+  journal state, the undo affordance, the target bytes, and no leftover temp.
 
 ### D10. GTK never waits on a guard
 
@@ -510,8 +697,13 @@ on GTK:
 - a new Replace All.
 
 An editor save of a file being rewritten waits on its target guard on its
-worker, for at most one file's pass B. This is recorded. The responsiveness
-requirement adds the scenario.
+worker, for at most one file's passes A and B (the guard spans P0–P6). This
+is recorded. The responsiveness requirement adds the scenario.
+
+A run holds one of the eight `spawn_blocking_then` slots for its whole
+duration, as today but for longer. D3a keeps it the only long holder: a second
+run or an Undo is refused rather than queued, and a superseded journal disk
+job returns before it waits for the guard.
 
 ### D11. Kani shards
 
@@ -525,10 +717,16 @@ requirement adds the scenario.
   3. no entry references a missing body;
   4. undo writes only when the current file equals the replaced digest;
   5. cleanup never removes the body of an active entry before its entry.
+
+  The abstract journal also models the application-wide refusal (D3a): at
+  most one run or Undo mutates it at a time.
 - **`core-replace-stream`** proves the engine's chunk-split independence on
   inputs of at most 8 bytes, every chunk size from 1 to 4, and at most 2 edits:
   the streamed output, outcome and digests' input equal the whole-buffer
-  reference. That covers UTF-8 and CRLF seams.
+  reference. That covers UTF-8 and CRLF seams. The harness drives the engine
+  with a recording digest sink and the `cfg(kani)` UTF-8 path (D2), and with
+  chunk and line buffers sized for the harness (as `MAX_PROFILED_OFFSETS` is
+  under `cfg(kani)`).
 
 Both shards are scheduled, and their runner budgets are measured once
 (`make check-kani-shards`). `core-replace-protocol` is gated on pull requests
@@ -549,6 +747,10 @@ generated inputs.
 | `undo.rs` | undo and rollback |
 | `admission.rs` | the no-loss ledger and disk admission, pure |
 
+The split also moves the `.cargo/mutants.toml` entries keyed on
+`content_search/replace\.rs`, and reviews `sonar-project.properties`
+(`.agents/rules/build.md`, "SonarQube Cloud Scope").
+
 The UI side adds `ui/search_panel/skipped_files.rs` as a called presentation
 surface, and extends `policy.rs` and `evidence.rs`. `mod.rs` is at its
 370-line facade budget, so the new stages (progress, cancel, skipped list) are
@@ -562,9 +764,12 @@ not exceed 370. The `WFR-SEARCH-REPLACE` row re-derives its measured cells
   entry, target) where `main` takes two (entry, target), plus a second read.
   Task 9.3 measures 2,000 small files on an `fsync`-backed directory,
   interleaved with `main`. The acceptance is at most 1.6× `main`'s wall time.
-  The fallback, applied only if that fails: for sources of at most 64 KiB,
-  embed the original in the entry, as the legacy kind did, but with digests,
-  so the separate body file is not written.
+  If that fails, the candidate fallback is to embed originals of at most
+  64 KiB in the entry, as the legacy kind did but with digests, so the
+  separate body file is not written. It is not part of this change's
+  requirements. Applying it is a spec amendment, made before the code: the
+  journal requirement, the format fixtures, the Kani protocol and the
+  descriptor rule.
 - **Time per byte.** Two passes and four SHA-256 streams cost more per byte
   than `main`'s in-memory pass. Task 9.3 records branch against `main` at
   16 MiB. The acceptance is at most 2× `main`'s wall time plus 50 ms. If it
@@ -581,12 +786,20 @@ not exceed 370. The `WFR-SEARCH-REPLACE` row re-derives its measured cells
   sees the bar's invalid-query state or the matches before applying anything.
 - **Downgrade** loses the undo affordance of an in-flight journal (D6). The
   files keep the content the user asked for.
+- **Two windows** no longer keep two Undos for one session (D3a). The status
+  message says so when it happens.
+- **Test scale.** A cap-boundary test cannot build 512 MiB in memory or on a
+  tmpfs. The tests run against a test-only per-file limit at KiB scale, the
+  real limit is reached only through sparse files and metadata, and every
+  large fixture lives in a disk-backed scratch directory, never `/tmp` on
+  tmpfs, whose pages would count against the `heavy.sh` memory cap.
 
 ## Follow-ups
 
 - **Long lines.** Record the excerpt's byte offset within the source line in
-  `SearchMatch`, so the engine can verify the excerpt in place, plus the line
-  length, and replace matches on lines longer than 4 KiB. That is a weaker
+  `SearchMatch` (the line's byte length is already recorded,
+  `original_line_byte_len`), so the engine can verify the excerpt in place,
+  and replace matches on lines longer than 4 KiB. That is a weaker
   stale check than a whole-line comparison, so it needs its own data-safety
   review.
 - **Reflinks.** Use reflink (`FICLONE`) for the body on btrfs and XFS, with
