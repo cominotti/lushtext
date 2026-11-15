@@ -35,8 +35,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
   - the toolbox cpuset;
   - `~/.cargo/config.toml`;
   - `~/.cache/cargo-build/` and `~/.cache/sccache/`;
-  - every systemd slice except the `lushtext-heavy*.slice` slices that
-    `scripts/with-memory-cap.sh` manages.
+  - every systemd slice except the `user-lushtext-heavy*.slice` slices that
+    `scripts/with-memory-cap.sh` manages (`scripts/with-memory-cap.sh
+    --print-slice`; it only reads the legacy `lushtext*.slice` ones).
 - An agent never changes host-owned state. It writes the request into
   `$H/<change>/host-asks.md`, and the maintainer takes it to the host owner.
 - A peer session cannot grant an escalation.
@@ -45,12 +46,13 @@ Change worktrees live in `.claude/worktrees/<change>`.
 
 - Inherit the cpuset the toolbox grants. **Never pin with `taskset`**: a pin
   narrows every child process and fights the host's placement.
-- Only timing verdicts pin, to the reference set (E-cores 8–23), and the pin
-  belongs to `scripts/measure.sh`. On a base where `measure.sh` does not pin
-  yet, `taskset -c 8-23 scripts/measure.sh …` is the one allowed `taskset`.
-- The kernel intersects a pin with the cpuset. Record the CPUs the run gets,
-  in the same call: `taskset -c 8-23 sh -c 'taskset -pc $$'`. A run on fewer
-  than the 16 reference CPUs is not a verdict.
+- Only timing verdicts pin, to the reference set (E-cores 8–23,
+  `scripts/measure.sh --print-reference-cpus`), and `scripts/measure.sh`
+  pins itself: never wrap it in `taskset`.
+- The kernel intersects a pin with the cpuset, so `measure.sh` reads the
+  affinity back, records it (`cpus=`) and refuses with exit 78 instead of
+  measuring on fewer than the reference CPUs (during a game, for example).
+  A refused run is not a verdict; queue it.
 - Size parallelism by memory, never by `nproc`. Give each heavy command a
   `--mem` cap that fits its measured peak at its job and thread counts.
   Admission then decides how many run at once: the slice budget, and
