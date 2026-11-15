@@ -133,8 +133,7 @@ impl LushtextWindow {
             .update_index_file_renamed(old_path, new_path);
         let name = new_path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
         self.publish_status_message(&format!("Renamed to {name}"), MessageKind::Info);
     }
 
@@ -992,8 +991,7 @@ impl LushtextWindow {
             title_widget.set_title(&title);
             let subtitle = editor
                 .file_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
+                .map_or_default(|p| p.display().to_string());
             title_widget.set_subtitle(&subtitle);
         } else {
             title_widget.set_title("LushText");

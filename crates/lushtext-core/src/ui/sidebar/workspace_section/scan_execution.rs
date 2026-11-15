@@ -2685,10 +2685,7 @@ fn splice_child_cache(
             item_locations.remove(path);
         }
     }
-    let siblings = child_paths
-        .get(parent_dir)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
+    let siblings = child_paths.get(parent_dir).map_or_default(Vec::as_slice);
     if moved {
         for (offset, path) in siblings.iter().enumerate().skip(tail_start) {
             operations = operations.saturating_add(1);

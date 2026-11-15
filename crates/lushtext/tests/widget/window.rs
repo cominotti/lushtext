@@ -6975,9 +6975,9 @@ fn test_close_session_snapshot_preserves_not_yet_mounted_restore_descriptors() {
         saved.tabs[2].path.as_deref(),
         Some(dir.path().join("close-pending-2.txt").as_path())
     );
-    for ordinal in 3..10 {
+    for (ordinal, tab) in saved.tabs.iter().enumerate().take(10).skip(3) {
         assert_eq!(
-            saved.tabs[ordinal].draft_id.as_deref(),
+            tab.draft_id.as_deref(),
             Some(format!("untitled-bounded-{ordinal}").as_str())
         );
     }

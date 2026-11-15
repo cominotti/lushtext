@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 
+use crate::services::filesystem::write::DurableWriteError;
 use crate::services::filesystem::{
     DirectoryScanPolicy, FileKind, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
     read as fs_read, tree as fs_tree, write as fs_write,
@@ -136,8 +137,9 @@ pub fn move_in(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> Result<PathB
 /// A `Copy` of a body too large to read under the automatic-draft bound moves
 /// it instead: the body still leaves nothing behind unpreserved, and the
 /// journal's later deletion of the original becomes a no-op. When the
-/// transfer's own durability step fails after the body is already in place,
-/// the body counts as placed (with a warning) rather than as lost.
+/// transfer's own durability step fails after the body is already in place
+/// (its classified error is `AfterRename`), the body counts as placed (with a
+/// warning) rather than as lost, and no further name is tried.
 fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -> Result<PathBuf> {
     let source = draft_body_path(data_dir, draft_id);
     let dir = dir(data_dir);
@@ -173,9 +175,12 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
             SetAsideNameStep::AlreadyKept => return Ok(target),
             SetAsideNameStep::NextName => continue,
         }
+        // Both transfers report a classified result, so a body is placed
+        // exactly when the transfer took effect: `AfterRename` means it is in
+        // the set-aside area and only its durability is unconfirmed. Only the
+        // move's before-rename `AlreadyExists` means the name was taken.
         let placed = match copy_bytes.as_deref() {
-            Some(bytes) => fs_write::atomic_replace(&target, WriteLabel::DRAFT, bytes)
-                .map_err(std::io::Error::other),
+            Some(bytes) => fs_write::atomic_replace(&target, WriteLabel::DRAFT, bytes),
             None => fs_write::rename_durable_no_replace_or_checked(&source, &target),
         };
         match placed {
@@ -183,8 +188,9 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
                 record_placement();
                 return Ok(target);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) if took_effect(&source, &target, copy_bytes.is_some()) => {
+            Err(DurableWriteError::BeforeRename(error))
+                if copy_bytes.is_none() && error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(DurableWriteError::AfterRename(error)) => {
                 tracing::warn!(
                     "Set aside draft {} as {}, but its durability is unconfirmed: {error}",
                     source.display(),
@@ -193,7 +199,7 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
                 record_placement();
                 return Ok(target);
             }
-            Err(error) => {
+            Err(DurableWriteError::BeforeRename(error)) => {
                 return Err(anyhow::anyhow!(
                     "failed to set aside draft {} as {}: {error}",
                     source.display(),
@@ -219,14 +225,6 @@ fn holds_exactly(target: &Path, bytes: &[u8]) -> bool {
     }
     fs_read::prefix_bytes(target, bytes.len().saturating_add(1))
         .is_ok_and(|existing| existing == bytes)
-}
-
-/// Whether a failed set-aside transfer nevertheless placed the body.
-///
-/// A durable rename or replace can fail in its final directory sync after the
-/// new entry exists; the bytes are then in the set-aside area.
-fn took_effect(source: &Path, target: &Path, copied: bool) -> bool {
-    fs_metadata::exists(target) && (copied || !fs_metadata::exists(source))
 }
 
 /// One preserved body in the set-aside area.
@@ -530,6 +528,30 @@ fn ensure_inside(data_dir: &Path, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::services::filesystem::fixture;
+
+    /// `rust-1-100-adoption` A8: a move whose directory sync fails with an
+    /// `Unsupported` kind after the rename took effect has placed the body.
+    /// Reading that error as "no `RENAME_NOREPLACE` here" made the fallback
+    /// see the moved body as a name collision and try the next name, with the
+    /// source already gone.
+    #[test]
+    fn a_move_whose_directory_sync_is_unsupported_keeps_the_first_name() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let area = dir(data.path());
+        // Pre-create the area so its own creation consumes no injected sync.
+        fixture::create_dir_all(&area);
+        let source = draft_body_path(data.path(), "a8-draft");
+        fixture::write_text(&source, "unsaved edits");
+        crate::services::filesystem::write::fail_next_parent_sync_for_test(
+            std::io::ErrorKind::Unsupported,
+        );
+
+        let placed = move_in(data.path(), "a8-draft", 42).expect("the body was placed");
+
+        assert_eq!(placed, candidate_path(&area, "a8-draft", 42, 0));
+        fixture::assert_text(&placed, "unsaved edits");
+        assert!(!fixture::exists(&source), "the body was moved");
+    }
 
     /// No loss against `main` (`power-of-two-thresholds` D12): `main` scanned
     /// 10,000 set-aside entries, so an area of 10,000 bodies has exact totals,

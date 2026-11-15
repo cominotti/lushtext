@@ -161,11 +161,7 @@ fn clipboard_bytes(page: &LushtextEditorPage) -> Vec<u8> {
             slot.replace(Some(text.ok().flatten().map(|text| text.to_string())));
         });
     wait_until(Duration::from_secs(60), || result.borrow().is_some());
-    result
-        .take()
-        .flatten()
-        .map(String::into_bytes)
-        .unwrap_or_default()
+    result.take().flatten().map_or_default(String::into_bytes)
 }
 
 #[test]
@@ -625,10 +621,7 @@ fn read_clipboard(clipboard: &gtk4::gdk::Clipboard) -> String {
     let slot = std::rc::Rc::clone(&result);
     clipboard.read_text_async(None::<&gio::Cancellable>, move |text| {
         slot.replace(Some(
-            text.ok()
-                .flatten()
-                .map(|text| text.to_string())
-                .unwrap_or_default(),
+            text.ok().flatten().map_or_default(|text| text.to_string()),
         ));
     });
     wait_until(Duration::from_secs(60), || result.borrow().is_some());
