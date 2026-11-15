@@ -130,13 +130,13 @@ Scope statements:
 
 ## 4. Merge, final gates, and the single install
 
-- [ ] 4.1 Merge `origin/main` (never rebase) and resolve `flatpak-install`
+- [x] 4.1 Merge `origin/main` (never rebase) and resolve `flatpak-install`
   against `reduce-build-disk-writes` if it has landed (D8).
   - Keep its `--state-dir`/`build-cache.sh checkout` and this change's
     `--repo`, lock, prune and check.
   - Run its `build-cache.sh audit` if present.
   - Rerun 2.5.
-- [ ] 4.2 Run the authorised `make flatpak-install` once on the final tree,
+- [x] 4.2 Run the authorised `make flatpak-install` once on the final tree,
   through `scripts/heavy.sh`. The maintainer's machine starts from the
   disabled dangling `lushtext-origin`. Record in `runs.log`:
   - that the remote stayed disabled and unchanged while the build ran, and
@@ -146,7 +146,7 @@ Scope statements:
   - `flatpak info --user dev.cominotti.lushtext//master` (origin, commit)
     against `flatpak remote-info --user -c lushtext-origin <ref>`;
   - the repository's size (`du -sh`).
-- [ ] 4.3 Run `make verify-flatpak-identity` and record that the new "Flatpak
+- [x] 4.3 Run `make verify-flatpak-identity` and record that the new "Flatpak
   install origin" section passes.
-- [ ] 4.4 Run `make check` through `scripts/heavy.sh`. Then run `openspec
+- [x] 4.4 Run `make check` through `scripts/heavy.sh`. Then run `openspec
   validate stable-flatpak-install-origin --strict`. Commit and push.

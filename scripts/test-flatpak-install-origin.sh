@@ -253,6 +253,20 @@ origin_install "$shared_repo" flatpak build-export --runtime "$shared_repo" "$tr
 [[ "$(origin_remotes)" == "lushtext-origin" ]] || fail "leftover origins: $(origin_remotes | tr '\n' ' ')"
 pass
 
+# --- 5c. steady state: every later install, with the origin already valid ---
+case_name="5c steady state"
+make_tree seven
+origin_install "$shared_repo" flatpak build-export --runtime "$shared_repo" "$tree" master > "$scratch/install5c.log" 2>&1 ||
+    { cat "$scratch/install5c.log" >&2; fail "steady-state install failed"; }
+grep -q "lushtext-origin already points at $shared_uri" "$scratch/install5c.log" || fail "install modified a valid origin"
+head="$(repo_head "$shared_repo")"
+[[ "$(deployed_commit)" == "$head" ]] || fail "deployed $(deployed_commit), head $head"
+commits="$(ostree --repo="$shared_repo" log "$typed_ref" | grep -c '^commit')"
+[[ "$commits" == 1 ]] || fail "the repository holds $commits commits after the prune"
+[[ "$(origin_remotes)" == "lushtext-origin" ]] || fail "origin remotes are: $(origin_remotes | tr '\n' ' ')"
+remote_ls_ok || fail "remote-ls --updates fails: $(cat "$scratch/remote-ls.err")"
+pass
+
 # --- 6. installs serialize on the lock beside the repository ----------------
 case_name="6 lock"
 exec {lockfd}> "$shared_repo.lock"

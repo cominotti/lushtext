@@ -489,6 +489,9 @@ Decisions taken while implementing, each measured in the fixture test:
     deploys from `lushtext1-origin` (case h), `check --installed` fails naming
     the expected and the actual origin, and the next `install` moves the ref
     back to `lushtext-origin` and leaves no numbered origin;
+  - 5c, the steady state every later `make flatpak-install` takes: with the
+    origin already enabled at the shared URL, `install` leaves it alone ("already
+    points at"), deploys the new head, and prunes to one commit;
   - 8: a valid origin that is not the shared repository makes `check` warn
     and pass.
 
