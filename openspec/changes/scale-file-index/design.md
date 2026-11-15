@@ -91,7 +91,7 @@ nucleo scoring.
 ```
 FileIndex {
     folders:   Vec<FolderRecord>,      // workspace folder display path + canonical path (owned, few)
-    dirs:      Vec<DirRecord>,         // { parent: u32 (or folder), name: Span, canonical: CanonicalRule }
+    dirs:      Vec<DirRecord>,         // { display: DisplayRule, canonical: CanonicalRule }
     files:     Vec<FileRecord>,        // { dir: u32, name: Span, flags: u8 } — 12 bytes
     names:     String,                 // every directory and file name, UTF-8 (lossy, as `IndexedFile::new` is today)
     raw_names: Vec<(u32, Box<OsStr>)>, // exact bytes for the rare non-UTF-8 name, keyed by record
@@ -100,6 +100,15 @@ FileIndex {
     visibility,
 }
 ```
+
+`DisplayRule` is `Child { parent: u32 (a directory or a folder root), name:
+Span }` for every directory the build reaches, or `Detached(u32)` (an index
+into an owned display-path table, charged to the ledger), used only when a
+rename gives a directory a display path that is not a child of an indexed
+directory (D5). Files never store a folder. Their folder is the one their
+directory chain started from, so a detached subtree keeps its original folder,
+and `relative_display` falls back to the full path, as `IndexedFile` does on
+`main` when the path is not under its folder.
 
 `CanonicalRule` is `Derived` (parent canonical + name: a non-symlink
 directory) or `Resolved(u32)` (an index into an owned canonical-path table, for
@@ -116,8 +125,10 @@ PaletteFileIdentity` (owned, reconstructed) and `workspace_folder()`;
 **Search results carry the ordinal, not the view.** `SearchResultItem::File`
 carries a `FileOrdinal(u32)`, and the consumer, which already holds the
 `FileIndex` it searched (grouped rows, the category model, benches), builds the
-view with `index.file(ordinal)`. Stage 2 measured the alternative on the
-pinned toolchain: an enum whose `File` variant holds the 16-byte view is
+view with `index.file(ordinal)`. Stage 2 checked the alternative with rustc
+1.98.0 on x86_64 (enum layout does not change in the pinned 1.98.1 patch
+release; source and output in the handoff,
+`stage2-search-result-layout-check.rs.txt`): an enum whose `File` variant holds the 16-byte view is
 24 bytes (four dataful variants leave no niche for the tag), which makes
 `RetainedCandidate` 40 bytes and `PALETTE_CATEGORY_CANDIDATE_BYTES` 44 instead
 of 36. With a `u32` payload the enum stays 16 bytes, so the existing layout
@@ -329,15 +340,17 @@ still pays the full walk on every index or tab change.
   - *New parent not interned:* its missing directory records are created as
     for an add, charged first.
   - *Old path is a workspace folder root:* its folder record keeps its
-    display path and its directory record takes the new path as a
-    `Resolved` path. On `main` the files keep their `workspace_folder`, and
-    `relative_display` falls back to the full path because the new path is
-    not under the folder. Reconstruction gives the same strings.
-  - *New path outside every workspace folder:* the same representation. A
-    directory record may hold an owned absolute path (`Resolved`, charged to
-    the ledger), so descendants reconstruct `new_path/suffix` and display it
-    in full, as `main` does. The existing ledger test renames a folder to a
-    256 KiB `/renamed/…` prefix this way.
+    display path, and its directory record becomes `DisplayRule::Detached`
+    with the new path (D1). Its canonical rule becomes `Resolved` with the
+    new path's `realpath`. On `main` the files keep their
+    `workspace_folder`, and `relative_display` falls back to the full path
+    because the new path is not under the folder. Reconstruction gives the
+    same strings.
+  - *New path outside every workspace folder:* the same representation, so
+    descendants reconstruct `new_path/suffix` and display it in full, as
+    `main` does. The existing ledger test renames a folder to a 256 KiB
+    `/renamed/…` prefix this way, and the detached path is charged before
+    the rewrite.
   - *Ledger refusal:* `main` drops each descendant whose replacement does not
     fit (path cleared, then `retain`). The arena does the same for the
     subtree whose new record does not fit: its records are removed in the
@@ -351,9 +364,14 @@ still pays the full walk on every index or tab change.
   in `names` and directory records nothing references. Because capacity is
   charged, a long session could otherwise refuse adds on a small live index.
   A batch therefore compacts the arena, with one pass that rewrites `names`,
-  `dirs`, the record spans and `raw_names` and then shrinks to length, when
-  dead bytes exceed a quarter of the charged weight. That is the same 3/4
-  rule `should_compact_after_removal` applies today. The pass is O(n) on the
+  `dirs`, the record spans and `raw_names` and then shrinks to length. Two
+  triggers start it:
+  - when dead bytes exceed a quarter of the charged weight, which is the
+    same 3/4 rule `should_compact_after_removal` applies today;
+  - at once, whenever a growth charge would be refused while dead bytes
+    exist. The refused add is retried after the pass, so an index near the
+    64 MiB cap does not refuse an add while it holds reclaimable bytes below
+    that quarter. The pass is O(n) on the
   worker. It holds the compacted vectors, at the live length, beside the old
   ones only for the pass, which is the same transient copy `shrink_to_fit`
   makes on `main`. The ledger then records the compacted weight, so the
@@ -541,7 +559,8 @@ below 4, otherwise labelled non-verdict and retried; `main` and the branch
 interleaved, four rounds on the affected cases (Criterion: `file_index_rebuild`,
 `file_index_search`, `file_index_incremental`, `palette_categories` at 2^17 on
 both, 2^20 on the branch only since `main` cannot index it; lane: the D10
-cases). Pass bars: D7 (≤ 50 ms query at 2^20), D10 (dispatch budgets), and no
+cases). Pass bars: D7 (≤ 50 ms grouped query at 2^20; the category ranking
+measured and, if over, recorded as D7's exception), D10 (dispatch budgets), and no
 case at 2^17 slower than `main` by more than its own min–max spread.
 
 ## Risks / Trade-offs

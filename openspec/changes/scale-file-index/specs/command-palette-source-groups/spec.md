@@ -42,7 +42,7 @@ An incremental mutation batch SHALL copy the installed index without a per-file 
 - **THEN** the batch's index is rejected and its updates replay on the new index, as before
 
 ### Requirement: File-index storage left by mutations is reclaimed
-Name bytes and directory records that removals and renames leave unreferenced SHALL be reclaimed on the mutation worker before they can cause a later addition to be refused, so the installed index's charged weight follows its live files.
+Name bytes and directory records that removals and renames leave unreferenced SHALL be reclaimed on the mutation worker: at the latest when an addition would otherwise be refused while such storage exists, so that no addition the live files' size admits is refused.
 
 #### Scenario: Many removals and renames on a long-lived index
 - **WHEN** a long session removes and renames many files and directories and then adds new ones
@@ -60,11 +60,15 @@ The workspace file group SHALL exclude open tabs and count the empty query's rem
 - **THEN** it does not change the workspace group's rows or count
 
 ### Requirement: Palette queries over a large index stay prompt
-A non-empty query over a 1,048,576-file index SHALL complete on the worker within 50 ms (median of a verdict run on the reference machine), and the palette's GTK dispatches SHALL keep their budgets (`B_INTERACT_US` for input, `B_SETTLE_US` for a publish) at that size.
+A non-empty grouped query (the grouped view's rows and counts) over a 1,048,576-file index SHALL complete on the worker within 50 ms (median of a verdict run on the reference machine). A category view's ranking SHALL run on the worker as one bounded pass whose time at that size is measured and recorded. The palette's GTK dispatches SHALL keep their budgets (`B_INTERACT_US` for input, `B_SETTLE_US` for a publish) at that size, in both views.
 
 #### Scenario: Typing in a large workspace
-- **WHEN** the user types a query in Files mode over a 1,048,576-file index
+- **WHEN** the user types a query in Files mode's grouped view over a 1,048,576-file index
 - **THEN** the ranked rows publish within 200 ms of the last keystroke (150 ms debounce plus the worker query) and no dispatch exceeds its budget
+
+#### Scenario: Opening a large category
+- **WHEN** the user opens the workspace category of a query matching more than 131,072 of 1,048,576 files
+- **THEN** the ranking runs off the GTK thread and no palette dispatch exceeds its budget while it runs or when its rows publish
 
 ## MODIFIED Requirements
 

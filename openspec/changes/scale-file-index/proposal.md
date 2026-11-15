@@ -63,10 +63,11 @@ its own row cap instead of "the whole index".
   four truncation reasons, the single-flight build coordinator, the
   incremental mutation worker, generation arbitration and the readiness
   predicates are unchanged.
-- **The category view caps its rows at 131,072** (2^17, its current ceiling,
-  which ledger A95 and DP's measurement put at the edge of `B_INTERACT_US` for
-  a far select-and-scroll); a larger category says "Showing X of Y results", as
-  the budget rule already specifies. The grouped view is unchanged (64 rows per
+- **The category view caps its rows at 131,072** (2^17, today's index
+  ceiling, which ledger A95 and DP's measurement put at the edge of
+  `B_INTERACT_US` for a far select-and-scroll; the byte budget alone would allow
+  233,016). A larger category says "Showing X of Y results", as the budget
+  rule already specifies. The grouped view is unchanged (64 rows per
   category, exact "N more…" counts at any index size).
 - **Search results carry a file ordinal.** `SearchResultItem::File` holds a
   `u32` ordinal into the index, and consumers build the borrowed view from the

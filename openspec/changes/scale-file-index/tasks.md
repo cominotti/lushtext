@@ -83,7 +83,9 @@ Rules for every task:
       reclamation: on a 2^17 index, remove and re-add 2^17 files in batches
       of 1,024. Every add is admitted, and `retained_byte_weight` returns to
       within one growth step of the start (fails if dead bytes are never
-      compacted).
+      compacted). And near the 64 MiB cap, with dead bytes below a quarter of
+      the weight, an add that fits the live size is still admitted (design
+      D5's second compaction trigger).
 - [ ] 2.5 Unit, open tabs: the empty query's rest count at 2^20 with 256 open
       tabs equals the exact count and its selector metrics report no walk over
       the rest (fails on `main`: `RestCount::WalkWith` visits every file).
@@ -218,7 +220,10 @@ Rules for every task:
       and the budget's rows; the category model's cut reports "Showing X of Y
       results". Its `docs/thresholds.md` row, and the
       `PALETTE_CATEGORY_FLOOR_RETENTION` / `PALETTE_CATEGORY_RETAINED_BYTES`
-      rows re-worded to "the ranking peak of the row cap". Test 2.8 green.
+      rows re-worded to "the ranking peak of the row cap". If 1.3 lowered the
+      cap, the spec delta's 131,072 figures (the category requirement, its
+      "A category larger than the row cap" scenario, the 2.8 test and
+      design D8) move with it in the same commit. Test 2.8 green.
 - [ ] 4.5 Commit and push.
 
 ## 5. Lane, verdicts and smoke
