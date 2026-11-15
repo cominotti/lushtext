@@ -49,12 +49,17 @@ carried by a separate follow-up change.
 - **THEN** the comparison records its annotation ratio, rewrite footprint, trusted base, and proof-maintenance cost next to its verification results
 - **AND** an unbounded proof counts as evidence only if it fails on at least two real pre-fix defects that a Kani harness also rejects
 - **AND** a proof that relies on a trusted specification for a decision under test does not count as evidence for that decision
+- **AND** a known-false claim counts as reproduced only when the verifier proves a concrete witness against it, and a mutant counts as caught only when the verifier rejects the named invariant obligation, never on a timeout, a resource limit, or a build error
 
 ### Requirement: Unbounded claims are attempted in Kani first
 Before any tool other than Kani is discussed for a claim that needs to be
 unbounded, the project SHALL make two recorded attempts inside Kani:
 
-1. Kani loop contracts.
+1. Kani loop contracts, or the equivalent one-step inductive harness: an
+   arbitrary state assumed to satisfy the invariant, one step, and the
+   invariant asserted after it, together with a base case that the initial
+   state satisfies the invariant and a cover showing the assumed invariant
+   is satisfiable.
 2. A compositional argument: small harnesses plus a written proof note that
    extends a bounded proof to any size.
 
@@ -78,7 +83,7 @@ for that claim failed and the claim is needed.
 
 #### Scenario: A claim needs to be unbounded
 - **WHEN** a contributor needs an unbounded version of a bounded Kani result
-- **THEN** a loop-contract harness and a compositional argument are attempted and their outcomes recorded before another tool is proposed
+- **THEN** a loop-contract harness (or its one-step inductive equivalent, with its base case and satisfiability cover) and a compositional argument are attempted and their outcomes recorded before another tool is proposed
 
 #### Scenario: Both attempts succeed
 - **WHEN** either attempt verifies the claim

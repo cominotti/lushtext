@@ -86,7 +86,10 @@ is the mutant source for V2 beyond M1 and M2.
 - Adopting Verus as a maintained tool, lane, dependency or skill. Any
   adoption is a separate follow-up change under a recorded maintainer
   decision.
-- Changing production code, Kani harnesses, shards, GTK axioms, or CI.
+- Changing production code, Kani harnesses, shards, GTK axioms, or CI. The one
+  exception is a comment: `journal_core.rs`'s module rustdoc states L1 as
+  "within six journal steps", which contradicts `LIVENESS_STEPS = 7`, and is
+  corrected (task 7.4).
 - Replacing Kani. Kani stays the bug-finding and bounded lane whatever is
   decided.
 - Verifying GTK-facing code. The GTK axiom ledger still models the
@@ -133,16 +136,38 @@ siblings, so neither sits under the other's `rust-toolchain.toml`.
 
 By domain:
 
-- **Finite domains** (every `journal_core` decision takes enums and bools):
-  the table covers every input. Each domain has at most a few hundred inputs,
-  so the check is sound and cheap, and does not depend on formatting.
-- **Integer domains** (`clamped_preview_width`, `band_floor`): a table over a
+- **Finite domains** (the `journal_core` decisions, which are `pub` and so
+  reachable from `drift/`): the table covers every input. Every decision but
+  one takes enums, bools and small structs of them; each domain has at most a
+  few hundred inputs, so the check is sound and cheap, and does not depend on
+  formatting. The exception is `run_deletion`, which takes a start step and an
+  `impl FnMut(DeletionStep) -> bool` and loops: its table enumerates every
+  start step with every sequence of step outcomes up to the longest deletion
+  (three steps), recording the terminal and the steps performed. Verus
+  supports `FnMut` closures only partly (the guide: it "does not yet take
+  advantage of the capturing capabilities supported by Rust's `FnMut`"), so
+  the copy's form of `run_deletion` is recorded as footprint.
+- **Integer domains** (`clamped_preview_width`, `band_floor`): both are
+  `pub(crate)` (the first in `lushtext-core`'s private `markdown_preview::policy`,
+  the second in `gtk-lush-widgets`), so `drift/` cannot call them, and the
+  change makes no production item more visible. Instead the script extracts
+  each function's source, with the constants it reads
+  (`PREVIEW_MIN_WIDTH_SP`, `PREVIEW_MAX_WIDTH_DIVISOR`), from the pinned
+  commit (`git show <commit>:<path>`), and `drift/` compiles that extracted
+  text with the workspace toolchain and writes the table. The table covers a
   fixed set of boundary and sampled inputs (the Kani harnesses' interesting
   points: `i32::MIN`, `i32::MAX`, 0, ±1, the floor, 3·floor, and a seeded
-  sample), **plus** a normalised text check: strip the Verus annotations from
-  the copy, format both sides with rustfmt, and require identical function
-  bodies. The text check is the sound half; the table catches a copy that
-  type-checks differently.
+  sample). The extraction fails loudly if the function's signature is not
+  found exactly once, so a rename is a drift failure, not a silent pass.
+  Where the copy's rewrite footprint is zero (the Verus-annotated copy, with
+  its annotations removed mechanically, is the production text), the script
+  also compares the rustfmt-normalised bodies; where the copy had to be
+  rewritten (for example `.max`/`.min` or `map_or`/`saturating_add` replaced
+  by forms Verus accepts), the text check is skipped for that function, and
+  the table is the only drift check, which the report states. To keep the
+  removal mechanical, a copy that keeps the production body is written in the
+  `#[verus_spec]` attribute form, with its proof steps in separate lemma
+  functions.
 
 A plain `cargo build` of the annotated copy under the workspace toolchain
 (the guide says it works) would allow one-process comparison instead; task
@@ -189,9 +214,16 @@ weekly pin. The probe never reaches a production path.
 Start with `clamped_preview_width`. Kani proves its properties over every
 `i32`, and keeps `preview_width_is_not_always_a_third` as a counterexample.
 
-Verus must prove each Kani property and fail to prove the counterexample.
-Division and `max`/`min` may need `nonlinear_arith` or vstd arithmetic
-lemmas; the report records which.
+Verus must prove each Kani property, and must **refute** the counterexample:
+a failed proof of the unconditional one-third form is not evidence, because
+incompleteness, an `rlimit` hit, or a build error look the same. The known
+answer counts as reproduced only when Verus proves a concrete witness against
+the claim, for example `clamped_preview_width(500, 2) == 1` with
+`3 * 1 > 2` (the production unit test's point). A mutant counts as caught
+only when Verus reports the named postcondition or assertion as failed. The
+script's `classify` reads Verus's output for this (task 1.4). Division and
+`max`/`min` may need `nonlinear_arith` or vstd arithmetic lemmas; the report
+records which.
 
 If Verus cannot reproduce the known answers at a reasonable cost, stop and
 record that before V2. This mirrors the Quint/TLA+ calibration rule.
@@ -221,10 +253,28 @@ time:
   under which a stale manifest copy skips registration. The
   `verify-multi-window-draft-journal` baseline run kills it.
 
-Further mutants are drawn from the N9 population of `journal_core` that a
-Kani harness kills (including `journal_decisions_follow_their_documented_rules`);
-each is listed with the harness that kills it. A mutant no Kani harness kills
-does not count as evidence for V2.
+Further mutants are drawn from the N9 population of `journal_core`. Only the
+aggregates are committed (51 mutants at `71fc2e3a`, 33 killed by either arm),
+not per-mutant verdicts, so the population is listed with
+`make proof-strength-list PROOF_STRENGTH_MODULE=services/draft_service/journal_core.rs`
+(no verification) and each sampled mutant's kill is confirmed by a scratch
+Kani run under D5's run rules. **A mutant counts for V2 only if an invariant
+harness kills it** (`journal_invariants_hold_under_crashes`,
+`journal_invariants_hold_across_two_windows`, or the L1 harness for V3).
+The programme record (N9, `71fc2e3a`) shows why: `ownership`'s `||`→`&&`
+mutant survived all six journal harnesses, because they abstract away which
+body a decision protects, and only `journal_decisions_follow_their_documented_rules`
+kills it. A mutant that only the decision-table harness kills is reported as
+a comparison (does V2's invariant see it?), not counted for or against V2. A
+mutant no Kani harness kills does not count either. M1 and M2 are invariant
+harness kills, so the "at least two real pre-fix defects" floor rests on them.
+
+A mutant is caught only when the proof reports the inductive-step obligation
+(or the named invariant conjunct) as failed, never on a timeout, an `rlimit`
+hit, or a build error. Before mutants are run, a **vacuity probe** shows the
+invariant is not trivially true: an `assert(false)` placed after the
+invariant is assumed in the step must fail, and the initial state must be
+shown to satisfy it (`Init ⟹ Inv`) with a concrete instance.
 
 The E1 stamp-only set-aside naming is **not** a V2 mutant. The journal model
 keeps preserved content as a set, so S1–S4 never saw it, and only K9 kills
@@ -237,7 +287,8 @@ investigated before it counts.
 ### D4. V3 is L1 from every reachable state
 
 Kani's L1 is a fixed 7-step fault-free pass after the lane drains, checked
-from states that a bounded prefix reaches. The unbounded form is "`Inv(s)`,
+from states that a bounded prefix (three actions after startup) reaches, in
+the **single-window** scope (`SingleWindowScope`, 3 ids). The unbounded form is "`Inv(s)`,
 a drained lane and a dirty editor imply that the pass is clean within 7
 steps". This is a corollary over V2's invariant, and needs no temporal logic.
 V3 therefore runs only if V2 closed; if V2 stops within its budget, V3 is
@@ -249,8 +300,15 @@ needs a ranking function over the remaining environment budget and the pass
 position, or the `verus-tla` library. It is attempted only if budget remains,
 and the report records which route was taken.
 
-The proof must fail when the fault-free assumption is dropped, and when the
-lane-drain precondition is dropped.
+V3 is stated over V2's multi-window model, so its precondition also requires
+the editor's window to hold the id's claim (one owning window per id). That
+is a strictly larger claim than Kani's single-window L1, and the report says
+so. The k = 7 bound must be shown tight in Verus as in Kani
+(`a_dirty_editor_may_need_seven_steps`): by a proved witness state from
+which six fault-free steps leave the editor dirty, not by a failed proof at
+k = 6. The proof must fail, on the named obligation, when the fault-free
+assumption is dropped, and when the lane-drain precondition is dropped. The
+same vacuity probe as V2 applies to V3's precondition.
 
 ### D5. Kani-first attempts, recorded per claim, run first
 
@@ -260,6 +318,14 @@ Record their text and outcome as phase 3 recorded its two:
    satisfy the invariant (the cheaper form), or a loop-contract harness under
    `-Z loop-contracts`, with S1–S4 and one owning window per id as the
    invariant, at the lane's scope (2 windows, 1 file-backed + 1 untitled id).
+   The one-step harness discharges the same obligation a loop contract over
+   the action loop would (assume the invariant on an arbitrary state, run one
+   iteration, assert it), so it is the loop-contract attempt the rule names
+   (the amended requirement says so). It removes the action bound only with
+   two companions: a base-case harness (`Init ⟹ Inv`, after the first
+   startup as the lane harnesses start) and a `kani::cover!` showing that a
+   state satisfying the assumed invariant exists. Without the cover, a too
+   strong assumption would make the step vacuously true.
 2. **Compositional argument:** per-id and per-window independence, or the
    reason none applies.
 
@@ -279,10 +345,15 @@ Kani then proves the inductive step at its own scope, the report records
 this as the main comparison. Nothing in this change enters the maintained
 lane; carrying such a harness is a follow-up change.
 
-The scratch Kani runs are not shard runs and touch no shard table. They run
-in the scratch worktree with their own `KANI_TARGET_DIR` under
-`build/formal-evaluation/`, through `scripts/heavy.sh` with an explicit cap,
-detached (`setsid nohup`), one harness per call. The 8-action two-window
+The scratch Kani runs are not shard runs and touch no shard table. The
+scratch worktree is created with `git worktree add --detach` (no branch, so
+nothing is pushed or left in the shared branch list) from a recorded commit,
+under `build/formal-evaluation/`, and removed with `git worktree remove` when
+the evaluation ends; its patch is kept under `formal/evaluation/verus/`. The
+runs use their own `KANI_TARGET_DIR` under `build/formal-evaluation/`, go
+through `scripts/heavy.sh` with an explicit cap, detached (`setsid nohup`),
+one harness per call, inside the script's `measure` subcommand, so
+`FORMAL_EVAL_TIMEOUT` and the RSS ceiling apply. The 8-action two-window
 proof already peaked at 15.3 GB, so an arbitrary-state step is expected to
 be heavy: the cap is 16G, kissat is tried before raising it, and a raise is
 recorded with its reason.
@@ -315,19 +386,29 @@ recorded with its reason.
   (D5); V3 waits on V2 (D4).
 - **Machine rules** (`.agents/rules/verification-runs.md`, "Shared-machine
   agent work"): every Verus, Z3, cargo, and scratch-Kani command is heavy
-  work and runs as `taskset -c 8-23 scripts/heavy.sh --mem 16G -- <one
-  command>`, one command per call, never around a long script; long runs are
-  detached. `heavy.sh` waits for a running timing campaign, so no run starts
-  beside one. Verus's thread count is set to at most 16 and its SMT
-  `rlimit` is recorded. Inside that scope the script's existing `measure`
-  subcommand (not to be confused with `scripts/measure.sh`) enforces
-  `FORMAL_EVAL_TIMEOUT` and a `FORMAL_EVAL_MEM_MB` default of 14336 for
-  these targets, below the 7/8 address-space limit `with-memory-cap.sh` sets
-  for a 16G scope. If the address-space limit itself trips Verus or Z3, that
-  is recorded, and the cap is changed only with the reason recorded.
+  work and runs in its own `scripts/heavy.sh --mem 16G -- <one command>`
+  call, under `taskset -c 8-23`, never around a long script; long runs are
+  detached. A `verus-*` target that runs several checks (a proof and its
+  mutants, `verus-all`) is therefore **not** wrapped whole: the script wraps
+  each check, and each `cargo` build it needs, in its own `heavy.sh` call,
+  and the operator runs the target itself under `taskset` only. `heavy.sh`
+  waits for a pending timing measurement, so no check starts beside one, and
+  one check holds the shared lock for at most `FORMAL_EVAL_TIMEOUT` (1800 s,
+  the same as `scripts/measure.sh`'s default lock timeout). Verus's thread
+  count is set to at most 16 and its SMT `rlimit` is recorded. Inside each
+  check the script's existing `measure` subcommand (not to be confused with
+  `scripts/measure.sh`) enforces `FORMAL_EVAL_TIMEOUT` and a
+  `FORMAL_EVAL_MEM_MB` default of 14336 for these targets. `heavy.sh` sets no
+  address-space limit (it calls `with-memory-cap.sh` without
+  `--address-space`); the hard limit is the 16G scope, and the 14336 MiB RSS
+  ceiling sits 2 GiB under it, so the script records `memory-ceiling` before
+  the scope's OOM kill. If the OOM kill trips first, that is recorded, and
+  the cap is changed only with the reason recorded.
 - **Verification times are cost figures, not verdicts.** They are recorded
   the way Kani's shard figures are, through `heavy.sh`, with the 1-minute
-  load at start and end. `scripts/measure.sh` is for timing verdicts; taking
+  load at start and end. The script's `measure` subcommand records neither
+  today, so task 1.4 makes it append `/proc/loadavg` at start and end to each
+  result row. `scripts/measure.sh` is for timing verdicts; taking
   its exclusive lock for a multi-minute proof would drain every other agent
   for no verdict. A figure taken at a load of 4 or more is labelled as such.
 
@@ -375,8 +456,11 @@ It records the losing options' evidence and the fate of
   `journal_core`. Mitigation: record it as footprint, because it is part of
   the adoption cost.
 - **Proof brittleness.** SMT proofs can break with a new Z3, a new weekly
-  Verus release, or `rlimit` changes. Mitigation: re-verify V1 and V2 on one
-  newer release, if one exists before the report, and record the result.
+  Verus release, or `rlimit` changes. Mitigation: before the report, re-verify
+  V1 and V2 (and V3 if it closed) on the newest release then available, the
+  next non-rolling one if it exists, otherwise the newest rolling one (the
+  rolling `0.2026.11.05.31e44e6` already exists), and record the result
+  (task 7.1).
 - **Toolchain churn.** Weekly releases and a pinned rustc that already
   differs from the workspace's (1.99.1 against 1.98.0). Mitigation: D1 never
   crosses toolchains; record install time, size, and CI cost against the
@@ -438,6 +522,47 @@ against queued changes; the Kani-first attempts now narrow Verus's target
 budgets in the baseline; the gate audit extended to gates added since; the
 N9 mutant population added to V2; the decision framed as a recommendation;
 the 2026-11-15 maintainer decision recorded.
+
+## Stage-2 review (2026-11-15)
+
+An independent review against the code, the rules and the shard table.
+**Verdict: sound; fixed in place.** Decisions, with their reasons:
+- **Integer drift (D1).** `clamped_preview_width` and `band_floor` are
+  `pub(crate)`, so `drift/` cannot call them; making them public would
+  change production. `drift/` now compiles their source extracted from the
+  pinned commit, and the text comparison applies only where the copy kept the
+  production body, since a rewritten copy cannot match it by construction.
+- **`run_deletion` (D1).** It takes a closure and loops, so "every input" is
+  every start step with every outcome sequence; its `FnMut` parameter is
+  footprint (the Verus guide: `FnMut` capture is not yet supported).
+- **Attempt 1 is the loop-contract attempt (D5, spec).** The base rule named
+  only loop contracts; the one-step inductive harness discharges the same
+  obligation, so the MODIFIED requirement now names it, with the base case
+  and a satisfiability cover it needs to remove the action bound.
+- **Refutation is a proved witness (D2, D4, spec).** "Verus fails to prove"
+  is also what incompleteness and resource limits look like, so known-false
+  claims need a proved witness and mutants need the named obligation to
+  fail; V2 and V3 get a vacuity probe.
+- **Mutant counting (D3).** The record shows invariant harnesses miss
+  decision-table mutants (`ownership`'s `||`→`&&`), so only invariant-harness
+  kills count for V2; per-mutant verdicts are not committed, so each is
+  confirmed by a scratch run.
+- **V3 scope (D4).** Kani's L1 is single-window; V3 over V2's multi-window
+  model is a larger claim and needs the claim precondition.
+- **Machine rules (D6).** A multi-check target wrapped in one `heavy.sh` call
+  breaks "one command per call", so the script wraps each check; `heavy.sh`
+  sets no address-space limit, so D6's memory sentence was corrected; the
+  script records no load today, so task 1.4 adds it.
+- **Docs (tasks 7.3, 7.4).** AGENTS.md no longer lists `make
+  formal-evaluation` (its catalogue defers to `make help`), so the targets are
+  the Makefile help, `build.md` and README.md. `journal_core.rs`'s module
+  rustdoc says L1 holds "within six journal steps", but `LIVENESS_STEPS` is 7
+  and `a_dirty_editor_may_need_seven_steps` shows six is too few; it is wrong
+  since `67aef874`. Under the pre-existing-blockers rule it is corrected here,
+  comment only (no harness input changes, so no shard run).
+- **Report completeness (task 7.1).** The evidence rule requires install and
+  CI cost against the 30-minute cap and the bridge options; the report list
+  now names them, and the newer-release re-verification has a task.
 
 ## Open Questions
 

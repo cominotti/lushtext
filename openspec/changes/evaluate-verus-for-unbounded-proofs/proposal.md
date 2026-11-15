@@ -79,8 +79,9 @@ Verus work, so a Kani-only answer is found first if it exists.
 - Run three targets, each calibrated against what Kani already proved:
   - **V1, calibration:** `clamped_preview_width` (and `band_floor` if time
     allows), integer functions Kani proves over every `i32`. Verus must
-    re-prove the known properties and fail to prove the known
-    counterexample (`preview_width_is_not_always_a_third`). `viewport_slice`
+    re-prove the known properties and refute the known counterexample
+    (`preview_width_is_not_always_a_third`) by proving a concrete witness
+    against it, not merely by failing to prove it. `viewport_slice`
     is not the calibration target, because it is `f64` code and Verus's float
     reasoning is limited.
   - **V2, unbounded journal safety:** S1–S4 plus "one owning window per id"
@@ -91,13 +92,16 @@ Verus work, so a Kani-only answer is found first if it exists.
     `Unavailable` restore that preserved nothing, and the per-window
     coordinator (`TwoWindowBaselineScope`) that let a stale manifest copy skip
     registration. Further mutants come from the N9 proof-strength population
-    of `journal_core` that a Kani harness kills.
+    of `journal_core`; only those an invariant harness kills count, because
+    the decision-table harness alone kills mutants the invariants cannot
+    see.
   - **V3, L1 from every reachable state:** the 7-step fault-free bound, for
     every state satisfying V2's invariant. An "eventually, under fairness"
     form with other actors interleaving (E9's form) is a stretch goal. The
     slice-bin "rest" claim is not a target (see Non-Goals in the design).
 - Before V2 and V3, make and record the two Kani-first attempts for each
-  claim: a one-step inductive harness (or a loop-contract harness) and a
+  claim: a one-step inductive harness (the loop-contract obligation, with its
+  base case and a satisfiability cover), or a loop-contract harness, and a
   compositional argument, drafted in a scratch worktree and recorded as the
   slice attempts were. If the inductive step proves the claim for any number
   of actions at a fixed scope, Verus targets only what remains (any number of
@@ -132,7 +136,11 @@ Verus work, so a Kani-only answer is found first if it exists.
   - The evidence rule names deductive verifiers that check Rust, such as
     Verus, alongside modelling tools. It adds the metrics a deductive verifier
     must record: annotation ratio, rewrite footprint, trusted base, and proof
-    maintenance.
+    maintenance. A known-false claim is reproduced only by a proved witness,
+    and a mutant is caught only by the named obligation failing.
+  - The Kani-first rule names the one-step inductive harness, with its base
+    case and a satisfiability cover, as equivalent to the loop-contract
+    attempt.
   - The Kani-first rule allows a maintainer-authorised, disposable evaluation
     to measure another tool on an unbounded claim before that claim is
     needed. The evaluation still records both Kani attempts for the claim,
@@ -144,7 +152,8 @@ Verus work, so a Kani-only answer is found first if it exists.
 
 - **New and disposable:** `formal/evaluation/verus/` (`proofs/`, `drift/`);
   new `verus-*` targets of `scripts/formal-evaluation.sh`, run through the
-  existing local-only `make formal-evaluation FORMAL_EVAL_TARGET=…`; tool
+  existing local-only `make formal-evaluation FORMAL_EVAL_TARGET=…`, with each
+  check in its own `scripts/heavy.sh` call; tool
   installs under `build/formal-evaluation/tools/` (the
   `0.2026.11.02.8bf68ee` x86-64 Linux archive is 36 MB, 139 MB unpacked,
   and bundles Z3; its pinned rustc 1.99.1 is installed into a private
@@ -153,7 +162,11 @@ Verus work, so a Kani-only answer is found first if it exists.
   `docs/next/formal-verification.md` (§2, the deferral inventory, and the
   recommendation), `docs/next/formal-verification-next.md` (tool criteria,
   the change table, and the Lean note), and the `make formal-evaluation`
-  entries in AGENTS.md and `.agents/rules/build.md` (still local-only).
-- **Unchanged:** production crates, Kani harnesses and shards, GTK axioms,
+  entries in the Makefile help text, `.agents/rules/build.md` and README.md's
+  formal-verification paragraph (still local-only; AGENTS.md no longer lists
+  the target, since its catalogue defers to `make help`).
+- **Comment only:** `journal_core.rs`'s module rustdoc, which states L1 as
+  "within six journal steps" against `LIVENESS_STEPS = 7`.
+- **Unchanged:** production code (beyond that comment), Kani harnesses and shards, GTK axioms,
   the responsiveness lane, CI workflows, `cargo deny`, and hakari. A
   follow-up change carries any adoption.
