@@ -90,7 +90,7 @@ At teardown, before stopping services, the helper SHALL evaluate the session's o
 - **THEN** the gate fails and names the drifted setting
 
 ### Requirement: The rtkit and bluez classes key on what can reach the services
-The `rtkit` class SHALL fire on any `MakeThread*` call to RealtimeKit1 from any sender, and on any other message naming RealtimeKit1 unless its sender resolves to the `xdg-desktop-portal` executable in a profile with portals on. An unresolved sender SHALL get no exception. The `bluez` class SHALL fire on any message naming `org.bluez`.
+The `rtkit` class SHALL fire on any `MakeThread*` call to RealtimeKit1 from any sender, and on any other message naming RealtimeKit1 unless its sender resolves to the `xdg-desktop-portal` executable in a profile with portals on and the message is one of that frontend's startup lookups or its single read of each rtkit property. An unresolved sender, or a frontend record beyond that set, SHALL get no exception. The `bluez` class SHALL fire on any message naming `org.bluez`.
 
 #### Scenario: The portal frontend reads rtkit's properties
 - **WHEN** a session with portals on activates `xdg-desktop-portal`, which looks up `org.freedesktop.RealtimeKit1` and reads its properties at startup

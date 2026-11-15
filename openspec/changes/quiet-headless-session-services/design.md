@@ -26,7 +26,8 @@ queries (`responsiveness-smoke-driver.py`'s `["mutter", "--version"]` and its
 `artifacts.rs` test data, `lushtext-automation.py`'s `session_bus` value), the
 harness's own tooling check and its tests in `proof-harness/src/lib.rs`, the
 `for command_name in dbus-run-session mutter` loops of
-`run-portal-sandbox-smoke.sh`, and `setup-dev-tools.sh`'s `required_commands`.
+`run-portal-sandbox-smoke.sh`, `setup-dev-tools.sh`'s `required_commands`, and
+messages whose first word is a command name (`cargo-gtk-proof` `runner.rs`).
 
 ## Goals / Non-Goals
 
@@ -342,7 +343,12 @@ messages, 3 of them `Properties.Get` to `org.freedesktop.RealtimeKit1`, no
   to the `xdg-desktop-portal` executable and the profile has portals on. That
   one exception is recorded with its reason: on the host it is a property
   read that grants nothing and counts toward no limit, and portal-off profiles
-  never start the frontend. A regressed PipeWire module-rt under the private
+  never start the frontend. It is bounded by shape as well as by sender: the
+  lookups (`AddMatch`, `GetNameOwner`, `StartServiceByName`) and at most one
+  `Properties.Get` of each of `MaxRealtimePriority`, `MinNiceLevel` and
+  `RTTimeUSecMax` per frontend process. The frontend is also a PipeWire
+  client, and a client-side module-rt load in it would repeat those reads, so
+  any record beyond that set fires. A regressed PipeWire module-rt under the private
   bus never reaches a `MakeThread*` call (its property reads fail first), and
   this clause is what catches it.
 - A sender that cannot be resolved, because it disconnected, gets no
@@ -412,7 +418,9 @@ names are `dbus-run-session`, `dbus-daemon`, `dbus-launch`, `mutter`,
     `setup-dev-tools.sh` already follows;
   - a `case` pattern label;
   - text inside a quoted string, except a string passed to `sh -c`,
-    `bash -c` or `eval`, whose words are scanned as shell.
+    `bash -c` or `eval`, whose words are scanned as shell;
+  - a heredoc body (usage text, as in `run-widget-tests.sh`), except one fed
+    to `sh`, `bash` or `eval`.
 
   So `taskset -c 0 pipewire`, `scripts/heavy.sh -- mutter`,
   `require_command mutter`, `for c in dbus-run-session mutter; do` and
@@ -422,7 +430,11 @@ names are `dbus-run-session`, `dbus-daemon`, `dbus-launch`, `mutter`,
   name, ends in `/name`, or has as its first whitespace-separated word such a
   name or path (`"mutter --headless"` for `shell=True`). Docstrings and
   comments are excluded. Messages such as `"missing required command: mutter"`
-  pass. Lanes do not name these commands as data either: prerequisite checks
+  pass. A message whose first word is a command name is reworded
+  (`cargo-gtk-proof` `runner.rs`'s `"mutter child completed"` and
+  `"mutter child failed"` become compositor-child wording; the
+  `--mutter-child` flag itself passes). Lanes do not name these commands as
+  data either: prerequisite checks
   and version records come from `check-tools` (D2), the `session_bus` report
   value names the helper, and test data that needs a command name (the
   `cargo-gtk-proof` missing-capability tests) takes it from the helper's
@@ -531,9 +543,12 @@ them on every run, and the static gate pins their configuration.
   `smoke_warning_classifiers.py`, `docs/automation*.md`,
   `docs/end-user-coverage.md`, `crates/lushtext-core/src/ui/` and the widget
   tests, and `check-accessibility-policy` demands a fresh smoke for every
-  commit that leaves one of them changed. So every such edit lands in group 4,
-  whose commit is preceded by both smokes, and groups 5–8 touch none of them
-  (tasks.md).
+  commit that leaves one of them changed. `check-visual-proof-policy` does the
+  same for its visual-sensitive set, which includes
+  `crates/cargo-gtk-proof/src/`, `scripts/visual-geometry-smoke.py` and
+  `scripts/lushtext-automation.py`. So every such edit lands in group 4, whose
+  commit is preceded by the accessibility, visual and visual-geometry smokes,
+  and groups 5–8 touch none of them (tasks.md).
 - **The axiom runner moves from `GTK_A11Y=none` to `test`.** Every probe was
   verified under `none`. A test context per widget is a small, uniform cost,
   but a cost-ratio probe could move. Task 6.3 runs every probe, slow ones
