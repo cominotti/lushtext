@@ -124,7 +124,7 @@ exclude_re = [
     # Property-test-only bridge: the default mutation lane intentionally omits
     # `lushtext-core/property-tests`; the property lane covers this helper.
     "crates/lushtext-core/src/services/mod\\.rs:.*property_testing::rebase_document_identity_paths",
-    "crates/lushtext-core/src/services/content_search/replace\\.rs:.*apply_replacements_to_text_for_property_test",
+    "crates/lushtext-core/src/services/content_search/replace/stream\\.rs:.*apply_replacements_to_text_for_property_test",
     "crates/lushtext-core/src/services/palette/commands\\.rs:.*merge_sorted_for_property_test",
     # Race-only branches: if metadata says a file exists but it disappears before
     # the read, recovery treats the state as missing. This is intentionally the

@@ -61,7 +61,7 @@
 
 ## 2. Streaming engine (service, GTK-free)
 
-- [ ] 2.1 Split `services/content_search/replace.rs` into `replace/` (design
+- [x] 2.1 Split `services/content_search/replace.rs` into `replace/` (design
   D12), with no behaviour change. The existing tests must pass unchanged.
   Move the `.cargo/mutants.toml` entries keyed on `content_search/replace\.rs`
   and review `sonar-project.properties` in the same commit. This is a commit

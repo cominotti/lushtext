@@ -250,7 +250,7 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > FLAG HIGH: "Replace All can leave already-mutated files without durable, discoverable rollback evidence after interruption or a mid-loop failure."
 >
 > **RS-4: TOCTOU gap in replacement validation**
-> Grep: `original_line` and `TargetWriteGuard::acquire` in `services/content_search/replace.rs`
+> Grep: `original_line` and `TargetWriteGuard::acquire` in `services/content_search/replace/`
 > Tree: Validates file content (each line against `original_line`, on the bytes read under the stable target guard) matches expected state before writing? → No: FLAG immediately. Between validation and atomic write, can file change externally? File locked between validate and write? → Yes: SAFE.
 > FLAG MEDIUM: "Gap between line validation and write. External edit during replace applied to wrong content."
 >
@@ -348,7 +348,7 @@ Present findings as:
     ...
 
     ### Unresolved Candidates
-    - RS-3 — `services/content_search/replace.rs:NN`: could not determine
+    - RS-3 — `services/content_search/replace/:NN`: could not determine
       whether the validation-to-write interval holds a stable target guard.
       Needed evidence: guard acquisition and release path.
 
